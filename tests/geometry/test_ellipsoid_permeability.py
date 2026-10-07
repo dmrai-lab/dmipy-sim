@@ -44,7 +44,8 @@ A          = 3e-6   # m  — short semi-axis
 C_AXIS     = 9e-6   # m  — long semi-axis
 SEMIAXES   = [A, A, C_AXIS]
 KAPPA_MED  = 1e-5   # m/s
-KAPPA_HIGH = 5e-3   # m/s
+KAPPA_HIGH = 6e-6   # m/s — derived in test_permeability_high_kappa_approaches_free_diffusion
+                     # below from the engine's own sub-step budget, together with its TE
 RHO        = 5e-4   # m/s
 
 
@@ -107,16 +108,47 @@ def test_permeability_reduces_signal_at_high_b():
 def test_permeability_high_kappa_approaches_free_diffusion():
     """Very high κ: signal within 15% of exp(-bD) at b=500 s/mm².
 
-    Uses fine time-stepping (n_t=2000).  15% tolerance accounts for the
-    finite TE/τ ratio and the fact that walkers start inside the ellipsoid
-    and must diffuse back out multiple times.
+    15% tolerance accounts for the finite TE/τ ratio and the fact that walkers start inside the
+    ellipsoid and must diffuse back out multiple times. ``slew_rate=np.inf`` keeps the lobes
+    square: ``pgse_wf``'s unit-amplitude reference build ramps at a FIXED 5 ms regardless of TE,
+    so a short TE whose lobe is narrower than 5 ms is refused by the assembler as inexpressible
+    (dmrai-lab/dmipy-sim#475) -- not a bug in the assembler, a placeholder amplitude too large
+    for this TE.
+
+    KAPPA_HIGH and TE are DERIVED below, not chosen by search, from the engine's own sub-step
+    budget (``dmipy_sim.engine.physics``) -- the same derivation as the cylinder/sphere siblings
+    (``test_permeability_crossing.py``, ``test_sphere_permeability.py``), but the ellipsoid uses
+    TWO different radii: the sub-step rules read ``length_scales.min_feature = min(semiaxes) = A``
+    (``walk_sub_steps``'s R/6 rule has no other notion of "the pore" for this geometry), while the
+    exchange time is the solid's own ``tau = V / (kappa S)`` with its exact volume and surface
+    area, which for ``SEMIAXES = [3e-6, 3e-6, 9e-6]`` (a prolate spheroid) gives an equivalent
+    radius ``R_eq = 3 V / S = 3.661e-6 m``.
+
+      * ``crossing_sub_steps`` needs ``n_cross = ceil(6 D dt / step_max**2)``,
+        ``step_max = C D / (2 kappa)`` (``C = CROSSING_P_MAX = 3e-3``);
+      * ``walk_sub_steps`` needs ``n_refl = ceil(dt / ((A/6)**2 / (6 D)))``, kappa-independent;
+      * total sub-steps over the walk is ``TE * max(216 D / A**2, 24 kappa**2 / (C**2 D))``,
+        independent of n_t; neither rule wastes budget against the other at
+        ``kappa* = 3 D C / A``;
+      * for a walker-step budget ``B = N * TE * 216 D / A**2`` (N = 5,000, this file's N_EXACT),
+        ``TE = B A**2 / (216 D N)`` and the achieved ``TE / tau = TE * 3 kappa* / R_eq``
+        (the ellipsoid's tau uses ``R_eq``, not ``A``, so this does not collapse to as clean a
+        closed form in B as the cylinder/sphere siblings; it is evaluated numerically below).
+      * solving ``TE / tau >= 10`` at A = 3e-6 m, R_eq = 3.661e-6 m, D = 2e-9 m^2/s, C = 3e-3,
+        N = 5,000 gives ``kappa = 6.0e-6 m/s``, ``TE = 2.034 s``, ``n_sub = 98`` per save (both
+        rules bind, 1000x under the 100,000 cap) at ``n_t = 1,000``: ``TE / tau = 10.0``
+        exactly, total walker-steps ``5,000 * 1,000 * 98 ~= 4.90e8`` -- measured at ~3.5 minutes
+        wall clock on this machine (CPU), inside a 10-minute bound. N drops from N_WALKERS
+        (100,000) to N_EXACT (5,000, this module's reduced ordinal count) because N_WALKERS at
+        this budget would take ~20x as long for the same statistical qualitative check.
     """
-    TE    = 20e-3
+    TE    = 2.0337916666666667   # s -- derived above: B A**2 / (216 D N) at B = 97,622
+    n_t   = 1000
     b_idx = 1   # b = 500 s/mm²
-    wf    = pgse_wf(TE, n_t=2000)
+    wf    = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
     geom_perm = Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_HIGH)
-    S_perm    = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
+    S_perm    = simulate(N_EXACT, D, wf, geom_perm, seed=SEED)
 
     b_val  = 500e6
     S_free = np.exp(-b_val * D)
