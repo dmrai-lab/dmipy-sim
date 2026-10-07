@@ -390,7 +390,10 @@ def family(work_dir, *, dry, create_dataset, rows=None):
     grid = dict(QUANTITY_GRID)
     text = licence_text(os.path.join(work_dir, ".licence-cache"))
     import dmipy_sim
-    commits = sorted({r.get("commit") for r in rows.values() if r.get("commit")})
+    # built_commit / published_commit (dmipy-sim#499) is the current manifest schema; a row the live hub still
+    # serves from before that rename names the SAME fact as "commit" alone
+    commits = sorted({(r.get("built_commit") or r.get("commit")) for r in rows.values()
+                      if r.get("built_commit") or r.get("commit")})
     sources = [Source(
         key="dmipy-sim", url="https://github.com/dmrai-lab/dmipy-sim",
         host_record=f"dmipy-sim at {', '.join(c[:8] for c in commits)}, the commit(s) the packs' manifest rows name",

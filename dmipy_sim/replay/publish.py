@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -33,7 +34,7 @@ README = "README.md"
 CONTRACT = ("id", "license", "citation", "fidelity")     # what a published pack must carry in its header
 
 __all__ = ["publish", "fetch", "fetch_windows", "parse_uri", "is_hub_uri", "manifest_row", "render_readme",
-           "header_of", "window_prefix"]
+           "header_of", "window_prefix", "code_commit"]
 
 
 # ------------------------------- URIs -------------------------------
@@ -73,10 +74,15 @@ def _check_contract(meta):
                          f"{', '.join(missing)} (build it with build_replay_pack(..., id=, license=, citation=))")
 
 
-def _commit_of(meta):
-    """The code commit recorded by the producer: ``provenance.code.commit`` (every pack built after dmipy-sim#541,
-    content-derived, so it stays in the file), else ``provenance.run.code.commit`` or the pack step's (a pack
-    built before #541, read as it is -- its run record, including its code, was in the file)."""
+def _built_commit_of(meta):
+    """The commit that BUILT this pack -- sealed in its own header, never corrected after the fact (dmipy-sim#499):
+    ``provenance.code.commit`` (every pack built after dmipy-sim#541, content-derived, so it stays in the file),
+    else ``provenance.run.code.commit`` or the pack step's (a pack built before #541, read as it is -- its run
+    record, including its code, was in the file).
+
+    This is a different fact from :func:`code_commit`, the commit of the code PUBLISHING the pack: a branch can be
+    squashed or rebased after the walk ran, so the commit that built the bytes and the commit a consumer can fetch
+    today are not always the same one, and a manifest row names each (``built_commit`` / ``published_commit``)."""
     c = ((meta.get("provenance") or {}).get("code") or {}).get("commit")
     if c:
         return c
@@ -86,6 +92,56 @@ def _commit_of(meta):
         if c:
             return c
     return None
+
+
+def code_commit(*, require_clean=True):
+    """The dmipy-sim commit the code PUBLISHING a pack is at right now -- what a manifest row's
+    ``published_commit`` names (dmipy-sim#499), read fresh at call time and never copied from a pack's own
+    provenance (:func:`_built_commit_of`): a pack built on a feature branch and published after that branch was
+    squashed into main is published AT the squash commit, not at the extinct branch commit its bytes were built
+    at, and calling this at publish time is what makes that true without a later correction.
+
+    A dirty tree is refused (when ``require_clean``) because the commit does not describe the code that ran, and
+    an unpushed HEAD is refused because a manifest row that names a commit nobody can fetch is not provenance.
+    """
+    from .. import __file__ as pkg
+    root = os.path.dirname(os.path.dirname(os.path.abspath(pkg)))
+
+    def git(*args):
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=60)
+        if r.returncode:
+            raise ValueError(f"publish: git {' '.join(args)} failed in {root}: {r.stderr.strip()}")
+        return r.stdout.strip()
+
+    head = git("rev-parse", "HEAD")
+    if not require_clean:
+        return head
+    dirty = git("status", "--porcelain")
+    if dirty:
+        raise ValueError(f"publish: the dmipy-sim tree at {root} is dirty, so {head[:8]} does not describe "
+                         f"the code that ran:\n{dirty}")
+    if not git("branch", "-r", "--contains", head):
+        raise ValueError(f"publish: {head[:8]} is on no remote branch; a manifest row that names a commit "
+                         f"nobody can fetch is not provenance -- push the branch first")
+    return head
+
+
+def _commit_cell(built, published):
+    """One markdown cell naming a pack's built and published commits (dmipy-sim#499): a single, unlabelled hash
+    never appears twice meaning two different things. The two are the same fact when a pack is published right
+    after it is built, so the common case prints one short hash; they differ once a branch is squashed or
+    rebased after the walk ran, and then each is named."""
+    b, p = built or None, published or None
+    if not b and not p:
+        return "—"
+    if b and p and b == p:
+        return b[:8]
+    parts = []
+    if b:
+        parts.append(f"built {b[:8]}")
+    if p:
+        parts.append(f"published {p[:8]}")
+    return ", ".join(parts)
 
 
 def _substrate_summary(sub):
@@ -98,13 +154,19 @@ def _substrate_summary(sub):
                        for p in (sub.get("pools") or [])])
 
 
-def manifest_row(meta, path, sha256, nbytes, *, local=None):
+def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=None):
     """One manifest row for the pack whose header is ``meta``, stored at ``path`` with these bytes.
 
     ``local`` -- the file itself -- lets a pack stored in more than one window (RPK.md 4.3) carry
     ``segment_bytes``, the bytes of ONE window (the shared tensors -- weights, a static label, the field grid,
     the voxel tables -- counted once, not once per window): what a ``windows=range(k)`` read of it costs, so a
-    consumer can plan the read before it fetches anything (:func:`fetch_windows`)."""
+    consumer can plan the read before it fetches anything (:func:`fetch_windows`).
+
+    A row names two commits, never one unlabelled ``commit`` (dmipy-sim#499): ``built_commit``, read from the
+    pack's own sealed provenance (:func:`_built_commit_of`) and never corrected after the fact, and
+    ``published_commit``, the commit of the code that wrote THIS row (the caller's, from :func:`code_commit` at
+    publish time -- :func:`_publish_file` fills it in when the caller does not pass one). A re-publish of the
+    same bytes from a later commit updates ``published_commit`` without touching the sealed ``built_commit``."""
     wp = meta.get("walk_params") or {}
     cx = meta.get("compression") or {}
     fid = meta.get("fidelity") or {}
@@ -113,7 +175,8 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None):
                K=cx.get("K"), method=cx.get("method"), temporal_bandwidth_hz=cx.get("temporal_bandwidth_hz"),
                channels=["positions", *sorted(cx.get("channels") or {})],
                floor_max=fid.get("floor_max"), err_max=fid.get("err_max"), within_2x_floor=fid.get("within_2x_floor"),
-               commit=_commit_of(meta), license=meta.get("license"), citation=meta.get("citation"),
+               built_commit=_built_commit_of(meta), published_commit=published_commit,
+               license=meta.get("license"), citation=meta.get("citation"),
                substrate=(meta.get("substrate") or {}).get("id"))
     if wp.get("segments"):
         row["segments"] = wp["segments"]
@@ -203,7 +266,7 @@ def render_readme(manifest, repo):
     for r in packs:
         lines.append(f"| `{r.get('id')}` | {_duration(r)} | {_fmt(r.get('n_walkers'), 'd')} | {_fmt(r.get('K'), 'd')} | "
                      f"{', '.join(r.get('channels') or [])} | {_fmt(r.get('floor_max'), '.3g')} | {_size(r.get('bytes') or 0)} | "
-                     f"{(r.get('commit') or '—')[:8]} | `{r.get('path')}` |")
+                     f"{_commit_cell(r.get('built_commit'), r.get('published_commit'))} | `{r.get('path')}` |")
     cites = sorted({r["citation"] for r in packs if r.get("citation")})
     if cites:
         lines += ["", "## Citation", ""] + [f"* {c}" for c in cites]
@@ -232,14 +295,20 @@ def _hub_sha256(hub, path):
     return sha256_of(hub.get_live(path))
 
 
-def publish(pack_or_path, repo, *, path=None, hub=None, message=None):
+def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_commit=None):
     """Put a pack in the dataset ``repo`` (``owner/name``) and return its URI ``hf://owner/name/<path>``.
 
     ``pack_or_path`` is a ``.rpk`` file or a :class:`~dmipy_sim.replay.ReplayPack` (written to a temporary
     file first: the bytes uploaded are the bytes hashed). ``path`` defaults to ``packs/<id>.rpk`` with the id's
     slashes replaced. The file, the manifest row (replacing the row at the same path) and the regenerated card go
     up in ONE commit through ``hub`` (default :class:`~dmipy_sim.fill.hub.Hub`); afterwards the sha256 the hub
-    holds is read back and must equal the manifest's."""
+    holds is read back and must equal the manifest's.
+
+    ``published_commit`` names the manifest row's own commit (dmipy-sim#499): the commit of the code THIS call is
+    running as, as distinct from the pack's sealed ``built_commit``. A caller that already knows it (the
+    reference-pack protocol's stricter, clean-and-pushed :func:`~dmipy_sim.replay.reference.code_commit`) passes
+    it; left out, this reads one itself with :func:`code_commit`'s lenient form (no clean-tree or pushed-branch
+    requirement -- a plain ``publish()`` call is not that protocol)."""
     from .replay import ReplayPack
     if isinstance(pack_or_path, ReplayPack):
         _check_contract(pack_or_path.meta)
@@ -248,19 +317,27 @@ def publish(pack_or_path, repo, *, path=None, hub=None, message=None):
             local = os.path.join(tmp, "pack.rpk")
             pack_or_path.save(local)
             pack_or_path.source = source                          # the temporary file is not where the pack lives
-            return _publish_file(local, pack_or_path.meta, repo, path=path, hub=hub, message=message)
+            return _publish_file(local, pack_or_path.meta, repo, path=path, hub=hub, message=message,
+                                 published_commit=published_commit)
     local = os.fspath(pack_or_path)
-    return _publish_file(local, header_of(local), repo, path=path, hub=hub, message=message)
+    return _publish_file(local, header_of(local), repo, path=path, hub=hub, message=message,
+                         published_commit=published_commit)
 
 
-def _publish_file(local, meta, repo, *, path, hub, message):
+def _publish_file(local, meta, repo, *, path, hub, message, published_commit=None):
     _check_contract(meta)
     if hub is None:
         from ..fill.hub import Hub
         hub = Hub(repo)
     path = path or f"packs/{str(meta['id']).replace('/', '-')}.rpk"
+    if published_commit is None:
+        try:
+            published_commit = code_commit(require_clean=False)
+        except Exception as e:                  # an installed, non-git copy of dmipy-sim still publishes a pack
+            log.warning("publish %s: could not read the running code's commit for published_commit (%s)", path, e)
+            published_commit = None
     sha, nbytes = sha256_of(local), os.path.getsize(local)
-    row = manifest_row(meta, path, sha, nbytes, local=local)
+    row = manifest_row(meta, path, sha, nbytes, local=local, published_commit=published_commit)
     from ..fill.hub import StaleParent
     for attempt in range(MANIFEST_TRIES):
         # the manifest is read at the head and the commit declares that head as its parent: two publishers of one
