@@ -170,10 +170,33 @@ def _first_step_at(t, dt):
     return int(math.ceil(t / dt - _EPS_T))
 
 
+def _margin_cap(dt, end1_idx, start2_idx, lead, tail_bound):
+    """The largest shared length (samples) a :class:`SpinEcho`-style block pair -- one ``end``-anchored at the
+    grid index ``end1_idx`` (against the 180's gap), the other ``start``-anchored at ``start2_idx`` (against
+    the same gap, on the far side) -- may have without either block's OWN far edge landing inside a budget's
+    lead-in (block 1's start, against ``lead``) or readout-tail (block 2's end, against ``tail_bound``) dead
+    window once discretised.
+
+    The near edge of each block (the 180's gap) is already grid-safe (``_steps_before`` / ``_first_step_at``
+    round towards it); a block's LENGTH is rounded independently by its shape, and on whichever margin binds
+    with zero continuous slack (:meth:`SpinEcho.te_min`'s ``2 * max(lead, tail)``) the two roundings do not
+    cancel, so the discretised block can land up to about one sample past that edge (dmipy-sim#645) -- a
+    genuine overlap with the dead window, not mere rounding. Both blocks are capped to the SAME length here
+    (never lengthened, only shortened); :func:`assemble`'s placement loop is the one that then keeps them
+    exact mirror images of each other across the 180 (the raw shape need not itself be palindromic at an
+    arbitrary (span, dt), so independently slicing each block's far end from it would not leave equal
+    moments -- see the loop's own note)."""
+    return min(end1_idx - _first_step_at(lead, dt), _steps_before(tail_bound, dt) - start2_idx)
+
+
 # A placement says where a block goes. Sample k acts over the step [k dt, (k + 1) dt) (the engine's rule), and
-# the readout sample n_t - 1 acts over nothing. ("end", t, factor): the block's last step ends by time t (it
-# ends against a pulse, or at the readout); ("start", t, factor): its first step starts at or after t (it
-# follows a pulse); ("at", i0, factor, n): exactly n samples from sample i0 (a stretch handed out to fill).
+# the readout sample n_t - 1 acts over nothing. ("end", t, factor[, cap]): the block's last step ends by time t
+# (it ends against a pulse, or at the readout); ("start", t, factor[, cap]): its first step starts at or after
+# t (it follows a pulse); ("at", i0, factor, n): exactly n samples from sample i0 (a stretch handed out to
+# fill). The optional ``cap`` on "start"/"end" (:func:`_margin_cap`) truncates the block -- from its front for
+# "end", its back for "start", i.e. always the half FARTHER from the anchor -- to at most ``cap`` samples; a
+# "start" capped the SAME as a preceding same-row "end" is instead the exact time-reverse of that "end"
+# block's (already-truncated) array, not a second independent slice (`assemble()`'s loop, dmipy-sim#645).
 
 
 class SpinEcho:
@@ -198,7 +221,12 @@ class SpinEcho:
         placements = []
         for m, span in enumerate(spans):
             gap = self.gap(m, g[m])
-            placements.append([("end", TE / 2.0 - gap / 2.0, 1.0), ("start", TE / 2.0 + gap / 2.0, 1.0)])
+            end1, start2 = TE / 2.0 - gap / 2.0, TE / 2.0 + gap / 2.0
+            cap = None
+            if self.timing is not None:
+                cap = _margin_cap(dt, _steps_before(end1, dt), _first_step_at(start2, dt),
+                                  _lead(self.timing), TE - _tail(self.timing))
+            placements.append([("end", end1, 1.0, cap), ("start", start2, 1.0, cap)])
         return schedule, placements
 
 
@@ -224,7 +252,12 @@ class StimulatedEcho:
         schedule = RFSchedule([RFEvent(_dur(self.timing, "t_prep"), a1, 'Mz→Mxy', duration_s=w),
                                RFEvent(t_store, a2, 'store', duration_s=w),
                                RFEvent(t_recall, a3, 'recall', duration_s=w)])
-        return schedule, [[("end", t_store - w / 2.0, 1.0), ("start", t_recall + w / 2.0, 1.0)] for _ in spans]
+        end1, start2 = t_store - w / 2.0, t_recall + w / 2.0
+        cap = None
+        if self.timing is not None:
+            cap = _margin_cap(dt, _steps_before(end1, dt), _first_step_at(start2, dt),
+                              _lead(self.timing), TE - _tail(self.timing))
+        return schedule, [[("end", end1, 1.0, cap), ("start", start2, 1.0, cap)] for _ in spans]
 
 
 class GradientEcho:
@@ -417,11 +450,34 @@ def assemble(assembler, *, gradient_directions, span, bvalues=None, gradient_str
         schedule, placements = assembler.layout(spans, g, te, dt, n)
         G = np.zeros((n_m, n, 3), dtype=np.float64)
         for m in range(n_m):
+            truncated_end = None  # (cap, capped block) from a same-row "end" placement that a following
+                                   # "start" at the SAME cap mirrors, rather than slicing independently
+                                   # (dmipy-sim#645 -- see the note below)
             for kind, where, factor, *rest in placements[m]:
                 blk = fill(m, g[m], dt, rest[0]) if kind == "at" else sample(m, g[m], dt)
                 blk = np.asarray(blk, dtype=np.float64)
                 if blk.ndim == 1:
                     blk = blk[:, None] * dirs[m]
+                cap = rest[0] if kind != "at" and rest else None            # dmipy-sim#645: margin-safe length
+                if cap is not None and cap < blk.shape[0]:
+                    if cap < 1:
+                        raise ValueError(f"row {m}: the budget's lead-in / readout-tail margin leaves no room "
+                                         f"on the grid (dt = {dt*1e3:.4f} ms) for this encoding block")
+                    if kind == "end":
+                        blk = blk[-cap:]                                    # drop the half farther from the 180
+                        truncated_end = (cap, blk)
+                    elif truncated_end is not None and truncated_end[0] == cap:
+                        # The SAME shape, independently sampled, would be sliced from its OTHER end here
+                        # (`blk[:cap]`) -- correct for which half stays nearest the 180, but the raw shape need
+                        # not be palindromic at this (span, dt), so that independent slice's sum need not equal
+                        # the paired "end" block's, breaking q(TE) = 0 by exactly this kind of margin
+                        # truncation. The exact time-reverse of the paired block has the identical sum (and
+                        # values) by construction, so mirroring it instead keeps the cancellation exact.
+                        blk = truncated_end[1][::-1]
+                    else:
+                        blk = blk[:cap]
+                elif kind == "end":
+                    truncated_end = None
                 if kind == "at":
                     i0 = int(where)
                 elif kind == "start":

@@ -233,14 +233,11 @@ def test_the_readers_of_a_played_gradient_take_a_budget():
     """A designer's output built to a budget arrives with it: the 90 / 180 (or the three 90s) are finite, the
     sequence carries the budget and validate() holds the gradient to its windows."""
     tm = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=3e-3)
-    # n_t = 405, not 400: at 400 this asymmetric (lead != tail) budget's zero-continuous-slack margin rounds
-    # the post-180 block a hair past the readout tail's edge -- a genuine straddle #616's fixed check now
-    # (correctly) refuses, filed separately as dmipy-sim#645 rather than dodged by weakening that check.
-    ref = S.pgse(D2[:1], 4e-3, 20e-3, bvalues=B[:1], n_t=405, timing=tm)
+    ref = S.pgse(D2[:1], 4e-3, 20e-3, bvalues=B[:1], n_t=400, timing=tm)
     back = S.from_btensor_waveform(np.asarray(ref.G), ref.dt, timing=tm)
     assert back.timing is tm and [e.duration_s for e in back.rf] == [2e-3, 4e-3]
     np.testing.assert_allclose(back.b(), ref.b(), rtol=1e-6)
-    ste_ = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=405, timing=tm)
+    ste_ = S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=400, timing=tm)
     st, rc = (int(round(e.t_s / ste_.dt)) for e in ste_.rf[1:])
     back = S.from_pgste_waveform(np.asarray(ste_.G), ste_.dt, store_idx=st, recall_idx=rc, timing=tm)
     assert back.timing is tm and [e.duration_s for e in back.rf] == [2e-3] * 3 and back.stimulated_echo
@@ -279,6 +276,22 @@ def test_validate_refuses_a_step_straddling_a_budget_dead_window_not_only_contai
     flush[0, 20, 0] = 0.01; flush[0, 50, 0] = -0.01                      # sample 20 starts exactly at t_lead
     seq = ScannerSequence(G=flush, dt=dt, rf=rf2, timing=tm_on_grid)
     assert seq.validate() is seq
+
+
+def test_pgse_and_pgste_build_and_validate_across_n_t_on_an_asymmetric_budget():
+    """dmipy-sim#645: ``SpinEcho`` / ``StimulatedEcho`` size an asymmetric (``t_excite != t_readout_pre_echo``)
+    lead-in/readout-tail margin with exactly zero continuous slack on its binding side (minimal ``TE``), and
+    the discretised block used to be able to land up to about a sample past that edge depending on how ``n_t``
+    happens to round -- a real straddle #616's fixed `validate()` check (correctly) started refusing, roughly
+    half of a swept ``n_t`` range. Every ``n_t`` here must build AND validate for both families: this is the
+    sweep that failed on main (either the dead-window straddle itself, or, once that was margin-capped without
+    also mirroring the capped block, a broken refocusing -- the raw lobe shape is not exactly palindromic at
+    an arbitrary (span, dt), so independently slicing each block's far end from it need not leave equal
+    moments)."""
+    tm = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=3e-3)
+    for n_t in range(300, 421):
+        S.pgse(D2[:1], 4e-3, 20e-3, bvalues=B[:1], n_t=n_t, timing=tm).validate()
+        S.pgste(D2[:1], 4e-3, 30e-3, bvalues=B[:1], n_t=n_t, timing=tm).validate()
 
 
 def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing():
