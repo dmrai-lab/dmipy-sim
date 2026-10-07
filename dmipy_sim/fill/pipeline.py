@@ -1,15 +1,23 @@
-"""The stages of a block and their overlap: seed -> walk -> save -> pack -> upload, so the device only ever waits
-on itself.
+"""The stages of a block and their overlap: seed -> walk -> pack -> upload, so the device only ever waits on
+itself.
 
 The next round's seeds are drawn on the CPU (:func:`dmipy_sim.spec.draw_seeds`) in a thread while this round
-walks, the next block claimed ahead for its first round; a walked round is written to its file in a thread while
-the next round walks; the pack runs in a subprocess on the CPU over the block's walk files (its rounds merged
-with ``overlap="recertify"``); the upload is one commit in a thread, the local files kept until the hub's sha256
-matches. Every stage has queue depth one (at most one round saving, one pack, one upload), so a slow pack or
-upload makes the walk wait rather than stacking packs on disk: :func:`Fill.settle` is the only back-pressure.
-The walk context (:meth:`Recipe.context`) is built once per process. Measured on the GH200 before the seeds and
-saves left the device's path (dmipy-sim#258): 19 s of seeding and 21 s of saving around a 132 s pass-1 walk, the
-device busy 77 % of the time.
+walks, the next block claimed ahead for its first round; the pack runs in a THREAD of this process, directly from
+the block's rounds' :class:`~dmipy_sim.persistent_walk.PersistentWalk` objects (its rounds merged with
+``overlap="recertify"``) -- no ``.walk`` file, no reload (dmipy-sim#678: the disk round trip was the handoff's
+cost, not the pack's; ``build_replay_pack`` on the walk already in memory is ~12 s against ~24 s for a subprocess
+that paid its own start, JAX init and an 11 s write + reload of the same arrays). ``--keep`` still writes each
+round's ``.walk`` beside the shard (for inspection, or for :meth:`Fill.drain` to recover a block whose pack never
+ran); without it nothing is written and a block abandoned mid-pack cannot be recovered -- it is claimed again by
+whoever asks next. The upload is one commit in a thread, the local files kept until the hub's sha256 matches.
+Every stage keeps queue depth one (at most one pack, one upload in flight), so a slow pack or upload makes the
+walk wait rather than stacking packs in memory: :func:`Fill.settle` is the only back-pressure. Packing in this
+process rather than a subprocess means a pack in flight and the next block's walk share this process's RAM: the
+budget to check is two blocks' walk arrays at once (the one being packed, the one being walked), never three --
+the same ``settle(keep=1)`` throttle that depth-one queuing always enforced. The walk context
+(:meth:`Recipe.context`) is built once per process. Measured on the GH200 before the seeds and saves left the
+device's path (dmipy-sim#258): 19 s of seeding and 21 s of saving around a 132 s pass-1 walk, the device busy
+77 % of the time.
 
 A plan may be filled in passes (``plan.passes`` in the manifest): a pass of a block is its own shard walked from
 its own seed stream (round ``r`` of pass ``K`` of block ``b``: seed ``b_seed * 1000 + 100 (K - 1) + r``), the
@@ -20,8 +28,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -57,10 +63,10 @@ class Options:
     max_walkers: int = None           # walk a block in rounds of at most this many
     smoke: bool = False               # upload under smoke/ (never claims)
     no_upload: bool = False
-    keep: bool = False                # keep the local shard and run records after the upload
+    keep: bool = False                # keep the local shard and run records after the upload, and write each round's walk file too
     certify: bool = False             # a certifying walk: measured fidelity, under certificate/
     batch: object = None              # walker_batch_size (default: the manifest's); "auto": the backend sizes it from its device
-    pack_device: str = "numpy"        # where the pack subprocess runs its transforms: numpy, jax, auto
+    pack_device: str = "numpy"        # where the in-process pack runs its transforms: numpy (the CPU, so the walk keeps the GPU), jax, auto
     duty: float = 1.0                 # the device's duty: after a walk the worker pauses for walk_time * (1 / duty - 1)
     duty_file: str = None             # a file holding the duty, read before every walk (a shared box given back by the hour)
     require_gpu: bool = True
@@ -139,8 +145,9 @@ def round_paths(workdir, name, r, k):
 
 def walk_round(o, rc, row, name, r, k, P, seeds):
     """The walk stage (the device): round ``r`` of ``k`` of pass ``P`` of the block from its drawn seeds, walked
-    with the manifest's walk, spooled into its run record. Returns ``(walk, record)``; :func:`save_walk` writes
-    the walk (a thread, off the device's path)."""
+    with the manifest's walk, spooled into its run record. Returns ``(walk, record)``; :meth:`Fill.post_round`
+    hands the walk straight to the pack (a thread, off the device's path), writing it to disk only with
+    ``--keep``."""
     from ..spec import walk_spec
     W = rc.man["walk"]; spec = rc.spec()
     log.info("%s round %d/%d: voxels %s, plan %d walkers, scale %.4f -> %s", name, r + 1, k, row["voxels"], seeds["tot"], seeds["scale"], seeds["n_plan"])
@@ -163,16 +170,26 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
 
 
 def save_walk(w, rd):
-    """The walk written as one file (the handoff to the pack stage); the spool dropped once the file is whole."""
+    """The round's walk written as one file beside the shard (``--keep``, or :meth:`Fill.drain` recovering a
+    block whose pack never ran); the spool dropped once the file is whole. Not the pack's handoff any more
+    (dmipy-sim#678): the pack stage reads the walk object directly, in memory."""
     t0 = time.time(); w.save(rd["walk"])
     shutil.rmtree(os.path.join(rd["run_dir"], "spool"), ignore_errors=True)
     log.info("%s saved in %.0f s", os.path.basename(rd["walk"]), time.time() - t0)
 
 
-def pack_job(job):
-    """The pack stage (a subprocess on the CPU): the block's walk files packed, the rounds merged, the summary
-    and the certificate written beside the shard. ``job`` is the JSON the walk stage wrote."""
-    from ..persistent_walk import PersistentWalk
+def drop_spool(rd):
+    """The round's spool (its finished walk batches, kept only to resume a killed walk) dropped once the round
+    is whole and held in memory -- without ``--keep`` this is the walk stage's only disk write."""
+    shutil.rmtree(os.path.join(rd["run_dir"], "spool"), ignore_errors=True)
+
+
+def _pack_block(job, walk_of):
+    """The pack stage: the block's rounds packed from their walks (``walk_of(r, rd)`` returns round ``r``'s
+    :class:`~dmipy_sim.persistent_walk.PersistentWalk`), the rounds merged, the summary and the certificate
+    written beside the shard. ``job`` is the dict the walk stage built (:meth:`Fill.job_of`); shared by
+    :func:`pack_in_process` (the walks already in memory) and :func:`pack_job` (reloaded from ``--keep``'s
+    files, for :meth:`Fill.drain`). Returns the summary dict."""
     from ..replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
     from ..phantom import Grid
     man, P = job["manifest"], job["manifest"]["pack"]
@@ -180,7 +197,7 @@ def pack_job(job):
     fid = dict(fidelity="measured", blt_temporal_K=P["blt_K"]) if job["certify"] else dict(fidelity="inherited", fidelity_from=job["certificate"])
     rounds = job["rounds"]; k = len(rounds); out = job["out"]; t0 = time.time(); packs = []
     for r, rd in enumerate(rounds):
-        w = PersistentWalk.load(rd["walk"])
+        w = walk_of(r, rd)
         out_r = out if k == 1 else out[:-4] + f".round{r}.rpk"
         pk = build_replay_pack(w, id=f"{man['id']}/{job['variant']}/{job['name']}{'-certifying' if job['certify'] else ''}" + (f"/round-{r}" if k > 1 else ""),
                                license=man["license"], citation=man["citation"], K=P.get("K"), scanner=man["walk"]["scanner"], position_container=P["position_container"],
@@ -211,10 +228,28 @@ def pack_job(job):
     json.dump(summary, open(out[:-4] + ".json", "w"), indent=1)
     if job["certify"]:
         json.dump(pk.meta, open(out[:-4] + ".certificate.json", "w"), default=float)
-    for rd in rounds:                                      # the walk files were the handoff; the shard is the artifact
-        os.remove(rd["walk"])
     log.info("%s: packed in %.0f s -> %s (%.0f MB, %.2f kB/walker); certificate %s", job["name"], t_pack, out, os.path.getsize(out) / 1e6,
              os.path.getsize(out) / 1e3 / max(n_w, 1), cert)
+    return summary
+
+
+def pack_in_process(job, walks):
+    """The live pipeline's pack (dmipy-sim#678): the block's rounds packed from the :class:`PersistentWalk`
+    objects the walk stage already produced, in this process -- no ``.walk`` write, no reload. Runs in a thread
+    (:meth:`Fill.start_pack`) while the next block's walk proceeds on the device; ``walks[r]`` is round ``r``'s
+    walk, in the order ``job["rounds"]`` lists them."""
+    return _pack_block(job, lambda r, rd: walks[r])
+
+
+def pack_job(job):
+    """Recovering a block whose pack never ran (:meth:`Fill.drain`): the rounds' ``.walk`` files on disk --
+    written by ``--keep``, or left by a worker that died after saving but before packing -- loaded, packed and
+    removed; the walk files were the handoff then, the shard is the artifact now."""
+    from ..persistent_walk import PersistentWalk
+    summary = _pack_block(job, lambda r, rd: PersistentWalk.load(rd["walk"]))
+    for rd in job["rounds"]:
+        os.remove(rd["walk"])
+    return summary
 
 
 def upload_block(hub, o, job):
@@ -255,7 +290,7 @@ class Fill:
     def __init__(self, hub, rc, o):
         self.hub, self.rc, self.o = hub, rc, o
         os.makedirs(o.workdir, exist_ok=True)
-        self.packing = {"proc": None, "job": None}; self.uploading = {"thread": None, "error": None}
+        self.packing = {"thread": None, "job": None, "error": None}; self.uploading = {"thread": None, "error": None}
         self.post = {"threads": [], "error": None}; self.post_lock = threading.RLock()   # the pack/upload handoff: one thread at a time
         self.prefetch = {"thread": None, "key": None, "seeds": None, "error": None}
         self.state = {"walking": None, "held": {}}; self.stop = threading.Event()   # held: every claim in the pipeline, by name
@@ -269,21 +304,26 @@ class Fill:
             raise SystemExit("a certifying walk takes a budget: it is a scaled block (its pack holds the dense oracle in host memory)")
 
     # ---- pack + upload, depth one each
-    def start_pack(self, job):
-        """The pack subprocess for a block whose rounds are all saved; a waiter thread hands its shard to the upload
-        the moment it ends (on a slow device a block's walk is an hour, and its shard must not wait for the next)."""
+    def start_pack(self, job, walks):
+        """The pack for a block whose rounds are all walked, in a thread of this process (``walks``, in
+        ``job["rounds"]`` order) -- a waiter thread hands its shard to the upload the moment it ends (on a slow
+        device a block's walk is an hour, and its shard must not wait for the next)."""
         jf = job["file"]; json.dump(job, open(jf, "w"), indent=1, default=float)
-        env = dict(os.environ, JAX_PLATFORMS="cpu") if self.o.pack_device == "numpy" else dict(os.environ)
-        pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the same dmipy_sim as this process
-        env["PYTHONPATH"] = pkg + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-        proc = subprocess.Popen([sys.executable, "-m", "dmipy_sim.fill", "--pack", jf], env=env)
         cs = job.get("claim_state") or dict(block=job["block"], variant=job["variant"], host=job["host"], name=job["name"], claim=job.get("claim"),
                                             round=None, **{"pass": job.get("pass")}, run_dir=None, commit=job["manifest"]["code"]["commit"], started=C.stamp())
-        self.packing["proc"] = proc; self.packing["job"] = job; self.state["held"][job["name"]] = dict(cs, stage="packing")
-        log.info("%s: pack started (pid %d, device %s)", job["name"], proc.pid, self.o.pack_device)
+        self.state["held"][job["name"]] = dict(cs, stage="packing")
+
+        def body():
+            try:
+                pack_in_process(job, walks)
+            except BaseException as e:
+                self.packing["error"] = e
+        t = threading.Thread(target=body, daemon=False); t.start()
+        self.packing["thread"] = t; self.packing["job"] = job
+        log.info("%s: pack started (thread, device %s)", job["name"], self.o.pack_device)
 
         def waiter():
-            proc.wait()
+            t.join()
             try:
                 with self.post_lock:
                     self.finish_pack()
@@ -299,11 +339,16 @@ class Fill:
             self._finish_pack()
 
     def _finish_pack(self):
-        if self.packing["proc"] is None:
+        if self.packing["thread"] is None:
             return
-        rc_ = self.packing["proc"].wait(); job = self.packing["job"]; self.packing["proc"] = None; self.packing["job"] = None
-        if rc_ != 0:
-            raise RuntimeError(f"{job['name']}: the pack subprocess failed (exit {rc_}); its walk files are kept in {self.o.workdir}")
+        self.packing["thread"].join(); job = self.packing["job"]; err = self.packing["error"]
+        self.packing["thread"] = None; self.packing["job"] = None; self.packing["error"] = None
+        if err is not None:
+            raise RuntimeError(f"{job['name']}: the pack failed in its thread") from err
+        self._handoff_to_upload(job)
+
+    def _handoff_to_upload(self, job):
+        """A finished pack's shard handed to the upload thread (after the one before it)."""
         if self.o.no_upload:
             log.info("%s: packed, not uploaded", job["name"]); os.remove(job["file"]); self.state["held"].pop(job["name"], None); return
         self.join_upload()
@@ -330,19 +375,21 @@ class Fill:
             if self.uploading["error"] is not None:
                 raise self.uploading["error"]
 
-    # ---- the save thread per round, then the pack
-    def post_round(self, w, rd, job):
-        """Save the walk in a thread, then (``job`` given: the block's last round) pack it once every earlier
-        round's file is whole; the pack stages keep their depth of one under the lock."""
+    # ---- the round's housekeeping thread, then (the block's last round) the pack
+    def post_round(self, w, rd, job, walks=None):
+        """``--keep``: save the round's walk beside the shard; otherwise just drop its spool -- in a thread, off
+        the device's path. Then (``job`` given: the block's last round) pack the block from ``walks`` (every
+        round's walk, in order) once every earlier round's housekeeping is done; the pack stages keep their
+        depth of one under the lock."""
         def go():
             try:
-                save_walk(w, rd)
+                save_walk(w, rd) if self.o.keep else drop_spool(rd)
                 if job is not None:
                     for t_ in list(self.post["threads"]):
                         if t_ is not threading.current_thread():
                             t_.join()
                     with self.post_lock:
-                        self.finish_pack(); self.start_pack(job)
+                        self.finish_pack(); self.start_pack(job, walks)
             except BaseException as e:
                 self.post["error"] = e
         t = threading.Thread(target=go, daemon=False); t.start(); self.post["threads"].append(t)
@@ -418,9 +465,9 @@ class Fill:
                 if k > 1 and o.certify:
                     raise SystemExit("a certifying walk is one round: lower the budget instead of max_walkers")
                 out = os.path.join(o.workdir, f"{rc.variant}-{name}{'-certifying' if o.certify else ''}.rpk")
-                rounds = []; nxt = None
+                rounds = []; round_walks = []; nxt = None
                 for r in range(k):
-                    self.settle(keep=1)                    # the device's queue: at most one round still saving
+                    self.settle(keep=1)                    # the device's queue: at most one round still in its post-round thread
                     seeds = self.prefetch_take(row, r, k, P, (name, r))
                     if r + 1 < k:                          # the next round's seeds, drawn while this one walks
                         self.prefetch_start(row, r + 1, k, P, (name, r + 1))
@@ -432,7 +479,7 @@ class Fill:
                                **{"pass": P.get("pass")}, run_dir=round_paths(o.workdir, name, r, k)[0], commit=rc.commit, started=C.stamp())
                     self.state["walking"] = cur; self.state["held"][name] = cur
                     duty = o.current_duty(); t_walk = time.time()
-                    w, rd = walk_round(o, rc, row, name, r, k, P, seeds); rounds.append(rd)
+                    w, rd = walk_round(o, rc, row, name, r, k, P, seeds); rounds.append(rd); round_walks.append(w)
                     self.state["walking"] = None
                     if duty < 1.0:                             # the device given back: the pause the duty asks for
                         pause = (time.time() - t_walk) * (1.0 / duty - 1.0)
@@ -440,7 +487,8 @@ class Fill:
                         time.sleep(pause)
                     if r + 1 < k:
                         self.state["held"].pop(name, None)  # between rounds: covered again by the next round's walk
-                    self.post_round(w, rd, self.job_of(claimed, rounds, out) if r + 1 == k else None)
+                    last = r + 1 == k
+                    self.post_round(w, rd, self.job_of(claimed, rounds, out) if last else None, list(round_walks) if last else None)
                     del w
                 claimed = nxt; pending = None
                 if claimed is None and o.loop and not o.certify and not o.smoke:
@@ -462,15 +510,21 @@ class Fill:
             self.stop.set()
 
     def drain(self):
-        """What an earlier worker on this host left in the work directory: finished walk files packed, finished
-        packs uploaded, this host's other claims released."""
+        """What an earlier worker on this host left in the work directory: a finished pack uploaded; a pack that
+        never ran recovered from its rounds' kept ``.walk`` files (``--keep``) when they are there; a block whose
+        pack never ran and whose walk is gone (the common case without ``--keep``, now that the pack reads the
+        walk in memory rather than a handoff file) cannot be recovered -- its job file is dropped and its claim
+        released below, the block claimed again by whoever asks next; this host's other claims released."""
         o, rc, hub = self.o, self.rc, self.hub
         for jf in sorted(glob.glob(os.path.join(o.workdir, "*.job.json"))):
             job = json.load(open(jf))
-            if not os.path.isfile(job["out"]) and all(os.path.isfile(rd["walk"]) for rd in job["rounds"]):
-                self.start_pack(job); self.finish_pack()
-            elif os.path.isfile(job["out"]) and os.path.isfile(job["out"][:-4] + ".json"):
+            if os.path.isfile(job["out"]) and os.path.isfile(job["out"][:-4] + ".json"):
                 self.join_upload(); upload_block(hub, o, job)
+            elif all(os.path.isfile(rd["walk"]) for rd in job["rounds"]):
+                pack_job(job); self._handoff_to_upload(job)
+            else:
+                log.warning("%s: no pack and no kept walk file to recover it from; dropped, its claim released below", job["name"])
+                os.remove(jf)
         self.join_upload()
         for f in C.mine(hub, rc.variant, o.host):         # a claim of this host with nothing here to finish: open again
             hub.delete(f, f"release {f}: drained on {o.host}"); log.info("released %s", f)
