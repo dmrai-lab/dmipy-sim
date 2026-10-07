@@ -67,7 +67,13 @@ def _bloch(geom, wf, **kw):
 
 
 def _scalar(geom, wf, **kw):
-    return float(simulate(N, D, wf, geom, seed=3, require_gpu=False, **kw)[0])
+    # engine='fused' pins the comparison to the direct single-pass walk ("the validation
+    # oracle", core.simulate's own description) that `_bloch` is checked against. Every
+    # geometry here (FreeDiffusion, Sphere, the mesh sphere) declares `replay_parity`, so
+    # `engine='auto'` (the default) now routes through the replay backend instead -- a
+    # different numerical path that is not meant to agree bit-for-bit with the vector
+    # engine's direct rotation, only within the walk's own Monte-Carlo floor.
+    return float(simulate(N, D, wf, geom, seed=3, require_gpu=False, engine='fused', **kw)[0])
 
 
 @pytest.mark.slow
@@ -98,12 +104,21 @@ def test_a_mesh_pore_matches_the_scalar_engine(mesh_sphere, waveform):
 
 
 @pytest.mark.slow
-def test_one_displacement_per_waveform_step_loses_the_mesh(mesh_sphere, waveform):
-    """The self-guard: reproduce the bug on demand, so the test above cannot pass vacuously.
+def test_one_displacement_per_waveform_step_still_resolves_the_mesh(mesh_sphere, waveform):
+    """`sub_steps=1` no longer loses the mesh (#626; this test used to pin the opposite).
 
-    `sub_steps=1` is exactly what this path used to do unconditionally. Two things must happen: the
-    signal collapses to the free limit (the walls are missed), and the runtime guard says so instead of
-    letting it pass in silence -- which is the half of #69 that made it survive so long.
+    It used to: a step longer than the collision-lookup cell crossed triangles that were never
+    gathered as candidates, from a SINGLE gather at the step's start (#69). #624 gave every wall
+    one loop (`BounceLoop`) that runs a geometry's collision rule to exhaustion, re-gathering
+    candidates from each bounce's own position rather than only from the step's start -- so a step
+    many cells long is still walked correctly, just coarsely, instead of silently missing the wall.
+    The runtime warning (a step this long past the lookup cell is still an accuracy risk worth
+    flagging) still fires; what it no longer certifies is "and therefore confinement breaks", so
+    this checks that the walk STAYS confined at `sub_steps=1`, not that it collapses.
+
+    Measured: 0.93149 at `sub_steps=1`, against 0.96317 fully resolved
+    (`test_a_mesh_pore_matches_the_scalar_engine`) and a free limit of 0.01832 -- a few percent
+    off the resolved answer, nowhere near free.
     """
     n_auto = walk_sub_steps(mesh_sphere, D, float(waveform.dt))
     assert n_auto > 1, (
@@ -113,7 +128,7 @@ def test_one_displacement_per_waveform_step_loses_the_mesh(mesh_sphere, waveform
     with pytest.warns(UserWarning, match="collision-lookup cell"):
         e_one = _bloch(mesh_sphere, waveform, sub_steps=1)
 
-    assert e_one < FREE + 0.15, (
-        f"at one displacement per waveform step the mesh still confined ({e_one:.5f} against a free "
-        f"limit of {FREE:.5f}); the collision lookup is no longer the binding constraint and this "
-        f"self-guard needs rewriting")
+    assert e_one > FREE + 0.5, (
+        f"at one displacement per waveform step the mesh signal ({e_one:.5f}) collapsed toward the "
+        f"free limit ({FREE:.5f}); BounceLoop (#624) should keep the walk confined even at this "
+        f"coarse an outer step")

@@ -89,7 +89,10 @@ def test_mt_attenuates_more_for_higher_kf():
 
     def last_echo(k_f):
         kappa_MT, dwell = k_f * R / 3.0, 1.0 / 100.0
+        # readout=[n_t - 1] IS the last sample, so `_sequence_inputs` reads it as "no echo train"
+        # (the ScannerSequence unification, #173) and `simulate_bloch(...)[0]` is already the
+        # scalar magnitude for this one measurement -- there is no further echo axis to index.
         S = np.abs(simulate_bloch(8000, D, replace(_zero_wf(n_t, dt), rf=EXC, readout=[n_t - 1]), Sphere(radius=R), T2=T2a, kappa_MT=kappa_MT, dwell_time=dwell, T2_bound=T2b, seed=7)[0])
-        return float(S[0])
+        return float(S)
 
     assert last_echo(60.0) < last_echo(15.0)          # more binding -> more signal loss
