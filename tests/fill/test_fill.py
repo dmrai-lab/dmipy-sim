@@ -290,11 +290,11 @@ def test_the_backend_reaches_the_walk_and_an_unknown_one_is_refused(certified, m
     orig = specmod.walk_spec
 
     def spy(*a, **kw):
-        seen.append(kw.get("backend")); return orig(*a, **kw)
+        seen.append((kw.get("backend"), kw.get("spool"))); return orig(*a, **kw)
     monkeypatch.setattr(specmod, "walk_spec", spy)
     o = dataclasses.replace(opts(work, host="h", block=0, loop=False), no_upload=True, backend="jax")
     Fill(hub, rc, o).run(heartbeat_every=3600)
-    assert seen and all(b == "jax" for b in seen)
+    assert seen and all(b == ("jax", True) for b in seen)                  # the JAX walk is spooled (the resume)
     o = dataclasses.replace(opts(work, host="h2", block=0, loop=False), no_upload=True, backend="nope")
     with pytest.raises(ValueError, match="no backend 'nope' is installed"):
         Fill(hub, rc, o).run(heartbeat_every=3600)

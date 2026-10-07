@@ -129,7 +129,7 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_subtracts_
     req = still.requests[0]
     f = req.field
     assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 2 and f.reuse_intervals == 3
-    assert f.radius_m >= basis.gather_radius_m and f.list_k >= 1
+    assert f.radius_m >= basis.gather_radius_m and f.list_k == 256            # no JAX probe with a backend: the given width
     assert w.field_samples.shape == (64, 3, 13) and w.field_sample_every == 2 and w.field_basis is basis
     # the stub returned the start's bare channels at every sample: the record holds them with the mean subtracted
     expect = np.asarray(basis.channels(np.asarray(w.positions[:, 0])), np.float32) - np.asarray(basis.mean, np.float32)

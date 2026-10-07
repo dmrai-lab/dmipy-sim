@@ -95,7 +95,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
                                    candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4,
-                                   field_sample_every=1, spec=None, spool=None, backend=JAX):
+                                   field_sample_every=1, field_list_k=256, spec=None, spool=None, backend=JAX):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -123,7 +123,8 @@ interval mean as before).
     resolved as :func:`~dmipy_sim.engine.core.simulate_trajectories` resolves it: another backend receives the
     :class:`AdaptivePlan` as ``WalkRequest.stepping`` and walks each batch itself (positions, the interval local
     time, the pool-changed count as ``illegal``, its own free-step and kernel-step counters, and with ``field_basis``
-    the bare interval means of the field's channels as ``WalkBatch.field_samples``, the mean subtracted here).
+    the bare interval means of the field's channels as ``WalkBatch.field_samples``, the mean subtracted here). The
+    field list's width is then ``field_list_k`` (the backend widens its own list), not the JAX probe of the starts.
     """
     with Run("simulate_trajectories_adaptive", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
@@ -265,14 +266,19 @@ interval mean as before).
             n_tf = len(range(0, n_t, f_every))                          # the saves the field is read at
             field_all = np.empty((n_walkers, n_tf, 13), np.float32)
             f_chunk = 8192                                                # the gather's per-strand minima are n_strands per walker
-            # size the list from the start positions at the gather radius
-            sample = r0_all[np.random.default_rng(int(seed) + 5).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
-            n_probe = np.concatenate([np.asarray(field_basis.within_device(radius_m=f_radius, k=1)(jnp.asarray(sample[i:i + f_chunk]))[2])
-                                      for i in range(0, sample.shape[0], f_chunk)])
-            f_k = min(field_basis.segments_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
-            _list = dict(k=f_k, f=(field_basis.within_device(radius_m=f_radius, k=f_k) if _backend is None else None))   # widened when a walker outgrows it
-            log.info("adaptive: field sampled in the walk: list of %d segments gathered every %d saves at %.1f um (cutoff %.0f um + "
-                     "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, f_reach * 1e6, int(n_probe.max()))
+            if _backend is None:
+                # size the list from the start positions at the gather radius
+                sample = r0_all[np.random.default_rng(int(seed) + 5).choice(n_walkers, size=min(n_walkers, 20_000), replace=False)]
+                n_probe = np.concatenate([np.asarray(field_basis.within_device(radius_m=f_radius, k=1)(jnp.asarray(sample[i:i + f_chunk]))[2])
+                                          for i in range(0, sample.shape[0], f_chunk)])
+                f_k = min(field_basis.segments_max + 1, 1 << int(math.ceil(math.log2(1.5 * max(int(n_probe.max()), 1)))))
+                _list = dict(k=f_k, f=field_basis.within_device(radius_m=f_radius, k=f_k))   # widened when a walker outgrows it
+                log.info("adaptive: field sampled in the walk: list of %d segments gathered every %d saves at %.1f um (cutoff %.0f um + "
+                         "margin), up to %d in reach at the start", f_k, f_reuse, f_radius * 1e6, f_reach * 1e6, int(n_probe.max()))
+            else:                                                     # the backend widens its own list: no probe (dmipy-sim-cuda#30)
+                f_k = int(field_list_k)
+                log.info("adaptive: field sampled in the walk by backend %s: list of %d segments gathered every %d saves at %.1f um",
+                         _backend_name, f_k, f_reuse, f_radius * 1e6)
 
             def within_dev(r):
                 """The segments within reach of every walker of ``r``; the list widens (doubling, up to ``segments_max + 1``)
