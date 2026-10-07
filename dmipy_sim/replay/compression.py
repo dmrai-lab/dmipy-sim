@@ -494,8 +494,10 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
         _, local_time = _device_bridge(nt, K)
         for i in range(0, nw, rows):
             sl = slice(i, i + rows)
-            a_, e_, b_ = local_time(jnp.asarray(np.asarray(A[sl], np.float32)))
-            a[sl] = np.asarray(a_); endpoint[sl] = np.asarray(e_); C[sl] = np.asarray(b_)
+            A64 = np.asarray(A[sl], np.float64)
+            a[sl] = A64[:, 0]; endpoint[sl] = A64.sum(axis=1)          # the exact endpoints, float64 on the host as the numpy route
+            _, _, b_ = local_time(jnp.asarray(A64.astype(np.float32)))  # the bands on the device
+            C[sl] = np.asarray(b_)
     else:
         tau = np.linspace(0.0, 1.0, nt)[None, :]
         for i in range(0, nw, rows):                           # the cumulative time per chunk (float64), its bands
