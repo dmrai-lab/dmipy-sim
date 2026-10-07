@@ -122,6 +122,12 @@ def parity_cases():
         V, F = mesh_shapes.icosphere(R, subdivisions=2)
         return d.Mesh(V, F, feature_radius=R, **kw)
 
+    def strands(interior):
+        # three curved tubes of 1 / 1.5 / 2 um in a reflecting 20 um box, the family's test fixture; impermeable
+        cls = [np.array([[x, 0, -30e-6], [x, 0.5e-6, 0], [x, 0, 30e-6]]) for x in (-6e-6, 0, 6e-6)]
+        return d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=interior,
+                                       box=(np.full(3, -10e-6), np.full(3, 10e-6)))
+
     return {
         "sphere": lambda: d.Sphere(R),
         "sphere_perm": lambda: d.Sphere(R, permeability=1e-5),
@@ -136,6 +142,8 @@ def parity_cases():
         "label_slab_perm": lambda: label(permeability=1e-5, pools={0: "free", 1: "grain"}),
         "mesh": lambda: mesh(),
         "mesh_perm": lambda: mesh(permeability=1e-5),
+        "strands_intra": lambda: strands(True),
+        "strands_extra": lambda: strands(False),
     }
 
 

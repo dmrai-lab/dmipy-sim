@@ -120,7 +120,7 @@ interval mean as before).
                     key, sub = jax.random.split(key)
                     step = isotropic_unit_step(sub) * step_l
                     if cached:
-                        r_new, d_perp = geometry._step_with(r, step, cand, valid)
+                        r_new, d_perp, _, _ = geometry._step_with(r, step, cand, valid)
                         dlw = -2.0 * d_perp
                     else:
                         r_new, dlw = reflect_lw(r, step, jnp.float32(1.0))
