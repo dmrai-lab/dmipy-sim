@@ -142,7 +142,12 @@ def _seeded_pool(pool):
 def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool, rng=None):
     """``(n_walkers, ndim)`` points uniform over the periodic cell ``[-L/2, L/2)^ndim``, kept by membership when
     ``pool`` names one: inside any object for ``"intra"``, outside every object for ``"extra"``. The draws come from
-    ``rng`` when one is given (a seeding that continues another's stream), else from a generator seeded by ``key``."""
+    ``rng`` when one is given (a seeding that continues another's stream), else from a generator seeded by ``key``.
+
+    The accept test above runs in float64; a point within half a float32 ulp of a wall can round onto or past it
+    once cast to float32 below. Every accepted point is therefore pulled strictly onto its intended side of its
+    NEAREST wall (:func:`keep_side_radial`) -- the same end-of-step sentinel :func:`packed_wall_kernel` applies --
+    so the first step's classification can never disagree with the pool it was seeded into (#627)."""
     if rng is None:
         rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
     accepted, n_have = [], 0
@@ -158,7 +163,28 @@ def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool, rng=None):
             pts = pts[inside if pool == "intra" else ~inside]
         accepted.append(pts)
         n_have += len(pts)
-    return np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
+    pts = np.concatenate(accepted, axis=0)[:n_walkers].astype(np.float32)
+    if pool is not None and len(pts):
+        pts = _seed_keep_side(pts, L, np.asarray(radii), np.asarray(centers), pool == "intra")
+    return pts
+
+
+def _seed_keep_side(pts, L, radii, centers, want_inside):
+    """Pull every point of ``pts`` (n, ndim) strictly onto ``want_inside``'s side of its nearest
+    object's wall, in the periodic minimum image -- the correction :func:`_seed_periodic` applies
+    once it has cast its float64 accept test down to float32 (#627)."""
+    L_j, radii_j, centers_j = jnp.float32(L), jnp.asarray(radii, jnp.float32), jnp.asarray(centers, jnp.float32)
+    nudge = jnp.float32(1e-4 * float(np.min(radii)))
+
+    def _one(p):
+        q = p[None, :] - centers_j
+        q = q - L_j * jnp.round(q / L_j)                        # minimum-image
+        d2 = jnp.sum(q * q, axis=-1)
+        k = jnp.argmin(jnp.sqrt(d2) - radii_j)                  # nearest wall
+        p_out, _ = keep_side_radial(p, q[k], radii_j[k], want_inside, nudge)
+        return p_out
+
+    return np.asarray(jax.vmap(_one)(jnp.asarray(pts)))
 
 
 class PackedCylinders(Geometry):
