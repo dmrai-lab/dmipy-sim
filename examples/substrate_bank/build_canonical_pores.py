@@ -229,8 +229,10 @@ def analytic_signal(shape, d_um, grid, *, modes=ANALYTIC_MODES):
                    n_t=grid["n_t"])
     g = np.asarray(seq.G_eff, np.float64)[0]
     axis = int(np.argmax(np.abs(np.asarray(grid["direction"], float))))
-    return float(abs(MatrixPore(shape, float(d_um) * 1e-6, D0,
-                                n_modes=tuple(modes)).signal(g[:, axis], float(seq.dt))))
+    # the plane's eigenfunctions carry one index: its count is the pair's product, the count every record of
+    # this family was computed at when the solver took one pair for every shape
+    n_modes = int(modes[0]) * int(modes[1]) if shape == "plane" else tuple(int(x) for x in modes)
+    return float(abs(MatrixPore(shape, float(d_um) * 1e-6, D0, n_modes=n_modes).signal(g[:, axis], float(seq.dt))))
 
 
 def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N, n_t=DIRECT_N_T):

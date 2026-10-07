@@ -152,13 +152,18 @@ def _unit_modes(shape, n_modes, radial_nodes, angular_nodes):
     ``(shape, n_modes, radial_nodes, angular_nodes)`` -- computed once however many pore SIZES are evaluated,
     since a pore of size ``a`` scales as ``lambda = lambda_unit / a**2``, ``B = a * B_unit`` (eigenvectors of
     ``B`` are unchanged by the positive scalar ``a``, so ``beta = a * beta_unit``, ``U = U_unit``)."""
-    m_max, n_max = n_modes
     if shape == "plane":
-        lam, B = _plane_modes_unit(m_max * n_max, radial_nodes)
-    elif shape == "cylinder":
-        lam, B = _cyl_modes_unit(m_max, n_max, radial_nodes, angular_nodes)
-    elif shape == "sphere":
-        lam, B = _sph_modes_unit(m_max, n_max, radial_nodes, angular_nodes)
+        if not isinstance(n_modes, (int, np.integer)):
+            raise ValueError(f"a plane has one mode index: n_modes is the count of cosine modes (an int), not {n_modes!r}")
+        lam, B = _plane_modes_unit(int(n_modes), radial_nodes)
+    elif shape in ("cylinder", "sphere"):
+        if isinstance(n_modes, (int, np.integer)) or len(n_modes) != 2:
+            raise ValueError(f"a {shape} has an angular and a radial mode index: n_modes is the pair (angular, radial), not {n_modes!r}")
+        m_max, n_max = (int(x) for x in n_modes)
+        if shape == "cylinder":
+            lam, B = _cyl_modes_unit(m_max, n_max, radial_nodes, angular_nodes)
+        else:
+            lam, B = _sph_modes_unit(m_max, n_max, radial_nodes, angular_nodes)
     else:
         raise ValueError(f"a closed form is known for a plane, a cylinder and a sphere, not {shape!r}")
     beta, U = np.linalg.eigh(B)
@@ -178,19 +183,27 @@ def _runs(g):
     return out
 
 
+#: the series truncation when none is given: the cosine count for the plane, the (angular, radial) pair for the
+#: round pores
+DEFAULT_MODES = {"plane": 24, "cylinder": (24, 18), "sphere": (24, 18)}
+
+
 class MatrixPore:
     """The closed form of one pore: ``MatrixPore(shape, size_m, D).signal(g, dt)``.
 
     ``shape`` is ``"plane"``, ``"cylinder"`` or ``"sphere"``; ``size_m`` the plate separation (plane) or the
-    diameter (cylinder, sphere); ``n_modes`` the ``(angular, radial)`` truncation of the series, the only
-    approximation besides the quadrature resolution, refined to measure the reference's own uncertainty.
+    diameter (cylinder, sphere); ``n_modes`` the truncation of the series -- the count of cosine modes (an int)
+    for the plane, whose eigenfunctions carry one index, and the ``(angular, radial)`` pair for the cylinder and
+    the sphere; :data:`DEFAULT_MODES` when not given. It is the only approximation besides the quadrature
+    resolution, refined to measure the reference's own uncertainty.
     """
 
-    def __init__(self, shape, size_m, D, *, n_modes=(24, 18)):
+    def __init__(self, shape, size_m, D, *, n_modes=None):
         self.shape, self.D, self.size = str(shape), float(D), float(size_m)
-        m_max, n_max = (int(x) for x in n_modes)
-        lam_unit, B_unit, beta_unit, U_unit = _unit_modes(
-            self.shape, (m_max, n_max), RADIAL_NODES, ANGULAR_NODES)
+        if n_modes is None:
+            n_modes = DEFAULT_MODES.get(self.shape)
+        key = int(n_modes) if isinstance(n_modes, (int, np.integer)) else tuple(int(x) for x in n_modes)
+        lam_unit, B_unit, beta_unit, U_unit = _unit_modes(self.shape, key, RADIAL_NODES, ANGULAR_NODES)
         a = self.size if self.shape == "plane" else 0.5 * self.size
         self.lam = lam_unit / a ** 2
         self.B = a * B_unit
@@ -237,14 +250,14 @@ class MatrixPore:
         return complex(c[0])
 
 
-def matrix_restricted_signal(shape, g_axis, dt, D, size_m, *, n_modes=(24, 18)):
+def matrix_restricted_signal(shape, g_axis, dt, D, size_m, *, n_modes=None):
     """The restricted signal's magnitude for a single projected 1-D gradient schedule (T/m) at step ``dt``
     (s), diffusivity ``D`` (m^2/s) and pore ``size_m`` -- the functional entry point for a caller (such as
     dmipy-fit's compartment models) that wants a number rather than :class:`MatrixPore`'s object API."""
     return float(abs(MatrixPore(shape, size_m, D, n_modes=n_modes).signal(g_axis, dt)))
 
 
-def matrix_restricted_batch(shape, g_axes, dt, D, size_m, *, n_modes=(24, 18)):
+def matrix_restricted_batch(shape, g_axes, dt, D, size_m, *, n_modes=None):
     """``matrix_restricted_signal`` over a stack of projected 1-D schedules ``g_axes`` (n_meas, n_t) sharing
     one ``dt``, ``D`` and ``size_m`` -- one :class:`MatrixPore` (one unit-mode cache hit, one eigendecomposition
     scaled once) evaluated per measurement rather than rebuilt per call."""

@@ -28,7 +28,7 @@ from scipy.optimize import brentq
 
 import dmipy_sim.math.matrix_method as mm
 from dmipy_sim.constants import GAMMA
-from dmipy_sim.math.matrix_method import MatrixPore, matrix_restricted_batch, matrix_restricted_signal, _runs
+from dmipy_sim.math.matrix_method import DEFAULT_MODES, MatrixPore, matrix_restricted_batch, matrix_restricted_signal, _runs
 from dmipy_sim.sequences import pgse
 
 D0 = 2e-9    # m^2/s, a representative free diffusivity
@@ -83,8 +83,14 @@ def test_position_operator_is_centred_on_every_shape():
     the micron pores this module is built for -- is generous rather than tight.
     """
     for shape, size in (("cylinder", 2 * A), ("sphere", 2 * A), ("plane", 2 * A)):
-        mp = MatrixPore(shape, size, D0, n_modes=(8, 6))
+        mp = MatrixPore(shape, size, D0, n_modes=_modes(shape, (8, 6)))
         assert abs(mp.B[0, 0]) < 1e-9, f"{shape}: B[0,0] = {mp.B[0, 0]:.3e}, not centred on the pore"
+
+
+def _modes(shape, pair):
+    """``n_modes`` with the shape of the pore: the pair for a cylinder or a sphere, its product (the count of
+    cosine modes) for the plane."""
+    return int(pair[0]) * int(pair[1]) if shape == "plane" else tuple(pair)
 
 
 def test_sum_of_squared_couplings_is_the_pores_second_moment():
@@ -100,7 +106,7 @@ def test_sum_of_squared_couplings_is_the_pores_second_moment():
     mp_c = MatrixPore("cylinder", 2 * A, D0, n_modes=(8, 6))
     mp_s = MatrixPore("sphere", 2 * A, D0, n_modes=(8, 6))
     L = 2 * A
-    mp_p = MatrixPore("plane", L, D0, n_modes=(8, 6))
+    mp_p = MatrixPore("plane", L, D0, n_modes=48)
 
     npt.assert_allclose(np.sum(mp_c.B[0, :] ** 2), A ** 2 / 4, rtol=2e-4, err_msg="cylinder <x^2>")
     npt.assert_allclose(np.sum(mp_s.B[0, :] ** 2), A ** 2 / 5, rtol=2e-4, err_msg="sphere <x^2>")
@@ -153,7 +159,7 @@ def test_coupling_coefficients_match_published_closed_forms():
 
     # -- plane vs Neuman: a_n = 8 L^2 / (n^4 pi^4) for odd n, 0 for even n.
     L = 2 * A
-    mp_p = MatrixPore("plane", L, D0, n_modes=(m_max, n_max))
+    mp_p = MatrixPore("plane", L, D0, n_modes=m_max * n_max)
     n = np.arange(1, mp_p.B.shape[0])
     odd = n % 2 == 1
     neuman = 8 * L ** 2 / (n[odd] ** 4 * np.pi ** 4)
@@ -182,7 +188,7 @@ def test_free_diffusion_limit_huge_pore():
 
     huge = 200e-6
     for shape in ("cylinder", "sphere", "plane"):
-        mp = MatrixPore(shape, huge, D0, n_modes=(6, 6))
+        mp = MatrixPore(shape, huge, D0, n_modes=_modes(shape, (6, 6)))
         s = abs(mp.signal(g, dt))
         npt.assert_allclose(s, free, rtol=2e-3, err_msg=f"{shape}: huge-pore signal vs free diffusion")
 
@@ -218,7 +224,7 @@ def test_long_time_limit_tends_to_form_factor(monkeypatch):
         "plane": np.sin(q * A) / (q * A),
     }
     for shape, Fq in form_factors.items():
-        mp = MatrixPore(shape, 2 * A, D0, n_modes=(8, 6))
+        mp = MatrixPore(shape, 2 * A, D0, n_modes=_modes(shape, (8, 6)))
         s = abs(mp.signal(g, dt))
         npt.assert_allclose(s, Fq ** 2, rtol=1e-2, err_msg=f"{shape}: long-time signal vs |F(q)|^2")
 
@@ -256,7 +262,7 @@ def test_short_time_limit_trends_toward_mitra_surface_to_volume(monkeypatch):
 
     shapes = {"cylinder": 2.0 / A, "sphere": 3.0 / A, "plane": 1.0 / A}
     for shape, s_over_v in shapes.items():
-        mp = MatrixPore(shape, 2 * A, D0, n_modes=(8, 6))
+        mp = MatrixPore(shape, 2 * A, D0, n_modes=_modes(shape, (8, 6)))
         t_late, t_early = 0.20e-3, 0.05e-3
         gap_late = measured_adc_over_d0(mp, t_late) - mitra_D_over_D0(t_late, s_over_v)
         gap_early = measured_adc_over_d0(mp, t_early) - mitra_D_over_D0(t_early, s_over_v)
@@ -391,7 +397,7 @@ def test_b0_is_unity_and_physical_range():
         E = []
         for b in bvalues:
             g, dt, _ = _pgse_g_axis(b)
-            E.append(matrix_restricted_signal(shape, g, dt, D, diameter, n_modes=(12, 10)))
+            E.append(matrix_restricted_signal(shape, g, dt, D, diameter, n_modes=_modes(shape, (12, 10))))
         E = np.asarray(E)
         npt.assert_allclose(E[0], 1.0, err_msg=f"{shape}: b=0 is not unity")
         assert np.all(E > 0) and np.all(E <= 1.0 + 1e-9), f"{shape}: signal left [0, 1]"
@@ -404,8 +410,8 @@ def test_restriction_monotonicity():
     g, dt, _ = _pgse_g_axis(b)
     for shape in ("cylinder", "sphere", "plane"):
         D = LAMBDA_PAR if shape == "cylinder" else D0
-        E_small = matrix_restricted_signal(shape, g, dt, D, 4e-6, n_modes=(12, 10))
-        E_large = matrix_restricted_signal(shape, g, dt, D, 12e-6, n_modes=(12, 10))
+        E_small = matrix_restricted_signal(shape, g, dt, D, 4e-6, n_modes=_modes(shape, (12, 10)))
+        E_large = matrix_restricted_signal(shape, g, dt, D, 12e-6, n_modes=_modes(shape, (12, 10)))
         assert E_small > E_large, f"{shape}: a smaller pore must restrict more"
 
 
@@ -424,7 +430,7 @@ def test_plane_approaches_free():
     b = 1e9
     g, dt, _ = _pgse_g_axis(b)
     free = np.exp(-b * D0)
-    E = [matrix_restricted_signal("plane", g, dt, D0, L, n_modes=(1, nm))
+    E = [matrix_restricted_signal("plane", g, dt, D0, L, n_modes=nm)
          for L, nm in ((40e-6, 64), (100e-6, 96), (300e-6, 160))]
     assert E[0] > E[1] > E[2] >= free - 1e-6, "monotone descent toward free diffusion, never below it"
     assert E[2] - free < 0.03, "the 300 um slab should be close to free"
@@ -520,9 +526,21 @@ def test_unit_geometry_route_matches_direct_quadrature(shape, size):
     else:
         lam_direct, B_direct = _direct_sph_modes(0.5 * size, m_max, n_max, nr, nt)
 
-    mp = MatrixPore(shape, size, D0, n_modes=n_modes)
+    mp = MatrixPore(shape, size, D0, n_modes=_modes(shape, n_modes))
 
     npt.assert_allclose(mp.lam, lam_direct, rtol=1e-6, atol=1e-3 * lam_direct.max(),
                          err_msg=f"{shape} size={size}: eigenvalues, unit route vs direct quadrature")
     npt.assert_allclose(mp.B, B_direct, rtol=1e-6, atol=1e-9,
                          err_msg=f"{shape} size={size}: position matrix, unit route vs direct quadrature")
+
+
+def test_the_mode_count_has_the_shape_of_the_pore():
+    """A plane has one mode index, so its ``n_modes`` is an int; a cylinder and a sphere have an angular and a
+    radial one, so theirs is the pair; the other spelling is refused by name, and the defaults have the shape."""
+    L = 4e-6
+    with pytest.raises(ValueError, match="plane has one mode index"):
+        MatrixPore("plane", L, D0, n_modes=(8, 6))
+    with pytest.raises(ValueError, match="cylinder has an angular and a radial"):
+        MatrixPore("cylinder", L, D0, n_modes=12)
+    assert MatrixPore("plane", L, D0).lam.shape[0] == DEFAULT_MODES["plane"] + 1
+    assert MatrixPore("sphere", L, D0).lam.shape[0] == MatrixPore("sphere", L, D0, n_modes=DEFAULT_MODES["sphere"]).lam.shape[0]
