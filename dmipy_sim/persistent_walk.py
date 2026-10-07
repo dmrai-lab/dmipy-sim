@@ -110,6 +110,7 @@ class PersistentWalk:
     field_fill: Optional[dict] = field(default=None, compare=False, repr=False)
     run: object = field(default=None, compare=False, repr=False)
     work: Optional[dict] = field(default=None, compare=False)
+    scanner: Optional[str] = None               #: the scanner class the save grid was derived for (walk_spec), else None
 
     def __post_init__(self):
         # a walk always knows the situation it was walked in: the spec it was driven by, else its geometry's
@@ -166,7 +167,7 @@ class PersistentWalk:
         run = self.run
         header = dict(dt=float(self.dt), sub_steps=int(self.sub_steps), dt_sim=float(self.dt_sim), illegal_crossings=int(self.illegal_crossings),
                       seed=self.seed, diffusivity=self.diffusivity, field_sample_every=int(self.field_sample_every), stepping=self.stepping,
-                      work=self.work,
+                      work=self.work, scanner=self.scanner,
                       spec=(None if self.spec is None else self.spec.to_dict()),
                       field=(None if self.field_basis is None else getattr(self.field_basis, "meta", None)),
                       field_deferred=bool(self.field_deferred), field_fill=self.field_fill,
@@ -198,7 +199,7 @@ class PersistentWalk:
                    diffusivity=h.get("diffusivity"), spec=spec, weights=arrays.get("weights"), field_basis=basis,
                    stepping=h.get("stepping"), field_samples=arrays.get("field_samples"),
                    field_sample_every=int(h.get("field_sample_every", 1)), field_deferred=bool(h.get("field_deferred", False)),
-                   field_fill=h.get("field_fill"), run=h.get("run"), work=h.get("work"))
+                   field_fill=h.get("field_fill"), run=h.get("run"), work=h.get("work"), scanner=h.get("scanner"))
 
     def _bank_dict(self, **extra):
         """The bank's internal master dict (``traj``, ``dt_traj``, ``T_max``, ``comp``, ``dlog_b``,

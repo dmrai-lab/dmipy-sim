@@ -435,6 +435,14 @@
    "journal_or_publisher": "Data in Brief 25:104132",
    "year": 2019,
    "doi_or_url": "10.1016/j.dib.2019.104132"
+  },
+  "fick2026_replayable_mc": {
+   "key": "fick2026_replayable_mc",
+   "authors": "Fick R",
+   "title": "Replayable Monte Carlo: walk once, replay every acquisition -- Sec. 'A pack is a band, and the band is set by the scanner': 'Its bandwidths at epsilon = 5e-3 are 520 Hz for Prisma, 311 Hz for Connectom at its diffusion-derated slew, 784 Hz for MAGNUS, 928 Hz for Connectome 2.0, 2.1 kHz for the Bruker BGA-9S and 2.3 kHz for the Micro2.5 insert' (figures/fig_band_data.py, eps 5e-3, a 100 ms window at 0.1 ms saves, D = 2e-9 m^2/s)",
+   "journal_or_publisher": "manuscript (dmrai-papers-private/replayable_mc)",
+   "year": 2026,
+   "doi_or_url": null
   }
  },
  "scanners": {
@@ -663,6 +671,17 @@
      "location": "Rogers 2017, Results",
      "confidence": "inferred"
     }
+   },
+   "band": {
+    "certified_band_hz": {
+     "value": 520.0,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (200 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "source_key": "fick2026_replayable_mc",
+     "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
+     "confidence": "cited"
+    }
    }
   },
   "siemens_magnetom_connectom_3T": {
@@ -747,6 +766,17 @@
      "location": "coil geometry",
      "confidence": "widely-quoted"
     }
+   },
+   "band": {
+    "certified_band_hz": {
+     "value": 311.0,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the diffusion-derated slew (62.5 T/m/s), the regime a diffusion sequence is bound by. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "source_key": "fick2026_replayable_mc",
+     "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
+     "confidence": "cited"
+    }
    }
   },
   "siemens_magnetom_connectom_2_0_3T": {
@@ -810,6 +840,17 @@
      "source_key": "marques2019_lowfield",
      "location": "coil geometry",
      "confidence": "widely-quoted"
+    }
+   },
+   "band": {
+    "certified_band_hz": {
+     "value": 928.0,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (600 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "source_key": "fick2026_replayable_mc",
+     "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
+     "confidence": "cited"
     }
    }
   },
@@ -1424,6 +1465,17 @@
      "location": "coil geometry",
      "confidence": "widely-quoted"
     }
+   },
+   "band": {
+    "certified_band_hz": {
+     "value": 784.0,
+     "unit": "Hz",
+     "field_T": 3.0,
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (500 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "source_key": "fick2026_replayable_mc",
+     "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
+     "confidence": "cited"
+    }
    }
   },
   "bruker_bga_9s": {
@@ -1477,6 +1529,17 @@
      "source_key": "marques2019_lowfield",
      "location": "coil geometry",
      "confidence": "widely-quoted"
+    }
+   },
+   "band": {
+    "certified_band_hz": {
+     "value": 2100.0,
+     "unit": "Hz",
+     "field_T": null,
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (6840 T/m/s); the paper prints 2.1 kHz. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "source_key": "fick2026_replayable_mc",
+     "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
+     "confidence": "cited"
     }
    }
   },
@@ -1639,6 +1702,17 @@
      "source_key": "marques2019_lowfield",
      "location": "coil geometry",
      "confidence": "widely-quoted"
+    }
+   },
+   "band": {
+    "certified_band_hz": {
+     "value": 2300.0,
+     "unit": "Hz",
+     "field_T": null,
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the derived slew (15,000 T/m/s); the paper prints 2.3 kHz. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "source_key": "fick2026_replayable_mc",
+     "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
+     "confidence": "cited"
     }
    }
   },

@@ -159,7 +159,7 @@ def pack_job(job):
         w = PersistentWalk.load(rd["walk"])
         out_r = out if k == 1 else out[:-4] + f".round{r}.rpk"
         pk = build_replay_pack(w, id=f"{man['id']}/{job['variant']}/{job['name']}{'-certifying' if job['certify'] else ''}" + (f"/round-{r}" if k > 1 else ""),
-                               license=man["license"], citation=man["citation"], K=P["K"], position_container=P["position_container"],
+                               license=man["license"], citation=man["citation"], K=P.get("K"), scanner=man["walk"]["scanner"], position_container=P["position_container"],
                                blt_container=P["blt_container"], susc_path_K=(P["K_path"] if w.field_samples is not None else None), voxel_grid=grid,
                                out_path=out_r, device=job["device"], provenance=dict(job["provenance"], round=(r if k > 1 else None), rounds=k), **fid)
         packs.append(out_r); del w

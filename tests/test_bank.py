@@ -62,7 +62,7 @@ def _lean_env():
 
 @pytest.fixture(scope="module")
 def pack():
-    return build_replay_pack(_slab_master(), id="test/slab", method="bridge_dst",
+    return build_replay_pack(_slab_master(), scanner="connectom", id="test/slab", method="bridge_dst",
                              envelope=_lean_env(), K=64,
                              license="CC-BY-4.0", citation="test")
 
@@ -90,7 +90,7 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
 
 def test_rpk_roundtrip_and_lean_consumption(pack, tmp_path):
     out = tmp_path / "slab.rpk"
-    build_replay_pack(_slab_master(), id="test/slab", method="bridge_dst", envelope=_lean_env(),
+    build_replay_pack(_slab_master(), scanner="connectom", id="test/slab", method="bridge_dst", envelope=_lean_env(),
                       K=64, license="CC-BY-4.0", citation="test",
                       out_path=str(out))
     p2 = read_rpk(out)
@@ -171,7 +171,7 @@ def _sample_susc(m):
 def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capability():
     K = 32
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), scanner="connectom", id="test/slab-susc", method="bridge_dst",
                           envelope=env, K=64, susc_path_K=K,
                           license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
@@ -196,7 +196,7 @@ def test_susc_path_keeps_zz_when_trace_identity_is_broken():
     m = _susc_master()
     m["susc_field_basis"]["iso_P"] = m["susc_field_basis"]["iso_P"] * 1.05      # break the trace
     m = _sample_susc(m)
-    pk = build_replay_pack(m, id="test/slab-susc-broken", method="bridge_dst",
+    pk = build_replay_pack(m, scanner="connectom", id="test/slab-susc-broken", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
                            K=64, susc_path_K=16, license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
@@ -224,7 +224,7 @@ def test_susc_path_lossless_at_K_equals_nt():
 def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_path():
     """The grid route samples DECODED positions, so it is unsound once the position codec is lossy.
     A path pack with lossy positions must therefore not ship grid arrays offering that route."""
-    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-path-only", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), scanner="connectom", id="test/slab-path-only", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
                            K=64, susc_path_K=32, license="CC-BY-4.0", citation="test")
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
@@ -241,7 +241,7 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
 
 
 def test_lossless_positions_may_carry_both_routes():
-    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-both", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), scanner="connectom", id="test/slab-both", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
                            K=N_T, susc_path_K=32, license="CC-BY-4.0", citation="test")
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
@@ -252,7 +252,7 @@ def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
     """Without an explicit blt_temporal_K the pack must still get a cheap boundary channel: the
     selector costs DCT candidates against the surface gate instead of falling back to sparse CSR,
     whose size grows with walk length."""
-    pk = build_replay_pack(_slab_master(), id="test/slab-c2-auto", method="bridge_dst",
+    pk = build_replay_pack(_slab_master(), scanner="connectom", id="test/slab-c2-auto", method="bridge_dst",
                            envelope=_lean_env(), K=64,
                            license="CC-BY-4.0", citation="test")
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
@@ -265,7 +265,7 @@ def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
 def test_precision_tiers_declare_shuffle_and_account_for_non_sliceable_arrays():
     m = _slab_master()
     m["walkers_shuffled"] = True
-    pk = build_replay_pack(m, id="test/slab-tiers", method="bridge_dst", envelope=_lean_env(),
+    pk = build_replay_pack(m, scanner="connectom", id="test/slab-tiers", method="bridge_dst", envelope=_lean_env(),
                            K=64, license="CC-BY-4.0", citation="test")
     pt = pk.meta["compression"]["precision_tiers"]
     assert pt["usable"] is True and pt["walkers_shuffled"] is True
@@ -280,7 +280,7 @@ def test_precision_tiers_declare_shuffle_and_account_for_non_sliceable_arrays():
 
 
 def test_precision_tiers_flag_unshuffled_packs_as_unusable():
-    pk = build_replay_pack(_slab_master(), id="test/slab-noshuf", method="bridge_dst",
+    pk = build_replay_pack(_slab_master(), scanner="connectom", id="test/slab-noshuf", method="bridge_dst",
                            envelope=_lean_env(), K=64, license="CC-BY-4.0", citation="test")
     pt = pk.meta["compression"]["precision_tiers"]
     assert pt["usable"] is False and "NOT DECLARED SHUFFLED" in pt["note"]
@@ -305,7 +305,7 @@ def test_a_field_replay_can_restrict_to_one_compartment():
     m = _sample_susc(m)
 
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    pk = build_replay_pack(m, id="test/slab-susc-comp", method="bridge_dst", envelope=env,
+    pk = build_replay_pack(m, scanner="connectom", id="test/slab-susc-comp", method="bridge_dst", envelope=env,
                            K=64, susc_path_K=32, license="CC-BY-4.0", citation="test")
     nt, dt = pk.n_t, pk.dt
 
@@ -429,7 +429,7 @@ def test_the_field_tiers_band_is_derived_on_the_walk():
     with its reading, since it is the same battery."""
     from dmipy_sim.replay.bank import SUSC_PATH_LADDER
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc-auto", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), scanner="connectom", id="test/slab-susc-auto", method="bridge_dst",
                            envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     band = pm["band"]
@@ -456,7 +456,7 @@ def test_a_declared_train_depth_puts_a_floor_under_the_ladder():
     """A pack built for a train of n pulses must serve n: the tier serves K / 2, so the envelope's
     ``max_refocus_pulses`` keeps every rung at or above twice it, whatever the floor would have allowed."""
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0], max_refocus_pulses=20)
-    pk = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc-depth", method="bridge_dst",
+    pk = build_replay_pack(_sample_susc(_susc_master()), scanner="connectom", id="test/slab-susc-depth", method="bridge_dst",
                            envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     assert pm["band"]["min_K"] == 40 and pm["K"] >= 40 and pm["max_refocus_pulses"] == 20      # the declared depth, not K / 2
@@ -467,12 +467,12 @@ def test_lossless_positions_take_the_grid_route_under_auto():
     """With the positions stored losslessly the grid route is exact and costs no channel, so ``"auto"`` stores no
     path channel there; a band that is not a number, ``"auto"`` or ``None`` is refused."""
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0])
-    pk = build_replay_pack(_susc_master(), id="test/slab-susc-grid", method="bridge_dst",
+    pk = build_replay_pack(_susc_master(), scanner="connectom", id="test/slab-susc-grid", method="bridge_dst",
                            envelope=env, K=N_T, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     ch = pk.meta["compression"]["channels"]
     assert "susceptibility_path" not in ch and ch["susceptibility_grid"]["arrays_in_pack"]
     with pytest.raises(ValueError, match="'auto'"):
-        build_replay_pack(_susc_master(), id="test/x", method="bridge_dst", envelope=env, K=64, susc_path_K="derived",
+        build_replay_pack(_susc_master(), scanner="connectom", id="test/x", method="bridge_dst", envelope=env, K=64, susc_path_K="derived",
                           license="CC-BY-4.0", citation="test")
 
 
@@ -489,7 +489,7 @@ def test_build_to_floor_keeps_topping_up_until_the_floor_is_met(monkeypatch):
     asked = []
     floor_of = lambda n: 0.01 if n == 8000 else 0.02 * (8000 / n) ** 0.25
     monkeypatch.setattr(bank, "_measure_floor", lambda m, env, **kw: floor_of(asked[-1]))
-    pk = build_to_floor(lambda n: (asked.append(int(n)), _small_master(n))[1], id="test/floor-loop",
+    pk = build_to_floor(lambda n: (asked.append(int(n)), _small_master(n))[1], scanner="connectom", id="test/floor-loop",
                         sigma_star=5e-3, pilot_n=8000, max_n=10_000_000, verbose=False,
                         license="CC0-1.0", citation="test")
     assert len(asked) >= 4, asked                                   # pilot, N*, and at least two top-ups
@@ -502,7 +502,7 @@ def test_build_to_floor_stops_at_the_cap_and_says_the_target_is_not_met(monkeypa
     from dmipy_sim.replay import bank
     asked = []
     monkeypatch.setattr(bank, "_measure_floor", lambda m, env, **kw: 0.02)   # never met
-    pk = build_to_floor(lambda n: (asked.append(int(n)), _small_master(n))[1], id="test/floor-cap",
+    pk = build_to_floor(lambda n: (asked.append(int(n)), _small_master(n))[1], scanner="connectom", id="test/floor-cap",
                         sigma_star=5e-3, pilot_n=8000, max_n=50_000, verbose=False,
                         license="CC0-1.0", citation="test")
     assert asked[-1] == 50_000 and asked.count(50_000) == 1, asked   # walked the cap once, then stopped
@@ -525,7 +525,7 @@ def test_build_replay_pack_is_byte_reproducible(tmp_path):
 
     out1, out2 = tmp_path / "a.rpk", tmp_path / "b.rpk"
     for out in (out1, out2):
-        build_replay_pack(_slab_master(seed=0), id="test/repro", method="bridge_dst", envelope=_lean_env(),
+        build_replay_pack(_slab_master(seed=0), scanner="connectom", id="test/repro", method="bridge_dst", envelope=_lean_env(),
                           K=64, license="CC-BY-4.0", citation="test", out_path=str(out))
     assert sha(out1) == sha(out2)
 
@@ -551,7 +551,7 @@ def test_a_pack_with_the_old_in_file_run_record_still_loads(tmp_path):
     """A pack built before dmipy-sim#541 carries its run record inside ``provenance.run``: that is just data the
     file carries, read as it is, never translated or stripped on load."""
     out = tmp_path / "old.rpk"
-    build_replay_pack(_slab_master(), id="test/old", method="bridge_dst", envelope=_lean_env(),
+    build_replay_pack(_slab_master(), scanner="connectom", id="test/old", method="bridge_dst", envelope=_lean_env(),
                       K=64, license="CC-BY-4.0", citation="test", out_path=str(out))
     pk = read_rpk(out)
     meta = dict(pk.meta)
