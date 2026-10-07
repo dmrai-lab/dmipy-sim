@@ -275,3 +275,26 @@ def test_the_duty_pauses_the_device_after_a_walk(certified, monkeypatch, tmp_pat
     assert o.current_duty() == 1.0
     duty.write_text("nonsense")
     assert o.current_duty() == 1.0                                      # unparsable: the option's value, logged
+
+
+def test_the_backend_reaches_the_walk_and_an_unknown_one_is_refused(certified, monkeypatch):
+    """`--backend` is handed to `walk_spec` as given: the walk resolves it (an unknown name is refused naming what
+    is installed, before any block is walked) and its record names it."""
+    import pytest
+    import dmipy_sim.fill.pipeline as pl
+    hub, work = certified
+    rc = Recipe(hub)
+    seen = []
+    real = pl.walk_spec if hasattr(pl, "walk_spec") else None
+    from dmipy_sim import spec as specmod
+    orig = specmod.walk_spec
+
+    def spy(*a, **kw):
+        seen.append(kw.get("backend")); return orig(*a, **kw)
+    monkeypatch.setattr(specmod, "walk_spec", spy)
+    o = dataclasses.replace(opts(work, host="h", block=0, loop=False), no_upload=True, backend="jax")
+    Fill(hub, rc, o).run(heartbeat_every=3600)
+    assert seen and all(b == "jax" for b in seen)
+    o = dataclasses.replace(opts(work, host="h2", block=0, loop=False), no_upload=True, backend="nope")
+    with pytest.raises(ValueError, match="no backend 'nope' is installed"):
+        Fill(hub, rc, o).run(heartbeat_every=3600)
