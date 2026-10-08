@@ -998,11 +998,11 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
         trace_res = float(np.max(np.abs(tr - 3.0 * probe[..., i0]))) / (3.0 * scale)
         drop_zz = bool(trace_res <= atol_trace)
     keep = [i for i, n in enumerate(names) if not (drop_zz and n == "iso_P_zz")]
+    drop = None if len(keep) == n_ch else keep                   # a dropped channel is selected past the host copy
     coeffs = np.empty((n_w, len(keep), K), np.float64)
     for i in range(0, n_w, chunk):
         ch = take(slice(i, i + chunk))                           # the series' own dtype, read in place -- no copy
-        ch = ch if len(keep) == n_ch else ch[:, :, keep]          # a copy only when a channel (iso_P_zz) is dropped
-        coeffs[i:i + chunk] = _cx.dct_bands_series(ch, K, device=device)   # (rows, n_ch, K): one cached device jit for every chunk
+        coeffs[i:i + chunk] = _cx.dct_bands_series(ch, K, device=device, keep=drop)   # one cached device jit for every chunk
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
                 max_refocus_pulses=_depth(K, max_refocus_pulses))
