@@ -2737,7 +2737,6 @@ class ReplayPack:
         if not todo:
             return
         kind, t_dev = route(device)
-        e = np.eye(3)
         live = np.asarray(ew) != 0
         w_live = np.abs(np.asarray(ew, np.float64)[live]) / float(norm)
         per_walker = {c: 0.0 for c in todo}                                    # (n_live, n_r) per acquisition, windows summed
@@ -2772,8 +2771,12 @@ class ReplayPack:
                     nrm = torch.linalg.vector_norm(mu, dim=2) @ torch.as_tensor(np.linalg.norm(coef, axis=1).T, device=t_dev)
                     per_walker[c] = per_walker[c] + nrm                                       # (n_live, n_r) on the device
                     continue
-                mu = np.stack([np.stack([C @ _compile_effective(Vt[j][None, :, None] * e[b_][None, None, :], dt, self.K, n_s)[:, 0]
-                                         for b_ in range(3)], axis=1) for j in range(k)], axis=1)  # (n_live, k, 3)
+                # every course in ONE projection (as the torch branch above), each axis reading its own rows of the
+                # coefficients: k separate (K+2, n_s)-vs-n_s projections and k*3 (n_live,)-vector matvecs (#698) were
+                # k*3 calls into _compile_effective/bridge_projection's own DST and k*3 BLAS level-2 matvecs where
+                # one batched projection and 3 BLAS level-3 matmuls (over every mode at once) give the same numbers
+                Wk = _compile_effective(Vt[:k, :, None], dt, self.K, n_s)                            # (K+2, k)
+                mu = np.stack([C[:, b_::3] @ Wk for b_ in range(3)], axis=2)                          # (n_live, k, 3)
                 per_walker[c] = per_walker[c] + np.linalg.norm(mu, axis=2) @ np.linalg.norm(coef, axis=1).T
         for c in todo:
             if kind == "torch" and not isinstance(per_walker[c], float):
