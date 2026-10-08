@@ -6,8 +6,11 @@ time. Each generator writes one directory: a spec, a manifest + plan per walkabl
 sha256 (:mod:`dmipy_sim.spectrum.common`). ``python -m dmipy_sim.spectrum`` is the CLI."""
 from .common import EDGES_M, WALK_LENGTHS_S, SpectrumHaloError
 from .strands import strands
+from .packs import cylinders, spheres
+from .label_volumes import label_volume
 
 #: ``{class name: generator(edge_m, seed, *, out_dir, **kw) -> dict}`` -- what ``--class`` picks from.
-GENERATORS = {"strands": strands}
+GENERATORS = {"strands": strands, "cylinders": cylinders, "spheres": spheres, "label_volume": label_volume}
 
-__all__ = ["EDGES_M", "WALK_LENGTHS_S", "SpectrumHaloError", "strands", "GENERATORS"]
+__all__ = ["EDGES_M", "WALK_LENGTHS_S", "SpectrumHaloError", "strands", "cylinders", "spheres", "label_volume",
+          "GENERATORS"]
