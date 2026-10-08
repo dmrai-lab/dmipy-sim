@@ -404,6 +404,91 @@ def field_tables(basis):
             "fcell_off.i32": fcell_off, "fcell_ids.i32": fcell_ids, "fbox.i16": fbox}
 
 
+def cell_window(gmin, cs, dims, lo_m, hi_m, margin_m):
+    """The cell-index window of a box ``[lo_m, hi_m]`` expanded by ``margin_m`` on a grid of origin ``gmin``,
+    cell size ``cs`` and ``dims`` cells: ``(win_lo, win_hi)`` int64 ``(3,)`` -- inclusive/exclusive, each clipped
+    to ``[0, dims]`` -- the one piece of arithmetic a block kit's cell window is (:func:`window_cell_table`
+    crops a table to it; the request format's concern, not a block kit's own)."""
+    gmin = np.asarray(gmin, np.float64); dims = np.asarray(dims, np.int64); cs = float(cs)
+    lo = np.clip(np.floor((np.asarray(lo_m, np.float64) - margin_m - gmin) / cs).astype(np.int64), 0, dims - 1)
+    hi = np.clip(np.floor((np.asarray(hi_m, np.float64) + margin_m - gmin) / cs).astype(np.int64), 0, dims - 1) + 1
+    return lo, hi
+
+
+def window_cell_table(cell, dims, win_lo, win_hi):
+    """``cell`` (a geometry's or a field basis's padded ``(n_cells, C)`` table, x-major as :func:`bucket_by_bbox`
+    builds it) restricted to the cell window ``[win_lo, win_hi)`` and turned into CSR with its ids renumbered
+    DENSELY over the referenced primitives alone: ``(cell_off, cell_ids, uniq, window_dims)`` -- ``uniq`` selects
+    a primitive table's rows in the new, dense order (``uniq[cell_ids] == the window's true ids``, a bijection on
+    the referenced ids by construction of :func:`numpy.unique`), ``window_dims`` the window's own ``(3,)``. The
+    window is a sub-block of the SAME x-major table (:func:`csr_cells` turns any such padded table into CSR), so
+    cropping first and converting once is exactly the whole table's rule applied to fewer cells."""
+    dims = tuple(int(x) for x in dims)
+    cell = np.asarray(cell)
+    cell3 = cell.reshape(dims + (cell.shape[-1],))
+    window_dims = tuple(int(x) for x in (np.asarray(win_hi) - np.asarray(win_lo)))
+    sub = cell3[win_lo[0]:win_hi[0], win_lo[1]:win_hi[1], win_lo[2]:win_hi[2], :]
+    cell_off, cell_ids = csr_cells(np.ascontiguousarray(sub).reshape(-1, cell.shape[-1]))
+    uniq, inv = np.unique(cell_ids, return_inverse=True)
+    cell_ids = np.ascontiguousarray(inv.reshape(cell_ids.shape), np.int32)
+    return cell_off, cell_ids, uniq, window_dims
+
+
+def strands_struct_fields_window(geometry, lo_m, hi_m, margin_m):
+    """``(fields, arrays)`` of a ``PackedCurvedCylinders`` ``geometry`` exactly as :func:`strands_struct_fields`,
+    but cropped to the cell window of the box ``[lo_m, hi_m]`` expanded by ``margin_m`` (:func:`cell_window`):
+    only the segments the window's cells reference, renumbered densely (:func:`window_cell_table`); ``dims`` and
+    ``gmin`` are the WINDOW's, so the 27-cell gather a backend runs on this template reads the window alone and
+    a walker beyond it reads a clamped border cell, by construction already clear of every segment the window
+    does not carry. ``lo``/``hi`` (the box-reflect walls) are the geometry's own -- the substrate's domain edges,
+    not the window's."""
+    gmin = np.asarray(geometry._GMIN); dims = np.asarray(geometry._DIMS); cs = float(geometry._CS)
+    win_lo, win_hi = cell_window(gmin, cs, dims, lo_m, hi_m, margin_m)
+    cell_off, cell_ids, uniq, window_dims = window_cell_table(np.asarray(geometry._CELL), dims, win_lo, win_hi)
+    window_gmin = gmin + win_lo * cs
+    lo, hi = ((np.asarray(geometry._lo), np.asarray(geometry._hi)) if geometry.box_reflect else (np.zeros(3), np.zeros(3)))
+    fields = dict(n_seg=int(uniq.shape[0]), nnz=int(cell_ids.shape[0]), dims=[int(x) for x in window_dims],
+                 gmin=[_f32(x) for x in window_gmin], cs=_f32(cs), interior=int(bool(geometry.interior)),
+                 box_reflect=int(bool(geometry.box_reflect)), lo=[_f32(x) for x in lo], hi=[_f32(x) for x in hi],
+                 nudge=_f32(geometry.nudge_m))
+    arrays = {"A.f32": np.ascontiguousarray(np.asarray(geometry._A, np.float32)[uniq]),
+             "AB.f32": np.ascontiguousarray(np.asarray(geometry._AB, np.float32)[uniq]),
+             "AB2.f32": np.ascontiguousarray(np.asarray(geometry._AB2, np.float32)[uniq]),
+             "rr.f32": np.ascontiguousarray(np.asarray(geometry._rout, np.float32)[uniq]),
+             "tube.i32": np.ascontiguousarray(np.asarray(geometry._seg_tube, np.int32)[uniq]),
+             "cell_off.i32": cell_off, "cell_ids.i32": cell_ids}
+    return fields, arrays
+
+
+def field_tables_window(basis, lo_m, hi_m, margin_m):
+    """``(dims_gmin, arrays)`` of a :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` exactly as
+    :func:`field_tables`, but cropped to the cell window of the box ``[lo_m, hi_m]`` expanded by ``margin_m``
+    (:func:`cell_window`): only the segments the window's cells reference, renumbered densely
+    (:func:`window_cell_table`), with ``fbox`` rebuilt in the WINDOW's own cell coordinates (never the whole
+    table's ``fbox`` shifted: a segment's box is clipped to ``[0, dims)`` at build time, so shifting a clipped
+    box would carry the wrong clip -- recomputing against the window's ``gmin``/``dims`` is the same formula
+    :func:`field_tables` uses, just smaller). ``dims_gmin`` is ``{"dims": [...], "gmin": [...]}`` of the window."""
+    gmin = np.asarray(basis._gmin); dims = np.asarray(basis._dims); cs = float(basis._CS)
+    win_lo, win_hi = cell_window(gmin, cs, dims, lo_m, hi_m, margin_m)
+    cell_off, cell_ids, uniq, window_dims = window_cell_table(np.asarray(basis._CELL), dims, win_lo, win_hi)
+    window_gmin = gmin + win_lo * cs
+    A64 = np.vstack([c[:-1] for c in basis.centerlines]); AB64 = np.vstack([c[1:] - c[:-1] for c in basis.centerlines])
+    lo64 = np.minimum(A64, A64 + AB64); hi64 = np.maximum(A64, A64 + AB64)
+    wd = np.asarray(window_dims)
+    loc = np.clip(np.floor((lo64 - window_gmin) / cs).astype(int), 0, wd - 1)
+    hic = np.clip(np.floor((hi64 - window_gmin) / cs).astype(int), 0, wd - 1)
+    fbox = np.stack([loc[:, 0], hic[:, 0], loc[:, 1], hic[:, 1], loc[:, 2], hic[:, 2]], axis=1)[uniq]
+    dims_gmin = dict(dims=[int(x) for x in window_dims], gmin=[_f32(x) for x in window_gmin])
+    arrays = {"fA.f32": np.ascontiguousarray(np.asarray(basis._A, np.float32)[uniq]),
+             "fAB.f32": np.ascontiguousarray(np.asarray(basis._AB, np.float32)[uniq]),
+             "fAB2.f32": np.ascontiguousarray(np.asarray(basis._AB2, np.float32)[uniq]),
+             "fa.f32": np.ascontiguousarray(np.asarray(basis._a, np.float32)[uniq]),
+             "fb.f32": np.ascontiguousarray(np.asarray(basis._b, np.float32)[uniq]),
+             "fsid.i32": np.ascontiguousarray(np.asarray(basis._sid, np.int32)[uniq]),
+             "fcell_off.i32": cell_off, "fcell_ids.i32": cell_ids, "fbox.i16": np.ascontiguousarray(fbox, np.int16)}
+    return dims_gmin, arrays
+
+
 def field_struct_fields(basis, radius_m, sample_every, reuse, list_k, n_tf):
     """The backend's ``DscField`` fields EXCEPT ``far_dims``/``far_origin`` (the crop, a batch's own) -- built
     from ``basis``'s own arrays and the sampling settings, with no ``r0``."""

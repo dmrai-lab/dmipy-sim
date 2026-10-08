@@ -38,7 +38,8 @@ import numpy as np
 
 from ..engine.backends import (FIELD_ARRAY_NAMES, REQUEST_TEMPLATE_KEYS, STRAND_ARRAY_NAMES, STRANDS_STRUCT_KEYS,
                                 adaptive_struct_fields, crop_far_grid, field_struct_fields, field_tables,
-                                format_request_value, request_struct_fields, strands_struct_fields)
+                                field_tables_window, format_request_value, request_struct_fields,
+                                strands_struct_fields, strands_struct_fields_window)
 
 log = logging.getLogger("dmipy_sim.fill")
 
@@ -89,6 +90,73 @@ def _pool_lines_and_arrays(rc, ctx, pid, n_t, dt_actual, basis, sampling, *, ste
         n_tf = len(range(0, n_t, f_every))
         lines["field"] = 1
         lines.update({f"field_{k}": v for k, v in field_struct_fields(basis, f_radius, f_every, f_reuse, field_list_k, n_tf).items()})
+    return lines, arrays, dict(diffusivity=D, interior=bool(g.inside_w[pid]))
+
+
+def _reach_margin(plan, cell_size):
+    """A block's cell window margin (dmrai-lab/dmipy-sim#695): the adaptive plan's largest round reach plus the
+    free step's own threshold, plus one cell of the table being windowed -- past this margin a walker is beyond
+    where its own round could have moved it from the block's box, so the window's clamped border cell carries
+    whatever the true table would have anyway (nothing the block's own walk can reach)."""
+    return float(max(plan.reach_c)) + float(plan.far_at) + float(cell_size)
+
+
+def _block_box(rc, row):
+    """The block's own box in metres, from the plan grid's voxel index ranges ``row["i"]``/``["j"]``/``["k"]``
+    (half-open, :meth:`~dmipy_sim.fill.recipe.Recipe.counts`' own slicing) and the recipe's grid."""
+    grid = rc.grid()
+    origin = np.asarray(grid.origin_m, float); vs = np.asarray(grid.voxel_size_m, float)
+    lo = origin + np.array([row["i"][0], row["j"][0], row["k"][0]], float) * vs
+    hi = origin + np.array([row["i"][1], row["j"][1], row["k"][1]], float) * vs
+    return lo, hi
+
+
+def _pool_plan(ctx, pid, D, dt_actual, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
+               candidate_k_start=64):
+    """``(geom, plan)`` of one pool: the same :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`
+    :func:`_pool_lines_and_arrays`/:func:`_pool_lines_and_arrays_window` build, split out so a block kit can read
+    every walked pool's reach BEFORE deciding the field's one shared window (:func:`write_block_kit`)."""
+    from ..engine.adaptive import adaptive_plan
+    geom = _pool_geometry(ctx, pid)
+    plan = adaptive_plan(geom, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
+                         n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start)
+    return geom, plan
+
+
+def _pool_lines_and_arrays_window(rc, ctx, pid, n_t, dt_actual, basis, field_window, geom, plan, lo_m, hi_m, *,
+                                  field_list_k=256):
+    """``(lines, arrays, meta)`` of one pool's BLOCK request template: as :func:`_pool_lines_and_arrays`, but the
+    strand tables cropped to the cell window of the block's box ``[lo_m, hi_m]`` plus THIS pool's own walk reach
+    (:func:`_reach_margin`, :func:`~dmipy_sim.engine.backends.strands_struct_fields_window`) -- the request
+    format's own window arithmetic. ``field_window`` is ``(dims_gmin, n_seg, nnz)`` of the ONE field window every
+    walked pool shares (:func:`write_block_kit`: the field's tables are written once, at the kit's top level,
+    exactly where :func:`~dmipy_sim.fill.kit.assemble_request` reads them -- a per-pool field window would need a
+    per-pool copy of them, which the shared layout does not have), or ``None`` without a field; only the per-pool
+    sampling PARAMETERS (``radius``, derived from this pool's own diffusivity) are this pool's own."""
+    g = ctx.tests; W = rc.man["walk"]
+    D = float(g.pools[pid].D)
+    margin = _reach_margin(plan, geom.cell_size)
+    struct, arrays = strands_struct_fields_window(geom, lo_m, hi_m, margin)
+    lines = dict(engine="strands")
+    lines.update(request_struct_fields(n_t=n_t, sub_steps=int(plan.n_min), step_l=float(np.sqrt(6.0 * D * plan.dt_min)),
+                                       kappa_over_D=0.0, record=True, count=bool(geom.count_walls),
+                                       budget=(int(geom.bounce_loop.budget) if geom.bounce_loop is not None else 0)))
+    lines.update(struct)
+    lines["adaptive"] = 1
+    lines.update({f"adaptive_{k}": v for k, v in adaptive_struct_fields(plan, geom._Rmax).items()})
+    if field_window is not None:
+        dims_gmin, n_seg, nnz = field_window
+        f_every = max(1, int(W.get("field_sample_every", 1)))
+        f_reuse = max(1, int(W.get("field_gather_every", 4)))
+        f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)
+        f_reach = float(basis.gather_radius_m)
+        f_radius = min(f_reach + f_margin, 2.0 * f_reach)
+        n_tf = len(range(0, n_t, f_every))
+        fstruct = field_struct_fields(basis, f_radius, f_every, f_reuse, field_list_k, n_tf)
+        fstruct.update(dims_gmin)
+        fstruct["n_seg"] = int(n_seg); fstruct["nnz"] = int(nnz)
+        lines["field"] = 1
+        lines.update({f"field_{k}": v for k, v in fstruct.items()})
     return lines, arrays, dict(diffusivity=D, interior=bool(g.inside_w[pid]))
 
 
@@ -173,6 +241,94 @@ def write_kit(rc, out_dir):
               files={str(p.relative_to(out)): _sha256(p) for p in files})
     json.dump(kit, open(out / "kit.json", "w"), indent=1)
     log.info("kit written to %s: %d pool(s), field %s", out, len(pools_out), sampling)
+    return out
+
+
+def write_block_kit(rc, row, out_dir):
+    """The block kit of block ``row`` (:meth:`~dmipy_sim.fill.recipe.Recipe.block_kit`, dmrai-lab/dmipy-sim#695):
+    what a node downloads for ONE block, constant in the substrate's size rather than the whole-substrate kit's
+    (:func:`write_kit`) -- per pool, the cell window of the block's box plus the walk's reach
+    (:func:`_reach_margin`), the referenced segments renumbered densely; the field basis's tables cut the same
+    way; the far grid cropped to the block's box by :func:`~dmipy_sim.engine.backends.crop_far_grid`'s rule; the
+    block's own row of the plan; the certificate; the manifest; a ``kit.json``. Everything a pool's
+    :class:`~dmipy_sim.engine.adaptive.AdaptivePlan` needs and every other section (the far grid itself, the
+    certificate, the manifest) is built exactly as :func:`write_kit` builds it -- only the cell-window cropping
+    is the block kit's own, in :func:`_pool_lines_and_arrays_window`. The ``assemble_request`` layout is
+    IDENTICAL to the whole kit's: a node reads either the same way (``tests/fill/test_block_kit.py``)."""
+    from ..spec.substrate import susceptibility_field_of
+    from ..spec.walk import field_source_kind
+    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    man = rc.man; spec = rc.spec(); ctx = rc.context(); g = ctx.tests
+    W = man["walk"]
+    if not bool(W.get("adaptive_steps")):
+        raise ValueError("a block kit serialises the CUDA strands-adaptive engine's request tables; this "
+                         "recipe's walk is not adaptive_steps")
+    T_max = float(W["T_max_s"])
+    n_t, dt_actual = _n_t_dt(T_max, rc.dt_save())
+    sampling = field_source_kind(spec) == "strands" and susceptibility_field_of(spec) == "present"
+    basis = ctx.field_basis() if sampling else None
+    if sampling and (basis is None or basis.far is None):
+        raise ValueError("the recipe's variant declares a field but carries no far grid: a kit needs one (the "
+                         "per-start cutoff doubling without one needs an actual walk, which a kit is built without)")
+    lo_m, hi_m = _block_box(rc, row)
+
+    walked = [(pid, g.pools[pid]) for pid in g.seeded
+             if not (g.pools[pid].D in (None, 0.0) or (bool(g.inside_w[pid]) and bool(g.outside_w[pid])))]
+    if not walked:
+        raise ValueError("no diffusing pool to walk: a kit needs at least one")
+    plans = {pid: _pool_plan(ctx, pid, float(pool.D), dt_actual) for pid, pool in walked}
+
+    field_window = None
+    if sampling:
+        # the field's tables are written ONCE, shared by every pool that samples them (assemble_request reads
+        # them from the kit's top level, never per pool): the window must cover every walked pool's own reach,
+        # so its margin is the largest of theirs, not any one pool's
+        field_margin = max(_reach_margin(plan, float(basis._CS)) for _, plan in plans.values())
+        dims_gmin, farrays = field_tables_window(basis, lo_m, hi_m, field_margin)
+        for name, a in farrays.items():
+            np.ascontiguousarray(a).tofile(out / name)
+        field_window = (dims_gmin, int(farrays["fsid.i32"].shape[0]), int(farrays["fcell_ids.i32"].shape[0]))
+
+        far = basis.far
+        D_max = max(float(p.D) for p in spec.pools if p.D)        # the margin's own D: the walk's, the same bound rc.dt_save() uses
+        crop, far_dims, far_origin = crop_far_grid(far.values, far.origin_m, far.spacing_m, np.array([lo_m, hi_m]),
+                                                   n_t, dt_actual, D_max)
+        np.ascontiguousarray(crop).tofile(out / "far_full.u16")
+        # the full array shape (the spatial crop's 3 dims PLUS the 13 channels, write_kit's own "shape" spelling
+        # for far_full.json) -- not far_dims (3 only, the DscField struct's own field_far_dims)
+        json.dump(dict(origin_m=far_origin, spacing_m=float(far.spacing_m), near_m=float(far.near_m),
+                       blend_m=float(far.blend_m), cutoff_m=float(far.cutoff_m), shape=list(crop.shape)),
+                 open(out / "far_full.json", "w"), indent=1)
+
+    pools_out = {}
+    for pid, pool in walked:
+        geom, plan = plans[pid]
+        lines, arrays, meta = _pool_lines_and_arrays_window(rc, ctx, pid, n_t, dt_actual, basis, field_window, geom, plan, lo_m, hi_m)
+        pdir = out / "pools" / pool.name; pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "request.json").write_text(json.dumps(lines, indent=1))
+        (pdir / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
+        for name, a in arrays.items():
+            np.ascontiguousarray(a).tofile(pdir / name)
+        pools_out[pool.name] = meta
+
+    os.makedirs(out / "plan", exist_ok=True)
+    blocks_name = os.path.basename(man["plan"]["blocks"])
+    json.dump(dict(blocks=[row]), open(out / "plan" / blocks_name, "w"), indent=1)
+    shutil.copy(rc.hub.get(man["plan"]["file"]), out / "plan" / os.path.basename(man["plan"]["file"]))
+    (out / "manifest.json").write_text(json.dumps(man, indent=1))
+    cert_path = f"certificate/{rc.variant}.json"
+    if rc.hub.exists(cert_path):
+        os.makedirs(out / "certificate", exist_ok=True)
+        shutil.copy(rc.hub.get(cert_path), out / "certificate" / f"{rc.variant}.json")
+    else:
+        log.warning("block kit block %s: no certificate/%s.json on the hub yet; the kit carries none", row["block"], rc.variant)
+
+    files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "kit.json")
+    kit = dict(recipe_id=man.get("id"), commit=man["code"]["commit"], dmipy_sim_version=_dmipy_sim_version(), variant=rc.variant,
+              block=int(row["block"]), walk=dict(n_t=n_t, dt_save_s=dt_actual, T_max_s=T_max), field=dict(present=bool(sampling)),
+              pools=pools_out, files={str(p.relative_to(out)): _sha256(p) for p in files})
+    json.dump(kit, open(out / "kit.json", "w"), indent=1)
+    log.info("block kit %s written to %s: %d pool(s), field %s", row["block"], out, len(pools_out), sampling)
     return out
 
 
