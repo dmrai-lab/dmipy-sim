@@ -68,8 +68,6 @@ FAR_SPACING_FLOOR_M = 2.5e-6
 #: resolution, so a 5 mm plan is the 1 mm plan's grid tiled 5x on every axis.
 VOXEL_SIZE_M = 25e-6
 
-_default_scanner_class = "connectom"
-
 
 def _git_commit():
     try:
@@ -132,7 +130,7 @@ def _census_from_segments(A, B, r, grid):
     return np.bincount(vox, weights=w, minlength=grid.n_voxels) / float(np.prod(grid.voxel_size_m))
 
 
-def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, scanner=_default_scanner_class):
+def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, scanner="connectom"):
     """Build and walk the pilot (:data:`PILOT_EDGE_M`, one column, seed :func:`~.common.derive_seed`'s
     ``"pilot"`` branch -- never one of the main generation's own tile seeds): writes ``pilot/strands.tck`` +
     ``pilot/strands_diameters.txt`` under ``out_dir``, walks it a short, safe ``T_max`` (well inside its own
@@ -223,7 +221,7 @@ def _build_far_grid(spec, out_path, *, node_budget=FAR_GRID_NODE_BUDGET, spacing
 
 
 def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, far_grid_info, grid, counts_rel,
-                  blocks_rel, n_tiles, id_, license_, citation, scanner=_default_scanner_class, total_walkers, n_blocks):
+                  blocks_rel, n_tiles, id_, license_, citation, scanner="connectom", total_walkers, n_blocks):
     """``far_grid_info``: ``(n_nodes, spacing_m, near_m)`` of the far grid this manifest's variant carries, or
     None (no field). Recorded directly on ``substrate`` (not just in the ``.npy``'s own ``.json`` sidecar a
     reader has to open separately, or in the entry's ``spectrum.json`` index) so a quick read of the manifest
@@ -256,7 +254,7 @@ def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, 
 
 def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per_mm=DISCO_POINTS_PER_MM,
            T_max_s=(0.020, 0.100), target_floor=PILOT_TARGET_FLOOR, far_grid_node_budget=FAR_GRID_NODE_BUDGET,
-           scanner=_default_scanner_class):
+           scanner="connectom"):
     """Generate one strands entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): random curved strands at
     DiSCo's own radius and density statistics (:mod:`dmipy_sim.spectrum.disco_stats`, overridable for a
     different class of statistics) in a cube of ``edge_m`` side, tiled in 1 mm columns streamed one at a time.
