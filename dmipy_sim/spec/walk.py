@@ -360,13 +360,16 @@ class _Boundary:
     """The closed surfaces of a set of walls as ONE boundary: membership on the host and the Geometry that walks
     the pool inside (``"intra"``) or outside (``"extra"``) it. One surface family per boundary."""
 
-    def __init__(self, walls):
+    def __init__(self, walls, backend="jax"):
         kinds = {w.surface.kind for w in walls}
         if len(kinds) != 1:
             raise SpecError(f"walls {[w.name for w in walls]} mix surface kinds {sorted(kinds)}; one pool's boundary "
                             f"must be one kind")
         self.kind = kinds.pop()
         self.walls = walls
+        #: which arithmetic a ``swept_polyline`` boundary's `PackedCurvedCylinders` runs its host-side
+        #: membership on (`PackedCurvedCylinders.backend`); a mesh or sphere-union boundary is numpy already
+        self.backend = backend
         self._geom = {}
         if self.kind == "mesh":
             from ..geometry.mesh import load_ply
@@ -447,7 +450,7 @@ class _Boundary:
             else:
                 from ..geometry.curved_cylinder import PackedCurvedCylinders
                 g = PackedCurvedCylinders(self.centerlines, self.radii, interior=(pool == "intra"),
-                                      box=((lo, hi) if reflect else None))
+                                      box=((lo, hi) if reflect else None), backend=self.backend)
             self._geom[key] = g
         return self._geom[key]
 
@@ -484,7 +487,7 @@ class _PoolTests:
     """A spec's pools as membership tests: the walls each pool is inside and outside, their boundaries built once,
     the domain box, the water fractions -- what seeding and walking share."""
 
-    def __init__(self, spec):
+    def __init__(self, spec, backend="jax"):
         self.pools = {p.id: p for p in spec.pools}
         for w in spec.walls:
             if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
@@ -497,11 +500,14 @@ class _PoolTests:
         self.reflect = "reflect" in spec.domain.boundary
         self.seeded = list(spec.seeding.pools)
         self.wf = {pid: self.pools[pid].water_fraction for pid in self.pools}
+        #: ``"numpy"`` for a draw with no JAX, or asked for explicitly (`PackedCurvedCylinders.backend`);
+        #: a mesh / sphere-union boundary ignores it, already being plain numpy
+        self.backend = backend
 
     def boundary(self, walls):
         key = tuple(w.name for w in walls)
         if key not in self._bounds:
-            self._bounds[key] = _Boundary(walls)
+            self._bounds[key] = _Boundary(walls, backend=self.backend)
         return self._bounds[key]
 
     def member(self, pid):
@@ -626,14 +632,21 @@ def _explicit_seeds(spec, pid, n, member=None):
     return r0, np.ones(len(r0))
 
 
-def draw_seeds(spec, seeding, seed, *, context=None):
+def draw_seeds(spec, seeding, seed, *, context=None, backend="jax"):
     """The stratified seeds of ``spec`` drawn on the CPU: every seeded pool's start positions and weights on
     ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk_spec` takes in place
     of the :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel` they were drawn from, with the same result to the
     bit; ``context`` is a :class:`WalkContext` of the spec whose pool tests the draw uses. A pool the seeding
     wants nowhere is drawn empty, and the walk leaves it out (a round of a pass may hold none of a sparse pool);
     a pool wanted somewhere that no draw lands in is refused. What a producer draws for its next block while the device walks this one (dmipy-sim#258): the draw of
-    a DiSCo block is 20 s of CPU the walk otherwise waits for. Pool ``pid`` is drawn from ``seed + 13 pid``."""
+    a DiSCo block is 20 s of CPU the walk otherwise waits for. Pool ``pid`` is drawn from ``seed + 13 pid``.
+    ``backend="numpy"`` draws a strand substrate's extra pool (the one membership test this draw runs,
+    :class:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders`'s `inside_any`) off its numpy classifier
+    rather than JAX's -- for a node without it, or asked for explicitly; the seeds are identical either way
+    (:meth:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders.classify_positions_exact_np` agrees with
+    the JAX one element for element). No effect on a mesh or sphere-union substrate, already plain numpy here.
+    Given a ``context``, its pool tests were already built at the context's own backend and ``backend`` must
+    agree (a context built once and drawn from repeatedly carries one backend, like it carries one spec)."""
     from .seeding import DrawnSeeds, StratifiedByVoxel, fill_per_voxel, fill_swept_by_voxel
     from ..run import Run
     if not isinstance(seeding, StratifiedByVoxel):
@@ -641,7 +654,10 @@ def draw_seeds(spec, seeding, seed, *, context=None):
     log = logging.getLogger("dmipy_sim")
     if context is not None:
         context.check(spec)
-    g = context.tests if context is not None else _PoolTests(spec); grid = seeding.grid; positions, weights = {}, {}
+        if backend != context.tests.backend:
+            raise ValueError(f"draw_seeds(backend={backend!r}) does not match the context's "
+                             f"backend={context.tests.backend!r}")
+    g = context.tests if context is not None else _PoolTests(spec, backend=backend); grid = seeding.grid; positions, weights = {}, {}
     with Run("draw_seeds", params=dict(seed=int(seed), n_voxels=int(grid.n_voxels))) as run:
         for pid in g.seeded:
             name = g.pools[pid].name; s = int(seed) + 13 * pid

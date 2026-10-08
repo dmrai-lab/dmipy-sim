@@ -25,6 +25,37 @@ def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
     assert a.positions.shape[0] == drawn.n_walkers
 
 
+def test_draw_seeds_numpy_backend_matches_jax(spec_grid):
+    """``draw_seeds(backend="numpy")`` -- for a node without JAX, or asked for explicitly (dmipy-sim#686) -- draws
+    the identical seeds as the default: the extra pool's membership test is the one thing this draw runs through
+    `PackedCurvedCylinders` (`_Boundary.contains` -> `inside_any`), and the numpy classifier behind it agrees with
+    the JAX one element for element, so the stratified draw lands the same points in the same voxels with the
+    same weights. The intra pool is drawn by segment volume either way (no classifier involved), so it is
+    unaffected by construction; checked here anyway, for the one output `draw_seeds` promises."""
+    spec, grid, _ = spec_grid
+    want = np.zeros(grid.shape, np.int64); want[0] = 6
+    seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
+    a = draw_seeds(spec, seeding, 11, backend="jax")
+    b = draw_seeds(spec, seeding, 11, backend="numpy")
+    assert set(a.positions) == set(b.positions) == {"extra", "intra"}
+    for name in a.positions:
+        np.testing.assert_array_equal(a.positions[name], b.positions[name])
+        np.testing.assert_array_equal(np.asarray(a.weights[name]), np.asarray(b.weights[name]))
+    assert a.n_walkers == b.n_walkers > 0
+
+
+def test_draw_seeds_backend_must_match_its_context(spec_grid):
+    """A context's pool tests are built at one backend; a `draw_seeds(context=, backend=)` naming another is
+    refused rather than silently drawing at the context's own backend."""
+    from dmipy_sim.spec import WalkContext
+    spec, grid, _ = spec_grid
+    ctx = WalkContext(spec)      # the default backend, "jax"
+    want = np.zeros(grid.shape, np.int64); want[0] = 2
+    seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
+    with pytest.raises(ValueError, match="backend"):
+        draw_seeds(spec, seeding, 1, context=ctx, backend="numpy")
+
+
 def test_drawn_seeds_are_checked(spec_grid):
     spec, grid, _ = spec_grid
     with pytest.raises(ValueError, match="different pools"):

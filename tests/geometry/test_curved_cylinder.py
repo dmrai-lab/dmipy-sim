@@ -135,3 +135,60 @@ def test_a_walker_in_a_fat_tube_near_a_thin_one_is_classified_inside():
     g = PackedCurvedCylinders([fat, thin], [2.0e-6, 0.5e-6], interior=True)
     ids = np.asarray(g.classify_positions_exact(np.array([[1.2e-6, 0.0, 0.0], [1.8e-6, 0.0, 0.0], [2.5e-6, 0.0, 0.0], [0.0, 0.0, 0.0]])))
     assert ids.tolist() == [1, 2, 0, 1]                             # fat (the thin axis is nearer, but it is outside the thin tube), thin (deepest), out, fat
+
+
+def _disco_like_random_pack(seed=42, n_strands=25, box=40e-6):
+    """A DiSCo-like pack for the numpy-classifier parity tests below: ``n_strands`` random curved strands of
+    several joints each, overlapping, with a range of radii, inside a box of the given half-extent."""
+    rng = np.random.default_rng(seed)
+    centerlines, radii = [], []
+    for _ in range(n_strands):
+        pts = [rng.uniform(-box, box, 3)]
+        for _ in range(int(rng.integers(4, 10)) - 1):
+            pts.append(pts[-1] + rng.normal(0.0, 8e-6, 3))
+        centerlines.append(np.asarray(pts))
+        radii.append(float(rng.uniform(0.5e-6, 3.0e-6)))
+    return centerlines, radii, box
+
+
+@pytest.mark.parametrize("case", ["strands_intra", "strands_extra"])
+def test_classify_positions_exact_np_matches_jax_on_strands(case):
+    """`classify_positions_exact_np`, the numpy twin of the JAX classifier (dmipy-sim#686), agrees with it element
+    for element -- including at the wall, where only matching the JAX one's float32 arithmetic agrees -- on 100k
+    random points in and around the family's own three-tube parity fixture (`backends.parity_cases`)."""
+    from dmipy_sim.engine.backends import parity_cases
+    g = parity_cases()[case]()
+    lo, hi = g.box
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(lo - 5e-6, hi + 5e-6, (100_000, 3)).astype(np.float32)
+    exact = np.asarray(g.classify_positions_exact(pts))
+    npv = g.classify_positions_exact_np(pts)
+    np.testing.assert_array_equal(npv, exact)
+    np.testing.assert_array_equal(np.asarray(g.pool_of(npv)), np.asarray(g.pool_of(exact)))
+
+
+@pytest.mark.parametrize("interior", [True, False])
+def test_classify_positions_exact_np_matches_jax_on_overlapping_random_strands(interior):
+    """The same agreement on a DiSCo-like pack of 25 curved, OVERLAPPING strands with several joints each -- the
+    capsule-joint and tube-overlap cases the three-tube fixture above does not exercise -- again at 100k points."""
+    from dmipy_sim.geometry.curved_cylinder import PackedCurvedCylinders
+    centerlines, radii, box = _disco_like_random_pack()
+    g = PackedCurvedCylinders(centerlines, radii, interior=interior, box=(np.full(3, -box), np.full(3, box)))
+    rng = np.random.default_rng(1)
+    pts = rng.uniform(-box - 5e-6, box + 5e-6, (100_000, 3)).astype(np.float32)
+    exact = np.asarray(g.classify_positions_exact(pts))
+    npv = g.classify_positions_exact_np(pts)
+    np.testing.assert_array_equal(npv, exact)
+    assert (exact > 0).mean() > 0.01, "too few points land inside a tube for this to test the rule"
+
+
+def test_classify_positions_exact_np_chunking_does_not_change_the_answer():
+    """The chunk boundary is bookkeeping, not part of the rule: a point's label does not depend on which chunk
+    of the batch it falls into."""
+    from dmipy_sim.geometry.curved_cylinder import PackedCurvedCylinders
+    centerlines, radii, box = _disco_like_random_pack(seed=7, n_strands=10)
+    g = PackedCurvedCylinders(centerlines, radii, box=(np.full(3, -box), np.full(3, box)))
+    pts = np.random.default_rng(2).uniform(-box, box, (5000, 3)).astype(np.float32)
+    whole = g.classify_positions_exact_np(pts, chunk=5000)
+    chunked = g.classify_positions_exact_np(pts, chunk=37)
+    np.testing.assert_array_equal(whole, chunked)
