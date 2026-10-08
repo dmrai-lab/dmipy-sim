@@ -49,7 +49,6 @@ GAMMA_SHAPE = 4.0
 #: RSA_LIMIT-safe stated volume fractions (dmipy_sim.spec.producers.RSA_LIMIT: cylinder 0.60, sphere 0.40).
 TARGET_FRACTION = {"cylinder": 0.5, "sphere": 0.3}
 
-_default_scanner_class = "connectom"
 VOXEL_SIZE_M = 25e-6
 
 
@@ -225,7 +224,7 @@ def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, s
 
 
 def cylinders(edge_m, seed, *, out_dir, target_fraction=None, n_objects_per_tile=N_OBJECTS_PER_TILE,
-             shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner=_default_scanner_class):
+             shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner="connectom"):
     """Generate one packed-cylinder entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): a random
     periodic packing of parallel cylinders at ``target_fraction`` (default :data:`TARGET_FRACTION`, 0.5, under
     the RSA saturation of 0.60) in a square cross-section of ``edge_m`` side, the axis unconfined. See the
@@ -236,7 +235,7 @@ def cylinders(edge_m, seed, *, out_dir, target_fraction=None, n_objects_per_tile
 
 
 def spheres(edge_m, seed, *, out_dir, target_fraction=None, n_objects_per_tile=N_OBJECTS_PER_TILE,
-           shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner=_default_scanner_class):
+           shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner="connectom"):
     """Generate one packed-sphere entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): a random periodic
     packing of spheres at ``target_fraction`` (default :data:`TARGET_FRACTION`, 0.3, under the RSA saturation
     of 0.40) in a cube of ``edge_m`` side. See the module docstring for the tiling and object-count rule."""

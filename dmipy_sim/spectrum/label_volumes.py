@@ -29,11 +29,10 @@ TARGET_FRACTION = 0.3
 #: (the Manhattan surface of the segmentation), so the smallest edge (25 um) needs internal voxel structure to
 #: have a wall at all, which an absolute 25 um voxel (one voxel, no face between any two) does not give it.
 N_VOXELS_PER_AXIS = 40
-_default_scanner_class = "connectom"
 
 
 def label_volume(edge_m, seed, *, out_dir, target_fraction=TARGET_FRACTION, n_objects_per_tile=N_OBJECTS_PER_TILE,
-                 shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner=_default_scanner_class):
+                 shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner="connectom"):
     """Generate one label-volume entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): a random sphere
     packing at ``target_fraction`` (default 0.3, under the RSA saturation of 0.40) rasterised onto a
     ``VOXEL_SIZE_M``-voxel grid of ``edge_m`` side as a segmented image (grain = solid, free = pore space),
