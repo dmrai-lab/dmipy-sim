@@ -184,18 +184,23 @@ def strand_frame(centerlines, *, cluster_deg=30.0):
         raise SpecError("no strand has two control points: no axis to declare")
     ch = np.asarray(ch)
     cos_tol = np.cos(np.radians(cluster_deg))
-    means, members = [], []
+    # a bundle's running mean, kept as a running SUM + count (not a growing list recomputed via np.mean on
+    # every strand: that was O(bundle size) per strand, O(n^2) over n strands -- fine for DiSCo's 12,196 strands,
+    # ~600x too slow at the substrate spectrum's 5 mm case (~305,000, dmipy-sim#697). Mathematically identical
+    # (a running sum normalised is the same mean np.mean would recompute), so every existing bundle is unchanged.
+    means, sums, counts = [], [], []
     for v in ch:
         for k, mu in enumerate(means):
             if abs(float(v @ mu)) >= cos_tol:
                 v = v if float(v @ mu) >= 0 else -v
-                members[k].append(v)
-                mu = np.mean(members[k], axis=0); means[k] = mu / np.linalg.norm(mu)
+                sums[k] = sums[k] + v
+                counts[k] += 1
+                means[k] = sums[k] / np.linalg.norm(sums[k])
                 break
         else:
-            means.append(v.copy()); members.append([v])
-    order = np.argsort([-len(mm) for mm in members], kind="stable")
-    axes = np.asarray([means[k] for k in order]); counts = [len(members[k]) for k in order]
+            means.append(v.copy()); sums.append(v.copy()); counts.append(1)
+    order = np.argsort([-c for c in counts], kind="stable")
+    axes = np.asarray([means[k] for k in order]); counts = [counts[k] for k in order]
     F = frame_from_bundles(axes, primary=0, weights=counts)
     bundles = [{"axis": axes[k].tolist(), "n_strands": int(counts[k])} for k in range(len(axes))]
     return F, bundles

@@ -157,6 +157,10 @@ _SLOW_MC_MODULES = {
     # Three 372-measurement MC/DC axon walks and one Disimpy cylinder walk against published signals
     # (needs DMIPY_SIM_MCDC_ROBUST_DIR / DMIPY_SIM_DISIMPY_DIR; skipped without them).
     "test_cross_engine_parity",
+    # The substrate spectrum's 250 um / 1 mm / 5 mm strands cases (dmipy-sim#697): a real far-grid build is
+    # minutes per edge even at the smallest of the three. The 25 um case (no far grid, both policy walk
+    # lengths refused by the halo rule) stays in the fast lane, test_strands.py.
+    "test_strands_slow",
 }
 
 
