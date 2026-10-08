@@ -400,6 +400,19 @@ def restate_maxima(fid):
     return fid
 
 
+def _census_rows(ijk_all, inside):
+    """The occupied voxels (unique rows of ``ijk_all[inside]``) and every walker's row into them, ``-1`` outside:
+    the per-(voxel, pool) census as one vectorised ``np.unique`` inverse lookup -- no per-walker Python dict probe
+    (``ijk_all`` of 157k walkers cost 1.2 s that way)."""
+    n_w = ijk_all.shape[0]
+    row = np.full(n_w, -1, np.int64)
+    if not inside.any():
+        return np.zeros((0, ijk_all.shape[1]), ijk_all.dtype), row
+    ijk, inv = np.unique(ijk_all[inside], axis=0, return_inverse=True)
+    row[inside] = inv.reshape(-1)
+    return ijk, row
+
+
 def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None, chunk=20_000):
     """The pack's fidelity PER VOXEL AND POOL, for a walk meant to be partitioned: every walker is binned by where
     it started (``grid.bin``, the partition's own rule) and by its pool; per (voxel, pool) the ensemble signal
@@ -415,11 +428,7 @@ def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None,
     ijk_all, inside = grid.bin(traj[:, 0])
     pools = sorted(set(np.unique(np.asarray(comp)[:, 0]).tolist())) if comp is not None else [0]
     pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(n_w, np.int64)
-    ijk = np.unique(ijk_all[inside], axis=0)
-    key = {tuple(v): i for i, v in enumerate(map(tuple, ijk))}
-    row = np.full(n_w, -1, np.int64)
-    for i in np.flatnonzero(inside):
-        row[i] = key[tuple(ijk_all[i])]
+    ijk, row = _census_rows(ijk_all, inside)
     col = np.searchsorted(pools, pid)
     ww = np.ones(n_w) if w is None else np.asarray(w, np.float64)
     lw = np.zeros(n_w) if logw is None else np.asarray(logw, np.float64)
@@ -457,11 +466,7 @@ def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chu
     ijk_all, inside = grid.bin(np.asarray(C[:, 0, :], np.float64))
     pools = sorted(set(np.unique(np.asarray(comp)[:, 0]).tolist())) if comp is not None else [0]
     pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(n_w, np.int64)
-    ijk = np.unique(ijk_all[inside], axis=0)
-    key = {tuple(v): i for i, v in enumerate(map(tuple, ijk))}
-    row = np.full(n_w, -1, np.int64)
-    for i in np.flatnonzero(inside):
-        row[i] = key[tuple(ijk_all[i])]
+    ijk, row = _census_rows(ijk_all, inside)
     col = np.searchsorted(pools, pid)
     ww = np.ones(n_w) if w is None else np.asarray(w, np.float64)
     half = (np.random.default_rng(0).permutation(n_w) % 2).astype(bool)
@@ -935,13 +940,23 @@ def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=
     return _quantise_susc_path(coeffs, meta, bits)
 
 
-def _quantise_susc_path(coeffs, meta, bits):
-    """The integer container of the path-field coefficients: a per-(channel, band) scale, ``bits`` wide."""
+def _quantise_susc_path(coeffs, meta, bits, *, device="numpy"):
+    """The integer container of the path-field coefficients: a per-(channel, band) scale, ``bits`` wide -- the
+    reduction (the scale's max-abs over every walker) and the round/clip run on the JAX device when ``device``
+    resolves to one (float32: the container is already lossy, so this loses nothing the quantisation does not),
+    host numpy (float64, the reference) otherwise."""
     itype = np.int8 if bits == 8 else np.int16
     lim = 2 ** (bits - 1) - 1
-    scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
-    scale[scale == 0] = 1.0
-    q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
+    if _cx.resolve_device(device) == "numpy":
+        scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
+        scale[scale == 0] = 1.0
+        q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
+    else:
+        import jax.numpy as jnp
+        c = jnp.asarray(coeffs, jnp.float32)
+        scale = np.asarray(jnp.max(jnp.abs(c), axis=0)) / lim
+        scale[scale == 0] = 1.0
+        q = np.asarray(jnp.clip(jnp.round(c / jnp.asarray(scale, jnp.float32)[None]), -lim, lim)).astype(itype)
     meta["bits"] = int(bits); meta["dtype"] = np.dtype(itype).name
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
 
@@ -985,9 +1000,9 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
     keep = [i for i, n in enumerate(names) if not (drop_zz and n == "iso_P_zz")]
     coeffs = np.empty((n_w, len(keep), K), np.float64)
     for i in range(0, n_w, chunk):
-        ch = np.asarray(take(slice(i, i + chunk)))                                  # the series' own dtype; the device casts
-        b = _cx.dct_bands(np.ascontiguousarray(ch[:, :, keep]), K, device=device)   # (rows, K, n_keep)
-        coeffs[i:i + chunk] = np.transpose(b, (0, 2, 1))
+        ch = take(slice(i, i + chunk))                           # the series' own dtype, read in place -- no copy
+        ch = ch if len(keep) == n_ch else ch[:, :, keep]          # a copy only when a channel (iso_P_zz) is dropped
+        coeffs[i:i + chunk] = _cx.dct_bands_series(ch, K, device=device)   # (rows, n_ch, K): one cached device jit for every chunk
     meta = dict(channel="susc_path_dct", K=K, n_t=int(n_t), n_ch=len(keep), channels=[names[i] for i in keep],
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
                 max_refocus_pulses=_depth(K, max_refocus_pulses))
@@ -998,7 +1013,7 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
     if bits not in (8, 16):
         raise ValueError("susc_path bits must be 8, 16, or None")
-    return _quantise_susc_path(coeffs, meta, bits)
+    return _quantise_susc_path(coeffs, meta, bits, device=device)
 
 
 def susc_path_coeffs(arrays, meta):
