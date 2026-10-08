@@ -24,6 +24,8 @@ has no other backend never sees the option do anything, and a name that is not i
 """
 from __future__ import annotations
 
+import math
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -309,4 +311,194 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
         rec["checks"]["pgse"] = dict(jax=sa.tolist(), backend=sb.tolist(), z=z.tolist(), ok=bool((z <= sigma).all()))
         rec["ok"] = all(c["ok"] for c in rec["checks"].values())
         out.append(rec)
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The request directory: dmipy-sim's side of the backend protocol (dmrai-lab/dmipy-sim#691). A backend
+# executes a WalkRequest; the strands engine's request DIRECTORY (request.txt + the strand/adaptive/field
+# tables) is serialised once, here, from the geometry's/plan's/basis's own arrays -- never read back by a
+# backend's own ctypes struct, which is a different consumer of the same numbers (a live library call, not a
+# file). dmipy_sim_cuda.cli.write_request calls write_request_directory for the strands engine; a substrate
+# kit (dmipy_sim.fill.kit) builds the same files from a template, never installing dmipy_sim_cuda to do it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: the strand-walk tables of one pool's geometry, the file names a request directory writes them under
+STRAND_ARRAY_NAMES = ("A.f32", "AB.f32", "AB2.f32", "rr.f32", "tube.i32", "cell_off.i32", "cell_ids.i32")
+#: the field basis's own tables, shared by every pool that samples it
+FIELD_ARRAY_NAMES = ("fA.f32", "fAB.f32", "fAB2.f32", "fa.f32", "fb.f32", "fsid.i32", "fcell_off.i32", "fcell_ids.i32", "fbox.i16")
+#: the request-struct fields that stay in a kit's template (everything but ``n`` and ``seed``, which are a batch's own)
+REQUEST_TEMPLATE_KEYS = ("n_t", "sub_steps", "step_l", "kappa_over_D", "record", "count", "budget")
+#: the strands-struct fields, in the backend's ``DscStrands`` field order
+STRANDS_STRUCT_KEYS = ("n_seg", "nnz", "dims", "gmin", "cs", "interior", "box_reflect", "lo", "hi", "nudge")
+
+
+def _f32(x):
+    """A value as a ``ctypes.c_float`` struct field would hold it after assignment: the float32 truncation a
+    backend's request structs apply to every field named as such below."""
+    return float(np.float32(x))
+
+
+def format_request_value(v):
+    """One ``request.txt`` value in the backend protocol's own spelling: an array comma-joined (a float
+    ``repr``'d, an int as itself), a scalar float ``repr``'d, a scalar int, or a bare name (``"strands"``) as
+    itself."""
+    if isinstance(v, (list, tuple)):
+        return ",".join(repr(float(x)) if isinstance(x, float) else str(int(x)) for x in v)
+    if isinstance(v, float):
+        return repr(float(v))
+    if isinstance(v, str):
+        return v
+    return int(v)
+
+
+def csr_cells(cell):
+    """A geometry's padded ``(n_cells, C)`` cell table (ids ascending per cell, -1 padding) as CSR
+    ``(offsets (n_cells + 1,), ids (nnz,))`` int32, the order kept: the one conversion every table with a
+    bucketed cell grid (the strands, the field basis) goes through."""
+    cell = np.asarray(cell)
+    valid = cell >= 0
+    counts = valid.sum(1, dtype=np.int64)
+    offsets = np.zeros(cell.shape[0] + 1, np.int64)
+    np.cumsum(counts, out=offsets[1:])
+    return np.ascontiguousarray(offsets, np.int32), np.ascontiguousarray(cell[valid], np.int32)
+
+
+def strands_struct_fields(geometry):
+    """``(fields, arrays)`` of a ``PackedCurvedCylinders`` ``geometry``: the backend's ``DscStrands`` fields (in
+    :data:`STRANDS_STRUCT_KEYS` order) and the tables a request directory names ``A.f32``/``AB.f32``/``AB2.f32``/
+    ``rr.f32``/``tube.i32``/``cell_off.i32``/``cell_ids.i32`` (:data:`STRAND_ARRAY_NAMES`) -- built from the
+    geometry's own arrays, with the float32 truncation a ``DscStrands`` ctypes field applies on assignment."""
+    cell_off, cell_ids = csr_cells(np.asarray(geometry._CELL))
+    lo, hi = ((np.asarray(geometry._lo), np.asarray(geometry._hi)) if geometry.box_reflect else (np.zeros(3), np.zeros(3)))
+    fields = dict(n_seg=int(geometry._A.shape[0]), nnz=int(cell_ids.shape[0]), dims=[int(x) for x in geometry._DIMS],
+                 gmin=[_f32(x) for x in np.asarray(geometry._GMIN)], cs=_f32(geometry._CS), interior=int(bool(geometry.interior)),
+                 box_reflect=int(bool(geometry.box_reflect)), lo=[_f32(x) for x in lo], hi=[_f32(x) for x in hi],
+                 nudge=_f32(geometry.nudge_m))
+    arrays = {"A.f32": np.ascontiguousarray(np.asarray(geometry._A, np.float32)),
+             "AB.f32": np.ascontiguousarray(np.asarray(geometry._AB, np.float32)),
+             "AB2.f32": np.ascontiguousarray(np.asarray(geometry._AB2, np.float32)),
+             "rr.f32": np.ascontiguousarray(np.asarray(geometry._rout, np.float32)),
+             "tube.i32": np.ascontiguousarray(np.asarray(geometry._seg_tube, np.int32)),
+             "cell_off.i32": cell_off, "cell_ids.i32": cell_ids}
+    return fields, arrays
+
+
+def field_tables(basis):
+    """The field basis's own tables -- the segment tables, the CSR cell table and each segment's cell box, with
+    a sanity check that the bucketing accounts for every CSR entry -- built from ``basis``'s own arrays."""
+    fcell_off, fcell_ids = csr_cells(np.asarray(basis._CELL))
+    A64 = np.vstack([c[:-1] for c in basis.centerlines]); AB64 = np.vstack([c[1:] - c[:-1] for c in basis.centerlines])
+    lo64 = np.minimum(A64, A64 + AB64); hi64 = np.maximum(A64, A64 + AB64); cs64 = 1.01 * basis.gather_radius_m
+    dims = np.asarray(basis._dims)
+    loc = np.clip(np.floor((lo64 - basis._gmin) / cs64).astype(int), 0, dims - 1)
+    hic = np.clip(np.floor((hi64 - basis._gmin) / cs64).astype(int), 0, dims - 1)
+    fbox = np.ascontiguousarray(np.stack([loc[:, 0], hic[:, 0], loc[:, 1], hic[:, 1], loc[:, 2], hic[:, 2]], axis=1), np.int16)
+    counts = (hic - loc + 1).prod(1)
+    if int(counts.sum()) != int(fcell_ids.shape[0]):
+        raise RuntimeError(f"the field's cell boxes ({int(counts.sum())} entries) do not match its cell table "
+                           f"({fcell_ids.shape[0]}): the bucketing differs")
+    return {"fA.f32": np.ascontiguousarray(np.asarray(basis._A, np.float32)), "fAB.f32": np.ascontiguousarray(np.asarray(basis._AB, np.float32)),
+            "fAB2.f32": np.ascontiguousarray(np.asarray(basis._AB2, np.float32)), "fa.f32": np.ascontiguousarray(np.asarray(basis._a, np.float32)),
+            "fb.f32": np.ascontiguousarray(np.asarray(basis._b, np.float32)), "fsid.i32": np.ascontiguousarray(np.asarray(basis._sid, np.int32)),
+            "fcell_off.i32": fcell_off, "fcell_ids.i32": fcell_ids, "fbox.i16": fbox}
+
+
+def field_struct_fields(basis, radius_m, sample_every, reuse, list_k, n_tf):
+    """The backend's ``DscField`` fields EXCEPT ``far_dims``/``far_origin`` (the crop, a batch's own) -- built
+    from ``basis``'s own arrays and the sampling settings, with no ``r0``."""
+    _, fcell_ids = csr_cells(np.asarray(basis._CELL))
+    far = basis.far
+    return dict(n_seg=int(basis.n_segments), nnz=int(fcell_ids.shape[0]), dims=[int(x) for x in basis._dims],
+               gmin=[_f32(x) for x in np.asarray(basis._gmin)], cs=_f32(basis._CS), radius=_f32(radius_m),
+               reach=_f32(basis.gather_radius_m), gate_radii=_f32(basis.NEAREST_GATE_RADII),
+               has_far=int(far is not None), near_m=_f32(far.near_m if far is not None else 0.0),
+               blend_m=_f32(far.blend_m if far is not None else 0.0), far_h=_f32(far.spacing_m if far is not None else 0.0),
+               sample_every=int(sample_every), reuse=int(reuse), list_k=max(1, int(list_k)),
+               n_tf=int(n_tf), segments_max=int(basis.segments_max))
+
+
+def adaptive_struct_fields(plan, R_max):
+    """The backend's ``DscAdaptive`` fields of an :class:`~dmipy_sim.engine.adaptive.AdaptivePlan` (``R_max`` is
+    the WALKING geometry's own ``_Rmax``, which differs by pool: the axolemma's radius for intra, the sheath's
+    for extra)."""
+    n_classes = int(plan.n_classes)
+    steps_c = [0] * 8; step_l_c = [0.0] * 8; reach_c = [0.0] * 8
+    for c in range(n_classes):
+        steps_c[c] = int(plan.steps_c[c]); step_l_c[c] = _f32(plan.step_l_c[c]); reach_c[c] = _f32(plan.reach_c[c])
+    return dict(K=int(plan.steps_per_round), n_rounds=int(plan.n_rounds), n_classes=n_classes,
+               sigma_round=_f32(plan.sigma_round), far_at=_f32(plan.far_at), R_min=_f32(plan.R_min), R_max=_f32(R_max),
+               steps_c=steps_c, step_l_c=step_l_c, reach_c=reach_c)
+
+
+def request_struct_fields(*, n_t, sub_steps, step_l, kappa_over_D, record, count, budget):
+    """The backend's ``DscRequest`` fields EXCEPT ``seed`` (a batch's own)."""
+    return dict(n_t=int(n_t), sub_steps=int(sub_steps), step_l=_f32(step_l), kappa_over_D=_f32(kappa_over_D),
+               record=int(bool(record)), count=int(bool(count)), budget=int(budget))
+
+
+def crop_far_grid(values, origin_m, spacing_m, r0, n_t, dt_save, diffusivity):
+    """The far grid cropped to what a batch of starts ``r0`` can reach: the starts' bounding box plus eight
+    sigma of the walk's excursion and three nodes, so a shard of a large substrate uploads a crop, never the
+    whole grid. Returns ``(crop.view(uint16), far_dims, far_origin)``."""
+    values = np.asarray(values)
+    N = np.asarray(values.shape[:3])
+    h = float(spacing_m)
+    T = float(dt_save) * (int(n_t) - 1)
+    margin = 8.0 * math.sqrt(2.0 * float(diffusivity) * T) + 3.0 * h
+    r0 = np.asarray(r0, np.float64)
+    origin = np.asarray(origin_m, np.float64)
+    lo = np.clip(np.floor((r0.min(0) - margin - origin) / h).astype(int) - 1, 0, N - 1)
+    hi = np.clip(np.ceil((r0.max(0) + margin - origin) / h).astype(int) + 2, 1, N)
+    hi = np.maximum(hi, lo + 1)
+    crop = np.ascontiguousarray(np.asarray(values[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]], np.float16))
+    far_dims = [int(x) for x in crop.shape[:3]]
+    far_origin = [_f32(x) for x in (origin + lo * h)]
+    return crop.view(np.uint16), far_dims, far_origin
+
+
+def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
+    """The request directory of a live, resolved ``WalkRequest`` whose geometry is the strands engine:
+    ``request.txt`` (the ``DscRequest`` fields, the engine's name, the ``DscStrands`` fields, and -- when the
+    request carries them -- the ``DscAdaptive`` and ``DscField`` fields, each prefixed ``adaptive_``/``field_``),
+    ``r0.f32``, ``keys.u32`` and the strand/field tables beside it (the far grid CROPPED to what ``r0`` can
+    reach, :func:`crop_far_grid`). This is dmipy-sim's side of the backend protocol: every value comes from the
+    geometry's/plan's/basis's own arrays, with the float32 truncation the backend's ctypes request structs apply
+    on assignment (:func:`strands_struct_fields`, :func:`adaptive_struct_fields`, :func:`field_struct_fields`) --
+    so this is exactly what ``dmipy_sim_cuda.cli.write_request`` writes for the strands engine, byte for byte,
+    without that package installed. ``classify`` is the CUDA CLI's own flag and is not written here."""
+    from ..geometry.curved_cylinder import PackedCurvedCylinders
+    g = request.geometry
+    if not isinstance(g, PackedCurvedCylinders):
+        raise ValueError(f"write_request_directory serialises the strands engine only, not {type(g).__name__}")
+    out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+    r0 = np.ascontiguousarray(r0, np.float32); n = int(r0.shape[0])
+    struct, arrays = strands_struct_fields(g)
+    lines = dict(engine="strands", n=n)
+    lines.update(request_struct_fields(n_t=request.n_t, sub_steps=request.sub_steps,
+                                       step_l=float(np.sqrt(6.0 * request.diffusivity * request.dt_sim)),
+                                       kappa_over_D=request.kappa_over_D, record=request.record, count=request.count_walls,
+                                       budget=(int(g.bounce_loop.budget) if g.bounce_loop is not None else 0)))
+    lines["seed"] = int(request.seed) & 0xFFFFFFFFFFFFFFFF
+    lines.update(struct)
+    if request.stepping is not None:
+        lines["adaptive"] = 1
+        lines.update({f"adaptive_{k}": v for k, v in adaptive_struct_fields(request.stepping, g._Rmax).items()})
+    if request.field is not None:
+        f = request.field; basis = f.basis
+        n_tf = len(range(0, int(request.n_t), int(f.sample_every)))
+        lines["field"] = 1
+        lines.update({f"field_{k}": v for k, v in field_struct_fields(basis, f.radius_m, f.sample_every, f.reuse_intervals, f.list_k, n_tf).items()})
+        arrays.update(field_tables(basis))
+        far_dims, far_origin = [0, 0, 0], [0.0, 0.0, 0.0]
+        if basis.far is not None:
+            crop, far_dims, far_origin = crop_far_grid(basis.far.values, basis.far.origin_m, basis.far.spacing_m,
+                                                       r0, request.n_t, request.dt_save, request.diffusivity)
+            arrays["far.u16"] = crop
+        lines["field_far_dims"] = far_dims; lines["field_far_origin"] = far_origin
+    (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
+    r0.tofile(out / "r0.f32")
+    np.ascontiguousarray(keys, np.uint32).reshape(n, -1)[:, :2].copy().tofile(out / "keys.u32")
+    for name, a in arrays.items():
+        np.ascontiguousarray(a).tofile(out / name)
     return out

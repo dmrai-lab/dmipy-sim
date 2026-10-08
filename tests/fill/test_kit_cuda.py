@@ -9,10 +9,11 @@ import numpy as np
 import pytest
 
 pytest.importorskip("dmipy_sim_cuda")
+from dmipy_sim_cuda.backend import CudaBackend  # noqa: E402
 from dmipy_sim_cuda.cli import write_request  # noqa: E402
 
 from dmipy_sim.engine.adaptive import adaptive_plan  # noqa: E402
-from dmipy_sim.engine.backends import FieldSampling, WalkRequest  # noqa: E402
+from dmipy_sim.engine.backends import FieldSampling, WalkRequest, format_request_value, write_request_directory  # noqa: E402
 from dmipy_sim.fill import Recipe  # noqa: E402
 from dmipy_sim.fill.kit import _pool_geometry, _sha256, assemble_request  # noqa: E402
 
@@ -78,3 +79,67 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
     real_dir = write_request(req, r0, keys, tmp_path / f"real-{pool_name}")
     batch_dir = assemble_request(kit_dir, pool_name, r0, keys, seed, tmp_path / f"batch-{pool_name}")
     _assert_dirs_match(real_dir, batch_dir)
+
+
+def _struct_dict(st):
+    """A ctypes struct as ``{field: formatted value}``, in ``request.txt``'s own spelling -- the same comparison
+    ``CudaBackend.struct_fields`` + the shared writer's ``format_request_value`` apply."""
+    out = {}
+    for name, _t in type(st)._fields_:
+        v = getattr(st, name)
+        out[name] = str(format_request_value(list(v) if hasattr(v, "__len__") else v))
+    return out
+
+
+@pytest.mark.parametrize("fixture_name,pool_name", [("fake", "intra"), ("fake", "extra"),
+                                                     ("field_fake", "intra"), ("field_fake", "extra")])
+def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixture_name, pool_name, request, tmp_path):
+    """dmrai-lab/dmipy-sim#691: ``write_request_directory`` writes, field for field, exactly what ``CudaBackend``
+    itself builds for the SAME live request through its own ctypes structs (``_strands``, ``adaptive_struct``,
+    ``field_of``) -- the one serialisation of the strands/adaptive/field constants, never reproduced a second
+    time by the backend's own struct-building."""
+    hub, _ = request.getfixturevalue(fixture_name)
+    rc = Recipe(hub)
+    ctx = rc.context(); g = ctx.tests; W = rc.man["walk"]
+    pid = next(p.id for p in g.pools.values() if p.name == pool_name)
+    basis = ctx.field_basis()
+
+    geom = _pool_geometry(ctx, pid)
+    D = float(g.pools[pid].D)
+    T_max, dt_save = float(W["T_max_s"]), rc.dt_save()
+    n_t = int(round(T_max / dt_save)) + 1
+    dt_actual = T_max / (n_t - 1)
+    plan = adaptive_plan(geom, D, dt_actual)
+
+    r0 = _starts(ctx, pid, 40, seed=5000 + pid)
+    seed = 1717 + pid
+    keys = np.random.default_rng(6000 + pid).integers(0, 2 ** 31 - 1, size=(len(r0), 2)).astype(np.uint32)
+
+    field = None
+    if basis is not None:
+        f_every = max(1, int(W.get("field_sample_every", 1)))
+        f_reuse = max(1, int(W.get("field_gather_every", 4)))
+        f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)
+        f_reach = float(basis.gather_radius_m)
+        f_radius = min(f_reach + f_margin, 2.0 * f_reach)
+        field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
+
+    req = WalkRequest(geometry=geom, n_t=n_t, dt_save=dt_actual, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
+                      diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
+                      bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field)
+
+    out = write_request_directory(req, r0, keys, tmp_path / f"shared-{pool_name}")
+    written = dict(line.split("=", 1) for line in (out / "request.txt").read_text().splitlines())
+
+    st, _ = CudaBackend._strands(geom)
+    for name, expected in _struct_dict(st).items():
+        assert written[name] == expected, name
+
+    ad = CudaBackend.adaptive_struct(plan, geom)
+    for name, expected in _struct_dict(ad).items():
+        assert written[f"adaptive_{name}"] == expected, name
+
+    if field is not None:
+        fd, _ = CudaBackend.field_of(req, r0)
+        for name, expected in _struct_dict(fd).items():
+            assert written[f"field_{name}"] == expected, name
