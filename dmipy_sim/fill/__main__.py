@@ -7,9 +7,11 @@
     python -m dmipy_sim.fill --repo OWNER/DATASET --block 0 --budget 200000 --certify  # the fill's certificate, measured once
     python -m dmipy_sim.fill --repo OWNER/DATASET --drain                  # finish what an earlier worker here left, release the rest
     python -m dmipy_sim.fill --local DIR --block 0 --budget 3000 --cpu     # a rehearsal against a directory, nothing uploaded
+    python -m dmipy_sim.fill --repo OWNER/DATASET --kit DIR                # the substrate kit (#689): no GPU, no walk
 
 Needs dmipy-sim at the manifest's commit (with a CUDA jaxlib unless ``--cpu``) and, against the hub, a login with
-write access to the repository."""
+write access to the repository. ``--kit`` needs none of that: it writes the recipe's substrate kit (every request
+table but the seeds, :func:`dmipy_sim.fill.kit.write_kit`) to a local directory, on the CPU, and claims nothing."""
 import os as _os
 import sys as _sys
 # a walk on another backend shares the device with this process's JAX, which must then not take it all: the
@@ -55,6 +57,8 @@ def main(argv=None):
     g.add_argument("--drain", action="store_true", help="upload what an earlier worker on this host left finished in --workdir "
                    "(a pack that never ran is recovered from its --keep walk files, else its claim is just released), "
                    "release this host's other claims, then stop")
+    g.add_argument("--kit", default=None, help="write the recipe's substrate kit (dmrai-lab/dmipy-sim#689: every request "
+                   "table but the seeds) to this local directory, on the CPU, and stop -- no claim, no walk")
     ap.add_argument("--repo", default=None, help="the dataset repository (owner/name)")
     ap.add_argument("--local", default=None, help="read the recipe from this directory instead of the hub (implies --no-upload)")
     ap.add_argument("--loop", action="store_true", help="with --next: fill blocks until none is open, pipelined")
@@ -92,6 +96,10 @@ def main(argv=None):
         ap.error("--repo OWNER/DATASET or --local DIR")
     hub = FakeHub(a.local) if a.local else Hub(a.repo)
     rc = Recipe(hub, a.variant)
+    if a.kit:
+        path = rc.kit(a.kit)
+        logging.getLogger("dmipy_sim.fill").info("kit written to %s", path)
+        return
     import jax                                             # every dmipy_sim import on the main thread, before any thread
     from ..spec import walk_spec, StratifiedByVoxel, disco_spec        # noqa: F401  (what the walk stage imports)
     from ..acquisition.scanners import save_interval                    # noqa: F401
