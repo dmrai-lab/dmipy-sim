@@ -18,7 +18,7 @@ import numpy as np
 
 __all__ = ["EDGES_M", "WALK_LENGTHS_S", "HALO_FREE_DIFFUSIVITY_M2_S", "HALO_MARGIN_CELLS", "TILE_EDGE_M",
            "SpectrumHaloError", "halo_m", "check_halo", "sha256_of", "write_index", "verify_index", "tile_seed",
-           "derive_seed", "n_tiles_per_axis"]
+           "derive_seed", "n_tiles_per_axis", "git_commit", "write_manifest", "pilot_n_and_floor", "pool_census"]
 
 #: the four edges of the spectrum (#697): one voxel, DiSCo's own two sizes, and the "100x" tiled case.
 EDGES_M = (25e-6, 250e-6, 1e-3, 5e-3)
@@ -133,3 +133,72 @@ def verify_index(index_path):
         if os.path.getsize(p) != meta["bytes"]:
             raise ValueError(f"{index_path}: {rel!r} is {os.path.getsize(p)} bytes, index says {meta['bytes']}")
     return len(index["files"])
+
+
+def git_commit():
+    """The worktree's own commit, or ``None`` outside a git checkout (recorded in every manifest's ``code``)."""
+    import subprocess
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=os.path.dirname(__file__),
+                                       stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return None
+
+
+def pilot_n_and_floor(target_floor):
+    """``(n_pilot, floor_pilot)`` of the textbook Monte-Carlo floor ``1/sqrt(n)`` at a stated precision: the one
+    pilot-walk rule every generator in this package uses (:func:`dmipy_sim.spectrum.strands.strands`'s own
+    derivation). ``n_pilot = ceil(1 / target_floor**2)``, so ``floor_pilot`` hits ``target_floor`` exactly."""
+    n_pilot = int(np.ceil(1.0 / float(target_floor) ** 2))
+    return n_pilot, 1.0 / np.sqrt(n_pilot)
+
+
+def pool_census(preds, grid, *, census_draws=200, seed=0):
+    """The per-voxel volume fraction of every named membership test in ``preds`` (``{name: points -> bool}``)
+    on ``grid``, by rejection sampling (:func:`dmipy_sim.spec.seeding.fill_per_voxel`'s own rule, at the cost of
+    ``census_draws`` draws per voxel) -- the generic census a geometry with no closed-form clipping primitive
+    (a packed cylinder/sphere, a label volume) still gets exactly: ``{name: (n_voxels,) float}``, grid-shaped
+    arrays the caller reshapes. A predicate is a geometry's own exact classifier
+    (:meth:`~dmipy_sim.geometry.base.Geometry.classify_positions_exact`, thresholded per pool) or a spec's
+    membership test (:class:`~dmipy_sim.spec.walk._PoolTests`, for a multi-surface bundle) -- whichever the
+    caller's substrate kind has. ``fill_per_voxel`` needs a positive ``want`` to run at all (it is written to
+    stratify real seeds, not just measure a fraction), so this calls it with ``want = census_draws`` everywhere
+    and reads back only its ``f`` (the kept points are discarded)."""
+    from ..spec.seeding import fill_per_voxel
+    want = np.full(grid.n_voxels, int(census_draws), np.int64)
+    out = {}
+    for name, pred in preds.items():
+        _, _, f, _, _ = fill_per_voxel(pred, grid, want, trials_max=max(5000, census_draws * 10),
+                                       census_draws=census_draws, seed=seed)
+        out[name] = f
+    return out
+
+
+def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_max_s, scanner, counts_rel,
+                   blocks_rel, total_walkers, n_blocks, dt_save_divisor=200.0):
+    """A recipe-shaped ``manifest.json`` for a substrate kind :mod:`dmipy_sim.fill` does not read yet
+    (``substrate["kind"]`` is not ``"disco"``): the SAME outer shape (``code``, ``substrate``, ``grid``,
+    ``walk``, ``pack``, ``plan``) dmipy_sim.spectrum.strands.strands's own manifest uses, so a reader
+    already expecting that shape finds the same fields, but ``substrate`` carries whatever this generator's
+    kind needs (a ``spec_file`` for a packed-cylinder/sphere or label-volume entry, since none of those has a
+    :mod:`dmipy_sim.fill.recipe.Recipe` reader of its own -- extending ``Recipe`` to the new kinds is a
+    follow-up, not this generator's job, which is to write the data in the shape the recipe is DEFINED to
+    have). No field basis: these classes carry no susceptibility source (dmipy-sim#697's PR2 scope)."""
+    from ..replay.bank import mode_count
+    man = dict(
+        id=id_, license=license_, citation=citation,
+        code=dict(repo="dmrai-lab/dmipy-sim", commit=git_commit()),
+        substrate=substrate,
+        variants=dict(field=dict(field=False)), default_variant="field",
+        grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
+                  attach="substrate"),
+        walk=dict(T_max_s=float(T_max_s), dt_save_s=float(T_max_s) / dt_save_divisor, scanner=scanner,
+                  floor_fraction=0.1, adaptive_steps=False, walker_batch_size=4096, census_draws=200),
+        pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="bands",
+                  blt_container="bands", blt_K=mode_count(T_max_s, scanner)),
+        plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),
+    )
+    path = os.path.join(variant_dir, "manifest.json")
+    with open(path, "w") as fh:
+        json.dump(man, fh, indent=1, sort_keys=True)
+    return path
