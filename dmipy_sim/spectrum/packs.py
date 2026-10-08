@@ -143,7 +143,15 @@ def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, s
     n_objects = len(radii)
 
     Geom = PackedCylinders if kind == "cylinder" else PackedSpheres
-    geom = Geom(radii, centers, float(edge_m))
+    # PackedCylinders/PackedSpheres.__init__ computes min_gap EAGERLY as a full pairwise distance matrix
+    # (dmipy_sim.geometry.packing.periodic_min_gap): O(n_objects^2), ~60 GB and an OOM kill at the 5 mm
+    # sphere case's 50,000 combined objects (measured). The spec this entry cites is built from one
+    # REPRESENTATIVE tile's own objects (the same statistics, bounded at n_objects_per_tile, safe to
+    # construct and walk) rather than the full tiled count; the census/plan below still cover the WHOLE
+    # domain from the raw per-tile arrays directly, which need no Geometry object at all.
+    spec_radii, spec_centers, spec_L = (radii, centers, float(edge_m)) if n_side == 1 else \
+        (radii_all[0], centers_all[0], float(tile_edge))
+    geom = Geom(spec_radii, spec_centers, spec_L)
     spec = spec_of(geom, id=f"spectrum/{kind}s/edge_{edge_m:g}m_seed_{seed}")
     spec_path = os.path.join(sub_dir, "spec.json")
     spec.save(spec_path)
@@ -198,7 +206,8 @@ def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, s
                       license_=license_, citation=citation,
                       substrate=dict(kind=f"packed_{kind}", spec_file="../substrate/spec.json",
                                     n_objects=int(n_objects), target_fraction=float(target_fraction),
-                                    side_m=float(edge_m)),
+                                    side_m=float(edge_m), spec_side_m=float(spec_L),
+                                    spec_is_one_representative_tile=bool(n_side > 1)),
                       grid=grid, T_max_s=T_max, scanner=scanner, counts_rel="../substrate/counts.npz",
                       blocks_rel="../substrate/blocks.json", total_walkers=total_walkers, n_blocks=len(blocks))
         variants.append(float(T_max))
