@@ -33,6 +33,10 @@ def test_250um_manifests_and_plans_exist(entry_250um):
         assert man["substrate"]["kind"] == "disco"
         assert man["substrate"]["far_grid"] is not None
         assert os.path.exists(os.path.join(out, sub, "..", "substrate", "far.npy"))
+        fgm = man["substrate"]["far_grid_meta"]  # the spacing recorded directly on the manifest, not only
+        assert fgm["n_nodes"] == entry_250um["far_grid"][1]  # the far.npy's own .json sidecar
+        assert fgm["spacing_m"] == pytest.approx(entry_250um["far_grid"][2])
+        assert fgm["near_m"] == pytest.approx(entry_250um["far_grid"][3])
         assert man["pack"]["K"] >= 2
 
 

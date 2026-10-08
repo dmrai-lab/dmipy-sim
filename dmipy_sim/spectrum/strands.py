@@ -222,16 +222,23 @@ def _build_far_grid(spec, out_path, *, node_budget=FAR_GRID_NODE_BUDGET, spacing
     return out_path, n_nodes, h, near_m, dt
 
 
-def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, grid, counts_rel, blocks_rel,
-                  n_tiles, id_, license_, citation, scanner=_DEFAULT_SCANNER, total_walkers, n_blocks):
+def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, far_grid_info, grid, counts_rel,
+                  blocks_rel, n_tiles, id_, license_, citation, scanner=_DEFAULT_SCANNER, total_walkers, n_blocks):
+    """``far_grid_info``: ``(n_nodes, spacing_m, near_m)`` of the far grid this manifest's variant carries, or
+    None (no field). Recorded directly on ``substrate`` (not just in the ``.npy``'s own ``.json`` sidecar a
+    reader has to open separately, or in the entry's ``spectrum.json`` index) so a quick read of the manifest
+    alone says what resolution this edge's field was built at -- the coordinator's own ask on #697/#699."""
     from ..replay.bank import mode_count
     commit = _git_commit()
+    far_grid_meta = (None if far_grid_info is None else
+                    dict(path=far_grid_rel, n_nodes=int(far_grid_info[0]), spacing_m=float(far_grid_info[1]),
+                        near_m=float(far_grid_info[2])))
     man = dict(
         id=id_, license=license_, citation=citation,
         code=dict(repo="dmrai-lab/dmipy-sim", commit=commit),
         substrate=dict(kind="disco", tracks=substrate_rel["tracks"], diameters=substrate_rel["diameters"],
                        coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=float(edge_m),
-                       far_grid=far_grid_rel),
+                       far_grid=far_grid_rel, far_grid_meta=far_grid_meta),
         variants=dict(field=dict(field=far_grid_rel is not None)), default_variant="field",
         grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
                   attach="substrate"),
@@ -362,7 +369,8 @@ def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per
         os.makedirs(variant_dir, exist_ok=True)
         _manifest_for(edge_m, T_max, variant_dir=variant_dir,
                      substrate_rel=dict(tracks="../substrate/strands.tck", diameters="../substrate/strands_diameters.txt"),
-                     far_grid_rel="../substrate/far.npy", grid=grid, counts_rel="../substrate/counts.npz",
+                     far_grid_rel="../substrate/far.npy", far_grid_info=(far_info[1], far_info[2], far_info[3]),
+                     grid=grid, counts_rel="../substrate/counts.npz",
                      blocks_rel="../substrate/blocks.json", n_tiles=n_side, id_=f"{id_base}/T{T_max}",
                      license_=license_, citation=citation, scanner=scanner, total_walkers=total_walkers,
                      n_blocks=len(blocks))

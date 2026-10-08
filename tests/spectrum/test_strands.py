@@ -91,3 +91,23 @@ def test_generate_column_two_columns_differ_and_are_reproducible():
 def test_strands_refuses_a_bad_tiling_edge(tmp_path):
     with pytest.raises(ValueError):
         strands(1.5e-3, 1, out_dir=str(tmp_path))
+
+
+def test_manifest_records_the_far_grid_spacing_without_a_real_build(tmp_path):
+    """A manifest's own substrate.far_grid_meta carries the far grid's spacing_m/near_m/n_nodes directly (the
+    coordinator's #699 follow-up): a reader should not have to open the far.npy's own .json sidecar just to
+    see what resolution an edge's field was built at. Checked against a synthetic far_grid_info -- the real
+    far-grid build this would normally come from is minutes even at 250 um (test_strands_slow.py)."""
+    from dmipy_sim.phantom import Grid
+    from dmipy_sim.spectrum.strands import _manifest_for
+    grid = Grid(shape=(10, 10, 10), voxel_size_m=(25e-6,) * 3, origin_m=(12.5e-6,) * 3)
+    _manifest_for(250e-6, 0.02, variant_dir=str(tmp_path), substrate_rel=dict(tracks="t.tck", diameters="d.txt"),
+                 far_grid_rel="../substrate/far.npy", far_grid_info=(1_030_301, 2.5e-6, 1.69e-5), grid=grid,
+                 counts_rel="counts.npz", blocks_rel="blocks.json", n_tiles=1, id_="x", license_="l", citation="c",
+                 total_walkers=100, n_blocks=1)
+    man = json.load(open(os.path.join(str(tmp_path), "manifest.json")))
+    fgm = man["substrate"]["far_grid_meta"]
+    assert fgm["n_nodes"] == 1_030_301
+    assert fgm["spacing_m"] == pytest.approx(2.5e-6)
+    assert fgm["near_m"] == pytest.approx(1.69e-5)
+    assert fgm["path"] == "../substrate/far.npy"
