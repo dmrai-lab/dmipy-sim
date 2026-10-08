@@ -366,3 +366,30 @@ def test_the_misfit_bounds_what_the_grouping_and_the_rounding_leave_out(pack, ma
         for R in so3.haar_rotations(6, 5):
             err = np.abs(pr.at(R) - pack.replay(one, orientation=R, complex_signal=True))
             assert np.all(err <= pr.misfit + 1e-12), (err - pr.misfit).max()
+
+
+def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
+    """dmrai-lab/dmipy-sim#698: ``_residual_bounds`` (#617) bounds every row that departs from its group's played
+    waveform, a departure a float32-stored ``G`` reconstructed through two independent float64 SVDs never lands on
+    exactly zero for even an ideal scanner's rows -- so on a many-direction single-shell batch nearly every row
+    gets a residual, and its numerical rank ``k`` runs to the hundreds (unstructured rounding has no preferred
+    direction). The numpy branch projected each of those ``k`` modes through its own call into
+    :func:`dmipy_sim.replay.replay._compile_effective` (``bridge_projection``'s own DST) and its own matmul against
+    every walker, a cost that grows with ``k`` -- where the torch branch beside it already batches every mode into
+    ONE projection. Pinning the number of ``_compile_effective`` calls pins that cost: it must stay the few calls
+    the per-axis moment contraction and ONE residual batch take, never one per mode."""
+    from dmipy_sim.replay import replay as rr
+    rng = np.random.default_rng(11)
+    dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    seq = sequences.pgse(dirs, 2e-3, 5e-3, bvalues=[1e9] * 24, TE=10e-3, slew_rate=np.inf)
+    calls = []
+    orig = rr._compile_effective
+    def counted(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+    monkeypatch.setattr(rr, "_compile_effective", counted)
+    pack.pose_response(seq, method="closed")
+    # per window: 3 calls for the main moment contraction (one per axis) and ONE for the residual bound's batch
+    # (every mode of every residual row, in one call, #698) -- never the dozens of directions, let alone the
+    # residual's own numerical rank (in the hundreds here), which is what #698 cost
+    assert len(calls) <= 4 * pack.n_segments
