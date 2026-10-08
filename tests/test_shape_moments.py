@@ -379,7 +379,10 @@ def test_the_preloaded_field_terms_are_the_ones_the_image_uses(layout_field):
     """preload() names the field terms with the same direction key image() looks them up by, so a preloaded layout
     contracts nothing at the default direction (the pool's parent preloads, its worker inherits)."""
     col, merged, grid, n_t, tmp = layout_field
-    sm = ShapeMoments(str(tmp / "sf_device"))
+    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    out = str(tmp / "sf_preload")
+    write_shape_moments(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
+    sm = ShapeMoments(out)
     sm.preload(["se"])
     g, _ = sm._tier_group("se")
     sm._set_b0_direction((0.0, 0.0, 1.0))

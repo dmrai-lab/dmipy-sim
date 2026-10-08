@@ -59,14 +59,21 @@ def test_raw_floor_reads_the_walk_once_and_in_place(monkeypatch):
 
 
 def test_the_decoder_reconstructs_the_same_positions_per_walker_range():
+    """Reading a walker range at a time must agree with reading them all at once -- not to the bit, since
+    ``scipy.fft``'s inverse DST (``_idst``, ``workers=FFT_WORKERS``) is free to split a batch across threads
+    differently depending on the batch size, and a thread split reorders the float64 summation: on a box with
+    many cores (``FFT_WORKERS`` scales with ``os.cpu_count()``) decoding 500 walkers whole takes a different
+    thread split than decoding them in chunks of 128, and the two reconstructions differ by a few ULP (~2e-15
+    relative here) though every number is the same walker's own transform. A tolerance far above that noise and
+    far below any stored tier's own float32 precision is the real invariant."""
     from dmipy_sim.replay.compression import decode, decoder, encode
     traj, dt = _walk(n_w=500, n_t=120)
     arrays, meta, _ = encode(traj, "bridge_dst", 16, device="numpy")
     whole = decode(arrays, meta)
     dec = decoder(arrays, meta)
     parts = np.concatenate([dec(lo, min(lo + 128, 500)) for lo in range(0, 500, 128)])
-    assert np.array_equal(parts, whole)
-    assert np.array_equal(decode(arrays, meta, walkers=slice(37, 91)), whole[37:91])
+    np.testing.assert_allclose(parts, whole, rtol=1e-9, atol=1e-15)
+    np.testing.assert_allclose(decode(arrays, meta, walkers=slice(37, 91)), whole[37:91], rtol=1e-9, atol=1e-15)
 
 
 def test_the_certificate_of_a_decoder_matches_the_decoded_walk(monkeypatch):
