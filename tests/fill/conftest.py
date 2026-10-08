@@ -11,7 +11,11 @@ from dmipy_sim.fill import FakeHub
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 
 
-def make_recipe(root, *, passes=True, field=False):
+def make_recipe(root, *, passes=True, field=False, far_grid=False):
+    """``far_grid``: also builds the field's :class:`~dmipy_sim.fields.strand_field.FarGrid` for this exact spec
+    (the strand-field basis of its sheath, cutoff 12 um) and points ``manifest["substrate"]["far_grid"]`` at it --
+    implies ``field=True`` (a kit's field support needs one, dmipy-sim#689)."""
+    field = field or bool(far_grid)
     os.makedirs(os.path.join(root, "substrate"), exist_ok=True); os.makedirs(os.path.join(root, "plan"), exist_ok=True)
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     write_tck(os.path.join(root, "substrate/t.tck"), *concat_centerlines(cls_), coordinate_unit_m=25e-6)
@@ -20,8 +24,22 @@ def make_recipe(root, *, passes=True, field=False):
     np.savez(os.path.join(root, "plan/counts.npz"), count_extra=np.full(shape, 6, np.int64), count_intra=np.full(shape, 6, np.int64))
     blocks = [dict(block=b, i=[0, 2], j=[0, 2], k=[b, b + 1], seed=7 + b, walkers=dict(extra=24, intra=24), voxels=4) for b in (0, 1)]
     json.dump(dict(grid=dict(shape=list(shape)), target_walkers_per_block=48, blocks=blocks), open(os.path.join(root, "plan/blocks.json"), "w"))
+    substrate = dict(kind="disco", tracks="substrate/t.tck", diameters="substrate/d.txt", coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=20e-6)
+    if far_grid:
+        from dmipy_sim.spec import disco_spec
+        from dmipy_sim.spec.walk import _PoolTests
+        from dmipy_sim.fields.strand_field import StrandFieldBasis
+        spec = disco_spec(os.path.join(root, "substrate/t.tck"), os.path.join(root, "substrate/d.txt"),
+                          coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=20e-6, field=True)
+        pt = _PoolTests(spec)
+        src0 = spec.field_source_pools[0].id
+        ob, ib = pt.boundary(pt.inside_w[src0]), pt.boundary(pt.outside_w[src0])
+        plain = StrandFieldBasis(ob.centerlines, ib.radii, ob.radii, cutoff_m=13e-6, domain=(pt.lo, pt.hi))
+        grid = plain.build_far_grid(1e-6, 11e-6, blend_m=2e-6)
+        grid.save(os.path.join(root, "substrate/far.npy"))
+        substrate["far_grid"] = "substrate/far.npy"
     man = dict(id="test/fill", license="x", citation="x", code=dict(repo="dmrai-lab/dmipy-sim", commit="test"),
-               substrate=dict(kind="disco", tracks="substrate/t.tck", diameters="substrate/d.txt", coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=20e-6),
+               substrate=substrate,
                variants=dict(t=dict(field=bool(field))), default_variant="t",
                grid=dict(shape=list(shape), voxel_size_m=[1e-5] * 3, origin_m=[5e-6] * 3, attach="substrate"),
                walk=dict(T_max_s=8e-4, dt_save_s=2e-4, scanner="connectom", floor_fraction=0.1, adaptive_steps=True, walker_batch_size=4096, census_draws=50),
@@ -36,6 +54,13 @@ def make_recipe(root, *, passes=True, field=False):
 def fake(tmp_path):
     """``(hub, workdir)``: a fake hub holding the recipe, and an empty work directory."""
     hub = FakeHub(make_recipe(str(tmp_path / "hub")))
+    return hub, str(tmp_path / "work")
+
+
+@pytest.fixture
+def field_fake(tmp_path):
+    """``(hub, workdir)``: a fake hub holding the recipe WITH its field on and a far grid (dmipy-sim#689's kit)."""
+    hub = FakeHub(make_recipe(str(tmp_path / "hub"), far_grid=True))
     return hub, str(tmp_path / "work")
 
 

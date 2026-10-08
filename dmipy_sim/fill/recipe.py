@@ -107,3 +107,9 @@ class Recipe:
         if susceptibility_field_of(spec) == "present":
             dt = min(dt, save_interval(W["T_max_s"], 8, W["scanner"], D=max(float(p.D) for p in spec.pools if p.D), field=True))
         return dt
+
+    def kit(self, out_dir):
+        """The substrate kit of this recipe (:func:`~dmipy_sim.fill.kit.write_kit`): everything a request
+        directory needs but the seeds, written once to ``out_dir``."""
+        from .kit import write_kit
+        return write_kit(self, out_dir)
