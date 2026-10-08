@@ -225,6 +225,52 @@ def dct_bands(u, K, *, device="auto", chunk_bytes=None):
     return out
 
 
+@functools.lru_cache(maxsize=None)
+def _device_dct_series(n_t, K, keep):
+    """The jitted DCT-II bands of a device chunk of a field series, ``(rows, n_t, n_ch) -> (rows, n_ch', K)``
+    float32: one ``einsum`` against the cosine matrix at ``Precision.HIGHEST`` (a float32 ``@`` on a CUDA device
+    is TF32 otherwise) -- the field channel's own layout, cached by ``(n_t, K, keep)`` so a walker-chunked call
+    traces and compiles ONCE rather than once per chunk (what a fresh ``jax.jit`` closure built inside the
+    caller's loop body does not give; the cosine twin of :func:`_device_bridge`). ``keep`` is the static tuple of
+    channels to read (``None``: every one) -- a dropped channel (e.g. ``iso_P_zz``) is selected where the device
+    already copies host to device, so it costs no separate host copy."""
+    import jax
+    import jax.numpy as jnp
+    n = np.arange(int(n_t))[:, None]; k = np.arange(int(K))[None, :]
+    Cm = np.sqrt(2.0 / n_t) * np.cos(np.pi * (2 * n + 1) * k / (2 * n_t)); Cm[:, 0] /= np.sqrt(2.0)
+    Cd = jnp.asarray(Cm, jnp.float32)                                                                 # (n_t, K)
+    hi = jax.lax.Precision.HIGHEST
+    idx = None if keep is None else jnp.asarray(keep, jnp.int32)
+
+    @jax.jit
+    def f(x):
+        x = x.astype(jnp.float32)
+        if idx is not None:
+            x = jnp.take(x, idx, axis=2)
+        b = jnp.einsum("wnc,nk->wkc", x, Cd, precision=hi)
+        return jnp.transpose(b, (0, 2, 1))                                                             # (rows, n_ch', K)
+
+    return f
+
+
+def dct_bands_series(x, K, *, device="auto", keep=None):
+    """The lowest ``K`` orthonormal DCT-II bands of a field-series chunk ``(rows, n_t, n_ch)``, as ``(rows, n_ch',
+    K)`` -- the layout :func:`dmipy_sim.replay.bank.susc_path_encode_series` stores: scipy on the host (float64,
+    the reference), or the cached device matmul (:func:`_device_dct_series`, float32, ``Precision.HIGHEST``).
+    ``keep`` selects channels along axis 2 (``None``: every one); the device route selects AFTER the host-to-
+    device copy it makes anyway, so a dropped channel costs no separate host copy -- the numpy route selects
+    with one fancy index, same as every other host copy here."""
+    K = int(K)
+    if resolve_device(device) == "numpy":
+        from scipy.fft import dct
+        xs = x if keep is None else x[:, :, keep]
+        b = dct(np.asarray(xs, np.float64), type=2, norm="ortho", axis=1)[:, :K]
+        return np.ascontiguousarray(np.transpose(b, (0, 2, 1)))
+    import jax.numpy as jnp
+    f = _device_dct_series(int(x.shape[1]), K, None if keep is None else tuple(int(i) for i in keep))
+    return np.asarray(f(jnp.asarray(x)))
+
+
 def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=None):
     """``(N_w, n_meas)`` gradient phase of every walker under the waveforms ``G`` ``(n_meas, n_t, 3)`` from the
     bridge coefficients ``C`` ``(N_w, K+2, 3)`` alone: ``gamma dt sum C W`` with ``W`` the bridge projection of the
