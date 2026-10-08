@@ -1,16 +1,17 @@
 """dmipy-sim#689: the substrate kit (``Recipe.kit``) and its per-batch assembly (``assemble_request``), checked
-against a from-scratch serialisation of a LIVE ``WalkRequest`` (``dmipy_sim.fill.kit.dump_request``) --
-``dmipy_sim_cuda`` is not installed on this box, so this is the independent half of the cross-check (the PR also
-runs the real package's ``write_request`` on the L40S against the same kit)."""
+against the shared request-directory writer (``dmipy_sim.engine.backends.write_request_directory``,
+dmrai-lab/dmipy-sim#691) applied from scratch to a LIVE ``WalkRequest`` -- ``dmipy_sim_cuda`` is not installed on
+this box, so this exercises the same serialisation the real package's ``write_request`` calls, without it (the
+PR also runs the real package's ``write_request`` on the L40S against the same kit, ``test_kit_cuda.py``)."""
 import os
 
 import numpy as np
 import pytest
 
 from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
-from dmipy_sim.engine.backends import Backend
+from dmipy_sim.engine.backends import Backend, write_request_directory
 from dmipy_sim.fill import Recipe
-from dmipy_sim.fill.kit import _pool_geometry, _sha256, assemble_request, dump_request
+from dmipy_sim.fill.kit import _pool_geometry, _sha256, assemble_request
 
 
 class _Captured(Exception):
@@ -132,6 +133,6 @@ def test_a_batch_request_from_the_kit_matches_a_live_walk_requests_dump(fixture_
                            field_sample_every=int(W.get("field_sample_every", 1)), field_reuse_intervals=int(W.get("field_gather_every", 4)))
     assert (req.field is not None) == (basis is not None)
 
-    oracle_dir = dump_request(req, r0, keys, tmp_path / f"oracle-{pool_name}")
+    oracle_dir = write_request_directory(req, r0, keys, tmp_path / f"oracle-{pool_name}")
     batch_dir = assemble_request(kit_dir, pool_name, r0, keys, seed, tmp_path / f"batch-{pool_name}")
     _assert_dirs_match(oracle_dir, batch_dir)
