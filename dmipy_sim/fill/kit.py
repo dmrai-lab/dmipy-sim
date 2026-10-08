@@ -93,12 +93,18 @@ def _pool_lines_and_arrays(rc, ctx, pid, n_t, dt_actual, basis, sampling, *, ste
     return lines, arrays, dict(diffusivity=D, interior=bool(g.inside_w[pid]))
 
 
-def _reach_margin(plan, cell_size):
-    """A block's cell window margin (dmrai-lab/dmipy-sim#695): the adaptive plan's largest round reach plus the
-    free step's own threshold, plus one cell of the table being windowed -- past this margin a walker is beyond
-    where its own round could have moved it from the block's box, so the window's clamped border cell carries
-    whatever the true table would have anyway (nothing the block's own walk can reach)."""
-    return float(max(plan.reach_c)) + float(plan.far_at) + float(cell_size)
+def _reach_margin(plan, cell_size, D, T_max):
+    """A block's cell window margin (dmrai-lab/dmipy-sim#695, corrected on review): a walker is NOT confined to
+    its block's box -- DiSCo's own box is the whole substrate with reflecting faces, so over the walk's whole
+    ``T_max`` it can wander as far from where it started as any walker can (the far crop's own rule,
+    :func:`~dmipy_sim.engine.backends.crop_far_grid`: eight sigma of ``2 D T_max``, plus three cells of safety),
+    not merely one round's worth. On top of that whole-walk excursion, the adaptive plan's largest ROUND reach
+    and the free step's own threshold, plus one more cell, cover the one round that could still have been
+    stepping against a real wall when the walker crossed that radius. Past the total, nothing the block's own
+    walk can ever reach, so the window's clamped border cell carries whatever the true table would have
+    anyway."""
+    walk_margin = 8.0 * math.sqrt(2.0 * float(D) * float(T_max)) + 3.0 * float(cell_size)
+    return walk_margin + float(max(plan.reach_c)) + float(plan.far_at) + float(cell_size)
 
 
 def _block_box(rc, row):
@@ -135,7 +141,8 @@ def _pool_lines_and_arrays_window(rc, ctx, pid, n_t, dt_actual, basis, field_win
     sampling PARAMETERS (``radius``, derived from this pool's own diffusivity) are this pool's own."""
     g = ctx.tests; W = rc.man["walk"]
     D = float(g.pools[pid].D)
-    margin = _reach_margin(plan, geom.cell_size)
+    T_max = dt_actual * (n_t - 1)
+    margin = _reach_margin(plan, geom.cell_size, D, T_max)
     struct, arrays = strands_struct_fields_window(geom, lo_m, hi_m, margin)
     lines = dict(engine="strands")
     lines.update(request_struct_fields(n_t=n_t, sub_steps=int(plan.n_min), step_l=float(np.sqrt(6.0 * D * plan.dt_min)),
@@ -248,13 +255,17 @@ def write_block_kit(rc, row, out_dir):
     """The block kit of block ``row`` (:meth:`~dmipy_sim.fill.recipe.Recipe.block_kit`, dmrai-lab/dmipy-sim#695):
     what a node downloads for ONE block, constant in the substrate's size rather than the whole-substrate kit's
     (:func:`write_kit`) -- per pool, the cell window of the block's box plus the walk's reach
-    (:func:`_reach_margin`), the referenced segments renumbered densely; the field basis's tables cut the same
-    way; the far grid cropped to the block's box by :func:`~dmipy_sim.engine.backends.crop_far_grid`'s rule; the
-    block's own row of the plan; the certificate; the manifest; a ``kit.json``. Everything a pool's
+    (:func:`_reach_margin`: the walk's WHOLE-duration excursion, since a walker is not confined to its block's
+    box, plus the round-level terms), the referenced segments renumbered densely; the field basis's tables cut
+    the same way; the far grid cropped to the block's box by :func:`~dmipy_sim.engine.backends.crop_far_grid`'s
+    rule; the plan's counts CROPPED to the block's own voxel box (never the whole grid -- a substrate a hundred
+    times larger must not carry a hundred-times-larger counts array) with the block's own row and the
+    manifest's grid section re-based to that crop's local index frame ``[0, 0, 0)``, so a node reads them
+    exactly as it would the whole substrate's; the certificate; a ``kit.json``. Everything a pool's
     :class:`~dmipy_sim.engine.adaptive.AdaptivePlan` needs and every other section (the far grid itself, the
-    certificate, the manifest) is built exactly as :func:`write_kit` builds it -- only the cell-window cropping
-    is the block kit's own, in :func:`_pool_lines_and_arrays_window`. The ``assemble_request`` layout is
-    IDENTICAL to the whole kit's: a node reads either the same way (``tests/fill/test_block_kit.py``)."""
+    certificate) is built exactly as :func:`write_kit` builds it -- only the cell-window cropping and the
+    plan/grid re-basing are the block kit's own. The ``assemble_request`` layout is IDENTICAL to the whole
+    kit's: a node reads either the same way (``tests/fill/test_block_kit.py``)."""
     from ..spec.substrate import susceptibility_field_of
     from ..spec.walk import field_source_kind
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
@@ -283,7 +294,9 @@ def write_block_kit(rc, row, out_dir):
         # the field's tables are written ONCE, shared by every pool that samples them (assemble_request reads
         # them from the kit's top level, never per pool): the window must cover every walked pool's own reach,
         # so its margin is the largest of theirs, not any one pool's
-        field_margin = max(_reach_margin(plan, float(basis._CS)) for _, plan in plans.values())
+        T_max_actual = dt_actual * (n_t - 1)
+        field_margin = max(_reach_margin(plan, float(basis._CS), float(g.pools[pid].D), T_max_actual)
+                          for pid, (_, plan) in plans.items())
         dims_gmin, farrays = field_tables_window(basis, lo_m, hi_m, field_margin)
         for name, a in farrays.items():
             np.ascontiguousarray(a).tofile(out / name)
@@ -312,10 +325,26 @@ def write_block_kit(rc, row, out_dir):
         pools_out[pool.name] = meta
 
     os.makedirs(out / "plan", exist_ok=True)
+    # the plan's counts cropped to this block's own voxel box (dmrai-lab/dmipy-sim#695 review point 2: a
+    # substrate a hundred times larger must not carry a hundred-times-larger counts array into a block kit
+    # that is supposed to be constant in the substrate's size) -- the block's row re-based to the LOCAL grid
+    # this crop defines (i/j/k from [0, 0, 0)), and the manifest's own grid section re-based the same way, so
+    # nothing downstream (RasGrid, block_counts, fill_per_voxel/fill_swept_by_voxel) needs to know it is one
+    i0, i1 = row["i"]; j0, j1 = row["j"]; k0, k1 = row["k"]
+    plan_full = np.load(rc.hub.get(man["plan"]["file"]))
+    plan_cropped = {k: np.ascontiguousarray(plan_full[k][i0:i1, j0:j1, k0:k1]) for k in plan_full.files}
+    plan_name = os.path.basename(man["plan"]["file"])
+    np.savez(out / "plan" / plan_name, **plan_cropped)
+
+    local_row = dict(row, i=[0, int(i1 - i0)], j=[0, int(j1 - j0)], k=[0, int(k1 - k0)])
     blocks_name = os.path.basename(man["plan"]["blocks"])
-    json.dump(dict(blocks=[row]), open(out / "plan" / blocks_name, "w"), indent=1)
-    shutil.copy(rc.hub.get(man["plan"]["file"]), out / "plan" / os.path.basename(man["plan"]["file"]))
-    (out / "manifest.json").write_text(json.dumps(man, indent=1))
+    json.dump(dict(blocks=[local_row]), open(out / "plan" / blocks_name, "w"), indent=1)
+
+    grid = rc.grid()
+    local_grid = dict(man["grid"], shape=[int(i1 - i0), int(j1 - j0), int(k1 - k0)],
+                      origin_m=[float(x) for x in (np.asarray(grid.origin_m) + np.array([i0, j0, k0]) * np.asarray(grid.voxel_size_m))])
+    man_local = dict(man, grid=local_grid)
+    (out / "manifest.json").write_text(json.dumps(man_local, indent=1))
     cert_path = f"certificate/{rc.variant}.json"
     if rc.hub.exists(cert_path):
         os.makedirs(out / "certificate", exist_ok=True)

@@ -34,6 +34,14 @@ def test_block_kit_layout_sha256_and_sections(field_fake, tmp_path):
         assert (out / name).is_file(), name
     blocks = json.loads((out / "plan" / "blocks.json").read_text())["blocks"]
     assert len(blocks) == 1 and blocks[0]["block"] == 0
+    # the row and the manifest's grid are re-based to the crop's own LOCAL index frame (review point 2):
+    # i/j/k start at 0, and the counts array is cropped to exactly that local shape
+    assert blocks[0]["i"][0] == 0 and blocks[0]["j"][0] == 0 and blocks[0]["k"][0] == 0
+    man_local = json.loads((out / "manifest.json").read_text())
+    assert man_local["grid"]["shape"] == [blocks[0]["i"][1], blocks[0]["j"][1], blocks[0]["k"][1]]
+    counts = np.load(out / "plan" / "counts.npz")
+    for k in counts.files:
+        assert list(counts[k].shape) == man_local["grid"]["shape"]
     assert (out / "plan" / "counts.npz").is_file()
     assert (out / "manifest.json").is_file()
     assert "kit.json" not in kit["files"]
@@ -98,8 +106,10 @@ def test_block_kit_window_contains_box_plus_reach_and_renumbering_is_a_bijection
         if pool.D in (None, 0.0) or (bool(g.inside_w[pid]) and bool(g.outside_w[pid])):
             continue
         geom = _pool_geometry(ctx, pid)
-        plan = adaptive_plan(geom, float(pool.D), 2e-4)
-        margin = _reach_margin(plan, geom.cell_size)
+        D = float(pool.D)
+        plan = adaptive_plan(geom, D, 2e-4)
+        T_max = float(rc.man["walk"]["T_max_s"])
+        margin = _reach_margin(plan, geom.cell_size, D, T_max)
 
         gmin, dims, cs = np.asarray(geom._GMIN), np.asarray(geom._DIMS), float(geom._CS)
         win_lo, win_hi = cell_window(gmin, cs, dims, lo_m, hi_m, margin)
