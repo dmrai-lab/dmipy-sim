@@ -113,3 +113,15 @@ class Recipe:
         directory needs but the seeds, written once to ``out_dir``."""
         from .kit import write_kit
         return write_kit(self, out_dir)
+
+    def block_kit(self, block, out_dir):
+        """The block kit of ``block`` (dmrai-lab/dmipy-sim#695, :func:`~dmipy_sim.fill.kit.write_block_kit`):
+        what a node downloads for that one block alone -- the cell window of its box plus the walk's reach,
+        the field basis cut the same way, the far grid cropped to its box, its own row of the plan, the
+        certificate and the manifest -- constant in the substrate's size rather than :meth:`kit`'s whole-
+        substrate one."""
+        from .kit import write_block_kit
+        row = next((r for r in self.table if r["block"] == block), None)
+        if row is None:
+            raise ValueError(f"block {block}: no such block in the plan's table")
+        return write_block_kit(self, row, out_dir)
