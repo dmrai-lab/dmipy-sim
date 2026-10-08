@@ -374,13 +374,19 @@ class PackedCurvedCylinders(Geometry):
     surface_substep_frac = STEP_FRACTION
 
     def __init__(self, centerlines, radii, cell_size=None, interior=False, box=None, box_reflect=True,
-                 surface_relaxivity_t2=None):
+                 surface_relaxivity_t2=None, backend="jax"):
         self.surface_relaxivity_t2 = None if surface_relaxivity_t2 is None else float(surface_relaxivity_t2)
         # interior=False: extra-axonal (bounce off tube exteriors, stay outside all tubes)
         # interior=True : intra-axonal, all tubes at once (each walker confined inside its
         #                 own tube), one grid/one JIT for all tubes.
         # box=(lo, hi) : a finite, non-periodic voxel; with box_reflect its faces are mirrors that never
         #                carry a walker across a tube wall (the fold is refused, like an escaping step).
+        if backend not in ("jax", "numpy"):
+            raise ValueError(f"backend must be 'jax' or 'numpy', got {backend!r}")
+        #: which arithmetic `classify_positions_exact` and `inside_any` run -- the walk itself (`_wall`,
+        #: `reach_candidates`, `wall_scales`, ...) is JAX either way, this is only the host-side classification
+        #: a seeding draw needs (:func:`~dmipy_sim.spec.walk.draw_seeds`)
+        self.backend = backend
         self.interior = bool(interior)
         self.box = None if box is None else (np.asarray(box[0], float), np.asarray(box[1], float))
         self.box_reflect = bool(box_reflect) and self.box is not None
@@ -393,11 +399,20 @@ class PackedCurvedCylinders(Geometry):
             cl = np.asarray(cl, np.float64)
             A.append(cl[:-1]); AB.append(cl[1:] - cl[:-1]); rr.append(np.full(len(cl) - 1, float(R)))
         A = np.vstack(A); AB = np.vstack(AB); rout = np.concatenate(rr)
-        self._seg_tube = jnp.asarray(np.concatenate([np.full(len(cl) - 1, k) for k, cl in enumerate(centerlines)]), jnp.int32)
+        seg_tube = np.concatenate([np.full(len(cl) - 1, k) for k, cl in enumerate(centerlines)])
+        self._seg_tube = jnp.asarray(seg_tube, jnp.int32)
         self._A = jnp.asarray(A, jnp.float32)
         self._AB = jnp.asarray(AB, jnp.float32)
-        self._AB2 = jnp.asarray(np.maximum((AB ** 2).sum(1), 1e-30), jnp.float32)
+        AB2 = np.maximum((AB ** 2).sum(1), 1e-30)
+        self._AB2 = jnp.asarray(AB2, jnp.float32)
         self._rout = jnp.asarray(rout, jnp.float32)
+        # the same tables as plain numpy float32, for `classify_positions_exact_np`: a copy of what the
+        # jnp tables above hold (never read back off device), so the host route touches no jax op at all
+        self._seg_tube_np = seg_tube.astype(np.int32)
+        self._A_np = A.astype(np.float32)
+        self._AB_np = AB.astype(np.float32)
+        self._AB2_np = AB2.astype(np.float32)
+        self._rout_np = rout.astype(np.float32)
         self._Rmin = float(rout.min()); self._Rmax = float(rout.max())
         self.radius = self._Rmin                       # auto-tune to the finest wall
         cs = float(cell_size) if cell_size else (4.0 * self._Rmin / 6.0 + 2.0 * self._Rmax)
@@ -418,6 +433,10 @@ class PackedCurvedCylinders(Geometry):
         self._GMIN = jnp.asarray(self.gmin, jnp.float32)
         self._CS = jnp.float32(cs)
         self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
+        self._CELL_np = cell                                     # int32 already, the same table _CELL holds
+        self._GMIN_np = self.gmin.astype(np.float32)
+        self._CS_np = np.float32(cs)
+        self._dims_np = np.asarray(self._DIMS, np.int64)
 
     #: the device tables every jitted program of this geometry reads -- passed as arguments at every call
     #: (:func:`~dmipy_sim.engine.tables.jit_with_tables`), never captured: a program per batch shape and candidate
@@ -425,13 +444,56 @@ class PackedCurvedCylinders(Geometry):
     TABLES = ("_A", "_AB", "_AB2", "_rout", "_seg_tube", "_CELL")
 
     def classify_positions_exact(self, pts, chunk=100_000):
-        """The exact labels of a batch of host-side points, in chunks; the program is built once per instance
-        and reads the tables as arguments."""
+        """The exact labels of a batch of host-side points, in chunks: the JAX program built once per instance
+        and reading the tables as arguments, or (``backend="numpy"``) :meth:`classify_positions_exact_np` -- the
+        same rule either way."""
+        if self.backend == "numpy":
+            return self.classify_positions_exact_np(pts, chunk=chunk)
         f = getattr(self, "_classify_batch", None)
         if f is None:
             f = self._classify_batch = jit_with_tables(self, self.TABLES, jax.vmap(self.classify_position))
         pts = np.asarray(pts, np.float32)
         return jnp.concatenate([f(jnp.asarray(pts[i:i + chunk])) for i in range(0, pts.shape[0], chunk)])
+
+    def classify_positions_exact_np(self, pts, chunk=None):
+        """The numpy twin of :meth:`classify_positions_exact`: the same rule (the 27-cell gather, the capsule's
+        point-to-segment distance with its parameter clipped to ``[0, 1]`` to every candidate, the deepest tube's
+        id or 0 outside every tube) over the same cell tables, without JAX -- what a node without it draws a
+        block's seeds with (:func:`~dmipy_sim.spec.walk.draw_seeds`). Float32 throughout, as the JAX one is, so the
+        two agree at a wall. Chunked over points so the ``(points, candidates)`` arrays this builds (candidates =
+        27 times the cell width) stay within ~1 GB regardless of how many points are asked for at once."""
+        pts = np.asarray(pts, np.float32)
+        K = 27 * self._CELL_np.shape[1]
+        if chunk is None:
+            # ~6 arrays of shape (chunk, K, 3) float32 plus a few of shape (chunk, K): generous, so the
+            # matrix this builds per chunk is comfortably under the 1 GB target rather than exactly at it
+            chunk = max(1, min(pts.shape[0] or 1, int(1e9 / (200 * max(K, 1)))))
+        out = np.empty(pts.shape[0], np.int32)
+        for i in range(0, pts.shape[0], chunk):
+            out[i:i + chunk] = self._classify_chunk_np(pts[i:i + chunk])
+        return out
+
+    def _gather_np(self, r):
+        """The host twin of :func:`~dmipy_sim.geometry._grid.gather`: ``(n, 3)`` points -> ``(n, 27 C)``
+        candidate segment ids and their validity, over this instance's cell table."""
+        dims = self._dims_np
+        c = np.clip(np.floor((r - self._GMIN_np) / self._CS_np).astype(np.int32), 0, dims - 1)
+        nb = np.clip(c[:, None, :] + NEIGHBOUR_OFFSETS[None, :, :], 0, dims - 1)
+        cids = (nb[..., 0] * dims[1] + nb[..., 1]) * dims[2] + nb[..., 2]
+        cand = self._CELL_np[cids].reshape(r.shape[0], -1)
+        valid = cand >= 0
+        return np.where(valid, cand, 0), valid
+
+    def _classify_chunk_np(self, r):
+        cand, valid = self._gather_np(r)
+        A = self._A_np[cand]; AB = self._AB_np[cand]; AB2 = self._AB2_np[cand]; rr = self._rout_np[cand]
+        t = np.clip(((r[:, None, :] - A) * AB).sum(-1) / AB2, np.float32(0.0), np.float32(1.0))
+        d = np.sqrt(((r[:, None, :] - (A + t[..., None] * AB)) ** 2).sum(-1))
+        depth = np.where(valid, rr - d, np.float32(-np.inf))             # positive inside a tube
+        i = np.argmax(depth, axis=-1)
+        rows = np.arange(depth.shape[0])
+        best = depth[rows, i]; seg = cand[rows, i]
+        return np.where(best > 0, self._seg_tube_np[seg] + 1, 0).astype(np.int32)
 
     def _gather(self, r):
         return gather(self._CELL, self._OFF, self._GMIN, self._CS, self._dims_arr, r)
@@ -461,8 +523,12 @@ class PackedCurvedCylinders(Geometry):
         """(n,3) → (n,) bool: is each point inside ANY tube (dist-to-segment < r_out)?
         Grid-accelerated (each point tests only its 27-cell segment neighbourhood) and
         GPU-vmapped in chunks — the fast primitive for seeding the extra-axonal space
-        (rejection over ~O(#segments-per-cell), not the whole pack)."""
+        (rejection over ~O(#segments-per-cell), not the whole pack). ``backend="numpy"``: the same
+        membership off :meth:`classify_positions_exact_np` (a point is inside some tube exactly where
+        that classifier's id is positive), without JAX."""
         P = np.asarray(P, np.float32)
+        if self.backend == "numpy":
+            return self.classify_positions_exact_np(P, chunk=chunk) > 0
         out = np.empty(P.shape[0], bool)
 
         # Built ONCE per instance, not per call. jax.jit caches compiled programs on the identity of
