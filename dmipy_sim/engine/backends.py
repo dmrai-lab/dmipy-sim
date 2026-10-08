@@ -457,7 +457,7 @@ def crop_far_grid(values, origin_m, spacing_m, r0, n_t, dt_save, diffusivity):
     return crop.view(np.uint16), far_dims, far_origin
 
 
-def write_request_directory(request: WalkRequest, r0, keys, out_dir, *, far_crop: bool = True) -> Path:
+def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
     """The request directory of a live, resolved ``WalkRequest`` whose geometry is the strands engine:
     ``request.txt`` (the ``DscRequest`` fields, the engine's name, the ``DscStrands`` fields, and -- when the
     request carries them -- the ``DscAdaptive`` and ``DscField`` fields, each prefixed ``adaptive_``/``field_``),
@@ -466,9 +466,7 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir, *, far_crop
     geometry's/plan's/basis's own arrays, with the float32 truncation the backend's ctypes request structs apply
     on assignment (:func:`strands_struct_fields`, :func:`adaptive_struct_fields`, :func:`field_struct_fields`) --
     so this is exactly what ``dmipy_sim_cuda.cli.write_request`` writes for the strands engine, byte for byte,
-    without that package installed. ``classify`` is the CUDA CLI's own flag and is not written here.
-    ``far_crop=False`` leaves ``far_dims``/``far_origin`` at zero and writes no ``far.u16``, for a caller with
-    no walkers yet to crop the far grid around."""
+    without that package installed. ``classify`` is the CUDA CLI's own flag and is not written here."""
     from ..geometry.curved_cylinder import PackedCurvedCylinders
     g = request.geometry
     if not isinstance(g, PackedCurvedCylinders):
@@ -493,7 +491,7 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir, *, far_crop
         lines.update({f"field_{k}": v for k, v in field_struct_fields(basis, f.radius_m, f.sample_every, f.reuse_intervals, f.list_k, n_tf).items()})
         arrays.update(field_tables(basis))
         far_dims, far_origin = [0, 0, 0], [0.0, 0.0, 0.0]
-        if basis.far is not None and far_crop:
+        if basis.far is not None:
             crop, far_dims, far_origin = crop_far_grid(basis.far.values, basis.far.origin_m, basis.far.spacing_m,
                                                        r0, request.n_t, request.dt_save, request.diffusivity)
             arrays["far.u16"] = crop
