@@ -1,12 +1,13 @@
-"""The thread cap on the LAPACK calls a known BLAS build hangs on (dmipy_sim._blas, dmrai-lab/dmipy-sim#564):
-applied only on that build, inert everywhere else, and the expansion's numbers the same either way."""
-import contextlib
-
+"""The floor :data:`dmipy_sim._blas.SAFE_THREADS` puts under :func:`dmipy_sim._threads.cap_cpu_threads`
+on the one OpenBLAS build whose multithreaded drivers hang (dmrai-lab/dmipy-sim#564): BLAS never
+runs more than that build's floor, whatever ``DMIPY_SIM_CPU_THREADS`` asked for; every other build
+gets exactly what was asked. The pose expansion's SVD gives the same numbers at any thread count."""
 import numpy as np
 import pytest
+import threadpoolctl
 
 import dmipy_sim as d
-from dmipy_sim import _blas, sequences
+from dmipy_sim import _blas, _threads, sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -19,25 +20,21 @@ def _pool(**kw):
 
 @pytest.mark.parametrize("pool", [_pool(version="0.3.27"), _pool(architecture="Haswell"), _pool(internal_api="mkl"),
                                   _pool(num_threads=8), _pool(user_api="openmp")])
-def test_an_unaffected_build_is_left_alone(monkeypatch, pool):
-    import threadpoolctl
-
-    def no_limits(*a, **k):
-        raise AssertionError("the guard capped an unaffected build")
-
+def test_an_unaffected_build_gets_exactly_what_was_asked(monkeypatch, pool):
     monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [pool])
-    monkeypatch.setattr(threadpoolctl, "threadpool_limits", no_limits)
-    assert isinstance(_blas.lapack_threads(), contextlib.nullcontext)
-
-
-def test_the_hanging_build_is_capped(monkeypatch):
-    import threadpoolctl
     calls = []
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k) or None)
+    _threads._cap_blas(72)
+    assert calls == [dict(limits=72, user_api="blas")]
+
+
+@pytest.mark.parametrize("requested,expect", [(72, _blas.SAFE_THREADS), (3, 3)])
+def test_the_hanging_build_never_exceeds_the_floor(monkeypatch, requested, expect):
     monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [_pool()])
-    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k) or contextlib.nullcontext())
-    with _blas.lapack_threads():
-        pass
-    assert calls == [dict(limits=_blas.SAFE_THREADS, user_api="blas")]
+    calls = []
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k) or None)
+    _threads._cap_blas(requested)
+    assert calls == [dict(limits=expect, user_api="blas")]
 
 
 @pytest.fixture(scope="module")
@@ -49,15 +46,15 @@ def pack(tmp_path_factory):
     return read_rpk(str(p))
 
 
-def test_the_residual_bound_is_the_same_numbers_guarded_or_not(pack, monkeypatch):
-    """The residual's SVD in the closed form's bound, with the guard forced on (the real thread cap applied) and
-    off: the same expansion and the same misfit, to the bit."""
+def test_the_residual_bound_is_the_same_numbers_at_any_thread_count(pack):
+    """The residual's SVD in the closed form's bound gives the same expansion and misfit, to the
+    bit, at one BLAS thread or many -- the process-wide cap changes nothing about the physics."""
     played = sequences.pgse([[1, 0, 0], [0.0, 0.6, 0.8]], 2e-3, 5e-3, gradient_strengths=[0.3, 0.3], TE=10e-3,
                             slew_rate=200.0).with_concomitant(np.array([0.03, 0.05, 0.06]), 0.5)
-    monkeypatch.setattr(_blas, "_affected", lambda: [])
-    off = pack.pose_response(played)
-    monkeypatch.setattr(_blas, "_affected", lambda: [_pool()])
-    on = pack.pose_response(played)
-    assert off.route == "closed" and off.misfit.max() > 1e-3                 # the bound is in play
-    np.testing.assert_array_equal(on.coeffs, off.coeffs)
-    np.testing.assert_array_equal(on.misfit, off.misfit)
+    with threadpoolctl.threadpool_limits(limits=1, user_api="blas"):
+        one = pack.pose_response(played)
+    with threadpoolctl.threadpool_limits(limits=max(2, _threads.cpu_threads()), user_api="blas"):
+        many = pack.pose_response(played)
+    assert one.route == "closed" and one.misfit.max() > 1e-3  # the bound is in play
+    np.testing.assert_array_equal(one.coeffs, many.coeffs)
+    np.testing.assert_array_equal(one.misfit, many.misfit)

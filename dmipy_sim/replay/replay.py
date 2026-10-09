@@ -2731,7 +2731,6 @@ class ReplayPack:
         residuals, a few thousand by the window's saves, on the host)."""
         from .compression import read_position_coeffs
         from ._replay_kernel import effective_gradient
-        from .._blas import lapack_threads
         from .pose_device import route
         todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
         if not todo:
@@ -2744,6 +2743,8 @@ class ReplayPack:
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)[live]
             if kind == "torch":
                 import torch
+                from .._threads import cap_cpu_threads
+                cap_cpu_threads()  # torch's own pool: capped only once it is loaded, here
                 C = torch.as_tensor(C, device=t_dev)
             for c in todo:
                 q = per[c]; rows = q["residual"]; ref = q["ref"][rows]
@@ -2758,8 +2759,7 @@ class ReplayPack:
                     d_beta = (q["beta"][rows] - q["beta"][ref]) / np.where(q["beta"][rows] > 0, q["beta"][rows], 1.0)
                     res = res + (d_beta[:, None] * q["g0"][rows])[:, None, :] * e_s[None, :, None]
                 X = res.transpose(0, 2, 1).reshape(-1, n_s)                                       # (n_r * 3, n_s)
-                with lapack_threads():                                                            # #564: this shape hangs a known build
-                    U, S, Vt = np.linalg.svd(X, full_matrices=False)
+                U, S, Vt = np.linalg.svd(X, full_matrices=False)  # BLAS threads: dmipy_sim._threads, process-wide
                 k = int(np.sum(S > 1e-12 * S[0])) if S.size and S[0] > 0 else 0
                 if k == 0:
                     continue

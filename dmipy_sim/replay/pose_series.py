@@ -570,9 +570,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
             _h, _v, D = _fit(ctx, p)
             D_all.append(D if kind != "torch" else D.cpu().numpy())
         X = np.concatenate([D.transpose(0, 2, 1).reshape(-1, n_c) for D in D_all], 0)
-        from .._blas import lapack_threads
-        with lapack_threads():
-            _u, _s, Vt = np.linalg.svd(X, full_matrices=True)
+        _u, _s, Vt = np.linalg.svd(X, full_matrices=True)  # BLAS threads: dmipy_sim._threads, process-wide
         V = Vt.T                                                              # (n_c, n_c): an orthonormal basis
         ctx["V"] = V
         # ---- the walker pass: shape moments, background moment, departure courses

@@ -9,6 +9,12 @@ Shares one pulse-sequence and substrate interface with ``dmipy-fit``.
 from .engine._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # noqa: E402
 _apply_gpu_mem_cap()
 
+# Own the CPU thread count (DMIPY_SIM_CPU_THREADS, dmrai-lab/dmipy-sim#700) BEFORE any submodule
+# imports JAX: see dmipy_sim._threads for why this one call, here, caps BLAS for real and still
+# catches XLA's CPU intra-op pool in time.
+from ._threads import cap_cpu_threads as _cap_cpu_threads  # noqa: E402
+_cap_cpu_threads()
+
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories, certify_bounce_budget
 # NB: the scalar trajectory-replay entrypoint is `dmipy_sim.replay.trajectories.replay`, NOT a bare
 # top-level `replay` — the name `dmipy_sim.replay` is the package of the .rpk pack forward (see below).
