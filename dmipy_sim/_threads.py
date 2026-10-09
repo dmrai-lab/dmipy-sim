@@ -21,9 +21,7 @@ it (checked through ``sys.modules``), which costs nothing and is called again, c
 (idempotent past the first successful application), by any code path that imports torch
 itself. None of this adds an import or a check to the GPU route beyond this one cheap pass.
 
-Folds in the #564 one-build guard (formerly ``dmipy_sim._blas.lapack_threads``, a per-call
-context manager): with a process-wide cap always in place, a narrow per-call guard is no
-longer needed as a separate mechanism, only as a floor under it -- :func:`cpu_threads` can be
+The #564 one-build guard is a floor under this cap: :func:`cpu_threads` can be
 set above :data:`dmipy_sim._blas.SAFE_THREADS`, but the build #564 found hanging past it never
 runs above it regardless of what was asked, so :func:`_cap_blas` clamps to the lower of the
 two only on that build and passes the request through unchanged on every other.
@@ -89,11 +87,12 @@ def _cap_blas(n):
 def _cap_xla(n):
     flag = f"--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads={n}"
     if "jax" in sys.modules:
-        warnings.warn(
-            "DMIPY_SIM_CPU_THREADS is set but jax is already imported; XLA's CPU intra-op "
-            "thread count can only be set before jax's backend initialises, so this process "
-            "keeps jax's own default. Import dmipy_sim (or set DMIPY_SIM_CPU_THREADS) before "
-            "jax to cap it.", RuntimeWarning)
+        if "DMIPY_SIM_CPU_THREADS" in os.environ:          # an explicit budget that cannot reach XLA is said; the default is silent
+            warnings.warn(
+                "DMIPY_SIM_CPU_THREADS is set but jax was imported before dmipy_sim; XLA's CPU intra-op "
+                "thread count is read once when jax's backend initialises, so this process keeps jax's "
+                "own default for it (BLAS and torch are capped). Import dmipy_sim before jax to cap XLA too.",
+                RuntimeWarning)
         return
     existing = os.environ.get("XLA_FLAGS", "")
     if flag not in existing:
