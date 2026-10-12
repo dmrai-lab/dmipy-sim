@@ -104,6 +104,20 @@ def test_min_gap_equals_the_pairwise_loop():
     assert pm.min_gap == pytest.approx(_gap_reference(cm, np.full(12, 1e-6 / 0.7), Lm), rel=1e-12)
 
 
+@pytest.mark.parametrize("dim", [2, 3])
+def test_min_gap_cell_grid_equals_the_pairwise_loop_at_scale(dim):
+    """The O(n) cKDTree route (dmrai-lab/dmipy-sim#697: the full O(n^2) matrix is a ~60 GB array
+    at 50,000 objects) gives the SAME minimum as the O(n^2) pairwise loop above, bit for bit, on
+    300 objects -- large enough that a grid or cutoff bug (an uncaptured close pair) would show,
+    small enough that the reference loop is still cheap."""
+    rng = np.random.default_rng(7)
+    n = 300
+    radii = rng.uniform(0.3e-6, 1.0e-6, n)
+    pack = d.pack_cylinders if dim == 2 else d.pack_spheres
+    c, L, _ = pack(radii, target_vf=0.3 if dim == 2 else 0.2, seed=7)
+    assert periodic_min_gap(c, radii, L) == pytest.approx(_gap_reference(c, radii, L), rel=1e-12)
+
+
 @pytest.mark.parametrize("cap", [None, 3])
 def test_grid_bucketing_equals_the_triple_loop(cap):
     rng = np.random.default_rng(4)
