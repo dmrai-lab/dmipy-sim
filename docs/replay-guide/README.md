@@ -16,7 +16,7 @@ and the operations that join them. Every code block on these pages runs in the t
 | **study** (`Study`) | a protocol on some tissues on some scanners, replayed in one pass | `Study(Protocol([...]), tissues=[...], scanners=[...])` |
 
 Pages: [pack](pack.md) · [sequence](sequence.md) · [tissue](tissue.md) · [scanner](scanner.md) ·
-[orientation](orientation.md) · [replay](replay.md) · [images from the hub](images.md) · [phantoms](phantoms.md) ·
+[orientation](orientation.md) · [replay](replay.md) · [views](views.md) · [images from the hub](images.md) · [phantoms](phantoms.md) ·
 recipes: [a canonical pore](recipes/canonical_pore.md), [DiSCo from the hub](recipes/disco.md).
 
 ## What this guide is not

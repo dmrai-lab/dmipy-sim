@@ -915,7 +915,8 @@ class ReplayPack:
 
         The result is an ordinary :class:`ReplayPack` sharing this one's arrays, so :meth:`prefix`, the pose
         cache and every route read it as they read any pack; :attr:`~dmipy_sim.spec.Tissue.D` on a replay
-        resolves to it.
+        resolves to it. The two similarities, what each keeps, moves and refuses, side by side:
+        ``docs/replay-guide/views.md``.
         """
         import copy
         D0 = self.diffusivity
@@ -1009,7 +1010,8 @@ class ReplayPack:
         by ``s = L / L0`` then ``a = D / (s^2 D0)`` when ``D / L^2 >= D0 / L0^2`` and ``D T / L^2 <= D0 T0 / L0^2``:
         one walk per shape at the slowest ``D / L^2`` over the longest ``D T / L^2`` serves every size and every
         faster diffusivity, read with :meth:`prefix` where it is longer than needed. The result is an ordinary
-        :class:`ReplayPack`: :meth:`prefix`, the pose cache and every route read it as they read any pack.
+        :class:`ReplayPack`: :meth:`prefix`, the pose cache and every route read it as they read any pack. The two
+        similarities, what each keeps, moves and refuses, side by side: ``docs/replay-guide/views.md``.
         """
         import copy
         from .compression import POSITION_AXES
@@ -1551,8 +1553,8 @@ class ReplayPack:
         if not isinstance(waveform, ScannerSequence):
             raise TypeError(f"a replay takes a ScannerSequence (a bare gradient array says nothing about its pulses); "
                             f"got {type(waveform).__name__}")
+        self._check_length_scale(waveform)              # the view's battery first: its refusal names the cause
         self._check_band(waveform)
-        self._check_length_scale(waveform)
         G = np.asarray(waveform.G, np.float64)
         G_eff = np.asarray(waveform.G_eff, np.float64)
         dt_wf = float(waveform.dt)
