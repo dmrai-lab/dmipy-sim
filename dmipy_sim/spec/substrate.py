@@ -30,6 +30,9 @@ TIERS = ("gradient", "relaxation", "surface", "field", "exchange")
 SUSCEPTIBILITY_FIELD = ("present", "absent")
 #: The numbers a :class:`Pool` carries, which :meth:`SubstrateSpec.replace` takes per pool.
 POOL_VALUES = ("D", "T1", "T2", "water_fraction", "susceptibility")
+#: The per-instance arrays a :class:`Surface`'s ``instances`` may hold, all lengths (metres), which
+#: :meth:`SubstrateSpec.scaled` multiplies by the size scale.
+INSTANCE_LENGTHS = ("centers", "radii", "centerlines")
 
 
 class SpecError(ValueError):
@@ -233,6 +236,74 @@ class SubstrateSpec:
             prov = dict(prov or {})
             prov["transformations"] = list(prov.get("transformations") or []) + notes
         return dataclasses.replace(self, pools=pools, provenance=prov, **changes).validate()
+
+    # ---- the same shape at another size ----
+    def scaled(self, s):
+        """This substrate at ``s`` times its size: the same shape with every length multiplied by ``s`` -- the
+        domain's box, each surface's centre, radius, length, semiaxes, point, centerline, voxel size and origin,
+        the unit scale a surface read from a file is read at (so the file stands as it is), the per-instance
+        :data:`INSTANCE_LENGTHS`, the explicit seeding positions' scale, and the validity lengths
+        (``smallest_feature``, ``min_gap``, ``thinnest_shell``) -- with each pool's stated diffusivity multiplied
+        by ``s^2`` and every rate on a wall (permeability, surface relaxivity, MT reactivity, the domain's
+        surface relaxivity; m/s) by ``s``.
+
+        Those are the scalings under which diffusion is similar (dmipy-sim#542): the dimensionless walk --
+        ``sqrt(D dt) / L``, ``kappa L / D``, ``rho L / D``, ``D T / L^2`` -- is the original's, so a walk of the
+        scaled spec is the original's walk with every position multiplied by ``s`` at the same times, and the
+        susceptibility field at corresponding points is unchanged (a dipole field depends on shape, not size).
+        A pool whose ``D`` is ``None`` keeps it: that is the diffusivity the walk is driven with, which a pack
+        read at another size scales itself (:meth:`~dmipy_sim.replay.ReplayPack.at_length_scale`). A
+        per-instance array this method does not know as a length is refused by name, since its unit is unknown
+        to it. The scaling is recorded in ``provenance.transformations``; the result is re-validated."""
+        import math
+        s = float(s)
+        if not math.isfinite(s) or s <= 0.0:
+            raise SpecError(f"a size scale is a positive number; got {s!r}")
+
+        def L(x):
+            if x is None:
+                return None
+            if hasattr(x, "tolist"):
+                x = x.tolist()
+            if isinstance(x, (list, tuple)):
+                return [L(v) for v in x]
+            return float(x) * s
+
+        dom = self.domain
+        domain = dataclasses.replace(dom, box_min=L(dom.box_min), box_max=L(dom.box_max),
+                                     surface_relaxivity=float(dom.surface_relaxivity) * s)
+        walls = []
+        for w in self.walls:
+            sf = w.surface
+            kw = {k: L(getattr(sf, k)) for k in ("center", "radius", "length", "semiaxes", "point", "centerline",
+                                                 "voxel_size", "origin") if getattr(sf, k) is not None}
+            if sf.file is not None or sf.scale is not None:
+                kw["scale"] = float(sf.scale if sf.scale is not None else 1.0) * s
+            if sf.instances:
+                unknown = sorted(set(sf.instances) - set(INSTANCE_LENGTHS))
+                if unknown:
+                    raise SpecError(f"wall {w.name!r}: the per-instance arrays {unknown} are not known as lengths "
+                                    f"({list(INSTANCE_LENGTHS)} are), so their unit under a size scale is unknown")
+                kw["instances"] = {k: L(v) for k, v in sf.instances.items()}
+            walls.append(dataclasses.replace(
+                w, surface=dataclasses.replace(sf, **kw),
+                permeability=Directional(float(w.permeability.in_to_out) * s, float(w.permeability.out_to_in) * s),
+                surface_relaxivity=Sided(float(w.surface_relaxivity.inside) * s, float(w.surface_relaxivity.outside) * s),
+                mt_reactivity=Sided(float(w.mt_reactivity.inside) * s, float(w.mt_reactivity.outside) * s)))
+        pools = [dataclasses.replace(p, D=None if p.D is None else float(p.D) * s * s) for p in self.pools]
+        seeding = self.seeding
+        if seeding.positions:
+            pos = dict(seeding.positions)
+            pos["scale"] = float(pos.get("scale") or 1.0) * s
+            seeding = dataclasses.replace(seeding, positions=pos)
+        val = self.validity
+        validity = dataclasses.replace(val, smallest_feature=float(val.smallest_feature) * s,
+                                       min_gap=L(val.min_gap), thinnest_shell=L(val.thinnest_shell))
+        prov = dict(self.provenance or {})
+        prov["transformations"] = list(prov.get("transformations") or []) + [
+            f"scaled by {s!r}: every length x {s!r}, each pool's D x {s * s!r}, every wall rate x {s!r} (SubstrateSpec.scaled)"]
+        return dataclasses.replace(self, domain=domain, pools=pools, walls=walls, seeding=seeding, validity=validity,
+                                   provenance=prov).validate()
 
     # ---- JSON ----
     def to_dict(self):

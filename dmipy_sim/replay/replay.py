@@ -976,6 +976,103 @@ class ReplayPack:
         out = ReplayPack(self.arrays, meta, source=self.source)
         return out
 
+    def at_length_scale(self, s):
+        """This pack read as the walk in its substrate at ``s`` times the size (dmipy-sim#542): every stored
+        length multiplied by ``s`` -- the position coefficients, the contact channel's boundary local time, the
+        field grid's origin and voxel size -- with the diffusivity at ``s^2`` and every wall rate at ``s`` times
+        the walked ones. The second similarity of diffusion, in space, beside :meth:`at_diffusivity`'s in time.
+
+        Scaling every length by ``s`` at fixed times leaves the dimensionless walk as it was: the step relative to
+        the smallest feature ``sqrt(D dt) / L``, ``kappa L / D``, ``rho L / D`` and ``D T / L^2`` are the walked
+        values. So the stored path with every position multiplied by ``s`` IS a walk of the scaled substrate
+        (:meth:`~dmipy_sim.spec.substrate.SubstrateSpec.scaled`, the view's embedded spec) at ``s^2 D``, with
+        permeability and reactivity ``s kappa``, and the susceptibility field at corresponding points is the
+        walked one (a dipole field depends on shape, not size). Nothing is decoded: the coefficients are linear
+        in the positions, so the view's length-carrying arrays are the coded ones times ``s`` (float64; an
+        integer container's scales), and every other array is shared.
+
+        Each channel then follows in its own space. The gradient channel of the view at ``G`` is this pack at
+        ``s G`` (``gamma G . s x``). The surface term at a tissue's ``rho2`` is this pack's at ``rho2 / s``, since
+        ``rho2 s ell / (s^2 D) = (rho2 / s) ell / D``. The relaxation gates and the compartment labels are
+        unchanged, and so is the field path channel; the grid route reads the scaled positions against the
+        scaled grid. :attr:`~dmipy_sim.spec.Tissue.D` on a replay resolves against the view's diffusivity.
+
+        Both directions are exact in the physics; what bounds ``s`` is the certificate. The codec error and the
+        Monte-Carlo floor were measured on this grid over the battery up to
+        ``replay_envelope.acquisition.b_max``, and the view at ``b`` is the walk at ``s^2 b``, so the view
+        serves ``b <= b_max / s^2`` -- more than the pack states for ``s < 1``, less for ``s > 1`` -- which its
+        envelope states and :meth:`_check_length_scale` holds every replay to; the contact tier's
+        ``rho2_over_D_max`` moves to ``rho2_over_D_max / s`` the same way. The pair is recorded in
+        ``provenance.length_scaled`` (``s`` cumulative over repeated views).
+
+        With :meth:`at_diffusivity` (``a >= 1``) a target ``(L, D, T)`` is reached from a walk ``(L0, D0, T0)``
+        by ``s = L / L0`` then ``a = D / (s^2 D0)`` when ``D / L^2 >= D0 / L0^2`` and ``D T / L^2 <= D0 T0 / L0^2``:
+        one walk per shape at the slowest ``D / L^2`` over the longest ``D T / L^2`` serves every size and every
+        faster diffusivity, read with :meth:`prefix` where it is longer than needed. The result is an ordinary
+        :class:`ReplayPack`: :meth:`prefix`, the pose cache and every route read it as they read any pack.
+        """
+        import copy
+        from .compression import POSITION_AXES
+        from ..spec.substrate import SubstrateSpec
+        s = float(s)
+        if not np.isfinite(s) or s <= 0.0:
+            raise ValueError(f"a size scale is a positive number; got {s!r}")
+        if s == 1.0:
+            return self
+        lengths = (set(POSITION_AXES) | {f"{ax}_ends" for ax in POSITION_AXES}
+                   | {"pos_band_scale", "blt_start", "blt_endpoint", "blt_bridge_dst", "blt_band_scale", "susc_grid_origin"})
+        arrays = {k: (np.asarray(v, np.float64) * s if v is not None and k.rsplit("/", 1)[-1] in lengths else v)
+                  for k, v in self.arrays.items()}
+        meta = copy.deepcopy(self.meta)
+        wp = meta.setdefault("walk_params", {})
+        D0 = wp.get("diffusivity")
+        if D0 is not None:
+            wp["diffusivity"] = float(D0) * s * s
+        if wp.get("cell_size") is not None:
+            wp["cell_size"] = float(wp["cell_size"]) * s
+        gm = ((meta.get("compression") or {}).get("channels") or {}).get("susceptibility_grid")
+        if isinstance(gm, dict):
+            for key in ("origin", "voxel_size"):
+                if gm.get(key) is not None:
+                    gm[key] = (np.asarray(gm[key], np.float64) * s).tolist()
+        env = meta.get("replay_envelope") or {}
+        acq = env.get("acquisition") or {}
+        b_max = acq.get("b_max")
+        if b_max is not None:
+            acq["b_max"] = float(b_max) / (s * s)
+        tis = env.get("tissue") or {}
+        if tis.get("rho2_over_D_max") is not None:
+            tis["rho2_over_D_max"] = float(tis["rho2_over_D_max"]) / s
+        if isinstance(meta.get("substrate"), dict):
+            meta["substrate"] = SubstrateSpec.from_dict(meta["substrate"]).scaled(s).to_dict()
+        prov = meta.setdefault("provenance", {})
+        before = prov.get("length_scaled") or {}
+        s_total = float(before.get("s", 1.0)) * s
+        prov["length_scaled"] = dict(
+            s=s_total,
+            diffusivity=dict(walked=before.get("diffusivity", {}).get("walked", D0), replayed=wp.get("diffusivity")),
+            b_max=dict(walked=before.get("b_max", {}).get("walked", b_max), served=acq.get("b_max")),
+            certificate="measured at the walked lengths; the view at b is the walk at s^2 b, served up to b_max / s^2")
+        return ReplayPack(arrays, meta, source=self.source)
+
+    def _check_length_scale(self, waveform):
+        """Refuse a waveform beyond the envelope a length-scaled view serves (:meth:`at_length_scale`): the view at
+        ``b`` is the walk at ``s^2 b``, certified up to the walk's battery, so the view's
+        ``replay_envelope.acquisition.b_max`` is the walk's over ``s^2``, and a replay past it would return a
+        signal the certificate does not cover. A pack that is no view, or states no battery, is not judged here."""
+        ls = (self.meta.get("provenance") or {}).get("length_scaled")
+        b_max = ((self.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("b_max")
+        if not ls or b_max is None:
+            return
+        b = float(np.max(np.asarray(waveform.b(), np.float64)))
+        if b > float(b_max) * (1.0 + 1e-9):
+            s = float(ls["s"])
+            raise ValueError(
+                f"b = {b:.3g} s/m^2 is beyond the {float(b_max):.3g} s/m^2 this length-scaled view serves: at s = {s:.4g} "
+                f"it reads the walk at s^2 b = {b * s * s:.3g}, and the walk's codec was certified up to b_max = "
+                f"{float(ls['b_max']['walked']):.3g} (replay_envelope.acquisition.b_max). Replay within the view's "
+                f"envelope, or walk the substrate at this size (dmipy-sim#542)")
+
     def _at_tissue(self, tissue):
         """The pack a replay with ``tissue`` reads: this one, or its view at the tissue's diffusivity and
         permeability. Both stated, they must sit on the walk's line ``kappa / D = kappa_walk / D_walk``."""
@@ -1455,6 +1552,7 @@ class ReplayPack:
             raise TypeError(f"a replay takes a ScannerSequence (a bare gradient array says nothing about its pulses); "
                             f"got {type(waveform).__name__}")
         self._check_band(waveform)
+        self._check_length_scale(waveform)
         G = np.asarray(waveform.G, np.float64)
         G_eff = np.asarray(waveform.G_eff, np.float64)
         dt_wf = float(waveform.dt)

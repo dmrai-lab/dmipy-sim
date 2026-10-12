@@ -98,3 +98,42 @@ def test_per_instance_wall_properties_are_refused_honestly():
     g2 = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=[1e-6, 2e-6, 3e-6])
     with pytest.raises(SpecError, match="varies per axon"):
         g2.spec
+
+
+def test_scaled_is_the_same_shape_at_another_size():
+    """Every length x s, each stated D x s^2, every wall rate x s (dmipy-sim#542); a file-backed surface is read at
+    s times its units; an instance array of unknown unit is refused."""
+    import dataclasses
+    from dmipy_sim.spec.substrate import Directional, Sided, Surface, Wall
+    spec = spec_of(_packed_myelin())
+    s = 2.0
+    out = spec.scaled(s)
+    np.testing.assert_allclose(out.domain.box_min, s * np.asarray(spec.domain.box_min))
+    np.testing.assert_allclose(out.domain.box_max, s * np.asarray(spec.domain.box_max))
+    assert out.validity.smallest_feature == s * spec.validity.smallest_feature
+    for w0, w1 in zip(spec.walls, out.walls):
+        if w0.surface.radius is not None:
+            assert w1.surface.radius == s * w0.surface.radius
+        if w0.surface.instances:
+            for k, v in w0.surface.instances.items():
+                np.testing.assert_allclose(w1.surface.instances[k], s * np.asarray(v, float))
+        assert w1.permeability == Directional(s * w0.permeability.in_to_out, s * w0.permeability.out_to_in)
+        assert w1.surface_relaxivity == Sided(s * w0.surface_relaxivity.inside, s * w0.surface_relaxivity.outside)
+    for p0, p1 in zip(spec.pools, out.pools):
+        assert p1.D == (None if p0.D is None else s * s * p0.D) and p1.T2 == p0.T2 and p1.water_fraction == p0.water_fraction
+    assert out.provenance["transformations"][-1].startswith("scaled by 2.0")
+    assert SubstrateSpec.from_json(out.to_json()) == out
+    # a file-backed wall is read at s times its units, an inline instance table scales each length
+    gradient_only = dataclasses.replace(spec.validity, tiers=["gradient", "field"])   # the myelin pool is magnetic
+    inst = dataclasses.replace(spec, validity=gradient_only,
+                               walls=[Wall("union", Surface("sphere_union", instances={"centers": [[0.0, 0.0, 0.0]], "radii": [1e-6]}), 1, 0),
+                                      Wall("mesh", Surface("mesh", file="x.ply", format="ply"), 1, 0)])
+    got = inst.scaled(0.5)
+    assert got.walls[0].surface.instances == {"centers": [[0.0, 0.0, 0.0]], "radii": [0.5e-6]}
+    assert got.walls[1].surface.scale == 0.5
+    with pytest.raises(SpecError, match="not known as lengths"):
+        dataclasses.replace(spec, validity=gradient_only,
+                            walls=[Wall("u", Surface("sphere_union", instances={"radii": [1e-6], "spin": [1]}), 1, 0)]).scaled(2)
+    for bad in (0.0, -1.0, float("nan")):
+        with pytest.raises(SpecError, match="positive"):
+            spec.scaled(bad)
