@@ -161,6 +161,10 @@ _SLOW_MC_MODULES = {
     # minutes per edge even at the smallest of the three. The 25 um case (no far grid, both policy walk
     # lengths refused by the halo rule) stays in the fast lane, test_strands.py.
     "test_strands_slow",
+    # The substrate spectrum's 250 um / 1 mm packed-cylinder/sphere and label-volume cases (dmipy-sim#697):
+    # the 25 um case stays in the fast lane (test_packs.py / test_label_volumes.py).
+    "test_packs_slow",
+    "test_label_volumes_slow",
 }
 
 

@@ -36,17 +36,52 @@ def _rsa_place(radii_s, L, dim, rng, max_attempts, what):
 
 def periodic_min_gap(centers, radii, L):
     """Smallest clear gap between any two object surfaces, and between each object and its own
-    periodic image (at distance ``L``); ``inf`` for a single object in a box wider than itself."""
+    periodic image (at distance ``L``); ``inf`` for a single object in a box wider than itself.
+
+    O(n) via a periodic neighbour search (:class:`scipy.spatial.cKDTree`, ``boxsize=L``) rather
+    than the full O(n^2) pairwise distance matrix (50,000 objects is a ~60 GB array, the OOM this
+    replaces, dmrai-lab/dmipy-sim#697), but exact regardless of how the objects are arranged: a
+    pair outside a search radius ``R`` has gap >= ``R - 2 * r_max``, so once the smallest gap
+    found WITHIN ``R`` is no larger than that bound, no uncaptured pair can beat it and growing
+    ``R`` further is pointless; otherwise ``R`` grows to exactly the radius that bound requires
+    and the tree is re-queried. ``R`` starts at ``2 * r_max`` (the closest two of these objects'
+    surfaces could possibly be at the tightest, so the first pass is never searched for nothing)
+    and the loop usually proves itself on the first or second pass for an RSA packing, which
+    always places some pair close to touching; a configuration sparse enough to need ``R`` past
+    half the box falls back to the exhaustive pairwise matrix, correct by construction, over
+    whatever's left (this only ever triggers on a handful of objects in practice).
+    """
     c = np.asarray(centers, np.float64)
     r = np.asarray(radii, np.float64)
     n = len(r)
     gap = float(np.min(L - 2.0 * r)) if n else float("inf")
     if n > 1:
-        dq = c[:, None, :] - c[None, :, :]
-        dq -= L * np.round(dq / L)
-        dist = np.sqrt(np.einsum("ijk,ijk->ij", dq, dq)) - r[:, None] - r[None, :]
-        iu = np.triu_indices(n, 1)
-        gap = min(gap, float(dist[iu].min()))
+        from scipy.spatial import cKDTree
+        r_max = float(r.max())
+        wrapped = np.mod(c + L / 2.0, L)
+        tree = cKDTree(wrapped, boxsize=L)
+        R = 2.0 * r_max
+        while True:
+            R_eff = min(R, 0.49 * L)
+            pairs = tree.query_pairs(r=R_eff, output_type="ndarray")
+            if len(pairs):
+                i, j = pairs[:, 0], pairs[:, 1]
+                dq = c[i] - c[j]
+                dq -= L * np.round(dq / L)
+                dist = np.sqrt(np.einsum("ij,ij->i", dq, dq))
+                gap = min(gap, float((dist - r[i] - r[j]).min()))
+            if R_eff - 2.0 * r_max >= gap:
+                break
+            if R_eff >= 0.49 * L:
+                # the periodic box is too small relative to r_max to prove the bound by search;
+                # finish exactly over the (necessarily few) objects this can still happen with.
+                dq = c[:, None, :] - c[None, :, :]
+                dq -= L * np.round(dq / L)
+                dist = np.sqrt(np.einsum("ijk,ijk->ij", dq, dq)) - r[:, None] - r[None, :]
+                iu = np.triu_indices(n, 1)
+                gap = min(gap, float(dist[iu].min()))
+                break
+            R = (gap + 2.0 * r_max) * (1.0 + 1e-9)   # the margin keeps the bound test above from landing a rounding error short
     return gap
 
 
