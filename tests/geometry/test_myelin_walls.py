@@ -147,9 +147,12 @@ def test_bounce_budget_and_candidates_follow_the_worst_case():
     Ro = G * R
     w_small = _kernel([[0.0, 0.0]], [R], [Ro], None, step_max=R / 6)
     w_big = _kernel([[0.0, 0.0]], [R], [Ro], None, step_max=2 * R)
-    assert 2 <= w_small.bounce_loop.budget < w_big.bounce_loop.budget <= 32
+    assert 2 <= w_small.bounce_loop.budget < w_big.bounce_loop.budget
     chord = 2 * np.sqrt(2 * 1e-4)                       # in units of R
     assert w_small.bounce_loop.budget == int(np.ceil((1 / 6) / min(G - 1, chord)) + 1)
+    # The budget has no upper cap (#706): a bigger step over the same passage needs a
+    # proportionally bigger budget, here past what an earlier fixed clamp of 32 allowed.
+    assert w_big.bounce_loop.budget == int(np.ceil(2 / min(G - 1, chord)) + 1) > 32
     w_gap = _kernel([[0.0, 0.0], [3 * Ro, 0.0]], [R, R], [Ro, Ro], None, step_max=R / 6,
                     min_gap=0.01 * R)
     assert w_gap.bounce_loop.budget == int(np.ceil((1 / 6) / 0.01) + 1)

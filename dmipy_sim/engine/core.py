@@ -1317,6 +1317,7 @@ def simulate_trajectories(
                 f"{type(geometry).__name__} has no bound pool to bind into. Pass kappa_MT=0.0 "
                 f"(the default), or walk a PackedMyelinatedCylinders.")
 
+        step_fn_traj_pm = None       # set below when the myelin trajectory step runs; read by the work record
         if record and uses_myelin_traj:
             # (Packed or isolated) myelinated cylinder: use the stripped trajectory step fn
             # (geometry + permeability only, rho/D=1 at all walls).  comp_id is the encoded id
@@ -1735,8 +1736,14 @@ def simulate_trajectories(
 
         # ── The work record: what the walk cost in wall encounters, for a cost model per substrate class
         # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
-        # trajectories as any larger one, by the loop's own rule.
+        # trajectories as any larger one, by the loop's own rule. A myelinated geometry has no `bounce_loop`
+        # of its own (its loop is sized per walk, from the step's `step_max`, inside the kernel build
+        # -- physics.make_myelin_substep / geometry.myelin.concentric_wall_kernel -- and carried on the
+        # trajectory step function instead); read THAT loop when the geometry has none, so the record names
+        # the budget that actually ran rather than reporting None for a walk that did use one.
         _loop = geometry.bounce_loop
+        if _loop is None and step_fn_traj_pm is not None:
+            _loop = step_fn_traj_pm.bounce_loop
         _counted = _counting and _work[3]
         work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
                     backend=_backend_name,
