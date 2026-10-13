@@ -261,3 +261,18 @@ def test_a_phantom_substrate_cites_a_published_pack_by_its_uri(monkeypatch):
     sub = PackSubstrate("hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk", m0=1.0)
     assert sub.uri.startswith("hf://") and sub.name == "100ms_K48"
     assert sub.pack is fake and seen["uri"] == "hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk"
+
+
+def test_pack_license_rides_the_row_and_the_card():
+    """A pack with terms of its own carries them in the row and the card: the Hub tags come from the SPDX expression
+    (a commercial option is `other`), the source's `license` stays beside it, and a pack without terms is as before."""
+    from dmipy_sim.replay import publish as P
+    meta = dict(id="x/y", license="CC-BY-4.0", citation="c", walk_params={}, compression={}, fidelity={},
+                pack_license="CC-BY-NC-SA-4.0 OR LicenseRef-Commercial", pack_license_url="https://example.org/LICENSING.md")
+    row = P.manifest_row(meta, "packs/y.rpk", "0" * 64, 10)
+    assert row["pack_license"] == "CC-BY-NC-SA-4.0 OR LicenseRef-Commercial" and row["license"] == "CC-BY-4.0"
+    card = P.render_readme({"packs": [row]}, "o/n")
+    assert "  - cc-by-nc-sa-4.0" in card and "  - other" in card and "## Licence" in card and "cc-by-4.0" in card
+    plain = P.manifest_row(dict(meta, pack_license=None), "packs/y.rpk", "0" * 64, 10)
+    assert "pack_license" not in plain and P.render_readme({"packs": [plain]}, "o/n").startswith("---\nlicense: cc-by-4.0")
+    assert P._hub_license_tags("MIT") == ["mit"]

@@ -1740,8 +1740,13 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                       position_container=None, blt_container=None,
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
                       fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False,
-                      _window_of_plan=False):
+                      _window_of_plan=False, pack_license=None, pack_license_url=None):
     """Compress a persistent walk and assemble a self-certifying replay pack.
+
+    ``license`` is the SOURCE substrate's licence, which a pack never relicenses (RPK.md 10); ``pack_license`` is
+    the terms the pack file itself is distributed under, as an SPDX expression such as
+    ``"CC-BY-NC-SA-4.0 OR LicenseRef-Commercial"``, with ``pack_license_url`` where its full text lives; absent, the
+    pack is distributed under ``license``.
 
     The walk is stored in SEGMENTS of ``segment_T`` seconds (RPK.md 4.3; the storage rule's 100 ms): a walk within
     one is one segment, a longer one a whole number of them on its save grid (refused otherwise), each window
@@ -2155,6 +2160,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                                  magnetization_transfer=channels["mt"],
                                  diffusivity_fixed=True, acquisition=_envelope_summary(env)),
             fidelity=fid, provenance=dict(provenance or {}, code=_code()), license=license, citation=citation)
+        if pack_license:
+            meta["pack_license"] = str(pack_license)
+            if pack_license_url:
+                meta["pack_license_url"] = str(pack_license_url)
         meta["substrate"] = m["substrate"]               # the spec the walk was driven by (#130)
         stored = bool(channels["susceptibility"])
         susceptibility_field_of(meta["substrate"], name=id, stores_field=(None if _window_of_plan and not stored else stored))
