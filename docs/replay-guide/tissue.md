@@ -13,7 +13,7 @@ print(wm)
 |---|---|---|---|
 | `T2`, `T1` | s, per pool | the bulk relaxation tier: a weight per walker from its transverse and longitudinal exposure in each pool | the occupancy channel (C1) |
 | `rho2` | m/s | the surface tier: a weight from the walker's gated wall contact, at the rate `rho2 / D` | the contact channel (C2) |
-| `D` | m²/s | the diffusivity `rho2` is scaled by; the walk's own when None | — |
+| `D` | m²/s | the diffusivity the pack is READ at: the walk's own when None, else its view at `D / D_walk` with every permeability on the same line ([views](views.md)) | `D >= D_walk` |
 | `chi_iso`, `chi_aniso` | dimensionless | the field tier: a phase from the field source's susceptibility, at the scanner's field | a pack whose field is present (C3) and a [scanner](scanner.md) |
 
 Every field is optional and `None` switches its tier off. Per-pool values are one `{pool name: seconds}` mapping

@@ -30,6 +30,9 @@ The knobs are `tissue`, `scanner`, `orientation` and `compartment`, each as its 
 returns is the signal as measured: a b = 0 at TE with a T2 is `exp(-TE / T2)`, not 1; divide by a b = 0 of the
 same setting for S/S0.
 
+A tissue that states `D` or `kappa` replays the pack's view at that diffusivity, on every route; another size is
+`pack.at_length_scale(s)`. What each view keeps, moves and refuses is on [the views page](views.md).
+
 ## `walker_signals`: before the mean
 
 ```python
