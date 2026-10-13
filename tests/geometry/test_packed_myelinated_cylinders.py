@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import (
-    simulate, PackedMyelinatedCylinders, pack_myelinated_cylinders,
+    simulate, simulate_trajectories, PackedMyelinatedCylinders, pack_myelinated_cylinders,
     set_b,
 )
 from dmipy_sim.sequences import pgse
@@ -251,3 +251,20 @@ def test_simulate_packed_myelin_signal():
     npt.assert_allclose(sig[0], 1.0, atol=3.0 / np.sqrt(20000))   # b0 unattenuated
     assert np.all(np.diff(sig) < 0)                               # monotonic decay in b
     assert np.all(sig > 0) and np.all(sig <= 1.0 + 1e-6)
+
+
+def test_tight_packing_derives_its_budget_with_zero_exhausted_steps_and_names_it():
+    """A tight RSA pack (#709): three axons at a high outer packing fraction can place two
+    sheaths' outer walls almost touching (`min_gap` ~ 1e-10 m), the narrowest possible passage --
+    the adversarial case `concentric_wall_kernel`'s bounce budget must be derived for, not just
+    the typical one. A walk of this substrate must exhaust nothing, and the work record must name
+    the budget the walk actually ran (never `None`, which `geometry.bounce_loop` alone would give:
+    PackedMyelinatedCylinders carries its loop on the trajectory step function instead)."""
+    D0 = 2e-9
+    L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
+    _, _, c = pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
+    pm = PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, D_intra=D0, D_extra=D0)
+    assert pm.min_gap < 1e-8, "the adversarial case this test guards needs a near-zero gap"
+    walk = simulate_trajectories(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False)
+    assert walk.work["exhausted_steps"] == 0
+    assert walk.work["bounce_budget"] is not None and walk.work["bounce_budget"] >= 2

@@ -49,7 +49,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     outer walls, the thinnest sheath, or the shortest chord a nudged grazing ray can make on the
     smallest lumen (``2 sqrt(2 nudge R)``) -- needs ``step_max / passage + 1`` reflections, and the
     walls within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint
-    disks.
+    disks. The budget has no upper cap: a packing whose outer walls nearly touch (``min_gap`` near
+    zero) is a narrower passage than a typical one, and capping the count at a fixed value would
+    silently leave some walker-steps' paths untested instead of raising the budget to the case at
+    hand (``budget=`` overrides this derivation for one walk).
 
     Returns ``wall(xy, d_hat, step_l, pool, k, u)`` giving a :class:`ConcentricHit`: the end position, the pool
     and owning / nearest axon after the step, the four boundary local-time channels ``-2 d_perp`` (inner wall met
@@ -65,7 +68,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     thick_min = float(np.min((outer_np - inner_np)[real_np]))
     chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * R_in_min)
     passage = min(float(min_gap), thick_min, chord_floor)
-    loop = BounceLoop(budget or int(np.clip(np.ceil(float(step_max) / passage) + 1, 2, 32)), count=count)
+    loop = BounceLoop(budget or int(max(2.0, np.ceil(float(step_max) / passage) + 1)), count=count)
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
     real = outer > 0
