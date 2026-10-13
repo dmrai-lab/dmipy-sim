@@ -178,6 +178,10 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=Non
                built_commit=_built_commit_of(meta), published_commit=published_commit,
                license=meta.get("license"), citation=meta.get("citation"),
                substrate=(meta.get("substrate") or {}).get("id"))
+    if meta.get("pack_license"):                             # the terms the FILE is under; `license` is the source's
+        row["pack_license"] = meta["pack_license"]
+        if meta.get("pack_license_url"):
+            row["pack_license_url"] = meta["pack_license_url"]
     if wp.get("segments"):
         row["segments"] = wp["segments"]
         n = int(wp["segments"].get("n") or 1)
@@ -236,15 +240,31 @@ def _duration(row):
     return s
 
 
+def _hub_license_tags(expr):
+    """The Hub's licence tags of an SPDX expression: each identifier the Hub knows, lower-cased, and ``other`` for
+    one it does not (a commercial option, ``LicenseRef-...``)."""
+    tags = []
+    for part in str(expr).replace("(", " ").replace(")", " ").split():
+        if part.upper() in ("OR", "AND", "WITH"):
+            continue
+        tags.append("other" if part.lower().startswith("licenseref-") else part.lower())
+    return list(dict.fromkeys(tags))
+
+
 def render_readme(manifest, repo):
-    """The dataset card from its manifest: HF front matter, the substrate, one table row per pack."""
+    """The dataset card from its manifest: HF front matter, the substrate, one table row per pack, and the terms
+    the packs are distributed under when they have terms of their own (``pack_license``, with ``license``, the
+    source substrate's, stated beside it)."""
     packs = manifest.get("packs") or []
+    pack_terms = sorted({r["pack_license"] for r in packs if r.get("pack_license")})
     licenses = sorted({r["license"].lower() for r in packs if r.get("license")})
+    tags = [t for e in pack_terms for t in _hub_license_tags(e)] if pack_terms else licenses
+    tags = list(dict.fromkeys(tags))
     lines = ["---"]
-    if len(licenses) == 1:
-        lines.append(f"license: {licenses[0]}")
-    elif licenses:
-        lines.append("license:"); lines += [f"  - {l}" for l in licenses]
+    if len(tags) == 1:
+        lines.append(f"license: {tags[0]}")
+    elif tags:
+        lines.append("license:"); lines += [f"  - {l}" for l in tags]
     lines += [f"pretty_name: {repo.split('/')[-1]}", "---", "", f"# {repo}", "",
               "Replay packs (`.rpk`) built with `dmipy_sim`: one converged Monte-Carlo walk each, stored so any acquisition "
               "can be replayed on it. Load one with `ReplayPack.load(\"hf://" + repo + "/<path>\")`; the manifest "
@@ -270,6 +290,12 @@ def render_readme(manifest, repo):
     cites = sorted({r["citation"] for r in packs if r.get("citation")})
     if cites:
         lines += ["", "## Citation", ""] + [f"* {c}" for c in cites]
+    if pack_terms:
+        urls = sorted({r["pack_license_url"] for r in packs if r.get("pack_license_url")})
+        lines += ["", "## Licence", "",
+                  "The packs are distributed under " + " and ".join(f"`{e}`" for e in pack_terms)
+                  + (f" (the full terms: {', '.join(urls)})" if urls else "") + ". The source geometry of each pack keeps its own "
+                  "licence, recorded in the pack's `license` field" + (f": {', '.join(licenses)}" if licenses else "") + "; the format never relicenses a source."]
     return "\n".join(lines) + "\n"
 
 
