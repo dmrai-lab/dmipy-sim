@@ -25,7 +25,7 @@ dependencies = [
     "numpy>=2.0",
     "scipy>=1.10",       # replay: DCT/low-rank compression + compiled-scheme forward; susceptibility field-map sampling
     "safetensors>=0.4",  # replay: .rpk container I/O (dmipy_sim.replay)
-    "threadpoolctl>=3.1",  # the BLAS thread cap on a build whose multithreaded LAPACK hangs (dmipy_sim._blas, #564)
+    "threadpoolctl>=3.1",  # the process-wide BLAS thread cap (dmipy_sim._threads, #700; the #564 floor, dmipy_sim._blas)
 ]
 
 [project.optional-dependencies]
