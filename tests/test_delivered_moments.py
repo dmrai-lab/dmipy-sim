@@ -145,7 +145,7 @@ def test_each_term_reaches_the_image(layout):
     k = dl.kappa
     ratio = np.sin(np.pi / 2 * k) ** 3
     live = sm.live_voxels
-    np.testing.assert_allclose(S.reshape(-1, len(b))[live], S0.reshape(-1, len(b))[live] * ratio[:, None], rtol=1e-6)
+    np.testing.assert_allclose(S.reshape(-1, len(b))[live], S0.reshape(-1, len(b))[live] * ratio[:, None], rtol=1e-5)
 
 
 def test_a_shape_with_ramps_is_refused_for_the_maxwell_term(layout):

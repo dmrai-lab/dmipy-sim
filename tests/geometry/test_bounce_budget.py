@@ -27,7 +27,7 @@ def test_analytic_caps_are_the_grazing_worst_case():
         R = g.length_scales.min_feature
         chord = 2 * np.sqrt(2 * 1e-4 * R * R)
         assert g.bounce_loop.budget == int(np.ceil((LONGEST_STEP * R / 6) / chord) + 1) == bounce_budget(R, 1e-4 * R, np.inf, LONGEST_STEP * R / 6)
-    assert d.Sphere(1e-6).bounce_loop.budget == 7                      # scale-free at nudge = 1e-4 R
+    assert d.Sphere(1e-6).bounce_loop.budget == 11                     # scale-free at nudge = 1e-4 R
     assert bounce_budget(1e-6, 1e-10, 2e-8, 1.7e-7) == int(np.ceil(1.7e-7 / 2e-8) + 1)   # a gap rules
 
 

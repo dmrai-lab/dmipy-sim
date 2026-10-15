@@ -701,27 +701,36 @@ def test_an_impermeable_volume_refuses_a_crossing_request():
 
 
 def test_a_refused_step_is_counted_by_the_engine():
-    """A reject-escape holds the walker still for that step, and the engine says so.
+    """A step the kernel cannot trace to its end is refused: the walker is held still for that step, and the
+    engine says so.
 
     The refusal is reported as `WallHit.illegal`, which the trajectory producer accumulates into
     `PersistentWalk.illegal_crossings` and warns about; a refusal the engine cannot see is the walk
-    quietly standing still. Measured on the voxelised R = 5 um sphere at 50,000 walkers x 41 saves:
-    2 refused steps of 2,050,000 at two voxels per step (and a RuntimeWarning), 0 at three voxels and
-    0 at the step the engine's own rules pick -- so this is a net over the coarse end, not a
-    correction the walk leans on.
+    quietly standing still. The kernel's budget, four crossings per grid plane plus sixteen, is out of
+    reach of a diffusion step at any rule the engine picks (the voxelised R = 5 um sphere at 50,000
+    walkers x 41 saves refuses 0 of 2,050,000 steps at 2, 2.5, 3 and 3.5 voxels per step), so the test
+    provokes it: a step of sixty voxels through a periodic four-voxel cell crosses more planes than the
+    budget of 64 can follow.
     """
     import warnings
     from dmipy_sim import simulate_trajectories
-    R, h = 5e-6, 1e-6
-    lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 1.4 * R, h)
-    g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
-    dt = (2.0 * h) ** 2 / (6 * D)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        walk = simulate_trajectories(50_000, D, g, T_max=41 * dt, dt_save=dt, seed=0,
-                                     sub_steps=1, require_gpu=False)
-        refused = [w for w in caught if "were refused" in str(w.message)]
-    assert walk.illegal_crossings == 2 and len(refused) == 1
+    h = 1e-6
+    lab = np.ones((4, 4, 4), np.uint8)
+    lab[1:3, 1:3, 1:3] = 2                                           # a grain: two pools, walls on the path
+    g = LabelVolume(lab, h, periodic=True, pools={1: "free", 2: "grain"}, pool="free")
+    assert g.bounce_loop.budget == 4 * 12 + 16
+
+    def walk_at(voxels):
+        dt = (voxels * h) ** 2 / (6 * D)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            walk = simulate_trajectories(500, D, g, T_max=3 * dt, dt_save=dt, seed=0, sub_steps=1, require_gpu=False)
+        return walk, [w for w in caught if "were refused" in str(w.message)]
+
+    walk, refused = walk_at(20.0)                                    # within the budget: nothing to refuse
+    assert walk.illegal_crossings == 0 and not refused
+    walk, refused = walk_at(60.0)
+    assert walk.illegal_crossings > 1000 and len(refused) == 1
     assert "held at its own position" in str(refused[0].message)
 
 
