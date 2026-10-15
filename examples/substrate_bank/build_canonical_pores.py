@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, LICENCE_NONE_STATED, Published,
-                                        Reference, ReferenceFamily, ReferenceQuantity, Publication, RecordedWalk,
+                                        Reference, ReferenceFamily, pack_seed, ReferenceQuantity, Publication, RecordedWalk,
                                         Source, SourceFile, Systematic, Tier, Tolerance)
 
 REPO = "SubstrateCommons/canonical-pores"
@@ -43,7 +43,6 @@ K_BANDS = 256       #: bands per 100 ms segment
 SIGMA = 5e-3        #: the floor every pack of this family was built to (`build_to_floor`'s sigma_star)
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 4000
-SEED = 0
 FALSE_FAILURE_RATE = 0.01
 
 #: The closed form. Codd & Callaghan extend Callaghan's matrix formalism to exactly the three pores this family
@@ -83,6 +82,12 @@ def parse_pack_id(pack_id):
     """``(shape, diameter_um)`` of a manifest row's pack id, ``canonical-pores/<shape>/d<NN.NN>um``."""
     _family, shape, d = str(pack_id).split("/")
     return shape, float(d[1:-2])
+
+
+def pack_id(shape, d_um):
+    """The pack's id, ``canonical-pores/<shape>/d<NN.NN>um``: the name the manifest lists it under, and the one
+    thing its walk seed (``pack_seed``) is derived from."""
+    return f"canonical-pores/{shape}/d{d_um:05.2f}um"
 
 
 def substrate_name(shape, d_um):
@@ -169,12 +174,13 @@ def spec_of(shape, d_um):
     return geometry(shape, d_um).spec
 
 
-def walk(spec, n, *, n_t):
-    """The walk the pilot runs and a fresh pack would be built from: no relaxivity, every tier stored."""
+def walk(spec, n, *, n_t, seed):
+    """The walk the pilot runs and a fresh pack would be built from: no relaxivity, every tier stored, at the
+    pack's own ``seed`` (``pack_seed`` of its id)."""
     import dmipy_sim as d
     from dmipy_sim.spec import geometry_from_spec
     dt = T / (n_t - 1)
-    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, dt_save=dt, seed=SEED,
+    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, dt_save=dt, seed=int(seed),
                                    tiers="all", require_gpu=False, walker_batch_size=2000)
 
 
@@ -248,7 +254,7 @@ def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N, n_t=DIRECT_N_T):
     seq = sequence(grid["delta_s"], grid["Delta_s"], b=grid["b_s_per_m2"], direction=grid["direction"],
                    n_t=grid["n_t"])
     dt = T / (n_t - 1)
-    w = d.simulate_trajectories(int(n), D0, geometry(shape, d_um), T_max=T, dt_save=dt, seed=SEED, tiers=(),
+    w = d.simulate_trajectories(int(n), D0, geometry(shape, d_um), T_max=T, dt_save=dt, seed=pack_seed(pack_id(shape, d_um)), tiers=(),
                                 require_gpu=False, walker_batch_size=2000)
     G = rk.effective_gradient(np.asarray(seq.G_eff, np.float64), float(seq.dt), int(w.positions.shape[1]),
                               float(w.dt))
@@ -378,11 +384,11 @@ def measured_quantities(work_dir, rows, grid):
                     value=v["direct"], unit="-", se=v["direct_se"], se_kind="delta_method",
                     se_derivation=("the delta method on the modulus of the ensemble mean over the walk's own "
                                    "walkers: each walker's contribution projected on the modulus' direction, "
-                                   "sd / sqrt(N) / |S|. No fold, no split half, no seed"),
+                                   "sd / sqrt(N) / |S|. No fold, no split half, no seed spread"),
                     n_walkers=DIRECT_N, grid=grid, solver=grid["solver"],
                     source=(f"examples/substrate_bank/build_canonical_pores.py (direct_walk_signal): a "
                             f"{DIRECT_N:,}-walker trajectory walk of the same pore at the same D over the same "
-                            f"window, read with the engine's own gradient phase and no codec between the walk "
+                            f"window, at the pack's own seed ({pack_seed(pack_id(shape, d_um))}), read with the engine's own gradient phase and no codec between the walk "
                             f"and the number"))))
     return tuple(out)
 
@@ -438,7 +444,12 @@ def family(work_dir, *, dry, create_dataset, rows=None):
             FreeParameter(name="save grid", value="the rule of dmipy-sim#143 at each pack's own walker count",
                           unit="-", whose="ours", where="acquisition.scanners.save_interval",
                           how="each pack's dt_save is the rule's at ITS walker count, so the 600 packs do not "
-                              "share one grid; each pack's own is in the walk record")),
+                              "share one grid; each pack's own is in the walk record"),
+            FreeParameter(name="walk seed", value="one per pack, from its id", unit="-", whose="ours",
+                          where="dmipy_sim.replay.reference.pack_seed",
+                          how="the first four bytes of the SHA-256 of the pack's id, so no two packs share a "
+                              "random stream whatever their walker counts; the seed is in each pack's "
+                              "provenance (walk_params.seed)")),
         description=("Cylinders, spheres and parallel plates from 0.1 to 20 um, walked once each and stored so "
                      "that any waveform, any surface relaxivity and any per-pool relaxation can be replayed on "
                      "them. The three shapes whose restricted diffusion has a closed form, which is what makes "
@@ -449,6 +460,13 @@ def family(work_dir, *, dry, create_dataset, rows=None):
         licence_note="CC-BY-4.0 packs; the substrate is dmipy-sim's own (CC-BY-4.0), and the reference paper's "
                      "numbers are computed from its formalism, never redistributed",
         caveats=dict(
+            seed=("Every pack of this family is walked at one seed of its own, derived from its id "
+                  "(dmipy_sim.replay.reference.pack_seed), so the residuals of the packs against the reference "
+                  "are independent draws. The packs of the release published before this rule were all walked "
+                  "at seed 0, and packs of equal walker count therefore shared their walkers' random streams: "
+                  "their residuals against the reference are correlated across packs, a pattern over several "
+                  "neighbouring diameters is one draw read many times, and the largest residual of the family "
+                  "is not evidence of a bias."),
             envelope=("The design's envelope is the default battery whole. Each pack was BUILT with that "
                       "battery's gradient directions restricted to the axes its pore confines -- a cylinder "
                       "across its section, the plates along their normal -- because a free axis' Monte-Carlo "

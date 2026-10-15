@@ -177,7 +177,7 @@ def test_the_sub_step_counts_the_refusal_quotes_are_the_engines_own():
 def test_the_walk_refuses_by_name_with_the_number_that_makes_it_a_refusal(tmp_path):
     fam, _ = _family(tmp_path, ["sham_25_contra_cc"])
     with pytest.raises(ReferenceRefusal) as e:
-        fam.build.walk(None, 10, n_t=2)
+        fam.build.walk(None, 10, n_t=2, seed=0)
     assert "dmipy-sim#478" in str(e.value)
     assert f"{B.SUB_STEPS[('lm', 625e-6)]:,}" in str(e.value)
     assert f"{B.SUB_STEPS[('lm', B.DT_SAVE)]:,}" in str(e.value)
