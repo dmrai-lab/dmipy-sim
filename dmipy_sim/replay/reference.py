@@ -222,6 +222,16 @@ class Published:
     data_sha256: Optional[str] = None
 
 
+def pack_seed(pack_id) -> int:
+    """The walk seed of the pack named ``pack_id``: the first four bytes of the SHA-256 of the id, big-endian.
+
+    A deterministic function of the pack's identity alone (no process state, no Python ``hash``), in
+    ``[0, 2**32)``, which is the range ``jax.random.PRNGKey`` takes. Packs with distinct ids walk distinct random
+    streams whatever their walker counts.
+    """
+    return int.from_bytes(hashlib.sha256(str(pack_id).encode("utf-8")).digest()[:4], "big")
+
+
 @dataclass(frozen=True)
 class Direct:
     """OUR direct measurement of the same quantity -- the forward engine with the parameter baked in -- as
@@ -377,7 +387,9 @@ class Build:
 
     ``specs`` maps a substrate name to a zero-argument callable returning its
     :class:`~dmipy_sim.spec.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
-    a count (``walk(spec, n, *, n_t)``) and is what the pilot and the walk stage call; ``recorded`` gives a
+    a count and a seed (``walk(spec, n, *, n_t, seed)``) and is what the pilot and the walk stage call, with
+    ``seed = pack_seed(pack_id)``: one seed per pack, so no two packs of a family share a random stream (a
+    family walked at one seed has residuals that are one draw read many times); ``recorded`` gives a
     :class:`RecordedWalk` per substrate instead, for a family whose packs already exist and must not be
     re-walked or re-encoded.
 
@@ -1318,7 +1330,7 @@ class ReferenceFamily:
         rss0 = _rss_bytes()
         t0 = time.time()
         with _PeakRSS() as sampler:
-            walk = self.build.walk(spec, int(d.pilot_n), n_t=n_t)
+            walk = self.build.walk(spec, int(d.pilot_n), n_t=n_t, seed=pack_seed(self.build.pack_id[name]))
         walk_s, walk_peak = time.time() - t0, sampler.peak
         if int(walk.positions.shape[1]) != n_t:
             raise ReferenceRefusal(f"design: the pilot recorded {walk.positions.shape[1]} saves, the design's window "
@@ -1478,7 +1490,7 @@ class ReferenceFamily:
         rss0 = _rss_bytes()
         t0 = time.time()
         with _PeakRSS() as sampler:
-            walk = self.build.walk(spec, n, n_t=int(des["n_t"]))
+            walk = self.build.walk(spec, n, n_t=int(des["n_t"]), seed=pack_seed(self.build.pack_id[name]))
         seconds, peak = time.time() - t0, sampler.peak
         out_dir = os.path.join(self.dir, "walks")
         os.makedirs(out_dir, exist_ok=True)

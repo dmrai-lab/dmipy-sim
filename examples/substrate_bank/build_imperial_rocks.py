@@ -46,7 +46,6 @@ SIGMA = 5e-3        #: the split-half floor per tier this family targets
 K_BANDS = 128       #: bands per 100 ms storage window, set by the declared gradient envelope
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 8000
-SEED = 0
 FALSE_FAILURE_RATE = 0.01   #: the probability this gate fails a CORRECT family, DECLARED before it runs; the
                             #: band per comparison follows from it and the comparison count (`reference.pass_band`)
 INVERT_MS = 1.0     #: the sampling of the decay the log-mean is inverted on -- part of the measurement
@@ -151,12 +150,12 @@ def spec_of(rock, data_dir):
                      f"replay knobs, and the nominal values are Talabi 2008's ({ref['rho_note']})."))
 
 
-def walk(spec, n, *, n_t):
+def walk(spec, n, *, n_t, seed):
     """The walk the pilot runs and a fresh family would run: no relaxivity, C2 stored as a channel."""
     import dmipy_sim as d
     from dmipy_sim.spec import geometry_from_spec
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT_SAVE,
-                                   dt_save=DT_SAVE, seed=SEED, tiers="all", require_gpu=False,
+                                   dt_save=DT_SAVE, seed=int(seed), tiers="all", require_gpu=False,
                                    walker_batch_size=2000)
 
 

@@ -123,10 +123,13 @@ def walk_of(name, mcdc_data, disimpy_data):
 
     The spec is the design stage's own, whose surface is cited by the resolved path the source record digested;
     rebuilding it from the producer here would walk a spec cited by basename and resolve it somewhere else.
+
+    A fixture is a reproducibility test against a reference engine, so it walks at the fixture's own fixed
+    ``X.SEED`` and the per-pack ``seed`` the framework offers is not used.
     """
     X = fixtures_module()
 
-    def walk(spec, n, *, n_t):
+    def walk(spec, n, *, n_t, seed):
         import dmipy_sim as d
         from dmipy_sim.spec import geometry_from_spec
         geom = geometry_from_spec(spec)

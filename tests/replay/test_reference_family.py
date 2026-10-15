@@ -28,7 +28,6 @@ N_WALK = 300
 B = 1e8
 DELTA = 8e-4
 BIGDELTA = 2.4e-3
-SEED = 0
 ENV = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
            delta_frac=0.2, Delta_frac=0.5, rho2_list=[])
 LICENCE_TEXT = "SYNTHETIC LICENCE\n\n" + ("This is the verbatim text of a licence that does not exist. " * 12)
@@ -52,10 +51,10 @@ def _spec_off():
     return d.Sphere(radius=0.75 * R_SPHERE).spec
 
 
-def _walk(spec, n, *, n_t):
+def _walk(spec, n, *, n_t, seed):
     from dmipy_sim.spec import geometry_from_spec
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT, dt_save=DT,
-                                   seed=SEED, tiers="all", require_gpu=False)
+                                   seed=int(seed), tiers="all", require_gpu=False)
 
 
 def _per_walker(pack):
