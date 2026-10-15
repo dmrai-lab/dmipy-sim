@@ -69,14 +69,14 @@ class AdaptivePlan(NamedTuple):
 
 
 def adaptive_plan(geometry, diffusivity, dt_save, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
-                  candidate_k_start=64):
+                  candidate_k_start=64, f_band=None):
     """The :class:`AdaptivePlan` of a walk of ``geometry`` at ``diffusivity`` saved every ``dt_save``: the finest
     sub-step count from the family's step rule (``sub_steps`` overrides it), rounded up to a multiple of
     ``steps_per_round``; the classes doubling in step time from the smallest feature."""
     from .physics import resolve_sub_steps, length_scales_of
     D = float(diffusivity)
     K = int(steps_per_round)
-    n_min = resolve_sub_steps(geometry, D, dt_save, surface=True, override=sub_steps)
+    n_min = resolve_sub_steps(geometry, D, dt_save, surface=True, override=sub_steps, f_band=f_band)
     n_min = K * int(math.ceil(n_min / K))                          # the finest class divides the round
     n_rounds = n_min // K
     dt_min = dt_save / n_min; dt_round = dt_save / n_rounds
@@ -102,7 +102,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, dt_s
                                    steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                                    walker_batch_size=100_000, require_gpu=None, storage_dtype=np.float32,
                                    candidate_cache=True, candidate_k_start=64, field_basis=None, field_reuse_intervals=4,
-                                   field_sample_every=1, field_list_k=256, spec=None, spool=None, backend=JAX):
+                                   field_sample_every=1, field_list_k=256, spec=None, spool=None, backend=JAX, f_band=None):
     """A :class:`~dmipy_sim.persistent_walk.PersistentWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable. ``steps_per_round`` is the finest class's steps per round (the round is
@@ -149,7 +149,7 @@ interval mean as before).
         n_t = int(round(T_max / dt_save)) + 1
         dt_actual = T_max / (n_t - 1)
         plan = adaptive_plan(geometry, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
-                             n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start)
+                             n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start, f_band=f_band)
         K, n_min, n_rounds, dt_min, dt_round, n_classes = plan.steps_per_round, plan.n_min, plan.n_rounds, plan.dt_min, plan.dt_round, plan.n_classes
         R_min, sigma_round, far_at = plan.R_min, plan.sigma_round, plan.far_at
         steps_c = list(plan.steps_c)

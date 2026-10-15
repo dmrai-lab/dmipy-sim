@@ -738,7 +738,7 @@ class Mesh(Geometry):
 
     # `self.radius` is `feature_radius` -- a MESH-RESOLUTION parameter, not a physical
     # pore size. It therefore does NOT bound a step the way an analytic radius does, and
-    # physics.walk_sub_steps must use the collision criterion INSTEAD of R/6 here (see #59).
+    # physics.tolerance_sub_steps must use the collision criterion INSTEAD of R/6 here (see #59).
     # Analytic geometries that merely carry a spatial index (PackedCurvedCylinders) leave this
     # False, so both criteria apply to them.
     radius_is_mesh_feature = True
@@ -814,7 +814,7 @@ class Mesh(Geometry):
             feature_radius = 0.5 * float(np.min(sides[sides > 0]))
         self.radius = float(feature_radius)              # read by core sub-step auto-tune
         # NB: `radius` here is a MESHING parameter, not a pore size -- see
-        # `radius_is_mesh_feature` on the class and physics.walk_sub_steps.
+        # `radius_is_mesh_feature` on the class and physics.tolerance_sub_steps.
         self.reject_escape = bool(reject_escape)         # impermeable-leak safety net
         # Reflect at the voxel faces INSIDE the bounce loop (dmipy-sim#61), DEFAULT ON. A mirror applied to
         # the position after the step is a reflection of space with no collision test, so it can teleport a

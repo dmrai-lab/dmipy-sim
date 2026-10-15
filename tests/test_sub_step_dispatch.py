@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.engine.physics import (resolve_sub_steps, walk_sub_steps, surface_sub_steps,
+from dmipy_sim.engine.physics import (resolve_sub_steps, tolerance_sub_steps, surface_sub_steps,
                                permeable_sub_steps, collision_sub_steps, mt_sub_steps,
                                make_step_fn, make_packed_myelin_step_fn)
 
@@ -37,10 +37,12 @@ def _packed_myelin():
 # ── the composition rule ──────────────────────────────────────────────────────────────────
 def test_resolve_is_the_maximum_of_the_applicable_criteria():
     g = _sphere_rho()
-    assert resolve_sub_steps(g, D, DT) == walk_sub_steps(g, D, DT)
-    assert resolve_sub_steps(g, D, DT, surface=True) == max(walk_sub_steps(g, D, DT),
+    assert resolve_sub_steps(g, D, DT) == tolerance_sub_steps(g, D, DT)
+    assert resolve_sub_steps(g, D, DT, surface=True) == max(tolerance_sub_steps(g, D, DT),
                                                              surface_sub_steps(g, D, DT))
-    assert resolve_sub_steps(g, D, DT, surface=True) > resolve_sub_steps(g, D, DT)
+    # a flat wall has no wall term and a low band no bulk term: there the surface rule is the one that binds
+    b = d.Box1D(4e-6, surface_relaxivity_t2=1e-6)
+    assert resolve_sub_steps(b, D, DT, surface=True, f_band=100.0) > resolve_sub_steps(b, D, DT, f_band=100.0)
 
     k = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), permeability=1e-5)
     assert resolve_sub_steps(k, D, DT) == permeable_sub_steps(k, D, DT)
@@ -50,7 +52,7 @@ def test_resolve_is_the_maximum_of_the_applicable_criteria():
     assert surface_sub_steps(m, D, DT) == 1, "a feature radius is not a pore"
 
     assert resolve_sub_steps(g, D, DT, mt_dwell_time=1e-3) == max(
-        walk_sub_steps(g, D, DT), mt_sub_steps(g, D, DT, 1e-3))
+        tolerance_sub_steps(g, D, DT), mt_sub_steps(g, D, DT, 1e-3))
 
     assert resolve_sub_steps(d.FreeDiffusion(), D, DT, surface=True) == 1
     assert resolve_sub_steps(g, D, DT, surface=True, override=3) == 3
@@ -59,7 +61,7 @@ def test_resolve_is_the_maximum_of_the_applicable_criteria():
 def test_disabling_the_surface_criterion_keeps_the_reflection_criterion():
     g = _sphere_rho()
     g.surface_substep_frac = 0.0
-    assert resolve_sub_steps(g, D, DT, surface=True) == walk_sub_steps(g, D, DT) > 1
+    assert resolve_sub_steps(g, D, DT, surface=True) == tolerance_sub_steps(g, D, DT) > 1
 
 
 # ── every driver reports the dispatcher's count ──────────────────────────────────────────
@@ -98,7 +100,11 @@ def test_trajectory_producers_take_the_dispatched_count():
     out = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0,
                                   require_gpu=False)
     assert out.sub_steps == resolve_sub_steps(g, D, dt_save, surface=True)
-    assert out.sub_steps > n_plain, "recording the boundary local time resolves the surface criterion"
+    b = d.Box1D(4e-6, surface_relaxivity_t2=1e-6)                     # flat walls, a low band: the surface rule binds
+    n_box = d.simulate_trajectories(64, D, b, T_max, dt_save, seed=0, require_gpu=False, tiers=(), f_band=100.0).sub_steps
+    n_rho = d.simulate_trajectories(64, D, b, T_max, dt_save, seed=0, require_gpu=False, f_band=100.0).sub_steps
+    assert n_rho == resolve_sub_steps(b, D, dt_save, surface=True, f_band=100.0) > n_box == 1, \
+        "recording the boundary local time resolves the surface criterion"
 
     mt = d.simulate_mt_trajectories(64, D, d.Sphere(2e-6), T_max, dt_save, kappa_MT=1e-5,
                                     dwell_time=1e-3, seed=0, require_gpu=False,

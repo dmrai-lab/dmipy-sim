@@ -7,7 +7,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..math.step_law import LONGEST_STEP
+from ..math.step_law import LONGEST_STEP, SPHERE_K1, SPHERE_WALL_COEFFICIENT, CYLINDER_K1, CYLINDER_WALL_COEFFICIENT
+
+#: The slowest mode of each pore, ``k_1 * R``: the first root of ``j_1'`` (sphere) and ``J_1'`` (cylinder), and the
+#: wall coefficient of its specular reflection measured with the stepped matrix method (step_law: the sphere's
+#: 0.65 to 0.83 over ``delta_0 / a`` 0.1 to 0.5, the cylinder's 0.41 to 0.51).
 from ._boundary import (bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
@@ -89,7 +93,7 @@ class Sphere(Geometry):
 
     @property
     def length_scales(self):
-        return LengthScales(min_feature=self.radius)
+        return LengthScales(min_feature=self.radius, pore_rate=(SPHERE_K1 / self.radius) ** 2, wall_coefficient=SPHERE_WALL_COEFFICIENT)
 
     def volume(self) -> float:
         """Volume of the sphere: (4/3)·π·R³ (m³)."""
@@ -199,7 +203,7 @@ class Cylinder(Geometry):
 
     @property
     def length_scales(self):
-        return LengthScales(min_feature=self.radius)
+        return LengthScales(min_feature=self.radius, pore_rate=(CYLINDER_K1 / self.radius) ** 2, wall_coefficient=CYLINDER_WALL_COEFFICIENT)
 
     def init_positions(self, n_walkers, key):
         """Uniform sampling in circular cross-section, each accepted point then pulled
@@ -467,7 +471,7 @@ class PermeableSlab1D(Geometry):
 
     @property
     def length_scales(self):
-        return LengthScales(min_feature=self.length / 2.0)     # one compartment's width
+        return LengthScales(min_feature=self.length / 2.0, pore_rate=(2.0 * np.pi / self.length) ** 2, wall_coefficient=0.0)     # one compartment's width; flat walls
 
     def volume(self) -> float:
         return self.length / 2.0          # per compartment (V/S -> tau = L/(2 kappa) one-sided)

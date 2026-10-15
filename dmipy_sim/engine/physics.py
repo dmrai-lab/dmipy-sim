@@ -81,10 +81,10 @@ def crossing_sub_steps(geometry, diffusivity: float, dt: float) -> int:
 
 
 def permeable_sub_steps(geometry, diffusivity: float, dt: float) -> int:
-    """Sub-steps of a permeable walk: the reflection rule of :func:`walk_sub_steps` and the crossing rule of
+    """Sub-steps of a permeable walk: the step law's rule of :func:`tolerance_sub_steps` and the crossing rule of
     :func:`crossing_sub_steps`, whichever is finer -- the count scales with ``kappa``, and an impermeable
-    geometry gets the reflection rule alone."""
-    return max(walk_sub_steps(geometry, diffusivity, dt), crossing_sub_steps(geometry, diffusivity, dt))
+    geometry gets the step law's rule alone."""
+    return max(tolerance_sub_steps(geometry, diffusivity, dt), crossing_sub_steps(geometry, diffusivity, dt))
 
 
 def _surface_char_radius(geometry):
@@ -193,46 +193,56 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
     return max(1, int(n))
 
 
-def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
-    """Sub-steps for a plain diffusion walk (no MT, no surface tier of its own).
+STEP_TOLERANCE = 1e-3
+"""The relative error of the walk's diffusion spectrum ``D(w)`` the physics step is sized for, up to the band the
+walk serves (:func:`tolerance_sub_steps`): every mode a measurement reads decays at a rate within this of the
+exact one, so a row's signal error is below ``STEP_TOLERANCE * |S ln S| <= STEP_TOLERANCE / e``, under the
+Monte-Carlo floor of every pack of the substrate bank (dmrai-lab/dmipy-sim#714, #715)."""
 
-    For an ANALYTIC pore this is ``step_l = R/6``, ``R`` its smallest feature (a geometry that has measured its
-    own step declares it as ``reflection_step_fraction``: the curved tubes, see
-    :class:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders`). Reflection off an analytic surface is
-    exact at any step, so the criterion only has to keep a step from skipping the pore. A permeable wall adds the
-    crossing rule of :func:`crossing_sub_steps`, which scales with ``kappa``; it is applied by
-    :func:`resolve_sub_steps`, not here.
 
-    For a MESH it is :func:`collision_sub_steps` instead, because ``R/6`` is not a physical criterion there:
-    ``_geometry_radius`` returns ``feature_radius``, a MESH-RESOLUTION parameter, so the rule tightened as a
-    mesh was refined while the pore stayed the size it always was. What actually bounds a mesh step is the
-    27-cell collision lookup -- outrun it and the wall is missed entirely. This is the same substitution
-    :func:`mt_sub_steps` makes for the binding walk, for the same reason.
+def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float = STEP_TOLERANCE,
+                        f_band: float = None) -> int:
+    """Sub-steps so the walk's diffusion spectrum is within ``eps_D`` up to the band ``f_band`` (Hz).
 
-    Measured on the 366-fibre CACTUS bundle (feature_radius 0.186um, cell 0.124um, dt_save 0.1ms, D=2e-9):
-    the old rule asked for 1256 sub-steps, the collision criterion for 97, and across 97 -> 314 the apparent
-    perpendicular diffusivity scatters +/-1.3% with no trend, the accumulated boundary local time moves
-    +0.16%, and containment is flat (97.45% -> 97.02%). So the observables are converged at 97 and the extra
-    13x was buying nothing.
+    The walk's step law (:mod:`dmipy_sim.math.step_law`) leaves two first-order terms and one bound, and the
+    physics step ``dt_p`` is the smallest of the three:
+
+    * the curved wall, ``dt_p = 5 eps_D / (c lambda_1)`` (:func:`~dmipy_sim.math.step_law.pore_step`), ``lambda_1``
+      the pore's slowest rate and ``c`` its wall coefficient, both declared by the geometry (``LengthScales.pore_rate``
+      and ``wall_coefficient``; exact for the analytic pores, the envelope of a sphere of ``min_feature`` and 0.85 otherwise);
+    * the band, the largest step at which the pair's bulk error on the mode a band of ``f_band`` reads stays within
+      ``eps_D`` (:func:`~dmipy_sim.math.step_law.band_step`); ``f_band`` is the Nyquist frequency of the sample grid,
+      ``1 / (2 dt)``, when a driver states none (a trajectory walk serves every waveform its save grid can carry);
+    * the first-order regime, ``delta_0 <= min_feature / 2`` (the longest step 0.82 of it), where the law is measured;
+      a geometry that declares its own ceiling (``reflection_step_fraction``: the curved tubes' two-bounce wall) keeps it.
+
+    A geometry whose ``min_feature`` is a resolution and not a pore declares ``pore_rate = 0`` (a label volume's
+    voxel) and has no pore term; the band term and the ceiling size its step, and the pilot of a build measures its
+    error.
+
+    For a MESH it is :func:`collision_sub_steps` instead, because a pore rule cannot be written on a meshing
+    parameter: ``min_feature`` is ``feature_radius``, a MESH-RESOLUTION parameter, so a pore rule on it tightened as a
+    mesh was refined while the pore stayed the size it always was. What bounds a mesh step is the 27-cell collision
+    lookup -- outrun it and the wall is missed entirely. Measured on the 366-fibre CACTUS bundle (feature_radius
+    0.186um, cell 0.124um, dt_save 0.1ms, D=2e-9): a pore rule on the feature asked for 1256 sub-steps, the
+    collision criterion for 97, and across 97 -> 314 the apparent perpendicular diffusivity scatters +/-1.3% with no
+    trend, the accumulated boundary local time moves +0.16%, and containment is flat (97.45% -> 97.02%). A mesh's
+    step error is what the two-step pilot of its build measures (#715).
     """
+    from ..math.step_law import pore_step, band_step, WALL_COEFFICIENT_ENVELOPE, PORE_RATE_ENVELOPE
     ls = length_scales_of(geometry)
     R = ls.min_feature
     n_coll = 1
     if ls.lookup_cell:
         n_coll = collision_sub_steps(geometry, diffusivity, dt)
-        # A cell grid is not the same thing as a mesh. For a MESH the collision criterion
-        # REPLACES R/6, because `_geometry_radius` there returns `feature_radius` -- a
-        # meshing parameter, not a pore size (that is the point of the substitution above).
-        # For an ANALYTIC geometry that merely carries a spatial index (PackedCurvedCylinders
-        # buckets tube SEGMENTS so a step tests ~50 candidates instead of millions), R is a
-        # real physical radius and the two criteria bound DIFFERENT failures, so both apply:
-        #   * cell   -- a step must not outrun the 27-cell candidate gather (wall never tested)
-        #   * R/6    -- a step must not break single-reflection-per-step (the analytic
-        #               reflection math itself; see CurvedCylinder's class docstring)
-        # Keying this branch on `cell_size` alone silently dropped the R/6 rule for
-        # PackedCurvedCylinders: on the DiSCo substrate (R_min 0.72um, cell 6.5um) it asked for
-        # 1 sub-step where the analytic rule asks for 106, i.e. step/R ~ 1.7 -- walkers
-        # stepping straight through tube walls.
+        # A cell grid is not the same thing as a mesh. For a MESH the collision criterion REPLACES the pore rule,
+        # because `min_feature` there is `feature_radius` -- a meshing parameter, not a pore size. For an ANALYTIC
+        # geometry that merely carries a spatial index (PackedCurvedCylinders buckets tube SEGMENTS so a step tests
+        # ~50 candidates instead of millions), R is a real physical radius and the two criteria bound DIFFERENT
+        # failures, so both apply: the cell (a step must not outrun the 27-cell candidate gather) and the pore rule.
+        # Keying this branch on `cell_size` alone silently dropped the pore rule for PackedCurvedCylinders: on the
+        # DiSCo substrate (R_min 0.72um, cell 6.5um) it asked for 1 sub-step where the pore rule asks for 106,
+        # i.e. step/R ~ 1.7 -- walkers stepping straight through tube walls.
         if ls.is_mesh_feature or R is None:
             return n_coll
     if R is None:
@@ -250,15 +260,22 @@ def walk_sub_steps(geometry, diffusivity: float, dt: float) -> int:
         if confined:
             warnings.warn(
                 f"{type(geometry).__name__} exposes walls (finite surface_area and volume) but no length "
-                f"scale that walk_sub_steps recognises, so the walk runs at ONE sub-step "
+                f"scale that tolerance_sub_steps recognises, so the walk runs at ONE sub-step "
                 f"(step_l = sqrt(6*D*dt)). Boundary local time, and any surface T2 fitted from it, will be "
                 f"wrong if that step is comparable to the pore. Expose `radius` (or `length`) on the "
                 f"geometry, or pass sub_steps explicitly.", UserWarning, stacklevel=3)
         return 1
-    frac = float(getattr(geometry, 'reflection_step_fraction', None) or 6.0)
-    dt_phys_max = (float(R) / frac) ** 2 / (6.0 * diffusivity)
-    return max(n_coll, max(1, int(np.ceil(dt / dt_phys_max))))
-
+    D = float(diffusivity)
+    R = float(R)
+    rate = ls.pore_rate if ls.pore_rate is not None else PORE_RATE_ENVELOPE / R ** 2
+    c = ls.wall_coefficient if ls.wall_coefficient is not None else WALL_COEFFICIENT_ENVELOPE
+    pore = pore_step(rate, D, eps_D, c)                      # infinite at a declared rate of 0: no confining mode
+    if f_band is None:
+        f_band = 0.5 / float(dt)
+    frac = getattr(geometry, 'reflection_step_fraction', None)
+    delta_max = R / float(frac) if frac else R / 2.0
+    dt_p = min(pore, band_step(f_band, eps_D), delta_max ** 2 / (6.0 * D))
+    return max(n_coll, max(1, int(np.ceil(float(dt) / dt_p * (1.0 - 1e-12)))))      # an exact multiple is not one more
 
 def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0) -> int:
     """Fine sub-steps so a surface-relaxivity walk resolves the boundary local time.
@@ -326,21 +343,37 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
 #: cost blocks a user for hours before telling them. ``sub_steps=`` overrides deliberately.
 MAX_SUB_STEPS = 100_000
 
+def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = False, mt_dwell_time=None,
+                   eps_D: float = STEP_TOLERANCE, f_band: float = None) -> dict:
+    """The sub-step count each criterion that applies to a walk on ``geometry`` asks for, by name -- what
+    :func:`resolve_sub_steps` takes the maximum of, and what a walk records as its ``step_rule``."""
+    rules = {"step law": tolerance_sub_steps(geometry, diffusivity, dt, eps_D=eps_D, f_band=f_band),
+             "collision lookup": collision_sub_steps(geometry, diffusivity, dt),
+             "crossing": crossing_sub_steps(geometry, diffusivity, dt)}
+    if surface:
+        rules["surface local time"] = surface_sub_steps(geometry, diffusivity, dt)
+    if mt_dwell_time is not None:
+        rules["binding"] = mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time)
+    return rules
+
+
 def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool = False,
-                      mt_dwell_time=None, override=None) -> int:
+                      mt_dwell_time=None, override=None, eps_D: float = STEP_TOLERANCE, f_band: float = None) -> int:
     """Fine sub-steps per waveform (or save) step for a walk on ``geometry``.
 
     Every driver -- the fused scan (:func:`make_step_fn`, :func:`make_packed_myelin_step_fn`),
     the trajectory producer (:func:`~dmipy_sim.engine.core.simulate_trajectories`), the vector-Bloch
     engine and the MT walker -- takes its count from here, so one substrate is walked at one
-    resolution whichever way it is driven. The count is the maximum over the criteria that apply:
+    resolution whichever way it is driven. The count is the maximum over the criteria that apply
+    (:func:`sub_step_rules`):
 
-    * reflection, ``step_l <= min_feature / 6`` (:func:`walk_sub_steps`; a geometry's own measured
-      ``reflection_step_fraction`` in place of the 6); not applied when ``min_feature`` is a meshing
-      parameter;
+    * the step law, the walk's diffusion spectrum within ``eps_D`` up to the band ``f_band``
+      (:func:`tolerance_sub_steps`: the curved-wall term on the pore's slowest mode, the pair's bulk term on
+      the band's mode, the first-order regime); ``f_band`` is the sample grid's Nyquist frequency when a driver
+      states none; not applied when ``min_feature`` is a meshing parameter;
     * crossing, ``step_l <= CROSSING_P_MAX D / (2 kappa)`` (:func:`crossing_sub_steps`), when the wall is
       permeable: the per-hit transmission stays at first order, and the count scales with ``kappa``;
-    * collision lookup, ``step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a
+    * collision lookup, ``LONGEST_STEP * step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a
       spatially indexed geometry;
     * surface local time, ``step_l <= surface_pore / 8`` (:func:`surface_sub_steps`), when
       ``surface`` -- the walk records or applies a boundary local time;
@@ -350,13 +383,7 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     """
     if override:
         return int(override)
-    rules = {"reflection": walk_sub_steps(geometry, diffusivity, dt),
-             "collision lookup": collision_sub_steps(geometry, diffusivity, dt),
-             "crossing": crossing_sub_steps(geometry, diffusivity, dt)}
-    if surface:
-        rules["surface local time"] = surface_sub_steps(geometry, diffusivity, dt)
-    if mt_dwell_time is not None:
-        rules["binding"] = mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time)
+    rules = sub_step_rules(geometry, diffusivity, dt, surface=surface, mt_dwell_time=mt_dwell_time, eps_D=eps_D, f_band=f_band)
     name, n = max(rules.items(), key=lambda kv: kv[1])
     n = max(1, int(n))
     if n > MAX_SUB_STEPS:
@@ -376,7 +403,7 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
 
 
 def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
-                 T1: float = None, sub_steps: int = None, track_compartment: bool = False):
+                 T1: float = None, sub_steps: int = None, track_compartment: bool = False, f_band: float = None):
     """Return ``(step_fn, has_weight)``: the fused scan body for one waveform timestep.
 
     Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary transverse-coherence
@@ -436,7 +463,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
     _inv_T2 = jnp.float32(1.0 / T2) if T2 is not None else jnp.float32(0.0)
     _inv_T1 = jnp.float32(1.0 / T1) if T1 is not None else jnp.float32(0.0)
 
-    n_sub = resolve_sub_steps(geometry, float(_D0), dt, surface=has_surf, override=sub_steps)
+    n_sub = resolve_sub_steps(geometry, float(_D0), dt, surface=has_surf, override=sub_steps, f_band=f_band)
     _warn_if_step_outruns_the_lookup(geometry, float(_D0), dt, n_sub, 'walk')
     dt_sub       = dt / n_sub
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
@@ -539,7 +566,7 @@ def _add_work(work, w, keep=None):
     return tuple(out)
 
 
-def make_myelin_substep(geometry, dt: float, rho_weights=None):
+def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = None):
     """The one displacement-and-wall rule for the concentric-cylinder substrates.
 
     Serves :class:`MyelinatedCylinder` (one axon, open extra-axonal space) and
@@ -620,7 +647,7 @@ def make_myelin_traj_step_fn(geometry, dt: float):
     return step_fn
 
 
-def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = None):
+def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = None, f_band: float = None):
     """Fused forward step for :class:`MyelinatedCylinder`.
 
     Carry ``(r, phi, log_w, compartment_id, key)`` with the compartment a pool id (0 extra,
@@ -629,7 +656,7 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = 
     exposed as ``step_fn.n_sub``.
     """
     D_max = float(max(geometry.D_intra, geometry.D_myelin, geometry.D_extra))
-    n_sub = resolve_sub_steps(geometry, D_max, dt, override=sub_steps)
+    n_sub = resolve_sub_steps(geometry, D_max, dt, override=sub_steps, f_band=f_band)
     dt_sub = dt / n_sub
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
     dt_sub_f32 = jnp.float32(dt_sub)
@@ -746,7 +773,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
     return step_fn
 
 
-def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
+def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: float = None):
     """Fused forward signal step for PackedMyelinatedCylinders.
 
     The walk of :func:`make_packed_myelin_traj_step_fn` with, in the same scan, the gradient
@@ -774,7 +801,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None):
     inv_T1 = jnp.float32(1.0 / T1) if has_t1 else jnp.float32(0.0)
 
     D_ref = float(max(np.max(np.asarray(D_i)), np.max(np.asarray(D_e))))
-    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=has_rho)
+    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=has_rho, f_band=f_band)
     dt_sub = dt / n_sub
     sub = make_myelin_substep(geometry, dt_sub, rho_weights=rho_weights)
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
