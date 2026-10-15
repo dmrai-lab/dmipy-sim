@@ -43,6 +43,7 @@ from .gpu import gpu_available
 from ..run import Run
 
 _log = logging.getLogger("dmipy_sim.engine.bloch")
+from ..acquisition.waveforms import band_hz
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, pair_step
 
 __all__ = ["simulate_bloch"]
@@ -91,7 +92,7 @@ def _build_rf_schedule(rf_events, dt, n_t):
 
 
 def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
-                        field_fn=None, sub_steps=None):
+                        field_fn=None, sub_steps=None, f_band=None):
     """Per-timestep forward Bloch scan body (per walker; M is (n_meas, 3)).
 
     Carry ``(r, M, key, u_crush)``; ``u_crush`` is the walker's fixed macroscopic
@@ -154,7 +155,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         # across membranes during a mixing time is modelled correctly (e.g. FEXI).
         kappa_over_D = jnp.float32(geometry.permeability / D)
         interact = geometry.interact               # absorbs a geometry that also reports crossing / refusal
-        n_sub = resolve_sub_steps(geometry, float(D), dt, surface=rho > 0.0, override=sub_steps)
+        n_sub = resolve_sub_steps(geometry, float(D), dt, surface=rho > 0.0, override=sub_steps, f_band=f_band)
         _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
         step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
         gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
@@ -184,7 +185,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         step_fn.work0 = _work0
         return step_fn
 
-    n_sub = resolve_sub_steps(geometry, float(D), dt, surface=has_surf, override=sub_steps)
+    n_sub = resolve_sub_steps(geometry, float(D), dt, surface=has_surf, override=sub_steps, f_band=f_band)
     _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
     step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
     gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)
@@ -356,7 +357,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         step_fn = _make_bloch_step_fn(geometry, float(diffusivity), dt,
                                       T2, T1, float(M0), float(off_resonance_hz),
                                       rho=float(surface_relaxivity), field_fn=field_fn,
-                                      sub_steps=sub_steps)
+                                      sub_steps=sub_steps, f_band=band_hz(G, dt))
         M_init = jnp.zeros((n_meas, 3), dtype=jnp.float32).at[:, 2].set(jnp.float32(M0))
 
         want_echo = echo_steps is not None
@@ -582,7 +583,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     n_meas, n_t, _ = G.shape
 
     sub_steps = resolve_sub_steps(geometry, D, dt, surface=float(surface_relaxivity) > 0.0,
-                                  mt_dwell_time=dwell_time, override=sub_steps)
+                                  mt_dwell_time=dwell_time, override=sub_steps, f_band=band_hz(G, dt))
 
     dflip, axis, carrier = _build_rf_schedule(seq.rf, dt, n_t)
     crush_rate, has_crush = _build_crusher(seq.crusher, dt, n_t)

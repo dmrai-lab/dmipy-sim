@@ -30,6 +30,8 @@ so the difference isolates the step law.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 from scipy import special
 
@@ -37,7 +39,9 @@ from dmipy_sim.constants import GAMMA
 from .matrix_method import _cyl_neumann_roots, _sph_neumann_roots
 
 __all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",
-           "FIXED_LENGTHS", "FIXED_WEIGHTS", "step_moments", "bulk_multiplier", "SteppedPore"]
+           "FIXED_LENGTHS", "FIXED_WEIGHTS", "WALL_COEFFICIENT_ENVELOPE", "PORE_RATE_ENVELOPE",
+           "SPHERE_K1", "SPHERE_WALL_COEFFICIENT", "CYLINDER_K1", "CYLINDER_WALL_COEFFICIENT", "step_moments", "bulk_multiplier",
+           "pore_step", "band_step", "band_reach", "SteppedPore"]
 
 #: The pair's lengths in units of ``sqrt(6 D dt)`` and the probability of the long one.
 PAIR_SHORT = float(np.sqrt((5.0 - np.sqrt(10.0)) / 3.0))      # 0.78267
@@ -52,6 +56,20 @@ MEAN_STEP = (1.0 - PAIR_P_LONG) * PAIR_SHORT + PAIR_P_LONG * PAIR_LONG       # 0
 #: The fixed-length law, for the oracle's comparisons.
 FIXED_LENGTHS = (1.0,)
 FIXED_WEIGHTS = (1.0,)
+#: The first-order coefficient of the specular reflection on a curved wall, in units of ``lambda_1 dt / 5`` on the
+#: pore's slowest mode, for a surface that declares none: the largest measured (the sphere, 0.83 at
+#: ``delta_0 / a = 0.5``, 0.65 at 0.1; the cylinder 0.41 to 0.51; a flat wall 0), so the envelope of every
+#: convex pore in the first-order regime ``delta_0 <= a / 2``.
+WALL_COEFFICIENT_ENVELOPE = 0.85
+#: The slowest mode of each analytic pore, as the root ``K1`` of its Neumann condition (rate ``(K1 / a)^2`` per unit
+#: D): the sphere's ``l = 1`` and the cylinder's ``m = 1``; and the wall coefficient measured on it with the stepped
+#: matrix method (the sphere's bound over the first-order regime, the cylinder's 0.41 to 0.51).
+SPHERE_K1, SPHERE_WALL_COEFFICIENT = 2.0815759778181, 0.85
+CYLINDER_K1, CYLINDER_WALL_COEFFICIENT = 1.8411837813407, 0.5
+#: The pore rate per ``min_feature^2`` of a geometry that declares none: a sphere of that radius, the tightest
+#: confinement of the pores at one feature (a cylinder's is 3.39, a slab of width ``2 h`` 2.47), so the step it sets
+#: holds the tolerance on any of them.
+PORE_RATE_ENVELOPE = SPHERE_K1 ** 2
 
 
 def step_moments(lengths, weights):
@@ -67,6 +85,40 @@ def bulk_multiplier(k_delta0, lengths=PAIR_LENGTHS, weights=PAIR_WEIGHTS):
     to a bulk mode ``k``, against diffusion's ``exp(-(k delta_0)^2 / 6)``."""
     x = np.asarray(k_delta0, float)
     return sum(w * np.sinc(x * l / np.pi) for l, w in zip(lengths, weights))
+
+
+def pore_step(pore_rate, D, eps, wall_coefficient=WALL_COEFFICIENT_ENVELOPE):
+    """The physics step (s) at which the pore's slowest mode decays with relative rate error ``eps``:
+    ``5 eps / (c lambda_1)`` with ``lambda_1 = D * pore_rate`` the mode's rate (``pore_rate`` its eigenvalue
+    per unit D, 1/m^2) and ``c`` the wall coefficient; infinite for a flat wall (``c = 0``) and for a geometry that
+    declares no confining mode on its feature (``pore_rate = 0``)."""
+    c = float(wall_coefficient)
+    if c <= 0.0 or float(pore_rate) <= 0.0:
+        return float("inf")
+    return 5.0 * float(eps) / (c * float(pore_rate) * float(D))
+
+
+@lru_cache(maxsize=None)
+def band_reach(eps, lengths=PAIR_LENGTHS, weights=PAIR_WEIGHTS):
+    """The largest ``k delta_0`` at which a step law's bulk rate error on mode ``k`` stays within ``eps``: where
+    ``|ln E[sinc(k delta)] / (-(k delta_0)^2 / 6) - 1|`` first exceeds ``eps`` on a fine grid (the pair: 1.79 at
+    1e-3, 1.24 at 1e-4; the fixed step: 0.17 at 1e-3, from ``(k delta_0)^2 / 30``)."""
+    x = np.linspace(1e-3, 3.0, 30000)
+    m = bulk_multiplier(x, lengths, weights)
+    ok = m > 0
+    err = np.full_like(x, np.inf)
+    err[ok] = np.abs(np.log(m[ok]) / (-x[ok] ** 2 / 6.0) - 1.0)
+    beyond = np.flatnonzero(err > float(eps))
+    return float(x[beyond[0] - 1]) if len(beyond) and beyond[0] > 0 else float(x[-1])
+
+
+def band_step(f_band, eps, lengths=PAIR_LENGTHS, weights=PAIR_WEIGHTS):
+    """The physics step (s) at which the bulk mode a band of ``f_band`` (Hz) reads, ``k = sqrt(2 pi f / D)``,
+    decays with relative rate error ``eps``: ``k delta_0 = sqrt(12 pi f dt)``, so ``dt = reach^2 / (12 pi f)``
+    with :func:`band_reach`; infinite for no band."""
+    if f_band is None or f_band <= 0.0:
+        return float("inf")
+    return band_reach(float(eps), tuple(lengths), tuple(weights)) ** 2 / (12.0 * np.pi * float(f_band))
 
 
 def _trapz_weights(x):

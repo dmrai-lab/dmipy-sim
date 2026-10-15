@@ -484,16 +484,19 @@ def test_length_scales_are_the_voxel_and_nothing_else():
     narrowest pore one can hold. ``surface_pore`` is unset, so the surface-relaxivity rule divides that
     worst case and not ``V/S``, which is a mean (a slab's is half its width, ten times its voxel here).
     There is no ``lookup_cell``: the traversal visits every voxel the path enters, so no step can
-    outrun a candidate gather, and the engine resolves a quarter of a voxel per step for the surface
-    tier and one voxel without it."""
+    outrun a candidate gather. The voxel is a resolution, not a pore (``pore_rate`` 0), so the step law has no
+    pore term on it: the engine resolves a quarter of a voxel per step for the surface tier and, read to a band
+    of 1 kHz, one voxel without it (the save grid's own Nyquist band, 24 kHz, would ask the pair's bulk
+    term for six)."""
     from dmipy_sim.engine.physics import resolve_sub_steps
     g, d = slab()
     ls = g.length_scales
-    assert ls == LengthScales(min_feature=pytest.approx(0.5e-6))
+    assert ls == LengthScales(min_feature=pytest.approx(0.5e-6), pore_rate=0.0)
     assert g.surface_to_volume() == pytest.approx(2 / d)    # measured, and not a step rule
     dt = (0.5e-6) ** 2 / (6 * D)                            # one voxel per step
     assert resolve_sub_steps(g, D, dt, surface=True) == 16   # (4 voxels)^2: a quarter of a voxel
-    assert resolve_sub_steps(g, D, dt, surface=False) == 1
+    assert resolve_sub_steps(g, D, dt, surface=False, f_band=1000.0) == 1
+    assert resolve_sub_steps(g, D, dt, surface=False) == 6
 
 
 def test_the_voxelised_surface_is_the_manhattan_surface():

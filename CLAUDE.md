@@ -214,10 +214,18 @@ which; `geometry_from_spec` passes it back). A pool's water is a property of the
 default seeding happens to do.
 
 **Sub-steps** come from one dispatch, `physics.resolve_sub_steps(geometry, D, dt, surface=,
-mt_dwell_time=, override=)` — the maximum of the reflection (R/6, R/25 permeable), collision-lookup,
-surface-local-time (pore/8) and binding criteria that apply. Every driver (`make_step_fn`,
-`simulate_trajectories`, `simulate_bloch`, `simulate_mt_trajectories`, the packed-myelin kernel)
-calls it; the returned step functions carry the count as `.n_sub`. Do not pick a rule per call site.
+mt_dwell_time=, override=, eps_D=, f_band=)` — the maximum of the step law's tolerance rule
+(`tolerance_sub_steps`, #714/#715: the walk's diffusion spectrum within `STEP_TOLERANCE` = 1e-3 up to the band
+`f_band`, from the curved-wall term on the pore's slowest mode, `5 eps / (c lambda_1)` with the geometry's declared
+`LengthScales.pore_rate` and `wall_coefficient` or the envelope of a sphere of `min_feature` (rate `4.33 D / min_feature^2`) and 0.85, the pair's bulk term
+on the band's mode, `band_step`, and the first-order regime `delta_0 <= min_feature / 2`; a mesh takes the
+collision rule instead, its pore being unknown), the crossing (R/25-like, on the longest atom), collision-lookup
+(on the longest atom), surface-local-time (pore/8) and binding criteria that apply. The band is the waveform's own
+(`acquisition.waveforms.band_hz`: the frequency holding all but `eps` of every row's b) for the fused drivers, the
+scanner class's for `walk_spec`, the save grid's Nyquist frequency for a bare `simulate_trajectories`; the walk
+records what sized its step as `work["step_rule"]`. Every driver (`make_step_fn`, `simulate_trajectories`,
+`simulate_bloch`, `simulate_mt_trajectories`, the packed-myelin kernel) calls it; the returned step functions carry
+the count as `.n_sub`. Do not pick a rule per call site.
 
 ```python
 hit = geom.interact(r, step, kappa_over_D=0.0, rho_over_D=0.0, key=None, side=None)

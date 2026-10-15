@@ -254,8 +254,10 @@ class LabelVolume(Geometry):
         divides that same worst case rather than ``V/S``, which is a MEAN and on a real rock is larger
         than the pores that set the bias (see :data:`SURFACE_STEP_FRACTION`). ``V/S`` is measured and
         reported by :meth:`surface_to_volume`; it is a property of the substrate, not a step rule.
+        The voxel is a resolution, not a pore: ``pore_rate`` is 0, the step law has no confining mode to
+        read on it, and the pilot of a build measures the step's error (dmrai-lab/dmipy-sim#715).
         """
-        return LengthScales(min_feature=float(self.voxel_size.min()))
+        return LengthScales(min_feature=float(self.voxel_size.min()), pore_rate=0.0)
 
     # ------------------------------------------------------------------ labelling
     def _wrap(self, r):

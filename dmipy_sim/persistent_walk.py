@@ -219,7 +219,8 @@ class PersistentWalk:
 def merge_work(works):
     """The work record of a walk assembled from several (a bundle's pools, a fill's shards): the counts summed,
     an entry None when any part has it None, ``bounce_budget`` the common value or, when the parts differ, the
-    largest. ``None`` when no part carries a record."""
+    largest, ``step_rule`` the one rule when the parts share it and the list of the parts' rules otherwise.
+    ``None`` when no part carries a record."""
     works = [w for w in works if w]
     if not works:
         return None
@@ -229,4 +230,6 @@ def merge_work(works):
         out[key] = None if any(v is None for v in vals) else int(sum(vals))
     budgets = [w.get("bounce_budget") for w in works if w.get("bounce_budget") is not None]
     out["bounce_budget"] = None if not budgets else int(max(budgets))
+    rules = [w.get("step_rule") for w in works if w.get("step_rule") is not None]
+    out["step_rule"] = None if not rules else (rules[0] if all(r == rules[0] for r in rules) else rules)
     return out

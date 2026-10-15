@@ -20,6 +20,7 @@ import logging
 
 log = logging.getLogger(__name__)
 
+from ..acquisition.waveforms import band_hz
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
                       seed_walkers, pair_step)
@@ -463,6 +464,7 @@ def simulate(
             waveform = waveform.waveform
         G = waveform.G_eff      # (n_measurements, n_t, 3), the effective gradient
         dt = waveform.dt
+        f_band = band_hz(G, dt)                 # the band the step law resolves (physics.tolerance_sub_steps)
 
         # Substrate placement in the bore (e.g. Mesh with orientation/R): the walk runs
         # in the geometry's native frame, so rotate the ACQUISITION into that frame
@@ -509,7 +511,7 @@ def simulate(
 
         if is_myelin:
             # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
-            step_fn = make_myelin_step_fn(geometry, dt, T1=T1, sub_steps=sub_steps)
+            step_fn = make_myelin_step_fn(geometry, dt, T1=T1, sub_steps=sub_steps, f_band=f_band)
             compartments0 = geometry._init_compartments  # (n_walkers,) int32, pool id
             spin_w = jnp.asarray(geometry._water_fraction_by_pool, jnp.float32)[compartments0]
 
@@ -543,7 +545,7 @@ def simulate(
                 raise NotImplementedError(
                     "simulate(r0=...) is unsupported for PackedMyelinatedCylinders; it "
                     "initialises walkers (and their compartments) from `seed` via init_positions.")
-            step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1)
+            step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1, f_band=f_band)
             compartments0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
             _to3 = geometry.pool_of                            # -> 0 extra, 1 intra, 2 myelin
             spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
@@ -575,7 +577,7 @@ def simulate(
             # compartment id is advanced inside the step (per-compartment D/T2/T1 read it) and emitted
             # per timestep only when the caller asked for it.
             step_fn, has_weight = make_step_fn(geometry, diffusivity, dt, T2=T2, T1=T1,
-                                               sub_steps=sub_steps, track_compartment=track_comp)
+                                               sub_steps=sub_steps, track_compartment=track_comp, f_band=f_band)
             spin_w = jnp.ones((n_walkers,), dtype=jnp.float32)
             per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
                                                    geometry._inv_T1_comp_jax))
@@ -807,6 +809,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
         G = waveform.G_eff                 # (n_measurements, n_t, 3), the effective gradient
         dt = waveform.dt
+        f_band = band_hz(G, dt)
         n_measurements, n_t, _ = G.shape
 
         G_scan = jnp.transpose(G, (1, 0, 2))   # (n_t, n_measurements, 3)
@@ -821,7 +824,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
         _, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)
 
-        step_fn, _ = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps)
+        step_fn, _ = make_step_fn(geometry, diffusivity, dt, T2=T2, sub_steps=sub_steps, f_band=f_band)
         per_comp = any(a is not None for a in (geometry._D_comp_jax, geometry._inv_T2_comp_jax,
                                                geometry._inv_T1_comp_jax))
         comp0 = (jnp.asarray(geometry.classify_positions_exact(r0), jnp.int32) if per_comp
@@ -970,6 +973,7 @@ def simulate_trajectories(
     field_basis=None,
     field_sample_every: int = 1,
     bounce_budget: int = None,
+    f_band: float = None,
     backend="jax",
 ) -> PersistentWalk:
     """Walk the spins ONCE and save positions at every saved time step — the
@@ -1087,11 +1091,21 @@ def simulate_trajectories(
         # --- Sub-stepping: one dispatch for every driver (physics.resolve_sub_steps) ---
         # A walk that records the boundary local time is resolved at the surface criterion too, so a
         # replayed rho reproduces the fused engine's; MT binding adds its own.
-        from .physics import resolve_sub_steps as _resolve_sub_steps, length_scales_of as _length_scales_of
+        from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
+                              length_scales_of as _length_scales_of, STEP_TOLERANCE)
         R_geom = _length_scales_of(geometry).min_feature
+        # the band the step law resolves: the caller's (walk_spec passes the scanner class's), else the save grid's
+        # Nyquist frequency, since a bare trajectory walk serves every waveform its grid can carry
+        f_band = 0.5 / float(dt_actual) if f_band is None else float(f_band)
+        _rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record),
+                                 mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), f_band=f_band)
+        _override = None if sub_steps is None else int(sub_steps)
         sub_steps = _resolve_sub_steps(
             geometry, diffusivity, dt_actual, surface=bool(record),
-            mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps)
+            mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps, f_band=f_band)
+        # what sized the step (PersistentWalk.work["step_rule"]): the count each rule asked for, the tolerance, the
+        # band, and the caller's override when there was one
+        step_rule = dict(eps_D=float(STEP_TOLERANCE), f_band_hz=f_band, rules=dict(_rules), override=_override)
         dt_sim = dt_actual / sub_steps
         step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
         # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable
@@ -1747,6 +1761,7 @@ def simulate_trajectories(
         _counted = _counting and _work[3]
         work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
                     backend=_backend_name,
+                    step_rule=dict(step_rule, dt_p=float(dt_sim), sub_steps=int(sub_steps)),
                     bounce_budget=(None if _loop is None else int(_loop.budget)),
                     n_hits=(int(_work[0]) if _counted else None),
                     n_crossings=(int(_work[1]) if _counted else None),

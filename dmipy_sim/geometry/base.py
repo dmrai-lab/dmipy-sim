@@ -20,8 +20,19 @@ class LengthScales(NamedTuple):
     ----------
     min_feature : float or None
         The smallest confining scale a step must not skip: a pore radius, a slab width, the
-        smallest object in a packing. The R/6 (reflection), R/25 (membrane crossing) and R/8
-        (surface local time) sub-step rules divide this. ``None`` for an unbounded walk.
+        smallest object in a packing. The step law's envelope (a sphere of this radius for an
+        undeclared ``pore_rate``, half of it for the longest step), the R/25 (membrane crossing)
+        and R/8 (surface local time) sub-step rules divide this. ``None`` for an unbounded walk.
+    pore_rate : float or None
+        The eigenvalue per unit D (1/m^2) of the slowest mode the walk's step error is measured
+        against (:mod:`dmipy_sim.math.step_law`): ``(2.0816 / R)^2`` for a sphere, ``(1.8412 / R)^2``
+        for a cylinder, ``(pi / L)^2`` for a slab. ``None`` takes a sphere of ``min_feature``, the tightest of them;
+        0 declares no confining mode on the feature (a label volume's voxel is a resolution), so the step law
+        has no pore term and a build's pilot measures the step's error.
+    wall_coefficient : float or None
+        The first-order coefficient of the specular reflection on this surface, in units of
+        ``lambda_1 dt / 5``, measured with the stepped matrix method: 0 for a flat wall, 0.5 for a
+        cylinder, 0.85 for a sphere. ``None`` takes the envelope ``WALL_COEFFICIENT_ENVELOPE``.
     surface_pore : float or None
         The pore the relaxing walkers occupy, for the surface-relaxivity sub-step rule, where
         it differs from ``min_feature`` (a packed substrate's extra-axonal pore, ~1/(S_ext/V)).
@@ -33,7 +44,7 @@ class LengthScales(NamedTuple):
     is_mesh_feature : bool
         True when ``min_feature`` is a meshing parameter (a ``feature_radius``) rather than a
         physical pore, so the pore-based rules do not apply to it (see
-        :func:`~dmipy_sim.engine.physics.walk_sub_steps`).
+        :func:`~dmipy_sim.engine.physics.tolerance_sub_steps`).
     min_gap : float or None
         The narrowest clearance between two objects of a packing, periodic images included.
         Declared for the packed geometries; not yet consumed by the sub-step rules.
@@ -43,6 +54,8 @@ class LengthScales(NamedTuple):
     lookup_cell: Optional[float] = None
     is_mesh_feature: bool = False
     min_gap: Optional[float] = None
+    pore_rate: Optional[float] = None
+    wall_coefficient: Optional[float] = None
 
 
 def permeability_of(value):
@@ -168,8 +181,9 @@ class Geometry(ABC):
     #: Per-geometry override of the surface-relaxivity sub-step target `pore / frac`;
     #: 0 or a negative value disables surface sub-stepping (see `physics.surface_sub_steps`).
     surface_substep_frac = None
-    #: A family's measured reflection step, `step_l <= min_feature / frac`, in place of the historical 6
-    #: (see `physics.walk_sub_steps`); None takes the 6.
+    #: A family's declared ceiling on the step, ``sqrt(6 D dt_p) <= min_feature / fraction`` (the curved tubes'
+    #: two-bounce wall, measured); None takes the step law's first-order regime, ``min_feature / 2``
+    #: (see `physics.tolerance_sub_steps`).
     reflection_step_fraction = None
     #: Acquisition rotation (geometry frame -> lab, 3x3) applied to G by the engine, or None.
     _orient_R = None
@@ -348,7 +362,7 @@ class Box1D(Geometry):
 
     @property
     def length_scales(self):
-        return LengthScales(min_feature=self.length)     # a slab confines over its width
+        return LengthScales(min_feature=self.length, pore_rate=(np.pi / self.length) ** 2, wall_coefficient=0.0)   # a slab confines over its width; flat walls
 
     def volume(self) -> float:
         """Volume per unit cross-section area = slab thickness (m)."""
