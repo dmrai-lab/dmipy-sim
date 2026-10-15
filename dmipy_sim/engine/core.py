@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
-                      seed_walkers, isotropic_unit_step)
+                      seed_walkers, pair_step)
 from ..persistent_walk import PersistentWalk
 from ..run import Run, current
 from ..acquisition.scanner_sequence import Protocol
@@ -1196,7 +1196,7 @@ def simulate_trajectories(
             def inner_step(carry, _):
                 r, key, side, bad, work = carry
                 key, step_key, perm_key = jax.random.split(key, 3)
-                unit_noise = isotropic_unit_step(step_key)
+                unit_noise = pair_step(step_key)
                 step = unit_noise * step_l_sim
                 if _carries_side:
                     hit = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
@@ -1216,7 +1216,7 @@ def simulate_trajectories(
             def inner_step(carry, _):
                 r, key, side, bad, work = carry
                 key, subkey = jax.random.split(key)
-                unit_noise = isotropic_unit_step(subkey)
+                unit_noise = pair_step(subkey)
                 step = unit_noise * step_l_sim
                 hit = interact(r, step)
                 bad = bad + hit.illegal.astype(jnp.int32)
@@ -1401,7 +1401,7 @@ def simulate_trajectories(
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp, work = carry
                     key, step_key, perm_key = jax.random.split(key, 3)
-                    unit_noise = isotropic_unit_step(step_key)
+                    unit_noise = pair_step(step_key)
                     step = unit_noise * step_l_sim
                     if _carries_side:
                         hit = permeate_relax(r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
@@ -1435,7 +1435,7 @@ def simulate_trajectories(
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp, work = carry
                     key, subkey = jax.random.split(key)
-                    unit_noise = isotropic_unit_step(subkey)
+                    unit_noise = pair_step(subkey)
                     step = unit_noise * step_l_sim
                     hit = interact(r, step, rho_over_D=jnp.float32(1.0))
                     r_new, dlog_w_unit = hit.r, hit.dlog_w
@@ -1451,7 +1451,7 @@ def simulate_trajectories(
                 def inner_step_relax(carry, _):
                     r, key, dlog_accum, comp_sum, side, bad, comp, work = carry
                     key, subkey = jax.random.split(key)
-                    unit_noise = isotropic_unit_step(subkey)
+                    unit_noise = pair_step(subkey)
                     step = unit_noise * step_l_sim
                     r_new = reflect_free(r, step)
                     comp = geometry.classify_position_carry(r_new, comp)

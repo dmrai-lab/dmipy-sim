@@ -13,6 +13,7 @@ import warnings
 import numpy as np
 
 from ..constants import GAMMA
+from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG, LONGEST_STEP
 
 
 def length_scales_of(geometry):
@@ -45,10 +46,17 @@ def seed_walkers(geometry, n_walkers, seed, r0=None):
     return master_key, r0, walker_keys
 
 
-def isotropic_unit_step(key):
-    """A direction uniform over the sphere, as float32: a standard Gaussian triple from ``key``, normalised."""
-    noise = jax.random.normal(key, (3,), dtype=jnp.float32)
-    return noise / jnp.linalg.norm(noise)
+def pair_step(key):
+    """One step of the walk in units of ``sqrt(6 D dt)``, as float32: a direction uniform over the sphere (a standard
+    Gaussian triple from ``key``, normalised) times the length the step law draws -- ``PAIR_LONG`` with probability
+    ``PAIR_P_LONG``, else ``PAIR_SHORT`` (:mod:`dmipy_sim.math.step_law`: the two lengths that give the step the
+    Gaussian step's second, fourth and sixth moments, so the walk's bulk error is third order in ``dt`` and its
+    longest step is bounded by ``LONGEST_STEP``)."""
+    k_dir, k_len = jax.random.split(key)
+    noise = jax.random.normal(k_dir, (3,), dtype=jnp.float32)
+    long = jax.random.uniform(k_len, dtype=jnp.float32) < jnp.float32(PAIR_P_LONG)
+    length = jnp.where(long, jnp.float32(PAIR_LONG), jnp.float32(PAIR_SHORT))
+    return noise * (length / jnp.linalg.norm(noise))
 
 
 CROSSING_P_MAX = 3e-3
@@ -63,11 +71,12 @@ largest probability measured."""
 
 def crossing_sub_steps(geometry, diffusivity: float, dt: float) -> int:
     """Sub-steps so a step's transmission stays at first order: ``d_perp <= CROSSING_P_MAX * D / (2 kappa)``,
-    ``d_perp`` the rms step; 1 for an impermeable geometry (``permeability`` None; a zero is stored as None)."""
+    ``d_perp`` the longest step the law draws (``LONGEST_STEP * sqrt(6 D dt_sub)``); 1 for an impermeable geometry
+    (``permeability`` None; a zero is stored as None)."""
     kappa = getattr(geometry, 'permeability', None)
     if kappa is None:
         return 1
-    step_max = CROSSING_P_MAX * float(diffusivity) / (2.0 * float(kappa))
+    step_max = CROSSING_P_MAX * float(diffusivity) / (2.0 * float(kappa)) / LONGEST_STEP
     return max(1, int(np.ceil(dt / (step_max ** 2 / (6.0 * float(diffusivity))))))
 
 
@@ -105,15 +114,16 @@ def collision_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 0
     without an independent containment check and gets WORSE as the mesh improves, since the cell size
     scales with the triangle size while the step does not.
 
-    Step length falls as 1/sqrt(n), so n = (L / (frac*cell))^2 keeps each sub-step inside the gather.
-    ``frac`` under 1 leaves margin for a walker sitting at the far edge of its own cell.
+    Step length falls as 1/sqrt(n), so n = (L / (frac*cell))^2 keeps each sub-step inside the gather, ``L`` the
+    LONGEST step the law draws (``LONGEST_STEP * sqrt(6 D dt)``). ``frac`` under 1 leaves margin for a walker
+    sitting at the far edge of its own cell.
 
     Returns 1 for geometries with no cell grid, and self-limits to 1 once dt already resolves the cell.
     """
     cs = length_scales_of(geometry).lookup_cell
     if cs is None or not np.isfinite(cs) or cs <= 0:
         return 1
-    L = float(np.sqrt(6.0 * float(diffusivity) * float(dt)))
+    L = LONGEST_STEP * float(np.sqrt(6.0 * float(diffusivity) * float(dt)))
     ratio = L / (float(frac) * float(cs))
     return int(max(1, np.ceil(ratio ** 2))) if ratio > 1.0 else 1
 
@@ -299,11 +309,11 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
     cell = length_scales_of(geometry).lookup_cell
     if not cell:
         return
-    step_l = float(np.sqrt(6.0 * diffusivity * dt / max(n_sub, 1)))
+    step_l = LONGEST_STEP * float(np.sqrt(6.0 * diffusivity * dt / max(n_sub, 1)))
     ratio = step_l / float(cell)
     if ratio > 0.9:
         warnings.warn(
-            f"{what}: sub-step length {step_l:.3e} m is {ratio:.2f} x the collision-lookup cell "
+            f"{what}: the longest sub-step {step_l:.3e} m is {ratio:.2f} x the collision-lookup cell "
             f"({float(cell):.3e} m). A step longer than a cell crosses triangles that were never gathered as "
             f"candidates, so walls are missed: measured 4.85% of walkers lost per ms at 3.3 cells and 26% at "
             f"6.6 cells on a permeable mesh sphere. Increase sub_steps (or do not override it).",
@@ -479,7 +489,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
             else:
                 key, k_step = jax.random.split(key)
                 k_wall = None
-            step = isotropic_unit_step(k_step) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
+            step = pair_step(k_step) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
 
             r_new, dlog_w = _move(r, step, comp, k_wall)
             comp_new = carry_fn(r_new, comp) if carry_comp else comp
@@ -562,7 +572,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None):
         budget=geometry.bounce_budget)
     def sub(r, step_key, u, comp_id):
         pool, k = _pool_and_axon(geometry, comp_id)
-        unit = isotropic_unit_step(step_key)
+        unit = pair_step(step_key)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
         r_c = r
         s_c = unit * step_l

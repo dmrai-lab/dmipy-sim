@@ -536,6 +536,7 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=
     """
     import jax
     import jax.numpy as jnp
+    from ..engine.physics import pair_step
     key = jax.random.PRNGKey(seed)
     k0, kw = jax.random.split(key)
     if r0 is None:
@@ -545,8 +546,7 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
 
     def one(r, k):
-        noise = jax.random.normal(k, (n_walkers, 3), dtype=jnp.float32)
-        step = noise / jnp.linalg.norm(noise, axis=1, keepdims=True) * step_l
+        step = jax.vmap(pair_step)(jax.random.split(k, n_walkers)) * step_l
         r_new = jax.vmap(mesh.reflect)(r, step)
         return r_new, r_new
     keys = jax.random.split(kw, n_steps)

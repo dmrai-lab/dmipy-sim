@@ -41,6 +41,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     one sequence) -- it is NOT a reusable / cached primitive."""
     import jax
     import jax.numpy as jnp
+    from ..engine.physics import pair_step
 
     # Packed myelinated cylinders carry their own per-compartment (intra/myelin/extra) walk
     # with per-compartment diffusivity + permeability, so use the dedicated trajectory step
@@ -75,13 +76,11 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
         key, sk = jax.random.split(key)
         if has_perm:
             key, pk = jax.random.split(key)
-            n = jax.random.normal(sk, (3,), jnp.float32)
-            r2 = geometry.interact(r, n / jnp.linalg.norm(n) * step_l,
+            r2 = geometry.interact(r, pair_step(sk) * step_l,
                                    kappa_over_D=jnp.float32(geometry.permeability / diffusivity),
                                    key=pk).r
         else:
-            n = jax.random.normal(sk, (3,), jnp.float32)
-            r2 = reflect(r, n / jnp.linalg.norm(n) * step_l)
+            r2 = reflect(r, pair_step(sk) * step_l)
         return (r2, key), r2
 
     def one(r0, key):

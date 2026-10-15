@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..math.step_law import LONGEST_STEP
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
                         BounceLoop, WallHit, bounce_budget)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
@@ -287,7 +288,7 @@ class PackedCylinders(Geometry):
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
         self._build_kernel = lambda count, budget: packed_wall_kernel(
-            self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=min_r / 6.0,
+            self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=LONGEST_STEP * min_r / 6.0,
             min_gap=self.min_gap, count=count, budget=budget)
         self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 
@@ -481,7 +482,7 @@ class PackedSpheres(Geometry):
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
         self._build_kernel = lambda count, budget: packed_wall_kernel(
-            self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=min_r / 6.0,
+            self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=LONGEST_STEP * min_r / 6.0,
             min_gap=self.min_gap, count=count, budget=budget)
         self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 

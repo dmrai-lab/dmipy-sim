@@ -43,7 +43,7 @@ from .gpu import gpu_available
 from ..run import Run
 
 _log = logging.getLogger("dmipy_sim.engine.bloch")
-from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, isotropic_unit_step
+from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, pair_step
 
 __all__ = ["simulate_bloch"]
 
@@ -166,7 +166,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
             def _sub(c, _):
                 r, phi, logw, key, work = c
                 key, sk_step, sk_perm = jax.random.split(key, 3)
-                unit = isotropic_unit_step(sk_step)
+                unit = pair_step(sk_step)
                 hit = interact(r, unit * step_len_sub, kappa_over_D=kappa_over_D,
                                rho_over_D=rho_over_D, key=sk_perm)
                 r_new, dlog_w = hit.r, hit.dlog_w                # dlog_w already scaled by rho/D
@@ -199,7 +199,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         def _sub(c, _):
             r, phi, phi_f, logw, key, work = c
             key, subkey = jax.random.split(key)
-            unit = isotropic_unit_step(subkey)
+            unit = pair_step(subkey)
             # `interact` at rho/D = 1 (the unit local time, scaled below) or 0: the same function as the
             # wrappers it replaces, and the WallHit carries the work
             hit = interact(r, unit * step_len_sub, rho_over_D=rho_unit)
@@ -491,7 +491,7 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             r, M, key, bound_rem = c
             key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
             is_bound = bound_rem > jnp.float32(0.0)
-            unit = isotropic_unit_step(step_key)
+            unit = pair_step(step_key)
             # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
             r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
             local_time = -dlog
