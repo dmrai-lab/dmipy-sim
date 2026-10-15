@@ -355,7 +355,7 @@ def measured_quantities(work_dir, rows, grid):
             if name not in rows:
                 raise SystemExit(f"{name} is not a pack of this family's manifest")
             key = hashlib.sha256(json.dumps([shape, d_um, grid, ANALYTIC_MODES, ANALYTIC_MODES_FINE, DIRECT_N,
-                                             DIRECT_N_T], sort_keys=True).encode()).hexdigest()
+                                             DIRECT_N_T, pack_seed(pack_id(shape, d_um))], sort_keys=True).encode()).hexdigest()
             if cache.get(name, {}).get("key") != key:
                 coarse = analytic_signal(shape, d_um, grid, modes=ANALYTIC_MODES)
                 fine = analytic_signal(shape, d_um, grid, modes=ANALYTIC_MODES_FINE)
@@ -466,7 +466,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
                   "at seed 0, and packs of equal walker count therefore shared their walkers' random streams: "
                   "their residuals against the reference are correlated across packs, a pattern over several "
                   "neighbouring diameters is one draw read many times, and the largest residual of the family "
-                  "is not evidence of a bias."),
+                  "is not by itself evidence of a bias."),
             envelope=("The design's envelope is the default battery whole. Each pack was BUILT with that "
                       "battery's gradient directions restricted to the axes its pore confines -- a cylinder "
                       "across its section, the plates along their normal -- because a free axis' Monte-Carlo "
