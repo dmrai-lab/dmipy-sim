@@ -208,9 +208,17 @@ class Shards:
         self.remote = not os.path.isdir(where); self.uri = where; self.repo = repo
         if self.remote:
             from huggingface_hub import HfApi
-            self.names = {f.split("/")[-1] for f in HfApi().list_repo_files(repo, repo_type="dataset") if f.startswith(where + "/") and f.endswith(".rpk")}
+            listed = {f.split("/")[-1] for f in HfApi().list_repo_files(repo, repo_type="dataset") if f.startswith(where + "/")}
         else:
-            self.names = {f for f in os.listdir(where) if f.endswith(".rpk")}
+            listed = set(os.listdir(where))
+        self.names = {f for f in listed if f.endswith(".rpk")}
+        self.summaries = {f for f in listed if f.endswith(".walk.json")}      # a dealt shard's summary, ``block-NNNN[.pK].s<idx>.walk.json``
+
+    def read_json(self, name):
+        """The parsed JSON file ``name`` of the shards' location."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            return json.load(open(self.fetch(name, tmp)))
 
     def __contains__(self, name):
         return name in self.names
@@ -500,18 +508,33 @@ class Consolidator:
 
 def _shard_names(b, shards, pass_):
     """The shard files of block ``b``, in the order they are merged: its pass file when the pass wrote one, else the
-    whole block's single file; else the round shards of the pass (``block-NNNN.pK.<pool>.r<r>.rpk``), else of the
-    whole block (``block-NNNN.<pool>.r<r>.rpk``), sorted by (pool, round). Empty when the block has none."""
+    whole block's single file; else the pass's shards -- the round shards (``block-NNNN.pK.<pool>.r<r>.rpk``, sorted
+    by (pool, round)) and the dealt shards -- else the same of the whole block. A dealt shard is the ``.rpk`` files
+    named in the ``files`` of each ``block-NNNN[.pK].s<idx>.walk.json`` summary present, sorted by (idx, pool, round)
+    (``block-NNNN[.pK].s<idx>.<pool>.r<r>.rpk``); a shard without a summary (a walk that failed) contributes
+    nothing. Empty when the block has none."""
     import re
     from .claims import shard_name
     for P in ({"pass": pass_}, {}):
         one = shard_name(b, P) + ".rpk"
         if one in shards:
             return [one]
-        rounds = re.compile(re.escape(shard_name(b, P)) + r"\.(?P<pool>[^.]+)\.r(?P<r>\d+)\.rpk")
-        found = sorted(((m["pool"], int(m["r"])), n) for n in shards.names if (m := rounds.fullmatch(n)))
+        stem = re.escape(shard_name(b, P))
+        rounds = re.compile(stem + r"\.(?P<pool>[^.]+)\.r(?P<r>\d+)\.rpk")
+        summary = re.compile(stem + r"\.s(?P<idx>\d+)\.walk\.json")
+        member = re.compile(stem + r"\.s(?P<idx>\d+)\.(?P<pool>[^.]+)\.r(?P<r>\d+)\.rpk")
+        by_round = [((m["pool"], int(m["r"])), n) for n in shards.names if (m := rounds.fullmatch(n))]
+        by_deal = []
+        for sname in shards.summaries:
+            if not summary.fullmatch(sname):
+                continue
+            for f in shards.read_json(sname)["files"]:
+                n = os.path.basename(f)
+                if n.endswith(".rpk") and (m := member.fullmatch(n)):
+                    by_deal.append(((int(m["idx"]), m["pool"], int(m["r"])), n))
+        found = [n for _, n in sorted(by_round)] + [n for _, n in sorted(set(by_deal))]
         if found:
-            return [n for _, n in found]
+            return found
     return []
 
 
