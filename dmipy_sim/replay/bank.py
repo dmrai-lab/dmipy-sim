@@ -37,7 +37,7 @@ from ..spec.substrate import susceptibility_field_of
 __all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
            "check_frame_against_geometry", "read_rpk", "write_rpk", "RPK_SCHEMA_VERSION"]
 
-RPK_SCHEMA_VERSION = "0.6"
+RPK_SCHEMA_VERSION = "0.7"
 
 
 # --------------------------------------------------------------- master-walk normalisation
@@ -1723,14 +1723,16 @@ def _walk_master(walk, *, weights=None, diffusivity=None, substrate_frame=None):
 
 def _container(spec):
     """A band container from the builder's knob: ``None`` (the float container), ``"bands"`` (the registry's
-    default, :data:`compression.BAND_CONTAINER`) or an explicit ``((upto, bits), ...)``."""
+    default, :data:`compression.BAND_CONTAINER`) or an explicit ``((upto, bits), ...)`` or the ``[{"bands", "bits"}, ...]`` of
+    :func:`compression.band_curve`."""
     if spec is None:
         return None
     if isinstance(spec, str):
         if spec != "bands":
             raise ValueError(f"container must be None, 'bands' or ((upto, bits), ...); got {spec!r}")
         return _cx.BAND_CONTAINER
-    return tuple((None if u is None else int(u), int(b)) for u, b in spec)
+    return tuple((None if u is None else int(u), int(b)) for u, b in
+                 ((r["bands"][1], r["bits"]) if isinstance(r, dict) else r for r in spec))
 
 
 def build_replay_pack(walk, *, id, license, citation, weights=None,

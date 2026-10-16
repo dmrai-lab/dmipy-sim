@@ -31,8 +31,8 @@ def test_the_band_container_round_trips_to_nanometres_at_a_third_of_the_bytes():
     np.testing.assert_array_equal(_cx.read_position_coeffs(a_b)[:, :2], _cx.read_position_coeffs(a_f)[:, :2])   # the endpoints exact
     with pytest.raises(ValueError, match="covers bands"):
         _cx.encode_bridge_dst(X, 32, container=((16, 16),))
-    with pytest.raises(ValueError, match="8 or 16"):
-        _cx.encode_bridge_dst(X, 32, container=((None, 4),))
+    with pytest.raises(ValueError, match="bits must be 3..16"):
+        _cx.encode_bridge_dst(X, 32, container=((None, 2),))
 
 
 def test_the_c2_container_and_the_static_c1_column():
@@ -95,3 +95,70 @@ def test_a_prefix_of_a_banded_pack_replays(packs):
     seq = _seqmod.pgse([[1, 0, 0]], 1e-3, 3e-3, bvalues=[1e9], TE=TE, n_t=4 * pb.n_t + 1, slew_rate=np.inf)
     np.testing.assert_allclose(pb.replay(seq), pf.replay(seq), rtol=2e-3)
 
+
+
+# ------------------------------------------------------------------ the curve and the packed depths
+
+@pytest.mark.parametrize("bits", [3, 4, 5, 6, 7, 9, 12, 13, 15])
+def test_a_packed_range_round_trips_the_quantised_values_exactly(bits):
+    rng = np.random.default_rng(bits); n_w, m = 257, 24
+    lim = 2 ** (bits - 1) - 1
+    q = rng.integers(-lim, lim + 1, (n_w, m, 3))
+    t = _cx._store_range(q, bits)
+    assert t.dtype == np.uint8 and t.shape == (n_w, -(-m * bits // 8), 3)
+    np.testing.assert_array_equal(_cx._load_range(t, bits, m), q)
+    np.testing.assert_array_equal(_cx._load_range(_cx._store_range(q[..., 0], bits), bits, m), q[..., 0])
+    # a row is its values side by side, MSB first, offset-binary
+    row = np.unpackbits(_cx._store_range(q[:1, :, 0], bits)[0])[: m * bits].reshape(m, bits)
+    np.testing.assert_array_equal(row @ (1 << np.arange(bits - 1, -1, -1)), q[0, :, 0] + 2 ** (bits - 1))
+
+
+@pytest.mark.parametrize("bits", [3, 5, 7, 11])
+def test_quantise_bands_reconstructs_the_integers_times_the_scale_at_every_depth(bits):
+    rng = np.random.default_rng(1); B = rng.normal(size=(100, 20, 3)) / np.arange(1, 21)[None, :, None]
+    cont = ((8, bits), (None, 8))
+    arrays, meta = _cx.quantise_bands(B, cont, "pos", "pos_band_scale")
+    got = _cx.dequantise_bands(arrays, meta["container"], "pos", "pos_band_scale")
+    lim = 2 ** (bits - 1) - 1; scale = np.abs(B).max(axis=0) / np.where(np.arange(20) < 8, lim, 127)[:, None]
+    assert np.abs(got - B).max() <= 0.5 * scale.max() * (1 + 1e-6)
+    assert got.shape == B.shape
+
+
+def test_the_curve_is_the_rule_grouped_into_whole_bytes():
+    c = _cx.band_curve(256, 13)
+    ranges = [(r["bands"][0], r["bands"][1], r["bits"]) for r in c]
+    assert ranges[0][0] == 0 and ranges[-1][1] == 256 and all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
+    for k0, k1, b in ranges[:-1]:
+        assert (k1 - k0) * b % 8 == 0
+    bits = np.empty(256, int)
+    for k0, k1, b in ranges:
+        bits[k0:k1] = b
+    ideal = np.clip(np.rint(13 - np.log2(np.arange(1, 257))), 3, 16)
+    assert np.all(bits >= np.minimum(ideal, bits)) and bits[0] == 13 and bits[-1] == 5
+    assert abs(bits.mean() - ideal.mean()) < 0.5                                    # whole-byte grouping moves the mean by under half a bit
+    assert _cx.band_curve(16, 16, b_max=8) == [{"bands": [0, 16], "bits": 8}]
+
+
+def test_a_pack_with_a_five_bit_range_reads_back_and_replays(tmp_path):
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="bands",
+                          position_container=((4, 16), (None, 8)))
+    p = build_replay_pack(walk, id="t/p", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="bands",
+                          position_container=((8, 12), (None, 5)), out_path=str(tmp_path / "p.rpk"))
+    cont = p.meta["compression"]["container"]
+    assert any(r["bits"] == 5 for r in cont) and any(k.endswith("u5") for k in p.arrays)
+    from dmipy_sim.replay.bank import read_rpk
+    back = read_rpk(str(tmp_path / "p.rpk"))
+    np.testing.assert_array_equal(_cx.read_position_coeffs(back.arrays), _cx.read_position_coeffs(p.arrays))
+    seq = _seqmod.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, bvalues=[1e9, 1e9], TE=9.5e-3, n_t=4 * p.n_t + 1, slew_rate=np.inf)
+    np.testing.assert_allclose(back.replay(seq), f.replay(seq), rtol=5e-3)
+    assert p.meta["rpk_schema_version"] == "0.7"
+
+
+def test_the_two_level_container_still_reads_as_before():
+    rng = np.random.default_rng(3); X = np.cumsum(rng.normal(0, 1e-6, (50, 61, 3)), axis=1)
+    a, m, _ = _cx.encode_bridge_dst(X, 24, container=_cx.BAND_CONTAINER)
+    assert sorted(k for k in a if k.startswith("pos_x_b")) == ["pos_x_b0", "pos_x_b1"]
+    sc = np.asarray(a["pos_band_scale"], np.float64)[0, 0]                        # (K,) the x scales
+    by_hand = np.concatenate([a["pos_x_ends"], a["pos_x_b0"] * sc[:16], a["pos_x_b1"] * sc[16:]], axis=1)
+    np.testing.assert_array_equal(_cx.read_position_coeffs(a)[:, :, 0], by_hand)
