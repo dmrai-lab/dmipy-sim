@@ -30,6 +30,29 @@ def _moment_to_readout(G, dt):
     return q - q[:, -1:, :]
 
 
+def band_hz(G, dt, eps=1e-3):
+    """The band (Hz) a gradient waveform reads: the lowest frequency below which every measurement's dephasing
+    power holds all but ``eps`` of its b-value. ``b = gamma^2 int |q(t)|^2 dt`` is, by Parseval, the integral of
+    ``|q_hat(f)|^2`` over frequency, and a walk whose diffusion spectrum is exact up to this frequency misreads at
+    most ``eps`` of ``b``. ``G`` is ``(n_meas, n_t, 3)`` sampled at ``dt``; the largest band over the measurements
+    that encode at all, ``None`` when none does."""
+    G = np.asarray(G, np.float64)
+    if G.ndim == 2:
+        G = G[None]
+    n_t = G.shape[1]
+    q = np.cumsum(G, axis=1) * float(dt)                               # (n_meas, n_t, 3), up to gamma
+    power = (np.abs(np.fft.rfft(q, axis=1)) ** 2).sum(axis=2)          # (n_meas, n_f)
+    freqs = np.fft.rfftfreq(n_t, float(dt))
+    total = power.sum(axis=1)
+    band = None
+    for m in np.flatnonzero(total > 0):
+        tail = np.cumsum(power[m, ::-1])[::-1] / total[m]               # tail[j]: power at and above freqs[j]
+        beyond = np.flatnonzero(tail <= float(eps))
+        f = float(freqs[beyond[0]]) if len(beyond) else float(freqs[-1])
+        band = f if band is None else max(band, f)
+    return band
+
+
 def b_from_gradient(G, dt):
     """b (s/m²) per measurement from a gradient array ``(n_measurements, n_t, 3)`` and its step:
     ``b = ∫ |k|² dt`` by the trapezoidal rule, with ``k`` the moment to the readout of

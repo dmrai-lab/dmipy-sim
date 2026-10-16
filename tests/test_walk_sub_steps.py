@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.geometry import Sphere
-from dmipy_sim.engine.physics import collision_sub_steps, walk_sub_steps, _geometry_radius
+from dmipy_sim.engine.physics import collision_sub_steps, tolerance_sub_steps, _geometry_radius, STEP_TOLERANCE
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -41,10 +41,10 @@ def _old_rule(geometry, dt, divisor=216.0):
 def test_a_mesh_uses_the_collision_criterion():
     mesh = _mesh_sphere()
     dt = 2e-5
-    assert walk_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt)
+    assert tolerance_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt)
     # and that is far below what keying off feature_radius asked for
-    assert walk_sub_steps(mesh, D, dt) < 0.25 * _old_rule(mesh, dt), (
-        f"{walk_sub_steps(mesh, D, dt)} vs old {_old_rule(mesh, dt)}")
+    assert tolerance_sub_steps(mesh, D, dt) < 0.25 * _old_rule(mesh, dt), (
+        f"{tolerance_sub_steps(mesh, D, dt)} vs old {_old_rule(mesh, dt)}")
 
 
 def test_refining_a_mesh_no_longer_multiplies_the_cost_quadratically():
@@ -59,14 +59,21 @@ def test_refining_a_mesh_no_longer_multiplies_the_cost_quadratically():
     old_ratio = _old_rule(fine, dt) / _old_rule(coarse, dt)
     assert old_ratio > 3.0, f"test geometry no longer shows the old rule's scaling (ratio {old_ratio:.2f})"
     # the new rule still tightens with resolution (the lookup really does shrink) but from a far lower base
-    assert walk_sub_steps(fine, D, dt) < _old_rule(fine, dt) / 3.0
+    assert tolerance_sub_steps(fine, D, dt) < _old_rule(fine, dt) / 3.0
 
 
-def test_an_analytic_pore_is_unchanged():
-    """R/6 is a real criterion for an analytic sphere -- only the mesh path was keyed to the wrong length."""
+def test_an_analytic_pore_takes_the_step_law_s_rule():
+    """A sphere's step is the tolerance rule's (#715): the smallest of the curved-wall term on its slowest mode
+    (``5 eps / (c lambda_1)`` with its declared rate and wall coefficient), the band's bulk term and the
+    first-order regime; ``R/6`` was a 5.6e-3 error on that mode and is no longer a rule."""
+    from dmipy_sim.math.step_law import pore_step, band_step
     sph = Sphere(radius=2e-6)
     dt = 2e-5
-    assert walk_sub_steps(sph, D, dt) == _old_rule(sph, dt)
+    ls = sph.length_scales
+    dt_p = min(pore_step(ls.pore_rate, D, STEP_TOLERANCE, ls.wall_coefficient), band_step(0.5 / dt, STEP_TOLERANCE),
+               (ls.min_feature / 2) ** 2 / (6 * D))
+    assert tolerance_sub_steps(sph, D, dt) == int(np.ceil(dt / dt_p)) == 8
+    assert tolerance_sub_steps(sph, D, dt, eps_D=5.6e-3, f_band=1e3) < _old_rule(sph, dt) <= tolerance_sub_steps(sph, D, dt)
 
 
 def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
@@ -76,7 +83,7 @@ def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
     from dmipy_sim.engine.physics import crossing_sub_steps, resolve_sub_steps, CROSSING_P_MAX
     mesh = _mesh_sphere(permeability=1e-5)
     dt = 2e-5
-    assert walk_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt)
+    assert tolerance_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt)
     n = resolve_sub_steps(mesh, D, dt)
     assert n == max(collision_sub_steps(mesh, D, dt), crossing_sub_steps(mesh, D, dt))
     assert 2 * 1e-5 / D * np.sqrt(6 * D * dt / n) <= CROSSING_P_MAX + 1e-12
@@ -123,28 +130,29 @@ def test_the_observables_are_converged_at_the_collision_criterion():
 def test_a_slab_is_sub_stepped_by_its_width():
     """`Box1D` exposes `length`, not `radius`, and losing that clause fails SILENTLY.
 
-    Regression for 6d585fc, which refactored the core.py auto-tune into `physics.walk_sub_steps` and dropped
+    Regression for 6d585fc, which refactored the core.py auto-tune into `physics.tolerance_sub_steps` and dropped
     its `length` fallback. `_geometry_radius` then returned None for a slab, the caller read that as "no scale
     to resolve", and every Box1D walk ran at ONE sub-step: step_l = sqrt(6*D*dt) = 6 um for a 2 um slab at
     dt_save = 3 ms. Nothing raised; the boundary local time was simply garbled, inflating a fitted surface T2
     to 1.42 s against a Brownstein-Tarr 1.0 s. `tests/test_compression.py` caught it as a walk sanity check.
     """
     from dmipy_sim import Box1D
-    from dmipy_sim.engine.physics import _geometry_radius, walk_sub_steps
+    from dmipy_sim.engine.physics import _geometry_radius, tolerance_sub_steps
 
     L, D, dt = 2e-6, 2e-9, 3e-3
     g = Box1D(length=L)
     assert _geometry_radius(g) == L, "the slab width is the scale to resolve"
-    n = walk_sub_steps(g, D, dt)
+    n = tolerance_sub_steps(g, D, dt)
     step = float(np.sqrt(6 * D * dt / n))
     assert n > 1, "a slab must be sub-stepped"
-    # the documented analytic rule is step_l = R/6 (divisor 216 = 6*6^2)
-    assert step / L == pytest.approx(1 / 6, rel=0.05), f"step_l/L = {step / L:.4f}, expected ~1/6"
+    # a flat wall has no wall term (the pair is exact on it), so the slab's step is the first-order regime's
+    # ceiling, delta_0 <= L / 2, or the band's bulk term when the grid's Nyquist frequency asks for less
+    assert step <= L / 2 * (1 + 1e-9) and step > L / 4, f"step_l/L = {step / L:.4f}"
 
 
 def test_a_walled_geometry_without_a_recognised_scale_warns():
     """One sub-step is right for free diffusion and wrong for anything with walls, so it must not be silent."""
-    from dmipy_sim.engine.physics import walk_sub_steps
+    from dmipy_sim.engine.physics import tolerance_sub_steps
     from dmipy_sim.geometry import LengthScales
 
     class WalledButUnrecognised:
@@ -153,7 +161,7 @@ def test_a_walled_geometry_without_a_recognised_scale_warns():
         volume = 1e-17                      # finite walls
 
     with pytest.warns(UserWarning, match="no length scale"):
-        assert walk_sub_steps(WalledButUnrecognised(), 2e-9, 3e-3) == 1
+        assert tolerance_sub_steps(WalledButUnrecognised(), 2e-9, 3e-3) == 1
 
     class Unbounded:                        # free diffusion: one sub-step, no warning
         length_scales = LengthScales()
@@ -161,7 +169,7 @@ def test_a_walled_geometry_without_a_recognised_scale_warns():
     import warnings as _w
     with _w.catch_warnings():
         _w.simplefilter("error")
-        assert walk_sub_steps(Unbounded(), 2e-9, 3e-3) == 1
+        assert tolerance_sub_steps(Unbounded(), 2e-9, 3e-3) == 1
 
 
 def test_the_step_cell_assertion_actually_guards():
@@ -215,8 +223,8 @@ def _disco_like_tubes(r_min_um=0.718, r_max_um=2.99, n_seg=40):
 
 def test_an_analytic_pack_with_a_spatial_index_keeps_the_reflection_rule():
     """A cell grid is not a mesh. PackedCurvedCylinders buckets tube SEGMENTS purely to cut
-    the candidate set; its `radius` is a real tube radius, so the family's step rule
-    (``R / STEP_FRACTION``, measured -- see curved_cylinder's module docstring) bounds the
+    the candidate set; its `radius` is a real tube radius, so the step law's rule and the family's
+    ceiling (``R / STEP_FRACTION``, measured -- see curved_cylinder's module docstring) bound the
     step. Keying the collision substitution on `cell_size` alone dropped the radius rule
     here and returned 1 sub-step at step/R ~ 1.7, i.e. walkers stepping through tube walls."""
     from dmipy_sim.geometry.curved_cylinder import STEP_FRACTION
@@ -225,21 +233,23 @@ def test_an_analytic_pack_with_a_spatial_index_keeps_the_reflection_rule():
     D0 = 0.6e-9                             # the DiSCo diffusivity
     assert not getattr(pk, "radius_is_mesh_feature", False)
     assert pk.cell_size > 4 * pk.radius, "test pack no longer has the coarse-cell/fine-tube shape"
-    n = walk_sub_steps(pk, D0, dt)
-    assert n == _old_rule_at(pk, dt, D0, divisor=6.0 * STEP_FRACTION ** 2), f"the family's reflection rule not applied (got {n})"
+    n = tolerance_sub_steps(pk, D0, dt)
+    assert n >= _old_rule_at(pk, dt, D0, divisor=6.0 * STEP_FRACTION ** 2), f"the family's step ceiling not applied (got {n})"
     step_l = float(np.sqrt(6.0 * D0 * dt / n))
     assert step_l / pk.radius < 1.0 / STEP_FRACTION + 1e-6, f"step/R = {step_l/pk.radius:.4f}, must be <= 1/{STEP_FRACTION:g}"
+    # the pack declares no pore rate, so the tolerance rule's envelope on its smallest tube binds below the ceiling
+    assert step_l / pk.radius < 1.0 / STEP_FRACTION
 
 
 def test_the_collision_criterion_still_applies_to_an_analytic_pack():
     """Both criteria bound DIFFERENT failures, so the analytic pack takes the tighter:
-    R/6 for the reflection math, the cell for the 27-cell candidate gather. With a cell
+    the step law's rule for the walk's accuracy, the cell for the 27-cell candidate gather. With a cell
     made artificially tiny the collision rule must win."""
     pk = _disco_like_tubes()
     dt = 53.5e-3 / 128
     D0 = 0.6e-9
     pk.cell_size = 0.02 * UM                # far finer than R/6 would ask for
-    assert walk_sub_steps(pk, D0, dt) == collision_sub_steps(pk, D0, dt) > _old_rule_at(pk, dt, D0)
+    assert tolerance_sub_steps(pk, D0, dt) == collision_sub_steps(pk, D0, dt) > _old_rule_at(pk, dt, D0)
 
 
 def _old_rule_at(geometry, dt, diffusivity, divisor=216.0):

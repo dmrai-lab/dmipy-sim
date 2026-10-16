@@ -24,7 +24,7 @@ trimesh = pytest.importorskip("trimesh")
 from dmipy_sim import FreeDiffusion, Sphere, pgse, set_b, simulate
 from dmipy_sim.engine.bloch import simulate_bloch
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.engine.physics import walk_sub_steps
+from dmipy_sim.engine.physics import tolerance_sub_steps
 
 UM = 1e-6
 R = 2e-6
@@ -120,7 +120,7 @@ def test_one_displacement_per_waveform_step_still_resolves_the_mesh(mesh_sphere,
     (`test_a_mesh_pore_matches_the_scalar_engine`) and a free limit of 0.01832 -- a few percent
     off the resolved answer, nowhere near free.
     """
-    n_auto = walk_sub_steps(mesh_sphere, D, float(waveform.dt))
+    n_auto = tolerance_sub_steps(mesh_sphere, D, float(waveform.dt))
     assert n_auto > 1, (
         f"the auto-tune asks for {n_auto} sub-steps on this mesh, so sub_steps=1 is not a downgrade "
         f"and this test proves nothing")

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.engine.physics import (resolve_sub_steps, walk_sub_steps, crossing_sub_steps, permeable_sub_steps,
+from dmipy_sim.engine.physics import (resolve_sub_steps, tolerance_sub_steps, crossing_sub_steps, permeable_sub_steps,
                                       surface_sub_steps, CROSSING_P_MAX)
 from dmipy_sim.math.step_law import LONGEST_STEP
 
@@ -33,10 +33,11 @@ def test_a_zero_permeability_is_an_impermeable_wall(make):
 
 def test_the_crossing_rule_scales_with_kappa():
     """On the reporter's packing (radii floored at 1 um, rho 1.2 um/s, 0.2 ms saves) the impermeable count is the
-    surface rule's; at 10 um/s the crossing rule asks for nothing finer, at 30 um/s it asks for the count that
-    keeps ``p`` at ``CROSSING_P_MAX`` on the law's longest atom, under half the fixed R/25 count of 1500."""
+    step law's on the smallest tube, above the surface rule's; at 10 um/s the crossing rule asks for nothing finer,
+    at 30 um/s it asks for the count that keeps ``p`` at ``CROSSING_P_MAX`` on the law's longest atom, under half
+    the fixed R/25 count of 1500."""
     n0 = resolve_sub_steps(_packing(None), D, DT, surface=True)
-    assert n0 == surface_sub_steps(_packing(None), D, DT) == 154
+    assert n0 == tolerance_sub_steps(_packing(None), D, DT) == 295 > surface_sub_steps(_packing(None), D, DT) == 154
     n10 = resolve_sub_steps(_packing(10e-6), D, DT, surface=True)
     n30 = resolve_sub_steps(_packing(30e-6), D, DT, surface=True)
     assert n10 == n0
@@ -44,7 +45,7 @@ def test_the_crossing_rule_scales_with_kappa():
     step = LONGEST_STEP * np.sqrt(6 * D * DT / n30)                 # the law's longest atom
     assert 2 * 30e-6 / D * step <= CROSSING_P_MAX + 1e-12
     assert n30 == int(np.ceil(DT / ((CROSSING_P_MAX * D / (2 * 30e-6) / LONGEST_STEP) ** 2 / (6 * D)))) < 1500
-    assert permeable_sub_steps(_packing(30e-6), D, DT) == max(walk_sub_steps(_packing(30e-6), D, DT), n30)
+    assert permeable_sub_steps(_packing(30e-6), D, DT) == max(tolerance_sub_steps(_packing(30e-6), D, DT), n30)
 
 
 def test_a_zero_permeability_walks_as_no_permeability():
