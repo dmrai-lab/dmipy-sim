@@ -121,17 +121,19 @@ def _code_commit():
         return _dmipy_sim_version()
 
 
-def plan_blocks(rc, *, edge_voxels=20, shard_walkers=160000, pass_n, out_dir, wavelength_min_m=10e-6):
+def plan_blocks(rc, *, edge_voxels=20, shard_walkers=160000, pass_n, out_dir, wavelength_min_m=10e-6, repo=None):
     """The block plan of pass ``pass_n``: :func:`block_table`'s rows, each block's tar written to
     ``out_dir/kit/<variant>/block-NNNN.p<pass>.tar`` and its ``kit`` entry filled, and the plan file written to
-    ``out_dir/plan.p<pass>.json`` (module docstring). Returns the plan dict."""
+    ``out_dir/plan.p<pass>.json`` (module docstring). ``repo`` is the Hub dataset the plan names as the home of
+    its kits and shards (the recipe's own unless given: a rehearsal keeps its shards apart from the dataset whose
+    recipe it reads). Returns the plan dict."""
     out = Path(out_dir); rows = block_table(rc, edge_voxels, pass_n=pass_n, shard_walkers=shard_walkers)
     for row in rows:
         rel = f"kit/{rc.variant}/block-{row['block']:04d}.p{pass_n}.tar"
         _, sha, nbytes = write_block_tar(rc, row, out / rel, wavelength_min_m=wavelength_min_m)
         row["kit"] = dict(path=rel, sha256=sha, bytes=int(nbytes))
         log.info("block %d: %d shards, kit %.1f MB", row["block"], row["n_shards"], nbytes / 1e6)
-    plan = dict(repo=getattr(rc.hub, "repo", None), variant=rc.variant, **{"pass": pass_n}, scale=pass_scale(rc, pass_n),
+    plan = dict(repo=repo or getattr(rc.hub, "repo", None), variant=rc.variant, **{"pass": pass_n}, scale=pass_scale(rc, pass_n),
                 block_edge_voxels=int(edge_voxels), shard_walkers=int(shard_walkers), code=dict(dmipy_sim=_code_commit()), blocks=rows)
     out.mkdir(parents=True, exist_ok=True)
     (out / f"plan.p{pass_n}.json").write_text(json.dumps(plan, indent=1))
@@ -145,17 +147,21 @@ def main(argv=None):
     ap.add_argument("--edge", type=int, default=20); ap.add_argument("--shard-walkers", type=int, default=160000)
     ap.add_argument("--out", required=True); ap.add_argument("--wavelength-um", type=float, default=10.0)
     ap.add_argument("--publish", action="store_true", help="upload the plan file and every tar in one commit")
+    ap.add_argument("--publish-to", default=None, metavar="OWNER/NAME",
+                    help="the dataset the plan names and --publish writes to (default: --repo); a rehearsal reads the "
+                         "recipe from the real dataset and keeps its kits and shards elsewhere")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     from .hub import Hub
     from .recipe import Recipe
     hub = Hub(a.repo); rc = Recipe(hub, a.variant)
+    target = a.publish_to or a.repo
     plan = plan_blocks(rc, edge_voxels=a.edge, shard_walkers=a.shard_walkers, pass_n=a.pass_n, out_dir=a.out,
-                       wavelength_min_m=a.wavelength_um * 1e-6)
+                       wavelength_min_m=a.wavelength_um * 1e-6, repo=target)
     if a.publish:
         adds = {f"blocks/{rc.variant}/plan.p{a.pass_n}.json": os.path.join(a.out, f"plan.p{a.pass_n}.json")}
         adds.update({b["kit"]["path"]: os.path.join(a.out, b["kit"]["path"]) for b in plan["blocks"]})
-        hub.commit(adds, [], f"{rc.variant} blocks: plan p{a.pass_n}, {len(plan['blocks'])} kit tarballs")
+        (hub if target == a.repo else Hub(target)).commit(adds, [], f"{rc.variant} blocks: plan p{a.pass_n}, {len(plan['blocks'])} kit tarballs")
     return plan
 
 
