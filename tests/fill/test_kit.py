@@ -11,6 +11,7 @@ import pytest
 from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
 from dmipy_sim.engine.backends import Backend, write_request_directory
 from dmipy_sim.fill import Recipe
+from dmipy_sim.replay.bank import storage_band_hz
 from dmipy_sim.fill.kit import _pool_geometry, _sha256, assemble_request
 
 
@@ -33,14 +34,14 @@ class _CaptureBackend(Backend):
         raise _Captured()
 
 
-def _capture_request(geom, D, T_max, dt_save, *, seed, r0, field_basis, field_sample_every, field_reuse_intervals):
+def _capture_request(geom, D, T_max, dt_save, *, seed, r0, field_basis, field_sample_every, field_reuse_intervals, f_band=None):
     """The live ``WalkRequest`` ``simulate_trajectories_adaptive`` would hand a backend for this pool -- aborted
     before any stepping, by ``_CaptureBackend``."""
     be = _CaptureBackend()
     try:
         simulate_trajectories_adaptive(len(r0), D, geom, T_max, dt_save, seed=seed, r0=r0, require_gpu=False,
                                        walker_batch_size=4096, field_basis=field_basis, field_sample_every=field_sample_every,
-                                       field_reuse_intervals=field_reuse_intervals, backend=be)
+                                       field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band)
     except _Captured:
         pass
     assert be.request is not None
@@ -86,8 +87,11 @@ def test_kit_layout_sha256_and_sections(field_fake, tmp_path):
         for name in ("request.txt", "request.json", "A.f32", "AB.f32", "AB2.f32", "rr.f32", "tube.i32", "cell_off.i32", "cell_ids.i32"):
             assert (pdir / name).is_file(), (pool, name)
     for name in ("fA.f32", "fAB.f32", "fAB2.f32", "fa.f32", "fb.f32", "fsid.i32", "fcell_off.i32", "fcell_ids.i32",
-                "fbox.i16", "far_full.u16", "far_full.json"):
+                "fbox.i16", "far_full.u16", "far_full.json", "field_mean.f32"):
         assert (out / name).is_file(), name
+    mean = np.fromfile(out / "field_mean.f32", np.float32)
+    assert mean.shape == (13,) and np.array_equal(mean, np.asarray(Recipe(hub).context().field_basis().mean, np.float32))
+    assert kit["files"]["field_mean.f32"] == _sha256(out / "field_mean.f32")
     assert (out / "plan" / "blocks.json").is_file() and (out / "plan" / "counts.npz").is_file()
     assert (out / "manifest.json").is_file()
     assert "kit.json" not in kit["files"]
@@ -106,7 +110,37 @@ def test_kit_without_a_field_variant(fake, tmp_path):
     kit = json.loads((out / "kit.json").read_text())
     assert kit["field"]["present"] is False
     assert not (out / "far_full.u16").exists()
+    assert not (out / "field_mean.f32").exists() and "field_mean.f32" not in kit["files"]
     assert "field" not in (out / "pools" / "intra" / "request.json").read_text()
+
+
+@pytest.mark.parametrize("fixture_name", ["fake", "field_fake"])
+def test_kit_template_holds_the_scanner_class_band_not_the_save_grids_nyquist(fixture_name, request, tmp_path):
+    """The kit's ``sub_steps``, kernel steps per class and step lengths are the plan's at the class's stored band,
+    as the recipe's own walk resolves them, and never more than the plan at the save grid's Nyquist frequency.
+    (This fake recipe's micron pores set the step through the pore term, so the two plans coincide here; on a
+    substrate whose band term sets the step the band's is the smaller.)"""
+    import json
+    from dmipy_sim.engine.adaptive import adaptive_plan
+    hub, _ = request.getfixturevalue(fixture_name)
+    rc = Recipe(hub)
+    ctx = rc.context(); g = ctx.tests; W = rc.man["walk"]
+    out = rc.kit(tmp_path / "kit")
+    n_t = int(round(float(W["T_max_s"]) / rc.dt_save())) + 1
+    dt = float(W["T_max_s"]) / (n_t - 1)
+    band = storage_band_hz(W["scanner"])
+    for pid in g.seeded:
+        pool = g.pools[pid]
+        if pool.D in (None, 0.0) or (bool(g.inside_w[pid]) and bool(g.outside_w[pid])):
+            continue
+        geom = _pool_geometry(ctx, pid)
+        banded = adaptive_plan(geom, float(pool.D), dt, f_band=band)
+        nyq = adaptive_plan(geom, float(pool.D), dt)
+        req = json.loads((out / "pools" / pool.name / "request.json").read_text())
+        msg = f"{pool.name}: band {band:.0f} Hz sub_steps {banded.n_min}, Nyquist {nyq.f_band_hz:.0f} Hz sub_steps {nyq.n_min}"
+        assert req["sub_steps"] == banded.n_min <= nyq.n_min, msg
+        assert req["adaptive_steps_c"] == [int(m) for m in banded.steps_c] + [0] * (8 - banded.n_classes), msg
+        assert sum(req["adaptive_steps_c"]) <= sum(int(m) for m in nyq.steps_c) + 0, msg
 
 
 @pytest.mark.parametrize("fixture_name,pool_name", [("fake", "intra"), ("fake", "extra"),
@@ -130,7 +164,8 @@ def test_a_batch_request_from_the_kit_matches_a_live_walk_requests_dump(fixture_
     keys = np.random.default_rng(2000 + pid).integers(0, 2 ** 31 - 1, size=(len(r0), 2)).astype(np.uint32)
 
     req = _capture_request(geom, D, T_max, dt_save, seed=seed, r0=r0, field_basis=basis,
-                           field_sample_every=int(W.get("field_sample_every", 1)), field_reuse_intervals=int(W.get("field_gather_every", 4)))
+                           field_sample_every=int(W.get("field_sample_every", 1)), field_reuse_intervals=int(W.get("field_gather_every", 4)),
+                           f_band=storage_band_hz(W["scanner"]))
     assert (req.field is not None) == (basis is not None)
 
     oracle_dir = write_request_directory(req, r0, keys, tmp_path / f"oracle-{pool_name}")
