@@ -51,10 +51,10 @@ def _spec_off():
     return d.Sphere(radius=0.75 * R_SPHERE).spec
 
 
-def _walk(spec, n, *, n_t, seed):
+def _walk(spec, n, *, n_t, seed, sub_steps=None):
     from dmipy_sim.spec import geometry_from_spec
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT, dt_save=DT,
-                                   seed=int(seed), tiers="all", require_gpu=False)
+                                   seed=int(seed), tiers="all", require_gpu=False, sub_steps=sub_steps)
 
 
 def _per_walker(pack):
@@ -1378,3 +1378,32 @@ def test_a_declared_hold_reaches_the_manifest_row_without_becoming_a_verdict(ran
         worse.stage(st)
     with pytest.raises(R.ReferenceRefusal, match="has no pack of"):
         worse.stage("publish")
+
+
+def test_the_design_records_the_step_certificate_and_the_gate_holds_it(ran):
+    """The pilot walks its substrate a second time at a coarser step on the same save grid, and the design record
+    carries the measured first-order error of the fine step's diffusion spectrum over the declared waveforms' band,
+    against the tolerance the walk was sized for; the gate holds it within the pass band and says what the pilot
+    resolves (dmrai-lab/dmipy-sim#715)."""
+    fam, rec = ran
+    st = rec["design"]["pilot"]["step"]
+    assert st["eps_declared"] == rec["design"]["pilot"]["step"]["eps_declared"] > 0
+    assert st["sub_steps_fine"] > st["sub_steps_coarse"] >= 1 and st["ratio"] == pytest.approx(st["sub_steps_fine"] / st["sub_steps_coarse"])
+    assert st["n_bins"] >= 1 and st["eps_se"] > 0 and np.isfinite(st["eps_measured"])
+    assert st["band_is"] == "the largest band the declared waveforms read" and 0 < st["f_band_hz"] <= 0.5 / rec["design"]["dt_save_s"]
+    assert st["rules"]["step law"] >= 1 and st["dt_p_s"] > 0
+    c = next(c for c in rec["gate"]["checks"] if c["check"] == "sphere/step-within-tolerance")
+    assert c["passed"] and ("resolves" in c["detail"]) == (not st["resolves"])
+
+
+def test_a_walk_hook_without_sub_steps_is_refused_by_name(tmp_path):
+    """The step pilot walks at a stated sub-step count, so a hook that cannot take one is refused before anything
+    is walked twice."""
+    def legacy(spec, n, *, n_t, seed):
+        return _walk(spec, n, n_t=n_t, seed=seed)
+    fam = _family(tmp_path, build=R.Build(specs={"sphere": _spec, "sphere-off": _spec_off},
+                                         pack_id={"sphere": "synthetic/sphere", "sphere-off": "synthetic/sphere-off"},
+                                         reproduce=_reproduce, served_vs_channel=_served, served_tier="positions",
+                                         walk=legacy))
+    with pytest.raises(R.ReferenceRefusal, match="sub_steps"):
+        fam.run()

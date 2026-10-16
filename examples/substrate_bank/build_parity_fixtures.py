@@ -129,7 +129,7 @@ def walk_of(name, mcdc_data, disimpy_data):
     """
     X = fixtures_module()
 
-    def walk(spec, n, *, n_t, seed):
+    def walk(spec, n, *, n_t, seed, sub_steps=None):
         import dmipy_sim as d
         from dmipy_sim.spec import geometry_from_spec
         geom = geometry_from_spec(spec)
@@ -139,10 +139,10 @@ def walk_of(name, mcdc_data, disimpy_data):
             r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), int(n))
             return d.simulate_trajectories(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE,
                                            dt_save=X.MCDC_TE / (int(n_t) - 1), seed=X.SEED, tiers="all", r0=r0,
-                                           require_gpu=False, walker_batch_size=2000)
+                                           require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
         return d.simulate_trajectories(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE,
                                        dt_save=X.DISIMPY_TE / (int(n_t) - 1), seed=X.SEED, tiers="all",
-                                       require_gpu=False, walker_batch_size=2000)
+                                       require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
     return walk
 
 

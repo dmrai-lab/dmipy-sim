@@ -40,7 +40,8 @@ from .matrix_method import _cyl_neumann_roots, _sph_neumann_roots
 
 __all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",
            "FIXED_LENGTHS", "FIXED_WEIGHTS", "WALL_COEFFICIENT_ENVELOPE", "PORE_RATE_ENVELOPE",
-           "SPHERE_K1", "SPHERE_WALL_COEFFICIENT", "CYLINDER_K1", "CYLINDER_WALL_COEFFICIENT", "step_moments", "bulk_multiplier",
+           "SPHERE_K1", "SPHERE_WALL_COEFFICIENT", "CYLINDER_K1", "CYLINDER_WALL_COEFFICIENT",
+           "PILOT_STEP_RATIO", "diffusion_spectrum", "step_certificate", "step_moments", "bulk_multiplier",
            "pore_step", "band_step", "band_reach", "SteppedPore"]
 
 #: The pair's lengths in units of ``sqrt(6 D dt)`` and the probability of the long one.
@@ -316,3 +317,67 @@ class SteppedPore:
             c = U @ (np.exp(-1j * GAMMA * gk * dt * beta) * (U.T @ c))
             c = half * c
         return float(abs(self.p @ c))
+
+
+#: The factor between the two pilot walks' physics steps: the coarse walk steps this many times longer in time (twice
+#: as long in length) than the fine one, so the first-order difference is three times the error at the fine step
+#: for a quarter of the fine walk's cost, and the coarse step stays in the first-order regime the rule sizes
+#: (``delta_0 <= min_feature / 2``) wherever the fine step is under a quarter of it.
+PILOT_STEP_RATIO = 4
+
+
+def diffusion_spectrum(positions, dt, *, f_max=None):
+    """``(f, D, se)``: the walk's diffusion spectrum on its save grid, ``D(f)`` in m^2/s at the grid's frequencies up to
+    ``f_max`` (the Nyquist frequency when None), the mean over the three axes and over walkers, ``se`` its standard
+    error over walkers.
+
+    ``D(f) = (1/2) int <v(0) v(t)> cos(2 pi f t) dt`` per axis, read as the periodogram of the saved increments
+    ``x_{k+1} - x_k`` over the save interval: a free walk's increments are white on any grid, so its estimate is
+    flat at ``D``; a confined walk's falls from ``D`` above the pore rate to zero at zero frequency. The increments
+    average the velocity over an interval, which weights a structured spectrum by ``sinc^2(f dt)`` and its aliases;
+    the two walks of :func:`step_certificate` share one grid, so that weight cancels in their difference."""
+    x = np.asarray(positions, np.float64)
+    u = np.diff(x, axis=1)                                   # (n_w, n_t - 1, 3)
+    n = u.shape[1]
+    per = (np.abs(np.fft.rfft(u, axis=1)) ** 2) / (n * float(dt))      # E = 2 D(f) per axis
+    d_w = per.mean(axis=2) / 2.0                             # (n_w, n_f)
+    f = np.fft.rfftfreq(n, float(dt))
+    D = d_w.mean(axis=0)
+    se = d_w.std(axis=0, ddof=1) / np.sqrt(d_w.shape[0]) if d_w.shape[0] > 1 else np.full_like(D, np.inf)
+    keep = slice(None) if f_max is None else (f <= float(f_max))
+    return f[keep], D[keep], se[keep]
+
+
+def step_certificate(fine, coarse, dt, ratio, *, f_band, eps_declared):
+    """What two pilot walks of one substrate on one save grid, the coarse one stepping ``ratio`` times longer in time
+    than the fine one, measure of the fine step's error: the relative first-order error of the diffusion spectrum
+    over the band, ``eps_measured``, with its standard error, and whether the fine step holds ``eps_declared``.
+
+    The law is first order in the step, so ``D_coarse(f) - D_fine(f) = (ratio - 1) * err_fine(f)``; each frequency
+    bin up to ``f_band`` gives ``err_fine(f) / D_fine(f)`` with its own standard error. A mode's rate error enters the
+    spectrum with one sign below the mode's rate and the other above it, so the band's error is read as the root
+    mean square over the bins, its noise subtracted (``E[rel^2] = err^2 + se^2``); the slowest mode's rate error,
+    which the rule sizes the step for, bounds it from above. ``floor`` is the rms standard error of the bins, what the
+    pilot can resolve, and ``resolves`` whether that is under ``eps_declared``: a pilot that cannot resolve the
+    tolerance bounds the error only to its floor, the record and the card say so, and the rule the walk was sized by
+    is then what holds the tolerance."""
+    _, Df, sf = diffusion_spectrum(fine, dt, f_max=f_band)
+    _, Dc, sc = diffusion_spectrum(coarse, dt, f_max=f_band)
+    keep = np.arange(len(Df)) > 0                             # the zero-frequency bin is the window's mean drift
+    if keep.sum() < 1:
+        raise ValueError(f"the band {f_band} Hz holds no frequency bin of a save grid at {dt} s: the pilot's window "
+                         f"is too short to read the band it certifies")
+    r = float(ratio)
+    rel = (Dc[keep] - Df[keep]) / (r - 1.0) / Df[keep]
+    se = np.sqrt(sc[keep] ** 2 + sf[keep] ** 2) / (r - 1.0) / Df[keep]
+    n = int(keep.sum())
+    floor = float(np.sqrt(np.mean(se ** 2)))
+    eps = float(np.sqrt(max(float(np.mean(rel ** 2) - np.mean(se ** 2)), 0.0)))
+    eps_se = float(np.sqrt(np.sum(2.0 * se ** 4 + 4.0 * rel ** 2 * se ** 2)) / n / (2.0 * max(eps, floor)))
+    return dict(eps_measured=eps, eps_se=eps_se, floor=floor, eps_declared=float(eps_declared), ratio=r,
+                f_band_hz=float(f_band), n_bins=n, n_walkers=int(np.asarray(fine).shape[0]),
+                resolves=bool(floor < float(eps_declared)), per_bin_max=float(np.abs(rel).max()),
+                rule="eps_measured = the noise-corrected root mean square over the band's bins of "
+                     "(D_coarse - D_fine) / ((ratio - 1) D_fine), the first-order error of the fine step's diffusion "
+                     "spectrum, which the slowest mode's rate error bounds; the gate holds it to eps_declared within "
+                     "its pass band")

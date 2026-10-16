@@ -179,12 +179,12 @@ def spec_of(sample, data_dir, work_dir):
 
 
 def walk_of(data_dir, work_dir):
-    def walk(spec, n, *, n_t, seed):
+    def walk(spec, n, *, n_t, seed, sub_steps=None):
         import dmipy_sim as d
         from dmipy_sim.spec import geometry_from_spec
         return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT_SAVE,
                                        dt_save=DT_SAVE, seed=int(seed), tiers="all", require_gpu=False,
-                                       walker_batch_size=2000)
+                                       walker_batch_size=2000, sub_steps=sub_steps)
     return walk
 
 
