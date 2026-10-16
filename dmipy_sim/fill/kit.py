@@ -36,6 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ..spec.walk import _class_band
 from ..engine.backends import (FIELD_ARRAY_NAMES, REQUEST_TEMPLATE_KEYS, STRAND_ARRAY_NAMES, STRANDS_STRUCT_KEYS,
                                 adaptive_struct_fields, crop_far_grid, field_struct_fields, field_tables,
                                 field_tables_window, format_request_value, request_struct_fields,
@@ -72,7 +73,8 @@ def _pool_lines_and_arrays(rc, ctx, pid, n_t, dt_actual, basis, sampling, *, ste
     geom = _pool_geometry(ctx, pid)
     D = float(g.pools[pid].D)
     plan = adaptive_plan(geom, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
-                         n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start)
+                         n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start,
+                         f_band=_class_band(W.get("scanner")))
     struct, arrays = strands_struct_fields(geom)
     lines = dict(engine="strands")
     lines.update(request_struct_fields(n_t=n_t, sub_steps=int(plan.n_min), step_l=float(np.sqrt(6.0 * D * plan.dt_min)),
@@ -117,7 +119,7 @@ def _block_box(rc, row):
     return lo, hi
 
 
-def _pool_plan(ctx, pid, D, dt_actual, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
+def _pool_plan(rc, ctx, pid, D, dt_actual, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                candidate_k_start=64):
     """``(geom, plan)`` of one pool: the same :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`
     :func:`_pool_lines_and_arrays`/:func:`_pool_lines_and_arrays_window` build, split out so a block kit can read
@@ -125,7 +127,8 @@ def _pool_plan(ctx, pid, D, dt_actual, *, steps_per_round=16, safety_sigma=6.0, 
     from ..engine.adaptive import adaptive_plan
     geom = _pool_geometry(ctx, pid)
     plan = adaptive_plan(geom, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
-                         n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start)
+                         n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start,
+                         f_band=_class_band(rc.man["walk"].get("scanner")))
     return geom, plan
 
 
@@ -227,6 +230,7 @@ def write_kit(rc, out_dir):
             np.ascontiguousarray(a).tofile(out / name)
         far = basis.far
         np.ascontiguousarray(np.asarray(far.values, np.float16)).view(np.uint16).tofile(out / "far_full.u16")
+        np.ascontiguousarray(np.asarray(basis.mean, np.float32)).tofile(out / "field_mean.f32")
         json.dump(dict(origin_m=[float(x) for x in far.origin_m], spacing_m=float(far.spacing_m), near_m=float(far.near_m),
                        blend_m=float(far.blend_m), cutoff_m=float(far.cutoff_m), shape=list(far.values.shape)),
                  open(out / "far_full.json", "w"), indent=1)
@@ -287,7 +291,7 @@ def write_block_kit(rc, row, out_dir):
              if not (g.pools[pid].D in (None, 0.0) or (bool(g.inside_w[pid]) and bool(g.outside_w[pid])))]
     if not walked:
         raise ValueError("no diffusing pool to walk: a kit needs at least one")
-    plans = {pid: _pool_plan(ctx, pid, float(pool.D), dt_actual) for pid, pool in walked}
+    plans = {pid: _pool_plan(rc, ctx, pid, float(pool.D), dt_actual) for pid, pool in walked}
 
     field_window = None
     if sampling:
@@ -307,6 +311,7 @@ def write_block_kit(rc, row, out_dir):
         crop, far_dims, far_origin = crop_far_grid(far.values, far.origin_m, far.spacing_m, np.array([lo_m, hi_m]),
                                                    n_t, dt_actual, D_max)
         np.ascontiguousarray(crop).tofile(out / "far_full.u16")
+        np.ascontiguousarray(np.asarray(basis.mean, np.float32)).tofile(out / "field_mean.f32")
         # the full array shape (the spatial crop's 3 dims PLUS the 13 channels, write_kit's own "shape" spelling
         # for far_full.json) -- not far_dims (3 only, the DscField struct's own field_far_dims)
         json.dump(dict(origin_m=far_origin, spacing_m=float(far.spacing_m), near_m=float(far.near_m),
