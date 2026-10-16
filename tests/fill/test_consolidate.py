@@ -139,9 +139,10 @@ def _layout_bytes(out, manifest, index):
     return cols, index
 
 
-@pytest.mark.parametrize("split", ["pools", "rounds"])
+@pytest.mark.parametrize("split", ["pools", "rounds", "dealt"])
 def test_a_block_given_as_round_shards_consolidates_as_the_block_given_whole(spec_grid, split):
-    """A block's round shards (``block-NNNN.<pool>.r<r>.rpk``: one pool's walkers, or one round of a pool's)
+    """A block's round shards (``block-NNNN.<pool>.r<r>.rpk``: one pool's walkers, or one round of a pool's) or dealt
+    shards (``block-NNNN.s<idx>.<pool>.rpk``)
     consolidate to the same index and column bytes as the block's merged pack given as its one shard."""
     spec, grid, tmp = spec_grid
     spec = spec_without_source(spec)
@@ -149,6 +150,9 @@ def test_a_block_given_as_round_shards_consolidates_as_the_block_given_whole(spe
     if split == "pools":
         parts = [_shard_pools(spec, grid, tmp, "block-0000.intra.r0", 0, 6, 31, pools=("intra",), out_dir=str(tmp / "rounds")),
                  _shard_pools(spec, grid, tmp, "block-0000.extra.r0", 0, 24, 32, pools=("extra",), out_dir=str(tmp / "rounds"))]
+    elif split == "dealt":              # block-NNNN.s<idx>.<pool>.rpk: the shards a node walks of a dealt block
+        parts = [_shard_pools(spec, grid, tmp, "block-0000.s0.intra", 0, 6, 31, pools=("intra",), out_dir=str(tmp / "rounds")),
+                 _shard_pools(spec, grid, tmp, "block-0000.s1.intra", 0, 6, 33, pools=("intra",), out_dir=str(tmp / "rounds"))]
     else:
         parts = [_shard_pools(spec, grid, tmp, "block-0000.intra.r0", 0, 6, 31, pools=("intra",), out_dir=str(tmp / "rounds")),
                  _shard_pools(spec, grid, tmp, "block-0000.intra.r1", 0, 6, 33, pools=("intra",), out_dir=str(tmp / "rounds"))]

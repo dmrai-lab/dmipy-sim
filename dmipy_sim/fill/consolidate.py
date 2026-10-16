@@ -500,18 +500,23 @@ class Consolidator:
 
 def _shard_names(b, shards, pass_):
     """The shard files of block ``b``, in the order they are merged: its pass file when the pass wrote one, else the
-    whole block's single file; else the round shards of the pass (``block-NNNN.pK.<pool>.r<r>.rpk``), else of the
-    whole block (``block-NNNN.<pool>.r<r>.rpk``), sorted by (pool, round). Empty when the block has none."""
+    whole block's single file; else the pass's shards -- the round shards (``block-NNNN.pK.<pool>.r<r>.rpk``, sorted
+    by (pool, round)) and the dealt shards (``block-NNNN.pK.s<idx>.<pool>.rpk``, sorted by (idx, pool)) -- else the
+    same of the whole block. Empty when the block has none."""
     import re
     from .claims import shard_name
     for P in ({"pass": pass_}, {}):
         one = shard_name(b, P) + ".rpk"
         if one in shards:
             return [one]
-        rounds = re.compile(re.escape(shard_name(b, P)) + r"\.(?P<pool>[^.]+)\.r(?P<r>\d+)\.rpk")
-        found = sorted(((m["pool"], int(m["r"])), n) for n in shards.names if (m := rounds.fullmatch(n)))
+        stem = re.escape(shard_name(b, P))
+        rounds = re.compile(stem + r"\.(?P<pool>[^.]+)\.r(?P<r>\d+)\.rpk")
+        dealt = re.compile(stem + r"\.s(?P<idx>\d+)\.(?P<pool>[^.]+)\.rpk")
+        by_round = [((m["pool"], int(m["r"])), n) for n in shards.names if (m := rounds.fullmatch(n))]
+        by_deal = [((int(m["idx"]), m["pool"]), n) for n in shards.names if (m := dealt.fullmatch(n))]
+        found = [n for _, n in sorted(by_round)] + [n for _, n in sorted(by_deal)]
         if found:
-            return [n for _, n in found]
+            return found
     return []
 
 
