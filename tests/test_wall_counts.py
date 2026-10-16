@@ -64,10 +64,12 @@ def test_a_permeable_walk_counts_its_crossings():
 
 
 def test_the_hit_rate_is_the_surface_to_volume_law():
-    """A sphere of radius R meets its wall on (S/V) l / 4 = 3 l / (4 R) of its steps, to a few percent."""
+    """A sphere of radius R meets its wall on (S/V) E[l] / 4 = 3 E[l] / (4 R) of its steps, E[l] the step law's
+    mean length (0.942 of ``sqrt(6 D dt)`` for the pair), to a few percent."""
+    from dmipy_sim.math.step_law import MEAN_STEP
     g = d.Sphere(R); g.count_walls = True
     w = _walk(g, n=4000, seed=3)
-    l = np.sqrt(6.0 * D * w.dt_sim)
+    l = MEAN_STEP * np.sqrt(6.0 * D * w.dt_sim)
     rate = w.work["n_hits"] / w.work["walker_steps"]
     assert rate == pytest.approx(3.0 * l / (4.0 * R), rel=0.05)
 

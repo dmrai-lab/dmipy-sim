@@ -48,8 +48,8 @@ class WalkRequest(NamedTuple):
     geometry: object          #: the substrate, resolved (its constants are the physics)
     n_t: int                  #: saves, save 0 the start
     dt_save: float            #: seconds between saves
-    sub_steps: int            #: fixed-length steps per save interval
-    dt_sim: float             #: the step's duration; the step length is ``sqrt(6 D dt_sim)``
+    sub_steps: int            #: physics steps per save interval
+    dt_sim: float             #: the step's duration; the step length is ``sqrt(6 D dt_sim)`` times the law's atom (:mod:`dmipy_sim.math.step_law`)
     diffusivity: float        #: m^2/s
     record: bool              #: record the boundary local time and the compartment beside the positions
     kappa_over_D: float       #: the membrane's permeability over D; 0 for an impermeable walk

@@ -45,9 +45,10 @@ def test_the_effective_gradient_conserves_the_integral_on_any_grid():
 
 
 def test_an_off_grid_pgse_carries_its_b_to_the_replay():
-    """Before: -3.7 % at dt 200 us for edges between walk samples. Now the same acquisition described on a 4x finer
-    grid with shifted edges replays within the codec's own precision of the on-grid one."""
-    walk = d.simulate_trajectories(3000, D0, d.FreeDiffusion(), 0.05, 2e-4, seed=0, require_gpu=False)
+    """The same acquisition described on a 4x finer grid with shifted edges replays within the codec's own precision
+    of the on-grid one. The two replays read one walk, so what scatters between them is the shifted edges' partial
+    increments: 0.1 to 0.2 % at 3,000 walkers across seeds, 0.03 % at 30,000 (measured, two seconds)."""
+    walk = d.simulate_trajectories(30_000, D0, d.FreeDiffusion(), 0.05, 2e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="t/grid", license="x", citation="x", K=32, envelope=ENV)
     on = pk.replay(_pgse(pk.dt, pk.n_t, 0.010, 0.030, 1e9))[0]
     off = pk.replay(_pgse(pk.dt / 4, 4 * pk.n_t, 0.010 + 0.6 * pk.dt, 0.030, 1e9))[0]

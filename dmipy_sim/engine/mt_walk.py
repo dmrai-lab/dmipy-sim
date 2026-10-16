@@ -40,7 +40,7 @@ import jax
 import jax.numpy as jnp
 from ..geometry._boundary import bind_probability
 
-from .physics import _geometry_radius, resolve_sub_steps, seed_walkers, isotropic_unit_step
+from .physics import _geometry_radius, resolve_sub_steps, seed_walkers, pair_step
 from . import mt as _mt
 from ..persistent_walk import PersistentWalk
 from ..run import Run
@@ -177,7 +177,7 @@ def simulate_mt_trajectories(
             is_bound = bound_rem > jnp.float32(0.0)
 
             # free-move proposal + per-step boundary local time (surface + binding)
-            unit = isotropic_unit_step(step_key)
+            unit = pair_step(step_key)
             step = unit * step_l
             r_free, dlog_free, local_time = _move(r, step)   # dlog_free <= 0, local_time >= 0
             if not mt_on:

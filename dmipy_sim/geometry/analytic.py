@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..math.step_law import LONGEST_STEP
 from ._boundary import (bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall)
@@ -48,10 +49,10 @@ def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
 
 
 def _radial_loop(self):
-    """The loop of a wall at one radius: the reflections a grazing walker can need in one R/6 step
-    (:func:`bounce_budget`), as a :class:`BounceLoop`."""
+    """The loop of a wall at one radius: the reflections a grazing walker can need in the longest step of the
+    R/6 rule (:func:`bounce_budget`), as a :class:`BounceLoop`."""
     R = self.length_scales.min_feature
-    return BounceLoop(self.bounce_budget or bounce_budget(R, 1e-4 * R, float('inf'), R / 6.0), count=self.count_walls)
+    return BounceLoop(self.bounce_budget or bounce_budget(R, 1e-4 * R, float('inf'), LONGEST_STEP * R / 6.0), count=self.count_walls)
 
 
 class Sphere(Geometry):

@@ -2,7 +2,8 @@
 
 A fixed-length scan costs every lane the same, so its length is set by the most adversarial
 walker: a grazing ray nudged off the smallest object keeps its angle and makes chords of
-`2 sqrt(2 nudge R)`, so a step of `R/6` needs `ceil(step/chord) + 1` reflections. Iterating a
+`2 sqrt(2 nudge R)`, so the longest step of the `R/6` rule (`LONGEST_STEP * R / 6`, the pair's long atom)
+needs `ceil(step/chord) + 1` reflections. Iterating a
 finished lane is a no-op, so a walk under the cap and under twice the cap must agree to the bit;
 if they ever differ, some lane hit the cap and it is too low.
 """
@@ -12,6 +13,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.geometry import mesh_shapes
 from dmipy_sim.geometry._boundary import bounce_budget
+from dmipy_sim.math.step_law import LONGEST_STEP
 
 D = 2e-9
 
@@ -24,8 +26,8 @@ def test_analytic_caps_are_the_grazing_worst_case():
     for g in (d.Sphere(1e-6), d.Sphere(7e-6), d.Cylinder(2e-6, (0, 0, 1)), d.Ellipsoid((3e-6, 1e-6, 2e-6))):
         R = g.length_scales.min_feature
         chord = 2 * np.sqrt(2 * 1e-4 * R * R)
-        assert g.bounce_loop.budget == int(np.ceil((R / 6) / chord) + 1) == bounce_budget(R, 1e-4 * R, np.inf, R / 6)
-    assert d.Sphere(1e-6).bounce_loop.budget == 7                      # scale-free at nudge = 1e-4 R
+        assert g.bounce_loop.budget == int(np.ceil((LONGEST_STEP * R / 6) / chord) + 1) == bounce_budget(R, 1e-4 * R, np.inf, LONGEST_STEP * R / 6)
+    assert d.Sphere(1e-6).bounce_loop.budget == 11                     # scale-free at nudge = 1e-4 R
     assert bounce_budget(1e-6, 1e-10, 2e-8, 1.7e-7) == int(np.ceil(1.7e-7 / 2e-8) + 1)   # a gap rules
 
 
@@ -41,7 +43,7 @@ def test_mesh_cap_has_a_floor_and_grows_with_the_cell():
 def _dispatched_steps(g, n, rng, key):
     """``n`` wall interactions' worth of starts and steps at the step the dispatcher chooses for ``g``: Gaussian
     steps at the resolved sub-step (their tails included), and a grazing set -- a start ``2 nudge`` inside the
-    smallest object's wall with a tangential step of the rule's length ``R / 6``, the lane the cap is derived
+    smallest object's wall with a tangential step of the rule's longest length ``LONGEST_STEP * R / 6``, the lane the cap is derived
     from (a sphere or a cylinder; an ellipsoid has no one radius and gets random starts)."""
     from dmipy_sim.engine.physics import resolve_sub_steps
     import jax
@@ -58,7 +60,7 @@ def _dispatched_steps(g, n, rng, key):
     t = rng.normal(size=(m, 3)); t -= (t * u).sum(1, keepdims=True) * u; t /= np.linalg.norm(t, axis=1, keepdims=True)
     if isinstance(g, d.Ellipsoid):
         graze = graze * 0.0 + r0[:m]                                  # an ellipsoid has no one radius: random starts
-    return np.concatenate([r0, graze]).astype(np.float32), np.concatenate([step, (R / 6.0) * t]).astype(np.float32)
+    return np.concatenate([r0, graze]).astype(np.float32), np.concatenate([step, (LONGEST_STEP * R / 6.0) * t]).astype(np.float32)
 
 
 @pytest.mark.parametrize("make", [

@@ -41,7 +41,8 @@ import jax.numpy as jnp
 from ..persistent_walk import PersistentWalk
 from .backends import JAX, WalkRequest, FieldSampling, resolve as resolve_backend
 from .tables import jit_with_tables
-from .physics import seed_walkers, isotropic_unit_step
+from .physics import seed_walkers, pair_step
+from ..math.step_law import LONGEST_STEP
 from ..run import Run
 
 log = logging.getLogger("dmipy_sim")
@@ -63,7 +64,7 @@ class AdaptivePlan(NamedTuple):
     R_bounds: tuple           #: a class's lower radius bound, ``R_min 2^(c/2)`` (m)
     steps_c: tuple            #: kernel steps per round per class, ``K >> c``
     step_l_c: tuple           #: the step length per class (m), ``sqrt(6 D dt_round / steps_c)``
-    reach_c: tuple            #: the round's deterministic excursion per class (m): the candidate reach
+    reach_c: tuple            #: the round's deterministic excursion per class (m), ``steps_c * LONGEST_STEP * step_l_c``: the candidate reach
     candidate_k: int          #: the candidate list's width (the JAX rounds widen it; a backend keeps its own)
 
 
@@ -87,7 +88,7 @@ def adaptive_plan(geometry, diffusivity, dt_save, *, steps_per_round=16, safety_
     step_l_c = tuple(float(np.float32(math.sqrt(6.0 * D * dt_round / m))) for m in steps_c)
     R_bounds = tuple(R_min * 2.0 ** (c / 2.0) for c in range(n_classes))   # a class's lower radius bound
     NUDGE = 1e-4 * R_min
-    reach_c = tuple(float(m) * l + NUDGE for m, l in zip(steps_c, step_l_c))
+    reach_c = tuple(float(m) * LONGEST_STEP * l + NUDGE for m, l in zip(steps_c, step_l_c))   # the longest atom, m times
     return AdaptivePlan(K, int(n_min), int(n_rounds), float(dt_min), float(dt_round), n_classes, float(safety_sigma),
                         sigma_round, far_at, R_min, R_bounds, steps_c, step_l_c, reach_c, int(candidate_k_start))
 
@@ -176,7 +177,7 @@ interval mean as before).
                 def body(_, carry):
                     r, key, dlog = carry
                     key, sub = jax.random.split(key)
-                    step = isotropic_unit_step(sub) * step_l
+                    step = pair_step(sub) * step_l
                     if cached:
                         r_new, d_perp, _, _ = geometry._step_with(r, step, cand, valid)
                         dlw = -2.0 * d_perp
