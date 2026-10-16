@@ -150,13 +150,14 @@ def spec_of(rock, data_dir):
                      f"replay knobs, and the nominal values are Talabi 2008's ({ref['rho_note']})."))
 
 
-def walk(spec, n, *, n_t, seed):
-    """The walk the pilot runs and a fresh family would run: no relaxivity, C2 stored as a channel."""
+def walk(spec, n, *, n_t, seed, sub_steps=None):
+    """The walk the pilot runs and a fresh family would run: no relaxivity, C2 stored as a channel; ``sub_steps``
+    is the step pilot's coarse count, None the rule's."""
     import dmipy_sim as d
     from dmipy_sim.spec import geometry_from_spec
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT_SAVE,
                                    dt_save=DT_SAVE, seed=int(seed), tiers="all", require_gpu=False,
-                                   walker_batch_size=2000)
+                                   walker_batch_size=2000, sub_steps=sub_steps)
 
 
 # ----------------------------------------------------------------- the quantity, replayed

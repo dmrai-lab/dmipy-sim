@@ -272,7 +272,7 @@ def spec_of(substrate, data_dir, rois):
             f"walk, and #478 without #503 is an affordable walk with no spec") from e
 
 
-def walk(spec, n, *, n_t, seed):
+def walk(spec, n, *, n_t, seed, sub_steps=None):
     """The walk this family will run, and the refusal it is until dmipy-sim#478 lands.
 
     ``resolve_sub_steps``' surface-local-time rule divides the smallest feature -- here the voxel, since a
