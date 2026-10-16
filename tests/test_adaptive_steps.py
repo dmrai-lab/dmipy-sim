@@ -95,3 +95,26 @@ def test_the_walk_samples_the_field_it_carries():
                                         sub_steps=64, steps_per_round=16, field_basis=sf)
     end = sf.channels(w2.positions[:, 2]); assert np.abs(w2.field_samples[:, 2] - end).max() > 1e-4
     assert np.abs(w2.field_samples[:, 2] - end).mean() < np.abs(w2.field_samples[:, 2]).mean()
+
+
+def test_every_class_steps_within_the_band_term():
+    """The classes double in step time from the smallest feature (the rule's pore term at the class radius), and
+    none steps longer than the rule's band term, which does not grow with the radius (dmrai-lab/dmipy-sim#715):
+    at a low band the doubling stands, at a high one the coarse classes are capped at the band's step, a power of
+    two so each still divides the round; the walk's stepping record carries the tolerance and the band."""
+    from dmipy_sim.engine.adaptive import adaptive_plan
+    from dmipy_sim.engine.physics import STEP_TOLERANCE
+    from dmipy_sim.math.step_law import band_step
+    g = _pack(False)
+    low = adaptive_plan(g, D, 2.5e-4, f_band=100.0)
+    assert low.steps_c == (16, 8, 4, 2) and low.eps_D == STEP_TOLERANCE and low.f_band_hz == 100.0
+    assert low.dt_band_s == pytest.approx(band_step(100.0, STEP_TOLERANCE))
+    high = adaptive_plan(g, D, 2.5e-4, f_band=2e4)
+    assert high.dt_band_s == pytest.approx(band_step(2e4, STEP_TOLERANCE)) and high.dt_band_s < high.dt_round
+    assert all(high.dt_round / m <= high.dt_band_s * (1 + 1e-9) for m in high.steps_c)
+    assert high.steps_c[0] == 16 and high.steps_c[-1] > 2 and all(m & (m - 1) == 0 for m in high.steps_c)
+    assert high.n_min >= low.n_min
+    w = simulate_trajectories_adaptive(64, D, g, 5e-4, 2.5e-4, seed=1, require_gpu=False, walker_batch_size=64, f_band=2e4)
+    st = w.stepping
+    assert st["eps_D"] == STEP_TOLERANCE and st["f_band_hz"] == 2e4 and st["dt_band_s"] == pytest.approx(high.dt_band_s)
+    assert tuple(st["steps_per_round_by_class"]) == high.steps_c
