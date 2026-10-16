@@ -66,16 +66,25 @@ class AdaptivePlan(NamedTuple):
     step_l_c: tuple           #: the step length per class (m), ``sqrt(6 D dt_round / steps_c)``
     reach_c: tuple            #: the round's deterministic excursion per class (m), ``steps_c * LONGEST_STEP * step_l_c``: the candidate reach
     candidate_k: int          #: the candidate list's width (the JAX rounds widen it; a backend keeps its own)
+    eps_D: float              #: the tolerance on the walk's diffusion spectrum every class's step is sized for
+    f_band_hz: float          #: the band (Hz) the tolerance holds to: a stated one, else the save grid's Nyquist frequency
+    dt_band_s: float          #: the band term's step (s), ``band_step(f_band_hz, eps_D)``: the ceiling of every class's step
 
 
 def adaptive_plan(geometry, diffusivity, dt_save, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
                   candidate_k_start=64, f_band=None):
     """The :class:`AdaptivePlan` of a walk of ``geometry`` at ``diffusivity`` saved every ``dt_save``: the finest
-    sub-step count from the family's step rule (``sub_steps`` overrides it), rounded up to a multiple of
-    ``steps_per_round``; the classes doubling in step time from the smallest feature."""
-    from .physics import resolve_sub_steps, length_scales_of
+    sub-step count from the step rule (:func:`~dmipy_sim.engine.physics.tolerance_sub_steps` and the rules beside it;
+    ``sub_steps`` overrides it), rounded up to a multiple of ``steps_per_round``; the classes doubling in step time
+    from the smallest feature, which is the rule's pore term at the class's radius, and none stepping longer than the
+    rule's band term, which does not grow with the radius."""
+    from .physics import resolve_sub_steps, length_scales_of, STEP_TOLERANCE
+    from ..math.step_law import band_step
     D = float(diffusivity)
     K = int(steps_per_round)
+    eps_D = float(STEP_TOLERANCE)
+    f_band_hz = float(f_band) if f_band is not None else 0.5 / float(dt_save)
+    dt_band = float(band_step(f_band_hz, eps_D))
     n_min = resolve_sub_steps(geometry, D, dt_save, surface=True, override=sub_steps, f_band=f_band)
     n_min = K * int(math.ceil(n_min / K))                          # the finest class divides the round
     n_rounds = n_min // K
@@ -84,13 +93,19 @@ def adaptive_plan(geometry, diffusivity, dt_save, *, steps_per_round=16, safety_
     sigma_round = math.sqrt(2.0 * D * dt_round)                    # per axis
     far_at = float(safety_sigma) * sigma_round                    # |step| > 6 sigma: 1.2e-7 of a 3-D Gaussian's mass
     n_classes = int(max(1, min(n_classes, int(math.log2(K)) + 1)))
-    steps_c = tuple(K >> c for c in range(n_classes))              # kernel steps per round, per class
+    # kernel steps per round, per class: the doubling (the pore term at the class radius), and no class stepping
+    # longer than the band term allows (a power of two, so a class's steps still divide the round)
+    m_band = 1
+    while m_band < K and dt_round / m_band > dt_band * (1.0 + 1e-9):
+        m_band *= 2
+    steps_c = tuple(max(K >> c, m_band) for c in range(n_classes))
     step_l_c = tuple(float(np.float32(math.sqrt(6.0 * D * dt_round / m))) for m in steps_c)
     R_bounds = tuple(R_min * 2.0 ** (c / 2.0) for c in range(n_classes))   # a class's lower radius bound
     NUDGE = 1e-4 * R_min
     reach_c = tuple(float(m) * LONGEST_STEP * l + NUDGE for m, l in zip(steps_c, step_l_c))   # the longest atom, m times
     return AdaptivePlan(K, int(n_min), int(n_rounds), float(dt_min), float(dt_round), n_classes, float(safety_sigma),
-                        sigma_round, far_at, R_min, R_bounds, steps_c, step_l_c, reach_c, int(candidate_k_start))
+                        sigma_round, far_at, R_min, R_bounds, steps_c, step_l_c, reach_c, int(candidate_k_start),
+                        eps_D, f_band_hz, dt_band)
 
 
 def _pad_to(n, unit=4096):
@@ -433,6 +448,7 @@ interval mean as before).
                         kernel_steps=(int(n_kernel_steps) if counted else None), fused_steps=int(total_steps),
                         kernel_steps_ratio=(total_steps / max(n_kernel_steps, 1) if counted else None), steps_per_round_by_class=steps_c,
                         radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma),
+                        eps_D=float(plan.eps_D), f_band_hz=float(plan.f_band_hz), dt_band_s=float(plan.dt_band_s),
                         backend=_backend_name)
         walk = PersistentWalk(positions, float(dt_actual), int(n_min), float(dt_min), boundary_local_time=dlog_all,
                               compartment=comp, illegal_crossings=0, seed=int(seed), diffusivity=D, geometry=geometry, spec=spec,
