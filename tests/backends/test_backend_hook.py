@@ -188,3 +188,14 @@ def test_the_parity_harness_admits_what_is_installed():
         report = backends.parity_report(name, n_walkers=2000)
         bad = [r for r in report if r["ok"] is False]
         assert not bad, f"{name}: {bad}"
+
+
+def test_the_request_carries_the_step_law():
+    """A backend's request states the step law beside the length scale: the pair's two atoms and the long one's
+    probability, the values ``dmipy_sim.math.step_law`` defines, so no kernel holds a length of its own."""
+    from dmipy_sim.math import step_law as sl
+    fields = backends.request_struct_fields(n_t=3, sub_steps=2, step_l=1e-6, kappa_over_D=0.0, record=False, count=False, budget=4)
+    assert fields["atom_short"] == pytest.approx(sl.PAIR_SHORT, rel=1e-6)
+    assert fields["atom_long"] == pytest.approx(sl.PAIR_LONG, rel=1e-6) and fields["atom_long"] == pytest.approx(sl.LONGEST_STEP, rel=1e-6)
+    assert fields["p_long"] == pytest.approx(sl.PAIR_P_LONG, rel=1e-6)
+    assert list(fields) == ["n_t", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record", "count", "budget"]

@@ -328,7 +328,7 @@ STRAND_ARRAY_NAMES = ("A.f32", "AB.f32", "AB2.f32", "rr.f32", "tube.i32", "cell_
 #: the field basis's own tables, shared by every pool that samples it
 FIELD_ARRAY_NAMES = ("fA.f32", "fAB.f32", "fAB2.f32", "fa.f32", "fb.f32", "fsid.i32", "fcell_off.i32", "fcell_ids.i32", "fbox.i16")
 #: the request-struct fields that stay in a kit's template (everything but ``n`` and ``seed``, which are a batch's own)
-REQUEST_TEMPLATE_KEYS = ("n_t", "sub_steps", "step_l", "kappa_over_D", "record", "count", "budget")
+REQUEST_TEMPLATE_KEYS = ("n_t", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record", "count", "budget")
 #: the strands-struct fields, in the backend's ``DscStrands`` field order
 STRANDS_STRUCT_KEYS = ("n_seg", "nnz", "dims", "gmin", "cs", "interior", "box_reflect", "lo", "hi", "nudge")
 
@@ -517,9 +517,14 @@ def adaptive_struct_fields(plan, R_max):
 
 
 def request_struct_fields(*, n_t, sub_steps, step_l, kappa_over_D, record, count, budget):
-    """The backend's ``DscRequest`` fields EXCEPT ``seed`` (a batch's own)."""
-    return dict(n_t=int(n_t), sub_steps=int(sub_steps), step_l=_f32(step_l), kappa_over_D=_f32(kappa_over_D),
-               record=int(bool(record)), count=int(bool(count)), budget=int(budget))
+    """The backend's ``DscRequest`` fields EXCEPT ``seed`` (a batch's own): the saves, the physics steps per save,
+    the step length's scale ``step_l = sqrt(6 D dt_sim)`` with the step law's two atoms and the long one's
+    probability (:mod:`dmipy_sim.math.step_law`: a kernel multiplies the scale by the atom it draws and defines
+    no length of its own), the membrane, what is recorded and counted, and the bounce budget."""
+    from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG
+    return dict(n_t=int(n_t), sub_steps=int(sub_steps), step_l=_f32(step_l),
+               atom_short=_f32(PAIR_SHORT), atom_long=_f32(PAIR_LONG), p_long=_f32(PAIR_P_LONG),
+               kappa_over_D=_f32(kappa_over_D), record=int(bool(record)), count=int(bool(count)), budget=int(budget))
 
 
 def crop_far_grid(values, origin_m, spacing_m, r0, n_t, dt_save, diffusivity):
