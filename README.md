@@ -145,6 +145,11 @@ sequence, tissue, scanner, orientation), the knob table that says what each one 
 which channel it needs, the operations from `replay` down to the per-walker primitives a study reuses, images
 from the hub, and two recipes. Every code block on its pages runs in the test suite.
 
+**[The step law, shown](docs/step-law.md)** is the evidence for the walk's step: the two-length step that carries the
+Gaussian step's moments, the operator of the engine's own reflection on the analytic pores, the fused engine against it,
+the two-walk certificate every build records, and what the step costs. `tools/gen_step_law.py` regenerates every number
+on it from the code; `tests/test_step_law_report.py` runs its small tier.
+
 ## Replay phantoms: voxels from packs
 
 A pack answers for one microstructure at any pose. A **replay phantom** (`.rph`, spec in

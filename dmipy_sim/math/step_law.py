@@ -293,17 +293,23 @@ class SteppedPore:
             e = -np.log(np.diag(T)) / dt_p / rate - 1.0
         return np.where(rate > 0, e, 0.0)
 
-    def signal(self, T, g, dt, sub):
+    def signal(self, T, g, dt, sub, *, phase="endpoint"):
         """``|S|`` of a walk under the per-sample gradient ``g`` (T/m) at the sample interval ``dt``, ``sub``
-        physics steps of ``T`` per sample, the engine's endpoint phase rule."""
+        physics steps of ``T`` per sample; ``T`` ``None`` steps with the exact propagator ``exp(-D lam dt_p)``,
+        which isolates the phase rule. ``phase`` is the engine's ``endpoint`` rule (the step, then the whole
+        step's phase at its end point) or ``midpoint`` (half the phase, the step, half the phase: second order)."""
         dt_p = dt / sub
         U, beta = self._U, self._beta
+        exact = np.exp(-dt_p * self.D * self.lam)
         c = self.p.astype(complex).copy()
         for gk in g:
             ph = np.exp(-1j * GAMMA * gk * dt_p * beta)
+            half = np.exp(-0.5j * GAMMA * gk * dt_p * beta)
             for _ in range(sub):
-                c = T @ c
-                c = U @ (ph * (U.T @ c))
+                if phase == "midpoint":
+                    c = U @ (half * (U.T @ c))
+                c = exact * c if T is None else T @ c
+                c = U @ ((half if phase == "midpoint" else ph) * (U.T @ c))
         return float(abs(self.p @ c))
 
     def continuous(self, g, dt):
