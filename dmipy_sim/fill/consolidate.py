@@ -498,34 +498,66 @@ class Consolidator:
         return manifest, index
 
 
-def _shard_name(b, shards, pass_):
-    """The shard file of block ``b``: its pass file when the pass wrote one, else the whole block's."""
+def _shard_names(b, shards, pass_):
+    """The shard files of block ``b``, in the order they are merged: its pass file when the pass wrote one, else the
+    whole block's single file; else the round shards of the pass (``block-NNNN.pK.<pool>.r<r>.rpk``), else of the
+    whole block (``block-NNNN.<pool>.r<r>.rpk``), sorted by (pool, round). Empty when the block has none."""
+    import re
     from .claims import shard_name
-    p = shard_name(b, {"pass": pass_}) + ".rpk"
-    return p if p in shards else shard_name(b, {}) + ".rpk"
+    for P in ({"pass": pass_}, {}):
+        one = shard_name(b, P) + ".rpk"
+        if one in shards:
+            return [one]
+        rounds = re.compile(re.escape(shard_name(b, P)) + r"\.(?P<pool>[^.]+)\.r(?P<r>\d+)\.rpk")
+        found = sorted(((m["pool"], int(m["r"])), n) for n in shards.names if (m := rounds.fullmatch(n)))
+        if found:
+            return [n for _, n in found]
+    return []
+
+
+def _block_name(b, names, pass_):
+    """The name a block's rows are recorded under: its single shard's, else the block's own (the pass file's when
+    the round shards are the pass's)."""
+    from .claims import shard_name
+    if len(names) == 1:
+        return names[0]
+    return shard_name(b, {"pass": pass_} if f".p{pass_}." in names[0] else {}) + ".rpk"
+
+
+def _fetch_block(b, names, sh, scratch, pass_, read_rpk):
+    """``(pack, paths)`` of block ``b``: its one shard, or its shards merged into the block's pack (held in memory;
+    the fetched files are the caller's to delete)."""
+    paths = [sh.fetch(n, scratch) for n in names]
+    if len(paths) == 1:
+        return read_rpk(paths[0]), paths
+    from ..replay.bank import merge_packs
+    return merge_packs(paths, id=_block_name(b, names, pass_), overlap="recertify"), paths
 
 
 def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None, cap_bytes=1e9, resume=False):
-    """The shards of ``blocks`` (their indices; ``block-NNNN.p<pass>.rpk`` where it exists, else the whole block)
-    from ``shards`` (a directory, or a prefix of ``repo``) into the layout under ``out_dir``, published under
-    ``upload`` on ``repo`` when given. Returns ``(manifest, index)``."""
+    """The shards of ``blocks`` (their indices; ``block-NNNN.p<pass>.rpk`` where it exists, else the whole block,
+    else the block's round shards merged into the block's pack) from ``shards`` (a directory, or a prefix of
+    ``repo``) into the layout under ``out_dir``, published under ``upload`` on ``repo`` when given. Returns
+    ``(manifest, index)``."""
     from ..replay.replay import read_rpk
     sh = Shards(shards, repo); up = Uploader(repo, upload)
     con = Consolidator(out_dir, cap_bytes, up)
     if resume:
         con.resume()
-    missing = [b for b in blocks if _shard_name(b, sh, pass_) not in sh]
+    names_of = {b: _shard_names(b, sh, pass_) for b in blocks}
+    missing = [b for b in blocks if not names_of[b]]
     if missing:
         raise FileNotFoundError(f"{len(missing)} blocks have no shard (e.g. {missing[:5]})")
     t0 = time.time()
     for i, b in enumerate(blocks):
-        name = _shard_name(b, sh, pass_)
+        names = names_of[b]; name = _block_name(b, names, pass_)
         if name in con.done:
             continue
-        t1 = time.time(); path = sh.fetch(name, con.scratch); pk = read_rpk(path)
+        t1 = time.time(); pk, paths = _fetch_block(b, names, sh, con.scratch, pass_, read_rpk)
         con.add(name, pk); del pk
         if sh.remote:
-            os.remove(path)
+            for path in paths:
+                os.remove(path)
         con.checkpoint()
         log.info("block %4d %s: %d rows total, %.1f s (%.0f s elapsed, %d/%d shards)", b, name, con.n_rows, time.time() - t1, time.time() - t0, i + 1, len(blocks))
         if up.failed:
@@ -534,7 +566,8 @@ def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None,
 
 
 def append(shards_dir, out_dir, *, id, pass_, repo=None, upload=None, cap_bytes=1e9):
-    """A later pass of some blocks (``block-NNNN.p<pass>.rpk`` in ``shards_dir``) appended to the layout under
+    """A later pass of some blocks (``block-NNNN.p<pass>.rpk`` in ``shards_dir``, or the block's round shards
+    ``block-NNNN.p<pass>.<pool>.r<r>.rpk``, merged) appended to the layout under
     ``out_dir`` (its checkpoint resumed): the union weights on both sides, the old rows patched in their weights
     part, the repaired pools' certificate rows the union's. Returns ``(manifest, index)``."""
     from ..replay.replay import read_rpk
@@ -543,10 +576,13 @@ def append(shards_dir, out_dir, *, id, pass_, repo=None, upload=None, cap_bytes=
     old_ranges = {}
     for v, p, s, e in con.index:
         old_ranges.setdefault((v, p), []).append((s, e))
-    files = sorted(f for f in os.listdir(shards_dir) if f.endswith(f".p{pass_}.rpk"))
+    from .claims import parse_shard
+    sh = Shards(shards_dir)
+    blocks = sorted({b for b, p in map(parse_shard, sh.names) if p == pass_})
     union = {}; repaired = set()
-    for i, name in enumerate(files):
-        pk = read_rpk(os.path.join(shards_dir, name)); n = pk.n_walkers
+    for b in blocks:
+        names = _shard_names(b, sh, pass_); name = _block_name(b, names, pass_)
+        pk, _ = _fetch_block(b, names, sh, con.scratch, pass_, read_rpk); n = pk.n_walkers
         ijk, _ = con.grid.bin(pk.r0); vox = np.ravel_multi_index(ijk.T, con.grid.shape)
         pool = np.asarray(pk.arrays[POOL_KEY]).astype(np.int64) if POOL_KEY in pk.arrays else np.zeros(n, np.int64)
         w = np.asarray(pk.arrays["spin_weights"], np.float64).copy()

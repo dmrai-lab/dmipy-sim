@@ -121,3 +121,45 @@ def test_a_later_pass_appends_with_the_union_weights(spec_grid):
     np.testing.assert_allclose(S.reshape(-1, 2)[keys], S_m, rtol=1e-6)
     cert = pack.columns_over(["voxel_certificate"], [(0, 0)])["voxel_certificate"]
     assert (cert[:, :, 0] == 16).all() and manifest["meta"]["columnar"]["repair"]["voxels"] == 4
+
+
+def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):
+    """A shard of ``block`` that walks only ``pools`` (the others get no walkers)."""
+    want = np.zeros(grid.shape, np.int64); want[block] = per
+    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False,
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}))
+    os.makedirs(out_dir, exist_ok=True)
+    return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"))
+
+
+def _layout_bytes(out, manifest, index):
+    cols = {}
+    for k, c in manifest["columns"].items():
+        cols[k] = b"".join(open(os.path.join(out, p["file"]), "rb").read()[p["data_offset"]:p["data_offset"] + p["nbytes"]] for p in c["parts"])
+    return cols, index
+
+
+@pytest.mark.parametrize("split", ["pools", "rounds"])
+def test_a_block_given_as_round_shards_consolidates_as_the_block_given_whole(spec_grid, split):
+    """A block's round shards (``block-NNNN.<pool>.r<r>.rpk``: one pool's walkers, or one round of a pool's)
+    consolidate to the same index and column bytes as the block's merged pack given as its one shard."""
+    spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)
+    tmp = tmp / f"rounds-{split}"
+    if split == "pools":
+        parts = [_shard_pools(spec, grid, tmp, "block-0000.intra.r0", 0, 6, 31, pools=("intra",), out_dir=str(tmp / "rounds")),
+                 _shard_pools(spec, grid, tmp, "block-0000.extra.r0", 0, 24, 32, pools=("extra",), out_dir=str(tmp / "rounds"))]
+    else:
+        parts = [_shard_pools(spec, grid, tmp, "block-0000.intra.r0", 0, 6, 31, pools=("intra",), out_dir=str(tmp / "rounds")),
+                 _shard_pools(spec, grid, tmp, "block-0000.intra.r1", 0, 6, 33, pools=("intra",), out_dir=str(tmp / "rounds"))]
+    os.makedirs(str(tmp / "whole"), exist_ok=True)
+    merge_packs(sorted(parts, key=lambda p: p.meta["id"]), id="t/block-0000", overlap="recertify", out_path=str(tmp / "whole" / "block-0000.rpk"))
+    m_r, i_r = consolidate(str(tmp / "rounds"), str(tmp / "out-rounds"), blocks=[0], id="t/columns")
+    m_w, i_w = consolidate(str(tmp / "whole"), str(tmp / "out-whole"), blocks=[0], id="t/columns")
+    cols_r, _ = _layout_bytes(str(tmp / "out-rounds"), m_r, i_r)
+    cols_w, _ = _layout_bytes(str(tmp / "out-whole"), m_w, i_w)
+    assert i_r == i_w and i_r["n_rows"] > 0
+    assert cols_r.keys() == cols_w.keys()
+    for k in cols_r:
+        assert cols_r[k] == cols_w[k], k
+    assert m_r["meta"]["fidelity"] == m_w["meta"]["fidelity"]

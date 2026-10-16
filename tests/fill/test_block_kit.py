@@ -30,8 +30,11 @@ def test_block_kit_layout_sha256_and_sections(field_fake, tmp_path):
         for name in ("request.txt", "request.json", "A.f32", "AB.f32", "AB2.f32", "rr.f32", "tube.i32", "cell_off.i32", "cell_ids.i32"):
             assert (pdir / name).is_file(), (pool, name)
     for name in ("fA.f32", "fAB.f32", "fAB2.f32", "fa.f32", "fb.f32", "fsid.i32", "fcell_off.i32", "fcell_ids.i32",
-                "fbox.i16", "far_full.u16", "far_full.json"):
+                "fbox.i16", "far_full.u16", "far_full.json", "field_mean.f32"):
         assert (out / name).is_file(), name
+    mean = np.fromfile(out / "field_mean.f32", np.float32)
+    assert mean.shape == (13,) and np.array_equal(mean, np.asarray(rc.context().field_basis().mean, np.float32))
+    assert kit["files"]["field_mean.f32"] == _sha256(out / "field_mean.f32")
     blocks = json.loads((out / "plan" / "blocks.json").read_text())["blocks"]
     assert len(blocks) == 1 and blocks[0]["block"] == 0
     # the row and the manifest's grid are re-based to the crop's own LOCAL index frame (review point 2):
@@ -57,6 +60,7 @@ def test_block_kit_without_a_field_variant(fake, tmp_path):
     kit = json.loads((out / "kit.json").read_text())
     assert kit["field"]["present"] is False
     assert not (out / "far_full.u16").exists()
+    assert not (out / "field_mean.f32").exists() and "field_mean.f32" not in kit["files"]
     assert "field" not in (out / "pools" / "intra" / "request.json").read_text()
 
 
