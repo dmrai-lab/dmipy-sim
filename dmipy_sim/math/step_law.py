@@ -36,7 +36,7 @@ from scipy import special
 from dmipy_sim.constants import GAMMA
 from .matrix_method import _cyl_neumann_roots, _sph_neumann_roots
 
-__all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP",
+__all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",
            "FIXED_LENGTHS", "FIXED_WEIGHTS", "step_moments", "bulk_multiplier", "SteppedPore"]
 
 #: The pair's lengths in units of ``sqrt(6 D dt)`` and the probability of the long one.
@@ -47,6 +47,8 @@ PAIR_LENGTHS = (PAIR_SHORT, PAIR_LONG)
 PAIR_WEIGHTS = (1.0 - PAIR_P_LONG, PAIR_P_LONG)
 #: The longest step the walk takes, in units of ``sqrt(6 D dt)``: the number every displacement bound uses.
 LONGEST_STEP = PAIR_LONG
+#: The pair's mean length in units of ``delta_0``: what a wall's hit rate per step, ``(S/V) E[delta] / 4``, reads.
+MEAN_STEP = (1.0 - PAIR_P_LONG) * PAIR_SHORT + PAIR_P_LONG * PAIR_LONG       # 0.94222
 #: The fixed-length law, for the oracle's comparisons.
 FIXED_LENGTHS = (1.0,)
 FIXED_WEIGHTS = (1.0,)
