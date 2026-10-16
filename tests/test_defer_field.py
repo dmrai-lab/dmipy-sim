@@ -86,17 +86,20 @@ def test_build_replay_pack_refuses_a_field_argument(spec):
 
 def test_the_quadrature_at_save_resolution_agrees_with_the_sub_step_sample_within_the_save_grid_bound(spec):
     """``fill_field`` reads the SAME basis at the SAME saved positions the in-walk sampling used, but at a
-    single point per save rather than the sub-step interval mean: the two must agree to the quadrature bound
-    the save grid implies, not merely be of the same order."""
+    single point per save rather than the mean over the rounds of the interval: the two differ by what the field
+    moves within a save interval, which the save grid's own consecutive reads bound (a mean of points inside the
+    interval lies within half the interval's change of its end point), and by nothing else."""
     w = _walk(spec, adaptive_steps=True)
+    assert w.sub_steps > w.stepping["pools"]["extra"]["steps_per_round_by_class"][0], "more than one round per save"
     bare = dataclasses.replace(w, field_samples=None)
     filled = fill_field(bare, w.field_basis)
     sub_step = np.asarray(w.field_samples, np.float64)
     save_grid = np.asarray(filled.field_samples, np.float64)
     scale = np.abs(sub_step).max()
     rel = float(np.abs(save_grid - sub_step).max() / scale)
-    # measured on this fixture (60 walkers, dt_save 50 us over 0.8 ms): 3.5e-7 relative to the channel's own
-    # scale -- at this save grid the field barely moves within one interval, so the sub-step mean and the
-    # save-point read agree to near machine precision; a coarser save grid (a longer walk, fewer saves) is
-    # where fill_field's quadrature bias actually shows up (dmipy-sim#539's own PackedMyelinatedCylinders check)
-    assert rel < 1e-4, rel
+    moved = float(np.abs(np.diff(save_grid, axis=1)).max() / scale)
+    # measured on this fixture (60 walkers, dt_save 50 us over 0.8 ms, two rounds per save): the field moves by up
+    # to 0.36 of the channel's scale between consecutive saves, and the round mean differs from the save-point
+    # read by 0.029 at most, 9e-5 on average; at one round per save the two are the same read (3.5e-7)
+    assert rel <= 0.5 * moved and rel < 0.1, (rel, moved)
+    assert float(np.abs(save_grid - sub_step).mean() / scale) < 1e-3
