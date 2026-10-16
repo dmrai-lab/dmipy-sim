@@ -46,7 +46,7 @@ def test_the_pack_records_the_grid_and_the_replay_gates_on_it(spec, tmp_path):
     """The path channel's meta carries its own n_t and dt; the certificate is measured on that grid; the replay's
     field phase equals the gated contraction on the coarse grid; a prefix keeps the grid."""
     w4 = _walk(spec, 4)
-    pk = build_replay_pack(w4, id="t/every4", license="x", citation="x", K=8, susc_path_K=4, device="numpy",
+    pk = _float_pack(w4, id="t/every4", license="x", citation="x", K=8, susc_path_K=4, device="numpy",
                            out_path=str(tmp_path / "e4.rpk"))
     pm = pk.meta["compression"]["channels"]["susceptibility_path"]
     n_tf = len(range(0, pk.n_t, 4))
@@ -82,7 +82,7 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     and the decoder applies each walker's own, so the merged coefficients are the shards' and the field replay is
     the weight-averaged replay of the shards."""
     from dmipy_sim.replay.bank import merge_packs, susc_path_coeffs
-    pks = [build_replay_pack(_walk(spec, 4) if s_ == 3 else walk_spec(spec, 60, 8e-4, 5e-5, seed=s_, n_probe=20_000, require_gpu=False,
+    pks = [_float_pack(_walk(spec, 4) if s_ == 3 else walk_spec(spec, 60, 8e-4, 5e-5, seed=s_, n_probe=20_000, require_gpu=False,
                                                                      adaptive_steps=True, field_cutoff_max_m=25e-6, field_sample_every=4),
                              id=f"t/shard-{s_}", license="x", citation="x", K=8, susc_path_K=4, device="numpy", out_path=str(tmp_path / f"s{s_}.rpk"))
            for s_ in (3, 4)]
@@ -97,3 +97,11 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) if "spin_weights" in pk.arrays else pk.n_walkers for pk in pks]
     S = [pk.replay(seq, **kw)[0] for pk in pks]
     np.testing.assert_allclose(m.replay(seq, **kw)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

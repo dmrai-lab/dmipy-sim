@@ -20,7 +20,7 @@ D0, T, DT = 2.0e-9, 40e-3, 5e-4
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, **kw):
     walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False)
     out = tmp / f"{name}.rpk"
-    build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out), **kw)
+    _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out), **kw)
     return read_rpk(str(out))
 
 
@@ -198,7 +198,7 @@ def sheathed(tmp_path_factory):
         walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False)
         walk = fill_field(walk, field_grid_of(geom, res=0.2e-6))
         path = tmp / f"{name}.rpk"
-        build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,
+        _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,
                           susc_path_K=16, out_path=str(path))
         out.append(read_rpk(str(path)))
     return out
@@ -238,3 +238,11 @@ def test_the_field_and_the_relaxation_channels_follow_the_rescale_to_the_bit(she
 def so3_rotation(a, b, c):
     from scipy.spatial.transform import Rotation
     return Rotation.from_euler("zyx", [a, b, c]).as_matrix()
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

@@ -669,7 +669,7 @@ def _susc_path_bloch_fidelity(m, arrays, pm, gm, env, n_sub=8000):
     from ..constants import GAMMA
     from .trajectories import replay_bloch
     field = _field_of(m)
-    if field is None or "susc_path_dct" not in arrays:
+    if field is None or not has_susc_path(arrays):
         return None
     n_w, n_t = m["traj"].shape[0], m["traj"].shape[1]            # the walk is read for the subsample alone
     dt = float(m["dt_traj"]); TE = (n_t - 1) * dt
@@ -827,7 +827,7 @@ def _susc_path_fidelity(m, arrays, pm, gm, env):
     it advertises.
     """
     field = _field_of(m)
-    if field is None or "susc_path_dct" not in arrays:
+    if field is None or not has_susc_path(arrays):
         return None
     traj = m["traj"]; n_w = traj.shape[0]          # read whole only to sample a field the walk did not sample itself
     every = int(m.get("susc_field_every", 1) or 1)
@@ -934,17 +934,60 @@ def susc_path_encode(field, traj, *, K=32, bits=8, dtype=np.float16, atol_trace=
     if bits is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
-    if bits not in (8, 16):
-        raise ValueError("susc_path bits must be 8, 16, or None (got %r); sub-byte depths need "
-                         "bit-packing to save bytes and 6-bit measured above the MC floor" % (bits,))
     return _quantise_susc_path(coeffs, meta, bits)
 
 
+def path_codec(bits):
+    """The path channel's storage knob in its one normal form: an ``int`` 8 or 16 (one native depth over every mode,
+    the single-depth container), or the tuple ``((upto, bits), ...)`` of a container with several ranges or a
+    bit-packed depth (:func:`compression.band_curve`'s list is accepted, its ranges naming ``modes`` or ``bands``).
+    ``None`` is the float form."""
+    if bits is None:
+        return None
+    if isinstance(bits, (int, np.integer)):
+        if int(bits) not in (8, 16):
+            raise ValueError(f"susc_path bits must be 8, 16 or a container of ranges (got {bits!r})")
+        return int(bits)
+    c = _container(bits)
+    if isinstance(c, _cx.BandCurve):
+        return c
+    if len(c) == 1 and c[0][1] in _cx.NATIVE_BITS:
+        return int(c[0][1])
+    return c
+
+
+def path_codec_of(pm):
+    """:func:`path_codec` of a path channel's metadata: its ``container`` when it has one, else its ``bits``."""
+    if pm.get("container") is not None:
+        return path_codec(pm["container"])
+    return path_codec(pm.get("bits") or None)
+
+
 def _quantise_susc_path(coeffs, meta, bits, *, device="numpy"):
-    """The integer container of the path-field coefficients: a per-(channel, band) scale, ``bits`` wide -- the
+    """The integer container of the path-field coefficients: a per-(channel, mode) scale, ``bits`` wide -- or, for a
+    container of ranges (:func:`path_codec`), each range of modes at its own depth, bit-packed along the modes
+    below or between the native depths (:func:`compression.quantise_bands`' layout), under ``susc_path_dct_b<i>[u<bits>]``
+    with the ranges in ``meta["container"]``. In the single-depth form the
     reduction (the scale's max-abs over every walker) and the round/clip run on the JAX device when ``device``
     resolves to one (float32: the container is already lossy, so this loses nothing the quantisation does not),
     host numpy (float64, the reference) otherwise."""
+    bits = path_codec(bits)
+    if not isinstance(bits, (int, np.integer)):
+        K = coeffs.shape[2]
+        ranges = _cx._band_ranges(bits, K)
+        amax = np.abs(coeffs).max(axis=0)                            # (n_ch, K)
+        scale = np.ones(amax.shape, np.float64); arrays, cont = {}, []
+        for i, (k0, k1, b) in enumerate(ranges):
+            lim = 2 ** (b - 1) - 1
+            sc = amax[:, k0:k1] / lim; sc[sc == 0] = 1.0
+            scale[:, k0:k1] = sc
+            q = np.clip(np.rint(coeffs[:, :, k0:k1] / sc[None]), -lim, lim)           # (n_w, n_ch, m)
+            t = _cx._store_range(np.swapaxes(q, 1, 2), b)                              # (n_w, m | bytes, n_ch)
+            arrays[_cx.range_name("susc_path_dct", i, b)] = np.ascontiguousarray(np.swapaxes(t, 1, 2))
+            cont.append({"modes": [int(k0), int(k1)], "bits": int(b)})
+        meta["bits"] = None; meta["dtype"] = "bands"; meta["container"] = cont
+        arrays["susc_path_scale"] = np.asarray(scale, np.float32)
+        return arrays, meta
     itype = np.int8 if bits == 8 else np.int16
     lim = 2 ** (bits - 1) - 1
     if _cx.resolve_device(device) == "numpy":
@@ -1011,9 +1054,12 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
     if bits is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
-    if bits not in (8, 16):
-        raise ValueError("susc_path bits must be 8, 16, or None")
     return _quantise_susc_path(coeffs, meta, bits, device=device)
+
+
+def has_susc_path(arrays):
+    """Whether the arrays carry a path channel, in the single-depth tensor or in a container's ranges."""
+    return any(k.startswith("susc_path_dct") for k in arrays)
 
 
 def susc_path_coeffs(arrays, meta):
@@ -1024,7 +1070,14 @@ def susc_path_coeffs(arrays, meta):
     integers ~1e3 off with no error -- every consumer goes through here. The zz identity is applied
     in coefficient space; the DCT is linear, so this is identical to applying it after the transform.
     """
-    C = np.asarray(arrays["susc_path_dct"], np.float64)
+    if meta.get("container") is not None:
+        parts = []
+        for i, r in enumerate(meta["container"]):
+            t = np.swapaxes(np.asarray(arrays[_cx.range_name("susc_path_dct", i, r["bits"])]), 1, 2)
+            parts.append(np.swapaxes(np.asarray(_cx._load_range(t, int(r["bits"]), int(r["modes"][1] - r["modes"][0])), np.float64), 1, 2))
+        C = np.concatenate(parts, axis=2)
+    else:
+        C = np.asarray(arrays["susc_path_dct"], np.float64)
     if "susc_path_scale" in arrays:
         S = np.asarray(arrays["susc_path_scale"], np.float64)
         if S.ndim == 3:                                            # a merged pack: one scale table per shard, walkers by block
@@ -1721,25 +1774,34 @@ def _walk_master(walk, *, weights=None, diffusivity=None, substrate_frame=None):
     extra["walkers_shuffled"] = True        # the producer draws walkers i.i.d.: any prefix is a fair subsample
     return walk._bank_dict(**extra)
 
+def _inherited_container(spec, cert_ranges):
+    """The container of a block that inherits a certificate: the certifying pack's own ranges when the knob is the
+    derived default, else the knob."""
+    c = _container(spec)
+    return list(cert_ranges) if isinstance(c, _cx.DerivedContainer) and cert_ranges else c
+
+
 def _container(spec):
     """A band container from the builder's knob: ``None`` (the float container), ``"bands"`` (the registry's
-    default, :data:`compression.BAND_CONTAINER`) or an explicit ``((upto, bits), ...)`` or the ``[{"bands", "bits"}, ...]`` of
+    default, :data:`compression.BAND_CONTAINER`, the curve ``band_curve(K, 10)`` of the pack's own K) or an explicit ``((upto, bits), ...)`` or the ``[{"bands", "bits"}, ...]`` of
     :func:`compression.band_curve`."""
     if spec is None:
         return None
+    if isinstance(spec, (_cx.BandCurve, _cx.DerivedContainer)):
+        return spec
     if isinstance(spec, str):
-        if spec != "bands":
-            raise ValueError(f"container must be None, 'bands' or ((upto, bits), ...); got {spec!r}")
+        if spec not in ("bands", "derived"):
+            raise ValueError(f"container must be None, 'derived', or ((upto, bits), ...); got {spec!r}")
         return _cx.BAND_CONTAINER
     return tuple((None if u is None else int(u), int(b)) for u, b in
-                 ((r["bands"][1], r["bits"]) if isinstance(r, dict) else r for r in spec))
+                 ((r["bands"][1] if "bands" in r else r["modes"][1], r["bits"]) if isinstance(r, dict) else r for r in spec))
 
 
 def build_replay_pack(walk, *, id, license, citation, weights=None,
                       method=_cx.POSITION_METHOD, envelope=None, tol=2.0, K=None, temporal_bandwidth_hz=None, scanner=None,
                       sigma_star=None, provenance=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K="auto", susc_path_bits=8, voxel_grid=None,
-                      position_container=None, blt_container=None,
+                      position_container="bands", blt_container="bands",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
                       fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False,
                       _window_of_plan=False, pack_license=None, pack_license_url=None):
@@ -1765,6 +1827,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
     by name unless ``K`` or ``temporal_bandwidth_hz`` states the band. Nothing is searched on the walk: the
     certificate measures whether the band holds, it does not choose it. The pack records the class under
     ``compression.scanner`` beside ``temporal_bandwidth_hz``.
+
+    ``position_container`` and ``blt_container`` are the band containers of the position and contact channels:
+    ``"bands"`` (the default) is :data:`compression.BAND_CONTAINER`, ``band_curve(K, 10)`` of the pack's own band
+    count; ``None`` is the float container; an explicit ``((upto, bits), ...)`` or :func:`compression.band_curve` list
+    is taken as given. ``susc_path_bits`` is the field path channel's: 8 or 16 (one depth over every mode), or a list
+    of ``{"modes": [k0, k1], "bits": b}`` ranges.
 
     ``fidelity`` is what this pack certifies (RPK.md 9.4 rule 4): ``"measured"`` replays the envelope's battery
     on the raw and the decoded walk and reports the codec error against the split-half floor, per tier; a pack
@@ -1897,8 +1965,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
             temporal_bandwidth_hz = storage_band_hz(band_class)
         if K is None and temporal_bandwidth_hz is not None:
             K = mode_count((X.shape[1] - 1) * dt, temporal_bandwidth_hz=temporal_bandwidth_hz)
+        _floor_t = None
         if cert is not None:                              # the codec error is the certifying pack's; the floor is this walk's
-            pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
+            pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_inherited_container(position_container, cert["compression"].get("container")), device=device)
             cc, cf = cert["compression"], cert["fidelity"]
             same = dict(K=(int(pos_meta.get("K", K)), int(cc["K"])), n_t=(int(X.shape[1]), int(cc["n_t"])),
                         container=(pos_meta.get("container"), cc.get("container")),
@@ -1916,11 +1985,27 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                        certified="inherited",
                        inherited_from=dict(id=cert["id"], err_max=float(cf["err_max"]), floor_max=float(cf["floor_max"])))
         else:
-            pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_container(position_container), device=device)
+            _pc = _container(position_container)
+            if isinstance(_pc, _cx.DerivedContainer):             # the floor the pack is ordered at: sigma_star, else this walk's own
+                run.phase("floor target")
+                _floor_t = float(sigma_star) if sigma_star is not None else float(_cx.measure_fidelity(X, dt, X, env)["floor_max"])
+                _pc = _pc.bound(floor=_floor_t, dt=dt, env=env)
+            pos_arrays, pos_meta, _ = _cx.encode(X, method, K, container=_pc, device=device)
             run.phase("certificate positions")
             fid = _cx.measure_fidelity(X, dt, _cx.decoder(pos_arrays, pos_meta), env)   # decoded per chunk, never whole
         if cert is None:
             fid["certified"] = "measured"
+
+        def _blt_bound(spec):
+            """The contact channel's container: a derived default bound to the pack's floor target and the battery's
+            largest ``rho2 / D``."""
+            c = _container(spec)
+            if not isinstance(c, _cx.DerivedContainer):
+                return c
+            fl = _floor_t if _floor_t is not None else (float(sigma_star) if sigma_star is not None
+                                                        else float(_cx.measure_fidelity(X, dt, X, env)["floor_max"]))
+            D_ = float(m.get("D_intra") or 0.0) or 1.0
+            return c.bound(floor=fl, dt=dt, env=env, weight=max(env.get("rho2_list") or [1e-4]) / D_)
         if sigma_star is not None:                       # adaptive floor-target policy (build_to_floor)
             fid = dict(fid, target_floor=float(sigma_star),
                        meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
@@ -2040,15 +2125,15 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                 if blt_temporal_K is not None and int(blt_temporal_K) != int(_cb["K"]):
                     raise ValueError(f"blt_temporal_K={blt_temporal_K} but the certifying pack's C2 has K={_cb['K']}")
                 _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(_cb["K"]), dtype=blt_dtype,
-                                                     container=_container(blt_container), device=device)
+                                                     container=_inherited_container(blt_container, _cb.get("container")), device=device)
                 if _mm.get("container") != _cb.get("container") or _mm.get("dtype") != _cb.get("dtype"):
                     raise ValueError("the C2 container or dtype differs from the certifying pack's")
             elif blt_temporal_K:
                 _a, _mm = _cx.encode_boundary_bridge(np.asarray(m["dlog_b"]), K=int(blt_temporal_K),
-                                                 dtype=blt_dtype, container=_container(blt_container), device=device)
+                                                 dtype=blt_dtype, container=_blt_bound(blt_container), device=device)
             else:
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
-                                                 blt_dtype, verbose, container=_container(blt_container),
+                                                 blt_dtype, verbose, container=_blt_bound(blt_container),
                                                  min_K=_c2_min_K, segment_T=_c2_window_T)
             arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho2"] = True
 
@@ -2073,7 +2158,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         # reproduces the raw-grid/true-trajectory susceptibility signal (SE + GRE, split-half floor).
         if channels["susceptibility"] and chan_meta.get("susceptibility_path") is not None and cert is not None:
             _cp = (cert["compression"].get("channels") or {}).get("susceptibility_path") or {}
-            if int(_cp.get("K", -1)) != int(susc_path_K) or int(_cp.get("bits", -1)) != int(susc_path_bits):
+            if int(_cp.get("K", -1)) != int(susc_path_K) or path_codec_of(_cp) != path_codec(susc_path_bits):
                 raise ValueError("the path channel's K or bits differ from the certifying pack's")
         if channels["susceptibility"] and chan_meta.get("susceptibility_path") is not None and cert is None:
             run.phase("certificate path")
@@ -2263,6 +2348,8 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                                    fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    _window_of_plan=True, **kw)
             K = int(pk.K)
+            if pk.meta["compression"].get("container"):          # the container derived on window 0 is every window's
+                kw["position_container"] = pk.meta["compression"]["container"]
             pm0 = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
             if pm0 is not None:
                 susc_path_K = int(pm0["K"])                   # a band derived on window 0 is every window's
@@ -2272,6 +2359,8 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
                     raise ValueError("a walk stored in segments keeps its contact channel in the bridge form, and segment 0 chose "
                                      f"{c2.get('mode')!r}; pass blt_temporal_K=")
                 blt_temporal_K = int(c2["K"])
+                if c2.get("container"):
+                    kw["blt_container"] = c2["container"]
         else:
             pk = build_replay_pack(w, id=f"{id}", K=K, scanner=scanner, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
                                    fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,

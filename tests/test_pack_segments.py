@@ -44,8 +44,8 @@ def packs():
     m = _master()
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
     kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, scanner="connectom")
-    one = build_replay_pack(m, id="t/one", K=N_T - 2, blt_temporal_K=N_T - 2, susc_path_K=N_T, segment_T=(N_T - 1) * DT, **kw)
-    two = build_replay_pack(m, id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01, **kw)
+    one = _float_pack(m, id="t/one", K=N_T - 2, blt_temporal_K=N_T - 2, susc_path_K=N_T, segment_T=(N_T - 1) * DT, **kw)
+    two = _float_pack(m, id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01, **kw)
     return m, one, two
 
 
@@ -72,7 +72,7 @@ def test_a_window_is_the_pack_a_fresh_walk_of_it_would_be(packs):
     m, one, two = packs
     from dmipy_sim.replay.bank import _window_master
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    w1 = build_replay_pack(_window_master(m, 20, 40), id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01,
+    w1 = _float_pack(_window_master(m, 20, 40), id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01,
                            license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16,
                            _occupancy_runs=True)
     s1 = two.segment(1)
@@ -214,8 +214,8 @@ def test_a_walk_continues_from_its_end_and_appends_as_segments():
     from dmipy_sim.replay.continuation import append_segments, continue_walk, end_state
     g = d.Cylinder(2e-6, (0, 0, 1))
     kw = dict(license="x", citation="x", K=16, blt_temporal_K=16, segment_T=0.01)
-    two = build_replay_pack(d.simulate_trajectories(2000, 2e-9, g, 0.02, 5e-4, seed=0, require_gpu=False), id="t/two", **kw)
-    one = build_replay_pack(d.simulate_trajectories(2000, 2e-9, g, 0.01, 5e-4, seed=0, require_gpu=False), id="t/one", **kw)
+    two = _float_pack(d.simulate_trajectories(2000, 2e-9, g, 0.02, 5e-4, seed=0, require_gpu=False), id="t/two", **kw)
+    one = _float_pack(d.simulate_trajectories(2000, 2e-9, g, 0.01, 5e-4, seed=0, require_gpu=False), id="t/one", **kw)
     r_end, pool = end_state(one)
     assert pool is not None and np.all(pool == 1)                                   # every walker in the lumen
     cont = continue_walk(one, 0.01, seed=7, require_gpu=False)
@@ -247,7 +247,7 @@ def test_shards_of_a_segmented_walk_merge(packs, tmp_path):
     m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 5
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
     kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
-    b = build_replay_pack(m2, id="t/b", **kw)
+    b = _float_pack(m2, id="t/b", **kw)
     merged = merge_packs([two, b], id="t/merged")
     assert merged.n_segments == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
     seq = _seq()
@@ -265,16 +265,16 @@ def test_a_shard_inherits_a_windowed_certificate_window_by_window(packs):
     m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 11
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
     kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
-    b = build_replay_pack(m2, id="t/b-inherited", fidelity="inherited", fidelity_from=two, **kw)
+    b = _float_pack(m2, id="t/b-inherited", fidelity="inherited", fidelity_from=two, **kw)
     cert = two.meta["fidelity"]; got = b.meta["fidelity"]
     assert len(got["segments"]) == len(cert["segments"]) == 2
     for mine, theirs in zip(got["segments"], cert["segments"]):
         assert mine["certified"] == "inherited" and mine["inherited_from"]["err_max"] == pytest.approx(theirs["err_max"])
         assert mine["err_max"] == pytest.approx(theirs["err_max"])
     assert got["err_max"] == pytest.approx(sum(s["err_max"] for s in cert["segments"]))   # the bound over the windows, once
-    four = build_replay_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "segment_T": 0.005})
+    four = _float_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "segment_T": 0.005})
     with pytest.raises(ValueError, match="window"):
-        build_replay_pack(m2, id="t/b-wrong", fidelity="inherited", fidelity_from=four, **kw)
+        _float_pack(m2, id="t/b-wrong", fidelity="inherited", fidelity_from=four, **kw)
 
 
 # ------------------------------------------------------------------ the C2 band floor for a one-window pack (#528)
@@ -312,7 +312,7 @@ def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():
     m = _c2_slab_master()
     env = _lean_env()
     T_walk = (C2_N_T - 1) * C2_DT
-    pk = build_replay_pack(m, id="t/c2-one", method="bridge_dst", envelope=env, K=64,
+    pk = _float_pack(m, id="t/c2-one", method="bridge_dst", envelope=env, K=64,
                            license="CC-BY-4.0", citation="test", segment_T=T_walk)
     assert pk.n_segments == 1
     c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
@@ -331,7 +331,7 @@ def test_a_walk_built_in_its_storage_rule_windows_is_unchanged():
     so none of this applies to it."""
     m = _c2_slab_master()
     env = _lean_env()
-    pk = build_replay_pack(m, id="t/c2-seg", method="bridge_dst", envelope=env, K=64,
+    pk = _float_pack(m, id="t/c2-seg", method="bridge_dst", envelope=env, K=64,
                            license="CC-BY-4.0", citation="test")               # default segment_T: 10 x 100 ms
     assert pk.n_segments == 10
     c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
@@ -344,9 +344,17 @@ def test_a_walk_shorter_than_the_storage_rule_window_keeps_the_plain_ladder():
     itself, so it needs none of this: the plain ladder (8, 16, 32, 64), exactly as before #528."""
     m = _c2_slab_master(n_t=21, dt=C2_DT)                                      # 50 ms, under SEGMENT_T's 100 ms
     env = _lean_env()
-    pk = build_replay_pack(m, id="t/c2-short", method="bridge_dst", envelope=env, K=16,
+    pk = _float_pack(m, id="t/c2-short", method="bridge_dst", envelope=env, K=16,
                            license="CC-BY-4.0", citation="test")
     assert pk.n_segments == 1
     c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
     assert c2["K"] in (8, 16, 32, 64)
     assert "err_surface_window" not in pk.fidelity
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

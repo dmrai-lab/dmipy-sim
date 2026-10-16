@@ -15,7 +15,7 @@ def parent(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = d.simulate_trajectories(600, 2e-9, g, 20e-3, 2.5e-4, seed=7, require_gpu=False)      # 81 saves, 20 ms
     p = tmp_path_factory.mktemp("pk") / "parent.rpk"
-    build_replay_pack(walk, id="test/parent", license="x", citation="x", K=16, out_path=str(p))
+    _float_pack(walk, id="test/parent", license="x", citation="x", K=16, out_path=str(p))
     return read_rpk(str(p))
 
 
@@ -24,7 +24,7 @@ def test_the_band_is_a_frequency(parent, tmp_path):
     assert parent.meta["compression"]["temporal_bandwidth_hz"] == pytest.approx(parent.temporal_bandwidth_hz)
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = d.simulate_trajectories(100, 2e-9, g, 10e-3, 2.5e-4, seed=1, require_gpu=False)
-    pk = build_replay_pack(walk, id="t", license="x", citation="x", temporal_bandwidth_hz=400.0)
+    pk = _float_pack(walk, id="t", license="x", citation="x", temporal_bandwidth_hz=400.0)
     assert pk.K == 8 and pk.temporal_bandwidth_hz == pytest.approx(400.0)                         # K = 2 T f
 
 
@@ -78,7 +78,7 @@ def test_a_prefix_of_a_field_pack_re_encodes_the_path_channel_and_certifies_it(t
     from tests.test_bank import _susc_master, _sample_susc, _lean_env
     from dmipy_sim.replay.bank import susc_path_decode
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    parent = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
+    parent = _float_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
                                susc_path_K=32, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
     half = parent.prefix(T / 2)
@@ -102,7 +102,7 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
     from dmipy_sim.constants import GAMMA
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
-    parent = build_replay_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
+    parent = _float_pack(_sample_susc(_susc_master()), id="test/slab-susc", method="bridge_dst", envelope=env, K=64,
                                susc_path_K=32, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
     half = parent.prefix(T / 2)
@@ -136,7 +136,7 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
     T, n_t = 0.3, 1302                                                  # dt = 0.3 / 1301: 0.1 s is not a whole number of saves
     walk = d.simulate_trajectories(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False)
     p = tmp_path / "parent.rpk"
-    build_replay_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), segment_T=T)
+    _float_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), segment_T=T)
     parent = read_rpk(str(p))
     assert parent.n_segments == 1
     pre = parent.prefix(0.15, out_path=str(tmp_path / "prefix.rpk"))
@@ -151,9 +151,9 @@ def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
     walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 2.5e-4, seed=5, require_gpu=False)
     X = np.asarray(walk.positions)
     m = walk._bank_dict(substrate=walk.spec.to_dict())                  # a cylinder: nothing magnetic
-    a = build_replay_pack(dict(m, traj=X), id="t/array", license="x", citation="x", K=12, out_path=str(tmp_path / "a.rpk"))
+    a = _float_pack(dict(m, traj=X), id="t/array", license="x", citation="x", K=12, out_path=str(tmp_path / "a.rpk"))
     lazy = LazyWalk(lambda lo, hi: X[lo:hi], X.shape, chunk_bytes=1 << 14)
-    b = build_replay_pack(dict(m, traj=lazy), id="t/lazy", license="x", citation="x", K=12, out_path=str(tmp_path / "b.rpk"))
+    b = _float_pack(dict(m, traj=lazy), id="t/lazy", license="x", citation="x", K=12, out_path=str(tmp_path / "b.rpk"))
     for k in ("pos_x", "pos_y", "pos_z"):
         assert np.array_equal(np.asarray(a.arrays[k]), np.asarray(b.arrays[k])), k
     assert a.meta["fidelity"]["err_max"] == pytest.approx(b.meta["fidelity"]["err_max"], rel=1e-9)
@@ -209,10 +209,18 @@ def test_a_prefix_inside_a_later_window_reads_across_the_windows(tmp_path):
     dt = 0.1 / 200
     walk = d.simulate_trajectories(300, 2e-9, g, 0.3, dt, seed=9, require_gpu=False)
     p = tmp_path / "parent.rpk"
-    build_replay_pack(walk, id="t/windows", license="x", citation="x", K=16, out_path=str(p))
+    _float_pack(walk, id="t/windows", license="x", citation="x", K=16, out_path=str(p))
     parent = read_rpk(str(p))
     assert parent.n_segments == 3
     pre = parent.prefix(0.25, out_path=str(tmp_path / "prefix.rpk"))
     assert pre.n_segments == 1 and abs((pre.n_t - 1) * pre.dt - 0.25) < dt
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 20e-3, 60e-3, gradient_strengths=[0.05, 0.05], TE=0.25)
     np.testing.assert_allclose(pre.replay(seq), parent.replay(seq), atol=3 * pre.meta["fidelity"]["floor_max"])
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

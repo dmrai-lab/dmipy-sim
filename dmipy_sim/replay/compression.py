@@ -81,12 +81,132 @@ _F16, _F32 = 2, 4
 
 # --------------------------------------------------------------------- encoders
 
-#: The default band container of the bridge channels: the first 16 bands at 16 bits, the rest at 8. A bridge's sine
-#: coefficients fall as 1/k, so a per-band scale keeps the quantisation step proportional to the band's own range:
-#: at 8 bits a band contributes a step of ~1/127 of its range, which for band 17 and beyond of a 100 ms walk is
-#: nanometres; the first bands carry the walker's excursion and keep 16 bits. This two-level container stays the
-#: default until the sweep of ``tools/band_sweep.py`` (#727) picks the :func:`band_curve` that replaces it.
-BAND_CONTAINER = ((16, 16), (None, 8))
+#: The first container of the registry (0.6): the first 16 bands at 16 bits, the rest at 8. Packs written with it stay
+#: readable; it is no longer the default.
+TWO_LEVEL_CONTAINER = ((16, 16), (None, 8))
+
+
+class BandCurve:
+    """A container given as a rule rather than as ranges: :func:`band_curve` at ``b1`` and ``taper``, resolved to ranges
+    against the K of the pack it is applied to (:func:`_band_ranges`), so one spec serves every band count."""
+    __slots__ = ("b1", "taper")
+
+    def __init__(self, b1, taper=1.0):
+        self.b1, self.taper = float(b1), float(taper)
+
+    def ranges(self, K):
+        return band_curve(K, self.b1, self.taper)
+
+    def __repr__(self):
+        return f"BandCurve(b1={self.b1:g}, taper={self.taper:g})"
+
+    def __eq__(self, other):
+        return isinstance(other, BandCurve) and (self.b1, self.taper) == (other.b1, other.taper)
+
+    def __hash__(self):
+        return hash((self.b1, self.taper))
+
+
+BUDGET = 0.1
+"""The share of the ordered floor the container may spend: the certificate's error against the float pack of the same
+walk is derived to sit at ``BUDGET`` x floor."""
+KAPPA = 1.0
+"""Calibration (radians^-1): the random-phase error of the mean signal, in units of the walkers' split-half floor, per
+radian of rms quantisation phase noise (:func:`derive_container`)."""
+
+
+class DerivedContainer:
+    """The default container, derived per pack by :func:`derive_container` from the band scales the encoder measures
+    and the floor the pack is ordered at. ``floor`` None is filled by the builder (``sigma_star``, else the walk's own
+    measured floor); ``dt`` the save interval and ``env`` the acquisition envelope the phase weights are read on;
+    ``weight`` the contact channel's ``rho2 / D`` ceiling (None: positions, weighted by the envelope's waveforms)."""
+
+    def __init__(self, floor=None, dt=None, env=None, budget=BUDGET, weight=None):
+        self.floor, self.dt, self.env, self.budget, self.weight = floor, dt, env, float(budget), weight
+
+    def bound(self, **kw):
+        d = dict(floor=self.floor, dt=self.dt, env=self.env, budget=self.budget, weight=self.weight); d.update(kw)
+        return DerivedContainer(**d)
+
+    def ranges(self, K, scales, n_t):
+        if self.floor is None or (self.weight is None and self.dt is None):
+            raise ValueError("a derived container needs the pack's floor target and save interval; the builder supplies them")
+        return derive_container(scales, K, self.floor, n_t=n_t, dt=self.dt, env=self.env, budget=self.budget, weight=self.weight)
+
+    def __repr__(self):
+        return f"DerivedContainer(floor={self.floor}, budget={self.budget:g})"
+
+
+BAND_CONTAINER = DerivedContainer()
+"""The default container of the bridge channels: derived per pack (:class:`DerivedContainer`)."""
+
+
+@functools.lru_cache(maxsize=32)
+def _phase_weight(K, n_t, dt, env_key):
+    """``max over the envelope's measurements of (gamma dt)^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands: the
+    phase variance per unit quantisation variance of one band, summed over bands, for the worst waveform."""
+    env = dict(env_key) if env_key else default_envelope()
+    G, _ = acquisition_battery(int(n_t), float(dt), env)
+    W = bridge_projection(G, int(n_t), int(K))[:, 2:, :]
+    return float(((GAMMA * float(dt)) ** 2 * (W ** 2).sum(axis=(1, 2))).max())
+
+
+def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGET, kappa=KAPPA, b_min=3,
+                     b_max=16, weight=None):
+    """The ranges ``[{"bands": [k0, k1], "bits": b}, ...]`` of one common quantisation step across the bands.
+
+    A band quantised at ``b`` bits against its scale ``a_k`` (the block's maximum) has step ``a_k / (2^(b-1) - 1)``
+    and noise ``step^2 / 12``. The noise is a random phase per walker with variance
+    ``eps^2 = S step^2 / 12`` for one step common to the bands, ``S`` the phase variance per unit step variance of
+    the envelope's worst waveform (:func:`_phase_weight`; a contact channel: ``weight^2 K``). It costs the mean signal
+    two ways: a random term, ``kappa * eps`` times the walkers' split-half floor, which does not depend on the number
+    of walkers, and a bias ``eps^2 / 2``, which does not fall with them while the floor does. Holding both under
+    ``budget`` x ``floor_target`` (each at its share, so that the two sum in quadrature to at most ``budget``)::
+
+        eps  = min(budget / (sqrt(2) kappa), sqrt(budget floor_target)),      step = sqrt(12) eps / sqrt(S),
+        b_k  = ceil(log2(a_k / step)) + 1,    clipped to [b_min, b_max].
+
+    A band below the step keeps ``b_min`` (an empty range is not carried). Equal-bit runs form ranges grown forward
+    to whole bytes, the last taking the remainder, as :func:`band_curve`."""
+    scales = np.asarray(scales, np.float64).ravel()[:int(K)]
+    eps = min(float(budget) / (np.sqrt(2.0) * float(kappa)), float(np.sqrt(budget * floor_target)))
+    S = float(weight) ** 2 * int(K) if weight is not None else _phase_weight(int(K), int(n_t), float(dt), _env_key(env))
+    step = float(np.sqrt(12.0) * eps / np.sqrt(S))
+    bits = np.clip(np.ceil(np.log2(np.maximum(scales, 1e-300) / step)) + 1, b_min, b_max).astype(int)
+    return _group_bits(bits)
+
+
+def _env_key(env):
+    return None if env is None else tuple(sorted((k, tuple(map(tuple, v)) if k == "dirs" else (tuple(v) if isinstance(v, (list, tuple)) else v))
+                                                 for k, v in env.items()))
+
+
+def _group_bits(bits):
+    """Ranges from per-band bits: equal-bit runs grown forward to whole bytes (``len * bits`` a multiple of 8), the last
+    range taking the remainder."""
+    K = len(bits)
+    out, pos = [], 0
+    while pos < K:
+        b = int(bits[pos]); end = pos
+        while end < K and bits[end] == b:
+            end += 1
+        step = 8 // math.gcd(8, b)
+        end = pos + -(-(end - pos) // step) * step
+        end = K if end >= K else end
+        if out and out[-1]["bits"] == b:
+            out[-1]["bands"][1] = end
+        else:
+            out.append({"bands": [pos, end], "bits": b})
+        pos = end
+    return out
+
+
+def resolve_container(container, B, n_t):
+    """``container`` with a :class:`DerivedContainer` replaced by its ranges for the bands ``B`` ``(N_w, K[, n_axes])``."""
+    if isinstance(container, DerivedContainer):
+        a = np.abs(np.asarray(B)).max(axis=0)
+        return container.ranges(B.shape[1], a.max(axis=1) if a.ndim == 2 else a, n_t)
+    return container
 
 NATIVE_BITS = (8, 16)
 """The depths stored as a native integer tensor (``int8``, ``int16``); every other depth in ``MIN_BITS .. 15`` is
@@ -104,30 +224,21 @@ def band_curve(K, b1, taper=1.0, b_min=3, b_max=16):
     if not MIN_BITS <= int(b_min) <= int(b_max) <= 16:
         raise ValueError(f"band_curve needs {MIN_BITS} <= b_min <= b_max <= 16 (got {b_min}, {b_max})")
     bits = np.clip(np.rint(float(b1) - float(taper) * np.log2(np.arange(1, K + 1))), b_min, b_max).astype(int)
-    out, pos = [], 0
-    while pos < K:
-        b = int(bits[pos]); end = pos
-        while end < K and bits[end] == b:
-            end += 1
-        step = 8 // math.gcd(8, b)
-        end = pos + -(-(end - pos) // step) * step
-        end = K if end >= K else end
-        if out and out[-1]["bits"] == b:
-            out[-1]["bands"][1] = end
-        else:
-            out.append({"bands": [pos, end], "bits": b})
-        pos = end
-    return out
+    return _group_bits(bits)
 
 
 def _band_ranges(container, K):
     """``[(k0, k1, bits), ...]`` covering bands ``0 .. K-1`` from a container: ``((upto, bits), ...)`` with ``upto``
     None the end, or the ``[{"bands": [k0, k1], "bits": b}, ...]`` a pack's metadata records and :func:`band_curve`
-    returns. Refuses a gap, an overlap, or a depth outside ``MIN_BITS .. 16``."""
+    returns (the path channel's ranges name ``"modes"`` for ``"bands"``). Refuses a gap, an overlap, or a depth outside ``MIN_BITS .. 16``."""
     out, k0 = [], 0
+    if isinstance(container, BandCurve):
+        container = container.ranges(K)
+    if isinstance(container, DerivedContainer):
+        raise ValueError("a derived container is resolved against the measured band scales (resolve_container) before its ranges are read")
     for item in container:
         if isinstance(item, dict):
-            upto, bits = int(item["bands"][1]), int(item["bits"])
+            upto, bits = int(item["bands"][1] if "bands" in item else item["modes"][1]), int(item["bits"])
         else:
             upto, bits = item
         k1 = int(K) if upto is None else min(int(upto), int(K))
@@ -468,6 +579,7 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     if container is None:                                            # the float32 container, one tensor per axis
         arrays = pack_position_arrays(C, np.float32)
         return arrays, meta, Nw * 3 * (K + 2) * _F32
+    container = resolve_container(container, C[:, 2:, :], Nt)
     arrays = pack_position_arrays(C, np.float32, container=container)
     meta["container"] = [{"bands": [k0, k1], "bits": b} for k0, k1, b in _band_ranges(container, K)]
     return arrays, meta, int(sum(int(np.asarray(v).nbytes) for v in arrays.values()))
@@ -663,7 +775,7 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     if container is None:
         arrays["blt_bridge_dst"] = C.astype(dtype)
     else:                                                          # the integer container: bands per range, a scale per band
-        q, qm = quantise_bands(C, container, "blt", "blt_band_scale")
+        q, qm = quantise_bands(C, resolve_container(container, C, int(nt)), "blt", "blt_band_scale")
         arrays.update(q); meta["container"] = qm["container"]; meta["dtype"] = "bands"
     return arrays, meta
 

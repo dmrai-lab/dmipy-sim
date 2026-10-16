@@ -22,7 +22,7 @@ D0, T, DT, R, KAPPA = 2.0e-9, 40e-3, 5e-4, 4e-6, 2e-5
 def _pack(tmp, geometry, D, T_, dt, name, seed=3):
     walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False)
     out = tmp / f"{name}.rpk"
-    build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out))
+    _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out))
     return read_rpk(str(out))
 
 
@@ -143,3 +143,11 @@ def test_the_prefix_of_a_view_is_the_view_of_the_prefix(packs, tmp_path):
     b = half.prefix(T / 4, out_path=str(tmp_path / "b.rpk"))
     np.testing.assert_allclose(a.replay(seq), b.replay(seq), rtol=1e-4)
     assert a.diffusivity == pytest.approx(D0 / 4)
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

@@ -72,16 +72,16 @@ def test_a_block_inherits_the_certificate_and_measures_its_own_floor(walks, tmp_
     missing citation or an inherited certificate as the source are refused."""
     grid, (w0, w1) = walks
     K = w0.positions.shape[1] - 2
-    cert = build_replay_pack(w0, id="fill/block-0", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=3,
+    cert = _float_pack(w0, id="fill/block-0", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=3,
                              device="numpy")
     assert cert.meta["fidelity"]["certified"] == "measured" and "inherited_from" not in cert.meta["fidelity"]
-    shard = build_replay_pack(w1, id="fill/block-1", license="x", citation="x", voxel_grid=grid, device="numpy",
+    shard = _float_pack(w1, id="fill/block-1", license="x", citation="x", voxel_grid=grid, device="numpy",
                               fidelity="inherited", fidelity_from=cert, out_path=str(tmp_path / "b1.rpk"))
     f = shard.meta["fidelity"]
     assert f["certified"] == "inherited" and f["inherited_from"]["id"] == "fill/block-0"
     assert f["err_max"] == cert.meta["fidelity"]["err_max"] and f["err_surface"] == cert.meta["fidelity"]["err_surface"]
     assert shard.K == cert.K and shard.meta["compression"]["channels"]["boundary_local_time"]["K"] == 3
-    measured = build_replay_pack(w1, id="fill/block-1-measured", license="x", citation="x", K=K, voxel_grid=grid,
+    measured = _float_pack(w1, id="fill/block-1-measured", license="x", citation="x", K=K, voxel_grid=grid,
                                  blt_temporal_K=3, device="numpy")
     assert f["floor_max"] == max(v["floor_max"] for v in f["per_family"].values())    # this walk's own floor, the same split
     for fam in f["per_family"]:
@@ -99,15 +99,15 @@ def test_a_block_inherits_the_certificate_and_measures_its_own_floor(walks, tmp_
     from dmipy_sim.replay import read_rpk
     assert read_rpk(str(tmp_path / "b1.rpk")).meta["fidelity"]["certified"] == "inherited"
     with pytest.raises(ValueError, match="inherits a certificate only"):
-        build_replay_pack(w1, id="x", license="x", citation="x", K=2, fidelity="inherited", fidelity_from=cert, device="numpy")
+        _float_pack(w1, id="x", license="x", citation="x", K=2, fidelity="inherited", fidelity_from=cert, device="numpy")
     with pytest.raises(ValueError, match="needs fidelity_from"):
-        build_replay_pack(w1, id="x", license="x", citation="x", fidelity="inherited", device="numpy")
+        _float_pack(w1, id="x", license="x", citation="x", fidelity="inherited", device="numpy")
     with pytest.raises(ValueError, match="cannot certify another"):
-        build_replay_pack(w1, id="x", license="x", citation="x", fidelity="inherited", fidelity_from=shard, device="numpy")
+        _float_pack(w1, id="x", license="x", citation="x", fidelity="inherited", fidelity_from=shard, device="numpy")
     with pytest.raises(ValueError, match="goes with"):
-        build_replay_pack(w1, id="x", license="x", citation="x", K=K, fidelity_from=cert, device="numpy")
+        _float_pack(w1, id="x", license="x", citation="x", K=K, fidelity_from=cert, device="numpy")
     # the citation survives as JSON (a fill distributes its certifying pack's meta, not the pack)
-    again = build_replay_pack(w1, id="fill/block-1b", license="x", citation="x", fidelity="inherited", device="numpy",
+    again = _float_pack(w1, id="fill/block-1b", license="x", citation="x", fidelity="inherited", device="numpy",
                               fidelity_from=json.loads(json.dumps(cert.meta, default=float)))
     assert again.meta["fidelity"]["inherited_from"]["id"] == "fill/block-0"
 
@@ -120,14 +120,14 @@ def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
     import dmipy_sim as d
     grid, (w0, w1) = walks
     K = w0.positions.shape[1] - 2
-    cert = build_replay_pack(w0, id="fill/cert", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=3, device="numpy")
+    cert = _float_pack(w0, id="fill/cert", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=3, device="numpy")
     spec = w1.spec
     want = np.zeros(grid.shape, np.int64); want[1] = 12
     rounds = []
     for r in (0, 1):
         w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 + r, require_gpu=False,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        rounds.append(build_replay_pack(w, id=f"fill/block-1/round-{r}", license="x", citation="x", voxel_grid=grid, device="numpy",
+        rounds.append(_float_pack(w, id=f"fill/block-1/round-{r}", license="x", citation="x", voxel_grid=grid, device="numpy",
                                         fidelity="inherited", fidelity_from=cert, out_path=str(tmp_path / f"r{r}.rpk")))
     with pytest.raises(ValueError, match="unless the merge recertifies"):
         merge_packs(rounds, id="fill/block-1")
@@ -174,3 +174,11 @@ def test_path_channel_series_encoder_is_chunked_device_capable_and_drops_zz():
     assert m3["iso_P_zz"] == "stored" and m3["n_ch"] == 13
     with pytest.raises(ValueError, match="layout"):
         susc_path_encode_series(S, CHANNEL_NAMES, K=8, layout="cwt")
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

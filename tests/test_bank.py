@@ -80,7 +80,7 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
     # an axis subset is a contiguous read that composes with the walker-prefix read; `.position_coeffs`
     # assembles them for consumers that want all three.
     from dmipy_sim.replay.compression import POSITION_AXES, has_axis_layout
-    assert has_axis_layout(pack.arrays) and all(k in pack.arrays for k in POSITION_AXES)
+    assert has_axis_layout(pack.arrays) and (all(k in pack.arrays for k in POSITION_AXES) or "pos_x_ends" in pack.arrays)   # float or integer container
     assert np.asarray(pack.position_coeffs).shape[2] == 3
     from dmipy_sim.replay.compression import has_c1, has_c2
     assert has_c1(pack.arrays)                                  # compartment tier
@@ -253,7 +253,7 @@ def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
     selector costs DCT candidates against the surface gate instead of falling back to sparse CSR,
     whose size grows with walk length."""
     pk = build_replay_pack(_slab_master(), scanner="connectom", id="test/slab-c2-auto", method="bridge_dst",
-                           envelope=_lean_env(), K=64,
+                           envelope=_lean_env(), K=64, blt_container=None,
                            license="CC-BY-4.0", citation="test")
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
     assert cm["mode"] == "bridge_dst" and cm["dtype"] == "float16"

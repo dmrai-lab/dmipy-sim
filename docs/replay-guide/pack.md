@@ -79,6 +79,21 @@ print(pack.nominal_field_T)
 A published pack therefore reproduces its paper with one call, `pack.replay(seq, tissue=pack.nominal,
 scanner=pack.nominal_field_T)`, and never by default.
 
+## The band container
+
+A pack stores a walker's path as the endpoints plus sine bands of the Brownian bridge; band `k` falls as `1/k`, so
+the bits a band needs fall as `log2 k`. The default container is derived per pack: one quantisation step common to all bands, set so that the quantisation
+phase noise costs a tenth of the floor the pack is ordered at, and band `k` takes `ceil(log2(a_k / step)) + 1` bits
+for its measured maximum `a_k` (3 to 16 bits). Equal-bit runs form ranges of a whole number of bytes.
+`band_curve(K, b1)` (`round(b1 - log2 k)` bits) and the two-level container (16 bands at 16 bits, the rest at 8) are
+explicit choices. Each
+range is one tensor per axis: `int8` / `int16` at 8 / 16 bits (`pos_x_b0`), otherwise bit-packed rows of
+offset-binary values, most significant bit first, under `pos_x_b2u7` (`u<bits>` names the depth). The metadata lists
+the ranges (`compression.container`, `{"bands": [k0, k1], "bits": b}`); a reader reads every container a pack names,
+so packs written with the two-level container (16 bands at 16 bits, the rest at 8) read unchanged. The contact
+channel takes the same container; the field path channel takes ranges over its modes (`{"modes": [k0, k1], ...}`)
+and defaults to one 8-bit range.
+
 ## Saving, loading, opening
 
 ```python
