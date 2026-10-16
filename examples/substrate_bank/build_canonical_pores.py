@@ -174,14 +174,14 @@ def spec_of(shape, d_um):
     return geometry(shape, d_um).spec
 
 
-def walk(spec, n, *, n_t, seed):
+def walk(spec, n, *, n_t, seed, sub_steps=None):
     """The walk the pilot runs and a fresh pack would be built from: no relaxivity, every tier stored, at the
-    pack's own ``seed`` (``pack_seed`` of its id)."""
+    pack's own ``seed`` (``pack_seed`` of its id); ``sub_steps`` is the step pilot's coarse count, None the rule's."""
     import dmipy_sim as d
     from dmipy_sim.spec import geometry_from_spec
     dt = T / (n_t - 1)
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, dt_save=dt, seed=int(seed),
-                                   tiers="all", require_gpu=False, walker_batch_size=2000)
+                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
 
 
 # ----------------------------------------------------------------- the envelope and the declared waveforms

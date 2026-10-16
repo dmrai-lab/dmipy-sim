@@ -58,6 +58,8 @@ import os
 import re
 import subprocess
 import time
+
+import numpy as np
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -387,7 +389,8 @@ class Build:
 
     ``specs`` maps a substrate name to a zero-argument callable returning its
     :class:`~dmipy_sim.spec.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
-    a count and a seed (``walk(spec, n, *, n_t, seed)``) and is what the pilot and the walk stage call, with
+    a count and a seed (``walk(spec, n, *, n_t, seed, sub_steps)``, ``sub_steps`` None for the engine's own rule and
+    a count for the step pilot's coarse walk) and is what the pilot and the walk stage call, with
     ``seed = pack_seed(pack_id)``: one seed per pack, so no two packs of a family share a random stream (a
     family walked at one seed has residuals that are one draw read many times); ``recorded`` gives a
     :class:`RecordedWalk` per substrate instead, for a family whose packs already exist and must not be
@@ -837,6 +840,21 @@ def _gate_checks(rec):
                f"the producing run recorded no resident peak for this walk, so the {_size(budget)} budget is "
                f"not checked against a measurement for this pack: "
                + str(wk.get("counters_not_recorded"))[:200]))
+
+        st = des["pilot"].get("step")
+        if st is None:
+            raise ReferenceRefusal(f"gate: the design record carries no step certificate (pilot.step) for the family; "
+                                   f"delete records/design.json onwards and run the design stage again")
+        k = float(des["pass_band"]["k"])
+        check(st["eps_measured"] <= st["eps_declared"] + k * st["eps_se"],
+              f"{name}/step-within-tolerance",
+              f"the pilot measured the fine step's spectrum error at {st['eps_measured']:.2e} +- {st['eps_se']:.1e} over "
+              f"{st['n_bins']} bins to {st['f_band_hz']:.3g} Hz (steps {st['sub_steps_fine']} against "
+              f"{st['sub_steps_coarse']} per save), against the tolerance {st['eps_declared']:g} it was sized for, "
+              f"within {k:.3g} standard errors"
+              + ("" if st["resolves"] else f"; at {st['n_walkers']:,} walkers the pilot resolves the step error "
+                                            f"only to {st['eps_se']:.1e}, so the rule, not this pilot, is what holds "
+                                            f"the tolerance"))
 
         declared = {w["label"] for w in des["waveforms"]}
         served = {w["label"] for w in sub["waveforms"]}
@@ -1330,8 +1348,16 @@ class ReferenceFamily:
         rss0 = _rss_bytes()
         t0 = time.time()
         with _PeakRSS() as sampler:
-            walk = self.build.walk(spec, int(d.pilot_n), n_t=n_t, seed=pack_seed(self.build.pack_id[name]))
+            try:
+                walk = self.build.walk(spec, int(d.pilot_n), n_t=n_t, seed=pack_seed(self.build.pack_id[name]), sub_steps=None)
+            except TypeError as e:
+                if "sub_steps" not in str(e):
+                    raise
+                raise ReferenceRefusal("design: build.walk takes (spec, n, *, n_t, seed, sub_steps): the step pilot walks the "
+                                       "substrate a second time at a stated sub-step count, so the hook must accept "
+                                       "sub_steps and pass it to the engine") from e
         walk_s, walk_peak = time.time() - t0, sampler.peak
+        step = self._step_pilot(spec, name, walk, n_t, d)
         if int(walk.positions.shape[1]) != n_t:
             raise ReferenceRefusal(f"design: the pilot recorded {walk.positions.shape[1]} saves, the design's window "
                                    f"is {n_t}; a pilot on a shorter window measures another pack's memory")
@@ -1433,7 +1459,7 @@ class ReferenceFamily:
                                                 "increment at this pilot count was below it"),
                               rss_bytes_before=int(rss0), peak_rss_bytes_walk=int(walk_peak),
                               peak_rss_bytes_pack=int(pack_peak), codec_err=float(fid["err_max"]),
-                              band_hz=float(pk.temporal_bandwidth_hz)),
+                              band_hz=float(pk.temporal_bandwidth_hz), step=step),
                    derived=dict(target_floor=target, n_for_target_floor=n_floor, n_for_budget=n_budget,
                                 n_walkers=n_walkers, tiers_that_hold=holds,
                                 rule="the pilot's measured floor scaled as 1/sqrt(N) with the declared safety "
@@ -1441,6 +1467,42 @@ class ReferenceFamily:
                                      "memory budget; never an estimate"),
                    trade=trade)
         return self.records.write("design", rec, inputs_digest=inputs, previous_sha256=prev_sha)
+
+    def _step_pilot(self, spec, name, walk, n_t, d):
+        """The step certificate of the pilot (dmrai-lab/dmipy-sim#715): a second pilot of the same substrate on the same
+        save grid, stepping :data:`~dmipy_sim.math.step_law.PILOT_STEP_RATIO` times longer in time, and the measured
+        first-order error of the fine step's diffusion spectrum over the band the declared waveforms read, against
+        the tolerance the walk was sized for (its ``work["step_rule"]``). A pilot that cannot halve its step, or
+        whose standard error exceeds the tolerance, is refused by name: a certificate is a measurement."""
+        from ..acquisition.waveforms import band_hz
+        from ..math.step_law import PILOT_STEP_RATIO, step_certificate
+        rule = (walk.work or {}).get("step_rule") or {}
+        if not rule or rule.get("eps_D") is None:
+            raise ReferenceRefusal(f"design: the pilot walk of {name!r} carries no step rule (work['step_rule']); the step "
+                                   f"certificate holds the walk to the tolerance it was sized for, and this walk states none")
+        n_fine = int(walk.sub_steps)
+        if n_fine < 2:
+            raise ReferenceRefusal(f"design: the pilot of {name!r} walks one physics step per save, which the step "
+                                   f"certificate cannot step coarser; a save grid this close to the physics step "
+                                   f"leaves the step unmeasured -- declare a finer dt_save_s")
+        regime = int((rule.get("rules") or {}).get("regime") or 1)        # the coarse walk stays in the first-order regime
+        n_coarse = max(n_fine // (PILOT_STEP_RATIO if n_fine >= PILOT_STEP_RATIO else 2), regime)
+        if n_coarse >= n_fine:
+            raise ReferenceRefusal(f"design: the pilot of {name!r} steps at the first-order regime's ceiling ({n_fine} per "
+                                   f"save, the regime asks {regime}); the step certificate cannot step coarser within the "
+                                   f"regime, so the step is unmeasured -- declare a finer dt_save_s")
+        ratio = n_fine / n_coarse
+        bands = [band_hz(np.asarray(seq.G_eff), float(seq.dt)) for _, seq in self.design.waveforms()]
+        bands = [b for b in bands if b is not None]
+        f_band = float(max(bands)) if bands else float(rule.get("f_band_hz") or 0.5 / float(walk.dt))
+        f_band = min(f_band, 0.5 / float(walk.dt))
+        t0 = time.time()
+        coarse = self.build.walk(spec, int(d.pilot_n), n_t=n_t, seed=pack_seed(self.build.pack_id[name]) + 1, sub_steps=n_coarse)
+        cert = step_certificate(np.asarray(walk.positions), np.asarray(coarse.positions), float(walk.dt), ratio,
+                                f_band=f_band, eps_declared=float(rule["eps_D"]))
+        return dict(cert, sub_steps_fine=n_fine, sub_steps_coarse=n_coarse, dt_p_s=float(walk.dt_sim),
+                    band_is=("the largest band the declared waveforms read" if bands else "the walk's own band"),
+                    rules=rule.get("rules"), coarse_walk_seconds=round(time.time() - t0, 1), illegal_crossings_coarse=int(coarse.illegal_crossings or 0))
 
     # ---------------- 5. walk
     def _walk(self):
@@ -1490,7 +1552,7 @@ class ReferenceFamily:
         rss0 = _rss_bytes()
         t0 = time.time()
         with _PeakRSS() as sampler:
-            walk = self.build.walk(spec, n, n_t=int(des["n_t"]), seed=pack_seed(self.build.pack_id[name]))
+            walk = self.build.walk(spec, n, n_t=int(des["n_t"]), seed=pack_seed(self.build.pack_id[name]), sub_steps=None)
         seconds, peak = time.time() - t0, sampler.peak
         out_dir = os.path.join(self.dir, "walks")
         os.makedirs(out_dir, exist_ok=True)

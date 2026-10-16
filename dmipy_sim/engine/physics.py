@@ -277,6 +277,19 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
     dt_p = min(pore, band_step(f_band, eps_D), delta_max ** 2 / (6.0 * D))
     return max(n_coll, max(1, int(np.ceil(float(dt) / dt_p * (1.0 - 1e-12)))))      # an exact multiple is not one more
 
+def regime_sub_steps(geometry, diffusivity: float, dt: float) -> int:
+    """Sub-steps so the step stays in the first-order regime the step law is measured in: ``delta_0 <= min_feature / 2``,
+    or the ceiling a geometry declares (``reflection_step_fraction``); 1 for a geometry without a scale. The ceiling
+    alone, which :func:`tolerance_sub_steps` folds in; the step pilot of a build reads it to keep its coarse walk in
+    the regime (dmrai-lab/dmipy-sim#715)."""
+    ls = length_scales_of(geometry)
+    if ls.min_feature is None or ls.is_mesh_feature:
+        return 1
+    frac = getattr(geometry, 'reflection_step_fraction', None)
+    delta_max = float(ls.min_feature) / (float(frac) if frac else 2.0)
+    return max(1, int(np.ceil(float(dt) / (delta_max ** 2 / (6.0 * float(diffusivity))) * (1.0 - 1e-12))))
+
+
 def surface_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 8.0) -> int:
     """Fine sub-steps so a surface-relaxivity walk resolves the boundary local time.
 
@@ -348,6 +361,7 @@ def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = F
     """The sub-step count each criterion that applies to a walk on ``geometry`` asks for, by name -- what
     :func:`resolve_sub_steps` takes the maximum of, and what a walk records as its ``step_rule``."""
     rules = {"step law": tolerance_sub_steps(geometry, diffusivity, dt, eps_D=eps_D, f_band=f_band),
+             "regime": regime_sub_steps(geometry, diffusivity, dt),
              "collision lookup": collision_sub_steps(geometry, diffusivity, dt),
              "crossing": crossing_sub_steps(geometry, diffusivity, dt)}
     if surface:
