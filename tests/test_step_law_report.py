@@ -90,7 +90,7 @@ def test_the_cost_table_names_what_binds(report):
     _, R = report
     for name, r in R["cost"].items():
         assert r["sub_steps"] == max(r["rules"].values()) and r["binds"] in r["rules"]
-        assert r["walker_steps_per_s"] > 0
+        assert r["walker_steps_per_s"] > 0 or "not_walked" in r
     assert "lookup_longest_atom" in R["cost"]["icosphere mesh 4 um"]
 
 

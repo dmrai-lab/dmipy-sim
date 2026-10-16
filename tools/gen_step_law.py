@@ -383,10 +383,16 @@ def sec_cost(cfg, fig_dir):
             rec["lookup_fixed_step"] = int(max(1, math.ceil((np.sqrt(6 * D0 * DT) / (0.9 * cs)) ** 2)))
             rec["lookup_longest_atom"] = int(collision_sub_steps(g, D0, DT))
             assert rec["lookup_longest_atom"] == rules["collision lookup"]
-        d.simulate_trajectories(min(2000, cfg["cost_n"]), D0, g, 2 * DT, DT, seed=5, require_gpu=False, sub_steps=n)
-        t0 = time.time()
-        w = d.simulate_trajectories(cfg["cost_n"], D0, g, T, DT, seed=5, require_gpu=False, sub_steps=n)
-        sec = time.time() - t0
+        try:
+            d.simulate_trajectories(min(2000, cfg["cost_n"]), D0, g, 2 * DT, DT, seed=5, require_gpu=False, sub_steps=n)
+            t0 = time.time()
+            d.simulate_trajectories(cfg["cost_n"], D0, g, T, DT, seed=5, require_gpu=False, sub_steps=n)
+            sec = time.time() - t0
+        except ValueError as e:                      # a surface the bare producer cannot seed (an open CACTUS box)
+            rec["not_walked"] = str(e).splitlines()[0][:160]
+            out[name] = rec
+            log(f"cost {name}: rules {rules} -> {n} ({rec['binds']}); not walked: {rec['not_walked']}")
+            continue
         rec.update(n_walkers=cfg["cost_n"], saves=cfg["cost_saves"], seconds=sec,
                    walker_steps_per_s=cfg["cost_n"] * cfg["cost_saves"] * n / sec,
                    walker_saves_per_s=cfg["cost_n"] * cfg["cost_saves"] / sec)
@@ -526,6 +532,13 @@ def render(R, meta):
         L.append("")
         L.append("![engine against operator](step-law/fused.png)")
         L.append("")
+        if "operator" in R:
+            asym = {shape: max(lv["asym"] for lv in rec["levels"].values()) for shape, rec in R["operator"]["pores"].items()}
+            L.append("The operator's own precision is its symmetry check, the largest asymmetry of the one-step matrix over the "
+                     "levels above: " + ", ".join(f"{k} {v:.0e}" for k, v in asym.items()) + ". A row whose standard error is "
+                     "below that check reads the operator's quadrature, not the engine; a pull there is not a defect of the walk "
+                     "until the operator is refined past it.")
+            L.append("")
     # 4 certificate
     if "certificate" in R:
         s = R["certificate"]
@@ -561,8 +574,10 @@ def render(R, meta):
         for name, r in s.items():
             ru = r["rules"]
             lk = f"{r['lookup_fixed_step']} -> {r['lookup_longest_atom']}" if "lookup_longest_atom" in r else "-"
+            rate = f"{r['walker_steps_per_s']:.2e}" if "walker_steps_per_s" in r else f"not walked: {r['not_walked'][:110]}"
+            walkers = f"{r['n_walkers']:,}" if "n_walkers" in r else "-"
             L.append(f"| {name} | {ru.get('step law', '-')} | {ru.get('regime', '-')} | {lk} | {ru.get('crossing', '-')} | "
-                     f"{r['binds']} | {r['sub_steps']} | {r.get('retired_R6', '-')} | {r['walker_steps_per_s']:.2e} | {r['n_walkers']:,} |")
+                     f"{r['binds']} | {r['sub_steps']} | {r.get('retired_R6', '-')} | {rate} | {walkers} |")
         L.append("")
     # 6 outside
     if "outside" in R:
@@ -599,7 +614,7 @@ def main(argv=None):
     fig_dir.mkdir(parents=True, exist_ok=True)
     json_path = fig_dir / "step_law.json"
     R = json.loads(json_path.read_text()) if json_path.exists() else {}
-    R.pop("meta", None)
+    kept = R.pop("meta", None)
     cfg = TIERS[a.tier]
     import matplotlib
     matplotlib.use("Agg")
@@ -615,6 +630,8 @@ def main(argv=None):
         log(f"section {name} done in {time.time()-t0:.0f}s")
         json_path.write_text(json.dumps(R, indent=1, default=float))
     meta = dict(commit=commit, date=_dt.date.today().isoformat(), tier=a.tier, device=device, D0=D0, dt=DT)
+    if a.only in ("", "none") and kept:
+        meta = dict(kept, commit=commit)                  # a render-only pass keeps the measurements' tier and device
     json_path.write_text(json.dumps(dict(R, meta=meta), indent=1, default=float))
     out.write_text(render(R, meta), encoding="utf-8")
     log(f"wrote {out} and {json_path}")
