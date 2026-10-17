@@ -1439,7 +1439,7 @@ def simulate_trajectories(
     the position after each group of ``sub_steps`` inner steps is saved, so storage
     is always ``(n_walkers, n_t, 3)`` at ``dt_save`` granularity.
 
-    The walk states its cost before it starts: :func:`walk_cost` is the same resolution as a dict, and the walk
+    The walk states its cost before it starts: :func:`walk_cost` states the same resolution as a :class:`WalkCost`, and the walk
     writes it as the ``cost`` row of its run (a walk on the JAX kernels that an installed backend accepts also
     warns, naming the backend).
 
