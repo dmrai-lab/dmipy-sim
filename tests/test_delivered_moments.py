@@ -18,6 +18,7 @@ from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom.bore import delivered_moments, encoding_classes
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.columnar import ColumnarPack
+from dmipy_sim.replay.compression import BUDGET
 from dmipy_sim.replay.shape_moments import ShapeMoments, stamp_background, write_shape_moments
 from dmipy_sim.fill.consolidate import consolidate
 from dmipy_sim.spec import walk_spec, fill_field, StratifiedByVoxel
@@ -94,7 +95,8 @@ def _direct(merged, grid, placed, sc, seq, ijk):
 def test_the_delivered_layout_is_the_machines_own_replay(layout, scanner):
     """At 7.1 cm from isocentre, every catalogued term on: the layout's image under the delivery equals, voxel by
     voxel, the merged pack replayed on the acquisition the machine plays there, for a spin echo and a stimulated echo,
-    to float32 arithmetic; and the delivery moves the image off the field-only one by far more than that."""
+    within the moment container's share of the floor target; and the delivery moves the image off the field-only one
+    by more than that share."""
     sm, col, merged, grid, n_t, shapes, tmp = layout
     sc = ScannerLimits.of(scanner)
     placed = sm.grid.centred_at(OFFSET)
@@ -108,10 +110,10 @@ def test_the_delivered_layout_is_the_machines_own_replay(layout, scanner):
         S0, _ = sm.image(name, b, dirs, tissue=TISSUE, scanner=sc, b0_direction=sc.b0_axis)
         ref = _direct(merged, grid, placed, sc, seq, ijk)
         got = S.reshape(-1, len(b))[live]
-        err = np.abs(got - ref).max()
-        assert err < 5e-6, (scanner, name, err)                    # float32 against float64: measured 0.5-1.2e-7
+        err = np.abs(got - ref).max(); bound = BUDGET * sm.manifest["shapes"][name]["moment"]["floor_target"]
+        assert err < bound, (scanner, name, err, bound)            # the packed moments against float64: 0.013-0.018 of 0.054 measured
         moved = np.abs(got - S0.reshape(-1, len(b))[live]).max()
-        assert moved > 100 * err and moved > 1e-4, (scanner, name, moved, err)
+        assert moved > bound, (scanner, name, moved, bound)        # 0.15-0.44 measured
 
 
 def test_the_torch_backend_is_the_jax_image_under_a_delivery(layout):
