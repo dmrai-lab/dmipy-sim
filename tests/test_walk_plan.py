@@ -153,3 +153,23 @@ def test_measure_projects_the_walk():
     d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
     real = time.perf_counter() - t0
     assert real / 2 < p["projected_s"] < real * 2
+
+
+def test_scaling_times_the_pilot_at_several_batches(monkeypatch):
+    from dmipy_sim.engine import core
+    g = d.Sphere(radius=2e-6)
+    monkeypatch.setattr(core, "_free_device_bytes", lambda: None)
+    p = d.walk_plan(g, D, 8e-3, 1e-3, 400, walker_batch_size=200, measure="scaling")
+    s = p["scaling"]
+    assert sorted(s["walker_steps_per_s"]) == [100, 200, 400, 800]
+    assert s["plateau_walker_steps_per_s"] == max(s["walker_steps_per_s"].values())
+    assert s["batch_fraction_of_plateau"] == pytest.approx(s["walker_steps_per_s"][200] / s["plateau_walker_steps_per_s"])
+    assert s["max_batch_memory"] is None and "unavailable" in s["memory_cap"]
+    want = "under-filled" if s["seconds"][400] < core.UNDERFILLED_DOUBLING * s["seconds"][200] else "saturated"
+    assert s["verdict"] == want
+    # a device that holds 1.5 batches: 2B does not fit
+    per = core._device_bytes_per_walker(core._resolve_walk(g, D, 8e-3, 1e-3))
+    monkeypatch.setattr(core, "_free_device_bytes", lambda: int(1.5 * 200 * per))
+    q = d.walk_plan(g, D, 8e-3, 1e-3, 400, walker_batch_size=200, measure="scaling")["scaling"]
+    assert sorted(q["walker_steps_per_s"]) == [100, 200] and q["verdict"] == "memory-bound"
+    assert q["max_batch_memory"] == 300
