@@ -1072,15 +1072,15 @@ class WalkScaling:
     seconds: dict                     #: batch size -> seconds of the pilot
     plateau_walker_steps_per_s: float #: the largest rate
     batch_fraction_of_plateau: float  #: the walk's batch rate over the plateau
-    recommended_batch: int            #: the largest batch reached by doublings that each cost under :data:`UNDERFILLED_DOUBLING` x the time before
-    stopped_by: str                   #: why the profile ends: ``"given"`` (the caller's batch with B/2..4B), ``"doubling no longer pays"``,
-                                      #: ``"memory"``, ``"n_walkers"`` or ``"r0"`` (the sweep reached that limit while doubling still paid)
+    recommended_batch: int            #: the timed batch with the highest rate: for a fixed walker count it minimises the total time
+    stopped_by: str                   #: why the profile ends: ``"given"`` (the caller's batch with B/2..4B), ``"rate fell"`` (the sweep passed
+                                      #: its best), or the limit the sweep reached while the rate still rose: ``"memory"``, ``"n_walkers"``, ``"r0"``
     max_batch_memory: object          #: the largest batch the device's free memory holds, or None without a memory cap
     bytes_per_walker: int             #: device bytes of one walker's inputs and output channels over all saves (a lower bound)
     memory_cap: str                   #: where ``max_batch_memory`` comes from, or why there is none
     verdict: str                      #: about the walk's batch B: ``"under-filled"`` when 2B takes under :data:`UNDERFILLED_DOUBLING` x the
-                                      #: time of B (the extra walkers cost under 20 %) or the sweep ran out of walkers; ``"memory-bound"`` when
-                                      #: 2B does not fit the device; else ``"saturated"``; ``"unresolved"`` when 2B was not timed for want of ``r0`` rows
+                                      #: time of B (the extra walkers cost under 20 %), measured whenever 2B fits the device, whatever ``n_walkers``;
+                                      #: ``"memory-bound"`` when 2B does not fit; else ``"saturated"``; ``"unresolved"`` when 2B could not be timed for want of ``r0`` rows
 
 
 @dataclass(frozen=True)
@@ -1190,43 +1190,35 @@ def _free_device_bytes():
 
 
 def _recommended(times):
-    """The largest batch of ``times`` ({batch: seconds}) reached by doublings that each cost under
-    :data:`UNDERFILLED_DOUBLING` x the time before, the smallest batch when the first doubling does not pay."""
-    sizes = sorted(times)
-    rec = sizes[0]
-    for prev, cur in zip(sizes, sizes[1:]):
-        if times[cur] >= UNDERFILLED_DOUBLING * times[prev]:
-            break
-        rec = cur
-    return rec
+    """The batch of ``times`` ({batch: seconds}) with the highest walkers per second."""
+    return max(times, key=lambda b: b / times[b])
 
 
 def _sweep(seconds, cap, limit):
-    """The pilot timed at 4096 * 2^k walkers up to ``cap`` (``limit`` names what ``cap`` is), stopping once doubling
-    no longer pays. Returns ``({batch: seconds}, stopped_by)``."""
-    B = min(4096, cap)
-    times = {B: seconds(B)}
-    while 2 * B <= cap:
-        times[2 * B] = seconds(2 * B)
-        if times[2 * B] >= UNDERFILLED_DOUBLING * times[B]:
-            return times, "doubling no longer pays"
-        B *= 2
+    """The pilot timed at 4096 * 2^k walkers below ``cap`` and at ``cap`` itself (``limit`` names what ``cap`` is),
+    stopping at the first point whose rate is below the best so far. Returns ``({batch: seconds}, stopped_by)``."""
+    sizes = [b for b in (4096 * 2 ** k for k in range(64)) if b < cap][:]
+    sizes = sizes + [cap] if cap > 0 else sizes
+    times, best = {}, 0.0
+    for b in sizes:
+        times[b] = seconds(b)
+        rate = b / times[b]
+        if rate < best:
+            return times, "rate fell"
+        best = rate
     return times, limit
 
 
-def _scaling(times, B, res, saves, max_batch, stopped_by, available):
-    """The :class:`WalkScaling` of timed pilots ``times`` ({batch: seconds}) read against the walk's batch ``B``."""
+def _scaling(times, vb, res, saves, max_batch, stopped_by):
+    """The :class:`WalkScaling` of timed pilots ``times`` ({batch: seconds}), the verdict read at batch ``vb``."""
     rates = {b: b * saves * res.sub_steps / tt for b, tt in sorted(times.items())}
     plateau = max(rates.values())
-    if stopped_by == "given":
-        if 2 * B in times:
-            verdict = "under-filled" if times[2 * B] < UNDERFILLED_DOUBLING * times[B] else "saturated"
-        else:
-            verdict = "memory-bound" if (max_batch is not None and 2 * B > max_batch) else "unresolved"
+    if 2 * vb in times:
+        verdict = "under-filled" if times[2 * vb] < UNDERFILLED_DOUBLING * times[vb] else "saturated"
     else:
-        verdict = {"doubling no longer pays": "saturated", "memory": "memory-bound"}.get(stopped_by, "under-filled")
+        verdict = "memory-bound" if (max_batch is not None and 2 * vb > max_batch) else "unresolved"
     return WalkScaling(walker_steps_per_s=rates, seconds={b: times[b] for b in sorted(times)},
-                       plateau_walker_steps_per_s=plateau, batch_fraction_of_plateau=rates[B] / plateau,
+                       plateau_walker_steps_per_s=plateau, batch_fraction_of_plateau=rates[vb] / plateau,
                        recommended_batch=int(_recommended(times)), stopped_by=stopped_by,
                        max_batch_memory=None if max_batch is None else int(max_batch),
                        bytes_per_walker=_device_bytes_per_walker(res),
@@ -1265,23 +1257,25 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
         ``WalkCost.dt_save_rule`` says which set it.
     walker_batch_size : int or None
         Walkers per batch. ``None`` finds the batch: with ``measure="scaling"`` the pilot is timed at 4096 * 2^k
-        walkers up to ``min(n_walkers, the memory-limited batch)``, stopping once doubling no longer pays (the
-        doubled batch takes at least :data:`UNDERFILLED_DOUBLING` = 1.2 x the time: the extra walkers cost at least
-        20 % more), and the batch is the largest one reached by doublings that each cost under 20 %
-        (:attr:`WalkScaling.recommended_batch`); otherwise it is ``n_walkers`` capped by the memory-limited batch
-        (one batch where it fits). ``WalkCost.walker_batch_rule`` says which. The memory-limited batch is the
-        device's free memory over ``bytes_per_walker`` (no cap where the device reports no memory statistics).
+        walkers below ``min(n_walkers, the memory-limited batch)`` and at that cap, stopping at the first batch whose
+        walker-steps per second is below the best so far; the batch is the one with the highest rate
+        (:attr:`WalkScaling.recommended_batch`), which for a fixed walker count minimises the total time. Otherwise it
+        is ``n_walkers`` capped by the memory-limited batch (one batch where it fits).
+        ``WalkCost.walker_batch_rule`` says which. The memory-limited batch is the device's free memory over
+        ``bytes_per_walker`` (no cap where the device reports no memory statistics).
     backend : str or Backend, optional
         The backend that would walk it (default the JAX kernels).
     measure : {False, True, "scaling"}
-        ``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) for 3 saves on the real device
+        ``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) for 1 save on the real device
         and backend, twice, and times the second call (the compile is in the first): :attr:`WalkCost.measured`. The
         walk is the production program (``walk_kwargs`` included; ``r0`` is sliced to the batch) and its cost is
         linear in the saves at a fixed batch size, so the projection is a measurement. The timed call is the whole
         of :func:`simulate_trajectories`: seeding, the walk and the transfer to the host. ``"scaling"`` also times
         the same pilot over the batch sizes above -- the sweep for a batch not given, else B/2, B, 2B and 4B for the
         given B (the larger sizes only where the device's free memory holds them) -- each the second call of its
-        shape: :attr:`WalkCost.scaling`. The projection is made at the walk's batch.
+        shape: :attr:`WalkCost.scaling`. Its verdict asks whether more walkers are nearly free at the walk's batch
+        B: 2B (timed whenever it fits the device) takes under :data:`UNDERFILLED_DOUBLING` = 1.2 x the time of B,
+        i.e. the extra walkers cost under 20 %. The projection is made at the walk's batch.
 
     Returns
     -------
@@ -1324,7 +1318,7 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
         cost = _cost_of(res, geometry, n_walkers, batch, name, scanner=scanner, dt_save_rule=rule,
                         batch_rule="given" if given else "n_walkers capped by memory")
     if measure:
-        saves = min(3, cost.n_saves - 1)
+        saves = 1
         r0 = None if kw.get("r0") is None else np.asarray(kw["r0"])
         kw.update(sub_steps=res.sub_steps)
 
@@ -1344,8 +1338,10 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
             limit = min((k for k, v in limits.items() if v is not None), key=lambda k: limits[k])
             times, stopped = _sweep(seconds, limits[limit], limit)
             B = _recommended(times)
-            scaling = _scaling(times, B, res, saves, max_batch, stopped, available)
             t = times[B]
+            if 2 * B not in times and (max_batch is None or 2 * B <= max_batch) and (available is None or 2 * B <= available):
+                times[2 * B] = seconds(2 * B)                 # the verdict's doubling, whatever n_walkers
+            scaling = _scaling(times, B, res, saves, max_batch, stopped)
             cost = dataclasses.replace(cost, walker_batch_size=int(B), walker_batch_rule="recommended by the sweep",
                                        walker_batches=-(-int(n_walkers) // int(B)))
         else:
@@ -1359,7 +1355,7 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
                     if (max_batch is not None and m * B > max_batch) or (available is not None and m * B > available):
                         break
                     times[m * B] = seconds(m * B)
-                scaling = _scaling(times, B, res, saves, max_batch, "given", available)
+                scaling = _scaling(times, B, res, saves, max_batch, "given")
         measured = WalkMeasured(seconds=t, batch=int(B), saves=int(saves),
                                 seconds_per_walker_step=t / (B * saves * res.sub_steps),
                                 projected_s=cost.walker_batches * t / saves * (cost.n_saves - 1))

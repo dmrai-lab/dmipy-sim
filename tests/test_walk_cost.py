@@ -152,8 +152,8 @@ def test_measure_projects_the_walk():
     p = cost(g, t, 1e-3, n, walker_batch_size=1000, measure=True)
     m = p.measured
     assert m.seconds_per_walker_step > 0 and m.projected_s > 0
-    assert m.batch == 1000 and m.saves == 3
-    assert m.projected_s == pytest.approx(p.walker_batches * m.seconds / 3 * (p.n_saves - 1))
+    assert m.batch == 1000 and m.saves == 1
+    assert m.projected_s == pytest.approx(p.walker_batches * m.seconds / m.saves * (p.n_saves - 1))
     assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).scaling is None
     # within 2x of a measured walk of the same shape (compile excluded)
     d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
@@ -216,21 +216,30 @@ def test_the_scanners_band_reaches_the_sub_step_rules():
     assert c.sub_step_rules != cost(g).sub_step_rules and cost(g).f_band_hz == 0.5 / DT
 
 
-def test_the_sweep_stops_once_doubling_no_longer_pays():
+def test_the_sweep_stops_after_the_rate_falls_and_recommends_the_fastest():
     from dmipy_sim.engine import core
-    # doubling costs 10 % (pays), then 30 % (does not): the sweep ends there and recommends the batch the paying doubling reached
-    t = {4096: 1.0, 8192: 1.1, 16384: 1.43, 32768: 9.0}
+    # walkers per second: 4096 -> 4096, 8192 -> 7447, 16384 -> 11916, 32768 -> 7282 (falls: the sweep stops there)
+    t = {4096: 1.0, 8192: 1.1, 16384: 1.375, 32768: 4.5, 65536: 9.0}
     times, why = core._sweep(lambda b: t[b], 10 ** 6, "memory")
-    assert sorted(times) == [4096, 8192, 16384] and why == "doubling no longer pays"
-    assert core._recommended(times) == 8192
-    # every doubling pays up to the cap: the sweep ends at the limit and recommends its last point
-    times, why = core._sweep(lambda b: b ** 0.05, 20000, "n_walkers")
-    assert sorted(times) == [4096, 8192, 16384] and why == "n_walkers" and core._recommended(times) == 16384
-    # nothing pays: the smallest batch
-    assert core._recommended({4096: 1.0, 8192: 2.0}) == 4096
-    # under one rung of walkers: the cap itself
+    assert sorted(times) == [4096, 8192, 16384, 32768] and why == "rate fell"
+    assert core._recommended(times) == 16384
+    # the rate rises to the cap, which is timed itself: the sweep ends at the limit, recommending the cap
+    times, why = core._sweep(lambda b: b ** 0.5, 20000, "n_walkers")
+    assert sorted(times) == [4096, 8192, 16384, 20000] and why == "n_walkers" and core._recommended(times) == 20000
+    # under one rung of walkers: the cap alone
     times, why = core._sweep(lambda b: 1.0, 100, "n_walkers")
-    assert list(times) == [100]
+    assert list(times) == [100] and why == "n_walkers"
+
+
+def test_the_verdict_is_the_doubling_at_the_recommended_batch(monkeypatch):
+    from dmipy_sim.engine import core
+    g = d.Sphere(radius=2e-6)
+    res = core._resolve_walk(g, D, 2e-3, 1e-3)
+    # nearly free doubling -> under-filled; a proportional one -> saturated; 2B beyond the device -> memory-bound
+    assert core._scaling({100: 1.0, 200: 1.1}, 100, res, 1, None, "given").verdict == "under-filled"
+    assert core._scaling({100: 1.0, 200: 1.2}, 100, res, 1, None, "given").verdict == "saturated"
+    assert core._scaling({100: 1.0}, 100, res, 1, 150, "given").verdict == "memory-bound"
+    assert core._scaling({100: 1.0}, 100, res, 1, None, "given").verdict == "unresolved"
 
 
 def test_no_batch_given_is_n_walkers_capped_by_memory(monkeypatch):
@@ -253,10 +262,11 @@ def test_scaling_finds_the_batch_within_the_memory_cap(monkeypatch):
     monkeypatch.setattr(core, "_free_device_bytes", lambda: int(9000.5 * per))
     c = cost(g, 2e-3, 1e-3, 20000, measure="scaling")
     s = c.scaling
-    assert sorted(s.seconds) == [4096, 8192] and s.max_batch_memory == 9000
-    assert s.stopped_by in ("doubling no longer pays", "memory")
-    assert c.walker_batch_size == s.recommended_batch in (4096, 8192)
+    assert s.max_batch_memory == 9000
+    assert set(s.seconds) <= {4096, 8192, 9000, 18000}          # the sweep stays within the cap; 2B is timed only if it fits
+    assert max(b for b in s.seconds if b <= 9000) <= 9000 and 18000 not in s.seconds
+    assert c.walker_batch_size == s.recommended_batch and c.walker_batch_size <= 9000
+    assert s.recommended_batch == max(s.walker_steps_per_s, key=s.walker_steps_per_s.get)
     assert c.walker_batch_rule == "recommended by the sweep"
-    assert c.measured.batch == c.walker_batch_size and c.walker_batches == -(-20000 // c.walker_batch_size)
-    if s.stopped_by == "memory":
-        assert s.verdict == "memory-bound"
+    assert c.measured.batch == c.walker_batch_size and c.measured.saves == 1
+    assert c.walker_batches == -(-20000 // c.walker_batch_size)
