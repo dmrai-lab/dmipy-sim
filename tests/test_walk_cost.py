@@ -152,8 +152,8 @@ def test_measure_projects_the_walk():
     p = cost(g, t, 1e-3, n, walker_batch_size=1000, measure=True)
     m = p.measured
     assert m.seconds_per_walker_step > 0 and m.projected_s > 0
-    assert m.batch == 1000 and m.saves == 1
-    assert m.projected_s == pytest.approx(p.walker_batches * m.seconds / m.saves * (p.n_saves - 1))
+    assert m.batch == 1000 and m.pilot_saves[0] == 1 and 1 < m.pilot_saves[1] <= p.n_saves - 1
+    assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_save * (p.n_saves - 1)))
     assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).scaling is None
     # within 2x of a measured walk of the same shape (compile excluded)
     d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
@@ -173,7 +173,7 @@ def test_scaling_times_the_pilot_at_several_batches(monkeypatch):
     assert s.plateau_walker_steps_per_s == max(s.walker_steps_per_s.values())
     assert s.batch_fraction_of_plateau == pytest.approx(s.walker_steps_per_s[200] / s.plateau_walker_steps_per_s)
     assert s.max_batch_memory is None and "unavailable" in s.memory_cap
-    want = "under-filled" if s.seconds[400] < core.UNDERFILLED_DOUBLING * s.seconds[200] else "saturated"
+    want = "under-filled" if s.seconds_per_save[400] < core.UNDERFILLED_DOUBLING * s.seconds_per_save[200] else "saturated"
     assert s.verdict == want
     # a device that holds 1.5 batches: 2B does not fit
     per = core._device_bytes_per_walker(core._resolve_walk(g, D, 8e-3, 1e-3))
@@ -236,10 +236,10 @@ def test_the_verdict_is_the_doubling_at_the_recommended_batch(monkeypatch):
     g = d.Sphere(radius=2e-6)
     res = core._resolve_walk(g, D, 2e-3, 1e-3)
     # nearly free doubling -> under-filled; a proportional one -> saturated; 2B beyond the device -> memory-bound
-    assert core._scaling({100: 1.0, 200: 1.1}, 100, res, 1, None, "given").verdict == "under-filled"
-    assert core._scaling({100: 1.0, 200: 1.2}, 100, res, 1, None, "given").verdict == "saturated"
-    assert core._scaling({100: 1.0}, 100, res, 1, 150, "given").verdict == "memory-bound"
-    assert core._scaling({100: 1.0}, 100, res, 1, None, "given").verdict == "unresolved"
+    assert core._scaling({100: 1.0, 200: 1.1}, 100, res, None, "given").verdict == "under-filled"
+    assert core._scaling({100: 1.0, 200: 1.2}, 100, res, None, "given").verdict == "saturated"
+    assert core._scaling({100: 1.0}, 100, res, 150, "given").verdict == "memory-bound"
+    assert core._scaling({100: 1.0}, 100, res, None, "given").verdict == "unresolved"
 
 
 def test_no_batch_given_is_n_walkers_capped_by_memory(monkeypatch):
@@ -263,10 +263,34 @@ def test_scaling_finds_the_batch_within_the_memory_cap(monkeypatch):
     c = cost(g, 2e-3, 1e-3, 20000, measure="scaling")
     s = c.scaling
     assert s.max_batch_memory == 9000
-    assert set(s.seconds) <= {4096, 8192, 9000, 18000}          # the sweep stays within the cap; 2B is timed only if it fits
-    assert max(b for b in s.seconds if b <= 9000) <= 9000 and 18000 not in s.seconds
+    assert set(s.seconds_per_save) <= {4096, 8192, 9000, 18000}          # the sweep stays within the cap; 2B is timed only if it fits
+    assert 18000 not in s.seconds_per_save
     assert c.walker_batch_size == s.recommended_batch and c.walker_batch_size <= 9000
     assert s.recommended_batch == max(s.walker_steps_per_s, key=s.walker_steps_per_s.get)
     assert c.walker_batch_rule == "recommended by the sweep"
-    assert c.measured.batch == c.walker_batch_size and c.measured.saves == 1
+    assert c.measured.batch == c.walker_batch_size
     assert c.walker_batches == -(-20000 // c.walker_batch_size)
+
+
+def test_the_fixed_part_of_a_call_is_not_multiplied_by_the_saves():
+    from dmipy_sim.engine import core
+    # a call costs 5 s whatever its saves, plus b * saves / 1e4 s, but b = 32768 is slower per walker (the true optimum is 16384)
+    per_walker = {4096: 1.0, 8192: 0.6, 16384: 0.4, 32768: 0.5}
+    calls = []
+
+    def seconds(b, saves):
+        calls.append((b, saves))
+        return 5.0 + b * per_walker[b] * saves / 1e4
+
+    ps, fixed, (n1, n2) = core._fit_saves(seconds, 16384, 1111)
+    assert ps == pytest.approx(16384 * 0.4 / 1e4) and fixed == pytest.approx(5.0) and n1 == 1
+    assert n2 > 2 and n2 < 1111                       # doubled until the saves outweighed the fixed part
+    t_n2, t_1 = 5.0 + ps * n2, 5.0 + ps
+    assert t_n2 >= 2 * t_1 and (n2 == 2 or 5.0 + ps * (n2 // 2) < 2 * t_1)
+    # the projection is fixed + saves * per_save, not 1111 * t(1)
+    assert fixed + ps * 1111 < 0.5 * 1111 * (5.0 + ps)
+    # the sweep rates by seconds per save: the fastest batch is 16384 and the sweep stops after the slower 32768
+    per, why = core._sweep(lambda b: core._fit_saves(seconds, b, 1111)[0], 32768, "n_walkers")
+    assert sorted(per) == [4096, 8192, 16384, 32768] and core._recommended(per) == 16384 and why == "rate fell"
+    # a walk of one save has no fixed part to separate
+    assert core._fit_saves(seconds, 4096, 1) == (seconds(4096, 1), 0.0, (1, 1))

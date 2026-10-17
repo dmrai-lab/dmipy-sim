@@ -1056,20 +1056,23 @@ def _backend_refusal(backend, name, res, geometry):
 
 @dataclass(frozen=True)
 class WalkMeasured:
-    """A walk's cost measured on the real device and backend by :func:`walk_cost` (``measure=True``)."""
-    seconds: float                    #: the timed pilot: the second call of ``batch`` walkers over ``saves`` saves (compile excluded)
+    """A walk's cost measured on the real device and backend by :func:`walk_cost` (``measure=True``): the pilot timed at
+    two lengths, so that the per-call part (seeding, setup, the transfer to the host) is separated from the part that
+    grows with the saves."""
     batch: int                        #: walkers of the pilot, the walk's real batch
-    saves: int                        #: save intervals of the pilot
-    seconds_per_walker_step: float    #: ``seconds / (batch * saves * sub_steps)``
-    projected_s: float                #: the full walk: ``walker_batches`` times the batch's seconds per save times the walk's saves
+    pilot_saves: tuple                #: ``(n1, n2)``: the save intervals of the two pilot lengths
+    seconds_per_save: float           #: ``(t(n2) - t(n1)) / (n2 - n1)``, each ``t`` the second call of its shape (compile excluded)
+    fixed_seconds_per_call: float     #: ``t(n1) - seconds_per_save``: what a call costs whatever its saves
+    seconds_per_walker_step: float    #: ``seconds_per_save / (batch * sub_steps)``
+    projected_s: float                #: the full walk: ``walker_batches * (fixed_seconds_per_call + seconds_per_save * (n_saves - 1))``
 
 
 @dataclass(frozen=True)
 class WalkScaling:
     """How a walk's rate scales with the batch size, measured by :func:`walk_cost` (``measure="scaling"``): the same
     pilot at B/2, B, 2B and 4B (B the walk's batch), each the second call of its shape."""
-    walker_steps_per_s: dict          #: batch size -> rate
-    seconds: dict                     #: batch size -> seconds of the pilot
+    walker_steps_per_s: dict          #: batch size -> rate, from the seconds per save
+    seconds_per_save: dict            #: batch size -> seconds per save of the pilot (the per-call part removed)
     plateau_walker_steps_per_s: float #: the largest rate
     batch_fraction_of_plateau: float  #: the walk's batch rate over the plateau
     recommended_batch: int            #: the timed batch with the highest rate: for a fixed walker count it minimises the total time
@@ -1189,42 +1192,61 @@ def _free_device_bytes():
     return int(st["bytes_limit"]) - int(st.get("bytes_in_use", 0))
 
 
-def _recommended(times):
-    """The batch of ``times`` ({batch: seconds}) with the highest walkers per second."""
-    return max(times, key=lambda b: b / times[b])
+def _recommended(per_save):
+    """The batch of ``per_save`` ({batch: seconds per save}) with the highest walkers per second."""
+    return max(per_save, key=lambda b: b / per_save[b])
 
 
-def _sweep(seconds, cap, limit):
-    """The pilot timed at 4096 * 2^k walkers below ``cap`` and at ``cap`` itself (``limit`` names what ``cap`` is),
-    stopping at the first point whose rate is below the best so far. Returns ``({batch: seconds}, stopped_by)``."""
-    sizes = [b for b in (4096 * 2 ** k for k in range(64)) if b < cap][:]
-    sizes = sizes + [cap] if cap > 0 else sizes
-    times, best = {}, 0.0
+def _sweep(per_save_of, cap, limit):
+    """The pilot timed (``per_save_of(batch)`` -> seconds per save) at 4096 * 2^k walkers below ``cap`` and at ``cap``
+    itself (``limit`` names what ``cap`` is), stopping at the first point whose rate is below the best so far.
+    Returns ``({batch: seconds per save}, stopped_by)``."""
+    sizes = [b for b in (4096 * 2 ** k for k in range(64)) if b < cap] + [cap]
+    per, best = {}, 0.0
     for b in sizes:
-        times[b] = seconds(b)
-        rate = b / times[b]
+        per[b] = per_save_of(b)
+        rate = b / per[b]
         if rate < best:
-            return times, "rate fell"
+            return per, "rate fell"
         best = rate
-    return times, limit
+    return per, limit
 
 
-def _scaling(times, vb, res, saves, max_batch, stopped_by):
-    """The :class:`WalkScaling` of timed pilots ``times`` ({batch: seconds}), the verdict read at batch ``vb``."""
-    rates = {b: b * saves * res.sub_steps / tt for b, tt in sorted(times.items())}
+def _scaling(per_save, vb, res, max_batch, stopped_by):
+    """The :class:`WalkScaling` of the seconds per save ``per_save`` ({batch: seconds}), the verdict read at batch ``vb``:
+    the seconds per save of 2B against those of B."""
+    rates = {b: b * res.sub_steps / tt for b, tt in sorted(per_save.items())}
     plateau = max(rates.values())
-    if 2 * vb in times:
-        verdict = "under-filled" if times[2 * vb] < UNDERFILLED_DOUBLING * times[vb] else "saturated"
+    if 2 * vb in per_save:
+        verdict = "under-filled" if per_save[2 * vb] < UNDERFILLED_DOUBLING * per_save[vb] else "saturated"
     else:
         verdict = "memory-bound" if (max_batch is not None and 2 * vb > max_batch) else "unresolved"
-    return WalkScaling(walker_steps_per_s=rates, seconds={b: times[b] for b in sorted(times)},
+    return WalkScaling(walker_steps_per_s=rates, seconds_per_save={b: per_save[b] for b in sorted(per_save)},
                        plateau_walker_steps_per_s=plateau, batch_fraction_of_plateau=rates[vb] / plateau,
-                       recommended_batch=int(_recommended(times)), stopped_by=stopped_by,
+                       recommended_batch=int(_recommended(per_save)), stopped_by=stopped_by,
                        max_batch_memory=None if max_batch is None else int(max_batch),
                        bytes_per_walker=_device_bytes_per_walker(res),
                        memory_cap=("device free memory" if max_batch is not None
                                    else "unavailable: the device reports no memory statistics"),
                        verdict=verdict)
+
+
+def _fit_saves(seconds, batch, max_saves):
+    """``(seconds_per_save, fixed_seconds_per_call, (n1, n2))`` of a ``batch`` from ``seconds(batch, saves)``, the second
+    call of each shape: n1 = 1 save, n2 from 2 doubling until ``t(n2) >= 2 t(n1)`` (the saves then weigh at least as
+    much as the fixed part of a call), at most ``max_saves``."""
+    t1 = seconds(batch, 1)
+    if max_saves <= 1:
+        return t1, 0.0, (1, 1)
+    n2 = 2
+    t2 = seconds(batch, n2)
+    while t2 < 2 * t1 and n2 < max_saves:
+        n2 = min(2 * n2, max_saves)
+        t2 = seconds(batch, n2)
+    per = (t2 - t1) / (n2 - 1)
+    if per <= 0:                                  # the saves were lost in the timing noise: the longer call is the bound
+        per = t2 / n2
+    return per, max(t1 - per, 0.0), (1, n2)
 
 
 def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", dt_save=None,
@@ -1266,16 +1288,21 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
     backend : str or Backend, optional
         The backend that would walk it (default the JAX kernels).
     measure : {False, True, "scaling"}
-        ``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) for 1 save on the real device
-        and backend, twice, and times the second call (the compile is in the first): :attr:`WalkCost.measured`. The
-        walk is the production program (``walk_kwargs`` included; ``r0`` is sliced to the batch) and its cost is
-        linear in the saves at a fixed batch size, so the projection is a measurement. The timed call is the whole
-        of :func:`simulate_trajectories`: seeding, the walk and the transfer to the host. ``"scaling"`` also times
-        the same pilot over the batch sizes above -- the sweep for a batch not given, else B/2, B, 2B and 4B for the
-        given B (the larger sizes only where the device's free memory holds them) -- each the second call of its
-        shape: :attr:`WalkCost.scaling`. Its verdict asks whether more walkers are nearly free at the walk's batch
-        B: 2B (timed whenever it fits the device) takes under :data:`UNDERFILLED_DOUBLING` = 1.2 x the time of B,
-        i.e. the extra walkers cost under 20 %. The projection is made at the walk's batch.
+``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) on the real device and backend and
+        times it at two pilot lengths, each the second call of its shape (the compile is in the first):
+        :attr:`WalkCost.measured`. The walk is the production program (``walk_kwargs`` included; ``r0`` is sliced
+        to the batch). A timed call is the whole of :func:`simulate_trajectories`: seeding, setup, the walk and the
+        transfer to the host. Only the walk grows with the saves; the rest is paid once per call, so one pilot
+        length would multiply that fixed part by every save of the walk and flatten the rate curve. The pilot is
+        therefore timed at n1 = 1 save and at n2 saves, n2 starting at 2 and doubling until ``t(n2) >= 2 t(n1)`` (the
+        saves weigh at least as much as the fixed part), at most the walk's own saves; the seconds per save are
+        ``(t(n2) - t(n1)) / (n2 - n1)``, the fixed part ``t(n1)`` less one save, and the projection is
+        ``walker_batches * (fixed + seconds_per_save * (n_saves - 1))``, linear in the saves. ``"scaling"`` also
+        times the pilot over the batch sizes above -- the sweep for a batch not given, else B/2, B, 2B and 4B for the
+        given B (the larger sizes only where the device's free memory holds them) -- and rates every batch by its
+        seconds per save: :attr:`WalkCost.scaling`. Its verdict asks whether more walkers are nearly free at the
+        walk's batch B: the seconds per save of 2B (timed whenever it fits the device) are under
+        :data:`UNDERFILLED_DOUBLING` = 1.2 x those of B, i.e. the extra walkers cost under 20 %.
 
     Returns
     -------
@@ -1318,11 +1345,11 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
         cost = _cost_of(res, geometry, n_walkers, batch, name, scanner=scanner, dt_save_rule=rule,
                         batch_rule="given" if given else "n_walkers capped by memory")
     if measure:
-        saves = 1
+        max_saves = cost.n_saves - 1
         r0 = None if kw.get("r0") is None else np.asarray(kw["r0"])
         kw.update(sub_steps=res.sub_steps)
 
-        def seconds(b):
+        def seconds(b, saves):
             """Seconds of the second call of this shape (the first holds the compile)."""
             k = dict(kw, **({} if r0 is None else dict(r0=r0[:b])))
             walk = lambda: simulate_trajectories(b, diffusivity, geometry, saves * res.dt_actual, res.dt_actual,
@@ -1331,34 +1358,42 @@ def walk_cost(geometry, diffusivity, n_walkers, *, T_max, scanner="connectom", d
             t0 = time.perf_counter(); walk()
             return time.perf_counter() - t0
 
+        fits = {}
+
+        def fit(b):
+            if b not in fits:
+                fits[b] = _fit_saves(seconds, b, max_saves)
+            return fits[b]
+
+        per_save_of = lambda b: fit(b)[0]
         available = None if r0 is None else len(r0)
         scaling = None
         if measure == "scaling" and not given:
             limits = {"memory": max_batch, "n_walkers": int(n_walkers), "r0": available}
             limit = min((k for k, v in limits.items() if v is not None), key=lambda k: limits[k])
-            times, stopped = _sweep(seconds, limits[limit], limit)
-            B = _recommended(times)
-            t = times[B]
-            if 2 * B not in times and (max_batch is None or 2 * B <= max_batch) and (available is None or 2 * B <= available):
-                times[2 * B] = seconds(2 * B)                 # the verdict's doubling, whatever n_walkers
-            scaling = _scaling(times, B, res, saves, max_batch, stopped)
+            per, stopped = _sweep(per_save_of, limits[limit], limit)
+            B = _recommended(per)
+            if 2 * B not in per and (max_batch is None or 2 * B <= max_batch) and (available is None or 2 * B <= available):
+                per[2 * B] = per_save_of(2 * B)                 # the verdict's doubling, whatever n_walkers
+            scaling = _scaling(per, B, res, max_batch, stopped)
             cost = dataclasses.replace(cost, walker_batch_size=int(B), walker_batch_rule="recommended by the sweep",
                                        walker_batches=-(-int(n_walkers) // int(B)))
         else:
             B = cost.walker_batch_size
-            t = seconds(B)
+            per_save_of(B)
             if measure == "scaling":
-                times = {B: t}
+                per = {B: per_save_of(B)}
                 if B // 2 >= 1:
-                    times[B // 2] = seconds(B // 2)
+                    per[B // 2] = per_save_of(B // 2)
                 for m in (2, 4):
                     if (max_batch is not None and m * B > max_batch) or (available is not None and m * B > available):
                         break
-                    times[m * B] = seconds(m * B)
-                scaling = _scaling(times, B, res, saves, max_batch, "given")
-        measured = WalkMeasured(seconds=t, batch=int(B), saves=int(saves),
-                                seconds_per_walker_step=t / (B * saves * res.sub_steps),
-                                projected_s=cost.walker_batches * t / saves * (cost.n_saves - 1))
+                    per[m * B] = per_save_of(m * B)
+                scaling = _scaling(per, B, res, max_batch, "given")
+        ps, fixed, pilot = fit(B)
+        measured = WalkMeasured(batch=int(B), pilot_saves=pilot, seconds_per_save=ps, fixed_seconds_per_call=fixed,
+                                seconds_per_walker_step=ps / (B * res.sub_steps),
+                                projected_s=cost.walker_batches * (fixed + ps * max_saves))
         cost = dataclasses.replace(cost, measured=measured, scaling=scaling)
     return cost
 
