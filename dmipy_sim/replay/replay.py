@@ -627,6 +627,7 @@ class ReplayPack:
         if (ch.get("susceptibility_grid") or {}).get("arrays_in_pack"):
             raise ValueError("this pack's field tier samples its stored grid at the decoded positions, which holds only while "
                              "the positions are lossless; re-encoded windows are not, so it is not resegmented")
+        from .bank import path_codec_of
         containers = dict(position_container=_container_of(self.meta["compression"].get("container")))
         c2 = ch.get("boundary_local_time")                            # the parent's contact channel, or None
         if c2 is not None:
@@ -636,7 +637,7 @@ class ReplayPack:
         crosses = col is not None and col["kind"] != "static"
         K = max(2, int(round(self.K * steps / (n_t - 1))))
         K_cap = min(int(self.K), steps - 1)                           # the bridge's interior: n_seg - 2 bands
-        blt_K, path_K, path_bits = None, ("auto" if pm is not None else None), (int(pm.get("bits") or 16) if pm is not None else 8)
+        blt_K, path_K, path_bits = None, ("auto" if pm is not None else None), ((path_codec_of(pm) or 16) if pm is not None else 8)
         spec = self.substrate
         chi_iso = None
         if spec is not None:
@@ -672,7 +673,7 @@ class ReplayPack:
                     blt_K = int(c2["K"])
                 pw = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
                 if pw is not None:
-                    path_K, path_bits = int(pw["K"]), int(pw["bits"])
+                    path_K, path_bits = int(pw["K"]), path_codec_of(pw)
             (pk.meta["compression"].get("channels") or {}).pop("susceptibility_grid", None)
             packs.append(pk)
             del m
@@ -1952,13 +1953,14 @@ class ReplayPack:
             bm = dict(ch["boundary_local_time"])
             bm.setdefault("K", _cx_bands_K(self.segment(0).arrays, bm))
             blt_K = max(2, int(np.ceil(bm["K"] * T_cut / T)))
+        from .bank import path_codec_of
         path_series = None
         if path is not None:
             series, names = path
             _n_tf, _dt_f = _path_grid(ch["susceptibility_path"], int(self.segments["n_t"]), dt)
             path_series = (series, names,
                            max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
-                           ch["susceptibility_path"].get("bits", 8))
+                           path_codec_of(ch["susceptibility_path"]) or 8)
         tried = []
         while True:
             prov = dict(provenance or {})

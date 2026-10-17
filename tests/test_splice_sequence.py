@@ -69,7 +69,7 @@ def test_the_train_depends_on_its_refocusing_flip_as_the_pathways_say():
     pathway enumeration, which is the whole reason a reduced-flip train behaves differently from a perfect
     one. Compared as a ratio to the 180 train, so the preparation and the relaxation divide out."""
     walk = d.simulate_trajectories(1500, 2e-9, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
-    pack = build_replay_pack(walk, id="test/free", license="x", citation="x", K=8)
+    pack = _float_pack(walk, id="test/free", license="x", citation="x", K=8)
     tissue = Tissue(T2={"extra": 0.081}, T1={"extra": 0.275})   # the free pack's one pool is named
     ref = np.abs(np.asarray(pack.replay_bloch(_seq(180.0), tissue=tissue))).reshape(-1)
     got = np.abs(np.asarray(pack.replay_bloch(_seq(120.0), tissue=tissue))).reshape(-1)
@@ -132,7 +132,7 @@ def test_the_replayed_train_is_the_sum_over_pathways_at_every_echo(beta):
     reproduces that sum at every echo, not merely the first. Taken as a ratio to the 180 train so the
     preparation, the relaxation and the diffusion weighting divide out."""
     walk = d.simulate_trajectories(600, 1e-14, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
-    pack = build_replay_pack(walk, id="test/static", license="x", citation="x", K=8)
+    pack = _float_pack(walk, id="test/static", license="x", citation="x", K=8)
     n = 5
 
     def replayed(b):
@@ -205,7 +205,7 @@ def test_the_replayed_split_train_reproduces_both_echo_families(beta):
     preparation's own amplitude is not what is being tested."""
     n = 5
     walk = d.simulate_trajectories(4_000, 1e-14, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False)
-    pack = build_replay_pack(walk, id="test/static", license="x", citation="x", K=8)
+    pack = _float_pack(walk, id="test/static", license="x", citation="x", K=8)
     seq = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[0.0], TE_prep=PREP,
                            beta_deg=beta, n_t_per_echo=40).with_split_readout()
     S = np.abs(np.asarray(pack.replay_bloch(seq)).reshape(-1))
@@ -259,7 +259,7 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     # K = 16 over 400 ms (20 Hz): the band the train needs on this pack (12 bands; at K = 8 the replay was refused
     # for dropping a third of the free pack's phase, #277, and the delivered b it read was 17 % low within the
     # tolerance below)
-    mk = lambda diff: build_replay_pack(
+    mk = lambda diff: _float_pack(
         d.simulate_trajectories(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False),
         id="test/b", license="x", citation="x", K=16)
     static, free = mk(1e-14), mk(D)
@@ -342,3 +342,11 @@ def test_the_prolonged_readouts_own_diffusion_weighting_is_negligible():
     assert amp15 == pytest.approx(2 * amp3, rel=1e-6)
     assert b15 / b3 == pytest.approx(4.0, rel=0.05)
     assert b15 / prepared < 2e-2
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

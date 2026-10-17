@@ -47,7 +47,7 @@ def _master(n_t=N_T):
 def _parent(n_t=N_T):
     """The walk as ONE window, lossy in the positions (K = 48 over 98 ms), the contact bridge and the path channel."""
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0, 90], max_refocus_pulses=8)
-    return build_replay_pack(_master(n_t), id="t/parent", license="CC-BY-4.0", citation="test", envelope=env, K=48,
+    return _float_pack(_master(n_t), id="t/parent", license="CC-BY-4.0", citation="test", envelope=env, K=48,
                              blt_temporal_K=8, susc_path_K=32, susc_path_bits=16, segment_T=(n_t - 1) * DT)
 
 
@@ -206,7 +206,7 @@ def _timing_packs(tmp_path):
     m = dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt, w=np.ones(n_w), D_intra=D, n_walkers=n_w, seed=0,
              substrate=spec_of(FreeDiffusion()).to_dict())
     env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[])
-    parent = build_replay_pack(m, id="t/long", license="x", citation="x", envelope=env, K=2000, segment_T=(n_t - 1) * dt)
+    parent = _float_pack(m, id="t/long", license="x", citation="x", envelope=env, K=2000, segment_T=(n_t - 1) * dt)
     parent.save(tmp_path / "long.rpk")
     parent = read_rpk(str(tmp_path / "long.rpk"))
     return parent, parent.resegment(0.025, out_path=tmp_path / "long_seg.rpk", envelope=env)
@@ -355,11 +355,19 @@ def test_resegment_of_a_band_floored_one_window_pack_passes_the_windows_own_cert
     T_walk = (C2_N_T - 1) * C2_DT
     steps = int(round(bank.SEGMENT_T / C2_DT))
     kw = dict(method="bridge_dst", envelope=env, K=64, license="CC-BY-4.0", citation="test", segment_T=T_walk)
-    good = build_replay_pack(m, id="t/c2-good", **kw)                             # the new floor: K >= 16/window
-    bad = build_replay_pack(m, id="t/c2-bad", blt_temporal_K=8, **kw)             # pinned at the historical K=8
+    good = _float_pack(m, id="t/c2-good", **kw)                             # the new floor: K >= 16/window
+    bad = _float_pack(m, id="t/c2-bad", blt_temporal_K=8, **kw)             # pinned at the historical K=8
     assert good.meta["compression"]["channels"]["boundary_local_time"]["K"] >= 16 * 10
     assert bad.meta["compression"]["channels"]["boundary_local_time"]["K"] == 8
     good_ratio = _worst_window_surface_ratio(good, m["dlog_b"], m["w"], m["D_intra"], env, tmp_path, steps, "good")
     bad_ratio = _worst_window_surface_ratio(bad, m["dlog_b"], m["w"], m["D_intra"], env, tmp_path, steps, "bad")
     assert good_ratio <= 2.0, good_ratio
     assert bad_ratio > 2.0, bad_ratio
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

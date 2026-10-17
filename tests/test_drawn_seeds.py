@@ -105,8 +105,8 @@ def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
     intra = next(p.id for p in spec.pools if p.name == "intra")
     assert w.positions.shape[0] == drawn.n_walkers and intra not in set(np.unique(w.compartment).tolist())
     both = walk_spec(spec, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), seed=6, **kw)
-    a = build_replay_pack(w, id="t/none", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "none.rpk"))
-    b = build_replay_pack(both, id="t/both", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "both.rpk"))
+    a = _float_pack(w, id="t/none", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "none.rpk"))
+    b = _float_pack(both, id="t/both", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "both.rpk"))
     _, _, ca = voxel_fidelity_volumes(a); _, _, cb = voxel_fidelity_volumes(b)
     assert ca["extra"].sum() == drawn.n_walkers and ca.get("intra", np.zeros(1)).sum() == 0 and cb["intra"].sum() > 0
     m = merge_packs([a, b], id="t/union", overlap="recertify", out_path=str(tmp_path / "union.rpk"))
@@ -119,3 +119,11 @@ def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
     far = np.zeros(wide.shape, np.int64); far[2, 0, 0] = 4
     with pytest.raises(SpecError, match="no seed landed"):
         draw_seeds(spec, StratifiedByVoxel(grid=wide, walkers_per_voxel={"extra": np.zeros(wide.shape, np.int64), "intra": far}), 5)
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

@@ -11,7 +11,7 @@ from dmipy_sim.replay.bank import build_replay_pack, merge_packs, seed_value
 def _pack(seed, id):
     walk = simulate_trajectories(200, 2e-9, Cylinder(4e-6, (0, 0, 1)), T_max=0.02, dt_save=2e-4,
                                  seed=seed, require_gpu=False)
-    return build_replay_pack(walk, id=id, license="CC-BY-4.0", citation="test", K=16)
+    return _float_pack(walk, id=id, license="CC-BY-4.0", citation="test", K=16)
 
 
 def test_seed_value_keeps_a_list_and_coerces_a_scalar():
@@ -32,3 +32,11 @@ def test_a_merged_pack_can_be_prefixed():
     assert short.n_t == int(round(0.01 / merged.dt)) + 1
     assert short.meta["walk_params"]["seed"] == [0, 1]
     assert short.n_walkers == merged.n_walkers
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

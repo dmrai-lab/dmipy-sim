@@ -123,13 +123,94 @@ def test_a_later_pass_appends_with_the_union_weights(spec_grid):
     assert (cert[:, :, 0] == 16).all() and manifest["meta"]["columnar"]["repair"]["voxels"] == 4
 
 
+# ------------------------------------------------------------ packs in a derived curve (positions and contact bit-packed)
+
+def _curve_shard(spec, grid, tmp, name, block, per, seed, K):
+    from dmipy_sim.replay.compression import band_curve
+    want = np.zeros(grid.shape, np.int64); want[block] = per
+    w = walk_spec(spec, T_max=6e-3, dt_save=2e-4, seed=seed, require_gpu=False,
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+    os.makedirs(str(tmp / "cshards"), exist_ok=True)
+    return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=K,
+                             position_container=band_curve(K, 7), blt_container=band_curve(K, 7),
+                             out_path=str(tmp / "cshards" / f"{name}.rpk"))
+
+
+@pytest.fixture(scope="module")
+def curve_layout(spec_grid):
+    spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)
+    K = 24
+    a = _curve_shard(spec, grid, tmp, "block-0000.p1", 0, 12, 7, K); b = _curve_shard(spec, grid, tmp, "block-0001.p1", 1, 12, 8, K)
+    out = str(tmp / "clayout")
+    consolidate(str(tmp / "cshards"), out, blocks=[0, 1], id="t/ccolumns")
+    return out, (a, b), merge_packs([a, b], id="t/cmerged"), K
+
+
+def test_a_curve_pack_keeps_its_ranges_as_column_groups_and_replays_as_the_merged_pack(curve_layout):
+    out, (a, b), merged, K = curve_layout
+    cont = merged.meta["compression"]["container"]
+    assert any(r["bits"] not in (8, 16) for r in cont)                                  # a packed range is in play
+    pack = ReplayPack.open(out)
+    assert pack.band_groups == [r["bands"][1] for r in cont] == list(band_groups_of(K, cont))
+    names = set(pack.columns)
+    assert {f"pos_x_b{i}" + ("" if r["bits"] in (8, 16) else f"u{r['bits']}") for i, r in enumerate(cont)} <= names
+    full = pack.view(contact=True)
+    seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
+    np.testing.assert_allclose(full.replay(seq), merged.replay(seq), rtol=1e-9)
+    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho2=1e-5)), merged.replay(seq, tissue=Tissue(rho2=1e-5)), rtol=1e-9)
+
+
+def test_a_band_prefix_view_of_a_curve_pack_is_the_prefix_of_its_ranges(curve_layout):
+    out, (a, b), merged, K = curve_layout
+    pack = ReplayPack.open(out)
+    k1 = pack.band_groups[1]
+    v = pack.view(K=k1)
+    assert v.K == k1 and len(v.meta["compression"]["container"]) == 2
+    from dmipy_sim.replay.compression import read_position_coeffs
+    np.testing.assert_array_equal(read_position_coeffs(v.arrays)[:, :, :], read_position_coeffs(pack.view().arrays)[:, :k1 + 2, :])
+
+
+
+def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(spec_grid):
+    """The field path channel in a container of two ranges (the second bit-packed): the mode groups are the ranges, the
+    ranges are columns as stored, and a view reads them back to the merged pack's replay."""
+    spec, grid, tmp = spec_grid
+    cont = [{"modes": [0, 2], "bits": 12}, {"modes": [2, 4], "bits": 6}]
+    packs = []
+    for blk, seed in ((0, 7), (1, 8)):
+        want = np.zeros(grid.shape, np.int64); want[blk] = 12
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, field_cutoff_max_m=25e-6, n_probe=20_000, adaptive_steps=True,
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+        os.makedirs(str(tmp / "pshards"), exist_ok=True)
+        packs.append(build_replay_pack(w, id=f"t/p{blk}", license="x", citation="x", K=3, voxel_grid=grid, susc_path_K=4, susc_path_bits=cont, position_container=((None, 8),), blt_container=((None, 8),),
+                                       device="numpy", out_path=str(tmp / "pshards" / f"block-000{blk}.p1.rpk")))
+    out = str(tmp / "players")
+    consolidate(str(tmp / "pshards"), out, blocks=[0, 1], id="t/pcolumns")
+    merged = merge_packs(packs, id="t/pmerged")
+    pack = ReplayPack.open(out)
+    assert pack.path_groups == [2, 4] and "susc_path_dct_b1u6" in pack.columns and "susc_path_dct" not in pack.columns
+    v = pack.view(modes=4)
+    pm = v.meta["compression"]["channels"]["susceptibility_path"]
+    assert pm["container"] == cont and pm["K"] == 4
+    v2 = pack.view(modes=2)
+    assert v2.meta["compression"]["channels"]["susceptibility_path"]["container"] == cont[:1]
+    from dmipy_sim.replay.bank import susc_path_coeffs
+    C_full = susc_path_coeffs(v.arrays, pm)[0]; C_2 = susc_path_coeffs(v2.arrays, v2.meta["compression"]["channels"]["susceptibility_path"])[0]
+    np.testing.assert_array_equal(C_2, C_full[:, :, :2])
+    C_m = susc_path_coeffs(merged.arrays, merged.meta["compression"]["channels"]["susceptibility_path"])[0]
+    assert sorted(np.round(np.abs(C_m).sum(axis=(1, 2)), 12)) == sorted(np.round(np.abs(C_full).sum(axis=(1, 2)), 12))
+
+
 def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):
-    """A shard of ``block`` that walks only ``pools`` (the others get no walkers)."""
+    """A shard of ``block`` that walks only ``pools`` (the others get no walkers), in the container every shard of a
+    fill shares (the certifying pack's, which the walker writes; shards built apart would each derive their own)."""
     want = np.zeros(grid.shape, np.int64); want[block] = per
     w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}))
     os.makedirs(out_dir, exist_ok=True)
-    return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"))
+    return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"),
+                             position_container=((16, 16), (None, 8)), blt_container=((16, 16), (None, 8)))
 
 
 def _layout_bytes(out, manifest, index):

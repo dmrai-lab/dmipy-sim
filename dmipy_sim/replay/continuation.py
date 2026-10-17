@@ -104,7 +104,7 @@ def append_segments(pack, walk, *, seed, out_path=None, envelope=None, device="a
     :func:`continue_walk`) built as a pack with the pack's own codec, band, containers and segment length, its
     windows stored under the next ``s{i}/`` keys, the table's ``walks`` gaining the continuation with its ``seed``,
     and the whole's certificate the bound over every segment (:func:`~dmipy_sim.replay.bank.combine_segment_fidelity`)."""
-    from .bank import build_replay_pack, combine_segment_fidelity, _is_shared_key, _precision_tiers, _MEASURED_CHANNEL_KEYS
+    from .bank import path_codec_of, build_replay_pack, combine_segment_fidelity, _is_shared_key, _precision_tiers, _MEASURED_CHANNEL_KEYS
     seg = pack.segments
     cm = pack.meta["compression"]; ch = cm.get("channels") or {}
     if int(walk.n_walkers) != int(pack.n_walkers):
@@ -120,10 +120,9 @@ def append_segments(pack, walk, *, seed, out_path=None, envelope=None, device="a
               weights=np.asarray(pack.spin_weights, np.float64), license=pack.license, citation=pack.citation,
               position_container=(None if cm.get("container") is None else _container_of(cm["container"])),
               blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float16 if c2.get("dtype", "float16") == "float16" else np.float32),
-              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=(pm.get("bits", 8) if pm else 8),
+              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=((path_codec_of(pm) or 8) if pm else 8),
               _occupancy_runs=("comp_rle_counts" in pack.arrays), _window_of_plan=True)
-    if c2.get("dtype") == "bands":
-        kw["blt_container"] = _container_of(c2["container"])
+    kw["blt_container"] = _container_of(c2["container"]) if c2.get("dtype") == "bands" else None      # the parent's, float or banded
     new = build_replay_pack(walk, id=f"{pack.id}", **kw)
     if sorted(k for k in new.segment(0).arrays) != sorted(k for k in pack.segment(0).arrays):
         raise ValueError(f"the continuation stores {sorted(new.segment(0).arrays)} where the pack stores {sorted(pack.segment(0).arrays)}; "

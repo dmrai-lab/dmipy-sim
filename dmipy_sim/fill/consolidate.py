@@ -41,11 +41,12 @@ log = logging.getLogger("dmipy_sim.fill")
 
 
 def band_groups_of(K, container):
-    """The stored band groups of a pack of ``K`` bands: with the banded ``container`` (the codec's; its first entry
-    the bands kept at 16 bit) the first group is that entry and the rest split at :data:`BAND_GROUPS`; without one
-    (the float coefficients) the groups are :data:`BAND_GROUPS` alone; the last group ends at ``K``."""
+    """The stored band groups of a pack of ``K`` bands: with the banded ``container`` (the pack's own ranges, which
+    :func:`~dmipy_sim.replay.compression.band_curve` or any explicit container wrote) one group per range, each a
+    stored tensor kept whole; without one (the float coefficients) the groups are :data:`BAND_GROUPS` alone. The
+    last group ends at ``K``."""
     if container:
-        b1 = int(container[0]["bands"][1]); groups = [min(b1, K)] + [g for g in BAND_GROUPS if b1 < g < K]
+        groups = sorted({min(int(r["bands"][1]), K) for r in container})
     else:
         groups = [g for g in BAND_GROUPS if g < K]
     if not groups or groups[-1] != K:
@@ -53,9 +54,12 @@ def band_groups_of(K, container):
     return tuple(groups)
 
 
-def path_groups_of(K_path):
-    groups = [g for g in PATH_GROUPS if g < K_path] + [K_path]
-    return tuple(groups)
+def path_groups_of(K_path, container=None):
+    """The stored mode groups of a path channel of ``K_path`` modes: one per range of its container, else the
+    single-depth tensor split at :data:`PATH_GROUPS`."""
+    if container:
+        return tuple(sorted({min(int(r["modes"][1]), K_path) for r in container}))
+    return tuple([g for g in PATH_GROUPS if g < K_path] + [K_path])
 
 
 class Part:
@@ -261,7 +265,8 @@ class Consolidator:
             return meta
         i = list(sp["channels"]).index("iso_P_zz")
         arrays = dict(pk.arrays)
-        arrays["susc_path_dct"] = np.delete(np.asarray(arrays["susc_path_dct"]), i, axis=1)
+        for k in [k for k in arrays if k.startswith("susc_path_dct")]:        # the single tensor or every range of a container
+            arrays[k] = np.delete(np.asarray(arrays[k]), i, axis=1)
         arrays["susc_path_scale"] = np.delete(np.asarray(arrays["susc_path_scale"]), i, axis=-2)
         meta = json.loads(json.dumps(meta)); sp = meta["compression"]["channels"]["susceptibility_path"]
         sp["channels"] = [c for c in sp["channels"] if c != "iso_P_zz"]; sp["n_ch"] = len(sp["channels"]); sp["iso_P_zz"] = "implied"
@@ -284,7 +289,7 @@ class Consolidator:
             self.grid = Grid.from_meta(ident["grid"])
             self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
             pm = (meta["compression"].get("channels") or {}).get("susceptibility_path")
-            self.path_groups = path_groups_of(int(pm["K"])) if pm else ()
+            self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
         else:
             for k, v in ident.items():
                 if not _agree(v, self.ident0[k]):
@@ -305,7 +310,8 @@ class Consolidator:
             m = np.max(per_vox[counts >= 100], axis=0)
             self.acc["band_max"] = m if self.acc["band_max"] is None else np.maximum(self.acc["band_max"], m)
         del C, C2
-        if "susc_path_dct" in pk.arrays:
+        from ..replay.bank import has_susc_path
+        if has_susc_path(pk.arrays):
             from ..replay.bank import susc_path_coeffs
             Cs, _ = susc_path_coeffs(pk.arrays, meta["compression"]["channels"]["susceptibility_path"])
             s = (np.asarray(Cs, np.float64) ** 2).sum(axis=0)
@@ -320,18 +326,13 @@ class Consolidator:
         self.n_blocks += nb
         # the per-row columns, appended in the row order
         cols = {"band_block": blk.astype(np.uint16)}
-        b1 = self.band_groups[0]
         for k, v in pk.arrays.items():
             v = np.asarray(v)
             if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
                 continue
             if v.shape[:1] != (n,):
                 raise ValueError(f"{name}: array {k!r} is not walker-leading")
-            if k.startswith("pos_") and k.endswith("_b1"):     # the 8-bit bands, re-sliced into the groups after the first
-                full = v[order]; lo = b1
-                for g, hi in enumerate(self.band_groups[1:], start=1):
-                    cols[f"pos_{k[4]}_b{g}"] = full[:, lo - b1:hi - b1]; lo = hi
-            elif k in ("pos_x", "pos_y", "pos_z"):                # the float coefficients: the two ends, then the groups
+            if k in ("pos_x", "pos_y", "pos_z"):                # the float coefficients: the two ends, then the groups
                 full = v[order]; cols[f"{k}_ends"] = full[:, :2]; lo = 0
                 for g, hi in enumerate(self.band_groups):
                     cols[f"{k}_b{g}"] = full[:, 2 + lo:2 + hi]; lo = hi

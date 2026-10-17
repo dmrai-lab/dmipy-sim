@@ -88,7 +88,7 @@ def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(walk):
     """A lossless pack of the walk replays an in-plane PGSE as the direct replay of the continuous trajectory does;
     the folded trajectory replays something else (the jumps act as displacements)."""
     n_t = walk.positions.shape[1]
-    pk = build_replay_pack(walk, id="test/pm-continuous", K=n_t - 2, envelope=ENV, license="x",
+    pk = _float_pack(walk, id="test/pm-continuous", K=n_t - 2, envelope=ENV, license="x",
                            citation="x")
     G = np.zeros((1, n_t, 3)); G[0, 2:12, 0] = 0.4; G[0, 22:32, 0] = -0.4
     S_pack = pk.replay(ScannerSequence(G=G, dt=walk.dt))[0]
@@ -115,7 +115,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
     folded = PersistentWalk(_fold(walk.positions), walk.dt, walk.sub_steps, walk.dt_sim,
                             boundary_local_time=walk.boundary_local_time, compartment=walk.compartment,
                             seed=walk.seed, diffusivity=walk.diffusivity, geometry=pm)
-    packs = [build_replay_pack(fill_field(w, fg), id="test/pm-field", K=n_t - 2, envelope=ENV, license="x", citation="x")
+    packs = [_float_pack(fill_field(w, fg), id="test/pm-field", K=n_t - 2, envelope=ENV, license="x", citation="x")
              for w in (dataclasses.replace(walk, spec=pm.spec), folded)]   # the field source's own spec
     gm = packs[0].meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["periodic"] == [True, True, True] and grid_periodic_of(gm) == (True, True, True)
@@ -124,3 +124,11 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
     S = [pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6))[0] for pk in packs]
     assert S[0] < 0.99                                                          # the field dephases
     assert S[0] == pytest.approx(S[1], abs=1e-6)                                # every walker reads its image's field
+
+
+def _float_pack(*a, **k):
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    derived integer default does not promise."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    return build_replay_pack(*a, **k)

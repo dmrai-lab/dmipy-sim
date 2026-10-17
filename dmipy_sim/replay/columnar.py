@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import threading
 import time
 
@@ -188,8 +189,13 @@ class ColumnarPack:
         for n, c in self.columns.items():
             if not c["per_row"]:
                 continue
-            if n[:4] == "pos_" and "_b" in n[5:]:
-                if int(n.rsplit("_b", 1)[1]) >= n_b:
+            mb = re.fullmatch(r"pos_[xyz]_b(\d+)(?:u\d+)?", n)
+            mp = re.fullmatch(r"susc_path_dct_b(\d+)(?:u\d+)?", n)
+            if mb:
+                if int(mb.group(1)) >= n_b:
+                    continue
+            elif mp:
+                if int(mp.group(1)) >= n_m:
                     continue
             elif n.startswith("susc_path_m"):
                 if int(n[len("susc_path_m"):]) >= n_m:
@@ -266,8 +272,15 @@ class ColumnarPack:
             for a in "xyz":
                 arrays[f"pos_{a}"] = np.concatenate([arrays.pop(f"pos_{a}_ends")] + [arrays.pop(f"pos_{a}_b{i}") for i in range(n_b)], axis=1)
         meta = json.loads(json.dumps(self.meta)); meta["compression"]["K"] = int(K_read)
+        if meta["compression"].get("container"):                           # the ranges read: a prefix of the container
+            meta["compression"]["container"] = meta["compression"]["container"][:len([g for g in self.band_groups if g <= K_read])]
+        pmeta = meta["compression"]["channels"].get("susceptibility_path") or {}
         if M_read:
-            arrays["susc_path_dct"] = np.concatenate([arrays.pop(f"susc_path_m{i}") for i in range(len([g for g in self.path_groups if g <= M_read]))], axis=2)
+            n_m = len([g for g in self.path_groups if g <= M_read])
+            if pmeta.get("container"):                                      # the container's ranges, kept as stored: a prefix of them
+                pmeta["container"] = pmeta["container"][:n_m]
+            else:
+                arrays["susc_path_dct"] = np.concatenate([arrays.pop(f"susc_path_m{i}") for i in range(n_m)], axis=2)
             arrays["susc_path_scale"] = np.ascontiguousarray(arrays["susc_path_scale"][..., :M_read])
             meta["compression"]["channels"]["susceptibility_path"]["K"] = int(M_read)
         else:
