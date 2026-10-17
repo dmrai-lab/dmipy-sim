@@ -11,6 +11,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.columnar import ColumnarPack
+from dmipy_sim.replay.compression import BUDGET
 from dmipy_sim.replay.shape_moments import ShapeMoments, write_shape_moments, _profile
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
 from dmipy_sim.fill.consolidate import consolidate
@@ -42,8 +43,8 @@ def _shape(n_t, delta=0.2e-3, Delta=0.5e-3, g=0.05, direction=(0.0, 0.0, 1.0)):
 
 def test_the_moments_replay_every_amplitude_and_direction_of_the_shape(layout):
     """Six directions at three amplitudes of one shape: the layout's image equals the columnar image of the
-    same acquisitions (built as one sequence at those b-values) to float32 arithmetic, its floor the study's
-    split-half floor, and NaN sits exactly where the columns have no rows."""
+    same acquisitions (built as one sequence at those b-values) within the moment container's share of the floor
+    target, its floor the study's split-half floor alike, and NaN sits exactly where the columns have no rows."""
     col, grid, n_t, tmp = layout
     out = str(tmp / "sm_moments")
     manifest = write_shape_moments(col, {"a": _shape(n_t), "c": _shape(n_t, delta=0.2e-3, Delta=0.4e-3, g=0.02)}, out,
@@ -51,6 +52,7 @@ def test_the_moments_replay_every_amplitude_and_direction_of_the_shape(layout):
     assert manifest["n_rows"] == col.n_rows and manifest["K"] == col.K and manifest["source"]["n_rows"] == col.n_rows
     sm = ShapeMoments(out)
     assert sm.shapes == ["a", "c"] and sm.moments("a").shape == (sm.n_tiles, sm.tile, 3) and sm.moments("a").dtype == np.float32
+    bound = BUDGET * manifest["shapes"]["a"]["moment"]["floor_target"]
     assert sm.n_rows == col.n_rows and sm.n_tiles * sm.tile >= col.n_rows
     # the tiles hold every row once: the per-voxel weight sums are the columns' own, and a padding row weighs nothing
     full = col.view(); ijk, _ = grid.bin(full.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
@@ -65,15 +67,15 @@ def test_the_moments_replay_every_amplitude_and_direction_of_the_shape(layout):
     assert S.shape == S_col.shape == tuple(grid.shape) + (19,)
     np.testing.assert_array_equal(np.isnan(S), np.isnan(S_col))
     err = np.nanmax(np.abs(S - S_col))
-    assert err < 2e-6, err                    # float32 phases and complex64 sums against the float64 image: 2.4e-7 measured
+    assert err < bound, err                   # the packed moments against the float64 image: 0.021 of 0.059 measured
     np.testing.assert_allclose(np.nan_to_num(S[..., -1]), np.nan_to_num(S_col[..., -1]) , atol=1e-6)   # b = 0 is 1
     _, floor_study, _ = col.image(Study(Protocol([Acquisition(seq)])), tol=1e-9, chunk_rows=5)
     np.testing.assert_array_equal(np.isnan(floor), np.isnan(floor_study[0]))
-    assert np.nanmax(np.abs(floor - floor_study[0])) < 2e-6
+    assert np.nanmax(np.abs(floor - floor_study[0])) < bound
     S_c, _ = sm.image("c", b[:6], dirs[:6])                                   # the second shape of the shared pass
     seq_c = d.pgse(dirs[:6].tolist(), 0.2e-3, 0.4e-3, bvalues=b[:6], n_t=n_t, slew_rate=np.inf)
     S_col_c, _, _ = col.image(seq_c, tol=1e-9, chunk_rows=5)
-    assert np.nanmax(np.abs(S_c - S_col_c)) < 2e-6 and np.nanmax(np.abs(S_c - S[..., :6])) > 1e-3
+    assert np.nanmax(np.abs(S_c - S_col_c)) < bound and np.nanmax(np.abs(S_c - S[..., :6])) > 1e-3
 
 
 def test_the_amplitude_of_a_b_value_is_the_shapes_own(layout):
@@ -164,7 +166,7 @@ def test_preload_keeps_the_padded_host_arrays_and_changes_no_number(layout):
     b = np.array([1e9, 0.0]); dirs = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
     before, _ = sm.image("a", b, dirs, backend="torch", device="cpu", resident=False)
     sm.preload(["a"])
-    assert set(sm._host) == {"w", "tiles", "a"} and sm._host["a"].shape == (-(-sm.n_tiles // sm.TILES) * sm.TILES, sm.tile, 3)
+    assert set(sm._host) == {"w", "tiles", "a"} and sm._host["a"].shape == (-(-sm.n_tiles // sm.TILES) * sm.TILES, sm.tile)
     after, _ = sm.image("a", b, dirs, backend="torch", device="cpu", resident=False)
     np.testing.assert_array_equal(np.nan_to_num(before), np.nan_to_num(after))
     assert not any(k[1] == "a" for k in sm._device)
@@ -216,7 +218,8 @@ def _per_voxel(pack, grid, w, ew, E):
 
 def test_the_tiers_are_the_studys_terms_on_every_pathway(layout_field):
     """dmipy-sim#514: a spin-echo shape and a stimulated-echo shape in one layout with tiers; the image under a tissue
-    (T2 and T1 per pool, rho2, chi) at 3 T equals the merged pack's ``walker_signals`` per voxel to float32 arithmetic
+    (T2 and T1 per pool, rho2, chi) at 3 T equals the merged pack's ``walker_signals`` per voxel within the moment
+    container's share of the floor target (the two backends to float32 arithmetic)
     -- the stimulated echo's storage time carries T1 and its pathway amplitude, its gate the field and the contact;
     the bare image is the pathway-scaled bare replay; a field asked of the bare layout is refused by name."""
     from dmipy_sim.spec.tissue import Tissue
@@ -242,15 +245,15 @@ def test_the_tiers_are_the_studys_terms_on_every_pathway(layout_field):
         w, ew, E = merged.walker_signals(seq, tissue=t, scanner=3.0)
         keys, ref = _per_voxel(merged, grid, w, ew, E)
         got = S.reshape(-1, 4)[keys]
-        err = np.abs(got - ref).max()
-        assert err < 5e-6, (name, err)                                  # float32 phases and weights against float64: measured 1.6e-6 on the fixture (se)
+        err = np.abs(got - ref).max(); bound = BUDGET * manifest["shapes"][name]["moment"]["floor_target"]
+        assert err < bound, (name, err, bound)                          # the packed moments against float64: 0.017 of 0.054 measured (se)
         torch = pytest.importorskip("torch")
         St, _ = sm.image(name, b, dirs, tissue=t, scanner=3.0, backend="torch", device="cpu")   # the torch tiered kernel
         assert np.nanmax(np.abs(St - S)) < 5e-6
         S0, _ = sm.image(name, b, dirs)                                  # bare: the pathway amplitude alone
         w0, ew0, E0 = merged.walker_signals(seq)
         _, ref0 = _per_voxel(merged, grid, w0, ew0, E0)
-        assert np.abs(S0.reshape(-1, 4)[keys] - ref0).max() < 5e-6
+        assert np.abs(S0.reshape(-1, 4)[keys] - ref0).max() < bound
     bare = ShapeMoments(str(tmp / "sm_moments"))
     with pytest.raises(ValueError, match="tiers"):
         bare.image("a", [1e9], [[0, 0, 1]], tissue=t, scanner=3.0)
@@ -258,7 +261,8 @@ def test_the_tiers_are_the_studys_terms_on_every_pathway(layout_field):
 
 def test_the_field_direction_is_a_knob(layout_field):
     """The same tissue at 3 T with B0 along x: the image equals the per-voxel signal built from the pack's field
-    channels contracted for x (``field_terms``), and differs from the z image; a non-unit direction is refused."""
+    channels contracted for x (``field_terms``) within the moment container's share of the floor target, and differs
+    from the z image; a non-unit direction is refused."""
     from dmipy_sim.spec.tissue import Tissue
     from dmipy_sim.replay.study import Acquisition, Primitives
     from dmipy_sim.replay.replay import _path_field_channels
@@ -279,7 +283,7 @@ def test_the_field_direction_is_a_knob(layout_field):
                         voxel=prim.voxel, pathway=prim.pathway, by_pool=prim.by_pool, susceptibility_field=prim.susceptibility_field)
     w, ew, E = prim_x.signals(t, 3.0)
     keys, ref = _per_voxel(merged, grid, w, ew, E)
-    assert np.abs(Sx.reshape(-1, 2)[keys] - ref).max() < 5e-6
+    assert np.abs(Sx.reshape(-1, 2)[keys] - ref).max() < BUDGET * sm.manifest["shapes"]["se"]["moment"]["floor_target"]
     assert np.nanmax(np.abs(Sx - Sz)) > 1e-6                            # the direction changes the field phase
     with pytest.raises(ValueError, match="unit"):
         sm.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=(0, 0, 2))

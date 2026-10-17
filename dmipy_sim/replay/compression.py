@@ -151,6 +151,15 @@ def _phase_weight(K, n_t, dt, env_key):
     return float(((GAMMA * float(dt)) ** 2 * (W ** 2).sum(axis=(1, 2))).max())
 
 
+def container_eps(floor_target, *, budget=BUDGET, kappa=KAPPA):
+    """The rms quantisation phase (radians) a container may add at ``floor_target``: the larger of it costs the mean
+    signal ``kappa eps`` floors at random and ``eps^2 / 2`` as a bias, each held at its share of ``budget`` x
+    ``floor_target`` so that the two sum in quadrature to at most the budget::
+
+        eps = min(budget / (sqrt(2) kappa), sqrt(budget floor_target))."""
+    return min(float(budget) / (np.sqrt(2.0) * float(kappa)), float(np.sqrt(budget * float(floor_target))))
+
+
 def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGET, kappa=KAPPA, b_min=3,
                      b_max=16, weight=None):
     """The ranges ``[{"bands": [k0, k1], "bits": b}, ...]`` of one common quantisation step across the bands.
@@ -169,7 +178,7 @@ def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGE
     A band below the step keeps ``b_min`` (an empty range is not carried). Equal-bit runs form ranges grown forward
     to whole bytes, the last taking the remainder, as :func:`band_curve`."""
     scales = np.asarray(scales, np.float64).ravel()[:int(K)]
-    eps = min(float(budget) / (np.sqrt(2.0) * float(kappa)), float(np.sqrt(budget * floor_target)))
+    eps = container_eps(floor_target, budget=budget, kappa=kappa)
     S = float(weight) ** 2 * int(K) if weight is not None else _phase_weight(int(K), int(n_t), float(dt), _env_key(env))
     step = float(np.sqrt(12.0) * eps / np.sqrt(S))
     bits = np.clip(np.ceil(np.log2(np.maximum(scales, 1e-300) / step)) + 1, b_min, b_max).astype(int)

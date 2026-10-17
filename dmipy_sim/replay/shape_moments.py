@@ -12,11 +12,20 @@ The layout is **tiled**: rows are stored in tiles of ``TILE`` rows, every tile t
 a split half), the last tile of a segment padded with zero weight, so that a voxel's sum is a fused reduction over
 whole tiles and the sum over tiles a scatter with as many collisions as a segment has tiles. A scatter over rows
 serialises on a voxel's thousands of contiguous rows (measured on the L40S: 6.4 s per 2^19 rows against 1 ms for
-the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE, 3)`` float32; once, ``w.npy``
+the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE)`` words, a walker's moment packed into one
+(:func:`pack_moments`); once, ``w.npy``
 ``(n_tiles, TILE)`` (the walkers' weights, 0 on padding), ``tiles.npy`` ``(n_tiles,)`` (``2 voxel + half``), and
 ``manifest.json`` naming the source layout (its manifest's sha256), the bands read and their truncation error,
 and every shape's profile with the b-value it encodes at unit amplitude, so that an amplitude follows from a
 b-value as ``g = sqrt(b / b_unit)``.
+
+A moment enters a measurement as the phase ``g u . m``, so a rounding of ``delta`` per component is a random phase
+of variance ``g^2 delta^2 / 12``: each shape's moments are stored at the width :func:`moment_width` derives from the
+pack's floor target and the largest amplitude the pack's declared envelope reaches on that shape (``q_max =
+sqrt(b_max / b_unit)``), ``ceil(log2(a / delta)) + 1`` bits per component against the largest ``|m|`` over the
+walkers, three components to one uint32 (10-bit fields) or, past 10 bits, one uint64 (16-bit fields). The manifest
+records ``{"q_max", "b_max", "floor_target", "step", "bits", "scale", "field"}`` per shape; the image decodes each
+word in its kernel and refuses an amplitude above ``q_max``.
 
 With ``tiers=True`` the layout also holds each walker's **primitives** as :func:`~dmipy_sim.replay.study.walker_primitives`
 gives them, gated by the shape's coherence pathway: once, the walker's pool (``pool.npy``, uint8: a walker that never
@@ -60,12 +69,71 @@ import time
 import numpy as np
 
 MANIFEST = "manifest.json"
-FORMAT = "shape_moments/2"
+FORMAT = "shape_moments/3"
 TILE = 128                                                            # rows per tile
 _AXES = np.eye(3)
 #: T/m: the largest background gradient a layout's background moments are certified for by default -- several times
 #: the strongest catalogued magnet's own gradient over its anchored volume (the Swoop's 1.4 mT/m at 8 cm)
 BACKGROUND_AMPLITUDE = 5e-3
+#: the bit-field widths a walker's moment is stored at: three 10-bit fields in one uint32, else three 16-bit fields in
+#: one uint64
+MOMENT_FIELDS = (10, 16)
+
+
+def moment_width(floor_target, q_max, *, budget=None, kappa=None):
+    """The quantisation step of a moment component, in the moment's units, for a moment entered into a measurement
+    as the phase ``q . m`` with ``|q| <= q_max`` (``q_max`` in the units conjugate to the moment's):
+    ``sqrt(12) (eps / sqrt 2) / q_max``, ``eps`` :func:`~dmipy_sim.replay.compression.container_eps` at
+    ``floor_target``. A step ``delta`` per component is a random phase of variance ``q^2 delta^2 / 12`` along any
+    direction; the moment shares the budget with the bands it is contracted from, so each holds ``eps / sqrt 2``."""
+    from .compression import BUDGET, KAPPA, container_eps
+    eps = container_eps(floor_target, budget=BUDGET if budget is None else budget, kappa=KAPPA if kappa is None else kappa)
+    return float(np.sqrt(12.0) * eps / np.sqrt(2.0) / float(q_max))
+
+
+def moment_code(a_max, step, *, b_min=3, b_max=16):
+    """``(bits, scale, field)`` of a moment whose components reach ``a_max`` (3,) at the quantisation ``step``: per
+    component ``bits = ceil(log2(a / step)) + 1`` clipped to ``[b_min, b_max]``, the scale ``a / (2^(bits-1) - 1)``
+    (``step`` where a component is all zero), and the one bit-field width of :data:`MOMENT_FIELDS` that holds every
+    component's bits."""
+    a = np.asarray(a_max, np.float64)
+    bits = np.clip(np.ceil(np.log2(np.maximum(a, 1e-300) / float(step))) + 1, b_min, b_max).astype(int)
+    scale = np.where(a > 0, a / (2.0 ** (bits - 1) - 1), float(step))
+    field = next(f for f in MOMENT_FIELDS if bits.max() <= f)
+    return bits, scale, field
+
+
+def pack_moments(m, scale, field):
+    """The moments ``m`` ``(..., 3)`` as one word per walker: component ``c`` rounded to ``scale[c]`` steps, two's
+    complement in bits ``[field c, field (c + 1))`` of a uint32 (``field`` 10) or a uint64 (``field`` 16)."""
+    m = np.asarray(m, np.float64); scale = np.asarray(scale, np.float64)
+    word = np.uint32 if field == 10 else np.uint64
+    lim = 2 ** (field - 1) - 1
+    k = np.clip(np.rint(m / scale), -lim, lim).astype(np.int64) & ((1 << field) - 1)
+    return (k[..., 0] | (k[..., 1] << field) | (k[..., 2] << (2 * field))).astype(word)
+
+
+def _signed_words(words, field):
+    """The int32 view the kernels decode: the uint32 words themselves (``field`` 10), or each uint64 word as its two
+    int32 halves ``(..., 2)``, low half first (``field`` 16)."""
+    words = np.asarray(words)
+    return words.view(np.int32) if field == 10 else words.view(np.int32).reshape(words.shape + (2,))
+
+
+def _components(words, scale, field):
+    """The three components of packed moments, on any array library, from :func:`_signed_words`: each field shifted to
+    the top of its int32 and arithmetically back down, times its scale."""
+    if field == 10:
+        return tuple(((words << (32 - 10 * (c + 1))) >> 22) * scale[c] for c in range(3))
+    lo, hi = words[..., 0], words[..., 1]
+    return ((lo << 16) >> 16) * scale[0], (lo >> 16) * scale[1], ((hi << 16) >> 16) * scale[2]
+
+
+def unpack_moments(words, scale, field):
+    """``(..., 3)`` float32: the moments :func:`pack_moments` stored."""
+    signed = _signed_words(words, field)
+    sc = np.asarray(scale, np.float32)
+    return np.stack([c.astype(np.float32) for c in _components(signed, sc, field)], axis=-1)
 
 
 def _profile(seq):
@@ -286,7 +354,8 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     groups, tiles = _plan(col, chunk_rows)
     n_tiles = len(tiles); n_rows = col.n_rows; n_vox = int(np.prod(col.grid.shape))
     os.makedirs(out_dir, exist_ok=True)
-    m = {name: np.lib.format.open_memmap(os.path.join(out_dir, f"m_{name}.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, 3))
+    floor_target, b_max = _moment_declaration(col)
+    m = {name: np.lib.format.open_memmap(os.path.join(out_dir, f"m_{name}.f32.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, 3))
          for name in shapes}
     w = np.lib.format.open_memmap(os.path.join(out_dir, "w.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE))
     np.save(os.path.join(out_dir, "tiles.npy"), tiles)
@@ -371,8 +440,13 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
             progress(row, col.src.bytes_read, time.time() - t0)
     if row != n_rows:
         raise RuntimeError(f"the pass read {row} rows of {n_rows}")
-    for a in list(m.values()) + [w] + list(tier_cols.values()) + list(bg_cols.values()):
+    for a in [w] + list(tier_cols.values()) + list(bg_cols.values()):
         a.flush()
+    moment = {name: _pack_column(m[name], os.path.join(out_dir, f"m_{name}.npy"), floor_target,
+                                 float(np.sqrt(b_max / b_unit[name])), b_max) for name in shapes}
+    del m
+    for name in shapes:
+        os.remove(os.path.join(out_dir, f"m_{name}.f32.npy"))
     if tiers:
         _field_of_tiers(col.meta.get("id"), tier_meta, tier_groups)
     manifest = dict(
@@ -386,7 +460,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         n_voxels=int(n_vox), columns=dict(w="w.npy", tiles="tiles.npy", **{name: f"m_{name}.npy" for name in shapes}),
         shapes={name: dict(profile=prof[name][0].tolist(), dt=float(shapes[name].dt), n_t=int(len(prof[name][0])),
                            rf=shapes[name].rf.to_dicts(),
-                           b_unit=b_unit[name], amplitude_built=prof[name][2], pathway=pathway[name], family=getattr(shapes[name], "family", None),
+                           b_unit=b_unit[name], amplitude_built=prof[name][2], moment=moment[name], pathway=pathway[name], family=getattr(shapes[name], "family", None),
                            build_spec=_jsonable(shapes[name].build_spec),
                            encoding={k: _jsonable(getattr(shapes[name].encoding, k, None))
                                      for k in ("delta", "Delta", "TE") if shapes[name].encoding is not None})
@@ -397,6 +471,37 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     with open(os.path.join(out_dir, MANIFEST), "w") as f:
         json.dump(manifest, f, indent=1)
     return manifest
+
+
+def _moment_declaration(col):
+    """``(floor_target, b_max)`` a layout's moments are derived from: the floor the pack was ordered at
+    (``fidelity.target_floor``, else its median per-voxel floor) and the largest b-value (s/m^2) of the acquisition
+    envelope it declares (``replay_envelope.acquisition.b_max``), refused when it declares none."""
+    fid = col.meta.get("fidelity") or {}
+    floor_target = float(fid["target_floor"]) if fid.get("target_floor") is not None else float(col.floor)
+    b_max = ((col.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("b_max")
+    if b_max is None:
+        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max): a moment's width "
+                         "is derived from the largest q the pack is certified for")
+    return floor_target, float(b_max)
+
+
+def _pack_column(m, path, floor_target, q_max, b_max, chunk_tiles=65_536):
+    """The float moments ``m`` ``(n_tiles, TILE, 3)`` packed into ``path`` ``(n_tiles, TILE)`` at the width
+    :func:`moment_width` derives for ``q_max`` (the largest amplitude the moment is multiplied by, the shape's at
+    ``b_max``) and ``floor_target``; returns the header ``{"q_max", "b_max", "floor_target", "step", "bits", "scale",
+    "field"}``."""
+    a = np.zeros(3)
+    for s in range(0, m.shape[0], chunk_tiles):
+        a = np.maximum(a, np.abs(np.asarray(m[s:s + chunk_tiles], np.float64)).max(axis=(0, 1)))
+    step = moment_width(floor_target, q_max)
+    bits, scale, field = moment_code(a, step)
+    out = np.lib.format.open_memmap(path, mode="w+", dtype=np.uint32 if field == 10 else np.uint64, shape=m.shape[:2])
+    for s in range(0, m.shape[0], chunk_tiles):
+        out[s:s + chunk_tiles] = pack_moments(m[s:s + chunk_tiles], scale, field)
+    out.flush()
+    return dict(q_max=float(q_max), b_max=float(b_max), floor_target=float(floor_target), step=float(step),
+                bits=[int(b) for b in bits], scale=[float(x) for x in scale], field=int(field))
 
 
 def _field_of_tiers(pack_id, tiers, groups):
@@ -697,10 +802,26 @@ class ShapeMoments:
         return (logw, float(rt["rho2_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))
 
     def moments(self, shape):
-        """``(n_tiles, tile, 3)`` float32, memory-mapped: the moment of every row under ``shape`` (0 on padding)."""
+        """``(n_tiles, tile, 3)`` float32: the moment of every row under ``shape`` (0 on padding), decoded from its
+        packed words."""
+        scale, field = self._moment_code(shape)
+        return unpack_moments(self._column(shape), scale, field)
+
+    def _moment_code(self, shape):
+        """``(scale, field)`` of ``shape``'s packed moments: the per-component scale (float32, (3,)) and the bit-field
+        width the manifest records."""
         if shape not in self.shapes:
             raise KeyError(f"no shape {shape!r} in this layout; it holds {self.shapes}")
-        return self._column(shape)
+        rec = self.manifest["shapes"][shape]["moment"]
+        return np.asarray(rec["scale"], np.float32), int(rec["field"])
+
+    def _certified(self, shape, g):
+        """Refuse amplitudes above the largest one ``shape``'s moments are derived for (``moment.q_max``)."""
+        q_max = float(self.manifest["shapes"][shape]["moment"]["q_max"])
+        if np.max(g, initial=0.0) > q_max * (1 + 1e-9):
+            b_max = float(self.manifest["shapes"][shape]["moment"]["b_max"])
+            raise ValueError(f"the shape {shape!r} is asked for {np.max(g):.4g} T/m and its moments are derived for at most "
+                             f"{q_max:.4g} T/m (b = {b_max:.4g} s/m^2, the pack's declared envelope)")
 
     def amplitude(self, shape, bvalues):
         """The amplitudes (T/m) at which ``shape`` encodes ``bvalues`` (s/m^2): ``sqrt(b / b_unit)``."""
@@ -722,7 +843,7 @@ class ShapeMoments:
 
     def preload(self, shapes=None, background=True):
         """The padded host arrays of ``shapes`` (every shape when None) and the shared tiles kept in this process's
-        memory (about 1.9 GB per shape for DiSCo), so that a device copy built later -- in a forked worker of a
+        memory (about 0.6 GB per shape for DiSCo at 10-bit fields), so that a device copy built later -- in a forked worker of a
         shared pool, which inherits them for free -- costs a host-to-device transfer and not a read of the layout
         (measured on Hugging Face's ZeroGPU: the mounted bucket reads at 80 MB/s, the transfer at 8 GB/s); with
         ``background`` the background column of each shape's group too, where the layout carries one."""
@@ -764,7 +885,9 @@ class ShapeMoments:
         elif name == "tiles":
             a = np.full(n_pad, 2 * self.n_vox, np.int32); a[:self.n_tiles] = self._column("tiles")
         else:
-            a = np.zeros((n_pad, self.tile, 3), np.float32); a[:self.n_tiles] = self.moments(name)
+            words = self._column(name)
+            a = np.zeros((n_pad, self.tile), words.dtype); a[:self.n_tiles] = words
+            a = _signed_words(a, self._moment_code(name)[1])
         return a
 
     def _resident(self, shape, backend, device, resident, names=("w", "tiles")):
@@ -775,10 +898,11 @@ class ShapeMoments:
         copy made here is subject to the same eviction as the host's."""
         if backend == "jax":
             import jax.numpy as jnp
-            put = jnp.asarray
+            put = lambda a, name: jnp.asarray(a)
         else:
             import torch
-            put = lambda a: torch.as_tensor(a if a.dtype != np.int32 else a.astype(np.int64), device=device)
+            # the index columns as int64 (torch's index dtype); a shape's packed words stay the int32 its kernel shifts
+            put = lambda a, name: torch.as_tensor(a.astype(np.int64) if name in ("tiles", "slot") else a, device=device)
         out = []; made = {}
         for name in (shape,) + tuple(names):
             key = (backend, name, str(device))
@@ -791,7 +915,7 @@ class ShapeMoments:
                         made.update({f"field_iso_{g}@{d}": iso, f"field_aniso_{g}@{d}": aniso})
                     arr = made[name]
                 else:
-                    arr = put(self._padded(name))
+                    arr = put(self._padded(name), name)
                 if not resident:
                     if fd is not None:
                         self._touch_field_direction(*fd)
@@ -884,7 +1008,9 @@ class ShapeMoments:
         tm = self.terms(shape, tissue, scanner)
         self._set_b0_direction(b0_direction)
         g = self.amplitude(shape, bvalues)
+        self._certified(shape, g)
         u = self._directions(g, directions)
+        code = self._moment_code(shape)
         M = len(g); M_pad = -(-M // self.MEAS) * self.MEAS
         n_seg = 2 * self.n_vox + 1
         if backend == "torch" and device is None:
@@ -908,7 +1034,7 @@ class ShapeMoments:
             if bg:
                 G0[:len(live)] = delivered.g0
             tier = None if tm is None else (tier_cols, np.asarray(tm[0], np.float32), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]))
-            acc = (_sums_delivered_jax if backend == "jax" else _sums_delivered_torch)(m, w, tiles, slot, Q, nb, G0, tier, n_seg, self.TILES, device)
+            acc = (_sums_delivered_jax if backend == "jax" else _sums_delivered_torch)(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, self.TILES, device)
             if delivered.kappa is not None:
                 from ..acquisition.epg import transmit_amplitude
                 seq = self.sequence(shape)
@@ -919,13 +1045,13 @@ class ShapeMoments:
             u_p = np.zeros((M_pad, 3), np.float32); u_p[:M] = u
             if tm is None:
                 m, w, tiles = self._resident(shape, backend, device, resident)
-                acc = (_sums_jax if backend == "jax" else _sums_torch)(m, w, tiles, g_p, u_p, n_seg, self.TILES)
+                acc = (_sums_jax if backend == "jax" else _sums_torch)(m, code, w, tiles, g_p, u_p, n_seg, self.TILES)
             else:
                 logw_pool, rho_D, a_iso, a_aniso, amp = tm
                 m, w, tiles, pool, contact, fiso, faniso = self._resident(shape, backend, device, resident, names=("w", "tiles") + tier_names)
                 logw_pool = np.asarray(logw_pool, np.float32)
                 acc = (_sums_jax_tiers if backend == "jax" else _sums_torch_tiers)(
-                    m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, np.float32(rho_D), np.float32(a_iso),
+                    m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, np.float32(rho_D), np.float32(a_iso),
                     np.float32(a_aniso), np.float32(amp), n_seg, self.TILES)
         num = acc[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
@@ -972,22 +1098,30 @@ class Delivered:
     kappa: np.ndarray = None
 
 
-def _sums_jax(m, w, tiles, g_p, u_p, n_seg, chunk):
-    """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX: the compiled chunk kernel over the tiles."""
+def _sums_jax(m, code, w, tiles, g_p, u_p, n_seg, chunk):
+    """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX: the compiled chunk kernel over the tiles, the packed
+    moments ``m`` decoded in it at ``code`` (``(scale, field)``)."""
     import jax.numpy as jnp
-    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled(n_seg)
-    g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p)
+    scale, field = code
+    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled(n_seg, field)
+    g_d, u_d, sc = jnp.asarray(g_p), jnp.asarray(u_p), jnp.asarray(scale)
     for i in range(0, m.shape[0], chunk):
-        acc = kernel(m[i:i + chunk], w[i:i + chunk], tiles[i:i + chunk], g_d, u_d, acc)
+        acc = kernel(m[i:i + chunk], sc, w[i:i + chunk], tiles[i:i + chunk], g_d, u_d, acc)
     return np.asarray(acc)
 
 
-def _tile_sums_torch(mc, wc, g, u):
-    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the phase as three products (a float32 matmul
-    on CUDA is TF32 unless ``allow_tf32`` is off, so no matmul), ``w exp(i ph)`` in complex64, the reduce over the
-    tile's rows."""
+def _shape_phase(m, scale, field, g, u):
+    """``g (u . m)`` ``(chunk, tile, M_pad)`` of packed moments on any array library: the components decoded
+    (:func:`_components`) and the phase written out as three products (a float32 matmul on CUDA is TF32)."""
+    m0, m1, m2 = _components(m, scale, field)
+    return g[None, None, :] * (m0[:, :, None] * u[None, None, :, 0] + m1[:, :, None] * u[None, None, :, 1] + m2[:, :, None] * u[None, None, :, 2])
+
+
+def _tile_sums_torch(mc, sc, field, wc, g, u):
+    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the phase of the packed moments
+    (:func:`_shape_phase`), ``w exp(i ph)`` in complex64, the reduce over the tile's rows."""
     import torch
-    ph = g[None, None, :] * (mc[:, :, 0:1] * u[None, None, :, 0] + mc[:, :, 1:2] * u[None, None, :, 1] + mc[:, :, 2:3] * u[None, None, :, 2])
+    ph = _shape_phase(mc, sc, field, g, u)
     return torch.polar(wc[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
 
 
@@ -1007,22 +1141,23 @@ def _torch_kernel():
     return _TORCH_KERNEL["fn"]
 
 
-def _sums_torch(m, w, tiles, g_p, u_p, n_seg, chunk):
+def _sums_torch(m, code, w, tiles, g_p, u_p, n_seg, chunk):
     """The same sums on torch: the tile sums of every chunk (:func:`_tile_sums_torch`, compiled when possible)
     ``index_add_``-ed into a complex128 accumulator (deterministic under
     ``torch.use_deterministic_algorithms(True)``)."""
     import torch
     dev = m.device
     g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev)
+    sc = torch.as_tensor(code[0], device=dev); field = int(code[1])
     acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
     fn = _torch_kernel()
     with torch.no_grad():
         for i in range(0, m.shape[0], chunk):
             try:
-                ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
+                ts = fn(m[i:i + chunk], sc, field, w[i:i + chunk], g, u)
             except Exception:                                  # the compiled path failed at run time: eager, once for all
                 _TORCH_KERNEL["fn"] = fn = _tile_sums_torch
-                ts = fn(m[i:i + chunk], w[i:i + chunk], g, u)
+                ts = fn(m[i:i + chunk], sc, field, w[i:i + chunk], g, u)
             acc.index_add_(0, tiles[i:i + chunk], ts)
     return acc.cpu().numpy()
 
@@ -1053,58 +1188,55 @@ def _voxel_sums_jax(rows, n_q, w, tiles, n_seg, chunk):
     return np.asarray(acc).T
 
 
-def _sums_jax_tiers(m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
+def _sums_jax_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
     """:func:`_sums_jax` with the tiers: each row's weight ``w amp exp(logw_pool[pool] + rho_D contact)`` and its
     phase offset ``a_iso field_iso + a_aniso field_aniso`` (:meth:`Primitives.signals` on the device)."""
     import jax.numpy as jnp
-    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled_tiers(n_seg)
-    g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p); lw = jnp.asarray(logw_pool)
+    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled_tiers(n_seg, int(code[1]))
+    g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p); lw = jnp.asarray(logw_pool); scale = jnp.asarray(code[0])
     sc = tuple(jnp.float32(x) for x in (rho_D, a_iso, a_aniso, amp))
     for i in range(0, m.shape[0], chunk):
         sl = slice(i, i + chunk)
-        acc = kernel(m[sl], w[sl], tiles[sl], pool[sl], contact[sl], fiso[sl], faniso[sl], g_d, u_d, lw, *sc, acc)
+        acc = kernel(m[sl], scale, w[sl], tiles[sl], pool[sl], contact[sl], fiso[sl], faniso[sl], g_d, u_d, lw, *sc, acc)
     return np.asarray(acc)
 
 
-def _sums_torch_tiers(m, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
+def _sums_torch_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
     """:func:`_sums_torch` with the tiers (eager: the weight and the phase offset per row, then the chunk kernel)."""
     import torch
     dev = m.device
     g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev); lw = torch.as_tensor(logw_pool, device=dev)
+    sc = torch.as_tensor(code[0], device=dev); field = int(code[1])
     acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
-    fn = _torch_kernel()
     with torch.no_grad():
         for i in range(0, m.shape[0], chunk):
             sl = slice(i, i + chunk)
             wf = w[sl] * float(amp) * torch.exp(lw[pool[sl].long()] + float(rho_D) * contact[sl])
             off = float(a_iso) * fiso[sl] + float(a_aniso) * faniso[sl]
-            try:
-                ts = _tile_sums_torch_offset(m[sl], wf, off, g, u)
-            except Exception:
-                ts = _tile_sums_torch_offset(m[sl], wf, off, g, u)
+            ts = _tile_sums_torch_offset(m[sl], sc, field, wf, off, g, u)
             acc.index_add_(0, tiles[sl], ts)
     return acc.cpu().numpy()
 
 
-def _tile_sums_torch_offset(mc, wc, off, g, u):
+def _tile_sums_torch_offset(mc, sc, field, wc, off, g, u):
     """:func:`_tile_sums_torch` with a per-row phase offset ``off (chunk, tile)``."""
     import torch
-    ph = g[None, None, :] * (mc[:, :, 0:1] * u[None, None, :, 0] + mc[:, :, 1:2] * u[None, None, :, 1] + mc[:, :, 2:3] * u[None, None, :, 2]) + off[:, :, None]
+    ph = _shape_phase(mc, sc, field, g, u) + off[:, :, None]
     return torch.polar(wc[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
 
 
 _KERNELS = {}
 
 
-def _compiled_tiers(n_seg):
+def _compiled_tiers(n_seg, field):
     """The chunk kernel with the tiers: the per-row weight and phase offset folded into the fused reduction."""
     import jax
     import jax.numpy as jnp
-    key = ("tiers", n_seg)
+    key = ("tiers", n_seg, field)
     if key not in _KERNELS:
         @jax.jit
-        def kernel(m, w, tiles, pool, contact, fiso, faniso, g, u, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
-            ph = g[None, None, :] * (m[:, :, 0:1] * u[None, None, :, 0] + m[:, :, 1:2] * u[None, None, :, 1] + m[:, :, 2:3] * u[None, None, :, 2])
+        def kernel(m, scale, w, tiles, pool, contact, fiso, faniso, g, u, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
+            ph = _shape_phase(m, scale, field, g, u)
             ph = ph + (a_iso * fiso + a_aniso * faniso)[:, :, None]
             wf = w * amp * jnp.exp(logw_pool[pool.astype(jnp.int32)] + rho_D * contact)
             E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
@@ -1113,31 +1245,40 @@ def _compiled_tiers(n_seg):
     return _KERNELS[key]
 
 
-def _compiled(n_seg):
-    """The chunk kernel for ``n_seg`` segments: ``exp(i g (u . m)) w`` summed over each tile's rows (a fused
-    reduction), the tile sums scattered into their segments. The three products are written out: a float32 matmul
-    on CUDA is TF32 and moves a 30 rad phase by 0.03. The tile sums and the accumulator are complex128; the cast
-    costs nothing measurable and the sums are then exact to the float32 phases."""
+def _compiled(n_seg, field):
+    """The chunk kernel for ``n_seg`` segments and moments packed at ``field`` bits: ``exp(i g (u . m)) w`` summed
+    over each tile's rows (a fused reduction), the tile sums scattered into their segments. Each row's word is
+    decoded in the kernel (one load, shifts and a scale per component); the three products are written out: a float32
+    matmul on CUDA is TF32 and moves a 30 rad phase by 0.03. The tile sums and the accumulator are complex128; the
+    cast costs nothing measurable and the sums are then exact to the float32 phases."""
     import jax
     import jax.numpy as jnp
-    if n_seg not in _KERNELS:
+    key = ("plain", n_seg, field)
+    if key not in _KERNELS:
         @jax.jit
-        def kernel(m, w, tiles, g, u, acc):
-            ph = g[None, None, :] * (m[:, :, 0:1] * u[None, None, :, 0] + m[:, :, 1:2] * u[None, None, :, 1] + m[:, :, 2:3] * u[None, None, :, 2])
+        def kernel(m, scale, w, tiles, g, u, acc):
+            ph = _shape_phase(m, scale, field, g, u)
             E = (jnp.exp(1j * ph) * w[:, :, None]).astype(jnp.complex128)
             return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
-        _KERNELS[n_seg] = kernel
-    return _KERNELS[n_seg]
+        _KERNELS[key] = kernel
+    return _KERNELS[key]
 
 
-def _sums_delivered_jax(m, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
+def _delivered_phase(m, scale, field, q):
+    """``q_v . m`` ``(chunk, tile, M_pad)`` of packed moments against each tile's delivered vectors ``q`` ``(chunk,
+    M_pad, 3)``, on any array library, the three products written out."""
+    m0, m1, m2 = _components(m, scale, field)
+    return m0[:, :, None] * q[:, None, :, 0] + m1[:, :, None] * q[:, None, :, 1] + m2[:, :, None] * q[:, None, :, 2]
+
+
+def _sums_delivered_jax(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
     """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX for a delivered acquisition: each tile's voxel's row of
     ``Q`` (``slot``) dotted with the rows' shape moments, the background moments ``nb`` dotted with the voxel's ``G0``
     and, with ``tier``, the tiers' weights and field phase, as :func:`_compiled_delivered` fuses them."""
     import jax.numpy as jnp
     acc = jnp.zeros((n_seg, Q.shape[1]), jnp.complex128)
-    kernel = _compiled_delivered(n_seg, tier is not None, nb is not None)
-    Q_d, G0_d = jnp.asarray(Q), jnp.asarray(G0)
+    kernel = _compiled_delivered(n_seg, tier is not None, nb is not None, int(code[1]))
+    Q_d, G0_d, scale = jnp.asarray(Q), jnp.asarray(G0), jnp.asarray(code[0])
     z = jnp.zeros(1, jnp.float32)
     if tier is not None:
         (pool, contact, fiso, faniso), lw, rho_D, a_iso, a_aniso, amp = tier
@@ -1146,21 +1287,21 @@ def _sums_delivered_jax(m, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device
         sl = slice(i, i + chunk)
         bg = nb[sl] if nb is not None else z
         tc = (pool[sl], contact[sl], fiso[sl], faniso[sl], lw) + sc if tier is not None else (z, z, z, z, z, z, z, z, z)
-        acc = kernel(m[sl], w[sl], tiles[sl], slot[sl], Q_d, bg, G0_d, *tc, acc)
+        acc = kernel(m[sl], scale, w[sl], tiles[sl], slot[sl], Q_d, bg, G0_d, *tc, acc)
     return np.asarray(acc)
 
 
-def _compiled_delivered(n_seg, tiers, background):
+def _compiled_delivered(n_seg, tiers, background, field):
     """The chunk kernel of a delivered acquisition: the voxel's delivered vector gathered per tile, the phase written
     out as three products (no matmul: TF32 on CUDA), the background and the tiers folded in when present."""
     import jax
     import jax.numpy as jnp
-    key = ("delivered", n_seg, bool(tiers), bool(background))
+    key = ("delivered", n_seg, bool(tiers), bool(background), field)
     if key not in _KERNELS:
         @jax.jit
-        def kernel(m, w, tiles, slot, Q, nb, G0, pool, contact, fiso, faniso, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
+        def kernel(m, scale, w, tiles, slot, Q, nb, G0, pool, contact, fiso, faniso, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
             q = Q[slot]                                                             # (chunk, M, 3)
-            ph = m[:, :, 0:1] * q[:, None, :, 0] + m[:, :, 1:2] * q[:, None, :, 1] + m[:, :, 2:3] * q[:, None, :, 2]
+            ph = _delivered_phase(m, scale, field, q)
             if background:
                 g0 = G0[slot]                                                       # (chunk, 3)
                 ph = ph + (nb[:, :, 0] * g0[:, None, 0] + nb[:, :, 1] * g0[:, None, 1] + nb[:, :, 2] * g0[:, None, 2])[:, :, None]
@@ -1175,12 +1316,13 @@ def _compiled_delivered(n_seg, tiers, background):
     return _KERNELS[key]
 
 
-def _sums_delivered_torch(m, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
+def _sums_delivered_torch(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
     """:func:`_sums_delivered_jax` on torch (eager): per chunk the gathered delivered vectors, the phase with its
     offsets, ``w exp(i ph)`` in complex64 summed over each tile's rows, ``index_add_``-ed into the segments."""
     import torch
     dev = m.device
     Q_d = torch.as_tensor(Q, device=dev); G0_d = torch.as_tensor(G0, device=dev)
+    scale = torch.as_tensor(code[0], device=dev); field = int(code[1])
     acc = torch.zeros((n_seg, Q.shape[1]), dtype=torch.complex128, device=dev)
     if tier is not None:
         (pool, contact, fiso, faniso), lw, rho_D, a_iso, a_aniso, amp = tier
@@ -1188,8 +1330,8 @@ def _sums_delivered_torch(m, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, devi
     with torch.no_grad():
         for i in range(0, m.shape[0], chunk):
             sl = slice(i, i + chunk)
-            mc = m[sl]; sc = slot[sl].long(); q = Q_d[sc]
-            ph = mc[:, :, 0:1] * q[:, None, :, 0] + mc[:, :, 1:2] * q[:, None, :, 1] + mc[:, :, 2:3] * q[:, None, :, 2]
+            sc = slot[sl].long(); q = Q_d[sc]
+            ph = _delivered_phase(m[sl], scale, field, q)
             off = None
             if nb is not None:
                 g0 = G0_d[sc]; bc = nb[sl]
