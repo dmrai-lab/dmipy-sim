@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..spec.walk import _class_band
+from ..replay.bank import class_band
 from ..engine.backends import (FIELD_ARRAY_NAMES, REQUEST_TEMPLATE_KEYS, STRAND_ARRAY_NAMES, STRANDS_STRUCT_KEYS,
                                 adaptive_struct_fields, crop_far_grid, field_struct_fields, field_tables,
                                 field_tables_window, format_request_value, request_struct_fields,
@@ -74,7 +74,7 @@ def _pool_lines_and_arrays(rc, ctx, pid, n_t, dt_actual, basis, sampling, *, ste
     D = float(g.pools[pid].D)
     plan = adaptive_plan(geom, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
                          n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start,
-                         f_band=_class_band(W.get("scanner")))
+                         f_band=class_band(W.get("scanner")))
     struct, arrays = strands_struct_fields(geom)
     lines = dict(engine="strands")
     lines.update(request_struct_fields(n_t=n_t, sub_steps=int(plan.n_min), step_l=float(np.sqrt(6.0 * D * plan.dt_min)),
@@ -128,7 +128,7 @@ def _pool_plan(rc, ctx, pid, D, dt_actual, *, steps_per_round=16, safety_sigma=6
     geom = _pool_geometry(ctx, pid)
     plan = adaptive_plan(geom, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
                          n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start,
-                         f_band=_class_band(rc.man["walk"].get("scanner")))
+                         f_band=class_band(rc.man["walk"].get("scanner")))
     return geom, plan
 
 
