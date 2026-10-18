@@ -1,5 +1,5 @@
-"""A machine's gradient side on the shape-moment layout (the DiSCo page's route): every voxel's delivered encoding
-vector, the magnet's own gradient against the stored background moment, and the transmit scale on the pathway
+"""A machine's gradient side on the time-segment layout (the DiSCo page's route): every voxel's delivered encoding
+vector, the magnet's own gradient against the stored background vector, and the transmit scale on the pathway
 amplitude, held against the reference route -- each voxel's acquisition rebuilt as the machine plays it
 (``ScannerSequence.with_gradient_nonlinearity / with_background_gradient / with_concomitant``, through
 ``bore.encoding_classes`` with no binning) and replayed walker by walker on the merged pack -- for the three
@@ -15,11 +15,11 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.acquisition.epg import transmit_amplitude
 from dmipy_sim.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom.bore import delivered_moments, encoding_classes
+from dmipy_sim.phantom.bore import delivered_vectors, encoding_classes
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.columnar import ColumnarPack
 from dmipy_sim.replay.compression import BUDGET
-from dmipy_sim.replay.shape_moments import ShapeMoments, stamp_background, write_shape_moments
+from dmipy_sim.replay.time_segments import TimeSegmentLayout, stamp_background, write_time_segment_layout
 from dmipy_sim.fill.consolidate import consolidate
 from dmipy_sim.spec import walk_spec, fill_field, StratifiedByVoxel
 from dmipy_sim.spec.tissue import Tissue
@@ -34,7 +34,7 @@ OFFSET = np.array([0.05, 0.03, 0.04])
 @pytest.fixture(scope="module")
 def layout(spec_grid):
     """Two blocks of the three-strand spec walked with the sheath's field, consolidated into columns; the merged pack;
-    a layout of a spin-echo and a stimulated-echo shape with the tiers and the background moments."""
+    a layout of a spin-echo and a stimulated-echo shape with the tiers and the background vectors."""
     spec, grid, tmp = spec_grid
     os.makedirs(str(tmp / "dm_shards"), exist_ok=True)
     packs = []
@@ -50,8 +50,8 @@ def layout(spec_grid):
     n_t = packs[0].n_t
     shapes = _shapes(n_t)
     out = str(tmp / "dm_moments")
-    write_shape_moments(col, shapes, out, tol=1e-9, chunk_rows=7, tiers=True, background=True)
-    return ShapeMoments(out), col, merge_packs(packs, id="t/dm-merged"), grid, n_t, shapes, tmp
+    write_time_segment_layout(col, shapes, out, tol=1e-9, chunk_rows=7, tiers=True, background=True)
+    return TimeSegmentLayout(out), col, merge_packs(packs, id="t/dm-merged"), grid, n_t, shapes, tmp
 
 
 def _shapes(n_t):
@@ -95,7 +95,7 @@ def _direct(merged, grid, placed, sc, seq, ijk):
 def test_the_delivered_layout_is_the_machines_own_replay(layout, scanner):
     """At 7.1 cm from isocentre, every catalogued term on: the layout's image under the delivery equals, voxel by
     voxel, the merged pack replayed on the acquisition the machine plays there, for a spin echo and a stimulated echo,
-    within the moment container's share of the floor target; and the delivery moves the image off the field-only one
+    within the vector container's share of the floor target; and the delivery moves the image off the field-only one
     by more than that share."""
     sm, col, merged, grid, n_t, shapes, tmp = layout
     sc = ScannerLimits.of(scanner)
@@ -110,8 +110,8 @@ def test_the_delivered_layout_is_the_machines_own_replay(layout, scanner):
         S0, _ = sm.image(name, b, dirs, tissue=TISSUE, scanner=sc, b0_direction=sc.b0_axis)
         ref = _direct(merged, grid, placed, sc, seq, ijk)
         got = S.reshape(-1, len(b))[live]
-        err = np.abs(got - ref).max(); bound = BUDGET * sm.manifest["shapes"][name]["moment"]["floor_target"]
-        assert err < bound, (scanner, name, err, bound)            # the packed moments against float64: 0.013-0.018 of 0.054 measured
+        err = np.abs(got - ref).max(); bound = BUDGET * sm.manifest["shapes"][name]["vector"]["floor_target"]
+        assert err < bound, (scanner, name, err, bound)            # the packed vectors against float64: 0.013-0.018 of 0.054 measured
         moved = np.abs(got - S0.reshape(-1, len(b))[live]).max()
         assert moved > bound, (scanner, name, moved, bound)        # 0.15-0.44 measured
 
@@ -151,14 +151,14 @@ def test_each_term_reaches_the_image(layout):
 
 
 def test_a_shape_with_ramps_is_refused_for_the_maxwell_term(layout):
-    """A trapezoid's Maxwell gradient goes as the square of its ramps, not as the shape: not one vector on the shape's
-    moment, so it is refused by name; without the Maxwell term the same shape is accepted."""
+    """A trapezoid's Maxwell gradient goes as the square of its ramps, not as the shape: not one vector dotted with the
+    shape's, so it is refused by name; without the Maxwell term the same shape is accepted."""
     sm, col, merged, grid, n_t, shapes, tmp = layout
     sc = ScannerLimits.of("prisma")
     profile = np.array([0.0, 0.5, 1.0, 1.0, 0.5])
     with pytest.raises(ValueError, match="two-valued"):
-        delivered_moments(sc, sm.grid.centred_at(OFFSET), profile, [0.05], [[0.0, 0.0, 1.0]], voxels=[[0, 0, 0]])
-    delivered_moments(sc, sm.grid.centred_at(OFFSET), profile, [0.05], [[0.0, 0.0, 1.0]], voxels=[[0, 0, 0]], concomitant=False)
+        delivered_vectors(sc, sm.grid.centred_at(OFFSET), profile, [0.05], [[0.0, 0.0, 1.0]], voxels=[[0, 0, 0]])
+    delivered_vectors(sc, sm.grid.centred_at(OFFSET), profile, [0.05], [[0.0, 0.0, 1.0]], voxels=[[0, 0, 0]], concomitant=False)
 
 
 def test_a_layout_without_background_refuses_a_magnet_gradient_and_the_stamp_adds_it(layout):
@@ -166,8 +166,8 @@ def test_a_layout_without_background_refuses_a_magnet_gradient_and_the_stamp_add
     adds it in one pass with every other column untouched, and the stamped layout's image is the one written with it."""
     sm, col, merged, grid, n_t, shapes, tmp = layout
     out = str(tmp / "dm_plain")
-    write_shape_moments(col, shapes, out, tol=1e-9, chunk_rows=7, tiers=True)
-    plain = ShapeMoments(out)
+    write_time_segment_layout(col, shapes, out, tol=1e-9, chunk_rows=7, tiers=True)
+    plain = TimeSegmentLayout(out)
     assert plain.background is None
     sc = ScannerLimits.of("swoop")
     placed = plain.grid.centred_at(OFFSET)
@@ -181,7 +181,7 @@ def test_a_layout_without_background_refuses_a_magnet_gradient_and_the_stamp_add
     stamp_background(out, col, shapes)
     after = {f: open(os.path.join(out, f), "rb").read() for f in before}
     assert before == after                                          # nothing written but the new columns
-    stamped = ShapeMoments(out)
+    stamped = TimeSegmentLayout(out)
     for name in ("se", "ste"):
         np.testing.assert_array_equal(np.asarray(stamped._column(f"bg_{stamped.background_group(name)}")),
                                       np.asarray(sm._column(f"bg_{sm.background_group(name)}")))
@@ -195,7 +195,7 @@ def test_a_magnets_gradient_through_a_stimulated_echo_accrues_nothing_while_stor
     """The effective gradient is the coherence sign times the transverse gate: through the mixing time the
     magnetisation is along B0 and a magnet's constant gradient adds no phase, so the background of a stimulated echo
     is refocused like a spin echo's (to one sample per change of the gate) and not left as a winding."""
-    from dmipy_sim.replay.shape_moments import _background_sequence
+    from dmipy_sim.replay.time_segments import _background_sequence
     ste = d.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     bg = _background_sequence(ste)
     G = np.asarray(bg.G_eff)[0, :, 0]

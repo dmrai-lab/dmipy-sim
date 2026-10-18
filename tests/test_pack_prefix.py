@@ -136,11 +136,11 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
     T, n_t = 0.3, 1302                                                  # dt = 0.3 / 1301: 0.1 s is not a whole number of saves
     walk = d.simulate_trajectories(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False)
     p = tmp_path / "parent.rpk"
-    _float_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), segment_T=T)
+    _float_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), window_T=T)
     parent = read_rpk(str(p))
-    assert parent.n_segments == 1
+    assert parent.n_windows == 1
     pre = parent.prefix(0.15, out_path=str(tmp_path / "prefix.rpk"))
-    assert pre.n_segments == 1 and abs((pre.n_t - 1) * pre.dt - 0.15) < pre.dt
+    assert pre.n_windows == 1 and abs((pre.n_t - 1) * pre.dt - 0.15) < pre.dt
 
 
 def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
@@ -211,9 +211,9 @@ def test_a_prefix_inside_a_later_window_reads_across_the_windows(tmp_path):
     p = tmp_path / "parent.rpk"
     _float_pack(walk, id="t/windows", license="x", citation="x", K=16, out_path=str(p))
     parent = read_rpk(str(p))
-    assert parent.n_segments == 3
+    assert parent.n_windows == 3
     pre = parent.prefix(0.25, out_path=str(tmp_path / "prefix.rpk"))
-    assert pre.n_segments == 1 and abs((pre.n_t - 1) * pre.dt - 0.25) < dt
+    assert pre.n_windows == 1 and abs((pre.n_t - 1) * pre.dt - 0.25) < dt
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 20e-3, 60e-3, gradient_strengths=[0.05, 0.05], TE=0.25)
     np.testing.assert_allclose(pre.replay(seq), parent.replay(seq), atol=3 * pre.meta["fidelity"]["floor_max"])
 

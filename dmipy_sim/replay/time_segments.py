@@ -1,29 +1,33 @@
-"""A replay pack contracted against the shape of a gradient waveform, once, so that every acquisition that plays
-that shape -- at any amplitude, in any direction -- is a three-term phase per walker (dmipy-sim#505: the whole
-DiSCo grid replayed while a user waits).
+"""The **time-segment layout**: a replay pack contracted at a fixed gate against the shapes of its gradient waveforms,
+once, so that every acquisition that plays a stored shape -- at any amplitude, in any direction -- is a three-term
+phase per walker (dmipy-sim#505: the whole DiSCo grid replayed while a user waits).
 
 A single-direction waveform is ``G(t) = g s(t) u``: ``s`` its shape (``max |s| = 1``), ``g`` its amplitude (T/m)
 and ``u`` its unit direction. The band contraction of a replay (:func:`~dmipy_sim.replay.replay._band_phase`) is
-linear in the waveform, so the gradient phase of walker ``w`` is ``g (u . m_w)`` with the **shape moment**
+linear in the waveform, so the gradient phase of walker ``w`` is ``g (u . m_w)`` with the **shape vector**
 ``m_w = gamma int s(t) r_w(t) dt`` (rad per T/m): the pack's bands contracted against the shape's projection on
-the three axes, once per shape, through the same ``_prepare`` / ``_band_phase`` route every replay takes.
+the three axes, once per shape, through the same ``_prepare`` / ``_band_phase`` route every replay takes. A shape
+constant on time segments makes ``m_w`` a sum over the segments of the walker's mean position on each, relative to its
+start (a refocused shape has no net area, so the start adds nothing), weighted by the shape's level and the
+segment's duration: for a pulse pair ``m_w / (gamma delta)`` is the walker's centre-of-mass displacement between the
+pulses (Mitra & Halperin 1995).
 
-The layout is **tiled**: rows are stored in tiles of ``TILE`` rows, every tile the rows of one segment (a voxel and
-a split half), the last tile of a segment padded with zero weight, so that a voxel's sum is a fused reduction over
-whole tiles and the sum over tiles a scatter with as many collisions as a segment has tiles. A scatter over rows
+The layout is **tiled**: rows are stored in tiles of ``TILE`` rows, every tile the rows of one voxel half (a voxel and
+one split half), the last tile of a voxel half padded with zero weight, so that a voxel's sum is a fused reduction over
+whole tiles and the sum over tiles a scatter with as many collisions as a voxel half has tiles. A scatter over rows
 serialises on a voxel's thousands of contiguous rows (measured on the L40S: 6.4 s per 2^19 rows against 1 ms for
-the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE)`` words, a walker's moment packed into one
-(:func:`pack_moments`); once, ``w.npy``
+the tiled reduction). Per shape ``m_<name>.npy`` holds ``(n_tiles, TILE)`` words, a walker's vector packed into one
+(:func:`pack_vectors`); once, ``w.npy``
 ``(n_tiles, TILE)`` (the walkers' weights, 0 on padding), ``tiles.npy`` ``(n_tiles,)`` (``2 voxel + half``), and
 ``manifest.json`` naming the source layout (its manifest's sha256), the bands read and their truncation error,
 and every shape's profile with the b-value it encodes at unit amplitude, so that an amplitude follows from a
 b-value as ``g = sqrt(b / b_unit)``.
 
-A moment enters a measurement as the phase ``g u . m``, so a rounding of ``delta`` per component is a random phase
-of variance ``g^2 delta^2 / 12``: each shape's moments are stored at the width :func:`moment_width` derives from the
+A vector enters a measurement as the phase ``g u . m``, so a rounding of ``delta`` per component is a random phase
+of variance ``g^2 delta^2 / 12``: each shape's vectors are stored at the width :func:`vector_width` derives from the
 pack's floor target and the largest amplitude the pack's declared envelope reaches on that shape (``q_max =
 sqrt(b_max / b_unit)``), ``ceil(log2(a / delta)) + 1`` bits per component against the largest ``|m|`` over the
-walkers, each component a two's-complement bit field of its own width (:func:`moment_fields`): one uint32 when the
+walkers, each component a two's-complement bit field of its own width (:func:`vector_fields`): one uint32 when the
 three widths sum to at most 32, else one uint64. The manifest records ``{"q_max", "b_max", "floor_target", "step",
 "bits", "offsets", "word", "scale"}`` per shape; the image decodes each word in its kernel (shifts constant per
 shape) and refuses an amplitude above ``q_max``.
@@ -38,7 +42,7 @@ the gated boundary local time (``contact_<g>.npy``) and the gated path-field cha
 field direction), with the group's transverse and longitudinal exposure times and its pathway amplitude, the embedded
 substrate spec and the walk's diffusivity in the manifest. A tier layout holds the field equivalence
 (:func:`~dmipy_sim.spec.substrate.susceptibility_field_of`): its spec has a magnetic pool exactly when its groups store
-the field columns, checked when it is written and when it is opened. :meth:`ShapeMoments.image` then takes ``tissue=``,
+the field columns, checked when it is written and when it is opened. :meth:`TimeSegmentLayout.image` then takes ``tissue=``,
 ``scanner=`` and ``b0_direction=`` (the field's direction in the substrate frame: the magnitude and the direction of
 B0 are both knobs) and applies exactly :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms`: the per-row
 weight ``amp exp(-tau_2 / T2_pool - tau_1 / T1_pool + (rho2 / D) contact)`` and the phase ``B0 (chi_iso A + chi_aniso
@@ -48,7 +52,7 @@ its image in every case.
 
 A shape is a one-row single-direction :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` whose
 ramps do not scale with its amplitude (built with ``slew_rate=np.inf``): a finite slew makes the shape a
-function of ``g`` and the moment would not be one vector. The image of an acquisition on the layout is
+function of ``g`` and the walker's phase would not be one vector dotted with ``g u``. The image of an acquisition on the layout is
 ``|sum_w w exp(i g u . m_w)| / sum_w w`` per voxel with its split-half floor, formed on the device from
 device-resident rows: float32 phases with the three products written out (a float32 matmul on CUDA is TF32),
 the exponential in complex64, the tile sums and every sum after them in complex128. Two backends run that
@@ -70,25 +74,70 @@ import time
 import numpy as np
 
 MANIFEST = "manifest.json"
-FORMAT = "shape_moments/3"
+FORMAT = "time_segments/1"
 TILE = 128                                                            # rows per tile
 _AXES = np.eye(3)
-#: T/m: the largest background gradient a layout's background moments are certified for by default -- several times
+#: T/m: the largest background gradient a layout's background vectors are certified for by default -- several times
 #: the strongest catalogued magnet's own gradient over its anchored volume (the Swoop's 1.4 mT/m at 8 cm)
 BACKGROUND_AMPLITUDE = 5e-3
-def moment_width(floor_target, q_max, *, budget=None, kappa=None):
-    """The quantisation step of a moment component, in the moment's units, for a moment entered into a measurement
-    as the phase ``q . m`` with ``|q| <= q_max`` (``q_max`` in the units conjugate to the moment's):
+
+
+def read_manifest(path):
+    """The manifest of the layout in the directory ``path``; a manifest of another format is refused by name, and one
+    written as ``shape_moments/3`` names :func:`restamp_layout`, which rewrites it."""
+    with open(os.path.join(path, MANIFEST)) as f:
+        manifest = json.load(f)
+    _check_format(manifest, path)
+    return manifest
+
+
+def _check_format(manifest, where):
+    if manifest.get("format") == RESTAMPABLE_FORMAT:
+        raise ValueError(f"{where} is a {RESTAMPABLE_FORMAT} layout: restamp_layout(path) rewrites its manifest as {FORMAT}")
+    if manifest.get("format") != FORMAT:
+        raise ValueError(f"{where} is not a {FORMAT} layout ({manifest.get('format')!r})")
+
+
+#: the layout's format before dmipy-sim#738: the same columns, each shape's packed vector recorded under ``moment``
+RESTAMPABLE_FORMAT = "shape_moments/3"
+
+
+def restamp_layout(path):
+    """Rewrite, in place, the manifest of a ``shape_moments/3`` layout as ``time_segments/1``: the format string and
+    each shape's ``moment`` record as its ``vector``, nothing else (the columns are the same bytes). A layout already
+    in this format is returned unchanged; any other format is refused. The rewrite is recorded under ``restamped``
+    with the code that made it. Returns the manifest."""
+    with open(os.path.join(path, MANIFEST)) as f:
+        manifest = json.load(f)
+    if manifest.get("format") == FORMAT:
+        return manifest
+    if manifest.get("format") != RESTAMPABLE_FORMAT:
+        raise ValueError(f"{path} is a {manifest.get('format')!r} layout; restamp_layout rewrites {RESTAMPABLE_FORMAT} only")
+    manifest = dict(manifest, format=FORMAT,
+                    shapes={n: {("vector" if k == "moment" else k): v for k, v in rec.items()}
+                            for n, rec in manifest["shapes"].items()},
+                    restamped=list(manifest.get("restamped") or []) + [dict(
+                        from_format=RESTAMPABLE_FORMAT, to_format=FORMAT, code=_code(),
+                        created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))])
+    tmp = os.path.join(path, MANIFEST + ".restamp")
+    with open(tmp, "w") as f:
+        json.dump(manifest, f, indent=1)
+    os.replace(tmp, os.path.join(path, MANIFEST))
+    return manifest
+
+
+def vector_width(floor_target, q_max, *, budget=None, kappa=None):
+    """The quantisation step of a vector component, in the vector's units, for a vector entered into a measurement
+    as the phase ``q . m`` with ``|q| <= q_max`` (``q_max`` in the units conjugate to the vector's):
     ``sqrt(12) (eps / sqrt 2) / q_max``, ``eps`` :func:`~dmipy_sim.replay.compression.container_eps` at
     ``floor_target``. A step ``delta`` per component is a random phase of variance ``q^2 delta^2 / 12`` along any
-    direction; the moment shares the budget with the bands it is contracted from, so each holds ``eps / sqrt 2``."""
+    direction; the vector shares the budget with the bands it is contracted from, so each holds ``eps / sqrt 2``."""
     from .compression import BUDGET, KAPPA, container_eps
     eps = container_eps(floor_target, budget=BUDGET if budget is None else budget, kappa=KAPPA if kappa is None else kappa)
     return float(np.sqrt(12.0) * eps / np.sqrt(2.0) / float(q_max))
 
-
-def moment_code(a_max, step, *, b_min=3, b_max=16):
-    """``(bits, scale)`` of a moment whose components reach ``a_max`` (3,) at the quantisation ``step``: per component
+def vector_code(a_max, step, *, b_min=3, b_max=16):
+    """``(bits, scale)`` of a vector whose components reach ``a_max`` (3,) at the quantisation ``step``: per component
     ``bits = ceil(log2(a / step)) + 1`` clipped to ``[b_min, b_max]`` and the scale ``a / (2^(bits-1) - 1)``
     (``step`` where a component is all zero)."""
     a = np.asarray(a_max, np.float64)
@@ -97,21 +146,21 @@ def moment_code(a_max, step, *, b_min=3, b_max=16):
     return bits, scale
 
 
-def moment_fields(bits):
-    """``(((offset, bits), ...), word)``: each component's bit field and the word width (32 or 64) a walker's moment
+def vector_fields(bits):
+    """``(((offset, bits), ...), word)``: each component's bit field and the word width (32 or 64) a walker's vector
     is stored in -- the three fields side by side from bit 0 of one uint32 when their widths sum to at most 32, else
     the first two from bit 0 and the third from bit 32 of one uint64 (no field crosses the word's halves; each holds
     at most 16 bits)."""
     b = [int(x) for x in bits]
     if max(b) > 16:
-        raise ValueError(f"a moment component holds at most 16 bits, got {b}")
+        raise ValueError(f"a vector component holds at most 16 bits, got {b}")
     if sum(b) <= 32:
         return ((0, b[0]), (b[0], b[1]), (b[0] + b[1], b[2])), 32
     return ((0, b[0]), (b[0], b[1]), (32, b[2])), 64
 
 
-def pack_moments(m, scale, fields, word):
-    """The moments ``m`` ``(..., 3)`` as one word per walker: component ``c`` rounded to ``scale[c]`` steps, two's
+def pack_vectors(m, scale, fields, word):
+    """The vectors ``m`` ``(..., 3)`` as one word per walker: component ``c`` rounded to ``scale[c]`` steps, two's
     complement in its field ``(offset, bits)`` of a uint32 (``word`` 32) or a uint64 (``word`` 64)."""
     m = np.asarray(m, np.float64); scale = np.asarray(scale, np.float64)
     out = np.zeros(m.shape[:-1], np.uint64)
@@ -130,7 +179,7 @@ def _signed_words(words, word):
 
 
 def _components(words, scale, fields):
-    """The three components of packed moments, on any array library, from :func:`_signed_words`: each field shifted to
+    """The three components of packed vectors, on any array library, from :func:`_signed_words`: each field shifted to
     the top of its int32 and arithmetically back down (the shifts constant per shape), times its scale; a field at
     offset 32 or more sits in the high half of a 64-bit word."""
     wide = any(off >= 32 for off, _ in fields)
@@ -141,8 +190,8 @@ def _components(words, scale, fields):
     return tuple(out)
 
 
-def unpack_moments(words, scale, fields, word):
-    """``(..., 3)`` float32: the moments :func:`pack_moments` stored."""
+def unpack_vectors(words, scale, fields, word):
+    """``(..., 3)`` float32: the vectors :func:`pack_vectors` stored."""
     signed = _signed_words(words, word)
     sc = np.asarray(scale, np.float32)
     return np.stack([c.astype(np.float32) for c in _components(signed, sc, fields)], axis=-1)
@@ -173,13 +222,13 @@ def _profile(seq):
 
 
 def _axis_sequence(seq, s):
-    """The shape at unit amplitude along x, y and z as one three-row sequence: its phases are a walker's moment."""
+    """The shape at unit amplitude along x, y and z as one three-row sequence: its phases are a walker's vector."""
     from ..acquisition.waveforms import tile_waveform
     return tile_waveform(seq, 3).with_gradient(np.stack([s[:, None] * e[None, :] for e in _AXES]))
 
 
 def _contractions(shapes, prof):
-    """The sequences whose band contraction gives every shape's moment, as few as the shapes allow: shapes on one
+    """The sequences whose band contraction gives every shape's vector, as few as the shapes allow: shapes on one
     grid with one RF schedule and readout share a sequence (their rows side by side, one contraction per row
     group); ``[(sequence, [(name, first_row), ...]), ...]``."""
     from ..acquisition.waveforms import tile_waveform
@@ -198,7 +247,7 @@ def _contractions(shapes, prof):
 
 def _plan(col, chunk_rows):
     """The tiling, from the index alone: per row group of the pass, its voxel runs ``(voxel, start, n, tile0,
-    tile1)`` -- the run's rows within the group, and the first tile of each half -- and every tile's segment."""
+    tile1)`` -- the run's rows within the group, and the first tile of each half -- and every tile's voxel half."""
     groups, tiles, t = [], [], 0
     for rows in col.row_groups(chunk_rows):
         runs, off = [], 0
@@ -222,7 +271,7 @@ def _background_sequence(seq, amplitude=1.0):
     """The magnet's own gradient at ``amplitude`` along x, y and z as a three-row sequence on ``seq``'s grid, RF
     schedule and readout: a constant gradient through the pulses and the dead times
     (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` on a silent waveform),
-    so that its phases are a walker's **background moment** ``gamma int e(t) r(t) dt`` with ``e`` the sequence's
+    so that its phases are a walker's **background vector** ``gamma int e(t) r(t) dt`` with ``e`` the sequence's
     :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, zero while
     stored) -- what a constant ``g0`` adds to the phase as ``g0 . n``."""
     from ..acquisition.waveforms import tile_waveform
@@ -232,7 +281,7 @@ def _background_sequence(seq, amplitude=1.0):
 
 def _background_plan(col, shapes, contractions, K, amplitude):
     """The background section of a manifest: per sequence group ``g<i>`` (:func:`_contractions`) its shapes and its
-    column, and the truncation error of the background moments for a magnet gradient of ``amplitude`` T/m at the
+    column, and the truncation error of the background vectors for a magnet gradient of ``amplitude`` T/m at the
     fewest bands that carry it (:meth:`~dmipy_sim.replay.columnar.ColumnarPack.bands_for` at the default tolerance, an
     upper bound at the layout's own), refused when the layout's bands are fewer."""
     groups, err = {}, 0.0
@@ -247,7 +296,7 @@ def _background_plan(col, shapes, contractions, K, amplitude):
 
 
 def _background_rows(pk, shapes, contractions):
-    """``{bg_g<i>: (n, 3)}``: every row's background moment per sequence group, the band contraction of
+    """``{bg_g<i>: (n, 3)}``: every row's background vector per sequence group, the band contraction of
     :func:`_background_sequence` on this view."""
     from .replay import _band_phase
     out = {}
@@ -277,16 +326,13 @@ def _place(runs, cols, rows):
 
 
 def stamp_background(path, source, shapes, *, background_amplitude=BACKGROUND_AMPLITUDE, workers=8, progress=None):
-    """Add the background moments (:func:`write_shape_moments` with ``background=True``) to the layout at ``path``
+    """Add the background vectors (:func:`write_time_segment_layout` with ``background=True``) to the layout at ``path``
     in one pass over its source, every other column untouched: ``shapes`` must be the layout's own (same names,
     profiles and grids; refused otherwise), the source the one its manifest names by sha256, and the tiling the one
     its rows were placed by. Records each shape's RF schedule in the manifest beside the background section.
     Returns the manifest."""
     from .columnar import ColumnarPack
-    with open(os.path.join(path, MANIFEST)) as f:
-        manifest = json.load(f)
-    if manifest.get("format") != FORMAT:
-        raise ValueError(f"{path} is not a {FORMAT} layout")
+    manifest = read_manifest(path)
     if set(shapes) != set(manifest["shapes"]):
         raise ValueError(f"the layout holds the shapes {sorted(manifest['shapes'])}; give exactly those, got {sorted(shapes)}")
     prof = {name: _profile(seq) for name, seq in shapes.items()}
@@ -338,9 +384,9 @@ def stamp_background(path, source, shapes, *, background_amplitude=BACKGROUND_AM
     return manifest
 
 
-def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None, tiers=False,
+def write_time_segment_layout(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_000, workers=8, progress=None, tiers=False,
                         background=False, background_amplitude=BACKGROUND_AMPLITUDE):
-    """The shape-moment layout of the columnar pack at ``source`` (a
+    """The time-segment layout of the columnar pack at ``source`` (a
     :class:`~dmipy_sim.replay.columnar.ColumnarPack`, a directory or ``hf://owner/name/prefix``) for ``shapes``,
     a ``{name: sequence}`` of one-row single-direction sequences, written to ``out_dir`` in one pass over the rows
     at the fewest band groups whose truncation error stays under ``tol`` times the pack's median floor on every
@@ -348,9 +394,9 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     build a shape at the largest amplitude it will be replayed at). ``progress(rows, bytes, seconds)`` is called
     after every row group. With ``tiers`` the walkers' primitives at the shapes' common echo time are stored too (the
     field modes and the contact tier read in the same pass). With ``background`` each sequence group's **background
-    moment** is stored too (:func:`_background_sequence`: the walker's moment against the group's effective gate
+    vector** is stored too (:func:`_background_sequence`: the walker's vector against the group's effective gate
     alone, what a magnet's own constant gradient encodes), certified to ``background_amplitude`` (T/m). Every shape's
-    RF schedule is recorded, so :meth:`ShapeMoments.sequence` rebuilds it. Returns the manifest."""
+    RF schedule is recorded, so :meth:`TimeSegmentLayout.sequence` rebuilds it. Returns the manifest."""
     from .columnar import ColumnarPack
     from .replay import _band_phase
     from .study import Acquisition
@@ -366,7 +412,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     groups, tiles = _plan(col, chunk_rows)
     n_tiles = len(tiles); n_rows = col.n_rows; n_vox = int(np.prod(col.grid.shape))
     os.makedirs(out_dir, exist_ok=True)
-    floor_target, b_max = _moment_declaration(col)
+    floor_target, b_max = _vector_declaration(col)
     m = {name: np.lib.format.open_memmap(os.path.join(out_dir, f"m_{name}.f32.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE, 3))
          for name in shapes}
     w = np.lib.format.open_memmap(os.path.join(out_dir, "w.npy"), mode="w+", dtype=np.float32, shape=(n_tiles, TILE))
@@ -403,7 +449,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
             P = pk._prepare(a, tissue=None, scanner=None, orientation=None, compartment=None)
             if np.any(P["voxel"] != 1.0):
                 raise ValueError(f"shapes {[n_ for n_, _ in names]} leave an amplitude per measurement (an unbalanced "
-                                 "encoding); a moment carries a phase only")
+                                 "encoding); a vector carries a phase only")
             ph = _band_phase(P)                                     # (n, 3 per shape): the one band contraction
             for name, first in names:
                 phi[name] = ph[:, first:first + 3]
@@ -454,7 +500,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         raise RuntimeError(f"the pass read {row} rows of {n_rows}")
     for a in [w] + list(tier_cols.values()) + list(bg_cols.values()):
         a.flush()
-    moment = {name: _pack_column(m[name], os.path.join(out_dir, f"m_{name}.npy"), floor_target,
+    vector = {name: _pack_column(m[name], os.path.join(out_dir, f"m_{name}.npy"), floor_target,
                                  float(np.sqrt(b_max / b_unit[name])), b_max) for name in shapes}
     del m
     for name in shapes:
@@ -472,7 +518,7 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
         n_voxels=int(n_vox), columns=dict(w="w.npy", tiles="tiles.npy", **{name: f"m_{name}.npy" for name in shapes}),
         shapes={name: dict(profile=prof[name][0].tolist(), dt=float(shapes[name].dt), n_t=int(len(prof[name][0])),
                            rf=shapes[name].rf.to_dicts(),
-                           b_unit=b_unit[name], amplitude_built=prof[name][2], moment=moment[name], pathway=pathway[name], family=getattr(shapes[name], "family", None),
+                           b_unit=b_unit[name], amplitude_built=prof[name][2], vector=vector[name], pathway=pathway[name], family=getattr(shapes[name], "family", None),
                            build_spec=_jsonable(shapes[name].build_spec),
                            encoding={k: _jsonable(getattr(shapes[name].encoding, k, None))
                                      for k in ("delta", "Delta", "TE") if shapes[name].encoding is not None})
@@ -485,33 +531,33 @@ def write_shape_moments(source, shapes, out_dir, *, tol=0.25, chunk_rows=2_000_0
     return manifest
 
 
-def _moment_declaration(col):
-    """``(floor_target, b_max)`` a layout's moments are derived from: the floor the pack was ordered at
+def _vector_declaration(col):
+    """``(floor_target, b_max)`` a layout's vectors are derived from: the floor the pack was ordered at
     (``fidelity.target_floor``, else its median per-voxel floor) and the largest b-value (s/m^2) of the acquisition
     envelope it declares (``replay_envelope.acquisition.b_max``), refused when it declares none."""
     fid = col.meta.get("fidelity") or {}
     floor_target = float(fid["target_floor"]) if fid.get("target_floor") is not None else float(col.floor)
     b_max = ((col.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("b_max")
     if b_max is None:
-        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max): a moment's width "
+        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max): a vector's width "
                          "is derived from the largest q the pack is certified for")
     return floor_target, float(b_max)
 
 
 def _pack_column(m, path, floor_target, q_max, b_max, chunk_tiles=65_536):
-    """The float moments ``m`` ``(n_tiles, TILE, 3)`` packed into ``path`` ``(n_tiles, TILE)`` at the width
-    :func:`moment_width` derives for ``q_max`` (the largest amplitude the moment is multiplied by, the shape's at
+    """The float vectors ``m`` ``(n_tiles, TILE, 3)`` packed into ``path`` ``(n_tiles, TILE)`` at the width
+    :func:`vector_width` derives for ``q_max`` (the largest amplitude the vector is multiplied by, the shape's at
     ``b_max``) and ``floor_target``; returns the header ``{"q_max", "b_max", "floor_target", "step", "bits", "scale",
     "field"}``."""
     a = np.zeros(3)
     for s in range(0, m.shape[0], chunk_tiles):
         a = np.maximum(a, np.abs(np.asarray(m[s:s + chunk_tiles], np.float64)).max(axis=(0, 1)))
-    step = moment_width(floor_target, q_max)
-    bits, scale = moment_code(a, step)
-    fields, word = moment_fields(bits)
+    step = vector_width(floor_target, q_max)
+    bits, scale = vector_code(a, step)
+    fields, word = vector_fields(bits)
     out = np.lib.format.open_memmap(path, mode="w+", dtype=np.uint32 if word == 32 else np.uint64, shape=m.shape[:2])
     for s in range(0, m.shape[0], chunk_tiles):
-        out[s:s + chunk_tiles] = pack_moments(m[s:s + chunk_tiles], scale, fields, word)
+        out[s:s + chunk_tiles] = pack_vectors(m[s:s + chunk_tiles], scale, fields, word)
     out.flush()
     return dict(q_max=float(q_max), b_max=float(b_max), floor_target=float(floor_target), step=float(step),
                 bits=[int(b) for b in bits], scale=[float(x) for x in scale],
@@ -558,8 +604,8 @@ def _jsonable(x):
     return repr(x)
 
 
-class ShapeMoments:
-    """The shape-moment layout at ``path``, tiles memory-mapped from disk: ``manifest``, ``grid``, ``shapes`` (the
+class TimeSegmentLayout:
+    """The time-segment layout at ``path``, tiles memory-mapped from disk: ``manifest``, ``grid``, ``shapes`` (the
     names), and :meth:`image` -- a whole grid under any amplitudes and directions of one shape, on the device.
     Open a Hub layout with :meth:`open`."""
 
@@ -575,10 +621,7 @@ class ShapeMoments:
     def __init__(self, path):
         from ..phantom.grid import Grid
         self.path = path
-        with open(os.path.join(path, MANIFEST)) as f:
-            self.manifest = json.load(f)
-        if self.manifest.get("format") != FORMAT:
-            raise ValueError(f"{path} is not a {FORMAT} layout ({self.manifest.get('format')!r})")
+        self.manifest = read_manifest(path)
         self.grid = Grid.from_meta(self.manifest["source"]["grid"])
         self.n_rows = int(self.manifest["n_rows"]); self.n_tiles = int(self.manifest["n_tiles"]); self.tile = int(self.manifest["tile"])
         self.n_vox = int(np.prod(self.grid.shape))
@@ -594,17 +637,18 @@ class ShapeMoments:
     @staticmethod
     def open(uri, *, shapes=None, revision=None, workers=8):
         """The layout at ``uri``: a directory, or ``hf://owner/name/prefix`` fetched into the Hub cache (the
-        manifest, the shared tiles and the moments of ``shapes``, every shape when None) at ``revision``."""
+        manifest, the shared tiles and the vectors of ``shapes``, every shape when None) at ``revision``."""
         if not uri.startswith("hf://"):
-            return ShapeMoments(uri)
+            return TimeSegmentLayout(uri)
         from huggingface_hub import snapshot_download, hf_hub_download
         owner, name, prefix = uri[5:].split("/", 2); repo = f"{owner}/{name}"
         mf = hf_hub_download(repo, f"{prefix}/{MANIFEST}", repo_type="dataset", revision=revision)
         with open(mf) as f:
             manifest = json.load(f)
+        _check_format(manifest, uri)
         local = snapshot_download(repo, repo_type="dataset", revision=revision, max_workers=workers,
-                                  allow_patterns=[f"{prefix}/{f}" for f in ShapeMoments.files(manifest, shapes)])
-        return ShapeMoments(os.path.join(local, prefix))
+                                  allow_patterns=[f"{prefix}/{f}" for f in TimeSegmentLayout.files(manifest, shapes)])
+        return TimeSegmentLayout(os.path.join(local, prefix))
 
     @staticmethod
     def columns(manifest):
@@ -623,8 +667,8 @@ class ShapeMoments:
     @staticmethod
     def files(manifest, shapes=None):
         """The files a layout needs for ``shapes`` (every shape when None): the manifest, the shared columns, the
-        tier columns and the moments of those shapes."""
-        cols = ShapeMoments.columns(manifest)
+        tier columns and the vectors of those shapes."""
+        cols = TimeSegmentLayout.columns(manifest)
         keep = set(manifest["columns"]) - {"w", "tiles"} if shapes is None else set(shapes)
         return [MANIFEST] + [f for name, f in cols.items() if name in ("w", "tiles") or name not in manifest["columns"] or name in keep]
 
@@ -709,8 +753,8 @@ class ShapeMoments:
                     out.append(ph if q[0] == "phase" else ph * ph)
             return out
 
-        n_seg = 2 * self.n_vox + 1
-        acc = (_voxel_sums_torch if backend == "torch" else _voxel_sums_jax)(rows, len(names), w, tiles, n_seg, self.TILES)
+        n_halves = 2 * self.n_vox + 1
+        acc = (_voxel_sums_torch if backend == "torch" else _voxel_sums_jax)(rows, len(names), w, tiles, n_halves, self.TILES)
         num = acc[:, :2 * self.n_vox].reshape(len(names), self.n_vox, 2).sum(2)
         den = self.weights.sum(1)
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -815,27 +859,27 @@ class ShapeMoments:
         logw = -(float(grp["tau_t2"] or 0.0) * np.asarray(rt["invT2"], np.float64) + float(grp["tau_t1"] or 0.0) * np.asarray(rt["invT1"], np.float64))
         return (logw, float(rt["rho2_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))
 
-    def moments(self, shape):
-        """``(n_tiles, tile, 3)`` float32: the moment of every row under ``shape`` (0 on padding), decoded from its
+    def vectors(self, shape):
+        """``(n_tiles, tile, 3)`` float32: the vector of every row under ``shape`` (0 on padding), decoded from its
         packed words."""
-        scale, fields, word = self._moment_code(shape)
-        return unpack_moments(self._column(shape), scale, fields, word)
+        scale, fields, word = self._vector_code(shape)
+        return unpack_vectors(self._column(shape), scale, fields, word)
 
-    def _moment_code(self, shape):
-        """``(scale, fields, word)`` of ``shape``'s packed moments as the manifest records them: the per-component
+    def _vector_code(self, shape):
+        """``(scale, fields, word)`` of ``shape``'s packed vectors as the manifest records them: the per-component
         scale (float32, (3,)), the bit fields ``((offset, bits), ...)`` and the word width (32 or 64)."""
         if shape not in self.shapes:
             raise KeyError(f"no shape {shape!r} in this layout; it holds {self.shapes}")
-        rec = self.manifest["shapes"][shape]["moment"]
+        rec = self.manifest["shapes"][shape]["vector"]
         fields = tuple((int(o), int(b)) for o, b in zip(rec["offsets"], rec["bits"]))
         return np.asarray(rec["scale"], np.float32), fields, int(rec["word"])
 
     def _certified(self, shape, g):
-        """Refuse amplitudes above the largest one ``shape``'s moments are derived for (``moment.q_max``)."""
-        q_max = float(self.manifest["shapes"][shape]["moment"]["q_max"])
+        """Refuse amplitudes above the largest one ``shape``'s vectors are derived for (``vector.q_max``)."""
+        q_max = float(self.manifest["shapes"][shape]["vector"]["q_max"])
         if np.max(g, initial=0.0) > q_max * (1 + 1e-9):
-            b_max = float(self.manifest["shapes"][shape]["moment"]["b_max"])
-            raise ValueError(f"the shape {shape!r} is asked for {np.max(g):.4g} T/m and its moments are derived for at most "
+            b_max = float(self.manifest["shapes"][shape]["vector"]["b_max"])
+            raise ValueError(f"the shape {shape!r} is asked for {np.max(g):.4g} T/m and its vectors are derived for at most "
                              f"{q_max:.4g} T/m (b = {b_max:.4g} s/m^2, the pack's declared envelope)")
 
     def amplitude(self, shape, bvalues):
@@ -874,7 +918,7 @@ class ShapeMoments:
 
     def _padded(self, name):
         """The column ``name`` (a shape, ``"w"`` or ``"tiles"``) on the host, padded to whole chunks of ``TILES``
-        (padding rows weigh nothing and scatter into the dump segment); the preloaded copy when there is one. A
+        (padding rows weigh nothing and scatter into the dump slot); the preloaded copy when there is one. A
         field-direction column (``field_iso_<g>@<d>`` / ``field_aniso_<g>@<d>``) touches the bounded field-direction
         cache (:meth:`_touch_field_direction`) whether it is already held or built here."""
         fd = self._field_direction_of(name)
@@ -902,7 +946,7 @@ class ShapeMoments:
         else:
             words = self._column(name)
             a = np.zeros((n_pad, self.tile), words.dtype); a[:self.n_tiles] = words
-            a = _signed_words(a, self._moment_code(name)[2])
+            a = _signed_words(a, self._vector_code(name)[2])
         return a
 
     def _resident(self, shape, backend, device, resident, names=("w", "tiles")):
@@ -944,8 +988,8 @@ class ShapeMoments:
     def background_group(self, shape):
         """The sequence group whose background column ``shape`` reads (``g<i>``), refused for a layout without one."""
         if not self.background:
-            raise ValueError("this layout holds no background moments: a magnet's own gradient needs them "
-                             "(write_shape_moments(..., background=True), or stamp_background on this layout)")
+            raise ValueError("this layout holds no background vectors: a magnet's own gradient needs them "
+                             "(write_time_segment_layout(..., background=True), or stamp_background on this layout)")
         for g, grp in self.background["groups"].items():
             if shape in grp["shapes"]:
                 return g
@@ -972,10 +1016,10 @@ class ShapeMoments:
         """What ``scanner`` (a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits`) plays at every voxel with rows
         when the layout's grid sits in its bore as ``grid`` says (the layout's own grid, whose isocenter is the grid
         centre, when None; :meth:`~dmipy_sim.phantom.Grid.centred_at` moves it), for ``shape`` at ``bvalues`` along
-        ``directions``: :func:`~dmipy_sim.phantom.bore.delivered_moments` at :attr:`live_voxels`, for :meth:`image`'s
+        ``directions``: :func:`~dmipy_sim.phantom.bore.delivered_vectors` at :attr:`live_voxels`, for :meth:`image`'s
         ``delivered``. The term switches are those of :func:`~dmipy_sim.phantom.bore.delivered_gradient` and
         ``transmit``."""
-        from ..phantom.bore import delivered_moments
+        from ..phantom.bore import delivered_vectors
         grid = self.grid if grid is None else grid
         if tuple(grid.shape) != tuple(self.grid.shape):
             raise ValueError(f"the grid placed in the bore is the layout's own ({tuple(self.grid.shape)}), got {tuple(grid.shape)}")
@@ -983,7 +1027,7 @@ class ShapeMoments:
         u = self._directions(g, directions)
         live = self.live_voxels
         ijk = np.stack(np.unravel_index(live, tuple(self.grid.shape)), axis=1)
-        d = delivered_moments(scanner, grid, self.manifest["shapes"][shape]["profile"], g, u, voxels=ijk, to_scanner=to_scanner,
+        d = delivered_vectors(scanner, grid, self.manifest["shapes"][shape]["profile"], g, u, voxels=ijk, to_scanner=to_scanner,
                               nonlinearity=nonlinearity, background=background, concomitant=concomitant, transmit=transmit)
         return Delivered(shape=shape, voxels=live, amplitudes=g, directions=u, q=d.q, g0=d.g0, kappa=d.kappa)
 
@@ -1015,7 +1059,7 @@ class ShapeMoments:
 
         ``delivered`` (:meth:`delivery`, for this shape and these measurements) is what a machine plays at each voxel
         in place of the commanded gradient: each row's phase is ``q_v . m + g0_v . n`` with ``q_v`` the voxel's
-        delivered encoding vector, ``m`` the row's shape moment and ``n`` its background moment (the shape's sequence
+        delivered encoding vector, ``m`` the row's shape vector and ``n`` its background vector (the shape's sequence
         group's background column), and each voxel's signal is multiplied by its pathway amplitude at its transmit
         scale over the nominal one (:func:`~dmipy_sim.acquisition.epg.transmit_amplitude`)."""
         if backend not in ("jax", "torch"):
@@ -1025,9 +1069,9 @@ class ShapeMoments:
         g = self.amplitude(shape, bvalues)
         self._certified(shape, g)
         u = self._directions(g, directions)
-        code = self._moment_code(shape)
+        code = self._vector_code(shape)
         M = len(g); M_pad = -(-M // self.MEAS) * self.MEAS
-        n_seg = 2 * self.n_vox + 1
+        n_halves = 2 * self.n_vox + 1
         if backend == "torch" and device is None:
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1049,7 +1093,7 @@ class ShapeMoments:
             if bg:
                 G0[:len(live)] = delivered.g0
             tier = None if tm is None else (tier_cols, np.asarray(tm[0], np.float32), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]))
-            acc = (_sums_delivered_jax if backend == "jax" else _sums_delivered_torch)(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, self.TILES, device)
+            acc = (_sums_delivered_jax if backend == "jax" else _sums_delivered_torch)(m, code, w, tiles, slot, Q, nb, G0, tier, n_halves, self.TILES, device)
             if delivered.kappa is not None:
                 from ..acquisition.epg import transmit_amplitude
                 seq = self.sequence(shape)
@@ -1060,14 +1104,14 @@ class ShapeMoments:
             u_p = np.zeros((M_pad, 3), np.float32); u_p[:M] = u
             if tm is None:
                 m, w, tiles = self._resident(shape, backend, device, resident)
-                acc = (_sums_jax if backend == "jax" else _sums_torch)(m, code, w, tiles, g_p, u_p, n_seg, self.TILES)
+                acc = (_sums_jax if backend == "jax" else _sums_torch)(m, code, w, tiles, g_p, u_p, n_halves, self.TILES)
             else:
                 logw_pool, rho_D, a_iso, a_aniso, amp = tm
                 m, w, tiles, pool, contact, fiso, faniso = self._resident(shape, backend, device, resident, names=("w", "tiles") + tier_names)
                 logw_pool = np.asarray(logw_pool, np.float32)
                 acc = (_sums_jax_tiers if backend == "jax" else _sums_torch_tiers)(
                     m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, np.float32(rho_D), np.float32(a_iso),
-                    np.float32(a_aniso), np.float32(amp), n_seg, self.TILES)
+                    np.float32(a_aniso), np.float32(amp), n_halves, self.TILES)
         num = acc[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
         S = np.full((self.n_vox, M), np.nan); floor = np.full(self.n_vox, np.nan)
@@ -1094,16 +1138,16 @@ class ShapeMoments:
             amax = float(self.background["amplitude"]) if self.background else 0.0
             if float(np.abs(delivered.g0).max(initial=0.0)) > amax * (1 + 1e-9):
                 raise ValueError(f"the magnet's gradient reaches {np.linalg.norm(delivered.g0, axis=1).max():.3g} T/m and the "
-                                 f"layout's background moments are certified to {amax:g} T/m")
+                                 f"layout's background vectors are certified to {amax:g} T/m")
         return live
 
 
 @dataclass(frozen=True)
 class Delivered:
-    """:meth:`ShapeMoments.delivery`: what a machine plays at each of a layout's voxels with rows (``voxels``, flat
+    """:meth:`TimeSegmentLayout.delivery`: what a machine plays at each of a layout's voxels with rows (``voxels``, flat
     indices) for ``shape`` at ``amplitudes`` along ``directions``: the delivered encoding vectors ``q`` ``(n_voxels,
     n_meas, 3)``, the magnet's own gradient ``g0`` ``(n_voxels, 3)`` (None without one) and the transmit scale
-    ``kappa`` ``(n_voxels,)`` (None without one) (:class:`~dmipy_sim.phantom.bore.MomentDelivery`)."""
+    ``kappa`` ``(n_voxels,)`` (None without one) (:class:`~dmipy_sim.phantom.bore.VectorDelivery`)."""
     shape: str
     voxels: np.ndarray
     amplitudes: np.ndarray
@@ -1113,12 +1157,12 @@ class Delivered:
     kappa: np.ndarray = None
 
 
-def _sums_jax(m, code, w, tiles, g_p, u_p, n_seg, chunk):
-    """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX: the compiled chunk kernel over the tiles, the packed
-    moments ``m`` decoded in it at ``code`` (``(scale, fields, word)``)."""
+def _sums_jax(m, code, w, tiles, g_p, u_p, n_halves, chunk):
+    """The per-voxel-half sums ``(n_halves, M_pad)`` complex128 on JAX: the compiled chunk kernel over the tiles, the packed
+    vectors ``m`` decoded in it at ``code`` (``(scale, fields, word)``)."""
     import jax.numpy as jnp
     scale, fields = code[0], code[1]
-    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled(n_seg, fields)
+    acc = jnp.zeros((n_halves, g_p.shape[0]), jnp.complex128); kernel = _compiled(n_halves, fields)
     g_d, u_d, sc = jnp.asarray(g_p), jnp.asarray(u_p), jnp.asarray(scale)
     for i in range(0, m.shape[0], chunk):
         acc = kernel(m[i:i + chunk], sc, w[i:i + chunk], tiles[i:i + chunk], g_d, u_d, acc)
@@ -1126,14 +1170,14 @@ def _sums_jax(m, code, w, tiles, g_p, u_p, n_seg, chunk):
 
 
 def _shape_phase(m, scale, fields, g, u):
-    """``g (u . m)`` ``(chunk, tile, M_pad)`` of packed moments on any array library: the components decoded
+    """``g (u . m)`` ``(chunk, tile, M_pad)`` of packed vectors on any array library: the components decoded
     (:func:`_components`) and the phase written out as three products (a float32 matmul on CUDA is TF32)."""
     m0, m1, m2 = _components(m, scale, fields)
     return g[None, None, :] * (m0[:, :, None] * u[None, None, :, 0] + m1[:, :, None] * u[None, None, :, 1] + m2[:, :, None] * u[None, None, :, 2])
 
 
 def _tile_sums_torch(mc, sc, fields, wc, g, u):
-    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the phase of the packed moments
+    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the phase of the packed vectors
     (:func:`_shape_phase`), ``w exp(i ph)`` in complex64, the reduce over the tile's rows."""
     import torch
     ph = _shape_phase(mc, sc, fields, g, u)
@@ -1156,7 +1200,7 @@ def _torch_kernel():
     return _TORCH_KERNEL["fn"]
 
 
-def _sums_torch(m, code, w, tiles, g_p, u_p, n_seg, chunk):
+def _sums_torch(m, code, w, tiles, g_p, u_p, n_halves, chunk):
     """The same sums on torch: the tile sums of every chunk (:func:`_tile_sums_torch`, compiled when possible)
     ``index_add_``-ed into a complex128 accumulator (deterministic under
     ``torch.use_deterministic_algorithms(True)``)."""
@@ -1164,7 +1208,7 @@ def _sums_torch(m, code, w, tiles, g_p, u_p, n_seg, chunk):
     dev = m.device
     g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev)
     sc = torch.as_tensor(code[0], device=dev); fields = code[1]
-    acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
+    acc = torch.zeros((n_halves, g_p.shape[0]), dtype=torch.complex128, device=dev)
     fn = _torch_kernel()
     with torch.no_grad():
         for i in range(0, m.shape[0], chunk):
@@ -1177,12 +1221,12 @@ def _sums_torch(m, code, w, tiles, g_p, u_p, n_seg, chunk):
     return acc.cpu().numpy()
 
 
-def _voxel_sums_torch(rows, n_q, w, tiles, n_seg, chunk):
-    """The weighted per-segment sums ``(n_q, n_seg)`` float64 on torch of the ``n_q`` per-row quantities ``rows(sl,
+def _voxel_sums_torch(rows, n_q, w, tiles, n_halves, chunk):
+    """The weighted per-voxel-half sums ``(n_q, n_halves)`` float64 on torch of the ``n_q`` per-row quantities ``rows(sl,
     torch)`` gives for a chunk of tiles: each times the walk's weight, summed over the tile's rows, ``index_add_``-ed
-    into the segments."""
+    into the voxel halves."""
     import torch
-    acc = torch.zeros((n_q, n_seg), dtype=torch.float64, device=w.device)
+    acc = torch.zeros((n_q, n_halves), dtype=torch.float64, device=w.device)
     with torch.no_grad():
         for i in range(0, w.shape[0], chunk):
             sl = slice(i, i + chunk)
@@ -1191,23 +1235,23 @@ def _voxel_sums_torch(rows, n_q, w, tiles, n_seg, chunk):
     return acc.cpu().numpy()
 
 
-def _voxel_sums_jax(rows, n_q, w, tiles, n_seg, chunk):
-    """:func:`_voxel_sums_torch` on JAX (``segment_sum`` into the segments)."""
+def _voxel_sums_jax(rows, n_q, w, tiles, n_halves, chunk):
+    """:func:`_voxel_sums_torch` on JAX (``segment_sum`` into the voxel halves)."""
     import jax
     import jax.numpy as jnp
-    acc = jnp.zeros((n_seg, n_q), jnp.float64)
+    acc = jnp.zeros((n_halves, n_q), jnp.float64)
     for i in range(0, w.shape[0], chunk):
         sl = slice(i, i + chunk)
         ts = jnp.stack([(q * w[sl]).sum(1) for q in rows(sl, jnp)], axis=1).astype(jnp.float64)
-        acc = acc + jax.ops.segment_sum(ts, tiles[sl], num_segments=n_seg)
+        acc = acc + jax.ops.segment_sum(ts, tiles[sl], num_segments=n_halves)
     return np.asarray(acc).T
 
 
-def _sums_jax_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
+def _sums_jax_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_halves, chunk):
     """:func:`_sums_jax` with the tiers: each row's weight ``w amp exp(logw_pool[pool] + rho_D contact)`` and its
     phase offset ``a_iso field_iso + a_aniso field_aniso`` (:meth:`Primitives.signals` on the device)."""
     import jax.numpy as jnp
-    acc = jnp.zeros((n_seg, g_p.shape[0]), jnp.complex128); kernel = _compiled_tiers(n_seg, code[1])
+    acc = jnp.zeros((n_halves, g_p.shape[0]), jnp.complex128); kernel = _compiled_tiers(n_halves, code[1])
     g_d, u_d = jnp.asarray(g_p), jnp.asarray(u_p); lw = jnp.asarray(logw_pool); scale = jnp.asarray(code[0])
     sc = tuple(jnp.float32(x) for x in (rho_D, a_iso, a_aniso, amp))
     for i in range(0, m.shape[0], chunk):
@@ -1216,13 +1260,13 @@ def _sums_jax_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, lo
     return np.asarray(acc)
 
 
-def _sums_torch_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_seg, chunk):
+def _sums_torch_tiers(m, code, w, tiles, pool, contact, fiso, faniso, g_p, u_p, logw_pool, rho_D, a_iso, a_aniso, amp, n_halves, chunk):
     """:func:`_sums_torch` with the tiers (eager: the weight and the phase offset per row, then the chunk kernel)."""
     import torch
     dev = m.device
     g = torch.as_tensor(g_p, device=dev); u = torch.as_tensor(u_p, device=dev); lw = torch.as_tensor(logw_pool, device=dev)
     sc = torch.as_tensor(code[0], device=dev); fields = code[1]
-    acc = torch.zeros((n_seg, g_p.shape[0]), dtype=torch.complex128, device=dev)
+    acc = torch.zeros((n_halves, g_p.shape[0]), dtype=torch.complex128, device=dev)
     with torch.no_grad():
         for i in range(0, m.shape[0], chunk):
             sl = slice(i, i + chunk)
@@ -1243,11 +1287,11 @@ def _tile_sums_torch_offset(mc, sc, fields, wc, off, g, u):
 _KERNELS = {}
 
 
-def _compiled_tiers(n_seg, fields):
+def _compiled_tiers(n_halves, fields):
     """The chunk kernel with the tiers: the per-row weight and phase offset folded into the fused reduction."""
     import jax
     import jax.numpy as jnp
-    key = ("tiers", n_seg, fields)
+    key = ("tiers", n_halves, fields)
     if key not in _KERNELS:
         @jax.jit
         def kernel(m, scale, w, tiles, pool, contact, fiso, faniso, g, u, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
@@ -1255,44 +1299,44 @@ def _compiled_tiers(n_seg, fields):
             ph = ph + (a_iso * fiso + a_aniso * faniso)[:, :, None]
             wf = w * amp * jnp.exp(logw_pool[pool.astype(jnp.int32)] + rho_D * contact)
             E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
-            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
+            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_halves)
         _KERNELS[key] = kernel
     return _KERNELS[key]
 
 
-def _compiled(n_seg, fields):
-    """The chunk kernel for ``n_seg`` segments and moments packed in the bit ``fields`` ``((offset, bits), ...)``:
-    ``exp(i g (u . m)) w`` summed over each tile's rows (a fused reduction), the tile sums scattered into their segments. Each row's word is
+def _compiled(n_halves, fields):
+    """The chunk kernel for ``n_halves`` voxel halves and vectors packed in the bit ``fields`` ``((offset, bits), ...)``:
+    ``exp(i g (u . m)) w`` summed over each tile's rows (a fused reduction), the tile sums scattered into their voxel halves. Each row's word is
     decoded in the kernel (one load, shifts and a scale per component); the three products are written out: a float32
     matmul on CUDA is TF32 and moves a 30 rad phase by 0.03. The tile sums and the accumulator are complex128; the
     cast costs nothing measurable and the sums are then exact to the float32 phases."""
     import jax
     import jax.numpy as jnp
-    key = ("plain", n_seg, fields)
+    key = ("plain", n_halves, fields)
     if key not in _KERNELS:
         @jax.jit
         def kernel(m, scale, w, tiles, g, u, acc):
             ph = _shape_phase(m, scale, fields, g, u)
             E = (jnp.exp(1j * ph) * w[:, :, None]).astype(jnp.complex128)
-            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
+            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_halves)
         _KERNELS[key] = kernel
     return _KERNELS[key]
 
 
 def _delivered_phase(m, scale, fields, q):
-    """``q_v . m`` ``(chunk, tile, M_pad)`` of packed moments against each tile's delivered vectors ``q`` ``(chunk,
+    """``q_v . m`` ``(chunk, tile, M_pad)`` of packed vectors against each tile's delivered vectors ``q`` ``(chunk,
     M_pad, 3)``, on any array library, the three products written out."""
     m0, m1, m2 = _components(m, scale, fields)
     return m0[:, :, None] * q[:, None, :, 0] + m1[:, :, None] * q[:, None, :, 1] + m2[:, :, None] * q[:, None, :, 2]
 
 
-def _sums_delivered_jax(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
-    """The per-segment sums ``(n_seg, M_pad)`` complex128 on JAX for a delivered acquisition: each tile's voxel's row of
-    ``Q`` (``slot``) dotted with the rows' shape moments, the background moments ``nb`` dotted with the voxel's ``G0``
+def _sums_delivered_jax(m, code, w, tiles, slot, Q, nb, G0, tier, n_halves, chunk, device=None):
+    """The per-voxel-half sums ``(n_halves, M_pad)`` complex128 on JAX for a delivered acquisition: each tile's voxel's row of
+    ``Q`` (``slot``) dotted with the rows' shape vectors, the background vectors ``nb`` dotted with the voxel's ``G0``
     and, with ``tier``, the tiers' weights and field phase, as :func:`_compiled_delivered` fuses them."""
     import jax.numpy as jnp
-    acc = jnp.zeros((n_seg, Q.shape[1]), jnp.complex128)
-    kernel = _compiled_delivered(n_seg, tier is not None, nb is not None, code[1])
+    acc = jnp.zeros((n_halves, Q.shape[1]), jnp.complex128)
+    kernel = _compiled_delivered(n_halves, tier is not None, nb is not None, code[1])
     Q_d, G0_d, scale = jnp.asarray(Q), jnp.asarray(G0), jnp.asarray(code[0])
     z = jnp.zeros(1, jnp.float32)
     if tier is not None:
@@ -1306,12 +1350,12 @@ def _sums_delivered_jax(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, 
     return np.asarray(acc)
 
 
-def _compiled_delivered(n_seg, tiers, background, fields):
+def _compiled_delivered(n_halves, tiers, background, fields):
     """The chunk kernel of a delivered acquisition: the voxel's delivered vector gathered per tile, the phase written
     out as three products (no matmul: TF32 on CUDA), the background and the tiers folded in when present."""
     import jax
     import jax.numpy as jnp
-    key = ("delivered", n_seg, bool(tiers), bool(background), fields)
+    key = ("delivered", n_halves, bool(tiers), bool(background), fields)
     if key not in _KERNELS:
         @jax.jit
         def kernel(m, scale, w, tiles, slot, Q, nb, G0, pool, contact, fiso, faniso, logw_pool, rho_D, a_iso, a_aniso, amp, acc):
@@ -1326,19 +1370,19 @@ def _compiled_delivered(n_seg, tiers, background, fields):
             else:
                 wf = w
             E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
-            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_seg)
+            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_halves)
         _KERNELS[key] = kernel
     return _KERNELS[key]
 
 
-def _sums_delivered_torch(m, code, w, tiles, slot, Q, nb, G0, tier, n_seg, chunk, device=None):
+def _sums_delivered_torch(m, code, w, tiles, slot, Q, nb, G0, tier, n_halves, chunk, device=None):
     """:func:`_sums_delivered_jax` on torch (eager): per chunk the gathered delivered vectors, the phase with its
-    offsets, ``w exp(i ph)`` in complex64 summed over each tile's rows, ``index_add_``-ed into the segments."""
+    offsets, ``w exp(i ph)`` in complex64 summed over each tile's rows, ``index_add_``-ed into the voxel halves."""
     import torch
     dev = m.device
     Q_d = torch.as_tensor(Q, device=dev); G0_d = torch.as_tensor(G0, device=dev)
     scale = torch.as_tensor(code[0], device=dev); fields = code[1]
-    acc = torch.zeros((n_seg, Q.shape[1]), dtype=torch.complex128, device=dev)
+    acc = torch.zeros((n_halves, Q.shape[1]), dtype=torch.complex128, device=dev)
     if tier is not None:
         (pool, contact, fiso, faniso), lw, rho_D, a_iso, a_aniso, amp = tier
         lw = torch.as_tensor(lw, device=dev)

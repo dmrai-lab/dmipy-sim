@@ -1,7 +1,7 @@
 """The canonical pores as a reference family, run through the reference-pack protocol (#482, #480).
 
 Three shapes -- a cylinder, a sphere and a pair of parallel plates -- at every diameter from 0.1 to 20 um in
-steps of 0.1 um, 600 packs in all, each walked to 100 ms at D = 2e-9 m^2/s and stored as one 100 ms segment at
+steps of 0.1 um, 600 packs in all, each walked to 100 ms at D = 2e-9 m^2/s and stored as one 100 ms window at
 K = 256 bands with the contact and occupancy channels, published to ``SubstrateCommons/canonical-pores``. The
 reference is the closed form these shapes have and no tissue substrate does: the eigenmode (matrix) solution of
 the Bloch-Torrey equation for a reflecting planar, cylindrical or spherical pore under a generalised gradient
@@ -38,8 +38,8 @@ LICENCE = "CC-BY-4.0"
 CITATION = "Fick RHJ (2026), the canonical pores family of replay packs, SubstrateCommons"
 
 D0 = 2e-9           #: m^2/s, the walk's diffusivity, the same for all 600
-T = 0.1             #: s, the storage window: one segment per pack
-K_BANDS = 256       #: bands per 100 ms segment
+T = 0.1             #: s, the storage window: one window per pack
+K_BANDS = 256       #: bands per 100 ms window
 SIGMA = 5e-3        #: the floor every pack of this family was built to (`build_to_floor`'s sigma_star)
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 4000

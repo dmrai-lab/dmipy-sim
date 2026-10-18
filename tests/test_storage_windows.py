@@ -1,4 +1,4 @@
-"""A pack stores its walk in segments of one duration (RPK.md 4.3), and a replay across them is the sum of the windows'
+"""A pack stores its walk in windows of one duration (RPK.md 4.3), and a replay across them is the sum of the windows'
 contractions: a walk stored in two windows replays as the same walk stored in one, on every tier and every scalar
 route, to the containers' rounding; a window is a pack of its own; a prefix of whole windows is a range of the
 file; a partial prefix re-encodes the decoded windows; the builder refuses a walk that is not a whole number of
@@ -12,7 +12,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
-from dmipy_sim.replay.bank import SEGMENT_T, combine_segment_fidelity, segment_plan
+from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity, window_plan
 from dmipy_sim.replay.study import walker_primitives
 from dmipy_sim.spec.substrate import Susceptibility
 from dmipy_sim.spec.tissue import Tissue
@@ -44,8 +44,8 @@ def packs():
     m = _master()
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
     kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, scanner="connectom")
-    one = _float_pack(m, id="t/one", K=N_T - 2, blt_temporal_K=N_T - 2, susc_path_K=N_T, segment_T=(N_T - 1) * DT, **kw)
-    two = _float_pack(m, id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01, **kw)
+    one = _float_pack(m, id="t/one", K=N_T - 2, blt_temporal_K=N_T - 2, susc_path_K=N_T, window_T=(N_T - 1) * DT, **kw)
+    two = _float_pack(m, id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01, **kw)
     return m, one, two
 
 
@@ -55,8 +55,8 @@ def _seq(n_t=N_T, TE=None):
 
 def test_the_layout_and_the_table(packs):
     m, one, two = packs
-    assert one.n_segments == 1 and one.segments == dict(n=1, n_t=N_T, T=pytest.approx((N_T - 1) * DT), walks=[dict(first=0, last=0, seed=0)])
-    assert two.n_segments == 2 and two.segments["n_t"] == 21 and two.segments["T"] == pytest.approx(0.01)
+    assert one.n_windows == 1 and one.windows == dict(n=1, n_t=N_T, T=pytest.approx((N_T - 1) * DT), walks=[dict(first=0, last=0, seed=0)])
+    assert two.n_windows == 2 and two.windows["n_t"] == 21 and two.windows["T"] == pytest.approx(0.01)
     assert two.n_t == N_T and two.meta["compression"]["n_t"] == 21 and two.K == 19
     per_window = {k[3:] for k in two.arrays if k.startswith("s1/")}
     assert {"pos_x", "pos_y", "pos_z", "blt_bridge_dst", "blt_start", "blt_endpoint", "comp_rle_vals", "comp_rle_lens",
@@ -65,18 +65,18 @@ def test_the_layout_and_the_table(packs):
     assert shared == {"spin_weights", "susc_grid_iso_local", "susc_grid_iso_P"}
     assert "comp_static" not in two.arrays                                  # a walk that crosses anywhere stores runs everywhere
     f = two.fidelity
-    assert f["certified"] == "measured" and len(f["segments"]) == 2 and f["within_2x_floor"]
+    assert f["certified"] == "measured" and len(f["windows"]) == 2 and f["within_2x_floor"]
 
 
 def test_a_window_is_the_pack_a_fresh_walk_of_it_would_be(packs):
     m, one, two = packs
     from dmipy_sim.replay.bank import _window_master
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    w1 = _float_pack(_window_master(m, 20, 40), id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01,
+    w1 = _float_pack(_window_master(m, 20, 40), id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01,
                            license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16,
                            _occupancy_runs=True)
-    s1 = two.segment(1)
-    assert s1.n_t == 21 and s1.n_segments == 1 and s1.segments["T"] == pytest.approx(0.01)
+    s1 = two.window(1)
+    assert s1.n_t == 21 and s1.n_windows == 1 and s1.windows["T"] == pytest.approx(0.01)
     for k in w1.arrays:
         npt.assert_array_equal(s1.arrays[k], w1.arrays[k], err_msg=k)
     npt.assert_allclose(two.positions(), np.asarray(m["traj"]), atol=1e-11)
@@ -120,44 +120,86 @@ def test_a_short_acquisition_reads_the_first_window_alone(packs):
                                  for k, v in two.arrays.items()}, two.meta)
     a = blind.replay(short, tissue=TIS, scanner=3.0, complex_signal=True)
     assert np.all(np.isfinite(a))
-    npt.assert_array_equal(a, two.segment(0).replay(short, tissue=TIS, scanner=3.0, complex_signal=True))
+    npt.assert_array_equal(a, two.window(0).replay(short, tissue=TIS, scanner=3.0, complex_signal=True))
 
 
 def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_encodes(packs):
     m, one, two = packs
     pr = two.prefix(0.01)
-    assert pr.n_segments == 1 and pr.n_t == 21 and set(pr.arrays) == set(two.segment(0).arrays)
+    assert pr.n_windows == 1 and pr.n_t == 21 and set(pr.arrays) == set(two.window(0).arrays)
     for k in pr.arrays:
-        npt.assert_array_equal(pr.arrays[k], two.segment(0).arrays[k])
-    assert pr.fidelity["certified"] == "bounded" and pr.meta["provenance"]["truncated"]["segments_kept"] == 1
+        npt.assert_array_equal(pr.arrays[k], two.window(0).arrays[k])
+    assert pr.fidelity["certified"] == "bounded" and pr.meta["provenance"]["truncated"]["windows_kept"] == 1
     pp = two.prefix(0.015)
-    assert pp.n_segments == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"]
+    assert pp.n_windows == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"]
     seq = d.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
     npt.assert_allclose(pp.replay(seq, tissue=TIS0, complex_signal=True), two.replay(seq, tissue=TIS0, complex_signal=True), atol=3e-3)
 
 
 def test_the_plan_refuses_a_walk_that_is_not_whole_windows():
-    assert segment_plan(41, 5e-4, 0.01) == (2, 21) and segment_plan(41, 5e-4, 0.02) == (1, 41) and segment_plan(41, 5e-4, 0.1) == (1, 41)
-    with pytest.raises(ValueError, match="segment_T"):
-        segment_plan(41, 5e-4, None)
+    assert window_plan(41, 5e-4, 0.01) == (2, 21) and window_plan(41, 5e-4, 0.02) == (1, 41) and window_plan(41, 5e-4, 0.1) == (1, 41)
+    with pytest.raises(ValueError, match="window_T"):
+        window_plan(41, 5e-4, None)
     with pytest.raises(ValueError, match="not a whole number"):
-        segment_plan(41, 5e-4, 0.015)
+        window_plan(41, 5e-4, 0.015)
     with pytest.raises(ValueError, match="not a whole number of saves"):
-        segment_plan(41, 5e-4, 0.0101)
+        window_plan(41, 5e-4, 0.0101)
 
 
-def test_the_bound_over_segments():
+def test_the_bound_over_windows():
     a = dict(metric="m", err_max=0.01, floor_max=0.05, err_surface=0.002, floor_surface=0.04, per_family={"PGSE": dict(err_max=0.01, floor_max=0.05)})
     b = dict(metric="m", err_max=0.02, floor_max=0.03, err_surface=0.001, floor_surface=0.06, per_family={"PGSE": dict(err_max=0.02, floor_max=0.03)})
-    c = combine_segment_fidelity([a, b])
+    c = combine_window_fidelity([a, b])
     assert c["err_max"] == pytest.approx(0.03) and c["floor_max"] == pytest.approx(0.05) and c["err_surface"] == pytest.approx(0.003)
     assert c["floor_surface"] == pytest.approx(0.06) and c["per_family"]["PGSE"] == dict(err_max=pytest.approx(0.03), floor_max=pytest.approx(0.05))
-    assert c["certified"] == "bounded" and c["within_2x_floor"] and len(c["segments"]) == 2
+    assert c["certified"] == "bounded" and c["within_2x_floor"] and len(c["windows"]) == 2
 
 
 def test_a_pack_without_the_table_is_refused():
-    with pytest.raises(ValueError, match="walk_params.segments"):
-        d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"n_t": 3}}).n_segments
+    with pytest.raises(ValueError, match="walk_params.windows"):
+        d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"n_t": 3}}).n_windows
+
+
+def _write_earlier_vocabulary(pack, path):
+    """``pack`` written as a pack from before dmipy-sim#738: its window table and per-window certificates under
+    ``segments``."""
+    import copy
+    from dmipy_sim.replay.replay import write_rpk
+    meta = copy.deepcopy(pack.meta)
+    meta["walk_params"]["segments"] = meta["walk_params"].pop("windows")
+    if "windows" in (meta.get("fidelity") or {}):
+        meta["fidelity"]["segments"] = meta["fidelity"].pop("windows")
+    write_rpk(path, pack.arrays, meta)
+
+
+def test_a_pack_with_the_earlier_table_is_refused_until_restamped(packs, tmp_path):
+    """A header that names its window table ``walk_params.segments`` is refused by name; ``restamp_pack`` rewrites
+    the header in place (``walk_params.windows``, ``fidelity.windows``, recorded under ``provenance.restamped``) and
+    the pack then reads with the same table, certificates and tensors; a second restamp leaves the file as it is,
+    and a header with neither table is refused."""
+    import hashlib
+    from dmipy_sim.replay.replay import read_rpk, restamp_pack, write_rpk
+    m, one, two = packs
+    old = tmp_path / "earlier.rpk"
+    _write_earlier_vocabulary(two, old)
+    with pytest.raises(ValueError, match="restamp_pack"):
+        read_rpk(old).n_windows
+    meta = restamp_pack(old)
+    assert "segments" not in meta["walk_params"] and meta["walk_params"]["windows"] == two.windows
+    assert meta["provenance"]["restamped"][-1]["what"].startswith("walk_params.segments")
+    back = read_rpk(old)
+    assert back.n_windows == 2 and back.windows == two.windows and back.meta["fidelity"]["windows"] == two.meta["fidelity"]["windows"]
+    assert set(back.arrays) == set(two.arrays)
+    for k, a in two.arrays.items():
+        npt.assert_array_equal(back.arrays[k], a)
+    sha = hashlib.sha256(old.read_bytes()).hexdigest()
+    assert restamp_pack(old)["walk_params"]["windows"] == two.windows
+    assert hashlib.sha256(old.read_bytes()).hexdigest() == sha                       # already restamped: not rewritten
+    bare = tmp_path / "bare.rpk"
+    meta = dict(two.meta, walk_params={k: v for k, v in two.meta["walk_params"].items() if k != "windows"})
+    write_rpk(bare, two.arrays, meta)
+    with pytest.raises(ValueError, match="declares no window table"):
+        restamp_pack(bare)
 
 
 def _crushed_train(n_echoes=8, beta=120.0):
@@ -202,29 +244,29 @@ def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
     short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms of 20
     a = one.replay_bloch(short, tissue=TIS0, complex_signal=True)
     b = two.replay_bloch(short, tissue=TIS0, complex_signal=True)
-    c = two.segment(0).replay_bloch(short, tissue=TIS0, complex_signal=True)
+    c = two.window(0).replay_bloch(short, tissue=TIS0, complex_signal=True)
     npt.assert_allclose(b, a, atol=1e-8); npt.assert_allclose(c, a, atol=1e-8)
     npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS0), rtol=1e-4)
 
 
-def test_a_walk_continues_from_its_end_and_appends_as_segments():
-    """A 10 ms pack extended by 10 ms with a fresh seed has the layout of a 20 ms walk stored in two segments, its
-    second segment starts exactly where the first ended, its table records both walks, its certificate is the bound
-    over the segments, and it replays a 20 ms acquisition as the one-walk pack does within the floor."""
-    from dmipy_sim.replay.continuation import append_segments, continue_walk, end_state
+def test_a_walk_continues_from_its_end_and_appends_as_windows():
+    """A 10 ms pack extended by 10 ms with a fresh seed has the layout of a 20 ms walk stored in two windows, its
+    second window starts exactly where the first ended, its table records both walks, its certificate is the bound
+    over the windows, and it replays a 20 ms acquisition as the one-walk pack does within the floor."""
+    from dmipy_sim.replay.continuation import append_windows, continue_walk, end_state
     g = d.Cylinder(2e-6, (0, 0, 1))
-    kw = dict(license="x", citation="x", K=16, blt_temporal_K=16, segment_T=0.01)
+    kw = dict(license="x", citation="x", K=16, blt_temporal_K=16, window_T=0.01)
     two = _float_pack(d.simulate_trajectories(2000, 2e-9, g, 0.02, 5e-4, seed=0, require_gpu=False), id="t/two", **kw)
     one = _float_pack(d.simulate_trajectories(2000, 2e-9, g, 0.01, 5e-4, seed=0, require_gpu=False), id="t/one", **kw)
     r_end, pool = end_state(one)
     assert pool is not None and np.all(pool == 1)                                   # every walker in the lumen
     cont = continue_walk(one, 0.01, seed=7, require_gpu=False)
     npt.assert_array_equal(np.asarray(cont.positions[:, 0, :], np.float32), r_end.astype(np.float32))
-    ext = append_segments(one, cont, seed=7)
-    assert sorted(ext.arrays) == sorted(two.arrays) and ext.n_t == two.n_t == 41 and ext.n_segments == 2
-    assert ext.segments["walks"] == [dict(first=0, last=0, seed=0), dict(first=1, last=1, seed=7)]
-    npt.assert_array_equal(ext.segment(1).r0, r_end.astype(np.float32))
-    assert ext.fidelity["certified"] == "bounded" and len(ext.fidelity["segments"]) == 2
+    ext = append_windows(one, cont, seed=7)
+    assert sorted(ext.arrays) == sorted(two.arrays) and ext.n_t == two.n_t == 41 and ext.n_windows == 2
+    assert ext.windows["walks"] == [dict(first=0, last=0, seed=0), dict(first=1, last=1, seed=7)]
+    npt.assert_array_equal(ext.window(1).r0, r_end.astype(np.float32))
+    assert ext.fidelity["certified"] == "bounded" and len(ext.fidelity["windows"]) == 2
     assert ext.meta["provenance"]["continuations"][0]["seed"] == 7
     seq = _seq()
     tis = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho2=1e-5)
@@ -233,23 +275,23 @@ def test_a_walk_continues_from_its_end_and_appends_as_segments():
     with pytest.raises(ValueError, match="whole number"):
         continue_walk(one, 0.015, seed=1, require_gpu=False)
     longer = ext.extend(0.02, seed=9, require_gpu=False)
-    assert longer.n_segments == 4 and longer.n_t == 81 and longer.segments["walks"][-1] == dict(first=2, last=3, seed=9)
+    assert longer.n_windows == 4 and longer.n_t == 81 and longer.windows["walks"][-1] == dict(first=2, last=3, seed=9)
     long_seq = d.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
     assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0
 
 
-def test_shards_of_a_segmented_walk_merge(packs, tmp_path):
-    """Two shards of the same substrate, each stored in two segments with a field path channel, merge into one pack
-    of two segments whose every segment's scale table carries a block axis and whose replay is the weight-combined shards'."""
+def test_shards_of_a_windowed_walk_merge(packs, tmp_path):
+    """Two shards of the same substrate, each stored in two windows with a field path channel, merge into one pack
+    of two windows whose every window's scale table carries a block axis and whose replay is the weight-combined shards'."""
     from dmipy_sim.replay.bank import merge_packs
     m, one, two = packs
     m2 = dict(m); rng = np.random.default_rng(3)
     m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 5
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01)
     b = _float_pack(m2, id="t/b", **kw)
     merged = merge_packs([two, b], id="t/merged")
-    assert merged.n_segments == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
+    assert merged.n_windows == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
     seq = _seq()
     Sa, Sb = two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), b.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True)
     npt.assert_allclose(merged.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), (Sa + Sb) / 2.0, atol=1e-6)
@@ -264,21 +306,21 @@ def test_a_shard_inherits_a_windowed_certificate_window_by_window(packs):
     m2 = dict(m); rng = np.random.default_rng(7)
     m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 11
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, segment_T=0.01)
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01)
     b = _float_pack(m2, id="t/b-inherited", fidelity="inherited", fidelity_from=two, **kw)
     cert = two.meta["fidelity"]; got = b.meta["fidelity"]
-    assert len(got["segments"]) == len(cert["segments"]) == 2
-    for mine, theirs in zip(got["segments"], cert["segments"]):
+    assert len(got["windows"]) == len(cert["windows"]) == 2
+    for mine, theirs in zip(got["windows"], cert["windows"]):
         assert mine["certified"] == "inherited" and mine["inherited_from"]["err_max"] == pytest.approx(theirs["err_max"])
         assert mine["err_max"] == pytest.approx(theirs["err_max"])
-    assert got["err_max"] == pytest.approx(sum(s["err_max"] for s in cert["segments"]))   # the bound over the windows, once
-    four = _float_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "segment_T": 0.005})
+    assert got["err_max"] == pytest.approx(sum(s["err_max"] for s in cert["windows"]))   # the bound over the windows, once
+    four = _float_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "window_T": 0.005})
     with pytest.raises(ValueError, match="window"):
         _float_pack(m2, id="t/b-wrong", fidelity="inherited", fidelity_from=four, **kw)
 
 
 # ------------------------------------------------------------------ the C2 band floor for a one-window pack (#528)
-# A reflecting-slab walk long enough to be several storage-rule windows (SEGMENT_T = 100 ms): 400 steps of 2.5 ms
+# A reflecting-slab walk long enough to be several storage-rule windows (WINDOW_T = 100 ms): 400 steps of 2.5 ms
 # is 1 s, ten windows. Scaled from tests.test_bank._slab_master's construction (that one is fixed at ~100 ms).
 C2_N_T, C2_DT, C2_D0, C2_L = 401, 2.5e-3, 2e-9, 6e-6
 
@@ -305,18 +347,18 @@ def _c2_slab_master(n_w=300, n_t=C2_N_T, dt=C2_DT, seed=0):
 
 
 def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():
-    """A walk built as ONE window (segment_T pinned at its own length) but longer than the storage rule's window
-    (SEGMENT_T) gets a C2 band of at least 16 bands per storage-rule window (#528): its certificate carries the
+    """A walk built as ONE window (window_T pinned at its own length) but longer than the storage rule's window
+    (WINDOW_T) gets a C2 band of at least 16 bands per storage-rule window (#528): its certificate carries the
     window term (err_surface_window/floor_surface_window), and both the whole and the window pass within
     tol x their floor."""
     m = _c2_slab_master()
     env = _lean_env()
     T_walk = (C2_N_T - 1) * C2_DT
     pk = _float_pack(m, id="t/c2-one", method="bridge_dst", envelope=env, K=64,
-                           license="CC-BY-4.0", citation="test", segment_T=T_walk)
-    assert pk.n_segments == 1
+                           license="CC-BY-4.0", citation="test", window_T=T_walk)
+    assert pk.n_windows == 1
     c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
-    n_windows = int(round(T_walk / SEGMENT_T))
+    n_windows = int(round(T_walk / WINDOW_T))
     assert n_windows == 10 and c2["K"] >= 16 * n_windows
     f = pk.fidelity
     assert "err_surface_window" in f and "floor_surface_window" in f
@@ -326,27 +368,27 @@ def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():
 
 
 def test_a_walk_built_in_its_storage_rule_windows_is_unchanged():
-    """The SAME walk built directly in its storage-rule windows (segment_T left at the default) keeps the plain
-    ladder (K=8) and no window term: a window built directly (_build_segmented) already has its own endpoints,
+    """The SAME walk built directly in its storage-rule windows (window_T left at the default) keeps the plain
+    ladder (K=8) and no window term: a window built directly (_build_windowed) already has its own endpoints,
     so none of this applies to it."""
     m = _c2_slab_master()
     env = _lean_env()
     pk = _float_pack(m, id="t/c2-seg", method="bridge_dst", envelope=env, K=64,
-                           license="CC-BY-4.0", citation="test")               # default segment_T: 10 x 100 ms
-    assert pk.n_segments == 10
+                           license="CC-BY-4.0", citation="test")               # default window_T: 10 x 100 ms
+    assert pk.n_windows == 10
     c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
     assert c2["K"] == 8
     assert "err_surface_window" not in pk.fidelity
 
 
 def test_a_walk_shorter_than_the_storage_rule_window_keeps_the_plain_ladder():
-    """A one-window walk within the storage rule's window (SEGMENT_T) is never cut into windows narrower than
+    """A one-window walk within the storage rule's window (WINDOW_T) is never cut into windows narrower than
     itself, so it needs none of this: the plain ladder (8, 16, 32, 64), exactly as before #528."""
-    m = _c2_slab_master(n_t=21, dt=C2_DT)                                      # 50 ms, under SEGMENT_T's 100 ms
+    m = _c2_slab_master(n_t=21, dt=C2_DT)                                      # 50 ms, under WINDOW_T's 100 ms
     env = _lean_env()
     pk = _float_pack(m, id="t/c2-short", method="bridge_dst", envelope=env, K=16,
                            license="CC-BY-4.0", citation="test")
-    assert pk.n_segments == 1
+    assert pk.n_windows == 1
     c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
     assert c2["K"] in (8, 16, 32, 64)
     assert "err_surface_window" not in pk.fidelity

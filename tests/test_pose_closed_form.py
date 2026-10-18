@@ -199,7 +199,7 @@ def _g0(strength):
 def test_a_magnets_own_gradient_is_a_second_plane_wave_in_closed_form(pack, kind):
     """A magnet's own gradient g0 is on through every pulse and dead time, so every measurement plays two directions
     with two time courses: the encoding and g0 through the effective gate. Its phase g0 . R n_w (n_w the walker's
-    background moment) is a second Rayleigh factor coupled to the gradient's, as the field factor is; the expansion
+    background vector) is a second Rayleigh factor coupled to the gradient's, as the field factor is; the expansion
     equals the direct posed replay of the delivered waveform at every rotation, to its misfit (#565). The background
     here is 50 mT/m, far beyond any magnet's, so the factor's band is several orders and the coupling is exercised."""
     dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
@@ -377,7 +377,7 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     :func:`dmipy_sim.replay.replay._compile_effective` (``bridge_projection``'s own DST) and its own matmul against
     every walker, a cost that grows with ``k`` -- where the torch branch beside it already batches every mode into
     ONE projection. Pinning the number of ``_compile_effective`` calls pins that cost: it must stay the few calls
-    the per-axis moment contraction and ONE residual batch take, never one per mode."""
+    the per-axis vector contraction and ONE residual batch take, never one per mode."""
     from dmipy_sim.replay import replay as rr
     rng = np.random.default_rng(11)
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
@@ -389,7 +389,7 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
         return orig(*a, **k)
     monkeypatch.setattr(rr, "_compile_effective", counted)
     pack.pose_response(seq, method="closed")
-    # per window: 3 calls for the main moment contraction (one per axis) and ONE for the residual bound's batch
+    # per window: 3 calls for the main vector contraction (one per axis) and ONE for the residual bound's batch
     # (every mode of every residual row, in one call, #698) -- never the dozens of directions, let alone the
     # residual's own numerical rank (in the hundreds here), which is what #698 cost
-    assert len(calls) <= 4 * pack.n_segments
+    assert len(calls) <= 4 * pack.n_windows

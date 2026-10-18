@@ -136,7 +136,7 @@ def main(argv=None):
         """The contact channel's per-window surface term (windows of T/4) of a pack against the raw contact."""
         from dmipy_sim.replay.bank import _surface_fidelity
         return _surface_fidelity(master, pk.arrays, pk.meta["compression"]["channels"]["boundary_local_time"],
-                                 _cx_env(), segment_T=T / 4)
+                                 _cx_env(), window_T=T / 4)
 
     ref, pos_f, tot_f, sig_f = build("float", None, None)
     n_t = int(ref.n_t)

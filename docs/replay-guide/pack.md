@@ -30,18 +30,18 @@ paper measured for each class; a walk from `walk_spec` carries its class, so it 
 no class and no `K` is refused rather than searched. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix.
 
-A pack stores its walk in **segments** of one duration, 100 ms by default (`build_replay_pack(segment_T=)`), consecutive
-windows sharing their boundary save: a walk within one window is one segment, a longer walk a whole number of them,
-each encoded with the same `K` and certified on its own. Segment 0's tensors sit under the channel names and segment
-`i` under `s{i}/`, so `pack.segment(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without
+A pack stores its walk in **storage windows** of one duration, 100 ms by default (`build_replay_pack(window_T=)`), consecutive
+windows sharing their boundary save: a walk within one window is stored as one, a longer walk as a whole number of them,
+each encoded with the same `K` and certified on its own. Window 0's tensors sit under the channel names and window
+`i` under `s{i}/`, so `pack.window(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without
 re-encoding, and an acquisition reads only the windows it reaches; a replay across windows is the sum of their
-contractions. `pack.segments` is the table. A walk is continued rather than re-walked: `pack.extend(0.1, seed=17)`
-resumes every walker from the last segment's exact endpoint in the pool it is in, walks one more segment on the
+contractions. `pack.windows` is the table. A walk is continued rather than re-walked: `pack.extend(0.1, seed=17)`
+resumes every walker from the last window's exact endpoint in the pool it is in, walks one more window on the
 pack's own substrate with the fresh seed, and appends it with its own certificate (`pack.end_state()` is where the
 walkers are; `replay.continuation` holds the two steps). A pack written as one long window is stored in shorter ones
-by `pack.resegment(0.1, out_path=...)`: every window is the parent's channels decoded on its saves and re-encoded at
+by `pack.rewindow(0.1, out_path=...)`: every window is the parent's channels decoded on its saves and re-encoded at
 the parent's bands per second, certified against them, and a trailing remainder of at most `max_dropped_fraction`
-of the saves that no whole window covers is dropped and recorded (`provenance.resegmented`).
+of the saves that no whole window covers is dropped and recorded (`provenance.rewindowed`).
 
 ## What it holds
 

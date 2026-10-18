@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "gradient_tensor_map",
-           "delivered_gradient", "delivered_weights", "delivered_moments", "encoding_classes", "EncodingClasses"]
+           "delivered_gradient", "delivered_weights", "delivered_vectors", "encoding_classes", "EncodingClasses"]
 
 
 def _model(scanner):
@@ -448,10 +448,10 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
 
 
 @dataclass(frozen=True)
-class MomentDelivery:
-    """What a machine plays at each voxel for an acquisition of one two-valued shape (:func:`delivered_moments`):
-    ``q`` ``(n_voxels, n_meas, 3)`` T/m, the delivered encoding vector a walker's shape moment is dotted with;
-    ``g0`` ``(n_voxels, 3)`` T/m, the magnet's own gradient its background moment is dotted with (None: no field
+class VectorDelivery:
+    """What a machine plays at each voxel for an acquisition of one two-valued shape (:func:`delivered_vectors`):
+    ``q`` ``(n_voxels, n_meas, 3)`` T/m, the delivered encoding vector a walker's shape vector is dotted with;
+    ``g0`` ``(n_voxels, 3)`` T/m, the magnet's own gradient its background vector is dotted with (None: no field
     shape catalogued or the term off); ``kappa`` ``(n_voxels,)``, the transmit scale every flip is multiplied by (None:
     no transmit profile catalogued or the term off). In the grid's frame."""
     q: np.ndarray
@@ -459,11 +459,11 @@ class MomentDelivery:
     kappa: np.ndarray = None
 
 
-def delivered_moments(scanner, grid, profile, amplitudes, directions, *, voxels=None, to_scanner=None,
+def delivered_vectors(scanner, grid, profile, amplitudes, directions, *, voxels=None, to_scanner=None,
                       nonlinearity=True, background=True, concomitant=True, transmit=True):
     """The gradient each voxel of ``grid`` receives for an acquisition that plays one shape ``profile`` (``(n_t,)``,
     peak 1) at ``amplitudes`` (T/m) along unit ``directions`` (``(n_meas, 3)``, the grid's frame), in the terms a
-    walker's two moments take (:class:`MomentDelivery`): the same physics as :func:`delivered_gradient`, reduced.
+    walker's two vectors take (:class:`VectorDelivery`): the same physics as :func:`delivered_gradient`, reduced.
 
     Measurement ``i`` commands ``G_i(t) = a_i s(t) u_i``. The coils deliver ``L G_i`` (linear in ``G``: the shape is
     kept, the vector becomes ``a_i L u_i``); the magnet adds its constant ``g0`` (its own shape, the effective gate
@@ -500,7 +500,7 @@ def delivered_moments(scanner, grid, profile, amplitudes, directions, *, voxels=
         if not np.all(np.isclose(s, 0.0, atol=1e-6) | np.isclose(s, 1.0, atol=1e-6)):
             raise ValueError("the Maxwell gradient follows the coils' gradient sample by sample, and this shape is not "
                              "two-valued (ramps, or lobes of two levels), so its time course is not the shape's: it is "
-                             "not one vector on the shape's moment. Replay this acquisition on the bridge route "
+                             "not one vector dotted with the shape's. Replay this acquisition on the bridge route "
                              "(delivered_weights), or play the shape with square pulses of one polarity")
         from ..acquisition.scanner_sequence import concomitant_terms
         gc, _Bc = concomitant_terms(q, d[:, None, :], float(B0), _b0_axis(scanner, R))
@@ -509,4 +509,4 @@ def delivered_moments(scanner, grid, profile, amplitudes, directions, *, voxels=
     g0 = None if gmap is None else np.atleast_2d(gmap(pos)).astype(np.float64)
     bmap = b1_scale_map(scanner, grid, to_scanner=R) if transmit else None
     kappa = None if bmap is None else np.atleast_1d(np.asarray(bmap(pos), np.float64))
-    return MomentDelivery(q=q, g0=g0, kappa=kappa)
+    return VectorDelivery(q=q, g0=g0, kappa=kappa)

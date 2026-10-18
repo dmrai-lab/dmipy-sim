@@ -273,7 +273,7 @@ def _measure_floor(m, env):
     return float(_cx.measure_fidelity(traj, float(m["dt_traj"]), traj, env)["floor_max"])
 
 
-def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
+def _surface_fidelity(m, arrays, chan_meta, env, *, window_T=None):
     """Certify the surface tier (C2): the surface-relaxivity attenuation reconstructed from the
     STORED boundary channel vs the RAW per-step boundary local time, over a rho2 battery, against
     the split-half MC floor of the raw surface signal. Returns ``dict(err, floor)`` or None.
@@ -281,9 +281,9 @@ def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
     The whole-duration ``err``/``floor`` above is blind to the BAND: the bridge
     (:func:`compression.encode_boundary_bridge`) stores the summed contact exactly in its two
     endpoints at every K, so a band too coarse to resolve a later cut still reproduces the whole
-    walk's total. When ``segment_T`` is given and this walk is longer than one window of that
+    walk's total. When ``window_T`` is given and this walk is longer than one window of that
     duration, ``err_window``/``floor_window`` add the same battery and split-half floor on the summed
-    contact of EACH window of ``segment_T`` of the STORED channel
+    contact of EACH window of ``window_T`` of the STORED channel
     (:func:`compression.decode_boundary_bridge`'s ``n_cut``/``start``, dropping the window's own
     first save as :func:`_window_master` does) against the window's own raw saves -- the worst window
     kept (dmipy-sim#528). Only the bridge codec carries a band to probe this way; the exact
@@ -316,10 +316,10 @@ def _surface_fidelity(m, arrays, chan_meta, env, *, segment_T=None):
         floor = max(floor, abs(fac(sl_raw, A) - fac(sl_raw, B)))
     out = dict(err=float(err), floor=float(floor))
     dt = m.get("dt_traj")
-    if segment_T and dt and _cx.has_c2(arrays):
+    if window_T and dt and _cx.has_c2(arrays):
         dt = float(dt); T_walk = (n_t - 1) * dt
-        if T_walk > float(segment_T) * (1.0 + 1e-9):
-            steps = max(1, int(round(float(segment_T) / dt)))
+        if T_walk > float(window_T) * (1.0 + 1e-9):
+            steps = max(1, int(round(float(window_T) / dt)))
             n_windows = (n_t - 1) // steps
             if n_windows >= 1:
                 err_w = floor_w = 0.0
@@ -1214,11 +1214,11 @@ def union_weights(w, shard, voxel, pool):
 
 def _walk_identity(wp):
     """The walk parameters that shards of one walk share: everything but the walker count and the seeds, the
-    segment table's walks compared without theirs."""
+    window table's walks compared without theirs."""
     out = {k: v for k, v in wp.items() if k not in ("n_walkers", "seed")}
-    seg = out.get("segments")
+    seg = out.get("windows")
     if isinstance(seg, dict):
-        out["segments"] = dict(seg, walks=[{k: v for k, v in w.items() if k != "seed"} for w in seg.get("walks", [])])
+        out["windows"] = dict(seg, walks=[{k: v for k, v in w.items() if k != "seed"} for w in seg.get("walks", [])])
     return out
 
 
@@ -1286,7 +1286,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         same("array names", lambda pk: sorted(pk.arrays))
         n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
         arrays = {}
-        scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]   # every segment's
+        scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]   # every window's
         # a scale table with a block axis: the band scales carry one from the start ((n_blocks, ...)); the path channel's
         # (n_ch, K) gains one here
         table = lambda pk, k: (np.asarray(pk.arrays[k])[None] if (k.split("/")[-1] == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
@@ -1401,10 +1401,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
             comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, float(fid.get("floor_max") or 0.0), False)
         meta = dict(pks[0].meta)
         seeds = [pk.meta["walk_params"]["seed"] for pk in pks]
-        seg0 = pks[0].meta["walk_params"].get("segments") or {}
+        seg0 = pks[0].meta["walk_params"].get("windows") or {}
         meta.update(id=id, compression=comp_meta, fidelity=fid,
                     walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds,
-                                     segments=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])])),
+                                     windows=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])])),
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[dict(id=pk.meta.get("id"), n_walkers=int(m)) for pk, m in zip(pks, n)]))
         out = ReplayPack(arrays, meta)
         out.susceptibility_field                                         # the merged pack holds the equivalence
@@ -1414,7 +1414,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         return out
 
 
-SEGMENT_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
+WINDOW_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
 STORAGE_BAND_MARGIN = 1.4  #: the storage rule's margin over a class's certified band (the paper's K = 256 per 100 ms for the human classes)
 
 
@@ -1458,25 +1458,25 @@ def _is_shared_key(k):
     return k in _SHARED_KEYS or k.startswith("susc_grid_")
 
 
-def segment_plan(n_t, dt, segment_T):
-    """``(n_segments, n_t per segment)`` for a walk of ``n_t`` saves at ``dt`` stored in windows of ``segment_T``
+def window_plan(n_t, dt, window_T):
+    """``(n_windows, n_t per window)`` for a walk of ``n_t`` saves at ``dt`` stored in windows of ``window_T``
     seconds (RPK.md 4.3): one window when the walk is within it, else the walk must be a whole number of windows
-    on its save grid, and is refused otherwise. A pack declares its segment length; there is no other layout."""
+    on its save grid, and is refused otherwise. A pack declares its window length; there is no other layout."""
     n_t = int(n_t); dt = float(dt)
-    if segment_T is None or not float(segment_T) > 0.0:
-        raise ValueError("segment_T is the duration of the windows a pack stores its walk in (RPK.md 4.3), the storage "
-                         f"rule's {SEGMENT_T:g} s by default; got {segment_T!r}")
+    if window_T is None or not float(window_T) > 0.0:
+        raise ValueError("window_T is the duration of the windows a pack stores its walk in (RPK.md 4.3), the storage "
+                         f"rule's {WINDOW_T:g} s by default; got {window_T!r}")
     T = (n_t - 1) * dt
-    if T <= float(segment_T) * (1.0 + 1e-9):
+    if T <= float(window_T) * (1.0 + 1e-9):
         return 1, n_t
-    steps = int(round(float(segment_T) / dt))
-    if steps < 2 or abs(steps * dt - float(segment_T)) > 1e-9 * float(segment_T):
-        raise ValueError(f"a segment of {float(segment_T):.6g} s is not a whole number of saves at dt = {dt:.6g} s; "
-                         "walk on a save grid that divides the segment")
+    steps = int(round(float(window_T) / dt))
+    if steps < 2 or abs(steps * dt - float(window_T)) > 1e-9 * float(window_T):
+        raise ValueError(f"a window of {float(window_T):.6g} s is not a whole number of saves at dt = {dt:.6g} s; "
+                         "walk on a save grid that divides the window")
     if (n_t - 1) % steps:
-        raise ValueError(f"the walk's {T:.6g} s is not a whole number of {float(segment_T):.6g} s segments on its save "
-                         f"grid ({n_t - 1} steps, {steps} per segment); walk a whole number of segments, or pass the "
-                         "segment_T that divides it")
+        raise ValueError(f"the walk's {T:.6g} s is not a whole number of {float(window_T):.6g} s windows on its save "
+                         f"grid ({n_t - 1} steps, {steps} per window); walk a whole number of windows, or pass the "
+                         "window_T that divides it")
     return (n_t - 1) // steps, steps + 1
 
 
@@ -1499,19 +1499,19 @@ def _window_master(m, k0, k1):
     if m.get("susc_field_samples") is not None:
         every = int(m.get("susc_field_every", 1) or 1)
         if k0 % every or k1 % every:
-            raise ValueError(f"the field was sampled every {every} saves and a segment boundary at save {k0 if k0 % every else k1} "
-                             "is not on that grid; walk with a segment that is a whole number of field samples")
+            raise ValueError(f"the field was sampled every {every} saves and a window boundary at save {k0 if k0 % every else k1} "
+                             "is not on that grid; walk with a window that is a whole number of field samples")
         w["susc_field_samples"] = np.asarray(m["susc_field_samples"])[:, k0 // every:k1 // every + 1]
     return w
 
 
-def combine_segment_fidelity(fids):
-    """The whole walk's certificate as the BOUND over its segments' (RPK.md 4.3): every error term the sum over
+def combine_window_fidelity(fids):
+    """The whole walk's certificate as the BOUND over its windows' (RPK.md 4.3): every error term the sum over
     the windows (a replay across them sums their contributions, which may add coherently), every floor the largest,
     and ``certified = "bounded"``. What a prefix of whole windows or an appended continuation carries; a walk built
     in one go measures the positions battery over the whole instead."""
     fids = [dict(f) for f in fids]
-    out = dict(metric=fids[0].get("metric"), certified="bounded", segments=fids)
+    out = dict(metric=fids[0].get("metric"), certified="bounded", windows=fids)
     keys = sorted({k for f in fids for k in f if k.startswith(("err_", "floor_"))})
     for k in keys:
         vals = [f.get(k) for f in fids]
@@ -1553,7 +1553,7 @@ def _round_floats(x, sig):
 
 def _round_certificate(fid, sig=6):
     """The certificate's statistics (``fidelity.*``: every ``err_*``/``floor_*``, ``per_family``, ``per_voxel``,
-    the per-segment list) rounded to ``sig`` significant digits before they are written.
+    the per-window list) rounded to ``sig`` significant digits before they are written.
 
     6 digits is far below any floor's MEANING -- a split-half Monte-Carlo floor is itself an estimate, not an
     exact quantity -- and far above the 17th digit a float64 reduction (a sum over many walkers or windows)
@@ -1626,7 +1626,7 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
                       "WALKER ORDER NOT DECLARED SHUFFLED -- a prefix may be a biased sub-ensemble"))
 
 
-def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=None, *, min_K=None, segment_T=None):
+def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=None, *, min_K=None, window_T=None):
     """Choose the C2 (boundary-local-time) codec by COST subject to the surface-fidelity gate.
 
     The bridge form (:func:`compression.encode_boundary_bridge`) is flat in ``n_t`` and, at K=32 in
@@ -1638,14 +1638,14 @@ def _select_boundary_codec(m, dlog, env, tol, dtype, verbose=False, container=No
     ``min_K`` raises the ladder's smallest rung (16 bands per storage-rule window when this build is a
     walk built as one window but longer than the storage rule's window, RPK.md 4.3 -- the measured
     table is in the PR, not here) instead of the plain ladder's 8; it still doubles from there, same as
-    always, until the certificate passes. ``segment_T`` adds :func:`_surface_fidelity`'s window term
+    always, until the certificate passes. ``window_T`` adds :func:`_surface_fidelity`'s window term
     (``err_window``/``floor_window``): a candidate passes only when both the whole-duration term and
     the window term are within ``tol`` of their floors (dmipy-sim#528)."""
     base = 8 if not min_K else int(min_K)
     cands = []
     for K in (base, base * 2, base * 4, base * 8):
         a, mm = _cx.encode_boundary_bridge(dlog, K=int(K), dtype=dtype, container=container)
-        cf = _surface_fidelity(m, a, mm, env, segment_T=segment_T)
+        cf = _surface_fidelity(m, a, mm, env, window_T=window_T)
         nb = sum(int(np.asarray(v).nbytes) for v in a.values()) / max(len(dlog), 1)
         cands.append((nb, K, a, mm, cf))
         ok = cf is not None and cf["err"] <= tol * cf["floor"]
@@ -1810,7 +1810,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K="auto", susc_path_bits=8, voxel_grid=None,
                       position_container="bands", blt_container="bands",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
-                      fidelity="measured", fidelity_from=None, device="auto", segment_T=SEGMENT_T, _occupancy_runs=False,
+                      fidelity="measured", fidelity_from=None, device="auto", window_T=WINDOW_T, _occupancy_runs=False,
                       _window_of_plan=False, pack_license=None, pack_license_url=None):
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
@@ -1819,12 +1819,12 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
     ``"CC-BY-NC-SA-4.0 OR LicenseRef-Commercial"``, with ``pack_license_url`` where its full text lives; absent, the
     pack is distributed under ``license``.
 
-    The walk is stored in SEGMENTS of ``segment_T`` seconds (RPK.md 4.3; the storage rule's 100 ms): a walk within
-    one is one segment, a longer one a whole number of them on its save grid (refused otherwise), each window
+    The walk is stored in STORAGE WINDOWS of ``window_T`` seconds (RPK.md 4.3; the storage rule's 100 ms): a walk
+    within one is stored as one, a longer one as a whole number of them on its save grid (refused otherwise), each window
     encoded with the same codec at the same ``K`` and certified on its own, the whole certified over the full
-    walk; segment 0's tensors under the channel names, segment ``i`` under ``s{i}/``. ``K`` and ``susc_path_K``
-    are per segment. A prefix of whole segments is then a range of the file, and a walk is continued by
-    appending segments (:meth:`~dmipy_sim.replay.replay.ReplayPack.truncate`, :func:`continue_walk`).
+    walk; window 0's tensors under the channel names, window ``i`` under ``s{i}/``. ``K`` and ``susc_path_K``
+    are per window. A prefix of whole windows is then a range of the file, and a walk is continued by
+    appending windows (:meth:`~dmipy_sim.replay.replay.ReplayPack.truncate`, :func:`continue_walk`).
 
     **The band is the scanner class's** (#643): ``K = ceil(2 f T)`` per window with ``f`` =
     :func:`storage_band_hz` of ``scanner`` -- the class's certified band (the catalogue's ``band.certified_band_hz``,
@@ -1892,10 +1892,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
 
     A contact (C2) channel chosen automatically (``blt_temporal_K`` not given) is banded by
     :func:`_select_boundary_codec`: for a walk built as ONE window but longer than the storage rule's
-    window (``segment_T``, RPK.md 4.3), the ladder's floor is 16 bands per storage-rule window, so that a
-    later cut of this pack into windows (:meth:`~dmipy_sim.replay.replay.ReplayPack.resegment`) keeps the
+    window (``window_T``, RPK.md 4.3), the ladder's floor is 16 bands per storage-rule window, so that a
+    later cut of this pack into windows (:meth:`~dmipy_sim.replay.replay.ReplayPack.rewindow`) keeps the
     stored contact within the window's own floor rather than only the whole walk's (dmipy-sim#528) -- a
-    window built directly as one segment of an already-decided plan (``_build_segmented``, ``resegment``,
+    window built directly as one window of an already-decided plan (``_build_windowed``, ``rewindow``,
     ``prefix``, a continuation) keeps its own endpoints and the plain ladder, since it IS the window, not
     something that will be cut again.
 
@@ -1914,14 +1914,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         # a window of an already-planned pack may carry its field channel beside the walk (the parent's grid)
         susceptibility_field_of(m.get("substrate"), name=id,
                                 stores_field=(None if _window_of_plan and not _stores_field(m) else _stores_field(m)))
-        n_segments, n_seg = segment_plan(m["traj"].shape[1], m["dt_traj"], segment_T)
-        if n_segments > 1:
+        n_windows, n_seg = window_plan(m["traj"].shape[1], m["dt_traj"], window_T)
+        if n_windows > 1:
             kw = dict(id=id, license=license, citation=citation, method=method, envelope=envelope, tol=tol, K=K,
                       temporal_bandwidth_hz=temporal_bandwidth_hz, scanner=scanner, sigma_star=sigma_star,
                       provenance=provenance, blt_temporal_K=blt_temporal_K, blt_dtype=blt_dtype, susc_path_K=susc_path_K,
                       susc_path_bits=susc_path_bits, voxel_grid=voxel_grid, position_container=position_container,
                       blt_container=blt_container, verbose=verbose, fidelity=fidelity, fidelity_from=fidelity_from, device=device)
-            return _build_segmented(m, n_segments, n_seg, run, walk, out_path, **kw)
+            return _build_windowed(m, n_windows, n_seg, run, walk, out_path, **kw)
         if m.get("substrate_frame") is not None:
             sub = m.get("substrate") or {}
             if (sub.get("frame") or {}).get("source") == "structural":
@@ -1952,10 +1952,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
             raise ValueError("fidelity_from= goes with fidelity='inherited'")
         X = m["traj"] if _cx.is_lazy(m["traj"]) else np.asarray(m["traj"])   # as stored, or lazily: read per walker chunk
         dt = float(m["dt_traj"])
-        # a window built directly (one segment of a plan _build_segmented/resegment/prefix/a continuation already
+        # a window built directly (one window of a plan _build_windowed/rewindow/prefix/a continuation already
         # decided) carries its own endpoints and needs none of this; only a walk built as ONE window that is itself
         # longer than the storage rule's window risks a later cut it cannot see (#528)
-        _c2_window_T = None if _window_of_plan else SEGMENT_T
+        _c2_window_T = None if _window_of_plan else WINDOW_T
         _c2_min_K = None
         if _c2_window_T is not None and (X.shape[1] - 1) * dt > float(_c2_window_T) * (1.0 + 1e-9):
             _c2_min_K = 16 * int(np.ceil((X.shape[1] - 1) * dt / float(_c2_window_T)))
@@ -2141,14 +2141,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
             else:
                 _a, _mm = _select_boundary_codec(m, np.asarray(m["dlog_b"]), env, tol,
                                                  blt_dtype, verbose, container=_blt_bound(blt_container),
-                                                 min_K=_c2_min_K, segment_T=_c2_window_T)
+                                                 min_K=_c2_min_K, window_T=_c2_window_T)
             arrays.update(_a); chan_meta["boundary_local_time"] = _mm; channels["rho2"] = True
 
         # Surface tier (C2) fidelity: certify the boundary channel reproduces the surface-relaxivity
         # signal from its stored coeffs, vs the raw boundary local time.
         if channels["rho2"] and chan_meta.get("boundary_local_time") is not None and cert is None:
             run.phase("certificate surface")
-            _cf = _surface_fidelity(m, arrays, chan_meta["boundary_local_time"], env, segment_T=_c2_window_T)
+            _cf = _surface_fidelity(m, arrays, chan_meta["boundary_local_time"], env, window_T=_c2_window_T)
             if _cf is not None:
                 fid = dict(fid, err_surface=_cf["err"], floor_surface=_cf["floor"],
                            err_max=max(float(fid.get("err_max", 0.0)), _cf["err"]),
@@ -2242,7 +2242,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
             compression=comp_meta,
             walk_params=dict(n_walkers=int(m["n_walkers"]), n_t=int(n_t), dt_traj=dt,
                              T_max=float(m["T_max"]), diffusivity=m.get("D_intra"), seed=seed_value(m["seed"]),
-                             segments=dict(n=1, n_t=int(n_t), T=float((int(n_t) - 1) * dt),
+                             windows=dict(n=1, n_t=int(n_t), T=float((int(n_t) - 1) * dt),
                                            walks=[dict(first=0, last=0, seed=seed_value(m["seed"]))]),
                              cell_size=m.get("cell_size"),
                              substrate_frame=(None if m.get("substrate_frame") is None
@@ -2273,24 +2273,24 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         return pack
 
 
-def join_segments(packs, *, fidelity, walks, walkers_shuffled):
+def join_windows(packs, *, fidelity, walks, walkers_shuffled):
     """The packs of the consecutive windows of one walk -- each one window of the same saves, codec and band, as
     :func:`build_replay_pack` writes one -- as ONE pack's ``(arrays, meta)`` (RPK.md 4.3): window 0's tensors under the
     channel names and window ``i``'s under ``s{i}/``, the tensors the walk shares (``_SHARED_KEYS``, the field grids)
     once, refused when two windows disagree in one; the channel numbers a codec measures the worst over the windows;
-    the segment table ``{n, n_t, T, walks}``; ``fidelity`` the whole's certificate and the precision tiers read from
+    the window table ``{n, n_t, T, walks}``; ``fidelity`` the whole's certificate and the precision tiers read from
     it. The metadata is window 0's otherwise."""
     arrays = dict(packs[0].arrays)
     for i, pk in enumerate(packs[1:], start=1):
         for k, v in pk.arrays.items():
             if _is_shared_key(k):
                 if not np.array_equal(np.asarray(v), np.asarray(arrays[k])):
-                    raise ValueError(f"segment {i} disagrees with segment 0 in the shared tensor {k!r}")
+                    raise ValueError(f"window {i} disagrees with window 0 in the shared tensor {k!r}")
                 continue
             arrays[f"s{i}/{k}"] = v
     meta = json.loads(json.dumps(packs[0].meta))
     n_seg = int(packs[0].n_t); steps = n_seg - 1
-    n_segments = len(packs)
+    n_windows = len(packs)
     cm = meta["compression"]
     chans = cm.get("channels") or {}
     for c, mm in chans.items():                                   # the measured numbers: the worst over the windows
@@ -2303,37 +2303,37 @@ def join_segments(packs, *, fidelity, walks, walkers_shuffled):
     if cm.get("walker_preserving"):
         cm["precision_tiers"] = _precision_tiers(arrays, n_walkers, float(fidelity.get("floor_max") or 0.0), bool(walkers_shuffled))
     dt = float(packs[0].dt)
-    meta["walk_params"].update(n_t=int(n_segments * steps + 1), T_max=float(n_segments * steps * dt),
-                               segments=dict(n=int(n_segments), n_t=int(n_seg), T=float(steps * dt), walks=list(walks)))
+    meta["walk_params"].update(n_t=int(n_windows * steps + 1), T_max=float(n_windows * steps * dt),
+                               windows=dict(n=int(n_windows), n_t=int(n_seg), T=float(steps * dt), walks=list(walks)))
     meta["fidelity"] = fidelity
     return arrays, meta
 
 
-def _window_certificate(fidelity_from, i, n_segments):
-    """The certifying pack's certificate for window ``i`` of a segmented build: a certifying pack stored in windows
-    certifies window by window (its ``fidelity.segments[i]``, each a measured one-window certificate), so a window
+def _window_certificate(fidelity_from, i, n_windows):
+    """The certifying pack's certificate for window ``i`` of a windowed build: a certifying pack stored in windows
+    certifies window by window (its ``fidelity.windows[i]``, each a measured one-window certificate), so a window
     inherits the error of the window it mirrors and the whole's bound is the sum over the windows once, as the
     certifying pack's own is; a one-window certifying pack certifies every window with its whole. ``None`` stays
     ``None`` (a measured build). A certifying pack with another number of windows is refused by name."""
     if fidelity_from is None:
         return None
     cert = fidelity_from.meta if hasattr(fidelity_from, "meta") else dict(fidelity_from)
-    segs = (cert.get("fidelity") or {}).get("segments")
+    segs = (cert.get("fidelity") or {}).get("windows")
     if not segs:
         return cert
-    if len(segs) != int(n_segments):
-        raise ValueError(f"the certifying pack holds {len(segs)} window(s), this build {n_segments}: a window inherits the certificate "
+    if len(segs) != int(n_windows):
+        raise ValueError(f"the certifying pack holds {len(segs)} window(s), this build {n_windows}: a window inherits the certificate "
                          "of the window it mirrors")
     return dict(cert, fidelity=dict(segs[int(i)]))
 
 
-def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, scanner, blt_temporal_K, susc_path_K,
+def _build_windowed(m, n_windows, n_seg, run, walk, out_path, *, id, K, temporal_bandwidth_hz, scanner, blt_temporal_K, susc_path_K,
                      fidelity, fidelity_from, envelope, sigma_star=None, **kw):
-    """:func:`build_replay_pack` for a walk of ``n_segments`` windows of ``n_seg`` saves: every window built as a
-    pack of its own from the walk's arrays of that window (:func:`_window_master`), with segment 0's band, contact
+    """:func:`build_replay_pack` for a walk of ``n_windows`` windows of ``n_seg`` saves: every window built as a
+    pack of its own from the walk's arrays of that window (:func:`_window_master`), with window 0's band, contact
     codec and occupancy form, then assembled -- the windows' tensors under ``s{i}/`` beside the tensors the walk
     shares, the whole's positions battery measured over the full walk and its tier terms the bound over the
-    windows (:func:`combine_segment_fidelity`), every window's certificate kept under ``fidelity.segments``."""
+    windows (:func:`combine_window_fidelity`), every window's certificate kept under ``fidelity.windows``."""
     dt = float(m["dt_traj"]); steps = n_seg - 1
     T_seg = steps * dt
     comp = m.get("comp")
@@ -2346,13 +2346,13 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
     if temporal_bandwidth_hz is not None and K is None:
         K = mode_count(T_seg, temporal_bandwidth_hz=temporal_bandwidth_hz)
     packs = []
-    for i in range(n_segments):
-        run.phase(f"segment {i + 1} of {n_segments}")
+    for i in range(n_windows):
+        run.phase(f"window {i + 1} of {n_windows}")
         w = _window_master(m, i * steps, (i + 1) * steps)
-        cert_i = _window_certificate(fidelity_from, i, n_segments)
+        cert_i = _window_certificate(fidelity_from, i, n_windows)
         if i == 0:
             pk = build_replay_pack(w, id=f"{id}", K=K, scanner=scanner, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
+                                   fidelity_from=cert_i, envelope=envelope, window_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    _window_of_plan=True, **kw)
             K = int(pk.K)
             if pk.meta["compression"].get("container"):          # the container derived on window 0 is every window's
@@ -2363,18 +2363,18 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
             c2 = (pk.meta["compression"].get("channels") or {}).get("boundary_local_time")
             if c2 is not None:
                 if c2.get("mode") != "bridge_dst":
-                    raise ValueError("a walk stored in segments keeps its contact channel in the bridge form, and segment 0 chose "
+                    raise ValueError("a walk stored in windows keeps its contact channel in the bridge form, and window 0 chose "
                                      f"{c2.get('mode')!r}; pass blt_temporal_K=")
                 blt_temporal_K = int(c2["K"])
                 if c2.get("container"):
                     kw["blt_container"] = c2["container"]
         else:
             pk = build_replay_pack(w, id=f"{id}", K=K, scanner=scanner, blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K, fidelity=fidelity,
-                                   fidelity_from=cert_i, envelope=envelope, segment_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
+                                   fidelity_from=cert_i, envelope=envelope, window_T=T_seg, _occupancy_runs=crosses, sigma_star=sigma_star,
                                    _window_of_plan=True, voxel_grid=None, **{k_: v_ for k_, v_ in kw.items() if k_ != "voxel_grid"})
         packs.append(pk)
     # the whole: the positions battery measured over the full walk (the walk is in hand), the tier terms bounded
-    fid = combine_segment_fidelity([pk.meta["fidelity"] for pk in packs])
+    fid = combine_window_fidelity([pk.meta["fidelity"] for pk in packs])
     if fidelity == "measured":
         run.phase("certificate whole")
         X = np.asarray(m["traj"], np.float64)
@@ -2385,12 +2385,12 @@ def _build_segmented(m, n_segments, n_seg, run, walk, out_path, *, id, K, tempor
         tier_floor = [fid[k] for k in fid if k.startswith("floor_") and k != "floor_max"]
         fid.update(per_family=whole["per_family"], noise_floor=whole["noise_floor"],
                    err_max=float(max([whole["err_max"]] + tier_err)), floor_max=float(max([whole["floor_max"]] + tier_floor)),
-                   certified="measured", positions="measured over the whole walk", tiers="bounded over the segments")
+                   certified="measured", positions="measured over the whole walk", tiers="bounded over the windows")
         fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
     if sigma_star is not None:                                 # the floor-target policy's verdict on the whole
         fid.update(target_floor=float(sigma_star), meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
     fid = _round_certificate(fid)
-    arrays, meta = join_segments(packs, fidelity=fid, walks=[dict(first=0, last=int(n_segments) - 1, seed=seed_value(m["seed"]))],
+    arrays, meta = join_windows(packs, fidelity=fid, walks=[dict(first=0, last=int(n_windows) - 1, seed=seed_value(m["seed"]))],
                                  walkers_shuffled=bool(m.get("walkers_shuffled")))
     # meta["provenance"]["code"] is already window 0's (every window is itself a build_replay_pack call, #541)
     run.phase("write")

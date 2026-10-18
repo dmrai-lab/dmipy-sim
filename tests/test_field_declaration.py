@@ -101,7 +101,7 @@ def test_absent_refuses_a_tissue_chi(absent):
     with pytest.raises(ValueError, match="field absent"):
         pk.pose_response(seq, tissue=MYELIN, scanner=3.0, keep=(4, 0))
     with pytest.raises(ValueError, match="field absent"):
-        pk.walker_primitives(Acquisition(seq)).signal(MYELIN, 3.0)          # the study / columnar / shape-moment route
+        pk.walker_primitives(Acquisition(seq)).signal(MYELIN, 3.0)          # the study / columnar / time-segment route
     with pytest.raises(ValueError, match="field absent"):
         FreeWater(m0=1.0, tissue=Tissue(D=3e-9, chi_iso=1e-7))
 
@@ -271,10 +271,10 @@ def _columnar_dir(tmp, base, spec, stored):
 
 
 def _moments_dir(tmp, spec, stored):
-    """A tier shape-moment layout's manifest under ``spec``, its one group storing field columns or not."""
+    """A tier time-segment layout's manifest under ``spec``, its one group storing field columns or not."""
     import json
     from dmipy_sim.phantom import Grid
-    from dmipy_sim.replay.shape_moments import FORMAT, TILE
+    from dmipy_sim.replay.time_segments import FORMAT, TILE
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "manifest.json").write_text(json.dumps(dict(
         format=FORMAT, n_rows=0, n_tiles=0, tile=TILE, columns=dict(w="w.npy", tiles="tiles.npy"),
@@ -286,17 +286,17 @@ def _moments_dir(tmp, spec, stored):
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_layouts_refuse_every_mismatch_on_every_surface_kind(kind, surface_specs, absent, present, tmp_path):
     from dmipy_sim.replay.columnar import ColumnarPack
-    from dmipy_sim.replay.shape_moments import ShapeMoments
+    from dmipy_sim.replay.time_segments import TimeSegmentLayout
     spec, pool = surface_specs[kind]
     for i, ((mag, tier, stored), msg) in enumerate(MISMATCHES):
         v = _variant(spec, pool, mag, tier)
         with pytest.raises(SpecError, match=msg):
             ColumnarPack(_columnar_dir(tmp_path / f"col{i}", (present if stored else absent)[0], v, stored))
         with pytest.raises(SpecError, match=msg):
-            ShapeMoments(_moments_dir(tmp_path / f"sm{i}", v, stored))
+            TimeSegmentLayout(_moments_dir(tmp_path / f"sm{i}", v, stored))
     ok = ColumnarPack(_columnar_dir(tmp_path / "col_ok", present[0], _variant(spec, pool, True, True), True))
     assert ok.susceptibility_field == "present"
-    assert ShapeMoments(_moments_dir(tmp_path / "sm_ok", _variant(spec, pool, False, False), False)).susceptibility_field == "absent"
+    assert TimeSegmentLayout(_moments_dir(tmp_path / "sm_ok", _variant(spec, pool, False, False), False)).susceptibility_field == "absent"
 
 
 def test_a_spec_on_its_own_holds_the_pool_and_tier_half():

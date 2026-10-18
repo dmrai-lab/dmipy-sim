@@ -93,7 +93,7 @@ def test_publish_puts_the_file_the_manifest_row_and_the_card_up_in_one_commit(pa
     # read fresh -- dmipy-sim#499) are two different facts, never one unlabelled "commit"; run straight through
     # in one worktree they name the same commit
     assert len(row["published_commit"]) == 40 and row["published_commit"] == row["built_commit"]
-    assert row["segments"]["n"] == 1                                      # every pack declares its table (RPK.md 4.3)
+    assert row["windows"]["n"] == 1                                      # every pack declares its table (RPK.md 4.3)
     assert man["substrate"]["id"] == "analytic/cylinder" and [p["name"] for p in man["substrate"]["pools"]] == ["extra", "intra"]
     readme = open(os.path.join(hub.root, "README.md")).read()
     assert readme.startswith("---\nlicense: cc-by-4.0\npretty_name: packs\n---\n")
@@ -183,12 +183,12 @@ def test_a_pack_without_its_contract_is_refused(hub, tmp_path):
     assert not hub.log and not hub.exists("manifest.json")
 
 
-def test_segments_are_carried_into_the_row_and_the_card(pack, hub):
+def test_windows_are_carried_into_the_row_and_the_card(pack, hub):
     p = ReplayPack(pack.arrays, pack.meta)
-    p.meta["walk_params"] = dict(pack.meta["walk_params"], segments=dict(n=4, n_t=3, T=1e-3, seeds=[1, 2, 3, 4]))
+    p.meta["walk_params"] = dict(pack.meta["walk_params"], windows=dict(n=4, n_t=3, T=1e-3, seeds=[1, 2, 3, 4]))
     pub.publish(p, REPO, hub=hub)
     row = _manifest(hub)["packs"][0]
-    assert row["segments"] == dict(n=4, n_t=3, T=1e-3, seeds=[1, 2, 3, 4])
+    assert row["windows"] == dict(n=4, n_t=3, T=1e-3, seeds=[1, 2, 3, 4])
     assert "| 4 ms (4 × 1 ms) |" in open(os.path.join(hub.root, "README.md")).read()
 
 
@@ -200,6 +200,33 @@ class _CorruptingHub(FakeHub):
         for r in adds:
             if r.endswith(".rpk"):
                 b = bytearray(open(self._p(r), "rb").read()); b[-1] ^= 0xFF; open(self._p(r), "wb").write(b)
+
+
+def test_a_local_dataset_copy_is_restamped_in_place(pack, hub, tmp_path):
+    """``restamp_dataset`` on a copy whose pack and row still say ``segments``: the pack's header is restamped, the
+    row says ``windows`` with the new file's sha256 and bytes, the card is re-rendered; a second run changes nothing,
+    and a copy missing a pack it names is refused before anything is written."""
+    import copy, json, shutil
+    from dmipy_sim.replay.publish import manifest_row, render_readme, restamp_dataset, sha256_of
+    from dmipy_sim.replay.replay import read_rpk, write_rpk
+    root = tmp_path / "copy"; (root / "packs").mkdir(parents=True)
+    meta = copy.deepcopy(pack.meta); meta["walk_params"]["segments"] = meta["walk_params"].pop("windows")
+    local = root / "packs" / "p.rpk"; write_rpk(local, pack.arrays, meta)
+    row = manifest_row(pack.meta, "packs/p.rpk", sha256_of(str(local)), local.stat().st_size)
+    row["segments"] = row.pop("windows")
+    (root / "manifest.json").write_text(json.dumps({"schema": "substratecommons/1", "packs": [row]}))
+    out = restamp_dataset(str(root), "o/d")
+    r = out["packs"][0]
+    assert "segments" not in r and r["windows"] == pack.windows
+    assert r["sha256"] == sha256_of(str(local)) and r["bytes"] == local.stat().st_size
+    assert read_rpk(local).windows == pack.windows
+    assert (root / "README.md").read_text() == render_readme(out, "o/d")
+    before = (root / "manifest.json").read_text()
+    restamp_dataset(str(root), "o/d")
+    assert (root / "manifest.json").read_text() == before
+    gone = tmp_path / "gone"; shutil.copytree(root, gone); (gone / "packs" / "p.rpk").unlink()
+    with pytest.raises(ValueError, match="does not hold"):
+        restamp_dataset(str(gone), "o/d")
 
 
 def test_publish_verifies_what_the_hub_holds(pack, tmp_path):
@@ -256,7 +283,7 @@ def test_a_phantom_substrate_cites_a_published_pack_by_its_uri(monkeypatch):
     from dmipy_sim.phantom import PackSubstrate
     from dmipy_sim.replay.replay import ReplayPack
     seen = {}
-    fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"id": "o/p", "walk_params": {"n_t": 3, "segments": {"n": 1, "n_t": 3, "T": 1e-3, "walks": []}}})
+    fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"id": "o/p", "walk_params": {"n_t": 3, "windows": {"n": 1, "n_t": 3, "T": 1e-3, "walks": []}}})
     monkeypatch.setattr(ReplayPack, "load", classmethod(lambda cls, uri: seen.setdefault("uri", uri) and fake))
     sub = PackSubstrate("hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk", m0=1.0)
     assert sub.uri.startswith("hf://") and sub.name == "100ms_K48"
