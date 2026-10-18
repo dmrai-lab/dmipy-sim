@@ -16,9 +16,8 @@ T, DT, N = 4e-3, 1e-3, 64
 
 
 def cost(g, T_max=T, dt=DT, n=N, **kw):
-    """``walk_cost`` on the test's save grid and no scanner class (the save grid's Nyquist band)."""
-    kw.setdefault("scanner", None)
-    return d.walk_cost(g, D, n, T_max=T_max, dt_save=dt, **kw)
+    """``walk_cost`` of the walk ``simulate_trajectories(n, D, g, T_max, dt, **kw)``."""
+    return d.walk_cost(n, D, g, T_max, dt, **kw)
 
 
 def _pack():
@@ -55,7 +54,7 @@ def test_cost_follows_the_walks_keywords():
     free = cost(g, tiers=())
     assert "surface local time" not in free.sub_step_rules
     assert "surface local time" in cost(g).sub_step_rules
-    assert cost(g, scanner="prisma").sub_steps <= cost(g).sub_steps
+    assert cost(g, f_band=100.0).sub_steps <= cost(g).sub_steps
     assert cost(g, walker_batch_size=20).walker_batches == 4
     assert cost(g, walker_batch_size=None).walker_batches == 1
     with pytest.raises(TypeError, match="does not take"):
@@ -154,7 +153,7 @@ def test_measure_projects_the_walk():
     assert m.seconds_per_walker_step > 0 and m.projected_s > 0
     assert m.batch == 1000 and m.pilot_saves[0] == 1 and 1 < m.pilot_saves[1] <= p.n_saves - 1
     assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_save * (p.n_saves - 1)))
-    assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).scaling is None
+    assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).profile is None
     # within 2x of a measured walk of the same shape (compile excluded)
     d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
     t0 = time.perf_counter()
@@ -163,12 +162,12 @@ def test_measure_projects_the_walk():
     assert real / 2 < m.projected_s < real * 2
 
 
-def test_scaling_times_the_pilot_at_several_batches(monkeypatch):
+def test_profile_times_the_pilot_at_several_batches(monkeypatch):
     from dmipy_sim.engine import core
     g = d.Sphere(radius=2e-6)
     monkeypatch.setattr(core, "_free_device_bytes", lambda: None)
-    p = cost(g, 8e-3, 1e-3, 400, walker_batch_size=200, measure="scaling")
-    s = p.scaling
+    p = cost(g, 8e-3, 1e-3, 400, walker_batch_size=200, measure="profile")
+    s = p.profile
     assert sorted(s.walker_steps_per_s) == [100, 200, 400, 800]
     assert s.plateau_walker_steps_per_s == max(s.walker_steps_per_s.values())
     assert s.batch_fraction_of_plateau == pytest.approx(s.walker_steps_per_s[200] / s.plateau_walker_steps_per_s)
@@ -178,7 +177,7 @@ def test_scaling_times_the_pilot_at_several_batches(monkeypatch):
     # a device that holds 1.5 batches: 2B does not fit
     per = core._device_bytes_per_walker(core._resolve_walk(g, D, 8e-3, 1e-3))
     monkeypatch.setattr(core, "_free_device_bytes", lambda: int(1.5 * 200 * per))
-    q = cost(g, 8e-3, 1e-3, 400, walker_batch_size=200, measure="scaling").scaling
+    q = cost(g, 8e-3, 1e-3, 400, walker_batch_size=200, measure="profile").profile
     assert sorted(q.walker_steps_per_s) == [100, 200] and q.verdict == "memory-bound"
     assert q.max_batch_memory == 300
 
@@ -188,32 +187,26 @@ def test_a_cost_is_frozen_and_its_row_is_its_fields():
     p = cost(d.Sphere(radius=2e-6))
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.sub_steps = 1
-    assert p.dt_save_rule == "given" and p.scanner is None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.profile = None
 
 
-def test_dt_save_none_is_the_scanners_save_interval():
-    from dmipy_sim.acquisition.scanners import save_interval
-    g = d.Sphere(radius=2e-6)
-    c = d.walk_cost(g, D, N, T_max=T, scanner="prisma")
-    assert c.dt_save == save_interval(T, N, "prisma", D=D, field=False)
-    assert c.dt_save_rule == "save_interval(prisma)" and c.scanner == "prisma"
-    given = d.walk_cost(g, D, N, T_max=T, scanner="prisma", dt_save=DT)
-    assert given.dt_save == DT and given.dt_save_rule == "given"
-    # a stronger gradient needs a finer save grid: more saves, more bytes per walker
-    strong = d.walk_cost(g, D, N, T_max=T, scanner="connectome_2")
-    assert strong.dt_save < c.dt_save and strong.n_saves > c.n_saves and strong.bytes_per_walker > c.bytes_per_walker
-    with pytest.raises(ValueError, match="name a scanner"):
-        d.walk_cost(g, D, N, T_max=T, scanner=None)
+def test_the_cost_takes_the_walks_arguments():
+    import inspect
+    sig, walk = inspect.signature(d.walk_cost).parameters, inspect.signature(d.simulate_trajectories).parameters
+    assert list(sig)[:5] == list(walk)[:5] == ["n_walkers", "diffusivity", "geometry", "T_max", "dt_save"]
+    assert sig["walker_batch_size"].default == walk["walker_batch_size"].default
+    kw = dict(n_walkers=N, diffusivity=D, geometry=d.Sphere(radius=2e-6), T_max=T, dt_save=DT, tiers=())
+    assert d.walk_cost(**kw).sub_steps == d.simulate_trajectories(**kw).sub_steps
 
 
-def test_the_scanners_band_reaches_the_sub_step_rules():
-    from dmipy_sim.replay.bank import class_band
+def test_the_band_is_the_walks():
     from dmipy_sim.engine.physics import sub_step_rules
     g = d.Sphere(radius=20e-6)                  # a pore so wide that the band, not the pore, sizes the step
-    c = d.walk_cost(g, D, N, T_max=T, scanner="prisma", dt_save=DT)
-    assert c.f_band_hz == class_band("prisma") != 0.5 / DT
-    assert c.sub_step_rules == sub_step_rules(g, D, DT, surface=True, f_band=class_band("prisma"))
-    assert c.sub_step_rules != cost(g).sub_step_rules and cost(g).f_band_hz == 0.5 / DT
+    assert cost(g).f_band_hz == 0.5 / DT        # the save grid's Nyquist frequency, as the walk takes it
+    c = cost(g, f_band=1280.0)
+    assert c.f_band_hz == 1280.0 and c.sub_step_rules == sub_step_rules(g, D, DT, surface=True, f_band=1280.0)
+    assert c.sub_steps == d.simulate_trajectories(N, D, g, T, DT, f_band=1280.0).sub_steps
 
 
 def test_the_sweep_stops_after_the_rate_falls_and_recommends_the_fastest():
@@ -236,32 +229,33 @@ def test_the_verdict_is_the_doubling_at_the_recommended_batch(monkeypatch):
     g = d.Sphere(radius=2e-6)
     res = core._resolve_walk(g, D, 2e-3, 1e-3)
     # nearly free doubling -> under-filled; a proportional one -> saturated; 2B beyond the device -> memory-bound
-    assert core._scaling({100: 1.0, 200: 1.1}, 100, res, None, "given").verdict == "under-filled"
-    assert core._scaling({100: 1.0, 200: 1.2}, 100, res, None, "given").verdict == "saturated"
-    assert core._scaling({100: 1.0}, 100, res, 150, "given").verdict == "memory-bound"
-    assert core._scaling({100: 1.0}, 100, res, None, "given").verdict == "unresolved"
+    assert core._profile({100: 1.0, 200: 1.1}, 100, res, None, "given").verdict == "under-filled"
+    assert core._profile({100: 1.0, 200: 1.2}, 100, res, None, "given").verdict == "saturated"
+    assert core._profile({100: 1.0}, 100, res, 150, "given").verdict == "memory-bound"
+    assert core._profile({100: 1.0}, 100, res, None, "given").verdict == "unresolved"
 
 
 def test_no_batch_given_is_n_walkers_capped_by_memory(monkeypatch):
     from dmipy_sim.engine import core
     g = d.Sphere(radius=2e-6)
     monkeypatch.setattr(core, "_free_device_bytes", lambda: None)
-    c = cost(g)
+    assert cost(g).walker_batch_rule == "given"                      # the walk's own default batch
+    c = cost(g, walker_batch_size=None)
     assert c.walker_batch_size == N and c.walker_batches == 1 and c.walker_batch_rule == "n_walkers capped by memory"
     per = c.bytes_per_walker
     monkeypatch.setattr(core, "_free_device_bytes", lambda: 20 * per)
-    c = cost(g)
+    c = cost(g, walker_batch_size=None)
     assert c.walker_batch_size == 20 and c.walker_batches == 4 and c.walker_batch_rule == "n_walkers capped by memory"
     assert cost(g, walker_batch_size=30).walker_batch_rule == "given"
 
 
-def test_scaling_finds_the_batch_within_the_memory_cap(monkeypatch):
+def test_profile_finds_the_batch_within_the_memory_cap(monkeypatch):
     from dmipy_sim.engine import core
     g = d.Sphere(radius=2e-6)
     per = core._device_bytes_per_walker(core._resolve_walk(g, D, 2e-3, 1e-3))
     monkeypatch.setattr(core, "_free_device_bytes", lambda: int(9000.5 * per))
-    c = cost(g, 2e-3, 1e-3, 20000, measure="scaling")
-    s = c.scaling
+    c = cost(g, 2e-3, 1e-3, 20000, walker_batch_size=None, measure="profile")
+    s = c.profile
     assert s.max_batch_memory == 9000
     assert set(s.seconds_per_save) <= {4096, 8192, 9000, 18000}          # the sweep stays within the cap; 2B is timed only if it fits
     assert 18000 not in s.seconds_per_save
