@@ -1,7 +1,8 @@
 """The walk's band accumulation: what a coefficient walk (``simulate_trajectories(accumulate=K)``) carries per walker
 in place of its saves.
 
-A walk runs in blocks of ``h`` seconds. Inside a block the step scan adds, per walker, the moments of each channel's
+A walk runs in blocks of ``h`` seconds, the band's own unless given (:func:`block_length`: ``omega_K h =``
+:data:`BLOCK_OMEGA_H` at the top band, the table's order :data:`BLOCK_ORDER`). Inside a block the step scan adds, per walker, the moments of each channel's
 increments about the block's centre in the block's own unit ``tau = (t - t_b) / h`` (each step at its midpoint):
 ``M_j += tau^j dx`` for the positions and ``B_j += tau^j dlog`` for the local time, ``j = 0..m`` (:func:`moment_scan`).
 At the end of every :data:`RING` blocks the ring's moments are projected onto the ``K + 1`` cosine modes as one
@@ -18,6 +19,24 @@ import numpy as np
 
 #: blocks per ring: the projection's inner sum and the stride of the level-2 chain
 RING = 16
+
+#: the block table's order a coefficient walk takes by default (dmipy-sim-cuda#74)
+BLOCK_ORDER = 3
+
+#: ``omega_K h`` at the top band of the block a coefficient walk takes by default: with ``m = 3`` the quadrature adds
+#: ``quadrature_rel(3, h, omega_K) = 0.8^8 / 1327104 = 1.3e-7`` of the top band's phase variance, for every class
+#: (measured 1.41e-7 on a T4, dmipy-sim-cuda#74)
+BLOCK_OMEGA_H = 0.8
+
+
+def block_length(T, K):
+    """The block of a coefficient walk of ``K`` bands over ``T`` seconds when none is given: ``h = BLOCK_OMEGA_H T /
+    (pi K)``, so that ``omega_K h = 0.8`` at the top band ``omega_K = pi K / T``, rounded to a whole number of blocks
+    over the walk (``T / round(T / h)``) -- 100 us at K = 256 over 100 ms. The band sets it, never the walker count or
+    the step: the quadrature it costs is the same fraction of the top band for every scanner class."""
+    h = float(BLOCK_OMEGA_H) * float(T) / (np.pi * int(K))
+    return float(T) / max(int(round(float(T) / h)), 1)
+
 
 #: what the walk records as its accumulation precision (``CoefficientWalk.block["precision"]``)
 PRECISION = f"float32: the moments of each block summed per step, a ring of {RING} blocks projected in one product, the rings chained into a level-2 accumulator"

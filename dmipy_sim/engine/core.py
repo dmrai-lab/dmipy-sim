@@ -981,20 +981,32 @@ class WalkResolution(NamedTuple):
     request: object           #: the :class:`~dmipy_sim.engine.backends.WalkRequest` of this walk
     jax_only: list            #: what this walk uses that only the JAX kernels implement
     accumulate: object = None #: the bands a coefficient walk accumulates per axis and channel, or None (a walk of saves)
-    block_order: int = 1      #: the order ``m`` of the block table of a coefficient walk
+    block_order: int = 3      #: the order ``m`` of the block table of a coefficient walk
+    block_rule: str = None    #: how a coefficient walk's block was set: ``"derived"`` (omega_K h = BLOCK_OMEGA_H) or ``"given"``
 
 
 def _resolve_walk(geometry, diffusivity, T_max, dt_save, *, tiers="all", sub_steps=None, kappa_MT=0.0, dwell_time=0.0,
-                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, accumulate=None, block_order=1):
+                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, accumulate=None, block_order=None):
     """The resolution every trajectory walk shares: the save grid (a coefficient walk's blocks), the sub-step count
     (``physics.resolve_sub_steps`` over the rules ``physics.sub_step_rules``), the geometries this walk cannot
     represent (refused), and the :class:`WalkResolution` a backend is handed. :func:`simulate_trajectories` walks what
     this returns and :func:`walk_cost` reports it, so a cost and a walk state one count."""
     record = _record_channels(tiers)
-    n_t = int(round(T_max / dt_save)) + 1
+    block_rule = None
+    if accumulate is not None and dt_save is None:
+        # the block is the band's (#740, dmipy-sim-cuda#74): omega_K h = BLOCK_OMEGA_H at the top band, n_blocks whole
+        from .accumulate import block_length
+        dt_save, block_rule = block_length(T_max, accumulate), "derived"
+    elif accumulate is not None:
+        block_rule = "given"
+    if dt_save is None:
+        raise ValueError("a walk of saves needs dt_save; a coefficient walk (accumulate=K) derives its block when none is given")
+    n_t = max(int(round(T_max / dt_save)), 1) + 1
     dt_actual = T_max / (n_t - 1)
     if accumulate is not None:
-        accumulate, block_order = int(accumulate), int(block_order)
+        from .accumulate import BLOCK_ORDER
+        accumulate = int(accumulate)
+        block_order = BLOCK_ORDER if block_order is None else int(block_order)
         if accumulate < 1:
             raise ValueError(f"accumulate is the number of bands a walk accumulates, at least 1; got {accumulate}")
         if not 0 <= block_order <= 3:
@@ -1056,7 +1068,7 @@ def _resolve_walk(geometry, diffusivity, T_max, dt_save, *, tiers="all", sub_ste
         kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
         count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed))
     return WalkResolution(record, n_t, dt_actual, f_band, dict(rules), override, int(n_sub), dt_sim, step_rule, binding,
-                          ls, request, jax_only, accumulate, int(block_order))
+                          ls, request, jax_only, accumulate, (None if block_order is None else int(block_order)), block_rule)
 
 
 def _backend_refusal(backend, name, res, geometry):
@@ -1277,7 +1289,7 @@ def _fit_saves(seconds, batch, max_saves):
     return per, max(t1 - per, 0.0), (1, n2)
 
 
-def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_size=DEFAULT_WALKER_BATCH,
+def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save=None, *, walker_batch_size=DEFAULT_WALKER_BATCH,
               backend=None, measure=False, **walk_kwargs):
     """What a trajectory walk costs, stated before it runs: a :class:`WalkCost`.
 
@@ -1339,7 +1351,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_
                             dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
                             enforce_compartment=kw.get("enforce_compartment", False),
                             field_basis=kw.get("field_basis"), accumulate=kw.get("accumulate"),
-                            block_order=kw.get("block_order", 1))
+                            block_order=kw.get("block_order"))
         if be is not None:
             refusal = _backend_refusal(be, name, res, geometry)
             if refusal:
@@ -1409,7 +1421,7 @@ def simulate_trajectories(
     diffusivity: float,
     geometry,
     T_max: float,
-    dt_save: float,
+    dt_save: float = None,
     seed: int = 42,
     walker_batch_size: int = DEFAULT_WALKER_BATCH,
     tiers="all",
@@ -1421,7 +1433,7 @@ def simulate_trajectories(
     dwell_time: float = 0.0,
     equilibrate_binding="auto",
     accumulate: int = None,
-    block_order: int = 1,
+    block_order: int = None,
     raw_subset: int = 0,
     enforce_compartment: bool = False,
     field_basis=None,
@@ -1464,7 +1476,8 @@ def simulate_trajectories(
     T_max : float
         Total simulation duration in seconds.
     dt_save : float
-        Time step between saved positions in seconds.
+        Time step between saved positions in seconds; for a coefficient walk (``accumulate=K``) the block length,
+        which is the band's when not given (:func:`~dmipy_sim.engine.accumulate.block_length`).
     seed : int
         Master PRNG seed.
     walker_batch_size : int
@@ -1520,7 +1533,10 @@ def simulate_trajectories(
     accumulate : int, optional
         Walk as a COEFFICIENT walk: the ``K`` bands of the bridge per axis (and of the cumulative local time) are
         accumulated while the walk runs, and nothing is stored per save (:mod:`dmipy_sim.engine.accumulate`). The walk
-        runs in blocks of ``h = dt_save``; inside a block the steps add the moments of their increments about the
+        runs in blocks of ``h``: ``dt_save`` when given, else the band's own, ``omega_K h = 0.8`` at the top band
+        ``omega_K = pi K / T_max`` in ``round(T_max / h)`` blocks of one whole step count each
+        (:func:`~dmipy_sim.engine.accumulate.block_length`; 100 us at K = 256 over 100 ms); the walk records the block
+        and how it was set (``CoefficientWalk.block``). Inside a block the steps add the moments of their increments about the
         block's centre, and every ring of blocks is projected onto the cosine basis
         (:func:`~dmipy_sim.replay.compression.block_table`) into a float32 level-2 accumulator; at the end of a
         batch the projections become the bridge's sine bands by integration by parts
@@ -1530,9 +1546,10 @@ def simulate_trajectories(
         myelinated kernels and MT binding; the field samples (``field_basis=``) and the other backends are refused
         by name. :func:`~dmipy_sim.replay.bank.build_replay_pack` takes the walk.
     block_order : int
-        The order ``m`` of the block table: ``1`` (the default) the continuous basis with the quadrature error
-        :func:`~dmipy_sim.replay.compression.quadrature_rel`; ``0`` the DST-I of the walk at its block ends exactly,
-        the pack of a walk stored at ``dt_save``.
+        The order ``m`` of the block table, :data:`~dmipy_sim.engine.accumulate.BLOCK_ORDER` = 3 by default: the
+        continuous basis with the quadrature error :func:`~dmipy_sim.replay.compression.quadrature_rel` (at the
+        derived block 1.3e-7 of the top band's phase variance); ``m >= 1`` any order up to 3; ``0`` the DST-I of the
+        walk at its block ends exactly, the pack of a walk stored at ``dt_save``.
     raw_subset : int
         With ``accumulate``, keep the first ``raw_subset`` walkers' positions at the block ends beside the
         coefficients, for a measured certificate (``CoefficientWalk.raw_positions``).
@@ -1607,7 +1624,7 @@ def simulate_trajectories(
         _acc = accumulate is not None
         if _acc:
             from .accumulate import moment_scan as _moment_scan
-            _m_blk = int(block_order)
+            _m_blk = int(res.block_order)
             _iscan_gen = lambda inner, init, n, read: _moment_scan(inner, init, n, lambda c: c[0], None, _m_blk)
             _iscan_relax = lambda inner, init, n, read: _moment_scan(inner, init, n, lambda c: c[0], lambda c: c[2], _m_blk)
             _iscan_pm = lambda inner, init, n, read: _moment_scan(inner, init, n, lambda c: c[1], lambda c: c[3], _m_blk)
@@ -2088,7 +2105,7 @@ def simulate_trajectories(
             from .accumulate import ring_scan, coefficient_form, PRECISION, RING
             from ..replay.compression import cosine_band_scale
             from ..coefficient_walk import CoefficientWalk
-            K, m = int(accumulate), int(block_order)
+            K, m = int(accumulate), int(res.block_order)
             n_blocks = int(n_t) - 1
             basis = "dst1" if m == 0 else "continuous"
             scale = jnp.asarray(cosine_band_scale(basis, K, n_t, float(T_max)), jnp.float32)
@@ -2203,7 +2220,7 @@ def simulate_trajectories(
                 warnings.warn(f"{n_dev} walker-blocks ended on a pool label other than the walker's own on a substrate no walker "
                               f"leaves its pool in; the walk records each walker's start label (CoefficientWalk.compartment)",
                               RuntimeWarning, stacklevel=2)
-            block = dict(h=float(dt_actual), m=m, n_blocks=n_blocks, ring=int(RING), precision=PRECISION,
+            block = dict(h=float(dt_actual), m=m, n_blocks=n_blocks, rule=res.block_rule, ring=int(RING), precision=PRECISION,
                          k0_residual_m=float(np.abs(resid).max()) if resid.size else 0.0,
                          k0_residual_relative=(float(np.abs(resid).max() / max(np.sqrt(np.mean(disp ** 2)), 1e-300))
                                                if resid.size else 0.0))

@@ -106,7 +106,7 @@ def exactness(names=None, *, n=400, T=0.01, dt_save=2e-4, K=24, sub_steps=4, see
 
 
 # ------------------------------------------------------------------------------------------------- the quadrature
-def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-5), (1, 2e-5), (1, 4e-5), (2, 5e-5)),
+def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-5), (1, 2e-5), (2, 5e-5), (3, 1e-4)),
                n=2000, seed=5, env=None):
     """The phase variance the block accumulation at each ``(m, h)`` of ``cases`` adds per measurement of the battery,
     against the same walk accumulated per step (``h = dt_sim``; the same seed, starts and steps), all read on the
@@ -208,8 +208,9 @@ def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, dt_saves=(5e-4, 1.25e-4, 3
 
 
 # -------------------------------------------------------------------------------------------------------- the oracle
-def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=2e-5, seed=1):
-    """A sphere (radius 4 um) and a cylinder (radius 3 um) walked as coefficient walks, packed on the continuous basis
+def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=None, seed=1):
+    """A sphere (radius 4 um) and a cylinder (radius 3 um) walked as coefficient walks (the band's own block and
+    order unless ``dt_save`` gives the block), packed on the continuous basis
     and replayed under a cosine OGSE at ``f`` -- a band the pack's ``K`` only just holds -- against the matrix method
     (``dmipy_sim.math.matrix_method``) on the same waveform. Per pore and measurement: both signals, the difference and
     the standard error of the replay's ensemble mean."""
@@ -231,6 +232,7 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=2e-5, seed=1):
         Sm = np.array([abs(pore.signal(np.asarray(seq.G_eff)[i, :, 0], seq.dt)) for i in range(seq.G_eff.shape[0])])
         out[name] = dict(replay=S.tolist(), matrix_method=Sm.tolist(), diff=(S - Sm).tolist(), se=se.tolist(),
                          band_needed=pk.waveform_band(seq)[1], K=pk.K, basis=pk.meta["compression"]["basis"],
+                         block=dict(m=cw.block["m"], h=cw.block["h"], rule=cw.block["rule"]), sub_steps=cw.sub_steps,
                          certificate=dict(err_max=pk.fidelity["err_max"], floor_max=pk.fidelity["floor_max"]))
     return out
 

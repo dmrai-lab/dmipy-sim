@@ -44,7 +44,10 @@ def test_the_page_runs(page, basis, tmp_path, monkeypatch):
         walk = dmipy_sim.simulate_trajectories
 
         def accumulated(*args, **kw):
+            # the page's save interval gives way to the band's own block (accumulate=K alone)
             kw.setdefault("accumulate", GUIDE_ACCUMULATE)
+            args = args[:4] + args[5:]
+            kw.pop("dt_save", None)
             return walk(*args, **kw)
         monkeypatch.setattr(dmipy_sim, "simulate_trajectories", accumulated)
     ns = {"__name__": "__docs__", "__file__": str(page)}

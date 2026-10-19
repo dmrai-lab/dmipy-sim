@@ -107,10 +107,10 @@ def test_the_quadrature_is_bounded_absolutely(which):
     table's prediction (the measurement the table predicts largest, within the variance estimate's spread); on the slab
     the error RELATIVE to a mode's own variance is several times the table, which is why the statement is absolute."""
     geom = d.FreeDiffusion() if which == "free" else d.Box1D(length=0.8e-6)
-    rows = _quiet(_tool().quadrature, geom, T=0.01, dt_sim=1e-6, K=48, cases=((0, 2e-5), (1, 2e-5), (1, 4e-5)), n=1500)
+    rows = _quiet(_tool().quadrature, geom, T=0.01, dt_sim=1e-6, K=48, cases=((1, 2e-5), (2, 5e-5), (3, 1e-4)), n=1500)
     for r in rows:
         assert r["within_bound"], r
-        if which == "free":
+        if which == "free" and r["predicted_largest"] > 1e-10:                        # above the float32 phase rounding
             assert 0.75 <= r["ratio_at_largest_prediction"] <= 1.3, r
     if which != "free":
         assert all(r["relative_vs_table_top_modes"] > 2.0 for r in rows), rows
@@ -120,9 +120,9 @@ def test_the_quadrature_is_bounded_absolutely(which):
 def test_sphere_and_cylinder_agree_with_the_matrix_method():
     """A sphere and a cylinder replayed from their accumulated packs (the continuous basis) under a cosine OGSE that the
     pack's band only just holds agree with the matrix method within the replay's own Monte-Carlo floor."""
-    res = _quiet(_tool().oracle, n=6000, K=80)
+    res = _quiet(_tool().oracle, n=6000, K=80)                                       # the band's own block and order
     for name, r in res.items():
-        assert r["basis"] == "continuous" and r["band_needed"] <= r["K"], (name, r)
+        assert r["basis"] == "continuous" and r["band_needed"] <= r["K"] and r["block"]["m"] == 3, (name, r)
         for diff, se in zip(r["diff"], r["se"]):
             assert abs(diff) <= 3.0 * se + 2e-3, (name, r)
 
@@ -139,6 +139,24 @@ def test_the_walks_host_bytes_do_not_grow_with_the_save_interval():
     assert grown > 5e6
     assert max(acc) - min(acc) < 0.25 * grown, (acc, [r["host_peak_over_base"] for r in saves])
     assert saves[-1]["host_peak_over_base"] - saves[0]["host_peak_over_base"] > 0.5 * grown, rows
+
+
+def test_accumulate_alone_takes_the_bands_own_block():
+    """``accumulate=K`` alone: the block order 3 and the block ``h = 0.8 T / (pi K)`` in a whole number of blocks of one
+    step count each, recorded in the walk; a given ``dt_save`` and ``block_order`` are the block instead."""
+    from dmipy_sim.engine.accumulate import block_length, BLOCK_ORDER
+    g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
+    T, K = 0.01, 32
+    cw = _quiet(d.simulate_trajectories, 50, 2e-9, g, T, accumulate=K, require_gpu=False)
+    n = int(round(T * np.pi * K / (0.8 * T)))
+    assert BLOCK_ORDER == 3 and cw.m == 3 and cw.basis == "continuous" and cw.block["rule"] == "derived"
+    assert cw.n_blocks == n and cw.dt == pytest.approx(T / n) == pytest.approx(block_length(T, K))
+    assert np.pi * K / T * cw.dt == pytest.approx(0.8, rel=0.01)
+    assert cx.quadrature_rel(3, cw.dt, np.pi * K / T) == pytest.approx(1.3e-7, rel=0.05)
+    given = _quiet(d.simulate_trajectories, 50, 2e-9, g, T, 2e-4, accumulate=K, block_order=1, require_gpu=False)
+    assert (given.m, given.dt, given.block["rule"]) == (1, pytest.approx(2e-4), "given")
+    with pytest.raises(ValueError, match="dt_save"):
+        d.simulate_trajectories(50, 2e-9, g, T, require_gpu=False)
 
 
 def test_walk_cost_states_the_accumulators():
@@ -169,7 +187,8 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
     pk = build_replay_pack(cw, id="t/derived", license="x", citation="x")
     fid = pk.fidelity
     assert pk.meta["compression"]["basis"] == "continuous" and fid["certified"] == "derived"
-    assert pk.meta["walk_params"]["block"]["m"] == 1
+    assert pk.meta["walk_params"]["block"]["m"] == 3
+    assert pk.n_windows == 1 and "n_t" not in pk.meta["walk_params"]["windows"]          # one window, no save grid of its own
     assert fid["err_quadrature"] > 0 and fid["err_max"] <= 2 * fid["floor_max"], fid
     pm = build_replay_pack(cw, id="t/measured", license="x", citation="x", fidelity="measured")
     assert pm.fidelity["certified"] == "measured" and pm.fidelity["measured_on"] == 200

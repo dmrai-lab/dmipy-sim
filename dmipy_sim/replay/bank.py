@@ -2487,7 +2487,7 @@ def _build_from_coefficients(cw, *, id, license, citation, weights, envelope, to
         meta = dict(
             rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
             walk_params=dict(n_walkers=cw.n_walkers, n_t=n_t, dt_traj=dt, T_max=T, diffusivity=D, seed=seed,
-                             windows=dict(n=1, n_t=n_t, T=T, walks=[dict(first=0, last=0, seed=seed)]),
+                             windows=dict(n=1, T=T, walks=[dict(first=0, last=0, seed=seed)]),   # one window, no save grid of its own
                              cell_size=None, block=dict(cw.block),
                              substrate_frame=(None if substrate_frame is None else np.asarray(substrate_frame, float).tolist())),
             replay_envelope=dict(gradient=True, bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"],
