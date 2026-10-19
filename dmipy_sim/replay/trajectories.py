@@ -212,97 +212,6 @@ def replay_jax(
     return signals
 
 
-def _replay_compressed(master, G, dt_wf, *, chi_perp, T2, T1, surface_relaxivity, D,
-                       stimulated_echo, comp_traj, T2_per_comp, T1_per_comp,
-                       return_walker_signals, susceptibility, eps_P):
-    """Replay a COMPRESSED master (IR modes from simulate_trajectories(compress=K)).
-
-    The gradient phase is computed in mode space (compression.mode_space_phi: contract the
-    stored bridge_dst position bands against the waveform's own per-save weights) — the
-    (N, n_t, 3) trajectory is NEVER reconstructed. Surface relaxivity uses the stored
-    cumulative endpoint (ungated / full walk) or the decoded per-save boundary channel
-    (chi-gated). Per-compartment T2/T1 use the raw compartment channel carried in the
-    master. Susceptibility is unsupported: its off-resonance phase samples a field
-    nonlinearly in position and does not commute with the basis."""
-    from . import compression as _cx
-    if susceptibility is not None:
-        raise NotImplementedError(
-            "susceptibility replay from a compressed master is unsupported: the off-resonance "
-            "phase samples a field nonlinearly in position and does not commute with the basis. "
-            "Replay susceptibility from a raw walk.")
-
-    K = int(master["K"]); n_t = int(master["n_t"]); dt_traj = float(master["dt_traj"])
-    _cx.require_position_method(master.get("method", "bridge_dst"))
-    pos_modes = np.asarray(master["pos_modes"], np.float64)          # (N, K+2, 3)
-    meta = {"method": master.get("method", "bridge_dst"), "K": K, "n_t": n_t}
-
-    # ── Gradient phase in mode space (no trajectory reconstruction) ──────────────
-    n_meas = np.asarray(G).shape[0]
-    phi = _cx.mode_space_phi(_cx.pack_position_arrays(pos_modes, np.float64),
-                             meta, G, dt_traj, dt_wf=dt_wf).T                # (n_meas, N), exact in time
-
-    # ── the coherence gate on the save grid, without resampling: averaged over each save's accumulation interval
-    ungated = chi_perp is None
-    ones_r = bin_gate(np.ones(np.asarray(G).shape[1]), dt_wf, n_t, dt_traj)   # the acquisition's own extent on the saves
-    chi_r = ones_r if ungated else bin_gate(chi_perp, dt_wf, n_t, dt_traj)
-
-    # ── Relaxation / surface log-weights ─────────────────────────────────────────
-    log_w_scalar = np.zeros(n_meas); log_w_pw = np.zeros((n_meas, 1))
-
-    def _inv_rate_at_step(inv_arr, comp):
-        comp = np.asarray(comp)
-        if np.issubdtype(comp.dtype, np.floating):
-            f = comp.astype(np.float64)
-            return inv_arr[0] + f * (inv_arr[1] - inv_arr[0])
-        return inv_arr[comp]
-
-    if T2_per_comp is not None:
-        comp = comp_traj if comp_traj is not None else master.get("comp_traj")
-        if comp is None:
-            raise ValueError("comp_traj required when T2_per_comp is provided.")
-        inv = _inv_rate_at_step(1.0 / np.asarray(T2_per_comp, np.float64), comp)
-        log_w_pw = log_w_pw - dt_traj * (chi_r @ inv.T)
-    elif T2 is not None:
-        log_w_scalar -= (dt_traj / T2) * chi_r.sum(1)
-
-    if T1_per_comp is not None:
-        comp = comp_traj if comp_traj is not None else master.get("comp_traj")
-        if comp is None:
-            raise ValueError("comp_traj required when T1_per_comp is provided.")
-        inv = _inv_rate_at_step(1.0 / np.asarray(T1_per_comp, np.float64), comp)
-        log_w_pw = log_w_pw - dt_traj * ((ones_r - chi_r) @ inv.T)
-    elif T1 is not None:
-        log_w_scalar -= (dt_traj / T1) * (ones_r.sum(1) - chi_r.sum(1))
-
-    if surface_relaxivity is not None:
-        if D is None:
-            raise ValueError("D must be provided when surface_relaxivity is not None.")
-        if "blt_endpoint" not in master:
-            raise ValueError("compressed master lacks the boundary channel "
-                             "(re-run simulate_trajectories with tiers=\"all\").")
-        if ungated:
-            # (ρ/D)·Σ_t ℓ_t = (ρ/D)·B(T) — the stored endpoint; no reconstruction.
-            surf = (surface_relaxivity / D) * np.asarray(master["blt_endpoint"], np.float64)
-            log_w_pw = log_w_pw + surf[None, :]
-        else:
-            # chi-gated surface needs per-save ℓ(t): reconstruct the (N, n_t) boundary
-            # channel (ONE channel — 1/3 the positions; a mode-space contraction that
-            # avoids this is a follow-up). Positions are still never reconstructed.
-            blt = _cx.decode_boundary_bridge(
-                {"blt_bridge_dst": master["blt_modes"], "blt_start": master["blt_start"],
-                 "blt_endpoint": master["blt_endpoint"]},
-                {"n_t": n_t, "K": K}).astype(np.float64)
-            log_w_pw = log_w_pw + (surface_relaxivity / D) * (chi_r @ blt.T)
-
-    log_w_total = log_w_scalar[:, None] + log_w_pw                  # (n_meas, N) or (n_meas, 1)
-    signals = np.mean(np.exp(log_w_total) * np.cos(phi), axis=1)
-    if stimulated_echo:
-        signals = signals * 0.5
-    if return_walker_signals:
-        return phi, log_w_total, signals
-    return signals
-
-
 def replay(
     trajectory,
     dt_traj: float,
@@ -426,19 +335,7 @@ def replay(
     trajectory grid — appropriate since chi_perp is a binary step function not
     suited to linear interpolation.  G is resampled linearly.
 
-    Compressed master: if ``trajectory`` is the dict returned by
-    ``simulate_trajectories(compress=K)`` (IR-basis modes), the gradient phase is
-    replayed in mode space (never reconstructing positions) and the surface/relaxation
-    weights come from the stored boundary/compartment channels — see
-    :func:`_replay_compressed`.  ``dt_traj`` is then taken from the master.
     """
-    if isinstance(trajectory, dict) and trajectory.get("compressed"):
-        return _replay_compressed(
-            trajectory, G, dt_wf, chi_perp=chi_perp, T2=T2, T1=T1,
-            surface_relaxivity=surface_relaxivity, D=D, stimulated_echo=stimulated_echo,
-            comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
-            return_walker_signals=return_walker_signals, susceptibility=susceptibility,
-            eps_P=eps_P)
 
     G = np.asarray(G, dtype=np.float64)
     n_meas, n_t_wf, _ = G.shape

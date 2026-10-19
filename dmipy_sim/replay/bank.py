@@ -456,16 +456,18 @@ def voxel_fidelity(traj, dt, decoded_pos, grid, comp, env, *, w=None, logw=None,
     return ijk, pools, N, floor, err
 
 
-def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chunk=200_000):
-    """The per-(voxel, pool) split-half floor of a walk meant to be partitioned, from its bridge coefficients
-    (:func:`voxel_fidelity` without the dense oracle: the same binning by start position -- the exact first
-    endpoint -- and pool, the same fixed split, the phases by :func:`compression.coded_phases`). Returns
-    ``(ijk, pools, n, floor, err)`` with ``err`` all ``nan``: the codec error is the certifying pack's."""
+def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, basis="dst1", w=None, device="auto", chunk=200_000):
+    """The per-(voxel, pool) split-half floor of a walk meant to be partitioned, from its bridge coefficients on
+    ``basis`` (:func:`voxel_fidelity` without the dense oracle: the same binning by start position -- the exact first
+    endpoint -- and pool (``comp`` a track, its first sample, or one label per walker), the same fixed split, the
+    phases by :func:`compression.coded_phases`). Returns ``(ijk, pools, n, floor, err)`` with ``err`` all ``nan``:
+    the codec error is the certifying pack's, or the walk-free certificate's."""
     C = np.asarray(C); n_w = C.shape[0]
     G, _ = _cx.acquisition_battery(int(n_t), float(dt), env); n_m = G.shape[0]
     ijk_all, inside = grid.bin(np.asarray(C[:, 0, :], np.float64))
-    pools = sorted(set(np.unique(np.asarray(comp)[:, 0]).tolist())) if comp is not None else [0]
-    pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(n_w, np.int64)
+    pid = None if comp is None else (np.asarray(comp) if np.ndim(comp) == 1 else np.asarray(comp)[:, 0]).astype(np.int64)
+    pools = sorted(set(np.unique(pid).tolist())) if pid is not None else [0]
+    pid = pid if pid is not None else np.zeros(n_w, np.int64)
     ijk, row = _census_rows(ijk_all, inside)
     col = np.searchsorted(pools, pid)
     ww = np.ones(n_w) if w is None else np.asarray(w, np.float64)
@@ -477,7 +479,7 @@ def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chu
         idx = np.arange(i, min(i + chunk, n_w)); idx = idx[row[idx] >= 0]
         if not len(idx):
             continue
-        e = np.exp(1j * _cx.coded_phases(C[idx], dt, G, n_t, device=device)) * ww[idx, None]
+        e = np.exp(1j * _cx.coded_phases(C[idx], dt, G, n_t, basis=basis, device=device)) * ww[idx, None]
         r, c, h = row[idx], col[idx], half[idx]
         np.add.at(S_a, (r[h], c[h]), e[h]); np.add.at(S_b, (r[~h], c[~h]), e[~h])
         np.add.at(W_a, (r[h], c[h]), ww[idx][h]); np.add.at(W_b, (r[~h], c[~h]), ww[idx][~h])
@@ -1363,7 +1365,8 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     _w = union_weights(np.asarray(arrays["spin_weights"], np.float64), np.repeat(np.arange(len(pks)), n), _key, _pid)
                     arrays["spin_weights"] = _w.astype(np.float32)
                 _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded(C, float(wp["dt_traj"]), int(comp_meta_ch and pks[0].meta["walk_params"]["n_t"]),
-                                                                     grid, comp, envelope or _cx.default_envelope(), w=_w, device=device)
+                                                                     grid, comp, envelope or _cx.default_envelope(), w=_w, device=device,
+                                                                     basis=_cx.basis_of(pks[0].meta))
                 if [int(p_) for p_ in _pools_r] != [int(p_) for p_ in pools]:
                     raise ValueError(f"the merged walkers' pools {list(_pools_r)} differ from the shards' certificate pools {pools}")
                 ijk, cert = _ijk, np.stack([_n.astype(np.float64), _floor, _err], axis=-1)
@@ -1810,7 +1813,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                       blt_temporal_K=None, blt_dtype=np.float16, susc_path_K="auto", susc_path_bits=8, voxel_grid=None,
                       position_container="bands", blt_container="bands",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False,
-                      fidelity="measured", fidelity_from=None, device="auto", window_T=WINDOW_T, _occupancy_runs=False,
+                      fidelity=None, fidelity_from=None, device="auto", window_T=WINDOW_T, _occupancy_runs=False,
                       _window_of_plan=False, pack_license=None, pack_license_url=None):
     """Compress a persistent walk and assemble a self-certifying replay pack.
 
@@ -1841,7 +1844,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
     is taken as given. ``susc_path_bits`` is the field path channel's: 8 or 16 (one depth over every mode), or a list
     of ``{"modes": [k0, k1], "bits": b}`` ranges.
 
-    ``fidelity`` is what this pack certifies (RPK.md 9.4 rule 4): ``"measured"`` replays the envelope's battery
+    ``fidelity`` is what this pack certifies (RPK.md 9.4 rule 4), by default ``"measured"`` for a walk of saves and
+    ``"derived"`` for a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` (:func:`_build_from_coefficients`: the
+    certificate walk-free, its ``fidelity="measured"`` reading the raw subset the walk kept and refused without one):
+    ``"measured"`` replays the envelope's battery
     on the raw and the decoded walk and reports the codec error against the split-half floor, per tier; a pack
     that is one block of a fill -- the same substrate, walk parameters, save grid, codec and containers as a
     pack already measured, other walkers -- passes ``fidelity="inherited"`` with ``fidelity_from=`` that
@@ -1907,6 +1913,20 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
             f"{_work['exhausted_steps']} walker-steps of this walk exhausted its bounce budget of {_work['bounce_budget']}: "
             f"part of their paths went untested, so the walk is not the record of the physics it claims. Walk it again "
             f"with a larger bounce_budget= (certify_bounce_budget sizes one from a pilot) and build the pack from that.")
+    from ..coefficient_walk import CoefficientWalk
+    if isinstance(walk, CoefficientWalk):
+        if method != _cx.POSITION_METHOD or susc_path_K not in ("auto", None) or _occupancy_runs or _window_of_plan:
+            raise ValueError("a coefficient walk is stored as it was accumulated: no position method, field band or window "
+                             "plan is chosen for it")
+        return _build_from_coefficients(
+            walk, id=id, license=license, citation=citation, weights=weights, envelope=envelope, tol=tol, K=K,
+            temporal_bandwidth_hz=temporal_bandwidth_hz, scanner=scanner, sigma_star=sigma_star, provenance=provenance,
+            blt_temporal_K=blt_temporal_K, blt_dtype=blt_dtype, voxel_grid=voxel_grid, position_container=position_container,
+            blt_container=blt_container, diffusivity=diffusivity, substrate_frame=substrate_frame, out_path=out_path,
+            verbose=verbose, fidelity=fidelity, fidelity_from=fidelity_from, device=device, window_T=window_T,
+            pack_license=pack_license, pack_license_url=pack_license_url)
+    if fidelity is None:
+        fidelity = "measured"
     with Run("build_replay_pack", params=dict(id=id, K=K, fidelity=fidelity, device=device, out_path=out_path)) as run:
         src = _walk_master(walk, weights=weights, diffusivity=diffusivity, substrate_frame=substrate_frame)
         _cx.require_position_method(method)
@@ -2270,6 +2290,223 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         if verbose:
             log.info(f"[pack] {id} method={method} K={K} err={fid['err_max']:.4f} "
                   f"floor={fid['floor_max']:.4f} within2x={fid['within_2x_floor']}")
+        return pack
+
+
+def _derived_certificate(scales, *, basis, n_t, dt, K, m, D, env, floor):
+    """The walk-free certificate of a pack built from a coefficient walk, per measurement of the envelope's battery
+    and per family: the TRUNCATION, the phase the bands beyond ``K`` would carry for a free walk at ``D``
+    (:func:`compression.band_phase_variances`), half of it as the signal it costs; the QUADRATURE of the block table
+    at ``(m, h)``, half of ``gamma^2 sum_k W_k^2 rel(m, h, omega_k) var_k`` (:func:`compression.quadrature_rel`; zero on
+    the DST-I, which the block moments are exactly); the QUANTISATION of the stored container, the random phase
+    ``eps^2 = gamma^2 sum_k W_k^2 step_k^2 / 12`` of its realised steps at ``KAPPA eps`` floors and its bias
+    ``eps^2 / 2``, in quadrature (:func:`compression.derive_container`'s budget, read back); and the split-half floor
+    ``floor`` (:func:`compression.measure_floor_coded`). The error per measurement is the sum of the three."""
+    from ..constants import GAMMA
+    G, meta = _cx.acquisition_battery(int(n_t), float(dt), env)
+    pb, total = _cx.band_phase_variances(G, float(dt), int(n_t), float(dt), int(K), float(D), basis=basis)
+    trunc = 0.5 * np.clip(total - pb.sum(axis=1), 0.0, None)
+    h, T = float(dt), (int(n_t) - 1) * float(dt)
+    if basis == "continuous":
+        om = np.pi * np.arange(1, int(K) + 1) / T
+        quad = 0.5 * (pb * _cx.quadrature_rel(m, h, om)[None, :]).sum(axis=1)
+    else:
+        quad = np.zeros_like(trunc)
+    W = _cx.band_projection(G, float(dt), int(n_t), float(dt), int(K), basis=basis)[:, 2:, :]     # (n_meas, K, 3)
+    if scales is None:
+        eps = np.zeros_like(trunc)
+    else:
+        step2 = np.mean(np.asarray(scales, np.float64) ** 2, axis=0)                           # (3, K) over the walkers
+        eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
+    quant = np.sqrt((_cx.KAPPA * eps * float(floor["floor_max"])) ** 2 + (eps ** 2 / 2.0) ** 2)
+    err = trunc + quad + quant
+    fams = sorted({x["fam"] for x in meta})
+    per = {}
+    for f in fams:
+        j = np.array([i for i, x in enumerate(meta) if x["fam"] == f])
+        per[f] = dict(err_max=float(err[j].max()), floor_max=float(floor["per_family"][f]))
+    return dict(metric="max_abs_complex_signal_error", certified="derived",
+                err_truncation=float(trunc.max()), err_quadrature=float(quad.max()), err_quantisation=float(quant.max()),
+                err_max=float(err.max()), floor_max=float(floor["floor_max"]), noise_floor=float(floor["noise_floor"]),
+                within_2x_floor=bool(err.max() <= 2.0 * float(floor["floor_max"])), per_family=per,
+                quadrature=dict(m=int(m), h=h, f_band_hz=float(K) / (2.0 * T),
+                                rel_at_band_edge=(float(_cx.quadrature_rel(m, h, np.pi * K / T)) if basis == "continuous" else 0.0)),
+                bounds_diffusivity=float(D))
+
+
+def _build_from_coefficients(cw, *, id, license, citation, weights, envelope, tol, K, temporal_bandwidth_hz, scanner,
+                             sigma_star, provenance, blt_temporal_K, blt_dtype, voxel_grid, position_container,
+                             blt_container, diffusivity, substrate_frame, out_path, verbose, fidelity, fidelity_from,
+                             device, window_T, pack_license, pack_license_url):
+    """:func:`build_replay_pack` of a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`: its bands stored as they
+    were accumulated, on the walk's basis (``compression.basis``), at its ``K`` or a stated smaller band, in the
+    builder's containers; the occupancy as the walk kept it (the static label, or the per-block track as runs); the
+    block record under ``walk_params.block``. The certificate is walk-free (:func:`_derived_certificate`) unless
+    ``fidelity="measured"``, which replays the battery on the walk's raw subset against its own coefficients and is
+    refused, by name, on a walk that kept none. One window: a walk longer than ``window_T`` is refused."""
+    if fidelity is None:
+        fidelity = "derived"
+    if fidelity not in ("derived", "measured"):
+        raise ValueError(f"a coefficient walk certifies itself walk-free (fidelity='derived') or on the raw subset it kept "
+                         f"(fidelity='measured'); got fidelity={fidelity!r}")
+    if fidelity_from is not None:
+        raise ValueError("fidelity_from= goes with fidelity='inherited', which a coefficient walk does not take")
+    if fidelity == "measured" and cw.raw_positions is None:
+        raise ValueError("fidelity='measured' replays the battery on raw positions, and this coefficient walk kept none: "
+                         "walk it with simulate_trajectories(accumulate=K, raw_subset=n), or build with fidelity='derived'")
+    T, n_t, dt, basis = float(cw.T), int(cw.n_t), float(cw.dt), cw.basis
+    if T > float(window_T) * (1.0 + 1e-9):
+        raise ValueError(f"a coefficient walk is accumulated over its whole {T * 1e3:.4g} ms, one window; a pack stores windows of "
+                         f"window_T = {float(window_T) * 1e3:.4g} ms (RPK.md 4.3). Walk at most one window, or pass window_T >= T")
+    with Run("build_replay_pack", params=dict(id=id, K=K, fidelity=fidelity, device=device, out_path=out_path, basis=basis)) as run:
+        spec = cw.spec
+        if spec is None:
+            raise ValueError("a pack embeds the substrate spec its walk was driven by, and this walk carries none")
+        susceptibility_field_of(spec.to_dict(), name=id, stores_field=False)
+        comp = cw.compartment
+        comp0 = None if comp is None else (np.asarray(comp) if np.ndim(comp) == 1 else np.asarray(comp)[:, 0])
+        if weights is None and cw.weights is None and comp0 is not None:
+            wf = [p.water_fraction for p in sorted(spec.pools, key=lambda p: p.id)]
+            pool0 = np.rint(comp0).astype(int)
+            dry = [(p, int(np.sum(pool0 == p.id))) for p in spec.pools if p.water_fraction == 0.0 and np.any(pool0 == p.id)]
+            if dry:
+                raise ValueError("the walk has walkers in a pool the spec says holds no water: "
+                                 + ", ".join(f"{n:,} in pool {p.id} ({p.name})" for p, n in dry)
+                                 + "; such walkers would weigh 0 and the pack would silently omit them")
+            if any(f != 1.0 for f in wf):
+                weights = np.asarray(wf, float)[pool0]
+        if weights is None and cw.weights is not None:
+            weights = cw.weights
+        sub = spec.to_dict()
+        if substrate_frame is None:
+            substrate_frame = frame_of_spec(spec)
+        if substrate_frame is not None:
+            if (sub.get("frame") or {}).get("source") == "structural":
+                check_frame_against_geometry(sub, substrate_frame)
+            elif cw.raw_positions is not None:
+                bundles = (sub.get("realisation") or {}).get("bundles")
+                check_frame_against_walk(cw.raw_positions, substrate_frame,
+                                         bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
+        D = float(diffusivity if diffusivity is not None else (cw.diffusivity or 0.0))
+        if not D > 0.0:
+            raise ValueError("the walk-free certificate bounds the truncation at the walk's diffusivity, which this walk does not record")
+        band_class = None
+        if K is None and temporal_bandwidth_hz is None and scanner is not None:
+            band_class = scanner
+            temporal_bandwidth_hz = storage_band_hz(scanner)
+        if K is None:
+            K = cw.K if temporal_bandwidth_hz is None else mode_count(T, temporal_bandwidth_hz=temporal_bandwidth_hz)
+        K = int(K)
+        if K > cw.K:
+            raise ValueError(f"the walk accumulated {cw.K} bands; a pack of {K} needs a walk with accumulate >= {K}")
+        env = envelope or _cx.default_envelope()
+        C = np.asarray(cw.position_coeffs, np.float64)[:, :K + 2, :]
+        run.phase("floor")
+        floor = _cx.measure_floor_coded(C, dt, n_t, env, basis=basis, device=device)
+        floor_t = float(sigma_star) if sigma_star is not None else float(floor["floor_max"])
+        pc = _container(position_container)
+        if isinstance(pc, _cx.DerivedContainer):
+            pc = pc.bound(floor=floor_t, dt=dt, env=env, basis=basis)
+        pos_meta = dict(method=_cx.POSITION_METHOD, K=K, n_t=n_t)
+        if pc is None:
+            pos_arrays = _cx.pack_position_arrays(C, np.float32)
+        else:
+            pc = _cx.resolve_container(pc, C[:, 2:, :], n_t)
+            pos_arrays = _cx.pack_position_arrays(C, np.float32, container=pc)
+            pos_meta["container"] = [{"bands": [k0, k1], "bits": b} for k0, k1, b in _cx._band_ranges(pc, K)]
+        Cq = _cx.read_position_coeffs(pos_arrays, dtype=np.float64)
+        run.phase("certificate")
+        scales = None if pc is None else _cx.band_scales(pos_arrays, "pos_band_scale", Cq.shape[0])
+        fid = _derived_certificate(scales, basis=basis, n_t=n_t, dt=dt, K=K, m=cw.m, D=D, env=env, floor=floor)
+        if fidelity == "measured":
+            raw = np.asarray(cw.raw_positions, np.float64)
+            n_raw = raw.shape[0]
+            G, gmeta = _cx.acquisition_battery(n_t, dt, env)
+            phi_raw = _cx._phases_by_chunk(raw, dt, G)
+            phi_dec = _cx.coded_phases(Cq[:n_raw], dt, G, n_t, basis=basis, device=device)
+            err = np.abs(_cx._mean_signal(phi_dec) - _cx._mean_signal(phi_raw))
+            per = {f: dict(err_max=float(err[[i for i, x in enumerate(gmeta) if x["fam"] == f]].max()),
+                           floor_max=fid["per_family"][f]["floor_max"]) for f in fid["per_family"]}
+            fid.update(certified="measured", measured_on=int(n_raw), err_derived=fid["err_max"], err_max=float(err.max()),
+                       per_family=per, within_2x_floor=bool(err.max() <= 2.0 * fid["floor_max"]))
+        if sigma_star is not None:
+            fid.update(target_floor=float(sigma_star),
+                       meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
+        arrays = dict(pos_arrays)
+        chan_meta = {}
+        channels = {"gradient": True, "susceptibility": False, "T1T2": False, "rho2": False, "mt": cw.bound_frac is not None}
+        if comp is not None:
+            if np.ndim(comp) == 1:
+                arrays["comp_static"] = np.asarray(comp, np.int8)
+                chan_meta["compartment"] = {"channel": "compartment", "n_t": n_t,
+                                            "columns": [{"name": "comp", "kind": "static", "n_t": n_t}]}
+            else:
+                cols = {"comp": np.asarray(comp)}
+                if cw.bound_frac is not None:
+                    cols["bound"] = np.asarray(cw.bound_frac)
+                a_, cm_ = _cx.encode_occupancy(cols)
+                arrays.update(a_); chan_meta["compartment"] = cm_
+            if weights is not None:
+                arrays["spin_weights"] = np.asarray(weights, np.float32)
+            channels["T1T2"] = True
+        if cw.boundary_bands is not None:
+            Kb = K if blt_temporal_K is None else int(blt_temporal_K)
+            if Kb > cw.K:
+                raise ValueError(f"the walk accumulated {cw.K} contact bands; blt_temporal_K={Kb} asks for more")
+            bc = _container(blt_container)
+            if isinstance(bc, _cx.DerivedContainer):
+                bc = bc.bound(floor=floor_t, dt=dt, env=env, weight=max(env.get("rho2_list") or [1e-4]) / D, basis=basis)
+            a_, cm_ = _cx.encode_boundary_bands(cw.boundary_start, cw.boundary_endpoint, np.asarray(cw.boundary_bands)[:, :Kb],
+                                                n_t=n_t, dtype=blt_dtype, container=bc, basis=basis, T=T)
+            arrays.update(a_); chan_meta["boundary_local_time"] = cm_; channels["rho2"] = True
+        if voxel_grid is not None:
+            from ..phantom.grid import Grid
+            if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
+                raise TypeError("voxel_grid must be a dmipy_sim.phantom.Grid attached to the substrate")
+            _w = None if weights is None else np.asarray(weights, np.float64)
+            _ijk, _pools, _n, _floor, _err = voxel_floor_coded(Cq, dt, n_t, voxel_grid, comp, env, w=_w, device=device, basis=basis)
+            arrays["voxel_ijk"] = _ijk.astype(np.int32)
+            arrays["voxel_certificate"] = np.stack([_n.astype(np.float32), _floor.astype(np.float32), _err.astype(np.float32)], axis=-1)
+            _ok = np.isfinite(_floor)
+            fid = dict(fid, per_voxel=dict(grid=voxel_grid.to_meta(), pools=[int(p) for p in _pools], n_voxels=int(_ijk.shape[0]),
+                                           walkers_min=int(_n[_n > 0].min()) if (_n > 0).any() else 0,
+                                           floor_max=float(np.nanmax(_floor)) if _ok.any() else None,
+                                           floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
+                                           err_max=None, within_2x_floor_fraction=None,
+                                           thin_voxels=int(((_n > 0) & (_n < 2)).sum())))
+        comp_meta = dict(method=_cx.POSITION_METHOD, basis=basis, K=K, walker_preserving=True, n_t=n_t,
+                         container=pos_meta.get("container"), temporal_bandwidth_hz=float(K) / (2.0 * T))
+        if band_class is not None:
+            comp_meta["scanner"] = str(band_class)
+        comp_meta["precision_tiers"] = _precision_tiers(arrays, cw.n_walkers, float(fid.get("floor_max") or 0.0), True)
+        if chan_meta:
+            comp_meta["channels"] = chan_meta
+        fid = _round_certificate(fid)
+        seed = seed_value(cw.seed)
+        run_summary = None if cw.run is None else (cw.run.summary if hasattr(cw.run, "summary") else cw.run)
+        meta = dict(
+            rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
+            walk_params=dict(n_walkers=cw.n_walkers, n_t=n_t, dt_traj=dt, T_max=T, diffusivity=D, seed=seed,
+                             windows=dict(n=1, n_t=n_t, T=T, walks=[dict(first=0, last=0, seed=seed)]),
+                             cell_size=None, block=dict(cw.block),
+                             substrate_frame=(None if substrate_frame is None else np.asarray(substrate_frame, float).tolist())),
+            replay_envelope=dict(gradient=True, bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"],
+                                 field=False, magnetization_transfer=channels["mt"], diffusivity_fixed=True,
+                                 acquisition=_envelope_summary(env)),
+            fidelity=fid, provenance=dict(provenance or {}, code=_code(), walk=dict(kind="coefficient", run=run_summary)),
+            license=license, citation=citation, substrate=sub)
+        if pack_license:
+            meta["pack_license"] = str(pack_license)
+            if pack_license_url:
+                meta["pack_license_url"] = str(pack_license_url)
+        run.phase("write")
+        pack = ReplayPack(arrays, meta, source=out_path)
+        if out_path is not None:
+            write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)
+            run.artifact(out_path)
+            _write_run_sidecar(out_path, run, cw)
+        if verbose:
+            log.info(f"[pack] {id} basis={basis} K={K} err={fid['err_max']:.4g} floor={fid['floor_max']:.4g}")
         return pack
 
 
