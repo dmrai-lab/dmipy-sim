@@ -15,6 +15,19 @@ from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 
+def _demo_pack(path, what):
+    """The machine-local CACTUS demo pack, skipped when it is absent or a pack this revision refuses by name."""
+    import os
+    if not os.path.exists(path):
+        pytest.skip(f"the CACTUS demo pack{what} is not on this machine")
+    try:
+        return read_rpk(path)
+    except ValueError as e:
+        if "re-walk the pack" not in str(e):
+            raise
+        pytest.skip(f"the CACTUS demo pack on this machine predates the continuous basis; re-walk it ({e})")
+
+
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
@@ -90,11 +103,7 @@ def test_encodings_the_closed_form_does_not_take_fall_back_or_refuse(pack):
 def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(seq):
     """The 8k-walker CACTUS pack at four measurements: the closed form takes no samples, and its n = 0 column
     composes the roll-averaged direct replay (the wall-clock is a measurement, not a test: #455)."""
-    import os
-    path = "/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk"
-    if not os.path.exists(path):
-        pytest.skip("the CACTUS demo pack is not on this machine")
-    pk = read_rpk(path)
+    pk = _demo_pack("/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk", "")
     seq30 = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]], 8e-3, 16e-3, bvalues=[3e9] * 4, TE=30e-3)
     # no tissue, no scanner: this pack's spec declares a nominal field, and a field response still takes the quadrature
     pr = pk.pose_response(seq30, keep=(8, 0))
@@ -128,11 +137,7 @@ def test_a_shell_is_one_body_and_its_directions_are_free(pack):
 
 @pytest.fixture(scope="module")
 def field_pack():
-    import os
-    path = "/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk"
-    if not os.path.exists(path):
-        pytest.skip("the CACTUS demo pack (field tier, path route) is not on this machine")
-    return read_rpk(path)
+    return _demo_pack("/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk", " (field tier, path route)")
 
 
 def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(field_pack):
@@ -374,20 +379,20 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     exactly zero for even an ideal scanner's rows -- so on a many-direction single-shell batch nearly every row
     gets a residual, and its numerical rank ``k`` runs to the hundreds (unstructured rounding has no preferred
     direction). The numpy branch projected each of those ``k`` modes through its own call into
-    :func:`dmipy_sim.replay.replay._compile_effective` (``bridge_projection``'s own DST) and its own matmul against
-    every walker, a cost that grows with ``k`` -- where the torch branch beside it already batches every mode into
-    ONE projection. Pinning the number of ``_compile_effective`` calls pins that cost: it must stay the few calls
-    the per-axis vector contraction and ONE residual batch take, never one per mode."""
+    :func:`dmipy_sim.replay.replay._compile_continuous` (the band projection) and its own matmul against every
+    walker, a cost that grows with ``k`` -- where the torch branch beside it already batches every mode into ONE
+    projection. Pinning the number of ``_compile_continuous`` calls pins that cost: it must stay the few calls the
+    per-axis vector contraction and ONE residual batch take, never one per mode."""
     from dmipy_sim.replay import replay as rr
     rng = np.random.default_rng(11)
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     seq = sequences.pgse(dirs, 2e-3, 5e-3, bvalues=[1e9] * 24, TE=10e-3, slew_rate=np.inf)
     calls = []
-    orig = rr._compile_effective
+    orig = rr._compile_continuous
     def counted(*a, **k):
         calls.append(1)
         return orig(*a, **k)
-    monkeypatch.setattr(rr, "_compile_effective", counted)
+    monkeypatch.setattr(rr, "_compile_continuous", counted)
     pack.pose_response(seq, method="closed")
     # per window: 3 calls for the main vector contraction (one per axis) and ONE for the residual bound's batch
     # (every mode of every residual row, in one call, #698) -- never the dozens of directions, let alone the

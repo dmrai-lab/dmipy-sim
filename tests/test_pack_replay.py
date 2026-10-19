@@ -33,7 +33,7 @@ def _wf(n_t, dt):
 
 def _W(pack, wf):
     """The compiled scheme of ``wf`` on the pack grid, by hand: what pack.replay must reproduce."""
-    return compile_scheme(np.asarray(wf.G_eff), wf.dt, pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    return compile_scheme(np.asarray(wf.G_eff), wf.dt, pack.K, T=pack.T_window)
 
 
 def test_gradient_replay_is_the_mode_space_contraction(packs):
@@ -47,7 +47,7 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     full, plain = packs
     wf = _wf(full.n_t, full.dt)
     ch = full.meta["compression"]["channels"]["compartment"]
-    comp = decode_occupancy(full.arrays, ch)["comp"]
+    comp = decode_occupancy(full.arrays, ch, n_t=full.n_t)["comp"]
     from dmipy_sim.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # the acquisition ends at its echo: no relaxation
     logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi, chi)   # counted over the walk beyond it
@@ -81,8 +81,7 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     W = _W(full, wf)
     rho2 = 1e-5
     from dmipy_sim.replay._replay_kernel import bin_gate
-    chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # contact after the echo is not in the acquisition
-    ref = replay_signal(full, W, rho2_over_D=rho2 / D0, chi_hat=chi)
+    ref = replay_signal(full, W, rho2_over_D=rho2 / D0, gate=np.ones(wf.n_t), dt_gate=wf.dt)   # contact after the echo is not in it
     np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2)), ref, rtol=1e-12)
     np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2, D=D0)), ref, rtol=1e-12)
     with pytest.raises(ValueError, match="no C2"):
@@ -134,7 +133,7 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
         assert r0[K].shape == (200, 3) and r0[K].dtype == np.float64
         np.testing.assert_allclose(r0[K], pk.positions()[:, 0, :], atol=1e-12)     # the path starts where r0 says
     np.testing.assert_array_equal(r0[2], r0[4])                                       # K-independent, to the bit
-    x0 = np.asarray(walk._bank_dict()["traj"])[:, 0, :]                              # the walk's own first sample
+    x0 = np.asarray(walk.position_coeffs)[:, 0, 0, :]                                # the walk's own start
     np.testing.assert_allclose(r0[4], x0, atol=2e-10)                                # float32 of a 10 um coordinate
 
 
@@ -167,10 +166,10 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     # an FID has no longitudinal period: T1 acts over none of it, and none of the walk beyond its echo
     np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2={"extra": np.inf, "intra": np.inf}, T1={"extra": TE, "intra": TE}))), 1.0, rtol=1e-9)
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=300)
     pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
     rho2 = 1e-5
-    cum = np.cumsum(np.asarray(walk.boundary_local_time, np.float64), axis=1)   # per-step log-weight at rho2 / D = 1
+    cum = np.cumsum(np.asarray(walk.saves().boundary_local_time, np.float64), axis=1)   # per-block log-weight at rho2 / D = 1
     ref = np.exp(rho2 / D0 * cum[:, n]).mean()
     off = np.exp(rho2 / D0 * cum[:, n + 1]).mean()
     got = float(np.abs(pk.replay(fid, tissue=Tissue(rho2=rho2))[0]))

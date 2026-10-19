@@ -225,13 +225,13 @@ def test_lumen_boundary_local_time_is_brownstein_tarr():
     c, L = _pack([R_l] * 4, 0.7, 0.5, seed=0)
     pm = d.PackedMyelinatedCylinders([R_l] * 4, 0.7, c, L, N_max=4)
     out = d.simulate_trajectories(N, D, pm, T_max, dt_save, seed=5,
-                                  require_gpu=False)
+                                  require_gpu=False, raw_subset=N).saves()
     dlog, comp = np.asarray(out.boundary_local_time), np.asarray(out.compartment)
     intra = (comp == 1).all(axis=1)
     rate_pm = -dlog[intra].mean() / dt_save
     cyl = d.Cylinder(R_l, (0, 0, 1))
     out_c = d.simulate_trajectories(N, D, cyl, T_max, dt_save, seed=5,
-                                    require_gpu=False)
+                                    require_gpu=False, raw_subset=N).saves()
     rate_c = -np.asarray(out_c.boundary_local_time).mean() / dt_save
     theory = 2 * D / R_l
     for name, rate in (("packed myelin lumen", rate_pm), ("Cylinder", rate_c)):

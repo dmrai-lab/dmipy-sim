@@ -11,7 +11,8 @@ from dmipy_sim.replay.trajectories import replay
 
 
 def _walk(geom, n, seed=0, r0=None):
-    return d.simulate_trajectories(n, 2e-9, geom, 4e-3, 4e-5, seed=seed, walker_batch_size=n, require_gpu=False, r0=r0)
+    return d.simulate_trajectories(n, 2e-9, geom, 4e-3, 4e-5, seed=seed, walker_batch_size=n, require_gpu=False, r0=r0,
+                                   K=16, raw_subset=n)
 
 
 def _unit_weights(pack):
@@ -24,7 +25,7 @@ def test_a_packed_cell_packs_both_pools_and_replays_to_the_trajectories():
     radii = np.array([1.5e-6, 1.0e-6])
     geom = d.PackedCylinders(radii, [[-2.5e-6, 0.0], [2.5e-6, 0.0]], 10e-6)
     walk = _walk(geom, 400)
-    pool0 = np.asarray(walk.compartment)[:, 0]
+    pool0 = np.asarray(walk.compartment)
     assert 0 < np.mean(pool0 == 1) < 1, "the default seeding covers both pools"
     pack = build_replay_pack(walk, id="test/packed", license="CC-BY-4.0", citation="test", K=16)
     assert _unit_weights(pack)
@@ -33,7 +34,8 @@ def test_a_packed_cell_packs_both_pools_and_replays_to_the_trajectories():
     mixed = (f_intra * pack.replay(seq, compartment=1, complex_signal=True)
              + (1 - f_intra) * pack.replay(seq, compartment=0, complex_signal=True))
     assert np.allclose(pack.replay(seq, complex_signal=True), mixed, atol=1e-6), "every walker counts once, at its pool's water"
-    raw = np.asarray(replay(np.asarray(walk.positions), float(walk.dt), np.asarray(seq.G_eff), float(seq.dt)))
+    sv = walk.saves()
+    raw = np.asarray(replay(np.asarray(sv.positions), float(sv.dt), np.asarray(seq.G_eff), float(seq.dt)))
     real = np.real(pack.replay(seq, complex_signal=True))          # the raw replay is the cosine mean: compare like with like
     assert np.allclose(real, raw, atol=2e-2), (real, raw)
 
@@ -44,7 +46,7 @@ def test_walkers_in_a_dry_pool_are_refused():
     geom = d.Cylinder(1e-6, (0, 0, 1))
     r0 = np.column_stack([np.full(50, 2.5e-6), np.zeros(50), np.zeros(50)]).astype(np.float32)
     walk = _walk(geom, 50, r0=r0)
-    assert np.all(np.asarray(walk.compartment)[:, 0] == 0)
+    assert np.all(np.asarray(walk.compartment) == 0)
     with pytest.raises(ValueError, match="holds no water"):
         build_replay_pack(walk, id="test/dry", license="CC-BY-4.0", citation="test", K=8)
     pack = build_replay_pack(walk, id="test/dry", license="CC-BY-4.0", citation="test", K=8, weights=np.ones(50))

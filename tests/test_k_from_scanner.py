@@ -46,8 +46,12 @@ def _walk(**kw):
 
 
 def test_a_walk_with_no_class_and_no_stated_band_is_refused_by_name():
+    """A walk kept at its saves states no band and is refused by name; a walk that accumulated its bands states
+    its own K and packs at it."""
     with pytest.raises(ValueError, match="scanner=.*K=.*temporal_bandwidth_hz=.*never searched"):
-        build_replay_pack(_walk(), id="t", license="x", citation="x")
+        build_replay_pack(_walk(raw_subset=300).saves(), id="t", license="x", citation="x")
+    w = _walk()
+    assert build_replay_pack(w, id="t", license="x", citation="x").K == w.K
 
 
 def test_scanner_sets_the_band_and_the_pack_records_the_class():
@@ -65,14 +69,6 @@ def test_a_walk_from_walk_spec_carries_its_class_and_packs_without_an_argument()
     assert w.scanner == "prisma"
     pk = build_replay_pack(w, id="t", license="x", citation="x")
     assert pk.K == mode_count(4e-3, "prisma") and pk.meta["compression"]["scanner"] == "prisma"
-
-
-def test_the_walk_file_keeps_the_class(tmp_path):
-    from dmipy_sim.persistent_walk import PersistentWalk
-    spec = d.Cylinder(2e-6, (0, 0, 1)).spec
-    w = walk_spec(spec, 100, 2e-3, 5e-4, scanner="connectom", seed=0, require_gpu=False, diffusivity=2e-9)
-    w.save(tmp_path / "w.safetensors")
-    assert PersistentWalk.load(tmp_path / "w.safetensors").scanner == "connectom"
 
 
 def test_no_producer_calls_the_mode_search():

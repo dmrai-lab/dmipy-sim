@@ -18,15 +18,17 @@ DT = 5e-4
 
 
 def _synth_pack(seed=0):
-    "A synthetic pack: smooth random walker trajectories, stored as their DCT-II coefficients."
+    "A synthetic pack: random walker trajectories kept at N_T instants, stored as their bridge bands."
     rng = np.random.default_rng(seed)
     # low-frequency-ish trajectories (bounded ~micron scale), so K modes capture them
     traj = np.cumsum(rng.normal(0, 3e-7, size=(N_W, N_T, 3)), axis=1)
     traj -= traj.mean(1, keepdims=True)
     from dmipy_sim.replay.compression import encode_bridge_dst
-    arrays, cmeta, _ = encode_bridge_dst(traj, K)              # (N_W, K+2, 3) per axis
+    arrays, cmeta, _ = encode_bridge_dst(traj, K, DT)          # (N_W, K+2, 3) per axis
     arrays["spin_weights"] = np.ones(N_W, np.float32)
-    meta = {"n_t": N_T, "dt": DT, "walk_params": {"n_t": N_T, "dt_traj": DT},
+    T = (N_T - 1) * DT
+    meta = {"walk_params": {"T_max": T, "block": {"h": DT, "m": 0, "n_blocks": N_T - 1},
+                            "windows": {"n": 1, "T": T, "walks": [{"first": 0, "last": 0, "seed": 0}]}},
             "compression": {"method": cmeta["method"], "K": K},
             "substrate": spec_of(FreeDiffusion()).to_dict()}                # free walkers: nothing magnetic
     return arrays, meta, traj
@@ -39,19 +41,23 @@ def _pgse(amp, delta, Delta, direction=(1., 0, 0)):
 
 
 def test_replay_equals_direct_phase():
-    "Compiled replay == the direct integral of the waveform against the (reconstructed) piecewise-linear path."
+    """Compiled replay == the integral of the held waveform against the stored path (the chord plus the bands'
+    series), by a midpoint rule fine enough to see it."""
     arrays, meta, traj = _synth_pack()
     pack = ReplayPack(arrays, meta)
     G = np.stack([_pgse(a, 10e-3, 30e-3) for a in (0.02, 0.05, 0.1)])   # (3, N_T, 3)
-    W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
+    T = (N_T - 1) * DT
+    W = compile_scheme(G, DT, K, GAMMA, T=T)
     E = replay_signal(pack, W)
-    # direct reference: reconstruct the truncated trajectory and integrate the phase
-    from dmipy_sim.replay.compression import decode
-    r = decode(arrays, {"method": "bridge_dst", "n_t": N_T})
-    from dmipy_sim.replay._replay_kernel import effective_gradient
-    phi = GAMMA * DT * np.einsum("mtc,wtc->mw", effective_gradient(G, DT, N_T, DT), r)   # exact in time, (n_meas, N_W)
-    E_direct = np.abs(np.cos(phi).mean(1) + 1j * 0) if False else np.abs(np.exp(1j * phi).mean(1))
-    npt.assert_allclose(E, E_direct, atol=1e-10)
+    C = read_position_coeffs(arrays, dtype=np.float64)
+    sub = 64
+    t = (np.arange((N_T - 1) * sub) + 0.5) * DT / sub                   # the held samples' pieces, finely
+    k = np.arange(1, K + 1)
+    r = (C[:, None, 0, :] + C[:, None, 1, :] * (t / T)[None, :, None]
+         + np.einsum("wkc,kt->wtc", C[:, 2:, :], np.sqrt(2.0 / T) * np.sin(np.pi * np.outer(k, t) / T)))
+    g = G[:, np.minimum((t / DT).astype(int), N_T - 1), :]
+    phi = GAMMA * (DT / sub) * np.einsum("mtc,wtc->mw", g, r)
+    npt.assert_allclose(E, np.abs(np.exp(1j * phi).mean(1)), atol=1e-6)
 
 
 def test_rpk_roundtrip(tmp_path):
@@ -70,7 +76,7 @@ def test_jax_twin_matches_and_differentiable():
     import jax.numpy as jnp
     arrays, meta, _ = _synth_pack()
     G = np.stack([_pgse(a, 10e-3, 30e-3) for a in (0.03, 0.08)])
-    W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
+    W = compile_scheme(G, DT, K, GAMMA)
     E_np = replay_signal(arrays, W)
     C3 = read_position_coeffs(arrays, dtype=np.float32)
     E_jx = np.abs(np.asarray(replay_signal_jax(C3, arrays["spin_weights"], W)))
@@ -97,12 +103,12 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     n_w = arrays["pos_x"].shape[0]
     rng = np.random.default_rng(1)
     dlog = -np.abs(rng.normal(0, 1e-6, (n_w, N_T)))          # engine convention: <= 0
-    a2, cm = encode_boundary_bridge(dlog, K=16)
+    a2, cm = encode_boundary_bridge(dlog, 16, DT)
     arrays = {**arrays, **a2}
     pack = ReplayPack(arrays, meta)
 
     G = _pgse(0.0, 10e-3, 30e-3)[None]                        # b0
-    W = compile_scheme(G, DT, K, GAMMA, n_t=N_T)
+    W = compile_scheme(G, DT, K, GAMMA)
     E0 = replay_signal(pack, W)[0]
     Er = replay_signal(pack, W, rho2_over_D=5e3)[0]
     assert E0 == pytest.approx(1.0, abs=1e-9)
@@ -110,7 +116,7 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
 
     # the endpoint path must equal summing the decoded per-save series
     npt.assert_allclose(replay_slw(arrays, 5e3, cm),
-                        surface_logweight(decode_boundary_bridge(arrays, cm), 5e3), rtol=1e-6)
+                        surface_logweight(decode_boundary_bridge(arrays, cm, n_t=N_T), 5e3), rtol=1e-6)
 
     # a pack with no C2 must RAISE when rho2 is requested, not silently return the bare signal
     bare = {k: v for k, v in arrays.items() if not k.startswith("blt_")}

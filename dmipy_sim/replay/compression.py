@@ -7,23 +7,20 @@ together:
   * positions (C0) -- ``bridge_dst``, the one representation (:func:`encode_bridge_dst`): per axis the
     path's two exact endpoints and the lowest ``K`` sine bands of the residual pinned at both. A
     deliverable gradient is band-limited, so the replay is exact for every acquisition inside the band.
-    Any other codec name is refused generically (:func:`require_position_method`). The bands are on one of
-    two bases, the pack's ``compression.basis`` (:data:`BASES`, :func:`basis_of`): ``"dst1"``, the orthonormal
-    DST-I of the residual sampled at the ``n_t`` saves (every pack written from a walk stored at its saves; a
-    pack that declares no basis is on it), and ``"continuous"``, the projections ``int u(t) s_k(t) dt`` on
-    ``s_k = sqrt(2 / T) sin(pi k t / T)`` of the path itself, which a walk accumulates while it runs
-    (:func:`block_table`, :func:`cosine_band_scale`). Every reader of the bands goes through the basis:
-    :func:`band_projection` (the waveform side), :func:`saves_basis` (the bands at the saves), the gated contact
-    (:func:`surface_logweight_bridge`, :func:`surface_logweight_continuous`) and the free band variances
-    (:func:`band_variances`).
+    Any other codec name is refused generically (:func:`require_position_method`). The bands are the
+    projections ``beta_k = int u(t) s_k(t) dt`` of the bridge ``u`` on the continuous basis ``s_k = sqrt(2 / T)
+    sin(pi k t / T)`` of the window, which a walk accumulates while it runs (:func:`block_table`,
+    :func:`cosine_band_scale`); a walk kept at its saves is read the same way, its block moments the increments
+    between saves (:func:`encode_bridge_dst`). The readers: :func:`band_projection` (the waveform side, exact per
+    sample), :func:`saves_basis` (the bands at instants), the gated contact (:func:`surface_logweight_bridge`) and
+    the free band variances (:func:`band_variances`).
   * compartment occupancy (C1) -- named columns, piecewise-constant per walker, stored as row run
     lengths (:func:`rle_encode_rows`) or one static label per walker. The MT bound pool is one of these
     columns, not a channel of its own.
   * boundary local time (C2, rho2/D = 1) -- the cumulative local time ``B(t) = cumsum(ell)`` in the same
     bridge form as the positions (:func:`encode_boundary_bridge`): its two endpoints exact, its residual as
-    sine bands. :func:`encode_boundary_local_time` is the per-step sparse/dense form, lossless to its value
-    quantisation. A pack whose arrays use another representation's names (its ``blt_dct_coeffs`` where this
-    reader looks for ``blt_bridge_dst``) simply has no channel this reader finds.
+    sine bands. A pack whose arrays use another representation's names (its ``blt_dct_coeffs`` where this reader
+    looks for ``blt_bridge_dst``) simply has no channel this reader finds.
 
 :func:`mode_space_signal` computes the replay signal from the coefficients without reconstructing the
 trajectory. :func:`auto_select_modes` finds the smallest ``K`` that meets a fidelity tolerance against the
@@ -87,58 +84,30 @@ def require_position_method(method):
 _F16, _F32 = 2, 4
 
 
-# ------------------------------------------------------------------ the basis the bands are on
-BASES = ("dst1", "continuous")
-"""The bases a pack's bridge bands are stored on (``compression.basis``): ``"dst1"`` the orthonormal DST-I of the
-residual at the ``n_t`` saves, ``"continuous"`` the projections on ``s_k(t) = sqrt(2 / T) sin(pi k t / T)``."""
-
-
-def basis_of(meta):
-    """The basis of a pack's bands (:data:`BASES`) from its metadata, its ``compression`` block or a channel's
-    metadata: the declared ``basis``, ``"dst1"`` where none is declared. An unknown basis is refused by name."""
-    if meta is None:
-        return "dst1"
-    cx = meta.get("compression", meta) if isinstance(meta, dict) else meta
-    b = (cx or {}).get("basis") or "dst1"
-    if b not in BASES:
-        raise ValueError(f"the pack declares its bands on the basis {b!r}; this build reads {BASES}")
-    return b
-
-
-def require_basis(meta, *allowed, what):
-    """The basis of ``meta`` (:func:`basis_of`) when ``what`` reads it, else a refusal naming both: a reader that
-    contracts bands on one basis against weights built for the other returns plausible numbers, never an error."""
-    b = basis_of(meta)
-    if b not in allowed:
-        raise ValueError(f"{what} reads bands on the {' or '.join(map(repr, allowed))} basis; this pack's bands are on the "
-                         f"{b!r} basis (compression.basis)")
-    return b
-
-
-def cosine_band_scale(basis, K, n_t, T=None):
-    """Per band ``k = 1..K`` the factor taking the cosine projection of a path's increments to the bridge's sine
-    band on ``basis``, ``(K,)`` float64.
+# ------------------------------------------------------------------ the continuous basis
+def cosine_band_scale(K, T):
+    """Per band ``k = 1..K`` the factor taking the cosine projection of a path's increments, ``c_k = int cos(pi k t /
+    T) dx(t)``, to the bridge's band on the continuous basis, ``beta_k = sqrt(2 T) / (pi k) c_k``, ``(K,)`` float64.
 
     The bridge of a path is ``u(t) = x(t) - x(0) - (t / T) (x(T) - x(0))``, pinned at both ends, so by parts
-    ``int u s_k dt = -int S_k du`` with ``S_k`` an antiderivative of ``s_k``, and ``du = dx - (x(T) - x(0)) dt / T``
-    adds nothing because the cosine integrates to zero over the window:
-
-    * ``"continuous"`` (``s_k = sqrt(2 / T) sin(pi k t / T)``): ``beta_k = sqrt(2 T) / (pi k) c_k`` with
-      ``c_k = int cos(pi k t / T) dx(t)``;
-    * ``"dst1"`` on ``n_t`` saves (``N = n_t - 1`` intervals, ``t_b = (b + 1/2) T / N`` their midpoints): summation
-      by parts of the orthonormal DST-I, with ``sin(pi k n / N) = (cos(pi k (n - 1/2) / N) - cos(pi k (n + 1/2) / N))
-      / (2 sin(pi k / 2N))`` and ``sum_b cos(pi k t_b / T) = 0``, gives ``beta_k = sqrt(2 / N) / (2 sin(pi k / 2N))
-      c_k`` with ``c_k = sum_b cos(pi k t_b / T) dx_b`` -- exactly, for the increments ``dx_b`` over the save
-      intervals."""
+    ``int u s_k dt = -int S_k du`` with ``S_k = -sqrt(2 / T) (T / pi k) cos(pi k t / T)`` an antiderivative of ``s_k``,
+    and ``du = dx - (x(T) - x(0)) dt / T`` adds nothing because the cosine integrates to zero over the window (the
+    block table's midpoint sum of it is zero too, ``sum_b cos(pi k (2b + 1) / 2N) = 0``)."""
     k = np.arange(1, int(K) + 1, dtype=np.float64)
-    if basis == "continuous":
-        return np.sqrt(2.0 * float(T)) / (np.pi * k)
-    if basis == "dst1":
-        N = int(n_t) - 1
-        if int(K) > N - 1:
-            raise ValueError(f"the DST-I of {int(n_t)} saves has {N - 1} bands; {int(K)} were asked for")
-        return np.sqrt(2.0 / N) / (2.0 * np.sin(np.pi * k / (2.0 * N)))
-    raise ValueError(f"basis is one of {BASES}, not {basis!r}")
+    return np.sqrt(2.0 * float(T)) / (np.pi * k)
+
+
+def _dst1_to_continuous(K, n_t, T):
+    """Per band the factor taking the orthonormal DST-I band of a bridge sampled at ``n_t`` saves to its continuous
+    band at block order 0: summation by parts gives the DST-I band ``sqrt(2 / N) / (2 sin(pi k / 2N)) c_k`` with
+    ``c_k`` the cosine projection of the increments between saves at their midpoints (``N = n_t - 1``), exactly; the
+    continuous band of the same ``c_k`` is :func:`cosine_band_scale`. ``sqrt(dt)`` times a factor that tends to 1
+    as ``k / N -> 0``."""
+    N = int(n_t) - 1
+    if int(K) > N - 1:
+        raise ValueError(f"the walk's {int(n_t)} saves hold {N - 1} bands; {int(K)} were asked for")
+    k = np.arange(1, int(K) + 1, dtype=np.float64)
+    return cosine_band_scale(K, T) * 2.0 * np.sin(np.pi * k / (2.0 * N)) / np.sqrt(2.0 / N)
 
 
 def block_table(T, n_blocks, K, m, *, blocks=None, xp=np):
@@ -197,19 +166,13 @@ def quadrature_rel(m, h, omega):
     return (np.asarray(omega, np.float64) * float(h) / 2.0) ** (2 * (m + 1)) / (math.factorial(m + 1) ** 2 * (2 * m + 3))
 
 
-def band_variances(basis, K, n_t, dt, D):
-    """The free bridge's band variances on ``basis``, ``(K,)``: the eigenvalues of the bridge covariance ``2 D (min(s,
-    t) - s t / T)`` per axis. ``"dst1"`` on ``n_t`` saves of ``dt``: ``D dt / (2 sin^2(pi k / 2N))``, ``N = n_t - 1``;
-    ``"continuous"``: ``2 D T^2 / (pi k)^2``, ``T = (n_t - 1) dt`` -- the limit of the first as ``dt -> 0`` once the
-    discrete bands are read in the continuous normalisation (``beta = sqrt(dt) beta_dst1``)."""
+def band_variances(K, T, D):
+    """The free bridge's band variances on the continuous basis, ``(K,)``: the eigenvalues of the bridge covariance
+    ``2 D (min(s, t) - s t / T)`` per axis, ``2 D T^2 / (pi k)^2`` -- the limit as ``dt -> 0`` of the DST-I's
+    ``D dt / (2 sin^2(pi k / 2N))`` on ``N`` intervals of ``dt``, read in the continuous normalisation (``beta =
+    sqrt(dt) beta_dst1``)."""
     k = np.arange(1, int(K) + 1, dtype=np.float64)
-    N = int(n_t) - 1
-    if basis == "dst1":
-        return float(D) * float(dt) / (2.0 * np.sin(np.pi * k / (2.0 * N)) ** 2)
-    if basis == "continuous":
-        T = N * float(dt)
-        return 2.0 * float(D) * T * T / (np.pi * k) ** 2
-    raise ValueError(f"basis is one of {BASES}, not {basis!r}")
+    return 2.0 * float(D) * float(T) ** 2 / (np.pi * k) ** 2
 
 
 #: bytes of float64 a continuous projection holds per chunk of bands (the pieces x the bands of one chunk)
@@ -218,8 +181,8 @@ _PROJECTION_CHUNK = 1 << 25
 
 def _window_pieces(G, dt_wf, T, t0):
     """The sample-and-hold pieces of ``G`` ``(n_meas, n_wf, n_c)`` within the window ``[t0, t0 + T]``: ``(G_live,
-    a, b)`` with the pieces' ends on the window's clock, clipped to it, the pieces outside dropped. Without ``t0`` a
-    non-zero sample starting beyond ``T`` is refused (the stored path ends there)."""
+    a, b, live)`` with the pieces' ends on the window's clock, clipped to it, the pieces outside dropped (``live`` the
+    samples kept). Without ``t0`` a non-zero sample starting beyond ``T`` is refused (the stored path ends there)."""
     G = np.asarray(G, np.float64)
     e = np.arange(G.shape[1] + 1) * float(dt_wf)
     start = 0.0 if t0 is None else float(t0)
@@ -230,49 +193,52 @@ def _window_pieces(G, dt_wf, T, t0):
                              f"(its own extent is {e[-1]:.6g} s); the stored path ends there")
     a = np.clip(e[:-1] - start, 0.0, float(T)); b = np.clip(e[1:] - start, 0.0, float(T))
     live = b > a
-    return G[:, live, :], a[live], b[live]
+    return G[:, live, :], a[live], b[live], live
 
 
-def continuous_projection(G, dt_wf, T, K, *, t0=None):
-    """The waveform's projection on the continuous bridge basis, ``(n_meas, K + 2, n_c)``: ``M0 = int G``, ``M1 =
+def _piece_weights(a, b, T, k):
+    """``(n_pieces, len(k))``: the integral of ``s_k(t)`` over each piece ``[a, b]`` of the window, ``sqrt(2 / T) (cos(omega
+    a) - cos(omega b)) / omega``, written ``2 sin(omega (a + b) / 2) sin(omega (b - a) / 2) / omega`` (no cancellation)."""
+    om = np.pi * np.asarray(k, np.float64) / float(T)
+    mid, half = 0.5 * (a + b), 0.5 * (b - a)
+    return np.sqrt(2.0 / float(T)) * 2.0 * np.sin(np.outer(mid, om)) * np.sin(np.outer(half, om)) / om[None, :]
+
+
+def band_projection(G, dt_wf, T, K, *, t0=None):
+    """THE projection of a waveform on a pack's bands, ``(n_meas, K + 2, n_c)``: ``M0 = int G``, ``M1 =
     int G (t - t0) / T`` and ``W_k = int G(t) s_k(t - t0) dt`` over the window ``[t0, t0 + T]``, exactly for the
     sample-and-hold waveform ``G`` ``(n_meas, n_wf, n_c)`` on its own grid ``dt_wf`` (each sample held over its
-    interval, as :func:`~dmipy_sim.replay._replay_kernel.effective_gradient` reads it): per piece ``[a, b]`` the
-    sine integrates to ``(cos(omega a) - cos(omega b)) / omega = 2 sin(omega (a + b) / 2) sin(omega (b - a) / 2) /
-    omega``. The gradient phase of a walk stored as ``C = [x(0), x(T) - x(0), beta_1..beta_K]`` is
-    ``gamma sum C W``."""
+    interval, as :func:`~dmipy_sim.replay._replay_kernel.effective_gradient` reads it), piece by piece
+    (:func:`_piece_weights`). The gradient phase of a walk stored as ``C = [x(0), x(T) - x(0), beta_1..beta_K]`` is
+    ``gamma sum C W``; :func:`band_projection_matrix` is the same map as a matrix on the samples."""
     T = float(T)
-    Gl, a, b = _window_pieces(G, dt_wf, T, t0)
+    Gl, a, b, _ = _window_pieces(G, dt_wf, T, t0)
     n_meas, _, n_c = Gl.shape
     out = np.zeros((n_meas, int(K) + 2, n_c))
     out[:, 0, :] = np.einsum("mnc,n->mc", Gl, b - a)
     out[:, 1, :] = np.einsum("mnc,n->mc", Gl, (b * b - a * a) / (2.0 * T))
     if int(K) == 0 or a.size == 0:
         return out
-    mid, half = 0.5 * (a + b), 0.5 * (b - a)
     step = max(1, int(_PROJECTION_CHUNK // max(8 * a.size, 1)))
     for k0 in range(1, int(K) + 1, step):
-        k = np.arange(k0, min(k0 + step, int(K) + 1), dtype=np.float64)
-        om = np.pi * k / T
-        F = 2.0 * np.sin(np.outer(mid, om)) * np.sin(np.outer(half, om)) / om[None, :]          # (n_pieces, n_k)
-        out[:, 1 + k0:1 + k0 + k.size, :] = np.sqrt(2.0 / T) * np.einsum("mnc,nk->mkc", Gl, F)
+        k = np.arange(k0, min(k0 + step, int(K) + 1))
+        out[:, 1 + k0:1 + k0 + k.size, :] = np.einsum("mnc,nk->mkc", Gl, _piece_weights(a, b, T, k))
     return out
 
 
-def band_projection(G, dt_wf, n_t, dt_pack, K, *, basis, t0=None):
-    """THE projection of a waveform on a pack's bands, ``(n_meas, K + 2, n_c)``, such that the gradient phase of a walker
-    stored as ``C`` (``[x(0), x(T) - x(0), beta_1..beta_K]`` per axis) is ``gamma sum_{k,c} C[k, c] W[m, k, c]``: the
-    waveform ``G`` on its own grid ``dt_wf``, the window of ``n_t`` saves of ``dt_pack`` (starting at ``t0`` on the
-    waveform's clock). ``"dst1"``: ``dt_pack`` times :func:`bridge_projection` of the exact per-save weights
-    (:func:`~dmipy_sim.replay._replay_kernel.effective_gradient`), exact for the piecewise-linear path through the
-    saves; ``"continuous"``: :func:`continuous_projection`, exact for the stored continuous bands."""
-    if basis == "dst1":
-        from ._replay_kernel import effective_gradient
-        Geff = effective_gradient(np.asarray(G, np.float64), float(dt_wf), int(n_t), float(dt_pack), t0=t0)
-        return float(dt_pack) * bridge_projection(Geff, int(n_t), int(K))
-    if basis == "continuous":
-        return continuous_projection(G, dt_wf, (int(n_t) - 1) * float(dt_pack), int(K), t0=t0)
-    raise ValueError(f"basis is one of {BASES}, not {basis!r}")
+def band_projection_matrix(n_wf, dt_wf, T, K, *, t0=None):
+    """``(K + 2, n_wf)``: :func:`band_projection` as a matrix on a waveform's ``n_wf`` samples (one axis) -- column ``n``
+    the projection of the unit sample ``n`` held over its interval, zero for a sample outside the window."""
+    T = float(T)
+    e = np.arange(int(n_wf) + 1) * float(dt_wf)
+    start = 0.0 if t0 is None else float(t0)
+    a = np.clip(e[:-1] - start, 0.0, T); b = np.clip(e[1:] - start, 0.0, T)
+    out = np.zeros((int(K) + 2, int(n_wf)))
+    out[0] = b - a
+    out[1] = (b * b - a * a) / (2.0 * T)
+    if int(K):
+        out[2:] = _piece_weights(a, b, T, np.arange(1, int(K) + 1)).T
+    return out
 
 
 def bridge_phase_variance(G, dt_wf, T, D, *, t0=None):
@@ -296,24 +262,16 @@ def bridge_phase_variance(G, dt_wf, T, D, *, t0=None):
     return 2.0 * float(D) * (int_q2 - int_q * int_q / T).sum(axis=1)
 
 
-def band_phase_variances(G, dt_wf, n_t, dt_pack, K, D, *, basis, t0=None):
+def band_phase_variances(G, dt_wf, T, K, D, *, t0=None):
     """``(per_band (n_meas, K), total (n_meas,))``: the phase variance (rad^2) each of the lowest ``K`` bands carries for
-    the waveform ``G`` on a free walk at ``D`` -- ``gamma^2 sum_c W_kc^2 var_k`` with :func:`band_projection` and
-    :func:`band_variances` -- and what every band of the bridge carries together: on ``"dst1"`` the sum over the
-    ``n_t - 2`` bands the saves hold, on ``"continuous"`` the closed form :func:`bridge_phase_variance`. The phase the
-    bands beyond ``j`` would carry is ``total - per_band[:, :j].sum(1)``, which a dropped independent phase costs the
-    signal half of: the truncation term of a pack's band, walk-free."""
-    if basis == "dst1":
-        Kb = int(n_t) - 2
-        W = band_projection(G, dt_wf, n_t, dt_pack, Kb, basis="dst1", t0=t0)[:, 2:, :]
-        pb = GAMMA ** 2 * (W ** 2).sum(axis=2) * band_variances("dst1", Kb, n_t, dt_pack, D)[None, :]
-        return pb[:, :int(K)], pb.sum(axis=1)
-    if basis == "continuous":
-        T = (int(n_t) - 1) * float(dt_pack)
-        W = band_projection(G, dt_wf, n_t, dt_pack, int(K), basis="continuous", t0=t0)[:, 2:, :]
-        pb = GAMMA ** 2 * (W ** 2).sum(axis=2) * band_variances("continuous", int(K), n_t, dt_pack, D)[None, :]
-        return pb, GAMMA ** 2 * bridge_phase_variance(G, dt_wf, T, D, t0=t0)
-    raise ValueError(f"basis is one of {BASES}, not {basis!r}")
+    the waveform ``G`` on a free walk at ``D`` over the window ``T`` -- ``gamma^2 sum_c W_kc^2 var_k`` with
+    :func:`band_projection` and :func:`band_variances` -- and what every band of the bridge carries together, the
+    closed form :func:`bridge_phase_variance`. The phase the bands beyond ``j`` would carry is ``total -
+    per_band[:, :j].sum(1)``, which a dropped independent phase costs the signal half of: the truncation term of a
+    pack's band, walk-free."""
+    W = band_projection(G, dt_wf, T, int(K), t0=t0)[:, 2:, :]
+    pb = GAMMA ** 2 * (W ** 2).sum(axis=2) * band_variances(int(K), T, D)[None, :]
+    return pb, GAMMA ** 2 * bridge_phase_variance(G, dt_wf, T, D, t0=t0)
 
 
 def rescale_bands(arrays, factor):
@@ -375,23 +333,20 @@ radian of rms quantisation phase noise (:func:`derive_container`)."""
 class DerivedContainer:
     """The default container, derived per pack by :func:`derive_container` from the band scales the encoder measures
     and the floor the pack is ordered at. ``floor`` None is filled by the builder (``sigma_star``, else the walk's own
-    measured floor); ``dt`` the save interval and ``env`` the acquisition envelope the phase weights are read on;
-    ``weight`` the contact channel's ``rho2 / D`` ceiling (None: positions, weighted by the envelope's waveforms);
-    ``basis`` the basis the bands are on (:data:`BASES`)."""
+    measured floor); ``dt`` the battery grid's interval and ``env`` the acquisition envelope the phase weights are read on;
+    ``weight`` the contact channel's ``rho2 / D`` ceiling (None: positions, weighted by the envelope's waveforms)."""
 
-    def __init__(self, floor=None, dt=None, env=None, budget=BUDGET, weight=None, basis="dst1"):
+    def __init__(self, floor=None, dt=None, env=None, budget=BUDGET, weight=None):
         self.floor, self.dt, self.env, self.budget, self.weight = floor, dt, env, float(budget), weight
-        self.basis = basis
 
     def bound(self, **kw):
-        d = dict(floor=self.floor, dt=self.dt, env=self.env, budget=self.budget, weight=self.weight, basis=self.basis); d.update(kw)
+        d = dict(floor=self.floor, dt=self.dt, env=self.env, budget=self.budget, weight=self.weight); d.update(kw)
         return DerivedContainer(**d)
 
     def ranges(self, K, scales, n_t):
         if self.floor is None or (self.weight is None and self.dt is None):
-            raise ValueError("a derived container needs the pack's floor target and save interval; the builder supplies them")
-        return derive_container(scales, K, self.floor, n_t=n_t, dt=self.dt, env=self.env, budget=self.budget, weight=self.weight,
-                                basis=self.basis)
+            raise ValueError("a derived container needs the pack's floor target and battery grid; the builder supplies them")
+        return derive_container(scales, K, self.floor, n_t=n_t, dt=self.dt, env=self.env, budget=self.budget, weight=self.weight)
 
     def __repr__(self):
         return f"DerivedContainer(floor={self.floor}, budget={self.budget:g})"
@@ -402,17 +357,13 @@ BAND_CONTAINER = DerivedContainer()
 
 
 @functools.lru_cache(maxsize=32)
-def _phase_weight(K, n_t, dt, env_key, basis="dst1"):
-    """``max over the envelope's measurements of gamma^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands on ``basis``:
-    the phase variance per unit quantisation variance of one band, summed over bands, for the worst waveform. On the
-    DST-I the battery's samples are read as the per-save weights, ``(gamma dt)^2 sum W^2`` with ``W`` their
-    :func:`bridge_projection`; on the continuous basis ``W`` is :func:`continuous_projection` of the battery."""
+def _phase_weight(K, n_t, dt, env_key):
+    """``max over the envelope's measurements of gamma^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands, ``W`` the
+    battery's :func:`band_projection` over the window of ``n_t`` blocks of ``dt``: the phase variance per unit
+    quantisation variance of one band, summed over bands, for the worst waveform."""
     env = dict(env_key) if env_key else default_envelope()
     G, _ = acquisition_battery(int(n_t), float(dt), env)
-    if basis == "dst1":
-        W = bridge_projection(G, int(n_t), int(K))[:, 2:, :]
-        return float(((GAMMA * float(dt)) ** 2 * (W ** 2).sum(axis=(1, 2))).max())
-    W = band_projection(G, float(dt), int(n_t), float(dt), int(K), basis=basis)[:, 2:, :]
+    W = band_projection(G, float(dt), (int(n_t) - 1) * float(dt), int(K))[:, 2:, :]
     return float((GAMMA ** 2 * (W ** 2).sum(axis=(1, 2))).max())
 
 
@@ -426,13 +377,13 @@ def container_eps(floor_target, *, budget=BUDGET, kappa=KAPPA):
 
 
 def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGET, kappa=KAPPA, b_min=3,
-                     b_max=16, weight=None, basis="dst1"):
+                     b_max=16, weight=None):
     """The ranges ``[{"bands": [k0, k1], "bits": b}, ...]`` of one common quantisation step across the bands.
 
     A band quantised at ``b`` bits against its scale ``a_k`` (the block's maximum) has step ``a_k / (2^(b-1) - 1)``
     and noise ``step^2 / 12``. The noise is a random phase per walker with variance
     ``eps^2 = S step^2 / 12`` for one step common to the bands, ``S`` the phase variance per unit step variance of
-    the envelope's worst waveform on the bands' ``basis`` (:func:`_phase_weight`; a contact channel: ``weight^2 K``). It costs the mean signal
+    the envelope's worst waveform (:func:`_phase_weight`; a contact channel: ``weight^2 K``). It costs the mean signal
     two ways: a random term, ``kappa * eps`` times the walkers' split-half floor, which does not depend on the number
     of walkers, and a bias ``eps^2 / 2``, which does not fall with them while the floor does. Holding both under
     ``budget`` x ``floor_target`` (each at its share, so that the two sum in quadrature to at most ``budget``)::
@@ -444,7 +395,7 @@ def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGE
     to whole bytes, the last taking the remainder, as :func:`band_curve`."""
     scales = np.asarray(scales, np.float64).ravel()[:int(K)]
     eps = container_eps(floor_target, budget=budget, kappa=kappa)
-    S = float(weight) ** 2 * int(K) if weight is not None else _phase_weight(int(K), int(n_t), float(dt), _env_key(env), basis)
+    S = float(weight) ** 2 * int(K) if weight is not None else _phase_weight(int(K), int(n_t), float(dt), _env_key(env))
     step = float(np.sqrt(12.0) * eps / np.sqrt(S))
     bits = np.clip(np.ceil(np.log2(np.maximum(scales, 1e-300) / step)) + 1, b_min, b_max).astype(int)
     return _group_bits(bits)
@@ -475,8 +426,9 @@ def _group_bits(bits):
     return out
 
 
-def resolve_container(container, B, n_t):
-    """``container`` with a :class:`DerivedContainer` replaced by its ranges for the bands ``B`` ``(N_w, K[, n_axes])``."""
+def resolve_container(container, B, n_t=None):
+    """``container`` with a :class:`DerivedContainer` replaced by its ranges for the bands ``B`` ``(N_w, K[, n_axes])``
+    (``n_t`` the battery's grid of a positions container, which the envelope's waveforms are read on)."""
     if isinstance(container, DerivedContainer):
         a = np.abs(np.asarray(B)).max(axis=0)
         return container.ranges(B.shape[1], a.max(axis=1) if a.ndim == 2 else a, n_t)
@@ -757,19 +709,14 @@ def dct_bands_series(x, K, *, device="auto", keep=None):
     return np.asarray(f(jnp.asarray(x)))
 
 
-def coded_phases(C, dt, G, n_t, *, basis="dst1", device="auto", chunk_bytes=None):
+def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=None):
     """``(N_w, n_meas)`` gradient phase of every walker under the waveforms ``G`` ``(n_meas, n_t, 3)`` (on the pack's
-    grid) from the bridge coefficients ``C`` ``(N_w, K+2, 3)`` on ``basis`` alone: ``gamma sum C W`` with ``W`` the
-    waveforms' :func:`band_projection` -- the replay's own reading of a pack, no path decoded (host float64, or the
-    device in float32 at full precision)."""
+    block grid of ``n_t`` block ends ``dt`` apart) from the bridge coefficients ``C`` ``(N_w, K+2, 3)`` alone:
+    ``gamma sum C W`` with ``W`` the waveforms' :func:`band_projection` -- the replay's own reading of a pack, no
+    path decoded (host float64, or the device in float32 at full precision)."""
     C = np.asarray(C); K = int(C.shape[1]) - 2
-    if basis == "dst1":                                                       # (gamma dt) times the DST-I projection
-        from ._replay_kernel import effective_gradient
-        W = bridge_projection(effective_gradient(np.asarray(G, np.float64), float(dt), int(n_t), float(dt)), int(n_t), K)
-        W2 = (GAMMA * float(dt)) * W.reshape(W.shape[0], -1).T                                       # ((K+2)*3, n_meas)
-    else:
-        W = band_projection(np.asarray(G, np.float64), float(dt), int(n_t), float(dt), K, basis=basis)
-        W2 = GAMMA * W.reshape(W.shape[0], -1).T
+    W = band_projection(np.asarray(G, np.float64), float(dt), (int(n_t) - 1) * float(dt), K)
+    W2 = GAMMA * W.reshape(W.shape[0], -1).T                                                         # ((K+2)*3, n_meas)
     Cf = C.reshape(C.shape[0], -1)
     if resolve_device(device) == "numpy":
         return np.asarray(Cf, np.float64) @ W2
@@ -784,13 +731,13 @@ def coded_phases(C, dt, G, n_t, *, basis="dst1", device="auto", chunk_bytes=None
     return out
 
 
-def measure_floor_coded(C, dt, n_t, env=None, *, basis="dst1", w=None, logw=None, device="auto"):
-    """The split-half Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients on
-    ``basis`` (:func:`coded_phases`): the same ensemble split :func:`measure_fidelity` uses, no path decoded. Returns
+def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
+    """The split-half Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
+    (:func:`coded_phases`): the same ensemble split :func:`measure_fidelity` uses, no path decoded. Returns
     ``floor_max``, ``noise_floor`` and the floor per family."""
     env = env or default_envelope()
     G, meta = acquisition_battery(int(n_t), float(dt), env)
-    phi = coded_phases(C, dt, G, n_t, basis=basis, device=device)
+    phi = coded_phases(C, dt, G, n_t, device=device)
     nw = phi.shape[0]
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
@@ -804,44 +751,34 @@ def measure_floor_coded(C, dt, n_t, env=None, *, basis="dst1", w=None, logw=None
     return dict(floor_max=float(floor.max()), noise_floor=float(1 / np.sqrt(nw)), per_family=per_fam)
 
 
-def encode_bridge_dst(X, K, container=None, *, device="auto"):
-    """Endpoints plus a Brownian bridge, expanded on the sine basis (per axis).
+def encode_bridge_dst(X, K, dt, container=None, *, device="auto"):
+    """A walk kept at its saves ``X`` ``(N_w, n_t, 3)`` (``dt`` apart) in the pack's form: per axis its two exact
+    endpoints and the lowest ``K`` continuous bands of the bridge between them,
 
-    Splits each path the way the gradient phase reads it -- into the two endpoints and a
-    residual pinned at both -- and keeps the lowest ``K`` DST-I bands of the residual:
+        r(t) = r(0) + (t/T)[r(T) - r(0)] + u(t),    u(0) = u(T) = 0,    beta_k = int u s_k dt,
 
-        r(t) = r(0) + (t/T)[r(T) - r(0)] + u(t),    u(0) = u(T) = 0
-
-    Stored per axis as ``[r(0), r(T)-r(0), beta_1..beta_K]``, so the layout stays one tensor per
-    spatial axis and the first two entries are the coefficients the gradient moments pair with.
-
-    Three properties, none of which is a compression claim. The gradient phase becomes
-    ``r(0).M0 + (r(T)-r(0)).M1/T + sum_k beta_k Ghat_k``, so refocusing and velocity
-    compensation annihilate the first two columns exactly.  Both endpoints are held exactly
-    rather than to the truncation error, so a stored walk can be continued from where it ended.
-    And the sine basis is the variance-optimal one for what remains: the discrete Brownian
-    bridge has covariance ``min(m,n) - mn/N`` whose inverse is the Dirichlet Laplacian, so its
-    Karhunen-Loeve eigenvectors are exactly the DST-I vectors.
-
-    Accuracy is indistinguishable from a cosine expansion of the same path, and that is a theorem
-    rather than a coincidence: the difference operator maps the cosine basis onto the sine basis exactly,
-    ``c_k(n) - c_k(n-1) = -2 sin(pi k / 2N) s_{k-1}(n)``, so a cosine expansion of the path is a
-    sine expansion of its increments and the two truncate to the same subspaces.
-    """
+    stored as ``[r(0), r(T)-r(0), beta_1..beta_K]`` per axis. The saves are read as a walk accumulated at block order
+    0 over blocks of ``dt``: the cosine projection of the increments between saves at their midpoints, which the
+    orthonormal DST-I of the saved bridge holds exactly up to a factor per band (:func:`_dst1_to_continuous`), so the
+    bands are formed as that DST-I (scipy's transform, or one full-precision matmul per walker chunk on the device)
+    times the factor. The gradient phase is then ``gamma (r(0).M0 + (r(T)-r(0)).M1 + sum_k beta_k W_k)``
+    (:func:`band_projection`): refocusing and velocity compensation annihilate the first two columns exactly, both
+    endpoints are held exactly, and the sine basis is the variance-optimal one for the bridge (its covariance's
+    eigenfunctions). The block order 0 reading costs the replay ``quadrature_rel(0, dt, omega_k)`` of each band."""
     X = X if is_lazy(X) else np.asarray(X)
     Nw, Nt, _ = X.shape
     K = int(min(K, Nt - 2))
+    T = (Nt - 1) * float(dt)
     dev = "numpy" if resolve_device(device) == "numpy" else "jax"
     rows = max(1, int(CHUNK_BYTES // max(Nt * 3 * 4, 1)))
     if dev == "jax":
-        # the bridge formed on the device per walker chunk (the compressed master's own route, #446): the host
-        # forms no line and no residual -- on a 100k x 3349 walk that was 7 s of the pack beside a 1.3 s transform
+        # the bridge formed on the device per walker chunk: the host forms no line and no residual
         import jax.numpy as jnp
         positions, _ = _device_bridge(Nt, K)
-        C = np.empty((Nw, K + 2, 3), np.float32)
+        C = np.empty((Nw, K + 2, 3), np.float64)
         for i in range(0, Nw, rows):
             sl = slice(i, i + rows)
-            C[sl] = np.asarray(positions(jnp.asarray(np.asarray(X[sl], np.float32))))
+            C[sl] = np.asarray(positions(jnp.asarray(np.asarray(X[sl], np.float32))), np.float64)
     else:
         a = np.asarray(X[:, 0, :], np.float64)
         v = np.asarray(X[:, -1, :], np.float64) - a
@@ -852,7 +789,8 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
             u = np.asarray(X[sl], np.float64) - (a[sl, None, :] + v[sl, None, :] * tau[None, :, None])
             B[sl] = dst_bands(u[:, 1:-1, :], K, device=dev)
         C = np.concatenate([a[:, None, :], v[:, None, :], B], axis=1)   # (Nw, K+2, 3)
-    meta = {"method": "bridge_dst", "K": K, "n_t": int(Nt)}
+    C[:, 2:, :] *= _dst1_to_continuous(K, Nt, T)[None, :, None]
+    meta = {"method": "bridge_dst", "K": K, "T": T}
     if container is None:                                            # the float32 container, one tensor per axis
         arrays = pack_position_arrays(C, np.float32)
         return arrays, meta, Nw * 3 * (K + 2) * _F32
@@ -862,74 +800,31 @@ def encode_bridge_dst(X, K, container=None, *, device="auto"):
     return arrays, meta, int(sum(int(np.asarray(v).nbytes) for v in arrays.values()))
 
 
-def _bridge_positions(C, Nt, basis="dst1", T=None):
-    """Positions ``(n, Nt, 3)`` at the ``Nt`` saves of the bridge coefficients ``C`` ``(n, K+2, 3)`` on ``basis``
-    (``T`` the window's duration, which the continuous basis's normalisation reads)."""
+def _bridge_positions(C, Nt, T):
+    """Positions ``(n, Nt, 3)`` at the ``Nt`` block ends of a window of ``T`` seconds from the coefficients ``C`` ``(n,
+    K+2, 3)``: the chord plus the bands' series at those instants."""
     a, v, B = C[:, 0, :], C[:, 1, :], C[:, 2:, :]
     tau = np.arange(Nt) / (Nt - 1.0)
     u = np.zeros((C.shape[0], Nt, 3))
-    if B.shape[1] and basis == "dst1":
-        u[:, 1:-1, :] = _idst(B, axis=1, type=1, norm="ortho", n=Nt - 2)
-    elif B.shape[1]:
-        S, _ = saves_basis(Nt, 0, Nt, B.shape[1], basis=basis, T=T)
+    if B.shape[1]:
+        S, _ = saves_basis(Nt, 0, Nt, B.shape[1], T=T)
         u = np.einsum("wkd,kn->wnd", B, S)
     return a[:, None, :] + v[:, None, :] * tau[None, :, None] + u
 
 
-def _basis_T(meta):
-    """``(basis, T)`` of a decoder's metadata: the basis (:func:`basis_of`) and the window's duration the continuous
-    basis needs (``meta["T"]``)."""
-    b = basis_of(meta)
-    T = meta.get("T")
-    if b == "continuous" and T is None:
-        raise ValueError("bands on the continuous basis are read with the window's duration T, which this metadata lacks")
-    return b, (None if T is None else float(T))
-
-
-def decode_bridge_dst(arrays, meta, walkers=None):
-    """Reconstruct positions at the saves from endpoints plus sine bands (on ``meta``'s basis), of every walker or of
-    the slice ``walkers``."""
+def decode_bridge_dst(arrays, meta, walkers=None, *, n_t):
+    """Positions at ``n_t`` evenly spaced instants of the window ``meta["T"]`` (both ends included: the reader's grid,
+    a pack's block ends by default) from the endpoints and the bands, of every walker or of the slice ``walkers``."""
     C = read_position_coeffs(arrays, dtype=np.float64)
-    return _bridge_positions(C if walkers is None else C[walkers], int(meta["n_t"]), *_basis_T(meta))
+    return _bridge_positions(C if walkers is None else C[walkers], int(n_t), float(meta["T"]))
 
 
-def decoder(arrays, meta):
-    """``(lo, hi) -> positions (hi - lo, n_t, 3)`` of walkers ``lo:hi``, the coefficients read once: what the
-    certificate reads instead of a decoded copy of the whole walk."""
+def decoder(arrays, meta, *, n_t):
+    """``(lo, hi) -> positions (hi - lo, n_t, 3)`` of walkers ``lo:hi`` at ``n_t`` evenly spaced instants of the
+    window, the coefficients read once: what the certificate reads instead of a decoded copy of the whole walk."""
     require_position_method(meta["method"])
-    C = read_position_coeffs(arrays, dtype=np.float64); Nt = int(meta["n_t"])
-    b, T = _basis_T(meta)
-    return lambda lo, hi: _bridge_positions(C[lo:hi], Nt, b, T)
-
-
-def bridge_moment_rows(G, n_t):
-    """Sequence-side rows the two endpoint coefficients pair with: ``(M0, M1/T)``.
-
-    ``M0 = sum_n G_n`` is the refocusing condition and ``M1 = sum_n tau_n G_n`` the
-    velocity-compensation one, so a motion-compensated waveform makes both vanish.
-    """
-    G = np.asarray(G, np.float64)
-    tau = np.arange(n_t) / (n_t - 1.0)
-    return G.sum(1), (G * tau[None, :, None]).sum(1)
-
-
-def bridge_projection(G, n_t, K):
-    """The waveform's projection on the bridge basis, ``(n_meas, K+2, 3)``: the two gradient
-    moments (:func:`bridge_moment_rows`) then the ``K`` sine bands ``DST-I(G[1:-1])``. The
-    gradient phase of a walk stored as ``C`` (:func:`encode_bridge_dst`) is
-    ``gamma dt sum_{k,d} C[w,k,d] W[m,k,d]``; :func:`mode_space_phi` and
-    :func:`dmipy_sim.replay.replay.compile_scheme` both read this one projection."""
-    G = np.asarray(G, np.float64)
-    n_t = int(n_t)
-    if G.shape[1] != n_t:
-        raise ValueError(f"waveform has {G.shape[1]} samples, pack walk has n_t={n_t}")
-    M0, M1 = bridge_moment_rows(G, n_t)
-    Ghat = _dst(G[:, 1:-1, :], axis=1, type=1, norm="ortho")[:, :int(K), :]
-    return np.concatenate([M0[:, None, :], M1[:, None, :], Ghat], axis=1)
-
-
-
-
+    C = read_position_coeffs(arrays, dtype=np.float64); Nt = int(n_t); T = float(meta["T"])
+    return lambda lo, hi: _bridge_positions(C[lo:hi], Nt, T)
 
 
 ENCODERS = {POSITION_METHOD: encode_bridge_dst}
@@ -958,77 +853,28 @@ def rle_decode_rows(vals, lens, counts, n_t):
 
 
 # ------------------------------------------- per-walker physics-channel codecs
-def encode_boundary_local_time(dlog, nlevels=4096):
-    """DENSITY-AWARE per-step codec: sparse CSR (isolated fibres) or dense int8 (packed
-    WM). Lossless to the value quant. NOTE: caps at ~2x when contacts are dense (small R);
-    prefer ``encode_boundary_bridge`` for the smooth cumulative representation."""
-    A = np.asarray(dlog, np.float64)
-    nw, nt = A.shape
-    scale = float(np.abs(A).max()) + 1e-30
-    nnz = int(np.count_nonzero(A))
-    sparse_bytes = nnz * 4 + nw * 4
-    dense_bytes = nw * nt
-    if sparse_bytes <= dense_bytes:
-        counts = np.empty(nw, np.int32); cols = []; qvals = []
-        for i, row in enumerate(A):
-            nz = np.flatnonzero(row)
-            counts[i] = nz.size; cols.append(nz)
-            qvals.append(np.rint(row[nz] / scale * (nlevels - 1)))
-        arrays = {
-            "blt_counts": counts,
-            "blt_cols": (np.concatenate(cols) if len(cols) else np.zeros(0)).astype(
-                np.int16 if nt <= 32000 else np.int32),
-            "blt_qvals": (np.concatenate(qvals) if len(qvals) else np.zeros(0)).astype(
-                np.int16 if nlevels <= 32000 else np.int32),
-        }
-        return arrays, {"channel": "boundary_local_time", "mode": "sparse",
-                        "n_t": int(nt), "scale": scale, "nlevels": int(nlevels)}
-    q = np.rint(np.clip(A / scale, -1.0, 1.0) * 127.0).astype(np.int8)
-    return {"blt_dense_q": q}, {"channel": "boundary_local_time", "mode": "dense",
-                                "n_t": int(nt), "scale": scale, "nlevels": 127}
-
-
-def decode_boundary_local_time(arrays, meta, walkers=None):
-    """Per-save ell(t) of every walker, or of the slice ``walkers``, from the quantised container."""
-    nt = int(meta["n_t"]); scale = float(meta["scale"]); nl = int(meta["nlevels"])
-    sl = slice(None) if walkers is None else walkers
-    if meta.get("mode") == "dense" or "blt_dense_q" in arrays:
-        q = np.asarray(np.asarray(arrays["blt_dense_q"])[sl], np.float64)
-        return (q * scale / nl).astype(np.float32)
-    counts = np.asarray(arrays["blt_counts"]); cols = np.asarray(arrays["blt_cols"])
-    qvals = np.asarray(arrays["blt_qvals"], np.float64)
-    lo, hi, _ = sl.indices(counts.size)
-    out = np.zeros((hi - lo, nt), np.float32); p = int(counts[:lo].sum())
-    for i, c in enumerate(counts[lo:hi]):
-        c = int(c)
-        out[i, cols[p:p + c]] = (qvals[p:p + c] * scale / (nl - 1)).astype(np.float32)
-        p += c
-    return out
-
-
-def encode_boundary_bands(start, endpoint, bands, *, n_t, dtype=np.float32, container=None, basis="dst1", T=None):
+def encode_boundary_bands(start, endpoint, bands, *, T, dtype=np.float32, container=None):
     """The C2 channel's tensors and metadata from its bridge already formed: the cumulative local time's exact
-    endpoints ``start`` / ``endpoint`` ``(N_w,)`` (always float32) and its ``bands`` ``(N_w, K)`` on ``basis`` (``T`` the
-    window's duration for the continuous basis), the bands at ``dtype`` or in the integer ``container``."""
+    endpoints ``start`` / ``endpoint`` ``(N_w,)`` (always float32) and its continuous ``bands`` ``(N_w, K)`` over the
+    window ``T``, the bands at ``dtype`` or in the integer ``container``."""
     C = np.asarray(bands, np.float64)
     K = int(C.shape[1])
-    meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "n_t": int(n_t), "K": K,
+    meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "T": float(T), "K": K,
             "dtype": np.dtype(dtype).name}
-    if basis != "dst1":
-        meta.update(basis=basis, T=float(T))
     arrays = {"blt_start": np.asarray(start, np.float32), "blt_endpoint": np.asarray(endpoint, np.float32)}
     if container is None:
         arrays["blt_bridge_dst"] = C.astype(dtype)
     else:                                                          # the integer container: bands per range, a scale per band
-        q, qm = quantise_bands(C, resolve_container(container, C, int(n_t)), "blt", "blt_band_scale")
+        q, qm = quantise_bands(C, resolve_container(container, C), "blt", "blt_band_scale")
         arrays.update(q); meta["container"] = qm["container"]; meta["dtype"] = "bands"
     return arrays, meta
 
 
-def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, device="auto"):
-    """Bridge codec for the boundary-local-time channel: the CUMULATIVE local time B(t)=cumsum(ell)
-    stored as its two exact endpoints plus SINE bands of the pinned residual -- the same form C0
-    uses for positions, on the same window grid.
+def encode_boundary_bridge(dlog, K, dt, dtype=np.float32, container=None, *, device="auto"):
+    """Bridge codec for the boundary-local-time channel kept at the saves (``dlog`` ``(N_w, n_t)``, the contact of
+    the step ending at each save, ``dt`` apart): the CUMULATIVE local time B(t)=cumsum(ell) stored as its two exact
+    endpoints plus the continuous bands of the pinned residual -- the same form C0 uses for positions, read at block
+    order 0 over the saves as :func:`encode_bridge_dst` reads them.
 
     ell(t) is spiky and dense; its running integral B(t) is smooth and ~linear (roughly constant
     contact rate). Detrending by the chord B(0) + tau*(B(T)-B(0)) leaves a residual vanishing at
@@ -1052,7 +898,6 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     the ungated rho2 attenuation reads directly.
 
     Stores (N_w, K) sine bands + two floats per walker; ratio ~ n_t/K, which GROWS with walk length.
-    Lossless at K = n_t - 2 (the interior dimension), NOT at K = n_t.
     """
     A = np.asarray(dlog)
     nw, nt = A.shape
@@ -1081,7 +926,9 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
     # two ENDPOINTS are always f32 -- they are the exact quantities the rho2 attenuation and the
     # window chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
-    return encode_boundary_bands(a, endpoint, C, n_t=nt, dtype=dtype, container=container)
+    T = (nt - 1) * float(dt)
+    C *= _dst1_to_continuous(K, nt, T)[None, :]
+    return encode_boundary_bands(a, endpoint, C, T=T, dtype=dtype, container=container)
 
 
 # --------------------------------------------------------- the bridge on the device
@@ -1115,13 +962,13 @@ def _device_bridge(n_t, K):
 
 
 @functools.lru_cache(maxsize=8)
-def _saves_decode_kernel(n_t, start, stop, K, basis="dst1", T=None):
-    """``C (c, K+2, 3) -> positions (c, stop - start, 3)`` float32: saves ``start .. stop - 1`` of a bridge-coded walk
-    of ``n_t`` saves on ``basis``, the sine bands evaluated only where they are read."""
+def _saves_decode_kernel(n_t, start, stop, K, T):
+    """``C (c, K+2, 3) -> positions (c, stop - start, 3)`` float32: block ends ``start .. stop - 1`` of a window of ``n_t``
+    block ends over ``T`` seconds, the bands evaluated only where they are read."""
     import jax
     import jax.numpy as jnp
     hi = jax.lax.Precision.HIGHEST
-    S_part, tau = saves_basis(n_t, start, stop, K, basis=basis, T=T)
+    S_part, tau = saves_basis(n_t, start, stop, K, T=T)
     S_part = jnp.asarray(S_part, jnp.float32); tau = jnp.asarray(tau, jnp.float32)
 
     @jax.jit
@@ -1133,31 +980,21 @@ def _saves_decode_kernel(n_t, start, stop, K, basis="dst1", T=None):
     return kernel
 
 
-def saves_basis(n_t, start, stop, K, *, basis="dst1", T=None):
-    """The bridge's sine bands and chord at saves ``start .. stop - 1`` of a walk of ``n_t`` saves: ``(S (K, n), tau
-    (n,))``, the bands zero at both ends of the walk (where the residual is pinned). ``"dst1"``: the orthonormal DST-I
-    vectors at the saves; ``"continuous"``: ``s_k(t) = sqrt(2 / T) sin(pi k t / T)`` at the save instants, ``T`` the
-    window's duration."""
+def saves_basis(n_t, start, stop, K, *, T):
+    """The bands and the chord at the instants ``start .. stop - 1`` of ``n_t`` evenly spaced over a window of ``T``
+    seconds (a pack's block ends): ``(S (K, n), tau (n,))``, ``S[k, n] = s_k(t_n) = sqrt(2 / T) sin(pi k t_n / T)``,
+    zero at both ends of the window, where the bridge is pinned."""
     s = np.arange(int(start), int(stop))
     tau = s / (n_t - 1.0)
-    if basis == "continuous":
-        k = np.arange(1, int(K) + 1, dtype=np.float64)
-        return np.sqrt(2.0 / float(T)) * np.sin(np.pi * np.outer(k, tau)), tau
-    if basis != "dst1":
-        raise ValueError(f"basis is one of {BASES}, not {basis!r}")
-    inner = (s >= 1) & (s <= n_t - 2)
-    S = np.zeros((int(K), s.size))
-    if K and inner.any():
-        S[:, inner] = _dst_matrix(n_t - 2, K)[s[inner] - 1].T
-    return S, tau
+    k = np.arange(1, int(K) + 1, dtype=np.float64)
+    return np.sqrt(2.0 / float(T)) * np.sin(np.pi * np.outer(k, tau)), tau
 
 
-def decode_saves(C, n_t, start, stop, *, basis="dst1", T=None, device="auto", chunk_bytes=1 << 30):
-    """Saves ``start .. stop - 1`` ``(n_w, stop - start, 3)`` float32 of a bridge-coded walk of ``n_t`` saves from its
-    coefficients ``C`` ``(n_w, K+2, 3)`` on ``basis`` (``T`` the window's duration for the continuous one): a prefix
-    (``start = 0``) or a window of the walk, the sine bands evaluated at those saves alone as one product per walker
-    chunk -- on the device, or by the host's BLAS (on a 13,017-save walk, whose interior length has a large prime
-    factor, 20 times faster than the whole inverse transform cut)."""
+def decode_saves(C, n_t, start, stop, *, T, device="auto", chunk_bytes=1 << 30):
+    """The positions ``(n_w, stop - start, 3)`` float32 at the block ends ``start .. stop - 1`` of a window of ``n_t``
+    block ends over ``T`` seconds from its coefficients ``C`` ``(n_w, K+2, 3)``: a prefix (``start = 0``) or a stretch
+    of the window, the bands evaluated at those instants alone as one product per walker chunk -- on the device, or by
+    the host's BLAS."""
     C = np.asarray(C, np.float64)
     n_w, K = C.shape[0], C.shape[1] - 2
     start, stop, n_t = int(start), int(stop), int(n_t)
@@ -1165,7 +1002,7 @@ def decode_saves(C, n_t, start, stop, *, basis="dst1", T=None, device="auto", ch
         raise ValueError(f"saves {start} .. {stop - 1} are not within a walk of {n_t}")
     out = np.empty((n_w, stop - start, 3), np.float32)
     if resolve_device(device) == "numpy":
-        S, tau = saves_basis(n_t, start, stop, K, basis=basis, T=T)
+        S, tau = saves_basis(n_t, start, stop, K, T=T)
         step = max(1, int(chunk_bytes // (8 * 3 * (stop - start + K + 2))))
         for lo in range(0, n_w, step):
             c = C[lo:lo + step]
@@ -1173,7 +1010,7 @@ def decode_saves(C, n_t, start, stop, *, basis="dst1", T=None, device="auto", ch
             out[lo:lo + step] = c[:, None, 0, :] + c[:, None, 1, :] * tau[None, :, None] + np.transpose(u, (0, 2, 1))
         return out
     import jax.numpy as jnp
-    kernel = _saves_decode_kernel(n_t, start, stop, int(K), basis, None if T is None else float(T))
+    kernel = _saves_decode_kernel(n_t, start, stop, int(K), float(T))
     step = max(1, int(chunk_bytes // (4 * 3 * (stop - start + K + 2))))
     for lo in range(0, n_w, step):
         sl = slice(lo, min(lo + step, n_w))
@@ -1210,30 +1047,23 @@ def bridge_bands(arrays, meta, key="blt", scale_key="blt_band_scale", dtype=np.f
     return dequantise_bands(arrays, meta["container"], key, scale_key, dtype)
 
 
-def decode_boundary_bridge(arrays, meta, walkers=None, n_cut=None, start=0):
-    """Reconstruct per-save ell(t) = diff(B) from the two endpoints + the pinned sine bands (on the channel's basis,
-    :func:`basis_of`), of every walker or of the slice ``walkers``; saves ``start .. n_cut - 1`` only when asked (a prefix, or a window of the walk:
-    ``ell`` at ``start`` is ``B(start) - B(start - 1)``), the bands evaluated there as one product (the same numbers
-    as the whole decode cut, to rounding)."""
-    nt = int(meta["n_t"])
-    basis, T = _basis_T(meta)
+def decode_boundary_bridge(arrays, meta, walkers=None, n_cut=None, start=0, *, n_t):
+    """The contact per interval ``ell = diff(B)`` at ``n_t`` evenly spaced instants of the window ``meta["T"]`` (the
+    reader's grid, a pack's block ends by default) from the two exact endpoints and the continuous bands of the
+    cumulative local time ``B``, of every walker or of the slice ``walkers``; instants ``start .. n_cut - 1`` only
+    when asked (a prefix, or a stretch of the window: ``ell`` at ``start`` is ``B(start) - B(start - 1)``), the bands
+    evaluated there alone as one product."""
+    nt = int(n_t)
     sl = slice(None) if walkers is None else walkers
     C = bridge_bands(arrays, meta)[sl]
     a = np.asarray(arrays["blt_start"], np.float64)[sl]
     endpoint = np.asarray(arrays["blt_endpoint"], np.float64)[sl]
     stop = nt if n_cut is None else min(int(n_cut), nt)
     start = int(start)
-    if start > 0 or stop < nt or basis != "dst1":
-        lo = max(start - 1, 0)                                                            # the save before the first read
-        S, tau = saves_basis(nt, lo, stop, C.shape[1], basis=basis, T=T)
-        B = C @ S + (a[:, None] + (endpoint - a)[:, None] * tau[None, :])
-        ell = np.diff(B, axis=1, prepend=B[:, :1] * 0.0) if start == 0 else np.diff(B, axis=1)
-        return ell.astype(np.float32)
-    tau = np.linspace(0.0, 1.0, nt)[None, :]
-    u = np.zeros((C.shape[0], nt), np.float64)
-    u[:, 1:-1] = _idst(C, axis=1, type=1, norm="ortho", n=nt - 2)
-    B = u + (a[:, None] + (endpoint - a)[:, None] * tau)
-    ell = np.diff(B, axis=1, prepend=B[:, :1] * 0.0)          # per-save increments
+    lo = max(start - 1, 0)                                                                # the block end before the first read
+    S, tau = saves_basis(nt, lo, stop, C.shape[1], T=float(meta["T"]))
+    B = C @ S + (a[:, None] + (endpoint - a)[:, None] * tau[None, :])
+    ell = np.diff(B, axis=1, prepend=B[:, :1] * 0.0) if start == 0 else np.diff(B, axis=1)
     return ell.astype(np.float32)
 
 
@@ -1264,7 +1094,7 @@ def _encode_occupancy_column(x, name, Q, force_runs=False):
     A = np.asarray(x)
     if name == _EXCLUSIVE_COLUMN and not force_runs and np.array_equal(A, np.round(A)) and A.ndim == 2 and (A == A[:, :1]).all():
         # nothing crosses: one label per walker, the static column (an impermeable substrate)
-        return ({f"{name}_static": A[:, 0].astype(np.int8)}, {"name": name, "kind": "static", "n_t": int(A.shape[1])})
+        return ({f"{name}_static": A[:, 0].astype(np.int8)}, {"name": name, "kind": "static"})
     if name == _EXCLUSIVE_COLUMN and np.array_equal(A, np.round(A)):
         vals, lens, counts, n_t = rle_encode_rows(A.astype(np.int32))
         return ({f"{name}_rle_vals": vals.astype(np.int16),
@@ -1280,10 +1110,11 @@ def _encode_occupancy_column(x, name, Q, force_runs=False):
             {"name": name, "kind": "fraction", "Q": int(Q), "scale": scale, "n_t": int(n_t)})
 
 
-def _decode_occupancy_column(arrays, d):
+def _decode_occupancy_column(arrays, d, n_t=None):
     name = d["name"]
     if d["kind"] == "static":
-        return np.repeat(np.asarray(arrays[f"{name}_static"], np.int16)[:, None], int(d["n_t"]), axis=1)
+        lab = np.asarray(arrays[f"{name}_static"], np.int16)
+        return lab if n_t is None else np.repeat(lab[:, None], int(n_t), axis=1)
     q = rle_decode_rows(np.asarray(arrays[f"{name}_rle_vals"]),
                         np.asarray(arrays[f"{name}_rle_lens"]),
                         np.asarray(arrays[f"{name}_rle_counts"]), int(d["n_t"]))
@@ -1305,14 +1136,24 @@ def encode_occupancy(columns, Q=256, force_runs=False):
     for name, x in columns.items():
         a, d = _encode_occupancy_column(x, name, Q, force_runs=force_runs)
         arrays.update(a); cols.append(d)
-    n_t = {d["n_t"] for d in cols}
-    if len(n_t) != 1:
-        raise ValueError(f"C1 columns disagree on n_t: {[(d['name'], d['n_t']) for d in cols]}")
-    return arrays, {"channel": "compartment", "columns": cols, "n_t": cols[0]["n_t"]}
+    n_t = {d["n_t"] for d in cols if "n_t" in d}
+    if len(n_t) > 1:
+        raise ValueError(f"C1 columns disagree on the track length: {[(d['name'], d.get('n_t')) for d in cols]}")
+    out = {"channel": "compartment", "columns": cols}
+    if n_t:
+        out["n_t"] = n_t.pop()
+    return arrays, out
 
 
-def decode_occupancy(arrays, meta):
-    """-> {name: track}. ``comp`` is int16 labels (or a float fraction); others are float [0,1]."""
+def encode_static_occupancy(labels):
+    """The C1 channel of a walk no walker of which leaves its pool: the one label per walker (``comp_static`` int8)."""
+    return ({"comp_static": np.asarray(labels).astype(np.int8)},
+            {"channel": "compartment", "columns": [{"name": "comp", "kind": "static"}]})
+
+
+def decode_occupancy(arrays, meta, *, n_t=None):
+    """-> {name: track}. ``comp`` is int16 labels (or a float fraction); others are float [0,1]. A static column is
+    the label per walker, broadcast over ``n_t`` instants when given; a track is its stored length."""
     if "columns" not in meta:
         raise ValueError(
             "this pack's C1 metadata predates the occupancy-column layout (no 'columns' key; it "
@@ -1321,7 +1162,7 @@ def decode_occupancy(arrays, meta):
             "pool under 'bound' (retiring the separate bound_fraction channel and its bfrac_rle_* "
             "keys). The stored arrays are readable but their meaning is declared differently, so "
             "the pack must be re-encoded from its master rather than reinterpreted here.")
-    return {d["name"]: _decode_occupancy_column(arrays, d) for d in meta["columns"]}
+    return {d["name"]: _decode_occupancy_column(arrays, d, n_t) for d in meta["columns"]}
 
 
 def is_current_c1(meta):
@@ -1329,15 +1170,15 @@ def is_current_c1(meta):
     return isinstance(meta, dict) and "columns" in meta
 
 
-CHANNEL_DECODERS = {"boundary_local_time": decode_boundary_local_time,
-                    "boundary_bridge": decode_boundary_bridge,
+CHANNEL_DECODERS = {"boundary_bridge": decode_boundary_bridge,
                     "compartment": decode_occupancy}
 
 
-def encode(X, method=POSITION_METHOD, K=32, **kw):
+def encode(X, method, K, dt, **kw):
+    """The positions ``X`` kept at their saves ``dt`` apart in the pack's form by ``method``."""
     if method not in ENCODERS:
         raise ValueError(f"unknown method {method!r}; choose from {list(ENCODERS)}")
-    return ENCODERS[method](X, K, **kw)
+    return ENCODERS[method](X, K, dt, **kw)
 
 
 # --------------------------------------------------------------------- decoder
@@ -1443,41 +1284,24 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
         f"where silent errors live.")
 
 
-def decode(arrays, meta, walkers=None):
-    """Reconstruct positions (n_walkers, n_t, 3) at the saves from a pack's stored arrays, or those of the slice
-    ``walkers``; ``meta`` carries the basis and, for the continuous one, the window's duration ``T``."""
+def decode(arrays, meta, walkers=None, *, n_t):
+    """Positions ``(n_walkers, n_t, 3)`` at ``n_t`` evenly spaced instants of the window ``meta["T"]`` from a pack's
+    stored arrays, or those of the slice ``walkers``."""
     require_position_method(meta["method"])
-    return decode_bridge_dst(arrays, meta, walkers)
-
-
-def rank_of(method=POSITION_METHOD, n_t=None):
-    """Number of coefficients per axis at which ``method`` is an exact rewrite of the walk.
-
-``n_t - 2``: ``bridge_dst`` spends two coefficients on the endpoints and expands the pinned residual on the
-    remaining ``n_t - 2`` interior samples -- so the representation is exactly rank-preserving,
-    not merely close to it.
-    """
-    require_position_method(method)
-    return int(n_t) - 2
-
-
-def is_lossless_at(method, K, n_t):
-    """Whether ``method`` at ``K`` bands reproduces the walk exactly (to storage precision)."""
-    return method == POSITION_METHOD and int(K) >= rank_of(method, n_t)
+    return decode_bridge_dst(arrays, meta, walkers, n_t=n_t)
 
 
 # ------------------------------------------------------------ mode-space replay
 def mode_space_phi(arrays, meta, G, dt, *, dt_wf=None):
     """Gradient phase phi_i (N_w, n_meas) in the compressed basis, WITHOUT reconstructing the trajectory:
-    the exact integral of the waveform ``G`` (on its own grid ``dt_wf``, default the pack's ``dt``) against
-    the stored path, through :func:`band_projection` on the bands' basis (``meta``). Linear in position, so it
+    the exact integral of the waveform ``G`` (on its own grid ``dt_wf``, default ``dt``) against the stored path over
+    the window ``meta["T"]``, through :func:`band_projection`. Linear in position, so it
     commutes with the codec: phi = gamma [r(0).M0 + (r(T)-r(0)).M1 + sum_k beta_k W_k], and a
     motion-compensated waveform zeroes the first two columns exactly.
     """
     require_position_method(meta.get("method"))
     C = read_position_coeffs(arrays, dtype=np.float64)              # (N_w, K+2, n_axes)
-    n_t = int(meta["n_t"])
-    W = band_projection(G, dt if dt_wf is None else dt_wf, n_t, dt, C.shape[1] - 2, basis=basis_of(meta))
+    W = band_projection(G, dt if dt_wf is None else dt_wf, float(meta["T"]), C.shape[1] - 2)
     return GAMMA * np.einsum("wkd,mkd->wm", C, W)
 
 
@@ -1538,14 +1362,19 @@ def _run_bounds(lens, counts, n_t):
     return run_w, k1 - lens, k1
 
 
-def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=None, active=None):
+def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=None, active=None, *, n_t=None):
     """:func:`relaxation_logweight` on the stored runs, never on a decoded track: the per-walker log-weight is a
     sum over the walker's runs of the run's rate times the gate's on-time within it, ``dt * r * (Cg[k1] - Cg[k0])``
     with ``Cg`` the gate's prefix sum over the saves. O(runs) -- one run per walker on an impermeable substrate.
     ``column`` is the ``comp`` column's descriptor (``kind`` label or fraction); the gates as in
     :func:`relaxation_logweight`: without ``chi`` the walk relaxes over its ``(n_t - 1) dt`` at T2, and with it the
-    longitudinal periods are ``active - chi``."""
-    name = column["name"]; n_t = int(column["n_t"])
+    longitudinal periods are ``active - chi``. A static column (one label per walker) spans ``n_t`` instants, the
+    gate's length when one is given."""
+    name = column["name"]
+    if column["kind"] == "static":
+        n_t = int(len(np.asarray(chi).reshape(-1)) if (n_t is None and chi is not None) else n_t)
+    else:
+        n_t = int(column["n_t"])
     if column["kind"] == "static":                                                 # one run per walker
         lab = np.asarray(arrays[f"{name}_static"])
         vals, lens, counts = lab, np.full(lab.shape[0], n_t, np.int64), np.ones(lab.shape[0], np.int64)
@@ -1571,36 +1400,15 @@ def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, dt, chi=
     return -float(dt) * np.bincount(run_w, weights=per_run, minlength=counts.size)
 
 
-def surface_logweight_bridge(arrays, meta, rho2_over_D, chi):
-    """The gated surface log-weight ``(rho2/D) sum_t chi_t ell_t`` from the bridge form itself, without the per-save
-    series: with ``ell = diff(B)`` (``ell_0 = B_0``, the start), summation by parts gives ``sum_t d_t B_t`` with
-    ``d_t = chi_t - chi_{t+1}`` (``chi_{n_t} = 0``), and on the bridge ``B = a + (e - a) tau + u``, ``u = idst(C)``
-    (DST-I, orthonormal, its own inverse), that is ``a sum d + (e - a) sum d tau + C . dst(d[1:-1])``: two scalars
-    and one ``(n_w, K)`` product, equal to the decoded sum to rounding."""
-    from scipy.fft import dst
-    require_basis(meta, "dst1", what="the per-save gated contact (surface_logweight_bridge; the continuous basis reads its "
-                                     "gate on the waveform's grid, surface_logweight_continuous)")
-    nt = int(meta["n_t"])
-    C = bridge_bands(arrays, meta); K = C.shape[1]
-    a = np.asarray(arrays["blt_start"], np.float64); e = np.asarray(arrays["blt_endpoint"], np.float64)
-    chi = np.asarray(chi, np.float64).reshape(-1)[:nt]
-    if chi.shape[0] < nt:
-        chi = np.concatenate([chi, np.zeros(nt - chi.shape[0])])
-    d = chi - np.concatenate([chi[1:], [0.0]])
-    tau = np.linspace(0.0, 1.0, nt)
-    dhat = dst(d[1:-1], type=1, norm="ortho")[:K]
-    return float(rho2_over_D) * (a * d.sum() + (e - a) * (d * tau).sum() + C @ dhat)
-
-
-def surface_logweight_continuous(arrays, meta, rho2_over_D, gate=None, dt_gate=None, *, t0=0.0):
+def surface_logweight_bridge(arrays, meta, rho2_over_D, gate=None, dt_gate=None, *, t0=0.0):
     """The gated surface log-weight ``(rho2 / D) int chi(t) dB(t)`` over the window ``[t0, t0 + T]`` from the contact
     channel's continuous bridge ``B(t) = a + (e - a)(t - t0) / T + sum_k beta_k s_k(t - t0)``: the gate ``chi`` held
     sample by sample on its own grid ``dt_gate`` (its last sample the readout, held over nothing), so
 
         int chi dB = (e - a) <chi>_T + sum_k beta_k sqrt(2 / T) omega_k int chi cos(omega_k (t - t0)) dt,
 
-    each piece's cosine integral in closed form. Without a gate the exact total ``(rho2 / D) (e - a)``."""
-    require_basis(meta, "continuous", what="surface_logweight_continuous")
+    each piece's cosine integral in closed form, no series decoded. Without a gate the exact total ``(rho2 / D) (e -
+    a)``."""
     a = np.asarray(arrays["blt_start"], np.float64); e = np.asarray(arrays["blt_endpoint"], np.float64)
     if gate is None:
         return float(rho2_over_D) * (e - a)
@@ -1608,7 +1416,7 @@ def surface_logweight_continuous(arrays, meta, rho2_over_D, gate=None, dt_gate=N
     chi = np.asarray(gate, np.float64).reshape(-1)
     if chi.size < 2:
         raise ValueError(f"a gate needs at least two samples (the last is the readout, held over nothing); got {chi.size}")
-    Gc, lo, hi = _window_pieces(chi[None, :-1, None], dt_gate, T, float(t0))
+    Gc, lo, hi, _ = _window_pieces(chi[None, :-1, None], dt_gate, T, float(t0))
     g = Gc[0, :, 0]
     C = bridge_bands(arrays, meta); K = C.shape[1]
     om = np.pi * np.arange(1, K + 1) / T
@@ -1741,21 +1549,26 @@ def _mean_signal(phi, w=None, logw=None):
     return (np.exp(lw[:, None] + 1j * phi) * (ww / ww.sum())[:, None]).sum(0)
 
 
-def measure_fidelity(traj, dt_traj, decoded_pos, env=None, w=None, logw=None):
-    """Max complex replay error per acquisition family, decoded vs raw positions, against
-    a split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to
-    both so surface/relaxation packs are scored with their physics on. The positions are read
-    in walker chunks of at most :data:`CHUNK_BYTES` in float64; ``decoded_pos`` may be a
-    :func:`decoder` so that the decoded walk is never held whole; when it is ``traj`` itself
-    (a raw walk's floor) the phases are read once."""
+def measure_fidelity(traj, dt_traj, decoded_pos=None, env=None, w=None, logw=None, *, phases=None):
+    """Max complex replay error per acquisition family, the stored walk against the raw positions, against a
+    split-half Monte-Carlo floor. `logw` (optional) applies the same separable weight to both so surface/relaxation
+    packs are scored with their physics on. The stored walk is read as the replay reads it, ``phases(G)`` -> its
+    phases ``(N_w, n_meas)`` under the battery's waveforms ``G`` (:func:`coded_phases`, the bands' projection), or
+    as positions at the saves (``decoded_pos``: an array or a :func:`decoder`, never held whole); ``decoded_pos``
+    ``traj`` itself is a raw walk's floor alone. The raw positions are read in walker chunks of at most
+    :data:`CHUNK_BYTES` in float64."""
     env = env or default_envelope()
     r = traj if is_lazy(traj) else np.asarray(traj); dt = float(dt_traj)      # the walk as stored; float64 per chunk below
     G, meta = acquisition_battery(r.shape[1], dt, env)
     phi_raw = _phases_by_chunk(r, dt, G)                          # (N_w, n_meas): all the certificate reads
     S_raw = _mean_signal(phi_raw, w, logw)
-    S_dec = S_raw if decoded_pos is traj else _mean_signal(
-        _phases_by_chunk(decoded_pos if callable(decoded_pos) else np.asarray(decoded_pos), dt, G,
-                         shape=r.shape[:2]), w, logw)
+    if phases is not None:
+        S_dec = _mean_signal(phases(G), w, logw)
+    elif decoded_pos is traj:
+        S_dec = S_raw
+    else:
+        S_dec = _mean_signal(_phases_by_chunk(decoded_pos if callable(decoded_pos) else np.asarray(decoded_pos), dt, G,
+                                              shape=r.shape[:2]), w, logw)
     idx = np.random.default_rng(0).permutation(r.shape[0]); h = r.shape[0] // 2
     ia, ib = idx[:h], idx[h:]
     la = None if logw is None else np.asarray(logw)[ia]
@@ -1787,7 +1600,7 @@ def auto_select_modes(X, traj, dt_traj, method=POSITION_METHOD, env=None, tol=2.
     require_position_method(method)
     best = None
     for K in K_grid:
-        arrays, meta, _ = ENCODERS[method](X, K)
+        arrays, meta, _ = ENCODERS[method](X, K, dt_traj)
         pos = decode(arrays, meta)
         fid = measure_fidelity(traj, dt_traj, pos, env, w=w, logw=logw)
         if verbose:

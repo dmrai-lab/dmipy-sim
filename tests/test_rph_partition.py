@@ -24,11 +24,11 @@ def pack_paths(walk, tmp_path_factory):
     """The same walk at two K, plus the same walk split into its two pools by weight."""
     root = tmp_path_factory.mktemp("pk")
     out = {}
-    for K in (2, 6):
+    for K in (2, 8):
         p = root / f"k{K}.rpk"
         build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, out_path=str(p))
         out[K] = str(p)
-    comp = np.asarray(walk._bank_dict()["comp"]).reshape(2000, -1)[:, 0]
+    comp = np.asarray(walk.compartment)                                     # one label per walker
     for name, sel in (("intra", comp == 0), ("extra", comp != 0)):
         p = root / f"{name}.rpk"
         build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=4, weights=sel.astype(float), out_path=str(p))
@@ -66,7 +66,7 @@ def _rows(ph, vol):
 
 # ------------------------------------------------------------------ membership
 def test_membership_is_derived_from_r0_and_independent_of_K(pack_paths):
-    p2, p6 = read_rpk(pack_paths[2]), read_rpk(pack_paths[6])
+    p2, p6 = read_rpk(pack_paths[2]), read_rpk(pack_paths[8])
     grid = _grid(p2)
     a = Phantom.partition(PackSubstrate(p2, m0=1.0), grid)
     b = Phantom.partition(PackSubstrate(p6, m0=1.0), grid)
@@ -80,7 +80,7 @@ def test_membership_is_derived_from_r0_and_independent_of_K(pack_paths):
 
 
 def test_a_voxel_without_walkers_is_absent_or_is_the_outside_substrate(pack_paths):
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     big = Grid.covering(pk.r0, voxel_size_m=(2.5e-6, 2.5e-6, float(np.ptp(pk.r0[:, 2])) + 1e-6), margin_voxels=1)
     bare = Phantom.partition(PackSubstrate(pk, m0=0.7), big)
     assert bare.n_voxels < big.n_voxels                                              # the margin is not in the phantom
@@ -122,7 +122,7 @@ def test_fractions_are_emergent_from_the_weights_and_declared_only_where_nothing
 
 # ------------------------------------------------------------------ the free grid
 def test_regrid_is_an_exact_rebin(pack_paths):
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     fine = _grid(pk, 2.5e-6)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), fine)
     coarse = ph.regrid(voxel_size_m=(5e-6, 5e-6, fine.voxel_size_m[2]))
@@ -143,7 +143,7 @@ def test_regrid_is_an_exact_rebin(pack_paths):
 
 
 def test_the_scanner_decides_the_voxels_when_the_partition_declares_no_grid(pack_paths):
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     free = Phantom.partition(PackSubstrate(pk, m0=1.0), outside=Inert())
     seq = _acq(pk, [[1, 0, 0]], [1e9])
     with pytest.raises(ValueError, match="Prescription"):
@@ -159,7 +159,7 @@ def test_the_scanner_decides_the_voxels_when_the_partition_declares_no_grid(pack
 # ------------------------------------------------------------------ the pose
 def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_membership_unchanged(pack_paths):
     from dmipy_sim.replay import so3
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     grid = _grid(pk, attach="substrate")
     R = so3.rotation_of((0.3, 0.5, 0.81))
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)
@@ -175,7 +175,7 @@ def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_member
 
 def test_a_pose_on_a_bore_attached_grid_rebins_the_walkers(pack_paths):
     from dmipy_sim.replay import so3
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     R = so3.rotation_of((0.0, 1.0, 0.0))                                # tip the cylinder axis into the plane
     lab = Grid.covering(pk.r0 @ R.T, voxel_size_m=(2.5e-6, 2.5e-6, 2.5e-6), attach="lab", margin_voxels=1)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), lab, outside=Inert()).with_pose(Pose(R))
@@ -189,7 +189,7 @@ def test_a_pose_on_a_bore_attached_grid_rebins_the_walkers(pack_paths):
 
 # ------------------------------------------------------------------ maps per walker
 def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     grid = _grid(pk)
     ph = Phantom.partition(PackSubstrate(pk, m0=0.8), grid)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9], rf=True)
@@ -214,7 +214,7 @@ def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
 
 def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
     from dmipy_sim.constants import GAMMA
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     grid = _grid(pk)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)
     seq = _acq(pk, [[1, 0, 0]], [1e9])
@@ -233,7 +233,7 @@ def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
 
 # ------------------------------------------------------------------ the file
 def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
-    pk = read_rpk(pack_paths[6])
+    pk = read_rpk(pack_paths[8])
     grid = _grid(pk, attach="lab")
     myelin = Inert(name="myelin")
     ph = Phantom.partition(PackSubstrate(pk, m0=0.7, name="wm", tissue=Tissue(T2={"extra": 0.06, "intra": 0.06})), grid,

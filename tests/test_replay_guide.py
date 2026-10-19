@@ -1,10 +1,6 @@
 """The replay guide's code blocks run (docs/replay-guide): a page's blocks in order in one namespace, a block whose
 first line is ``# docs: skip`` left out (the hub, over the network), on the CPU, in a temporary working directory. A block
-that no longer runs is a page that lies.
-
-A page that walks with ``simulate_trajectories`` runs on both bases a pack's bands are on: as written (the walk's saves,
-packed on their DST-I) and with the walk accumulated (``accumulate=``, the continuous basis), its pack built from the
-coefficient walk at the band the page asks for."""
+that no longer runs is a page that lies."""
 from __future__ import annotations
 import os
 import re
@@ -24,41 +20,16 @@ def blocks(page: Path):
         yield text[: m.start()].count("\n") + 2, m.group(1)
 
 
-#: the bands a page's walk accumulates on the continuous basis: at least the band any page packs at
-GUIDE_ACCUMULATE = 32
-
-
-def _walks(page):
-    return "simulate_trajectories(" in page.read_text(encoding="utf-8")
-
-
-CASES = [(p, b) for p in PAGES for b in (("dst1", "continuous") if _walks(p) else ("dst1",))]
-
-
-@pytest.mark.parametrize("page,basis", CASES, ids=[f"{p.relative_to(GUIDE)}-{b}" for p, b in CASES])
-def test_the_page_runs(page, basis, tmp_path, monkeypatch):
+@pytest.mark.parametrize("page", PAGES, ids=[str(p.relative_to(GUIDE)) for p in PAGES])
+def test_the_page_runs(page, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MPLBACKEND", "Agg")
-    if basis == "continuous":
-        import dmipy_sim
-        walk = dmipy_sim.simulate_trajectories
-
-        def accumulated(*args, **kw):
-            # the page's save interval gives way to the band's own block (accumulate=K alone)
-            kw.setdefault("accumulate", GUIDE_ACCUMULATE)
-            args = args[:4] + args[5:]
-            kw.pop("dt_save", None)
-            return walk(*args, **kw)
-        monkeypatch.setattr(dmipy_sim, "simulate_trajectories", accumulated)
     ns = {"__name__": "__docs__", "__file__": str(page)}
     for line, src in blocks(page):
         first = src.lstrip().splitlines()[0] if src.strip() else ""
         if first.startswith("# docs: skip"):
             continue
         exec(compile(src, f"{page.relative_to(ROOT)}:{line}", "exec"), ns)
-    if "walk" in ns and "pack" in ns:                                  # the page packed the walk it made, on the basis asked
-        from dmipy_sim.replay.compression import basis_of
-        assert basis_of(ns["pack"].meta) == basis, (basis_of(ns["pack"].meta), basis)
 
 
 def test_every_page_is_linked():

@@ -3,8 +3,9 @@
 Every route from a stored walk to a signal integrates `gamma dt sum_t G(t) . r(t)` through
 `dmipy_sim.replay._replay_kernel`. Synthetic trajectories with a closed-form phase -- a stationary
 walker, a constant velocity, a single sine mode -- go through each route and must return that
-phase to 1e-8 of the waveform's first moment (the pack routes to the float32 their coefficients
-are stored in). The
+phase to 1e-8 of the waveform's first moment; the pack routes return the phase of the path they store (the
+chord plus the bands' series, which at block order 0 holds the sine mode at ``sinc(pi / 2N)`` of its
+amplitude) to the float32 their coefficients are stored in. The
 field gate has one implementation, the kernel's, which every field route reads, and the MT
 trajectory producer at zero binding is the plain producer to the bit.
 """
@@ -35,23 +36,30 @@ def _bipolar(n_t=N_T, G=G0, axis=0):
 
 
 def _synthetic_trajectories(n_t=N_T, dt=DT):
-    """(name, traj (n_w, n_t, 3), closed-form phase (n_w,)) for the bipolar waveform of `_bipolar`: the exact
-    integral of the sample-and-hold waveform against the piecewise-linear path through the saves,
-    ``gamma dt sum_k g_k (r_k + r_{k+1}) / 2`` (the last sample sits at T and integrates to nothing)."""
+    """(name, traj (n_w, n_t, 3), closed-form phase (n_w,), closed-form phase of the stored path (n_w,)) for the
+    bipolar waveform of `_bipolar`: the exact integral of the sample-and-hold waveform against the piecewise-linear
+    path through the saves, ``gamma dt sum_k g_k (r_k + r_{k+1}) / 2`` (the last sample sits at T and integrates to
+    nothing), and against the path a pack stores of those saves (the same for the chord; the sine mode at
+    ``sinc(pi / 2N)`` of its amplitude)."""
     t = np.arange(n_t) * dt
     g = _bipolar(n_t)[0, :, 0]
     mid = lambda r: (r[:, :-1] + r[:, 1:]) / 2.0                     # the path's mean over each save interval
     out = []
     x0 = np.array([1e-6, -2e-6, 3e-6])                               # stationary: gamma x0 int g = 0 (refocused)
     traj = np.zeros((3, n_t, 3)); traj[:, :, 0] = x0[:, None]
-    out.append(("stationary", traj, GAMMA * dt * x0 * g[:-1].sum()))
+    phi = GAMMA * dt * x0 * g[:-1].sum()
+    out.append(("stationary", traj, phi, phi))
     v = np.array([1e-3, -5e-4])                                      # constant velocity: gamma v int g(t) t dt
     traj = np.zeros((2, n_t, 3)); traj[:, :, 0] = v[:, None] * t[None, :]
-    out.append(("constant velocity", traj, GAMMA * dt * (g[None, :-1] * mid(traj[:, :, 0])).sum(1)))
+    phi = GAMMA * dt * (g[None, :-1] * mid(traj[:, :, 0])).sum(1)
+    out.append(("constant velocity", traj, phi, phi))
     A = np.array([2e-6, 7e-7])                                       # one sine mode through the saves
     mode = np.sin(np.pi * t / T_TOTAL)
     traj = np.zeros((2, n_t, 3)); traj[:, :, 0] = A[:, None] * mode[None, :]
-    out.append(("sine mode", traj, GAMMA * dt * (g[None, :-1] * mid(traj[:, :, 0])).sum(1)))
+    N = n_t - 1
+    T_ = N * dt
+    stored = GAMMA * A * np.sinc(1.0 / (2.0 * N)) * (g[:-1] * (T_ / np.pi) * (np.cos(np.pi * t[:-1] / T_) - np.cos(np.pi * t[1:] / T_))).sum()
+    out.append(("sine mode", traj, GAMMA * dt * (g[None, :-1] * mid(traj[:, :, 0])).sum(1), stored))
     return out
 
 
@@ -64,7 +72,7 @@ def _phase_scale():
 # ── every route returns the closed-form phase ─────────────────────────────────────────────
 @pytest.mark.parametrize("case", range(3), ids=["stationary", "constant-velocity", "sine-mode"])
 def test_every_route_returns_the_closed_form_phase(case):
-    name, traj, phi_exact = _synthetic_trajectories()[case]
+    name, traj, phi_exact, phi_stored = _synthetic_trajectories()[case]
     G = _bipolar()
     tol = 1e-8 * _phase_scale()
     routes = {}
@@ -75,17 +83,18 @@ def test_every_route_returns_the_closed_form_phase(case):
     routes["pre_pulse"] = T.pre_pulse_gradient_phase(traj, DT, G, DT, N_T)[0]
     # per-step increments summed
     routes["increments"] = phase_increments(effective_gradient(G, DT, N_T, DT)[0], traj, DT).sum(0)
-    # the mode-space replay of a losslessly encoded walk (K = n_t - 2)
-    arrays, meta, _ = cx.encode_bridge_dst(traj, K=N_T - 2)
+    # the mode-space replay of the walk kept at its saves (K = n_t - 2)
+    arrays, meta, _ = cx.encode_bridge_dst(traj, N_T - 2, DT)
     routes["mode space"] = cx.mode_space_phi(arrays, meta, G, DT)[:, 0]
-    W = compile_scheme(G, DT, meta["K"], n_t=N_T)
+    W = compile_scheme(G, DT, meta["K"])
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
     routes["compiled scheme"] = (C.reshape(C.shape[0], -1) @ W)[:, 0]
     # a pack stores its coefficients in float32, so the two pack routes carry that storage precision
     tol_pack = 1e-6 * max(_phase_scale(), np.abs(phi_exact).max())
     for route, phi in routes.items():
-        err = np.abs(np.asarray(phi) - phi_exact).max()
-        t = tol_pack if route in ("mode space", "compiled scheme") else tol
+        pack_route = route in ("mode space", "compiled scheme")
+        err = np.abs(np.asarray(phi) - (phi_stored if pack_route else phi_exact)).max()
+        t = tol_pack if pack_route else tol
         assert err < t, f"{name} through {route}: |phi - exact| = {err:.3e} rad (tol {t:.1e})"
 
 
@@ -93,7 +102,7 @@ def test_jax_routes_agree_with_numpy():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
     from dmipy_sim.replay._replay_kernel import gradient_phase_jax, effective_gradient_jax, phase_increments_jax
-    _, traj, phi_exact = _synthetic_trajectories()[2]
+    _, traj, phi_exact, _ = _synthetic_trajectories()[2]
     G = _bipolar()
     # float32 arithmetic: a relative 1e-5 of the phase scale
     tol = 1e-5 * max(_phase_scale(), np.abs(phi_exact).max())
@@ -149,12 +158,10 @@ def test_the_waveform_enters_through_its_exact_moments():
 def test_compiled_scheme_and_mode_space_read_one_projection():
     G = np.concatenate([_bipolar(axis=0), _bipolar(axis=2)], axis=0)
     K = 12
-    W = compile_scheme(G, DT, K, n_t=N_T)
-    P = cx.bridge_projection(effective_gradient(G, DT, N_T, DT), N_T, K)
-    B = cx.band_projection(G, DT, N_T, DT, K, basis="dst1")                     # the basis dispatch: dt x the DST-I projection
-    np.testing.assert_allclose(B, DT * P, rtol=0, atol=0)
+    W = compile_scheme(G, DT, K)
+    B = cx.band_projection(G, DT, T_TOTAL, K)
     np.testing.assert_allclose(W, (GAMMA * B).reshape(2, -1).T, rtol=0, atol=0)
-    arrays, meta, _ = cx.encode_bridge_dst(_synthetic_trajectories()[2][1], K=K)
+    arrays, meta, _ = cx.encode_bridge_dst(_synthetic_trajectories()[2][1], K, DT)
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
     np.testing.assert_allclose(cx.mode_space_phi(arrays, meta, G, DT), C.reshape(C.shape[0], -1) @ W,
                                rtol=1e-12)
@@ -165,12 +172,12 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
     import jax.numpy as jnp
     from dmipy_sim.replay.replay import surface_logweight
     traj = _synthetic_trajectories()[2][1]
-    arrays, meta, _ = cx.encode_bridge_dst(traj, K=16)
+    arrays, meta, _ = cx.encode_bridge_dst(traj, 16, DT)
     n_w = traj.shape[0]
     dlog = -np.abs(np.random.default_rng(0).normal(0, 1e-6, (n_w, N_T)))
-    a2, cm = cx.encode_boundary_bridge(dlog, K=16)
+    a2, cm = cx.encode_boundary_bridge(dlog, 16, DT)
     arrays = {**arrays, **a2, "spin_weights": np.ones(n_w)}
-    W = compile_scheme(_bipolar(), DT, 16, n_t=N_T)
+    W = compile_scheme(_bipolar(), DT, 16)
     slw = surface_logweight(arrays, 5e3, cm)
     E_np = replay_signal(arrays, W, rho2_over_D=5e3)
     E_jx = np.abs(np.asarray(replay_signal_jax(cx.read_position_coeffs(arrays, dtype=np.float32),
@@ -202,7 +209,7 @@ def test_one_field_gate():
 def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
     g = d.Sphere(2e-6, surface_relaxivity_t2=1e-6)
     kw = dict(seed=3, require_gpu=False)
-    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, **kw)
+    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, f_band=0.5 / 5e-4, raw_subset=200, **kw).saves()
     mt = d.simulate_mt_trajectories(200, 2e-9, g, 2e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                     equilibrate_binding="off", **kw)
     assert mt.positions.dtype == np.float32 and mt.bound_frac.dtype == np.float32
@@ -231,8 +238,8 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4)
     seq = d.set_b(d.pgse([[1, 0, 0], [0, 1, 1], [1, 1, 1]], 2e-3, 5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9] * 3)
     G = np.asarray(seq.G_eff)
-    W3 = compile_scheme(G, pk.dt, pk.K, n_t=pk.n_t)
-    W2 = compile_scheme(G[..., [0, 2]], pk.dt, pk.K, n_t=pk.n_t)
+    W3 = compile_scheme(G, seq.dt, pk.K, T=pk.T_window)
+    W2 = compile_scheme(G[..., [0, 2]], seq.dt, pk.K, T=pk.T_window)
     Kw = pk.K + 2
     np.testing.assert_allclose(W2, W3.reshape(Kw, 3, -1)[:, [0, 2], :].reshape(2 * Kw, -1), atol=1e-12 * np.abs(W3).max())
     C = read_position_coeffs(pk.arrays, dtype=np.float64); w = np.asarray(pk.spin_weights, float)

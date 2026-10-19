@@ -54,7 +54,8 @@ def _spec_off():
 def _walk(spec, n, *, n_t, seed, sub_steps=None):
     from dmipy_sim.spec import geometry_from_spec
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT, dt_save=DT,
-                                   seed=int(seed), tiers="all", require_gpu=False, sub_steps=sub_steps)
+                                   seed=int(seed), tiers="all", require_gpu=False, sub_steps=sub_steps,
+                                   raw_subset=int(n)).saves()
 
 
 def _per_walker(pack):

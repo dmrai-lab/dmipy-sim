@@ -39,8 +39,8 @@ def test_cost_is_what_the_walk_reports(build):
     p = cost(g)
     w = d.simulate_trajectories(N, D, g, T, DT)
     assert p.sub_steps == w.sub_steps
-    assert p.walker_steps == w.work["walker_steps"] == N * (p.n_saves - 1) * w.sub_steps
-    assert p.n_saves == w.positions.shape[1]
+    assert p.walker_steps == w.work["walker_steps"] == N * p.n_blocks * w.sub_steps
+    assert p.n_blocks == w.n_blocks and p.K == w.K and p.block_s == pytest.approx(w.h)
     assert p.sub_step_rules == w.work["step_rule"]["rules"]
     assert p.sub_steps == max(p.sub_step_rules.values())
     assert p.sub_step_rules[p.binding_rule] == p.sub_steps
@@ -97,28 +97,14 @@ def _install(monkeypatch, **backends):
     monkeypatch.setattr(B, "installed", lambda: {k: _EP(v) for k, v in backends.items()})
 
 
-def test_cost_names_the_backends_that_accept_it(monkeypatch):
+def test_every_other_backend_is_refused_until_it_accumulates(monkeypatch):
+    """The band accumulation is the JAX kernels' alone (until dmipy-sim-cuda#73): an installed backend is named among
+    the refusing, whatever it would say itself, and none accepts."""
     _install(monkeypatch, fast=_Fake("fast"), picky=_Fake("picky", "no spheres"))
     p = cost(d.Sphere(radius=2e-6))
-    assert p.backends_accepting == ["fast"]
-    assert p.backends_refusing == {"picky": "backend 'picky' refuses this walk of Sphere: no spheres"}
-    # the paths only the JAX kernels implement are refused for every other backend
-    q = cost(d.Sphere(radius=2e-6), enforce_compartment=True)
-    assert q.backends_accepting == [] and "only the jax kernels" in q.backends_refusing["fast"]
-
-
-def test_the_walk_warns_when_an_installed_backend_accepts_it(monkeypatch, caplog, tmp_path):
-    _install(monkeypatch, fast=_Fake("fast"))
-    monkeypatch.setenv("DMIPY_SIM_RUN_DIR", str(tmp_path))
-    with caplog.at_level(logging.WARNING, logger="dmipy_sim"):
-        w = d.simulate_trajectories(N, D, d.Sphere(radius=2e-6), T, DT)
-    rows = w.run._events
-    warn = [r for r in rows if r["kind"] == "warning"]
-    assert len(warn) == 1
-    c = [r for r in rows if r["kind"] == "cost"][0]
-    assert "fast" in warn[0]["message"] and f"{c['walker_steps']:.3g}" in warn[0]["message"]
-    assert c["binding_rule"] in warn[0]["message"]
-    assert any(r.levelno == logging.WARNING and "fast" in r.getMessage() for r in caplog.records)
+    assert p.backends_accepting == []
+    assert set(p.backends_refusing) == {"fast", "picky"}
+    assert all("band accumulation" in r and "only the jax kernels" in r for r in p.backends_refusing.values())
 
 
 def test_the_walk_is_silent_when_no_other_backend_accepts_it(monkeypatch, caplog):
@@ -141,7 +127,7 @@ def test_the_cost_is_in_the_runs_events(tmp_path):
     c = [r for r in rows if r["kind"] == "cost"]
     assert len(c) == 1
     p = cost(g)
-    for k in ("sub_steps", "walker_steps", "binding_rule", "n_saves", "backend", "sub_step_rules"):
+    for k in ("sub_steps", "walker_steps", "binding_rule", "n_blocks", "K", "backend", "sub_step_rules"):
         assert c[0][k] == getattr(p, k)
 
 
@@ -151,8 +137,8 @@ def test_measure_projects_the_walk():
     p = cost(g, t, 1e-3, n, walker_batch_size=1000, measure=True)
     m = p.measured
     assert m.seconds_per_walker_step > 0 and m.projected_s > 0
-    assert m.batch == 1000 and m.pilot_saves[0] == 1 and 1 < m.pilot_saves[1] <= p.n_saves - 1
-    assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_save * (p.n_saves - 1)))
+    assert m.batch == 1000 and m.pilot_blocks[0] == 1 and 1 < m.pilot_blocks[1] <= p.n_blocks
+    assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_block * p.n_blocks))
     assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).profile is None
     # within 2x of a measured walk of the same shape (compile excluded)
     d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
@@ -172,7 +158,7 @@ def test_profile_times_the_pilot_at_several_batches(monkeypatch):
     assert s.plateau_walker_steps_per_s == max(s.walker_steps_per_s.values())
     assert s.batch_fraction_of_plateau == pytest.approx(s.walker_steps_per_s[200] / s.plateau_walker_steps_per_s)
     assert s.max_batch_memory is None and "unavailable" in s.memory_cap
-    want = "under-filled" if s.seconds_per_save[400] < core.UNDERFILLED_DOUBLING * s.seconds_per_save[200] else "saturated"
+    want = "under-filled" if s.seconds_per_block[400] < core.UNDERFILLED_DOUBLING * s.seconds_per_block[200] else "saturated"
     assert s.verdict == want
     # a device that holds 1.5 batches: 2B does not fit
     per = core._device_bytes_per_walker(core._resolve_walk(g, D, 8e-3, 1e-3))
@@ -203,7 +189,8 @@ def test_the_cost_takes_the_walks_arguments():
 def test_the_band_is_the_walks():
     from dmipy_sim.engine.physics import sub_step_rules
     g = d.Sphere(radius=20e-6)                  # a pore so wide that the band, not the pore, sizes the step
-    assert cost(g).f_band_hz == 0.5 / DT        # the save grid's Nyquist frequency, as the walk takes it
+    c0 = cost(g)
+    assert c0.f_band_hz == pytest.approx(c0.K / (2 * T))   # the walk's own band, K / (2 T)
     c = cost(g, f_band=1280.0)
     assert c.f_band_hz == 1280.0 and c.sub_step_rules == sub_step_rules(g, D, DT, surface=True, f_band=1280.0)
     assert c.sub_steps == d.simulate_trajectories(N, D, g, T, DT, f_band=1280.0).sub_steps
@@ -257,8 +244,8 @@ def test_profile_finds_the_batch_within_the_memory_cap(monkeypatch):
     c = cost(g, 2e-3, 1e-3, 20000, walker_batch_size=None, measure="profile")
     s = c.profile
     assert s.max_batch_memory == 9000
-    assert set(s.seconds_per_save) <= {4096, 8192, 9000, 18000}          # the sweep stays within the cap; 2B is timed only if it fits
-    assert 18000 not in s.seconds_per_save
+    assert set(s.seconds_per_block) <= {4096, 8192, 9000, 18000}          # the sweep stays within the cap; 2B is timed only if it fits
+    assert 18000 not in s.seconds_per_block
     assert c.walker_batch_size == s.recommended_batch and c.walker_batch_size <= 9000
     assert s.recommended_batch == max(s.walker_steps_per_s, key=s.walker_steps_per_s.get)
     assert c.walker_batch_rule == "recommended by the sweep"
@@ -266,9 +253,9 @@ def test_profile_finds_the_batch_within_the_memory_cap(monkeypatch):
     assert c.walker_batches == -(-20000 // c.walker_batch_size)
 
 
-def test_the_fixed_part_of_a_call_is_not_multiplied_by_the_saves():
+def test_the_fixed_part_of_a_call_is_not_multiplied_by_the_blocks():
     from dmipy_sim.engine import core
-    # a call costs 5 s whatever its saves, plus b * saves / 1e4 s, but b = 32768 is slower per walker (the true optimum is 16384)
+    # a call costs 5 s whatever its blocks, plus b * blocks / 1e4 s, but b = 32768 is slower per walker (the true optimum is 16384)
     per_walker = {4096: 1.0, 8192: 0.6, 16384: 0.4, 32768: 0.5}
     calls = []
 
@@ -276,15 +263,15 @@ def test_the_fixed_part_of_a_call_is_not_multiplied_by_the_saves():
         calls.append((b, saves))
         return 5.0 + b * per_walker[b] * saves / 1e4
 
-    ps, fixed, (n1, n2) = core._fit_saves(seconds, 16384, 1111)
+    ps, fixed, (n1, n2) = core._fit_blocks(seconds, 16384, 1111)
     assert ps == pytest.approx(16384 * 0.4 / 1e4) and fixed == pytest.approx(5.0) and n1 == 1
-    assert n2 > 2 and n2 < 1111                       # doubled until the saves outweighed the fixed part
+    assert n2 > 2 and n2 < 1111                       # doubled until the blocks outweighed the fixed part
     t_n2, t_1 = 5.0 + ps * n2, 5.0 + ps
     assert t_n2 >= 2 * t_1 and (n2 == 2 or 5.0 + ps * (n2 // 2) < 2 * t_1)
-    # the projection is fixed + saves * per_save, not 1111 * t(1)
+    # the projection is fixed + blocks * per_block, not 1111 * t(1)
     assert fixed + ps * 1111 < 0.5 * 1111 * (5.0 + ps)
-    # the sweep rates by seconds per save: the fastest batch is 16384 and the sweep stops after the slower 32768
-    per, why = core._sweep(lambda b: core._fit_saves(seconds, b, 1111)[0], 32768, "n_walkers")
+    # the sweep rates by seconds per block: the fastest batch is 16384 and the sweep stops after the slower 32768
+    per, why = core._sweep(lambda b: core._fit_blocks(seconds, b, 1111)[0], 32768, "n_walkers")
     assert sorted(per) == [4096, 8192, 16384, 32768] and core._recommended(per) == 16384 and why == "rate fell"
-    # a walk of one save has no fixed part to separate
-    assert core._fit_saves(seconds, 4096, 1) == (seconds(4096, 1), 0.0, (1, 1))
+    # a walk of one block has no fixed part to separate
+    assert core._fit_blocks(seconds, 4096, 1) == (seconds(4096, 1), 0.0, (1, 1))

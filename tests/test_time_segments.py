@@ -15,7 +15,7 @@ from dmipy_sim.replay.compression import BUDGET
 from dmipy_sim.replay.time_segments import TimeSegmentLayout, write_time_segment_layout, _profile
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
 from dmipy_sim.fill.consolidate import consolidate
-from dmipy_sim.spec import walk_spec, fill_field, StratifiedByVoxel
+from dmipy_sim.spec import walk_spec, StratifiedByVoxel
 from tests.conftest import spec_without_source
 
 
@@ -28,7 +28,7 @@ def layout(spec_grid):
     n_t = None
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=11 + b, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=11 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         pk = build_replay_pack(w, id=f"t/sm{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                out_path=str(tmp / "sm_shards" / f"block-000{b}.p1.rpk"))
@@ -93,12 +93,10 @@ def test_the_amplitude_of_a_b_value_is_the_shapes_own(layout):
     assert m["code"]["package"] == "dmipy-sim" and m["source"]["manifest_sha256"]
 
 
-def test_a_layout_written_under_its_earlier_name_is_refused_until_restamped(layout):
-    """A manifest written as ``shape_moments/3``, each shape's packed vector under ``moment``, is refused by name;
-    ``restamp_layout`` rewrites it in place as ``time_segments/1`` (recorded under ``restamped``), after which it
-    replays the same numbers; a second restamp changes nothing, and any other format is refused by both."""
+def test_a_layout_of_another_format_is_refused_by_name(layout):
+    """A manifest written as ``shape_moments/3`` (each shape's packed vector under ``moment``) is not a
+    ``time_segments/1`` layout and is refused by name; it is rebuilt from its packs."""
     import shutil
-    from dmipy_sim.replay.time_segments import restamp_layout
     col, grid, n_t, tmp = layout
     src, old = str(tmp / "sm_moments"), str(tmp / "sm_earlier")
     shutil.copytree(src, old)
@@ -106,23 +104,8 @@ def test_a_layout_written_under_its_earlier_name_is_refused_until_restamped(layo
     m["format"] = "shape_moments/3"
     m["shapes"] = {n: {("moment" if k == "vector" else k): v for k, v in rec.items()} for n, rec in m["shapes"].items()}
     json.dump(m, open(os.path.join(old, "manifest.json"), "w"))
-    with pytest.raises(ValueError, match="restamp_layout"):
-        TimeSegmentLayout(old)
-    stamped = restamp_layout(old)
-    assert stamped["format"] == "time_segments/1" and "vector" in stamped["shapes"]["a"] and "moment" not in stamped["shapes"]["a"]
-    assert stamped["restamped"][0]["from_format"] == "shape_moments/3"
-    assert restamp_layout(old) == stamped                                   # already in this format: unchanged
-    now, earlier = TimeSegmentLayout(src), TimeSegmentLayout(old)
-    dirs = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]); b = np.array([2e8, 1e9, 0.0])
-    S_now, F_now = now.image("a", b, dirs)
-    S_old, F_old = earlier.image("a", b, dirs)
-    np.testing.assert_array_equal(S_now, S_old); np.testing.assert_array_equal(F_now, F_old)
-    m["format"] = "shape_moments/2"
-    json.dump(m, open(os.path.join(old, "manifest.json"), "w"))
     with pytest.raises(ValueError, match="not a time_segments/1 layout"):
         TimeSegmentLayout(old)
-    with pytest.raises(ValueError, match="rewrites shape_moments/3 only"):
-        restamp_layout(old)
 
 
 def test_a_shape_is_one_direction_with_amplitude_invariant_ramps(layout):
@@ -232,9 +215,8 @@ def layout_field(spec_grid):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=21 + b, require_gpu=False, field_res=0.5e-6,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        w = fill_field(w, w.field_basis)                     # read at save resolution: no adaptive stepping here
         packs.append(build_replay_pack(w, id=f"t/sf{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
                                        out_path=str(tmp / "sf_shards" / f"block-000{b}.p1.rpk")))
     consolidate(str(tmp / "sf_shards"), str(tmp / "sf_layout"), blocks=[0, 1], id="t/sf-columns")

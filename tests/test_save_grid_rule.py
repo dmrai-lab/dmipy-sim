@@ -73,34 +73,22 @@ def test_the_save_interval_rule_scales_as_derived():
     assert var / 2 <= 0.1 / np.sqrt(n) * 1.0001
 
 
-def test_walk_spec_derives_the_save_grid():
+def test_walk_spec_derives_the_band_from_the_class():
+    """``walk_spec`` walks the scanner class's band per window (#643), its block the band's own; an explicit
+    ``dt_save`` is the block."""
+    from dmipy_sim.replay.bank import mode_count
     spec = Substrate.canonical(field_T=3.0).request(n_fibres=3, seed=1)
-    spec_nf = spec_without_source(spec)             # the scanner-dependence below, not the field cap
+    spec_nf = spec_without_source(spec)
     w = walk_spec(spec_nf, 60, 2e-3, seed=0, require_gpu=False)
-    D = max(p.D for p in spec.pools if p.D)
-    assert w.dt == pytest.approx(save_interval(2e-3, 60, "connectom", D=D, field=False))
+    assert w.K == mode_count(2e-3, "connectom") and w.block["rule"] == "derived"
     w2 = walk_spec(spec_nf, 60, 2e-3, seed=0, require_gpu=False, scanner="prisma")
-    assert w2.dt > w.dt
-    w3 = walk_spec(spec_nf, 60, 2e-3, dt_save=2.5e-4, seed=0, require_gpu=False)     # an explicit grid still wins
-    assert w3.dt == pytest.approx(2.5e-4)
-    # the spec declares a source: the save grid is capped at FIELD_DT_CAP regardless of scanner (#143)
-    w_field = walk_spec(spec, 60, 2e-3, seed=0, require_gpu=False)
-    assert w_field.dt == pytest.approx(save_interval(2e-3, 60, "connectom", D=D, field=True))
+    assert w2.K == mode_count(2e-3, "prisma") and w2.scanner == "prisma"
+    w3 = walk_spec(spec_nf, 60, 2e-3, dt_save=2.5e-4, seed=0, require_gpu=False)     # an explicit block still wins
+    assert w3.h == pytest.approx(2.5e-4) and w3.block["rule"] == "given"
 
 
-def test_mode_space_equals_position_space_for_an_off_grid_waveform():
-    """The same integral read two ways: the compiled scheme against the bands (what pack.replay does) and the
-    per-save weights against the decoded positions, for a waveform on its own grid with edges between saves.
-    At lossless K they agree to rounding; the effective weights are what make that true."""
-    from dmipy_sim.replay._replay_kernel import effective_gradient, gradient_phase
-    from dmipy_sim.replay.compression import decode_bridge_dst
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(3e-6, (0, 0, 1)), 0.02, 2e-4, seed=0, require_gpu=False)
-    pk = build_replay_pack(walk, id="t/exact", license="x", citation="x", K=walk.n_t - 2, envelope=ENV)
-    acq = _pgse(pk.dt / 3, 3 * pk.n_t - 2, 0.004 + 0.4 * pk.dt, 0.012 + 0.7 * pk.dt, 1e9)          # edges between saves
-    S_mode = pk.replay(acq, complex_signal=True)
-    pos = decode_bridge_dst(pk.arrays, {"n_t": pk.n_t})
-    phi = gradient_phase(effective_gradient(acq.G, acq.dt, pk.n_t, pk.dt), pos, pk.dt)              # (n_meas, n_w)
-    S_pos = np.exp(1j * phi).mean(1)
-    np.testing.assert_allclose(S_mode, S_pos, rtol=1e-9, atol=1e-12)
+def test_a_waveform_beyond_the_pack_is_refused():
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(3e-6, (0, 0, 1)), 0.02, 2e-4, seed=0, require_gpu=False, K=40)
+    pk = build_replay_pack(walk, id="t/exact", license="x", citation="x", envelope=ENV)
     with pytest.raises(ValueError, match="beyond the pack"):
         pk.replay(_acq(np.ones((1, 3 * pk.n_t + 30, 3)) * 1e-3, pk.dt / 3))

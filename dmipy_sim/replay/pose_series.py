@@ -9,8 +9,8 @@ term adds a gradient quadratic in the coils'. Binned to a tolerance of ``b`` the
 one timing class: what changes from one to the next is each row's amplitude and direction, the background's
 magnitude ``|g0|`` and direction, and the small part of each row that is not its commanded shape.
 
-**The phase.** In the pack's own coefficient space a row is ``W_i`` ``(n_c, 3)`` (the bridge projection of its
-effective gradient per window, :func:`~dmipy_sim.replay.replay._compile_effective`), and walker ``w``'s phase is
+**The phase.** In the pack's own coefficient space a row is ``W_i`` ``(n_c, 3)`` (the bands' projection of its
+waveform per window, :func:`~dmipy_sim.replay.compression.band_projection_matrix`), and walker ``w``'s phase is
 ``sum_k W_i[k] . C_w[k]`` with ``C_w`` its stored coefficients. A shape is a unit vector ``u`` of that space (the
 first class's rows' principal profiles, one per shell); a row of the shape is written ``W_i = u v_i^T + D_i`` with
 ``v_i`` its least-squares vector in the metric the departure bound weighs (below; amplitude ``a_i = |v_i|``,
@@ -326,22 +326,13 @@ class PoseSeries:
 
 def _window_maps(pack, P, n_t_wf, dt_wf):
     """``(n_c, n_t_wf)``: the linear map from a waveform's samples (one axis) to the pack's coefficient space, every
-    window the acquisition reaches side by side -- the same :func:`effective_gradient` and bridge projection every
-    closed-form route reads, applied to the unit samples (exact: both are linear)."""
-    from ._replay_kernel import effective_gradient
-    from .replay import _compile_effective
+    window the acquisition reaches side by side -- ``gamma`` times the bands' projection of each held sample
+    (:func:`~dmipy_sim.replay.compression.band_projection_matrix`), the map every closed-form route reads."""
+    from .compression import band_projection_matrix
+    from .replay import GAMMA
     dt = P["dt"]
-    maps = []
-    for _seg, t0, n_s in P["windows"]:
-        M = np.empty((pack.K + 2, n_t_wf))
-        for lo in range(0, n_t_wf, 256):
-            hi = min(lo + 256, n_t_wf)
-            unit = np.zeros((hi - lo, n_t_wf, 1)); unit[np.arange(hi - lo), np.arange(lo, hi), 0] = 1.0
-            G = effective_gradient(unit, dt_wf, n_s, dt, t0=t0) if pack.n_windows > 1 else \
-                effective_gradient(unit, dt_wf, P["n_t"], dt)
-            M[:, lo:hi] = _compile_effective(G, dt, pack.K, n_s)
-        maps.append(M)
-    return np.concatenate(maps, 0)
+    return np.concatenate([GAMMA * band_projection_matrix(n_t_wf, dt_wf, (n_s - 1) * dt, pack.K, t0=t0)
+                           for _seg, t0, n_s in P["windows"]], 0)
 
 
 def _timing_key(wf):
@@ -502,8 +493,6 @@ def _couple(B3, cpl, channels, l_off, K_body):
 def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None, keep=None, tol=1e-8,
                 l_cap=64, direction_tol=None, backend="jax", device=None):
     """:meth:`~dmipy_sim.replay.replay.ReplayPack.pose_series` (the module docstring is the derivation)."""
-    from .compression import require_basis as _require_basis
-    _require_basis(pack.meta, "dst1", what="the factorised pose series (it projects per-save waveform courses)")
     import time
     from . import so3
     from .compression import read_position_coeffs

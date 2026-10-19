@@ -181,7 +181,8 @@ def walk(spec, n, *, n_t, seed, sub_steps=None):
     from dmipy_sim.spec import geometry_from_spec
     dt = T / (n_t - 1)
     return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, dt_save=dt, seed=int(seed),
-                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
+                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
+                                   window_T=T, raw_subset=int(n)).saves()
 
 
 # ----------------------------------------------------------------- the envelope and the declared waveforms
@@ -255,7 +256,7 @@ def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N, n_t=DIRECT_N_T):
                    n_t=grid["n_t"])
     dt = T / (n_t - 1)
     w = d.simulate_trajectories(int(n), D0, geometry(shape, d_um), T_max=T, dt_save=dt, seed=pack_seed(pack_id(shape, d_um)), tiers=(),
-                                require_gpu=False, walker_batch_size=2000)
+                                require_gpu=False, walker_batch_size=2000, window_T=T, raw_subset=int(n)).saves()
     G = rk.effective_gradient(np.asarray(seq.G_eff, np.float64), float(seq.dt), int(w.positions.shape[1]),
                               float(w.dt))
     phi = np.asarray(rk.gradient_phase(G, np.asarray(w.positions, np.float32), float(w.dt)), np.float64)

@@ -1,9 +1,10 @@
-"""A pack replays at another diffusivity: the save grid divided by the ratio, nothing decoded (dmipy-sim#289).
+"""A pack replays at another diffusivity: the block divided by the ratio, nothing decoded (dmipy-sim#289).
 
-A path walked at ``D`` and read on a grid divided by ``a`` is a path walked at ``a D``. The stored coefficients
-are duration-agnostic, so the replay at ``a D`` is a view of the same arrays on the new grid, and every channel
-follows in its own space. The checks are exact: a walk at ``2 D`` from the same seed on the halved grid is the
-same walk to the bit, so the view of the pack walked at ``D`` must replay as the pack walked at ``2 D`` does.
+A path walked at ``D`` and read on a grid divided by ``a`` is a path walked at ``a D``. The replay at ``a D`` is a
+view of the same arrays on the new grid, the bands renormalised by ``a^(-1/2)`` (the basis of a window ``a`` times
+shorter), and every channel follows in its own space. A walk at ``2 D`` from the same seed on the halved block is the
+same walk to the bit, its ends identical and its bands those of the walk at ``D`` over ``sqrt(2)`` to the float32 they
+are stored in, so the view of the pack walked at ``D`` must replay as the pack walked at ``2 D`` does to that rounding.
 """
 import numpy as np
 import pytest
@@ -15,10 +16,20 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec.tissue import Tissue
 
 D0, T, DT = 2.0e-9, 40e-3, 5e-4
+#: the view against the walk at 2 D: their bands agree to the float32 they are stored in
+RTOL = 2e-6
+
+
+def _same_walk(a, b):
+    """One axis's stored coefficients of the walk at ``D`` and of the walk at ``2 D`` on the halved block: the ends
+    identical, the bands over ``sqrt(2)`` to float32."""
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    np.testing.assert_array_equal(a[:, :2], b[:, :2])
+    np.testing.assert_allclose(a[:, 2:] / np.sqrt(2.0), b[:, 2:], rtol=1e-6, atol=1e-7 * np.abs(b[:, 2:]).max())
 
 
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, **kw):
-    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False)
+    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=12)
     out = tmp / f"{name}.rpk"
     _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out), **kw)
     return read_rpk(str(out))
@@ -59,9 +70,9 @@ def test_the_view_is_the_walk_at_the_other_diffusivity_to_the_bit(free):
     assert view.temporal_bandwidth_hz == pytest.approx(2 * pk_d.temporal_bandwidth_hz)
     for k in ("pos_x", "pos_y", "pos_z"):
         if k in pk_d.arrays:
-            np.testing.assert_array_equal(pk_d.arrays[k], pk_2d.arrays[k])       # the same walk, coded
+            _same_walk(pk_d.arrays[k], pk_2d.arrays[k])                          # the same walk, coded
     seq = _seq(T / 2)
-    np.testing.assert_allclose(view.replay(seq, complex_signal=True), pk_2d.replay(seq, complex_signal=True), rtol=1e-12)
+    np.testing.assert_allclose(view.replay(seq, complex_signal=True), pk_2d.replay(seq, complex_signal=True), rtol=RTOL)
     np.testing.assert_allclose(np.abs(view.replay(seq)), np.exp(-np.asarray(seq.b()) * 2 * D0), atol=4.0 / np.sqrt(600))
     assert view.meta["provenance"]["diffusivity_scaled"]["a"] == 2.0
 
@@ -70,16 +81,16 @@ def test_tissue_d_is_the_knob_on_every_route(free):
     pk_d, pk_2d = free
     seq = _seq(T / 2)
     t = Tissue(D=2 * D0)
-    np.testing.assert_allclose(pk_d.replay(seq, tissue=t, complex_signal=True), pk_2d.replay(seq, complex_signal=True), rtol=1e-12)
+    np.testing.assert_allclose(pk_d.replay(seq, tissue=t, complex_signal=True), pk_2d.replay(seq, complex_signal=True), rtol=RTOL)
     w1, e1, E1 = pk_d.walker_signals(seq, tissue=t)
     w2, e2, E2 = pk_2d.walker_signals(seq)
-    np.testing.assert_allclose(E1, E2, rtol=1e-12)
-    np.testing.assert_allclose(pk_d.walker_phases(seq, tissue=t)[2], pk_2d.walker_phases(seq)[2], rtol=1e-12)
+    np.testing.assert_allclose(E1, E2, rtol=RTOL)
+    np.testing.assert_allclose(pk_d.walker_phases(seq, tissue=t)[2], pk_2d.walker_phases(seq)[2], rtol=RTOL, atol=1e-6)   # radians
     r1 = pk_d.pose_response(seq, tissue=t)
     r2 = pk_2d.pose_response(seq)
-    np.testing.assert_allclose(r1.coeffs, r2.coeffs, rtol=1e-9, atol=1e-14)
+    np.testing.assert_allclose(r1.coeffs, r2.coeffs, rtol=RTOL, atol=1e-9)
     np.testing.assert_allclose(pk_d.replay_bloch(seq, tissue=t, complex_signal=True),
-                               pk_2d.replay_bloch(seq, complex_signal=True), rtol=1e-9)
+                               pk_2d.replay_bloch(seq, complex_signal=True), rtol=RTOL)
     # and the walked diffusivity, or none, replays the pack as it is
     np.testing.assert_array_equal(pk_d.replay(seq, tissue=Tissue(D=D0)), pk_d.replay(seq))
 
@@ -87,17 +98,17 @@ def test_tissue_d_is_the_knob_on_every_route(free):
 def test_the_surface_term_changes_with_the_diffusivity_and_the_replay_is_still_exact(pore):
     """dmipy-sim#289's retraction, as a test: the surface term does NOT cancel under the rescaling -- only its
     mean exposure does, and the signal is an average of exponentials. The replay reproduces the change rather
-    than cancelling it: per walker it is the walk at 2 D, and that walk's own pack agrees to the bit."""
+    than cancelling it: per walker it is the walk at 2 D, and that walk's own pack agrees to float32."""
     pk_d, pk_2d = pore
     seq = _seq(T / 2)
     rho2 = 2e-5
     at_d = pk_d.replay(seq, tissue=Tissue(rho2=rho2))
     at_2d = pk_d.replay(seq, tissue=Tissue(rho2=rho2, D=2 * D0))
     own = pk_2d.replay(seq, tissue=Tissue(rho2=rho2))
-    np.testing.assert_allclose(at_2d, own, rtol=1e-12)
+    np.testing.assert_allclose(at_2d, own, rtol=RTOL)
     w1, e1, _ = pk_d.walker_signals(seq, tissue=Tissue(rho2=rho2, D=2 * D0))
     w2, e2, _ = pk_2d.walker_signals(seq, tissue=Tissue(rho2=rho2))
-    np.testing.assert_allclose(e1, e2, rtol=1e-12)                       # per walker, the same weights
+    np.testing.assert_allclose(e1, e2, rtol=RTOL)                       # per walker, the same weights
     assert not np.allclose(at_2d, at_d, rtol=1e-3)                       # and the signal moved
 
 
@@ -150,7 +161,7 @@ def test_a_study_refuses_a_tissue_at_another_diffusivity_and_takes_the_view(free
         pk_d.study(Study(Protocol([Acquisition(seq)]), tissues=[Tissue(D=2 * D0)]))
     S_view = pk_d.at_diffusivity(2 * D0).study(Study(Protocol([Acquisition(seq)]), tissues=[None]))
     S_own = pk_2d.study(Study(Protocol([Acquisition(seq)]), tissues=[None]))
-    np.testing.assert_allclose(np.asarray(S_view), np.asarray(S_own), rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(S_view), np.asarray(S_own), rtol=RTOL)
 
 
 def test_the_walk_serves_its_line_of_diffusivity_and_permeability_pairs_and_no_other(permeable):
@@ -161,11 +172,11 @@ def test_the_walk_serves_its_line_of_diffusivity_and_permeability_pairs_and_no_o
     assert pk_d.permeability == K and pk_2d.permeability == 2 * K
     for k in ("pos_x", "pos_y", "pos_z"):
         if k in pk_d.arrays:
-            np.testing.assert_array_equal(pk_d.arrays[k], pk_2d.arrays[k])       # the same crossings, coded
+            _same_walk(pk_d.arrays[k], pk_2d.arrays[k])                          # the same crossings, coded
     own = pk_2d.replay(seq, complex_signal=True)
-    np.testing.assert_allclose(pk_d.replay(seq, tissue=Tissue(kappa=2 * K), complex_signal=True), own, rtol=1e-12)
-    np.testing.assert_allclose(pk_d.replay(seq, tissue=Tissue(D=2 * D0), complex_signal=True), own, rtol=1e-12)
-    np.testing.assert_allclose(pk_d.replay(seq, tissue=Tissue(D=2 * D0, kappa=2 * K), complex_signal=True), own, rtol=1e-12)
+    np.testing.assert_allclose(pk_d.replay(seq, tissue=Tissue(kappa=2 * K), complex_signal=True), own, rtol=RTOL)
+    np.testing.assert_allclose(pk_d.replay(seq, tissue=Tissue(D=2 * D0), complex_signal=True), own, rtol=RTOL)
+    np.testing.assert_allclose(pk_d.replay(seq, tissue=Tissue(D=2 * D0, kappa=2 * K), complex_signal=True), own, rtol=RTOL)
     view = pk_d.at_permeability(2 * K)
     assert view.diffusivity == pytest.approx(2 * D0)
     assert view.meta["provenance"]["diffusivity_scaled"]["permeability"]["wall_0.in_to_out"]["replayed"] == pytest.approx(2 * K)
@@ -189,14 +200,13 @@ def sheathed(tmp_path_factory):
     """A sheathed axon with its field basis, walked at (D, T, dt) and at (2D, T/2, dt/2) from one seed: three
     pools, walls with contact, and the susceptibility path channel -- every tier a pack can carry."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
-    from dmipy_sim.spec.walk import fill_field
     tmp = tmp_path_factory.mktemp("sheath")
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
     g2 = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=2 * D0, D_extra=2 * D0)
     out = []
     for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
-        walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False)
-        walk = fill_field(walk, field_grid_of(geom, res=0.2e-6))
+        walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
+                                       field_basis=field_grid_of(geom, res=0.2e-6))
         path = tmp / f"{name}.rpk"
         _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,
                           susc_path_K=16, out_path=str(path))
@@ -204,8 +214,8 @@ def sheathed(tmp_path_factory):
     return out
 
 
-def test_the_field_and_the_relaxation_channels_follow_the_rescale_to_the_bit(sheathed):
-    """The path channel is the field per save, a function of position only; the occupancy runs are per save.
+def test_the_field_and_the_relaxation_channels_follow_the_rescale(sheathed):
+    """The path channel is the field per block, a function of position only; the occupancy runs are per block.
     Both follow the new grid in their own space: the field's gate is taken on it and its phase carries the
     new dt, the relaxation gates read the new dt. The view of the pack walked at D must replay as the pack
     walked at 2D from the same seed does, under a field, under T2 per pool, and under both with a pose."""
@@ -213,7 +223,7 @@ def test_the_field_and_the_relaxation_channels_follow_the_rescale_to_the_bit(she
     assert pk_d.has_field and pk_2d.has_field and pk_d.has_relaxation
     for k in ("pos_x", "pos_y", "pos_z"):
         if k in pk_d.arrays:
-            np.testing.assert_array_equal(pk_d.arrays[k], pk_2d.arrays[k])
+            _same_walk(pk_d.arrays[k], pk_2d.arrays[k])
     n_t, dt = pk_2d.n_t, pk_2d.dt
     seq = sequences.pgse([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], 0.4e-3, 1.2e-3, bvalues=[2e8, 2e8],
                          TE=(n_t - 1) * dt, n_t=n_t, slew_rate=np.inf)
@@ -226,13 +236,13 @@ def test_the_field_and_the_relaxation_channels_follow_the_rescale_to_the_bit(she
     for tissue, kw, live in ((chi, dict(scanner=3.0), 1e-7), (t2, {}, 1e-3), (both, dict(scanner=7.0), 1e-3)):
         own = pk_2d.replay(seq, tissue=tissue, complex_signal=True, **kw)
         view = pk_d.replay(seq, tissue=tissue.replace(D=2 * D0), complex_signal=True, **kw)
-        np.testing.assert_allclose(view, own, rtol=1e-9, err_msg=repr(tissue))
+        np.testing.assert_allclose(view, own, rtol=RTOL, err_msg=repr(tissue))
         assert np.abs(view - bare).max() > live * np.abs(bare).max(), repr(tissue)
     # and through the pose expansion, which reads the field's grid on its own
     R = so3_rotation(0.3, 0.7, -0.4)
     own = pk_2d.replay(seq, tissue=both, scanner=3.0, orientation=R, complex_signal=True)
     view = pk_d.replay(seq, tissue=both.replace(D=2 * D0), scanner=3.0, orientation=R, complex_signal=True)
-    np.testing.assert_allclose(view, own, rtol=1e-9)
+    np.testing.assert_allclose(view, own, rtol=RTOL)
 
 
 def so3_rotation(a, b, c):
@@ -241,7 +251,7 @@ def so3_rotation(a, b, c):
 
 
 def _float_pack(*a, **k):
-    """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
+    """``build_replay_pack`` in the float containers: this module compares packs and replays to float32, which the
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None)

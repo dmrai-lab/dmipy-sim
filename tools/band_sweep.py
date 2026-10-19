@@ -115,7 +115,7 @@ def main(argv=None):
 
     log(f"walk: {a.n} walkers, {DIAM * 1e6:.0f} um cylinder, D {D0}, T {T}, dt_save {DT}")
     geom = d.Cylinder(DIAM / 2, (0.0, 0.0, 1.0))
-    walk = d.simulate_trajectories(a.n, D0, geom, T, DT, seed=a.seed, require_gpu=False, tiers="all")
+    walk = d.simulate_trajectories(a.n, D0, geom, T, DT, seed=a.seed, require_gpu=False, tiers="all", K=K, window_T=T)
     rows = gl.rows()
     exact = {k: SteppedPore("cylinder", DIAM, D0, geom, n_modes=(8, 8)).continuous(gl.g_axis(s), DT) for k, s in rows.items()}
     log("exact:", exact)

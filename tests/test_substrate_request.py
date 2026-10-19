@@ -44,6 +44,8 @@ def test_pack_is_the_specs_geometry_and_walks_the_same():
     p = sub.pack(n_axons=6, seed=3)
     assert type(p) is d.PackedMyelinatedCylinders and p.spec.walls == g.spec.walls and p.spec.pools == g.spec.pools
     w_spec = walk_spec(spec, 40, 4e-4, 2e-4, seed=1, require_gpu=False)
-    w_pack = d.simulate_trajectories(40, sub.D_intra, p, 4e-4, 2e-4, seed=1, require_gpu=False)
-    np.testing.assert_array_equal(w_spec.positions, w_pack.positions)
+    from dmipy_sim.replay.bank import class_band
+    w_pack = d.simulate_trajectories(40, sub.D_intra, p, 4e-4, 2e-4, seed=1, require_gpu=False, K=w_spec.K,
+                                     f_band=class_band("connectom"))
+    np.testing.assert_array_equal(w_spec.position_coeffs, w_pack.position_coeffs)
     assert w_spec.spec == spec and w_spec.diffusivity == pytest.approx(sub.D_intra, rel=1e-6)   # float32 pool D

@@ -19,8 +19,8 @@ from dmipy_sim.spec.tissue import Tissue
 D0, T, DT, R, KAPPA = 2.0e-9, 40e-3, 5e-4, 4e-6, 2e-5
 
 
-def _pack(tmp, geometry, D, T_, dt, name, seed=3):
-    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False)
+def _pack(tmp, geometry, D, T_, dt, name, seed=3, sub_steps=None):
+    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=12, sub_steps=sub_steps)
     out = tmp / f"{name}.rpk"
     _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out))
     return read_rpk(str(out))
@@ -35,9 +35,10 @@ def packs(tmp_path_factory):
     """The walked pack, its twin at half the size (``s = 1/2``: half the radius, a quarter of the diffusivity, half
     the permeability, same time), and the twin of that read back at ``D0`` (``a = 4``: a quarter of the time)."""
     tmp = tmp_path_factory.mktemp("size")
-    return (_pack(tmp, _cyl(R, KAPPA), D0, T, DT, "d"),
-            _pack(tmp, _cyl(R / 2, KAPPA / 2), D0 / 4, T, DT, "half"),
-            _pack(tmp, _cyl(R / 2, 2 * KAPPA), D0, T / 4, DT / 4, "half_at_d0"))
+    ss = d.walk_cost(600, D0, _cyl(R, KAPPA), T, DT, K=12).sub_steps          # the twins take the walk's own steps
+    return (_pack(tmp, _cyl(R, KAPPA), D0, T, DT, "d", sub_steps=ss),
+            _pack(tmp, _cyl(R / 2, KAPPA / 2), D0 / 4, T, DT, "half", sub_steps=ss),
+            _pack(tmp, _cyl(R / 2, 2 * KAPPA), D0, T / 4, DT / 4, "half_at_d0", sub_steps=ss))
 
 
 def _seq(TE, b=1.5e9):

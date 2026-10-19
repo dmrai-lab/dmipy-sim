@@ -1,5 +1,5 @@
-"""The walk's band accumulation: what a coefficient walk (``simulate_trajectories(accumulate=K)``) carries per walker
-in place of its saves.
+"""The walk's band accumulation: what a walk (``simulate_trajectories``, a
+:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`) carries per walker.
 
 A walk runs in blocks of ``h`` seconds, the band's own unless given (:func:`block_length`: ``omega_K h =``
 :data:`BLOCK_OMEGA_H` at the top band, the table's order :data:`BLOCK_ORDER`). Inside a block the step scan adds, per walker, the moments of each channel's
@@ -20,17 +20,44 @@ import numpy as np
 #: blocks per ring: the projection's inner sum and the stride of the level-2 chain
 RING = 16
 
-#: the block table's order a coefficient walk takes by default (dmipy-sim-cuda#74)
+#: the block table's order a walk takes by default (dmipy-sim-cuda#74)
 BLOCK_ORDER = 3
 
-#: ``omega_K h`` at the top band of the block a coefficient walk takes by default: with ``m = 3`` the quadrature adds
+#: ``omega_K h`` at the top band of the block a walk takes by default: with ``m = 3`` the quadrature adds
 #: ``quadrature_rel(3, h, omega_K) = 0.8^8 / 1327104 = 1.3e-7`` of the top band's phase variance, for every class
 #: (measured 1.41e-7 on a T4, dmipy-sim-cuda#74)
 BLOCK_OMEGA_H = 0.8
 
 
+#: the storage band a walk accumulates by default (Hz): K = 256 bands per 100 ms (#740)
+STORAGE_BAND_HZ = 1280.0
+
+
+def default_K(T):
+    """The bands of a window of ``T`` seconds at :data:`STORAGE_BAND_HZ`: ``ceil(2 f T)``."""
+    return max(1, int(np.ceil(2.0 * STORAGE_BAND_HZ * float(T) - 1e-9)))
+
+
+def window_count(T_max, window_T=None):
+    """``(n_windows, T_window)``: a walk within one storage window (``window_T``, the storage rule's
+    :data:`~dmipy_sim.replay.bank.WINDOW_T` by default) is one window; a longer one is a whole number of windows,
+    each accumulated on its own (RPK.md 4.3), and is refused otherwise."""
+    if window_T is None:
+        from ..replay.bank import WINDOW_T as window_T
+    T_max, window_T = float(T_max), float(window_T)
+    if not window_T > 0.0:
+        raise ValueError(f"window_T is the duration of a storage window, a positive number; got {window_T!r}")
+    if T_max <= window_T * (1.0 + 1e-9):
+        return 1, T_max
+    n = int(round(T_max / window_T))
+    if abs(n * window_T - T_max) > 1e-9 * T_max:
+        raise ValueError(f"a walk of {T_max:.6g} s longer than one storage window is a whole number of {window_T:.6g} s "
+                         "windows; walk a whole number of them, or pass the window_T that divides it")
+    return n, window_T
+
+
 def block_length(T, K):
-    """The block of a coefficient walk of ``K`` bands over ``T`` seconds when none is given: ``h = BLOCK_OMEGA_H T /
+    """The block of a walk of ``K`` bands over a window of ``T`` seconds when none is given: ``h = BLOCK_OMEGA_H T /
     (pi K)``, so that ``omega_K h = 0.8`` at the top band ``omega_K = pi K / T``, rounded to a whole number of blocks
     over the walk (``T / round(T / h)``) -- 100 us at K = 256 over 100 ms. The band sets it, never the walker count or
     the step: the quadrature it costs is the same fraction of the top band for every scanner class."""
@@ -38,22 +65,27 @@ def block_length(T, K):
     return float(T) / max(int(round(float(T) / h)), 1)
 
 
-#: what the walk records as its accumulation precision (``CoefficientWalk.block["precision"]``)
-PRECISION = f"float32: the moments of each block summed per step, a ring of {RING} blocks projected in one product, the rings chained into a level-2 accumulator"
+#: the floating-point type the block contributions are accumulated in across blocks (``walk_params.block.precision``,
+#: RPK.md 9.5.5), and how (``walk_params.block.accumulation``)
+PRECISION = "float32"
+ACCUMULATION = (f"the moments of each block summed per step, a ring of {RING} blocks projected in one float32 product, "
+                "the rings chained into a float32 level-2 accumulator")
 
 
-def moment_scan(inner, init, length, pos_of, blt_of, m):
+def moment_scan(inner, init, length, pos_of, blt_of, m, *, read=None, n_ch=0):
     """``inner`` stepped ``length`` times from ``init`` with the moments of the increments: ``(carry, (M (m+1, 3),
-    B (m+1,) or None, Q (3,), Qb () or None))``, ``M_j = sum_i tau_i^j (pos_of(c_i+1) - pos_of(c_i))`` and the same of
-    ``blt_of`` (a cumulative local time in the carry), ``tau_i = (i + 1/2) / length - 1/2``, and each channel's
-    quadratic variation over the block, ``Q = sum_i (dx_i)^2`` per axis and ``Qb = sum_i (dlog_i)^2``: what the
-    block table's error is proportional to (:func:`~dmipy_sim.replay.compression.quadrature_rel` times it)."""
+    B (m+1,) or None, Q (3,), Qb () or None, F (n_ch,) or None))``, ``M_j = sum_i tau_i^j (pos_of(c_i+1) -
+    pos_of(c_i))`` and the same of ``blt_of`` (a cumulative local time in the carry), ``tau_i = (i + 1/2) / length -
+    1/2``; each channel's quadratic variation over the block, ``Q = sum_i (dx_i)^2`` per axis and ``Qb = sum_i
+    (dlog_i)^2``, what the block table's error is proportional to (:func:`~dmipy_sim.replay.compression.quadrature_rel`
+    times it); and with ``read`` the block mean of ``read(position)`` after every step (``n_ch`` channels; zeros on a
+    block that reads nothing, so a reading and a silent block have one form)."""
     tau = (jnp.arange(length, dtype=jnp.float32) + 0.5) / jnp.float32(length) - 0.5
     pw = tau[:, None] ** jnp.arange(int(m) + 1, dtype=jnp.float32)[None, :]          # (length, m+1), shared by every walker
     has_b = blt_of is not None
 
     def body(c, p):
-        cc, mp, mb, qp, qb = c
+        cc, mp, mb, qp, qb, f = c
         r0 = pos_of(cc)
         b0 = blt_of(cc) if has_b else None
         cc, _ = inner(cc, None)
@@ -64,34 +96,47 @@ def moment_scan(inner, init, length, pos_of, blt_of, m):
             db = blt_of(cc) - b0
             mb = mb + p * db
             qb = qb + db * db
-        return (cc, mp, mb, qp, qb), None
+        if read is not None:
+            f = f + read(cc[0])
+        return (cc, mp, mb, qp, qb, f), None
 
     m0 = jnp.zeros((int(m) + 1, 3), jnp.float32)
     b0 = jnp.zeros((int(m) + 1,), jnp.float32) if has_b else None
     q0 = jnp.zeros((3,), jnp.float32)
     qb0 = jnp.float32(0.0) if has_b else None
-    (out, mp, mb, qp, qb), _ = jax.lax.scan(body, (init, m0, b0, q0, qb0), pw)
-    return out, (mp, mb, qp, qb)
+    f0 = jnp.zeros((int(n_ch),), jnp.float32) if n_ch else None
+    (out, mp, mb, qp, qb, f), _ = jax.lax.scan(body, (init, m0, b0, q0, qb0, f0), pw)
+    if f is not None:
+        f = f / jnp.float32(length)
+    return out, (mp, mb, qp, qb, f)
 
 
-def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None):
-    """The ``n_blocks`` blocks of one walker: ``interval(carry, None) -> (carry, ys, (M, B))`` walks one block
-    (its moments from :func:`moment_scan`). Returns ``(carry, acc_pos (K+1, 3), acc_blt (K+1,) or None, emitted,
-    counted, (qv_pos (3,), qv_blt () or None))``: the accumulators of the cosine projections
+def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None, read=None, every=1, offset=0):
+    """The ``n_blocks`` blocks of one walker (one window): ``interval(carry, read) -> (carry, ys, (M, B, Q, Qb, F))``
+    walks one block (its moments from :func:`moment_scan`). Returns ``(carry, acc_pos (K+1, 3), acc_blt (K+1,) or None,
+    emitted, counted, (qv_pos (3,), qv_blt () or None), fields)``: the accumulators of the cosine projections
     (:func:`~dmipy_sim.replay.compression.block_table` evaluated per ring), ``emit(ys)`` stacked over the blocks (None
-    without ``emit``), ``count(ys)`` summed over them (int32; None without ``count``) and each channel's quadratic
-    variation over the walk, summed per ring like the projections."""
+    without ``emit``), ``count(ys)`` summed over them (int32; None without ``count``), each channel's quadratic
+    variation over the window, summed per ring like the projections, and with ``read`` the block means of the field
+    ``(n_blocks, n_ch)`` -- read on the blocks whose walk-wide index plus one (``offset`` the window's first block) is a
+    multiple of ``every``, zero on the others."""
     from ..replay.compression import block_table
     hi = jax.lax.Precision.HIGHEST
     n_blocks, K, m = int(n_blocks), int(K), int(m)
 
-    def block(c, _):
-        c, ys, mom = interval(c, None)
+    def block(c, b):
+        if read is None:
+            c, ys, mom = interval(c, None)
+        elif int(every) == 1:
+            c, ys, mom = interval(c, read)
+        else:
+            c, ys, mom = jax.lax.cond((b + offset + 1) % every == 0, lambda c: interval(c, read),
+                                      lambda c: interval(c, None), c)
         return c, (mom, None if emit is None else emit(ys), None if count is None else count(ys).astype(jnp.int32))
 
     def ring(state, idx):
         c, ap, ab, n, qp, qb = state
-        c, (mom, e, k) = jax.lax.scan(block, c, None, length=int(idx.shape[0]))
+        c, (mom, e, k) = jax.lax.scan(block, c, idx)
         tab = block_table(1.0, n_blocks, K, m, blocks=idx, xp=jnp)                    # (R, K+1, m+1), no walker in it
         ap = ap + jnp.einsum("bkj,bjd->kd", tab, mom[0], precision=hi)
         qp = qp + mom[2].sum(axis=0)
@@ -99,8 +144,8 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None
             ab = ab + jnp.einsum("bkj,bj->k", tab, mom[1], precision=hi)
             qb = qb + mom[3].sum()
         if count is not None:
-            n = n + k.sum()
-        return (c, ap, ab, n, qp, qb), e
+            n = n + k.sum().astype(jnp.int32)
+        return (c, ap, ab, n, qp, qb), (e, mom[4])
 
     state = (carry, jnp.zeros((K + 1, 3), jnp.float32), jnp.zeros((K + 1,), jnp.float32) if has_blt else None,
              jnp.int32(0) if count is not None else None, jnp.zeros((3,), jnp.float32),
@@ -110,17 +155,13 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None
     if n_full:
         idx = jnp.arange(n_full * RING, dtype=jnp.int32).reshape(n_full, RING)
         state, e = jax.lax.scan(ring, state, idx)
-        if emit is not None:
-            parts.append(jax.tree_util.tree_map(lambda a: a.reshape((n_full * RING,) + a.shape[2:]), e))
+        parts.append(jax.tree_util.tree_map(lambda a: a.reshape((n_full * RING,) + a.shape[2:]), e))
     if rem:
         state, e = ring(state, n_full * RING + jnp.arange(rem, dtype=jnp.int32))
-        if emit is not None:
-            parts.append(e)
-    emitted = None
-    if emit is not None:
-        emitted = parts[0] if len(parts) == 1 else jax.tree_util.tree_map(lambda *a: jnp.concatenate(a, axis=0), *parts)
+        parts.append(e)
+    stacked = parts[0] if len(parts) == 1 else jax.tree_util.tree_map(lambda *a: jnp.concatenate(a, axis=0), *parts)
     c, ap, ab, n, qp, qb = state
-    return c, ap, ab, emitted, n, (qp, qb)
+    return c, ap, ab, stacked[0], n, (qp, qb), stacked[1]
 
 
 def coefficient_form(r0, r_end, acc_pos, scale):

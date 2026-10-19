@@ -52,8 +52,8 @@ def test_a_zero_permeability_walks_as_no_permeability():
     """The same seed, the same walk: positions identical to the bit, no label change either way."""
     from dmipy_sim import simulate_trajectories
     g0, gn = _packing(0.0, n=12), _packing(None, n=12)
-    w0 = simulate_trajectories(64, D, g0, 1e-3, DT, seed=3, walker_batch_size=64, storage_dtype=np.float32)
-    wn = simulate_trajectories(64, D, gn, 1e-3, DT, seed=3, walker_batch_size=64, storage_dtype=np.float32)
-    np.testing.assert_array_equal(np.asarray(w0.positions), np.asarray(wn.positions))
-    if w0.compartment is not None:
-        assert (np.asarray(w0.compartment) == np.asarray(w0.compartment)[:, :1]).all()
+    w0 = simulate_trajectories(64, D, g0, 1e-3, DT, seed=3, walker_batch_size=64, raw_subset=64)
+    wn = simulate_trajectories(64, D, gn, 1e-3, DT, seed=3, walker_batch_size=64, raw_subset=64)
+    np.testing.assert_array_equal(np.asarray(w0.raw_positions), np.asarray(wn.raw_positions))
+    if w0.raw_compartment is not None:
+        assert (np.asarray(w0.raw_compartment) == np.asarray(w0.raw_compartment)[:, :1]).all()

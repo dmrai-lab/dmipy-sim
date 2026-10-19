@@ -14,8 +14,8 @@ def _batch(b=400, n_t=300, seed=0):
 
 def test_position_coefficients_match_the_host_encoder():
     pos, _ = _batch()
-    C_host = cx.read_position_coeffs(cx.encode_bridge_dst(pos, 16, device="numpy")[0], dtype=np.float32)
-    C_dev = cx.read_position_coeffs(cx.encode_bridge_dst(pos, 16, device="jax")[0], dtype=np.float32)
+    C_host = cx.read_position_coeffs(cx.encode_bridge_dst(pos, 16, 1e-4, device="numpy")[0], dtype=np.float32)
+    C_dev = cx.read_position_coeffs(cx.encode_bridge_dst(pos, 16, 1e-4, device="jax")[0], dtype=np.float32)
     assert C_dev.shape == C_host.shape
     assert np.array_equal(C_dev[:, :1], C_host[:, :1])                          # the start is exact
     assert np.abs(C_dev[:, 1] - C_host[:, 1]).max() <= 1e-6 * np.abs(C_host[:, 1]).max()
@@ -25,8 +25,8 @@ def test_position_coefficients_match_the_host_encoder():
 
 def test_boundary_coefficients_match_the_host_encoder():
     _, dlog = _batch()
-    host, _ = cx.encode_boundary_bridge(dlog, 16, device="numpy")
-    dev, _ = cx.encode_boundary_bridge(dlog, 16, device="jax")
+    host, _ = cx.encode_boundary_bridge(dlog, 16, 1e-4, device="numpy")
+    dev, _ = cx.encode_boundary_bridge(dlog, 16, 1e-4, device="jax")
     assert np.array_equal(dev["blt_start"], host["blt_start"])
     assert np.array_equal(dev["blt_endpoint"], host["blt_endpoint"])          # the endpoints are float64 on the host either way
     assert np.abs(dev["blt_bridge_dst"] - host["blt_bridge_dst"]).max() <= 1e-5 * np.abs(host["blt_bridge_dst"]).max()
@@ -34,6 +34,6 @@ def test_boundary_coefficients_match_the_host_encoder():
 
 def test_the_band_count_is_capped_by_the_saves():
     pos, dlog = _batch(n_t=12)
-    arrays, meta, _ = cx.encode_bridge_dst(pos, 64, device="jax")
+    arrays, meta, _ = cx.encode_bridge_dst(pos, 64, 1e-4, device="jax")
     assert meta["K"] == 10 and cx.read_position_coeffs(arrays).shape == (400, 12, 3)
-    assert cx.encode_boundary_bridge(dlog, 64, device="jax")[0]["blt_bridge_dst"].shape == (400, 10)
+    assert cx.encode_boundary_bridge(dlog, 64, 1e-4, device="jax")[0]["blt_bridge_dst"].shape == (400, 10)

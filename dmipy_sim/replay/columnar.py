@@ -106,14 +106,29 @@ class ColumnarPack:
     def __init__(self, uri, workers=8):
         self.uri = uri; self.src = Source(uri, workers=workers)
         m = json.loads(self.src.text("manifest.json")); self.meta, self.columns = m["meta"], m["columns"]
-        from .compression import require_basis
-        require_basis(self.meta, "dst1", what="the columnar layout (its plans project per-save weights)")
+        from .replay import _refuse_predating
+        _refuse_predating(self.meta, uri)
         self.index = json.loads(self.src.text("index.json"))
         self.n_rows = int(self.index["n_rows"]); self.band_groups = list(self.index["band_groups"]); self.path_groups = list(self.index.get("path_groups", []))
         self.grid = _grid_of(self.meta)
         self.floor = float(self.meta["fidelity"]["per_voxel"]["floor_median"])
         self.K = int(self.meta["compression"]["K"])
         self.susceptibility_field
+
+    @property
+    def dt(self):
+        """The block length ``h`` (s) of the walk the layout stores (``walk_params.block``)."""
+        return float(self.meta["walk_params"]["block"]["h"])
+
+    @property
+    def n_t(self):
+        """The block ends of the walk, ``T_max / h + 1``: the grid a waveform built for the layout is sampled on."""
+        return int(round(float(self.meta["walk_params"]["T_max"]) / self.dt)) + 1
+
+    @property
+    def T_window(self):
+        """One storage window's duration (s): the interval the bands are on."""
+        return float(self.meta["walk_params"]["windows"]["T"])
 
     @property
     def susceptibility_field(self):
@@ -127,17 +142,15 @@ class ColumnarPack:
     def bands_for(self, seq, tol=0.25):
         """``(K', error)``: the fewest stored band groups whose truncation costs less than ``tol`` x the pack's median
         floor on every measurement -- the phase variance the dropped bands carry under the waveform's projection
-        on the pack grid, ``(gamma dt)^2 sum_{k>K'} sum_d var_{k,d} W_{m,k,d}^2``, halved (a dropped independent
+        on the bands, ``gamma^2 sum_{k>K'} sum_d var_{k,d} W_{m,k,d}^2``, halved (a dropped independent
         phase under-attenuates the signal by that much), from the manifest's per-band variance of the worst
         populated voxel. The walk is not read."""
-        from .replay import _compile_effective, GAMMA
-        from ._replay_kernel import effective_gradient
-        K = self.K; n_t = int(self.meta["walk_params"]["n_t"]); dt = float(self.meta["walk_params"]["dt_traj"])
-        G = np.asarray(seq.G_eff, np.float64)
-        Geff = effective_gradient(G, float(seq.dt), n_t, dt)
-        W = (_compile_effective(Geff, dt, K, n_t) / (GAMMA * dt)).T.reshape(-1, K + 2, 3)[:, 2:, :]
+        from .replay import GAMMA
+        from .compression import band_projection
+        K = self.K
+        W = band_projection(np.asarray(seq.G_eff, np.float64), float(seq.dt), self.T_window, K)[:, 2:, :]
         var = np.asarray(self.meta["columnar"].get("band_variance_max") or self.meta["columnar"]["band_variance"], np.float64).T   # (K, 3)
-        per_band = (GAMMA * dt) ** 2 * (W ** 2 * var[None]).sum(axis=2)
+        per_band = GAMMA ** 2 * (W ** 2 * var[None]).sum(axis=2)
         tail = np.cumsum(per_band[:, ::-1], axis=1)[:, ::-1]
         for Kp in self.band_groups:
             err = 0.5 * (tail[:, Kp] if Kp < K else np.zeros(per_band.shape[0]))
@@ -159,8 +172,7 @@ class ColumnarPack:
             raise ValueError("this pair has a field term and the layout stores no field modes (C3 path channel)")
         B0, chi, chi_a = f.B0, f.chi_iso, f.chi_aniso
         pm = self.meta["compression"]["channels"]["susceptibility_path"]
-        n_t = int(self.meta["walk_params"]["n_t"]); dt = float(self.meta["walk_params"]["dt_traj"])
-        n_tf, dt_f = _path_grid(pm, n_t, dt)
+        n_tf, dt_f = _path_grid(pm, None, None)
         g = dct(field_gate(seq, n_tf, dt_f), type=2, norm="ortho")[:self.path_groups[-1]]
         var = np.asarray(self.meta["columnar"]["path_mode_variance"], np.float64).sum(axis=0)
         per_mode = (GAMMA * dt_f * B0 * (abs(chi) + abs(chi_a))) ** 2 * g ** 2 * var[:len(g)]

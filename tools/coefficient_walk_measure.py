@@ -1,15 +1,17 @@
-"""The measurements of a coefficient walk (``simulate_trajectories(accumulate=K)``, dmrai-lab/dmipy-sim#741), each a
+"""The measurements of the walk's band accumulation (``simulate_trajectories``, dmrai-lab/dmipy-sim#741), each a
 function the tests read and a table this script prints:
 
-* ``exactness``  -- at ``block_order=0`` the pack of the accumulated walk against the pack of the same walk stored at
-  its saves (same seed, same starts), on a sphere, a cylinder, a packed cell, a mesh and a myelinated cylinder;
+* ``exactness``  -- at ``block_order=0`` the pack of the accumulated walk against the pack of the same walk's block
+  ends (its raw subset, every walker; same seed, same steps), on a sphere, a cylinder, a packed cell, a mesh and a
+  myelinated cylinder, and the bands against ``sqrt(h) sinc(pi k / 2N)`` times the DST-I of those block ends;
 * ``quadrature`` -- the phase variance the block accumulation adds per measurement of the envelope's battery, against
   the same walk accumulated per step (``h = dt_sim``), beside the table ``rel(m, h)`` it is held to, absolutely;
-* ``memory``     -- the walk's peak host bytes (VmHWM, read from ``/proc``) over three save intervals spanning 16x at
-  a fixed ``K``, accumulated and stored at the saves, each in a process of its own; on a GPU also the device's peak;
+* ``memory``     -- the walk's peak host bytes (VmHWM, read from ``/proc``) over three blocks spanning 16x at a fixed
+  ``K``, accumulated alone and keeping every walker's block ends, each in a process of its own; on a GPU also the
+  device's peak;
 * ``oracle``     -- a sphere and a cylinder replayed from the accumulated pack against the matrix method;
 * ``surface``    -- the contact tier (C2) at the signal: surface-relaxation rows at the envelope's largest ``rho2``
-  replayed from the accumulated pack, from the pack of the same walk at its saves and by the fused engine.
+  replayed from the accumulated pack, from the pack of the same walk's block ends and by the fused engine.
 
     python tools/coefficient_walk_measure.py --what exactness quadrature memory oracle
 
@@ -29,15 +31,9 @@ import numpy as np
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 
-def continuous_bands(cw):
-    """``(n_w, K+2, 3)``: a coefficient walk's coefficients with the bands on the continuous basis -- a ``block_order=0``
-    walk's DST-I bands read back as the cosine projections they are (``compression.cosine_band_scale``)."""
-    from dmipy_sim.replay import compression as cx
-    C = np.asarray(cw.position_coeffs, np.float64).copy()
-    if cw.basis == "dst1":
-        f = cx.cosine_band_scale("continuous", cw.K, cw.n_t, cw.T) / cx.cosine_band_scale("dst1", cw.K, cw.n_t, cw.T)
-        C[:, 2:, :] *= f[None, :, None]
-    return C
+def bands(cw):
+    """``(n_w, K+2, 3)``: a one-window coefficient walk's coefficients, float64."""
+    return np.asarray(cw.position_coeffs, np.float64)[:, 0]
 
 
 # ----------------------------------------------------------------------------------------------- exactness at m = 0
@@ -62,11 +58,14 @@ def _geometries():
 
 
 def exactness(names=None, *, n=400, T=0.01, dt_save=2e-4, K=24, sub_steps=4, seed=11):
-    """Per geometry the largest differences between the pack of the walk stored at its saves and the pack of the same
-    walk accumulated at ``block_order=0`` (float containers on both): the start (m), the displacement and the bands
-    relative to their largest value, the contact's endpoint and bands likewise, whether the occupancy is the same,
-    and the largest difference of a replayed PGSE."""
+    """Per geometry the largest differences between the pack of a walk's block ends (its raw subset, every walker,
+    read at block order 0) and the pack of the same walk's accumulation at ``block_order=0`` (float containers on
+    both): the start (m), the displacement and the bands relative to their largest value, the contact's endpoint and
+    bands likewise, whether the occupancy is the same, the largest difference of a replayed PGSE, and the bands
+    against the exact relation ``beta = sqrt(h) sinc(pi k / 2N) beta_DST-I`` with the orthonormal DST-I of the
+    block ends' bridge."""
     import dmipy_sim as d
+    from scipy.fft import dst
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_sim.replay.compression import read_position_coeffs
     seq = d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 5e-3, bvalues=[2e9, 2e9], TE=0.009, slew_rate=np.inf)
@@ -80,8 +79,8 @@ def exactness(names=None, *, n=400, T=0.01, dt_save=2e-4, K=24, sub_steps=4, see
                   blt_dtype=np.float32)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            walks = [d.simulate_trajectories(n, 2e-9, make(), **kw),
-                     d.simulate_trajectories(n, 2e-9, make(), accumulate=K, block_order=0, **kw)]
+            cw = d.simulate_trajectories(n, 2e-9, make(), K=K, block_order=0, raw_subset=n, **kw)
+            walks = [cw.saves(), cw]
             spec = walks[0].spec
             if spec.field_source_pools:
                 # the sheath's field is the C3 tier, which a coefficient walk does not carry yet (#740 stage 3): both
@@ -93,8 +92,15 @@ def exactness(names=None, *, n=400, T=0.01, dt_save=2e-4, K=24, sub_steps=4, see
             acc = build_replay_pack(walks[1], id="exact/acc", **pk)
         A, B = read_position_coeffs(raw.arrays), read_position_coeffs(acc.arrays)
         rel = lambda a, b: float(np.abs(a - b).max() / max(np.abs(a).max(), 1e-300))
-        row = dict(basis=acc.meta["compression"]["basis"], start_m=float(np.abs(A[:, 0] - B[:, 0]).max()),
+        X = np.asarray(cw.raw_positions, np.float64)
+        N = X.shape[1] - 1
+        tau = np.arange(N + 1) / N
+        u = X - (X[:, :1] + (X[:, -1:] - X[:, :1]) * tau[None, :, None])
+        k = np.arange(1, K + 1)
+        exact = np.sqrt(cw.h) * np.sinc(k / (2.0 * N))[None, :, None] * dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
+        row = dict(n_blocks=int(cw.n_blocks), start_m=float(np.abs(A[:, 0] - B[:, 0]).max()),
                    displacement_rel=rel(A[:, 1], B[:, 1]), bands_rel=rel(A[:, 2:], B[:, 2:]),
+                   bands_vs_sinc_dst1_rel=rel(exact, B[:, 2:]),
                    replay_abs=float(np.abs(raw.replay(seq) - acc.replay(seq)).max()))
         if "blt_bridge_dst" in raw.arrays:
             row.update(contact_endpoint_rel=rel(raw.arrays["blt_endpoint"], acc.arrays["blt_endpoint"]),
@@ -124,9 +130,9 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
     h_max = max(h for _, h in cases)
     n_t = int(round(T / h_max)) + 1
     G, meta = cx.acquisition_battery(n_t, h_max, env or cx.default_envelope())
-    W = cx.continuous_projection(G, h_max, T, K)                                     # (n_meas, K+2, 3)
+    W = cx.band_projection(G, h_max, T, K)                                           # (n_meas, K+2, 3)
     b = np.array([x["b"] for x in meta])
-    var = cx.band_variances("continuous", K, n_t, h_max, D)
+    var = cx.band_variances(K, T, D)
     om = np.pi * np.arange(1, K + 1) / T
     per_band = GAMMA ** 2 * (W[:, 2:, :] ** 2).sum(axis=2) * var[None, :]
 
@@ -134,16 +140,16 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             return d.simulate_trajectories(n, D, geometry, T_max=T, dt_save=h, seed=seed, require_gpu=False, tiers=(),
-                                           sub_steps=int(round(h / dt_sim)), accumulate=K, block_order=m)
+                                           sub_steps=int(round(h / dt_sim)), K=K, block_order=m, window_T=T)
     ref_walk = walk(dt_sim, 1)
-    ref = continuous_bands(ref_walk)
+    ref = bands(ref_walk)
     phi_ref = GAMMA * np.einsum("wkc,mkc->wm", ref, W)
-    qv = np.asarray(ref_walk.qv_positions, np.float64).mean(axis=0)                     # the measured QV per axis
+    qv = np.asarray(ref_walk.qv_positions, np.float64)[:, 0].mean(axis=0)                # the measured QV per axis
     per_band_qv = GAMMA ** 2 * np.einsum("mkc,k,c->mk", W[:, 2:, :] ** 2, T / (np.pi * np.arange(1, K + 1)) ** 2, qv)
     top = slice(3 * K // 4, K)
     rows = []
     for m, h in cases:
-        C = continuous_bands(walk(h, m))
+        C = bands(walk(h, m))
         if not np.array_equal(C[:, :2], ref[:, :2]):
             raise AssertionError("the case and the reference did not walk the same paths")
         meas = np.var(GAMMA * np.einsum("wkc,mkc->wm", C, W) - phi_ref, axis=0)
@@ -167,8 +173,9 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
 
 # -------------------------------------------------------------------------------------------------------- memory
 def _probe(mode, dt_save, n, T, dt_sim, K):
-    """One walk in this process: VmHWM (kB, from /proc/self/status) over the walk's second call, the high-water mark
-    reset after the first (which compiles), and the device's peak bytes when it reports them."""
+    """One walk in this process (``mode`` ``"accumulated"``: the bands alone; ``"saves"``: every walker's block ends
+    kept beside them, ``raw_subset=n``): VmHWM (from /proc/self/status) over the walk's second call, the high-water
+    mark reset after the first (which compiles), and the device's peak bytes when it reports them."""
     import dmipy_sim as d
 
     def vm(key):
@@ -177,7 +184,7 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
                 if line.startswith(key + ":"):
                     return int(line.split()[1]) * 1024
     kw = dict(T_max=T, dt_save=dt_save, seed=1, require_gpu=False, sub_steps=int(round(dt_save / dt_sim)),
-              walker_batch_size=n, accumulate=(K if mode == "accumulated" else None))
+              walker_batch_size=n, K=K, raw_subset=(0 if mode == "accumulated" else n))
     geom = d.Cylinder(radius=4e-6, orientation=(0, 0, 1))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -187,9 +194,8 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
         with open("/proc/self/clear_refs", "w") as f:
             f.write("5")                                                          # the high-water mark := now
         w = d.simulate_trajectories(n, 2e-9, geom, **kw)
-    out = dict(mode=mode, dt_save=dt_save, n_t=int(round(T / dt_save)) + 1, host_peak_over_base=vm("VmHWM") - base,
-               walk_host_bytes=int(w.nbytes if mode == "accumulated" else w.positions.nbytes
-                                   + sum(a.nbytes for a in (w.boundary_local_time, w.compartment) if a is not None)))
+    out = dict(mode=mode, dt_save=dt_save, n_blocks=int(w.n_blocks), host_peak_over_base=vm("VmHWM") - base,
+               walk_host_bytes=int(w.nbytes))
     try:
         import jax
         st = jax.devices()[0].memory_stats()
@@ -201,9 +207,9 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
 
 
 def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, dt_saves=(5e-4, 1.25e-4, 3.125e-5)):
-    """``memory_probe`` in a fresh process per (mode, save interval): the accumulated walk's peak host bytes against
-    the walk stored at its saves, over save intervals spanning 16x at a fixed ``K`` and a fixed physics step (the
-    walkers take the same steps at every save interval), a cylinder recording every tier."""
+    """``memory_probe`` in a fresh process per (mode, block): the accumulated walk's peak host bytes against the same
+    walk keeping every walker's block ends, over blocks spanning 16x at a fixed ``K`` and a fixed physics step (the
+    walkers take the same steps at every block), a cylinder recording every tier."""
     rows = []
     for mode in ("accumulated", "saves"):
         for h in dt_saves:
@@ -217,9 +223,9 @@ def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, dt_saves=(5e-4, 1.25e-4, 3
 
 # -------------------------------------------------------------------------------------------------------- the oracle
 def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=None, seed=1):
-    """A sphere (radius 4 um) and a cylinder (radius 3 um) walked as coefficient walks (the band's own block and
-    order unless ``dt_save`` gives the block), packed on the continuous basis
-    and replayed under a cosine OGSE at ``f`` -- a band the pack's ``K`` only just holds -- against the matrix method
+    """A sphere (radius 4 um) and a cylinder (radius 3 um) walked (the band's own block and order unless ``dt_save``
+    gives the block), packed, and replayed under a cosine OGSE at ``f`` -- a band the pack's ``K`` only just holds --
+    against the matrix method
     (``dmipy_sim.math.matrix_method``) on the same waveform. Per pore and measurement: both signals, the difference and
     the standard error of the replay's ensemble mean."""
     import dmipy_sim as d
@@ -231,7 +237,8 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=None, seed=1):
                                     ("cylinder", d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), "cylinder", 6e-6)):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            cw = d.simulate_trajectories(n, D, geom, T_max=T, dt_save=dt_save, seed=seed, require_gpu=False, accumulate=K, tiers=())
+            cw = d.simulate_trajectories(n, D, geom, T_max=T, dt_save=dt_save, seed=seed, require_gpu=False, K=K, tiers=(),
+                                         window_T=T)
         pk = build_replay_pack(cw, id=f"oracle/{name}", license="x", citation="x")
         w, ew, E = pk.walker_signals(seq)
         S = np.abs((ew[:, None] * E).sum(0) / w.sum())
@@ -239,15 +246,15 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=None, seed=1):
         pore = MatrixPore(shape, size, D)
         Sm = np.array([abs(pore.signal(np.asarray(seq.G_eff)[i, :, 0], seq.dt)) for i in range(seq.G_eff.shape[0])])
         out[name] = dict(replay=S.tolist(), matrix_method=Sm.tolist(), diff=(S - Sm).tolist(), se=se.tolist(),
-                         band_needed=pk.waveform_band(seq)[1], K=pk.K, basis=pk.meta["compression"]["basis"],
+                         band_needed=pk.waveform_band(seq)[1], K=pk.K,
                          block=dict(m=cw.block["m"], h=cw.block["h"], rule=cw.block["rule"]), sub_steps=cw.sub_steps,
                          certificate=dict(err_max=pk.fidelity["err_max"], floor_max=pk.fidelity["floor_max"]))
     return out
 
 
 def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
-    """The contact tier at the signal (C2): a reflecting sphere of radius ``R`` walked once as a coefficient walk (the
-    band's own block) and once at its saves on the same steps, each packed, and walked again by the fused engine with
+    """The contact tier at the signal (C2): a reflecting sphere of radius ``R`` walked once (the band's own block),
+    packed from its accumulation and from its block ends (every walker kept), and walked again by the fused engine with
     ``surface_relaxivity_t2 = rho`` (the envelope's largest, rho R / D = 0.2 at the defaults). PGSE rows at b = 0, 1
     and 3 ms/um^2 with TE = T (the whole contact, the exact endpoint) and TE = T / 2 (the contact gated at the
     acquisition's end, read from the bands) replayed with ``rho2 = rho``. Per row the three signals, the replay's
@@ -258,8 +265,8 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         g = d.Sphere(radius=R)
-        cw = d.simulate_trajectories(n, D, g, T_max=T, seed=seed, require_gpu=False, accumulate=K)
-        raw = d.simulate_trajectories(n, D, g, T_max=T, dt_save=cw.dt, sub_steps=cw.sub_steps, seed=seed, require_gpu=False)
+        cw = d.simulate_trajectories(n, D, g, T_max=T, seed=seed, require_gpu=False, K=K, raw_subset=n, window_T=T)
+        raw = cw.saves()
     pa = build_replay_pack(cw, id="surface/acc", license="x", citation="x")
     pr = build_replay_pack(raw, id="surface/saves", license="x", citation="x", K=K)
     tissue = Tissue(rho2=rho)
@@ -278,7 +285,7 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
         rows.append(dict(TE_ms=TE * 1e3, b=[0.0, 1e9, 3e9], accumulated=S_acc.tolist(), saves=np.asarray(S_raw).tolist(),
                          fused=S_fused.tolist(), se=se.tolist(), acc_minus_saves=(S_acc - S_raw).tolist(),
                          acc_minus_fused=(S_acc - S_fused).tolist()))
-    return dict(block=dict(m=cw.m, h=cw.dt, n_blocks=cw.n_blocks, sub_steps=cw.sub_steps),
+    return dict(block=dict(m=cw.m, h=cw.h, n_blocks=cw.n_blocks, sub_steps=cw.sub_steps),
                 qv_contact_mean=float(np.mean(cw.qv_boundary)), rho_over_D=rho / D,
                 err_quadrature_surface=pa.fidelity.get("err_quadrature_surface"), rows=rows)
 

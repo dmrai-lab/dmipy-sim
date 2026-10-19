@@ -41,7 +41,8 @@ def test_a_walk_round_trips_through_its_file_and_packs(spec, tmp_path):
     for k in pk.arrays:
         np.testing.assert_array_equal(pk.arrays[k], pk0.arrays[k])
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"] == pk0.meta["compression"]["channels"]["susceptibility_grid"]["source"]
-    plain = simulate_trajectories(50, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, dt_save=1e-4, seed=0, require_gpu=False)
+    plain = simulate_trajectories(50, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, dt_save=1e-4, seed=0, require_gpu=False,
+                                  raw_subset=50).saves()
     plain.save(str(tmp_path / "p.walk")); back = PersistentWalk.load(str(tmp_path / "p.walk"))
     np.testing.assert_array_equal(back.positions, plain.positions); assert back.field_basis is None
 

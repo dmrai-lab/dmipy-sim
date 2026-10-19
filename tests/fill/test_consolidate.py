@@ -20,7 +20,7 @@ from tests.conftest import spec_without_source
 
 def _shard(spec, grid, tmp, name, block, per, seed):
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False,
+    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, K=3,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
     os.makedirs(str(tmp / "shards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"))
@@ -128,7 +128,7 @@ def test_a_later_pass_appends_with_the_union_weights(spec_grid):
 def _curve_shard(spec, grid, tmp, name, block, per, seed, K):
     from dmipy_sim.replay.compression import band_curve
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=6e-3, dt_save=2e-4, seed=seed, require_gpu=False,
+    w = walk_spec(spec, T_max=6e-3, dt_save=2e-4, seed=seed, require_gpu=False, K=K,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
     os.makedirs(str(tmp / "cshards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=K,
@@ -206,7 +206,7 @@ def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):
     """A shard of ``block`` that walks only ``pools`` (the others get no walkers), in the container every shard of a
     fill shares (the certifying pack's, which the walker writes; shards built apart would each derive their own)."""
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False,
+    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, K=3,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}))
     os.makedirs(out_dir, exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"),

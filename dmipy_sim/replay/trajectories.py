@@ -1,15 +1,11 @@
-"""ScannerSequence application to pre-computed walker trajectories (the replay path).
+"""ScannerSequence application to walker paths kept at their saves: the dense replay, the oracle of a pack's.
 
-Decouples MC geometry simulation from gradient encoding + relaxation, enabling
-fast re-use of a single walker library for arbitrary waveforms, T2/T1 schedules
-and surface relaxivity.
-
-The replay invariant (see ``core.simulate_trajectories``): walker positions
-``r(t)`` and boundary events depend ONLY on ``(geometry, diffusivity, seed)`` —
-never on ``G(t)``, T2, T1 or ρ.  Those gate ``log_w``/phase only, so
-``simulate_trajectories(...)`` walks once and the
-``replay*`` functions below replay many acquisition/relaxation
-hypotheses off that one walk.
+The replay invariant (see ``core.simulate_trajectories``): walker positions ``r(t)`` and boundary events depend ONLY
+on ``(geometry, diffusivity, seed)`` -- never on ``G(t)``, T2, T1 or rho. Those gate ``log_w``/phase only, so one walk
+serves every acquisition and relaxation hypothesis. A pack replays the walk from its bands
+(:class:`~dmipy_sim.replay.replay.ReplayPack`); the ``replay*`` functions below replay a walk kept at its saves
+(a :class:`~dmipy_sim.persistent_walk.PersistentWalk`: the adaptive or MT producer's, or a band-accumulating walk's
+``raw_subset`` through ``CoefficientWalk.saves()``) through the piecewise-linear path between the saves.
 """
 
 import functools
@@ -288,8 +284,8 @@ def replay(
         measurements; 2D input (n_meas, n_t_wf) allows per-measurement chi.
         ``None`` (default) uses all-ones (no gating) — a pure gradient replay.
     dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t_traj), or None
-        Per-step accumulated boundary log-weight with surface_relaxivity/D = 1, as
-        returned by simulate_trajectories().  Required when
+        Per-step accumulated boundary log-weight with surface_relaxivity/D = 1, a walk of
+        saves' ``boundary_local_time``.  Required when
         surface_relaxivity is not None.  Non-positive (boundary hits reduce signal).
     T2 : float or None
         Transverse relaxation time constant in seconds.
@@ -302,8 +298,8 @@ def replay(
     stimulated_echo : bool
         If True, multiply signal by 0.5 for PGSTE cos(phi1) storage factor.
     comp_traj : np.ndarray, shape (n_walkers, n_t_traj), or None
-        Per-walker compartment ID at each trajectory time step, as returned by
-        simulate_trajectories().  Required when
+        Per-walker compartment ID at each trajectory time step, a walk of saves'
+        ``compartment``.  Required when
         T2_per_comp or T1_per_comp is provided.  An integer array indexes the
         per-compartment arrays directly; a float array is the fractional
         occupancy of pool 1 (the enclosed pool) in a 2-compartment permeable geometry.

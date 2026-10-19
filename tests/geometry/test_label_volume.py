@@ -727,7 +727,8 @@ def test_a_refused_step_is_counted_by_the_engine():
         dt = (voxels * h) ** 2 / (6 * D)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            walk = simulate_trajectories(500, D, g, T_max=3 * dt, dt_save=dt, seed=0, sub_steps=1, require_gpu=False)
+            walk = simulate_trajectories(500, D, g, T_max=3 * dt, dt_save=dt, seed=0, sub_steps=1, require_gpu=False,
+                                         raw_subset=500, window_T=3 * dt).saves()      # one window: the step is dt
         return walk, [w for w in caught if "were refused" in str(w.message)]
 
     walk, refused = walk_at(20.0)                                    # within the budget: nothing to refuse
@@ -753,7 +754,7 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     R, h = 5e-6, 1e-6
     lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 8e-6, h)
     g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
-    walk = simulate_trajectories(4000, D, g, T_max=0.02, dt_save=5e-4, seed=0, require_gpu=False)
+    walk = simulate_trajectories(4000, D, g, T_max=0.02, dt_save=5e-4, seed=0, require_gpu=False, raw_subset=4000).saves()
     assert walk.boundary_local_time is not None and walk.compartment is not None
     pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", scanner="connectom")
     assert pack.substrate.walls[0].surface.kind == "label_volume"

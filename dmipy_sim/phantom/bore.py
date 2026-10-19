@@ -374,14 +374,15 @@ def encoding_classes(scanner, grid, sequence, voxel_index, *, tolerance=1e-3, to
     return inverse, played
 
 
-def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, to_scanner=None,
+def delivered_weights(scanner, grid, sequence, *, K, T, voxels=None, to_scanner=None,
                       nonlinearity=True, background=True, concomitant=True):
     """Per-voxel replay weights ``W`` for the delivered gradient: ``(n_voxels, (K+2)*3, n_meas)``.
 
     The same physics as :func:`delivered_gradient`, in the space the replay contracts in, at a few thousand
-    flops per voxel instead of a sequence build and a fresh projection. What makes that possible is that
-    ``compression.bridge_projection`` is EXACTLY linear in the gradient (checked to 1e-15), so each term
-    can be projected once and combined per voxel:
+    flops per voxel instead of a sequence build and a fresh projection, on the bands of the pack's window of ``T``
+    seconds (``pack.T_window``) at its ``K``. What makes that possible is that the projection
+    (:func:`~dmipy_sim.replay.replay.compile_scheme`, ``compression.band_projection``) is EXACTLY linear in the
+    gradient, so each term can be projected once and combined per voxel:
 
     * ``L(r)`` is a 3x3 mix of the base weights' axis index -- projecting ``L G`` is ``L`` applied to the
       projection of ``G``;
@@ -400,8 +401,7 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
     None of that is an approximation: it is the same sum in a different order, which is why the reference
     route exists to check it rather than to be replaced by it.
     """
-    from ..replay.replay import _compile_effective
-    from ..replay._replay_kernel import effective_gradient
+    from ..replay.replay import compile_scheme
 
     scanner = _model(scanner)
     idx = grid.every_voxel if voxels is None else voxels
@@ -412,15 +412,12 @@ def delivered_weights(scanner, grid, sequence, *, K, n_t, dt_pack, voxels=None, 
     b0_axis = _b0_axis(scanner, R)
 
     def project(G):
-        """W for a physical G, carried through the RF sign AND onto the pack's save grid, exactly as the
-        replay does: ``ReplayPack._prepare`` builds its weights as
-        ``effective_gradient(G_eff, dt_waveform, n_t_pack, dt_pack)`` -- the sign folded in, then RESAMPLED
-        onto the grid the walk was saved on. Weights that skip the resample are self-consistent and
-        incompatible with the pack, and a parity test between two routes that both skip it cannot see it.
-        """
+        """W for a physical G, carried through the RF sign and projected on its own grid onto the bands of the
+        pack's window, exactly as the replay does (``ReplayPack._prepare``: ``G_eff`` on the sequence's grid,
+        :func:`~dmipy_sim.replay.compression.band_projection` over ``T``). Weights projected over another window are
+        self-consistent and incompatible with the pack."""
         G_eff = np.asarray(sequence.with_gradient(G).G_eff, dtype=np.float64)
-        on_pack = effective_gradient(G_eff, float(sequence.dt), int(n_t), float(dt_pack))
-        return _compile_effective(on_pack, dt_pack, K, n_t)
+        return compile_scheme(G_eff, float(sequence.dt), int(K), T=float(T))
 
     W = project(np.asarray(sequence.G, dtype=np.float64))                       # ((K+2)*3, n_meas)
     n_c = (K + 2)

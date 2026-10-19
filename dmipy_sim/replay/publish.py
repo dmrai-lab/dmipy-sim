@@ -171,7 +171,8 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=Non
     cx = meta.get("compression") or {}
     fid = meta.get("fidelity") or {}
     row = dict(id=meta.get("id"), path=path, sha256=sha256, bytes=int(nbytes),
-               n_walkers=wp.get("n_walkers"), T_max=wp.get("T_max"), dt_traj=wp.get("dt_traj"),
+               n_walkers=wp.get("n_walkers"), T_max=wp.get("T_max"),
+               block={k: (wp.get("block") or {}).get(k) for k in ("h", "m")},
                K=cx.get("K"), method=cx.get("method"), temporal_bandwidth_hz=cx.get("temporal_bandwidth_hz"),
                channels=["positions", *sorted(cx.get("channels") or {})],
                floor_max=fid.get("floor_max"), err_max=fid.get("err_max"), within_2x_floor=fid.get("within_2x_floor"),
@@ -388,41 +389,6 @@ def _publish_file(local, meta, repo, *, path, hub, message, published_commit=Non
     if held != sha:
         raise RuntimeError(f"{uri_of(repo, path)}: the hub holds sha256 {held}, the manifest says {sha}")
     return uri_of(repo, path)
-
-
-def restamp_dataset(local_dir, repo):
-    """Restamp, in place, a local copy of a dataset written before dmipy-sim#738: every pack its manifest names
-    (:func:`~dmipy_sim.replay.replay.restamp_pack`, its header's window table as ``walk_params.windows``), each row's
-    ``segments`` / ``segment_bytes`` as ``windows`` / ``window_bytes`` with the restamped file's sha256 and bytes,
-    and the card re-rendered from the manifest (:func:`render_readme`, ``repo`` the dataset it is the card of).
-    Every pack a row names must be in the copy, or nothing is written. A dataset already in this vocabulary comes
-    back unchanged. Uploading the result is a separate commit to the hub. Returns the manifest."""
-    from .replay import restamp_pack
-    with open(os.path.join(local_dir, MANIFEST)) as f:
-        manifest = json.load(f)
-    rows = manifest.get("packs") or []
-    missing = [r["path"] for r in rows if not os.path.exists(os.path.join(local_dir, r["path"]))]
-    if missing:
-        raise ValueError(f"{local_dir}: the manifest names packs this copy does not hold, so their rows' sha256 could "
-                         f"not follow their headers: {missing[:5]}{' ...' if len(missing) > 5 else ''}")
-    changed = False
-    for r in rows:
-        local = os.path.join(local_dir, r["path"])
-        before = sha256_of(local)
-        restamp_pack(local)
-        sha = sha256_of(local)
-        if sha != before:
-            r["sha256"], r["bytes"] = sha, os.path.getsize(local); changed = True
-        for old, new in (("segments", "windows"), ("segment_bytes", "window_bytes")):
-            if old in r:
-                r[new] = r.pop(old); changed = True
-    if not changed:
-        return manifest
-    with open(os.path.join(local_dir, MANIFEST), "w") as f:
-        json.dump(manifest, f, indent=1)
-    with open(os.path.join(local_dir, README), "w") as f:
-        f.write(render_readme(manifest, repo))
-    return manifest
 
 
 # ------------------------------- load -------------------------------

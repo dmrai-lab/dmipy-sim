@@ -16,7 +16,7 @@ WF = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=40, sle
 
 
 def _engines_used(geometry):
-    """Which batch programs a run built on the geometry: 'traj*' keys are the replay producer,
+    """Which batch programs a run built on the geometry: 'coefficient walk' keys are the replay producer,
     'standard' the fused scan."""
     return {k[0][0] for k in vars(geometry).get(core._BATCH_CACHE_ATTR, {})}
 
@@ -32,13 +32,13 @@ def test_parity_is_declared_on_the_validated_families_only():
 def test_auto_follows_the_declaration_not_the_name():
     sphere = d.Sphere(3e-6)
     d.simulate(200, D, WF, sphere, seed=0, require_gpu=False)
-    assert _engines_used(sphere) >= {"traj"} and "standard" not in _engines_used(sphere)
+    assert _engines_used(sphere) >= {"coefficient walk"} and "standard" not in _engines_used(sphere)
 
     class Renamed(d.Sphere):                       # a subclass keeps the capability with the walk
         pass
     r = Renamed(3e-6)
     d.simulate(200, D, WF, r, seed=0, require_gpu=False)
-    assert "traj" in _engines_used(r)
+    assert "coefficient walk" in _engines_used(r)
 
     class Unvalidated(d.Sphere):                   # ...and can renounce it
         replay_parity = False

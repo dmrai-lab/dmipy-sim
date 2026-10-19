@@ -232,8 +232,8 @@ def packing_certificate(cfg):
         eps = EPS * n_rule / n_fine
         n = cfg["pack_walkers"]
         t0 = time.time()
-        fine = d.simulate_trajectories(n, D0, g, T, DT, seed=21, require_gpu=False, sub_steps=n_fine)
-        coarse = d.simulate_trajectories(n, D0, g, T, DT, seed=22, require_gpu=False, sub_steps=n_coarse)
+        fine = d.simulate_trajectories(n, D0, g, T, DT, seed=21, require_gpu=False, sub_steps=n_fine, window_T=T, raw_subset=n).saves()
+        coarse = d.simulate_trajectories(n, D0, g, T, DT, seed=22, require_gpu=False, sub_steps=n_coarse, window_T=T, raw_subset=n).saves()
         cert = step_certificate(fine.positions, coarse.positions, DT, n_fine / n_coarse, f_band=f_band,
                                 eps_declared=eps)
         out[pool] = dict(n_walkers=n, n_rule=n_rule, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps,
@@ -317,8 +317,8 @@ def sec_certificate(cfg, fig_dir):
         n_coarse = max(regime_sub_steps(g, D0, DT), n_fine // PILOT_STEP_RATIO)
         eps = EPS * n_rule / n_fine
         t0 = time.time()
-        fine = d.simulate_trajectories(n, D0, g, T, DT, seed=1, require_gpu=False, sub_steps=n_fine)
-        coarse = d.simulate_trajectories(n, D0, g, T, DT, seed=2, require_gpu=False, sub_steps=n_coarse)
+        fine = d.simulate_trajectories(n, D0, g, T, DT, seed=1, require_gpu=False, sub_steps=n_fine, window_T=T, raw_subset=n).saves()
+        coarse = d.simulate_trajectories(n, D0, g, T, DT, seed=2, require_gpu=False, sub_steps=n_coarse, window_T=T, raw_subset=n).saves()
         cert = step_certificate(fine.positions, coarse.positions, DT, n_fine / n_coarse, f_band=f_band, eps_declared=eps)
         rec = dict(n_walkers=n, ratio=ratio, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps, seconds=time.time() - t0,
                    **{k: cert[k] for k in ("eps_measured", "eps_se", "floor", "resolves", "n_bins")})

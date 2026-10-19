@@ -19,8 +19,8 @@ SH = (6, 6, 2)
 @pytest.fixture(scope="module")
 def pack_path(tmp_path_factory):
     out = tmp_path_factory.mktemp("pk") / "wm.rpk"
-    walk = d.simulate_trajectories(600, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=0, require_gpu=False)
-    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=10, out_path=str(out), window_T=0.14)   # one 140 ms window
+    walk = d.simulate_trajectories(600, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=0, require_gpu=False, K=10, window_T=0.14)
+    build_replay_pack(walk, id="test/wm", license="x", citation="x", out_path=str(out), window_T=0.14)   # one 140 ms window
     return str(out)
 
 
@@ -231,8 +231,8 @@ def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
     from dmipy_sim.spec import Tissue
     import tempfile, os
     out = os.path.join(tempfile.mkdtemp(), "wm.rpk")
-    walk = d.simulate_trajectories(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False)
-    build_replay_pack(walk, id="test/wm2", license="x", citation="x", K=10, out_path=out, window_T=0.14)   # one 140 ms window
+    walk = d.simulate_trajectories(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False, K=10, window_T=0.14)
+    build_replay_pack(walk, id="test/wm2", license="x", citation="x", out_path=out, window_T=0.14)   # one 140 ms window
     pack = read_rpk(out)
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
                 origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
@@ -332,11 +332,9 @@ def test_a_pathway_gated_waveform_carries_its_sign_as_its_coherence():
 def field_pack(tmp_path_factory):
     """A sheathed axon alone in a wide cell with its field basis: the pack a static field needs (C3 path)."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
-    from dmipy_sim.spec.walk import fill_field
     D0 = 2.0e-9
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    walk = d.simulate_trajectories(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
-    walk = fill_field(walk, field_grid_of(g, res=0.2e-6))
+    walk = d.simulate_trajectories(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6), K=8)
     out = tmp_path_factory.mktemp("pk") / "sheathed.rpk"
     build_replay_pack(walk, id="test/sheathed", license="x", citation="x", K=8, out_path=str(out),
                       envelope=dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,

@@ -574,30 +574,34 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
         assert "scanner" in inspect.signature(fn).parameters, fn.__qualname__
 
 
-def test_a_coefficient_walk_is_asked_for_by_accumulate_and_compress_is_gone():
-    """The walk that keeps its bands instead of its saves has one spelling, ``accumulate=K``
-    (dmrai-lab/dmipy-sim#741): no ``compress=`` on the producer or its cost, and none anywhere in the package."""
+def test_the_walk_keeps_its_bands_and_has_no_second_spelling():
+    """The producer's walk keeps the bands (dmrai-lab/dmipy-sim#741): ``K`` is its parameter, ``raw_subset`` the
+    opt-in positions; there is no switch to a walk of saves (``accumulate=``, ``compress=``, ``storage_dtype=``) on
+    the producer or its cost, and none is spelled anywhere in the package."""
     import inspect
     from dmipy_sim.engine.core import simulate_trajectories, walk_cost
     params = inspect.signature(simulate_trajectories).parameters
-    assert "compress" not in params and "accumulate" in params and "block_order" in params
-    with pytest.raises(TypeError, match="compress"):
-        walk_cost(10, 2e-9, dmipy_sim.FreeDiffusion(), 1e-3, 1e-4, compress=4)
-    hits = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py") if re.search(r"\bcompress\s*=", f.read_text())]
-    assert not hits, f"compress= is spelled in {hits}; the spelling is accumulate="
+    assert {"K", "block_order", "window_T", "raw_subset"} <= set(params)
+    assert not {"compress", "accumulate", "storage_dtype"} & set(params)
+    for gone in ("compress", "accumulate"):
+        with pytest.raises(TypeError, match=gone):
+            walk_cost(10, 2e-9, dmipy_sim.FreeDiffusion(), 1e-3, 1e-4, **{gone: 4})
+    hits = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py") if re.search(r"\b(compress|accumulate)\s*=", f.read_text())]
+    assert not hits, f"a switch to a walk of saves is spelled in {hits}"
 
 
-def test_every_reader_of_the_bands_goes_through_the_basis():
-    """A pack's bands are on the DST-I of its saves or on the continuous basis (``compression.basis``). The waveform's
-    projection, the bands at the saves and the sine matrices live in ``compression`` behind the basis dispatch
-    (``band_projection``, ``saves_basis``), and every other module that reads a pack's coefficients names the basis
-    it reads (``basis_of`` / ``require_basis`` / ``band_projection``): a contraction of bands on one basis against
-    weights built for the other returns plausible numbers, never an error."""
+def test_one_basis_and_no_header_with_a_save_grid():
+    """A pack's bands are on one basis, the continuous one: no basis dispatch is left in ``compression`` (``BASES``,
+    ``basis_of``, ``require_basis``, the per-save ``bridge_projection``, the per-save contact codec), the sine
+    matrices are read in ``compression`` alone, and no module names a second basis. A header carrying a save grid or
+    a basis is refused by name on load."""
     import ast
-    private = {"bridge_projection", "_dst_matrix", "_idst", "_bridge_positions"}
-    # the one per-save route: the DST-I projection of per-save weights, which the routes that work in per-save
-    # weights read and refuse a continuous-basis pack at their entry (require_basis)
-    allowed = {("replay/replay.py", "_compile_effective")}
+    from dmipy_sim.replay import compression as cx
+    from dmipy_sim.replay.replay import _refuse_predating
+    for gone in ("BASES", "basis_of", "require_basis", "bridge_projection", "rank_of", "is_lossless_at",
+                 "encode_boundary_local_time", "decode_boundary_local_time", "surface_logweight_continuous"):
+        assert not hasattr(cx, gone), gone
+    private = {"_dst_matrix", "_idst", "_bridge_positions"}
     outside = set()
     for f in _SRC.rglob("*.py"):
         if f.name == "compression.py":
@@ -607,11 +611,15 @@ def test_every_reader_of_the_bands_goes_through_the_basis():
             if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for node in ast.walk(fn):
                     if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) in private:
-                        if (str(f.relative_to(_SRC)), fn.name) not in allowed:
-                            outside.add((str(f.relative_to(_SRC)), fn.name))
-    assert not outside, f"band-basis primitives read outside compression's dispatch: {sorted(outside)}"
-    reads = re.compile(r"\b(read_position_coeffs|bridge_bands)\b")
-    names = re.compile(r"\b(basis_of|require_basis|band_projection)\b")
-    blind = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")
-             if f.name != "compression.py" and reads.search(f.read_text()) and not names.search(f.read_text())]
-    assert not blind, f"modules read a pack's bands without naming their basis: {blind}"
+                        outside.add((str(f.relative_to(_SRC)), fn.name))
+    assert not outside, f"the sine matrices are read outside compression: {sorted(outside)}"
+    hits = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py") if re.search(r"[\"']dst1[\"']", f.read_text())]
+    assert not hits, f"a second basis is named in {hits}"
+    for old, key in ((dict(walk_params=dict(n_t=11, dt_traj=1e-3, block=dict(h=1e-3))), "walk_params.n_t"),
+                     (dict(walk_params=dict(block=dict(h=1e-3)), compression=dict(basis="continuous")), "compression.basis"),
+                     (dict(walk_params=dict(block=dict(h=1e-3), cell_size=1e-5)), "walk_params.cell_size"),
+                     (dict(walk_params=dict(block=dict(h=1e-3)), compression=dict(method="identity")), "compression.method = identity"),
+                     (dict(walk_params=dict(T_max=0.01)), "no walk_params.block")):
+        with pytest.raises(ValueError, match=r"This pack carries `" + key + r".*which this revision does not read; "
+                                             r"re-walk the pack with a conformant producer\. A pack is never converted"):
+            _refuse_predating(old, "old.rpk")

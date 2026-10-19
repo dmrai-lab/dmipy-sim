@@ -88,7 +88,7 @@ def test_the_drivers_resolve_the_band_they_serve():
     assert make_step_fn(g, D0, seq.dt, f_band=fb)[0].n_sub == resolve_sub_steps(g, D0, seq.dt, f_band=fb)
     w = d.simulate_trajectories(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False)
     rule = w.work["step_rule"]
-    assert rule["eps_D"] == STEP_TOLERANCE and rule["f_band_hz"] == pytest.approx(0.5 / w.dt) and rule["override"] is None
+    assert rule["eps_D"] == STEP_TOLERANCE and rule["f_band_hz"] == pytest.approx(w.K / (2 * w.T)) and rule["override"] is None
     assert rule["sub_steps"] == w.sub_steps == max(rule["rules"].values()) and rule["dt_p"] == pytest.approx(w.dt_sim)
     assert set(rule["rules"]) >= {"step law", "collision lookup", "crossing", "surface local time"}
     w2 = d.simulate_trajectories(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False, f_band=100.0)

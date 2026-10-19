@@ -52,28 +52,17 @@ def test_a_spec_without_a_source_neither_samples_nor_accepts_a_deferral(spec, tm
     assert w.field_basis is None and w.field_samples is None
     pk = build_replay_pack(w, id="t/no-source", license="x", citation="x", K=8)
     assert not pk.has_field
-    with pytest.raises(SpecError, match="declares no susceptibility"):
+    with pytest.raises(TypeError, match="keeps none"):
         _walk(nf, defer_field=True, run_dir=str(tmp_path / "nf-run"))
 
 
-def test_defer_field_needs_a_run_dir_and_build_replay_pack_refuses_the_unfilled_walk_until_fill_field(spec, tmp_path):
-    """``defer_field=True`` is refused without ``run_dir=`` (the quadrature ``fill_field`` needs the raw walk
-    kept); given one, the walk records the deferral and carries neither a basis nor samples; a pack of it is
-    refused by name; ``fill_field`` fills it and the pack then carries the tier, reading at save resolution."""
-    with pytest.raises(TypeError, match="run_dir"):
-        _walk(spec, defer_field=True)
-    w = _walk(spec, defer_field=True, run_dir=str(tmp_path / "run"))
-    assert w.field_deferred and w.field_basis is None and w.field_samples is None
-    with pytest.raises(ValueError, match="deferred field tier"):
-        build_replay_pack(w, id="t/deferred", license="x", citation="x", K=8, susc_path_K=4)
-    basis = field_grid_of_spec(spec, field_res=0.5e-6)        # given after the walk was kept: the CACTUS route
-    filled = fill_field(w, basis)
-    assert filled.field_samples is not None and filled.field_fill is not None
-    pk = build_replay_pack(filled, id="t/filled", license="x", citation="x", K=8, susc_path_K=4)
-    assert pk.has_field
-    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
-    assert pm["sampling"] == "read_at_save_resolution"
-    assert pm["field_fill"]["read"] == "save_resolution" and "basis_certificate" in pm["field_fill"]
+def test_a_walk_that_accumulates_its_bands_has_nothing_to_defer(spec, tmp_path):
+    """A walk that accumulates its bands keeps no positions for ``fill_field`` to read later, so its field is sampled
+    in the walk and a deferral is refused by name; ``fill_field`` refuses such a walk too."""
+    with pytest.raises(TypeError, match="keeps none"):
+        _walk(spec, defer_field=True, run_dir=str(tmp_path / "run"))
+    with pytest.raises(ValueError, match="keeps none"):
+        fill_field(_walk(spec_without_source(spec)), field_grid_of_spec(spec, field_res=0.5e-6))
 
 
 def test_build_replay_pack_refuses_a_field_argument(spec):

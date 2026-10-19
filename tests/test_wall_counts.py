@@ -22,7 +22,8 @@ R = 2e-6
 
 
 def _walk(g, n=256, seed=11, **kw):
-    return simulate_trajectories(n, D, g, 2e-3, 0.5e-3, seed=seed, tiers="all", walker_batch_size=n, **kw)
+    """The walk with every walker's block ends kept, as a walk of saves."""
+    return simulate_trajectories(n, D, g, 2e-3, 0.5e-3, seed=seed, tiers="all", walker_batch_size=n, raw_subset=n, **kw).saves()
 
 
 def _packed():

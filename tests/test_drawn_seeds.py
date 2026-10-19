@@ -19,10 +19,10 @@ def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
     assert drawn.n_walkers == sum(len(P) for P in drawn.positions.values()) > 0
     kw = dict(T_max=8e-4, dt_save=2e-4, seed=11, require_gpu=False)
     a = walk_spec(spec, seeding=seeding, **kw); b = walk_spec(spec, seeding=drawn, **kw)
-    np.testing.assert_array_equal(a.positions, b.positions)
+    np.testing.assert_array_equal(a.position_coeffs, b.position_coeffs)
     np.testing.assert_array_equal(a.compartment, b.compartment)
     np.testing.assert_array_equal(np.asarray(a.weights), np.asarray(b.weights))
-    assert a.positions.shape[0] == drawn.n_walkers
+    assert a.n_walkers == drawn.n_walkers
 
 
 def test_draw_seeds_numpy_backend_matches_jax(spec_grid):
@@ -77,10 +77,10 @@ def test_a_walk_context_is_kept_across_walks(spec_grid):
     ctx = WalkContext(spec)
     assert ctx.key == WalkContext.key_of(spec, None) and ctx.field_basis() is None
     a = walk_spec(spec, seeding=seeding, seed=3, **kw); b = walk_spec(spec, seeding=seeding, seed=3, context=ctx, **kw)
-    np.testing.assert_array_equal(a.positions, b.positions); np.testing.assert_array_equal(np.asarray(a.weights), np.asarray(b.weights))
+    np.testing.assert_array_equal(a.position_coeffs, b.position_coeffs); np.testing.assert_array_equal(np.asarray(a.weights), np.asarray(b.weights))
     drawn = draw_seeds(spec, seeding, 4, context=ctx)
     c = walk_spec(spec, seeding=drawn, seed=4, context=ctx, **kw); d = walk_spec(spec, seeding=seeding, seed=4, **kw)
-    np.testing.assert_array_equal(c.positions, d.positions)
+    np.testing.assert_array_equal(c.position_coeffs, d.position_coeffs)
     assert len(ctx.tests._bounds) > 0 and all(len(b_._geom) > 0 for b_ in ctx.tests._bounds.values())   # the geometries, kept
     with pytest.raises(TypeError, match="not both"):
         walk_spec(spec, seeding=seeding, seed=3, context=ctx, field_far="x.npy", **kw)
@@ -98,12 +98,12 @@ def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
     spec = spec_without_source(spec)      # pack mechanics, not the field tier
     want = np.zeros(grid.shape, np.int64); want[0] = 6
     none = np.zeros(grid.shape, np.int64)
-    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False)
+    kw = dict(T_max=8e-4, dt_save=2e-4, require_gpu=False, K=3)
     drawn = draw_seeds(spec, StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": none}), 5)
     assert len(drawn.positions["intra"]) == 0 and drawn.n_walkers == len(drawn.positions["extra"]) > 0
     w = walk_spec(spec, seeding=drawn, seed=5, **kw)
     intra = next(p.id for p in spec.pools if p.name == "intra")
-    assert w.positions.shape[0] == drawn.n_walkers and intra not in set(np.unique(w.compartment).tolist())
+    assert w.n_walkers == drawn.n_walkers and intra not in set(np.unique(w.compartment).tolist())
     both = walk_spec(spec, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), seed=6, **kw)
     a = _float_pack(w, id="t/none", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "none.rpk"))
     b = _float_pack(both, id="t/both", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "both.rpk"))

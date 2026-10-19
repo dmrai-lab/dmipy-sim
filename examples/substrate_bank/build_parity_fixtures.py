@@ -139,10 +139,12 @@ def walk_of(name, mcdc_data, disimpy_data):
             r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), int(n))
             return d.simulate_trajectories(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE,
                                            dt_save=X.MCDC_TE / (int(n_t) - 1), seed=X.SEED, tiers="all", r0=r0,
-                                           require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
+                                           require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
+                                           window_T=X.MCDC_TE, raw_subset=int(n)).saves()
         return d.simulate_trajectories(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE,
                                        dt_save=X.DISIMPY_TE / (int(n_t) - 1), seed=X.SEED, tiers="all",
-                                       require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
+                                       require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
+                                       window_T=X.DISIMPY_TE, raw_subset=int(n)).saves()
     return walk
 
 

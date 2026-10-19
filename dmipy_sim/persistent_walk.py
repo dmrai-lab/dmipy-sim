@@ -1,11 +1,10 @@
-"""The persistent walk: the microphysics a trajectory producer keeps, for any acquisition to replay.
+"""A walk kept at its saves: positions and the boundary, compartment and binding channels at every saved instant.
 
-A fused engine walks and returns a signal; nothing of the walk survives the call. The replay
-engine walks once and keeps the walk -- positions and the boundary, compartment and binding
-channels -- so every acquisition, relaxation and exchange hypothesis is applied afterwards without
-walking again. `simulate_trajectories` and `simulate_mt_trajectories` return a `PersistentWalk`;
-its channels are attributes, present or ``None`` by what the walk recorded; the replay functions
-read the attributes they need and `replay.bank.build_replay_pack` takes the walk directly.
+The adaptive and MT producers (:func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`,
+:func:`~dmipy_sim.engine.mt_walk.simulate_mt_trajectories`) return a `PersistentWalk`, and
+:meth:`~dmipy_sim.coefficient_walk.CoefficientWalk.saves` is a band-accumulating walk's raw subset as one; its
+channels are attributes, present or ``None`` by what the walk recorded. `replay.bank.build_replay_pack` takes it
+directly and reads its saves at block order 0 (the bands of the saves' DST-I times ``sqrt(h) sinc(pi k / 2N)``).
 """
 from dataclasses import dataclass, field
 from typing import Optional

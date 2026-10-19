@@ -8,7 +8,6 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import Encoding, ScannerSequence
 from dmipy_sim.fields.susceptibility_field import field_grid_of
-from dmipy_sim.spec.walk import fill_field
 from dmipy_sim.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.fod import FOD
@@ -23,8 +22,7 @@ def hollow():
     """One hollow cylinder along z, alone in a wide periodic cell, with its field basis: an axially symmetric
     substrate, where the azimuthal coefficients must come out at the Monte-Carlo floor."""
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
-    walk = fill_field(walk, field_grid_of(g, res=0.2e-6))
+    walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
     pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=ENV,
                            susc_path_K=16)
     assert pk.has_field and "susceptibility_path" in pk.meta["compression"]["channels"]

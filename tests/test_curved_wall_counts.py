@@ -15,7 +15,7 @@ def _pack(interior):
 
 def _walk(g, **kw):
     return d.simulate_trajectories(400, D, g, 1e-3, 2.5e-4, seed=5, require_gpu=False, tiers="all",
-                                   walker_batch_size=400, **kw)
+                                   walker_batch_size=400, raw_subset=400, **kw).saves()
 
 
 def test_counting_reports_the_bounces_and_changes_no_position():

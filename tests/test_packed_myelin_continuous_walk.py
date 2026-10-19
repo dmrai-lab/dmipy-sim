@@ -48,7 +48,7 @@ def pm():
 @pytest.fixture(scope="module")
 def walk(pm):
     import dataclasses
-    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False)
+    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300).saves()
     # this fixture is about the continuous path, not the susceptibility tier: the geometry's spec declares one
     # (dmipy-sim#539 -- a walk without field_basis/field_samples of a source-declaring spec is refused a pack)
     return dataclasses.replace(w, spec=spec_without_source(w.spec))
@@ -73,14 +73,14 @@ def test_a_packed_myelinated_walk_records_the_continuous_path(walk):
 def test_a_packed_myelinated_walk_with_binding_records_the_continuous_path():
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, _cell(), L, N_max=4, D_intra=D0, D_extra=D0)
     w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=1, require_gpu=False, kappa_MT=5e-5, dwell_time=1e-3,
-                                equilibrate_binding="off")
+                                equilibrate_binding="off", raw_subset=300).saves()
     assert w.has_binding
     _assert_continuous(w.positions)
 
 
 def test_a_packed_cylinders_walk_records_the_continuous_path():
     pc = d.PackedCylinders(np.array([1e-6] * 3), _cell(), L)
-    w = d.simulate_trajectories(300, D0, pc, 8e-3, 2e-4, seed=0, require_gpu=False, tiers="all")
+    w = d.simulate_trajectories(300, D0, pc, 8e-3, 2e-4, seed=0, require_gpu=False, tiers="all", raw_subset=300).saves()
     _assert_continuous(w.positions)
 
 
@@ -94,8 +94,8 @@ def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(walk):
     S_pack = pk.replay(ScannerSequence(G=G, dt=walk.dt))[0]
     S_direct = replay(walk.positions, walk.dt, G, walk.dt)[0]
     S_folded = replay(_fold(walk.positions), walk.dt, G, walk.dt)[0]
-    assert abs(S_pack - S_direct) < 1e-4
-    assert abs(S_folded - S_direct) > 100 * abs(S_pack - S_direct) and abs(S_folded - S_direct) > 0.01
+    assert abs(S_pack - S_direct) < 5e-4          # the bands' series against the path through the saves (2e-4 measured)
+    assert abs(S_folded - S_direct) > 20 * abs(S_pack - S_direct) and abs(S_folded - S_direct) > 0.01
 
 
 def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):

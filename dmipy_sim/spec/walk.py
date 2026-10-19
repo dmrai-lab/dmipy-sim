@@ -5,10 +5,10 @@ A spec with a single geometry (any analytic family, one mesh surface) is walked 
 each an inner and an outer closed surface -- is walked pool by pool: the intra pool inside the inner
 surfaces, the extra pool outside the outer ones with the domain's faces as walls, a stuck myelin
 pool (``D = 0``) frozen where it was seeded; seeding follows the spec's rule (uniform density by
-measured volume, weights by water fraction or thinning) and the pools are concatenated into one
-``PersistentWalk`` whose compartment channel carries the spec's ids. The field basis of a
-field-source pool is computed on the domain grid and rides on the walk. This is what
-the bespoke bundle builders used to decide in code.
+measured volume, weights by water fraction or thinning) and the pools are joined into one
+:class:`~dmipy_sim.coefficient_walk.CoefficientWalk` (a
+:class:`~dmipy_sim.persistent_walk.PersistentWalk` with adaptive steps) whose compartment channel carries the
+spec's ids. The field basis of a field-source pool is computed on the domain grid and rides on the walk.
 """
 import logging
 
@@ -25,8 +25,17 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, run_dir=None,
-              spool=False, context=None, defer_field=False, bounce_budget=None, backend="jax"):
-    """Walk ``spec`` and return a :class:`~dmipy_sim.persistent_walk.PersistentWalk` carrying the spec.
+              spool=False, context=None, defer_field=False, bounce_budget=None, backend="jax", K=None, block_order=None,
+              window_T=None):
+    """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec (a
+    :class:`~dmipy_sim.persistent_walk.PersistentWalk` with ``adaptive_steps=True``).
+
+    The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
+    certified band times the margin (:func:`~dmipy_sim.replay.bank.mode_count`) unless given, the step law resolving
+    the same band; its block is the band's own (``block_order``, ``dt_save`` as in
+    :func:`~dmipy_sim.engine.core.simulate_trajectories`). The adaptive producer walks on a save grid,
+    ``dt_save`` derived from the class, the walker count and the floor (``floor_fraction``) by
+    :func:`~dmipy_sim.acquisition.scanners.save_interval` unless given.
 
     ``context`` is a :class:`WalkContext` of the spec (its pool tests, boundaries, walking geometries and the
     strand-field basis with its far grid), kept by a producer across the walks of one spec so that none of it is
@@ -46,9 +55,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
     15 um and the gather is the field's main cost, so 16 halves the field's share of the walk.
 
-    ``field_sample_every`` reads the field along the walk at every that-many-th save interval only: the path
-    channel keeps a few modes over the walk and lives on its own grid, recorded on the walk and in the pack; the
-    positions keep the save grid the envelope asks for.
+    ``field_sample_every`` reads the field along the walk at every that-many-th block (save interval of an adaptive
+    walk) only: the path channel keeps a few modes over the walk and lives on its own grid, recorded on the walk and
+    in the pack.
 
     ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
     producer (:func:`dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`): free steps away from every
@@ -87,13 +96,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
     with ``adaptive_steps=True`` (:func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`, at
     ``field_gather_every``). A strand source walked without adaptive steps carries the basis and no
     ``field_samples``, and :func:`~dmipy_sim.replay.bank.build_replay_pack` refuses to pack it until the samples
-    exist. A frozen pool (``D = 0``) holds its seat: its samples are the channels there, at every save.
-    ``defer_field=True`` records that obligation on the walk (``PersistentWalk.field_deferred``) instead
+    exist. A frozen pool (``D = 0``) holds its seat: its samples are the channels there, at every sample.
+    ``defer_field=True`` records that obligation on an adaptive walk (``PersistentWalk.field_deferred``) instead
     of building the basis now, for a producer that means to fill it later from a basis of its own
-    (:func:`fill_field`, e.g. the CACTUS route: one :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`
-    per substrate, sampled on every block's kept walk). Deferring is refused for a spec with no field source
-    (there is nothing to defer) and unless ``run_dir`` is also given: the quadrature ``fill_field`` takes needs
-    the raw walk kept, and ``run_dir`` is this producer's persistence (above).
+    (:func:`fill_field`). Deferring is refused for a spec with no field source (there is nothing to defer), for a
+    walk that accumulates its bands (it keeps no positions to read a field at later: its field is sampled in the
+    walk) and unless ``run_dir`` is also given: the quadrature ``fill_field`` takes needs the raw walk kept, and
+    ``run_dir`` is this producer's persistence (above).
 
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
@@ -118,6 +127,10 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             raise ValueError("field_sample_every is the save grid of a field sampled in the walk: a gridded source is, a "
                              "strand source with adaptive_steps=True")
         if defer_field:
+            if not adaptive_steps:
+                raise TypeError("defer_field=True defers the field tier to fill_field, which reads a kept walk's saved "
+                                "positions; a walk that accumulates its bands keeps none -- its field is sampled in the "
+                                "walk (a gridded source by every walk, a strand source with adaptive_steps=True)")
             if not has_field:
                 raise SpecError(f"defer_field=True was given for spec {spec.id!r}, which declares no susceptibility "
                                 "source (no pool sets a susceptibility): there is no field tier to defer")
@@ -156,7 +169,11 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                 f"in the spec -- the producer's own argument, or SubstrateSpec.replace, e.g. "
                 f"spec.replace(D={{{', '.join(f'{n!r}: {diffusivity!r}' for n in stepped)}}}) -- rather than beside "
                 f"it; a number here reaches the save-grid rule and nothing else.")
-        if dt_save is None:
+        if K is None and not adaptive_steps:                 # the class's band per storage window (#643)
+            from ..engine.accumulate import window_count
+            from ..replay.bank import mode_count
+            K = mode_count(window_count(T_max, window_T)[1], scanner)
+        if dt_save is None and adaptive_steps:
             Ds = [p.D for p in spec.pools if p.D] + ([float(diffusivity)] if diffusivity else [])
             dt_save = save_interval(T_max, n_walkers, scanner, D=(max(Ds) if Ds else 2e-9), floor_fraction=floor_fraction,
                                     field=has_field)
@@ -185,14 +202,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
                                       require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, f_band=class_band(scanner),
                                       field_basis=fb, field_sample_every=(int(field_sample_every) if fb is not None else 1),
-                                      bounce_budget=bounce_budget, backend=backend)
-            return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
-                                  w.bound_frac, w.illegal_crossings, w.seed, w.diffusivity, geometry=g, spec=spec, run=w.run,
-                                  field_basis=w.field_basis, field_samples=w.field_samples,
-                                  field_sample_every=w.field_sample_every, field_deferred=bool(defer_field), work=w.work, scanner=str(scanner))
-        return _walk_bundle(spec, int(n_walkers), float(T_max), float(dt_save), seed, n_probe, field_res,
+                                      bounce_budget=bounce_budget, backend=backend, K=K, block_order=block_order, window_T=window_T)
+            import dataclasses
+            return dataclasses.replace(w, geometry=g, spec=spec, scanner=str(scanner))
+        return _walk_bundle(spec, int(n_walkers), float(T_max), (None if dt_save is None else float(dt_save)), seed, n_probe, field_res,
                             require_gpu, walker_batch_size, field_budget=field_budget, scanner=scanner, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field), bounce_budget=bounce_budget, backend=backend)
+                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_sample_every=int(field_sample_every), field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), defer_field=bool(defer_field), bounce_budget=bounce_budget, backend=backend,
+                            K=K, block_order=block_order, window_T=window_T)
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -264,6 +280,9 @@ def fill_field(walk, basis):
     if walk.field_samples is not None:
         raise ValueError("fill_field: the walk already carries field samples (sampled in the walk at the sub-step); "
                          "there is nothing to fill")
+    if not hasattr(walk, "positions"):
+        raise ValueError("fill_field reads a kept walk's saved positions, and a walk that accumulates its bands keeps "
+                         "none: sample the field in the walk (simulate_trajectories(field_basis=))")
     pts = np.asarray(walk.positions, np.float64).reshape(-1, 3)
     ch = np.asarray(basis.channels(pts), np.float64)
     samples = ch.reshape(walk.n_walkers, walk.n_t, ch.shape[-1]).astype(np.float32)
@@ -682,8 +701,75 @@ def draw_seeds(spec, seeding, seed, *, context=None, backend="jax"):
     return DrawnSeeds(positions=positions, weights=weights, grid=grid, seed=int(seed), drawn_from=seeding)
 
 
+def _frozen_channels(field, p0):
+    """The field basis's channels ``(n, n_ch)`` at the frozen walkers' seats ``p0``."""
+    p0 = jnp.asarray(np.asarray(p0, np.float32))
+    if hasattr(field, "within_device"):
+        seg, keep, _ = field.within_device()(p0)
+        return np.asarray(field.channels_at_device()(p0, seg, keep)) - field.mean[None, :]
+    return np.asarray(field.channels_at_device()(p0))
+
+
+def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
+    """The pools' coefficient walks of a bundle as one :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` in a
+    random walker order (any prefix a fair subsample): ``parts`` is ``(pool id, walk or seats, None)`` per pool, a
+    frozen pool (``D = 0``) its seats ``(n, 3)``, held there over every window (its displacement and bands zero,
+    no contact, the field at its seat at every sample); the compartment is the pool id per walker."""
+    import dataclasses
+    from ..persistent_walk import merge_work
+    walks = [w for _, w, _ in parts if not isinstance(w, np.ndarray)]
+    w0 = walks[0]
+    for w in walks[1:]:
+        if (w.K, w.m, w.n_windows, w.n_blocks) != (w0.K, w0.m, w0.n_windows, w0.n_blocks) or abs(w.h - w0.h) > 1e-12 * w0.h:
+            raise SpecError("the pools of a bundle are walked on one band and block; two walks disagree")
+    n_win, Kc = int(w0.n_windows), int(w0.position_coeffs.shape[2])
+    surface = all(w.boundary_bands is not None for w in walks)
+    sampled = field is not None and all(w.field_samples is not None for w in walks)
+    n_f = None if not sampled else int(w0.field_samples.shape[1])
+    pc, be, bb, ids, wts, fs, qp, qb = [], [], [], [], [], [], [], []
+    for pid, w, _ in parts:
+        if isinstance(w, np.ndarray):                                  # a frozen shell: held at its seat
+            n = len(w)
+            c = np.zeros((n, n_win, Kc, 3), np.float32); c[:, :, 0, :] = w[:, None, :]
+            pc.append(c); qp.append(np.zeros((n, n_win, 3), np.float32))
+            if surface:
+                be.append(np.zeros((n, n_win), np.float32)); bb.append(np.zeros((n, n_win, w0.boundary_bands.shape[2]), np.float32))
+                qb.append(np.zeros((n, n_win), np.float32))
+            if sampled:
+                fs.append(np.broadcast_to(_frozen_channels(field, w)[:, None, :], (n, n_f, w0.field_samples.shape[2])).astype(np.float32))
+        else:
+            n = w.n_walkers
+            pc.append(np.asarray(w.position_coeffs, np.float32)); qp.append(np.asarray(w.qv_positions, np.float32))
+            if surface:
+                be.append(np.asarray(w.boundary_endpoint)); bb.append(np.asarray(w.boundary_bands)); qb.append(np.asarray(w.qv_boundary))
+            if sampled:
+                fs.append(np.asarray(w.field_samples, np.float32))
+        ids.append(np.full(n, pid, np.int8))
+        wts.append(np.asarray(weights_of[pid], float))
+    n_tot = sum(len(i) for i in ids)
+    order = np.random.default_rng(int(seed) + 991).permutation(n_tot)          # any prefix is a fair subsample
+    cat = lambda xs: np.concatenate(xs, axis=0)[order]
+    wts = cat(wts)
+    by_name = {p.name: p for p in spec.pools}
+    D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(w0.diffusivity)
+    block = dict(w0.block)
+    for key in ("k0_residual_m", "k0_residual_relative"):
+        block[key] = float(max(w.block.get(key, 0.0) for w in walks))
+    block["quadratic_variation"] = {f"pool {pid}": w.block.get("quadratic_variation") for pid, w, _ in parts
+                                    if not isinstance(w, np.ndarray)}
+    return dataclasses.replace(
+        w0, position_coeffs=cat(pc), boundary_endpoint=(cat(be) if surface else None),
+        boundary_bands=(cat(bb) if surface else None), compartment=cat(ids), bound_frac=None,
+        field_basis=(field if sampled else None), field_samples=(cat(fs) if sampled else None),
+        raw_positions=None, raw_boundary=None, raw_compartment=None, qv_positions=cat(qp),
+        qv_boundary=(cat(qb) if surface else None), seed=int(seed), diffusivity=D_ref, geometry=None, spec=spec,
+        weights=(None if np.allclose(wts, 1.0) else wts), block=block, work=merge_work(works), scanner=str(scanner),
+        illegal_crossings=int(sum(w.illegal_crossings for w in walks)))
+
+
 def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, require_gpu, batch, field_budget=None, scanner=None, bounce_budget=None, backend="jax",
-                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, context=None, spool=False, defer_field=False):
+                 field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False, field_sample_every=1, field_far=None, field_gather_every=4, context=None, spool=False, defer_field=False,
+                 K=None, block_order=None, window_T=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -788,16 +874,25 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
             w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
                                       require_gpu=require_gpu, walker_batch_size=batch, field_basis=fg, f_band=class_band(scanner),
                                       field_sample_every=(int(field_sample_every) if fg is not None else 1),
-                                      bounce_budget=bounce_budget, backend=backend)
+                                      bounce_budget=bounce_budget, backend=backend, K=K, block_order=block_order,
+                                      window_T=window_T)
             if w.field_samples is not None:
                 field_samples.append((pid, w.field_samples))
-        n_t, walked = w.n_t, w
+        walked = w
         works.append(w.work)
+        if not adaptive_steps:
+            parts.append((pid, w, None))
+            continue
+        n_t = w.n_t
         parts.append((pid, np.asarray(w.positions, np.float32),
                       None if w.boundary_local_time is None else np.asarray(w.boundary_local_time, np.float32)))
     if walked is None:
         raise SpecError("no seeded pool diffuses; nothing to walk")
     current().phase("finalize")
+    if not adaptive_steps:
+        walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, scanner)
+        object.__setattr__(walk, "run", current())
+        return walk
     surface = all(dl is not None for pid, pos, dl in parts if pos.ndim == 3)      # every walked pool records contact
     sampled = {pid: arr for pid, arr in field_samples}
     n_tf = len(range(0, n_t, int(field_sample_every)))                     # the field's own save grid

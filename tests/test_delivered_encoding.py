@@ -11,7 +11,7 @@ from dmipy_sim.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import (background_gradient_map, delivered_gradient, delivered_weights,
                                     gradient_tensor_map)
-from dmipy_sim.replay.replay import _compile_effective
+from dmipy_sim.replay.replay import compile_scheme
 
 SH = (3, 3, 3)
 K, N_T = 16, 48
@@ -36,21 +36,16 @@ ROT = np.array([[0.81971317, -0.19639803, 0.53805031],
                 [-0.29237170, 0.66430510, 0.68790807]])
 
 
-def _reference(seq, G, K, n_t, dt_pack=None):
-    """W built the way ``ReplayPack._prepare`` builds it: ``ScannerSequence.G_eff``, resampled onto the
-    pack's save grid, then projected.
+def _reference(seq, G, K, T):
+    """W built the way ``ReplayPack._prepare`` builds it: ``ScannerSequence.G_eff`` on the sequence's own grid,
+    projected onto the bands of a window of ``T`` seconds.
 
     Deliberately not built from ``bore`` itself: a reference built from the module under test cannot fail
     when that module is wrong, and the "carried through the RF sign" claim needs coverage of its own.
-    The RESAMPLE is here for the same reason -- weights on the sequence's own grid are self-consistent and
-    incompatible with a pack, and leaving it out of both routes made the parity test blind to it.
     """
     from dataclasses import replace
-    from dmipy_sim.replay._replay_kernel import effective_gradient
-    dt = seq.dt if dt_pack is None else dt_pack
-    return np.stack([_compile_effective(
-        effective_gradient(replace(seq, G=np.asarray(g, np.float32)).G_eff, seq.dt, n_t, dt), dt, K, n_t)
-        for g in G])
+    return np.stack([compile_scheme(np.asarray(replace(seq, G=np.asarray(g, np.float32)).G_eff, np.float64), seq.dt, K, T=T)
+                     for g in G])
 
 
 @pytest.mark.parametrize("rotation", [None, ROT], ids=["aligned", "oblique"])
@@ -65,7 +60,7 @@ def _reference(seq, G, K, n_t, dt_pack=None):
 ])
 def test_the_fast_route_is_the_reference_route_in_another_order(setup, flags, rotation):
     """``delivered_weights`` works in the replay's coefficient space at a few thousand flops per voxel, by
-    exploiting that ``bridge_projection`` is exactly linear in the gradient. That is a reordering of the
+    exploiting that the band projection is exactly linear in the gradient. That is a reordering of the
     same sum, not an approximation, so it must agree with building the sequence per voxel.
 
     EVERY combination is checked, not the terms one at a time. Individually all three agreed to 1e-8 while
@@ -73,8 +68,9 @@ def test_the_fast_route_is_the_reference_route_in_another_order(setup, flags, ro
     deliver and composing it as if it were independent drops the cross terms."""
     s, grid, seq = setup
     G = delivered_gradient(s, grid, seq, to_scanner=rotation, **flags)
-    ref = _reference(seq, G, K, N_T)
-    fast = delivered_weights(s, grid, seq, K=K, n_t=N_T, dt_pack=seq.dt, to_scanner=rotation, **flags)
+    T = (N_T - 1) * seq.dt
+    ref = _reference(seq, G, K, T)
+    fast = delivered_weights(s, grid, seq, K=K, T=T, to_scanner=rotation, **flags)
     rel = np.abs(ref - fast).max() / max(np.abs(ref).max(), 1e-300)
     assert rel < 1e-6, f"{flags} at rotation={rotation is not None} disagree by {rel:.2e}"
 
@@ -203,24 +199,23 @@ def _signal(phi):
 def test_the_weights_a_caller_supplies_are_the_ones_the_replay_would_have_built(setup, pack):
     """The contract of ``walker_phases(weights=)``. Handing back the replay's OWN weights must change
     nothing, or a per-voxel override is not substituting for the shared path but for something else."""
-    from dmipy_sim.replay.replay import _compile_effective
     _s, _grid, seq = setup
     P = pack._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
-    W = _compile_effective(P["Geff"], P["dt"], pack.K, P["n_t"])
+    W = compile_scheme(P["G_eff_wf"], P["dt_wf"], pack.K, T=pack.T_window)
     _w, _e, base = pack.walker_phases(seq)
     _w, _e, given = pack.walker_phases(seq, weights=W)
     assert np.abs(base - given).max() == 0.0
 
 
-def test_delivered_weights_land_on_the_packs_save_grid_and_not_the_sequences(setup, pack):
-    """``_prepare`` resamples the effective gradient onto the grid the WALK was saved on before projecting.
-    Weights built on the sequence's own grid are self-consistent and incompatible with the pack, and a
-    parity test between two routes that both skip the resample cannot see it -- which is how this survived.
+def test_delivered_weights_are_projected_over_the_packs_window(setup, pack):
+    """``_prepare`` projects the effective gradient onto the bands of the pack's window. Weights projected over
+    another window are self-consistent and incompatible with the pack, and a parity test between two routes that
+    share the window cannot see it.
 
     The check that catches it: at isocentre every scanner term vanishes, so the delivered weights must
-    reproduce the ideal-magnet replay EXACTLY, and they only can if they live on the same grid."""
+    reproduce the ideal-magnet replay EXACTLY, and they only can if they are projected over the same window."""
     s, grid, seq = setup
-    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    W = delivered_weights(s, grid, seq, K=pack.K, T=pack.T_window)
     assert W.shape[1:] == (pack.n_coeffs * 3, seq.n_meas)
     iso = int(np.argmin(np.linalg.norm(grid.offset_m(grid.every_voxel).reshape(-1, 3), axis=1)))
     _w, _e, ideal = pack.walker_phases(seq)
@@ -233,7 +228,7 @@ def test_the_scanner_biases_the_signal_by_position_and_by_direction(setup, pack)
     encodes -- a model that only rescaled would move every direction together, and that is the part a
     diagonal L or a scalar b-correction cannot produce."""
     s, grid, seq = setup
-    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)
+    W = delivered_weights(s, grid, seq, K=pack.K, T=pack.T_window)
     d_v = grid.offset_m(grid.every_voxel).reshape(-1, 3)
     iso, corner = int(np.argmin(np.linalg.norm(d_v, axis=1))), int(np.argmax(np.linalg.norm(d_v, axis=1)))
     _w, _e, p_iso = pack.walker_phases(seq, weights=W[iso])
@@ -273,8 +268,8 @@ def test_the_delivered_weights_are_covariant_under_a_rigid_re_description(setup,
     turned = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=tuple(q @ R), isocenter_m=(0.0, 0.0, 0.0))
     posed = replace(seq, G=(np.asarray(seq.G, np.float64) @ R).astype(np.float32))
 
-    A = delivered_weights(s, aligned, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)[0]
-    B = delivered_weights(s, turned, posed, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt, to_scanner=R)[0]
+    A = delivered_weights(s, aligned, seq, K=pack.K, T=pack.T_window)[0]
+    B = delivered_weights(s, turned, posed, K=pack.K, T=pack.T_window, to_scanner=R)[0]
     A_rot = np.einsum("kjm,ji->kim", A.reshape(-1, 3, A.shape[-1]), R).reshape(A.shape)
     rel = np.abs(B - A_rot).max() / max(np.abs(A).max(), 1e-300)
     assert rel < 1e-5, f"the same physics re-described in a rotated grid gives a different answer: {rel:.2e}"
@@ -290,8 +285,8 @@ def test_an_oblique_grid_is_not_silently_evaluated_in_the_wrong_frame(setup, pac
     carried = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=org, isocenter_m=(0.0, 0.0, 0.0),
                    to_scanner=ROT)
     explicit = Grid(shape=shape, voxel_size_m=(vs,) * 3, origin_m=org, isocenter_m=(0.0, 0.0, 0.0))
-    a = delivered_weights(s, carried, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)
-    b = delivered_weights(s, explicit, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt, to_scanner=ROT)
+    a = delivered_weights(s, carried, seq, K=pack.K, T=pack.T_window)
+    b = delivered_weights(s, explicit, seq, K=pack.K, T=pack.T_window, to_scanner=ROT)
     assert np.abs(a - b).max() / np.abs(b).max() < 1e-9
 
 
@@ -302,7 +297,7 @@ def test_weights_refuse_the_two_routes_that_would_discard_them(setup, pack):
     bit-identical to passing no weights at all -- including weights of zero, in exactly the low-field case
     this feature exists for."""
     s, grid, seq = setup
-    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt)[0]
+    W = delivered_weights(s, grid, seq, K=pack.K, T=pack.T_window)[0]
     with pytest.raises(ValueError, match="cannot both be given"):
         pack.walker_phases(seq, weights=W, orientation=np.eye(3))
     with pytest.raises(ValueError, match="not finite"):
@@ -322,7 +317,7 @@ def test_the_signal_level_bias_is_the_b_level_prediction(setup, pack):
     ``|L u| > 1`` receives MORE diffusion weighting than prescribed, so its signal is LOWER and its fitted
     ADC HIGHER."""
     s, grid, seq = setup
-    W = delivered_weights(s, grid, seq, K=pack.K, n_t=pack.n_t, dt_pack=pack.dt,
+    W = delivered_weights(s, grid, seq, K=pack.K, T=pack.T_window,
                           background=False, concomitant=False)
     d_v = grid.offset_m(grid.every_voxel).reshape(-1, 3)
     iso, corner = int(np.argmin(np.linalg.norm(d_v, axis=1))), int(np.argmax(np.linalg.norm(d_v, axis=1)))

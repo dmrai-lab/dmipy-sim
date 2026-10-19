@@ -91,7 +91,7 @@ def test_a_mesh_pair_measures_its_shell(tmp_path):
 def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     inner, outer = _thin_axon(tmp_path)
     spec = winther_spec(inner, outer, scale=1e-6, pad=0.5e-6)
-    w = walk_spec(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False)
+    w = walk_spec(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3)
     vs = np.asarray(w.field_basis.basis["voxel_size"], float)
     np.testing.assert_allclose(vs, field_resolution(spec.validity.thinnest_shell), rtol=0.02)   # a whole count of nodes
     cert = w.field_basis.certificate                                                          # the raster checked

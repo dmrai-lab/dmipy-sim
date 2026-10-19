@@ -56,7 +56,7 @@ def test_the_jax_rounds_pass_the_void_invariant():
     g = case()
     r0 = case.starts(case.n_walkers, case.seed)
     w = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.dt_save, seed=case.seed, tiers="all",
-                              walker_batch_size=case.n_walkers, r0=r0, require_gpu=False)
+                              walker_batch_size=case.n_walkers, r0=r0, require_gpu=False, raw_subset=case.n_walkers).saves()
     checks = backends.void_invariant(g, w)
     assert checks["contained"]["ok"] and checks["contained"]["n_inside"] == 0
     assert checks["illegal"]["ok"] and checks["illegal"]["n_illegal"] == 0
@@ -69,18 +69,23 @@ def test_the_parity_report_admits_the_jax_backend_on_the_void_case():
     assert len(report) == 1 and report[0]["case"] == "strands_void" and report[0]["ok"] is True
 
 
-def test_a_backend_that_leaks_one_walker_into_the_tube_is_refused_by_the_invariant():
+def test_a_walk_that_leaks_one_walker_into_the_tube_is_refused_by_the_invariant():
+    """A walk with one walker's last save moved onto the tube's axis fails the per-save containment invariant; a
+    backend handing such a walk back is refused for the band accumulation before it walks (dmipy-sim-cuda#73), and
+    the invariant is what admits it after."""
+    import dataclasses
     case = _void_case()
     g = case()
     r0 = case.starts(case.n_walkers, case.seed)
     true_w = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.dt_save, seed=case.seed, tiers="all",
-                                   walker_batch_size=case.n_walkers, r0=r0, require_gpu=False)
-    leak_point = np.array([100e-6, 100e-6, 100e-6], np.float32)   # the tube's axis: deep inside it
-    bad = _LeakyVoid(true_w.positions, leak_point)
-    report = backends.parity_report(bad, cases={"strands_void": _void_case()})
-    rec = report[0]
-    assert rec["ok"] is False
-    assert rec["checks"]["contained"]["ok"] is False and rec["checks"]["contained"]["n_inside"] >= 1
+                                   walker_batch_size=case.n_walkers, r0=r0, require_gpu=False,
+                                   raw_subset=case.n_walkers).saves()
+    pos = np.array(true_w.positions, copy=True)
+    pos[0, -1] = np.array([100e-6, 100e-6, 100e-6], np.float32)       # the tube's axis: deep inside it
+    checks = backends.void_invariant(g, dataclasses.replace(true_w, positions=pos))
+    assert checks["contained"]["ok"] is False and checks["contained"]["n_inside"] >= 1
     # the leaked walker ends in its own pool (it started and ends outside), so the coarse end-vs-start guard
     # alone does not see it -- the per-save containment invariant is what catches it
-    assert rec["checks"]["illegal"]["n_illegal"] == 0
+    assert checks["illegal"]["n_illegal"] == 0
+    report = backends.parity_report(_LeakyVoid(true_w.positions, pos[0, -1]), cases={"strands_void": _void_case()})
+    assert report[0]["ok"] is None and "band accumulation" in report[0]["refused"]

@@ -48,7 +48,7 @@ def test_a_mesh_writes_its_spec_and_is_rebuilt_from_it(tmp_path, monkeypatch):
     assert spec2 == spec                                     # a fixed point, the file included
     w1 = d.simulate_trajectories(40, D, m, 4e-4, 2e-4, seed=2, require_gpu=False)
     w2 = d.simulate_trajectories(40, D, m2, 4e-4, 2e-4, seed=2, require_gpu=False)
-    np.testing.assert_array_equal(w1.positions, w2.positions)
+    np.testing.assert_array_equal(w1.position_coeffs, w2.position_coeffs)
     assert w2.spec == m2.spec and w2.geometry is m2               # a walk always carries its geometry's spec
 
 
@@ -76,7 +76,7 @@ def test_a_mesh_spec_written_on_one_machine_resolves_on_another(tmp_path, monkey
     assert resolved == str(machine_b / os.path.basename(cite))
     g2 = geometry_from_spec(spec)                             # the SAME spec dict, unmodified, read on "machine B"
     w = d.simulate_trajectories(20, D, g2, 4e-4, 2e-4, seed=3, require_gpu=False)
-    assert w.positions.shape[0] == 20
+    assert w.n_walkers == 20
 
 
 def test_a_mesh_surface_with_the_wrong_sha256_is_refused(tmp_path):
@@ -124,15 +124,15 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     spec = _bundle_spec(tmp_path)
     with pytest.raises(SpecError, match="pool by pool"):
         geometry_from_spec(spec)
-    walk = walk_spec(spec, 240, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False)
+    walk = walk_spec(spec, 240, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
     assert walk.spec is spec and walk.geometry is None and walk.weights is None      # thinned: unweighted
-    ids = np.asarray(walk.compartment)[:, 0]
-    assert set(np.unique(ids)) == {0, 1, 2} and (np.asarray(walk.compartment) == ids[:, None]).all()
+    ids = np.asarray(walk.compartment)                                              # one label per walker
+    assert set(np.unique(ids)) == {0, 1, 2} and ids.ndim == 1
     assert walk.has_surface and walk.diffusivity == D and walk.field_basis is not None
-    pos = np.asarray(walk.positions)
-    r0 = np.hypot(pos[:, 0, 0] - np.where(pos[:, 0, 0] < 0, -2e-6, 2e-6), pos[:, 0, 1])
+    C = np.asarray(walk.position_coeffs)[:, 0]
+    r0 = np.hypot(C[:, 0, 0] - np.where(C[:, 0, 0] < 0, -2e-6, 2e-6), C[:, 0, 1])
     assert (r0[ids == 1] < 0.8e-6 + 1e-9).all() and (r0[ids == 2] > 0.8e-6 - 1e-9).all()      # pools where the walls say
-    assert (pos[ids == 2] == pos[ids == 2][:, :1]).all()                                        # stuck myelin
+    assert (C[ids == 2, 1:] == 0).all()                                                     # stuck myelin: no path
     pk = build_replay_pack(walk, id="test/bundle", license="x", citation="x", K=8, envelope=ENV)
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert pk.meta["substrate"]["id"] == "test/bundle-2" and SubstrateSpec.from_dict(pk.meta["substrate"]) == spec
@@ -146,9 +146,10 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
 
 def test_walk_spec_walks_an_analytic_spec_too():
     g = d.Cylinder(3e-6, (0, 0, 1))
+    from dmipy_sim.replay.bank import class_band
     w = walk_spec(g.spec, 32, 4e-4, 2e-4, diffusivity=D, seed=1, require_gpu=False)
-    ref = d.simulate_trajectories(32, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
-    np.testing.assert_array_equal(w.positions, ref.positions)
+    ref = d.simulate_trajectories(32, D, g, 4e-4, 2e-4, seed=1, require_gpu=False, K=w.K, f_band=class_band("connectom"))
+    np.testing.assert_array_equal(w.position_coeffs, ref.position_coeffs)
     assert w.spec == g.spec and type(w.geometry) is d.Cylinder
     with pytest.raises(SpecError, match="no D"):
         walk_spec(g.spec, 32, 4e-4, 2e-4, seed=1, require_gpu=False)

@@ -279,8 +279,6 @@ class Consolidator:
         from ..replay.compression import read_position_coeffs
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
-        from ..replay.compression import require_basis
-        require_basis(meta, "dst1", what="the columnar layout (its band variance tables and plans are per save)")
         meta = self.normalise_path(name, pk, meta)
         ident = dict(compression=_codec_signature(meta["compression"]),
                      walk_params=_walk_identity(meta["walk_params"]),

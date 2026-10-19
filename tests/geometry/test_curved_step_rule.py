@@ -25,7 +25,7 @@ D0 = 0.6e-9
 
 
 def _walk(g, r0, n_sub, T=2e-3, dt_save=2e-4):
-    return d.simulate_trajectories(len(r0), D0, g, T, dt_save, seed=1, r0=r0, sub_steps=n_sub)
+    return d.simulate_trajectories(len(r0), D0, g, T, dt_save, seed=1, r0=r0, sub_steps=n_sub, raw_subset=len(r0)).saves()
 
 
 def _n_sub(frac, dt_save=2e-4):
