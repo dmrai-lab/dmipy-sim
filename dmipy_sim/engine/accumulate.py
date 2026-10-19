@@ -44,34 +44,43 @@ PRECISION = f"float32: the moments of each block summed per step, a ring of {RIN
 
 def moment_scan(inner, init, length, pos_of, blt_of, m):
     """``inner`` stepped ``length`` times from ``init`` with the moments of the increments: ``(carry, (M (m+1, 3),
-    B (m+1,) or None))``, ``M_j = sum_i tau_i^j (pos_of(c_i+1) - pos_of(c_i))`` and the same of ``blt_of`` (a
-    cumulative local time in the carry), ``tau_i = (i + 1/2) / length - 1/2``."""
+    B (m+1,) or None, Q (3,), Qb () or None))``, ``M_j = sum_i tau_i^j (pos_of(c_i+1) - pos_of(c_i))`` and the same of
+    ``blt_of`` (a cumulative local time in the carry), ``tau_i = (i + 1/2) / length - 1/2``, and each channel's
+    quadratic variation over the block, ``Q = sum_i (dx_i)^2`` per axis and ``Qb = sum_i (dlog_i)^2``: what the
+    block table's error is proportional to (:func:`~dmipy_sim.replay.compression.quadrature_rel` times it)."""
     tau = (jnp.arange(length, dtype=jnp.float32) + 0.5) / jnp.float32(length) - 0.5
     pw = tau[:, None] ** jnp.arange(int(m) + 1, dtype=jnp.float32)[None, :]          # (length, m+1), shared by every walker
     has_b = blt_of is not None
 
     def body(c, p):
-        cc, mp, mb = c
+        cc, mp, mb, qp, qb = c
         r0 = pos_of(cc)
         b0 = blt_of(cc) if has_b else None
         cc, _ = inner(cc, None)
-        mp = mp + p[:, None] * (pos_of(cc) - r0)[None, :]
+        dx = pos_of(cc) - r0
+        mp = mp + p[:, None] * dx[None, :]
+        qp = qp + dx * dx
         if has_b:
-            mb = mb + p * (blt_of(cc) - b0)
-        return (cc, mp, mb), None
+            db = blt_of(cc) - b0
+            mb = mb + p * db
+            qb = qb + db * db
+        return (cc, mp, mb, qp, qb), None
 
     m0 = jnp.zeros((int(m) + 1, 3), jnp.float32)
     b0 = jnp.zeros((int(m) + 1,), jnp.float32) if has_b else None
-    (out, mp, mb), _ = jax.lax.scan(body, (init, m0, b0), pw)
-    return out, (mp, mb)
+    q0 = jnp.zeros((3,), jnp.float32)
+    qb0 = jnp.float32(0.0) if has_b else None
+    (out, mp, mb, qp, qb), _ = jax.lax.scan(body, (init, m0, b0, q0, qb0), pw)
+    return out, (mp, mb, qp, qb)
 
 
 def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None):
     """The ``n_blocks`` blocks of one walker: ``interval(carry, None) -> (carry, ys, (M, B))`` walks one block
     (its moments from :func:`moment_scan`). Returns ``(carry, acc_pos (K+1, 3), acc_blt (K+1,) or None, emitted,
-    counted)``: the accumulators of the cosine projections (:func:`~dmipy_sim.replay.compression.block_table`
-    evaluated per ring), ``emit(ys)`` stacked over the blocks (None without ``emit``) and ``count(ys)`` summed over
-    them (int32; None without ``count``)."""
+    counted, (qv_pos (3,), qv_blt () or None))``: the accumulators of the cosine projections
+    (:func:`~dmipy_sim.replay.compression.block_table` evaluated per ring), ``emit(ys)`` stacked over the blocks (None
+    without ``emit``), ``count(ys)`` summed over them (int32; None without ``count``) and each channel's quadratic
+    variation over the walk, summed per ring like the projections."""
     from ..replay.compression import block_table
     hi = jax.lax.Precision.HIGHEST
     n_blocks, K, m = int(n_blocks), int(K), int(m)
@@ -81,18 +90,21 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None
         return c, (mom, None if emit is None else emit(ys), None if count is None else count(ys).astype(jnp.int32))
 
     def ring(state, idx):
-        c, ap, ab, n = state
+        c, ap, ab, n, qp, qb = state
         c, (mom, e, k) = jax.lax.scan(block, c, None, length=int(idx.shape[0]))
         tab = block_table(1.0, n_blocks, K, m, blocks=idx, xp=jnp)                    # (R, K+1, m+1), no walker in it
         ap = ap + jnp.einsum("bkj,bjd->kd", tab, mom[0], precision=hi)
+        qp = qp + mom[2].sum(axis=0)
         if has_blt:
             ab = ab + jnp.einsum("bkj,bj->k", tab, mom[1], precision=hi)
+            qb = qb + mom[3].sum()
         if count is not None:
             n = n + k.sum()
-        return (c, ap, ab, n), e
+        return (c, ap, ab, n, qp, qb), e
 
     state = (carry, jnp.zeros((K + 1, 3), jnp.float32), jnp.zeros((K + 1,), jnp.float32) if has_blt else None,
-             jnp.int32(0) if count is not None else None)
+             jnp.int32(0) if count is not None else None, jnp.zeros((3,), jnp.float32),
+             jnp.float32(0.0) if has_blt else None)
     n_full, rem = divmod(n_blocks, RING)
     parts = []
     if n_full:
@@ -107,8 +119,8 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, emit=None, count=None
     emitted = None
     if emit is not None:
         emitted = parts[0] if len(parts) == 1 else jax.tree_util.tree_map(lambda *a: jnp.concatenate(a, axis=0), *parts)
-    c, ap, ab, n = state
-    return c, ap, ab, emitted, n
+    c, ap, ab, n, qp, qb = state
+    return c, ap, ab, emitted, n, (qp, qb)
 
 
 def coefficient_form(r0, r_end, acc_pos, scale):

@@ -32,9 +32,10 @@ class CoefficientWalk:
     m : int
         The order of the block table (:func:`~dmipy_sim.replay.compression.block_table`).
     block : dict
-        ``{h, m, n_blocks, precision, k0_residual_m}``: the block length (s), the order, the block count, how the
-        accumulation was summed and the float32 chain's measured residual on the ``k = 0`` mode against the exact
-        displacement (the largest over the walkers, metres).
+        ``{h, m, n_blocks, rule, precision, k0_residual_m, quadratic_variation}``: the block length (s), the order, the
+        block count, whether the block was derived from the band or given, how the accumulation was summed, the
+        float32 chain's measured residual on the ``k = 0`` mode against the exact displacement (the largest over the
+        walkers, metres) and the channels' mean quadratic variation.
     dt_sim : float
         The physics step (s).
     sub_steps : int
@@ -48,6 +49,12 @@ class CoefficientWalk:
         start; a permeable wall's fractional occupancy as float32, a label as int8).
     bound_frac : (n_walkers, n_blocks + 1) or None
         The bound fraction per block of a binding (MT) walk.
+    qv_positions : (n_walkers, 3) float32
+        Each walker's quadratic variation per axis, ``sum (dx)^2`` over every step (``2 D T`` per axis for a free
+        walk): what the block table's error is proportional to, :func:`~dmipy_sim.replay.compression.quadrature_rel`
+        times it.
+    qv_boundary : (n_walkers,) float32 or None
+        The cumulative local time's quadratic variation, ``sum (dlog)^2`` over the steps (each hit's contact squared).
     raw_positions : (n_raw, n_blocks + 1, 3) float32 or None
         The first ``n_raw`` walkers' positions at the block ends, kept with ``raw_subset=`` for a measured
         certificate (:func:`~dmipy_sim.replay.bank.build_replay_pack` ``fidelity="measured"``).
@@ -66,6 +73,8 @@ class CoefficientWalk:
     compartment: Optional[np.ndarray] = None
     bound_frac: Optional[np.ndarray] = None
     raw_positions: Optional[np.ndarray] = None
+    qv_positions: Optional[np.ndarray] = None
+    qv_boundary: Optional[np.ndarray] = None
     illegal_crossings: int = 0
     seed: Optional[int] = None
     diffusivity: Optional[float] = None
@@ -122,4 +131,4 @@ class CoefficientWalk:
         """Host bytes of the walk's arrays."""
         return int(sum(np.asarray(a).nbytes for a in (self.position_coeffs, self.boundary_start, self.boundary_endpoint,
                                                        self.boundary_bands, self.compartment, self.bound_frac,
-                                                       self.raw_positions) if a is not None))
+                                                       self.raw_positions, self.qv_positions, self.qv_boundary) if a is not None))

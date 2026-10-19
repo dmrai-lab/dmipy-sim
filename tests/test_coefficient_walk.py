@@ -127,12 +127,25 @@ def test_sphere_and_cylinder_agree_with_the_matrix_method():
             assert abs(diff) <= 3.0 * se + 2e-3, (name, r)
 
 
+# ------------------------------------------------------------------------------------------------- the contact tier
+def test_the_contact_tier_is_admitted_at_the_signal():
+    """The surface-relaxation rows at the envelope's largest rho2 on a reflecting sphere: the accumulated pack against
+    the pack of the same walk at its saves (the codec: the whole contact at TE = T, the contact gated at the
+    acquisition's end at TE = T / 2) and against the fused engine (another walk), each within the replay's floor."""
+    res = _quiet(_tool().surface, n=4000)
+    assert res["qv_contact_mean"] > 0 and res["err_quadrature_surface"] is not None
+    for row in res["rows"]:
+        for a_s, a_f, se in zip(row["acc_minus_saves"], row["acc_minus_fused"], row["se"]):
+            assert abs(a_s) <= 2.0 * se, row
+            assert abs(a_f) <= 3.0 * np.sqrt(2.0) * se + 2e-3, row
+
+
 # ------------------------------------------------------------------------------------------------------- memory
 @pytest.mark.slow
 def test_the_walks_host_bytes_do_not_grow_with_the_save_interval():
     """Three save intervals spanning 16x at a fixed K, each walk in a process of its own: the accumulated walk's peak
     host bytes stay within a few MB of each other, while the walk stored at its saves grows by its positions."""
-    rows = _tool().memory(n=8000, T=0.004, dt_sim=3.125e-6, K=16, dt_saves=(2e-4, 5e-5, 1.25e-5))
+    rows = _tool().memory(n=40000, T=0.004, dt_sim=3.125e-6, K=16, dt_saves=(2e-4, 5e-5, 1.25e-5))
     acc = [r["host_peak_over_base"] for r in rows if r["mode"] == "accumulated"]
     saves = [r for r in rows if r["mode"] == "saves"]
     grown = saves[-1]["walk_host_bytes"] - saves[0]["walk_host_bytes"]
@@ -153,6 +166,10 @@ def test_accumulate_alone_takes_the_bands_own_block():
     assert cw.n_blocks == n and cw.dt == pytest.approx(T / n) == pytest.approx(block_length(T, K))
     assert np.pi * K / T * cw.dt == pytest.approx(0.8, rel=0.01)
     assert cx.quadrature_rel(3, cw.dt, np.pi * K / T) == pytest.approx(1.3e-7, rel=0.05)
+    free = _quiet(d.simulate_trajectories, 2000, 2e-9, d.FreeDiffusion(), T, accumulate=K, require_gpu=False)
+    qv = free.block["quadratic_variation"]                                                # sum (dx)^2 = 2 D T per axis
+    assert np.allclose(qv["positions_over_2DT"], 1.0, rtol=0.05), qv
+    assert free.qv_positions.shape == (2000, 3) and cw.qv_boundary.shape == (50,)
     given = _quiet(d.simulate_trajectories, 50, 2e-9, g, T, 2e-4, accumulate=K, block_order=1, require_gpu=False)
     assert (given.m, given.dt, given.block["rule"]) == (1, pytest.approx(2e-4), "given")
     with pytest.raises(ValueError, match="dt_save"):

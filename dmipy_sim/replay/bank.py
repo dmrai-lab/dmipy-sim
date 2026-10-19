@@ -2293,12 +2293,16 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         return pack
 
 
-def _derived_certificate(scales, *, basis, n_t, dt, K, m, D, env, floor):
+def _derived_certificate(scales, *, basis, n_t, dt, K, m, D, env, floor, qv_pos=None, qv_contact=None, rho_over_D=None):
     """The walk-free certificate of a pack built from a coefficient walk, per measurement of the envelope's battery
     and per family: the TRUNCATION, the phase the bands beyond ``K`` would carry for a free walk at ``D``
     (:func:`compression.band_phase_variances`), half of it as the signal it costs; the QUADRATURE of the block table
-    at ``(m, h)``, half of ``gamma^2 sum_k W_k^2 rel(m, h, omega_k) var_k`` (:func:`compression.quadrature_rel`; zero on
-    the DST-I, which the block moments are exactly); the QUANTISATION of the stored container, the random phase
+    at ``(m, h)``, per channel ``rel(m, h) x QV`` with ``QV`` the channel's measured quadratic variation (the walkers'
+    mean): on the positions half of ``gamma^2 sum_{k,c} W_kc^2 rel(m, h, omega_k) T QV_c / (pi k)^2`` (``QV_c = 2 D T``
+    on a free walk, where it is the free band variance's statement), on the contact half of ``(rho / D)^2 sum_k
+    rel(m, h, omega_k) 2 QV_B / (pi k)^2`` per jump of a gate at the envelope's largest ``rho / D`` (an ungated
+    contact is the exact endpoint); zero on the DST-I, which the block moments are exactly
+    (:func:`compression.quadrature_rel`); the QUANTISATION of the stored container, the random phase
     ``eps^2 = gamma^2 sum_k W_k^2 step_k^2 / 12`` of its realised steps at ``KAPPA eps`` floors and its bias
     ``eps^2 / 2``, in quadrature (:func:`compression.derive_container`'s budget, read back); and the split-half floor
     ``floor`` (:func:`compression.measure_floor_coded`). The error per measurement is the sum of the three."""
@@ -2307,19 +2311,24 @@ def _derived_certificate(scales, *, basis, n_t, dt, K, m, D, env, floor):
     pb, total = _cx.band_phase_variances(G, float(dt), int(n_t), float(dt), int(K), float(D), basis=basis)
     trunc = 0.5 * np.clip(total - pb.sum(axis=1), 0.0, None)
     h, T = float(dt), (int(n_t) - 1) * float(dt)
+    W = _cx.band_projection(G, float(dt), int(n_t), float(dt), int(K), basis=basis)[:, 2:, :]     # (n_meas, K, 3)
+    quad_surface = 0.0
     if basis == "continuous":
-        om = np.pi * np.arange(1, int(K) + 1) / T
-        quad = 0.5 * (pb * _cx.quadrature_rel(m, h, om)[None, :]).sum(axis=1)
+        k = np.arange(1, int(K) + 1)
+        rel = _cx.quadrature_rel(m, h, np.pi * k / T)
+        qv = np.full(3, 2.0 * float(D) * T) if qv_pos is None else np.asarray(qv_pos, np.float64)
+        quad = 0.5 * GAMMA ** 2 * np.einsum("mkc,k,c->m", W ** 2, rel * T / (np.pi * k) ** 2, qv)
+        if qv_contact is not None and rho_over_D is not None:
+            quad_surface = 0.5 * float(rho_over_D) ** 2 * float((rel * 2.0 * float(qv_contact) / (np.pi * k) ** 2).sum())
     else:
         quad = np.zeros_like(trunc)
-    W = _cx.band_projection(G, float(dt), int(n_t), float(dt), int(K), basis=basis)[:, 2:, :]     # (n_meas, K, 3)
     if scales is None:
         eps = np.zeros_like(trunc)
     else:
         step2 = np.mean(np.asarray(scales, np.float64) ** 2, axis=0)                           # (3, K) over the walkers
         eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
     quant = np.sqrt((_cx.KAPPA * eps * float(floor["floor_max"])) ** 2 + (eps ** 2 / 2.0) ** 2)
-    err = trunc + quad + quant
+    err = trunc + quad + quant + quad_surface
     fams = sorted({x["fam"] for x in meta})
     per = {}
     for f in fams:
@@ -2327,9 +2336,13 @@ def _derived_certificate(scales, *, basis, n_t, dt, K, m, D, env, floor):
         per[f] = dict(err_max=float(err[j].max()), floor_max=float(floor["per_family"][f]))
     return dict(metric="max_abs_complex_signal_error", certified="derived",
                 err_truncation=float(trunc.max()), err_quadrature=float(quad.max()), err_quantisation=float(quant.max()),
+                err_quadrature_surface=float(quad_surface),
                 err_max=float(err.max()), floor_max=float(floor["floor_max"]), noise_floor=float(floor["noise_floor"]),
                 within_2x_floor=bool(err.max() <= 2.0 * float(floor["floor_max"])), per_family=per,
                 quadrature=dict(m=int(m), h=h, f_band_hz=float(K) / (2.0 * T),
+                                qv_positions_m2=(None if qv_pos is None else [float(x) for x in qv_pos]),
+                                qv_contact_m2=(None if qv_contact is None else float(qv_contact)),
+                                surface_rho_over_D=(None if rho_over_D is None else float(rho_over_D)),
                                 rel_at_band_edge=(float(_cx.quadrature_rel(m, h, np.pi * K / T)) if basis == "continuous" else 0.0)),
                 bounds_diffusivity=float(D))
 
@@ -2417,7 +2430,10 @@ def _build_from_coefficients(cw, *, id, license, citation, weights, envelope, to
         Cq = _cx.read_position_coeffs(pos_arrays, dtype=np.float64)
         run.phase("certificate")
         scales = None if pc is None else _cx.band_scales(pos_arrays, "pos_band_scale", Cq.shape[0])
-        fid = _derived_certificate(scales, basis=basis, n_t=n_t, dt=dt, K=K, m=cw.m, D=D, env=env, floor=floor)
+        fid = _derived_certificate(scales, basis=basis, n_t=n_t, dt=dt, K=K, m=cw.m, D=D, env=env, floor=floor,
+                                   qv_pos=(None if cw.qv_positions is None else np.asarray(cw.qv_positions, np.float64).mean(axis=0)),
+                                   qv_contact=(None if cw.qv_boundary is None else float(np.mean(cw.qv_boundary))),
+                                   rho_over_D=(None if cw.qv_boundary is None else max(env.get("rho2_list") or [1e-4]) / D))
         if fidelity == "measured":
             raw = np.asarray(cw.raw_positions, np.float64)
             n_raw = raw.shape[0]

@@ -7,7 +7,9 @@ function the tests read and a table this script prints:
   the same walk accumulated per step (``h = dt_sim``), beside the table ``rel(m, h)`` it is held to, absolutely;
 * ``memory``     -- the walk's peak host bytes (VmHWM, read from ``/proc``) over three save intervals spanning 16x at
   a fixed ``K``, accumulated and stored at the saves, each in a process of its own; on a GPU also the device's peak;
-* ``oracle``     -- a sphere and a cylinder replayed from the accumulated pack against the matrix method.
+* ``oracle``     -- a sphere and a cylinder replayed from the accumulated pack against the matrix method;
+* ``surface``    -- the contact tier (C2) at the signal: surface-relaxation rows at the envelope's largest ``rho2``
+  replayed from the accumulated pack, from the pack of the same walk at its saves and by the fused engine.
 
     python tools/coefficient_walk_measure.py --what exactness quadrature memory oracle
 
@@ -133,8 +135,11 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
             warnings.simplefilter("ignore")
             return d.simulate_trajectories(n, D, geometry, T_max=T, dt_save=h, seed=seed, require_gpu=False, tiers=(),
                                            sub_steps=int(round(h / dt_sim)), accumulate=K, block_order=m)
-    ref = continuous_bands(walk(dt_sim, 1))
+    ref_walk = walk(dt_sim, 1)
+    ref = continuous_bands(ref_walk)
     phi_ref = GAMMA * np.einsum("wkc,mkc->wm", ref, W)
+    qv = np.asarray(ref_walk.qv_positions, np.float64).mean(axis=0)                     # the measured QV per axis
+    per_band_qv = GAMMA ** 2 * np.einsum("mkc,k,c->mk", W[:, 2:, :] ** 2, T / (np.pi * np.arange(1, K + 1)) ** 2, qv)
     top = slice(3 * K // 4, K)
     rows = []
     for m, h in cases:
@@ -143,6 +148,7 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
             raise AssertionError("the case and the reference did not walk the same paths")
         meas = np.var(GAMMA * np.einsum("wkc,mkc->wm", C, W) - phi_ref, axis=0)
         pred = (per_band * cx.quadrature_rel(m, h, om)[None, :]).sum(axis=1)
+        pred_qv = (per_band_qv * cx.quadrature_rel(m, h, om)[None, :]).sum(axis=1)
         bound = cx.quadrature_rel(m, h, np.pi * K / T) * 2.0 * b * D
         i = int(np.argmax(pred))
         rel_meas = np.var(C[:, 2:, :] - ref[:, 2:, :], axis=0) / np.var(ref[:, 2:, :], axis=0)   # (K, 3)
@@ -153,6 +159,8 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
                          predicted_largest=float(pred[i]), bound_max=float(bound.max()), within_bound=bool(np.all(meas <= bound)),
                          worst_fraction_of_bound=float(np.max(meas / np.where(bound > 0, bound, np.inf))),
                          ratio_range=[float((meas[live] / pred[live]).min()), float((meas[live] / pred[live]).max())],
+                         qv_over_2DT=[float(x) for x in qv / (2.0 * D * T)],
+                         ratio_range_qv=[float((meas[live] / pred_qv[live]).min()), float((meas[live] / pred_qv[live]).max())],
                          relative_vs_table_top_modes=float((rel_meas[top] / rel_tab[top]).mean(axis=0).max())))
     return rows
 
@@ -237,9 +245,47 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=None, seed=1):
     return out
 
 
+def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
+    """The contact tier at the signal (C2): a reflecting sphere of radius ``R`` walked once as a coefficient walk (the
+    band's own block) and once at its saves on the same steps, each packed, and walked again by the fused engine with
+    ``surface_relaxivity_t2 = rho`` (the envelope's largest, rho R / D = 0.2 at the defaults). PGSE rows at b = 0, 1
+    and 3 ms/um^2 with TE = T (the whole contact, the exact endpoint) and TE = T / 2 (the contact gated at the
+    acquisition's end, read from the bands) replayed with ``rho2 = rho``. Per row the three signals, the replay's
+    standard error, and the differences accumulated - saves (the codec) and accumulated - fused (two walks)."""
+    import dmipy_sim as d
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.spec.tissue import Tissue
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        g = d.Sphere(radius=R)
+        cw = d.simulate_trajectories(n, D, g, T_max=T, seed=seed, require_gpu=False, accumulate=K)
+        raw = d.simulate_trajectories(n, D, g, T_max=T, dt_save=cw.dt, sub_steps=cw.sub_steps, seed=seed, require_gpu=False)
+    pa = build_replay_pack(cw, id="surface/acc", license="x", citation="x")
+    pr = build_replay_pack(raw, id="surface/saves", license="x", citation="x", K=K)
+    tissue = Tissue(rho2=rho)
+    rows = []
+    for TE in (T, T / 2):
+        n_t = 401
+        seq = d.pgse([[1, 0, 0]] * 3, 0.2 * TE, 0.5 * TE, bvalues=[0.0, 1e9, 3e9], TE=TE, n_t=n_t, slew_rate=np.inf)
+        w, ew, E = pa.walker_signals(seq, tissue=tissue)
+        S_acc = np.abs((ew[:, None] * E).sum(0) / w.sum())
+        se = np.std(np.real((ew[:, None] / w.mean()) * E * np.conj(E.mean(0) / np.abs(E.mean(0)))), axis=0) / np.sqrt(E.shape[0])
+        S_raw = pr.replay(seq, tissue=tissue)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            S_fused = np.asarray(d.simulate(n, D, seq, d.Sphere(radius=R, surface_relaxivity_t2=rho), seed=seed + 100,
+                                            require_gpu=False), np.float64).reshape(-1)
+        rows.append(dict(TE_ms=TE * 1e3, b=[0.0, 1e9, 3e9], accumulated=S_acc.tolist(), saves=np.asarray(S_raw).tolist(),
+                         fused=S_fused.tolist(), se=se.tolist(), acc_minus_saves=(S_acc - S_raw).tolist(),
+                         acc_minus_fused=(S_acc - S_fused).tolist()))
+    return dict(block=dict(m=cw.m, h=cw.dt, n_blocks=cw.n_blocks, sub_steps=cw.sub_steps),
+                qv_contact_mean=float(np.mean(cw.qv_boundary)), rho_over_D=rho / D,
+                err_quadrature_surface=pa.fidelity.get("err_quadrature_surface"), rows=rows)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--what", nargs="+", default=["exactness", "quadrature", "memory", "oracle"])
+    ap.add_argument("--what", nargs="+", default=["exactness", "quadrature", "memory", "oracle", "surface"])
     ap.add_argument("--memory-probe", nargs=6, metavar=("MODE", "DT_SAVE", "N", "T", "DT_SIM", "K"))
     a = ap.parse_args(argv)
     if a.memory_probe:
@@ -256,6 +302,8 @@ def main(argv=None):
         res["memory"] = memory()
     if "oracle" in a.what:
         res["oracle"] = oracle()
+    if "surface" in a.what:
+        res["surface"] = surface()
     print(json.dumps(res, indent=1))
 
 

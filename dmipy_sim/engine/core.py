@@ -2128,25 +2128,25 @@ def simulate_trajectories(
             def _walker(raw):
                 if kind == "gen":
                     def one(r0_w, key_w, side_w, comp0_w, brem0_w):
-                        c, ap, _, e, _ = _ring(interval, (r0_w, key_w, side_w, jnp.int32(0), _work0()), False,
-                                               (lambda ys: ys) if raw else None, None)
+                        c, ap, _, e, _, (qp, _) = _ring(interval, (r0_w, key_w, side_w, jnp.int32(0), _work0()), False,
+                                                        (lambda ys: ys) if raw else None, None)
                         C, resid = coefficient_form(r0_w, c[0], ap, scale)
                         pos = jnp.concatenate([r0_w[None], e], axis=0) if raw else jnp.zeros((0,), jnp.float32)
                         z = jnp.zeros((0,), jnp.float32)
-                        return C, resid, jnp.float32(0.0), z, jnp.int8(0), z, z, pos, jnp.int32(0), c[3], c[4]
+                        return C, resid, jnp.float32(0.0), z, jnp.int8(0), z, z, pos, qp, jnp.float32(0.0), jnp.int32(0), c[3], c[4]
                     return one
                 if kind == "relax":
                     def one(r0_w, key_w, side_w, comp0_w, brem0_w):
                         lab0 = _pool2(comp0_w)
                         emit = (lambda ys: (ys[0] if raw else None, ys[2] if crossing else None)) if (raw or crossing) else None
                         count = None if crossing else (lambda ys: jnp.rint(ys[2]) != lab0)
-                        c, ap, ab, e, n = _ring(interval_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w, _work0()),
-                                                True, emit, count)
+                        c, ap, ab, e, n, (qp, qb) = _ring(interval_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w, _work0()),
+                                                          True, emit, count)
                         C, resid = coefficient_form(r0_w, c[0], ap, scale)
                         occ = jnp.concatenate([lab0[None], e[1]]) if crossing else jnp.zeros((0,), jnp.float32)
                         pos = jnp.concatenate([r0_w[None], e[0]], axis=0) if raw else jnp.zeros((0,), jnp.float32)
                         return (C, resid, ab[0], scale * ab[1:], lab0.astype(jnp.int8), occ, jnp.zeros((0,), jnp.float32),
-                                pos, (jnp.int32(0) if n is None else n), c[3], c[5])
+                                pos, qp, qb, (jnp.int32(0) if n is None else n), c[3], c[5])
                     return one
 
                 def one(r0_w, key_w, side_w, comp0_w, brem0_w):
@@ -2156,13 +2156,13 @@ def simulate_trajectories(
                     count = None if crossing else (lambda ys: ys[2] != lab0)
                     carry0 = ((r0_w, r0_w, key_w, comp0_w, brem0_w, _work0()) if _mt_on
                               else (r0_w, r0_w, key_w, comp0_w, _work0()))
-                    c, ap, ab, e, n = _ring(interval_pm, carry0, True, emit, count)
+                    c, ap, ab, e, n, (qp, qb) = _ring(interval_pm, carry0, True, emit, count)
                     C, resid = coefficient_form(r0_w, c[1], ap, scale)
                     z = jnp.zeros((0,), jnp.float32)
                     occ = jnp.concatenate([lab0[None], e[1]]) if crossing else z
                     bf = jnp.concatenate([(brem0_w > 0).astype(jnp.float32)[None], e[2]]) if _mt_on else z
                     pos = jnp.concatenate([r0_w[None], e[0]], axis=0) if raw else z
-                    return (C, resid, ab[0], scale * ab[1:], lab0, occ, bf, pos,
+                    return (C, resid, ab[0], scale * ab[1:], lab0, occ, bf, pos, qp, qb,
                             (jnp.int32(0) if n is None else n), jnp.int32(0), c[-1])
                 return one
 
@@ -2171,7 +2171,7 @@ def simulate_trajectories(
                                                K, m, float(T_max), kappa_MT, dwell_time, _counting),
                                     lambda: jax.jit(jax.vmap(_walker(raw), in_axes=(0, 0, 0, 0, 0))))
 
-            names = ("C", "resid", "blt_end", "blt_bands", "lab", "occ", "bfrac", "pos")
+            names = ("C", "resid", "blt_end", "blt_bands", "lab", "occ", "bfrac", "pos", "qv_pos", "qv_blt")
             rows = {k: _Rows(n_walkers) for k in names}
             raw_rows = _Rows(n_raw) if n_raw else None
             dev = [0]
@@ -2224,6 +2224,11 @@ def simulate_trajectories(
                          k0_residual_m=float(np.abs(resid).max()) if resid.size else 0.0,
                          k0_residual_relative=(float(np.abs(resid).max() / max(np.sqrt(np.mean(disp ** 2)), 1e-300))
                                                if resid.size else 0.0))
+            qv_p = rows["qv_pos"].array()
+            block["quadratic_variation"] = dict(positions_mean_m2=[float(x) for x in qv_p.mean(axis=0)],
+                                                positions_over_2DT=[float(x) / (2.0 * float(diffusivity) * float(T_max))
+                                                                    for x in qv_p.mean(axis=0)] if diffusivity else None,
+                                                boundary_mean_m2=(float(rows["qv_blt"].array().mean()) if record else None))
             work = dict(work, block=block, label_deviations=n_dev)
             comp = bfrac = None
             if record:
@@ -2243,6 +2248,8 @@ def simulate_trajectories(
                 boundary_bands=(None if blt_end is None else rows["blt_bands"].array().astype(np.float32)),
                 compartment=comp, bound_frac=bfrac,
                 raw_positions=(None if raw_rows is None else raw_rows.array()),
+                qv_positions=rows["qv_pos"].array().astype(np.float32),
+                qv_boundary=(None if blt_end is None else rows["qv_blt"].array().astype(np.float32)),
                 illegal_crossings=illegal, seed=int(seed), diffusivity=(None if diffusivity is None else float(diffusivity)),
                 geometry=geometry, work=work)
             object.__setattr__(cw, "run", run)
