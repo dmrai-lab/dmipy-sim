@@ -21,16 +21,6 @@ from .substrate import SubstrateSpec, SpecError, susceptibility_field_of
 from .build import geometry_from_spec
 
 
-def _class_band(scanner):
-    """The band (Hz) a walk for scanner class ``scanner`` resolves its step for: the class's stored band
-    (:func:`~dmipy_sim.replay.bank.storage_band_hz`, the certified band times its margin); ``None`` -- the save
-    grid's Nyquist frequency -- when no class is named."""
-    if scanner is None:
-        return None
-    from ..replay.bank import storage_band_hz
-    return float(storage_band_hz(scanner))
-
-
 def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connectom", floor_fraction=0.1, diffusivity=None,
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
@@ -114,6 +104,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                                       defer_field=defer_field, adaptive_steps=adaptive_steps, seed=seed), run_dir=run_dir) as run:
         import logging
         from ..engine.core import simulate_trajectories
+        from ..replay.bank import class_band
         from ..persistent_walk import PersistentWalk, merge_work
         from ..acquisition.scanners import save_interval
         spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
@@ -192,7 +183,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, dt_save=None, *, scanner="connec
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, dt_save=dt_save, seed=seed,
-                                      require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, f_band=_class_band(scanner),
+                                      require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, f_band=class_band(scanner),
                                       field_basis=fb, field_sample_every=(int(field_sample_every) if fb is not None else 1),
                                       bounce_budget=bounce_budget, backend=backend)
             return PersistentWalk(w.positions, w.dt, w.sub_steps, w.dt_sim, w.boundary_local_time, w.compartment,
@@ -698,6 +689,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
     rasterised from the same membership tests."""
     from ..engine.core import simulate_trajectories
+    from ..replay.bank import class_band
     from ..persistent_walk import PersistentWalk, merge_work
     log = logging.getLogger("dmipy_sim")
     current().phase("context", reused=(context is not None))
@@ -786,7 +778,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                 raise SpecError(f"pool {pool.name!r}: its {type(g).__name__} offers no wall_scales; adaptive stepping "
                                 f"is for the curved tubes")
             from ..engine.adaptive import simulate_trajectories_adaptive
-            w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0, spec=spec, f_band=_class_band(scanner),
+            w = simulate_trajectories_adaptive(n, float(pool.D), g, T_max, dt_save, seed=seed + 13 * pid, r0=r0, spec=spec, f_band=class_band(scanner),
                                                require_gpu=require_gpu, walker_batch_size=batch, field_basis=sf, field_sample_every=int(field_sample_every), field_reuse_intervals=int(field_gather_every),
                                                spool=(pool.name if spool else None), backend=backend)
             stepping.append((pool.name, w.stepping))
@@ -794,7 +786,7 @@ def _walk_bundle(spec, n_walkers, T_max, dt_save, seed, n_probe, field_res, requ
                 field_samples.append((pid, w.field_samples))
         else:
             w = simulate_trajectories(n, float(pool.D), g, T_max=T_max, dt_save=dt_save, seed=seed + 13 * pid, r0=r0,
-                                      require_gpu=require_gpu, walker_batch_size=batch, field_basis=fg, f_band=_class_band(scanner),
+                                      require_gpu=require_gpu, walker_batch_size=batch, field_basis=fg, f_band=class_band(scanner),
                                       field_sample_every=(int(field_sample_every) if fg is not None else 1),
                                       bounce_budget=bounce_budget, backend=backend)
             if w.field_samples is not None:

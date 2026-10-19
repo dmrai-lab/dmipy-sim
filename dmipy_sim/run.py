@@ -11,7 +11,7 @@ minutes has a record that covers it from its start. A producer opened inside ano
 The directory holds ``manifest.json`` (written first: producer, parameters, code, hardware class (CPU
 architecture, GPU model and count -- never a hostname, platform string or path), devices, the memory
 ceiling, the command line -- a dead run is identifiable from it alone), ``events.jsonl`` (append-only, one JSON
-row per line, flushed per row, so a kill loses at most the row being written: ``phase``, ``progress`` with rate
+row per line, flushed per row, so a kill loses at most the row being written: ``phase``, ``cost`` (what a producer is about to cost: walker-steps, the rule that sized the step, the backend), ``progress`` with rate
 and ETA, ``resource`` from the sampler thread -- host RSS from ``/proc/self/statm``, host available, the cgroup's
 current and ceiling, every JAX device's bytes in use and peak, and ``where``, the main thread's stack at that moment -- ``artifact``,
 ``warning``, ``end`` with the exception's traceback when there was one) and ``summary.json`` (the wall time per phase, the peaks, the status).
@@ -439,6 +439,10 @@ class Run:
                 out[ph.name] = out.get(ph.name, 0.0) + ((ph.ended or now) - ph.started)
         return out
 
+    def cost(self, **fields):
+        """What the producer is about to do and what it costs, stated before it starts."""
+        self._event("cost", **{k: _jsonable(v) for k, v in fields.items()})
+
     def warning(self, message, **fields):
         self._event("warning", message=str(message), **{k: _jsonable(v) for k, v in fields.items()})
 
@@ -487,7 +491,7 @@ class Run:
                 self._fh.write(json.dumps(row) + "\n"); self._fh.flush()
             else:
                 self._events.append(row)
-        if kind in ("phase", "end", "warning"):
+        if kind in ("phase", "cost", "end", "warning"):
             log.info("run %s: %s %s", self.producer, kind, {k: v for k, v in fields.items() if k != "traceback"})
 
     def _sample(self):

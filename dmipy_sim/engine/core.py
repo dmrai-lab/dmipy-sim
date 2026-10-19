@@ -13,6 +13,9 @@ Signal = mean(cos(phi) * exp(log_w)) over walkers.
 import jax
 import jax.numpy as jnp
 import contextlib
+import dataclasses
+from dataclasses import dataclass
+from typing import NamedTuple
 import numpy as np
 
 from .backends import JAX, WalkRequest, resolve as resolve_backend
@@ -952,6 +955,423 @@ class _Rows:
         return self.array_ if self.filled == self.n_rows else self.array_[:self.filled]
 
 
+DEFAULT_WALKER_BATCH = 50_000
+"""Walkers per batch of :func:`simulate_trajectories` unless the caller says otherwise."""
+
+#: the length each sub-step rule divides, as the :class:`~dmipy_sim.geometry.base.LengthScales` field it reads;
+#: ``None`` where the rule's scale is not a length (the crossing rule reads the permeability, the binding rule the dwell time)
+_RULE_LENGTH = {"step law": "min_feature", "regime": "min_feature", "collision lookup": "lookup_cell",
+                "surface local time": "surface_pore", "crossing": None, "binding": None}
+
+
+class WalkResolution(NamedTuple):
+    """What a trajectory walk resolves from its request before it walks: the save grid, the sub-step count and the
+    rules that gave it, and the :class:`~dmipy_sim.engine.backends.WalkRequest` a backend is handed."""
+    record: bool              #: the surface / compartment channels are recorded beside the positions
+    n_t: int                  #: saves, save 0 the start
+    dt_actual: float          #: seconds between saves, ``T_max / (n_t - 1)``
+    f_band: float             #: the band (Hz) the step law resolves
+    rules: dict               #: the sub-step count each applicable rule asks for, by name
+    override: object          #: the caller's pinned sub-step count, or None
+    sub_steps: int            #: physics steps per save interval
+    dt_sim: float             #: seconds per physics step
+    step_rule: dict           #: ``PersistentWalk.work["step_rule"]`` without ``dt_p`` / ``sub_steps``
+    binding: str              #: the rule that sized the step (``"override"`` for a pinned count)
+    length_scales: object     #: the geometry's :class:`~dmipy_sim.geometry.base.LengthScales`
+    request: object           #: the :class:`~dmipy_sim.engine.backends.WalkRequest` of this walk
+    jax_only: list            #: what this walk uses that only the JAX kernels implement
+
+
+def _resolve_walk(geometry, diffusivity, T_max, dt_save, *, tiers="all", sub_steps=None, kappa_MT=0.0, dwell_time=0.0,
+                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, compress=None):
+    """The resolution every trajectory walk shares: the save grid, the sub-step count (``physics.resolve_sub_steps``
+    over the rules ``physics.sub_step_rules``), the geometries this walk cannot represent (refused), and the
+    :class:`WalkResolution` a backend is handed. :func:`simulate_trajectories` walks what this returns and
+    :func:`walk_cost` reports it, so a cost and a walk state one count."""
+    record = _record_channels(tiers)
+    n_t = int(round(T_max / dt_save)) + 1
+    dt_actual = T_max / (n_t - 1)
+
+    # A walk that records the boundary local time is resolved at the surface criterion too, so a replayed rho
+    # reproduces the fused engine's; MT binding adds its own.
+    from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
+                          length_scales_of as _length_scales_of, STEP_TOLERANCE)
+    ls = _length_scales_of(geometry)
+    # the band the step law resolves: the caller's (walk_spec passes the scanner class's), else the save grid's
+    # Nyquist frequency, since a bare trajectory walk serves every waveform its grid can carry
+    f_band = 0.5 / float(dt_actual) if f_band is None else float(f_band)
+    mt_dwell = dwell_time if kappa_MT > 0.0 else None
+    rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell, f_band=f_band)
+    override = None if sub_steps is None else int(sub_steps)
+    n_sub = _resolve_sub_steps(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell,
+                               override=sub_steps, f_band=f_band)
+    binding = "override" if override else max(rules.items(), key=lambda kv: kv[1])[0]
+    # what sized the step (PersistentWalk.work["step_rule"]): the count each rule asked for, the tolerance, the
+    # band, and the caller's override when there was one
+    step_rule = dict(eps_D=float(STEP_TOLERANCE), f_band_hz=f_band, rules=dict(rules), override=override)
+    dt_sim = dt_actual / n_sub
+    # the soundness bound of physics.make_step_fn, here too because a permeable mesh routes through the REPLAY
+    # backend (see _replay_gap) and never reaches make_step_fn
+    from .physics import _warn_if_step_outruns_the_lookup as _warn_step
+    _warn_step(geometry, diffusivity, dt_actual, n_sub, "trajectory walk")
+
+    # Reject geometries whose boundaries this path cannot represent. The one source of truth is the geometry's own
+    # `trajectory_walk_gap` (never a class-name list), which `spec.walk.walk_spec` also checks before the walk.
+    gap = geometry.trajectory_walk_gap()
+    if gap is not None:
+        raise NotImplementedError(f"simulate_trajectories cannot walk a {type(geometry).__name__}: {gap}")
+    if geometry._is_packed_myelinated and not record:
+        raise NotImplementedError(
+            "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "
+            "(tiers='all'), which route to the fused kernel "
+            "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
+            "compartment state and would return an unrestricted walk.")
+
+    permeability = geometry.permeability
+    jax_only = [what for what, on in (
+        ("the myelinated substrates", geometry._is_packed_myelinated or geometry._is_myelinated),
+        ("MT binding", kappa_MT > 0.0), ("in-walk field sampling", field_basis is not None),
+        ("the compressed master", compress is not None), ("the compartment guard", bool(enforce_compartment))) if on]
+    request = WalkRequest(
+        geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(n_sub), dt_sim=float(dt_sim),
+        diffusivity=float(diffusivity), record=bool(record),
+        kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
+        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed))
+    return WalkResolution(record, n_t, dt_actual, f_band, dict(rules), override, int(n_sub), dt_sim, step_rule, binding,
+                          ls, request, jax_only)
+
+
+def _backend_refusal(backend, name, res, geometry):
+    """Why ``backend`` (named ``name``) does not walk the resolved request ``res``, or None: the paths only the JAX
+    kernels implement are refused for any other backend rather than fallen back from, and the backend may refuse
+    the walk itself."""
+    if res.jax_only:
+        return (f"backend {name!r}: this walk uses {', '.join(res.jax_only)}, which only the jax kernels "
+                f"implement; it does not fall back")
+    reason = backend.refuses(res.request)
+    if reason:
+        return f"backend {name!r} refuses this walk of {type(geometry).__name__}: {reason}"
+    return None
+
+
+@dataclass(frozen=True)
+class WalkMeasured:
+    """A walk's cost measured on the real device and backend by :func:`walk_cost` (``measure=True``): the pilot timed at
+    two lengths, so that the per-call part (seeding, setup, the transfer to the host) is separated from the part that
+    grows with the saves."""
+    batch: int                        #: walkers of the pilot, the walk's real batch
+    pilot_saves: tuple                #: ``(n1, n2)``: the save intervals of the two pilot lengths
+    seconds_per_save: float           #: ``(t(n2) - t(n1)) / (n2 - n1)``, each ``t`` the second call of its shape (compile excluded)
+    fixed_seconds_per_call: float     #: ``t(n1) - seconds_per_save``: what a call costs whatever its saves
+    seconds_per_walker_step: float    #: ``seconds_per_save / (batch * sub_steps)``
+    projected_s: float                #: the full walk: ``walker_batches * (fixed_seconds_per_call + seconds_per_save * (n_saves - 1))``
+
+
+@dataclass(frozen=True)
+class WalkProfile:
+    """How a walk's rate scales with the batch size, measured by :func:`walk_cost` (``measure="profile"``): the same
+    pilot at B/2, B, 2B and 4B (B the walk's batch), each the second call of its shape."""
+    walker_steps_per_s: dict          #: batch size -> rate, from the seconds per save
+    seconds_per_save: dict            #: batch size -> seconds per save of the pilot (the per-call part removed)
+    plateau_walker_steps_per_s: float #: the largest rate
+    batch_fraction_of_plateau: float  #: the walk's batch rate over the plateau
+    recommended_batch: int            #: the timed batch with the highest rate: for a fixed walker count it minimises the total time
+    stopped_by: str                   #: why the profile ends: ``"given"`` (the caller's batch with B/2..4B), ``"rate fell"`` (the sweep passed
+                                      #: its best), or the limit the sweep reached while the rate still rose: ``"memory"``, ``"n_walkers"``, ``"r0"``
+    max_batch_memory: object          #: the largest batch the device's free memory holds, or None without a memory cap
+    bytes_per_walker: int             #: device bytes of one walker's inputs and output channels over all saves (a lower bound)
+    memory_cap: str                   #: where ``max_batch_memory`` comes from, or why there is none
+    verdict: str                      #: about the walk's batch B: ``"under-filled"`` when 2B takes under :data:`UNDERFILLED_DOUBLING` x the
+                                      #: time of B (the extra walkers cost under 20 %), measured whenever 2B fits the device, whatever ``n_walkers``;
+                                      #: ``"memory-bound"`` when 2B does not fit; else ``"saturated"``; ``"unresolved"`` when 2B could not be timed for want of ``r0`` rows
+
+
+@dataclass(frozen=True)
+class WalkCost:
+    """What a trajectory walk costs, stated before it runs: the resolution :func:`simulate_trajectories` walks, in work
+    and bytes, and optionally the time measured on the real device."""
+    n_walkers: int                    #: walkers of the walk
+    walker_batch_size: int            #: walkers per batch (``n_walkers`` for a single batch)
+    walker_batch_rule: str            #: what set it: ``"given"``, ``"recommended by the sweep"`` or ``"n_walkers capped by memory"``
+    walker_batches: int               #: batches of the walk
+    T_max: float                      #: seconds of diffusion time
+    n_saves: int                      #: saves, save 0 the start
+    dt_save: float                    #: seconds between saves
+    f_band_hz: float                  #: the band (Hz) the step law resolves: ``f_band``, else the save grid's Nyquist frequency
+    sub_steps: int                    #: physics steps per save interval
+    dt_sim: float                     #: seconds per physics step
+    sub_step_rules: dict              #: the sub-step count each applicable rule asks for, by name
+    binding_rule: str                 #: the rule that sized the step (``"override"`` for a pinned count)
+    binding_length: object            #: the :class:`~dmipy_sim.geometry.base.LengthScales` field that rule divides, or None
+    binding_length_m: object          #: that length (m), or None
+    length_scales: dict               #: ``min_feature``, ``min_gap``, ``lookup_cell``, ``surface_pore`` (m)
+    walker_steps: int                 #: ``n_walkers * (n_saves - 1) * sub_steps``
+    bytes_per_walker: int             #: device bytes of one walker over all saves (inputs and output channels; a lower bound)
+    backend: str                      #: the backend that would walk it
+    backends_accepting: list          #: the other installed backends that do not refuse this request
+    backends_refusing: dict           #: the other installed backends that refuse it, ``{name: reason}``
+    measured: object = None           #: :class:`WalkMeasured`, or None when not measured
+    profile: object = None            #: :class:`WalkProfile`, or None unless ``measure="profile"``
+
+
+def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, batch_rule="given"):
+    """The :class:`WalkCost` of a resolved walk (``walker_batch_size`` None is one batch)."""
+    from .backends import installed
+    n_walkers = int(n_walkers)
+    size = n_walkers if (walker_batch_size is None or int(walker_batch_size) >= n_walkers) else int(walker_batch_size)
+    ls = res.length_scales
+    field = _RULE_LENGTH.get(res.binding)
+    length = getattr(ls, field) if field else None
+    if field == "surface_pore" and length is None:
+        field, length = "min_feature", ls.min_feature
+    accepting, refusing = [], {}
+    for other in sorted(set(installed()) - {backend_name}):
+        try:
+            reason = _backend_refusal(resolve_backend(other), other, res, geometry)
+        except Exception as e:                               # an installed backend that cannot load costs nothing
+            reason = f"backend {other!r} could not be loaded: {e!r}"
+        if reason:
+            refusing[other] = reason
+        else:
+            accepting.append(other)
+    f = lambda x: None if x is None else float(x)
+    return WalkCost(
+        n_walkers=n_walkers, walker_batch_size=int(size), walker_batch_rule=batch_rule, walker_batches=-(-n_walkers // int(size)),
+        T_max=float(res.dt_actual) * (int(res.n_t) - 1), n_saves=int(res.n_t), dt_save=float(res.dt_actual),
+        f_band_hz=float(res.f_band),
+        sub_steps=int(res.sub_steps), dt_sim=float(res.dt_sim),
+        sub_step_rules={k: int(v) for k, v in res.rules.items()},
+        binding_rule=res.binding, binding_length=field, binding_length_m=f(length),
+        length_scales=dict(min_feature=f(ls.min_feature), min_gap=f(ls.min_gap), lookup_cell=f(ls.lookup_cell),
+                           surface_pore=f(ls.surface_pore)),
+        walker_steps=n_walkers * (int(res.n_t) - 1) * int(res.sub_steps),
+        bytes_per_walker=_device_bytes_per_walker(res),
+        backend=backend_name, backends_accepting=accepting, backends_refusing=refusing)
+
+
+def _announce_cost(run, cost):
+    """The cost in the run's record (a ``cost`` row) and the log; a walk on the JAX kernels that an installed
+    backend accepts also warns, naming the backend, the walker-steps and the rule that sized the step."""
+    run.cost(**dataclasses.asdict(cost))
+    log.info("  cost: %.3g walker-steps (%d walkers x %d saves x %d sub-steps; %s rule) on the %s backend",
+             cost.walker_steps, cost.n_walkers, cost.n_saves - 1, cost.sub_steps, cost.binding_rule, cost.backend)
+    if cost.backend == JAX and cost.backends_accepting:
+        names = ", ".join(cost.backends_accepting)
+        msg = (f"this walk of {cost.walker_steps:.3g} walker-steps (the {cost.binding_rule} rule, "
+               f"{cost.sub_steps} sub-steps) runs on the jax kernels; the installed backend {names} accepts the "
+               f"same request: pass backend={cost.backends_accepting[0]!r}")
+        run.warning(msg, walker_steps=cost.walker_steps, binding_rule=cost.binding_rule,
+                    backends=cost.backends_accepting)
+        log.warning("%s", msg)
+
+
+#: ``walk_cost(measure="profile")`` calls a batch under-filled when doubling it costs less than this multiple of
+#: its time: 1.2 is "the extra walkers cost under 20 %", the definition of a nearly free doubling
+UNDERFILLED_DOUBLING = 1.2
+
+
+def _device_bytes_per_walker(res):
+    """Bytes one walker holds on the device through a batch: its start (3 float32) and key (2 uint32), and the
+    float32 channels of every save -- positions, plus the boundary local time and the compartment when recorded.
+    The output buffers only: the walk's working set is not counted, so this is a lower bound."""
+    return 20 + int(res.n_t) * (12 + (8 if res.record else 0))
+
+
+def _free_device_bytes():
+    """Free bytes of the first JAX device (``bytes_limit - bytes_in_use``), or None where the device reports no
+    memory statistics (the CPU)."""
+    try:
+        st = jax.devices()[0].memory_stats()
+    except Exception:
+        st = None
+    if not st or "bytes_limit" not in st:
+        return None
+    return int(st["bytes_limit"]) - int(st.get("bytes_in_use", 0))
+
+
+def _recommended(per_save):
+    """The batch of ``per_save`` ({batch: seconds per save}) with the highest walkers per second."""
+    return max(per_save, key=lambda b: b / per_save[b])
+
+
+def _sweep(per_save_of, cap, limit):
+    """The pilot timed (``per_save_of(batch)`` -> seconds per save) at 4096 * 2^k walkers below ``cap`` and at ``cap``
+    itself (``limit`` names what ``cap`` is), stopping at the first point whose rate is below the best so far.
+    Returns ``({batch: seconds per save}, stopped_by)``."""
+    sizes = [b for b in (4096 * 2 ** k for k in range(64)) if b < cap] + [cap]
+    per, best = {}, 0.0
+    for b in sizes:
+        per[b] = per_save_of(b)
+        rate = b / per[b]
+        if rate < best:
+            return per, "rate fell"
+        best = rate
+    return per, limit
+
+
+def _profile(per_save, vb, res, max_batch, stopped_by):
+    """The :class:`WalkProfile` of the seconds per save ``per_save`` ({batch: seconds}), the verdict read at batch ``vb``:
+    the seconds per save of 2B against those of B."""
+    rates = {b: b * res.sub_steps / tt for b, tt in sorted(per_save.items())}
+    plateau = max(rates.values())
+    if 2 * vb in per_save:
+        verdict = "under-filled" if per_save[2 * vb] < UNDERFILLED_DOUBLING * per_save[vb] else "saturated"
+    else:
+        verdict = "memory-bound" if (max_batch is not None and 2 * vb > max_batch) else "unresolved"
+    return WalkProfile(walker_steps_per_s=rates, seconds_per_save={b: per_save[b] for b in sorted(per_save)},
+                       plateau_walker_steps_per_s=plateau, batch_fraction_of_plateau=rates[vb] / plateau,
+                       recommended_batch=int(_recommended(per_save)), stopped_by=stopped_by,
+                       max_batch_memory=None if max_batch is None else int(max_batch),
+                       bytes_per_walker=_device_bytes_per_walker(res),
+                       memory_cap=("device free memory" if max_batch is not None
+                                   else "unavailable: the device reports no memory statistics"),
+                       verdict=verdict)
+
+
+def _fit_saves(seconds, batch, max_saves):
+    """``(seconds_per_save, fixed_seconds_per_call, (n1, n2))`` of a ``batch`` from ``seconds(batch, saves)``, the second
+    call of each shape: n1 = 1 save, n2 from 2 doubling until ``t(n2) >= 2 t(n1)`` (the saves then weigh at least as
+    much as the fixed part of a call), at most ``max_saves``."""
+    t1 = seconds(batch, 1)
+    if max_saves <= 1:
+        return t1, 0.0, (1, 1)
+    n2 = 2
+    t2 = seconds(batch, n2)
+    while t2 < 2 * t1 and n2 < max_saves:
+        n2 = min(2 * n2, max_saves)
+        t2 = seconds(batch, n2)
+    per = (t2 - t1) / (n2 - 1)
+    if per <= 0:                                  # the saves were lost in the timing noise: the longer call is the bound
+        per = t2 / n2
+    return per, max(t1 - per, 0.0), (1, n2)
+
+
+def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_size=DEFAULT_WALKER_BATCH,
+              backend=None, measure=False, **walk_kwargs):
+    """What a trajectory walk costs, stated before it runs: a :class:`WalkCost`.
+
+    It takes the arguments of :func:`simulate_trajectories`, with its names and defaults, and costs that call: the
+    request is resolved exactly as the walk resolves it (one code path: ``walk.sub_steps`` equals
+    ``walk_cost(...).sub_steps``) and refused where the walk refuses. ``walk_kwargs`` are the walk's other keywords
+    (``tiers``, ``sub_steps``, ``f_band``, ``kappa_MT``, ``dwell_time``, ``seed``, ``bounce_budget``, ``field_basis``,
+    ``r0``, ``storage_dtype``, ...); a keyword the walk does not take is refused.
+
+    Parameters
+    ----------
+    n_walkers, diffusivity, geometry, T_max, dt_save
+        As :func:`simulate_trajectories`. ``T_max`` scales the walker-steps linearly; ``dt_save`` sets the saves, the
+        bytes per walker and the memory-limited batch, and, without ``f_band``, the band the step law resolves.
+    walker_batch_size : int or None
+        Walkers per batch, default the walk's own. ``None`` finds the batch: with ``measure="profile"`` the pilot is
+        timed at 4096 * 2^k walkers below ``min(n_walkers, the memory-limited batch)`` and at that cap, stopping at the
+        first batch whose walker-steps per second is below the best so far; the batch is the one with the highest
+        rate (:attr:`WalkProfile.recommended_batch`), which for a fixed walker count minimises the total time.
+        Otherwise it is ``n_walkers`` capped by the memory-limited batch (one batch where it fits).
+        ``WalkCost.walker_batch_rule`` says which. The memory-limited batch is the device's free memory over
+        ``bytes_per_walker`` (no cap where the device reports no memory statistics).
+    backend : str or Backend, optional
+        The backend that would walk it (default the JAX kernels).
+    measure : {False, True, "profile"}
+        ``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) on the real device and backend and
+        times it at two pilot lengths, each the second call of its shape (the compile is in the first):
+        :attr:`WalkCost.measured`. The walk is the production program (``walk_kwargs`` included; ``r0`` is sliced
+        to the batch). A timed call is the whole of :func:`simulate_trajectories`: seeding, setup, the walk and the
+        transfer to the host. Only the walk grows with the saves; the rest is paid once per call, so one pilot
+        length would multiply that fixed part by every save of the walk and flatten the rate curve. The pilot is
+        therefore timed at n1 = 1 save and at n2 saves, n2 starting at 2 and doubling until ``t(n2) >= 2 t(n1)`` (the
+        saves weigh at least as much as the fixed part), at most the walk's own saves; the seconds per save are
+        ``(t(n2) - t(n1)) / (n2 - n1)``, the fixed part ``t(n1)`` less one save, and the projection is
+        ``walker_batches * (fixed + seconds_per_save * (n_saves - 1))``, linear in the saves. ``"profile"`` also
+        times the pilot over the batch sizes above -- the sweep for a batch not given, else B/2, B, 2B and 4B for the
+        given B (the larger sizes only where the device's free memory holds them) -- and rates every batch by its
+        seconds per save: :attr:`WalkCost.profile`. Its verdict asks whether more walkers are nearly free at the
+        walk's batch B: the seconds per save of 2B (timed whenever it fits the device) are under
+        :data:`UNDERFILLED_DOUBLING` = 1.2 x those of B, i.e. the extra walkers cost under 20 %.
+
+    Returns
+    -------
+    WalkCost
+    """
+    import inspect
+    import time
+    unknown = set(walk_kwargs) - set(inspect.signature(simulate_trajectories).parameters)
+    if unknown:
+        raise TypeError(f"walk_cost got keywords simulate_trajectories does not take: {sorted(unknown)}")
+    kw = dict(walk_kwargs)
+    be = resolve_backend(backend)
+    name = JAX if be is None else str(be.name)
+    from ..spec.build import as_geometry
+    with _bounce_budget_override(geometry, kw.get("bounce_budget")):
+        geometry = as_geometry(geometry)
+        res = _resolve_walk(geometry, diffusivity, T_max, dt_save, tiers=kw.get("tiers", "all"),
+                            sub_steps=kw.get("sub_steps"), kappa_MT=kw.get("kappa_MT", 0.0),
+                            dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
+                            enforce_compartment=kw.get("enforce_compartment", False),
+                            field_basis=kw.get("field_basis"), compress=kw.get("compress"))
+        if be is not None:
+            refusal = _backend_refusal(be, name, res, geometry)
+            if refusal:
+                raise ValueError(refusal)
+        free = _free_device_bytes()
+        max_batch = None if free is None else max(1, free // _device_bytes_per_walker(res))
+        given = walker_batch_size is not None
+        batch = int(walker_batch_size) if given else min(int(n_walkers), max_batch or int(n_walkers))
+        cost = _cost_of(res, geometry, n_walkers, batch, name,
+                        batch_rule="given" if given else "n_walkers capped by memory")
+    if measure:
+        max_saves = cost.n_saves - 1
+        r0 = None if kw.get("r0") is None else np.asarray(kw["r0"])
+        kw.update(sub_steps=res.sub_steps, f_band=res.f_band)
+
+        def seconds(b, saves):
+            """Seconds of the second call of this shape (the first holds the compile)."""
+            k = dict(kw, **({} if r0 is None else dict(r0=r0[:b])))
+            walk = lambda: simulate_trajectories(b, diffusivity, geometry, saves * res.dt_actual, res.dt_actual,
+                                                 walker_batch_size=b, backend=backend, **k)
+            walk()
+            t0 = time.perf_counter(); walk()
+            return time.perf_counter() - t0
+
+        fits = {}
+
+        def fit(b):
+            if b not in fits:
+                fits[b] = _fit_saves(seconds, b, max_saves)
+            return fits[b]
+
+        per_save_of = lambda b: fit(b)[0]
+        available = None if r0 is None else len(r0)
+        profile = None
+        if measure == "profile" and not given:
+            limits = {"memory": max_batch, "n_walkers": int(n_walkers), "r0": available}
+            limit = min((k for k, v in limits.items() if v is not None), key=lambda k: limits[k])
+            per, stopped = _sweep(per_save_of, limits[limit], limit)
+            B = _recommended(per)
+            if 2 * B not in per and (max_batch is None or 2 * B <= max_batch) and (available is None or 2 * B <= available):
+                per[2 * B] = per_save_of(2 * B)                 # the verdict's doubling, whatever n_walkers
+            profile = _profile(per, B, res, max_batch, stopped)
+            cost = dataclasses.replace(cost, walker_batch_size=int(B), walker_batch_rule="recommended by the sweep",
+                                       walker_batches=-(-int(n_walkers) // int(B)))
+        else:
+            B = cost.walker_batch_size
+            per_save_of(B)
+            if measure == "profile":
+                per = {B: per_save_of(B)}
+                if B // 2 >= 1:
+                    per[B // 2] = per_save_of(B // 2)
+                for m in (2, 4):
+                    if (max_batch is not None and m * B > max_batch) or (available is not None and m * B > available):
+                        break
+                    per[m * B] = per_save_of(m * B)
+                profile = _profile(per, B, res, max_batch, "given")
+        ps, fixed, pilot = fit(B)
+        measured = WalkMeasured(batch=int(B), pilot_saves=pilot, seconds_per_save=ps, fixed_seconds_per_call=fixed,
+                                seconds_per_walker_step=ps / (B * res.sub_steps),
+                                projected_s=cost.walker_batches * (fixed + ps * max_saves))
+        cost = dataclasses.replace(cost, measured=measured, profile=profile)
+    return cost
+
+
 def simulate_trajectories(
     n_walkers: int,
     diffusivity: float,
@@ -959,7 +1379,7 @@ def simulate_trajectories(
     T_max: float,
     dt_save: float,
     seed: int = 42,
-    walker_batch_size: int = 50_000,
+    walker_batch_size: int = DEFAULT_WALKER_BATCH,
     tiers="all",
     sub_steps: int = None,
     require_gpu=None,
@@ -992,6 +1412,10 @@ def simulate_trajectories(
     criterion when ``kappa_MT > 0``), the same dispatch the fused engine uses.  Only
     the position after each group of ``sub_steps`` inner steps is saved, so storage
     is always ``(n_walkers, n_t, 3)`` at ``dt_save`` granularity.
+
+    The walk states its cost before it starts: :func:`walk_cost` states the same resolution as a :class:`WalkCost`, and the walk
+    writes it as the ``cost`` row of its run (a walk on the JAX kernels that an installed backend accepts also
+    warns, naming the backend).
 
     Parameters
     ----------
@@ -1083,58 +1507,19 @@ def simulate_trajectories(
         # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
         from .gpu import check_gpu
         check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
-        record = _record_channels(tiers)
-
-        n_t = int(round(T_max / dt_save)) + 1
-        dt_actual = T_max / (n_t - 1)
-
-        # --- Sub-stepping: one dispatch for every driver (physics.resolve_sub_steps) ---
-        # A walk that records the boundary local time is resolved at the surface criterion too, so a
-        # replayed rho reproduces the fused engine's; MT binding adds its own.
-        from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
-                              length_scales_of as _length_scales_of, STEP_TOLERANCE)
-        R_geom = _length_scales_of(geometry).min_feature
-        # the band the step law resolves: the caller's (walk_spec passes the scanner class's), else the save grid's
-        # Nyquist frequency, since a bare trajectory walk serves every waveform its grid can carry
-        f_band = 0.5 / float(dt_actual) if f_band is None else float(f_band)
-        _rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record),
-                                 mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), f_band=f_band)
-        _override = None if sub_steps is None else int(sub_steps)
-        sub_steps = _resolve_sub_steps(
-            geometry, diffusivity, dt_actual, surface=bool(record),
-            mt_dwell_time=(dwell_time if kappa_MT > 0.0 else None), override=sub_steps, f_band=f_band)
-        # what sized the step (PersistentWalk.work["step_rule"]): the count each rule asked for, the tolerance, the
-        # band, and the caller's override when there was one
-        step_rule = dict(eps_D=float(STEP_TOLERANCE), f_band_hz=f_band, rules=dict(_rules), override=_override)
-        dt_sim = dt_actual / sub_steps
+        res = _resolve_walk(geometry, diffusivity, T_max, dt_save, tiers=tiers, sub_steps=sub_steps, kappa_MT=kappa_MT,
+                            dwell_time=dwell_time, f_band=f_band, seed=seed, enforce_compartment=enforce_compartment,
+                            field_basis=field_basis, compress=compress)
+        record, n_t, dt_actual, sub_steps, dt_sim, step_rule = res.record, res.n_t, res.dt_actual, res.sub_steps, res.dt_sim, res.step_rule
+        R_geom = res.length_scales.min_feature
         step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
-        # Same soundness bound as in physics.make_step_fn -- the guard has to live here too, because a permeable
-        # mesh now routes through the REPLAY backend (see _replay_gap) and so never reaches make_step_fn.
-        from .physics import _warn_if_step_outruns_the_lookup as _warn_step
-        _warn_step(geometry, diffusivity, dt_actual, sub_steps, "trajectory walk")
 
         log.info(f"  sub_steps={sub_steps}, dt_sim={dt_sim*1e6:.3f} µs, "
               f"step_l={float(step_l_sim)*1e6:.4f} µm"
               + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""))
 
-        # ── Reject geometries whose boundaries this path cannot represent ────────
-        # A multi-compartment geometry may be stepped by a fused kernel that CARRIES the
-        # compartment id; a geometry with no such state and no usable `reflect` would fall
-        # through to one that cannot express its boundaries -- both used to do so silently, e.g.
-        # a MyelinatedCylinder came back confined to R_inner (myelin and extra water absent) and a
-        # PackedMyelinatedCylinders came back at 1.02x free diffusion through 1 um axons. The one
-        # source of truth is the geometry's own `trajectory_walk_gap` (never a class-name list),
-        # which `spec.walk.walk_spec` also checks before this function is even called.
-        _traj_gap = geometry.trajectory_walk_gap()
-        if _traj_gap is not None:
-            raise NotImplementedError(
-                f"simulate_trajectories cannot walk a {type(geometry).__name__}: {_traj_gap}")
-        if geometry._is_packed_myelinated and not record:
-            raise NotImplementedError(
-                "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "
-                "(tiers='all'), which route to the fused kernel "
-                "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
-                "compartment state and would return an unrestricted walk.")
+        # the cost: what this walk costs and which rule sized it, in the run's record before the walk starts
+        _announce_cost(run, _cost_of(res, geometry, n_walkers, walker_batch_size, _backend_name))
 
         permeability = geometry.permeability
         has_permeability = permeability is not None
@@ -1597,19 +1982,10 @@ def simulate_trajectories(
         if _backend is not None:
             # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
             # never fallen back from, and the backend may refuse the walk itself
-            jax_only = [what for what, on in (("the myelinated substrates", uses_myelin_traj), ("MT binding", kappa_MT > 0.0),
-                                              ("in-walk field sampling", _sampling), ("the compressed master", _compress),
-                                              ("the compartment guard", bool(enforce_compartment))) if on]
-            if jax_only:
-                raise ValueError(f"backend {_backend_name!r}: this walk uses {', '.join(jax_only)}, which only the "
-                                 f"jax kernels implement; it does not fall back")
-            _req = WalkRequest(geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(sub_steps),
-                               dt_sim=float(dt_sim), diffusivity=float(diffusivity), record=bool(record),
-                               kappa_over_D=(float(permeability) / float(diffusivity) if has_permeability else 0.0),
-                               count_walls=bool(_counting), bounce_budget=geometry.bounce_budget, seed=int(seed))
-            _reason = _backend.refuses(_req)
-            if _reason:
-                raise ValueError(f"backend {_backend_name!r} refuses this walk of {type(geometry).__name__}: {_reason}")
+            _refusal = _backend_refusal(_backend, _backend_name, res, geometry)
+            if _refusal:
+                raise ValueError(_refusal)
+            _req = res.request
 
             def _backend_batch(r0_b, keys_b):
                 res = _backend.walk_batch(_req, np.asarray(r0_b, np.float32), np.asarray(keys_b))

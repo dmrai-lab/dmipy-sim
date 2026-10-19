@@ -1423,6 +1423,13 @@ def _walk_scanner(walk):
     return getattr(walk, "scanner", None) if not isinstance(walk, dict) else walk.get("scanner")
 
 
+def class_band(scanner):
+    """The band (Hz) a walk for scanner class ``scanner`` resolves its step for: the class's stored band
+    (:func:`storage_band_hz`, the certified band times its margin); ``None`` -- the save grid's Nyquist frequency --
+    when no class is named."""
+    return None if scanner is None else float(storage_band_hz(scanner))
+
+
 def storage_band_hz(scanner):
     """The band a pack built for ``scanner`` is stored at (Hz): the class's certified band -- the highest frequency any
     waveform the class can deliver needs of a pack, the catalogue's ``band.certified_band_hz`` -- times
