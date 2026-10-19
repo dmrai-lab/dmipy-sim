@@ -572,3 +572,46 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
     for fn in (ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.walker_phases, ReplayPack.replay_bloch, ReplayPack.pose_response,
                ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay):
         assert "scanner" in inspect.signature(fn).parameters, fn.__qualname__
+
+
+def test_a_coefficient_walk_is_asked_for_by_accumulate_and_compress_is_gone():
+    """The walk that keeps its bands instead of its saves has one spelling, ``accumulate=K``
+    (dmrai-lab/dmipy-sim#741): no ``compress=`` on the producer or its cost, and none anywhere in the package."""
+    import inspect
+    from dmipy_sim.engine.core import simulate_trajectories, walk_cost
+    params = inspect.signature(simulate_trajectories).parameters
+    assert "compress" not in params and "accumulate" in params and "block_order" in params
+    with pytest.raises(TypeError, match="compress"):
+        walk_cost(10, 2e-9, dmipy_sim.FreeDiffusion(), 1e-3, 1e-4, compress=4)
+    hits = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py") if re.search(r"\bcompress\s*=", f.read_text())]
+    assert not hits, f"compress= is spelled in {hits}; the spelling is accumulate="
+
+
+def test_every_reader_of_the_bands_goes_through_the_basis():
+    """A pack's bands are on the DST-I of its saves or on the continuous basis (``compression.basis``). The waveform's
+    projection, the bands at the saves and the sine matrices live in ``compression`` behind the basis dispatch
+    (``band_projection``, ``saves_basis``), and every other module that reads a pack's coefficients names the basis
+    it reads (``basis_of`` / ``require_basis`` / ``band_projection``): a contraction of bands on one basis against
+    weights built for the other returns plausible numbers, never an error."""
+    import ast
+    private = {"bridge_projection", "_dst_matrix", "_idst", "_bridge_positions"}
+    # the one per-save route: the DST-I projection of per-save weights, which the routes that work in per-save
+    # weights read and refuse a continuous-basis pack at their entry (require_basis)
+    allowed = {("replay/replay.py", "_compile_effective")}
+    outside = set()
+    for f in _SRC.rglob("*.py"):
+        if f.name == "compression.py":
+            continue
+        tree = ast.parse(f.read_text())
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(fn):
+                    if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) in private:
+                        if (str(f.relative_to(_SRC)), fn.name) not in allowed:
+                            outside.add((str(f.relative_to(_SRC)), fn.name))
+    assert not outside, f"band-basis primitives read outside compression's dispatch: {sorted(outside)}"
+    reads = re.compile(r"\b(read_position_coeffs|bridge_bands)\b")
+    names = re.compile(r"\b(basis_of|require_basis|band_projection)\b")
+    blind = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")
+             if f.name != "compression.py" and reads.search(f.read_text()) and not names.search(f.read_text())]
+    assert not blind, f"modules read a pack's bands without naming their basis: {blind}"

@@ -22,6 +22,18 @@ pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", ci
 print(pack.n_walkers, pack.K, pack.n_t, pack.dt)                 # 300 walkers, 8 bands, the save grid
 ```
 
+A walk can also keep the bands instead of its saves: `simulate_trajectories(..., accumulate=K)` accumulates them while
+it runs, block by block, and returns a `CoefficientWalk` whose memory does not grow with the save interval. Its pack
+is on the **continuous** basis (`compression.basis`, the projections on `sqrt(2 / T) sin(pi k t / T)` rather than the
+DST-I of the saves), certified without the raw walk: the truncation from the free band variances, the block
+quadrature's constant, the container's quantisation and the split-half floor read from the coefficients.
+
+```python
+cw = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, accumulate=8)
+acc = build_replay_pack(cw, id="guide/cylinder-accumulated", license="CC-BY-4.0", citation="the guide")
+print(acc.meta["compression"]["basis"], acc.fidelity["certified"], acc.meta["walk_params"]["block"]["m"])   # continuous derived 1
+```
+
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
 replay beyond the pack's band is refused; see [the sequence](sequence.md)). Left unstated, `K` is the scanner class's:

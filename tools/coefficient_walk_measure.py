@@ -1,0 +1,261 @@
+"""The measurements of a coefficient walk (``simulate_trajectories(accumulate=K)``, dmrai-lab/dmipy-sim#741), each a
+function the tests read and a table this script prints:
+
+* ``exactness``  -- at ``block_order=0`` the pack of the accumulated walk against the pack of the same walk stored at
+  its saves (same seed, same starts), on a sphere, a cylinder, a packed cell, a mesh and a myelinated cylinder;
+* ``quadrature`` -- the phase variance the block accumulation adds per measurement of the envelope's battery, against
+  the same walk accumulated per step (``h = dt_sim``), beside the table ``rel(m, h)`` it is held to, absolutely;
+* ``memory``     -- the walk's peak host bytes (VmHWM, read from ``/proc``) over three save intervals spanning 16x at
+  a fixed ``K``, accumulated and stored at the saves, each in a process of its own; on a GPU also the device's peak;
+* ``oracle``     -- a sphere and a cylinder replayed from the accumulated pack against the matrix method.
+
+    python tools/coefficient_walk_measure.py --what exactness quadrature memory oracle
+
+CPU by default (``JAX_PLATFORMS=cpu`` is set unless the environment says otherwise).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import warnings
+
+import numpy as np
+
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
+
+def continuous_bands(cw):
+    """``(n_w, K+2, 3)``: a coefficient walk's coefficients with the bands on the continuous basis -- a ``block_order=0``
+    walk's DST-I bands read back as the cosine projections they are (``compression.cosine_band_scale``)."""
+    from dmipy_sim.replay import compression as cx
+    C = np.asarray(cw.position_coeffs, np.float64).copy()
+    if cw.basis == "dst1":
+        f = cx.cosine_band_scale("continuous", cw.K, cw.n_t, cw.T) / cx.cosine_band_scale("dst1", cw.K, cw.n_t, cw.T)
+        C[:, 2:, :] *= f[None, :, None]
+    return C
+
+
+# ----------------------------------------------------------------------------------------------- exactness at m = 0
+def _geometries():
+    import dmipy_sim as d
+    from dmipy_sim.geometry import pack_cylinders
+    out = {"sphere": lambda: d.Sphere(radius=4e-6), "cylinder": lambda: d.Cylinder(radius=3e-6, orientation=(0, 0, 1))}
+
+    def packed():
+        radii = np.full(4, 3e-6)
+        centers, L, _ = pack_cylinders(radii, target_vf=0.30, seed=0)
+        return d.PackedCylinders(radii=radii, centers=centers, L=L, orientation=(0.0, 0.0, 1.0))
+    out["packed cell"] = packed
+
+    def mesh():
+        import trimesh
+        m = trimesh.creation.icosphere(subdivisions=2, radius=4e-6)
+        return d.Mesh(np.asarray(m.vertices, np.float64), np.asarray(m.faces, np.int32), feature_radius=1e-6)
+    out["mesh"] = mesh
+    out["myelinated cylinder"] = lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), 2e-9, 2e-9)
+    return out
+
+
+def exactness(names=None, *, n=400, T=0.01, dt_save=2e-4, K=24, sub_steps=4, seed=11):
+    """Per geometry the largest differences between the pack of the walk stored at its saves and the pack of the same
+    walk accumulated at ``block_order=0`` (float containers on both): the start (m), the displacement and the bands
+    relative to their largest value, the contact's endpoint and bands likewise, whether the occupancy is the same,
+    and the largest difference of a replayed PGSE."""
+    import dmipy_sim as d
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.compression import read_position_coeffs
+    seq = d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 5e-3, bvalues=[2e9, 2e9], TE=0.009, slew_rate=np.inf)
+    out = {}
+    import dataclasses
+    for name, make in _geometries().items():
+        if names and name not in names:
+            continue
+        kw = dict(T_max=T, dt_save=dt_save, seed=seed, require_gpu=False, sub_steps=sub_steps)
+        pk = dict(license="x", citation="x", K=K, position_container=None, blt_container=None, blt_temporal_K=K,
+                  blt_dtype=np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            walks = [d.simulate_trajectories(n, 2e-9, make(), **kw),
+                     d.simulate_trajectories(n, 2e-9, make(), accumulate=K, block_order=0, **kw)]
+            spec = walks[0].spec
+            if spec.field_source_pools:
+                # the sheath's field is the C3 tier, which a coefficient walk does not carry yet (#740 stage 3): both
+                # walks are packed with the sheath declared non-magnetic, the positions, contact and occupancy compared
+                spec = spec.replace(susceptibility={p.name: None for p in spec.field_source_pools},
+                                    validity=dataclasses.replace(spec.validity, tiers=[t for t in spec.validity.tiers if t != "field"]))
+                walks = [dataclasses.replace(w, spec=spec) for w in walks]
+            raw = build_replay_pack(walks[0], id="exact/raw", **pk)
+            acc = build_replay_pack(walks[1], id="exact/acc", **pk)
+        A, B = read_position_coeffs(raw.arrays), read_position_coeffs(acc.arrays)
+        rel = lambda a, b: float(np.abs(a - b).max() / max(np.abs(a).max(), 1e-300))
+        row = dict(basis=acc.meta["compression"]["basis"], start_m=float(np.abs(A[:, 0] - B[:, 0]).max()),
+                   displacement_rel=rel(A[:, 1], B[:, 1]), bands_rel=rel(A[:, 2:], B[:, 2:]),
+                   replay_abs=float(np.abs(raw.replay(seq) - acc.replay(seq)).max()))
+        if "blt_bridge_dst" in raw.arrays:
+            row.update(contact_endpoint_rel=rel(raw.arrays["blt_endpoint"], acc.arrays["blt_endpoint"]),
+                       contact_bands_rel=rel(raw.arrays["blt_bridge_dst"], acc.arrays["blt_bridge_dst"]))
+        cr, ca = raw.meta["compression"]["channels"].get("compartment"), acc.meta["compression"]["channels"].get("compartment")
+        if cr is not None:
+            from dmipy_sim.replay.compression import decode_occupancy
+            row["occupancy_equal"] = bool(np.array_equal(decode_occupancy(raw.arrays, cr)["comp"], decode_occupancy(acc.arrays, ca)["comp"]))
+        out[name] = row
+    return out
+
+
+# ------------------------------------------------------------------------------------------------- the quadrature
+def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-5), (1, 2e-5), (1, 4e-5), (2, 5e-5)),
+               n=2000, seed=5, env=None):
+    """The phase variance the block accumulation at each ``(m, h)`` of ``cases`` adds per measurement of the battery,
+    against the same walk accumulated per step (``h = dt_sim``; the same seed, starts and steps), all read on the
+    continuous basis through one projection of the battery. Per case: the largest measured variance over the
+    battery, the table's prediction for that measurement (``sum_k gamma^2 W_k^2 rel(m, h, omega_k) var_k`` at the free
+    ``D``), the ratio of the two at the measurement the table predicts largest, the absolute bound ``rel(m, h,
+    omega_K) 2 b D`` and whether every measurement is within it, the range of measured over predicted across the
+    measurements, and the relative error of the top quarter of the modes against the table on the axis where it is
+    largest (what must NOT be the criterion on a restricted walk)."""
+    import dmipy_sim as d
+    from dmipy_sim.constants import GAMMA
+    from dmipy_sim.replay import compression as cx
+    h_max = max(h for _, h in cases)
+    n_t = int(round(T / h_max)) + 1
+    G, meta = cx.acquisition_battery(n_t, h_max, env or cx.default_envelope())
+    W = cx.continuous_projection(G, h_max, T, K)                                     # (n_meas, K+2, 3)
+    b = np.array([x["b"] for x in meta])
+    var = cx.band_variances("continuous", K, n_t, h_max, D)
+    om = np.pi * np.arange(1, K + 1) / T
+    per_band = GAMMA ** 2 * (W[:, 2:, :] ** 2).sum(axis=2) * var[None, :]
+
+    def walk(h, m):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return d.simulate_trajectories(n, D, geometry, T_max=T, dt_save=h, seed=seed, require_gpu=False, tiers=(),
+                                           sub_steps=int(round(h / dt_sim)), accumulate=K, block_order=m)
+    ref = continuous_bands(walk(dt_sim, 1))
+    phi_ref = GAMMA * np.einsum("wkc,mkc->wm", ref, W)
+    top = slice(3 * K // 4, K)
+    rows = []
+    for m, h in cases:
+        C = continuous_bands(walk(h, m))
+        if not np.array_equal(C[:, :2], ref[:, :2]):
+            raise AssertionError("the case and the reference did not walk the same paths")
+        meas = np.var(GAMMA * np.einsum("wkc,mkc->wm", C, W) - phi_ref, axis=0)
+        pred = (per_band * cx.quadrature_rel(m, h, om)[None, :]).sum(axis=1)
+        bound = cx.quadrature_rel(m, h, np.pi * K / T) * 2.0 * b * D
+        i = int(np.argmax(pred))
+        rel_meas = np.var(C[:, 2:, :] - ref[:, 2:, :], axis=0) / np.var(ref[:, 2:, :], axis=0)   # (K, 3)
+        rel_tab = cx.quadrature_rel(m, h, om)[:, None]
+        live = pred > 1e-6 * pred.max()
+        rows.append(dict(m=int(m), h_us=float(h * 1e6), measured_max=float(meas.max()), predicted_at_max=float(pred[int(np.argmax(meas))]),
+                         ratio_at_largest_prediction=float(meas[i] / pred[i]), measured_at_largest_prediction=float(meas[i]),
+                         predicted_largest=float(pred[i]), bound_max=float(bound.max()), within_bound=bool(np.all(meas <= bound)),
+                         worst_fraction_of_bound=float(np.max(meas / np.where(bound > 0, bound, np.inf))),
+                         ratio_range=[float((meas[live] / pred[live]).min()), float((meas[live] / pred[live]).max())],
+                         relative_vs_table_top_modes=float((rel_meas[top] / rel_tab[top]).mean(axis=0).max())))
+    return rows
+
+
+# -------------------------------------------------------------------------------------------------------- memory
+def _probe(mode, dt_save, n, T, dt_sim, K):
+    """One walk in this process: VmHWM (kB, from /proc/self/status) over the walk's second call, the high-water mark
+    reset after the first (which compiles), and the device's peak bytes when it reports them."""
+    import dmipy_sim as d
+
+    def vm(key):
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith(key + ":"):
+                    return int(line.split()[1]) * 1024
+    kw = dict(T_max=T, dt_save=dt_save, seed=1, require_gpu=False, sub_steps=int(round(dt_save / dt_sim)),
+              walker_batch_size=n, accumulate=(K if mode == "accumulated" else None))
+    geom = d.Cylinder(radius=4e-6, orientation=(0, 0, 1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        w = d.simulate_trajectories(n, 2e-9, geom, **kw)
+        del w
+        base = vm("VmRSS")
+        with open("/proc/self/clear_refs", "w") as f:
+            f.write("5")                                                          # the high-water mark := now
+        w = d.simulate_trajectories(n, 2e-9, geom, **kw)
+    out = dict(mode=mode, dt_save=dt_save, n_t=int(round(T / dt_save)) + 1, host_peak_over_base=vm("VmHWM") - base,
+               walk_host_bytes=int(w.nbytes if mode == "accumulated" else w.positions.nbytes
+                                   + sum(a.nbytes for a in (w.boundary_local_time, w.compartment) if a is not None)))
+    try:
+        import jax
+        st = jax.devices()[0].memory_stats()
+        if st and "peak_bytes_in_use" in st:
+            out["device_peak_bytes"] = int(st["peak_bytes_in_use"])
+    except Exception:
+        pass
+    print(json.dumps(out))
+
+
+def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, dt_saves=(5e-4, 1.25e-4, 3.125e-5)):
+    """``memory_probe`` in a fresh process per (mode, save interval): the accumulated walk's peak host bytes against
+    the walk stored at its saves, over save intervals spanning 16x at a fixed ``K`` and a fixed physics step (the
+    walkers take the same steps at every save interval), a cylinder recording every tier."""
+    rows = []
+    for mode in ("accumulated", "saves"):
+        for h in dt_saves:
+            # one malloc arena: glibc's per-thread arenas hold freed blocks of XLA's worker threads and add tens of MB
+            # of noise to the high-water mark, the same for both modes
+            r = subprocess.run([sys.executable, __file__, "--memory-probe", mode, repr(h), str(n), repr(T), repr(dt_sim), str(K)],
+                               capture_output=True, text=True, env=dict(os.environ, MALLOC_ARENA_MAX="1"), check=True)
+            rows.append(json.loads(r.stdout.strip().splitlines()[-1]))
+    return rows
+
+
+# -------------------------------------------------------------------------------------------------------- the oracle
+def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, dt_save=2e-5, seed=1):
+    """A sphere (radius 4 um) and a cylinder (radius 3 um) walked as coefficient walks, packed on the continuous basis
+    and replayed under a cosine OGSE at ``f`` -- a band the pack's ``K`` only just holds -- against the matrix method
+    (``dmipy_sim.math.matrix_method``) on the same waveform. Per pore and measurement: both signals, the difference and
+    the standard error of the replay's ensemble mean."""
+    import dmipy_sim as d
+    from dmipy_sim.math.matrix_method import MatrixPore
+    from dmipy_sim.replay.bank import build_replay_pack
+    seq = d.ogse([[1, 0, 0], [1, 0, 0]], f, 0.015, shape="cosine", bvalues=[1e9, 2e9], TE=T, n_t=4001, slew_rate=np.inf)
+    out = {}
+    for name, geom, shape, size in (("sphere", d.Sphere(radius=4e-6), "sphere", 8e-6),
+                                    ("cylinder", d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), "cylinder", 6e-6)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cw = d.simulate_trajectories(n, D, geom, T_max=T, dt_save=dt_save, seed=seed, require_gpu=False, accumulate=K, tiers=())
+        pk = build_replay_pack(cw, id=f"oracle/{name}", license="x", citation="x")
+        w, ew, E = pk.walker_signals(seq)
+        S = np.abs((ew[:, None] * E).sum(0) / w.sum())
+        se = np.std(np.real(E * np.conj(E.mean(0) / np.abs(E.mean(0)))), axis=0) / np.sqrt(E.shape[0])
+        pore = MatrixPore(shape, size, D)
+        Sm = np.array([abs(pore.signal(np.asarray(seq.G_eff)[i, :, 0], seq.dt)) for i in range(seq.G_eff.shape[0])])
+        out[name] = dict(replay=S.tolist(), matrix_method=Sm.tolist(), diff=(S - Sm).tolist(), se=se.tolist(),
+                         band_needed=pk.waveform_band(seq)[1], K=pk.K, basis=pk.meta["compression"]["basis"],
+                         certificate=dict(err_max=pk.fidelity["err_max"], floor_max=pk.fidelity["floor_max"]))
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--what", nargs="+", default=["exactness", "quadrature", "memory", "oracle"])
+    ap.add_argument("--memory-probe", nargs=6, metavar=("MODE", "DT_SAVE", "N", "T", "DT_SIM", "K"))
+    a = ap.parse_args(argv)
+    if a.memory_probe:
+        mode, h, n, T, dt_sim, K = a.memory_probe
+        _probe(mode, float(h), int(n), float(T), float(dt_sim), int(K))
+        return
+    import dmipy_sim as d
+    res = {}
+    if "exactness" in a.what:
+        res["exactness"] = exactness()
+    if "quadrature" in a.what:
+        res["quadrature"] = {"free": quadrature(d.FreeDiffusion()), "slab 0.8 um": quadrature(d.Box1D(length=0.8e-6))}
+    if "memory" in a.what:
+        res["memory"] = memory()
+    if "oracle" in a.what:
+        res["oracle"] = oracle()
+    print(json.dumps(res, indent=1))
+
+
+if __name__ == "__main__":
+    main()
