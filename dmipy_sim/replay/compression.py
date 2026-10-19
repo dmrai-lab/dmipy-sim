@@ -403,11 +403,15 @@ BAND_CONTAINER = DerivedContainer()
 
 @functools.lru_cache(maxsize=32)
 def _phase_weight(K, n_t, dt, env_key, basis="dst1"):
-    """``max over the envelope's measurements of gamma^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands on ``basis``
-    (:func:`band_projection`): the phase variance per unit quantisation variance of one band, summed over bands, for
-    the worst waveform."""
+    """``max over the envelope's measurements of gamma^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands on ``basis``:
+    the phase variance per unit quantisation variance of one band, summed over bands, for the worst waveform. On the
+    DST-I the battery's samples are read as the per-save weights, ``(gamma dt)^2 sum W^2`` with ``W`` their
+    :func:`bridge_projection`; on the continuous basis ``W`` is :func:`continuous_projection` of the battery."""
     env = dict(env_key) if env_key else default_envelope()
     G, _ = acquisition_battery(int(n_t), float(dt), env)
+    if basis == "dst1":
+        W = bridge_projection(G, int(n_t), int(K))[:, 2:, :]
+        return float(((GAMMA * float(dt)) ** 2 * (W ** 2).sum(axis=(1, 2))).max())
     W = band_projection(G, float(dt), int(n_t), float(dt), int(K), basis=basis)[:, 2:, :]
     return float((GAMMA ** 2 * (W ** 2).sum(axis=(1, 2))).max())
 
@@ -759,8 +763,13 @@ def coded_phases(C, dt, G, n_t, *, basis="dst1", device="auto", chunk_bytes=None
     waveforms' :func:`band_projection` -- the replay's own reading of a pack, no path decoded (host float64, or the
     device in float32 at full precision)."""
     C = np.asarray(C); K = int(C.shape[1]) - 2
-    W = band_projection(np.asarray(G, np.float64), float(dt), int(n_t), float(dt), K, basis=basis)   # (n_meas, K+2, 3)
-    W2 = GAMMA * W.reshape(W.shape[0], -1).T                                                         # ((K+2)*3, n_meas)
+    if basis == "dst1":                                                       # (gamma dt) times the DST-I projection
+        from ._replay_kernel import effective_gradient
+        W = bridge_projection(effective_gradient(np.asarray(G, np.float64), float(dt), int(n_t), float(dt)), int(n_t), K)
+        W2 = (GAMMA * float(dt)) * W.reshape(W.shape[0], -1).T                                       # ((K+2)*3, n_meas)
+    else:
+        W = band_projection(np.asarray(G, np.float64), float(dt), int(n_t), float(dt), K, basis=basis)
+        W2 = GAMMA * W.reshape(W.shape[0], -1).T
     Cf = C.reshape(C.shape[0], -1)
     if resolve_device(device) == "numpy":
         return np.asarray(Cf, np.float64) @ W2
