@@ -19,7 +19,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 
 walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
 pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")
-print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, derived, 3
+print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
 
 The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs, block by block (the

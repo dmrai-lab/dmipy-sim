@@ -610,7 +610,7 @@ class ReplayPack:
         :func:`~dmipy_sim.replay.bank.derive_susc_path_K` derives on window 0 from the decoded series. Window 0's
         bands are every window's. Each window's certificate (``fidelity.windows[i]``) is measured against the
         parent's decoded saves on it -- the re-encode error -- and the whole's is the bound over them
-        (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`, ``certified = "bounded"``); a window outside
+        (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`, ``combined = "bound_over_windows"``); a window outside
         ``tol`` times its floor is refused. ``provenance.rewindowed`` records the parent (id, sha256 of its file,
         certificate), ``T_seg``, ``n_seg``, the bands and ``saves_dropped``.
 
@@ -809,7 +809,7 @@ class ReplayPack:
             for f_i, (e, f) in zip(segs, restated):
                 f_i.update(err_surface=e, floor_surface=f, surface_rho2_over_D_max=edge)
                 restate_maxima(f_i)
-            if fid.get("certified") == "bounded":
+            if fid.get("combined") == "bound_over_windows":
                 fid = combine_window_fidelity(segs)
             else:
                 fid.update(err_surface=float(sum(e for e, _ in restated)), floor_surface=float(max(f for _, f in restated)), windows=segs)

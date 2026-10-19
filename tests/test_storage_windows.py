@@ -134,7 +134,7 @@ def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_encodes(packs
     assert pr.n_windows == 1 and pr.n_t == 21 and set(pr.arrays) == set(two.window(0).arrays)
     for k in pr.arrays:
         npt.assert_array_equal(pr.arrays[k], two.window(0).arrays[k])
-    assert pr.fidelity["certified"] == "bounded" and pr.meta["provenance"]["truncated"]["windows_kept"] == 1
+    assert pr.fidelity["combined"] == "bound_over_windows" and pr.meta["provenance"]["truncated"]["windows_kept"] == 1
     pp = two.prefix(0.015)
     assert pp.n_windows == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"]
     seq = d.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
@@ -157,7 +157,7 @@ def test_the_bound_over_windows():
     c = combine_window_fidelity([a, b])
     assert c["err_max"] == pytest.approx(0.03) and c["floor_max"] == pytest.approx(0.05) and c["err_surface"] == pytest.approx(0.003)
     assert c["floor_surface"] == pytest.approx(0.06) and c["per_family"]["PGSE"] == dict(err_max=pytest.approx(0.03), floor_max=pytest.approx(0.05))
-    assert c["certified"] == "bounded" and c["within_2x_floor"] and len(c["windows"]) == 2
+    assert c["combined"] == "bound_over_windows" and c["within_2x_floor"] and len(c["windows"]) == 2
 
 
 def test_a_pack_without_the_table_is_refused():
@@ -244,7 +244,7 @@ def test_a_walk_continues_from_its_end_and_appends_as_windows():
     assert sorted(ext.arrays) == sorted(two.arrays) and ext.n_t == two.n_t == 41 and ext.n_windows == 2
     assert ext.windows["walks"] == [dict(first=0, last=0, seed=0), dict(first=1, last=1, seed=7)]
     npt.assert_array_equal(ext.window(1).r0, r_end.astype(np.float32))
-    assert ext.fidelity["certified"] == "bounded" and len(ext.fidelity["windows"]) == 2
+    assert ext.fidelity["combined"] == "bound_over_windows" and len(ext.fidelity["windows"]) == 2
     assert ext.meta["provenance"]["continuations"][0]["seed"] == 7
     seq = _seq()
     tis = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho2=1e-5)

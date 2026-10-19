@@ -87,7 +87,7 @@ def test_the_windows_and_their_record(packs):
     assert r["parent_id"] == "t/parent" and r["n_seg"] == 4 and r["saves_dropped"] == 0 and r["T_seg"] == pytest.approx(T / 4)
     assert len(r["parent_sha256"]) == 64 and r["K"] == 12 and r["parent_K"] == 48
     f = seg.fidelity
-    assert f["certified"] == "bounded" and len(f["windows"]) == 4 and f["within_2x_floor"]
+    assert f["combined"] == "bound_over_windows" and len(f["windows"]) == 4 and f["within_2x_floor"]
     for w in f["windows"]:
         assert w["err_max"] <= 2.0 * w["floor_max"] and "err_susc_path" in w and "err_surface" in w
     ch = seg.meta["compression"]["channels"]

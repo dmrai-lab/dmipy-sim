@@ -215,7 +215,7 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
     assert sv.positions.shape == (200, 101, 3) and sv.dt == pytest.approx(1e-4)
     pk = build_replay_pack(cw, id="t/derived", license="x", citation="x")
     fid = pk.fidelity
-    assert fid["certified"] == "derived" and "basis" not in pk.meta["compression"]
+    assert fid["certified"] == "measured" and fid["measured_by"] == "walk_free_terms" and "basis" not in pk.meta["compression"]
     assert pk.meta["walk_params"]["block"]["m"] == 3
     for k in ("n_t", "dt_traj"):
         assert k not in pk.meta["walk_params"] and k not in pk.meta["compression"]
@@ -227,6 +227,20 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
         build_replay_pack(walks["z"], id="t/x", license="x", citation="x", fidelity="measured")
     with pytest.raises(ValueError, match="K >= 48"):
         build_replay_pack(cw, id="t/x", license="x", citation="x", K=48)
+
+
+def test_err_max_carries_every_term_and_the_float32_rounding(walks):
+    """RPK.md 9.5.5: a float32 accumulation carries its measured rounding as ``fidelity.terms.rounding``, ``r sqrt(2
+    b_max D)`` with ``r`` the walk's relative ``k = 0`` residual, and ``err_max`` is at least the sum of the terms."""
+    from dmipy_sim.replay import compression as cx
+    from dmipy_sim.replay.bank import _battery_b_max
+    cw = walks["c"]
+    pk = build_replay_pack(cw, id="t/rounding", license="x", citation="x")
+    f, t = pk.fidelity, pk.fidelity["terms"]
+    assert cw.block["precision"] == "float32" and "rounding" in t
+    want = cw.block["k0_residual_relative"] * np.sqrt(2.0 * _battery_b_max(cx.default_envelope()) * f["bounds_diffusivity"])
+    assert t["rounding"] == pytest.approx(want, rel=1e-5) and t["rounding"] > 0          # the header keeps 6 digits
+    assert f["err_max"] >= t["truncation"] + sum(t["quadrature"].values()) + t["rounding"]
 
 
 def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
@@ -252,7 +266,7 @@ def test_a_walk_of_several_windows_packs_window_by_window():
     cw = _quiet(d.simulate_trajectories, 200, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
     pk = build_replay_pack(cw, id="t/w", license="x", citation="x")
     assert pk.n_windows == 2 and pk.windows["T"] == pytest.approx(0.1) and pk.n_t == 101
-    assert pk.meta["walk_params"]["block"]["n_blocks"] == 100 and pk.fidelity["certified"] == "bounded"
+    assert pk.meta["walk_params"]["block"]["n_blocks"] == 100 and pk.fidelity["combined"] == "bound_over_windows"
     seq = d.pgse([[1, 0, 0]], 5e-3, 0.12, bvalues=[3e8], TE=0.15, slew_rate=np.inf)
     one = build_replay_pack(cw.window(0), id="t/w0", license="x", citation="x")
     assert one.n_windows == 1 and np.isfinite(pk.replay(seq)).all()

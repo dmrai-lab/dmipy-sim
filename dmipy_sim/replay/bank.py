@@ -1513,10 +1513,12 @@ def _window_master(m, k0, k1):
 def combine_window_fidelity(fids):
     """The whole walk's certificate as the BOUND over its windows' (RPK.md 4.3): every error term the sum over
     the windows (a replay across them sums their contributions, which may add coherently), every floor the largest,
-    and ``certified = "bounded"``. What a prefix of whole windows or an appended continuation carries; a walk built
+    ``combined = "bound_over_windows"``, and ``certified`` the windows' own (``"inherited"`` if any window inherited,
+    else ``"measured"``: RPK.md 9.4 rule 4 has no third value). What a prefix of whole windows or an appended continuation carries; a walk built
     in one go measures the positions battery over the whole instead."""
     fids = [dict(f) for f in fids]
-    out = dict(metric=fids[0].get("metric"), certified="bounded", windows=fids)
+    out = dict(metric=fids[0].get("metric"), combined="bound_over_windows", windows=fids,
+               certified=("inherited" if any(f.get("certified") == "inherited" for f in fids) else "measured"))
     keys = sorted({k for f in fids for k in f if k.startswith(("err_", "floor_"))})
     for k in keys:
         vals = [f.get(k) for f in fids]
@@ -1535,9 +1537,11 @@ def combine_window_fidelity(fids):
         out["terms"] = dict(t0, truncation=float(sum(f["terms"]["truncation"] for f in fids)),
                             quadrature={c: float(sum(f["terms"]["quadrature"].get(c, 0.0) for f in fids))
                                         for c in t0["quadrature"]})
+        if any("rounding" in f["terms"] for f in fids):
+            out["terms"]["rounding"] = float(sum(f["terms"].get("rounding", 0.0) for f in fids))
     if "err_max" in out and "floor_max" in out:
         out["within_2x_floor"] = bool(out["err_max"] <= 2.0 * out["floor_max"])
-    return out
+    return _cover_terms(out)
 
 
 def _round_sig(x, sig):
@@ -2277,6 +2281,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
                                        rho_over_D=(None if _qv.get("local_time") is None
                                                    else max(env.get("rho2_list") or [1e-4]) / _D))
             fid["terms"] = _terms_of(dict(_dc, has_contact=_qv.get("local_time") is not None))
+            # the bands of a walk of saves are the exact projection of the piecewise-linear path through them (the
+            # order-0 table's sinc(omega_k h / 2) is that segment's integral), and that path is this certificate's
+            # reference: no block quadrature against it. What the order-0 reading would add against a Brownian path
+            # between the saves is a property of the walk's save grid, recorded beside the terms.
+            fid["save_grid_quadrature"] = dict(fid["terms"]["quadrature"])
+            fid["terms"]["quadrature"] = {c: 0.0 for c in fid["terms"]["quadrature"]}
+            fid["terms"]["quadrature_reference"] = "piecewise_linear_saves"
+            _cover_terms(_measured_truncation(fid))
         comp_meta = dict(method=method, K=int(pos_meta.get("K", K)),        # the K stored: the codec clamps a short walk
                          walker_preserving=True,
                          container=pos_meta.get("container"),               # None: the float container; else the band ranges
@@ -2327,13 +2339,41 @@ def build_replay_pack(walk, *, id, license, citation, weights=None,
         return pack
 
 
+def _measured_truncation(fid):
+    """A certificate measured against the walk's own block ends has measured what the bands beyond ``K`` drop: its
+    ``err_max`` bounds the truncation over the battery, so ``terms.truncation`` is the smaller of it and the free
+    bridge's walk-free bound (``truncation_from = "pilot"`` when the measurement is the smaller, RPK.md 9.5.5)."""
+    t = fid.get("terms")
+    if isinstance(t, dict) and fid.get("err_max") is not None and float(fid["err_max"]) < float(t.get("truncation", 0.0)):
+        t["truncation"] = float(fid["err_max"]); t["truncation_from"] = "pilot"
+    return fid
+
+
+def _cover_terms(fid):
+    """``err_max`` is at least the sum of ``fidelity.terms`` (RPK.md 9.5.5): each term is a maximum over the battery,
+    so their sum can exceed the largest per-measurement total; a pack reports the larger. ``within_2x_floor`` follows."""
+    t = fid.get("terms")
+    if not isinstance(t, dict) or fid.get("err_max") is None:
+        return fid
+    total = (float(t.get("truncation", 0.0)) + float(sum((t.get("quadrature") or {}).values()))
+             + float(t.get("field_read", 0.0)) + float(t.get("rounding", 0.0)))
+    if total > float(fid["err_max"]):
+        fid["err_max"] = total
+    if fid.get("floor_max") is not None:
+        fid["within_2x_floor"] = bool(float(fid["err_max"]) <= 2.0 * float(fid["floor_max"]))
+    return fid
+
+
 def _terms_of(fid):
     """``fidelity.terms`` (RPK.md 9.5.5) of a certificate that carries its bounded terms as ``err_truncation`` /
     ``err_quadrature`` / ``err_quadrature_surface``."""
     q = dict(positions=float(fid.get("err_quadrature", 0.0)))
     if fid.get("err_quadrature_surface") is not None and fid.get("has_contact"):
         q["local_time"] = float(fid["err_quadrature_surface"])
-    return dict(truncation=float(fid.get("err_truncation", 0.0)), truncation_from="band_variance", quadrature=q)
+    out = dict(truncation=float(fid.get("err_truncation", 0.0)), truncation_from="band_variance", quadrature=q)
+    if fid.get("err_rounding") is not None:                           # REQUIRED iff block.precision is float32
+        out["rounding"] = float(fid["err_rounding"])
+    return out
 
 
 def _field_qv(samples, dt_f):
@@ -2343,7 +2383,13 @@ def _field_qv(samples, dt_f):
     return [float(x) for x in (b ** 2).sum(axis=1).mean(axis=0)]
 
 
-def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_contact=None, rho_over_D=None):
+def _battery_b_max(env):
+    """The largest b (s/m^2) of the envelope's battery (:func:`compression.acquisition_battery`)."""
+    return float(max(list(env.get("bvals") or [0.0]) + [float(env.get("shortd_b") or 0.0)]))
+
+
+def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_contact=None, rho_over_D=None,
+                         rounding_rel=None):
     """The walk-free certificate of a pack built from a coefficient walk, per measurement of the envelope's battery
     (on the window's block ends) and per family: the TRUNCATION, the phase the bands beyond ``K`` would carry for a
     free walk at ``D`` (:func:`compression.band_phase_variances`), half of it as the signal it costs; the QUADRATURE
@@ -2355,7 +2401,10 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     stored container, the random phase ``eps^2 = gamma^2 sum_k W_k^2 step_k^2 / 12`` of its realised steps at
     ``KAPPA eps`` floors and its bias ``eps^2 / 2``, in quadrature (:func:`compression.derive_container`'s budget,
     read back); and the split-half floor ``floor`` (:func:`compression.measure_floor_coded`). The error per
-    measurement is the sum of the three."""
+    measurement is the sum of the three. ``rounding_rel`` (a float32 accumulation's measured relative rounding of
+    its bands, ``block.k0_residual_relative``) adds the ROUNDING term of RPK.md 9.5.5: a relative error ``r`` on
+    every band is a phase error correlated with the phase, ``|<e^{i phi (1 + r)}> - <e^{i phi}>| <= r sqrt(<phi^2>)
+    <= r sqrt(2 b_max D)``, with ``b_max`` the battery's largest b and ``D`` the bounds' diffusivity."""
     from ..constants import GAMMA
     T, h, K = float(T), float(h), int(K)
     n_t = int(round(T / h)) + 1
@@ -2376,15 +2425,17 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
         step2 = np.mean(np.asarray(scales, np.float64) ** 2, axis=0)                           # (3, K) over the walkers
         eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
     quant = np.sqrt((_cx.KAPPA * eps * float(floor["floor_max"])) ** 2 + (eps ** 2 / 2.0) ** 2)
-    err = trunc + quad + quant + quad_surface
+    rounding = None if rounding_rel is None else float(rounding_rel) * float(np.sqrt(2.0 * _battery_b_max(env) * float(D)))
+    err = trunc + quad + quant + quad_surface + (0.0 if rounding is None else rounding)
     fams = sorted({x["fam"] for x in meta})
     per = {}
     for f in fams:
         j = np.array([i for i, x in enumerate(meta) if x["fam"] == f])
         per[f] = dict(err_max=float(err[j].max()), floor_max=float(floor["per_family"][f]))
-    return dict(metric="max_abs_complex_signal_error", certified="derived",
+    return dict(metric="max_abs_complex_signal_error", certified="measured", measured_by="walk_free_terms",
                 err_truncation=float(trunc.max()), err_quadrature=float(quad.max()), err_quantisation=float(quant.max()),
                 err_quadrature_surface=float(quad_surface),
+                **({} if rounding is None else dict(err_rounding=rounding)),
                 err_max=float(err.max()), floor_max=float(floor["floor_max"]), noise_floor=float(floor["noise_floor"]),
                 within_2x_floor=bool(err.max() <= 2.0 * float(floor["floor_max"])), per_family=per,
                 quadrature=dict(m=int(m), h=h, f_band_hz=float(K) / (2.0 * T),
@@ -2585,7 +2636,9 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, t
     fid = _derived_certificate(scales, T=T, h=h, K=K, m=cw.m, D=D, env=env, floor=floor,
                                qv_pos=(None if cw.qv_positions is None
                                        else np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)),
-                               qv_contact=qv_b, rho_over_D=(None if qv_b is None else max(env.get("rho2_list") or [1e-4]) / D))
+                               qv_contact=qv_b, rho_over_D=(None if qv_b is None else max(env.get("rho2_list") or [1e-4]) / D),
+                               rounding_rel=(float(cw.block.get("k0_residual_relative", 0.0))
+                                             if cw.block.get("precision", "float32") == "float32" else None))
     if fidelity == "measured":
         raw = np.asarray(cw.raw_positions, np.float64)
         n_raw = raw.shape[0]
@@ -2596,7 +2649,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, t
         err = np.abs(_cx._mean_signal(phi_dec, w=wr) - _cx._mean_signal(phi_raw, w=wr))
         per = {f: dict(err_max=float(err[[i for i, x in enumerate(gmeta) if x["fam"] == f]].max()),
                        floor_max=fid["per_family"][f]["floor_max"]) for f in fid["per_family"]}
-        fid.update(certified="measured", measured_on=int(n_raw), err_derived=fid["err_max"], err_max=float(err.max()),
+        fid.update(certified="measured", measured_by="raw_subset", measured_on=int(n_raw), err_derived=fid["err_max"], err_max=float(err.max()),
                    per_family=per, within_2x_floor=bool(err.max() <= 2.0 * fid["floor_max"]))
     arrays = dict(pos_arrays)
     chan_meta = {}
@@ -2683,6 +2736,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, t
     else:
         meta_field_read = None
     fid["terms"] = _terms_of(dict(fid, has_contact=cw.boundary_bands is not None))
+    _cover_terms(_measured_truncation(fid) if fid.get("measured_by") == "raw_subset" else fid)
     meta = dict(
         rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
         walk_params=dict(n_walkers=cw.n_walkers, T_max=T, diffusivity=D, seed=seed,
