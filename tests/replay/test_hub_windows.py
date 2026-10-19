@@ -57,7 +57,7 @@ def _fixture_pack():
     """A tiny, deterministic 3-window pack (positions + C1 + C2): bridge_dst at K=19 over 21-save, 10 ms
     windows -- small enough to serve from memory, with real ``sN/`` tensors to select by byte range."""
     return d.build_replay_pack(_fixture_master(), id="test/windows-fixture", K=19, envelope=_lean_env(),
-                               segment_T=0.01, license="CC-BY-4.0", citation="dmipy-sim window-read test fixture")
+                               window_T=0.01, license="CC-BY-4.0", citation="dmipy-sim window-read test fixture")
 
 
 def _seq(TE):
@@ -129,15 +129,15 @@ def served(pack, tmp_path):
 def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pack, served, tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, data = served
-    assert pack.n_segments == 3
+    assert pack.n_windows == 3
     local1 = pub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p1 = read_rpk(local1)
     assert p1.meta["windows_present"] == 1
     assert p1.meta["provenance"]["hub_window_read"]["revision"] == "rev0"
     fetched1 = p1.meta["provenance"]["hub_window_read"]["bytes_fetched"]
     assert 0 < fetched1 < len(data)                                        # strictly a part of the whole file
-    # every tensor a one-window read can hold (shared + segment 0's) is byte-identical to the whole file's
-    seg0_names = set(pack._segment_arrays(0))
+    # every tensor a one-window read can hold (shared + window 0's) is byte-identical to the whole file's
+    seg0_names = set(pack._window_arrays(0))
     assert set(p1.arrays) == seg0_names
     for k in seg0_names:
         npt.assert_array_equal(p1.arrays[k], pack.arrays[k], err_msg=k)
@@ -166,7 +166,7 @@ def test_an_acquisition_beyond_the_loaded_windows_is_refused_by_name(pack, serve
     url, _ = served
     local = pub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p1 = read_rpk(local)
-    assert p1.windows_present == 1 and p1.n_segments == 3
+    assert p1.windows_present == 1 and p1.n_windows == 3
     with pytest.raises(ValueError, match=r"load windows=range\(2\)"):
         p1.replay(_seq(0.015), complex_signal=True)                        # reaches into window 1
 
@@ -195,7 +195,7 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)},
                       {"id": "o/p", "windows_present": 2,
-                       "walk_params": {"n_t": 3, "segments": {"n": 2, "n_t": 3, "T": 1e-3, "walks": []}}})
+                       "walk_params": {"n_t": 3, "windows": {"n": 2, "n_t": 3, "T": 1e-3, "walks": []}}})
 
     def fake_load(cls, uri, *, windows=None, **kw):
         seen["uri"], seen["windows"] = uri, windows
@@ -267,7 +267,7 @@ def test_a_windowed_read_from_the_real_hub():
                             repo_type="dataset", commit_message="add the windows=range(k) hub-read test fixture (dmipy-sim#525)")
     uri = pub.uri_of(FIXTURE_REPO, FIXTURE_PATH)
     loaded = ReplayPack.load(uri, windows=range(1))
-    assert loaded.windows_present == 1 and loaded.n_segments == 3
+    assert loaded.windows_present == 1 and loaded.n_windows == 3
     assert loaded.n_walkers == pack.n_walkers
     npt.assert_array_equal(loaded.arrays["pos_x"], pack.arrays["pos_x"])
     npt.assert_array_equal(loaded.replay(_seq(0.01), complex_signal=True), pack.replay(_seq(0.01), complex_signal=True))

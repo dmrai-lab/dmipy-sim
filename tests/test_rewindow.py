@@ -1,5 +1,5 @@
-"""``ReplayPack.resegment`` (#525): a one-window pack stored in windows of a shorter duration replays as its parent
-on every tier and every route, to the resegmented pack's certified floor, whatever window an acquisition spans; a
+"""``ReplayPack.rewindow`` (#525): a one-window pack stored in windows of a shorter duration replays as its parent
+on every tier and every route, to the rewindowed pack's certified floor, whatever window an acquisition spans; a
 prefix of its windows is a range of it; a pose expansion reads the windows an acquisition reaches and no more."""
 import dataclasses
 import time
@@ -18,7 +18,7 @@ from dmipy_sim.replay.replay import _duration
 from dmipy_sim.spec.substrate import Susceptibility
 from dmipy_sim.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _susc_master, _sample_susc
-from tests.test_pack_segments import C2_DT, C2_N_T, _c2_slab_master
+from tests.test_storage_windows import C2_DT, C2_N_T, _c2_slab_master
 
 N_T, DT = 197, 5e-4                      # 98 ms of walk: four windows of 49 steps (24.5 ms)
 T = (N_T - 1) * DT
@@ -48,7 +48,7 @@ def _parent(n_t=N_T):
     """The walk as ONE window, lossy in the positions (K = 48 over 98 ms), the contact bridge and the path channel."""
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0, 90], max_refocus_pulses=8)
     return _float_pack(_master(n_t), id="t/parent", license="CC-BY-4.0", citation="test", envelope=env, K=48,
-                             blt_temporal_K=8, susc_path_K=32, susc_path_bits=16, segment_T=(n_t - 1) * DT)
+                             blt_temporal_K=8, susc_path_K=32, susc_path_bits=16, window_T=(n_t - 1) * DT)
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +57,7 @@ def packs(tmp_path_factory):
     p = tmp_path_factory.mktemp("reseg")
     parent.save(p / "parent.rpk")
     parent = read_rpk(str(p / "parent.rpk"))
-    seg = parent.resegment(T / 4, out_path=p / "seg.rpk", id="t/seg")
+    seg = parent.rewindow(T / 4, out_path=p / "seg.rpk", id="t/seg")
     return parent, seg, p
 
 
@@ -79,16 +79,16 @@ def _waveforms():
 
 def test_the_windows_and_their_record(packs):
     parent, seg, p = packs
-    assert parent.n_segments == 1 and seg.n_segments == 4
-    assert seg.segments["n_t"] == 50 and seg.segments["T"] == pytest.approx(T / 4) and seg.n_t == N_T
+    assert parent.n_windows == 1 and seg.n_windows == 4
+    assert seg.windows["n_t"] == 50 and seg.windows["T"] == pytest.approx(T / 4) and seg.n_t == N_T
     assert seg.K == 12                                                       # round(48 x 49 / 196): the bands per second kept
     assert seg.temporal_bandwidth_hz == pytest.approx(parent.temporal_bandwidth_hz)
-    r = seg.meta["provenance"]["resegmented"]
+    r = seg.meta["provenance"]["rewindowed"]
     assert r["parent_id"] == "t/parent" and r["n_seg"] == 4 and r["saves_dropped"] == 0 and r["T_seg"] == pytest.approx(T / 4)
     assert len(r["parent_sha256"]) == 64 and r["K"] == 12 and r["parent_K"] == 48
     f = seg.fidelity
-    assert f["certified"] == "bounded" and len(f["segments"]) == 4 and f["within_2x_floor"]
-    for w in f["segments"]:
+    assert f["certified"] == "bounded" and len(f["windows"]) == 4 and f["within_2x_floor"]
+    for w in f["windows"]:
         assert w["err_max"] <= 2.0 * w["floor_max"] and "err_susc_path" in w and "err_surface" in w
     ch = seg.meta["compression"]["channels"]
     assert ch["susceptibility_grid"] == parent.meta["compression"]["channels"]["susceptibility_grid"]
@@ -107,7 +107,7 @@ def test_the_boundary_saves_are_the_parents(packs):
     parent, seg, _ = packs
     X = parent.positions()
     for i in range(4):
-        C = seg.segment(i).position_coeffs
+        C = seg.window(i).position_coeffs
         npt.assert_allclose(C[:, 0, :], X[:, 49 * i, :], rtol=0, atol=1e-6 * np.abs(X).max())
         npt.assert_allclose(C[:, 0, :] + C[:, 1, :], X[:, 49 * (i + 1), :], rtol=0, atol=1e-6 * np.abs(X).max())
 
@@ -147,10 +147,10 @@ def test_a_one_window_acquisition_reads_window_zero_alone(packs):
                            seg.pose_response(seq, tissue=TIS, scanner=3.0, keep=(8, 0)).coeffs)
 
 
-def test_a_truncated_resegmented_pack_is_its_first_window(packs, tmp_path):
+def test_a_truncated_rewindowed_pack_is_its_first_window(packs, tmp_path):
     parent, seg, _ = packs
     one = seg.truncate(1, out_path=tmp_path / "one.rpk")
-    assert one.n_segments == 1 and one.n_t == 50
+    assert one.n_windows == 1 and one.n_t == 50
     seq = _waveforms()["pgse_1"]
     for knobs in KNOBS.values():
         npt.assert_array_equal(one.replay(seq, complex_signal=True, **knobs), seg.replay(seq, complex_signal=True, **knobs))
@@ -162,14 +162,14 @@ def test_the_trailing_remainder_is_dropped_within_its_bound_and_refused_beyond(t
     """197 steps have no divisor near 49: one save is dropped at a 1 % bound and the walk refused at 1e-3."""
     parent = _parent(n_t=N_T + 1)
     with pytest.raises(ValueError, match="drops at most"):
-        parent.resegment(T / 4, out_path=tmp_path / "x.rpk")
-    seg = parent.resegment(T / 4, out_path=tmp_path / "seg.rpk", max_dropped_fraction=1e-2)
-    assert seg.n_segments == 4 and seg.n_t == N_T and seg.meta["provenance"]["resegmented"]["saves_dropped"] == 1
+        parent.rewindow(T / 4, out_path=tmp_path / "x.rpk")
+    seg = parent.rewindow(T / 4, out_path=tmp_path / "seg.rpk", max_dropped_fraction=1e-2)
+    assert seg.n_windows == 4 and seg.n_t == N_T and seg.meta["provenance"]["rewindowed"]["saves_dropped"] == 1
     seq = _waveforms()["pgse_2"]
     a = parent.replay(seq, complex_signal=True, **KNOBS["all"])
     assert np.abs(a - seg.replay(seq, complex_signal=True, **KNOBS["all"])).max() <= seg.fidelity["floor_max"]
     with pytest.raises(ValueError, match="already stores"):
-        seg.resegment(T / 8, out_path=tmp_path / "y.rpk")
+        seg.rewindow(T / 8, out_path=tmp_path / "y.rpk")
 
 
 def test_the_channels_decoded_on_a_window_are_the_whole_ones_cut():
@@ -206,19 +206,19 @@ def _timing_packs(tmp_path):
     m = dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt, w=np.ones(n_w), D_intra=D, n_walkers=n_w, seed=0,
              substrate=spec_of(FreeDiffusion()).to_dict())
     env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[])
-    parent = _float_pack(m, id="t/long", license="x", citation="x", envelope=env, K=2000, segment_T=(n_t - 1) * dt)
+    parent = _float_pack(m, id="t/long", license="x", citation="x", envelope=env, K=2000, window_T=(n_t - 1) * dt)
     parent.save(tmp_path / "long.rpk")
     parent = read_rpk(str(tmp_path / "long.rpk"))
-    return parent, parent.resegment(0.025, out_path=tmp_path / "long_seg.rpk", envelope=env)
+    return parent, parent.rewindow(0.025, out_path=tmp_path / "long_seg.rpk", envelope=env)
 
 
 def test_a_pose_expansion_costs_the_saves_it_spans(tmp_path):
-    """The one-window acquisition on the resegmented pack reads one window of 1001 saves and 500 bands where the
+    """The one-window acquisition on the rewindowed pack reads one window of 1001 saves and 500 bands where the
     parent reads its whole walk of 4001 saves and 2000 bands, and the expansion is the parent's to the floor. Its
     time is held to a loose ordering only, the best of five on a shared machine (measured here between 0.46 and 0.82
     of the parent's under load; the ratio on the 1 s CACTUS pack is in #525)."""
     parent, seg = _timing_packs(tmp_path)
-    assert seg.n_segments == 4 and seg.K == 500
+    assert seg.n_windows == 4 and seg.K == 500
     seq = sequences.pgse(_dirs(30), 4e-3, 10e-3, bvalues=[1e9] * 30, TE=20e-3, n_t=800, slew_rate=np.inf)
     spanned = lambda pk: [(int(w.K), int(n_s)) for w, _, n_s in pk._prepare(seq, tissue=None, scanner=None, orientation=None,
                                                                             compartment=None)["windows"]]
@@ -244,7 +244,7 @@ def test_the_contact_envelope_is_stated_and_held(packs):
     assert top is not None and top > 0 and seg.meta["replay_envelope"]["tissue"]["rho2_over_D_max"] == top
     r = seg.meta["provenance"]["surface_envelope_restated"]
     assert r["rho2_over_D_max"] == top == min(r["per_window"]) and r["reference"] == "t/parent"
-    for f in seg.fidelity["segments"]:
+    for f in seg.fidelity["windows"]:
         assert f["surface_rho2_over_D_max"] == top and f["err_surface"] <= 2.0 * f["floor_surface"]
     D = seg.diffusivity
     seq = _waveforms()["pgse_2"]
@@ -299,8 +299,8 @@ def test_the_band_is_judged_over_the_saves_an_acquisition_spans(packs):
     (``K`` per window) while the frequency they resolve does not."""
     parent, seg, _ = packs
     wf = _waveforms()
-    assert seg._span(_duration(wf["pgse_1"])) == (int(seg.segments["n_t"]), 1)
-    assert seg._span(_duration(wf["pgse_2"])) == (2 * (int(seg.segments["n_t"]) - 1) + 1, 2)
+    assert seg._span(_duration(wf["pgse_1"])) == (int(seg.windows["n_t"]), 1)
+    assert seg._span(_duration(wf["pgse_2"])) == (2 * (int(seg.windows["n_t"]) - 1) + 1, 2)
     assert seg._span(_duration(wf["train_4"])) == (int(seg.n_t), 4)
     assert parent._span(_duration(wf["pgse_1"])) == (int(parent.n_t), 1)
     one, two = seg.truncate(1), seg.truncate(2)
@@ -312,11 +312,11 @@ def test_the_band_is_judged_over_the_saves_an_acquisition_spans(packs):
     assert np.isfinite(seg.replay(wf["pgse_2"])).all()                             # within K per window over two windows
 
 
-def test_resegment_states_that_the_contact_channel_is_inherited(packs):
-    """``provenance.resegmented.contact``: the parent's contact band and walk duration, marked inherited, beside
+def test_rewindow_states_that_the_contact_channel_is_inherited(packs):
+    """``provenance.rewindowed.contact``: the parent's contact band and walk duration, marked inherited, beside
     the pack's own ``replay_envelope`` that bounds where the windowed contact holds (#528)."""
     parent, seg, _ = packs
-    c = seg.meta["provenance"]["resegmented"]["contact"]
+    c = seg.meta["provenance"]["rewindowed"]["contact"]
     assert c["inherited"] is True
     assert c["parent_K"] == parent.meta["compression"]["channels"]["boundary_local_time"]["K"] == 8
     assert c["parent_T"] == pytest.approx(T)
@@ -324,37 +324,37 @@ def test_resegment_states_that_the_contact_channel_is_inherited(packs):
 
 
 def _worst_window_surface_ratio(parent_pack, raw_dlog_b, w, D, env, tmp_path, steps, stamp):
-    """Resegment ``parent_pack`` into windows of ``steps`` saves and return the worst window's
+    """Rewindow ``parent_pack`` into windows of ``steps`` saves and return the worst window's
     ``err_surface / floor_surface`` against the window's own TRUE raw contact (``raw_dlog_b``, the ground truth
-    only a test has): what #528 found resegment's own certificate (measured against the PARENT's decoded window,
+    only a test has): what #528 found rewindow's own certificate (measured against the PARENT's decoded window,
     not the raw walk) cannot see."""
     p = tmp_path / f"{stamp}.rpk"
     parent_pack.save(p)
-    seg = read_rpk(p).resegment(bank.SEGMENT_T, out_path=tmp_path / f"{stamp}-seg.rpk", id=f"t/{stamp}-reseg")
+    seg = read_rpk(p).rewindow(bank.WINDOW_T, out_path=tmp_path / f"{stamp}-seg.rpk", id=f"t/{stamp}-reseg")
     worst = 0.0
-    for i in range(seg.n_segments):
+    for i in range(seg.n_windows):
         lo = i * steps
         raw_win = np.array(raw_dlog_b[:, lo:lo + steps + 1], copy=True)
         if i:
             raw_win[:, 0] = 0.0                                 # the window's own first save ends no step of it
-        s = seg.segment(i)
+        s = seg.window(i)
         cf = bank._surface_fidelity(dict(dlog_b=raw_win, w=w, D_intra=D), s.arrays,
                                     s.meta["compression"]["channels"]["boundary_local_time"], env)
         worst = max(worst, cf["err"] / cf["floor"] if cf["floor"] else float("inf"))
     return worst
 
 
-def test_resegment_of_a_band_floored_one_window_pack_passes_the_windows_own_certificate(tmp_path):
+def test_rewindow_of_a_band_floored_one_window_pack_passes_the_windows_own_certificate(tmp_path):
     """#528's proper fix, checked end to end: a one-window pack built AT the new band floor (16 bands per
-    storage-rule window) resegments into windows that reproduce the TRUE raw window's contact within tol x its
+    storage-rule window) rewindows into windows that reproduce the TRUE raw window's contact within tol x its
     split-half floor -- the thing #528 found failing for a pack built below the floor (here, one pinned at the
     plain ladder's K=8, as the historical one-window packs were), measured the same way against the same raw
-    walk the directly-segmented build (#528's `_build_segmented` route) is measured against."""
+    walk the directly-windowed build (#528's `_build_windowed` route) is measured against."""
     m = _c2_slab_master()
     env = _lean_env()
     T_walk = (C2_N_T - 1) * C2_DT
-    steps = int(round(bank.SEGMENT_T / C2_DT))
-    kw = dict(method="bridge_dst", envelope=env, K=64, license="CC-BY-4.0", citation="test", segment_T=T_walk)
+    steps = int(round(bank.WINDOW_T / C2_DT))
+    kw = dict(method="bridge_dst", envelope=env, K=64, license="CC-BY-4.0", citation="test", window_T=T_walk)
     good = _float_pack(m, id="t/c2-good", **kw)                             # the new floor: K >= 16/window
     bad = _float_pack(m, id="t/c2-bad", blt_temporal_K=8, **kw)             # pinned at the historical K=8
     assert good.meta["compression"]["channels"]["boundary_local_time"]["K"] >= 16 * 10

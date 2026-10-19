@@ -158,7 +158,7 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=Non
     """One manifest row for the pack whose header is ``meta``, stored at ``path`` with these bytes.
 
     ``local`` -- the file itself -- lets a pack stored in more than one window (RPK.md 4.3) carry
-    ``segment_bytes``, the bytes of ONE window (the shared tensors -- weights, a static label, the field grid,
+    ``window_bytes``, the bytes of ONE window (the shared tensors -- weights, a static label, the field grid,
     the voxel tables -- counted once, not once per window): what a ``windows=range(k)`` read of it costs, so a
     consumer can plan the read before it fetches anything (:func:`fetch_windows`).
 
@@ -182,13 +182,13 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=Non
         row["pack_license"] = meta["pack_license"]
         if meta.get("pack_license_url"):
             row["pack_license_url"] = meta["pack_license_url"]
-    if wp.get("segments"):
-        row["segments"] = wp["segments"]
-        n = int(wp["segments"].get("n") or 1)
+    if wp.get("windows"):
+        row["windows"] = wp["windows"]
+        n = int(wp["windows"].get("n") or 1)
         if n > 1 and local is not None:
-            sb = _segment_bytes(local, n)
+            sb = _window_bytes(local, n)
             if sb is not None:
-                row["segment_bytes"] = sb
+                row["window_bytes"] = sb
     return row
 
 
@@ -200,18 +200,18 @@ def _local_header(local):
         return json.loads(f.read(n))
 
 
-def _segment_bytes(local, n):
-    """The bytes of one window of a segmented pack's file (the shared tensors counted once, not once per
+def _window_bytes(local, n):
+    """The bytes of one window of a windowed pack's file (the shared tensors counted once, not once per
     window), or ``None`` when the file carries no per-window tensors (``sN/`` keys) to measure."""
     header = _local_header(local)
     names = [k for k in header if k != "__metadata__"]
-    per_segment = {k[3:] for k in names if k.startswith("s1/")}
-    if not per_segment:
+    per_window = {k[3:] for k in names if k.startswith("s1/")}
+    if not per_window:
         return None
     def size(k):
         a, b = header[k]["data_offsets"]
         return b - a
-    shared_bytes = sum(size(k) for k in names if "/" not in k and k not in per_segment)
+    shared_bytes = sum(size(k) for k in names if "/" not in k and k not in per_window)
     data_total = sum(size(k) for k in names)
     return int(round((data_total - shared_bytes) / n))
 
@@ -231,11 +231,11 @@ def _size(nbytes):
 def _duration(row):
     T = row.get("T_max")
     s = "—" if T is None else f"{T * 1e3:g} ms"
-    seg = row.get("segments")
+    seg = row.get("windows")
     if seg and int(seg.get("n") or 1) > 1:                       # a walk in several windows: how many of what length
         s += f" ({seg.get('n')} × {_fmt(None if seg.get('T') is None else seg['T'] * 1e3, 'g')} ms"
-        if row.get("segment_bytes"):                             # what one windows=range(k) read costs
-            s += f", {_size(row['segment_bytes'])}/window"
+        if row.get("window_bytes"):                             # what one windows=range(k) read costs
+            s += f", {_size(row['window_bytes'])}/window"
         s += ")"
     return s
 
@@ -390,6 +390,41 @@ def _publish_file(local, meta, repo, *, path, hub, message, published_commit=Non
     return uri_of(repo, path)
 
 
+def restamp_dataset(local_dir, repo):
+    """Restamp, in place, a local copy of a dataset written before dmipy-sim#738: every pack its manifest names
+    (:func:`~dmipy_sim.replay.replay.restamp_pack`, its header's window table as ``walk_params.windows``), each row's
+    ``segments`` / ``segment_bytes`` as ``windows`` / ``window_bytes`` with the restamped file's sha256 and bytes,
+    and the card re-rendered from the manifest (:func:`render_readme`, ``repo`` the dataset it is the card of).
+    Every pack a row names must be in the copy, or nothing is written. A dataset already in this vocabulary comes
+    back unchanged. Uploading the result is a separate commit to the hub. Returns the manifest."""
+    from .replay import restamp_pack
+    with open(os.path.join(local_dir, MANIFEST)) as f:
+        manifest = json.load(f)
+    rows = manifest.get("packs") or []
+    missing = [r["path"] for r in rows if not os.path.exists(os.path.join(local_dir, r["path"]))]
+    if missing:
+        raise ValueError(f"{local_dir}: the manifest names packs this copy does not hold, so their rows' sha256 could "
+                         f"not follow their headers: {missing[:5]}{' ...' if len(missing) > 5 else ''}")
+    changed = False
+    for r in rows:
+        local = os.path.join(local_dir, r["path"])
+        before = sha256_of(local)
+        restamp_pack(local)
+        sha = sha256_of(local)
+        if sha != before:
+            r["sha256"], r["bytes"] = sha, os.path.getsize(local); changed = True
+        for old, new in (("segments", "windows"), ("segment_bytes", "window_bytes")):
+            if old in r:
+                r[new] = r.pop(old); changed = True
+    if not changed:
+        return manifest
+    with open(os.path.join(local_dir, MANIFEST), "w") as f:
+        json.dump(manifest, f, indent=1)
+    with open(os.path.join(local_dir, README), "w") as f:
+        f.write(render_readme(manifest, repo))
+    return manifest
+
+
 # ------------------------------- load -------------------------------
 def fetch(uri):
     """``hf://owner/name/path.rpk`` -> the file's local cache path, its sha256 checked against the dataset's
@@ -471,12 +506,12 @@ def _coalesce(ranges):
     return out
 
 
-def _window_tensor_names(names, i, per_segment):
-    """The tensor names of window ``i``: segment 0's are the unprefixed per-segment names, segment ``i > 0``'s
+def _window_tensor_names(names, i, per_window):
+    """The tensor names of window ``i``: window 0's are the unprefixed per-window names, window ``i > 0``'s
     its ``s{i}/`` ones. The shared tensors (weights, a static label, the field grid, the voxel tables) are not a
     window's -- they are fetched once, regardless of ``i``."""
     if i == 0:
-        return sorted(per_segment)
+        return sorted(per_window)
     p = f"s{int(i)}/"
     return [n for n in names if n.startswith(p)]
 
@@ -517,14 +552,14 @@ def _fetch_windows_to(url, k, local_path, *, revision, session=None):
     data_base = 8 + header_len
     names = [n for n in header if n != "__metadata__"]
     meta = json.loads((header.get("__metadata__") or {}).get("rpk") or "{}")
-    n_total = int(((meta.get("walk_params") or {}).get("segments") or {}).get("n") or 1)
+    n_total = int(((meta.get("walk_params") or {}).get("windows") or {}).get("n") or 1)
     if k > n_total:
         raise ValueError(f"{url}: this pack stores {n_total} window(s); windows=range({k}) asks for more than it has")
-    per_segment = {n[3:] for n in names if n.startswith("s1/")}
+    per_window = {n[3:] for n in names if n.startswith("s1/")}
     want_from = 0 if cached_k is None else cached_k
-    wanted = [n for n in names if "/" not in n and n not in per_segment] if want_from == 0 else []
+    wanted = [n for n in names if "/" not in n and n not in per_window] if want_from == 0 else []
     for i in range(want_from, k):
-        wanted += _window_tensor_names(names, i, per_segment)
+        wanted += _window_tensor_names(names, i, per_window)
     byte_ranges = {n: (header[n]["data_offsets"][0] + data_base, header[n]["data_offsets"][1] + data_base - 1)
                    for n in wanted}
     merged = _coalesce(byte_ranges.values())

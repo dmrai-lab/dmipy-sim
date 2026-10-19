@@ -15,7 +15,7 @@ effective gradient per window, :func:`~dmipy_sim.replay.replay._compile_effectiv
 first class's rows' principal profiles, one per shell); a row of the shape is written ``W_i = u v_i^T + D_i`` with
 ``v_i`` its least-squares vector in the metric the departure bound weighs (below; amplitude ``a_i = |v_i|``,
 direction ``g^_i = v_i / a_i``) and ``D_i`` its departure. With ``mu_w = sum_k u[k] C_w[k]`` (the walker's
-shape moment) and ``n_w`` its background moment (the effective gate's), the phase at pose ``R`` is
+shape vector) and ``n_w`` its background vector (the effective gate's), the phase at pose ``R`` is
 
     phi_iw(R) = a_i g^_i . R mu_w + beta g^0 . R n_w + d_iw(R),       d_iw(R) = sum_k (R^T D_i[k]) . C_w[k].
 
@@ -121,7 +121,7 @@ two plays of one class differ by its rounding (~1e-7), and a class read again mu
 in. The bounds are taken over the widened intervals."""
 
 SERIES_BINS = 512
-"""Bins of the walkers' moment lengths over which the series' bounds are summed (each at its bin's upper edge)."""
+"""Bins of the walkers' vector lengths over which the series' bounds are summed (each at its bin's upper edge)."""
 
 ZERO_ROW = 1e-6
 """A row whose encoding (the magnet's gradient taken out) is at most this fraction of the magnet's gradient on every
@@ -164,7 +164,7 @@ def _log_double_factorial(L):
 def _series_bound(x, wabs, centre, half, L, tol):
     """The Chebyshev degree of the series of ``j_l(s x)`` (``l <= L``) in ``s`` on ``[centre - half, centre + half]``
     and its bounds: ``(N, I, I_max)`` with ``I`` the walkers' weighted bound ``sum_w |w_w| I_w`` and ``I_max`` the
-    largest ``I_w`` (module docstring). ``x`` ``(n_w,)`` the walkers' moment lengths, ``wabs`` their ``|w|``. The
+    largest ``I_w`` (module docstring). ``x`` ``(n_w,)`` the walkers' vector lengths, ``wabs`` their ``|w|``. The
     walkers are binned by ``x`` and each bin is bounded at its upper edge (every term grows with ``x``)."""
     if half <= 0 or not x.size or float(x.max()) == 0.0:
         return 0, 0.0, 0.0
@@ -337,7 +337,7 @@ def _window_maps(pack, P, n_t_wf, dt_wf):
         for lo in range(0, n_t_wf, 256):
             hi = min(lo + 256, n_t_wf)
             unit = np.zeros((hi - lo, n_t_wf, 1)); unit[np.arange(hi - lo), np.arange(lo, hi), 0] = 1.0
-            G = effective_gradient(unit, dt_wf, n_s, dt, t0=t0) if pack.n_segments > 1 else \
+            G = effective_gradient(unit, dt_wf, n_s, dt, t0=t0) if pack.n_windows > 1 else \
                 effective_gradient(unit, dt_wf, P["n_t"], dt)
             M[:, lo:hi] = _compile_effective(G, dt, pack.K, n_s)
         maps.append(M)
@@ -575,7 +575,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
             _u, _s, Vt = np.linalg.svd(X, full_matrices=True)
         V = Vt.T                                                              # (n_c, n_c): an orthonormal basis
         ctx["V"] = V
-        # ---- the walker pass: shape moments, background moment, departure courses
+        # ---- the walker pass: shape vectors, background vector, departure courses
         _ph("moments", n_w=int(n_w), n_shapes=int(n_h))
         t0 = time.perf_counter()
         gate = np.asarray(first.effective_gate, np.float64)

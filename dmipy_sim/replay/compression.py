@@ -725,7 +725,7 @@ def decode_boundary_local_time(arrays, meta, walkers=None):
 def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, device="auto"):
     """Bridge codec for the boundary-local-time channel: the CUMULATIVE local time B(t)=cumsum(ell)
     stored as its two exact endpoints plus SINE bands of the pinned residual -- the same form C0
-    uses for positions, on the same segment grid.
+    uses for positions, on the same window grid.
 
     ell(t) is spiky and dense; its running integral B(t) is smooth and ~linear (roughly constant
     contact rate). Detrending by the chord B(0) + tau*(B(T)-B(0)) leaves a residual vanishing at
@@ -742,9 +742,9 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
         DCT-II endpoint    6.4e-2   4.5e-2   3.1e-2   2.5e-2   1.6e-2
         DST-I  endpoint    0        0        0        0        0
 
-    That is the property the segment algebra needs. Splitting into S segments and chaining their
+    That is the property the window algebra needs. Splitting into S windows and chaining their
     endpoints drifts by ~1.5e-2 under DCT-II regardless of S, and by <1e-16 under the sine form --
-    so a pack can be cut at a segment boundary, or two segments merged, without the surface channel
+    so a pack can be cut at a window boundary, or two windows merged, without the surface channel
     accumulating error the way a band codec does. ``blt_endpoint`` remains the exact total B(T) that
     the ungated rho2 attenuation reads directly.
 
@@ -777,7 +777,7 @@ def encode_boundary_bridge(dlog, K=16, dtype=np.float32, container=None, *, devi
             C[sl] = dst_bands(resid[:, 1:-1], K, device=device)
     # ``dtype`` sets the band precision; packs pass f16 via build_replay_pack's ``blt_dtype``. The
     # two ENDPOINTS are always f32 -- they are the exact quantities the rho2 attenuation and the
-    # segment chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
+    # window chaining read, where f16's ~3 significant digits would be a real error, not a rounding.
     meta = {"channel": "boundary_local_time", "mode": "bridge_dst", "n_t": int(nt), "K": int(K),
             "dtype": np.dtype(dtype).name}
     arrays = {"blt_start": a.astype(np.float32), "blt_endpoint": endpoint.astype(np.float32)}
