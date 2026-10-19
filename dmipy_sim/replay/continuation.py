@@ -18,7 +18,8 @@ from .replay import ReplayPack, write_rpk
 
 def end_state(pack):
     """``(r_end (n_w, 3), pool (n_w,) or None)``: where every walker is at the walk's last save, read from the last
-    window's exact endpoints (the position codec holds both ends of a window), and the pool it is in there, its
+    window's exact endpoints (the position codec holds both ends of a window on either basis,
+    :func:`~dmipy_sim.replay.compression.basis_of`), and the pool it is in there, its
     last occupancy label when the pack carries the compartment channel."""
     from .compression import read_position_coeffs, decode_occupancy
     seg = pack.window(pack.n_windows - 1)
@@ -105,6 +106,9 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
     windows stored under the next ``s{i}/`` keys, the table's ``walks`` gaining the continuation with its ``seed``,
     and the whole's certificate the bound over every window (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`)."""
     from .bank import path_codec_of, build_replay_pack, combine_window_fidelity, _is_shared_key, _precision_tiers, _MEASURED_CHANNEL_KEYS
+    from .compression import require_basis
+    require_basis(pack.meta, "dst1", what="append_windows (a continuation is walked at the saves and stored on the DST-I; "
+                                          "a continuous-basis pack is one accumulated window)")
     seg = pack.windows
     cm = pack.meta["compression"]; ch = cm.get("channels") or {}
     if int(walk.n_walkers) != int(pack.n_walkers):

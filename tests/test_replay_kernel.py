@@ -151,7 +151,9 @@ def test_compiled_scheme_and_mode_space_read_one_projection():
     K = 12
     W = compile_scheme(G, DT, K, n_t=N_T)
     P = cx.bridge_projection(effective_gradient(G, DT, N_T, DT), N_T, K)
-    np.testing.assert_allclose(W, (GAMMA * DT * P).reshape(2, -1).T, rtol=0, atol=0)
+    B = cx.band_projection(G, DT, N_T, DT, K, basis="dst1")                     # the basis dispatch: dt x the DST-I projection
+    np.testing.assert_allclose(B, DT * P, rtol=0, atol=0)
+    np.testing.assert_allclose(W, (GAMMA * B).reshape(2, -1).T, rtol=0, atol=0)
     arrays, meta, _ = cx.encode_bridge_dst(_synthetic_trajectories()[2][1], K=K)
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
     np.testing.assert_allclose(cx.mode_space_phi(arrays, meta, G, DT), C.reshape(C.shape[0], -1) @ W,

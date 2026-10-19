@@ -274,7 +274,7 @@ def walker_primitives(pack, acquisition):
     contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
     the windows the walk is stored in (RPK.md 4.3)."""
     from .compression import relaxation_logweight_runs
-    from .replay import _band_phase, _path_field_channels, surface_logweight, _has_aniso
+    from .replay import _band_phase, _path_field_channels, _gated_contact, _has_aniso
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
     n_w, dt, ch = P["n_w"], P["dt"], P["ch"]
@@ -291,19 +291,20 @@ def walker_primitives(pack, acquisition):
     pm = ch.get("susceptibility_path")
     phi = _band_phase(P)                                        # the one band contraction, windows summed
     exposure_t2 = exposure_t1 = contact = contact_t1 = None
-    for (seg, t0, n_s), (chi_s, act_s) in zip(P["windows"], P["window_gates"]):
+    for j, ((seg, t0, n_s), (chi_s, act_s)) in enumerate(zip(P["windows"], P["window_gates"])):
         if col is not None:
             e2 = np.stack([-relaxation_logweight_runs(seg.arrays, col, unit[p].tolist(), zero, dt, chi_s, act_s) for p in range(n_ids)], axis=1)
             e1 = np.stack([-relaxation_logweight_runs(seg.arrays, col, zero, unit[p].tolist(), dt, chi_s, act_s) for p in range(n_ids)], axis=1)
             exposure_t2 = e2 if exposure_t2 is None else exposure_t2 + e2
             exposure_t1 = e1 if exposure_t1 is None else exposure_t1 + e1
         if has_c2(seg.arrays):
-            c_s = np.asarray(surface_logweight(seg.arrays, 1.0, ch.get("boundary_local_time"), chi_s), np.float64)
+            c_s = np.asarray(_gated_contact(P["windows"], P["window_gates"], P["gate_wf"], j, 1.0, ch.get("boundary_local_time")),
+                             np.float64)
             contact = c_s if contact is None else contact + c_s
             # the SAME channel, gated by the complement (on while stored along B0): the longitudinal contact
             # rho1 reads at reduction time, built once here exactly as `contact` is (dmipy-sim#574)
-            chi_parallel_s = np.clip(act_s - chi_s, 0.0, None)
-            c1_s = np.asarray(surface_logweight(seg.arrays, 1.0, ch.get("boundary_local_time"), chi_parallel_s), np.float64)
+            c1_s = np.asarray(_gated_contact(P["windows"], P["window_gates"], P["gate_wf"], j, 1.0, ch.get("boundary_local_time"),
+                                             parallel=True), np.float64)
             contact_t1 = c1_s if contact_t1 is None else contact_t1 + c1_s
     field_iso = field_aniso = None
     if pm is not None:

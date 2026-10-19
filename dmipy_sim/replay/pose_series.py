@@ -502,6 +502,8 @@ def _couple(B3, cpl, channels, l_off, K_body):
 def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compartment=None, keep=None, tol=1e-8,
                 l_cap=64, direction_tol=None, backend="jax", device=None):
     """:meth:`~dmipy_sim.replay.replay.ReplayPack.pose_series` (the module docstring is the derivation)."""
+    from .compression import require_basis as _require_basis
+    _require_basis(pack.meta, "dst1", what="the factorised pose series (it projects per-save waveform courses)")
     import time
     from . import so3
     from .compression import read_position_coeffs

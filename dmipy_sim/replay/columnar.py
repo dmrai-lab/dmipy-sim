@@ -106,6 +106,8 @@ class ColumnarPack:
     def __init__(self, uri, workers=8):
         self.uri = uri; self.src = Source(uri, workers=workers)
         m = json.loads(self.src.text("manifest.json")); self.meta, self.columns = m["meta"], m["columns"]
+        from .compression import require_basis
+        require_basis(self.meta, "dst1", what="the columnar layout (its plans project per-save weights)")
         self.index = json.loads(self.src.text("index.json"))
         self.n_rows = int(self.index["n_rows"]); self.band_groups = list(self.index["band_groups"]); self.path_groups = list(self.index.get("path_groups", []))
         self.grid = _grid_of(self.meta)
