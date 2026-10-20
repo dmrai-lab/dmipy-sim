@@ -18,8 +18,6 @@ from dmipy_sim.constants import GAMMA
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import walk_spec, StratifiedByVoxel
-from tests.conftest import spec_without_source
 
 T_MAX, H, K = 2e-3, 1e-4, 12                 # 20 blocks; K below the N - 1 = 19 bands the block ends hold
 
@@ -53,24 +51,35 @@ def _seq():
                           n_t=201, slew_rate=np.inf, TE=T_MAX), [2e9, 2e9, 2e9])
 
 
+def _cell():
+    """A periodic cell of two packed cylinders (both pools walked) and a 2 x 2 x 1 voxel grid over it."""
+    from dmipy_sim.phantom.grid import Grid
+    g = d.PackedCylinders([1.5e-6, 2e-6], [[-2.5e-6, 0.0], [2.5e-6, 0.0]], 10e-6)
+    return g, Grid(shape=(2, 2, 1), voxel_size_m=(5e-6, 5e-6, 1e-5), origin_m=(-2.5e-6, -2.5e-6, 0.0))
+
+
 @pytest.fixture(scope="module")
-def walked(spec_grid):
-    """Two shards of one order-0 walk of the three-strand spec, every walker's block ends kept, packed in the float
-    containers (the pack is the walk's coefficients in float32) and consolidated into the columnar layout."""
+def walked(tmp_path_factory):
+    """Two shards of one substrate -- the walkers starting in the cell's lower and upper half in x, disjoint voxel
+    blocks of one fill -- each an order-0 walk with every walker's block ends kept, packed in the float containers
+    (the pack is the walk's coefficients in float32) and consolidated into the columnar layout."""
+    import warnings
     from dmipy_sim.fill.consolidate import consolidate
-    spec, grid, tmp = spec_grid
-    spec = spec_without_source(spec)
-    tmp = tmp / "oracle"; (tmp / "shards").mkdir(parents=True, exist_ok=True)
-    walks, packs = [], []
-    for block, seed in ((0, 31), (1, 32)):
-        want = np.zeros(grid.shape, np.int64); want[block] = 10
-        w = walk_spec(spec, T_max=T_MAX, block_h=H, seed=seed, require_gpu=False, K=K, block_order=0, raw_subset=10 ** 6,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        assert w.m == 0 and w.raw_positions.shape == (w.n_walkers, w.n_blocks + 1, 3)
-        walks.append(w)
-        packs.append(build_replay_pack(w, id=f"t/oracle-{block}", license="x", citation="x", K=K, voxel_grid=grid,
-                                       position_container=None, blt_container=None,
-                                       out_path=str(tmp / "shards" / f"block-{block:04d}.p1.rpk")))
+    g, grid = _cell()
+    tmp = tmp_path_factory.mktemp("oracle"); (tmp / "shards").mkdir()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        starts = np.asarray(d.simulate_trajectories(600, 2e-9, g, 2 * H, H, seed=30, require_gpu=False, K=1).position_coeffs[:, 0, 0])
+        walks, packs = [], []
+        for block, sel in ((0, starts[:, 0] < 0), (1, starts[:, 0] >= 0)):
+            r0 = np.ascontiguousarray(starts[sel], np.float32)
+            w = d.simulate_trajectories(len(r0), 2e-9, g, T_MAX, H, seed=31 + block, r0=r0, require_gpu=False, K=K, block_order=0,
+                                        raw_subset=len(r0))
+            assert w.m == 0 and w.raw_positions.shape == (w.n_walkers, w.n_blocks + 1, 3)
+            walks.append(w)
+            packs.append(build_replay_pack(w, id=f"t/oracle-{block}", license="x", citation="x", K=K, voxel_grid=grid,
+                                           position_container=None, blt_container=None,
+                                           out_path=str(tmp / "shards" / f"block-{block:04d}.p1.rpk")))
     out = str(tmp / "layout")
     consolidate(str(tmp / "shards"), out, blocks=[0, 1], id="t/oracle")
     return walks, packs, ReplayPack.open(out), grid
@@ -159,9 +168,7 @@ def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
     """A consolidation of shards that disagree on ``walk_params.block`` or ``walk_params.windows`` is refused, naming
     the key."""
     from dmipy_sim.fill.consolidate import consolidate
-    from dmipy_sim.phantom.grid import Grid
-    grid = Grid(shape=(1, 1, 1), voxel_size_m=(20e-6,) * 3, origin_m=(-10e-6,) * 3)
-    g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
+    g, grid = _cell()
     kw = dict(license="x", citation="x", K=4, voxel_grid=grid)
 
     def shard(name, **walk):

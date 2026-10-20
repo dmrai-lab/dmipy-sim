@@ -151,8 +151,10 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     seq_y, R_y = field_along(seq, (0.0, 1.0, 0.0))                   # the field along y of the specimen: a pose
     pc = pk.pose_response(seq_y, method="closed", pose=R_y, **kw)
     assert pc.n_samples == 0 and pc.field_lmax >= 2
+    # the two routes form the same phases in float32 on different paths: a rounding of a few ulps of the largest phase
+    f32 = 4 * float(np.finfo(np.float32).eps) * max(1.0, float(pc.phase_amplitude))
     for R in so3.haar_rotations(6, 2):
-        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=max(2e-6, f32))
     pq = pk.pose_response(seq_y, method="quadrature", pose=R_y, **kw)
     for d in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
         np.testing.assert_allclose(pc.compose(d), pq.compose(d), atol=3 * pq.misfit.max())
@@ -161,7 +163,7 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     pp = pk.pose_response(seq_x, method="closed", keep=(8, 0), pose=R_x, **kw)
     for R in so3.haar_rotations(2, 9):
         full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
-        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=2e-6)
+        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=max(2e-6, f32))
     assert np.isfinite(pp.coeffs).all()
 
 
