@@ -8,9 +8,12 @@ A manifest holds (the DiSCo replay dataset is the reference):
   domain's ``side_m``), an optional ``far_grid`` (``.npy`` with its ``.json`` beside it);
 - ``variants``: named walks of the substrate (``field`` on or off), ``default_variant``;
 - ``grid``: the voxel grid a shard's certificate is on (``shape``, ``voxel_size_m``, ``origin_m``);
-- ``walk``: ``T_max_s``, ``dt_save_s``, ``scanner``, ``walker_batch_size``, ``adaptive_steps``, ``floor_fraction``,
-  ``field_sample_every``, ``field_gather_every``, ``census_draws``;
-- ``pack``: ``K`` (optional: absent, the shard's band is ``walk.scanner``'s by the storage rule, #643), ``K_path``, ``blt_K``, ``position_container``, ``blt_container``;
+- ``walk``: ``T_max_s``, ``scanner``, ``walker_batch_size``, ``adaptive_steps``, ``field_gather_every``, ``census_draws``,
+  and optionally ``block_h_s`` (the block, else the band's own) and ``field_read_interval_s`` (the field read, else the
+  rule's);
+- ``pack``: ``K`` (optional: absent, the shard's band is ``walk.scanner``'s by the storage rule, #643), ``K_path`` (the
+  field channel's band, which every shard's walk accumulates: the certifying pack's), ``blt_K``, ``position_container``,
+  ``blt_container``;
 - ``plan``: ``file`` (an ``.npz`` of ``count_<pool>`` arrays on the grid), ``blocks`` (a JSON table of voxel
   boxes with their seeds), optional ``passes`` (each ``{pass, scale}``: a share of every block's counts, filled
   as its own shard from its own seed stream).
@@ -101,12 +104,16 @@ class Recipe:
         k = 1 if max_walkers is None else max(1, int(np.ceil(total / max_walkers)))
         return min(k, min(int(v.sum()) for v in want.values() if v.sum() > 0))
 
-    def dt_save(self):
-        from ..acquisition.scanners import save_interval
-        spec = self.spec(); W = self.man["walk"]; dt = float(W["dt_save_s"])
-        if susceptibility_field_of(spec) == "present":
-            dt = min(dt, save_interval(W["T_max_s"], 8, W["scanner"], D=max(float(p.D) for p in spec.pools if p.D), field=True))
-        return dt
+    def block_h(self):
+        """The walk's block (s) when the manifest states one (``walk.block_h_s``), else ``None``: the band's own."""
+        v = self.man["walk"].get("block_h_s")
+        return None if v is None else float(v)
+
+    def field_read_interval(self):
+        """The field read's interval (s) when the manifest states one (``walk.field_read_interval_s``), else ``None``:
+        derived from the field's spatial scale (:func:`~dmipy_sim.engine.accumulate.field_read_interval`)."""
+        v = self.man["walk"].get("field_read_interval_s")
+        return None if v is None else float(v)
 
     def kit(self, out_dir):
         """The substrate kit of this recipe (:func:`~dmipy_sim.fill.kit.write_kit`): everything a request

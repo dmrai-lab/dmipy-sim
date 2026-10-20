@@ -162,20 +162,19 @@ class ColumnarPack:
         """``(M, error)``: the fewest stored field modes for a replay at the scanner's field with the tissue's chi (0
         when :func:`~dmipy_sim.replay.replay.field_term` resolves the pair to no field term): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
         var_{ch,k}``, halved, against ``tol`` x the floor; the channel sum is the worst case over field directions."""
-        from .replay import GAMMA, field_term, _path_grid
-        from ._replay_kernel import field_gate
-        from scipy.fft import dct
+        from .replay import GAMMA, field_term
+        from .compression import cosine_projection
         f = field_term(self.susceptibility_field, tissue, scanner)
         if not f.active:
             return 0, 0.0
         if not self.path_groups:
             raise ValueError("this pair has a field term and the layout stores no field modes (C3 path channel)")
         B0, chi, chi_a = f.B0, f.chi_iso, f.chi_aniso
-        pm = self.meta["compression"]["channels"]["susceptibility_path"]
-        n_tf, dt_f = _path_grid(pm, None, None)
-        g = dct(field_gate(seq, n_tf, dt_f), type=2, norm="ortho")[:self.path_groups[-1]]
+        pm = self.meta["compression"]["channels"]["susc_field_basis"]
+        gate = seq.effective_gate if seq.gate is None else seq.gate
+        g = cosine_projection(np.asarray(gate, np.float64).reshape(1, -1, 1), float(seq.dt), float(pm["T"]), self.path_groups[-1])[0, :, 0]
         var = np.asarray(self.meta["columnar"]["path_mode_variance"], np.float64).sum(axis=0)
-        per_mode = (GAMMA * dt_f * B0 * (abs(chi) + abs(chi_a))) ** 2 * g ** 2 * var[:len(g)]
+        per_mode = (GAMMA * B0 * (abs(chi) + abs(chi_a))) ** 2 * g ** 2 * var[:len(g)]
         tail = np.cumsum(per_mode[::-1])[::-1]
         for M in self.path_groups:
             err = 0.5 * (tail[M] if M < len(per_mode) else 0.0)
@@ -288,7 +287,7 @@ class ColumnarPack:
         meta = json.loads(json.dumps(self.meta)); meta["compression"]["K"] = int(K_read)
         if meta["compression"].get("container"):                           # the ranges read: a prefix of the container
             meta["compression"]["container"] = meta["compression"]["container"][:len([g for g in self.band_groups if g <= K_read])]
-        pmeta = meta["compression"]["channels"].get("susceptibility_path") or {}
+        pmeta = meta["compression"]["channels"].get("susc_field_basis") or {}
         if M_read:
             n_m = len([g for g in self.path_groups if g <= M_read])
             if pmeta.get("container"):                                      # the container's ranges, kept as stored: a prefix of them
@@ -296,9 +295,9 @@ class ColumnarPack:
             else:
                 arrays["susc_path_dct"] = np.concatenate([arrays.pop(f"susc_path_m{i}") for i in range(n_m)], axis=2)
             arrays["susc_path_scale"] = np.ascontiguousarray(arrays["susc_path_scale"][..., :M_read])
-            meta["compression"]["channels"]["susceptibility_path"]["K"] = int(M_read)
+            meta["compression"]["channels"]["susc_field_basis"]["K"] = int(M_read)
         else:
-            meta["compression"]["channels"].pop("susceptibility_path", None); meta["compression"]["channels"].pop("susceptibility_grid", None)
+            meta["compression"]["channels"].pop("susc_field_basis", None); meta["compression"]["channels"].pop("susceptibility_grid", None)
             if self.path_groups:
                 meta["view"] = dict(field="unread")                    # the layout holds C3; this view reads none of it
         if not contact:

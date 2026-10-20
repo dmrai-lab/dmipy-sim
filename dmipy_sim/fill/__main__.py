@@ -114,7 +114,6 @@ def main(argv=None):
         return
     import jax                                             # every dmipy_sim import on the main thread, before any thread
     from ..spec import walk_spec, StratifiedByVoxel, disco_spec        # noqa: F401  (what the walk stage imports)
-    from ..acquisition.scanners import save_interval                    # noqa: F401
     from ..phantom import Grid                                          # noqa: F401
     devices = [str(d) for d in jax.devices()]; logging.getLogger("dmipy_sim.fill").info("devices %s", devices)
     from ..run import _hardware

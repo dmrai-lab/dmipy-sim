@@ -45,11 +45,21 @@ from ..engine.backends import (FIELD_ARRAY_NAMES, REQUEST_TEMPLATE_KEYS, STRAND_
 log = logging.getLogger("dmipy_sim.fill")
 
 
-def _n_t_dt(T_max, dt_save):
-    """``(n_t, dt_actual)`` of a save grid -- ``simulate_trajectories_adaptive``'s own rounding, reproduced so the
-    kit's template carries the WalkRequest's actual ``n_t``/``dt_save`` (not the manifest's nominal one)."""
-    n_t = int(round(T_max / dt_save)) + 1
-    return n_t, T_max / (n_t - 1)
+def _n_t_dt(rc):
+    """``(n_t, h)`` of the recipe's walk: its blocks over ``T_max`` plus one, and the block -- the band's own
+    (:func:`~dmipy_sim.engine.accumulate.block_length` at the pack's band) unless the manifest states ``block_h_s``;
+    ``simulate_trajectories_adaptive``'s own rounding, reproduced so the kit's template carries the request's actual
+    block count (the ``n_t`` of the CUDA request counts the block ends)."""
+    from ..engine.accumulate import window_count, block_length
+    from ..replay.bank import mode_count
+    W = rc.man["walk"]
+    T_max = float(W["T_max_s"])
+    n_win, T_win = window_count(T_max)
+    h = rc.block_h()
+    if h is None:
+        h = block_length(T_win, int(rc.man["pack"].get("K") or mode_count(T_win, W["scanner"])))
+    n_bw = max(int(round(T_win / h)), 1)
+    return n_win * n_bw + 1, T_win / n_bw
 
 
 def _pool_geometry(ctx, pid):
@@ -84,7 +94,7 @@ def _pool_lines_and_arrays(rc, ctx, pid, n_t, dt_actual, basis, sampling, *, ste
     lines["adaptive"] = 1
     lines.update({f"adaptive_{k}": v for k, v in adaptive_struct_fields(plan, geom._Rmax).items()})
     if sampling:
-        f_every = max(1, int(W.get("field_sample_every", 1)))
+        f_every = 1                                                   # the field is read every round: a read per block end at least
         f_reuse = max(1, int(W.get("field_gather_every", 4)))
         f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)
         f_reach = float(basis.gather_radius_m)
@@ -156,7 +166,7 @@ def _pool_lines_and_arrays_window(rc, ctx, pid, n_t, dt_actual, basis, field_win
     lines.update({f"adaptive_{k}": v for k, v in adaptive_struct_fields(plan, geom._Rmax).items()})
     if field_window is not None:
         dims_gmin, n_seg, nnz = field_window
-        f_every = max(1, int(W.get("field_sample_every", 1)))
+        f_every = 1                                                   # the field is read every round: a read per block end at least
         f_reuse = max(1, int(W.get("field_gather_every", 4)))
         f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)
         f_reach = float(basis.gather_radius_m)
@@ -203,7 +213,7 @@ def write_kit(rc, out_dir):
         raise ValueError("a substrate kit serialises the CUDA strands-adaptive engine's request tables; this "
                          "recipe's walk is not adaptive_steps")
     T_max = float(W["T_max_s"])
-    n_t, dt_actual = _n_t_dt(T_max, rc.dt_save())
+    n_t, dt_actual = _n_t_dt(rc)
     sampling = field_source_kind(spec) == "strands" and susceptibility_field_of(spec) == "present"
     basis = ctx.field_basis() if sampling else None
     if sampling and (basis is None or basis.far is None):
@@ -248,7 +258,7 @@ def write_kit(rc, out_dir):
 
     files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "kit.json")
     kit = dict(recipe_id=man.get("id"), commit=man["code"]["commit"], dmipy_sim_version=_dmipy_sim_version(), variant=rc.variant,
-              walk=dict(n_t=n_t, dt_save_s=dt_actual, T_max_s=T_max), field=dict(present=bool(sampling)), pools=pools_out,
+              walk=dict(n_blocks=n_t - 1, block_h_s=dt_actual, T_max_s=T_max), field=dict(present=bool(sampling)), pools=pools_out,
               files={str(p.relative_to(out)): _sha256(p) for p in files})
     json.dump(kit, open(out / "kit.json", "w"), indent=1)
     log.info("kit written to %s: %d pool(s), field %s", out, len(pools_out), sampling)
@@ -279,7 +289,7 @@ def write_block_kit(rc, row, out_dir):
         raise ValueError("a block kit serialises the CUDA strands-adaptive engine's request tables; this "
                          "recipe's walk is not adaptive_steps")
     T_max = float(W["T_max_s"])
-    n_t, dt_actual = _n_t_dt(T_max, rc.dt_save())
+    n_t, dt_actual = _n_t_dt(rc)
     sampling = field_source_kind(spec) == "strands" and susceptibility_field_of(spec) == "present"
     basis = ctx.field_basis() if sampling else None
     if sampling and (basis is None or basis.far is None):
@@ -307,9 +317,9 @@ def write_block_kit(rc, row, out_dir):
         field_window = (dims_gmin, int(farrays["fsid.i32"].shape[0]), int(farrays["fcell_ids.i32"].shape[0]))
 
         far = basis.far
-        D_max = max(float(p.D) for p in spec.pools if p.D)        # the margin's own D: the walk's, the same bound rc.dt_save() uses
+        D_max = max(float(p.D) for p in spec.pools if p.D)        # the margin's own D: the walk's, the same bound rc.block_h() uses
         crop, far_dims, far_origin = crop_far_grid(far.values, far.origin_m, far.spacing_m, np.array([lo_m, hi_m]),
-                                                   n_t, dt_actual, D_max)
+                                                   n_t - 1, dt_actual, D_max)
         np.ascontiguousarray(crop).tofile(out / "far_full.u16")
         np.ascontiguousarray(np.asarray(basis.mean, np.float32)).tofile(out / "field_mean.f32")
         # the full array shape (the spatial crop's 3 dims PLUS the 13 channels, write_kit's own "shape" spelling
@@ -359,7 +369,7 @@ def write_block_kit(rc, row, out_dir):
 
     files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "kit.json")
     kit = dict(recipe_id=man.get("id"), commit=man["code"]["commit"], dmipy_sim_version=_dmipy_sim_version(), variant=rc.variant,
-              block=int(row["block"]), walk=dict(n_t=n_t, dt_save_s=dt_actual, T_max_s=T_max), field=dict(present=bool(sampling)),
+              block=int(row["block"]), walk=dict(n_blocks=n_t - 1, block_h_s=dt_actual, T_max_s=T_max), field=dict(present=bool(sampling)),
               pools=pools_out, files={str(p.relative_to(out)): _sha256(p) for p in files})
     json.dump(kit, open(out / "kit.json", "w"), indent=1)
     log.info("block kit %s written to %s: %d pool(s), field %s", row["block"], out, len(pools_out), sampling)
@@ -392,7 +402,7 @@ def assemble_request(kit_dir, pool, r0, keys, seed, out_dir):
         meta = json.loads((kit_dir / "far_full.json").read_text())
         far_full = np.fromfile(kit_dir / "far_full.u16", dtype=np.uint16).view(np.float16).reshape(meta["shape"])
         crop, far_dims, far_origin = crop_far_grid(far_full, meta["origin_m"], meta["spacing_m"], r0,
-                                                   kit["walk"]["n_t"], kit["walk"]["dt_save_s"], kit["pools"][pool]["diffusivity"])
+                                                   int(kit["walk"]["n_blocks"]), kit["walk"]["block_h_s"], kit["pools"][pool]["diffusivity"])
         lines["field_far_dims"] = far_dims; lines["field_far_origin"] = far_origin
     (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
     r0.tofile(out / "r0.f32")

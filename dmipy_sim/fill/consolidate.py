@@ -260,7 +260,7 @@ class Consolidator:
         """A shard whose path channel STORES ``iso_P_zz`` brought to the layout of one that implies it: the stored
         channel dropped from the coefficients and the scale table, the channel declared implied (``-(P_xx + P_yy)``,
         what every consumer of the implied form computes), the shard's measured trace residual kept."""
-        sp = (meta.get("compression", {}).get("channels") or {}).get("susceptibility_path")
+        sp = (meta.get("compression", {}).get("channels") or {}).get("susc_field_basis")
         if not sp or sp.get("iso_P_zz") != "stored":
             return meta
         i = list(sp["channels"]).index("iso_P_zz")
@@ -268,7 +268,7 @@ class Consolidator:
         for k in [k for k in arrays if k.startswith("susc_path_dct")]:        # the single tensor or every range of a container
             arrays[k] = np.delete(np.asarray(arrays[k]), i, axis=1)
         arrays["susc_path_scale"] = np.delete(np.asarray(arrays["susc_path_scale"]), i, axis=-2)
-        meta = json.loads(json.dumps(meta)); sp = meta["compression"]["channels"]["susceptibility_path"]
+        meta = json.loads(json.dumps(meta)); sp = meta["compression"]["channels"]["susc_field_basis"]
         sp["channels"] = [c for c in sp["channels"] if c != "iso_P_zz"]; sp["n_ch"] = len(sp["channels"]); sp["iso_P_zz"] = "implied"
         pk.arrays = arrays; pk.meta = meta
         self.normalised.append({"shard": name, "trace_residual": sp.get("trace_residual")})
@@ -288,7 +288,7 @@ class Consolidator:
             self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
             self.grid = Grid.from_meta(ident["grid"])
             self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
-            pm = (meta["compression"].get("channels") or {}).get("susceptibility_path")
+            pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
             self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
         else:
             for k, v in ident.items():
@@ -313,7 +313,7 @@ class Consolidator:
         from ..replay.bank import has_susc_path
         if has_susc_path(pk.arrays):
             from ..replay.bank import susc_path_coeffs
-            Cs, _ = susc_path_coeffs(pk.arrays, meta["compression"]["channels"]["susceptibility_path"])
+            Cs, _ = susc_path_coeffs(pk.arrays, meta["compression"]["channels"]["susc_field_basis"])
             s = (np.asarray(Cs, np.float64) ** 2).sum(axis=0)
             self.acc["path_sq"] = s if self.acc["path_sq"] is None else self.acc["path_sq"] + s; self.acc["path_n"] += n
         # the scale tables with their block axis; every row's block
