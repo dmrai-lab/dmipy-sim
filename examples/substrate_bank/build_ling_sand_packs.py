@@ -9,11 +9,11 @@ walked as a ``geometry.LabelVolume`` on the released 450^3 Avizo lattices and pu
 surface relaxivity ``rho2`` and the bulk ``T2B`` are replay knobs and Ling's two relaxivities are a sweep over
 one pack rather than a walk per number.
 
-This file is the family's DECLARATION, re-expressed through
-:class:`~dmipy_sim.replay.reference.ReferenceFamily` so that its records have the same shape as every other
-family's. The packs already exist and are neither re-walked nor re-encoded; the walk stage reads the counters
-the engine reported in the family's own pre-protocol records, which are kept beside the new ones under
-``records/pre-protocol/``.
+This file is the family's DECLARATION, expressed through :class:`~dmipy_sim.replay.reference.ReferenceFamily` so
+that its records have the same shape as every other family's. Every pack is walked through the producer over the
+longest released train's 3.5 s, keeping ``K`` bands per 100 ms storage window (35 windows, the band's own blocks of
+199 us) and no path. The family's earlier measurements -- its reproduction of Ling's trains and its direct walk --
+are read from ``reproduction.json`` and ``direct.json`` beside the records.
 
 **The grade changes, by rule.** The pre-protocol record stated ``B`` as a FIELD, reasoning that the paper prints
 no T2 value. :func:`~dmipy_sim.replay.reference.grade_of` assigns ``A``: the quantity is read from Ling's own
@@ -22,7 +22,7 @@ graded like a number for exactly that reason. No record states its own grade any
 
 ::
 
-    HF_HUB_CACHE=~/.cache/hf-session JAX_PLATFORMS=cpu OMP_NUM_THREADS=8 \\
+    JAX_PLATFORMS=cpu OMP_NUM_THREADS=8 \\
       nice -n 10 python examples/substrate_bank/build_ling_sand_packs.py --data <the .am images> \\
       --work <the family dir> --stage source     # then reference, spec, design, walk, pack, gate, card
 """
@@ -38,8 +38,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
-                                        ReferenceFamily, ReferenceQuantity, Publication, RecordedWalk, Source,
-                                        SourceFile, Systematic, Tier, Tolerance)
+                                        ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
+                                        Systematic, Tier, Tolerance, pack_seed)
 
 REPO = "SubstrateCommons/ling-sand-packs"
 LICENCE = "CC-BY-4.0"
@@ -51,10 +51,10 @@ CITATION = ("Ling N, Hussaini SR, Elsayed M, Connolly P, El-Husseiny A, Mahmoud 
 D0 = 2.3e-9         #: m^2/s, the brine's self-diffusion the walk uses -- theirs
 T2B = 3.0           #: s, the brine's bulk T2 -- OURS, applied at replay (the paper states none)
 TE_REF = 100e-6     #: s, the echo spacing whose train this family reproduces (their rho2 was fitted on it)
-DT_SAVE = 1e-3      #: s, the save grid, which is also the grid the log-mean is inverted on
 INVERT_MS = 1.0     #: ms, the sampling of the decay the inversion runs on -- part of the measurement
 SIGMA = 5e-3        #: the floor per tier the family targets
-K_BANDS = 128
+K_BANDS = 128       #: bands per 100 ms storage window: the band 640 Hz, the band's own block 199 us
+SE_N = 4000         #: walkers of the walk the direct number's standard error is measured on (``measured_se``)
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 4000
 FALSE_FAILURE_RATE = 0.01
@@ -103,11 +103,8 @@ ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 shortd_deltas_frac=[80e-3 / 3.5, 60e-3 / 3.5], Delta_frac=160e-3 / 3.5,
                 rho2_list=sorted(RHO.values()))
 
-#: The deltas the family declares, in seconds. The shortest is 60 ms because that is what the LONGEST-window
-#: packs' band serves: at K = 96 over 3.5 s the band is 13.71 Hz, and measured against it delta 60 ms needs
-#: 11.71-12.29 Hz where delta 40 ms needs 17.57-18.43 and is REFUSED. The 2.0 s packs' band is 24 Hz and would
-#: serve 40 ms; declaring it would mean two of the five packs advertising a waveform they cannot serve, which
-#: is what `waveform_band` and the gate exist to stop.
+#: The deltas the family declares, in seconds: the envelope's own clinical pair, which the stored band (640 Hz,
+#: K = 128 per 100 ms window) holds on every pack.
 DECLARED_DELTAS = (60e-3, 80e-3)
 
 
@@ -119,14 +116,7 @@ def waveforms():
                  for delta in DECLARED_DELTAS)
 
 
-# ----------------------------------------------------------------- the pre-protocol records this family kept
-def pre(work_dir, stage):
-    """A record this family's own build script wrote before the protocol existed, kept under
-    ``records/pre-protocol/``: the walk's counters and the reproduction's numbers were measured by it and are
-    read, never re-measured."""
-    return json.load(open(os.path.join(work_dir, "records", "pre-protocol", f"{stage}.json")))
-
-
+# ----------------------------------------------------------------- the family's earlier measurements
 def reproduction(work_dir):
     return json.load(open(os.path.join(work_dir, "reproduction.json")))
 
@@ -178,15 +168,14 @@ def spec_of(sample, data_dir, work_dir):
                         "cannot hold both, so a consumer states one")))
 
 
-def walk_of(data_dir, work_dir):
-    def walk(spec, n, *, n_t, seed, sub_steps=None):
-        import dmipy_sim as d
-        from dmipy_sim.spec import geometry_from_spec
-        return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT_SAVE,
-                                       dt_save=DT_SAVE, seed=int(seed), tiers="all", require_gpu=False,
-                                       walker_batch_size=2000, sub_steps=sub_steps, window_T=(n_t - 1) * DT_SAVE,
-                                       raw_subset=int(n)).saves()
-    return walk
+def walk(spec, n, *, T, K, seed, sub_steps=None):
+    """The walk the pilot runs and every pack is built from: no relaxivity, C2 stored as a channel, ``K`` bands per
+    100 ms storage window over ``T`` in the band's own blocks; ``sub_steps`` is the step pilot's coarse count, None
+    the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
+    import dmipy_sim as d
+    from dmipy_sim.spec import geometry_from_spec
+    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
+                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
 
 
 # ----------------------------------------------------------------- the quantity
@@ -271,7 +260,7 @@ from dmipy_sim.replay import ReplayPack
 from examples.validation.talabi_micro_ct_rocks import t2_distribution, log_mean_T2
 
 pk = ReplayPack.load("{uri}")
-ell = pk.contact()                                        # the stored wall-contact channel, per save
+ell = pk.contact()                                        # the stored wall-contact channel, per block
 L = np.cumsum(np.asarray(ell, np.float64), axis=1)        # the boundary local time
 t = np.arange(pk.n_t) * pk.dt
 S = np.exp(pk.nominal.rho2 / {D0!r} * L - t / {T2B!r}).mean(axis=0)   # pk.nominal.rho2 IS Ling's for this mineral
@@ -294,30 +283,35 @@ def licence_text(cache_dir):
     return open(cache, encoding="utf-8").read()
 
 
-def measured_se(sample, work_dir, grid):
-    """The DIRECT walk's relative delta-method standard error on the log-mean, measured on this family's own
-    pack and scaled to the direct walk's count by 1/sqrt(N).
+def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
+    """The DIRECT walk's relative delta-method standard error on the log-mean, measured on a walk of ``n``
+    walkers of this family's own (the same substrate, window and band, packed in memory, read at the same rho2 on
+    the same channel and grid) and scaled to the direct walk's count by 1/sqrt(N).
 
     The direct fused walk's per-walker decays were not retained, and the relative per-echo spread is a property
-    of the substrate and the estimator rather than of the pack, which is what makes the substitution legitimate;
-    the record states it and the numbers it rests on. Measured once and cached on the pack's bytes and the grid.
+    of the substrate and the estimator rather than of the walk, which is what makes the substitution legitimate;
+    the record states it and the numbers it rests on. Measured once and cached on the image's digest, the grid
+    and the walk's parameters.
     """
     from dmipy_sim.fill.hub import sha256_of
-    from dmipy_sim.replay import ReplayPack
+    from dmipy_sim.replay.bank import build_replay_pack
     d = direct_record(work_dir)[f"{sample}@{rho_of(sample) * 1e6:g}"]
-    path = os.path.join(work_dir, "packs", f"{sample.lower()}.rpk")
-    key = hashlib.sha256(json.dumps([sha256_of(path), grid], sort_keys=True).encode()).hexdigest()
+    image = image_path(sample, data_dir, work_dir)
+    seed = pack_seed(f"ling-sand-packs/{sample.lower()}/direct-se")
+    key = hashlib.sha256(json.dumps([sha256_of(image), grid, int(n), T, K_BANDS, seed],
+                                    sort_keys=True).encode()).hexdigest()
     cache_path = os.path.join(work_dir, ".direct-se-cache.json")
     cache = json.load(open(cache_path)) if os.path.exists(cache_path) else {}
     if cache.get(sample, {}).get("key") != key:
-        pack = ReplayPack.load(path)
-        _t, _S, _lm, se_pack = decay_and_log_mean(pack, rho_of(sample), grid)
-        n_pack = int(pack.n_walkers)
-        scale = (n_pack / float(d["n_walkers"])) ** 0.5
-        cache[sample] = dict(key=key, value=dict(se=se_pack * scale, se_pack=se_pack, n_pack=n_pack,
+        w = walk(spec_of(sample, data_dir, work_dir), int(n), T=T, K=K_BANDS, seed=seed)
+        pack = build_replay_pack(w, id=f"ling-sand-packs/{sample.lower()}/direct-se", license=LICENCE,
+                                 citation=CITATION, envelope=ENVELOPE, K=K_BANDS)
+        _t, _S, _lm, se_walk = decay_and_log_mean(pack, rho_of(sample), grid)
+        scale = (int(n) / float(d["n_walkers"])) ** 0.5
+        cache[sample] = dict(key=key, value=dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n),
                                                  n_direct=int(d["n_walkers"]), scale=scale,
-                                                 direct_ms=float(d["T2lm_ms"]),
-                                                 measured_on=os.path.basename(path)))
+                                                 direct_ms=float(d["T2lm_ms"]), seed=int(seed),
+                                                 image_sha256=sha256_of(image)))
         with open(cache_path, "w") as fh:
             json.dump(cache, fh, indent=1, sort_keys=True)
     return cache[sample]["value"]
@@ -360,7 +354,7 @@ def t2b_systematic(work_dir):
 
 def family(data_dir, work_dir, *, samples, dry, create_dataset):
     rep = reproduction(work_dir)
-    walk_rec = pre(work_dir, "walk")["packs"]
+    window = max(SAMPLES[s]["window_s"] for s in samples)
     grid = dict(T2_GRID, sample_ms=INVERT_MS, solver=SOLVER)
     text = licence_text(os.path.join(work_dir, ".licence-cache"))
 
@@ -376,7 +370,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
                                     f"released 450^3 sub-volume, one label per voxel")
                     for s in samples))]
 
-    se = {s: measured_se(s, work_dir, grid) for s in samples if s in PURE}
+    se = {s: measured_se(s, data_dir, work_dir, grid, T=window) for s in samples if s in PURE}
     quantities = tuple(ReferenceQuantity(
         substrate=s, name="T2_log_mean",
         published=Published(
@@ -396,11 +390,11 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
             value=float(se[s]["direct_ms"]), unit="ms", se=float(se[s]["se"]), se_kind="delta_method",
             se_derivation=(
                 "the delta method over walkers on the log-mean (talabi_micro_ct_rocks.log_mean_gradient), "
-                f"MEASURED at record time on this family's own {s.lower()}.rpk -- {se[s]['se_pack']:.6f} over "
-                f"{se[s]['n_pack']:,} walkers at the same rho2, channel and grid -- and scaled to the direct "
+                f"MEASURED at record time on a walk of this family's own -- {se[s]['se_walk']:.6f} over "
+                f"{se[s]['n_walk']:,} walkers at the same rho2, channel and grid -- and scaled to the direct "
                 f"walk's {se[s]['n_direct']:,} by 1/sqrt(N) (x {se[s]['scale']:.6f}). The direct walk's own "
                 f"per-walker decays were not retained; the relative per-echo spread is a property of the "
-                f"substrate and the estimator, not of the pack"),
+                f"substrate and the estimator, not of the walk"),
             n_walkers=int(se[s]["n_direct"]), grid=grid, solver=SOLVER,
             source="examples/validation/ling_sand_packs.py, recorded in this family's direct.json by the "
                    "DIRECT fused-engine walk at the walker count and step stated with it; that walk is read, "
@@ -459,18 +453,12 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
                    "absence of a printed number costs is the reference's uncertainty -- it is 0.0 with a "
                    "reason, so the `published-` comparison cannot be failed on and its disagreement is "
                    "recorded instead."),
-            windows=("The five packs do not share a window: 3.5 s for the two quartz-rich packs (35,000 echoes) "
-                     "and 2.0 s for the three garnet-rich ones (20,000 echoes), each the extent of ITS OWN "
-                     "released train. The design's window is the longest and each pack's own is in the walk "
-                     "record.")))
+            windows=("The five packs share one window, the longest released train's 3.5 s: the two quartz-rich "
+                     "packs' trains span it (35,000 echoes) and the three garnet-rich ones' 2.0 s (20,000 echoes) "
+                     "is its prefix, read within the same walk.")))
 
     design = Design(
-        window_s=max(SAMPLES[s]["window_s"] for s in samples), dt_save_s=DT_SAVE,
-        save_grid_why=("1 ms is the grid the log-mean is stable on (measured on the Imperial rocks: a 20 ms "
-                       "sampling moved it by a factor of two) and it holds every 100 us echo of their train "
-                       "within a save. Each PUBLISHED pack's own window is its released train's extent, which "
-                       "is why the five do not share one and each is in the walk record"),
-        K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
+        window_s=window, K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
         tiers=(Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA),
                Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,
@@ -485,17 +473,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
         specs={s: (lambda ss=s: spec_of(ss, data_dir, work_dir)) for s in samples},
         pack_id={s: f"ling-sand-packs/{s.lower()}" for s in samples},
         reproduce=reproduce, served_vs_channel=served_vs_channel, served_tier="contact",
-        walk=walk_of(data_dir, work_dir),
-        recorded={s: RecordedWalk(
-            pack_path=os.path.join(work_dir, "packs", f"{s.lower()}.rpk"),
-            sub_steps=int(walk_rec[s]["sub_steps"]),
-            illegal_crossings=int(walk_rec[s]["illegal_crossings"]),
-            evidence=(f"records/pre-protocol/walk.json, packs.{s}: the walk that produced the pack reported "
-                      f"sub_steps {walk_rec[s]['sub_steps']}, {walk_rec[s]['illegal_crossings']} refused steps, "
-                      f"{walk_rec[s]['walk_peak_rss_gb']} GB walk peak and "
-                      f"{walk_rec[s]['pack_peak_rss_gb']} GB pack peak over "
-                      f"{walk_rec[s]['seconds']} + {walk_rec[s]['pack_seconds']} s, in "
-                      f"{walk_rec[s]['log']}")) for s in samples})
+        walk=walk)
 
     publication = Publication(repo=REPO, licence=LICENCE, citation=CITATION, snippet=snippet,
                               snippet_substrate=("1_G100" if "1_G100" in samples else sorted(samples)[0]),
