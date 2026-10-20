@@ -107,7 +107,7 @@ class ColumnarPack:
         self.uri = uri; self.src = Source(uri, workers=workers)
         m = json.loads(self.src.text("manifest.json")); self.meta, self.columns = m["meta"], m["columns"]
         from .replay import _refuse_predating
-        _refuse_predating(self.meta, uri)
+        _refuse_predating(self.meta, uri, tensors=list(self.columns))
         self.index = json.loads(self.src.text("index.json"))
         self.n_rows = int(self.index["n_rows"]); self.band_groups = list(self.index["band_groups"]); self.path_groups = list(self.index.get("path_groups", []))
         self.grid = _grid_of(self.meta)

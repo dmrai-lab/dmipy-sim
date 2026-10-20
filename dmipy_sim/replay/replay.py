@@ -68,7 +68,7 @@ def read_rpk(path):
         meta = json.loads(hdr.get("rpk") or hdr.get("json") or "{}")
         for k in f.keys():
             arrays[k] = f.get_tensor(k)
-    _refuse_predating(meta, path)
+    _refuse_predating(meta, path, tensors=arrays)
     pack = ReplayPack(arrays, meta, source=str(path))
     pack.susceptibility_field
     return pack
@@ -81,13 +81,21 @@ REFUSED_KEYS = (("walk_params", "n_t"), ("walk_params", "dt_traj"), ("walk_param
 #: channel is ``susc_field_basis``), an occupancy column of ``kind`` ``label`` / ``fraction``
 REFUSED_CHANNEL_KEYS = ("susceptibility_path",)
 REFUSED_COLUMN_KINDS = ("label", "fraction")
+#: the tensor keys a pack of this revision never carries (the registry's refused forms): the identity codec's raw
+#: samples, the occupancy and contact on a grid, the field grid as a field route, the retired codecs
+REFUSED_TENSORS = ("positions", "compartment", "boundary_local_time", "susc_field_basis", "dlog_boundary_unit",
+                   "blt_counts", "blt_cols", "blt_qvals", "blt_dense_q", "susc_field_0", "susc_field_C", "susc_field_S",
+                   "dct_coeffs", "modes", "blt_dct_coeffs")
+REFUSED_TENSOR_INFIX = "_rle_"
 
 
-def _refuse_predating(meta, where):
-    """Refuse, by name, a header this revision does not read (RPK.md 9.5.1): ``n_t`` or ``dt_traj`` (in
-    ``walk_params``, its window table or ``compression``), ``compression.basis``, ``walk_params.cell_size``, the codec
-    ``identity``, or no ``walk_params.block``. Its tensors are not decoded: a coefficient read against the wrong basis
-    is a plausible number, not an error. A pack is never converted; it is walked again."""
+def _refuse_predating(meta, where, tensors=()):
+    """Refuse, by name, a pack this revision does not read (RPK.md 9.5.1): a header with ``n_t`` or ``dt_traj`` (in
+    ``walk_params``, its window table or ``compression``), ``compression.basis``, ``walk_params.cell_size``, the
+    channel ``susceptibility_path``, the codec ``identity``, or no ``walk_params.block``; a tensor of the registry's
+    refused forms among ``tensors`` (their names; a window's ``s{i}/`` prefix is read through). Its tensors are not
+    decoded: a coefficient read against the wrong basis is a plausible number, not an error. A pack is never
+    converted; it is walked again."""
     wp = meta.get("walk_params") or {}
     cx = meta.get("compression") or {}
     found = [f"{a}.{b}" for a, b in REFUSED_KEYS if b in (wp if a == "walk_params" else cx)]
@@ -100,6 +108,10 @@ def _refuse_predating(meta, where):
             found.append(f"compression.channels.compartment.columns[{col.get('name')}].kind = {col['kind']}")
     if cx.get("method") == "identity":
         found.append("compression.method = identity")
+    for key in tensors:
+        base = str(key).split("/")[-1]
+        if base in REFUSED_TENSORS or REFUSED_TENSOR_INFIX in base:
+            found.append(f"the tensor {key}")
     if not found and "block" not in wp:
         found.append("no walk_params.block")
     if found:
