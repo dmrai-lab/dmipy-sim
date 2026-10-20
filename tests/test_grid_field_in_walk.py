@@ -1,8 +1,8 @@
 """A gridded susceptibility field (:class:`FieldGrid`: a mesh sheath, a myelinated cylinder, a packed cell) is read
 BY THE WALK: :func:`simulate_trajectories` with ``field_basis=`` reads the grid's channels at the kernel's position
 every ``field_read_interval`` seconds (every physics step when the rule asks below the step), accumulates the
-trapezoid of the reads as the field's cosine modes per window (and, on the raw subset, as block means), as the strand
-route does with ``adaptive_steps=True``. ``walk_spec`` reads every gridded source this way, and the pack's path
+trapezoid of the reads as the field's cosine modes per window (and keeps the raw subset's reads at their instants), as
+the strand route does with ``adaptive_steps=True``. ``walk_spec`` reads every gridded source this way, and the pack's path
 channel is encoded from those modes."""
 import dataclasses
 
@@ -41,16 +41,12 @@ def _packed():
     return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, np.asarray(c), 10 * UM, N_max=4, D_intra=D0, D_extra=D0)
 
 
-def _interval_means(fg, fine, n_sub, n_read=1):
+def _reads(fg, fine, n_read=1):
     """The rule, read after the walk: the grid at every ``n_read``-th sub-step position of a walk that kept every
-    sub-step (``fine``, a block of one step), each read interval's TRAPEZOID of its two reads averaged over a block
-    of ``n_sub`` steps; sample 0 the start position's read."""
+    sub-step (``fine``, a block of one step), read 0 the start position's -- ``(n_w, n_reads + 1, n_ch)``."""
     n_w = fine.shape[0]
     ch = fg.channels(np.asarray(fine, np.float64).reshape(-1, 3)).reshape(n_w, fine.shape[1], -1)
-    reads = ch[:, ::n_read]                                                        # the reads, every n_read-th step
-    trap = 0.5 * (reads[:, :-1] + reads[:, 1:])                                    # one per read interval
-    per_block = n_sub // n_read
-    return np.concatenate([ch[:, :1], trap.reshape(n_w, -1, per_block, ch.shape[-1]).mean(2)], axis=1)
+    return ch[:, ::n_read]
 
 
 def _modes_of(fg, fine, dt_step, T, K, n_read=1):
@@ -83,45 +79,48 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
-def test_the_in_walk_sample_is_the_interval_mean_of_the_grid_at_the_sub_steps(case):
-    """(a) The walk in blocks of ``N_SUB`` sub-steps, reading the field in the walk at every step (the rule asks below
-    the step: the read IS the step), against the same walk kept at every sub-step (its raw subset, every walker) and
-    the grid read afterwards: the positions are the same walk (to float32 rounding: the two are different programs,
-    and XLA may round a fused step differently), and every block mean of the raw subset (``raw_field``) is the
-    trapezoid mean of the grid over its block's sub-step positions, to float32 rounding (the device reads in float32
-    at the position the step kernel holds -- the in-cell one of a packed cell, whose grid is periodic). The modes
-    the walk accumulates are the block means' cosine projection (``sqrt(h)`` DCT-II, the k = 0 mode to 1e-6)."""
+def test_the_in_walk_read_is_the_grid_at_the_sub_steps(case):
+    """(a) The walk in blocks of ``N_SUB`` sub-steps, reading the field in the walk at every step, against the same
+    walk kept at every sub-step (its raw subset, every walker) and the grid read afterwards: the positions are the
+    same walk (to float32 rounding: the two are different programs, and XLA may round a fused step differently), and
+    every read of the raw subset (``raw_field``, at the walk's read instants) is the grid at that sub-step's position,
+    to float32 rounding (the device reads in float32 at the position the step kernel holds -- the in-cell one of a
+    packed cell, whose grid is periodic). The modes the walk accumulates are the cosine projection of the reads'
+    trapezoids (the k = 0 mode to 1e-6), and the read series' quadratic variation is that of the reads."""
     geom, fg, tiers = CASES[case]()
     T, dt = 2e-3, 2e-4
     w = d.simulate_trajectories(120, D0, geom, T, dt, seed=4, sub_steps=N_SUB, tiers=tiers, require_gpu=False,
-                                field_basis=fg, raw_subset=120)
+                                field_basis=fg, raw_subset=120, field_read_interval=dt / N_SUB)
     fine = d.simulate_trajectories(120, D0, geom, T, dt / N_SUB, seed=4, sub_steps=1, tiers=tiers, require_gpu=False,
                                    raw_subset=120)
     np.testing.assert_allclose(w.raw_positions, fine.raw_positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
     fr = w.block["field_read"]
-    assert w.field_basis is fg and fr["n_read"] == 1 and fr["at_step"] and w.field_read_interval == pytest.approx(w.dt_sim)
+    assert w.field_basis is fg and fr["n_read"] == 1 and w.field_read_interval == pytest.approx(w.dt_sim)
     n_ch = 7 if fg.basis.get("aniso_G") is None else 13
-    assert w.raw_field.shape == (120, w.n_blocks + 1, n_ch)
+    assert w.raw_field.shape == (120, w.n_blocks * N_SUB + 1, n_ch) and w.reads_per_block == N_SUB
     assert w.field_coeffs.shape == (120, w.n_windows, w.K_c3, n_ch)
-    ref = _interval_means(fg, fine.raw_positions, N_SUB)
+    ref = _reads(fg, fine.raw_positions)
     scale = np.abs(ref).max()
-    # measured: 4.9e-7 (sphere, clamped dipole grid) and 6.4e-6 (packed cell, read in-cell on the device against the
-    # unwrapped position wrapped on the host) of the channel scale, which changes by 0.34-0.74 of it between saves
+    # the device reads in float32 at the kernel's position (in-cell on a packed cell, against the unwrapped position
+    # wrapped on the host here): within 2e-5 of the channel scale, which changes by 0.34-0.74 of it between saves
     assert np.abs(w.raw_field - ref).max() <= 2e-5 * scale
+    qv = (np.diff(np.asarray(w.raw_field, np.float64), axis=1) ** 2).sum(1)              # the read series' QV per walker
+    np.testing.assert_allclose(np.asarray(w.qv_field_increments, np.float64)[:, 0], qv, rtol=1e-3, atol=1e-6 * qv.max())
     # the modes: c_k = int e_k b dt of the window, against the exact projection of the dense reads' trapezoids; the
     # k = 0 mode is sqrt(h) times the block means' k = 0 DCT-II coefficient
     assert w.n_windows == 1
     mode_ref = _modes_of(fg, fine.raw_positions, w.dt_sim, w.T_window, w.K_c3)
     modes = np.asarray(w.field_coeffs, np.float64)[:, 0]
     assert np.abs(modes - mode_ref).max() <= 5e-3 * np.abs(mode_ref).max()   # measured 4.5e-4 (packed cell), 2.4e-3 (sphere, positions only)
-    k0 = np.sqrt(w.h) * np.asarray(w.raw_field, np.float64)[:, 1:].sum(1) / np.sqrt(w.n_blocks)
+    r = np.asarray(w.raw_field, np.float64)
+    k0 = w.field_read_interval * (0.5 * (r[:, :-1] + r[:, 1:])).sum(1) / np.sqrt(w.T_window)
     np.testing.assert_allclose(modes[:, 0], k0, rtol=0, atol=1e-6 * np.abs(k0).max())
 
 
 def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     """(b) A given ``field_read_interval`` of two steps reads the field every second step (the largest divisor of the
     block's steps within it): the walk itself is unchanged -- the same positions, bands and contact, only the field
-    differs, each block mean the trapezoid of ITS reads -- and an interval below the step is the step."""
+    differs, the raw subset keeping ITS reads -- and an interval below the step is the step."""
     geom, fg = _packed(), field_grid_of(_packed(), res=0.1 * UM)
     T, dt = 1.8e-3, 2e-4
     dt_sim = dt / N_SUB
@@ -138,9 +137,10 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     np.testing.assert_allclose(w2.boundary_bands, w1.boundary_bands, rtol=1e-4, atol=1e-12)
     fine = d.simulate_trajectories(80, D0, geom, T, dt_sim, seed=5, sub_steps=1, require_gpu=False, raw_subset=80)
     for w, n_read in ((w1, 1), (w2, 2)):
-        ref = _interval_means(fg, fine.raw_positions, N_SUB, n_read)
-        assert np.abs(w.raw_field - ref).max() <= 2e-5 * np.abs(ref).max()
-    assert np.abs(w2.raw_field - w1.raw_field).max() > 1e-4 * np.abs(w1.raw_field).max()      # the coarser read is a different quadrature
+        ref = _reads(fg, fine.raw_positions, n_read)
+        assert w.raw_field.shape == ref.shape and np.abs(w.raw_field - ref).max() <= 2e-5 * np.abs(ref).max()
+    a, b = np.asarray(w1.field_coeffs, np.float64), np.asarray(w2.field_coeffs, np.float64)
+    assert np.abs(b - a).max() > 1e-5 * np.abs(a).max()                         # the coarser read is a different quadrature
     with pytest.raises(ValueError, match="go with field_basis"):
         d.simulate_trajectories(8, D0, geom, T, dt, seed=5, require_gpu=False, field_read_interval=2 * dt_sim)
 

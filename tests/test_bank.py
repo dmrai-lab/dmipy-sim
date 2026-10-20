@@ -190,12 +190,15 @@ def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capa
 
 
 def test_the_modes_are_the_block_means_cosine_transform():
-    """The accumulated modes against the raw subset's block means: ``c_k = sqrt(h) X_k`` with ``X`` the orthonormal
-    DCT-II of the means (the block-mean quadrature of the trapezoid reads), the k = 0 mode the window integral."""
+    """The accumulated modes against the block means of the raw subset's reads (each block's trapezoids of the reads
+    at the walk's read instants, over the block): ``c_k = sqrt(h) X_k`` with ``X`` the orthonormal DCT-II of the means
+    (the block-mean quadrature of the trapezoid reads), the k = 0 mode the window integral."""
     from scipy.fft import dct
     w = _susc_walk(120, seed=5)
     from dmipy_sim.replay.compression import quadrature_rel
-    means = np.asarray(w.raw_field, np.float64)[:, 1:, :]                                  # (n_w, n_blocks, n_ch)
+    r = np.asarray(w.raw_field, np.float64)
+    trap = 0.5 * (r[:, :-1] + r[:, 1:])                                                    # one per read interval
+    means = trap.reshape(r.shape[0], w.n_blocks, w.reads_per_block, -1).mean(2)            # (n_w, n_blocks, n_ch)
     X = dct(means, type=2, norm="ortho", axis=1)[:, :w.K_c3, :] * np.sqrt(w.h)
     c = np.asarray(w.field_coeffs, np.float64)[:, 0]
     scale = np.abs(X).max(axis=(0, 1))

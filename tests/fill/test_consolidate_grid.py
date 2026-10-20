@@ -16,7 +16,7 @@ from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_certific
 from dmipy_sim.replay.replay import ReplayPack, read_rpk, write_rpk
 from dmipy_sim.spec import StratifiedByVoxel, walk_spec
 from tests.conftest import spec_without_source
-from tests.test_field_read_interval import BLOCK
+from tests.test_field_read_interval import BLOCK, FINE
 
 
 def as_written_by_a_walker(pack, path):
@@ -122,7 +122,7 @@ def field_blocks(tmp_path_factory):
     spec = disco_spec(tck, dia, side_m=20e-6)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
     packs = []
-    for block, interval in ((0, None), (1, BLOCK)):
+    for block, interval in ((0, FINE), (1, BLOCK)):
         want = np.zeros(grid.shape, np.int64); want[block] = 6
         w = walk_spec(spec, None, 8e-4, BLOCK, seed=3 + block, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
                       field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}),
@@ -139,8 +139,16 @@ def test_a_layout_of_blocks_reads_the_field_at_the_coarsest(field_blocks, tmp_pa
     man, idx = consolidate(wdir, str(tmp_path / "out"), blocks=[0, 1], id="t/field", grid=grid)
     meta = man["meta"]
     assert meta["walk_params"]["field_read_interval"] == b1.meta["walk_params"]["field_read_interval"] == pytest.approx(BLOCK)
-    assert meta["replay_envelope"]["field_read"] == b1.meta["replay_envelope"]["field_read"]
-    assert meta["fidelity"]["terms"]["field_read"] == b1.meta["fidelity"]["terms"]["field_read"] > b0.meta["fidelity"]["terms"]["field_read"]
+    env, env1 = meta["replay_envelope"]["field_read"], b1.meta["replay_envelope"]["field_read"]
+    assert {k: v for k, v in env.items() if k != "B0_chi_max_T"} == {k: v for k, v in env1.items() if k != "B0_chi_max_T"}
+    # the term at the coarsest interval on the blocks' read series together (walker-weighted)
+    from dmipy_sim.engine.accumulate import field_read_term
+    n = np.asarray([b.meta["walk_params"]["n_walkers"] for b in (b0, b1)], np.float64)
+    qv = (n[:, None] * np.asarray([b.meta["walk_params"]["qv"]["field_increments"] for b in (b0, b1)])).sum(0) / n.sum()
+    consts = np.max([b.meta["compression"]["channels"]["susc_field_basis"]["read"]["constants"] for b in (b0, b1)], axis=0)
+    at = env1["term_at"]
+    assert meta["fidelity"]["terms"]["field_read"] == pytest.approx(field_read_term(BLOCK, qv, at["B0"], at["chi"], consts))
+    assert meta["fidelity"]["terms"]["field_read"] > b0.meta["fidelity"]["terms"]["field_read"]
     assert [s["field_read_interval"] for s in meta["provenance"]["shards"]] == [b0.meta["walk_params"]["field_read_interval"], BLOCK]
     t = meta["fidelity"]["terms"]
     assert meta["fidelity"]["err_max"] >= t["truncation"] + sum(t["quadrature"].values()) + t["field_read"] + t["rounding"] - 1e-15

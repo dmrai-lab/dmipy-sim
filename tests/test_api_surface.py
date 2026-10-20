@@ -718,6 +718,46 @@ def test_no_spelling_of_the_save_grid_survives_in_the_package():
     assert not hits, f"the save grid is spelled in {hits}"
 
 
+# ── the field read is charged from the walk's measured read series, never from an assumed gradient ──────────────
+#: The names of the field read's assumed-gradient route: the basis's largest gradient over a sheath and the rule and
+#: record keys built on it. The read's term is ``(gamma B0 chi)^2 dt_f^2 / 12 x QV`` of the read series (RPK.md
+#: 9.5.5), measured by the walk; nothing in the package spells the assumed maximum.
+_GRADIENT_ROUTE_NAMES = (r"gradient_scale", r"grad_b_per_m", r"grad_b", r"thinnest_sheath_m", r"_field_rule_inputs")
+
+
+def test_the_field_read_has_no_assumed_gradient():
+    pat = re.compile(r"\b(?:" + "|".join(_GRADIENT_ROUTE_NAMES) + r")\b")
+    hits = {}
+    for f in sorted(_SRC.rglob("*.py")):
+        found = sorted({m.group(0) for m in pat.finditer(f.read_text())})
+        if found:
+            hits[str(f.relative_to(_SRC))] = found
+    assert not hits, f"the assumed-gradient field read is spelled in {hits}"
+    import inspect
+    from dmipy_sim.engine import accumulate
+    from dmipy_sim.fields.strand_field import StrandFieldBasis, StrandFieldRecord
+    from dmipy_sim.fields.susceptibility_field import FieldGrid, FieldGridRecord
+    assert not hasattr(accumulate, "field_read_interval")             # the rule is field_read_rule on a measured QV
+    assert list(inspect.signature(accumulate.field_read_term).parameters)[:4] == ["dt_f", "qv_increments", "B0", "chi"]
+    assert list(inspect.signature(accumulate.field_read_rule).parameters)[:3] == ["qv_increments", "B0", "chi"]
+    for cls in (StrandFieldBasis, StrandFieldRecord, FieldGrid, FieldGridRecord):
+        assert not hasattr(cls, "gradient_scale"), cls.__name__
+    from dmipy_sim.engine.backends import CoefficientBatch
+    assert "field_qv_increments" in CoefficientBatch._fields
+    from dmipy_sim import CoefficientWalk
+    assert "qv_field_increments" in CoefficientWalk.__dataclass_fields__
+
+
+def test_a_field_pack_without_the_read_series_qv_is_refused():
+    """A pack whose field channel carries no ``walk_params.qv.field_increments`` was charged by another rule; it is
+    refused by name, never re-charged."""
+    from dmipy_sim.replay.replay import _refuse_predating
+    meta = dict(walk_params=dict(block=dict(h=1e-4), qv=dict(positions=[1.0, 1.0, 1.0], field=[0.0])),
+                compression=dict(channels=dict(susc_field_basis=dict(K=4))))
+    with pytest.raises(ValueError, match=r"This pack carries `no walk_params.qv.field_increments`.*re-walk"):
+        _refuse_predating(meta, "old.rpk")
+
+
 def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     """The fifth positional argument of every producer is ``block_h`` (the accumulation block, seconds); none takes a
     walk's ``n_t`` or a ``dt_save``; every one returns a ``CoefficientWalk``, whose raw subset is its own arrays (no

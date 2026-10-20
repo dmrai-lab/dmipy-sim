@@ -83,12 +83,13 @@ def test_the_candidate_cache_is_the_full_gather():
 
 
 def test_the_walk_samples_the_field_it_carries():
-    """With one round per block the block mean is the trapezoid of the reads at the block's two ends: the walk's own
-    block means equal the standalone basis evaluated at the stored positions (the first sample the start's read), the
-    domain mean subtracted -- exactly so when
-    the interval's segment list cannot change (straight strands, every strand within the cutoff throughout); a
-    strand crossing the cutoff or a joint between the interval's gather and its end is the difference otherwise,
-    at the size of that strand's field at the cutoff."""
+    """The raw subset keeps the walk's own field reads at its read instants: with one round per block the reads are
+    at the block ends, and equal the standalone basis evaluated at the stored positions (the first the start's read),
+    the domain mean subtracted -- exactly so when the interval's segment list cannot change (straight strands, every
+    strand within the cutoff throughout); a strand crossing the cutoff or a joint between the interval's gather and
+    its end is the difference otherwise, at the size of that strand's field at the cutoff. With a read every round of
+    four per block the reads at the block ends are those and the reads between them are the field along the way; the
+    read series' quadratic variation is the reads' own."""
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     cls = [np.array([[x, 0, -30e-6], [x, 0, 30e-6]]) for x in (-6e-6, 0, 6e-6)]
     g = d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=False, box=(np.full(3, -10e-6), np.full(3, 10e-6)))
@@ -98,14 +99,18 @@ def test_the_walk_samples_the_field_it_carries():
                                        sub_steps=64, steps_per_round=64, field_basis=sf, raw_subset=400)
     assert w.raw_field.shape == (400, 5, 13) and w.field_basis is sf and w.has_field
     at = [sf.channels(w.raw_positions[:, k]) for k in range(5)]
-    np.testing.assert_allclose(w.raw_field[:, 0], at[0], rtol=0, atol=2e-6)
-    for k in range(1, 5):
-        np.testing.assert_allclose(w.raw_field[:, k], 0.5 * (at[k - 1] + at[k]), rtol=0, atol=2e-6)
-    # several rounds per block: the mean over the interval, not the endpoint
+    for k in range(5):
+        np.testing.assert_allclose(w.raw_field[:, k], at[k], rtol=0, atol=2e-6)
+    qv = (np.diff(np.asarray(w.raw_field, np.float64), axis=1) ** 2).sum(1)
+    np.testing.assert_allclose(np.asarray(w.qv_field_increments, np.float64)[:, 0], qv, rtol=1e-4, atol=1e-6 * qv.max())
+    # a read every round of four per block: the block ends among the reads, the rounds between them
     w2 = simulate_trajectories_adaptive(400, D, g, 1e-3, 2.5e-4, seed=4, require_gpu=False, walker_batch_size=400,
-                                        sub_steps=64, steps_per_round=16, field_basis=sf, raw_subset=400)
-    end = sf.channels(w2.raw_positions[:, 2]); assert np.abs(w2.raw_field[:, 2] - end).max() > 1e-4
-    assert np.abs(w2.raw_field[:, 2] - end).mean() < np.abs(w2.raw_field[:, 2]).mean()
+                                        sub_steps=64, steps_per_round=16, field_basis=sf, raw_subset=400,
+                                        field_read_interval=2.5e-4 / 4)
+    assert w2.raw_field.shape == (400, 17, 13) and w2.reads_per_block == 4
+    for k in range(5):
+        np.testing.assert_allclose(w2.raw_field[:, 4 * k], sf.channels(w2.raw_positions[:, k]), rtol=0, atol=2e-6)
+    assert np.abs(w2.raw_field[:, 2] - w2.raw_field[:, 4]).max() > 1e-4         # the field along the way
 
 
 def test_every_class_steps_within_the_band_term():

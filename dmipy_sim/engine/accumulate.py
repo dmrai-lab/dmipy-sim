@@ -178,7 +178,8 @@ def field_read_steps(dt_f_rule, dt_sim, sub_steps):
     than a step (a read along the chord between two steps carries the same bridge deviation: the read is never
     sub-stepped), the block when the rule allows more than one."""
     sub_steps = int(sub_steps)
-    n_max = int(math.floor(float(dt_f_rule) / float(dt_sim) * (1.0 + 1e-9)))
+    ratio = float(dt_f_rule) / float(dt_sim) * (1.0 + 1e-9)
+    n_max = sub_steps if not math.isfinite(ratio) else int(math.floor(ratio))
     n = 1
     for d in range(1, sub_steps + 1):
         if sub_steps % d == 0 and d <= n_max:
@@ -250,12 +251,13 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
     weight = None
     if qv_all is not None:
         weight = np.asarray(qv_all, np.float64)
-    out = dict(rule=("given" if given is not None else "pilot"), dt_f_rule=float(dt_rule), dt_f=float(dt_f), n_read=int(n_read),
+    finite = lambda x: float(x) if math.isfinite(float(x)) else None          # a series that does not vary sets no interval
+    out = dict(rule=("given" if given is not None else "pilot"), dt_f_rule=finite(dt_rule), dt_f=float(dt_f), n_read=int(n_read),
                reads_per_block=int(steps // n_read), at_step=bool(n_read == 1 and dt_rule < step_s), B0=float(B0), chi=float(chi),
                floor=float(floor), T_e=float(T_e), step_s=step_s, constant=READ_CONSTANT,
                constants=(None if constants is None else [float(x) for x in constants]),
                pools={str(name): dict(walkers=int(n), qv_increments=[float(x) for x in np.asarray(qv, np.float64).reshape(-1)],
-                                      dt_f_rule=float(rules[name]))
+                                      dt_f_rule=finite(rules[name]))
                       for name, (qv, n) in pools.items()})
     if channels is not None:
         out["channels"] = [str(c) for c in channels]
@@ -263,7 +265,7 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
         out["measured_constants"] = {str(d): [None if not np.isfinite(x) else float(x) for x in k] for d, k in measured.items()}
     if weight is not None:
         out["term_pilot"] = float(field_read_term(dt_f, weight, B0, chi, constants))
-        out["B0_chi_max_T_pilot"] = float(field_read_B0_chi_max(dt_f, weight, floor, constants))
+        out["B0_chi_max_T_pilot"] = finite(field_read_B0_chi_max(dt_f, weight, floor, constants))
     return out
 
 

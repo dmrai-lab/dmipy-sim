@@ -823,6 +823,11 @@ def _envelope_identity(env):
     return {k: v for k, v in env.items() if k != "field_read"} if isinstance(env, dict) else env
 
 
+def _finite_or_none(x):
+    """``x`` as a float, or ``None`` where it is not finite (a read series that does not vary bounds no ``B0 chi``)."""
+    return float(x) if np.isfinite(float(x)) else None
+
+
 def _merged_qv(qvs, n):
     """``{"qv": ...}``: the walkers' mean quadratic variation of shards of one walk (RPK.md 9.5.5), each entry the
     walker-weighted mean of the shards' (``n`` their walker counts); ``{}`` when a shard carries none."""
@@ -887,7 +892,7 @@ def charge_field_read(meta, records):
     meta["walk_params"] = wp
     if coarse["envelope"] is not None:
         meta["replay_envelope"] = dict(meta["replay_envelope"], field_read=dict(
-            coarse["envelope"], B0_chi_max_T=float(field_read_B0_chi_max(coarse["interval"], qv, at.get("floor") or 1e-3, consts))))
+            coarse["envelope"], B0_chi_max_T=_finite_or_none(field_read_B0_chi_max(coarse["interval"], qv, at.get("floor") or 1e-3, consts))))
     comp = dict(meta["compression"]); chans = dict(comp["channels"]); pm = dict(chans["susc_field_basis"])
     for key, val in (("read", coarse["read"]), ("read_interval", coarse["channel_interval"])):
         if val is not None:
@@ -1735,8 +1740,8 @@ def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
     term = field_read_term(read["dt_f"], read["qv_increments"], read["B0"], read["chi"], read.get("constants"))
     return dict(quadrature=float(0.5 * v.max()), field_read=float(term), B0=B0, chi=float(chi),
                 read=dict(B0=float(read["B0"]), chi=float(read["chi"]), interval_s=float(read["dt_f"]),
-                          B0_chi_max_T=float(field_read_B0_chi_max(read["dt_f"], read["qv_increments"], read.get("floor", 1e-3),
-                                                                   read.get("constants")))))
+                          B0_chi_max_T=_finite_or_none(field_read_B0_chi_max(read["dt_f"], read["qv_increments"], read.get("floor", 1e-3),
+                                                                             read.get("constants")))))
 
 
 # ------------------------------------------------------------------------------------------ the pack from the walk
@@ -2081,7 +2086,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         # RPK.md 9.4 rule 5: a read at the step narrows the pack's reach, stated in the envelope, never hidden in fidelity
         rd = field_terms["read"]
         replay_env["field_read"] = dict(interval_s=float(cw.field_read_interval), at_step=bool(fr.get("at_step", False)),
-                                        B0_chi_max_T=float(rd["B0_chi_max_T"]),
+                                        B0_chi_max_T=rd["B0_chi_max_T"],
                                         term_at=dict(B0=rd["B0"], chi=rd["chi"], floor=fr.get("floor")))
     meta = dict(
         rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,

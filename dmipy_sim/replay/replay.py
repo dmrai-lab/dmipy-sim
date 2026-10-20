@@ -92,7 +92,8 @@ REFUSED_TENSOR_INFIX = "_rle_"
 def _refuse_predating(meta, where, tensors=()):
     """Refuse, by name, a pack this revision does not read (RPK.md 9.5.1): a header with ``n_t`` or ``dt_traj`` (in
     ``walk_params``, its window table or ``compression``), ``compression.basis``, ``walk_params.cell_size``, the
-    channel ``susceptibility_path``, the codec ``identity``, or no ``walk_params.block``; a tensor of the registry's
+    channel ``susceptibility_path``, the codec ``identity``, no ``walk_params.block``, or a field channel without
+    ``walk_params.qv.field_increments`` (its field read charged by a retired rule); a tensor of the registry's
     refused forms among ``tensors`` (their names; a window's ``s{i}/`` prefix is read through). Its tensors are not
     decoded: a coefficient read against the wrong basis is a plausible number, not an error. A pack is never
     converted; it is walked again."""
@@ -114,6 +115,8 @@ def _refuse_predating(meta, where, tensors=()):
             found.append(f"the tensor {key}")
     if not found and "block" not in wp:
         found.append("no walk_params.block")
+    if not found and "susc_field_basis" in chans and "field_increments" not in (wp.get("qv") or {}):
+        found.append("no walk_params.qv.field_increments")
     if found:
         raise ValueError(f"{where}: This pack carries `{found[0]}`, which this revision does not read; re-walk the pack "
                          "with a conformant producer. A pack is never converted."

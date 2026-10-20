@@ -71,8 +71,10 @@ print(round(pack.meta["fidelity"]["floor_max"], 2))                # the certifi
 - `blt_*`: the boundary local time, for surface relaxivity.
 - `susc_path_*`, when the substrate has a field source: the cosine modes of the field's channels along the path,
   for the sheath's susceptibility at a scanner's field. The walk reads the field itself every `field_read_interval`
-  seconds, derived from the basis's gradient scale, and accumulates `K_c3` modes per window, a band a pilot fixes
-  before the walk (`bank.derive_field_band`); `compression.channels.susc_field_basis` records `K` and `T`.
+  seconds, which a pilot derives from its read series' measured quadratic variation (`walk_params.qv.field_increments`
+  is the walk's own, and `fidelity.terms.field_read` is charged on it), and accumulates `K_c3` modes per window, a
+  band the same pilot fixes before the walk (`bank.derive_field_band`); `compression.channels.susc_field_basis`
+  records `K` and `T`.
 
 A pack's susceptibility field, `pack.susceptibility_field`, is its substrate's pools' own: `"present"` when a pool
 carries a `susceptibility` block (it is magnetic), `"absent"` when none does and the field is identically zero. Three
