@@ -651,6 +651,72 @@ def request_struct_fields(*, n_blocks, sub_steps, step_l, kappa_over_D, record, 
                kappa_over_D=_f32(kappa_over_D), record=int(bool(record)), count=int(bool(count)), budget=int(budget))
 
 
+#: the coefficient form's request keys, in the order the walker reads them after the request's own
+COEFFICIENT_REQUEST_KEYS = ("K", "dt_sim", "n_b", "m", "ring", "events", "field_K_c3", "field_read_every", "field_read_interval")
+#: the terms a block's ring projects at a time, over the table's ``m + 1`` orders (the CUDA walker's default ring)
+RING_TERMS = 256
+
+
+def field_read_every(dt_f, plan, block):
+    """The rounds between an adaptive walk's reads of the field for a read interval ``dt_f`` (s) and a block of
+    ``block`` physics steps: the most rounds, at least one, that divide the block's rounds and last no longer than
+    ``dt_f``; 0 (``dt_f = 0``) reads after every step."""
+    if float(dt_f) == 0.0:
+        return 0
+    rounds = int(block) // int(plan.steps_per_round)
+    best = 1
+    for r in range(1, rounds + 1):
+        if rounds % r == 0 and r * float(plan.dt_round) <= float(dt_f) * (1.0 + 1e-9):
+            best = r
+    return best
+
+
+def coefficient_request_fields(request):
+    """The coefficient form's request lines of ``request`` (a :class:`WalkRequest` with ``K > 0``), in
+    :data:`COEFFICIENT_REQUEST_KEYS`' order: the band ``K``, the step, the block's steps ``n_b`` (``sub_steps``), the
+    table's order ``m``, the ring (:data:`RING_TERMS` over ``m + 1``), the C1 event capacity, and with the field
+    accumulated (``K_c3 > 0``, an adaptive strand walk) its modes, the rounds between reads
+    (:func:`field_read_every`) and the read interval those rounds make. The block table beside them is
+    :func:`block_table_of`."""
+    K, m = int(request.K), int(request.m)
+    if K <= 0:
+        raise ValueError("a coefficient request needs the band K > 0")
+    block = int(request.sub_steps)
+    lines = dict(K=K, dt_sim=float(request.dt_sim), n_b=block, m=m, ring=RING_TERMS // (m + 1), events=int(request.events))
+    if int(request.K_c3):
+        if request.field is None or request.stepping is None:
+            raise ValueError("K_c3 > 0 accumulates the field of an adaptive strand walk, and this request samples none")
+        every = field_read_every(float(request.field_read_interval), request.stepping, block)
+        lines.update(field_K_c3=int(request.K_c3), field_read_every=int(every),
+                     field_read_interval=float(every * float(request.stepping.dt_round) if every else 0.0))
+    return lines
+
+
+def block_table_of(request):
+    """The block table a coefficient request is walked against, ``(n_blocks, K + 1, m + 1)`` float64 over the walk
+    (:func:`~dmipy_sim.replay.compression.block_table`): one storage window, since a backend accumulates one window
+    per walk (several are refused by name)."""
+    from ..replay.compression import block_table
+    return np.ascontiguousarray(block_table(float(request.T), int(request.n_blocks), int(request.K), int(request.m)), np.float64)
+
+
+def write_coefficient_lines(out_dir, request):
+    """Append ``request``'s coefficient form (:func:`coefficient_request_fields`) to ``out_dir/request.txt``
+    (:func:`write_request_directory` must already have written it) and drop ``table.f64`` (:func:`block_table_of`)
+    and, with the field accumulated, ``field_mean.f32`` beside it: the walker then accumulates the bands as the
+    producer does."""
+    out = Path(out_dir)
+    if not (out / "request.txt").exists():
+        raise FileNotFoundError(f"{out / 'request.txt'} does not exist: write_request_directory(request, ...) first")
+    lines = coefficient_request_fields(request)
+    block_table_of(request).tofile(out / "table.f64")
+    if "field_K_c3" in lines:
+        np.asarray(request.field.basis.mean, np.float32).tofile(out / "field_mean.f32")
+    with open(out / "request.txt", "a") as fh:
+        fh.write("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
+    return out
+
+
 def crop_far_grid(values, origin_m, spacing_m, r0, T, diffusivity):
     """The far grid cropped to what a batch of starts ``r0`` can reach over a walk of ``T`` seconds: the starts'
     bounding box plus eight sigma of the walk's excursion, ``8 sqrt(2 D T)``, and three nodes, so a shard of a large

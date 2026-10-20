@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
-from dmipy_sim.engine.backends import Backend, write_request_directory
+from dmipy_sim.engine.backends import Backend, write_coefficient_lines, write_request_directory
 from dmipy_sim.fill import Recipe
 from dmipy_sim.replay.bank import storage_band_hz
 from dmipy_sim.fill.kit import _block_record, _pool_geometry, _sha256, assemble_request
@@ -38,14 +38,15 @@ class _CaptureBackend(Backend):
         raise _Captured()
 
 
-def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None):
+def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None, K=None, K_c3=None):
     """The live ``WalkRequest`` ``simulate_trajectories_adaptive`` would hand a backend for this pool -- aborted
     before any stepping, by ``_CaptureBackend``."""
     be = _CaptureBackend()
     try:
         simulate_trajectories_adaptive(len(r0), D, geom, T_max, block_h, seed=seed, r0=r0, require_gpu=False,
                                        walker_batch_size=4096, field_basis=field_basis,
-                                       field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band)
+                                       field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band, K=K,
+                                       **({} if field_basis is None else dict(K_c3=K_c3)))
     except _Captured:
         pass
     assert be.request is not None
@@ -103,6 +104,16 @@ def test_kit_layout_sha256_and_sections(field_fake, tmp_path):
         assert _sha256(out / rel) == sha, rel
     # no certificate was built on this hub: the kit carries none, and does not pretend to
     assert not (out / "certificate").exists()
+    # the coefficient form: the walk's block record, every pool's band / block / field lines, the one block table
+    W = kit["walk"]
+    assert W["K"] == 3 and W["block"]["m"] == 3 and W["windows"]["n"] == 1 and "n_t" not in W and "dt_save_s" not in W
+    assert W["T_max_s"] == pytest.approx(W["block"]["h"] * W["block"]["n_blocks"])
+    table = np.fromfile(out / "table.f64", np.float64)
+    assert table.size == W["block"]["n_blocks"] * (W["K"] + 1) * (W["block"]["m"] + 1)
+    for pool in ("intra", "extra"):
+        coef = json.loads((out / "pools" / pool / "request.json").read_text())["coefficient"]
+        assert list(coef) == ["K", "dt_sim", "n_b", "m", "ring", "events", "field_K_c3", "field_read_every", "field_read_interval"]
+        assert coef["K"] == 3 and coef["field_K_c3"] == 4 and coef["events"] == 0 and coef["field_read_every"] >= 1
 
 
 def test_kit_without_a_field_variant(fake, tmp_path):
@@ -168,11 +179,11 @@ def test_a_batch_request_from_the_kit_matches_a_live_walk_requests_dump(fixture_
 
     req = _capture_request(geom, D, T_max, rc.block_h(), seed=seed, r0=r0, field_basis=basis,
                            field_reuse_intervals=int(W.get("field_gather_every", 4)),
-                           f_band=storage_band_hz(W["scanner"]))
+                           f_band=storage_band_hz(W["scanner"]), K=rc.man["pack"]["K"], K_c3=rc.man["pack"]["K_path"])
     assert (req.field is not None) == (basis is not None)
     if req.field is not None:       # the live producer sizes the field's segment list from its start-position probe; a kit has no
         req = req._replace(field=req.field._replace(list_k=256))        # walk to probe and writes the width a backend widens from
 
-    oracle_dir = write_request_directory(req, r0, keys, tmp_path / f"oracle-{pool_name}")
+    oracle_dir = write_coefficient_lines(write_request_directory(req, r0, keys, tmp_path / f"oracle-{pool_name}"), req)
     batch_dir = assemble_request(kit_dir, pool_name, r0, keys, seed, tmp_path / f"batch-{pool_name}")
     _assert_dirs_match(oracle_dir, batch_dir)

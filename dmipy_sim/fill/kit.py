@@ -23,7 +23,11 @@ serialise is already plain numpy on the geometry. ``assemble_request`` is the pe
 files alone (no geometry, no spec, no dmipy-sim import beyond this module, ``dmipy_sim.engine.backends`` and
 numpy): a batch's ``n``, ``seed``, ``r0``/``keys`` and a crop of the kit's uncropped far grid
 (:func:`~dmipy_sim.engine.backends.crop_far_grid`) turn the template into a full request directory, byte-for-byte
-what ``dmipy_sim_cuda.cli.write_request`` would have written for that batch (``tests/fill/test_kit.py``)."""
+what :func:`~dmipy_sim.engine.backends.write_request_directory` and
+:func:`~dmipy_sim.engine.backends.write_coefficient_lines` write for that batch's live request
+(``tests/fill/test_kit.py``): the walk's request, then its coefficient form -- the band, the block's steps, the
+table's order, the field's modes and read -- with the block table (``table.f64``) every pool shares. ``kit.json``'s
+``walk`` is the walk's block record (``T_max_s``, ``K``, ``block = {h, n_blocks, m}``, ``windows = {n, T}``)."""
 from __future__ import annotations
 
 import hashlib
@@ -37,8 +41,8 @@ from pathlib import Path
 import numpy as np
 
 from ..replay.bank import class_band
-from ..engine.backends import (FIELD_ARRAY_NAMES, REQUEST_TEMPLATE_KEYS, STRAND_ARRAY_NAMES, STRANDS_STRUCT_KEYS,
-                                adaptive_struct_fields, crop_far_grid, field_struct_fields, field_tables,
+from ..engine.backends import (COEFFICIENT_REQUEST_KEYS, FIELD_ARRAY_NAMES, REQUEST_TEMPLATE_KEYS, STRAND_ARRAY_NAMES,
+                                STRANDS_STRUCT_KEYS, adaptive_struct_fields, crop_far_grid, field_struct_fields, field_tables,
                                 field_tables_window, format_request_value, request_struct_fields,
                                 strands_struct_fields, strands_struct_fields_window)
 
@@ -46,11 +50,12 @@ log = logging.getLogger("dmipy_sim.fill")
 
 
 def _block_record(rc):
-    """The recipe's walk as its block record, ``dict(T, h, n_blocks, windows=dict(n, T))``: the storage windows over
+    """The recipe's walk as its block record, ``dict(T, h, n_blocks, windows=dict(n, T), K, m)``: the storage windows over
     ``T_max`` (:func:`~dmipy_sim.engine.accumulate.window_count`), the block -- the band's own
     (:func:`~dmipy_sim.engine.accumulate.block_length` at the pack's band) unless the manifest states ``block_h_s``
-    -- rounded to a whole number per window as ``simulate_trajectories_adaptive`` rounds it, and the blocks over the
-    walk; ``T = n_blocks h``."""
+    -- rounded to a whole number per window as ``simulate_trajectories_adaptive`` rounds it, the blocks over the walk
+    (``T = n_blocks h``), the band ``K`` per window (the manifest's ``pack.K``, else the scanner class's,
+    :func:`~dmipy_sim.replay.bank.mode_count`) and the block table's order ``m``."""
     from ..engine.accumulate import window_count, block_length
     from ..replay.bank import mode_count
     W = rc.man["walk"]
@@ -60,7 +65,9 @@ def _block_record(rc):
         h = block_length(T_win, int(rc.man["pack"].get("K") or mode_count(T_win, W["scanner"])))
     n_bw = max(int(round(T_win / h)), 1)
     h = T_win / n_bw
-    return dict(T=n_win * n_bw * h, h=h, n_blocks=n_win * n_bw, windows=dict(n=int(n_win), T=float(T_win)))
+    from ..engine.accumulate import BLOCK_ORDER
+    K = int(rc.man["pack"].get("K") or mode_count(T_win, W["scanner"]))
+    return dict(T=n_win * n_bw * h, h=h, n_blocks=n_win * n_bw, windows=dict(n=int(n_win), T=float(T_win)), K=K, m=int(BLOCK_ORDER))
 
 
 def _pool_geometry(ctx, pid):
@@ -72,6 +79,45 @@ def _pool_geometry(ctx, pid):
     if g.inside_w[pid]:
         return g.boundary(g.inside_w[pid]).geometry("intra", g.lo, g.hi, g.periodic, g.reflect, feature)
     return g.boundary(g.outside_w[pid]).geometry("extra", g.lo, g.hi, g.periodic, g.reflect, feature)
+
+
+def _coefficient_lines(rc, pid, blk, geom, plan, basis, field_params):
+    """The coefficient form's request lines of one pool (:func:`~dmipy_sim.engine.backends.coefficient_request_fields`
+    of the request the live walk hands a backend): the band, the step, the block's steps, the table's order and ring,
+    no events (a strand substrate is impermeable), and with the field its modes -- the manifest's ``pack.K_path``,
+    which a kit cannot pilot -- and its read (:func:`~dmipy_sim.engine.adaptive.field_read_of`: the manifest's
+    ``walk.field_read_interval_s`` or the rule's). A walk of several storage windows is refused by name: a backend
+    accumulates one window per walk."""
+    from ..engine.adaptive import field_read_of, _spec_holder
+    from ..engine.backends import WalkRequest, FieldSampling, coefficient_request_fields
+    if int(blk["windows"]["n"]) != 1:
+        raise ValueError(f"the recipe's walk is {blk['windows']['n']} storage windows; a backend accumulates one window per walk "
+                         "(several are refused by name), so a kit's coefficient request covers one")
+    D = float(rc.context().tests.pools[pid].D)
+    K_c3, dt_f, field = 0, 0.0, None
+    if field_params is not None:
+        K_c3 = rc.man["pack"].get("K_path")
+        if not K_c3:
+            raise ValueError("a kit's coefficient request states the field's band: the manifest's pack.K_path (a band a pilot "
+                             "derives needs a walk, which a kit is built without)")
+        dt_f = field_read_of(_spec_holder(rc.spec(), geom), basis, None, D, float(blk["windows"]["T"]), plan,
+                             rc.field_read_interval())["dt_f"]
+        field = FieldSampling(basis, *field_params)
+    req = WalkRequest(geometry=geom, block_h=float(blk["h"]), n_blocks=int(blk["n_blocks"]), sub_steps=int(plan.n_min),
+                      dt_sim=float(plan.dt_min), diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
+                      bounce_budget=geom.bounce_budget, seed=0, K=int(blk["K"]), m=int(blk["m"]), K_c3=int(K_c3),
+                      field_read_interval=float(dt_f), events=0, stepping=plan, field=field)
+    return coefficient_request_fields(req)
+
+
+def _write_template(pdir, lines):
+    """A pool's template: ``request.json`` (typed, the coefficient lines under ``coefficient``) and ``request.txt``
+    (the lines as a batch's request spells them, the coefficient lines last)."""
+    (pdir / "request.json").write_text(json.dumps(lines, indent=1))
+    flat = {k: v for k, v in lines.items() if k != "coefficient"}
+    flat_txt = "".join(f"{k}={format_request_value(v)}\n" for k, v in flat.items())
+    flat_txt += "".join(f"{k}={format_request_value(v)}\n" for k, v in lines["coefficient"].items())
+    (pdir / "request.txt").write_text(flat_txt)
 
 
 def _pool_lines_and_arrays(rc, ctx, pid, blk, basis, sampling, *, steps_per_round=16, safety_sigma=6.0,
@@ -104,6 +150,8 @@ def _pool_lines_and_arrays(rc, ctx, pid, blk, basis, sampling, *, steps_per_roun
         n_tf = len(range(0, n_blocks + 1, f_every))
         lines["field"] = 1
         lines.update({f"field_{k}": v for k, v in field_struct_fields(basis, f_radius, f_every, f_reuse, field_list_k, n_tf).items()})
+    lines["coefficient"] = _coefficient_lines(rc, pid, blk, geom, plan, basis,
+                                              (f_every, f_reuse, float(f_radius), int(field_list_k)) if sampling else None)
     return lines, arrays, dict(diffusivity=D, interior=bool(g.inside_w[pid]))
 
 
@@ -179,13 +227,21 @@ def _pool_lines_and_arrays_window(rc, ctx, pid, blk, basis, field_window, geom, 
         fstruct["n_seg"] = int(n_seg); fstruct["nnz"] = int(nnz)
         lines["field"] = 1
         lines.update({f"field_{k}": v for k, v in fstruct.items()})
+    lines["coefficient"] = _coefficient_lines(rc, pid, blk, geom, plan, basis,
+                                              (f_every, f_reuse, float(f_radius), int(field_list_k)) if field_window is not None else None)
     return lines, arrays, dict(diffusivity=D, interior=bool(g.inside_w[pid]))
 
 
+def _block_table(blk):
+    """The block table every pool's coefficient request is walked against (one window, the pools share it)."""
+    from ..replay.compression import block_table
+    return np.ascontiguousarray(block_table(float(blk["T"]), int(blk["n_blocks"]), int(blk["K"]), int(blk["m"])), np.float64)
+
+
 def _walk_record(blk):
-    """The kit's ``walk`` record: the walk's duration, its block (``h``, ``n_blocks``) and its window table, as a
-    pack states them (``walk_params.T_max``, ``block``, ``windows``)."""
-    return dict(T_max_s=float(blk["T"]), block=dict(h=float(blk["h"]), n_blocks=int(blk["n_blocks"])),
+    """The kit's ``walk`` record: the walk's duration, its band ``K``, its block (``h``, ``n_blocks``, ``m``) and its
+    window table, as a pack states them (``walk_params.T_max``, ``compression.K``, ``block``, ``windows``)."""
+    return dict(T_max_s=float(blk["T"]), K=int(blk["K"]), block=dict(h=float(blk["h"]), n_blocks=int(blk["n_blocks"]), m=int(blk["m"])),
                 windows=dict(n=int(blk["windows"]["n"]), T=float(blk["windows"]["T"])))
 
 
@@ -235,13 +291,13 @@ def write_kit(rc, out_dir):
             continue
         lines, arrays, meta = _pool_lines_and_arrays(rc, ctx, pid, blk, basis, sampling)
         pdir = out / "pools" / pool.name; pdir.mkdir(parents=True, exist_ok=True)
-        (pdir / "request.json").write_text(json.dumps(lines, indent=1))
-        (pdir / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
+        _write_template(pdir, lines)
         for name, a in arrays.items():
             np.ascontiguousarray(a).tofile(pdir / name)
         pools_out[pool.name] = meta
     if not pools_out:
         raise ValueError("no diffusing pool to walk: a kit needs at least one")
+    _block_table(blk).tofile(out / "table.f64")
 
     if sampling:
         for name, a in field_tables(basis).items():
@@ -340,11 +396,11 @@ def write_block_kit(rc, row, out_dir):
         geom, plan = plans[pid]
         lines, arrays, meta = _pool_lines_and_arrays_window(rc, ctx, pid, blk, basis, field_window, geom, plan, lo_m, hi_m)
         pdir = out / "pools" / pool.name; pdir.mkdir(parents=True, exist_ok=True)
-        (pdir / "request.json").write_text(json.dumps(lines, indent=1))
-        (pdir / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
+        _write_template(pdir, lines)
         for name, a in arrays.items():
             np.ascontiguousarray(a).tofile(pdir / name)
         pools_out[pool.name] = meta
+    _block_table(blk).tofile(out / "table.f64")
 
     os.makedirs(out / "plan", exist_ok=True)
     # the plan's counts cropped to this block's own voxel box (dmrai-lab/dmipy-sim#695 review point 2: a
@@ -385,8 +441,10 @@ def write_block_kit(rc, row, out_dir):
 
 def assemble_request(kit_dir, pool, r0, keys, seed, out_dir):
     """A batch's request directory from a written kit (:func:`write_kit`): the pool's template plus this batch's
-    ``n``/``seed``, its ``r0.f32``/``keys.u32``, and a crop of the kit's uncropped far grid by
-    :func:`crop_far_grid`. Disk and array work only -- no geometry, no spec, nothing a node without dmipy-sim
+    ``n``/``seed``, its ``r0.f32``/``keys.u32``, a crop of the kit's uncropped far grid by :func:`crop_far_grid`, and
+    the coefficient form's lines with the block table (``table.f64``) and the field's mean beside them -- what
+    :func:`~dmipy_sim.engine.backends.write_request_directory` then
+    :func:`~dmipy_sim.engine.backends.write_coefficient_lines` write for the live request. Disk and array work only -- no geometry, no spec, nothing a node without dmipy-sim
     could not do too."""
     kit_dir, out = Path(kit_dir), Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -411,7 +469,12 @@ def assemble_request(kit_dir, pool, r0, keys, seed, out_dir):
         crop, far_dims, far_origin = crop_far_grid(far_full, meta["origin_m"], meta["spacing_m"], r0,
                                                    float(kit["walk"]["T_max_s"]), kit["pools"][pool]["diffusivity"])
         lines["field_far_dims"] = far_dims; lines["field_far_origin"] = far_origin
-    (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
+    coef = {k: template["coefficient"][k] for k in COEFFICIENT_REQUEST_KEYS if k in template["coefficient"]}
+    (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items())
+                                     + "".join(f"{k}={format_request_value(v)}\n" for k, v in coef.items()))
+    shutil.copy(kit_dir / "table.f64", out / "table.f64")
+    if "field_K_c3" in coef:
+        shutil.copy(kit_dir / "field_mean.f32", out / "field_mean.f32")
     r0.tofile(out / "r0.f32")
     np.ascontiguousarray(keys, np.uint32).reshape(n, -1)[:, :2].copy().tofile(out / "keys.u32")
     for name in STRAND_ARRAY_NAMES:

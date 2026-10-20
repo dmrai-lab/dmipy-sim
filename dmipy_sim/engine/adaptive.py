@@ -162,7 +162,6 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                                             T_max=T_max, block_h=block_h, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
         from .accumulate import (block_length, default_K, window_count, BLOCK_ORDER, PRECISION, PILOT_WALKERS,
-                                 field_read_interval as _fri, field_read_steps, field_read_term, field_read_B0_chi_max, FIELD_READ_FLOOR,
                                  coefficient_form, field_mode_form)
         from .core import _field_rule_inputs
         from ..replay.compression import block_table, cosine_band_scale
@@ -206,17 +205,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             from ..fields.strand_field import StrandFieldBasis
             if not isinstance(field_basis, StrandFieldBasis):
                 raise TypeError("field_basis must be a StrandFieldBasis: the walk reads the strand field along the path")
-            B0, chi, grad_b = _field_rule_inputs(_spec_holder(spec, geometry), field_basis, envelope)
-            if field_read_interval is None:
-                dt_rule, f_rule = _fri(D, float(T_win), grad_b, B0, chi, FIELD_READ_FLOOR), "derived"
-            else:
-                dt_rule, f_rule = float(field_read_interval), "given"
-            n_read, dt_f = field_read_steps(dt_rule, dt_round, n_rounds)         # reads every n_read rounds, never finer than a round
-            field_read = dict(rule=f_rule, dt_f_rule=float(dt_rule), dt_f=float(dt_f), n_read=int(n_read), reads_per_block=int(n_rounds // n_read),
-                              at_step=bool(n_read == 1 and dt_rule < dt_round), B0=float(B0), chi=float(chi), grad_b_per_m=float(grad_b),
-                              D=D, T_e=float(T_win), floor=float(FIELD_READ_FLOOR),
-                              term=float(field_read_term(dt_f, D, T_win, grad_b, B0, chi)),
-                              B0_chi_max_T=float(field_read_B0_chi_max(dt_f, D, T_win, grad_b, FIELD_READ_FLOOR)))
+            field_read = field_read_of(_spec_holder(spec, geometry), field_basis, envelope, D, T_win, plan, field_read_interval)
         elif K_c3 is not None or field_read_interval is not None:
             raise ValueError("K_c3 and field_read_interval are the field channel's band and read interval: they go with field_basis=")
 
@@ -656,6 +645,29 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             geometry=geometry, spec=spec, stepping=stepping, work=work)
         object.__setattr__(walk, "run", run)
         return walk
+
+
+def field_read_of(spec_holder, field_basis, envelope, D, T_win, plan, field_read_interval=None):
+    """The field read of an adaptive walk of ``plan`` (its rounds per block, ``plan.dt_round``) in a window of ``T_win``
+    seconds: the rule's interval (:func:`~dmipy_sim.engine.accumulate.field_read_interval` at the envelope's ``B0``,
+    the spec's ``chi`` and the basis's gradient scale, or the given ``field_read_interval``) read every ``n_read``
+    rounds, never finer than a round, and its term. The record ``CoefficientWalk.block["field_read"]`` carries; a
+    substrate kit derives its request's read from it too."""
+    from .accumulate import (field_read_interval as _fri, field_read_steps, field_read_term, field_read_B0_chi_max,
+                             FIELD_READ_FLOOR)
+    from .core import _field_rule_inputs
+    B0, chi, grad_b = _field_rule_inputs(spec_holder, field_basis, envelope)
+    if field_read_interval is None:
+        dt_rule, f_rule = _fri(D, float(T_win), grad_b, B0, chi, FIELD_READ_FLOOR), "derived"
+    else:
+        dt_rule, f_rule = float(field_read_interval), "given"
+    dt_round, n_rounds = float(plan.dt_round), int(plan.n_rounds)
+    n_read, dt_f = field_read_steps(dt_rule, dt_round, n_rounds)              # reads every n_read rounds, never finer than a round
+    return dict(rule=f_rule, dt_f_rule=float(dt_rule), dt_f=float(dt_f), n_read=int(n_read), reads_per_block=int(n_rounds // n_read),
+                at_step=bool(n_read == 1 and dt_rule < dt_round), B0=float(B0), chi=float(chi), grad_b_per_m=float(grad_b),
+                D=float(D), T_e=float(T_win), floor=float(FIELD_READ_FLOOR),
+                term=float(field_read_term(dt_f, D, T_win, grad_b, B0, chi)),
+                B0_chi_max_T=float(field_read_B0_chi_max(dt_f, D, T_win, grad_b, FIELD_READ_FLOOR)))
 
 
 def _spec_holder(spec, geometry):
