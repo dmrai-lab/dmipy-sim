@@ -1,9 +1,9 @@
-"""Replay parity: walk-once + replay operators reproduce the fused ``simulate()``.
+"""Replay parity: walk-once + replay operators reproduce the fused ``simulate_fused()``.
 
 Phase-1 replay foundation.  For each geometry we walk the spins ONCE with
 ``simulate_trajectories()`` and then apply
 ``replay`` (pure-gradient and with relaxation) post-hoc,
-asserting the result equals the fused forward engine (``core.simulate``) — the
+asserting the result equals the fused forward engine (``engine._fused.simulate_fused``) — the
 validation oracle — for
 
   (a) pure gradient PGSE (phase only),
@@ -26,7 +26,8 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import simulate, simulate_trajectories
+from dmipy_sim import simulate_trajectories
+from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim.replay.trajectories import replay
 
 D = 2e-9          # m²/s
@@ -109,10 +110,10 @@ def _replay_case(request):
         assert sub_steps > 1, (f"[{name}] the producer took {sub_steps} sub-step; this parity "
                                f"must exercise the shared sub-step dispatch")
 
-    S_a = np.asarray(simulate(n, D, wf, geom, seed=SEED, require_gpu=False)).ravel()
-    S_b = np.asarray(simulate(n, D, wf, geom, seed=SEED, T2=T2, require_gpu=False)).ravel()
+    S_a = np.asarray(simulate_fused(n, D, wf, geom, seed=SEED, require_gpu=False)).ravel()
+    S_b = np.asarray(simulate_fused(n, D, wf, geom, seed=SEED, T2=T2, require_gpu=False)).ravel()
     S_d = (None if geom_rho is None
-           else np.asarray(simulate(n, D, wf, geom_rho, seed=SEED,
+           else np.asarray(simulate_fused(n, D, wf, geom_rho, seed=SEED,
                                     require_gpu=False)).ravel())
 
     return dict(name=name, n=n, wf=wf, G=G, chi=chi,
@@ -125,30 +126,30 @@ _ALL = ["free", "box1d", "sphere", "cylinder", "mesh"]
 
 @pytest.mark.parametrize("_replay_case", _ALL, indirect=True)
 def test_replay_pure_gradient_matches_simulate(_replay_case):
-    """(a) Phase-only replay == fused simulate() (no relaxation)."""
+    """(a) Phase-only replay == fused simulate_fused() (no relaxation)."""
     c = _replay_case
     S_rep = np.asarray(replay(
         c["traj"], c["dt_traj"], c["G"], c["wf"].dt)).ravel()
     npt.assert_allclose(
         S_rep, c["S_a"], atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] pure-gradient replay must match simulate()")
+        err_msg=f"[{c['name']}] pure-gradient replay must match simulate_fused()")
 
 
 @pytest.mark.parametrize("_replay_case", _ALL, indirect=True)
 def test_replay_scalar_T2_matches_simulate(_replay_case):
-    """(b) Scalar-T2 replay == fused simulate(T2=...)."""
+    """(b) Scalar-T2 replay == fused simulate_fused(T2=...)."""
     c = _replay_case
     S_rep = np.asarray(replay(
         c["traj"], c["dt_traj"], c["G"], c["wf"].dt,
         chi_perp=c["chi"], T2=T2)).ravel()
     npt.assert_allclose(
         S_rep, c["S_b"], atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] scalar-T2 replay must match simulate(T2)")
+        err_msg=f"[{c['name']}] scalar-T2 replay must match simulate_fused(T2)")
 
 
 @pytest.mark.parametrize("_replay_case", _ALL, indirect=True)
 def test_replay_per_compartment_T2_matches_simulate(_replay_case):
-    """(c) Per-compartment T2=[T2, T2] (via comp_traj) == fused simulate(T2=...).
+    """(c) Per-compartment T2=[T2, T2] (via comp_traj) == fused simulate_fused(T2=...).
 
     Exercises the ``T2_per_comp`` / ``comp_traj`` code path; with equal
     per-compartment values it must collapse onto the scalar-T2 oracle.
@@ -159,13 +160,13 @@ def test_replay_per_compartment_T2_matches_simulate(_replay_case):
         chi_perp=c["chi"], comp_traj=c["comp"], T2_per_comp=[T2, T2])).ravel()
     npt.assert_allclose(
         S_rep, c["S_b"], atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] per-compartment-T2 replay must match simulate(T2)")
+        err_msg=f"[{c['name']}] per-compartment-T2 replay must match simulate_fused(T2)")
 
 
 @pytest.mark.parametrize("_replay_case", _ALL, indirect=True)
 def test_replay_surface_relaxivity_matches_simulate(_replay_case):
     """(d) Surface-relaxivity replay (ρ off dlog_boundary_unit) == fused
-    simulate(surface_relaxivity_t2=ρ)."""
+    simulate_fused(surface_relaxivity_t2=ρ)."""
     c = _replay_case
     if c["S_d"] is None:
         pytest.skip(f"{c['name']} has no boundary — surface relaxivity N/A")
@@ -175,7 +176,7 @@ def test_replay_surface_relaxivity_matches_simulate(_replay_case):
     npt.assert_allclose(
         S_rep, c["S_d"], atol=_tol(c["n"]),
         err_msg=f"[{c['name']}] surface-relaxivity replay must match "
-                f"simulate(surface_relaxivity_t2)")
+                f"simulate_fused(surface_relaxivity_t2)")
 
 
 def test_a_positions_only_walk_carries_no_channels():
