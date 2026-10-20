@@ -73,7 +73,7 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
         f_radius = min(f_reach + f_margin, 2.0 * f_reach)
         field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
 
-    req = WalkRequest(geometry=geom, n_t=n_t, dt_save=dt_actual, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
+    req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=n_t - 1, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
                       diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
                       bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field)
 
@@ -125,7 +125,7 @@ def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixt
         f_radius = min(f_reach + f_margin, 2.0 * f_reach)
         field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
 
-    req = WalkRequest(geometry=geom, n_t=n_t, dt_save=dt_actual, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
+    req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=n_t - 1, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
                       diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
                       bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field)
 

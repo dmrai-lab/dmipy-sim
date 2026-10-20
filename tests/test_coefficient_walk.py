@@ -273,16 +273,21 @@ def test_a_walk_of_several_windows_packs_window_by_window():
 
 
 def test_what_a_walk_does_not_carry_is_refused_by_name():
+    from dmipy_sim.engine.backends import WalkBatch
+
     class Other:
+        """A backend that returns a walk of saves."""
         name = "other"
 
         def refuses(self, request):
             return None
 
         def walk_batch(self, request, r0, keys):
-            raise AssertionError("not reached")
+            n, n_t = r0.shape[0], request.n_blocks + 1
+            zero = np.zeros((n,), np.int32)
+            return WalkBatch(np.repeat(np.asarray(r0, np.float32)[:, None], n_t, axis=1), None, None, zero, (None, None, zero))
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
-    with pytest.raises(ValueError, match="band accumulation"):
+    with pytest.raises(ValueError, match="returned a WalkBatch for the coefficient walk.*converts nothing"):
         d.simulate_trajectories(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=8, backend=Other())
     with pytest.raises(ValueError, match="hold 19 bands"):
         d.simulate_trajectories(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=30, block_order=0)

@@ -1,18 +1,25 @@
 """Backends: another execution of the same physics, resolved by name (dmrai-lab/dmipy-sim#635).
 
 A backend walks a batch of walkers the way the JAX kernels of :mod:`.core` walk it -- the same geometry, the same
-starts and keys, the same sub-step and save grid -- and returns what they return. dmipy-sim stays the reference
-physics: a backend reads every constant from the geometry it is handed and carries none of its own.
+starts and keys, the same sub-step and blocks -- and returns what they return: the walk's **coefficient form**
+(:class:`CoefficientBatch`, dmrai-lab/dmipy-sim#740, #747), per walker the exact start and end and the bands of
+every channel accumulated while the walk ran, the quadratic variation per channel, the events of a walker that
+changes pool, and the work record. dmipy-sim stays the reference physics: a backend reads every constant from the
+geometry it is handed and carries none of its own.
 
 What a backend signs
 --------------------
 - **One physics.** The rule is dmipy-sim's; the backend executes it.
+- **One form.** The producer takes a :class:`CoefficientBatch` as it takes its own batch -- the same
+  :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, the same header -- and converts nothing: a backend that
+  returns a walk of saves (a :class:`WalkBatch`) for the coefficient walk is refused by name. The only positions a
+  backend returns are the block ends of the batch's ``raw_subset`` (:attr:`CoefficientBatch.saves`).
 - **Parity, not identity.** A different RNG stream and FMA policy make bit-identity impossible, and it is not stable
   across XLA compilations of one program either (#623). A backend is admitted per engine class by the public
-  validation of that class run on it and by the work record within Poisson noise: :func:`parity_report`. One
-  case is a hard invariant rather than a rate (``strands_void``, #675): starts in the void beyond a tube's own
-  gather reach, held to per-save containment -- a gather read as unbounded where it found nothing leaks a
-  walker through the next wall it never actually tested.
+  validation of that class run on it and by the work record within Poisson noise: :func:`parity_report`, on the
+  coefficient form. One case is a hard invariant rather than a rate (``strands_void``, #675): starts in the void
+  beyond a tube's own gather reach, held to per-block containment of the raw subset -- a gather read as unbounded
+  where it found nothing leaks a walker through the next wall it never actually tested.
 - **Determinism per (seed, architecture).** A trajectory is a function of the key; the pack says which backend and
   architecture walked it (``work["backend"]`` and the run record).
 - **Refusal over fallback.** A backend that does not implement an engine class, a tier or a wall says so by name
@@ -44,11 +51,13 @@ class FieldSampling(NamedTuple):
 
 
 class WalkRequest(NamedTuple):
-    """What the producer has resolved before the walk; what a backend walks."""
+    """What the producer has resolved before the walk; what a backend walks. A walk is ``n_blocks`` blocks of
+    ``block_h`` seconds (``T = n_blocks block_h``), each of ``sub_steps`` physics steps, accumulated per channel as
+    ``K`` bands through a block table of order ``m`` (dmipy-sim#740); there is no save grid in it."""
     geometry: object          #: the substrate, resolved (its constants are the physics)
-    n_t: int                  #: saves, save 0 the start
-    dt_save: float            #: seconds between saves
-    sub_steps: int            #: physics steps per save interval
+    block_h: float            #: the block length ``h`` (s)
+    n_blocks: int             #: blocks over the walk; ``T = n_blocks * block_h``
+    sub_steps: int            #: physics steps per block
     dt_sim: float             #: the step's duration; the step length is ``sqrt(6 D dt_sim)`` times the law's atom (:mod:`dmipy_sim.math.step_law`)
     diffusivity: float        #: m^2/s
     record: bool              #: record the boundary local time and the compartment beside the positions
@@ -56,8 +65,36 @@ class WalkRequest(NamedTuple):
     count_walls: bool         #: count hits and crossings (exhaustion is always reported)
     bounce_budget: Optional[int]   #: the budget the geometry's loop runs at for this walk
     seed: int                 #: the producer's master seed (the per-walker keys derive from it)
+    K: int = 0                #: bands per axis and channel the walk accumulates; 0 is a walk of saves (the adaptive
+                              #: producer's, until dmipy-sim#742 accumulates it)
+    m: int = 3                #: the order of the block table (:func:`~dmipy_sim.replay.compression.block_table`)
+    K_c3: int = 0             #: cosine modes per field channel accumulated in the walk; 0 accumulates no field
+    field_read_interval: float = 0.0  #: seconds between reads of the field (``dt_f``, dmipy-sim#742); 0.0 reads none
+    events: int = 0           #: the capacity of each walker's C1 event list, the pool changes a walk may record per
+                              #: walker (:func:`event_capacity`); a walk whose walker changes pool more often, or at
+                              #: all when the capacity is 0, is refused by name
+    raw_subset: int = 0       #: the first that-many walkers of the batch whose block ends come back as saves
+                              #: (:attr:`CoefficientBatch.saves`): the only positions a backend returns
     stepping: object = None   #: an adaptive walk's :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`; None for the fused walk
     field: object = None      #: a :class:`FieldSampling` when the walk samples a strand field; None otherwise
+
+    @property
+    def T(self):
+        """The walk's duration (s)."""
+        return float(self.block_h) * int(self.n_blocks)
+
+
+def event_capacity(n_steps, *, p_max=None, sigma=6.0, floor=16):
+    """The C1 event list's capacity per walker for a permeable walk of ``n_steps`` physics steps: a crossing needs a
+    hit and no hit crosses with a probability above ``p_max`` (the crossing rule's
+    :data:`~dmipy_sim.engine.physics.CROSSING_P_MAX` by default, which sizes the step so), so the crossings per
+    walker are bounded by Binomial(``n_steps``, ``p_max``); the capacity is its mean plus ``sigma`` standard
+    deviations, at least ``floor``. A backend refuses by name a walker that exceeds it (the count returned), so the
+    bound costs memory only: 9 bytes per entry on the CUDA backend."""
+    if p_max is None:
+        from .physics import CROSSING_P_MAX as p_max
+    mu = float(p_max) * int(n_steps)
+    return int(max(int(floor), math.ceil(mu + float(sigma) * math.sqrt(mu * (1.0 - float(p_max))))))
 
 
 class ParityCase(NamedTuple):
@@ -65,13 +102,13 @@ class ParityCase(NamedTuple):
     a bare builder answered, so every existing caller of ``parity_cases()[name]()`` is unaffected. A rate case
     is a case with nothing past ``build``; a hard-invariant case (``strands_void``) also carries ``starts``, the
     walk's own seeding (:func:`parity_report` draws none of its own when this is set), and the walk's own scale
-    (``n_walkers``, ``T_max``, ``dt_save``, ``seed`` -- each ``None`` falls back to :func:`parity_report`'s own
+    (``n_walkers``, ``T_max``, ``block_h``, ``seed`` -- each ``None`` falls back to :func:`parity_report`'s own
     keyword, except ``starts`` callers, which always get the case's own values)."""
     build: object             #: zero-arg callable returning the geometry
     starts: object = None     #: ``(n, seed) -> r0 (n, 3) float32``, or None: :func:`parity_report` draws its own
     n_walkers: object = None  #: overrides :func:`parity_report`'s ``n_walkers`` when ``starts`` is set
     T_max: object = None      #: overrides :func:`parity_report`'s ``T_max`` when ``starts`` is set
-    dt_save: object = None    #: overrides :func:`parity_report`'s ``dt_save`` when ``starts`` is set
+    block_h: object = None    #: overrides :func:`parity_report`'s ``block_h`` when ``starts`` is set
     seed: object = None       #: overrides :func:`parity_report`'s ``seed`` when ``starts`` is set
 
     def __call__(self):
@@ -79,7 +116,9 @@ class ParityCase(NamedTuple):
 
 
 class WalkBatch(NamedTuple):
-    """What a backend returns for a batch of walkers: the JAX kernels' outputs, as arrays."""
+    """A batch of walkers as its saves -- what the adaptive producer (:mod:`.adaptive`) takes back from a backend
+    until it accumulates (dmipy-sim#742): the JAX kernels' per-save outputs, as arrays. The coefficient producer
+    (:func:`~dmipy_sim.engine.core.simulate_trajectories`) refuses a backend that returns one."""
     positions: np.ndarray             #: (n, n_t, 3) float32, save 0 the start
     boundary_local_time: object       #: (n, n_t) float32 at rho/D = 1, or None when not recorded
     compartment: object               #: (n, n_t) float32 fractional occupancy of pool 1 (int labels when impermeable), or None
@@ -91,6 +130,42 @@ class WalkBatch(NamedTuple):
                                       #: sampled saves (sample 0 the start's reading; no mean subtracted), or None
 
 
+class CoefficientBatch(NamedTuple):
+    """A batch of walkers in its coefficient form (dmipy-sim#740, #747): what a backend returns for the coefficient
+    walk, under the names of :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` -- the producer concatenates the
+    batches into one walk and converts nothing. The bands are the walk's own accumulation finished by the backend
+    (the cosine projections of each channel's increments against :func:`~dmipy_sim.replay.compression.block_table`,
+    turned into the bridge's bands on the continuous sine basis, :func:`~dmipy_sim.replay.compression.cosine_band_scale`),
+    so a pack built from the walk is bit for bit the pack the backend's own writer builds from the same walk."""
+    position_coeffs: np.ndarray       #: (n, K + 2, 3) float64: per axis x(0), x(T) - x(0) (exact) and the K bands
+    boundary_start: object            #: (n,) float64 the cumulative local time at the start (0), or None
+    boundary_endpoint: object         #: (n,) float64 at the end, exact, or None
+    boundary_bands: object            #: (n, K) float64 its bridge's bands at rho/D = 1, or None
+    compartment: object               #: (n,) int8 the walker's pool at the start (1 inside; a label volume's label), or None
+    illegal: np.ndarray               #: (n,) int32 refused walker-steps per walker
+    work: tuple                       #: (hits | None, crossings | None, exhausted) per walker, int32 arrays
+    K: int                            #: bands per channel
+    m: int                            #: the order of the block table
+    sub_steps: int                    #: physics steps per block (h = sub_steps * dt_sim)
+    precision: str                    #: the floating-point type the bands were accumulated in across blocks
+    saves: object = None              #: the block ends of the batch's first ``request.raw_subset`` walkers as a
+                                      #: :class:`WalkBatch` (save 0 the start), or None when none were asked for
+    qv_positions: object = None       #: (n, 3) float64 each walker's sum dx^2 per axis over every step
+    qv_boundary: object = None        #: (n,) float64 its sum dlog^2 (each step's contact squared), or None
+    events: object = None             #: C1's event list ``(offsets (n + 1,) int64, times (n_ev,) float64 s, labels
+                                      #: (n_ev,) int8)``: walker w's pool changes are entries offsets[w] .. offsets[w+1],
+                                      #: each the start of the step that ended in the pool entered; None unrecorded
+    bound_events: object = None       #: an MT walk's bind / unbind events in the same form, or None
+    field_bands: object = None        #: (n, n_ch, K_c3) float64 the field's channels (less the domain mean) on the
+                                      #: cosine basis of [0, T], or None
+    field_qv: object = None           #: (n, n_ch) float64 each channel's sum (b dt_f)^2 over its reads, or None
+    dt_f: object = None               #: the field's read interval (s); 0.0 a read after every step; None no field
+    k0_residual: object = None        #: (n, 3) float64 ``c_0 - (x(T) - x(0))``, the accumulation's measured residual
+                                      #: on the k = 0 mode, when the backend reports it; None otherwise
+    ring: object = None               #: blocks per projection window, when the backend projects in windows
+    accumulation: object = None       #: how the backend summed the blocks (the header's ``block.accumulation``)
+
+
 class Backend:
     """The protocol. A backend subclasses or duck-types this: ``name``, :meth:`refuses`, :meth:`walk_batch`."""
     name = "?"
@@ -100,12 +175,14 @@ class Backend:
         None. The producer raises with the reason; it never falls back."""
         return None
 
-    def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, *, out=None) -> WalkBatch:
-        """Walk the ``(n, 3)`` float32 starts ``r0`` from their ``(n, 2)`` uint32 keys. ``out``, when given, is a
-        dict of the producer's own contiguous float32 arrays for this batch -- ``positions`` (n, n_t, 3),
-        ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, 13) -- that a backend
-        may write into instead of allocating its own (the batch then holds those arrays); a backend that ignores
-        ``out`` returns its own and the producer copies, at 7.6 GB per 100k DiSCo walkers (dmipy-sim-cuda#33)."""
+    def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, *, out=None) -> CoefficientBatch:
+        """Walk the ``(n, 3)`` float32 starts ``r0`` from their ``(n, 2)`` uint32 keys in the coefficient form
+        ``request`` names (``K`` bands at order ``m`` over ``n_blocks`` blocks of ``sub_steps`` steps): a
+        :class:`CoefficientBatch`, with the block ends of the first ``request.raw_subset`` walkers as its ``saves``.
+        A request with ``K = 0`` is the adaptive producer's walk of saves (a :class:`WalkBatch`; ``out``, when given,
+        is a dict of that producer's own contiguous float32 arrays -- ``positions`` (n, n_t, 3),
+        ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, 13) -- a backend may write
+        into instead of allocating its own, dmipy-sim-cuda#33)."""
         raise NotImplementedError
 
 
@@ -210,7 +287,7 @@ def parity_cases():
         # a rate comparison at parity_report's default scale would barely move these walkers, so the case pins
         # its own walk scale (and its own seed, #675 review: never parity_report's, which would move the case
         # with it) rather than overriding only starts
-        "strands_void": ParityCase(void_build, starts=void_starts, n_walkers=4096, T_max=40e-3, dt_save=0.5e-3, seed=5),
+        "strands_void": ParityCase(void_build, starts=void_starts, n_walkers=4096, T_max=40e-3, block_h=0.5e-3, seed=5),
     }
 
 
@@ -237,26 +314,55 @@ def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
     )
 
 
-def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.5e-3, seed=11, sigma=4.0, overdispersion=2.5):
-    """Compare ``backend`` with the JAX kernels on ``cases`` (default :func:`parity_cases`): the same starts, the
-    same sub-step and saves, counting on. Per case: the hit and crossing counts within ``sigma`` standard deviations,
-    where the standard deviation is ``overdispersion * sqrt(a + b)``: a walker near a wall hits it on consecutive
-    steps, so the per-walker counts are clustered and the total's spread is wider than Poisson (measured on the
-    sphere and the ellipsoid at 20k walkers: seed-to-seed swings of 0.1-0.4 % against a Poisson 0.12 %, i.e. 2-3x);
-    the exhausted walker-steps and the refused ones (``illegal_crossings``) compared the same way, since both are
-    rates of the geometry at its budget and not of the backend (a permeable icosphere mesh of 320 facets exhausts
-    0-5 of 1.07 M walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel
-    face it touches); every walker on its side (the classifier at the saves agrees with the start's pool unless a
-    crossing was granted), and the perpendicular PGSE signal of the two walks within ``sigma`` of their combined
-    standard errors. A case is a rate comparison unless it declares its own starts (:attr:`ParityCase.starts`,
-    e.g. ``strands_void``): there the backend under test walks those starts alone, at the case's own scale (its
-    ``n_walkers``/``T_max``/``dt_save``/``seed``, each falling back to this function's keyword of the same name
-    when the case leaves it ``None``), and is held to :func:`void_invariant`, a hard pass/fail with no JAX side
-    to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is the
-    contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
-    import dmipy_sim as d
+def _mean_se(x, axis=0):
+    """``(mean, standard error of the mean)`` of ``x`` along ``axis``."""
+    x = np.asarray(x, np.float64)
+    n = x.shape[axis]
+    return x.mean(axis=axis), x.std(axis=axis, ddof=1) / np.sqrt(n)
+
+
+def _z(a, ea, b, eb):
+    """``|a - b|`` in units of the combined standard error (0 where both errors vanish and the values agree)."""
+    den = np.sqrt(np.asarray(ea) ** 2 + np.asarray(eb) ** 2)
+    diff = np.abs(np.asarray(a) - np.asarray(b))
+    return np.where(den > 0.0, diff / np.where(den > 0.0, den, 1.0), np.where(diff > 0.0, np.inf, 0.0))
+
+
+def coefficient_signal(walk, G, dt_wf):
+    """The gradient signal of a coefficient walk's first window under the waveforms ``G`` ``(n_meas, n_wf, 3)`` on
+    their own grid ``dt_wf``, read from the bands alone (the replay's own reading of a pack of the walk,
+    :func:`~dmipy_sim.replay.compression.band_projection`): ``(signal (n_meas,), standard error (n_meas,))`` of the
+    walkers' ``cos(gamma sum C W)`` at float32 coefficients, what the pack stores."""
+    from ..constants import GAMMA
+    from ..replay import compression as _cx
+    C = np.asarray(walk.position_coeffs, np.float32).astype(np.float64)[:, 0]              # (n, K + 2, 3)
+    W = _cx.band_projection(np.asarray(G, np.float64), float(dt_wf), float(walk.T_window), int(C.shape[1]) - 2)
+    phi = GAMMA * np.einsum("wkc,mkc->wm", C, W)
+    return _mean_se(np.cos(phi))
+
+
+def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.5e-3, seed=11, sigma=4.0, overdispersion=2.5):
+    """Compare ``backend`` with the JAX kernels on ``cases`` (default :func:`parity_cases`) on the coefficient form:
+    the same starts, the same sub-step and blocks, counting on, every walker's block ends kept as the positional
+    oracle (``raw_subset``). Per case: the hit and crossing counts within ``sigma`` standard deviations, where the
+    standard deviation is ``overdispersion * sqrt(a + b)``: a walker near a wall hits it on consecutive steps, so the
+    per-walker counts are clustered and the total's spread is wider than Poisson (measured on the sphere and the
+    ellipsoid at 20k walkers: seed-to-seed swings of 0.1-0.4 % against a Poisson 0.12 %, i.e. 2-3x); the exhausted
+    walker-steps and the refused ones (``illegal_crossings``) compared the same way, since both are rates of the
+    geometry at its budget and not of the backend (a permeable icosphere mesh of 320 facets exhausts 0-5 of 1.07 M
+    walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel face it touches);
+    the bands at the band level -- each channel's measured quadratic variation (``qv_positions`` per axis,
+    ``qv_boundary``) and each band's mean square per axis, every one within ``sigma`` of the two walks' combined
+    standard errors; every walker on its side (the classifier at the last block end agrees with the start's pool
+    unless a crossing was granted); and the perpendicular PGSE signal replayed from each side's bands
+    (:func:`coefficient_signal`, what a pack of the walk stores) within ``sigma`` of their combined standard errors.
+    A case is a rate comparison unless it declares its own starts (:attr:`ParityCase.starts`, e.g.
+    ``strands_void``): there the backend under test walks those starts alone, at the case's own scale (its
+    ``n_walkers``/``T_max``/``block_h``/``seed``, each falling back to this function's keyword of the same name when
+    the case leaves it ``None``), and is held to :func:`void_invariant` on its block ends, a hard pass/fail with no
+    JAX side to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is
+    the contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
     from .core import simulate_trajectories
-    from ..replay.trajectories import replay
     from ..sequences import pgse
     out = []
     for name, case in (cases or parity_cases()).items():
@@ -264,10 +370,10 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
         if case.starts is not None:
             nw = n_walkers if case.n_walkers is None else case.n_walkers
             Tm = T_max if case.T_max is None else case.T_max
-            ds = dt_save if case.dt_save is None else case.dt_save
+            bh = block_h if case.block_h is None else case.block_h
             sd = seed if case.seed is None else case.seed
             try:
-                w = simulate_trajectories(nw, 2e-9, g, Tm, ds, seed=sd, tiers="all", walker_batch_size=nw,
+                w = simulate_trajectories(nw, 2e-9, g, Tm, bh, seed=sd, tiers="all", walker_batch_size=nw,
                                           r0=case.starts(nw, sd), backend=backend, raw_subset=nw).saves()
             except ValueError as e:
                 if "refuses" in str(e) or "does not" in str(e):
@@ -276,39 +382,51 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
             checks = void_invariant(g, w)
             out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
             continue
-        ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers,
-                                    raw_subset=n_walkers).saves()
+        ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
+                                    raw_subset=n_walkers)
         g2 = case(); g2.count_walls = True
+        x0 = np.asarray(ref.position_coeffs[:, 0, 0, :], np.float32)                       # the exact starts
         try:
-            w = simulate_trajectories(n_walkers, 2e-9, g2, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers,
-                                      r0=np.asarray(ref.positions[:, 0]), backend=backend, raw_subset=n_walkers).saves()
+            w = simulate_trajectories(n_walkers, 2e-9, g2, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
+                                      r0=x0, backend=backend, raw_subset=n_walkers)
         except ValueError as e:
             if "refuses" in str(e) or "does not" in str(e):
                 out.append(dict(case=name, ok=None, refused=str(e))); continue
             raise
         rec = dict(case=name, ok=True, checks={})
+        if (w.K, w.m, w.sub_steps, w.n_blocks) != (ref.K, ref.m, ref.sub_steps, ref.n_blocks):
+            raise ValueError(f"the two walks of {name!r} are not one resolution: jax (K, m, sub_steps, n_blocks) = "
+                             f"{(ref.K, ref.m, ref.sub_steps, ref.n_blocks)}, backend {(w.K, w.m, w.sub_steps, w.n_blocks)}")
         # the work record
-        steps = ref.work["walker_steps"]
         counts = {key: (ref.work[key], w.work[key]) for key in ("n_hits", "n_crossings", "exhausted_steps")}
         counts["illegal"] = (int(np.asarray(ref.illegal_crossings).sum()), int(np.asarray(w.illegal_crossings).sum()))
         for key, (a, b) in counts.items():
             z = abs(a - b) / (overdispersion * max(np.sqrt(a + b), 1.0))
             rec["checks"][key] = dict(jax=int(a), backend=int(b), z=float(z), ok=bool(z <= sigma))
-        # confinement: the saves' pools against the start's, where no crossing was granted
-        pool0 = np.asarray(g2.classify_positions_exact(np.asarray(w.positions[:, 0])))
-        poolT = np.asarray(g2.classify_positions_exact(np.asarray(w.positions[:, -1])))
+        # the bands: each channel's quadratic variation and each band's mean square, walker means against their errors
+        qa, ea = _mean_se(np.asarray(ref.qv_positions, np.float64).sum(axis=1))
+        qb, eb = _mean_se(np.asarray(w.qv_positions, np.float64).sum(axis=1))
+        z = _z(qa, ea, qb, eb)
+        rec["checks"]["qv_positions"] = dict(jax=qa.tolist(), backend=qb.tolist(), z=z.tolist(), ok=bool((z <= sigma).all()))
+        if ref.qv_boundary is not None and w.qv_boundary is not None:
+            qa, ea = _mean_se(np.asarray(ref.qv_boundary, np.float64).sum(axis=1))
+            qb, eb = _mean_se(np.asarray(w.qv_boundary, np.float64).sum(axis=1))
+            z = float(_z(qa, ea, qb, eb))
+            rec["checks"]["qv_boundary"] = dict(jax=float(qa), backend=float(qb), z=z, ok=bool(z <= sigma))
+        ba, ea = _mean_se(np.asarray(ref.position_coeffs, np.float64)[:, 0, 2:, :] ** 2)      # (K, 3)
+        bb, eb = _mean_se(np.asarray(w.position_coeffs, np.float64)[:, 0, 2:, :] ** 2)
+        z = _z(ba, ea, bb, eb)
+        rec["checks"]["bands"] = dict(z_max=float(z.max()), ok=bool((z <= sigma).all()))
+        # confinement: the last block end's pool against the start's, where no crossing was granted
+        pool0 = np.asarray(g2.classify_positions_exact(x0))
+        poolT = np.asarray(g2.classify_positions_exact(np.asarray(w.raw_positions[:, -1])))
         crossings_allowed = g2.permeability is not None and float(g2.permeability) > 0
         leaked = int((g2.pool_of(poolT) != g2.pool_of(pool0)).sum())
         rec["checks"]["confinement"] = dict(changed_pool=leaked, ok=(crossings_allowed or leaked == 0))
-        # the signal
+        # the signal, from each side's bands
         seq = pgse([[1, 0, 0], [0, 1, 0], [0, 0, 1]], 0.3e-3, 1.0e-3, bvalues=[2e9] * 3, TE=T_max, n_t=400, slew_rate=np.inf)
-        G = np.asarray(seq.G_eff)
-        def sig(p):
-            phi, log_w, _ = replay(np.asarray(p, np.float32), dt_save, G, seq.dt, return_walker_signals=True)
-            ws = np.exp(np.asarray(log_w, np.float64)) * np.cos(np.asarray(phi, np.float64))
-            return ws.mean(1), ws.std(1, ddof=1) / np.sqrt(ws.shape[1])
-        sa, ea = sig(ref.positions); sb, eb = sig(w.positions)
-        z = np.abs(sa - sb) / np.sqrt(ea ** 2 + eb ** 2)
+        sa, ea = coefficient_signal(ref, seq.G_eff, seq.dt); sb, eb = coefficient_signal(w, seq.G_eff, seq.dt)
+        z = _z(sa, ea, sb, eb)
         rec["checks"]["pgse"] = dict(jax=sa.tolist(), backend=sb.tolist(), z=z.tolist(), ok=bool((z <= sigma).all()))
         rec["ok"] = all(c["ok"] for c in rec["checks"].values())
         out.append(rec)
@@ -566,7 +684,7 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
     r0 = np.ascontiguousarray(r0, np.float32); n = int(r0.shape[0])
     struct, arrays = strands_struct_fields(g)
     lines = dict(engine="strands", n=n)
-    lines.update(request_struct_fields(n_t=request.n_t, sub_steps=request.sub_steps,
+    lines.update(request_struct_fields(n_t=int(request.n_blocks) + 1, sub_steps=request.sub_steps,
                                        step_l=float(np.sqrt(6.0 * request.diffusivity * request.dt_sim)),
                                        kappa_over_D=request.kappa_over_D, record=request.record, count=request.count_walls,
                                        budget=(int(g.bounce_loop.budget) if g.bounce_loop is not None else 0)))
@@ -577,14 +695,14 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
         lines.update({f"adaptive_{k}": v for k, v in adaptive_struct_fields(request.stepping, g._Rmax).items()})
     if request.field is not None:
         f = request.field; basis = f.basis
-        n_tf = len(range(0, int(request.n_t), int(f.sample_every)))
+        n_tf = len(range(0, int(request.n_blocks) + 1, int(f.sample_every)))
         lines["field"] = 1
         lines.update({f"field_{k}": v for k, v in field_struct_fields(basis, f.radius_m, f.sample_every, f.reuse_intervals, f.list_k, n_tf).items()})
         arrays.update(field_tables(basis))
         far_dims, far_origin = [0, 0, 0], [0.0, 0.0, 0.0]
         if basis.far is not None:
             crop, far_dims, far_origin = crop_far_grid(basis.far.values, basis.far.origin_m, basis.far.spacing_m,
-                                                       r0, request.n_t, request.dt_save, request.diffusivity)
+                                                       r0, int(request.n_blocks) + 1, request.block_h, request.diffusivity)
             arrays["far.u16"] = crop
         lines["field_far_dims"] = far_dims; lines["field_far_origin"] = far_origin
     (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))

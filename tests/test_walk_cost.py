@@ -97,14 +97,19 @@ def _install(monkeypatch, **backends):
     monkeypatch.setattr(B, "installed", lambda: {k: _EP(v) for k, v in backends.items()})
 
 
-def test_every_other_backend_is_refused_until_it_accumulates(monkeypatch):
-    """The band accumulation is the JAX kernels' alone (until dmipy-sim-cuda#73): an installed backend is named among
-    the refusing, whatever it would say itself, and none accepts."""
+def test_an_installed_backend_that_accepts_the_walk_is_named_and_the_walk_warns(monkeypatch, caplog):
+    """An installed backend that does not refuse the request is named among the accepting (the coefficient walk is a
+    backend's to walk, dmipy-sim#747); one that refuses is named with its reason; and a walk on the jax kernels that
+    an installed backend accepts warns, naming it."""
     _install(monkeypatch, fast=_Fake("fast"), picky=_Fake("picky", "no spheres"))
     p = cost(d.Sphere(radius=2e-6))
-    assert p.backends_accepting == []
-    assert set(p.backends_refusing) == {"fast", "picky"}
-    assert all("band accumulation" in r and "only the jax kernels" in r for r in p.backends_refusing.values())
+    assert p.backends_accepting == ["fast"]
+    assert set(p.backends_refusing) == {"picky"} and "no spheres" in p.backends_refusing["picky"]
+    with caplog.at_level(logging.WARNING, logger="dmipy_sim"):
+        w = d.simulate_trajectories(N, D, d.Sphere(radius=2e-6), T, DT)
+    warned = [r for r in w.run._events if r["kind"] == "warning"]
+    assert len(warned) == 1 and warned[0]["backends"] == ["fast"]
+    assert any("backend='fast'" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
 
 
 def test_the_walk_is_silent_when_no_other_backend_accepts_it(monkeypatch, caplog):

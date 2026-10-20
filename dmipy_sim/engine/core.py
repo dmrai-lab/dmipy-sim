@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
 
-from .backends import JAX, WalkRequest, resolve as resolve_backend
+from .backends import JAX, WalkRequest, CoefficientBatch, event_capacity, resolve as resolve_backend
 import logging
 
 log = logging.getLogger(__name__)
@@ -936,7 +936,8 @@ class WalkResolution(NamedTuple):
 
 
 def _resolve_walk(geometry, diffusivity, T_max, dt_save=None, *, tiers="all", sub_steps=None, kappa_MT=0.0, dwell_time=0.0,
-                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, K=None, block_order=None, window_T=None):
+                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, field_sample_every=1, K=None,
+                  block_order=None, window_T=None):
     """The resolution every walk shares: its storage windows, its band ``K`` per window, its blocks (the band's own,
     :func:`~dmipy_sim.engine.accumulate.block_length`, unless ``dt_save`` gives one), the sub-step count per block
     (``physics.resolve_sub_steps`` over the rules ``physics.sub_step_rules`` at the band ``K / (2 T)``), the geometries
@@ -1001,12 +1002,19 @@ def _resolve_walk(geometry, diffusivity, T_max, dt_save=None, *, tiers="all", su
     jax_only = [what for what, on in (
         ("the myelinated substrates", geometry._is_packed_myelinated or geometry._is_myelinated),
         ("MT binding", kappa_MT > 0.0), ("in-walk field sampling", field_basis is not None),
-        ("the band accumulation (dmipy-sim-cuda#73)", True), ("the compartment guard", bool(enforce_compartment))) if on]
+        ("several storage windows (a backend accumulates one window per walk)", n_windows > 1),
+        ("the compartment guard", bool(enforce_compartment))) if on]
+    kappa_over_D = float(permeability) / float(diffusivity) if permeability is not None else 0.0
+    # the C1 event list a backend keeps for a walk whose walkers can change pool: the capacity the crossing rule
+    # bounds (backends.event_capacity); an impermeable walk records none, and a pool change there is refused by name
+    events = event_capacity((int(n_t) - 1) * int(n_sub)) if (record and kappa_over_D > 0.0) else 0
     request = WalkRequest(
-        geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(n_sub), dt_sim=float(dt_sim),
-        diffusivity=float(diffusivity), record=bool(record),
-        kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
-        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed))
+        geometry=geometry, block_h=float(dt_actual), n_blocks=int(n_t) - 1, sub_steps=int(n_sub), dt_sim=float(dt_sim),
+        diffusivity=float(diffusivity), record=bool(record), kappa_over_D=kappa_over_D,
+        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed),
+        K=int(K), m=int(block_order), K_c3=0,
+        field_read_interval=(float(dt_actual) * int(field_sample_every) if field_basis is not None else 0.0),
+        events=int(events), raw_subset=0)
     return WalkResolution(record, n_t, dt_actual, f_band, dict(rules), override, int(n_sub), dt_sim, step_rule, binding,
                           ls, request, jax_only, K, block_order, block_rule, n_windows)
 
@@ -1293,8 +1301,8 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save=None, *, walker_b
                             sub_steps=kw.get("sub_steps"), kappa_MT=kw.get("kappa_MT", 0.0),
                             dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
                             enforce_compartment=kw.get("enforce_compartment", False),
-                            field_basis=kw.get("field_basis"), K=kw.get("K"), block_order=kw.get("block_order"),
-                            window_T=kw.get("window_T"))
+                            field_basis=kw.get("field_basis"), field_sample_every=kw.get("field_sample_every", 1),
+                            K=kw.get("K"), block_order=kw.get("block_order"), window_T=kw.get("window_T"))
         if be is not None:
             refusal = _backend_refusal(be, name, res, geometry)
             if refusal:
@@ -1357,6 +1365,21 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save=None, *, walker_b
                                 projected_s=cost.walker_batches * (fixed + ps * max_blocks))
         cost = dataclasses.replace(cost, measured=measured, profile=profile)
     return cost
+
+
+def _join_events(batches):
+    """One event list ``(offsets (n + 1,) int64, t (n_ev,) float64, label (n_ev,) int8)`` from the per-batch lists of
+    a walk's batches, in batch order."""
+    if not batches:
+        return np.zeros((1,), np.int64), np.zeros((0,), np.float64), np.zeros((0,), np.int8)
+    offsets = [np.zeros((1,), np.int64)]
+    base = 0
+    for off, _, _ in batches:
+        off = np.asarray(off, np.int64)
+        offsets.append(off[1:] + base)
+        base += int(off[-1])
+    return (np.concatenate(offsets), np.concatenate([np.asarray(t, np.float64) for _, t, _ in batches]),
+            np.concatenate([np.asarray(l, np.int8) for _, _, l in batches]))
 
 
 def simulate_trajectories(
@@ -1486,9 +1509,12 @@ def simulate_trajectories(
         an installed backend (the ``dmipy_sim.backends`` entry point), or a backend object. An unknown name is
         refused naming what is installed; a backend that does not implement this walk (an engine class, a
         tier, a wall) refuses by name, and the paths only the JAX kernels implement (the myelinated substrates,
-        MT binding, in-walk field sampling, the band accumulation (until dmipy-sim-cuda#73), the compartment guard) are refused for any
-        other backend rather than fallen back from. ``work["backend"]`` and the run record say which backend
-        walked. See :mod:`dmipy_sim.engine.backends`.
+        MT binding, in-walk field sampling, several storage windows, the compartment guard) are refused for any
+        other backend rather than fallen back from. A backend walks each batch in the coefficient form
+        (:class:`~dmipy_sim.engine.backends.CoefficientBatch`: the bands it accumulated, its events, the raw
+        subset's block ends) and the walk takes it as it takes its own, converting nothing; a backend that returns
+        a walk of saves is refused by name. ``work["backend"]`` and the run record say which backend walked. See
+        :mod:`dmipy_sim.engine.backends`.
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
@@ -1500,7 +1526,8 @@ def simulate_trajectories(
         check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
         res = _resolve_walk(geometry, diffusivity, T_max, dt_save, tiers=tiers, sub_steps=sub_steps, kappa_MT=kappa_MT,
                             dwell_time=dwell_time, f_band=f_band, seed=seed, enforce_compartment=enforce_compartment,
-                            field_basis=field_basis, K=K, block_order=block_order, window_T=window_T)
+                            field_basis=field_basis, field_sample_every=field_sample_every, K=K, block_order=block_order,
+                            window_T=window_T)
         record, n_t, dt_actual, sub_steps, dt_sim, step_rule = res.record, res.n_t, res.dt_actual, res.sub_steps, res.dt_sim, res.step_rule
         R_geom = res.length_scales.min_feature
         step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
@@ -1914,8 +1941,10 @@ def simulate_trajectories(
 
         if _backend is not None:
             # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
-            # never fallen back from -- the band accumulation is one of them until dmipy-sim-cuda#73
-            raise ValueError(_backend_refusal(_backend, _backend_name, res, geometry))
+            # never fallen back from; a backend walks each batch in the coefficient form (#747)
+            _refusal = _backend_refusal(_backend, _backend_name, res, geometry)
+            if _refusal:
+                raise ValueError(_refusal)
 
         from .accumulate import ring_scan, coefficient_form, PRECISION, ACCUMULATION, RING
         from ..replay.compression import cosine_band_scale
@@ -2013,7 +2042,77 @@ def simulate_trajectories(
             dev[0] += int(jnp.sum(n_dev))
             return {k: np.asarray(v) for k, v in zip(names, arrs)}
 
+        _resid_known = [True]                        # the k = 0 residual: the JAX chain's own, a backend's when it reports one
+        _events = []                                 # a backend's C1 event lists per batch, (offsets, t, label)
+        _backend_block = {}                          # how the backend accumulated: precision, window, summation
+
+        def _backend_call(a, b, raw):
+            """One batch through the backend (#747): its :class:`~dmipy_sim.engine.backends.CoefficientBatch` under the
+            names of the JAX batch, the walk converting nothing -- a backend that hands back a walk of saves is
+            refused by name."""
+            n_b = b - a
+            req = res.request._replace(raw_subset=(n_b if raw else 0))
+            r0_b = np.ascontiguousarray(np.asarray(r0_all[a:b]), np.float32)
+            keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[a:b]), np.uint32)
+            batch = _backend.walk_batch(req, r0_b, keys_b)
+            if not isinstance(batch, CoefficientBatch):
+                raise ValueError(f"backend {_backend_name!r} returned a {type(batch).__name__} for the coefficient walk; the "
+                                 f"producer takes a CoefficientBatch (the bands accumulated in the walk) and converts "
+                                 f"nothing: a walk of saves is refused (dmipy-sim#747)")
+            if (int(batch.K), int(batch.m), int(batch.sub_steps)) != (K, m, int(sub_steps)):
+                raise ValueError(f"backend {_backend_name!r} accumulated (K, m, sub_steps) = {(batch.K, batch.m, batch.sub_steps)} "
+                                 f"for a request of {(K, m, int(sub_steps))}")
+            C = np.asarray(batch.position_coeffs, np.float64)
+            if C.shape != (n_b, K + 2, 3):
+                raise ValueError(f"backend {_backend_name!r} returned position coefficients of shape {C.shape}; "
+                                 f"the batch of {n_b} walkers at K = {K} has {(n_b, K + 2, 3)}")
+            _illegal_crossings[0] += int(np.asarray(batch.illegal, np.int64).sum())
+            _work_acc(tuple(None if w is None else np.asarray(w) for w in batch.work))
+            _backend_block.update(precision=str(batch.precision), ring=batch.ring, accumulation=batch.accumulation)
+            if batch.k0_residual is None:
+                _resid_known[0] = False
+            got = {"C": C[:, None].astype(np.float32),                                   # one window
+                   "resid": (np.zeros((n_b, 3), np.float32) if batch.k0_residual is None
+                             else np.asarray(batch.k0_residual, np.float32)),
+                   "qv_pos": np.asarray(batch.qv_positions, np.float32)[:, None]}
+            if record:
+                if batch.boundary_bands is None or batch.boundary_endpoint is None or batch.qv_boundary is None \
+                        or batch.compartment is None:
+                    raise ValueError(f"backend {_backend_name!r} returned no contact or compartment channel for a recorded walk")
+                got["blt_end"] = np.asarray(batch.boundary_endpoint, np.float32)[:, None]
+                got["blt_bands"] = np.asarray(batch.boundary_bands, np.float32)[:, None]
+                got["qv_blt"] = np.asarray(batch.qv_boundary, np.float32)[:, None]
+                got["lab"] = np.asarray(batch.compartment, np.int8)
+                if crossing:
+                    if batch.events is None:
+                        raise ValueError(f"backend {_backend_name!r} returned no C1 event list for a walk whose walkers can change pool")
+                    _events.append(tuple(np.asarray(x) for x in batch.events))
+            else:
+                got["lab"] = np.zeros((n_b,), np.int8)
+            got["blt_end"] = got.get("blt_end", np.zeros((n_b, 1), np.float32))
+            got["blt_bands"] = got.get("blt_bands", np.zeros((n_b, 1, 0), np.float32))
+            got["qv_blt"] = got.get("qv_blt", np.zeros((n_b, 1), np.float32))
+            got.update(occ=np.zeros((n_b, 0), np.float32), bfrac=np.zeros((n_b, 0), np.float32), fs=np.zeros((n_b, 0, 0), np.float32))
+            z = np.zeros((n_b, 0), np.float32)
+            got.update(pos=z, dlog=z)
+            if raw:
+                sv = batch.saves
+                if sv is None or sv.positions is None:
+                    raise ValueError(f"backend {_backend_name!r} returned no block ends for the raw subset of {n_b} walkers")
+                pos = np.asarray(sv.positions, np.float32)
+                if pos.shape != (n_b, n_blocks + 1, 3):
+                    raise ValueError(f"backend {_backend_name!r} returned block ends of shape {pos.shape} for {n_b} walkers "
+                                     f"over {n_blocks} blocks")
+                got["pos"] = pos
+                got["dlog"] = (np.asarray(sv.boundary_local_time, np.float32) if (record and sv.boundary_local_time is not None)
+                               else np.zeros((n_b, n_blocks + 1), np.float32))
+                got["occ"] = (np.asarray(sv.compartment, np.float32) if (record and sv.compartment is not None)
+                              else np.repeat(got["lab"][:, None].astype(np.float32), n_blocks + 1, axis=1))
+            return got
+
         def _run(a, b, raw):
+            if _backend is not None:
+                return _backend_call(a, b, raw)
             try:
                 return _call(a, b, raw)
             except Exception as e:
@@ -2031,8 +2130,8 @@ def simulate_trajectories(
             for a, b, raw in pieces:
                 got = _run(a, b, raw)
                 for k in names:
-                    if k in ("pos", "dlog") or (k == "occ" and not crossing) or (k == "bfrac" and not _mt_on) \
-                            or (k == "fs" and not _sampling):
+                    if k in ("pos", "dlog") or (k == "occ" and (not crossing or _backend is not None)) \
+                            or (k == "bfrac" and not _mt_on) or (k == "fs" and not _sampling):
                         continue
                     rows[k].append(got[k])
                 if raw:
@@ -2051,11 +2150,17 @@ def simulate_trajectories(
                           RuntimeWarning, stacklevel=2)
         records_surface = record and (has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated)
         qv_p = rows["qv_pos"].array()
-        block = dict(h=float(dt_actual), m=m, precision=PRECISION, n_blocks=n_blocks, rule=res.block_rule, ring=int(RING),
-                     accumulation=ACCUMULATION,
-                     k0_residual_m=float(np.abs(resid).max()) if resid.size else 0.0,
-                     k0_residual_relative=(float(np.abs(resid).max() / max(np.sqrt(np.mean(disp ** 2)), 1e-300))
-                                           if resid.size else 0.0),
+        if _backend is None:
+            precision, ring, accumulation = PRECISION, int(RING), ACCUMULATION
+        else:                                         # the backend's own accumulation, as it reported it
+            precision = _backend_block.get("precision", "?")
+            ring = _backend_block.get("ring")
+            accumulation = _backend_block.get("accumulation") or f"accumulated by the {_backend_name} backend"
+        block = dict(h=float(dt_actual), m=m, precision=precision, n_blocks=n_blocks, rule=res.block_rule, ring=ring,
+                     accumulation=accumulation,
+                     k0_residual_m=((float(np.abs(resid).max()) if resid.size else 0.0) if _resid_known[0] else None),
+                     k0_residual_relative=((float(np.abs(resid).max()) / max(float(np.sqrt(np.mean(np.asarray(disp, np.float64) ** 2))), 1e-300)
+                                            if resid.size else 0.0) if _resid_known[0] else None),
                      quadratic_variation=dict(
                          positions_mean_m2=[float(x) for x in qv_p.sum(axis=1).mean(axis=0)],
                          positions_over_2DT=([float(x) / (2.0 * float(diffusivity) * float(T_max)) for x in qv_p.sum(axis=1).mean(axis=0)]
@@ -2064,8 +2169,13 @@ def simulate_trajectories(
         work = dict(work, block=block, label_deviations=n_dev)
         comp = bfrac = None
         raw_comp = None
+        comp_events = None
         if record:
-            comp = rows["occ"].array() if crossing else rows["lab"].array().astype(np.int8)
+            if crossing and _backend is not None:     # the backend's walk keeps C1 as its event list (#747, #742)
+                comp = rows["lab"].array().astype(np.int8)
+                comp_events = _join_events(_events)
+            else:
+                comp = rows["occ"].array() if crossing else rows["lab"].array().astype(np.int8)
             if crossing and kind == "pm":
                 comp = comp.astype(np.int8)
             if _mt_on:
@@ -2077,7 +2187,7 @@ def simulate_trajectories(
             n_windows=n_win, dt_sim=float(dt_sim), sub_steps=int(sub_steps),
             boundary_endpoint=(rows["blt_end"].array().astype(np.float32) if records_surface else None),
             boundary_bands=(rows["blt_bands"].array().astype(np.float32) if records_surface else None),
-            compartment=comp, bound_frac=bfrac,
+            compartment=comp, comp_events=comp_events, bound_frac=bfrac,
             field_basis=(field_basis if _sampling else None),
             field_samples=(rows["fs"].array().astype(np.float32) if _sampling else None),
             field_sample_every=_f_every,

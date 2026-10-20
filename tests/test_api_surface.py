@@ -590,6 +590,20 @@ def test_the_walk_keeps_its_bands_and_has_no_second_spelling():
     assert not hits, f"a switch to a walk of saves is spelled in {hits}"
 
 
+def test_a_backends_request_names_the_walk_and_no_save_grid():
+    """``WalkRequest`` (dmrai-lab/dmipy-sim#747, dmipy-sim-cuda#73 section 3) names the walk a backend accumulates --
+    the block, the blocks, the steps per block, the band ``K``, the order ``m``, the field's modes and read interval,
+    the event capacity, the raw subset -- and carries no save grid: no ``n_t``, no ``dt_save``, no
+    ``field_sample_every``. A backend returns the coefficient form (``CoefficientBatch``); ``WalkBatch`` is the
+    adaptive producer's walk of saves until dmipy-sim#742."""
+    from dmipy_sim.engine.backends import WalkRequest, CoefficientBatch
+    assert not {"n_t", "dt_save", "field_sample_every", "accumulate", "block_order"} & set(WalkRequest._fields)
+    assert {"block_h", "n_blocks", "sub_steps", "K", "m", "K_c3", "field_read_interval", "events", "raw_subset"} <= set(WalkRequest._fields)
+    assert {"position_coeffs", "boundary_bands", "boundary_endpoint", "compartment", "qv_positions", "qv_boundary",
+            "events", "bound_events", "field_bands", "field_qv", "dt_f", "saves", "precision", "K", "m"} <= set(CoefficientBatch._fields)
+    assert not {"positions", "n_t"} & set(CoefficientBatch._fields)
+
+
 def test_one_basis_and_no_header_with_a_save_grid():
     """A pack's bands are on one basis, the continuous one: no basis dispatch is left in ``compression`` (``BASES``,
     ``basis_of``, ``require_basis``, the per-save ``bridge_projection``, the per-save contact codec), the sine
