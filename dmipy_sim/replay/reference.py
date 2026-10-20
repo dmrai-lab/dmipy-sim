@@ -854,8 +854,8 @@ def _gate_checks(rec):
         check(st["eps_measured"] <= st["eps_declared"] + k * st["eps_se"],
               f"{name}/step-within-tolerance",
               f"the pilot measured the fine step's spectrum error at {st['eps_measured']:.2e} +- {st['eps_se']:.1e} over "
-              f"{st['n_bins']} bins to {st['f_band_hz']:.3g} Hz (steps {st['sub_steps_fine']} against "
-              f"{st['sub_steps_coarse']} per save), against the tolerance {st['eps_declared']:g} it was sized for, "
+              f"{st['n_bins']} bands to {st['f_band_hz']:.3g} Hz (steps {st['sub_steps_fine']} against "
+              f"{st['sub_steps_coarse']} per block), against the tolerance {st['eps_declared']:g} it was sized for, "
               f"within {k:.3g} standard errors"
               + ("" if st["resolves"] else f"; at {st['n_walkers']:,} walkers the pilot resolves the step error "
                                             f"only to {st['eps_se']:.1e}, so the rule, not this pilot, is what holds "
