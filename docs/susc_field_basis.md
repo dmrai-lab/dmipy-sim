@@ -52,7 +52,7 @@ is set by the field the walker actually crossed, the quadratic variation of the 
 
 ```
 QV_c   = sum_i (b_{c,i+1} - b_{c,i})^2          ~ 2 D int |grad b_c(x(t))|^2 dt    (per channel, measured)
-v_read = (gamma B0 chi)^2 dt_f^2 sum_c kappa_c QV_c                                  kappa_c = 1/12 (the trapezoid)
+v_read = (gamma B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2                       kappa_c = 1/12 (the trapezoid)
 fidelity.terms.field_read = v_read / 2
 ```
 

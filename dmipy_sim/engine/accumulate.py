@@ -18,7 +18,7 @@ running position, the last field read and the events buffer, whatever ``h`` and 
 
 The field read (RPK.md 9.5.5): between two reads the walker moves ``sqrt(2 D dt_f)`` and the trapezoid of the two
 reads misses the path's deviation from the chord; over a walk that adds to the field phase an independent term of
-variance ``v_read = (gamma B0 chi)^2 dt_f^2 sum_c kappa_c QV_c``, ``QV_c = sum_i (b_{i+1} - b_i)^2`` the quadratic
+variance ``v_read = (gamma B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2``, ``QV_c = sum_i (b_{i+1} - b_i)^2`` the quadratic
 variation of channel ``c``'s read series (:func:`moment_scan` accumulates it beside the trapezoid, one multiply-add
 per read) and ``kappa_c`` the trapezoid's constant, :data:`READ_CONSTANT` ``= 1/12`` for a field linear over one read
 or the larger constant a pilot measured on that channel (:func:`read_constants`). The certificate's term is
@@ -148,23 +148,26 @@ def read_constants(measured, n_ch):
 
 
 def _read_weight(qv_increments, constants):
-    """``sum_c kappa_c QV_c`` over the channels: the read error's variance per unit ``(gamma B0 chi dt_f)^2``."""
+    """``(sum_c sqrt(kappa_c QV_c))^2`` over the channels: the read error's variance per unit ``(gamma B0 chi dt_f)^2``.
+    The channels are linear functionals of one path, so their read errors are correlated, and a contraction at any
+    orientation weighs them by at most one: the bound is the square of the summed standard deviations."""
     qv = np.asarray(qv_increments, np.float64).reshape(-1)
     kap = read_constants(constants, qv.shape[0])
-    return float(np.sum(kap * qv))
+    return float(np.sum(np.sqrt(kap * np.clip(qv, 0.0, None)))) ** 2
 
 
 def field_read_term(dt_f, qv_increments, B0, chi, constants=None):
-    """``field_read = v_read / 2`` (RPK.md 9.5.5): ``v_read = (gamma B0 chi)^2 dt_f^2 sum_c kappa_c QV_c`` with
-    ``qv_increments`` the read series' quadratic variation per channel (the walkers' mean) and ``kappa_c`` the
-    trapezoid's constant per channel (:func:`read_constants` of ``constants``); the channels folded by their sum, as
-    the field's quadrature term folds them, and the gate bounded by ``|s| <= 1``."""
+    """``field_read = v_read / 2`` (RPK.md 9.5.5): ``v_read = (gamma B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2``
+    with ``qv_increments`` the read series' quadratic variation per channel (the walkers' mean) and ``kappa_c`` the
+    trapezoid's constant per channel (:func:`read_constants` of ``constants``; ``1/12`` gives ``dt_f^2 / 12 (sum_c
+    sqrt(QV_c))^2``): the channels folded as the square of their summed roots, the bound over every orientation of
+    one path's correlated components, and the gate bounded by ``|s| <= 1``."""
     return 0.5 * (GAMMA * float(B0) * float(chi) * float(dt_f)) ** 2 * _read_weight(qv_increments, constants)
 
 
 def field_read_rule(qv_increments, B0, chi, floor=FIELD_READ_FLOOR, constants=None):
     """The read interval ``dt_f`` (s) that holds ``v_read`` under ``floor^2`` for a walk whose read series has the
-    quadratic variation ``qv_increments`` per channel: ``floor / (gamma B0 chi sqrt(sum_c kappa_c QV_c))``; ``inf``
+    quadratic variation ``qv_increments`` per channel: ``floor / (gamma B0 chi sum_c sqrt(kappa_c QV_c))``; ``inf``
     for a series that does not vary (a stuck pool, a uniform field)."""
     denom = GAMMA * float(B0) * float(chi) * math.sqrt(_read_weight(qv_increments, constants))
     if not denom > 0.0:

@@ -5,7 +5,7 @@ gates the stored modes on it.
 
 The derived interval is the rule of :func:`dmipy_sim.engine.accumulate.field_read_rule` on the pilot's measured read
 series (its quadratic variation per pool, RPK.md 9.5.5) -- the read that keeps ``v_read`` under the floor's square --
-and the term the pack's certificate charges is ``(gamma B0 chi)^2 dt_f^2 / 12 x QV`` of the walk's own read series
+and the term the pack's certificate charges is ``(gamma B0 chi)^2 dt_f^2 / 12 x (sum_c sqrt(QV_c))^2`` of the walk's own read series
 (``fidelity.terms.field_read``). The walk's reads steer nothing: a coarser read keeps the positions and the contact
 identical and changes only the field's modes."""
 import numpy as np

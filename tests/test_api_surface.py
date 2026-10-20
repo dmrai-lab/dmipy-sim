@@ -720,7 +720,7 @@ def test_no_spelling_of_the_save_grid_survives_in_the_package():
 
 # ── the field read is charged from the walk's measured read series, never from an assumed gradient ──────────────
 #: The names of the field read's assumed-gradient route: the basis's largest gradient over a sheath and the rule and
-#: record keys built on it. The read's term is ``(gamma B0 chi)^2 dt_f^2 / 12 x QV`` of the read series (RPK.md
+#: record keys built on it. The read's term is ``(gamma B0 chi)^2 dt_f^2 / 12 x (sum_c sqrt(QV_c))^2`` of the read series (RPK.md
 #: 9.5.5), measured by the walk; nothing in the package spells the assumed maximum.
 _GRADIENT_ROUTE_NAMES = (r"gradient_scale", r"grad_b_per_m", r"grad_b", r"thinnest_sheath_m", r"_field_rule_inputs")
 
@@ -746,6 +746,22 @@ def test_the_field_read_has_no_assumed_gradient():
     assert "field_qv_increments" in CoefficientBatch._fields
     from dmipy_sim import CoefficientWalk
     assert "qv_field_increments" in CoefficientWalk.__dataclass_fields__
+
+
+def test_the_read_term_folds_the_channels_as_the_square_of_their_summed_roots():
+    """The channels are linear functionals of one path: ``v_read = (gamma B0 chi dt_f)^2 (sum_c sqrt(kappa_c QV_c))^2``,
+    ``kappa_c = 1/12`` unless a larger one is given; the rule and the envelope's ``B0 chi`` invert the same term."""
+    from dmipy_sim.constants import GAMMA
+    from dmipy_sim.engine.accumulate import field_read_term, field_read_rule, field_read_B0_chi_max
+    qv, dt, B0, chi = np.array([4.0, 1.0, 0.0]), 2e-6, 7.0, 1e-6
+    v = (GAMMA * B0 * chi * dt) ** 2 * (2.0 + 1.0) ** 2 / 12.0
+    assert field_read_term(dt, qv, B0, chi) == pytest.approx(0.5 * v)
+    k = np.array([0.25, 1.0 / 12.0, 1.0])
+    assert field_read_term(dt, qv, B0, chi, k) == pytest.approx(0.5 * (GAMMA * B0 * chi * dt) ** 2 * (np.sqrt(1.0) + np.sqrt(1.0 / 12.0)) ** 2)
+    dt_r = field_read_rule(qv, B0, chi, 1e-3)
+    assert 2.0 * field_read_term(dt_r, qv, B0, chi) == pytest.approx(1e-6)          # v_read = floor^2 at the rule's read
+    bc = field_read_B0_chi_max(dt, qv, 1e-3)
+    assert field_read_term(dt, qv, bc, 1.0) == pytest.approx(1e-3)                  # the term = floor at the envelope's B0 chi
 
 
 def test_a_field_pack_without_the_read_series_qv_is_refused():

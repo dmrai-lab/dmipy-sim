@@ -1724,7 +1724,7 @@ def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
     """The field channel's bounded terms (RPK.md 9.5.5): ``quadrature.field``, half of ``(gamma B0 chi)^2 sum_k g_k^2
     rel(m, omega_k h) QV_f / T`` over the battery's gates (:func:`_battery_gates`, their cosine projections on the
     window) at the envelope's largest ``B0`` and the certificate's chi, and ``field_read``, half of ``v_read = (gamma
-    B0 chi)^2 dt_f^2 sum_c kappa_c QV_c`` (:func:`~dmipy_sim.engine.accumulate.field_read_term`) from ``read`` =
+    B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2`` (:func:`~dmipy_sim.engine.accumulate.field_read_term`) from ``read`` =
     ``{dt_f, qv_increments, constants, B0, chi}``: the walk's read interval, its read series' quadratic variation per
     channel (the walkers' mean), the trapezoid's constants and the envelope's ``B0`` and the rule's ``chi``
     (:func:`~dmipy_sim.engine.accumulate.field_rule_scale`)."""
