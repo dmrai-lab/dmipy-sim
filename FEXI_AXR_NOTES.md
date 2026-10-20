@@ -4,7 +4,7 @@ Dev notes for the filter-exchange (FEXI) work. The sequence and the engine featu
 real pool contrast (below). Parked here so we can pick it up later.
 
 ## What's implemented (and solid)
-- **`dmipy_sim.engine.bloch.simulate_bloch` — membrane permeation.** The vector-Bloch step does the
+- **`dmipy_sim.engine.bloch._simulate_bloch` (the vector-Bloch oracle) — membrane permeation.** The vector-Bloch step does the
   Powles crossing (`geometry.permeate`), sub-stepped by `engine.physics.resolve_sub_steps`, the count
   every driver uses. Reflecting path unchanged when `permeability is None`. Tests:
   `tests/test_bloch_permeation.py` (slow tier) — κ-monotone + high-κ→free. **This is the reusable
@@ -53,7 +53,7 @@ FEXI needs a **>=2× inter-pool ADC contrast** or σ→0. Findings:
   (DiSimPy), explicitly for exchange-sensitive GM (NEXI et al.). Load via `Mesh.from_ply`. This is
   the GM-permeability regime the whole thing is aimed at; getting a substrate is an external
   (~hours) pipeline.
-- **Note:** `simulate_bloch` currently walks a single bulk D — it does NOT yet resolve
+- **Note:** `_simulate_bloch` currently walks a single bulk D — it does NOT yet resolve
   per-compartment D (the scalar engine does, via `_D_comp_jax`/`classify_position`). Only needed if
   a *non-permeable* multi-D substrate is ever wanted; irrelevant for the permeable FEXI case above.
 
@@ -75,5 +75,5 @@ FEXI needs a **>=2× inter-pool ADC contrast** or σ→0. Findings:
   to a ConCeG GM mesh.
 - Optional: a fast analytic two-site Kärger check that the fit recovers AXR = k_in+k_ex (validates
   the pipeline with zero substrate ambiguity).
-- Optional: add per-compartment D resolution to `simulate_bloch` (non-permeable only).
+- Optional: add per-compartment D resolution to `_simulate_bloch` (non-permeable only).
 - Docs + a pedagogy figure once a clean curve exists.
