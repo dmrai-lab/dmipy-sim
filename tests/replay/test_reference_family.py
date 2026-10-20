@@ -22,8 +22,7 @@ REAL_CODE_COMMIT = R.code_commit        # the module fixture patches R.code_comm
 D0 = 2e-9
 R_SPHERE = 2e-4            # 200 um: sqrt(2 D T) is 4 um over the window, so the diffusion is free to < 1e-4
 T_WIN = 4e-3
-DT = 2.5e-4
-N_T = 17
+K_BANDS = 8
 N_WALK = 300
 B = 1e8
 DELTA = 8e-4
@@ -51,11 +50,10 @@ def _spec_off():
     return d.Sphere(radius=0.75 * R_SPHERE).spec
 
 
-def _walk(spec, n, *, n_t, seed, sub_steps=None):
+def _walk(spec, n, *, T, K, seed, sub_steps=None):
     from dmipy_sim.spec import geometry_from_spec
-    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=(n_t - 1) * DT, dt_save=DT,
-                                   seed=int(seed), tiers="all", require_gpu=False, sub_steps=sub_steps,
-                                   raw_subset=int(n)).saves()
+    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, K=K, seed=int(seed), tiers="all",
+                                   require_gpu=False, sub_steps=sub_steps)
 
 
 def _per_walker(pack):
@@ -134,9 +132,11 @@ def _reference(direct_value=None, direct_se=0.05, **kw):
 
 
 def _design(**kw):
-    base = dict(window_s=T_WIN, dt_save_s=DT, save_grid_why="the test's own grid", K=8, envelope=ENV,
+    base = dict(window_s=T_WIN, K=K_BANDS, envelope=ENV,
                 waveforms=waveforms,
-                tiers=(R.Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=0.1),),
+                # the split-half floor of 300 walkers is a draw per pack, 0.06 and 0.12 on the two spheres at their
+                # own seeds: the target sits above both, so the tier holds as designed on either
+                tiers=(R.Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=0.2),),
                 memory_budget_bytes=200_000_000_000, pilot_n=N_WALK, safety=1.4,
                 tolerance=R.Tolerance(terms=("quantity.direct.se", "quantity.replay_se",
                                              "quantity.published.uncertainty")),
@@ -200,7 +200,11 @@ def test_every_stage_writes_its_record(ran):
     assert not rec["gate"]["per_substrate"]["sphere-off"]["passed"]
     assert rec["gate"]["per_substrate"]["sphere-off"]["failures"] == ["sphere-off/reproduces-signal_at_b"]
     assert rec["spec"]["substrates"]["sphere"]["round_trips"]
-    assert rec["walk"]["substrates"]["sphere"]["n_t"] == N_T
+    w = rec["walk"]["substrates"]["sphere"]
+    assert w["K"] == K_BANDS and w["windows"] == dict(n=1, T=T_WIN) and w["block"]["rule"] == "derived"
+    assert w["block"]["n_blocks"] * w["block"]["h"] == pytest.approx(T_WIN) and len(w["qv"]["positions"]) == 3
+    assert rec["design"]["block"] == rec["design"]["pilot"]["block"] == w["block"]
+    assert rec["pack"]["substrates"]["sphere"]["pack"]["block"]["h"] == pytest.approx(w["block"]["h"])
     assert rec["design"]["pilot"]["on_real_window"]
     assert rec["design"]["derived"]["n_walkers"] > 0
     # no record names a local file by its absolute path, this machine's hostname, or a user name
@@ -588,8 +592,8 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
         plain.stage(st)
     real = os.path.join(plain.dir, "packs", "real.rpk")
     os.makedirs(os.path.dirname(real), exist_ok=True)
-    from dmipy_sim.persistent_walk import PersistentWalk
-    walk = PersistentWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
+    from dmipy_sim.coefficient_walk import CoefficientWalk
+    walk = CoefficientWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
     build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENV, license="CC-BY-4.0",
                       citation="a test pack", position_container="bands", blt_container="bands",
                       verbose=False).save(real)
@@ -1382,8 +1386,9 @@ def test_a_declared_hold_reaches_the_manifest_row_without_becoming_a_verdict(ran
 
 
 def test_the_design_records_the_step_certificate_and_the_gate_holds_it(ran):
-    """The pilot walks its substrate a second time at a coarser step on the same save grid, and the design record
-    carries the measured first-order error of the fine step's diffusion spectrum over the declared waveforms' band,
+    """The pilot walks its substrate a second time at a coarser step over the same window, band and block, and the
+    design record carries the measured first-order error of the fine step's diffusion spectrum, read off the two
+    walks' bands, over the declared waveforms' band (capped at the walk's top band K / (2 T)),
     against the tolerance the walk was sized for; the gate holds it within the pass band and says what the pilot
     resolves (dmrai-lab/dmipy-sim#715)."""
     fam, rec = ran
@@ -1391,7 +1396,9 @@ def test_the_design_records_the_step_certificate_and_the_gate_holds_it(ran):
     assert st["eps_declared"] == rec["design"]["pilot"]["step"]["eps_declared"] > 0
     assert st["sub_steps_fine"] > st["sub_steps_coarse"] >= 1 and st["ratio"] == pytest.approx(st["sub_steps_fine"] / st["sub_steps_coarse"])
     assert st["n_bins"] >= 1 and st["eps_se"] > 0 and np.isfinite(st["eps_measured"])
-    assert st["band_is"] == "the largest band the declared waveforms read" and 0 < st["f_band_hz"] <= 0.5 / rec["design"]["dt_save_s"]
+    assert 0 < st["f_band_hz"] <= K_BANDS / (2 * T_WIN) and st["K"] == K_BANDS and st["T_s"] == pytest.approx(T_WIN)
+    assert st["band_is"] in ("the largest band the declared waveforms read", "the walk's own top band, K / (2 T)")
+    assert st["block_h_s"] == pytest.approx(rec["design"]["block"]["h"])
     assert st["rules"]["step law"] >= 1 and st["dt_p_s"] > 0
     c = next(c for c in rec["gate"]["checks"] if c["check"] == "sphere/step-within-tolerance")
     assert c["passed"] and ("resolves" in c["detail"]) == (not st["resolves"])
@@ -1400,8 +1407,8 @@ def test_the_design_records_the_step_certificate_and_the_gate_holds_it(ran):
 def test_a_walk_hook_without_sub_steps_is_refused_by_name(tmp_path):
     """The step pilot walks at a stated sub-step count, so a hook that cannot take one is refused before anything
     is walked twice."""
-    def legacy(spec, n, *, n_t, seed):
-        return _walk(spec, n, n_t=n_t, seed=seed)
+    def legacy(spec, n, *, T, K, seed):
+        return _walk(spec, n, T=T, K=K, seed=seed)
     fam = _family(tmp_path, build=R.Build(specs={"sphere": _spec, "sphere-off": _spec_off},
                                          pack_id={"sphere": "synthetic/sphere", "sphere-off": "synthetic/sphere-off"},
                                          reproduce=_reproduce, served_vs_channel=_served, served_tier="positions",
