@@ -345,7 +345,8 @@ def per_voxel_summary(grid_meta, pools, cert, **extra):
                 floor_max=float(np.nanmax(floor)) if ok.any() else None,
                 floor_median=float(np.nanmedian(floor)) if ok.any() else None,
                 err_max=float(np.nanmax(err)) if np.isfinite(err).any() else None,
-                within_2x_floor_fraction=(float(np.mean(err[ok] <= 2.0 * floor[ok])) if ok.any() else None),
+                within_2x_floor_fraction=(float(np.mean(err[ok & np.isfinite(err)] <= 2.0 * floor[ok & np.isfinite(err)]))
+                                          if (ok & np.isfinite(err)).any() else None),
                 thin_voxels=int(((n > 0) & (n < 2)).sum()), **extra)
 
 
@@ -901,8 +902,12 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     battery, default the envelope every pack is built against), the codec-error column ``nan`` as in an
     inherited certificate. The fidelity summary is the conservative one over the shards (the largest error and
     floor, every family within its floor only when every shard was); the precision tiers are recomputed and
-    declared unshuffled (the walkers are ordered by shard). Provenance lists the shards. ``packs`` are
-    :class:`ReplayPack` objects or paths."""
+    declared unshuffled (the walkers are ordered by shard). Provenance lists the shards and the field read interval
+    of each. The shards of a pool bundle read the field at the intervals of their own rounds, so the interval is not
+    an identity key: the merged pack states the coarsest and the term charged at it (:func:`charge_field_read`).
+    Shards that carry no per-voxel certificate (a walker's shards) keep their walkers' ``voxel_ijk`` ``(n, 3)``, by
+    which a recertifying merge renormalises their weights to the union. ``packs`` are :class:`ReplayPack` objects
+    or paths."""
     with Run("merge_packs", params=dict(id=id, n_packs=len(packs), overlap=overlap, out_path=out_path)) as run:
         from ..phantom.grid import Grid
         if overlap not in ("refuse", "recertify"):

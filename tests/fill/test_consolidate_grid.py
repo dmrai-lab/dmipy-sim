@@ -81,6 +81,7 @@ def test_a_layout_of_walkers_shards_is_the_layout_of_certified_shards(rounds, tm
     assert idx == ref_idx
     pv, pv_ref = man["meta"]["fidelity"]["per_voxel"], ref["meta"]["fidelity"]["per_voxel"]
     assert pv["n_voxels"] == pv_ref["n_voxels"] == 8 and pv["shards"] == pv_ref["shards"] == 2
+    assert pv["within_2x_floor_fraction"] is None and pv["err_max"] is None            # the error is the pack's, not a voxel's
     for k in ("walkers_min", "floor_max", "floor_median", "thin_voxels", "pools", "grid"):
         assert pv[k] == pytest.approx(pv_ref[k])
     pack, table = certified_table(str(tmp_path / "out")); _, table_ref = certified_table(str(tmp_path / "ref"))
