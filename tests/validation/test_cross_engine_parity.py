@@ -9,7 +9,8 @@ initial-walker list, the ``ActiveAxG140_PM.scheme`` ActiveAx protocol (372 measu
 shells at b = 1925 / 1932 / 3094 / 13190 s/mm^2) and the raw ``*_DWI.bfloat`` their engine produced. Their
 signal is a Monte-Carlo estimate too, so the tolerance is BOTH floors: theirs is the standard error at the
 walker count their b = 0 entry states (50,000) with the variance of ``cos(phi)`` measured on this walk, ours
-is this walk's split half. The test asserts ``|dS| <= 3 sqrt(ours^2 + theirs^2)`` on every measurement.
+is the analytic standard error of this walk's mean. Every walk keeps ``K_PARITY`` = 64 bands over the fixture's
+TE, and its signal is read off those bands (``cross_engine_parity.walk_phase``).
 
 **Disimpy** (Kerkelae et al. 2020, JOSS 5(52):2527, MIT) released ``tests/cylinder_mesh_closed.pkl`` and the
 MISST signal it is asserted against. MISST is an exact eigenfunction solution, so the tolerance is our floor
@@ -18,34 +19,25 @@ this fixture found (#479): 294 of the pickle's 588 faces are wound the other way
 half the lumen exterior and ``reject_escape`` discarded 15.6 % of steps, putting the walk 1.3-2.1e-2 below
 MISST with a gap that did not close with the step.
 
-Measured on an L40S at ``N_WALKERS`` = 8,000 -- **this test's own default** -- and recorded so the numbers can
-be checked rather than trusted. Every fixture passes here, which is the point of a default: 0 of the 360 live
-measurements outside their own 3-sigma band, against the 4 chance allows, and the worst well inside the
-3.198-sigma family-wise band. The 12 zero-variance (b = 0) rows agree exactly.
+Measured on a T4 at ``N_WALKERS`` = 8,000 -- **this test's own default** -- on the bands, and recorded so the
+numbers can be checked rather than trusted: 0 of the 360 live MC/DC measurements (0 of 100 Disimpy) outside
+their own 3-sigma band, against the 4 (2) chance allows, and the worst inside the 3.198-sigma (2.808-sigma)
+family-wise band. The zero-variance (b = 0) rows agree exactly.
 
 | fixture | max\\|dS\\| | rms | our floor | their floor | worst | over 3 sigma |
 |---|---|---|---|---|---|---|
-| MC/DC amp 0.2 wL 32 um | 0.01185 | 0.00538 | 0.00792 | 0.00317 | 1.992 sigma | 0 of 360 |
-| MC/DC amp 1.0 wL 12 um | 0.01124 | 0.00417 | 0.00807 | 0.00323 | 1.791 sigma | 0 of 360 |
-| MC/DC amp 2.6 wL 4 um | 0.00811 | 0.00349 | 0.00681 | 0.00273 | 2.015 sigma | 0 of 360 |
+| MC/DC amp 0.2 wL 32 um | 0.00727 | 0.00282 | 0.00790 | 0.00316 | 1.321 sigma | 0 of 360 |
+| MC/DC amp 1.0 wL 12 um | 0.00822 | 0.00249 | 0.00803 | 0.00321 | 1.860 sigma | 0 of 360 |
+| MC/DC amp 2.6 wL 4 um | 0.01431 | 0.00458 | 0.00684 | 0.00273 | 2.693 sigma | 0 of 360 |
+| Disimpy analytic cylinder, sub_steps 2 | 0.00114 | 0.00051 | 0.00174 | exact | 1.544 sigma | 0 of 100 |
+| Disimpy mesh, sub_steps 8 | 0.00186 | 0.00071 | 0.00174 | exact | 2.012 sigma | 0 of 100 |
 
-The published packs walk 100,000 and reach 2.87 sigma at worst; a smaller count is not a weaker test, because
-the band is the walk's own standard error and shrinks with it.
+A smaller count is not a weaker test, because the band is the walk's own standard error and shrinks with it.
 
-The step matters too, and at 8,000 walkers it is what the MC/DC fixture is really about: MC/DC walked these
-axons in T = 5000 steps of 10.7 us -- a 196 nm step against a 500 nm lumen radius -- and this engine's rule
-takes its own, which on this substrate is COARSER (268 nm). Walking at their step moved max|dS| on amp 0.2 /
-wL 32 um from 0.01185 to 0.00819, so part of what is left between the engines is the step and not the engine,
-which is what their paper is about.
-
-The second row is the point of the MC/DC fixture. MC/DC walked these axons in T = 5000 steps of 10.7 us -- a
-196 nm step against a 500 nm lumen radius -- and this engine's sub-step rule takes its own, which on this
-substrate comes out COARSER (268 nm). Walking at their step moves our signal a third of the way to theirs, so
-part of what is left between the two engines is the step and not the engine, which is what their paper is
-about. At the walker count the packs are built with, the tolerance is set by THEIR 50,000 walkers rather than
-by ours -- measured on amp 0.2 / wL 32 um at 100,000 walkers: max abs dS **0.00688** against a tolerance of
-**0.01344** (our floor 0.00360 against their 0.00317), and the published pack reproduces the walk's own number
-to 7e-6.
+The step matters too. MC/DC walked these axons in T = 5000 steps of 10.7 us -- a 196 nm step against a 500 nm
+lumen radius -- and this engine's rule takes its own: 24 sub-steps of the band's 213 us block, 8.9 us, a 179 nm
+step. Part of what is left between the two engines is the step and not the engine, which is what their paper is
+about.
 
 The data are not in the repository. Point ``DMIPY_SIM_MCDC_ROBUST_DIR`` at a checkout of
 Robust-Monte-Carlo-Simulations and ``DMIPY_SIM_DISIMPY_DIR`` at a checkout of disimpy to run this.
@@ -146,8 +138,9 @@ def test_the_uncapped_meshes_are_refused_as_substrates():
 def test_the_analytic_cylinder_of_the_same_radius_lands_on_misst():
     """The control. The same waveform, seed and walker count on ``Cylinder(radius=5e-6)`` instead of the mesh.
 
-    MISST is an exact eigenfunction solution, so the tolerance here IS our split-half floor alone, and it is
-    met: measured 1.18e-3 against a floor of 5.4e-4 at 8,000 walkers and sub_steps 2 (2.65e-3 at sub_steps 4).
+    MISST is an exact eigenfunction solution, so the tolerance here IS our own standard error alone, and it is
+    met: measured on the bands, max abs dS 1.14e-3 against a largest standard error of 1.74e-3 at 8,000 walkers
+    and sub_steps 2 (1.54 sigma at worst).
     This is what makes the mesh's larger gap in the next test a property of the surface and not of the engine.
     """
     X = fixtures()
