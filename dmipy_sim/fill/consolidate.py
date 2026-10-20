@@ -283,6 +283,11 @@ class Consolidator:
         self.normalised.append({"shard": name, "trace_residual": sp.get("trace_residual")})
         return meta
 
+    @staticmethod
+    def no_grid(name):
+        return ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel) and no voxel grid is given: the grid is "
+                          "the recipe's (consolidate(grid=...), --manifest), or the shards are packed with voxel_grid=")
+
     def certify_voxels(self, name, pk):
         """``pk.meta`` of a shard on the recipe's grid: a shard with a per-voxel certificate must be on that grid; one
         without is certified here (:func:`~dmipy_sim.replay.bank.voxel_certificate`), and the voxel its walker
@@ -295,8 +300,7 @@ class Consolidator:
                 raise ValueError(f"shard {name}: its per-voxel grid {pv['grid']!r} is not the recipe's {self.recipe_grid.to_meta()!r}")
             return meta
         if self.recipe_grid is None:
-            raise ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel) and no voxel grid is given: the grid is "
-                             "the recipe's (consolidate(grid=...), --manifest), or the shards are packed with voxel_grid=")
+            raise self.no_grid(name)
         stated = pk.arrays.get("voxel_ijk")
         arrays, pv = voxel_certificate(pk, self.recipe_grid)
         if stated is not None and np.asarray(stated).shape == (int(meta["walk_params"]["n_walkers"]), 3):
@@ -315,22 +319,13 @@ class Consolidator:
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
         meta = self.normalise_path(name, pk, meta)
-        meta = self.certify_voxels(name, pk)
-        # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid
+        # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
+        # shard's own, else the recipe's)
         ident = dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
                      substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
-                     grid=(meta["fidelity"].get("per_voxel") or {}).get("grid"), names=sorted(k for k in pk.arrays if k != "band_block"))
-        no_grid = ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel): a layout's shards are packed "
-                             "with voxel_grid=")
-        if self.meta0 is None:
-            if ident["grid"] is None:
-                raise no_grid
-            self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
-            self.grid = Grid.from_meta(ident["grid"])
-            self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
-            pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
-            self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
-        else:
+                     grid=(meta["fidelity"].get("per_voxel") or {}).get("grid") or (None if self.recipe_grid is None else self.recipe_grid.to_meta()),
+                     names=sorted(k for k in pk.arrays if k not in ("band_block", "voxel_ijk", "voxel_certificate")))
+        if self.meta0 is not None:
             for k, v in ident.items():
                 if not _agree(v, self.ident0[k]):
                     where = k
@@ -341,7 +336,14 @@ class Consolidator:
                     raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
                                      "layout are one walk's, on one block and one window table")
         if ident["grid"] is None:
-            raise no_grid
+            raise self.no_grid(name)
+        meta = self.certify_voxels(name, pk)
+        if self.meta0 is None:
+            self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
+            self.grid = Grid.from_meta(ident["grid"])
+            self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
+            pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
+            self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
         ijk, inside = self.grid.bin(pk.r0)
         if not inside.all():
             raise ValueError(f"{name}: {int((~inside).sum())} walkers start outside the certificate grid")
