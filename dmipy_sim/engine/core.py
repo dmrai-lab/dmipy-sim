@@ -1734,7 +1734,7 @@ def simulate_trajectories(
         _walk_batch = _call if _backend is None else _backend_call
 
         # ── The pilots: the events buffer's capacity (the largest count a pilot walker reached, with a margin) and
-        # the field's band (the ladder on the pilot's block means), each a walk of the first PILOT_WALKERS walkers
+        # the field's band (the ladder on the pilot's block means), each a walk of PILOT_WALKERS walkers spread over the walk (accumulate.pilot_walkers)
         # thrown away afterwards; the production program is compiled once they are known.
         from .accumulate import pilot_walkers
         pidx = pilot_walkers(n_walkers)                    # spread over the walk: its walkers are seeded pool by pool
