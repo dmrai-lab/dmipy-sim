@@ -1,38 +1,18 @@
-"""The replay primitives: one gradient phase, one resampler, one field gate.
+"""The block-end replay primitives: one gradient phase, one resampler, one field gate.
 
-Every route that turns a stored walk into a signal -- the raw numpy replay, its JAX twin, the
-compressed mode-space replay, the pre-pulse azimuth, the two vector-Bloch replays, the bank's
-susceptibility replay and the SH responder -- integrates the same quantity,
-``phi = gamma * dt * sum_t G(t) . r(t)``, on the same time grid. They read it from here.
+Every route that replays a walk at its block ends -- the dense replay of a raw subset, the two vector-Bloch
+replays and a measured certificate's oracle -- integrates the same quantity, ``phi = gamma * int G(t) . r(t) dt``
+against the piecewise-linear path through the block ends. They read it from here.
 
 * :func:`effective_gradient` gives a waveform's exact per-block-end weights against the piecewise-linear path
   through the block ends, from the waveform's own grid (:func:`waveform_moments`); no resampling of ``G``.
-* :func:`gradient_phase` is the total phase per (measurement, walker); :func:`phase_increments`
-  the per-step increments one measurement contributes, for a propagator that applies them in
-  order.
+* :func:`gradient_phase` is the total phase per (measurement, walker).
 * :func:`field_gate` is the acquisition's effective gate as per-block-end weights against a field sampled at the
   block ends: the one gate a static field, a uniform off-resonance and ``G_eff`` all accrue through.
-
-Each has a JAX twin (``*_jax``) where a consumer differentiates through it.
 """
 import numpy as np
 
 from ..constants import GAMMA
-
-try:
-    import jax
-    import jax.numpy as jnp
-    _JAX = True
-except ImportError:  # pragma: no cover
-    _JAX = False
-
-_FULL = jax.lax.Precision.HIGHEST if _JAX else None     # no TF32 in a phase contraction
-
-_SAME_GRID_RTOL = 1e-9
-
-
-def _same_grid(dt_wf, h):
-    return abs(float(dt_wf) - float(h)) / max(abs(float(h)), 1e-30) <= _SAME_GRID_RTOL
 
 
 def _cumulative_at(G, dt_wf, times):
@@ -194,28 +174,6 @@ def effective_gradient(G, dt_wf, n_t, dt_pack, t0=None):
     return W / float(dt_pack)
 
 
-def effective_gradient_jax(G, dt_wf, n_t, dt_pack):
-    """:func:`effective_gradient` for a traced ``G`` (differentiable in ``G``), float32 output."""
-    n_meas, n_wf, n_c = G.shape
-    n_t = int(n_t)
-    dt_wf, dt_pack = float(dt_wf), float(dt_pack)
-    G = G.astype(jnp.float32)
-    e = np.arange(n_wf + 1) * dt_wf
-    tp = np.arange(n_t) * dt_pack
-    tc = np.clip(tp, 0.0, e[-1])
-    j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)           # static: the grids are known
-    w1 = jnp.asarray((e[1:] ** 2 - e[:-1] ** 2) / 2.0, jnp.float32)
-    Q0 = jnp.concatenate([jnp.zeros((n_meas, 1, n_c), jnp.float32), jnp.cumsum(G, axis=1) * jnp.float32(dt_wf)], axis=1)
-    Q1 = jnp.concatenate([jnp.zeros((n_meas, 1, n_c), jnp.float32), jnp.cumsum(G * w1[None, :, None], axis=1)], axis=1)
-    Q0p = Q0[:, j, :] + G[:, j, :] * jnp.asarray(tc - e[j], jnp.float32)[None, :, None]
-    Q1p = Q1[:, j, :] + G[:, j, :] * jnp.asarray((tc ** 2 - e[j] ** 2) / 2.0, jnp.float32)[None, :, None]
-    A0 = jnp.diff(Q0p, axis=1)
-    A1 = jnp.diff(Q1p, axis=1) - jnp.asarray(tp[:-1], jnp.float32)[None, :, None] * A0
-    z = jnp.zeros((n_meas, 1, n_c), jnp.float32)
-    W = jnp.concatenate([A0 - A1 / dt_pack, z], axis=1) + jnp.concatenate([z, A1 / dt_pack], axis=1)
-    return W / jnp.float32(dt_pack)
-
-
 _PHASE_CHUNK_BYTES = 256 * 2 ** 20     # float64 working copy of the trajectory per chunk
 
 
@@ -238,34 +196,3 @@ def gradient_phase(G_traj, traj, dt, chunk_bytes=_PHASE_CHUNK_BYTES):
         out[:, a:a + step] = np.einsum('mr,wr->mw', G_flat,
                                        np.asarray(traj[a:a + step], np.float64).reshape(-1, row))
     return (GAMMA * float(dt)) * out
-
-
-def gradient_phase_jax(G_traj, traj, dt):
-    """:func:`gradient_phase` for traced operands (float32).
-
-    The contraction is pinned to full float32 precision: on a GPU the default lets XLA run a
-    float32 matmul at TF32 (10 mantissa bits), which on a phase of hundreds of radians is an
-    error of order 0.1 rad per walker and biases the signal by 10-20%.
-    """
-    return (float(GAMMA) * float(dt)) * jnp.einsum('mtx,wtx->mw', G_traj.astype(jnp.float32),
-                                                   traj.astype(jnp.float32), precision=_FULL)
-
-
-def phase_increments(G_m, traj, dt):
-    """Per-step increments ``gamma * dt * G_m[t] . r[w, t]`` of ONE measurement -> ``(n_t, n_walkers)``,
-    for a propagator that rotates the magnetisation step by step (the vector-Bloch replays)."""
-    G_m = np.asarray(G_m, np.float64)
-    traj = np.asarray(traj, np.float64)
-    return (GAMMA * float(dt)) * np.einsum('td,wtd->tw', G_m, traj)
-
-
-def phase_increment(g_t, r_t, dt):
-    """One step of :func:`phase_increments`: ``gamma * dt * r[w] . g`` -> ``(n_walkers,)``."""
-    return (GAMMA * float(dt)) * (np.asarray(r_t, np.float64) @ np.asarray(g_t, np.float64))
-
-
-def phase_increments_jax(G_m, traj, dt):
-    """:func:`phase_increments` for traced operands, at full float32 precision (see
-    :func:`gradient_phase_jax`)."""
-    return (float(GAMMA) * float(dt)) * jnp.einsum('td,wtd->tw', jnp.asarray(G_m), jnp.asarray(traj),
-                                                   precision=_FULL)

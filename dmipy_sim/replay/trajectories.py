@@ -16,8 +16,7 @@ import numpy as np
 
 from ..constants import GAMMA
 from ..acquisition.rf import RFSchedule
-from ._replay_kernel import (effective_gradient, effective_gradient_jax, gradient_phase,
-                             gradient_phase_jax, piece_phase_weights, gate_weights, bin_gate)
+from ._replay_kernel import effective_gradient, gradient_phase, piece_phase_weights, gate_weights, bin_gate
 
 # JAX optional — dmipy-sim does not hard-require JAX for the NumPy replay path.
 try:
