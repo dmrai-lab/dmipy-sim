@@ -116,14 +116,16 @@ def test_the_signal_reproduces_mcdcs_released_dwi_within_the_two_floors(mcdc_sch
 @needs_mcdc
 def test_the_walk_stays_inside_the_axon_and_never_reaches_the_domain(mcdc_scheme):
     """An intra-only walk in a closed tube: no walker leaves the lumen, and the domain faces are never met, so
-    what MC/DC's ``<voxels>`` block said about them cannot matter. Measured, not assumed."""
+    what MC/DC's ``<voxels>`` block said about them cannot matter. Measured, not assumed, on every walker's block
+    ends (the walk's raw subset)."""
     X = fixtures()
     spec = X.mcdc_spec(MCDC, 1.0, 12.0)
-    walk = X.mcdc_walk(MCDC, 1.0, 12.0, 2000)
-    r = np.asarray(walk.positions).reshape(-1, 3)
+    walk = X.mcdc_walk(MCDC, 1.0, 12.0, 2000, raw_subset=2000)
+    r = np.asarray(walk.raw_positions).reshape(-1, 3)
     lo, hi = np.asarray(spec.domain.box_min), np.asarray(spec.domain.box_max)
     assert walk.illegal_crossings == 0
-    comp = np.asarray(walk.compartment)                      # the walk's own occupancy channel
+    assert np.ndim(walk.compartment) == 1, "a walk whose walkers keep their pool keeps one label per walker"
+    comp = np.asarray(walk.raw_compartment)                  # the pool at every block end
     assert np.all(comp == comp[:, :1]), "a walker changed pool through a wall with no crossing granted"
     margin = np.minimum(r.min(0) - lo, hi - r.max(0))
     assert np.all(margin > 0), f"the walk reached the domain face: margin {margin} m"
@@ -227,7 +229,7 @@ def test_the_cylinder_mesh_lands_on_misst_within_our_floor():
     # 8,000 x 1400 x 8 steps at sub_steps 8 and 1 of 8,000 x 1400 at sub_steps 1, i.e. a rate below 1e-7. What
     # must hold is that the guard is RARE, not that it never fires -- a guard that never fires on a rim is a
     # guard that is not looking.
-    steps = N_WALKERS * (X.DISIMPY_N_T - 1) * int(walk.sub_steps)
+    steps = N_WALKERS * int(walk.n_blocks) * int(walk.sub_steps)
     assert walk.illegal_crossings / steps <= 1e-6, (
         f"{walk.illegal_crossings} refused steps of {steps} is a rate of "
         f"{walk.illegal_crossings / steps:.2e}, which is not the rim")
