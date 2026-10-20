@@ -15,6 +15,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.geometry.myelin import concentric_wall_kernel
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 R = 1e-6                       # lumen radius of the impact-table axon
@@ -174,10 +175,10 @@ def test_membrane_exchange_matches_permeable_shell():
     wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 18e-3, gradient_strengths=0.01, n_t=200, slew_rate=np.inf), 1e6)
     mc = d.MyelinatedCylinder(R_in, R_out, (0, 0, 1), D, D, D_myelin=D, kappa_inner=kappa,
                               kappa_outer=None, water_fractions=(1.0, 1.0, 0.0))
-    _, o_m, f_m = d.simulate(N, None, wf, mc, seed=3, return_compartments="final", require_gpu=False)
+    _, o_m, f_m = simulate_fused(N, None, wf, mc, seed=3, return_compartments="final", require_gpu=False)
     keep = o_m == 1                                     # the shell seeds its lumen; compare that population
     sh = d.geometry.PermeableShell(R_in, R_out, kappa, kind="cylinder", orientation=(0, 0, 1))
-    _, o_s, f_s = d.simulate(N, D, wf, sh, seed=3, return_compartments="final", require_gpu=False)
+    _, o_s, f_s = simulate_fused(N, D, wf, sh, seed=3, return_compartments="final", require_gpu=False)
     assert (o_s == 1).all()
     fT_m, fT_s = (f_m[keep] == 1).mean(), (f_s == 1).mean()
     assert fT_s < 0.95, "no exchange happened"
@@ -188,7 +189,7 @@ def test_membrane_exchange_matches_permeable_shell():
 def _extra_only_signal(pm, wf, N, seed):
     """The extra-axonal pool's own signal: intra and myelin water are removed by a vanishing T2, and
     the spin-density normalisation of `simulate` is undone with the seeded pool counts."""
-    s, origin, _ = d.simulate(N, None, wf, pm, seed=seed, return_compartments="final", require_gpu=False)
+    s, origin, _ = simulate_fused(N, None, wf, pm, seed=seed, return_compartments="final", require_gpu=False)
     n = np.bincount(origin, minlength=3)
     w_total = n[0] + n[1] + pm._myelin_proton_density * n[2]
     return np.asarray(s).ravel() * w_total / n[0], int(n[0])
@@ -206,7 +207,7 @@ def test_bare_pack_extra_axonal_signal_matches_packed_cylinders():
     wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
     N = 60_000
     s_pm, n_extra = _extra_only_signal(pm, wf, N, seed=4)
-    s_pc, _, f_pc = d.simulate(N, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
+    s_pc, _, f_pc = simulate_fused(N, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
     s_pc = np.asarray(s_pc).ravel()
     # the reference is only a reference while its single-hit rule keeps the walkers outside (#94 A6):
     # a leaked walker is restricted for the rest of the walk, so the leak must stay far below the tolerance
@@ -251,8 +252,8 @@ def test_per_axon_properties_are_per_axon():
                                         compartments=d.Compartments(extra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
     first = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(
                                         intra=d.Pool(T2=0.01), extra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
-    s_mixed, o, _ = d.simulate(N, None, wf, mixed, seed=6, return_compartments="final", require_gpu=False)
-    s_first, _, _ = d.simulate(N, None, wf, first, seed=6, return_compartments="final", require_gpu=False)
+    s_mixed, o, _ = simulate_fused(N, None, wf, mixed, seed=6, return_compartments="final", require_gpu=False)
+    s_first, _, _ = simulate_fused(N, None, wf, first, seed=6, return_compartments="final", require_gpu=False)
     n = np.bincount(o, minlength=3)
     w_total = n[0] + n[1] + mixed._myelin_proton_density * n[2]
     TE = wf.echo_idx * wf.dt
@@ -271,7 +272,7 @@ def test_per_axon_properties_are_per_axon():
         f"an inner-wall relaxivity changed the extra-axonal signal: {s_rho[0]:.4f} vs {s_plain[0]:.4f}"
     only_intra = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
                                              compartments=d.Compartments(extra=d.Pool(T2=1e-6), myelin=d.Pool(T2=1e-6)))
-    s_i, o_i, _ = d.simulate(N, None, wf, only_intra, seed=7, return_compartments="final", require_gpu=False)
+    s_i, o_i, _ = simulate_fused(N, None, wf, only_intra, seed=7, return_compartments="final", require_gpu=False)
     n_i = np.bincount(o_i, minlength=3)
     intra_rho = float(s_i[0]) * (n_i[0] + n_i[1] + only_intra._myelin_proton_density * n_i[2]) / n_i[1]
     assert intra_rho < 1.0 - 0.05, "the inner-wall relaxivity did not act on the lumen water"

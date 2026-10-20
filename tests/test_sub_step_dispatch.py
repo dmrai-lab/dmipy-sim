@@ -13,6 +13,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.physics import (resolve_sub_steps, tolerance_sub_steps, surface_sub_steps,
                                permeable_sub_steps, collision_sub_steps, mt_sub_steps,
                                make_step_fn, make_packed_myelin_step_fn)
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 DT = 1e-4
@@ -112,16 +113,16 @@ def test_trajectory_producers_take_the_dispatched_count():
     assert mt.sub_steps == resolve_sub_steps(d.Sphere(2e-6), D, block_h, surface=True, mt_dwell_time=1e-3)
 
 
-# ── the consequence: fused == replay at the auto count ───────────────────────────────────
+# ── the consequence: the oracle == the coefficient walk at the auto count ───────────────────────────────────
 @pytest.mark.slow
 @pytest.mark.parametrize("make", [_sphere_rho, lambda: d.Box1D(4e-6, surface_relaxivity_t2=1e-6)])
-def test_fused_and_replay_agree_at_the_auto_sub_step_count(make):
+def test_the_oracle_and_the_coefficient_walk_agree_at_the_auto_sub_step_count(make):
     g = make()
     wf = d.set_b(d.pgse([[1, 0, 0]], 4e-3, 12e-3, gradient_strengths=0.1, n_t=160, slew_rate=np.inf), 1e9)
     assert resolve_sub_steps(g, D, wf.dt, surface=True) > 1, "the test must exercise sub-stepping"
     N = 40_000
-    s_fused = np.asarray(d.simulate(N, D, wf, g, seed=1, engine="fused", require_gpu=False)).ravel()
-    s_replay = np.asarray(d.simulate(N, D, wf, g, seed=1, engine="replay", require_gpu=False)).ravel()
+    s_fused = np.asarray(simulate_fused(N, D, wf, g, seed=1, require_gpu=False)).ravel()
+    s_replay = np.asarray(d.simulate(N, D, wf, g, seed=1, require_gpu=False)).ravel()
     tol = max(0.01, 3.0 / np.sqrt(N))
     assert abs(s_fused[0] - s_replay[0]) < tol, f"fused {s_fused[0]:.4f} vs replay {s_replay[0]:.4f}"
 

@@ -4,11 +4,16 @@ How a walk stored once becomes any acquisition on any tissue on any scanner: the
 and the operations that join them. Every code block on these pages runs in the test suite
 (`tests/test_replay_guide.py`), so a block that no longer runs is a page that fails.
 
+A Monte Carlo walk's natural output is neither an acquisition-specific signal nor a trajectory history but an
+acquisition-independent set of sufficient projections, accumulated while the physics is simulated; the engine
+encodes as it goes. The scanner class gives the band, the band gives the block, and a pack is those projections
+(one basis, the continuous sine basis over a window) with the spec they were walked from.
+
 ## The objects, and what each one is
 
 | object | what it is | where it comes from |
 |---|---|---|
-| **pack** (`ReplayPack`) | the sample's structure, walked once and stored: per-walker positions as bridge bands, the pool a walker is in, its wall contact, the field along its path, and the substrate spec it was walked from | `ReplayPack.load(".rpk")`, `ReplayPack.open("hf://...")`, `build_replay_pack(walk)` |
+| **pack** (`ReplayPack`) | the sample's structure, walked once and stored: per-walker positions as bridge bands (the sine-band projections of the path), the pool a walker is in, its wall contact, the field along its path, and the substrate spec it was walked from | `ReplayPack.load(".rpk")`, `ReplayPack.open("hf://...")`, `build_replay_pack(walk)` |
 | **sequence** (`ScannerSequence`) | what the scanner plays from t = 0 to the readout: gradients, RF, timing | `sequences.pgse(...)`, `ogse`, `pgste`, `cpmg`, `gre`, `from_waveform` |
 | **tissue** (`Tissue`) | what the water is made of: T2 and T1 per pool, the walls' relaxivity, the bulk diffusivity, the field source's susceptibility | `Tissue(...)`, `pack.nominal`, the catalogue |
 | **scanner** | what measures it: the static field, the limits | a field in tesla, `ScannerLimits.of("prisma")`, `pack.nominal_field_T` |

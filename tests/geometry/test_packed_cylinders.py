@@ -20,6 +20,7 @@ import pytest
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, pack_cylinders, PackedCylinders, set_b, Cylinder
 from dmipy_sim.sequences import pgse
 from tests.conftest import D, N_WALKERS, SEED
+from dmipy_sim.engine._fused import simulate_fused
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +197,7 @@ def test_packed_cylinders_walkers_stay_outside():
 
     bvec = np.array([[1., 0., 0.]])
     wf   = set_b(pgse(bvec, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), np.array([1e9]))
-    _, final_pos = simulate(5_000, D, wf, geom, seed=SEED, return_positions=True)
+    _, final_pos = simulate_fused(5_000, D, wf, geom, seed=SEED, return_positions=True)
 
     centers = np.array(geom._centers_jax)
     radii   = geom._radii_np

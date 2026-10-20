@@ -157,12 +157,12 @@ def test_the_bloch_walk_records_its_work_on_the_run(caplog):
     and in the log, and the signal is the uncounted one to the bit."""
     import logging
     from dmipy_sim import pgse
-    from dmipy_sim.engine.bloch import simulate_bloch
+    from dmipy_sim.engine.bloch import _simulate_bloch
     seq = pgse([[1, 0, 0]], 2e-3, 4e-3, bvalues=[1e9], TE=8e-3, n_t=80, slew_rate=np.inf)
-    plain = simulate_bloch(64, D, seq, d.Sphere(R), seed=3)
+    plain = _simulate_bloch(64, D, seq, d.Sphere(R), seed=3)
     g = d.Sphere(R); g.count_walls = True
     with caplog.at_level(logging.INFO, logger="dmipy_sim.engine.bloch"):
-        counted = simulate_bloch(64, D, seq, g, seed=3)
+        counted = _simulate_bloch(64, D, seq, g, seed=3)
     np.testing.assert_array_equal(np.asarray(plain), np.asarray(counted))
     rec = [r for r in caplog.records if "bloch walk work" in r.getMessage()]
     assert rec and "'n_hits': " in rec[0].getMessage() and "'exhausted_steps': 0" in rec[0].getMessage()

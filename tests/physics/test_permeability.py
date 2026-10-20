@@ -74,6 +74,7 @@ import jax.numpy as jnp
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
 from dmipy_sim.sequences import pgse
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_sim.engine._fused import simulate_fused
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ def _run_f_inside_at_time(geometry, t_target, D, n_walkers, dt, seed):
     # peak device memory stays bounded (~2 GB/batch); the ensemble statistic
     # (fraction inside) is unchanged.  No-op when the run already fits.
     batch = int(min(n_walkers, max(50_000, 5e8 / max(1, n_t * 3))))
-    signals, comp_orig, comp_final = simulate(
+    signals, comp_orig, comp_final = simulate_fused(
         n_walkers, D, wf, geometry, seed=seed,
         return_compartments='final', walker_batch_size=batch)
     f_inside = float((comp_final == 1).mean())
@@ -340,7 +341,7 @@ class TestEscapeRateCylinder:
 
         # Single-step escape rate
         wf = _zero_waveform(1, DT_STD)
-        _, _, comp_final = simulate(
+        _, _, comp_final = simulate_fused(
             N_WALKERS_PERM, D, wf, geom_cyl, seed=SEED,
             return_compartments='final')
         escape_rate_sim = float((comp_final == 0).mean())

@@ -16,9 +16,9 @@ beside the free pool's boundary local time (for surface relaxivity of the free p
 
 That step is the ``"mt"`` kind of :func:`dmipy_sim.engine.core.simulate_trajectories` (``kappa_MT > 0`` on a geometry
 with walls); this module is the named entry point. The bound spins' relaxation / RF (the actual MT saturation
-transfer) is applied at REPLAY by :func:`dmipy_sim.replay.trajectories.replay_bloch`, consuming the bound occupancy
+transfer) is applied at REPLAY by ``ReplayPack.replay_bloch``, consuming the bound occupancy
 read off the events -- positions while bound are irrelevant to the MT observables (a bound spin has ~zero transverse
-via its huge R2b). This is the replay counterpart of the fused forward path ``bloch.simulate_bloch(kappa_MT=...)``.
+via its huge R2b). This is the replay counterpart of the forward vector-Bloch oracle ``bloch._simulate_bloch(kappa_MT=...)``.
 """
 from __future__ import annotations
 import logging

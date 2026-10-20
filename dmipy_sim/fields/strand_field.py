@@ -277,7 +277,7 @@ class StrandFieldBasis:
     def within_device(self, *, radius_m=None, k=None):
         """The jitted, vmapped ``p -> (segments (k,), keep (k,), n_within)``: for a point, the segments within
         ``radius_m`` of it (the cutoff by default; a walk gathers with a margin and reuses the list over several
-        save intervals, masking by the true distance when it evaluates) -- global segment indices, the nearest ``k``
+        read intervals, masking by the true distance when it evaluates) -- global segment indices, the nearest ``k``
         of them by distance (``segments_max + 1`` by default) with ``keep`` marking the real entries, and how many
         segments were within the radius (more than ``k``: the list is short). The radius must not exceed the grid's
         reach (the cutoff the grid was built for, plus a cell). What a walk gathers and evaluates the field against

@@ -1,24 +1,16 @@
-"""Engine-dispatch parity for ``simulate(engine=...)`` (Phase 5).
+"""The coefficient route of ``simulate`` against the fused oracle.
 
-The replay engine is the primary signal path; the fused inline step-kernels are
-kept as the validation oracle + fallback.  This module asserts the selector:
+``simulate`` walks the substrate to coefficients and contracts them with the waveform; the fused
+single-pass integrator (``engine._fused.simulate_fused``) is the oracle it is held to. This module asserts:
 
-  (1) ``engine='replay'`` == ``engine='fused'`` to ``max(0.02, 1/sqrt(N))`` on
-      each SUPPORTED geometry x effect (pure gradient / scalar T2 / surface
-      relaxivity), for the geometries "auto" routes to replay.
-  (2) ``engine='auto'`` (the default) reproduces the fused public result within
-      tolerance on a representative set — i.e. the default did not silently
-      shift the shipped physics.
-  (3) ``engine='replay'`` raises ``NotImplementedError`` (naming the gap) on the
-      unsupported paths (PackedMyelinatedCylinders, return_compartments), and
-      ``engine='auto'`` falls those back to fused.
+  (1) ``simulate`` == the oracle to ``max(0.02, 1/sqrt(N))`` on each SUPPORTED geometry x effect (pure
+      gradient / scalar T2 / surface relaxivity).
+  (2) A run the producer cannot walk (PackedMyelinatedCylinders) is the oracle's, exactly.
 
-SAME seed / N / waveform go through both engines.  The replay producer walks
-with a separate scan, so parity is at the MC-noise floor, not bit-identical.  The
-waveforms are coarse enough that ``physics.resolve_sub_steps`` asks for more than
-one sub-step on every walled geometry (asserted in the fixture), so both engines
-exercise the shared dispatch.  Heavy MC -> auto-marked ``slow`` via
-``tests/conftest.py::_SLOW_MC_MODULES``.
+SAME seed / N / waveform go through both. The producer walks with a separate scan, so parity is at the
+MC-noise floor, not bit-identical. The waveforms are coarse enough that ``physics.resolve_sub_steps`` asks
+for more than one sub-step on every walled geometry (asserted in the fixture), so both exercise the shared
+dispatch. Heavy MC -> auto-marked ``slow`` via ``tests/conftest.py::_SLOW_MC_MODULES``.
 """
 import numpy as np
 import numpy.testing as npt
@@ -26,6 +18,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import simulate
+from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim.geometry import pack_cylinders, pack_spheres
 
 D = 2e-9          # m^2/s
@@ -112,107 +105,60 @@ def _case(request):
         n_sub = resolve_sub_steps(geom, D, float(wf.dt))
         assert n_sub > 1, (f"[{name}] the dispatch asks for {n_sub} sub-step; this parity must "
                            f"exercise sub-stepping")
-    sf = np.asarray(simulate(n, D, wf, geom, seed=SEED, engine="fused",
-                             require_gpu=False)).ravel()
+    sf = np.asarray(simulate_fused(n, D, wf, geom, seed=SEED, require_gpu=False)).ravel()
     return dict(name=name, geom=geom, geom_rho=geom_rho, n=n, wf=wf, S_fused=sf)
 
 
 @pytest.mark.parametrize("_case", _SUPPORTED, indirect=True)
-def test_replay_matches_fused_pure_gradient(_case):
-    """(1a) engine='replay' == engine='fused' — pure gradient (no relaxation)."""
+def test_coefficient_route_matches_the_oracle_pure_gradient(_case):
+    """(1a) pure gradient (no relaxation)."""
     c = _case
-    S_rep = np.asarray(simulate(c["n"], D, c["wf"], c["geom"], seed=SEED,
-                                engine="replay", require_gpu=False)).ravel()
-    npt.assert_allclose(
-        S_rep, c["S_fused"], atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] replay must match fused (pure gradient)")
+    S = np.asarray(simulate(c["n"], D, c["wf"], c["geom"], seed=SEED, require_gpu=False)).ravel()
+    npt.assert_allclose(S, c["S_fused"], atol=_tol(c["n"]),
+                        err_msg=f"[{c['name']}] the coefficient route must match the oracle (pure gradient)")
 
 
 @pytest.mark.parametrize("_case", _SUPPORTED, indirect=True)
-def test_replay_matches_fused_scalar_T2(_case):
-    """(1b) engine='replay' == engine='fused' — scalar T2."""
+def test_coefficient_route_matches_the_oracle_scalar_T2(_case):
+    """(1b) scalar T2."""
     c = _case
-    S_f = np.asarray(simulate(c["n"], D, c["wf"], c["geom"], seed=SEED, T2=T2,
-                              engine="fused", require_gpu=False)).ravel()
-    S_r = np.asarray(simulate(c["n"], D, c["wf"], c["geom"], seed=SEED, T2=T2,
-                              engine="replay", require_gpu=False)).ravel()
-    npt.assert_allclose(
-        S_r, S_f, atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] replay must match fused (scalar T2)")
+    S_f = np.asarray(simulate_fused(c["n"], D, c["wf"], c["geom"], seed=SEED, T2=T2, require_gpu=False)).ravel()
+    S_r = np.asarray(simulate(c["n"], D, c["wf"], c["geom"], seed=SEED, T2=T2, require_gpu=False)).ravel()
+    npt.assert_allclose(S_r, S_f, atol=_tol(c["n"]),
+                        err_msg=f"[{c['name']}] the coefficient route must match the oracle (scalar T2)")
 
 
 @pytest.mark.parametrize("_case", _SUPPORTED, indirect=True)
-def test_replay_matches_fused_surface_relaxivity(_case):
-    """(1c) engine='replay' == engine='fused' — surface relaxivity rho."""
+def test_coefficient_route_matches_the_oracle_surface_relaxivity(_case):
+    """(1c) surface relaxivity rho."""
     c = _case
     if c["geom_rho"] is None:
         pytest.skip(f"{c['name']} has no boundary — surface relaxivity N/A")
-    S_f = np.asarray(simulate(c["n"], D, c["wf"], c["geom_rho"], seed=SEED,
-                              engine="fused", require_gpu=False)).ravel()
-    S_r = np.asarray(simulate(c["n"], D, c["wf"], c["geom_rho"], seed=SEED,
-                              engine="replay", require_gpu=False)).ravel()
-    npt.assert_allclose(
-        S_r, S_f, atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] replay must match fused (surface relaxivity)")
+    S_f = np.asarray(simulate_fused(c["n"], D, c["wf"], c["geom_rho"], seed=SEED, require_gpu=False)).ravel()
+    S_r = np.asarray(simulate(c["n"], D, c["wf"], c["geom_rho"], seed=SEED, require_gpu=False)).ravel()
+    npt.assert_allclose(S_r, S_f, atol=_tol(c["n"]),
+                        err_msg=f"[{c['name']}] the coefficient route must match the oracle (surface relaxivity)")
 
 
-@pytest.mark.parametrize("_case", _SUPPORTED, indirect=True)
-def test_auto_default_reproduces_fused(_case):
-    """(2) engine='auto' (default) reproduces the fused public result — the
-    shipped default did not silently shift the physics."""
-    c = _case
-    S_auto = np.asarray(simulate(c["n"], D, c["wf"], c["geom"], seed=SEED,
-                                 require_gpu=False)).ravel()
-    npt.assert_allclose(
-        S_auto, c["S_fused"], atol=_tol(c["n"]),
-        err_msg=f"[{c['name']}] auto default must reproduce fused")
-
-
-def test_replay_serves_a_permeable_walk():
-    """(3) Permeability is NOT a replay gap, and this pins which half of the contract is which.
-
-    This test used to assert the opposite. `d86c609` deliberately made permeable walks replayable and
-    the test was never updated, so it sat red asserting a contract the engine had abandoned. The
-    reasoning (in `_replay_gap`) is that kappa shapes the WALK, and the recorded trajectory already
-    contains every crossing that happened; replay then applies the gradient off positions, scalar
-    T2/T1 off elapsed time and rho off boundary local time, none of which depend on kappa.
-    """
+def test_the_coefficient_route_serves_a_permeable_walk():
+    """Permeability is NOT a gap, and this pins which half of the contract is which: kappa shapes the WALK,
+    and the coefficients already contain every crossing that happened; the replay then applies the gradient
+    off the bands, scalar T2/T1 off elapsed time and rho off the contact, none of which depend on kappa."""
     geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
-    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
-                            require_gpu=False)).ravel()
-    assert np.all(np.isfinite(S)) and np.all(S <= 1.0 + 1e-6)
+    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, require_gpu=False)).ravel()
+    assert S.shape == (1,) and np.all(np.isfinite(S)) and 0.0 <= S[0] <= 1.0 + 1e-6
 
 
-def test_replay_raises_on_return_compartments():
-    """(3) engine='replay' raises NotImplementedError for a single-pass internal."""
-    geom = d.Cylinder(radius=R, orientation=[0, 0, 1])
-    with pytest.raises(NotImplementedError, match="return_compartments"):
-        simulate(2_000, D, _WF, geom, seed=SEED, engine="replay",
-                 return_compartments="final", require_gpu=False)
-
-
-def test_replay_raises_on_packed_myelin():
-    """(3) engine='replay' raises NotImplementedError for PackedMyelinatedCylinders
-    (fused single-reflection kernel is not position-parity with the replay walk)."""
+def test_a_run_the_producer_cannot_walk_is_the_oracles():
+    """PackedMyelinatedCylinders has a dedicated fused single-reflection kernel that is not position-parity with
+    the multi-bounce walk (``core._replay_gap`` names it): ``simulate`` runs the oracle, bit for bit."""
+    from dmipy_sim.engine.core import _replay_gap
     inner = np.full(3, 3e-6)
     g_ratios = np.full(3, 0.7)
     centers = np.array([[0.0, 0.0], [12e-6, 0.0], [-12e-6, 0.0]])
     geom = d.PackedMyelinatedCylinders(
         inner_radii=inner, g_ratios=g_ratios, centers=centers,
         cell_size=40e-6, N_max=3)
-    with pytest.raises(NotImplementedError, match="PackedMyelinatedCylinders"):
-        simulate(2_000, None, _WF, geom, seed=SEED, engine="replay",
-                 require_gpu=False)
-
-
-def test_auto_falls_back_to_fused_on_unsupported():
-    """engine='auto' transparently uses fused for an unsupported path
-    (permeability) — no error, a valid signal comes back."""
-    geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
-    S = np.asarray(simulate(3_000, D, _WF, geom, seed=SEED, require_gpu=False)).ravel()
-    assert S.shape == (1,) and np.all(np.isfinite(S)) and 0.0 <= S[0] <= 1.0
-
-
-def test_bad_engine_value_raises():
-    with pytest.raises(ValueError, match="engine must be"):
-        simulate(100, D, _WF, d.FreeDiffusion(), engine="nope", require_gpu=False)
+    assert "PackedMyelinatedCylinders" in _replay_gap(geom, None)
+    np.testing.assert_array_equal(simulate(500, None, _WF, geom, seed=SEED, require_gpu=False),
+                                  simulate_fused(500, None, _WF, geom, seed=SEED, require_gpu=False))

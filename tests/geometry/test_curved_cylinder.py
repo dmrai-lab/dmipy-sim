@@ -19,6 +19,7 @@ import pytest
 from dmipy_sim import Cylinder, simulate, set_b
 from dmipy_sim.geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder
 from dmipy_sim.sequences import pgse
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2.0e-9
 R = 5.0e-6
@@ -99,7 +100,7 @@ def test_walkers_stay_inside_a_bent_tube():
     g = CurvedCylinder(bent, radius=R)
 
     wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=400), 1e9)
-    out = simulate(4000, D, wf, g, seed=SEED, return_positions=True)
+    out = simulate_fused(4000, D, wf, g, seed=SEED, return_positions=True)
     pos = np.asarray(out[1] if isinstance(out, tuple) else out)
 
     P = pos.reshape(-1, 3)

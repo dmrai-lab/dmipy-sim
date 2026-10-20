@@ -19,6 +19,7 @@ import pytest
 
 from dmipy_sim import simulate, Sphere, Cylinder, Mesh, set_b, pgse, pgste
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_sim.engine._fused import simulate_fused
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -137,7 +138,7 @@ def test_directional_permeability():
     npt.assert_array_equal(s_scalar, s_dict)             # symmetric dict == scalar
 
     def frac_in(perm):
-        _, pos = simulate(1500, D, _pgse(1, 150, TE=15e-3), Mesh(V, F, permeability=perm),
+        _, pos = simulate_fused(1500, D, _pgse(1, 150, TE=15e-3), Mesh(V, F, permeability=perm),
                           seed=1, return_positions=True)
         return (np.linalg.norm(np.asarray(pos), axis=1) < R).mean()
     f_sym = frac_in(2e-5)
@@ -197,7 +198,7 @@ def test_positions_full_selects_permeated_walkers():
     V, F = _ico(3)
     g = Mesh(V, F, permeability=2e-5)
     wf = _pgse(2, 120, TE=15e-3)
-    _, pos, origin, comp = simulate(800, D, wf, g, seed=SEED,
+    _, pos, origin, comp = simulate_fused(800, D, wf, g, seed=SEED,
                                     return_positions='full', return_compartments='full')
     assert pos.shape == (800, 120, 3)
     assert comp.shape == (800, 120)

@@ -1,6 +1,7 @@
-"""Forward vector-Bloch Monte-Carlo engine (B1 / RF, single pass, no replay).
+"""The forward vector-Bloch oracle (B1 / RF, single pass).
 
-Alongside the scalar ``cos(phi)`` engine (``core.simulate``), this carries each
+``_simulate_bloch`` is the integrator ``ReplayPack.replay_bloch`` and the MT tier are admitted against; nothing
+exports it. Alongside the scalar ``cos(phi)`` oracle (``engine._fused``), it carries each
 walker's full magnetization vector ``M = (Mx, My, Mz)`` through the *actual*
 sequence operators in a single forward ``jax.lax.scan`` -- no trajectory storage,
 no replay.  Each step applies, in order:
@@ -45,8 +46,6 @@ from ..run import Run
 _log = logging.getLogger("dmipy_sim.engine.bloch")
 from ..acquisition.waveforms import band_hz
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, pair_step
-
-__all__ = ["simulate_bloch"]
 
 
 # ── per-step RF rotation (Rodrigues about the in-plane B1 axis) ──────────────────
@@ -257,7 +256,7 @@ def _build_crusher(crusher, dt, n_t):
     return rate, True
 
 
-def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
+def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                    T2=None, T1=None, M0=1.0, off_resonance_hz=0.0, seed=0, r0=None,
                    return_mz=False, surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
@@ -270,7 +269,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
 
     Parameters
     ----------
-    n_walkers, diffusivity, waveform, geometry : as ``core.simulate`` (``waveform`` is the
+    n_walkers, diffusivity, waveform, geometry : as ``engine.core.simulate`` (``waveform`` is the
         ``ScannerSequence`` or any object with a ``.waveform``).
     T2, T1 : float or None
         Relaxation times (s).  None disables that channel (factor 1).
@@ -314,7 +313,7 @@ def simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
         if require_gpu and not gpu_available():
-            raise RuntimeError("simulate_bloch(require_gpu=True) but no CUDA device is "
+            raise RuntimeError("_simulate_bloch(require_gpu=True) but no CUDA device is "
                                "visible to JAX.")
 
         # Magnetization transfer: dispatch to the fused walk+Bloch path (binding at the
@@ -569,7 +568,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
                        surface_relaxivity, kappa_MT, dwell_time, T2_bound,
                        T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
                        equilibrate_binding="auto", susceptibility=None):
-    """MT forward path (see ``simulate_bloch``).  Returns ``signals`` then, in order,
+    """MT forward path (see ``_simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""
     if dwell_time <= 0.0:

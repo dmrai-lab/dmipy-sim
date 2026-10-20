@@ -1,10 +1,12 @@
 # dmipy-sim
 
-**Diffusion Microstructure Imaging in Python** — the Monte-Carlo **forward** engine. Spins random-walk
-through an explicit tissue substrate and accumulate phase under an arbitrary gradient waveform `G(t)`;
-the signal is the ensemble mean of the phasors. Wall physics (surface relaxivity, membrane permeability,
-magnetization transfer), per-compartment relaxation and susceptibility fields are part of the walk.
-Everything is JAX (`vmap`/`scan`) and runs on CPU or a CUDA-12 GPU.
+**Diffusion Microstructure Imaging in Python** — the Monte-Carlo **replay engine**. Spins random-walk
+through an explicit tissue substrate. A Monte Carlo walk's natural output is neither an acquisition-specific
+signal nor a trajectory history but an acquisition-independent set of sufficient projections, accumulated while
+the physics is simulated: the engine encodes as it goes, and the same walk answers any gradient waveform
+`G(t)`. Wall physics (surface relaxivity, membrane permeability, magnetization transfer), per-compartment
+relaxation and susceptibility fields are part of the walk. Everything is JAX (`vmap`/`scan`) and runs on CPU or a
+CUDA-12 GPU.
 
 > One `G(t)` and one substrate across the whole loop — **design** the sequence, **simulate** the
 > signal, **fit** the tissue:
@@ -33,7 +35,7 @@ flowchart LR
         G3["analytic geometries: Cylinder, Sphere, Mesh, ..."]
     end
     SPEC["SubstrateSpec (.sub.json)<br/>domain · pools · walls and their physics<br/>seeding · request vs realisation · nominal values"]
-    ENGINE["dmipy-sim engine<br/>walk_spec / simulate<br/>sub-steps from the spec's smallest feature<br/>the band from the scanner class, accumulated in the walk"]
+    ENGINE["dmipy-sim engine<br/>walk_spec / simulate<br/>sub-steps from the spec's smallest feature<br/>the scanner class gives the band, the band gives the block<br/>accumulated in the walk"]
     RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
     subgraph knobs["replay knobs"]
         direction TB
@@ -54,7 +56,8 @@ at it, and the same pack serves a fitting framework, an acquisition designer and
 
 ## Two ways to get a signal
 
-**Fused**: one call walks the spins under one acquisition and returns the signal.
+**In one call**: `simulate` walks the substrate to coefficients (the producer, at the band the acquisition reads) and
+contracts them with the acquisition (the replay), and returns the signal.
 
 ```python
 from dmipy_sim import simulate, Cylinder, sequences
@@ -69,11 +72,11 @@ Every driver takes the substrate as a **spec** (`SubstrateSpec`, its dict, or a 
 geometry object that is one spelling of it; `geometry.spec` writes out what a constructor leaves implicit, and a
 substrate with no spec spelling is refused.
 
-**Persistent**: walk once, keep the walk, replay any acquisition on it. The walk records every replay
+**Walk once**: keep the walk, replay any acquisition on it. The walk records every replay
 tier the substrate supports — positions (C0), compartment occupancy for per-pool T2/T1 (C1), the
-boundary local time for surface relaxivity (C2), and, through a field grid, the susceptibility field
-(C3). A `.rpk` replay pack is the compressed, self-certifying form of that walk; it is what the
-substrate bank distributes and what dmipy-fit fits against.
+boundary local time for surface relaxivity (C2), and, through a field basis, the susceptibility field
+(C3) — each as the band projections of its running integral. A `.rpk` replay pack is that walk, certified
+without a raw path; it is what the substrate bank distributes and what dmipy-fit fits against.
 
 ```python
 from dmipy_sim.substrate import Substrate
@@ -146,7 +149,7 @@ which channel it needs, the operations from `replay` down to the per-walker prim
 from the hub, and two recipes. Every code block on its pages runs in the test suite.
 
 **[The step law, shown](docs/step-law.md)** is the evidence for the walk's step: the two-length step that carries the
-Gaussian step's moments, the operator of the engine's own reflection on the analytic pores, the fused engine against it,
+Gaussian step's moments, the operator of the engine's own reflection on the analytic pores, the oracle against it,
 the two-walk certificate every build records, and what the step costs. `tools/gen_step_law.py` regenerates every number
 on it from the code; `tests/test_step_law_report.py` runs its small tier.
 
@@ -270,12 +273,12 @@ Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inn
 `spec.caterpillar_spec(csv)`, `spec.label_volume_spec(image)` (a segmented micro-CT / EM / mask volume in NRRD,
 MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
 domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
-There is no save grid: `walk_spec` accumulates the scanner class's certified band
-(`scanner="prisma" | "magnus" | "connectom" | ...`), `K` sine bands per 100 ms storage window, while the walk
-runs -- the positions, the wall contact and the field as band projections of their running integrals, the
-occupancy as events exact in time -- so the walk's memory and the pack's size are set by `K`, never by the walk's
-length or resolution, and the pack certifies itself without a raw path (the block quadrature, the field read, the
-truncation and the rounding are closed-form terms of `fidelity.terms`).
+The scanner class gives the band, the band gives the block: `walk_spec` accumulates the class's certified band
+(`scanner="prisma" | "magnus" | "connectom" | ...`), `K` sine bands per 100 ms storage window, in blocks of
+`h = 0.8 T / (pi K)`, while the walk runs -- the positions, the wall contact and the field as band projections of
+their running integrals, the occupancy as events exact in time -- so the walk's memory and the pack's size are set
+by `K`, never by the walk's length or resolution, and the pack certifies itself without a raw path (the block
+quadrature, the field read, the truncation and the rounding are closed-form terms of `fidelity.terms`).
 
 Wall and pool properties are set on the geometry and baked into the walk:
 
@@ -314,9 +317,10 @@ directions and either `bvalues=` (the exact b to realise) or `gradient_strengths
 the family's parameters, an optional `TE=`, `slew_rate=` and a `timing=` budget, and refuses what cannot be
 played. Everything else is derived from `G` and `rf`, never carried as a flag: the effective gradient
 `G_eff`, `chi_perp`, `TM`, `stimulated_echo`, the `echoes`, `b()`.
-B-tensor encoding (LTE / PTE / STE) and multi-echo CPMG are included. The vector-Bloch engine
-(`simulate_bloch`) propagates M = (Mx, My, Mz) through the actual RF, gradient, relaxation, exchange
-and MT operators when the transverse-only picture is not enough.
+B-tensor encoding (LTE / PTE / STE) and multi-echo CPMG are included. The vector-Bloch replay
+(`ReplayPack.replay_bloch`) propagates M = (Mx, My, Mz) through the actual RF, gradient, relaxation, exchange
+and MT operators when the transverse-only picture is not enough; the single-pass vector-Bloch walk it is held
+to is an internal oracle (`engine/bloch.py`).
 
 ## Physics is the specification
 
@@ -330,7 +334,8 @@ meet in that substrate, not validated on an average case.
 ```
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
-  engine/       core (simulate, simulate_trajectories), physics, bloch (simulate_bloch), pulse_sequence, mt, mt_walk, gpu
+  engine/       core (simulate, simulate_trajectories), accumulate, physics, pulse_sequence, mt, mt_walk, gpu;
+                _fused and bloch: the single-pass oracles the replay is held to
   replay/       trajectories, compression, replay (ReplayPack), columnar (ReplayPack.open: a pack by reference),
                 study (Acquisition, Protocol, Study), phantom, bank (build_replay_pack), fod, so3
   fill/         a distributed fill of one recipe into shards (hub, claims, pipeline), consolidate (shards -> columns)

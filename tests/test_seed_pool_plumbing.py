@@ -5,12 +5,12 @@ driver that seeds itself picks a compartment on the caller's behalf. On a sphere
 is right, which is why it went unnoticed for so long: every MT test used a sphere. On a fibre bundle's
 extra-axonal pool, whose geometry is the OUTER surface and whose walkers belong outside it, the guess
 re-simulated the intra pool and labelled the result "extra" -- ensemble bound fraction 0.0924 against a
-target 0.1390, fixed to 0.1355 by passing the seeds through (#67). `simulate_bloch`,
+target 0.1390, fixed to 0.1355 by passing the seeds through (#67). `_simulate_bloch`,
 `_simulate_bloch_mt` and `simulate_cpmg` had the same omission (#68).
 
 **Why an analytic Sphere and not a mesh here.** The natural test is pool contrast -- seed outside a mesh
 sphere and watch the signal fall to the free limit -- and it does not work, for a reason worth writing
-down: plain `simulate_bloch` ignores its own `sub_steps` argument and takes one displacement per
+down: plain `_simulate_bloch` ignores its own `sub_steps` argument and takes one displacement per
 waveform step, so it cannot confine a mesh at all (0.0505 on a 2 um mesh sphere where `core.simulate`
 gives 0.9631 and the analytic `Sphere` 0.9644). A pool test on a mesh would measure that bug rather than
 this one. An analytic `Sphere` reflects exactly at any step length, so the driver is sound there, and
@@ -33,7 +33,7 @@ import pytest
 import jax
 
 from dmipy_sim import Sphere, cpmg, pgse, set_b, simulate_cpmg
-from dmipy_sim.engine.bloch import simulate_bloch
+from dmipy_sim.engine.bloch import _simulate_bloch
 
 R = 2e-6
 D = 2e-9
@@ -99,16 +99,16 @@ def _assert_r0_reaches_the_walk(run, seeds, label, min_sep=0.08):
 @pytest.mark.slow
 def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
     def run(r0):
-        return float(np.real(simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, require_gpu=False)[0]))
+        return float(np.real(_simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, require_gpu=False)[0]))
 
-    _assert_r0_reaches_the_walk(run, seeds, "simulate_bloch")
+    _assert_r0_reaches_the_walk(run, seeds, "_simulate_bloch")
 
 
 @pytest.mark.slow
 def test_the_bloch_mt_path_starts_where_r0_says(sphere, seeds, waveform):
     """`kappa_MT > 0` dispatches to `_simulate_bloch_mt`, which seeds at its own separate site."""
     def run(r0):
-        return float(np.real(simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, kappa_MT=1e-6, dwell_time=2e-3, equilibrate_binding="off", require_gpu=False)[0]))
+        return float(np.real(_simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, kappa_MT=1e-6, dwell_time=2e-3, equilibrate_binding="off", require_gpu=False)[0]))
 
     _assert_r0_reaches_the_walk(run, seeds, "_simulate_bloch_mt")
 

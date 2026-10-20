@@ -44,8 +44,8 @@ ENTRY_POINT_GROUP = "dmipy_sim.backends"
 class FieldSampling(NamedTuple):
     """In-walk sampling of a strand field (the paper's C3): what a backend evaluates along each walker's path."""
     basis: object             #: the :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis` (its tables, switch, far grid, gate)
-    sample_every: int         #: the field's own save grid: a sample at every that-many-th save (sample 0 the start's)
-    reuse_intervals: int      #: the per-walker segment list is gathered every this many save intervals
+    sample_every: int         #: a read at every that-many-th step (read 0 the start's)
+    reuse_intervals: int      #: the per-walker segment list is gathered every this many read intervals
     radius_m: float           #: the list's gather radius: the basis's reach plus the margin the walkers travel in between
     list_k: int               #: the list's width the producer sized from the start positions (a backend may widen)
 

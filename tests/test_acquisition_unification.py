@@ -91,22 +91,24 @@ def test_sequence_carries_the_readout_protocol():
     assert dt == sq.dt
 
 
-# ── simulate accepts the object and a scheme wrapping it, in both engines ───────────────────
+# ── simulate accepts the object and a scheme wrapping it, on the coefficient route and on the oracle ──────
 class _Scheme:
     """The shape of a downstream acquisition scheme: anything with a `.waveform`."""
     def __init__(self, waveform):
         self.waveform = waveform
 
 
-@pytest.mark.parametrize("engine", ["fused", "replay"])
-def test_simulate_accepts_a_sequence_and_a_scheme(engine):
+@pytest.mark.parametrize("which", ["coefficients", "oracle"])
+def test_simulate_accepts_a_sequence_and_a_scheme(which):
+    from dmipy_sim.engine._fused import simulate_fused
+    run = d.simulate if which == "coefficients" else simulate_fused
     seq = S.pgse(DIRS, DELTA, DELTA_BIG, bvalues=B, n_t=200, slew_rate=np.inf)
     wf = d.set_b(S.pgse(DIRS, DELTA, DELTA_BIG, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), B)
     geom = d.Cylinder(3e-6, (0, 0, 1))
-    kw = dict(seed=0, require_gpu=False, engine=engine)
-    s_wf = np.asarray(d.simulate(2000, D, wf, geom, **kw)).ravel()
-    s_seq = np.asarray(d.simulate(2000, D, seq, geom, **kw)).ravel()
-    s_sch = np.asarray(d.simulate(2000, D, _Scheme(seq), geom, **kw)).ravel()
+    kw = dict(seed=0, require_gpu=False)
+    s_wf = np.asarray(run(2000, D, wf, geom, **kw)).ravel()
+    s_seq = np.asarray(run(2000, D, seq, geom, **kw)).ravel()
+    s_sch = np.asarray(run(2000, D, _Scheme(seq), geom, **kw)).ravel()
     assert s_wf.shape == (3,) and np.all(np.isfinite(s_wf))
     # the same gradient, the same seed: the same walk
     np.testing.assert_allclose(s_seq, s_wf, atol=2e-5)

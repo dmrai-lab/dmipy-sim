@@ -62,7 +62,7 @@ class Tissue:
       as ``T1`` is a second gate beside ``T2`` on the occupancy (C1).
     * ``D`` (m^2/s): the bulk diffusivity -- the walk's recorded value unless given, for a pack; a closed form's
       diffusion coefficient. Given on a pack, the pack is READ at that diffusivity
-      (:meth:`~dmipy_sim.replay.ReplayPack.at_diffusivity`): the save grid divided by ``D / D_walk``, every
+      (:meth:`~dmipy_sim.replay.ReplayPack.at_diffusivity`): the block and the window divided by ``D / D_walk``, every
       channel following in its own space, which is what a change of temperature does. Faster than walked only.
     * ``kappa`` (m/s): the walls' permeability the pack is READ at (:meth:`~dmipy_sim.replay.ReplayPack.at_permeability`).
       A walk realised one ratio ``kappa / D``, and the same path is the walk at ``(a D, a kappa)`` for any

@@ -30,6 +30,7 @@ CPU by default (``JAX_PLATFORMS=cpu`` is set unless the environment says otherwi
 from __future__ import annotations
 
 import argparse
+from dmipy_sim.engine.bloch import _simulate_bloch
 import json
 import os
 import subprocess
@@ -104,7 +105,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
         k = np.arange(1, K + 1)
         exact = np.sqrt(cw.h) * np.sinc(k / (2.0 * N))[None, :, None] * dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
         row = dict(n_blocks=int(cw.n_blocks), start_m=float(np.abs(X[:, 0] - B[:, 0]).max()),
-                   displacement_rel=rel(X[:, -1] - X[:, 0], B[:, 1]), bands_vs_sinc_dst1_rel=rel(exact, B[:, 2:]),
+                   displacement_rel=rel(X[:, -1] - X[:, 0], B[:, 1]), bands_vs_block_ends_rel=rel(exact, B[:, 2:]),
                    replay_err=float(acc.fidelity["err_max"]), replay_floor=float(acc.fidelity["floor_max"]))
         if cw.raw_boundary is not None:
             ell = np.asarray(cw.raw_boundary, np.float64)
@@ -112,7 +113,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
             uc = Bc - (Bc[:, :1] + (Bc[:, -1:] - Bc[:, :1]) * tau[None, :])
             exact_c = np.sqrt(cw.h) * np.sinc(k / (2.0 * N))[None, :] * dst(uc[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
             row.update(contact_endpoint_rel=rel(Bc[:, -1], np.asarray(cw.boundary_endpoint)[:, 0]),
-                       contact_bands_vs_sinc_dst1_rel=rel(exact_c, np.asarray(cw.boundary_bands)[:, 0]),
+                       contact_bands_vs_block_ends_rel=rel(exact_c, np.asarray(cw.boundary_bands)[:, 0]),
                        contact_err=float(acc.fidelity.get("err_surface", 0.0)), contact_floor=float(acc.fidelity.get("floor_surface", 0.0)))
         if cw.raw_compartment is not None:
             from dmipy_sim.coefficient_walk import events_at_instants
@@ -181,8 +182,8 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
 
 
 # -------------------------------------------------------------------------------------------------------- memory
-def _probe(mode, dt_save, n, T, dt_sim, K):
-    """One walk in this process (``mode`` ``"accumulated"``: the bands alone; ``"saves"``: every walker's block ends
+def _probe(mode, block_h, n, T, dt_sim, K):
+    """One walk in this process (``mode`` ``"accumulated"``: the bands alone; ``"raw_subset"``: every walker's block ends
     kept beside them, ``raw_subset=n``): VmHWM (from /proc/self/status) over the walk's second call, the high-water
     mark reset after the first (which compiles), and the device's peak bytes when it reports them."""
     import dmipy_sim as d
@@ -192,7 +193,7 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
             for line in f:
                 if line.startswith(key + ":"):
                     return int(line.split()[1]) * 1024
-    kw = dict(T_max=T, block_h=dt_save, seed=1, require_gpu=False, sub_steps=int(round(dt_save / dt_sim)),
+    kw = dict(T_max=T, block_h=block_h, seed=1, require_gpu=False, sub_steps=int(round(block_h / dt_sim)),
               walker_batch_size=n, K=K, raw_subset=(0 if mode == "accumulated" else n))
     geom = d.Cylinder(radius=4e-6, orientation=(0, 0, 1))
     with warnings.catch_warnings():
@@ -203,7 +204,7 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
         with open("/proc/self/clear_refs", "w") as f:
             f.write("5")                                                          # the high-water mark := now
         w = d.simulate_trajectories(n, 2e-9, geom, **kw)
-    out = dict(mode=mode, block_h=dt_save, n_blocks=int(w.n_blocks), host_peak_over_base=vm("VmHWM") - base,
+    out = dict(mode=mode, block_h=block_h, n_blocks=int(w.n_blocks), host_peak_over_base=vm("VmHWM") - base,
                walk_host_bytes=int(w.nbytes))
     try:
         import jax
@@ -215,13 +216,13 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
     print(json.dumps(out))
 
 
-def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, dt_saves=(5e-4, 1.25e-4, 3.125e-5)):
+def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, block_hs=(5e-4, 1.25e-4, 3.125e-5)):
     """``memory_probe`` in a fresh process per (mode, block): the accumulated walk's peak host bytes against the same
     walk keeping every walker's block ends, over blocks spanning 16x at a fixed ``K`` and a fixed physics step (the
     walkers take the same steps at every block), a cylinder recording every tier."""
     rows = []
-    for mode in ("accumulated", "saves"):
-        for h in dt_saves:
+    for mode in ("accumulated", "raw_subset"):
+        for h in block_hs:
             # one malloc arena: glibc's per-thread arenas hold freed blocks of XLA's worker threads and add tens of MB
             # of noise to the high-water mark, the same for both modes
             r = subprocess.run([sys.executable, __file__, "--memory-probe", mode, repr(h), str(n), repr(T), repr(dt_sim), str(K)],
@@ -349,7 +350,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
       axis, ``chi_aniso = dchi_a``: the scalar route against the pack's vector-Bloch route beside the pack's own
       ``_susc_path_bloch_fidelity`` (``err_susc_bloch``); and, since the forward vector-Bloch engine does not step
       the myelinated substrates, the cross-engine oracle on the SAME hollow-cylinder field: the one-axon periodic
-      cell's extra-axonal pool walked with the exact periodic grid, against ``simulate_bloch`` with
+      cell's extra-axonal pool walked with the exact periodic grid, against ``_simulate_bloch`` with
       ``MyelinSusceptibility`` (its periodic images to ``n_images=6``) on that pool.
 
     Every row carries both signals, their difference and the replay's standard error."""
@@ -423,7 +424,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     # held to the pack's own Bloch-route certificate on its raw subset (err_susc_bloch above) and to the scalar route
     # against the pack's vector-Bloch route; the cross-engine oracle is the SAME hollow-cylinder field on the one-axon
     # periodic cell's extra-axonal pool (PackedCylinders, which the forward engine steps), walked with the exact periodic
-    # field grid and replayed against simulate_bloch with MyelinSusceptibility (its images: n_images=2).
+    # field grid and replayed against _simulate_bloch with MyelinSusceptibility (its images: n_images=2).
     th = np.deg2rad(float(theta_deg))
     d_sub = (np.sin(th), 0.0, np.cos(th))
     R = _pose_with_field_along(d_sub)
@@ -464,8 +465,8 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         S_b = np.abs(pk2.replay_bloch(seq_lab, complex_signal=True, jax=True, **kw3)).reshape(-1)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            S_f = np.abs(np.asarray(d.simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov, require_gpu=require_gpu))).reshape(-1)
-            S_g = np.abs(np.asarray(d.simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov_grid, require_gpu=require_gpu))).reshape(-1)
+            S_f = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov, require_gpu=require_gpu))).reshape(-1)
+            S_g = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov_grid, require_gpu=require_gpu))).reshape(-1)
         c3x[name] = dict(TE=TE3, replay_scalar=S.tolist(), replay_bloch=S_b.tolist(), fused_bloch_images=S_f.tolist(), fused_bloch_grid=S_g.tolist(),
                          diff_scalar_grid=(S - S_g).tolist(), diff_bloch_grid=(S_b - S_g).tolist(), diff_scalar_images=(S - S_f).tolist(),
                          se=se.tolist(), z_grid=(np.abs(S - S_g) / (np.sqrt(2.0) * se)).tolist())
@@ -636,7 +637,7 @@ def permeable(*, n=4000, D=2e-9, T=0.025, seed=2, kappa=2e-5, T2=(0.03, 0.08), r
 
 def mt(*, n=4000, D=2e-9, T=0.05, R=3e-6, seed=3, kappa_MT=2e-5, dwell=2e-3, require_gpu=None):
     """The MT bound column as events: a sphere walked with binding (``simulate_mt_trajectories``), the bound fraction
-    over time read off the events at 51 instants against the fused vector-Bloch MT engine's (``simulate_bloch(...,
+    over time read off the events at 51 instants against the fused vector-Bloch MT engine's (``_simulate_bloch(...,
     return_bound_frac=True)``, another walk of the same count under a bare gradient echo), and both against the
     two-pool equilibrium ``f_b`` of ``engine.mt``; the largest difference against the binomial standard error."""
     import dmipy_sim as d
@@ -653,7 +654,7 @@ def mt(*, n=4000, D=2e-9, T=0.05, R=3e-6, seed=3, kappa_MT=2e-5, dwell=2e-3, req
     seq = bare_gradient_echo(T, dt)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        _, bf_f = d.simulate_bloch(n, D, seq, g, seed=seed + 100, kappa_MT=kappa_MT, dwell_time=dwell, return_bound_frac=True,
+        _, bf_f = _simulate_bloch(n, D, seq, g, seed=seed + 100, kappa_MT=kappa_MT, dwell_time=dwell, return_bound_frac=True,
                                    require_gpu=require_gpu)
     bf_f = np.asarray(bf_f, np.float64)
     idx = np.rint(times / dt).astype(int)

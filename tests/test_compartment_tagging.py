@@ -22,6 +22,7 @@ from dmipy_sim.geometry import (
     Ellipsoid,
 )
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_sim.engine._fused import simulate_fused
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ def _make_waveform():
 
 def _run_full(geometry, n_walkers, diffusivity=D, seed=0):
     wf = _make_waveform()
-    signals, comp_orig, comp_seq = simulate(
+    signals, comp_orig, comp_seq = simulate_fused(
         n_walkers, diffusivity, wf, geometry, seed=seed,
         return_compartments='full')
     return comp_orig, comp_seq
@@ -53,7 +54,7 @@ def _run_full(geometry, n_walkers, diffusivity=D, seed=0):
 
 def _run_final(geometry, n_walkers, diffusivity=D, seed=0):
     wf = _make_waveform()
-    signals, comp_orig, comp_final = simulate(
+    signals, comp_orig, comp_final = simulate_fused(
         n_walkers, diffusivity, wf, geometry, seed=seed,
         return_compartments='final')
     return comp_orig, comp_final
@@ -277,7 +278,7 @@ class TestReturnAPICompat:
         """return_positions=True + return_compartments='final' → 4-tuple."""
         wf = _make_waveform()
         geom = Cylinder(radius=5e-6, orientation=[0, 0, 1])
-        result = simulate(100, D, wf, geom, seed=0,
+        result = simulate_fused(100, D, wf, geom, seed=0,
                           return_positions=True,
                           return_compartments='final')
         assert isinstance(result, tuple) and len(result) == 4
@@ -291,7 +292,7 @@ class TestReturnAPICompat:
         wf = _make_waveform()
         geom = Cylinder(radius=5e-6, orientation=[0, 0, 1])
         with pytest.raises(ValueError):
-            simulate(100, D, wf, geom, return_compartments='invalid')
+            simulate_fused(100, D, wf, geom, return_compartments='invalid')
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +312,10 @@ class TestMyelinatedCylinderFull:
         n_walkers = 200
         wf = _make_waveform()
 
-        _, comp_orig_full, comp_seq = simulate(
+        _, comp_orig_full, comp_seq = simulate_fused(
             n_walkers, None, wf, mc, seed=1,
             return_compartments='full')
-        _, comp_orig_final, comp_final = simulate(
+        _, comp_orig_final, comp_final = simulate_fused(
             n_walkers, None, wf, mc, seed=1,
             return_compartments='final')
 
@@ -331,7 +332,7 @@ class TestMyelinatedCylinderFull:
         )
         n_walkers = 2000
         wf = _make_waveform()
-        _, comp_orig, comp_seq = simulate(
+        _, comp_orig, comp_seq = simulate_fused(
             n_walkers, None, wf, mc, seed=0,
             return_compartments='full')
         changed = np.any(comp_seq != comp_orig[:, None], axis=1)

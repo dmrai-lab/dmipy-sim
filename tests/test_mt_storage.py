@@ -15,12 +15,13 @@ Heavy Monte-Carlo -> GPU-recommended; marked slow.
 """
 
 from dataclasses import replace
+from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
 from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
 import pytest
 
-from dmipy_sim import Sphere, simulate_bloch
+from dmipy_sim import Sphere
 from dmipy_sim.engine import mt
 
 pytestmark = pytest.mark.slow
@@ -47,7 +48,7 @@ def _stored_mz(TM, *, with_mt):
         # the idealisation breaks; that regime needs a finite-pulse oracle (future work).
         kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=1e-5, T1_bound=T1B,
                   equilibrate_binding='off')
-    _, mz = simulate_bloch(4000, D, replace(wf, rf=INVERT), Sphere(radius=R), **kw)
+    _, mz = _simulate_bloch(4000, D, replace(wf, rf=INVERT), Sphere(radius=R), **kw)
     return float(mz[0])
 
 

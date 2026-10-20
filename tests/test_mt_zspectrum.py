@@ -12,13 +12,14 @@ Heavy Monte-Carlo -> GPU-recommended; marked slow.  Fine dt so the carrier
 """
 
 from dataclasses import replace
+from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
 from dmipy_sim import ScannerSequence
 from dmipy_sim.engine.pulse_sequence import saturation_pulse
 from dmipy_sim import RFEvent
 import pytest
 
-from dmipy_sim import Sphere, simulate_bloch, bare_gradient_echo, prepend_mt_prep
+from dmipy_sim import Sphere, bare_gradient_echo, prepend_mt_prep
 from dmipy_sim.engine import mt
 
 pytestmark = pytest.mark.slow
@@ -40,7 +41,7 @@ def _mz(offset_hz, *, with_mt, equilibrate='auto'):
     if with_mt:
         kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b,
                   equilibrate_binding=equilibrate)
-    _, mz = simulate_bloch(4000, D, replace(wf, rf=rf), Sphere(radius=R), **kw)
+    _, mz = _simulate_bloch(4000, D, replace(wf, rf=rf), Sphere(radius=R), **kw)
     return float(mz[0])
 
 
@@ -111,7 +112,7 @@ def test_mt_prep_gre_offresonance_mtr():
     seq = prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0)
     base = dict(T2=T2a, T1=T1a, seed=3)
     mt_kw = dict(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b)
-    S_sat = abs(simulate_bloch(4000, D, seq, Sphere(radius=R), **base, **mt_kw)[0])
-    S_ref = abs(simulate_bloch(4000, D, bare_gradient_echo(TE=2e-3, dt=DT), Sphere(radius=R), **base, **mt_kw)[0])
+    S_sat = abs(_simulate_bloch(4000, D, seq, Sphere(radius=R), **base, **mt_kw)[0])
+    S_ref = abs(_simulate_bloch(4000, D, bare_gradient_echo(TE=2e-3, dt=DT), Sphere(radius=R), **base, **mt_kw)[0])
     mtr = 1.0 - S_sat / S_ref
     assert mtr > 0.03                                      # emergent off-resonance MTR (bound pool)

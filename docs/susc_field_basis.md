@@ -1,4 +1,8 @@
-# Susceptibility as a compressible tier: the `susc_path_dct` channel
+# The field channel: `susc_field_basis`
+
+Susceptibility as a compressible tier: the walk accumulates the field it reads at its own position as cosine modes at a
+read interval, and the pack stores them under `compression.channels.susc_field_basis` (tensors `susc_path_dct`,
+`susc_path_scale`; replay-pack-spec `RPK.md` 6.4.1, 9.5.5, `CODEC_REGISTRY.md`).
 
 ## The problem it solves
 

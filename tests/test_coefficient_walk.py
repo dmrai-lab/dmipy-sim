@@ -106,8 +106,8 @@ def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
         pytest.importorskip("trimesh")
     row = _tool().exactness([name], n=200, T=0.008, block_h=2e-4, K=16, sub_steps=3)[name]
     assert row["start_m"] == 0.0 and row["displacement_rel"] <= 1e-6
-    assert row["bands_vs_sinc_dst1_rel"] <= 2e-6, row
-    assert row.get("contact_bands_vs_sinc_dst1_rel", 0.0) <= 5e-6 and row.get("contact_endpoint_rel", 0.0) <= 2e-6, row
+    assert row["bands_vs_block_ends_rel"] <= 2e-6, row
+    assert row.get("contact_bands_vs_block_ends_rel", 0.0) <= 5e-6 and row.get("contact_endpoint_rel", 0.0) <= 2e-6, row
     assert row.get("occupancy_equal", True), row
     assert row["replay_err"] <= 2.0 * row["replay_floor"], row                   # the measured certificate on the block ends
 
@@ -160,9 +160,9 @@ def test_the_contact_tier_is_admitted_at_the_signal():
 def test_the_walks_host_bytes_do_not_grow_with_the_block_count():
     """Three blocks spanning 16x at a fixed K, each walk in a process of its own: the accumulated walk's peak host bytes
     stay within a few MB of each other, while the same walk keeping every walker's block ends grows by them."""
-    rows = _tool().memory(n=40000, T=0.004, dt_sim=3.125e-6, K=16, dt_saves=(2e-4, 5e-5, 1.25e-5))
+    rows = _tool().memory(n=40000, T=0.004, dt_sim=3.125e-6, K=16, block_hs=(2e-4, 5e-5, 1.25e-5))
     acc = [r["host_peak_over_base"] for r in rows if r["mode"] == "accumulated"]
-    saves = [r for r in rows if r["mode"] == "saves"]
+    saves = [r for r in rows if r["mode"] == "raw_subset"]
     grown = saves[-1]["walk_host_bytes"] - saves[0]["walk_host_bytes"]
     assert grown > 5e6
     assert max(acc) - min(acc) < 0.25 * grown, (acc, [r["host_peak_over_base"] for r in saves])

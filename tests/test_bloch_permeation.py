@@ -1,13 +1,14 @@
-"""Membrane permeability in the vector-Bloch forward (`simulate_bloch`).
+"""Membrane permeability in the vector-Bloch forward (`_simulate_bloch`).
 
 The scalar `core.simulate` walk has always supported the Powles crossing; these check that
-`simulate_bloch` now does too — a diffusion-weighted spin echo on a restricted cylinder attenuates
+`_simulate_bloch` now does too — a diffusion-weighted spin echo on a restricted cylinder attenuates
 MORE as the wall becomes permeable (walkers escape the restriction), and approaches the free-
 diffusion signal in the high-κ limit. This is what lets the Bloch engine model exchange during a
 longitudinal-storage mixing time (FEXI).
 """
 import numpy as np
-from dmipy_sim import simulate_bloch, pgse
+from dmipy_sim.engine.bloch import _simulate_bloch
+from dmipy_sim import pgse
 import pytest
 
 from dmipy_sim import Cylinder, FreeDiffusion
@@ -38,7 +39,7 @@ def _dw_spin_echo(g=0.20, TE=30e-3, dt=1e-4, delta=5e-3):
 def _S(kappa, seq, D=2e-9, n=4000, seed=0):
     geom = Cylinder(radius=3e-6, orientation=(0, 0, 1),
                     permeability=(None if kappa == 0 else kappa))
-    return abs(complex(simulate_bloch(n, D, seq, geom, seed=seed, require_gpu=False)[0]))
+    return abs(complex(_simulate_bloch(n, D, seq, geom, seed=seed, require_gpu=False)[0]))
 
 
 def test_permeability_increases_attenuation_monotonically():
@@ -122,8 +123,8 @@ def test_high_permeability_approaches_free_diffusion():
     n_sub = resolve_sub_steps(geom, D, float(wf.dt))
     assert n_sub < 1_000, f"the derived regime should be far under the cap, asked for {n_sub}"
 
-    S_free = abs(complex(simulate_bloch(4000, D, wf, FreeDiffusion(), seed=0, require_gpu=False)[0]))
-    S_perm = abs(complex(simulate_bloch(4000, D, wf, geom, seed=0, require_gpu=False)[0]))
+    S_free = abs(complex(_simulate_bloch(4000, D, wf, FreeDiffusion(), seed=0, require_gpu=False)[0]))
+    S_perm = abs(complex(_simulate_bloch(4000, D, wf, geom, seed=0, require_gpu=False)[0]))
     assert abs(S_perm - S_free) < 0.12               # high-kappa limit ~= free diffusion (original)
 
 

@@ -1,11 +1,11 @@
 """Phase-2 replay: vector-Bloch, susceptibility, and magnetization-transfer replay.
 
 Validates the replay operators AGAINST the public forward engine
-(``bloch.simulate_bloch``) and the analytic two-pool oracle (``mt.mt_z_spectrum``):
+(``bloch._simulate_bloch``) and the analytic two-pool oracle (``mt.mt_z_spectrum``):
 
-* (a) vector-Bloch replay vs the fused ``simulate_bloch`` forward on a spin echo with a
+* (a) vector-Bloch replay vs the fused ``_simulate_bloch`` forward on a spin echo with a
       gradient — emergent refocusing, noise-floor parity;
-* (b) susceptibility replay vs ``simulate_bloch(susceptibility=<provider>)`` on a GRE
+* (b) susceptibility replay vs ``_simulate_bloch(susceptibility=<provider>)`` on a GRE
       (dephasing) and an SE (refocused) — same provider both paths;
 * (c) MT replay Z-spectrum vs the analytic ``mt.mt_z_spectrum`` oracle.
 
@@ -13,6 +13,7 @@ Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is aut
 ``slow`` in ``conftest.py`` (heavy MC); the pure-function unit checks at the end are cheap.
 """
 from dataclasses import replace
+from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
 from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
@@ -20,17 +21,14 @@ from dmipy_sim import RFEvent
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import (simulate_bloch, simulate_trajectories, simulate_mt_trajectories,
-                       replay_bloch, replay_bloch_jax,
-                       finite_180_longitudinal_dwell,
-                       SusceptibilitySources, mt)
-from dmipy_sim.replay.trajectories import replay
+from dmipy_sim import simulate_trajectories, simulate_mt_trajectories, SusceptibilitySources, mt
+from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax, finite_180_longitudinal_dwell
 
 
 # ── (a) vector-Bloch replay vs the forward engine: emergent SE refocusing ────────
 def test_bloch_replay_matches_forward_spin_echo():
     """replay_bloch replays a spin echo (with a gradient) off one walk and
-    matches the fused simulate_bloch forward to the noise floor.  Refocusing is
+    matches the fused _simulate_bloch forward to the noise floor.  Refocusing is
     emergent (the 180 conjugates the accumulated gradient phase)."""
     D, N, seed = 1.5e-9, 4000, 7
     TE, dt = 15e-3, 0.15e-3                     # dt chosen so the walk has sub_steps=1
@@ -41,7 +39,7 @@ def test_bloch_replay_matches_forward_spin_echo():
           RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
 
-    fwd = simulate_bloch(N, D, replace(wf, rf=rf), geom, T2=T2, seed=seed, require_gpu=False)
+    fwd = _simulate_bloch(N, D, replace(wf, rf=rf), geom, T2=T2, seed=seed, require_gpu=False)
     walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
     traj, dt_tr, subs = walk.raw_positions, walk.h, walk.sub_steps
     assert subs == 1                                       # bit-identical walk to forward
@@ -66,9 +64,9 @@ def test_susceptibility_replay_gre_and_se():
     rf_gre = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0)]
     rf_se = rf_gre + [RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
 
-    f_gre = simulate_bloch(N, D, replace(wf0, rf=rf_gre), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
+    f_gre = _simulate_bloch(N, D, replace(wf0, rf=rf_gre), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
     r_gre = replay_bloch(traj, dt_tr, Z, dt, rf_gre, T2=T2, susceptibility=prov)
-    f_se = simulate_bloch(N, D, replace(wf0, rf=rf_se), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
+    f_se = _simulate_bloch(N, D, replace(wf0, rf=rf_se), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
     r_se = replay_bloch(traj, dt_tr, Z, dt, rf_se, T2=T2, susceptibility=prov)
 
     # forward vs replay parity (same provider, bit-identical walk)

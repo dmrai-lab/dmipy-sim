@@ -1,6 +1,6 @@
 """The forward vector-Bloch walk must resolve the same collisions the scalar engine does.
 
-`simulate_bloch`'s plain path accepted `sub_steps`, documented it, and dropped it: `_make_bloch_step_fn`
+`_simulate_bloch`'s plain path accepted `sub_steps`, documented it, and dropped it: `_make_bloch_step_fn`
 took exactly one displacement per waveform step. Analytic geometries did not care -- their reflect is
 exact at any step length -- but a mesh cannot be, because a step longer than the collision-lookup cell
 crosses triangles that were never gathered as candidates and the walker leaves. The path returned the
@@ -22,9 +22,10 @@ import pytest
 trimesh = pytest.importorskip("trimesh")
 
 from dmipy_sim import FreeDiffusion, Sphere, pgse, set_b, simulate
-from dmipy_sim.engine.bloch import simulate_bloch
+from dmipy_sim.engine.bloch import _simulate_bloch
 from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.engine.physics import tolerance_sub_steps
+from dmipy_sim.engine._fused import simulate_fused
 
 UM = 1e-6
 R = 2e-6
@@ -63,17 +64,15 @@ def mesh_sphere():
 
 def _bloch(geom, wf, **kw):
     rf = EXC + [e for e in wf.rf if e.flip_deg == 180]        # the physical pair needs its 180
-    return float(np.real(simulate_bloch(N, D, replace(wf, rf=rf), geom, **kw, seed=3, require_gpu=False)[0]))
+    return float(np.real(_simulate_bloch(N, D, replace(wf, rf=rf), geom, **kw, seed=3, require_gpu=False)[0]))
 
 
 def _scalar(geom, wf, **kw):
-    # engine='fused' pins the comparison to the direct single-pass walk ("the validation
-    # oracle", core.simulate's own description) that `_bloch` is checked against. Every
-    # geometry here (FreeDiffusion, Sphere, the mesh sphere) declares `replay_parity`, so
-    # `engine='auto'` (the default) now routes through the replay backend instead -- a
-    # different numerical path that is not meant to agree bit-for-bit with the vector
-    # engine's direct rotation, only within the walk's own Monte-Carlo floor.
-    return float(simulate(N, D, wf, geom, seed=3, require_gpu=False, engine='fused', **kw)[0])
+    # the fused oracle is the direct single-pass walk that `_bloch` is checked against. Every geometry here
+    # (FreeDiffusion, Sphere, the mesh sphere) declares `replay_parity`, so `simulate` routes through the
+    # coefficient walk instead -- a different numerical path that is not meant to agree bit-for-bit with the
+    # vector engine's direct rotation, only within the walk's own Monte-Carlo floor.
+    return float(simulate_fused(N, D, wf, geom, seed=3, require_gpu=False, **kw)[0])
 
 
 @pytest.mark.slow

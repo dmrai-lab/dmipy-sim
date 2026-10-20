@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from dmipy_sim.engine._fused import simulate_fused
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -275,8 +276,7 @@ def sec_fused(cfg, fig_dir):
                 means, ses = [], []
                 for seed in cfg["fused_seeds"]:
                     t0 = time.time()
-                    res = d.simulate(cfg["fused_n"], D0, waveform=R[label], geometry=geom, seed=seed, sub_steps=sub,
-                                     engine="fused", return_walker_signals=True, require_gpu=False)
+                    res = simulate_fused(cfg["fused_n"], D0, waveform=R[label], geometry=geom, seed=seed, sub_steps=sub, return_walker_signals=True, require_gpu=False)
                     c = np.cos(np.asarray(res[2], np.float64).reshape(-1))
                     means.append(float(c.mean()))
                     ses.append(float(c.std() / np.sqrt(c.size)))

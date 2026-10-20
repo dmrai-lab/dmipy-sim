@@ -207,8 +207,6 @@ def test_a_protocol_is_a_tuple_of_sequences_one_te_each_in_acquisition_order():
     Ea = d.simulate(1500, 2e-9, a, d.FreeDiffusion(), seed=0, require_gpu=False)
     Eb = d.simulate(1500, 2e-9, b, d.FreeDiffusion(), seed=0, require_gpu=False)
     np.testing.assert_allclose(E, [Ea[0], Eb[0], Ea[1], Eb[1]], atol=1e-6)
-    with pytest.raises(ValueError, match="one sequence"):
-        d.simulate(100, 2e-9, q, d.FreeDiffusion(), seed=0, require_gpu=False, return_positions=True)
 
 
 def test_every_sequence_builder_is_validated_and_declares_its_family():

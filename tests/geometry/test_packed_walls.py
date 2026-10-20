@@ -15,6 +15,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.geometry.packed import packed_bounce_budget, packed_candidate_count
 from dmipy_sim.math.step_law import LONGEST_STEP
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 R = 1e-6
@@ -94,7 +95,7 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     radii, c, L = _dense_pack()
     pc = d.PackedCylinders(radii, c, L)
     wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
-    _, origin, final = d.simulate(20_000, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
+    _, origin, final = simulate_fused(20_000, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
     assert (origin == 0).all()
     assert (final == 0).all(), f"{(final > 0).sum()} walkers ended inside a cylinder"
 
@@ -117,8 +118,8 @@ def test_membrane_transmission_does_not_depend_on_the_sub_step():
     step_auto = np.sqrt(6 * D * wf.dt / n_auto)
     assert step_auto > 1.5 * gap, "the dispatched step must span the gap for this to be adversarial"
     n_fine = int(np.ceil(n_auto * (step_auto / (0.5 * gap)) ** 2))
-    _, _, f_auto = d.simulate(N, D, wf, pk, seed=5, return_compartments="final", require_gpu=False)
-    _, _, f_fine = d.simulate(N, D, wf, pk, seed=5, return_compartments="final", sub_steps=n_fine,
+    _, _, f_auto = simulate_fused(N, D, wf, pk, seed=5, return_compartments="final", require_gpu=False)
+    _, _, f_fine = simulate_fused(N, D, wf, pk, seed=5, return_compartments="final", sub_steps=n_fine,
                               require_gpu=False)
     p_auto, p_fine = (f_auto > 0).mean(), (f_fine > 0).mean()
     assert p_auto > 0.05, "no exchange happened"
@@ -136,8 +137,8 @@ def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     pk = d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=kappa)
     wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
     r0 = cyl.init_positions(N, jax.random.PRNGKey(0))                # inside the lumen
-    _, o_c, f_c = d.simulate(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False)
-    _, o_p, f_p = d.simulate(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False)
+    _, o_c, f_c = simulate_fused(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False)
+    _, o_p, f_p = simulate_fused(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False)
     assert (o_c == 1).all() and (o_p == 1).all()
     p_c, p_p = (f_c == 1).mean(), (f_p == 1).mean()
     assert p_c < 0.95, "no exchange happened"

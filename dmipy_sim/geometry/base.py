@@ -147,9 +147,9 @@ class Geometry(ABC):
 
     #: Stepped by `physics.make_packed_myelin_traj_step_fn` / `make_packed_myelin_step_fn`.
     _is_packed_myelinated = False
-    #: The replay producer's walk of this geometry is the fused engine's walk (position parity to
-    #: the MC-noise floor, tests/test_replay_parity.py), so ``simulate(engine="auto")`` may serve a
-    #: signal from a persistent walk. Declared by the geometry, never inferred from its class name.
+    #: The producer's walk of this geometry is the fused oracle's walk (position parity to the MC-noise floor,
+    #: tests/test_replay_parity.py), so ``simulate`` serves a signal from a coefficient walk. Declared by the
+    #: geometry, never inferred from its class name.
     replay_parity = False
 
     #: `classify_position` returns an OBJECT id (0 = extra, 1..N = the object the walker is

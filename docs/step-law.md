@@ -64,9 +64,9 @@ A geometry that declares no pore (a packing, a mesh) takes the envelope: a spher
 | intra | 256,000 | 24 / 6 | 1.0e-03 | 4.54e-04 | 1.3e-04 | 5.4e-04 | yes |
 | extra | 256,000 | 24 / 6 | 1.0e-03 | 5.00e-04 | 1.3e-04 | 5.4e-04 | yes |
 
-## 3. The fused engine against the operator
+## 3. The oracle against the operator
 
-The operator is one step of the engine's `reflect` in float64 quadrature. The fused engine runs the whole walk in float32 with its bounce budget, nudges and sub-step loop, the gradient applied in the walk. If the two agree to the standard error, the loop adds nothing the operator does not predict. `pull` is the engine's distance from the pair operator in standard errors.
+The operator is one step of the engine's `reflect` in float64 quadrature. The oracle (the fused single-pass engine, `engine/_fused.py`) runs the whole walk in float32 with its bounce budget, nudges and sub-step loop, the gradient applied in the walk. If the two agree to the standard error, the loop adds nothing the operator does not predict. `pull` is the engine's distance from the pair operator in standard errors.
 
 | pore, row | dt_p (us) | continuous | operator, fixed | operator, pair | engine | se | pull | walkers x seeds |
 |---|---|---|---|---|---|---|---|---|

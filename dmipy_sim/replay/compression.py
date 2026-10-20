@@ -181,9 +181,9 @@ def quadrature_rel(m, h, omega):
 
 def band_variances(K, T, D):
     """The free bridge's band variances on the continuous basis, ``(K,)``: the eigenvalues of the bridge covariance
-    ``2 D (min(s, t) - s t / T)`` per axis, ``2 D T^2 / (pi k)^2`` -- the limit as ``dt -> 0`` of the DST-I's
-    ``D dt / (2 sin^2(pi k / 2N))`` on ``N`` intervals of ``dt``, read in the continuous normalisation (``beta =
-    sqrt(dt) beta_dst1``)."""
+    ``2 D (min(s, t) - s t / T)`` per axis, ``2 D T^2 / (pi k)^2`` -- the limit as ``dt -> 0`` of the discrete
+    sine transform's ``D dt / (2 sin^2(pi k / 2N))`` on ``N`` intervals of ``dt``, read in the continuous
+    normalisation."""
     k = np.arange(1, int(K) + 1, dtype=np.float64)
     return 2.0 * float(D) * float(T) ** 2 / (np.pi * k) ** 2
 

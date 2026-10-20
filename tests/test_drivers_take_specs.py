@@ -41,14 +41,14 @@ def test_fused_engine_and_producer_walk_a_spec_as_the_geometry():
 
 
 def test_bloch_and_mt_drivers_take_a_spec():
-    from dmipy_sim.engine.bloch import simulate_bloch
+    from dmipy_sim.engine.bloch import _simulate_bloch
     from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
     g = d.Cylinder(3e-6, (0, 0, 1)); spec = g.spec
     seq = _seq()
     rf = [RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(seq.dt * (seq.G.shape[1] // 2), 180.0, axis_deg=0.0)]
     kw = dict(T2=0.05, seed=0, require_gpu=False)
-    np.testing.assert_array_equal(np.asarray(simulate_bloch(60, D0, replace(seq, rf=rf), spec, **kw)),
-                                  np.asarray(simulate_bloch(60, D0, replace(seq, rf=rf), g, **kw)))
+    np.testing.assert_array_equal(np.asarray(_simulate_bloch(60, D0, replace(seq, rf=rf), spec, **kw)),
+                                  np.asarray(_simulate_bloch(60, D0, replace(seq, rf=rf), g, **kw)))
     w_s = simulate_mt_trajectories(40, D0, spec, 1e-3, 2.5e-4, 0.0, 0.0, seed=2, require_gpu=False)
     w_g = simulate_mt_trajectories(40, D0, g, 1e-3, 2.5e-4, 0.0, 0.0, seed=2, require_gpu=False)
     np.testing.assert_array_equal(w_s.position_coeffs, w_g.position_coeffs)

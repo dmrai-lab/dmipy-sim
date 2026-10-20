@@ -5,6 +5,7 @@ with no free parameters; the forward Bloch engine is checked for spin-echo refoc
 a static field and for diffusion-driven attenuation in a varying field.
 """
 from dataclasses import replace
+from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
 from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
@@ -13,7 +14,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from dmipy_sim import (simulate_bloch, FreeDiffusion,
+from dmipy_sim import (FreeDiffusion,
                        SusceptibilitySources, MyelinSusceptibility, GridSusceptibility,
                        dipole_field, myelin_susceptibility_tensor, radial_from_sdf,
                        sample_grid, mesh_shapes as ms)
@@ -181,8 +182,8 @@ def test_uniform_field_refocuses_under_spin_echo():
     exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
     refocus = [RFEvent(TE / 2, 180.0, axis_deg=0.0)]
     uniform = lambda r: jnp.float32(dB0)      # position-independent field
-    ec_ref = simulate_bloch(2000, D, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=uniform)[0]
-    ec_free = simulate_bloch(2000, D, replace(wf, rf=exc), FreeDiffusion(), seed=0, susceptibility=uniform)[0]
+    ec_ref = _simulate_bloch(2000, D, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=uniform)[0]
+    ec_free = _simulate_bloch(2000, D, replace(wf, rf=exc), FreeDiffusion(), seed=0, susceptibility=uniform)[0]
     assert abs(np.angle(ec_ref)) < 0.1        # refocused
     assert abs(ec_ref) == pytest.approx(1.0, rel=1e-2)
     assert abs(np.angle(ec_free)) > 1.0       # unrefocused static dephasing
@@ -199,8 +200,8 @@ def test_diffusion_in_varying_field_attenuates():
     # a strong local perturber the walkers diffuse around (impenetrable-source clamp)
     src = SusceptibilitySources(centers=[[0., 0., 0.]], radii=[2e-6],
                                 delta_chi=3e-6, B0=7.0)
-    frozen = abs(simulate_bloch(4000, 1e-13, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=src)[0])
-    moving = abs(simulate_bloch(4000, D, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=src)[0])
+    frozen = abs(_simulate_bloch(4000, 1e-13, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=src)[0])
+    moving = abs(_simulate_bloch(4000, D, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=src)[0])
     assert frozen == pytest.approx(1.0, abs=0.02)   # static per spin -> refocused
     assert moving < frozen - 0.01                    # diffusion breaks the refocusing
 
@@ -219,8 +220,8 @@ def test_susceptibility_composes_with_mt():
           RFEvent(TE / 2, 180.0, axis_deg=0.0)]
     geom = Sphere(radius=R)
     uniform = lambda r: jnp.float32(dB0)
-    susc_only = simulate_bloch(3000, Dm, replace(wf, rf=se), geom, T2=0.06, seed=0, susceptibility=uniform)[0]
-    both = simulate_bloch(3000, Dm, replace(wf, rf=se), geom, T2=0.06, seed=0, susceptibility=uniform, kappa_MT=kappa_MT, dwell_time=dwell, T2_bound=1e-5)[0]
+    susc_only = _simulate_bloch(3000, Dm, replace(wf, rf=se), geom, T2=0.06, seed=0, susceptibility=uniform)[0]
+    both = _simulate_bloch(3000, Dm, replace(wf, rf=se), geom, T2=0.06, seed=0, susceptibility=uniform, kappa_MT=kappa_MT, dwell_time=dwell, T2_bound=1e-5)[0]
     assert abs(np.angle(both)) < 0.15                    # static field refocused (MT on)
     assert abs(both) < abs(susc_only) - 0.02             # MT binding saturates the free signal
 
@@ -237,7 +238,7 @@ def test_grid_provider_runs_and_refocuses_frozen():
     wf = _zero_waveform(n_t, dt)
     exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
     refocus = [RFEvent(TE / 2, 180.0, axis_deg=0.0)]
-    ec = simulate_bloch(2000, 1e-13, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=prov)[0]
+    ec = _simulate_bloch(2000, 1e-13, replace(wf, rf=exc + refocus), FreeDiffusion(), seed=0, susceptibility=prov)[0]
     assert abs(ec) == pytest.approx(1.0, abs=0.03)   # frozen -> static field refocuses
 
 
@@ -250,10 +251,10 @@ def test_forward_signal_parity_linear_field():
     T = n_t * dt
     exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]   # gradient echo, no 180
     # (a) susceptibility as a linear field
-    S_field = simulate_bloch(N, D, replace(_zero_waveform(n_t, dt), rf=exc), FreeDiffusion(), seed=0, susceptibility=lambda r: g * r[0])[0]
+    S_field = _simulate_bloch(N, D, replace(_zero_waveform(n_t, dt), rf=exc), FreeDiffusion(), seed=0, susceptibility=lambda r: g * r[0])[0]
     # (b) the SAME field as a constant gradient through the waveform, no susceptibility
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = g
-    S_grad = simulate_bloch(N, D, replace(ScannerSequence(G=G, dt=dt), rf=exc), FreeDiffusion(), seed=0)[0]
+    S_grad = _simulate_bloch(N, D, replace(ScannerSequence(G=G, dt=dt), rf=exc), FreeDiffusion(), seed=0)[0]
     b = (GAMMA ** 2 * g ** 2 * T ** 3) / 3.0
     analytic = np.exp(-b * D)
     tol = max(0.02, 1.0 / np.sqrt(N))
