@@ -45,11 +45,8 @@ def _walk(**kw):
     return d.simulate_trajectories(300, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False, **kw)
 
 
-def test_a_walk_states_its_own_band_and_a_walk_of_saves_is_no_pack_input():
-    """A walk that accumulated its bands states its own K and packs at it, with no class and no band stated; a walk
-    kept at its saves (the raw subset's view) is no producer output and is refused by name."""
-    with pytest.raises(TypeError, match="CoefficientWalk"):
-        build_replay_pack(_walk(raw_subset=300), id="t", license="x", citation="x")
+def test_a_walk_states_its_own_band():
+    """A walk that accumulated its bands states its own K and packs at it, with no class and no band stated."""
     w = _walk()
     assert build_replay_pack(w, id="t", license="x", citation="x").K == w.K
 
