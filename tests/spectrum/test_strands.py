@@ -56,8 +56,8 @@ def test_25um_is_walkable_by_walk_spec(entry_25um):
     spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=25e-6, field=False)
     w = walk_spec(spec, 40, 2e-4, 2e-5, seed=0, require_gpu=False, n_probe=5_000)
-    assert w.positions.shape[0] == 40
-    assert np.isfinite(w.positions).all()
+    assert w.n_walkers == 40
+    assert np.isfinite(w.position_coeffs).all()
 
 
 def test_25um_counts_sum_matches_the_blocks_table(entry_25um):

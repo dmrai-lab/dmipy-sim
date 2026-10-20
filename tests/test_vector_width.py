@@ -82,9 +82,9 @@ def layout(spec_grid):
     os.makedirs(str(tmp / "mw_shards"), exist_ok=True)
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 400
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=31 + b, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, seed=31 + b, require_gpu=False, K=8,      # the battery needs 4 bands over 0.8 ms
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        pk = build_replay_pack(w, id=f"t/mw{b}", license="x", citation="x", K=3, voxel_grid=grid,
+        pk = build_replay_pack(w, id=f"t/mw{b}", license="x", citation="x", voxel_grid=grid, K=8,   # not the class's 2
                                out_path=str(tmp / "mw_shards" / f"block-000{b}.p1.rpk"))
         n_t = pk.n_t
     consolidate(str(tmp / "mw_shards"), str(tmp / "mw_columns"), blocks=[0, 1], id="t/mw-columns")

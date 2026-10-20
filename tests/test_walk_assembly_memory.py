@@ -11,12 +11,12 @@ UM = 1e-6
 
 def _walk(**kw):
     return d.simulate_trajectories(3000, 2e-9, d.Sphere(3 * UM), T_max=4e-3, dt_save=2e-5, seed=0, tiers="all",
-                                   require_gpu=False, **kw)
+                                   require_gpu=False, raw_subset=3000, **kw)
 
 
 def test_the_walk_is_held_once_while_it_is_assembled():
     w = _walk(walker_batch_size=500)                                   # warm the kernels outside the measurement
-    held = w.positions.nbytes + w.boundary_local_time.nbytes + w.compartment.nbytes
+    held = w.nbytes                                                     # every array the walk holds
     del w
     tracemalloc.start()
     w = _walk(walker_batch_size=500)
@@ -37,6 +37,6 @@ def test_the_assembled_walk_is_the_concatenation_of_its_batches(monkeypatch):
     a = _walk(walker_batch_size=500)
     monkeypatch.setattr(core, "_Rows", lambda n: _ListRows())
     b = _walk(walker_batch_size=500)
-    assert np.array_equal(a.positions, b.positions)
-    assert np.array_equal(a.boundary_local_time, b.boundary_local_time)
-    assert np.array_equal(a.compartment, b.compartment)
+    assert np.array_equal(a.raw_positions, b.raw_positions)
+    assert np.array_equal(a.raw_boundary, b.raw_boundary)
+    assert np.array_equal(a.position_coeffs, b.position_coeffs)

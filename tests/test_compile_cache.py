@@ -101,8 +101,8 @@ def test_the_replay_producer_caches_too():
         d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False, tiers=())
         d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed,
                                 require_gpu=False)
-    keys = [k[0][0] for k in _entries(g)]
-    assert set(keys) == {"traj", "traj_relax"}, keys
+    keys = [(k[0][0], k[0][1]) for k in _entries(g)]
+    assert set(keys) == {("coefficient walk", "gen"), ("coefficient walk", "relax")}, keys
     # the relaxation walk and the plain walk each compiled once (the producer also builds the
     # plain batch function it does not call on a relaxation run; that one never compiles)
     sizes = sorted(fn._cache_size() for fn in _entries(g).values())

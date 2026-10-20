@@ -22,7 +22,7 @@ def high_b_pack():
     """A 2000-walker cylinder walk packed at K = 64, whose band carries the ActiveAx scheme's b = 13,190 s/mm^2:
     there the phases are 5.9 rad mean and 26 rad at most, the scale at which #484 found the replay's depths
     compared apart."""
-    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False)
+    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False, K=64)
     return build_replay_pack(walk, id="test/high-b", K=64, license="x", citation="x")
 
 
@@ -140,7 +140,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     os.makedirs(str(tmp_path / "shards")); packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")

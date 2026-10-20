@@ -27,9 +27,9 @@ spec = disco_spec(f"{tmp}/t.tck", f"{tmp}/d.txt", side_m=20e-6, field=False)
 grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
 for b in (0, 1):                                                       # two blocks of the grid, one shard each
     want = np.zeros(grid.shape, np.int64); want[b] = 12
-    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False,
+    w = walk_spec(spec, T_max=8e-4, seed=7 + b, require_gpu=False,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-    build_replay_pack(w, id=f"guide/block-{b}", license="CC-BY-4.0", citation="the guide", K=3, voxel_grid=grid, out_path=f"{tmp}/shards/block-000{b}.p1.rpk")
+    build_replay_pack(w, id=f"guide/block-{b}", license="CC-BY-4.0", citation="the guide", voxel_grid=grid, out_path=f"{tmp}/shards/block-000{b}.p1.rpk")
 manifest, index = consolidate(f"{tmp}/shards", f"{tmp}/layout", blocks=[0, 1], id="guide/columns")
 print(sorted(os.listdir(f"{tmp}/layout"))[:3], index["n_rows"], "rows")
 ```
@@ -38,7 +38,7 @@ print(sorted(os.listdir(f"{tmp}/layout"))[:3], index["n_rows"], "rows")
 
 ```python
 pack = ReplayPack.open(f"{tmp}/layout")                               # a directory here; "hf://owner/name/prefix" on the hub
-seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pack.meta["walk_params"]["n_t"], slew_rate=np.inf), [1e9, 1e9])
+seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [1e9, 1e9])
 plan = pack.plan(seq, tissue=Tissue(rho2=1e-6))                       # bands, modes, tiers, bytes: nothing has moved yet
 print(plan["K"], plan["contact"], plan["bytes_per_row"], plan["bytes"])
 view = pack.view(voxels=[(0, 0, 0)], contact=True)                    # one voxel's rows: an ordinary ReplayPack
@@ -69,7 +69,7 @@ print(S3.shape, plan["settings"])                                     # (3, grid
 
 ```python
 from dmipy_sim.replay.study import Protocol, Study
-axial = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=pack.meta["walk_params"]["n_t"], slew_rate=np.inf), [5e8])
+axial = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [5e8])
 study = Study(Protocol([seq, axial]), tissues=[None, Tissue(rho2=1e-6)], scanners=[None], name="guide")
 S, floor, plan = pack.image(study, chunk_rows=6)
 print(S.shape, floor.shape, plan["study"]["pairs"][1]["tissue"])    # (pairs, grid, 3 measurements), a floor per pair, the record

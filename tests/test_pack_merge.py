@@ -25,7 +25,7 @@ def shards(spec_grid):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12                    # the block: one x-slab of the grid
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/shard-{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp / f"shard-{b}.rpk")))
@@ -74,14 +74,15 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     packs, walks = [], []
     for p_, per in ((1, 4), (2, 12)):
         want = np.zeros(grid.shape, np.int64); want[0] = per
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 * p_, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 * p_, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         walks.append(w)
         packs.append(build_replay_pack(w, id=f"t/pass-{p_}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / f"pass-{p_}.rpk")))
     m = merge_packs(packs, id="t/union", out_path=str(tmp / "union.rpk"), overlap="recertify")
     from dmipy_sim.replay import compression as _cx
     start = _cx.read_position_coeffs(m.arrays, dtype=np.float64)[:, 0, :]                          # the walkers' start positions
-    vox = grid.bin(start)[0]; pool = np.asarray(_cx.decode_occupancy(m.arrays, m.meta["compression"]["channels"]["compartment"])["comp"])[:, 0]
+    vox = grid.bin(start)[0]; pool = np.asarray(_cx.decode_occupancy(m.arrays, m.meta["compression"]["channels"]["compartment"])["comp"])
+    pool = pool if pool.ndim == 1 else pool[:, 0]
     cells = [tuple(v) + (int(p_),) for v, p_ in zip(vox.tolist(), pool)]
     shard = np.repeat([0, 1], [pk.n_walkers for pk in packs])
     wm = np.asarray(m.spin_weights, np.float64); ws = np.concatenate([np.asarray(pk.spin_weights, np.float64) for pk in packs])

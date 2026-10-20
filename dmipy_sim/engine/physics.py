@@ -211,8 +211,9 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
       the pore's slowest rate and ``c`` its wall coefficient, both declared by the geometry (``LengthScales.pore_rate``
       and ``wall_coefficient``; exact for the analytic pores, the envelope of a sphere of ``min_feature`` and 0.85 otherwise);
     * the band, the largest step at which the pair's bulk error on the mode a band of ``f_band`` reads stays within
-      ``eps_D`` (:func:`~dmipy_sim.math.step_law.band_step`); ``f_band`` is the Nyquist frequency of the sample grid,
-      ``1 / (2 dt)``, when a driver states none (a trajectory walk serves every waveform its save grid can carry);
+      ``eps_D`` (:func:`~dmipy_sim.math.step_law.band_step`); ``f_band`` is the Nyquist frequency of the step ``dt``,
+      ``1 / (2 dt)``, when a driver states none (the fused drivers state the waveform's band, the band accumulation
+      ``K / (2 T)``, ``walk_spec`` the scanner class's);
     * the first-order regime, ``delta_0 <= min_feature / 2`` (the longest step 0.82 of it), where the law is measured;
       a geometry that declares its own ceiling (``reflection_step_fraction``: the curved tubes' two-bounce wall) keeps it.
 
@@ -351,7 +352,7 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
 
 
 
-#: Sub-steps per save / waveform step above which the resolver refuses: a substrate whose smallest
+#: Sub-steps per block / waveform step above which the resolver refuses: a substrate whose smallest
 #: feature demands more than this is degenerate far more often than it is intended, and a walk at that
 #: cost blocks a user for hours before telling them. ``sub_steps=`` overrides deliberately.
 MAX_SUB_STEPS = 100_000
@@ -373,7 +374,7 @@ def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = F
 
 def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool = False,
                       mt_dwell_time=None, override=None, eps_D: float = STEP_TOLERANCE, f_band: float = None) -> int:
-    """Fine sub-steps per waveform (or save) step for a walk on ``geometry``.
+    """Fine sub-steps per waveform step (a walk's block, a kept walk's save interval) for a walk on ``geometry``.
 
     Every driver -- the fused scan (:func:`make_step_fn`, :func:`make_packed_myelin_step_fn`),
     the trajectory producer (:func:`~dmipy_sim.engine.core.simulate_trajectories`), the vector-Bloch
@@ -383,8 +384,8 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
 
     * the step law, the walk's diffusion spectrum within ``eps_D`` up to the band ``f_band``
       (:func:`tolerance_sub_steps`: the curved-wall term on the pore's slowest mode, the pair's bulk term on
-      the band's mode, the first-order regime); ``f_band`` is the sample grid's Nyquist frequency when a driver
-      states none; not applied when ``min_feature`` is a meshing parameter;
+      the band's mode, the first-order regime); ``f_band`` is the step's Nyquist frequency when a driver states
+      none; not applied when ``min_feature`` is a meshing parameter;
     * crossing, ``step_l <= CROSSING_P_MAX D / (2 kappa)`` (:func:`crossing_sub_steps`), when the wall is
       permeable: the per-hit transmission stays at first order, and the count scales with ``kappa``;
     * collision lookup, ``LONGEST_STEP * step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a

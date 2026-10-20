@@ -153,18 +153,21 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
     log.info("%s round %d/%d: voxels %s, plan %d walkers, scale %.4f -> %s", name, r + 1, k, row["voxels"], seeds["tot"], seeds["scale"], seeds["n_plan"])
     run_dir, out = round_paths(o.workdir, name, r, k)
     t0 = time.time()
-    w = walk_spec(spec, T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=seeds["drawn"], seed=seeds["seed"],
+    w = walk_spec(spec, T_max=W["T_max_s"], dt_save=(rc.dt_save() if W["adaptive_steps"] else None),
+                  seeding=seeds["drawn"], seed=seeds["seed"],
                   require_gpu=o.require_gpu, walker_batch_size=batch_size(o, rc), adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
                   floor_fraction=W["floor_fraction"], field_sample_every=int(W.get("field_sample_every", 1)),
                   context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir,
                   spool=(o.backend == "jax"),                        # the resume of a killed hour-long walk; a backend's shard is redone, not resumed
                   backend=o.backend)
     t_walk = time.time() - t0
-    n_r, n_t = w.positions.shape[:2]
-    pools = np.bincount(np.asarray(w.compartment)[:, 0].astype(int)).tolist()
-    log.info("%s round %d/%d: walked %d walkers x %.0f ms (n_t %d, dt_save %.3g s) in %.0f s; pools %s", name, r + 1, k, n_r,
-             W["T_max_s"] * 1e3, n_t, float(w.dt), t_walk, pools)
-    rd = dict(walk=out, run_dir=run_dir, n_walkers=int(n_r), n_t=int(n_t), dt_save=float(rc.dt_save()), t_walk=t_walk, pools=pools,
+    n_r = int(w.n_walkers)
+    n_t, step = (int(w.n_t), float(w.dt)) if hasattr(w, "positions") else (int(w.n_blocks) + 1, float(w.h))
+    comp = np.asarray(w.compartment)
+    pools = np.bincount((comp[:, 0] if comp.ndim == 2 else comp).astype(int)).tolist()
+    log.info("%s round %d/%d: walked %d walkers x %.0f ms (%d intervals of %.3g s) in %.0f s; pools %s", name, r + 1, k, n_r,
+             W["T_max_s"] * 1e3, n_t - 1, step, t_walk, pools)
+    rd = dict(walk=out, run_dir=run_dir, n_walkers=int(n_r), n_t=int(n_t), dt_save=step, t_walk=t_walk, pools=pools,
               scale=seeds["scale"], plan=seeds["tot"], round=r)
     return w, rd
 
@@ -173,6 +176,8 @@ def save_walk(w, rd):
     """The round's walk written as one file beside the shard (``--keep``, or :meth:`Fill.drain` recovering a
     block whose pack never ran); the spool dropped once the file is whole. Not the pack's handoff any more
     (dmipy-sim#678): the pack stage reads the walk object directly, in memory."""
+    if not hasattr(w, "save"):
+        raise ValueError("a walk that accumulates its bands keeps no saves to write: --keep is for an adaptive walk")
     t0 = time.time(); w.save(rd["walk"])
     shutil.rmtree(os.path.join(rd["run_dir"], "spool"), ignore_errors=True)
     log.info("%s saved in %.0f s", os.path.basename(rd["walk"]), time.time() - t0)
@@ -198,6 +203,8 @@ def _pack_block(job, walk_of):
     rounds = job["rounds"]; k = len(rounds); out = job["out"]; t0 = time.time(); packs = []
     for r, rd in enumerate(rounds):
         w = walk_of(r, rd)
+        if not hasattr(w, "positions"):                     # a coefficient walk certifies itself walk-free
+            fid = dict(fidelity="derived", blt_temporal_K=P["blt_K"])
         out_r = out if k == 1 else out[:-4] + f".round{r}.rpk"
         pk = build_replay_pack(w, id=f"{man['id']}/{job['variant']}/{job['name']}{'-certifying' if job['certify'] else ''}" + (f"/round-{r}" if k > 1 else ""),
                                license=man["license"], citation=man["citation"], K=P.get("K"), scanner=man["walk"]["scanner"], position_container=P["position_container"],

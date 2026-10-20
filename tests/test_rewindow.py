@@ -80,14 +80,14 @@ def _waveforms():
 def test_the_windows_and_their_record(packs):
     parent, seg, p = packs
     assert parent.n_windows == 1 and seg.n_windows == 4
-    assert seg.windows["n_t"] == 50 and seg.windows["T"] == pytest.approx(T / 4) and seg.n_t == N_T
+    assert seg._window_n_t == 50 and seg.windows["T"] == pytest.approx(T / 4) and seg.n_t == N_T
     assert seg.K == 12                                                       # round(48 x 49 / 196): the bands per second kept
     assert seg.temporal_bandwidth_hz == pytest.approx(parent.temporal_bandwidth_hz)
     r = seg.meta["provenance"]["rewindowed"]
     assert r["parent_id"] == "t/parent" and r["n_seg"] == 4 and r["saves_dropped"] == 0 and r["T_seg"] == pytest.approx(T / 4)
     assert len(r["parent_sha256"]) == 64 and r["K"] == 12 and r["parent_K"] == 48
     f = seg.fidelity
-    assert f["certified"] == "bounded" and len(f["windows"]) == 4 and f["within_2x_floor"]
+    assert f["combined"] == "bound_over_windows" and len(f["windows"]) == 4 and f["within_2x_floor"]
     for w in f["windows"]:
         assert w["err_max"] <= 2.0 * w["floor_max"] and "err_susc_path" in w and "err_surface" in w
     ch = seg.meta["compression"]["channels"]
@@ -180,18 +180,18 @@ def test_the_channels_decoded_on_a_window_are_the_whole_ones_cut():
     rng = np.random.default_rng(8)
     n_w, n_t = 300, 240
     traj = np.cumsum(rng.normal(size=(n_w, n_t, 3)) * 1e-7, axis=1)
-    arrays, meta, _ = cx.encode(traj, "bridge_dst", 24, device="numpy")
+    arrays, meta, _ = cx.encode(traj, "bridge_dst", 24, 1e-4, device="numpy")
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
-    ref = cx._bridge_positions(C, n_t)
+    ref = cx.decode(arrays, meta, n_t=n_t)
     dlog = -(rng.exponential(1e-3, size=(n_w, n_t)) * (rng.uniform(size=(n_w, n_t)) < 0.2))
-    ba, bm = cx.encode_boundary_bridge(dlog, K=12, device="numpy")
-    whole = cx.decode_boundary_bridge(ba, bm)
+    ba, bm = cx.encode_boundary_bridge(dlog, 12, 1e-4, device="numpy")
+    whole = cx.decode_boundary_bridge(ba, bm, n_t=n_t)
     Cp = rng.normal(size=(n_w, 7, 9)).astype(np.float32)
     pa, pm = {"susc_path_dct": Cp}, dict(n_t=n_t, channels=["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz"])
     pwhole, _ = susc_path_decode(pa, pm)
     for start, stop in ((0, 60), (59, 120), (120, 240), (1, 2), (239, 240)):
-        npt.assert_allclose(cx.decode_saves(C, n_t, start, stop, device="numpy"), ref[:, start:stop], atol=1e-6 * np.abs(ref).max())
-        part = cx.decode_boundary_bridge(ba, bm, start=start, n_cut=stop)
+        npt.assert_allclose(cx.decode_saves(C, n_t, start, stop, T=meta["T"], device="numpy"), ref[:, start:stop], atol=1e-6 * np.abs(ref).max())
+        part = cx.decode_boundary_bridge(ba, bm, start=start, n_cut=stop, n_t=n_t)
         assert part.shape == (n_w, stop - start)
         npt.assert_allclose(part, whole[:, start:stop], atol=1e-6 * np.abs(whole).max())
         npt.assert_allclose(susc_path_decode(pa, pm, start=start, n_cut=stop)[0], pwhole[:, :, start:stop], atol=1e-9)
@@ -299,14 +299,15 @@ def test_the_band_is_judged_over_the_saves_an_acquisition_spans(packs):
     (``K`` per window) while the frequency they resolve does not."""
     parent, seg, _ = packs
     wf = _waveforms()
-    assert seg._span(_duration(wf["pgse_1"])) == (int(seg.windows["n_t"]), 1)
-    assert seg._span(_duration(wf["pgse_2"])) == (2 * (int(seg.windows["n_t"]) - 1) + 1, 2)
+    assert seg._span(_duration(wf["pgse_1"])) == (int(seg._window_n_t), 1)
+    assert seg._span(_duration(wf["pgse_2"])) == (2 * (int(seg._window_n_t) - 1) + 1, 2)
     assert seg._span(_duration(wf["train_4"])) == (int(seg.n_t), 4)
     assert parent._span(_duration(wf["pgse_1"])) == (int(parent.n_t), 1)
     one, two = seg.truncate(1), seg.truncate(2)
     for name, pk in (("pgse_1", one), ("pgse_2", two)):
-        hz_s, k_s, err_s = seg.waveform_band(wf[name])
-        hz_p, k_p, err_p = pk.waveform_band(wf[name])
+        t = float(seg.fidelity["floor_max"])                                      # one tolerance: the spans compared
+        hz_s, k_s, err_s = seg.waveform_band(wf[name], tol=t)
+        hz_p, k_p, err_p = pk.waveform_band(wf[name], tol=t)
         assert (hz_s, k_s) == (hz_p, k_p) and err_s == pytest.approx(err_p, rel=1e-12), name
     assert seg.waveform_band(wf["pgse_1"])[0] == pytest.approx(seg.waveform_band(wf["pgse_2"])[0], rel=0.5)
     assert np.isfinite(seg.replay(wf["pgse_2"])).all()                             # within K per window over two windows

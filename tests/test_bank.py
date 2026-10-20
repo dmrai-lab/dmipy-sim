@@ -240,12 +240,14 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
     assert s1 < s0                                     # field present -> dephasing
 
 
-def test_lossless_positions_may_carry_both_routes():
+def test_a_path_pack_carries_no_grid_at_any_band():
+    """The bands never reproduce the saves exactly, so even at the saves' own band count a path pack offers the path
+    route alone."""
     pk = build_replay_pack(_sample_susc(_susc_master()), scanner="connectom", id="test/slab-both", method="bridge_dst",
                            envelope=dict(_lean_env(), B0_list=[7.0], theta_deg=[0]),
-                           K=N_T, susc_path_K=32, license="CC-BY-4.0", citation="test")
+                           K=N_T - 2, susc_path_K=32, license="CC-BY-4.0", citation="test")
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
-    assert gm["arrays_in_pack"] is True and gm["replay_route"] == "grid+path"
+    assert gm["arrays_in_pack"] is False and gm["replay_route"] == "path"
 
 
 def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
@@ -256,9 +258,9 @@ def test_c2_codec_is_chosen_by_cost_not_left_to_the_expensive_default():
                            envelope=_lean_env(), K=64, blt_container=None,
                            license="CC-BY-4.0", citation="test")
     cm = pk.meta["compression"]["channels"]["boundary_local_time"]
-    assert cm["mode"] == "bridge_dst" and cm["dtype"] == "float16"
+    assert cm["mode"] == "bridge_dst" and cm["dtype"] == "float32"   # bands in metres: float16 would be subnormal
     per_walker = sum(np.asarray(pk.arrays[k]).nbytes for k in ("blt_bridge_dst", "blt_start", "blt_endpoint")) / N_W
-    assert per_walker < 300                     # sparse CSR on this walk costs far more
+    assert per_walker < 600                     # sparse CSR on this walk costs far more
     assert pk.fidelity["err_surface"] <= 2.0 * pk.fidelity["floor_surface"] + 1e-9
 
 
@@ -399,7 +401,8 @@ def test_preflight_catches_what_otherwise_costs_a_full_walk():
 def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
     import dmipy_sim as d
     from dmipy_sim.fields.susceptibility_field import FieldGrid
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False,
+                                   raw_subset=300).saves()
     pk = build_replay_pack(walk, id="test/walk", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
     env = pk.meta["replay_envelope"]
     assert env["gradient"] and env["bulk_relaxation"] and env["surface_relaxivity"] and not env["field"]
@@ -407,7 +410,8 @@ def test_builder_takes_a_persistent_walk_and_assembles_the_tiers_it_carries():
     assert pk.meta["compression"]["precision_tiers"]["usable"]         # the producer's walkers are i.i.d.
     assert pk.n_walkers == 300 and pk.n_t == walk.n_t
     # positions only: gradient tier alone, nothing silently assembled
-    plain = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, tiers=())
+    plain = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, tiers=(),
+                                    raw_subset=300).saves()
     pk0 = build_replay_pack(plain, id="test/plain", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
     e0 = pk0.meta["replay_envelope"]
     assert e0["gradient"] and not (e0["bulk_relaxation"] or e0["surface_relaxivity"] or e0["field"])
@@ -463,12 +467,13 @@ def test_a_declared_train_depth_puts_a_floor_under_the_ladder():
     assert pm["band"]["depth"] == 20 and all(r["K"] >= 40 for r in pm["band"]["ladder"])
 
 
-def test_lossless_positions_take_the_grid_route_under_auto():
-    """With the positions stored losslessly the grid route is exact and costs no channel, so ``"auto"`` stores no
-    path channel there; a band that is not a number, ``"auto"`` or ``None`` is refused."""
+def test_a_walk_without_field_samples_takes_the_grid_route_under_auto():
+    """A walk that carries the field basis but no samples along its path has nothing a path channel could store, so
+    ``"auto"`` takes the grid route (the grid read at the decoded path, certified against the raw path); a band that
+    is not a number, ``"auto"`` or ``None`` is refused."""
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0])
     pk = build_replay_pack(_susc_master(), scanner="connectom", id="test/slab-susc-grid", method="bridge_dst",
-                           envelope=env, K=N_T, susc_path_K="auto", license="CC-BY-4.0", citation="test")
+                           envelope=env, K=64, susc_path_K="auto", license="CC-BY-4.0", citation="test")
     ch = pk.meta["compression"]["channels"]
     assert "susceptibility_path" not in ch and ch["susceptibility_grid"]["arrays_in_pack"]
     with pytest.raises(ValueError, match="'auto'"):

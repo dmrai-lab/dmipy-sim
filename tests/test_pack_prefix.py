@@ -134,7 +134,7 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
     (found by the paper's Swoop train on the 1 s grey-matter pack)."""
     g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
     T, n_t = 0.3, 1302                                                  # dt = 0.3 / 1301: 0.1 s is not a whole number of saves
-    walk = d.simulate_trajectories(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False)
+    walk = d.simulate_trajectories(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False, K=16, window_T=T)
     p = tmp_path / "parent.rpk"
     _float_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), window_T=T)
     parent = read_rpk(str(p))
@@ -148,7 +148,7 @@ def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
     same pack, to the bit, as from the array."""
     from dmipy_sim.replay.compression import LazyWalk
     g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
-    walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 2.5e-4, seed=5, require_gpu=False)
+    walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 2.5e-4, seed=5, require_gpu=False, raw_subset=300).saves()
     X = np.asarray(walk.positions)
     m = walk._bank_dict(substrate=walk.spec.to_dict())                  # a cylinder: nothing magnetic
     a = _float_pack(dict(m, traj=X), id="t/array", license="x", citation="x", K=12, out_path=str(tmp_path / "a.rpk"))
@@ -163,20 +163,22 @@ def test_a_pack_built_from_a_lazy_walk_is_the_pack_of_the_array(tmp_path):
 
 
 def test_the_saves_decoder_on_the_device_is_the_numpy_one_to_float32_rounding():
-    from dmipy_sim.replay.compression import encode, _bridge_positions, read_position_coeffs
+    from dmipy_sim.replay.compression import encode, decode, read_position_coeffs
     from dmipy_sim.replay.compression import decode_saves
     rng = np.random.default_rng(3)
     traj = np.cumsum(rng.normal(size=(400, 300, 3)).astype(np.float32) * np.float32(1e-7), axis=1)
-    arrays, meta, _ = encode(traj, "bridge_dst", 24, device="numpy")
+    arrays, meta, _ = encode(traj, "bridge_dst", 24, 1e-4, device="numpy")
     C = read_position_coeffs(arrays, dtype=np.float64)
+    T = meta["T"]
+    whole = decode(arrays, meta, n_t=300)
     for n_cut in (2, 150, 299, 300):
-        ref = _bridge_positions(C, 300)[:, :n_cut, :]
-        cpu = decode_saves(C, 300, 0, n_cut, device="numpy")
-        dev = decode_saves(C, 300, 0, n_cut, device="jax", chunk_bytes=1 << 16)
+        ref = whole[:, :n_cut, :]
+        cpu = decode_saves(C, 300, 0, n_cut, T=T, device="numpy")
+        dev = decode_saves(C, 300, 0, n_cut, T=T, device="jax", chunk_bytes=1 << 16)
         assert np.abs(cpu - ref).max() <= 1e-9 and np.abs(dev - ref).max() <= 2e-6 * np.abs(ref).max(), n_cut
     for start, stop in ((1, 2), (99, 200), (150, 300), (299, 300)):                # a window of the walk
-        ref = _bridge_positions(C, 300)[:, start:stop, :]
-        dev = decode_saves(C, 300, start, stop, device="jax", chunk_bytes=1 << 16)
+        ref = whole[:, start:stop, :]
+        dev = decode_saves(C, 300, start, stop, T=T, device="jax", chunk_bytes=1 << 16)
         assert np.abs(dev - ref).max() <= 2e-6 * np.abs(ref).max(), (start, stop)
 
 
@@ -187,10 +189,10 @@ def test_the_channels_decoded_at_the_prefix_are_the_whole_ones_cut():
     rng = np.random.default_rng(8)
     n_w, n_t = 300, 240
     dlog = -(rng.exponential(1e-3, size=(n_w, n_t)).astype(np.float32) * (rng.uniform(size=(n_w, n_t)) < 0.2))
-    arrays, meta = cx.encode_boundary_bridge(dlog, K=12, device="numpy")
-    whole = cx.decode_boundary_bridge(arrays, meta)
+    arrays, meta = cx.encode_boundary_bridge(dlog, 12, 1e-4, device="numpy")
+    whole = cx.decode_boundary_bridge(arrays, meta, n_t=n_t)
     for n_cut in (2, 100, 239, 240):
-        part = cx.decode_boundary_bridge(arrays, meta, n_cut=n_cut)
+        part = cx.decode_boundary_bridge(arrays, meta, n_cut=n_cut, n_t=n_t)
         assert part.shape == (n_w, n_cut) and np.abs(part - whole[:, :n_cut]).max() <= 1e-6 * np.abs(whole).max()
     # the path series: a synthetic DCT-II coefficient block with the pack's reader convention
     K = 9; C = rng.normal(size=(n_w, 7, K))

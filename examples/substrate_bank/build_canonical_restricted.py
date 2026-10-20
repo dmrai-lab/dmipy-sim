@@ -37,7 +37,8 @@ def walk_restricted_master(shape, diameter, D0, *, T_max=200e-3, n_t=2000, n_wal
     dt_save = T_max / (n_t - 1)
     out = simulate_trajectories(n_walkers=int(n_walkers), diffusivity=float(D0), geometry=geom,
                                 T_max=float(T_max), dt_save=float(dt_save), seed=int(seed), require_gpu=require_gpu,
-                                walker_batch_size=int(walker_batch_size))
+                                walker_batch_size=int(walker_batch_size), window_T=float(T_max),
+                                raw_subset=int(n_walkers)).saves()
     traj, dt, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
     dlog_b = out.boundary_local_time
     traj = np.asarray(traj, np.float64)

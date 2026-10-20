@@ -24,18 +24,28 @@ from tests.replay_frames import field_along
 D0 = 2e-9
 
 
+def _series(pk, t, bands, start, end):
+    """A channel's bridge (``start``, ``end`` and ``bands`` per walker) evaluated at the instants ``t`` of its window."""
+    T = pk.T_window
+    k = np.arange(1, bands.shape[1] + 1)
+    return start[:, None] + (end - start)[:, None] * (t / T)[None, :] + bands @ (np.sqrt(2.0 / T) * np.sin(np.pi * np.outer(k, t) / T))
+
+
 def _dense_logweights(pk, seq, T2, T1, rho2):
-    """The decoded computation of the relaxation and surface log-weights: the oracle."""
+    """The decoded computation of the relaxation and surface log-weights: the oracle. The occupancy decoded on the
+    blocks and relaxed through the gate binned there; the contact's series evaluated at the gate's own samples, each
+    held over its interval, ``sum_i chi_i (B(t_i+1) - B(t_i))``."""
     ch = pk.meta["compression"]["channels"]
     n_t, dt = pk.n_t, pk.dt
-    G = np.asarray(seq.G); chi = np.ones(G.shape[1]) if seq.chi_perp is None else np.asarray(seq.chi_perp).reshape(-1)
-    active = bin_gate(np.ones(chi.shape[0]), seq.dt, n_t, dt)[0]; chi = bin_gate(chi, seq.dt, n_t, dt)[0]
-    comp = _cx.decode_occupancy(pk.arrays, ch["compartment"])["comp"]
+    G = np.asarray(seq.G); chi_wf = np.ones(G.shape[1]) if seq.chi_perp is None else np.asarray(seq.chi_perp).reshape(-1)
+    active = bin_gate(np.ones(chi_wf.shape[0]), seq.dt, n_t, dt)[0]; chi = bin_gate(chi_wf, seq.dt, n_t, dt)[0]
+    comp = _cx.decode_occupancy(pk.arrays, ch["compartment"], n_t=n_t)["comp"]
     lw = _cx.relaxation_logweight(comp, T2, T1, dt, chi, active)
-    meta = dict(ch["boundary_local_time"]); meta.setdefault("n_t", n_t)
-    ell = np.asarray(_cx.decode_boundary_bridge(pk.arrays, meta), np.float64)
-    lw = lw + _cx.surface_logweight_series(ell, rho2 / D0, chi)
-    return lw
+    meta = dict(ch["boundary_local_time"])
+    bands = _cx.bridge_bands(pk.arrays, meta)
+    t = np.minimum(np.arange(chi_wf.shape[0]) * float(seq.dt), pk.T_window)
+    B = _series(pk, t, bands, np.asarray(pk.arrays["blt_start"], np.float64), np.asarray(pk.arrays["blt_endpoint"], np.float64))
+    return lw + (rho2 / D0) * (np.diff(B, axis=1) * chi_wf[None, :-1]).sum(1)
 
 
 @pytest.mark.parametrize("make_seq", [
@@ -87,8 +97,15 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     R = np.asarray(pk.pose_rotation(None), float) if False else np.eye(3)
     dB = susc_path_field(b, np.asarray(b0_dir) / np.linalg.norm(b0_dir), B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8, has_aniso=bool(gm.get("has_aniso")))
     phi_x = GAMMA * pk.dt * (dB * field_gate(seq, pk.n_t, pk.dt)[None, :]).sum(1)
-    Geff = effective_gradient(np.asarray(seq.G_eff, np.float64), float(seq.dt), pk.n_t, pk.dt)
-    phi_g = gradient_phase(Geff, pk.positions(), pk.dt).T
+    # the gradient's phase: the held waveform against the stored path (the chord plus the bands' series), finely
+    C = _cx.read_position_coeffs(pk.arrays, dtype=np.float64)
+    G = np.asarray(seq.G_eff, np.float64); sub = 256
+    t = (np.arange((G.shape[1] - 1) * sub) + 0.5) * float(seq.dt) / sub
+    T = pk.T_window; k = np.arange(1, C.shape[1] - 1)
+    r = (C[:, None, 0, :] + C[:, None, 1, :] * (t / T)[None, :, None]
+         + np.einsum("wkc,kt->wtc", C[:, 2:, :], np.sqrt(2.0 / T) * np.sin(np.pi * np.outer(k, t) / T)))
+    g = G[:, np.minimum((t / float(seq.dt)).astype(int), G.shape[1] - 1), :]
+    phi_g = GAMMA * (float(seq.dt) / sub) * np.einsum("mtc,wtc->wm", g, r)
     expect = np.exp(1j * (phi_g + phi_x[:, None]))
     np.testing.assert_allclose(E, expect, rtol=1e-7, atol=1e-7)
 

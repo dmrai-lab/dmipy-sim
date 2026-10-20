@@ -15,47 +15,77 @@ from dmipy_sim.constants import GAMMA
 
 
 # --------------------------------------------------------------- position codec
-def test_position_codec_full_rank_is_exact_roundtrip():
+def _sinc_dst(u, K, h):
+    """``sqrt(h) sinc(pi k / 2N)`` times the orthonormal DST-I of a bridge ``u`` kept at ``N + 1`` instants ``h``
+    apart: the bands its order-0 reading gives."""
+    from scipy.fft import dst
+    N = u.shape[1] - 1
+    k = np.arange(1, K + 1)
+    f = np.sqrt(h) * np.sinc(k / (2.0 * N))
+    b = dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
+    return b * (f[None, :, None] if b.ndim == 3 else f[None, :])
+
+
+def test_the_position_codec_is_the_order_zero_reading_of_the_saves():
+    """Both ends exact; the bands ``sqrt(h) sinc(pi k / 2N)`` times the DST-I of the saved bridge (the cosine
+    projection of the increments at the saves' midpoints); decoded at the saves, the series of those bands."""
     rng = np.random.default_rng(0)
-    X = np.cumsum(rng.standard_normal((50, 200, 3)) * 1e-7, axis=1)   # smooth-ish paths
-    arrays, meta, _ = cx.encode_bridge_dst(X, K=198)   # rank = n_t - 2
-    Xr = cx.decode(arrays, meta)
-    assert np.allclose(Xr, X, atol=1e-6)
+    X = np.cumsum(rng.standard_normal((50, 200, 3)) * 1e-7, axis=1)
+    h = 1e-4
+    arrays, meta, _ = cx.encode_bridge_dst(X, 198, h)
+    C = cx.read_position_coeffs(arrays, dtype=np.float64)
+    tau = np.arange(200) / 199.0
+    u = X - (X[:, :1] + (X[:, -1:] - X[:, :1]) * tau[None, :, None])
+    npt.assert_allclose(C[:, 0], X[:, 0], rtol=1e-6)
+    npt.assert_allclose(C[:, 1], X[:, -1] - X[:, 0], rtol=1e-5, atol=1e-12)
+    assert np.abs(C[:, 2:] - _sinc_dst(u, 198, h)).max() <= 1e-6 * np.abs(C[:, 2:]).max()
+    S, t = cx.saves_basis(200, 0, 200, 198, T=meta["T"])
+    npt.assert_allclose(cx.decode(arrays, meta, n_t=200), C[:, None, 0] + C[:, None, 1] * t[None, :, None]
+                        + np.einsum("wkc,kn->wnc", C[:, 2:], S), rtol=1e-12, atol=1e-18)
 
 
-def test_mode_space_phi_equals_raw_at_full_K():
-    """phi in the stored basis == raw gamma*dt*sum_t G.r at full rank."""
+def test_mode_space_phi_is_the_held_waveform_against_the_stored_series():
+    """phi in the stored basis == the integral of the held waveform against the chord plus the bands' series."""
     rng = np.random.default_rng(1)
-    N, n_t, M = 40, 128, 6
+    N, n_t, M, K = 40, 128, 6, 32
     X = np.cumsum(rng.standard_normal((N, n_t, 3)) * 1e-7, axis=1)
     G = rng.standard_normal((M, n_t, 3)) * 0.1
     dt = 1e-4
-    from dmipy_sim.replay._replay_kernel import effective_gradient
-    phi_raw = (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, n_t, dt), X)
-    arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
+    T = (n_t - 1) * dt
+    arrays, meta, _ = cx.encode_bridge_dst(X, K, dt)
+    C = cx.read_position_coeffs(arrays, dtype=np.float64)
+    sub = 64
+    t = (np.arange((n_t - 1) * sub) + 0.5) * dt / sub
+    k = np.arange(1, K + 1)
+    r = (C[:, None, 0, :] + C[:, None, 1, :] * (t / T)[None, :, None]
+         + np.einsum("wkc,kt->wtc", C[:, 2:, :], np.sqrt(2.0 / T) * np.sin(np.pi * np.outer(k, t) / T)))
+    g = G[:, np.minimum((t / dt).astype(int), n_t - 1), :]
+    phi_ref = GAMMA * (dt / sub) * np.einsum("mtc,wtc->wm", g, r)
     phi_mode = cx.mode_space_phi(arrays, meta, G, dt)
-    assert np.allclose(phi_mode, phi_raw, rtol=1e-6, atol=1e-6)
-
-
-def test_mode_space_signal_matches_raw_reduction():
-    rng = np.random.default_rng(2)
-    N, n_t, M = 60, 100, 5
-    X = np.cumsum(rng.standard_normal((N, n_t, 3)) * 1e-7, axis=1)
-    G = rng.standard_normal((M, n_t, 3)) * 0.1
-    dt = 1e-4
-    S_raw = cx._mean_signal(cx._phases_by_chunk(X, dt, G))
-    arrays, meta, _ = cx.encode_bridge_dst(X, K=n_t - 2)
+    assert np.abs(phi_mode - phi_ref).max() <= 1e-5 * max(np.abs(phi_ref).max(), 1e-12)
     S_mode = cx.mode_space_signal(arrays, meta, G, dt)
-    assert np.allclose(S_mode, S_raw, atol=1e-9)
+    npt.assert_allclose(S_mode, np.exp(1j * phi_mode).mean(0), atol=1e-12)
 
 
 # --------------------------------------------------------------- boundary codec
-def test_boundary_bridge_full_K_recovers_per_save_ell():
+def test_the_boundary_bridge_is_the_order_zero_reading_of_the_cumulative_contact():
+    """The cumulative local time's two ends exact; its bands ``sqrt(h) sinc`` times the DST-I of its bridge; the
+    contact decoded at the saves the increments of that series."""
     rng = np.random.default_rng(3)
     ell = -np.abs(rng.standard_normal((30, 150))) * 1e-6     # <=0 per-save local time
-    arrays, meta = cx.encode_boundary_bridge(ell, K=150)
-    ell_r = cx.decode_boundary_bridge(arrays, meta)
-    assert np.allclose(ell_r, ell, atol=1e-9)
+    h = 1e-4
+    arrays, meta = cx.encode_boundary_bridge(ell, 148, h, dtype=np.float64)
+    B = np.cumsum(ell, axis=1)
+    tau = np.arange(150) / 149.0
+    u = B - (B[:, :1] + (B[:, -1:] - B[:, :1]) * tau[None, :])
+    npt.assert_allclose(arrays["blt_endpoint"], B[:, -1], rtol=1e-6)
+    assert np.abs(arrays["blt_bridge_dst"] - _sinc_dst(u, 148, h)).max() <= 1e-9 * np.abs(u).max()
+    S, t = cx.saves_basis(150, 0, 150, 148, T=meta["T"])
+    B_series = arrays["blt_start"][:, None] + (arrays["blt_endpoint"] - arrays["blt_start"])[:, None] * t[None, :] \
+        + arrays["blt_bridge_dst"] @ S
+    ell_r = cx.decode_boundary_bridge(arrays, meta, n_t=150)
+    npt.assert_allclose(np.cumsum(ell_r.astype(np.float64), axis=1), B_series,
+                        rtol=1e-4, atol=1e-12)
 
 
 def test_boundary_bridge_preserves_cumulative_at_low_K():
@@ -70,8 +100,8 @@ def test_boundary_bridge_preserves_cumulative_at_low_K():
     dens = amp * (1.0 + 0.4 * np.sin(2 * np.pi * t + ph)) * 1e-9
     ell = -dens
     B = np.cumsum(ell, axis=1)
-    arrays, meta = cx.encode_boundary_bridge(ell, K=16)
-    B_r = np.cumsum(cx.decode_boundary_bridge(arrays, meta), axis=1)
+    arrays, meta = cx.encode_boundary_bridge(ell, 16, 1e-4)
+    B_r = np.cumsum(cx.decode_boundary_bridge(arrays, meta, n_t=n_t), axis=1)
     # endpoint is stored exactly; the residual modes must reproduce B(t) at EVERY t (every TE
     # truncation of the surface weight), not just the ends
     rel = np.abs(B_r - B).max() / np.abs(B[:, -1]).max()
@@ -103,8 +133,8 @@ def test_boundary_bridge_replays_surface_signal_below_mc_floor():
     (1/sqrt(N)) -- the property that lets replay store K+1 modes instead of the raw dlog."""
     from dmipy_sim import simulate_trajectories, Box1D
     D, rho2, N, R = 2e-9, 1e-6, 8000, 2e-6
-    res = simulate_trajectories(N, D, Box1D(length=R), T_max=0.6, dt_save=3e-3,
-                                seed=7, require_gpu=False)
+    res = simulate_trajectories(N, D, Box1D(length=R), T_max=0.6, dt_save=3e-3, window_T=0.6, K=8,
+                                seed=7, require_gpu=False, raw_subset=N).saves()
     dlog = np.asarray(res.boundary_local_time).astype(np.float64)
     n_t = dlog.shape[1]; ts = np.arange(n_t) * 0.6 / (n_t - 1)
 
@@ -112,8 +142,8 @@ def test_boundary_bridge_replays_surface_signal_below_mc_floor():
         return np.exp((rho2 / D) * np.cumsum(dl, axis=1)).mean(0)
 
     E_raw = survival(dlog)
-    arrays, meta = cx.encode_boundary_bridge(dlog, K=8)
-    E_codec = survival(cx.decode_boundary_bridge(arrays, meta))
+    arrays, meta = cx.encode_boundary_bridge(dlog, 8, 3e-3)
+    E_codec = survival(cx.decode_boundary_bridge(arrays, meta, n_t=n_t))
     mc_floor = 1.0 / np.sqrt(N)
     assert np.abs(E_codec - E_raw).max() < mc_floor, np.abs(E_codec - E_raw).max()
 
@@ -141,8 +171,8 @@ def test_boundary_bridge_endpoints_are_exact_at_every_K_so_segments_chain():
     ep, ramp = B[:, -1], np.linspace(0.0, 1.0, nt)[None, :]
     for K in (4, 8, 16, 64):
         # f64 storage so the comparison is about the BASIS, not the container's rounding
-        arrays, meta = cx.encode_boundary_bridge(ell, K=K, dtype=np.float64)
-        Br = np.cumsum(cx.decode_boundary_bridge(arrays, meta), axis=1)
+        arrays, meta = cx.encode_boundary_bridge(ell, K, 1e-4, dtype=np.float64)
+        Br = np.cumsum(cx.decode_boundary_bridge(arrays, meta, n_t=nt), axis=1)
         # exact up to the f32 endpoint container (both endpoints are always stored f32)
         e_bridge = np.abs(Br[:, -1] - ep).max() / ep.mean()
         npt.assert_allclose(Br[:, 0], B[:, 0], rtol=1e-5, atol=1e-18)
@@ -161,10 +191,10 @@ def test_boundary_bridge_rejects_a_stale_cosine_pack_loudly():
     cosine bands were sine bands (which would return a plausible but wrong attenuation): a pack
     storing its residual under the old name has no ``blt_bridge_dst`` key for this reader to find."""
     rng = np.random.default_rng(12)
-    arrays, meta = cx.encode_boundary_bridge(np.abs(rng.standard_normal((10, 64))) * 1e-6, K=8)
+    arrays, meta = cx.encode_boundary_bridge(np.abs(rng.standard_normal((10, 64))) * 1e-6, 8, 1e-4)
     stale = {"blt_dct_coeffs": arrays["blt_bridge_dst"], "blt_endpoint": arrays["blt_endpoint"]}
     with pytest.raises(KeyError):
-        cx.decode_boundary_bridge(stale, meta)
+        cx.decode_boundary_bridge(stale, meta, n_t=64)
 
 
 def test_require_position_method_refuses_any_codec_but_the_one_it_reads():

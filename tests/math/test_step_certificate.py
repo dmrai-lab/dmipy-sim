@@ -13,12 +13,12 @@ D0 = 2e-9
 def test_a_free_walk_s_spectrum_is_flat_and_a_pore_s_rises_to_the_free_value():
     """Free increments are white on any save grid, so the estimate is ``D`` at every frequency within its standard
     error; a 5 um sphere's spectrum is under a fifth of ``D`` at the lowest bin and at ``D`` above its pore rate."""
-    w = d.simulate_trajectories(3000, D0, d.FreeDiffusion(), 0.02, 1e-4, seed=0, require_gpu=False)
+    w = d.simulate_trajectories(3000, D0, d.FreeDiffusion(), 0.02, 1e-4, seed=0, require_gpu=False, raw_subset=3000, window_T=0.1).saves()
     f, D, se = diffusion_spectrum(w.positions, w.dt)
     assert f[0] == 0.0 and f[-1] == pytest.approx(0.5 / w.dt)
     z = (D[1:] - D0) / se[1:]
     assert np.abs(z).max() < 4.5 and np.abs(z.mean()) < 0.3                       # flat, and unbiased over the band
-    w = d.simulate_trajectories(3000, D0, d.Sphere(5e-6), 0.1, 1e-4, seed=0, require_gpu=False)
+    w = d.simulate_trajectories(3000, D0, d.Sphere(5e-6), 0.1, 1e-4, seed=0, require_gpu=False, raw_subset=3000, window_T=0.1).saves()
     f, D, se = diffusion_spectrum(w.positions, w.dt)
     f1 = D0 * (2.0816 / 5e-6) ** 2 / (2 * np.pi)                                  # the pore rate, 55 Hz
     assert D[1] < 0.3 * D0 and f[1] < f1 / 4
@@ -39,8 +39,8 @@ def test_two_pilot_walks_measure_the_fine_step_s_error():
     assert n_fine // PILOT_STEP_RATIO >= regime_sub_steps(g, D0, dt)
     eps = STEP_TOLERANCE * n_rule / n_fine                                         # first order: eps scales as the step
     n_coarse = max(1, n_fine // PILOT_STEP_RATIO)
-    fine = d.simulate_trajectories(16000, D0, g, T, dt, seed=1, require_gpu=False, sub_steps=n_fine)
-    coarse = d.simulate_trajectories(16000, D0, g, T, dt, seed=2, require_gpu=False, sub_steps=n_coarse)
+    fine = d.simulate_trajectories(16000, D0, g, T, dt, seed=1, require_gpu=False, sub_steps=n_fine, raw_subset=16000).saves()
+    coarse = d.simulate_trajectories(16000, D0, g, T, dt, seed=2, require_gpu=False, sub_steps=n_coarse, raw_subset=16000).saves()
     cert = step_certificate(fine.positions, coarse.positions, dt, n_fine / n_coarse, f_band=f_band, eps_declared=eps)
     assert cert["n_bins"] == 40 and cert["ratio"] == pytest.approx(n_fine / n_coarse) and cert["resolves"]
     assert cert["floor"] < 0.5 * eps

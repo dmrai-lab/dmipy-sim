@@ -64,7 +64,7 @@ def test_25um_is_walkable(entry_cyl_25um):
     spec = load_spec(os.path.join(entry_cyl_25um["out_dir"], "substrate/spec.json"))
     geom = geometry_from_spec(spec)
     w = simulate_trajectories(20, 2.0e-9, geom, T_max=5e-5, dt_save=5e-6, seed=0)
-    assert np.isfinite(w.positions).all()
+    assert np.isfinite(w.position_coeffs).all()
 
 
 def test_place_tile_two_columns_differ_and_are_reproducible():

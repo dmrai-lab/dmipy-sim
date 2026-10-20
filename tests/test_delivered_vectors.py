@@ -21,7 +21,7 @@ from dmipy_sim.replay.columnar import ColumnarPack
 from dmipy_sim.replay.compression import BUDGET
 from dmipy_sim.replay.time_segments import TimeSegmentLayout, stamp_background, write_time_segment_layout
 from dmipy_sim.fill.consolidate import consolidate
-from dmipy_sim.spec import walk_spec, fill_field, StratifiedByVoxel
+from dmipy_sim.spec import walk_spec, StratifiedByVoxel
 from dmipy_sim.spec.tissue import Tissue
 
 DELTA, BIG_DELTA = 0.2e-3, 0.5e-3
@@ -40,9 +40,8 @@ def layout(spec_grid):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-5, seed=31 + b, require_gpu=False, field_res=0.5e-6,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-5, seed=31 + b, require_gpu=False, adaptive_steps=True,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        w = fill_field(w, w.field_basis)
         packs.append(build_replay_pack(w, id=f"t/dm{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
                                        out_path=str(tmp / "dm_shards" / f"block-000{b}.p1.rpk")))
     consolidate(str(tmp / "dm_shards"), str(tmp / "dm_layout"), blocks=[0, 1], id="t/dm-columns")

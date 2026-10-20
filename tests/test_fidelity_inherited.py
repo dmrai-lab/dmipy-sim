@@ -19,7 +19,8 @@ from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
 
 @pytest.fixture(scope="module")
 def walks(tmp_path_factory):
-    """Two disjoint blocks of one small strand walk plan (the pack-merge fixture), K lossless on 5 saves."""
+    """Two disjoint blocks of one small strand walk plan (the pack-merge fixture), walked as a fill walks them (adaptive
+    steps, kept at 5 saves), K the saves' own band count."""
     tmp = tmp_path_factory.mktemp("inherit")
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
@@ -29,7 +30,7 @@ def walks(tmp_path_factory):
     out = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        out.append(walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False,
+        out.append(walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=7 + b, require_gpu=False, adaptive_steps=True,
                              seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})))
     return grid, out
 
@@ -41,29 +42,33 @@ def test_device_bands_equal_scipy():
     b_np = cx.dst_bands(u[:, 1:-1], 64, device="numpy"); b_jx = cx.dst_bands(u[:, 1:-1], 64, device="jax")
     assert b_np.shape == (300, 64, 3) and np.abs(b_jx - b_np).max() < 1e-6 * np.abs(b_np).max()
     X = np.cumsum(rng.normal(0, 1e-7, (200, 129, 3)), axis=1) + 1e-3                # metres, at millimetre coordinates
-    a_np, m_np, _ = cx.encode_bridge_dst(X, 32, device="numpy"); a_jx, m_jx, _ = cx.encode_bridge_dst(X, 32, device="jax")
+    a_np, m_np, _ = cx.encode_bridge_dst(X, 32, 1e-4, device="numpy"); a_jx, m_jx, _ = cx.encode_bridge_dst(X, 32, 1e-4, device="jax")
     assert m_np == m_jx
-    p_np = cx.decode_bridge_dst(a_np, m_np); p_jx = cx.decode_bridge_dst(a_jx, m_jx)
+    p_np = cx.decode_bridge_dst(a_np, m_np, n_t=129); p_jx = cx.decode_bridge_dst(a_jx, m_jx, n_t=129)
     assert np.abs(p_jx - p_np).max() < 1e-9                                       # nanometres apart, not an error
     with pytest.raises(ValueError, match="device"):
         cx.dst_bands(u[:, 1:-1], 8, device="cuda")
     dl = np.abs(rng.normal(0, 1e-3, (150, 129)))
-    c_np, _ = cx.encode_boundary_bridge(dl, 8, np.float32, device="numpy"); c_jx, _ = cx.encode_boundary_bridge(dl, 8, np.float32, device="jax")
+    c_np, _ = cx.encode_boundary_bridge(dl, 8, 1e-4, np.float32, device="numpy"); c_jx, _ = cx.encode_boundary_bridge(dl, 8, 1e-4, np.float32, device="jax")
     assert np.abs(c_jx["blt_bridge_dst"] - c_np["blt_bridge_dst"]).max() < 1e-5 * np.abs(c_np["blt_bridge_dst"]).max()
     np.testing.assert_array_equal(c_jx["blt_endpoint"], c_np["blt_endpoint"])
 
 
 def test_coded_phases_are_the_replays(walks):
-    """Phases from the coefficients equal the dense phases when the bridge is lossless."""
+    """Phases from the coefficients are the replay's own reading of the stored path (``mode_space_phi``), on the host
+    and the device; the split-half floor read from them is the floor of the dense phases of the saves to the order-0
+    reading's quadrature, over the same families."""
     _, (w0, _) = walks
     X = np.asarray(w0.positions, np.float64); n_t = X.shape[1]; dt = float(w0.dt)
-    arrays, meta, _ = cx.encode_bridge_dst(X, n_t - 2, device="numpy")
+    arrays, meta, _ = cx.encode_bridge_dst(X, n_t - 2, dt, device="numpy")
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
     G, _ = cx.acquisition_battery(n_t, dt, cx.default_envelope())
-    np.testing.assert_allclose(cx.coded_phases(C, dt, G, n_t, device="numpy"), cx._walker_phases(X, dt, G), atol=1e-6)   # the float32 container
+    phi = cx.coded_phases(C, dt, G, n_t, device="numpy")
+    np.testing.assert_allclose(phi, cx.mode_space_phi(arrays, meta, G, dt), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(cx.coded_phases(C, dt, G, n_t, device="jax"), phi, atol=1e-5 * max(np.abs(phi).max(), 1.0))
     fl = cx.measure_floor_coded(C, dt, n_t)
     fid = cx.measure_fidelity(X, dt, X)
-    assert abs(fl["floor_max"] - fid["floor_max"]) < 1e-7 and fl["per_family"].keys() == fid["per_family"].keys()
+    assert abs(fl["floor_max"] - fid["floor_max"]) <= 0.1 * fid["floor_max"] and fl["per_family"].keys() == fid["per_family"].keys()
 
 
 def test_a_block_inherits_the_certificate_and_measures_its_own_floor(walks, tmp_path):
@@ -84,11 +89,12 @@ def test_a_block_inherits_the_certificate_and_measures_its_own_floor(walks, tmp_
     measured = _float_pack(w1, id="fill/block-1-measured", license="x", citation="x", K=K, voxel_grid=grid,
                                  blt_temporal_K=3, device="numpy")
     assert f["floor_max"] == max(v["floor_max"] for v in f["per_family"].values())    # this walk's own floor, the same split
-    for fam in f["per_family"]:
-        assert abs(f["per_family"][fam]["floor_max"] - measured.meta["fidelity"]["per_family"][fam]["floor_max"]) < 1e-7
+    for fam in f["per_family"]:                                                         # read from the bands, not the saves
+        m_ = measured.meta["fidelity"]["per_family"][fam]["floor_max"]
+        assert abs(f["per_family"][fam]["floor_max"] - m_) <= 0.1 * m_ + 1e-7
     _, fl_s, n_s = voxel_fidelity_volumes(shard); _, fl_m, n_m = voxel_fidelity_volumes(measured)
     for name in fl_s:
-        np.testing.assert_array_equal(n_s[name], n_m[name]); np.testing.assert_allclose(fl_s[name], fl_m[name], atol=1e-7)
+        np.testing.assert_array_equal(n_s[name], n_m[name]); np.testing.assert_allclose(fl_s[name], fl_m[name], rtol=0.1, atol=1e-7)
     assert np.isnan(shard.arrays["voxel_certificate"][..., 2]).all()                  # the codec error is the certifying pack's
     for name in shard.arrays:                                                          # the same tensors as a measured build
         if name != "voxel_certificate":
@@ -125,7 +131,7 @@ def test_rounds_of_one_block_merge_and_recertify(walks, tmp_path):
     want = np.zeros(grid.shape, np.int64); want[1] = 12
     rounds = []
     for r in (0, 1):
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 + r, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=100 + r, require_gpu=False, adaptive_steps=True,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         rounds.append(_float_pack(w, id=f"fill/block-1/round-{r}", license="x", citation="x", voxel_grid=grid, device="numpy",
                                         fidelity="inherited", fidelity_from=cert, out_path=str(tmp_path / f"r{r}.rpk")))

@@ -43,7 +43,7 @@ from ..constants import GAMMA
 from ..run import Run, current
 from ..acquisition.scanner_sequence import Protocol, ScannerSequence
 
-__all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "restamp_pack", "analytic_pose_response",
+__all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose_response",
            "compile_scheme", "replay_signal", "replay_coefficients", "replay_signal_jax", "replay_batch_jax",
            "surface_logweight"]
 
@@ -68,55 +68,35 @@ def read_rpk(path):
         meta = json.loads(hdr.get("rpk") or hdr.get("json") or "{}")
         for k in f.keys():
             arrays[k] = f.get_tensor(k)
+    _refuse_predating(meta, path)
     pack = ReplayPack(arrays, meta, source=str(path))
     pack.susceptibility_field
     return pack
 
 
-def restamp_pack(path):
-    """Rewrite, in place, the header of a pack written before dmipy-sim#738 in this format's vocabulary: its window
-    table ``walk_params.segments`` as ``walk_params.windows`` and its per-window certificates ``fidelity.segments``
-    as ``fidelity.windows``; nothing else changes (the tensors are the same bytes, so the file's sha256 does, the
-    data does not). A pack already in this vocabulary is returned unchanged and not rewritten; one that declares
-    neither table is refused, since a header stamp cannot supply one. The rewrite is recorded under
-    ``provenance.restamped`` with the code that made it. Returns the header's metadata."""
-    import os
-    import struct
-    import time as _time
-    from .time_segments import _code
-    path = str(path)
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        header = json.loads(f.read(n))
-    meta = json.loads((header.get("__metadata__") or {}).get("rpk") or "{}")
+#: the keys a pack of this revision never carries (RPK.md 9.5.1): a header that has one is on a save grid, or offers a
+#: field route this revision does not read
+REFUSED_KEYS = (("walk_params", "n_t"), ("walk_params", "dt_traj"), ("walk_params", "cell_size"), ("compression", "n_t"),
+                ("compression", "dt_traj"), ("compression", "basis"))
+
+
+def _refuse_predating(meta, where):
+    """Refuse, by name, a header this revision does not read (RPK.md 9.5.1): ``n_t`` or ``dt_traj`` (in
+    ``walk_params``, its window table or ``compression``), ``compression.basis``, ``walk_params.cell_size``, the codec
+    ``identity``, or no ``walk_params.block``. Its tensors are not decoded: a coefficient read against the wrong basis
+    is a plausible number, not an error. A pack is never converted; it is walked again."""
     wp = meta.get("walk_params") or {}
-    if "windows" in wp:
-        return meta
-    if "segments" not in wp:
-        raise ValueError(f"{path}: the header declares no window table (walk_params.windows or walk_params.segments); "
-                         "a stamp cannot supply one, rebuild the pack with build_replay_pack")
-    wp["windows"] = wp.pop("segments")
-    fid = meta.get("fidelity")
-    if isinstance(fid, dict) and "segments" in fid:
-        fid["windows"] = fid.pop("segments")
-    prov = meta.setdefault("provenance", {})
-    prov["restamped"] = list(prov.get("restamped") or []) + [dict(
-        what="walk_params.segments -> walk_params.windows, fidelity.segments -> fidelity.windows", code=_code(),
-        created=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))]
-    header = dict(header, __metadata__=dict(header.get("__metadata__") or {}, rpk=json.dumps(meta)))
-    blob = json.dumps(header, separators=(",", ":")).encode()
-    blob += b" " * (-len(blob) % 8)                                    # the header padded to 8 bytes, as safetensors writes it
-    tmp = path + ".restamp"
-    with open(path, "rb") as src, open(tmp, "wb") as dst:
-        src.seek(8 + n)
-        dst.write(struct.pack("<Q", len(blob))); dst.write(blob)
-        while True:
-            chunk = src.read(1 << 24)
-            if not chunk:
-                break
-            dst.write(chunk)
-    os.replace(tmp, path)
-    return meta
+    cx = meta.get("compression") or {}
+    found = [f"{a}.{b}" for a, b in REFUSED_KEYS if b in (wp if a == "walk_params" else cx)]
+    found += [f"walk_params.windows.{k}" for k in ("n_t", "dt_traj") if k in (wp.get("windows") or {})]
+    if cx.get("method") == "identity":
+        found.append("compression.method = identity")
+    if not found and "block" not in wp:
+        found.append("no walk_params.block")
+    if found:
+        raise ValueError(f"{where}: This pack carries `{found[0]}`, which this revision does not read; re-walk the pack "
+                         "with a conformant producer. A pack is never converted."
+                         + (f" (Also: {', '.join(found[1:])}.)" if found[1:] else ""))
 
 
 class PoseResponse:
@@ -390,16 +370,13 @@ class ReplayPack:
     # ---- windows (RPK.md 4.3): the walk stored in windows of one duration ----
     @property
     def windows(self):
-        """The window table ``walk_params.windows``, ``{n, n_t, T, walks}``: the walk is stored in ``n`` windows
-        of ``n_t`` saves (``T`` seconds) each, consecutive windows sharing their boundary save; window 0's tensors
+        """The window table ``walk_params.windows``, ``{n, T, walks}``: the walk is stored in ``n`` windows of ``T``
+        seconds each, consecutive windows sharing their boundary instant; window 0's tensors
         sit under the channel names and window ``i`` under the key prefix ``s{i}/``; ``walks`` lists the walks
         that produced them, ``{first, last, seed}`` in windows. Every pack declares it, a walk within one window as
         ``n = 1``."""
         wp = self.meta.get("walk_params") or {}
         seg = wp.get("windows")
-        if not seg and "segments" in wp:
-            raise ValueError("this pack's header names its window table walk_params.segments, as packs written before "
-                             "dmipy-sim#738 do: restamp_pack(path) rewrites the header as walk_params.windows")
         if not seg:
             raise ValueError("this pack declares no walk_params.windows (RPK.md 4.3): a pack is its walk in windows of "
                              "one duration, one window for a walk within that duration. It was written before the "
@@ -445,11 +422,10 @@ class ReplayPack:
             return self
         meta = copy.deepcopy(self.meta)
         wp = meta["walk_params"]
-        n_seg, T_seg = int(seg["n_t"]), float(seg["T"])
+        T_seg = float(seg["T"])
         walk = next((w for w in seg.get("walks") or [] if int(w["first"]) <= i <= int(w["last"])), None)
         seed = walk["seed"] if walk is not None else wp.get("seed")
-        wp.update(n_t=n_seg, T_max=T_seg, seed=seed, windows=dict(n=1, n_t=n_seg, T=T_seg, walks=[dict(first=0, last=0, seed=seed)]))
-        meta["compression"]["n_t"] = n_seg
+        wp.update(T_max=T_seg, seed=seed, windows=dict(n=1, T=T_seg, walks=[dict(first=0, last=0, seed=seed)]))
         fid = dict(meta.get("fidelity") or {})
         per = fid.pop("windows", None)
         meta["fidelity"] = dict(per[i]) if per else fid
@@ -464,7 +440,7 @@ class ReplayPack:
         n = self.n_windows
         if n == 1:
             return [(self, 0.0, int(self.n_t))]
-        n_seg, dt = int(self.windows["n_t"]), float(self.dt)
+        n_seg, dt = self._window_n_t, float(self.dt)
         present = self.windows_present
         upto = n if present is None else min(int(present), n)
         return [(self.window(i), i * (n_seg - 1) * dt, n_seg) for i in range(upto)]
@@ -493,9 +469,9 @@ class ReplayPack:
         keep = {k: v for k, v in self.arrays.items()
                 if "/" not in k or int(k[1:k.index("/")]) < n_keep}
         meta = copy.deepcopy(self.meta)
-        wp = meta["walk_params"]; n_seg, T_seg = int(seg["n_t"]), float(seg["T"])
+        wp = meta["walk_params"]; T_seg = float(seg["T"])
         walks = [dict(w, last=min(int(w["last"]), n_keep - 1)) for w in seg.get("walks") or [] if int(w["first"]) < n_keep]
-        wp.update(n_t=n_keep * (n_seg - 1) + 1, T_max=n_keep * T_seg, windows=dict(n=n_keep, n_t=n_seg, T=T_seg, walks=walks))
+        wp.update(T_max=n_keep * T_seg, windows=dict(n=n_keep, T=T_seg, walks=walks))
         fid = dict(meta.get("fidelity") or {})
         per = fid.get("windows")
         if per:
@@ -527,7 +503,7 @@ class ReplayPack:
         lacks the channel. The windows outside the saves are not read, and the bridge and path channels are
         evaluated at those saves alone; the path series holds the field samples its own grid places there."""
         from .bank import susc_path_decode
-        from .compression import decode_occupancy, decode_boundary_bridge, decode_boundary_local_time
+        from .compression import decode_occupancy, decode_boundary_bridge
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
         out = dict(comp=None, bound=None, ell=None, path=None)
         comps, bounds, ells, series = [], [], [], []
@@ -548,13 +524,9 @@ class ReplayPack:
                 if "bound" in occ:
                     b = np.asarray(occ["bound"]); bounds.append(b[:, lo:hi] if b.ndim == 2 else b)
             if "boundary_local_time" in ch:
-                bm = dict(ch["boundary_local_time"]); bm.setdefault("n_t", n_seg)
-                if w.has_surface:
-                    bm.setdefault("K", _cx_bands_K(w.arrays, bm))
-                    ell = decode_boundary_bridge(w.arrays, bm, start=lo, n_cut=hi)
-                else:
-                    ell = np.asarray(decode_boundary_local_time(w.arrays, bm))[:, lo:hi]
-                ells.append(np.asarray(ell))
+                bm = dict(ch["boundary_local_time"])
+                bm.setdefault("K", _cx_bands_K(w.arrays, bm))
+                ells.append(np.asarray(decode_boundary_bridge(w.arrays, bm, start=lo, n_cut=hi, n_t=n_seg)))
             if "susceptibility_path" in ch:
                 pm = ch["susceptibility_path"]
                 n_tf, dt_f = _path_grid(pm, n_seg, float(self.dt))
@@ -577,7 +549,7 @@ class ReplayPack:
         """Saves ``start .. stop - 1`` of this walk as the bank's master dict a fresh walk of that stretch would have
         recorded, and the path channel's decoded series there (``(series (n_w, n_ch, n_tf), names)`` or ``None``):
         the positions a :class:`~dmipy_sim.replay.compression.LazyWalk` decoded per walker range from the
-        coefficients of the windows the stretch spans, never held whole (#449 item 3); the occupancy and the
+        coefficients of the windows the stretch spans on the pack's basis, never held whole (#449 item 3); the occupancy and the
         contact at those saves (the contact of the first save 0 when the stretch starts past the walk's first: it
         ends no step of the stretch); the weights, spec, frame, diffusivity and seed."""
         from .bank import seed_value
@@ -598,7 +570,8 @@ class ReplayPack:
         n_w = spans[0][0].shape[0]
 
         def _positions(a, b):
-            return np.concatenate([decode_saves(C[a:b], n_seg, lo, hi) for C, n_seg, lo, hi in spans], axis=1)
+            return np.concatenate([decode_saves(C[a:b], n_seg, lo, hi, T=(n_seg - 1) * dt)
+                                   for C, n_seg, lo, hi in spans], axis=1)
 
         m = dict(traj=LazyWalk(_positions, (n_w, stop - start, 3)), dt_traj=dt, T_max=(stop - start - 1) * dt,
                  walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
@@ -637,7 +610,7 @@ class ReplayPack:
         :func:`~dmipy_sim.replay.bank.derive_susc_path_K` derives on window 0 from the decoded series. Window 0's
         bands are every window's. Each window's certificate (``fidelity.windows[i]``) is measured against the
         parent's decoded saves on it -- the re-encode error -- and the whole's is the bound over them
-        (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`, ``certified = "bounded"``); a window outside
+        (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`, ``combined = "bound_over_windows"``); a window outside
         ``tol`` times its floor is refused. ``provenance.rewindowed`` records the parent (id, sha256 of its file,
         certificate), ``T_seg``, ``n_seg``, the bands and ``saves_dropped``.
 
@@ -682,7 +655,7 @@ class ReplayPack:
         c2 = ch.get("boundary_local_time")                            # the parent's contact channel, or None
         if c2 is not None:
             containers.update(blt_container=_container_of(c2.get("container")),
-                              blt_dtype=(np.float16 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])))
+                              blt_dtype=(np.float32 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])))
         col = next((c for c in (ch.get("compartment") or {}).get("columns", []) if c["name"] == "comp"), None)
         crosses = col is not None and col["kind"] != "static"
         K = max(2, int(round(self.K * steps / (n_t - 1))))
@@ -815,17 +788,16 @@ class ReplayPack:
         rho2_list = default_envelope().get("rho2_list") or [1e-5, 3e-5, 1e-4]
         hi = max(rho2_list) / float(D)
         w = np.asarray(self.spin_weights, np.float64)
-        n_seg = int(self.windows["n_t"])
+        n_seg = self._window_n_t
         reads = []                                                   # (decoded contact, reference sums) per window
         for i, (win, _, n_s) in enumerate(self._windows()):
             cm = dict((win.meta["compression"].get("channels") or {})["boundary_local_time"])
-            cm.setdefault("n_t", n_s)
             cm.setdefault("K", _cx_bands_K(win.arrays, cm))
             ref = None
             if reference is not None:
                 k0 = i * (n_seg - 1)
                 ref = np.asarray(reference._decoded_channels(start=k0 + 1, stop=k0 + n_s)["ell"], np.float64).sum(axis=1)
-            reads.append((decode_boundary_bridge(win.arrays, cm), ref))
+            reads.append((decode_boundary_bridge(win.arrays, cm, n_t=n_s), ref))
         rows = [surface_envelope(ell, w, rho2_over_D_hi=hi, reference=ref, tol=tol) for ell, ref in reads]
         edge = float(min(r[0] for r in rows))
         restated = [surface_envelope(ell, w, rho2_over_D_hi=edge, reference=ref, tol=np.inf)[1:] if edge > 0 else (0.0, 0.0)
@@ -837,7 +809,7 @@ class ReplayPack:
             for f_i, (e, f) in zip(segs, restated):
                 f_i.update(err_surface=e, floor_surface=f, surface_rho2_over_D_max=edge)
                 restate_maxima(f_i)
-            if fid.get("certified") == "bounded":
+            if fid.get("combined") == "bound_over_windows":
                 fid = combine_window_fidelity(segs)
             else:
                 fid.update(err_surface=float(sum(e for e, _ in restated)), floor_surface=float(max(f for _, f in restated)), windows=segs)
@@ -950,7 +922,9 @@ class ReplayPack:
         wanted and :attr:`~dmipy_sim.spec.Tissue.D` the diffusivity; given both, they must sit on the line.
 
         A path walked at ``D0`` and read on a grid divided by ``a`` IS a path walked at ``a D0``: the stored
-        coefficients are duration-agnostic, so nothing is decoded and every channel follows on the new grid in
+        coefficients on the DST-I of the saves are duration-agnostic and those on the continuous basis carry its
+        normalisation ``sqrt(2 / T)``, which the view divides by ``sqrt(a)`` (:func:`~dmipy_sim.replay.compression.
+        rescale_bands`), so nothing is decoded and every channel follows on the new grid in
         its own space -- the gradient's per-save weights, the relaxation gates, the surface term (whose weight
         divides by the new ``D``), the field's gate. This is what a change of the substrate's temperature does,
         about 2.5 per cent per kelvin for water. The same path is the walk at ``(a D0, a kappa)`` across a
@@ -989,13 +963,10 @@ class ReplayPack:
         meta = copy.deepcopy(self.meta)
         wp = meta.setdefault("walk_params", {})
         wp["diffusivity"] = float(D)
-        for k in ("dt", "dt_traj", "T_max"):
-            if wp.get(k) is not None:
-                wp[k] = float(wp[k]) / a
+        wp["T_max"] = float(wp["T_max"]) / a
+        wp["block"] = dict(wp["block"], h=float(wp["block"]["h"]) / a)
         if wp.get("windows"):
             wp["windows"] = dict(wp["windows"], T=float(wp["windows"]["T"]) / a)
-        if meta.get("dt") is not None:
-            meta["dt"] = float(meta["dt"]) / a
         cx = meta.get("compression") or {}
         if cx.get("temporal_bandwidth_hz") is not None:
             cx["temporal_bandwidth_hz"] = float(cx["temporal_bandwidth_hz"]) * a
@@ -1025,7 +996,13 @@ class ReplayPack:
                                           grid_dt=dict(walked=float(self.dt), replayed=float(self.dt) / a),
                                           permeability=kappa,
                                           certificate="measured at the walked grid; the in-step bias falls as 1/a")
-        out = ReplayPack(self.arrays, meta, source=self.source)
+        from .compression import rescale_bands
+        # the bands are normalised by sqrt(2 / T): read over T / a they are the stored ones / sqrt(a)
+        arrays = rescale_bands(self.arrays, 1.0 / np.sqrt(a))
+        c2 = (cx.get("channels") or {}).get("boundary_local_time")
+        if c2 is not None and c2.get("T") is not None:
+            c2["T"] = float(c2["T"]) / a
+        out = ReplayPack(arrays, meta, source=self.source)
         return out
 
     def at_length_scale(self, s):
@@ -1081,8 +1058,12 @@ class ReplayPack:
         D0 = wp.get("diffusivity")
         if D0 is not None:
             wp["diffusivity"] = float(D0) * s * s
-        if wp.get("cell_size") is not None:
-            wp["cell_size"] = float(wp["cell_size"]) * s
+        if isinstance(wp.get("qv"), dict):                                       # every length x s: QV of a length x s^2
+            q = wp["qv"]
+            if q.get("positions") is not None:
+                q["positions"] = [float(x) * s * s for x in q["positions"]]
+            if q.get("local_time") is not None:
+                q["local_time"] = float(q["local_time"]) * s * s
         gm = ((meta.get("compression") or {}).get("channels") or {}).get("susceptibility_grid")
         if isinstance(gm, dict):
             for key in ("origin", "voxel_size"):
@@ -1172,15 +1153,16 @@ class ReplayPack:
         return None if spec is None else spec.nominal_field_T
 
     def positions(self):
-        """The ``(n_walkers, n_t, 3)`` trajectory decoded from the position codec (float64); a pack of several
-        windows decodes each window and joins them on the shared saves."""
+        """The ``(n_walkers, n_t, 3)`` positions at the block ends decoded from the bands (float64): the series
+        evaluated there; a pack of several windows decodes each window and joins them on the shared block ends."""
         from .compression import decode, require_position_method
         if self.n_windows > 1:
             return np.concatenate([w.positions()[:, (0 if j == 0 else 1):] for j, (w, _, _) in enumerate(self._windows())], axis=1)
         cx = self.meta.get("compression", {})
+        n_t = int(self.n_t)
         meta = {"method": require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
-                "n_t": int(cx.get("n_t") or self.n_t)}
-        return np.asarray(decode(self.arrays, meta), np.float64)
+                "T": (n_t - 1) * float(self.dt)}
+        return np.asarray(decode(self.arrays, meta, n_t=n_t), np.float64)
 
     def _by_pool(self, values, what):
         """A tissue's per-pool ``T2`` / ``T1`` as the list by pool id over every pool of the embedded spec:
@@ -1345,12 +1327,12 @@ class ReplayPack:
                 f"weights must be real floating point; got {W.dtype}. An integer array is truncated and a "
                 f"complex one loses its imaginary part, both silently")
         W = W.astype(np.float64)
-        want = (self.n_coeffs * 3, P["Geff"].shape[0])
+        want = (self.n_coeffs * 3, P["G_eff_wf"].shape[0])
         if W.shape != want:
             raise ValueError(
                 f"weights are this pack's replay weights for ONE position, {want} -- (n_coeffs * 3, "
                 f"n_meas). Got {W.shape}. dmipy_sim.phantom.bore.delivered_weights builds them per voxel, "
-                f"and must be given THIS pack's save grid: K={self.K}, n_t={self.n_t}, dt={self.dt!r}")
+                f"and must be given THIS pack's window: K={self.K}, T={self.T_window!r}")
         if not np.all(np.isfinite(W)):
             raise ValueError("weights are not finite, so the phase they produce is not a signal")
         if orientation is not None:
@@ -1530,12 +1512,11 @@ class ReplayPack:
             if b1_scale is not None:
                 kw["b1_scale"] = b1_scale
             if relax is not None:
-                kw.update(comp_traj=decode_occupancy(seg.arrays, ch["compartment"])["comp"], **relax)
+                kw.update(comp_traj=decode_occupancy(seg.arrays, ch["compartment"], n_t=n_s)["comp"], **relax)
             if surface is not None:
                 meta = dict(ch.get("boundary_local_time") or {})
-                meta.setdefault("n_t", n_s)
                 meta.setdefault("K", _cx_bands_K(seg.arrays, meta))
-                kw.update(dlog_boundary_unit=decode_boundary_bridge(seg.arrays, meta), **surface)
+                kw.update(dlog_boundary_unit=decode_boundary_bridge(seg.arrays, meta, n_t=n_s), **surface)
             extra = None
             if P["B0"] is not None:
                 extra = GAMMA * dt * seg._field_along_walk(P, pos)
@@ -1637,7 +1618,6 @@ class ReplayPack:
             R = self.pose_rotation(orientation)
             G, G_eff = G @ R, G_eff @ R                                   # R^T g per sample: stored coordinates
             b0_dir = tuple(np.asarray(R, float).T @ np.asarray(b0_dir, float))
-        Geff = effective_gradient(G_eff, dt_wf, n_t, dt)                 # exact per-save weights of the effective gradient
         # the windows of the walk (RPK.md 4.3): every tier is a sum over them, each window reading the acquisition
         # from where it sits on the walk's clock; a single window is the walk itself
         # only the windows the acquisition reaches are read: a window whose first save sits at or beyond the readout
@@ -1649,6 +1629,7 @@ class ReplayPack:
         chi_wf = np.asarray(waveform.chi_perp if waveform.chi_perp is not None else np.ones(G.shape[1]), np.float64).reshape(-1)
         window_gates = [(bin_gate(chi_wf, dt_chi, n_s, dt, t0=t0)[0], bin_gate(np.ones(chi_wf.shape[0]), dt_chi, n_s, dt, t0=t0)[0])
                         for _, t0, n_s in windows]
+        gate_wf = (chi_wf, dt_chi)                                     # the gate on its own grid, which a continuous C2 reads
         logw = np.zeros(n_w)
         if (T2 is not None or T1 is not None) and relaxation:
             if not self.has_relaxation:
@@ -1674,9 +1655,9 @@ class ReplayPack:
             if D_walk is None:
                 raise ValueError("rho2 needs the walk's diffusivity: the pack did not record it, pass D=")
             self._check_rho2(float(rho2) / float(D_walk))
-            for (seg, _, _), (chi_s, _) in zip(windows, window_gates):
-                logw = logw + surface_logweight(seg.arrays, float(rho2) / float(D_walk),
-                                                ch.get("boundary_local_time"), chi_s)      # raises without C2
+            for j in range(len(windows)):
+                logw = logw + _gated_contact(windows, window_gates, gate_wf, j, float(rho2) / float(D_walk),
+                                             ch.get("boundary_local_time"))                # raises without C2
         if rho1 is not None and float(rho1) != 0.0 and surface:
             # the SAME bridge contraction (surface_logweight), gated by the complement chi_parallel = active - chi:
             # the contact channel is one series, and the C2 gate rho2 * chi + rho1 * chi_parallel is linear in it, so
@@ -1685,10 +1666,9 @@ class ReplayPack:
             if D_walk is None:
                 raise ValueError("rho1 needs the walk's diffusivity: the pack did not record it, pass D=")
             self._check_rho2(float(rho1) / float(D_walk))
-            for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
-                chi_parallel_s = np.clip(act_s - chi_s, 0.0, None)
-                logw = logw + surface_logweight(seg.arrays, float(rho1) / float(D_walk),
-                                                ch.get("boundary_local_time"), chi_parallel_s)    # raises without C2
+            for j in range(len(windows)):
+                logw = logw + _gated_contact(windows, window_gates, gate_wf, j, float(rho1) / float(D_walk),
+                                             ch.get("boundary_local_time"), parallel=True)    # raises without C2
         ew = w * np.exp(logw)
         norm = w.sum()
         ew, norm = self._select(compartment, ew, norm, w, ch, n_w)
@@ -1697,10 +1677,10 @@ class ReplayPack:
         # read on the LAB waveform, since the voxel is the scanner's and the dot product k . r_v is the same in
         # every frame. The vector-Bloch route does not apply this scale: it places each walker in the voxel.
         voxel = np.asarray(waveform.voxel_factor(), np.float64)
-        return dict(G=G, Geff=Geff, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
+        return dict(G=G, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     pathway=(pathway_weight(waveform) if pathway else 1.0), voxel=voxel,
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho2=rho2, rho1=rho1, D=D,
-                    chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates)
+                    chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates, gate_wf=gate_wf)
 
     def _n_pool_ids(self, col):
         """How many pool ids the ``comp`` column addresses, read over every window."""
@@ -1840,7 +1820,8 @@ class ReplayPack:
             root = Path(cache)
         h = hashlib.sha256()
         h.update(self.digest.encode())
-        h.update(np.ascontiguousarray(P["Geff"], np.float64).tobytes())      # the acquisition on the pack's grid
+        h.update(np.ascontiguousarray(P["G_eff_wf"], np.float64).tobytes())  # the acquisition on its own grid
+        h.update(np.float64(P["dt_wf"]).tobytes())
         h.update(np.ascontiguousarray(P["ew"], np.float64).tobytes())        # the weights with every tissue knob applied
         h.update(np.ascontiguousarray(self.substrate_frame).tobytes())
         gate = waveform.effective_gate if waveform.gate is None else waveform.gate   # what the field accrues through
@@ -1881,21 +1862,23 @@ class ReplayPack:
         ``bands / (2 T)`` beside the pack's :attr:`temporal_bandwidth_hz` (#277).
 
         The gradient phase of a walker is the waveform's projection on the bridge basis contracted with the
-        walker's bands (:func:`~dmipy_sim.replay.compression.bridge_projection`); the bands beyond the pack's
+        walker's bands (:func:`~dmipy_sim.replay.compression.band_projection`); the bands beyond the pack's
         ``K`` are not stored, so the phase they would carry is lost silently. For a free path the bridge bands
-        are independent with the Dirichlet Laplacian's variances, ``D dt / (2 sin^2(pi k / 2 N))``, the tail every
-        restricted walk shares at short times, so the dropped phase variance per measurement is
-        ``(gamma dt)^2 sum_{k > K} sum_d W_{m,k,d}^2 var_k`` at the walk's diffusivity, and a dropped independent
-        phase under-attenuates the magnitude by half of it. ``tol`` defaults to the pack's certified Monte-Carlo
+        are independent with the bridge covariance's eigenvalues (:func:`~dmipy_sim.replay.compression.band_variances`:
+        ``D dt / (2 sin^2(pi k / 2 N))`` on the DST-I of the saves, their continuum limit ``2 D T^2 / (pi k)^2`` on the
+        continuous basis), the tail every restricted walk shares at short times, so the dropped phase variance per
+        measurement is ``gamma^2 sum_{k > K} sum_d W_{m,k,d}^2 var_k`` at the walk's diffusivity (on the continuous
+        basis the whole bridge's closed form less the retained bands, :func:`~dmipy_sim.replay.compression.
+        band_phase_variances`), and a dropped independent phase under-attenuates the magnitude by half of it. ``tol`` defaults to the pack's certified Monte-Carlo
         floor, the unit of every other error the certificate states; a pack whose certificate states no floor
         (walkers that never moved) is held to the largest floor its ``n_walkers`` could have, ``1 / sqrt(n)``.
         The band is judged over the saves the waveform spans (:meth:`_span`): the windows its duration reaches
         on a pack stored in windows (RPK.md 4.3), the whole grid on a one-window pack, so a short acquisition on a
-        long walk costs the projection of its own duration, not the walk's. ``bands`` is at most the span's own
-        ``n - 2``; a waveform beyond that returns ``inf``.
+        long walk costs the projection of its own duration, not the walk's. On the DST-I ``bands`` is at most the
+        span's own ``n - 2``; on the continuous basis the bands are sought up to :data:`CONTINUOUS_BAND_CAP` times the
+        pack's. A waveform beyond either returns ``inf``.
         """
-        from .compression import bridge_projection
-        from ._replay_kernel import effective_gradient
+        from .compression import band_phase_variances
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
         dt = float(self.dt)
         n_t, windows = self._span(_duration(waveform))
@@ -1905,19 +1888,23 @@ class ReplayPack:
             raise ValueError("the pack records no diffusivity, so the band a waveform needs cannot be judged")
         if tol is None:
             tol = float(self.meta.get("fidelity", {}).get("floor_max") or 0.0) or 1.0 / np.sqrt(float(self.n_walkers))
-        K_big = n_t - 2
-        Geff = effective_gradient(np.asarray(waveform.G_eff, np.float64), float(waveform.dt), n_t, dt)
-        W = bridge_projection(Geff, n_t, K_big)[:, 2:, :]                          # (n_meas, K_big, 3)
-        k = np.arange(1, K_big + 1)
-        var = float(D) * dt / (2.0 * np.sin(np.pi * k / (2.0 * (n_t - 1))) ** 2)   # the free bridge's band variances
-        per_band = (GAMMA * dt) ** 2 * (W ** 2).sum(axis=2) * var[None, :]           # (n_meas, K_big) phase variance
-        tail = np.cumsum(per_band[:, ::-1], axis=1)[:, ::-1]                        # dropped variance beyond band k-1
-        err = 0.5 * np.concatenate([tail, np.zeros((tail.shape[0], 1))], axis=1).max(axis=0)   # err[j]: keeping j bands
-        ok = np.flatnonzero(err <= float(tol))
+        G = np.asarray(waveform.G_eff, np.float64)
+        K_have = self.K * windows
+        K_try = max(64, 2 * K_have)
+        K_cap = CONTINUOUS_BAND_CAP * max(K_have, 1)
+        while True:
+            per_band, total = band_phase_variances(G, float(waveform.dt), T, K_try, D)
+            kept = np.concatenate([np.zeros((per_band.shape[0], 1)), np.cumsum(per_band, axis=1)], axis=1)
+            err = 0.5 * np.clip(total[:, None] - kept, 0.0, None).max(axis=0)          # err[j]: keeping j bands
+            ok = np.flatnonzero(err <= float(tol))
+            if len(ok) or K_try >= K_cap:
+                break
+            K_try = min(2 * K_try, K_cap)
+        at = float(err[min(K_have, K_try)])
         if len(ok) == 0:
-            return np.inf, np.inf, float(err[-1])
+            return np.inf, np.inf, at
         bands = int(ok[0])
-        return bands / (2.0 * T), bands, float(err[min(self.K * windows, K_big)])
+        return bands / (2.0 * T), bands, at
 
     def _span(self, T_acq):
         """``(n, windows)``: the saves of this walk an acquisition of duration ``T_acq`` (s, from the walk's start)
@@ -1927,7 +1914,7 @@ class ReplayPack:
         n_t, dt = int(self.n_t), float(self.dt)
         if self.n_windows == 1:
             return n_t, 1
-        steps = int(self.windows["n_t"]) - 1
+        steps = self._window_n_t - 1
         windows = sum(1 for i in range(int(self.n_windows)) if i * steps * dt < float(T_acq) * (1.0 - 1e-12)) or 1
         return windows * steps + 1, windows
 
@@ -1973,7 +1960,7 @@ class ReplayPack:
             raise ValueError(f"TE = {TE * 1e3:.3f} ms is not a prefix of this {T * 1e3:.3f} ms walk (dt {dt * 1e6:.1f} us): "
                              f"it needs at least three saves and at most the walk's {n_t}")
         if self.n_windows > 1:
-            steps = int(self.windows["n_t"]) - 1
+            steps = self._window_n_t - 1
             whole = (n_cut - 1) // steps + (1 if (n_cut - 1) % steps else 0)      # the windows the prefix lies in
             if (n_cut - 1) % steps == 0:
                 out = self.truncate(whole, id=id, out_path=out_path)             # a prefix of whole windows is a range read
@@ -2007,7 +1994,7 @@ class ReplayPack:
         path_series = None
         if path is not None:
             series, names = path
-            _n_tf, _dt_f = _path_grid(ch["susceptibility_path"], int(self.windows["n_t"]), dt)
+            _n_tf, _dt_f = _path_grid(ch["susceptibility_path"], self._window_n_t, dt)
             path_series = (series, names,
                            max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
                            path_codec_of(ch["susceptibility_path"]) or 8)
@@ -2176,7 +2163,6 @@ class ReplayPack:
         """
         from . import so3
         from .compression import read_position_coeffs
-        from ._replay_kernel import effective_gradient
         from .pose_device import bessel_tails, host_bodies, route, spherical_jn_all as _jn_all
         kind, t_dev = route(device)
         n_acq = len(Ps)
@@ -2206,19 +2192,21 @@ class ReplayPack:
         per = []
         gates = []                                                                 # the distinct gates a background accrues through
         for P, wf, bg in zip(Ps, waveforms, backgrounds):
+            # every course on the waveform's own grid: the projection onto the bands reads it there exactly
             if bg is None:
-                G_wf, G = P["G_eff_wf"], np.asarray(P["Geff"], np.float64)
+                G_wf = np.asarray(P["G_eff_wf"], np.float64)
             else:
                 # the magnet's own gradient leaves the encoding: g0 through the effective gate is the second plane wave
                 g0, gate = bg
                 G_wf = P["G_eff_wf"] - g0[:, None, :] * gate[None, :, None]
-                G = effective_gradient(G_wf, P["dt_wf"], n_t, dt)
+            G = G_wf
+            if bg is not None:
                 key = (gate.tobytes(), float(P["dt_wf"]))
                 gate_id = next((j for j, gk in enumerate(gates) if gk[0] == key), None)
                 if gate_id is None:
                     gate_id = len(gates); gates.append((key, gate, float(P["dt_wf"])))
             n_meas = G.shape[0]
-            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, n_t)); zero = np.zeros(n_meas, bool)
+            g_hat = np.zeros((n_meas, 3)); s_wave = np.zeros((n_meas, G.shape[1])); zero = np.zeros(n_meas, bool)
             for i in range(n_meas):
                 Gi = G[i]
                 if not np.any(Gi) or (bg is not None and np.abs(Gi).max() <= 1e-6 * np.linalg.norm(g0[i])):
@@ -2278,21 +2266,20 @@ class ReplayPack:
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
             if kind == "torch":
                 C = torch.as_tensor(C, device=t_dev)
-            s_all = np.zeros((n_grp + n_gates, n_s))
+            T_s = (n_s - 1) * dt
+            # every group's profile and every background's gate projected on its own grid, as one axis: axis b of the
+            # vectors reads its own coefficients against it, m_w[b] = gamma int s(t) r_w(t)_b dt
+            W1 = np.zeros((seg.K + 2, n_grp + n_gates))
             for c in live:
                 q = per[c]
-                G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_windows > 1 else q["G"]
-                s_all[g_off[c]:g_off[c] + len(q["first"])] = np.einsum("mtc,mc->mt", G_s[q["first"]], q["g_hat"][q["first"]])
-            for j, (_key, gate, dt_g) in enumerate(gates):                     # a background's vector: its gate's, per walker
-                s_all[n_grp + j] = effective_gradient(gate[None, :, None], dt_g, n_s, dt, t0=t0 if self.n_windows > 1 else None)[0, :, 0]
+                prof = np.einsum("mtc,mc->mt", q["G_wf"][q["first"]], q["g_hat"][q["first"]])
+                W1[:, g_off[c]:g_off[c] + len(q["first"])] = _compile_continuous(prof[:, :, None], q["P"]["dt_wf"], seg.K, T_s, t0)
+            for j, (_key, gate, dt_g) in enumerate(gates):
+                W1[:, n_grp + j] = _compile_continuous(gate[None, :, None], dt_g, seg.K, T_s, t0)[:, 0]
             if kind == "torch":
-                # the profiles projected once, as one axis; axis b of the vectors reads its own coefficients against it
-                W1 = torch.as_tensor(_compile_effective(s_all[:, :, None], dt, self.K, n_s), device=t_dev)
-                for b_ in range(3):
-                    m[:, :, b_] += C[:, b_::3] @ W1
-            for b_ in range(3 if kind != "torch" else 0):                      # m_w[b] = gamma sum_t s(t) r_w(t)_b dt
-                W = _compile_effective(s_all[:, :, None] * e[b_][None, None, :], dt, self.K, n_s)
-                m[:, :, b_] += C @ W
+                W1 = torch.as_tensor(W1, device=t_dev)
+            for b_ in range(3):
+                m[:, :, b_] += C[:, b_::3] @ W1
         if kind == "torch":
             del C
             m = m @ torch.as_tensor(self.substrate_frame, device=t_dev)       # stored -> canonical: F^T m, per walker
@@ -2880,9 +2867,8 @@ class ReplayPack:
         ENSEMBLE's, which is what the misfit bounds: ``|sum_w w_w (e^{i(phi_w + d_w)} - e^{i phi_w})| <= sum_w |w_w|
         |d_w|``, the walkers' bounds weighted as the signal weighs them. ``device`` as in
         :meth:`_pose_coeffs_closed_many`: on torch the walkers' contractions run on its device (the SVD of the
-        residuals, a few thousand by the window's saves, on the host)."""
+        residuals, a few thousand by the waveform's samples, on the host)."""
         from .compression import read_position_coeffs
-        from ._replay_kernel import effective_gradient
         from .._blas import lapack_threads
         from .pose_device import route
         todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
@@ -2897,19 +2883,17 @@ class ReplayPack:
             if kind == "torch":
                 import torch
                 C = torch.as_tensor(C, device=t_dev)
+            T_s = (n_s - 1) * dt
             for c in todo:
                 q = per[c]; rows = q["residual"]; ref = q["ref"][rows]
-                G_s = effective_gradient(q["G_wf"], q["P"]["dt_wf"], n_s, dt, t0=t0) if self.n_windows > 1 else q["G"]
-                G_s = np.asarray(G_s, np.float64)
+                G_s = np.asarray(q["G_wf"], np.float64)                                          # the waveform's own grid
                 g = q["g_hat"][rows]
                 s_ref = np.where(q["zero"][rows][:, None], 0.0, np.einsum("mtc,mc->mt", G_s[ref], q["g_hat"][ref]))
-                res = G_s[rows] - s_ref[:, :, None] * g[:, None, :]                              # (n_r, n_s, 3)
+                res = G_s[rows] - s_ref[:, :, None] * g[:, None, :]                              # (n_r, n_wf, 3)
                 if "g0" in q:                                       # the group's |g0| played for the row's own
-                    e_s = effective_gradient(q["gate"][None, :, None], q["P"]["dt_wf"], n_s, dt,
-                                             t0=t0 if self.n_windows > 1 else None)[0, :, 0]
                     d_beta = (q["beta"][rows] - q["beta"][ref]) / np.where(q["beta"][rows] > 0, q["beta"][rows], 1.0)
-                    res = res + (d_beta[:, None] * q["g0"][rows])[:, None, :] * e_s[None, :, None]
-                X = res.transpose(0, 2, 1).reshape(-1, n_s)                                       # (n_r * 3, n_s)
+                    res = res + (d_beta[:, None] * q["g0"][rows])[:, None, :] * np.asarray(q["gate"], np.float64)[None, :, None]
+                X = res.transpose(0, 2, 1).reshape(-1, res.shape[1])                              # (n_r * 3, n_wf)
                 with lapack_threads():                                                            # #564: this shape hangs a known build
                     U, S, Vt = np.linalg.svd(X, full_matrices=False)
                 k = int(np.sum(S > 1e-12 * S[0])) if S.size and S[0] > 0 else 0
@@ -2918,16 +2902,14 @@ class ReplayPack:
                 coef = (U[:, :k] * S[:k]).reshape(len(rows), 3, k)                                # c_ik per axis
                 if kind == "torch":
                     # every course in one projection, each axis reading its own rows of the coefficients
-                    Wk = torch.as_tensor(_compile_effective(Vt[:k, :, None], dt, self.K, n_s), device=t_dev)   # (K+2, k)
+                    Wk = torch.as_tensor(_compile_continuous(Vt[:k, :, None], q["P"]["dt_wf"], seg.K, T_s, t0), device=t_dev)   # (K+2, k)
                     mu = torch.stack([C[:, b_::3] @ Wk for b_ in range(3)], dim=2)                 # (n_live, k, 3)
                     nrm = torch.linalg.vector_norm(mu, dim=2) @ torch.as_tensor(np.linalg.norm(coef, axis=1).T, device=t_dev)
                     per_walker[c] = per_walker[c] + nrm                                       # (n_live, n_r) on the device
                     continue
                 # every course in ONE projection (as the torch branch above), each axis reading its own rows of the
-                # coefficients: k separate (K+2, n_s)-vs-n_s projections and k*3 (n_live,)-vector matvecs (#698) were
-                # k*3 calls into _compile_effective/bridge_projection's own DST and k*3 BLAS level-2 matvecs where
-                # one batched projection and 3 BLAS level-3 matmuls (over every mode at once) give the same numbers
-                Wk = _compile_effective(Vt[:k, :, None], dt, self.K, n_s)                            # (K+2, k)
+                # coefficients: one batched projection and 3 BLAS level-3 matmuls over every mode at once (#698)
+                Wk = _compile_continuous(Vt[:k, :, None], q["P"]["dt_wf"], seg.K, T_s, t0)          # (K+2, k)
                 mu = np.stack([C[:, b_::3] @ Wk for b_ in range(3)], axis=2)                          # (n_live, k, 3)
                 per_walker[c] = per_walker[c] + np.linalg.norm(mu, axis=2) @ np.linalg.norm(coef, axis=1).T
         for c in todo:
@@ -3006,7 +2988,7 @@ class ReplayPack:
         """Sample the response over rotations, project it, and check it off the grid.
 
         The gradient term is exact for any waveform, single- or multi-axis: the phase of walker ``w`` at pose
-        ``R`` is ``<R, M_w>`` with ``M_w[a, b] = sum_t Geff[t, a] r_w[t, b]``, so the walk is contracted once
+        ``R`` is ``<R, M_w>`` with ``M_w[a, b] = gamma int G[t, a] r_w[t, b] dt``, so the walk is contracted once
         per measurement and every pose is then a 3x3 inner product. The field term is the same second-rank form
         in the field direction carried into the substrate frame, reached through the six quadratic products of
         the rotated field direction.
@@ -3025,20 +3007,19 @@ class ReplayPack:
         """
         from . import so3
         from .compression import read_position_coeffs
-        Geff, dt, n_t, ew, norm, B0 = P["Geff"], P["dt"], P["n_t"], P["pathway"] * P["ew"], P["norm"], P["B0"]
+        G_wf, dt, n_t, ew, norm, B0 = P["G_eff_wf"], P["dt"], P["n_t"], P["pathway"] * P["ew"], P["norm"], P["B0"]
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
-        n_meas, n_w = Geff.shape[0], ew.shape[0]
+        n_meas, n_w = G_wf.shape[0], ew.shape[0]
 
         C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
-        # The gradient term at pose R is <R, M_w> with M_w[a, b] = sum_t Geff[i, t, a] r_w[t, b]: the walk is
+        # The gradient term at pose R is <R, M_w> with M_w[a, b] = gamma int G_i(t)_a r_w(t)_b dt: the walk is
         # contracted against the waveform once, and every pose after that is a 3x3 inner product. Exact for a
         # multi-axis waveform too, which an expansion in one gradient direction could not take at all.
         Q = np.empty((n_w, n_meas, 3, 3))
-        e = np.eye(3)
         for a in range(3):
+            Wa = _compile_continuous(np.asarray(G_wf, np.float64)[:, :, a][:, :, None], P["dt_wf"], self.K, (n_t - 1) * dt, 0.0)
             for b_ in range(3):
-                W = _compile_effective(Geff[:, :, a][:, :, None] * e[b_][None, None, :], dt, self.K, n_t)
-                Q[:, :, a, b_] = C @ W
+                Q[:, :, a, b_] = C[:, b_::3] @ Wa
 
         Psi = names = i_p = i_a = None
         if B0 is not None:
@@ -3223,14 +3204,30 @@ class ReplayPack:
         return int(self.position_coeffs.shape[0])
 
     @property
-    def n_t(self):
-        wp = self.meta.get("walk_params", {})
-        return int(self.meta.get("n_t") or wp.get("n_t"))
+    def block(self):
+        """The walk's block record ``walk_params.block``: ``h`` (s, the block a walk accumulated its bands over, or the
+        interval between a kept walk's saves), the table's order ``m`` and how they were set."""
+        return (self.meta.get("walk_params") or {})["block"]
 
     @property
     def dt(self):
-        wp = self.meta.get("walk_params", {})
-        return float(self.meta.get("dt") or wp.get("dt_traj") or wp.get("dt"))
+        """The block length ``h`` (s): the grid the occupancy, a gate's per-block reading and a decoded series are on."""
+        return float(self.block["h"])
+
+    @property
+    def n_t(self):
+        """The block ends of the whole walk, ``T_max / h + 1``."""
+        return int(round(float(self.meta["walk_params"]["T_max"]) / self.dt)) + 1
+
+    @property
+    def T_window(self):
+        """One storage window's duration (s), ``walk_params.windows.T``: the interval the bands are on."""
+        return float(self.windows["T"])
+
+    @property
+    def _window_n_t(self):
+        """The block ends of one window, ``windows.T / h + 1``."""
+        return int(round(float(self.windows["T"]) / self.dt)) + 1
 
     # ---- producer metadata (present on packs written by dmipy_sim.replay.bank.build_replay_pack) ----
     @property
@@ -3350,31 +3347,30 @@ def _evaluate(form, waveform, R, cache):
     return cache[key]
 
 
-def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, n_t=None, method=None, dt_pack=None):
+def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, T=None, method=None):
     """Compile an acquisition into its temporal-basis projection ``W``: the exact integral of the waveform
     against the stored path, in mode space.
 
-    ``G`` is the gradient waveform ``(n_meas, n_wf, 3)`` [T/m] on ITS OWN grid ``dt`` [s]; ``dt_pack`` the pack's
-    save interval (default: the waveform is on the pack grid, ``dt_pack = dt``); ``n_t`` the pack's save count
-    (default ``G.shape[1]`` on the pack grid); ``K`` the pack's retained-mode count; ``method`` the pack's
+    ``G`` is the gradient waveform ``(n_meas, n_wf, 3)`` [T/m] on ITS OWN grid ``dt`` [s]; ``T`` the pack's window
+    (``pack.T_window``; default the waveform's own extent, ``(G.shape[1] - 1) dt``); ``K`` the pack's retained-mode count; ``method`` the pack's
     position codec, accepted only to let a caller assert it. Shape is ``(n_c (K+2), n_meas)`` for a waveform of
     ``n_c`` components (three for a pack's positions; fewer when a consumer reads only some stored axes and
     supplies the waveform's matching components, in the same order): per component the two gradient moments
     ``M0`` and ``M1``, which a motion-compensated waveform makes vanish, then the sine bands.
-    Nothing is resampled: the waveform enters through its exact per-save weights
-    (:func:`_replay_kernel.effective_gradient`), so an edge between saves carries exactly its b. Reusable across
-    every pack on one grid (fitting) and every fit iteration; in design it is recomputed per candidate."""
-    from .compression import require_position_method
-    from ._replay_kernel import effective_gradient
+    Nothing is resampled: the waveform enters through :func:`~dmipy_sim.replay.compression.band_projection`, exact
+    for the stored bands, so an edge anywhere carries exactly its b. Reusable across every pack on one grid (fitting) and every fit
+    iteration; in design it is recomputed per candidate."""
+    from .compression import require_position_method, band_projection
     require_position_method(method or "bridge_dst")
     G = np.asarray(G, np.float64)
-    if dt_pack is None:
-        dt_pack = dt
-        n_t = int(n_t or G.shape[1])
-    elif n_t is None:
-        raise ValueError("a waveform on its own grid needs the pack's n_t")
-    return _compile_effective(effective_gradient(G, dt, int(n_t), dt_pack), dt_pack, K, int(n_t), gyromagnetic_ratio)
+    T = (G.shape[1] - 1) * float(dt) if T is None else float(T)
+    W = band_projection(G, dt, T, int(K))
+    return (gyromagnetic_ratio * W).reshape(W.shape[0], (int(K) + 2) * W.shape[2]).T
 
+
+CONTINUOUS_BAND_CAP = 64
+"""How far :meth:`ReplayPack.waveform_band` seeks the band a waveform needs on a continuous-basis pack, in units of the
+pack's own ``K``: a waveform that needs more is beyond any band a pack of it could be asked to store."""
 
 TORCH_GROUPS = 128
 """Groups the torch route of the closed form contracts per pass over the walkers (dmrai-lab/dmipy-sim#603): each pass's
@@ -3553,16 +3549,18 @@ def _path_grid(pm, n_t, dt):
     return int(pm.get("n_t", n_t)), float(pm.get("dt", dt))
 
 
-def _compile_effective(Geff, dt_pack, K, n_t, gyromagnetic_ratio=GAMMA):
-    """``W`` from per-save weights already on the pack grid (:func:`_replay_kernel.effective_gradient`)."""
-    from .compression import bridge_projection
-    W = bridge_projection(np.asarray(Geff, np.float64), int(n_t), K)              # (n_meas, K+2, n_c)
-    return (gyromagnetic_ratio * float(dt_pack) * W).reshape(W.shape[0], (K + 2) * W.shape[2]).T
+def _compile_continuous(X, dt_wf, K, T, t0, gyromagnetic_ratio=GAMMA):
+    """``(K + 2, n)``: ``gamma`` times the projection (:func:`~dmipy_sim.replay.compression.band_projection`) of each of
+    the ``n`` courses ``X`` ``(n, n_wf, 1)`` on its own grid ``dt_wf`` onto the bands of the window of ``T`` seconds
+    starting at ``t0`` -- what the pose routes contract one axis of the coefficients against."""
+    from .compression import band_projection
+    return gyromagnetic_ratio * band_projection(np.asarray(X, np.float64), float(dt_wf), float(T), int(K), t0=t0)[:, :, 0].T
 
 
 def _band_phase(P, W=None):
     """``(n_w, n_meas)`` gradient phase of every walker under the prepared acquisition ``P``: each window's stored
-    coefficients against the waveform's projection on that window's own save grid, summed (RPK.md 4.3).
+    coefficients against the waveform's projection on that window's bands (:func:`~dmipy_sim.replay.compression.
+    band_projection`), summed (RPK.md 4.3).
 
     The ONE band contraction of a replay. :meth:`ReplayPack._walker_phases` -- and with it
     :meth:`ReplayPack.replay`, :meth:`ReplayPack.walker_signals` and :meth:`ReplayPack.walker_phases` -- and
@@ -3570,13 +3568,15 @@ def _band_phase(P, W=None):
     the same number by construction rather than by agreement (dmipy-sim#484). ``W`` replaces the projection with a
     caller's own per-position weights (:meth:`ReplayPack._check_weights`, single-window only).
     """
-    from .compression import read_position_coeffs
-    from ._replay_kernel import effective_gradient
+    from .compression import read_position_coeffs, band_projection
     dt, n_w = P["dt"], P["n_w"]
     phi = None
     for seg, t0, n_s in P["windows"]:
-        W_s = W if W is not None else _compile_effective(
-            effective_gradient(P["G_eff_wf"], P["dt_wf"], n_s, dt, t0=t0), dt, seg.K, n_s)
+        if W is not None:
+            W_s = W
+        else:
+            Wp = band_projection(P["G_eff_wf"], P["dt_wf"], (n_s - 1) * dt, seg.K, t0=t0)
+            W_s = (GAMMA * Wp).reshape(Wp.shape[0], -1).T
         C = read_position_coeffs(seg.arrays, dtype=np.float64)
         phi_s = C.reshape(n_w, seg.n_coeffs * 3) @ W_s
         phi = phi_s if phi is None else phi + phi_s
@@ -3624,14 +3624,25 @@ def _signal_factor(phi, voxel):
     return np.exp(1j * np.asarray(phi)) * np.asarray(voxel, np.float64)[None, :]
 
 
-def surface_logweight(arrays, rho2_over_D, chan_meta=None, chi_hat=None):
-    """Per-walker surface log-weight ``(rho2/D) * sum_t chi(t) ell_i(t)`` from the C2 channel.
+def _gated_contact(windows, window_gates, gate_wf, j, rho_over_D, chan_meta, *, parallel=False):
+    """The gated contact term ``(rho / D) int chi dB`` of window ``j`` of a prepared replay: the gate on its own grid
+    (``gate_wf``: the transverse gate, or with ``parallel`` its complement within the acquisition) against the contact
+    channel's bridge (:func:`surface_logweight`)."""
+    seg, t0, _n_s = windows[j]
+    chi, dt_chi = gate_wf
+    gate = np.clip(1.0 - chi, 0.0, None) if parallel else chi
+    return surface_logweight(seg.arrays, rho_over_D, chan_meta, gate, dt_chi, t0=t0)
+
+
+def surface_logweight(arrays, rho2_over_D, chan_meta=None, gate=None, dt_gate=None, *, t0=0.0):
+    """Per-walker surface log-weight ``(rho2/D) int chi(t) dB(t)`` from the C2 channel, ``chi`` the ``gate`` on its own
+    grid ``dt_gate`` (from ``t0``, a window's start).
 
     C2 is stored in the bridge form (``blt_bridge_dst`` + the two exact endpoints), so the
     UNGATED total contact is ``blt_endpoint`` read directly -- it is the exact cumulative
     ``L(T)``, not something reconstructed from bands, which is the whole reason the endpoint is
-    held exactly. A coherence gate contracts the bridge with the gate's sine transform
-    (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge`): no per-save series is built.
+    held exactly. A gate contracts the bridge with the gate's cosine integrals
+    (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge`): no series is built.
 
     Takes the pack's ``arrays`` rather than one tensor: the channel is three tensors now, and a
     signature that accepted just the coefficient block invited passing the wrong one.
@@ -3640,23 +3651,22 @@ def surface_logweight(arrays, rho2_over_D, chan_meta=None, chi_hat=None):
     if not has_c2(arrays):
         raise ValueError(
             "surface relaxivity was requested but this pack carries no C2 channel "
-            "(no 'blt_bridge_dst'). A pack written before the C2 bridge form stored "
-            "'blt_dct_coeffs', which is retired -- re-encode it. Returning the signal without "
-            "the requested attenuation would be a plausible wrong number.")
-    if chi_hat is None:
+            "(no 'blt_bridge_dst'). Returning the signal without the requested attenuation would be a "
+            "plausible wrong number.")
+    if gate is None:
         return float(rho2_over_D) * np.asarray(arrays["blt_endpoint"], np.float64)
     meta = dict(chan_meta or {})
-    meta.setdefault("n_t", int(np.asarray(chi_hat).shape[0]))
     meta.setdefault("K", _cx_bands_K(arrays, meta))
-    return surface_logweight_bridge(arrays, meta, rho2_over_D, chi_hat)          # the bridge contracted, never decoded
+    return surface_logweight_bridge(arrays, meta, rho2_over_D, gate, dt_gate, t0=t0)   # the bridge contracted, never decoded
 
 
-def replay_signal(pack, W, *, rho2_over_D=0.0, chi_hat=None, complex_signal=False):
+def replay_signal(pack, W, *, rho2_over_D=0.0, gate=None, dt_gate=None, complex_signal=False):
     """Replay a compiled scheme ``W`` (from :func:`compile_scheme`) against ``pack`` (a :class:`ReplayPack`
     or a plain arrays dict). Returns ``E`` per measurement (magnitude unless ``complex_signal``).
 
     ``rho2_over_D`` > 0 activates the exact surface-relaxivity replay via the pack's boundary local time
-    (a per-walker signal loss decaying the whole signal, including ``b=0``); ``chi_hat`` coherence-gates it.
+    (a per-walker signal loss decaying the whole signal, including ``b=0``); ``gate`` (on its own grid ``dt_gate``)
+    coherence-gates it.
     """
     a = pack.arrays if isinstance(pack, ReplayPack) else pack
     from .compression import read_position_coeffs
@@ -3673,7 +3683,7 @@ def replay_signal(pack, W, *, rho2_over_D=0.0, chi_hat=None, complex_signal=Fals
         # when rho2_over_D was asked for and the pack carries no boundary channel.
         cm = ((pack.meta.get("compression", {}).get("channels", {}) or {}).get("boundary_local_time")
               if isinstance(pack, ReplayPack) else None)
-        surface_logw = surface_logweight(a, rho2_over_D, cm, chi_hat)
+        surface_logw = surface_logweight(a, rho2_over_D, cm, gate, dt_gate)
     return replay_coefficients(C, w0, W, surface_logw=surface_logw, complex_signal=complex_signal)
 
 
@@ -3693,7 +3703,7 @@ def replay_coefficients(position_coeffs, spin_weights, W, *, surface_logw=None, 
         raise ValueError(
             f"compiled scheme has {W.shape[0]} rows for {K * n_c} stored coefficients "
             f"({K} per axis = 2 endpoints + {K - 2} bands, {n_c} axes). Compile with "
-            f"compile_scheme(G, dt, pack.K, n_t=pack.n_t) from the same components -- passing the stored "
+            f"compile_scheme(G, dt, pack.K, T=pack.T_window) from the same components -- passing the stored "
             f"width instead of pack.K produces a scheme that multiplies cleanly and means nothing.")
     w0 = np.asarray(spin_weights, np.float64)
     phi = C.reshape(N_w, K * n_c) @ W                          # (N_w, n_meas)

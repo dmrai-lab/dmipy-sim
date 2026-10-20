@@ -18,6 +18,7 @@ from .replay.trajectories import (unwrap_periodic, replay_jax,
                            pathway_sign_se)
 from .engine.mt_walk import simulate_mt_trajectories
 from .persistent_walk import PersistentWalk
+from .coefficient_walk import CoefficientWalk
 from .compartments import Compartments, Pool, pool_id
 from .engine.bloch import simulate_bloch
 from .engine.pulse_sequence import (bare_gradient_echo, bare_spin_echo, fexi, fexi_b_detect,
@@ -67,7 +68,7 @@ __all__ = [
     # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
     "replay_bloch", "replay_bloch_jax",
     "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
-    "simulate_mt_trajectories", "PersistentWalk", "Compartments", "Pool", "pool_id",
+    "simulate_mt_trajectories", "PersistentWalk", "CoefficientWalk", "Compartments", "Pool", "pool_id",
     "simulate_bloch",
     "ScannerSequence", "Encoding", "Protocol",
     "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",

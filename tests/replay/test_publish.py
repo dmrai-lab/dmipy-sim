@@ -20,7 +20,7 @@ REPO = "owner/packs"
 
 
 def _pack(id="test/cyl", **kw):
-    walk = d.simulate_trajectories(200, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 4e-3, 5e-4, seed=0, require_gpu=False)
+    walk = d.simulate_trajectories(200, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 4e-3, 5e-4, seed=0, require_gpu=False, K=4)
     return build_replay_pack(walk, id=id, K=4, envelope=ENV, **{"license": "CC-BY-4.0", "citation": "a test pack", **kw})
 
 
@@ -84,7 +84,7 @@ def test_publish_puts_the_file_the_manifest_row_and_the_card_up_in_one_commit(pa
     assert row["sha256"] == sha256_of(os.path.join(hub.root, "packs/test-cyl.rpk"))
     assert row["bytes"] == os.path.getsize(os.path.join(hub.root, "packs/test-cyl.rpk"))
     assert row["n_walkers"] == 200 and row["K"] == 4 and row["method"] == "bridge_dst"
-    assert row["T_max"] == pytest.approx(4e-3) and row["dt_traj"] == pytest.approx(5e-4)
+    assert row["T_max"] == pytest.approx(4e-3) and row["block"] == dict(h=pytest.approx(5e-4), m=3) and "dt_traj" not in row
     assert row["channels"][0] == "positions" and "boundary_local_time" in row["channels"]
     assert row["floor_max"] == pack.fidelity["floor_max"] and row["err_max"] == pack.fidelity["err_max"]
     assert row["within_2x_floor"] is True and row["license"] == "CC-BY-4.0" and row["citation"] == "a test pack"
@@ -185,10 +185,10 @@ def test_a_pack_without_its_contract_is_refused(hub, tmp_path):
 
 def test_windows_are_carried_into_the_row_and_the_card(pack, hub):
     p = ReplayPack(pack.arrays, pack.meta)
-    p.meta["walk_params"] = dict(pack.meta["walk_params"], windows=dict(n=4, n_t=3, T=1e-3, seeds=[1, 2, 3, 4]))
+    p.meta["walk_params"] = dict(pack.meta["walk_params"], windows=dict(n=4, T=1e-3, seeds=[1, 2, 3, 4]))
     pub.publish(p, REPO, hub=hub)
     row = _manifest(hub)["packs"][0]
-    assert row["windows"] == dict(n=4, n_t=3, T=1e-3, seeds=[1, 2, 3, 4])
+    assert row["windows"] == dict(n=4, T=1e-3, seeds=[1, 2, 3, 4])
     assert "| 4 ms (4 × 1 ms) |" in open(os.path.join(hub.root, "README.md")).read()
 
 
@@ -200,33 +200,6 @@ class _CorruptingHub(FakeHub):
         for r in adds:
             if r.endswith(".rpk"):
                 b = bytearray(open(self._p(r), "rb").read()); b[-1] ^= 0xFF; open(self._p(r), "wb").write(b)
-
-
-def test_a_local_dataset_copy_is_restamped_in_place(pack, hub, tmp_path):
-    """``restamp_dataset`` on a copy whose pack and row still say ``segments``: the pack's header is restamped, the
-    row says ``windows`` with the new file's sha256 and bytes, the card is re-rendered; a second run changes nothing,
-    and a copy missing a pack it names is refused before anything is written."""
-    import copy, json, shutil
-    from dmipy_sim.replay.publish import manifest_row, render_readme, restamp_dataset, sha256_of
-    from dmipy_sim.replay.replay import read_rpk, write_rpk
-    root = tmp_path / "copy"; (root / "packs").mkdir(parents=True)
-    meta = copy.deepcopy(pack.meta); meta["walk_params"]["segments"] = meta["walk_params"].pop("windows")
-    local = root / "packs" / "p.rpk"; write_rpk(local, pack.arrays, meta)
-    row = manifest_row(pack.meta, "packs/p.rpk", sha256_of(str(local)), local.stat().st_size)
-    row["segments"] = row.pop("windows")
-    (root / "manifest.json").write_text(json.dumps({"schema": "substratecommons/1", "packs": [row]}))
-    out = restamp_dataset(str(root), "o/d")
-    r = out["packs"][0]
-    assert "segments" not in r and r["windows"] == pack.windows
-    assert r["sha256"] == sha256_of(str(local)) and r["bytes"] == local.stat().st_size
-    assert read_rpk(local).windows == pack.windows
-    assert (root / "README.md").read_text() == render_readme(out, "o/d")
-    before = (root / "manifest.json").read_text()
-    restamp_dataset(str(root), "o/d")
-    assert (root / "manifest.json").read_text() == before
-    gone = tmp_path / "gone"; shutil.copytree(root, gone); (gone / "packs" / "p.rpk").unlink()
-    with pytest.raises(ValueError, match="does not hold"):
-        restamp_dataset(str(gone), "o/d")
 
 
 def test_publish_verifies_what_the_hub_holds(pack, tmp_path):

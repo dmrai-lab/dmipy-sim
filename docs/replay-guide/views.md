@@ -24,8 +24,8 @@ why a view is exact: it is not an approximation of another walk, it IS that walk
 
 | view | what you ask for | what moves with it | what stays | direction |
 |---|---|---|---|---|
-| `at_diffusivity(D)`, `a = D / D_walk` | a faster diffusivity | the save grid (`dt / a`, `T / a`), the band in hertz (`x a`), every permeability and MT reactivity (`x a`) | positions, every wall, every length | `a >= 1` only |
-| `at_length_scale(s)` | another size | every length (`x s`: positions, walls, box, contact), the diffusivity (`x s^2`), every wall rate (`x s`), the certificate's battery (`b_max / s^2`, `rho2_over_D_max / s`) | the save grid, the duration, the band in hertz, the field values, T2 and T1 | both, bounded by the battery |
+| `at_diffusivity(D)`, `a = D / D_walk` | a faster diffusivity | the block (`h / a`, `T / a`), the band in hertz (`x a`), every permeability and MT reactivity (`x a`) | positions, every wall, every length | `a >= 1` only |
+| `at_length_scale(s)` | another size | every length (`x s`: positions, walls, box, contact), the diffusivity (`x s^2`), every wall rate (`x s`), the certificate's battery (`b_max / s^2`, `rho2_over_D_max / s`) | the block, the duration, the band in hertz, the field values, T2 and T1 | both, bounded by the battery |
 
 ## In time: `at_diffusivity`
 
@@ -40,11 +40,11 @@ from dmipy_sim import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec.tissue import Tissue
 
-walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1), permeability=1e-5), 0.01, 5e-4, seed=0, require_gpu=False)
+walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1), permeability=1e-5), 0.01, seed=0, require_gpu=False, K=8)
 pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
 
 fast = pack.at_diffusivity(4e-9)                                  # a = 2: the same walk, twice as fast
-print(fast.diffusivity, fast.permeability, fast.dt, fast.n_t)    # 4e-9, 2e-5 (the pair), dt / 2, the same saves
+print(fast.diffusivity, fast.permeability, fast.dt, fast.n_t)    # 4e-9, 2e-5 (the pair), h / 2, the same blocks
 print(fast.meta["provenance"]["diffusivity_scaled"]["a"])        # 2.0, with walked and replayed values beside it
 try:
     pack.at_diffusivity(1e-9)                                     # a < 1 stretches the grid: refused
@@ -111,7 +111,7 @@ D / L^2  >=  D0 / L0^2        and        D T / L^2  <=  D0 T0 / L0^2
 
 So one walk per shape, at the slowest `D / L^2` the study needs and over the longest `D T / L^2`, serves every size
 and every faster diffusivity, read with `pack.prefix` where it is longer than needed. It saves walks, not steps: the
-walk must be as long in saves as the smallest target's walk would be.
+walk must be as long in blocks as the smallest target's walk would be.
 
 ```python
 one_um_at_2e9 = pack.at_length_scale(0.5).at_diffusivity(2e-9)   # the 1 um cylinder at 2e-9, over 2.5 ms

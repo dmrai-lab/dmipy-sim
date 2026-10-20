@@ -27,7 +27,6 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
 from dmipy_sim.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of
 from dmipy_sim.spec.tissue import Tissue
-from dmipy_sim.spec.walk import fill_field
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
 
 D0 = 2.0e-9
@@ -54,15 +53,15 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
 def absent_walk():
     """An impermeable cylinder: nothing in it is magnetic."""
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
-    return d.simulate_trajectories(400, D0, g, 6e-3, 3e-4, seed=1, require_gpu=False)
+    return d.simulate_trajectories(400, D0, g, 6e-3, 3e-4, seed=1, require_gpu=False, raw_subset=400).saves()
 
 
 @pytest.fixture(scope="module")
 def present_walk():
     """One myelinated cylinder in a periodic cell, its field read along the walk: the myelin pool is magnetic."""
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    walk = d.simulate_trajectories(600, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
-    return fill_field(walk, field_grid_of(g, res=0.2e-6))
+    return d.simulate_trajectories(600, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6),
+                                   raw_subset=600).saves()
 
 
 @pytest.fixture(scope="module")
@@ -323,7 +322,8 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
     bare.save(tmp_path / "bare.rpk")
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         ReplayPack.load(tmp_path / "bare.rpk")
-    m = d.simulate_trajectories(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False)._bank_dict()
+    m = d.simulate_trajectories(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False,
+                                raw_subset=50).saves()._bank_dict()
     m.pop("substrate", None)
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         build_replay_pack(m, id="t", license="x", citation="x", K=4)
@@ -365,7 +365,7 @@ def _shell_union_spec(magnetic):
 
 def _walk_and_pack(spec, **kw):
     from dmipy_sim.spec import walk_spec
-    w = walk_spec(spec, 60, 6e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, **kw)
+    w = walk_spec(spec, 60, 6e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, K=4, **kw)
     return w, build_replay_pack(w, id="t/walk", license="x", citation="x", K=4)
 
 

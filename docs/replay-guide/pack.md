@@ -17,31 +17,38 @@ import numpy as np
 import dmipy_sim as d
 from dmipy_sim.replay.bank import build_replay_pack
 
-walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
-print(pack.n_walkers, pack.K, pack.n_t, pack.dt)                 # 300 walkers, 8 bands, the save grid
+walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
+pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")
+print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
+
+The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs, block by block (the
+band's own block, `omega_K h = 0.8` at the top band, `pack.block["h"]`), and returns a `CoefficientWalk` whose memory
+does not grow with the block count. The bands are the projections of each walker's bridge on `sqrt(2 / T) sin(pi k t /
+T)`, and the pack is certified without a raw walk: the truncation from the free band variances, the block quadrature
+(`rel(m, h)` times each channel's measured quadratic variation), the container's quantisation and the split-half floor
+read from the coefficients. `raw_subset=n` keeps the first `n` walkers' block ends beside the bands
+(`walk.saves()`), for a certificate measured on them (`fidelity="measured"`) or a picture of the paths.
 
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
-replay beyond the pack's band is refused; see [the sequence](sequence.md)). Left unstated, `K` is the scanner class's:
-`build_replay_pack(walk, scanner="prisma")` stores at the class's certified band times the storage margin (the band the
-paper measured for each class; a walk from `walk_spec` carries its class, so it packs with no argument), and a walk with
-no class and no `K` is refused rather than searched. The walk's length `T` is the longest echo time the pack can
+replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's `K` is the storage band by
+default (256 bands per 100 ms); `walk_spec` walks the scanner class's certified band times the storage margin, and
+`build_replay_pack(walk, scanner="prisma")` or `K=` stores a smaller band of a walk. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix.
 
-A pack stores its walk in **storage windows** of one duration, 100 ms by default (`build_replay_pack(window_T=)`), consecutive
-windows sharing their boundary save: a walk within one window is stored as one, a longer walk as a whole number of them,
-each encoded with the same `K` and certified on its own. Window 0's tensors sit under the channel names and window
+A walk is accumulated in **storage windows** of one duration, 100 ms by default (`simulate_trajectories(window_T=)`),
+consecutive windows sharing their boundary instant: a walk within one window is one, a longer walk a whole number of
+them, each with its own bands at the same `K`, stored and certified on its own. Window 0's tensors sit under the channel names and window
 `i` under `s{i}/`, so `pack.window(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without
 re-encoding, and an acquisition reads only the windows it reaches; a replay across windows is the sum of their
 contractions. `pack.windows` is the table. A walk is continued rather than re-walked: `pack.extend(0.1, seed=17)`
 resumes every walker from the last window's exact endpoint in the pool it is in, walks one more window on the
 pack's own substrate with the fresh seed, and appends it with its own certificate (`pack.end_state()` is where the
 walkers are; `replay.continuation` holds the two steps). A pack written as one long window is stored in shorter ones
-by `pack.rewindow(0.1, out_path=...)`: every window is the parent's channels decoded on its saves and re-encoded at
-the parent's bands per second, certified against them, and a trailing remainder of at most `max_dropped_fraction`
-of the saves that no whole window covers is dropped and recorded (`provenance.rewindowed`).
+by `pack.rewindow(0.1, out_path=...)`: every window is the parent's channels decoded at its block ends and re-encoded
+at the parent's bands per second, certified against them, and a trailing remainder of at most `max_dropped_fraction`
+of the blocks that no whole window covers is dropped and recorded (`provenance.rewindowed`).
 
 ## What it holds
 
@@ -104,6 +111,10 @@ from dmipy_sim.replay import ReplayPack
 same = ReplayPack.load(os.path.join(tmp, "cylinder.rpk"))
 assert same.n_walkers == pack.n_walkers
 ```
+
+A pack whose header carries a save grid (`n_t` / `dt_traj`), a declared `compression.basis` or a
+`walk_params.cell_size` predates the continuous basis and is refused by name on load (RPK.md 9.5.1): its bands are
+another basis's numbers, so its substrate is walked again; a pack is never converted.
 
 `ReplayPack.load` reads one `.rpk` file whole, from a local path or from a hub (`hf://owner/name/path.rpk`, checked
 against the dataset's manifest; see [publishing](README.md#publishing-a-pack)). `ReplayPack.open(uri)` opens the columnar layout of a large pack

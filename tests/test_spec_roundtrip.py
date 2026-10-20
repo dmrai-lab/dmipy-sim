@@ -61,7 +61,7 @@ def test_spec_round_trip_rebuilds_the_same_geometry(name):
         return                                             # no producer walk for these (fused kernels only)
     w1 = d.simulate_trajectories(48, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
     w2 = d.simulate_trajectories(48, D, g2, 4e-4, 2e-4, seed=1, require_gpu=False)
-    np.testing.assert_array_equal(w1.positions, w2.positions)
+    np.testing.assert_array_equal(w1.position_coeffs, w2.position_coeffs)
 
 
 def test_the_spec_says_what_the_constructor_left_unsaid():

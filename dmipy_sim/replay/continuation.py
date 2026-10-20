@@ -2,7 +2,7 @@
 window's exact endpoint in the pool it is in, walked for more whole windows on the pack's own substrate with a fresh
 seed, and the new windows appended to the pack under the next ``s{i}/`` keys with their own certificates.
 
-    r_end, pool = end_state(pack)                       # where every walker is at the last save, and its pool
+    r_end, pool = end_state(pack)                       # where every walker is at the walk's end, and its pool
     walk = continue_walk(pack, 0.1, seed=17)            # one more window, in the pack's walker order
     longer = append_windows(pack, walk, seed=17)       # the pack of both, certified as the bound over its windows
     longer = extend_pack(pack, 0.1, seed=17)            # the two in one call
@@ -17,9 +17,9 @@ from .replay import ReplayPack, write_rpk
 
 
 def end_state(pack):
-    """``(r_end (n_w, 3), pool (n_w,) or None)``: where every walker is at the walk's last save, read from the last
-    window's exact endpoints (the position codec holds both ends of a window), and the pool it is in there, its
-    last occupancy label when the pack carries the compartment channel."""
+    """``(r_end (n_w, 3), pool (n_w,) or None)``: where every walker is at the walk's end, read from the last window's
+    exact endpoints (the bands hold both ends of a window exactly), and the pool it is in there, its last occupancy
+    label when the pack carries the compartment channel."""
     from .compression import read_position_coeffs, decode_occupancy
     seg = pack.window(pack.n_windows - 1)
     C = read_position_coeffs(seg.arrays, dtype=np.float64)
@@ -37,7 +37,8 @@ def end_state(pack):
 
 def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, walker_batch_size=50_000):
     """The walk of ``pack`` continued for ``T_add`` seconds on its own substrate: every walker resumed from the last
-    window's endpoint in the pool it is in, a fresh ``seed``, the pack's save grid and the channels it carries.
+    window's endpoint in the pool it is in, a fresh ``seed``, the pack's block, band and window and the channels it
+    carries.
     ``T_add`` is a whole number of the pack's windows. A single-geometry spec walks as one; a multi-surface spec
     walks pool by pool, and the walk is returned in the pack's walker order either way, so that walker ``w`` of the
     continuation is walker ``w`` of the pack.
@@ -69,7 +70,8 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
             raise ValueError("the pack records no diffusivity to continue the walk at")
         fb = _single_geometry_field_grid(spec, g, None, None) if field_source_kind(spec) == "grid" else None
         w = simulate_trajectories(n_w, float(D), g, T_max=float(T_add), dt_save=dt, seed=int(seed), r0=r_end.astype(np.float32),
-                                  require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb)
+                                  require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
+                                  K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg)
         walk = dataclasses.replace(w, geometry=g, spec=spec) if w.spec is None else w
         return walk
     if pool is None:
@@ -86,8 +88,11 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     if field_source_kind(spec) == "strands":
         adaptive_steps = True
     w = walk_spec(spec, T_max=float(T_add), dt_save=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
-                  walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers)
+                  walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers,
+                  **({} if adaptive_steps else dict(K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg)))
     inv = np.empty_like(order); inv[order] = np.arange(order.size)                     # back to the pack's order
+    if hasattr(w, "take"):
+        return w.take(inv)
     fields = {k: (None if getattr(w, k) is None else np.asarray(getattr(w, k))[inv]) for k in w._FILE_ARRAYS}
     return dataclasses.replace(w, **fields)
 
@@ -105,23 +110,28 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
     windows stored under the next ``s{i}/`` keys, the table's ``walks`` gaining the continuation with its ``seed``,
     and the whole's certificate the bound over every window (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`)."""
     from .bank import path_codec_of, build_replay_pack, combine_window_fidelity, _is_shared_key, _precision_tiers, _MEASURED_CHANNEL_KEYS
+    from ..coefficient_walk import CoefficientWalk
+    accumulated = isinstance(walk, CoefficientWalk)
     seg = pack.windows
     cm = pack.meta["compression"]; ch = cm.get("channels") or {}
     if int(walk.n_walkers) != int(pack.n_walkers):
         raise ValueError(f"the continuation walks {walk.n_walkers} walkers, the pack {pack.n_walkers}")
     r_end, _ = end_state(pack)
-    if not np.allclose(np.asarray(walk.positions[:, 0, :], np.float64), r_end, atol=1e-9 * max(1.0, float(np.abs(r_end).max()))):
-        raise ValueError("the continuation does not start where the pack's walk ended (its first save is not the pack's last)")
-    if abs(float(walk.dt) - float(pack.dt)) > 1e-9 * float(pack.dt):
-        raise ValueError(f"the continuation's save interval {float(walk.dt):.6g} s is not the pack's {float(pack.dt):.6g} s")
+    start = np.asarray(walk.position_coeffs[:, 0, 0, :] if accumulated else walk.positions[:, 0, :], np.float64)
+    if not np.allclose(start, r_end, atol=1e-9 * max(1.0, float(np.abs(r_end).max()))):
+        raise ValueError("the continuation does not start where the pack's walk ended")
+    h = float(walk.h if accumulated else walk.dt)
+    if abs(h - float(pack.dt)) > 1e-9 * float(pack.dt):
+        raise ValueError(f"the continuation's block {h:.6g} s is not the pack's {float(pack.dt):.6g} s")
     c2 = ch.get("boundary_local_time") or {}
     pm = ch.get("susceptibility_path") or {}
-    kw = dict(K=int(pack.K), window_T=float(seg["T"]), method=cm.get("method"), envelope=envelope, device=device,
+    kw = dict(K=int(pack.K), window_T=float(seg["T"]), envelope=envelope, device=device,
               weights=np.asarray(pack.spin_weights, np.float64), license=pack.license, citation=pack.citation,
               position_container=(None if cm.get("container") is None else _container_of(cm["container"])),
-              blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float16 if c2.get("dtype", "float16") == "float16" else np.float32),
-              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=((path_codec_of(pm) or 8) if pm else 8),
-              _occupancy_runs=("comp_rle_counts" in pack.arrays), _window_of_plan=True)
+              blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float32 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])),
+              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=((path_codec_of(pm) or 8) if pm else 8))
+    if not accumulated:
+        kw.update(method=cm.get("method"), _occupancy_runs=("comp_rle_counts" in pack.arrays), _window_of_plan=True)
     kw["blt_container"] = _container_of(c2["container"]) if c2.get("dtype") == "bands" else None      # the parent's, float or banded
     new = build_replay_pack(walk, id=f"{pack.id}", **kw)
     if sorted(k for k in new.window(0).arrays) != sorted(k for k in pack.window(0).arrays):
@@ -137,12 +147,12 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
                 continue
             arrays[f"s{S0 + i}/{k}"] = v
     meta = json.loads(json.dumps(pack.meta))
-    n_seg = int(seg["n_t"])
     fid_old = pack.meta.get("fidelity") or {}
     per = list(fid_old.get("windows") or [dict((k, v) for k, v in fid_old.items() if k != "windows")])
     per_new = list((new.meta.get("fidelity") or {}).get("windows") or [dict((k, v) for k, v in new.meta["fidelity"].items() if k != "windows")])
     meta["fidelity"] = combine_window_fidelity(per + per_new)
-    meta["walk_params"].update(n_t=(S0 + S1) * (n_seg - 1) + 1, T_max=(S0 + S1) * float(seg["T"]),
+    meta["walk_params"]["block"]["n_blocks"] = int(pack.block["n_blocks"]) + int(new.block["n_blocks"])
+    meta["walk_params"].update(T_max=(S0 + S1) * float(seg["T"]),
                                windows=dict(seg, n=S0 + S1, walks=list(seg.get("walks") or []) + [dict(first=S0, last=S0 + S1 - 1, seed=int(seed))]))
     chans = meta["compression"].get("channels") or {}
     for c, mm in chans.items():

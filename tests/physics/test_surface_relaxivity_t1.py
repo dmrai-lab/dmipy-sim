@@ -39,7 +39,7 @@ ENV = dict(bvals=[0.0], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9,
 
 @pytest.fixture(scope="module")
 def sphere_pack():
-    walk = d.simulate_trajectories(N_WALKERS, D0, d.Sphere(R), T_MAX, DT_SAVE, seed=SEED, require_gpu=False)
+    walk = d.simulate_trajectories(N_WALKERS, D0, d.Sphere(R), T_MAX, DT_SAVE, seed=SEED, require_gpu=False, K=128)
     return build_replay_pack(walk, id="test/sphere-rho1", K=128, envelope=ENV, license="x", citation="x")
 
 
@@ -199,7 +199,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=23 + b, require_gpu=False,
+        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=23 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))

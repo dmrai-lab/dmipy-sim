@@ -36,7 +36,7 @@ def test_fused_engine_and_producer_walk_a_spec_as_the_geometry():
     np.testing.assert_array_equal(d.simulate(geometry=spec, **kw), d.simulate(geometry=g, **kw))
     w_s = d.simulate_trajectories(60, D0, spec, 1e-3, 2.5e-4, seed=1, require_gpu=False)
     w_g = d.simulate_trajectories(60, D0, g, 1e-3, 2.5e-4, seed=1, require_gpu=False)
-    np.testing.assert_array_equal(w_s.positions, w_g.positions)
+    np.testing.assert_array_equal(w_s.position_coeffs, w_g.position_coeffs)
     assert w_s.spec == spec and w_s.geometry.spec == spec
 
 

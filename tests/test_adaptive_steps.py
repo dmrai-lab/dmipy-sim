@@ -17,7 +17,7 @@ def _pack(interior):
 
 def test_the_finest_class_alone_is_the_fused_walk():
     g = _pack(False)
-    fixed = d.simulate_trajectories(300, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, sub_steps=64)
+    fixed = d.simulate_trajectories(300, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, sub_steps=64, raw_subset=300).saves()
     adaptive = simulate_trajectories_adaptive(300, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, sub_steps=64,
                                               steps_per_round=64, n_classes=1, safety_sigma=1e9, walker_batch_size=300)
     assert adaptive.sub_steps == fixed.sub_steps == 64
@@ -33,7 +33,7 @@ def test_the_guarantees_and_the_statistics(interior):
     g = _pack(interior)
     n = 6000
     a = simulate_trajectories_adaptive(n, D, g, 2e-3, 2.5e-4, seed=1, require_gpu=False, walker_batch_size=n)
-    f = d.simulate_trajectories(n, D, g, 2e-3, 2.5e-4, seed=2, require_gpu=False)
+    f = d.simulate_trajectories(n, D, g, 2e-3, 2.5e-4, seed=2, require_gpu=False, raw_subset=n).saves()
     P = a.positions.reshape(-1, 3)
     if interior:
         assert g.inside_any(P).all()                                   # never left its tube

@@ -106,7 +106,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
     _, origin, final = d.simulate(300, None, wf, pm, seed=0, return_compartments="final",
                                   require_gpu=False)
     out = d.simulate_trajectories(300, 2e-9, pm, T_max=6e-3, dt_save=2e-3, seed=0, require_gpu=False)
-    comp0 = np.asarray(out.compartment)[:, 0]
+    comp0 = np.asarray(out.compartment)                                 # one label per walker: nobody crosses
     assert set(np.unique(origin)) <= {EXTRA, INTRA, MYELIN}
     assert (np.asarray(origin) == comp0).all()
     assert (comp0 == MYELIN).mean() > 0.05 and (comp0 == INTRA).mean() > 0.05
@@ -120,7 +120,8 @@ def test_comp_traj_is_the_geometrys_own_label(name):
     g = _geometries()[name]
     r0 = g.init_positions(128, jax.random.PRNGKey(3))
     out = d.simulate_trajectories(128, D, g, T_max=2e-4, dt_save=1e-4, seed=3, r0=r0, require_gpu=False)
-    comp = np.asarray(out.compartment)[:, 0]                          # over the first save interval
+    comp = np.asarray(out.compartment)
+    comp = comp[:, 1] if comp.ndim == 2 else comp                      # over the first block, or the label
     want = np.minimum(np.asarray(g.classify_positions_exact(r0)), 1)
     if g.permeability is not None:
         # a permeable wall may be crossed within the interval

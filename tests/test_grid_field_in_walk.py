@@ -1,7 +1,7 @@
 """A gridded susceptibility field (:class:`FieldGrid`: a mesh sheath, a myelinated cylinder, a packed cell) is sampled
 BY THE WALK: :func:`simulate_trajectories` with ``field_basis=`` reads the grid's channels at every sub-step position
-inside the step and keeps their mean over each save interval (sample 0 the start position's), on the field's own
-save grid (``field_sample_every``), as the strand route does with ``adaptive_steps=True``. ``walk_spec`` samples
+inside the step and keeps their mean over each block (sample 0 the start position's), on the field's own grid of
+blocks (``field_sample_every``), as the strand route does with ``adaptive_steps=True``. ``walk_spec`` samples
 every gridded source this way, and the pack's path channel is encoded from those samples and certified against
 them."""
 import dataclasses
@@ -59,19 +59,20 @@ CASES = {
 
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_the_in_walk_sample_is_the_interval_mean_of_the_grid_at_the_sub_steps(case):
-    """(a) The walk at ``N_SUB`` sub-steps per save, sampling in the walk, against the same walk saved at every
-    sub-step and the grid read afterwards: the positions are the same walk (to float32 rounding: the two are
-    different programs, and XLA may round a fused step differently), and every sample is the mean of the grid over
-    its interval's sub-step positions, to float32 rounding (the device reads in float32 at the position the step
-    kernel holds -- the in-cell one of a packed cell, whose grid is periodic)."""
+    """(a) The walk in blocks of ``N_SUB`` sub-steps, sampling in the walk, against the same walk kept at every
+    sub-step (its raw subset, every walker) and the grid read afterwards: the positions are the same walk (to float32
+    rounding: the two are different programs, and XLA may round a fused step differently), and every sample is the
+    mean of the grid over its block's sub-step positions, to float32 rounding (the device reads in float32 at the
+    position the step kernel holds -- the in-cell one of a packed cell, whose grid is periodic)."""
     geom, fg, tiers = CASES[case]()
     T, dt = 2e-3, 2e-4
     w = d.simulate_trajectories(120, D0, geom, T, dt, seed=4, sub_steps=N_SUB, tiers=tiers, require_gpu=False,
-                                field_basis=fg)
-    fine = d.simulate_trajectories(120, D0, geom, T, dt / N_SUB, seed=4, sub_steps=1, tiers=tiers, require_gpu=False)
-    np.testing.assert_allclose(w.positions, fine.positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
+                                field_basis=fg, raw_subset=120)
+    fine = d.simulate_trajectories(120, D0, geom, T, dt / N_SUB, seed=4, sub_steps=1, tiers=tiers, require_gpu=False,
+                                   raw_subset=120).saves()
+    np.testing.assert_allclose(w.raw_positions, fine.positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
     assert w.field_basis is fg and w.field_sample_every == 1
-    assert w.field_samples.shape == (120, w.n_t, 7 if fg.basis.get("aniso_G") is None else 13)
+    assert w.field_samples.shape == (120, w.n_blocks + 1, 7 if fg.basis.get("aniso_G") is None else 13)
     ref = _interval_means(fg, fine.positions, N_SUB)
     scale = np.abs(ref).max()
     # measured: 4.9e-7 (sphere, clamped dipole grid) and 6.4e-6 (packed cell, read in-cell on the device against the
@@ -80,17 +81,19 @@ def test_the_in_walk_sample_is_the_interval_mean_of_the_grid_at_the_sub_steps(ca
 
 
 def test_field_sample_every_reads_every_that_many_th_interval_only():
-    """(b) ``field_sample_every=2`` is the strand route's rule: the samples are the every-save walk's at saves 0, 2,
-    4, ... -- each the mean over ITS save interval -- ``ceil(n_t / 2)`` of them; the walk itself is unchanged,
-    and an odd number of intervals leaves the last one unread."""
+    """(b) ``field_sample_every=2`` is the strand route's rule: the samples are the every-block walk's at block ends
+    0, 2, 4, ... -- each the mean over ITS block -- ``ceil(n / 2)`` of the ``n`` block ends; the walk itself is
+    unchanged, and an odd number of blocks leaves the last one unread."""
     geom, fg = _packed(), field_grid_of(_packed(), res=0.1 * UM)
-    kw = dict(seed=5, sub_steps=N_SUB, require_gpu=False, field_basis=fg)
+    kw = dict(seed=5, sub_steps=N_SUB, require_gpu=False, field_basis=fg, raw_subset=80)
     w1 = d.simulate_trajectories(80, D0, geom, 1.8e-3, 2e-4, **kw)
     w2 = d.simulate_trajectories(80, D0, geom, 1.8e-3, 2e-4, field_sample_every=2, **kw)
-    assert w1.n_t == 10 and w2.field_sample_every == 2 and w2.field_samples.shape[1] == 5
-    np.testing.assert_array_equal(w2.positions, w1.positions)
-    np.testing.assert_array_equal(w2.boundary_local_time, w1.boundary_local_time)
-    np.testing.assert_array_equal(w2.field_samples, w1.field_samples[:, ::2])
+    assert w1.n_blocks == 9 and w2.field_sample_every == 2 and w2.field_samples.shape[1] == 5
+    # the same walk, two programs (a read every other block is a branch): float32 rounding, 3.6e-12 m measured
+    np.testing.assert_allclose(w2.raw_positions, w1.raw_positions, rtol=0, atol=1e-11)
+    np.testing.assert_allclose(w2.position_coeffs, w1.position_coeffs, rtol=0, atol=1e-11)
+    np.testing.assert_allclose(w2.boundary_bands, w1.boundary_bands, rtol=1e-4, atol=1e-12)
+    np.testing.assert_allclose(w2.field_samples, w1.field_samples[:, ::2], rtol=1e-4, atol=1e-6 * np.abs(w1.field_samples).max())
     with pytest.raises(ValueError, match="goes with field_basis"):
         d.simulate_trajectories(8, D0, geom, 1.8e-3, 2e-4, seed=5, require_gpu=False, field_sample_every=2)
 
@@ -111,9 +114,9 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
     within twice its floor."""
     geom = _packed() if family == "packed" else d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
     w = walk_spec(geom.spec, 600, 5e-3, seed=2, require_gpu=False)
-    assert isinstance(w.field_basis, FieldGrid) and w.field_samples is not None and w.field_fill is None
+    assert isinstance(w.field_basis, FieldGrid) and w.field_samples is not None
     assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
-    assert w.field_samples.shape == (600, w.n_t, 13)
+    assert w.field_samples.shape == (600, w.n_blocks + 1, 13)
     pk = build_replay_pack(w, id=f"test/{family}-in-walk", license="x", citation="x", envelope=ENV)
     ch = pk.meta["compression"]["channels"]
     assert pk.has_field and ch["susceptibility_path"]["sampling"] == "interval_mean_in_walk"
@@ -126,15 +129,16 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
 
 def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_seat(tmp_path):
     """The pool-by-pool walk of a meshed sheath samples the raster in every diffusing pool's walk; the frozen myelin
-    pool's samples are the channels at its seat, at every save."""
+    pool's samples are the channels at its seat, at every block end."""
     pytest.importorskip("trimesh")
     from tests.test_mesh_spec import _bundle_spec
-    w = walk_spec(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False)
-    assert isinstance(w.field_basis, FieldGrid) and w.field_samples.shape == (120, w.n_t, 13)
-    ids = np.asarray(w.compartment)[:, 0]
+    w = walk_spec(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
+    n = w.n_blocks + 1
+    assert isinstance(w.field_basis, FieldGrid) and w.field_samples.shape == (120, n, 13)
+    ids = np.asarray(w.compartment)
     frozen = w.field_samples[ids == 2]
-    np.testing.assert_array_equal(frozen, np.repeat(frozen[:, :1], w.n_t, axis=1))
-    seat = np.asarray(w.field_basis.channels_at_device()(np.asarray(w.positions[ids == 2, 0], np.float32)))
+    np.testing.assert_array_equal(frozen, np.repeat(frozen[:, :1], n, axis=1))
+    seat = np.asarray(w.field_basis.channels_at_device()(np.asarray(w.position_coeffs[ids == 2, 0, 0], np.float32)))
     np.testing.assert_array_equal(frozen[:, 0], seat)
     assert not np.allclose(w.field_samples[ids != 2][:, 1:], w.field_samples[ids != 2][:, :1])   # the walkers move
     pk = build_replay_pack(w, id="test/bundle-in-walk", license="x", citation="x", K=8, envelope=ENV)
@@ -143,7 +147,7 @@ def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_
 
 def test_a_spec_without_a_source_carries_no_field():
     """(d) Unchanged: no source, no basis, no samples, no tier."""
-    w = walk_spec(spec_without_source(_packed().spec), 100, 2e-3, seed=2, require_gpu=False)
+    w = walk_spec(spec_without_source(_packed().spec), 100, 2e-3, seed=2, require_gpu=False, K=8)
     assert w.field_basis is None and w.field_samples is None
     pk = build_replay_pack(w, id="test/no-source", license="x", citation="x", K=8, envelope=ENV)
     assert not pk.has_field

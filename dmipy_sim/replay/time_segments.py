@@ -83,8 +83,7 @@ BACKGROUND_AMPLITUDE = 5e-3
 
 
 def read_manifest(path):
-    """The manifest of the layout in the directory ``path``; a manifest of another format is refused by name, and one
-    written as ``shape_moments/3`` names :func:`restamp_layout`, which rewrites it."""
+    """The manifest of the layout in the directory ``path``; a manifest of another format is refused by name."""
     with open(os.path.join(path, MANIFEST)) as f:
         manifest = json.load(f)
     _check_format(manifest, path)
@@ -92,38 +91,9 @@ def read_manifest(path):
 
 
 def _check_format(manifest, where):
-    if manifest.get("format") == RESTAMPABLE_FORMAT:
-        raise ValueError(f"{where} is a {RESTAMPABLE_FORMAT} layout: restamp_layout(path) rewrites its manifest as {FORMAT}")
     if manifest.get("format") != FORMAT:
-        raise ValueError(f"{where} is not a {FORMAT} layout ({manifest.get('format')!r})")
-
-
-#: the layout's format before dmipy-sim#738: the same columns, each shape's packed vector recorded under ``moment``
-RESTAMPABLE_FORMAT = "shape_moments/3"
-
-
-def restamp_layout(path):
-    """Rewrite, in place, the manifest of a ``shape_moments/3`` layout as ``time_segments/1``: the format string and
-    each shape's ``moment`` record as its ``vector``, nothing else (the columns are the same bytes). A layout already
-    in this format is returned unchanged; any other format is refused. The rewrite is recorded under ``restamped``
-    with the code that made it. Returns the manifest."""
-    with open(os.path.join(path, MANIFEST)) as f:
-        manifest = json.load(f)
-    if manifest.get("format") == FORMAT:
-        return manifest
-    if manifest.get("format") != RESTAMPABLE_FORMAT:
-        raise ValueError(f"{path} is a {manifest.get('format')!r} layout; restamp_layout rewrites {RESTAMPABLE_FORMAT} only")
-    manifest = dict(manifest, format=FORMAT,
-                    shapes={n: {("vector" if k == "moment" else k): v for k, v in rec.items()}
-                            for n, rec in manifest["shapes"].items()},
-                    restamped=list(manifest.get("restamped") or []) + [dict(
-                        from_format=RESTAMPABLE_FORMAT, to_format=FORMAT, code=_code(),
-                        created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))])
-    tmp = os.path.join(path, MANIFEST + ".restamp")
-    with open(tmp, "w") as f:
-        json.dump(manifest, f, indent=1)
-    os.replace(tmp, os.path.join(path, MANIFEST))
-    return manifest
+        raise ValueError(f"{where} is not a {FORMAT} layout ({manifest.get('format')!r}); a layout of another format is "
+                         "rebuilt from its packs (write_time_segment_layout)")
 
 
 def vector_width(floor_target, q_max, *, budget=None, kappa=None):

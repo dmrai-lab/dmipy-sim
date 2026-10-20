@@ -50,7 +50,7 @@ def _walk(g, **kw):
 
 def test_jax_is_the_default_and_the_same_walk_by_name():
     a, b = _walk(d.Sphere(R)), _walk(d.Sphere(R), backend="jax")
-    np.testing.assert_array_equal(a.positions, b.positions)
+    np.testing.assert_array_equal(a.position_coeffs, b.position_coeffs)
     assert a.work["backend"] == b.work["backend"] == "jax"
 
 
@@ -61,30 +61,20 @@ def test_an_unknown_backend_is_refused_naming_what_is_installed():
         _walk(d.Sphere(R), backend=object())
 
 
-def test_a_backend_object_takes_the_dispatch_and_signs_the_record():
-    g = d.Sphere(R); g.count_walls = True
-    still = _Still()
-    w = _walk(g, backend=still, bounce_budget=5)
-    assert (w.positions == w.positions[:, :1]).all()                 # nobody moved: the stub walked
-    assert w.work["backend"] == "still" and w.work["n_hits"] == 0 and w.work["exhausted_steps"] == 0
-    assert w.work["bounce_budget"] == 5
-    req = still.requests[0]
-    assert isinstance(req, backends.WalkRequest)
-    assert req.geometry is g and req.record and req.count_walls and req.bounce_budget == 5
-    assert req.sub_steps == w.sub_steps and req.n_t == w.positions.shape[1] and req.kappa_over_D == 0.0
-    assert w.has_surface and w.compartment is not None
-
-
-def test_a_backend_may_refuse_and_the_producer_never_falls_back():
-    with pytest.raises(ValueError, match="backend 'still' refuses this walk of Sphere: no spheres here"):
-        _walk(d.Sphere(R), backend=_Still(refuse="no spheres here"))
+def test_a_backend_object_is_refused_until_it_accumulates_and_never_fallen_back_from():
+    """The band accumulation is the JAX kernels' alone (dmipy-sim-cuda#73): a backend object, one that would walk and
+    one that would refuse, is refused by name before it is handed a request."""
+    for be in (_Still(), _Still(refuse="no spheres here")):
+        with pytest.raises(ValueError, match="band accumulation.*only the jax kernels implement"):
+            _walk(d.Sphere(R), backend=be)
+        assert not be.requests
 
 
 def test_the_jax_only_paths_are_refused_for_another_backend():
     from dmipy_sim.geometry.myelin import MyelinatedCylinder
     g = MyelinatedCylinder(inner_radius=R, outer_radius=1.4 * R, orientation=[0, 0, 1], D_intra=D, D_extra=D,
                            D_myelin=0.1e-9, water_fractions=(1.0, 0.0, 0.0))
-    with pytest.raises(ValueError, match="the myelinated substrates, which only the jax kernels implement"):
+    with pytest.raises(ValueError, match="the myelinated substrates.*which only the jax kernels implement"):
         _walk(g, backend=_Still())
     with pytest.raises(ValueError, match="the compartment guard"):
         _walk(d.Sphere(R), backend=_Still(), enforce_compartment=True)
@@ -93,8 +83,8 @@ def test_the_jax_only_paths_are_refused_for_another_backend():
 def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
     from dmipy_sim.spec import walk_spec, SpecError
     g = d.Sphere(R)
-    w = walk_spec(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still())
-    assert w.work["backend"] == "still"
+    with pytest.raises(ValueError, match="band accumulation"):
+        walk_spec(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still())
     # the adaptive producer takes the backend too (#651): the sphere is refused for not being a bundle, by the spec,
     # not for the backend
     with pytest.raises(SpecError, match="adaptive stepping is for a bundle"):

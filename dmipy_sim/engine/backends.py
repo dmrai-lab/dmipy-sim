@@ -268,7 +268,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
             sd = seed if case.seed is None else case.seed
             try:
                 w = simulate_trajectories(nw, 2e-9, g, Tm, ds, seed=sd, tiers="all", walker_batch_size=nw,
-                                          r0=case.starts(nw, sd), backend=backend)
+                                          r0=case.starts(nw, sd), backend=backend, raw_subset=nw).saves()
             except ValueError as e:
                 if "refuses" in str(e) or "does not" in str(e):
                     out.append(dict(case=name, ok=None, refused=str(e))); continue
@@ -276,11 +276,12 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, dt_save=0.
             checks = void_invariant(g, w)
             out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
             continue
-        ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers)
+        ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers,
+                                    raw_subset=n_walkers).saves()
         g2 = case(); g2.count_walls = True
         try:
             w = simulate_trajectories(n_walkers, 2e-9, g2, T_max, dt_save, seed=seed, tiers="all", walker_batch_size=n_walkers,
-                                      r0=np.asarray(ref.positions[:, 0]), backend=backend)
+                                      r0=np.asarray(ref.positions[:, 0]), backend=backend, raw_subset=n_walkers).saves()
         except ValueError as e:
             if "refuses" in str(e) or "does not" in str(e):
                 out.append(dict(case=name, ok=None, refused=str(e))); continue

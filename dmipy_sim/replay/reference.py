@@ -1046,7 +1046,7 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
                 pack_path=pack_path,
                 pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
-                n_t=int(wp["n_t"]), dt_s=float(wp["dt_traj"]),
+                n_t=int(round(float(wp["T_max"]) / float(wp["block"]["h"]))) + 1, dt_s=float(wp["block"]["h"]),
                 sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
                 illegal_crossings=(None if recorded.illegal_crossings is None
                                    else int(recorded.illegal_crossings)),

@@ -260,12 +260,15 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     # for dropping a third of the free pack's phase, #277, and the delivered b it read was 17 % low within the
     # tolerance below)
     mk = lambda diff: _float_pack(
-        d.simulate_trajectories(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False),
+        d.simulate_trajectories(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False, K=16, window_T=0.40),
         id="test/b", license="x", citation="x", K=16)
     static, free = mk(1e-14), mk(D)
 
-    for pk in (static, free):                                            # a b read off an uncertified pack is the codec's
-        assert pk.fidelity["within_2x_floor"], pk.fidelity
+    # a b read off an uncertified pack is the codec's: the static pack is certified outright; the free one carries
+    # the walk-free certificate, whose truncation term (0.07 here) bounds the envelope's whole battery at 20 Hz, not
+    # this train, which the band check admits below
+    assert static.fidelity["within_2x_floor"], static.fidelity
+    assert free.fidelity["measured_by"] == "walk_free_terms" and free.fidelity["terms"]["quadrature"]["positions"] < 1e-6
 
     def delivered(beta, bval):
         s = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[bval], TE_prep=PREP,

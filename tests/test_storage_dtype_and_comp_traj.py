@@ -35,32 +35,12 @@ def _small_pack(R_um=0.5, n=8, seed=0, permeability=None):
 
 # ---------------------------------------------------------------- storage dtype
 
-def test_positions_default_to_float32():
-    """f32 is the default: the walk is f32, the pack is f32, and the spec permits only
-    float32/float64 for `positions`."""
+def test_the_kept_positions_are_float32():
+    """A walk's kept block ends (its raw subset) are float32: in metres float16 is subnormal (below)."""
     geom = Cylinder(radius=2 * UM, orientation=(0., 0., 1.))
-    tr = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom,
-                                   T_max=2e-3, dt_save=5e-4, seed=0, require_gpu=False).positions
-    assert tr.dtype == np.float32
-
-
-def test_float16_is_available_as_an_explicit_opt_in():
-    geom = Cylinder(radius=2 * UM, orientation=(0., 0., 1.))
-    kw = dict(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3,
-              dt_save=5e-4, seed=0, require_gpu=False)
-    t16 = simulate_trajectories(storage_dtype=np.float16, **kw).positions
-    t32 = simulate_trajectories(storage_dtype=np.float32, **kw).positions
-    assert t16.dtype == np.float16 and t32.dtype == np.float32
-    assert t16.nbytes * 2 == t32.nbytes                      # the point of the opt-in
-    # same walk, so they agree to the f16 quantum and no further
-    assert np.abs(t16.astype(np.float64) - t32).max() < 1e-7
-
-
-def test_storage_dtype_rejects_a_non_float():
-    with pytest.raises(ValueError, match="float16/32/64"):
-        simulate_trajectories(n_walkers=8, diffusivity=D, geometry=Cylinder(radius=2 * UM, orientation=(0., 0., 1.)),
-                              T_max=1e-3, dt_save=5e-4, require_gpu=False,
-                              storage_dtype=np.int16)
+    w = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3, dt_save=5e-4, seed=0,
+                              require_gpu=False, raw_subset=64)
+    assert w.raw_positions.dtype == np.float32 and w.position_coeffs.dtype == np.float32
 
 
 def test_f16_in_metres_is_subnormal_and_ejects_confined_walkers_one_way():
@@ -119,8 +99,8 @@ def test_impermeable_pack_confines_intra_walkers_and_comp_traj_says_so():
     geom = _small_pack(permeability=None)
     out = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3,
                                 dt_save=1e-3, seed=0, require_gpu=False,
-                                r0=_intra_r0(geom, 64))
-    comp = np.asarray(out.compartment)
+                                r0=_intra_r0(geom, 64), raw_subset=64)
+    comp = np.asarray(out.raw_compartment)
     assert (comp != 0).all(), (
         f"{int((comp == 0).sum())}/{comp.size} intra-seeded samples read as extra-axonal: "
         f"an impermeable wall let walkers out")
@@ -138,7 +118,7 @@ def test_permeable_pack_reports_a_real_compartment_history():
     out = simulate_trajectories(n_walkers=256, diffusivity=D, geometry=geom, T_max=2e-3,
                                 dt_save=1e-3, seed=0, require_gpu=False,
                                 r0=_mixed_r0(geom, 128, 128))
-    comp = out.compartment
+    comp = out.compartment                                                 # the per-block track: walkers can cross
     assert comp.max() > 0.0, "comp_traj is still constant zero for a permeable pack"
     assert comp.min() >= 0.0 and comp.max() <= 1.0, "occupancy must lie in [0, 1]"
     # both pools present at t=0: seeded-intra label 1, seeded-extra label 0
@@ -155,8 +135,8 @@ def test_zero_permeability_conserves_compartments():
     n_intra = 256
     out = simulate_trajectories(n_walkers=512, diffusivity=D, geometry=geom, T_max=2e-3,
                                 dt_save=5e-4, seed=1, require_gpu=False,
-                                r0=_mixed_r0(geom, n_intra, 256, seed=1))
-    comp = out.compartment
+                                r0=_mixed_r0(geom, n_intra, 256, seed=1), raw_subset=512)
+    comp = out.raw_compartment
     intra = comp > 0.5
     per_save = intra.sum(0)
     assert per_save[0] == n_intra, f"expected {n_intra} intra at t=0, got {per_save[0]}"

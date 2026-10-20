@@ -210,7 +210,10 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
 
     if sub_steps:
         st_kwargs['sub_steps'] = sub_steps
-    walk = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt, **st_kwargs)
+    # the walk on the waveform's own grid, every walker kept at its block ends (the raw subset is the whole walk), the
+    # step resolved at that grid's Nyquist frequency as the fused engine resolves it; one band, which nothing reads
+    walk = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt, K=1, f_band=0.5 / dt, raw_subset=n_walkers,
+                                 window_T=T_max, **st_kwargs).saves()
     traj, dt_traj, dlog, comp = walk.positions, walk.dt, walk.boundary_local_time, walk.compartment
 
     relax_kw = dict(T2=T2, T1=T1)
@@ -878,60 +881,6 @@ class _GridRead:
         return grid_channels_at(*self.arrays, self.periodic, r)
 
 
-def _interval_scan(inner, init, length, read):
-    """``inner`` stepped ``length`` times from ``init``: ``(carry, mean)``, where ``mean`` is the mean of ``read``
-    at the position (``carry[0]``) after every step of the interval, or None without a ``read``."""
-    if read is None:
-        out, _ = jax.lax.scan(inner, init, None, length=length)
-        return out, None
-
-    def body(c, _):
-        c_in, acc = c
-        c_out, _ = inner(c_in, None)
-        return (c_out, acc + read(c_out[0])), None
-    (out, acc), _ = jax.lax.scan(body, (init, jnp.zeros(read.n_ch, jnp.float32)), None, length=length)
-    return out, acc / jnp.float32(length)
-
-
-def _save_scan(interval, carry, n_saves, read, every):
-    """The ``n_saves`` save intervals of one walker: ``interval(carry, read) -> (carry, ys, mean)`` walks one
-    (``mean`` the interval mean of ``read``, :func:`_interval_scan`). Returns ``(carry, ys, field)``: ``ys`` stacked
-    per save, and ``field`` the interval means of the saves ``every``, ``2 every``, ... (the field's own save grid;
-    only those intervals read the field, chosen per save by a condition no walker differs in, so a vmapped walk
-    runs the one branch and the walk itself is the same program whatever ``every`` is), None without a ``read``."""
-    def plain(c, _):
-        c, ys, _m = interval(c, None)
-        return c, ys
-    if read is None:
-        carry, ys = jax.lax.scan(plain, carry, None, length=n_saves)
-        return carry, ys, None
-
-    def save(c, t):
-        c, buf = c
-
-        def reading(cb):
-            c, buf = cb
-            c, ys, m = interval(c, read)
-            return (c, buf.at[t // every - 1].set(m)), ys
-
-        def not_reading(cb):
-            c, buf = cb
-            c, ys, _m = interval(c, None)
-            return (c, buf), ys
-        return jax.lax.cond(t % every == 0, reading, not_reading, (c, buf))
-    buf = jnp.zeros((n_saves // every, read.n_ch), jnp.float32)
-    (carry, field), ys = jax.lax.scan(save, (carry, buf), jnp.arange(1, n_saves + 1, dtype=jnp.int32))
-    return carry, ys, field
-
-
-def _field_series(read, r0, field):
-    """A walker's field samples: the channels at its start (sample 0), then the interval means; an empty row
-    without a ``read``, so the batch functions keep one output signature."""
-    if read is None:
-        return jnp.zeros((0,), jnp.float32)
-    return jnp.concatenate([read(r0)[None], field])
-
-
 class _Rows:
     """The rows of one walk channel, written into a single preallocated array as the walker batches arrive.
 
@@ -968,38 +917,59 @@ class WalkResolution(NamedTuple):
     """What a trajectory walk resolves from its request before it walks: the save grid, the sub-step count and the
     rules that gave it, and the :class:`~dmipy_sim.engine.backends.WalkRequest` a backend is handed."""
     record: bool              #: the surface / compartment channels are recorded beside the positions
-    n_t: int                  #: saves, save 0 the start
-    dt_actual: float          #: seconds between saves, ``T_max / (n_t - 1)``
+    n_t: int                  #: block ends over the walk, the start the first
+    dt_actual: float          #: the block length ``h`` (s)
     f_band: float             #: the band (Hz) the step law resolves
     rules: dict               #: the sub-step count each applicable rule asks for, by name
     override: object          #: the caller's pinned sub-step count, or None
-    sub_steps: int            #: physics steps per save interval
+    sub_steps: int            #: physics steps per block
     dt_sim: float             #: seconds per physics step
     step_rule: dict           #: ``PersistentWalk.work["step_rule"]`` without ``dt_p`` / ``sub_steps``
     binding: str              #: the rule that sized the step (``"override"`` for a pinned count)
     length_scales: object     #: the geometry's :class:`~dmipy_sim.geometry.base.LengthScales`
     request: object           #: the :class:`~dmipy_sim.engine.backends.WalkRequest` of this walk
     jax_only: list            #: what this walk uses that only the JAX kernels implement
+    K: int = None             #: the bands the walk accumulates per axis and channel, per window
+    block_order: int = 3      #: the order ``m`` of the block table
+    block_rule: str = None    #: how the block was set: ``"derived"`` (omega_K h = BLOCK_OMEGA_H) or ``"given"`` (``dt_save``)
+    n_windows: int = 1        #: the storage windows the walk accumulates separately
 
 
-def _resolve_walk(geometry, diffusivity, T_max, dt_save, *, tiers="all", sub_steps=None, kappa_MT=0.0, dwell_time=0.0,
-                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, compress=None):
-    """The resolution every trajectory walk shares: the save grid, the sub-step count (``physics.resolve_sub_steps``
-    over the rules ``physics.sub_step_rules``), the geometries this walk cannot represent (refused), and the
-    :class:`WalkResolution` a backend is handed. :func:`simulate_trajectories` walks what this returns and
-    :func:`walk_cost` reports it, so a cost and a walk state one count."""
+def _resolve_walk(geometry, diffusivity, T_max, dt_save=None, *, tiers="all", sub_steps=None, kappa_MT=0.0, dwell_time=0.0,
+                  f_band=None, seed=42, enforce_compartment=False, field_basis=None, K=None, block_order=None, window_T=None):
+    """The resolution every walk shares: its storage windows, its band ``K`` per window, its blocks (the band's own,
+    :func:`~dmipy_sim.engine.accumulate.block_length`, unless ``dt_save`` gives one), the sub-step count per block
+    (``physics.resolve_sub_steps`` over the rules ``physics.sub_step_rules`` at the band ``K / (2 T)``), the geometries
+    this walk cannot represent (refused), and the :class:`WalkResolution` a backend is handed.
+    :func:`simulate_trajectories` walks what this returns and :func:`walk_cost` reports it, so a cost and a walk state
+    one count."""
+    from .accumulate import block_length, BLOCK_ORDER, default_K, window_count
     record = _record_channels(tiers)
-    n_t = int(round(T_max / dt_save)) + 1
-    dt_actual = T_max / (n_t - 1)
+    n_windows, T_win = window_count(T_max, window_T)
+    K = default_K(T_win) if K is None else int(K)
+    if K < 1:
+        raise ValueError(f"K is the number of bands a walk accumulates per window, at least 1; got {K}")
+    if dt_save is None:
+        h, block_rule = block_length(T_win, K), "derived"     # omega_K h = BLOCK_OMEGA_H at the top band (#740, cuda#74)
+    else:
+        h, block_rule = float(T_win) / max(int(round(float(T_win) / float(dt_save))), 1), "given"
+    n_bw = int(round(float(T_win) / h))
+    n_t = n_windows * n_bw + 1
+    dt_actual = float(T_win) / n_bw
+    block_order = BLOCK_ORDER if block_order is None else int(block_order)
+    if not 0 <= block_order <= 3:
+        raise ValueError(f"block_order is the order m of the block table, 0..3; got {block_order}")
+    if block_order == 0 and K > n_bw - 1:
+        raise ValueError(f"at block_order=0 a window's bands are read from its {n_bw} blocks, which hold {n_bw - 1} "
+                         f"bands; K={K} asks for more")
 
     # A walk that records the boundary local time is resolved at the surface criterion too, so a replayed rho
     # reproduces the fused engine's; MT binding adds its own.
     from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
                           length_scales_of as _length_scales_of, STEP_TOLERANCE)
     ls = _length_scales_of(geometry)
-    # the band the step law resolves: the caller's (walk_spec passes the scanner class's), else the save grid's
-    # Nyquist frequency, since a bare trajectory walk serves every waveform its grid can carry
-    f_band = 0.5 / float(dt_actual) if f_band is None else float(f_band)
+    # the band the step law resolves: the caller's (walk_spec passes the scanner class's), else the walk's own K / (2 T)
+    f_band = float(K / (2.0 * float(T_win)) if f_band is None else f_band)
     mt_dwell = dwell_time if kappa_MT > 0.0 else None
     rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell, f_band=f_band)
     override = None if sub_steps is None else int(sub_steps)
@@ -1031,14 +1001,14 @@ def _resolve_walk(geometry, diffusivity, T_max, dt_save, *, tiers="all", sub_ste
     jax_only = [what for what, on in (
         ("the myelinated substrates", geometry._is_packed_myelinated or geometry._is_myelinated),
         ("MT binding", kappa_MT > 0.0), ("in-walk field sampling", field_basis is not None),
-        ("the compressed master", compress is not None), ("the compartment guard", bool(enforce_compartment))) if on]
+        ("the band accumulation (dmipy-sim-cuda#73)", True), ("the compartment guard", bool(enforce_compartment))) if on]
     request = WalkRequest(
         geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(n_sub), dt_sim=float(dt_sim),
         diffusivity=float(diffusivity), record=bool(record),
         kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
         count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed))
     return WalkResolution(record, n_t, dt_actual, f_band, dict(rules), override, int(n_sub), dt_sim, step_rule, binding,
-                          ls, request, jax_only)
+                          ls, request, jax_only, K, block_order, block_rule, n_windows)
 
 
 def _backend_refusal(backend, name, res, geometry):
@@ -1058,28 +1028,28 @@ def _backend_refusal(backend, name, res, geometry):
 class WalkMeasured:
     """A walk's cost measured on the real device and backend by :func:`walk_cost` (``measure=True``): the pilot timed at
     two lengths, so that the per-call part (seeding, setup, the transfer to the host) is separated from the part that
-    grows with the saves."""
+    grows with the blocks."""
     batch: int                        #: walkers of the pilot, the walk's real batch
-    pilot_saves: tuple                #: ``(n1, n2)``: the save intervals of the two pilot lengths
-    seconds_per_save: float           #: ``(t(n2) - t(n1)) / (n2 - n1)``, each ``t`` the second call of its shape (compile excluded)
-    fixed_seconds_per_call: float     #: ``t(n1) - seconds_per_save``: what a call costs whatever its saves
-    seconds_per_walker_step: float    #: ``seconds_per_save / (batch * sub_steps)``
-    projected_s: float                #: the full walk: ``walker_batches * (fixed_seconds_per_call + seconds_per_save * (n_saves - 1))``
+    pilot_blocks: tuple                #: ``(n1, n2)``: the save intervals of the two pilot lengths
+    seconds_per_block: float           #: ``(t(n2) - t(n1)) / (n2 - n1)``, each ``t`` the second call of its shape (compile excluded)
+    fixed_seconds_per_call: float     #: ``t(n1) - seconds_per_block``: what a call costs whatever its blocks
+    seconds_per_walker_step: float    #: ``seconds_per_block / (batch * sub_steps)``
+    projected_s: float                #: the full walk: ``walker_batches * (fixed_seconds_per_call + seconds_per_block * (n_blocks - 1))``
 
 
 @dataclass(frozen=True)
 class WalkProfile:
     """How a walk's rate scales with the batch size, measured by :func:`walk_cost` (``measure="profile"``): the same
     pilot at B/2, B, 2B and 4B (B the walk's batch), each the second call of its shape."""
-    walker_steps_per_s: dict          #: batch size -> rate, from the seconds per save
-    seconds_per_save: dict            #: batch size -> seconds per save of the pilot (the per-call part removed)
+    walker_steps_per_s: dict          #: batch size -> rate, from the seconds per block
+    seconds_per_block: dict            #: batch size -> seconds per block of the pilot (the per-call part removed)
     plateau_walker_steps_per_s: float #: the largest rate
     batch_fraction_of_plateau: float  #: the walk's batch rate over the plateau
     recommended_batch: int            #: the timed batch with the highest rate: for a fixed walker count it minimises the total time
     stopped_by: str                   #: why the profile ends: ``"given"`` (the caller's batch with B/2..4B), ``"rate fell"`` (the sweep passed
                                       #: its best), or the limit the sweep reached while the rate still rose: ``"memory"``, ``"n_walkers"``, ``"r0"``
     max_batch_memory: object          #: the largest batch the device's free memory holds, or None without a memory cap
-    bytes_per_walker: int             #: device bytes of one walker's inputs and output channels over all saves (a lower bound)
+    bytes_per_walker: int             #: device bytes of one walker through a batch (a lower bound)
     memory_cap: str                   #: where ``max_batch_memory`` comes from, or why there is none
     verdict: str                      #: about the walk's batch B: ``"under-filled"`` when 2B takes under :data:`UNDERFILLED_DOUBLING` x the
                                       #: time of B (the extra walkers cost under 20 %), measured whenever 2B fits the device, whatever ``n_walkers``;
@@ -1095,18 +1065,22 @@ class WalkCost:
     walker_batch_rule: str            #: what set it: ``"given"``, ``"recommended by the sweep"`` or ``"n_walkers capped by memory"``
     walker_batches: int               #: batches of the walk
     T_max: float                      #: seconds of diffusion time
-    n_saves: int                      #: saves, save 0 the start
-    dt_save: float                    #: seconds between saves
-    f_band_hz: float                  #: the band (Hz) the step law resolves: ``f_band``, else the save grid's Nyquist frequency
-    sub_steps: int                    #: physics steps per save interval
+    n_blocks: int                     #: blocks of the walk
+    block_s: float                    #: the block length ``h`` (s)
+    K: int                            #: bands per axis and channel, per window
+    block_order: int                  #: the order ``m`` of the block table
+    n_windows: int                    #: the storage windows the walk accumulates separately
+    f_band_hz: float                  #: the band (Hz) the step law resolves: ``f_band``, else ``K / (2 T)``
+    sub_steps: int                    #: physics steps per block
     dt_sim: float                     #: seconds per physics step
     sub_step_rules: dict              #: the sub-step count each applicable rule asks for, by name
     binding_rule: str                 #: the rule that sized the step (``"override"`` for a pinned count)
     binding_length: object            #: the :class:`~dmipy_sim.geometry.base.LengthScales` field that rule divides, or None
     binding_length_m: object          #: that length (m), or None
     length_scales: dict               #: ``min_feature``, ``min_gap``, ``lookup_cell``, ``surface_pore`` (m)
-    walker_steps: int                 #: ``n_walkers * (n_saves - 1) * sub_steps``
-    bytes_per_walker: int             #: device bytes of one walker over all saves (inputs and output channels; a lower bound)
+    walker_steps: int                 #: ``n_walkers * n_blocks * sub_steps``
+    bytes_per_walker: int             #: device bytes of one walker through a batch (inputs, accumulators and outputs; a lower bound)
+    accumulator_bytes_per_walker: int     #: the walk's accumulators per walker (level 2, a ring's moments, a block's moments)
     backend: str                      #: the backend that would walk it
     backends_accepting: list          #: the other installed backends that do not refuse this request
     backends_refusing: dict           #: the other installed backends that refuse it, ``{name: reason}``
@@ -1137,8 +1111,8 @@ def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, batch
     f = lambda x: None if x is None else float(x)
     return WalkCost(
         n_walkers=n_walkers, walker_batch_size=int(size), walker_batch_rule=batch_rule, walker_batches=-(-n_walkers // int(size)),
-        T_max=float(res.dt_actual) * (int(res.n_t) - 1), n_saves=int(res.n_t), dt_save=float(res.dt_actual),
-        f_band_hz=float(res.f_band),
+        T_max=float(res.dt_actual) * (int(res.n_t) - 1), n_blocks=int(res.n_t) - 1, block_s=float(res.dt_actual),
+        K=int(res.K), block_order=int(res.block_order), n_windows=int(res.n_windows), f_band_hz=float(res.f_band),
         sub_steps=int(res.sub_steps), dt_sim=float(res.dt_sim),
         sub_step_rules={k: int(v) for k, v in res.rules.items()},
         binding_rule=res.binding, binding_length=field, binding_length_m=f(length),
@@ -1146,6 +1120,7 @@ def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, batch
                            surface_pore=f(ls.surface_pore)),
         walker_steps=n_walkers * (int(res.n_t) - 1) * int(res.sub_steps),
         bytes_per_walker=_device_bytes_per_walker(res),
+        accumulator_bytes_per_walker=_accumulator_bytes(res.K, res.block_order, res.record),
         backend=backend_name, backends_accepting=accepting, backends_refusing=refusing)
 
 
@@ -1153,8 +1128,8 @@ def _announce_cost(run, cost):
     """The cost in the run's record (a ``cost`` row) and the log; a walk on the JAX kernels that an installed
     backend accepts also warns, naming the backend, the walker-steps and the rule that sized the step."""
     run.cost(**dataclasses.asdict(cost))
-    log.info("  cost: %.3g walker-steps (%d walkers x %d saves x %d sub-steps; %s rule) on the %s backend",
-             cost.walker_steps, cost.n_walkers, cost.n_saves - 1, cost.sub_steps, cost.binding_rule, cost.backend)
+    log.info("  cost: %.3g walker-steps (%d walkers x %d blocks x %d sub-steps; %s rule) on the %s backend",
+             cost.walker_steps, cost.n_walkers, cost.n_blocks, cost.sub_steps, cost.binding_rule, cost.backend)
     if cost.backend == JAX and cost.backends_accepting:
         names = ", ".join(cost.backends_accepting)
         msg = (f"this walk of {cost.walker_steps:.3g} walker-steps (the {cost.binding_rule} rule, "
@@ -1170,11 +1145,21 @@ def _announce_cost(run, cost):
 UNDERFILLED_DOUBLING = 1.2
 
 
+def _accumulator_bytes(K, m, record):
+    from .accumulate import accumulator_bytes
+    return accumulator_bytes(K, m, record)
+
+
 def _device_bytes_per_walker(res):
-    """Bytes one walker holds on the device through a batch: its start (3 float32) and key (2 uint32), and the
-    float32 channels of every save -- positions, plus the boundary local time and the compartment when recorded.
-    The output buffers only: the walk's working set is not counted, so this is a lower bound."""
-    return 20 + int(res.n_t) * (12 + (8 if res.record else 0))
+    """Bytes one walker holds on the device through a batch: its start (3 float32) and key (2 uint32), its
+    accumulators (:func:`~dmipy_sim.engine.accumulate.accumulator_bytes`) and its coefficients per window (the bands
+    per axis and channel, two exact endpoints each) -- independent of the block count -- and the occupancy track of a
+    walk whose walkers can change pool. The output buffers only: the walk's working set is not counted, so this is a
+    lower bound."""
+    ch = 3 + (1 if res.record else 0)
+    per_window = 4 * ch * (int(res.K) + 2) + 4 * 4
+    track = 4 * int(res.n_t) if (res.record and res.request.kappa_over_D > 0.0) else 0
+    return 20 + _accumulator_bytes(res.K, res.block_order, res.record) + int(res.n_windows) * per_window + track
 
 
 def _free_device_bytes():
@@ -1189,19 +1174,19 @@ def _free_device_bytes():
     return int(st["bytes_limit"]) - int(st.get("bytes_in_use", 0))
 
 
-def _recommended(per_save):
-    """The batch of ``per_save`` ({batch: seconds per save}) with the highest walkers per second."""
-    return max(per_save, key=lambda b: b / per_save[b])
+def _recommended(per_block):
+    """The batch of ``per_block`` ({batch: seconds per block}) with the highest walkers per second."""
+    return max(per_block, key=lambda b: b / per_block[b])
 
 
-def _sweep(per_save_of, cap, limit):
-    """The pilot timed (``per_save_of(batch)`` -> seconds per save) at 4096 * 2^k walkers below ``cap`` and at ``cap``
+def _sweep(per_block_of, cap, limit):
+    """The pilot timed (``per_block_of(batch)`` -> seconds per block) at 4096 * 2^k walkers below ``cap`` and at ``cap``
     itself (``limit`` names what ``cap`` is), stopping at the first point whose rate is below the best so far.
-    Returns ``({batch: seconds per save}, stopped_by)``."""
+    Returns ``({batch: seconds per block}, stopped_by)``."""
     sizes = [b for b in (4096 * 2 ** k for k in range(64)) if b < cap] + [cap]
     per, best = {}, 0.0
     for b in sizes:
-        per[b] = per_save_of(b)
+        per[b] = per_block_of(b)
         rate = b / per[b]
         if rate < best:
             return per, "rate fell"
@@ -1209,18 +1194,18 @@ def _sweep(per_save_of, cap, limit):
     return per, limit
 
 
-def _profile(per_save, vb, res, max_batch, stopped_by):
-    """The :class:`WalkProfile` of the seconds per save ``per_save`` ({batch: seconds}), the verdict read at batch ``vb``:
-    the seconds per save of 2B against those of B."""
-    rates = {b: b * res.sub_steps / tt for b, tt in sorted(per_save.items())}
+def _profile(per_block, vb, res, max_batch, stopped_by):
+    """The :class:`WalkProfile` of the seconds per block ``per_block`` ({batch: seconds}), the verdict read at batch ``vb``:
+    the seconds per block of 2B against those of B."""
+    rates = {b: b * res.sub_steps / tt for b, tt in sorted(per_block.items())}
     plateau = max(rates.values())
-    if 2 * vb in per_save:
-        verdict = "under-filled" if per_save[2 * vb] < UNDERFILLED_DOUBLING * per_save[vb] else "saturated"
+    if 2 * vb in per_block:
+        verdict = "under-filled" if per_block[2 * vb] < UNDERFILLED_DOUBLING * per_block[vb] else "saturated"
     else:
         verdict = "memory-bound" if (max_batch is not None and 2 * vb > max_batch) else "unresolved"
-    return WalkProfile(walker_steps_per_s=rates, seconds_per_save={b: per_save[b] for b in sorted(per_save)},
+    return WalkProfile(walker_steps_per_s=rates, seconds_per_block={b: per_block[b] for b in sorted(per_block)},
                        plateau_walker_steps_per_s=plateau, batch_fraction_of_plateau=rates[vb] / plateau,
-                       recommended_batch=int(_recommended(per_save)), stopped_by=stopped_by,
+                       recommended_batch=int(_recommended(per_block)), stopped_by=stopped_by,
                        max_batch_memory=None if max_batch is None else int(max_batch),
                        bytes_per_walker=_device_bytes_per_walker(res),
                        memory_cap=("device free memory" if max_batch is not None
@@ -1228,39 +1213,40 @@ def _profile(per_save, vb, res, max_batch, stopped_by):
                        verdict=verdict)
 
 
-def _fit_saves(seconds, batch, max_saves):
-    """``(seconds_per_save, fixed_seconds_per_call, (n1, n2))`` of a ``batch`` from ``seconds(batch, saves)``, the second
-    call of each shape: n1 = 1 save, n2 from 2 doubling until ``t(n2) >= 2 t(n1)`` (the saves then weigh at least as
-    much as the fixed part of a call), at most ``max_saves``."""
+def _fit_blocks(seconds, batch, max_blocks):
+    """``(seconds_per_block, fixed_seconds_per_call, (n1, n2))`` of a ``batch`` from ``seconds(batch, blocks)``, the
+    second call of each shape: n1 = 1 block, n2 from 2 doubling until ``t(n2) >= 2 t(n1)`` (the blocks then weigh at
+    least as much as the fixed part of a call), at most ``max_blocks``."""
     t1 = seconds(batch, 1)
-    if max_saves <= 1:
+    if max_blocks <= 1:
         return t1, 0.0, (1, 1)
     n2 = 2
     t2 = seconds(batch, n2)
-    while t2 < 2 * t1 and n2 < max_saves:
-        n2 = min(2 * n2, max_saves)
+    while t2 < 2 * t1 and n2 < max_blocks:
+        n2 = min(2 * n2, max_blocks)
         t2 = seconds(batch, n2)
     per = (t2 - t1) / (n2 - 1)
-    if per <= 0:                                  # the saves were lost in the timing noise: the longer call is the bound
+    if per <= 0:                                  # the blocks were lost in the timing noise: the longer call is the bound
         per = t2 / n2
     return per, max(t1 - per, 0.0), (1, n2)
 
 
-def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_size=DEFAULT_WALKER_BATCH,
+def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save=None, *, walker_batch_size=DEFAULT_WALKER_BATCH,
               backend=None, measure=False, **walk_kwargs):
     """What a trajectory walk costs, stated before it runs: a :class:`WalkCost`.
 
     It takes the arguments of :func:`simulate_trajectories`, with its names and defaults, and costs that call: the
     request is resolved exactly as the walk resolves it (one code path: ``walk.sub_steps`` equals
     ``walk_cost(...).sub_steps``) and refused where the walk refuses. ``walk_kwargs`` are the walk's other keywords
-    (``tiers``, ``sub_steps``, ``f_band``, ``kappa_MT``, ``dwell_time``, ``seed``, ``bounce_budget``, ``field_basis``,
-    ``r0``, ``storage_dtype``, ...); a keyword the walk does not take is refused.
+    (``K``, ``block_order``, ``tiers``, ``sub_steps``, ``f_band``, ``kappa_MT``, ``dwell_time``, ``seed``,
+    ``bounce_budget``, ``field_basis``, ``r0``, ...); a keyword the walk does not take is refused.
 
     Parameters
     ----------
     n_walkers, diffusivity, geometry, T_max, dt_save
-        As :func:`simulate_trajectories`. ``T_max`` scales the walker-steps linearly; ``dt_save`` sets the saves, the
-        bytes per walker and the memory-limited batch, and, without ``f_band``, the band the step law resolves.
+        As :func:`simulate_trajectories`. ``T_max`` scales the walker-steps linearly; the bands ``K`` set the
+        accumulators' bytes per walker and the memory-limited batch, and, without ``f_band``, the band the step law
+        resolves; ``dt_save`` is the block when the band's own is not wanted.
     walker_batch_size : int or None
         Walkers per batch, default the walk's own. ``None`` finds the batch: with ``measure="profile"`` the pilot is
         timed at 4096 * 2^k walkers below ``min(n_walkers, the memory-limited batch)`` and at that cap, stopping at the
@@ -1276,16 +1262,16 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_
         times it at two pilot lengths, each the second call of its shape (the compile is in the first):
         :attr:`WalkCost.measured`. The walk is the production program (``walk_kwargs`` included; ``r0`` is sliced
         to the batch). A timed call is the whole of :func:`simulate_trajectories`: seeding, setup, the walk and the
-        transfer to the host. Only the walk grows with the saves; the rest is paid once per call, so one pilot
-        length would multiply that fixed part by every save of the walk and flatten the rate curve. The pilot is
-        therefore timed at n1 = 1 save and at n2 saves, n2 starting at 2 and doubling until ``t(n2) >= 2 t(n1)`` (the
-        saves weigh at least as much as the fixed part), at most the walk's own saves; the seconds per save are
-        ``(t(n2) - t(n1)) / (n2 - n1)``, the fixed part ``t(n1)`` less one save, and the projection is
-        ``walker_batches * (fixed + seconds_per_save * (n_saves - 1))``, linear in the saves. ``"profile"`` also
-        times the pilot over the batch sizes above -- the sweep for a batch not given, else B/2, B, 2B and 4B for the
-        given B (the larger sizes only where the device's free memory holds them) -- and rates every batch by its
-        seconds per save: :attr:`WalkCost.profile`. Its verdict asks whether more walkers are nearly free at the
-        walk's batch B: the seconds per save of 2B (timed whenever it fits the device) are under
+        transfer to the host. Only the walk grows with the blocks; the rest is paid once per call, so one pilot
+        length would multiply that fixed part by every block of the walk and flatten the rate curve. The pilot is
+        therefore timed at n1 = 1 block and at n2 blocks (the walk's own block, ``K`` and step), n2 starting at 2 and
+        doubling until ``t(n2) >= 2 t(n1)`` (the blocks weigh at least as much as the fixed part), at most the walk's
+        own blocks; the seconds per block are ``(t(n2) - t(n1)) / (n2 - n1)``, the fixed part ``t(n1)`` less one
+        block, and the projection is ``walker_batches * (fixed + seconds_per_block * n_blocks)``, linear in the
+        blocks. ``"profile"`` also times the pilot over the batch sizes above -- the sweep for a batch not given, else
+        B/2, B, 2B and 4B for the given B (the larger sizes only where the device's free memory holds them) -- and
+        rates every batch by its seconds per block: :attr:`WalkCost.profile`. Its verdict asks whether more walkers
+        are nearly free at the walk's batch B: the seconds per block of 2B (timed whenever it fits the device) are under
         :data:`UNDERFILLED_DOUBLING` = 1.2 x those of B, i.e. the extra walkers cost under 20 %.
 
     Returns
@@ -1307,7 +1293,8 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_
                             sub_steps=kw.get("sub_steps"), kappa_MT=kw.get("kappa_MT", 0.0),
                             dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
                             enforce_compartment=kw.get("enforce_compartment", False),
-                            field_basis=kw.get("field_basis"), compress=kw.get("compress"))
+                            field_basis=kw.get("field_basis"), K=kw.get("K"), block_order=kw.get("block_order"),
+                            window_T=kw.get("window_T"))
         if be is not None:
             refusal = _backend_refusal(be, name, res, geometry)
             if refusal:
@@ -1319,14 +1306,14 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_
         cost = _cost_of(res, geometry, n_walkers, batch, name,
                         batch_rule="given" if given else "n_walkers capped by memory")
     if measure:
-        max_saves = cost.n_saves - 1
+        max_blocks = cost.n_blocks
         r0 = None if kw.get("r0") is None else np.asarray(kw["r0"])
-        kw.update(sub_steps=res.sub_steps, f_band=res.f_band)
+        kw.update(sub_steps=res.sub_steps, f_band=res.f_band, K=res.K, block_order=res.block_order)
 
-        def seconds(b, saves):
+        def seconds(b, blocks):
             """Seconds of the second call of this shape (the first holds the compile)."""
             k = dict(kw, **({} if r0 is None else dict(r0=r0[:b])))
-            walk = lambda: simulate_trajectories(b, diffusivity, geometry, saves * res.dt_actual, res.dt_actual,
+            walk = lambda: simulate_trajectories(b, diffusivity, geometry, blocks * res.dt_actual, res.dt_actual,
                                                  walker_batch_size=b, backend=backend, **k)
             walk()
             t0 = time.perf_counter(); walk()
@@ -1336,38 +1323,38 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, dt_save, *, walker_batch_
 
         def fit(b):
             if b not in fits:
-                fits[b] = _fit_saves(seconds, b, max_saves)
+                fits[b] = _fit_blocks(seconds, b, max_blocks)
             return fits[b]
 
-        per_save_of = lambda b: fit(b)[0]
+        per_block_of = lambda b: fit(b)[0]
         available = None if r0 is None else len(r0)
         profile = None
         if measure == "profile" and not given:
             limits = {"memory": max_batch, "n_walkers": int(n_walkers), "r0": available}
             limit = min((k for k, v in limits.items() if v is not None), key=lambda k: limits[k])
-            per, stopped = _sweep(per_save_of, limits[limit], limit)
+            per, stopped = _sweep(per_block_of, limits[limit], limit)
             B = _recommended(per)
             if 2 * B not in per and (max_batch is None or 2 * B <= max_batch) and (available is None or 2 * B <= available):
-                per[2 * B] = per_save_of(2 * B)                 # the verdict's doubling, whatever n_walkers
+                per[2 * B] = per_block_of(2 * B)                 # the verdict's doubling, whatever n_walkers
             profile = _profile(per, B, res, max_batch, stopped)
             cost = dataclasses.replace(cost, walker_batch_size=int(B), walker_batch_rule="recommended by the sweep",
                                        walker_batches=-(-int(n_walkers) // int(B)))
         else:
             B = cost.walker_batch_size
-            per_save_of(B)
+            per_block_of(B)
             if measure == "profile":
-                per = {B: per_save_of(B)}
+                per = {B: per_block_of(B)}
                 if B // 2 >= 1:
-                    per[B // 2] = per_save_of(B // 2)
+                    per[B // 2] = per_block_of(B // 2)
                 for m in (2, 4):
                     if (max_batch is not None and m * B > max_batch) or (available is not None and m * B > available):
                         break
-                    per[m * B] = per_save_of(m * B)
+                    per[m * B] = per_block_of(m * B)
                 profile = _profile(per, B, res, max_batch, "given")
         ps, fixed, pilot = fit(B)
-        measured = WalkMeasured(batch=int(B), pilot_saves=pilot, seconds_per_save=ps, fixed_seconds_per_call=fixed,
+        measured = WalkMeasured(batch=int(B), pilot_blocks=pilot, seconds_per_block=ps, fixed_seconds_per_call=fixed,
                                 seconds_per_walker_step=ps / (B * res.sub_steps),
-                                projected_s=cost.walker_batches * (fixed + ps * max_saves))
+                                projected_s=cost.walker_batches * (fixed + ps * max_blocks))
         cost = dataclasses.replace(cost, measured=measured, profile=profile)
     return cost
 
@@ -1377,45 +1364,51 @@ def simulate_trajectories(
     diffusivity: float,
     geometry,
     T_max: float,
-    dt_save: float,
+    dt_save: float = None,
     seed: int = 42,
     walker_batch_size: int = DEFAULT_WALKER_BATCH,
     tiers="all",
     sub_steps: int = None,
     require_gpu=None,
-    storage_dtype=np.float32,
     r0=None,
     kappa_MT: float = 0.0,
     dwell_time: float = 0.0,
     equilibrate_binding="auto",
-    compress: int = None,
+    K: int = None,
+    block_order: int = None,
+    window_T: float = None,
+    raw_subset: int = 0,
     enforce_compartment: bool = False,
     field_basis=None,
     field_sample_every: int = 1,
     bounce_budget: int = None,
     f_band: float = None,
     backend="jax",
-) -> PersistentWalk:
-    """Walk the spins ONCE and save positions at every saved time step — the
-    producer for the replay path (:mod:`dmipy_sim.replay.trajectories`).
+):
+    """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
-    Unlike :func:`simulate`, this applies NO gradient waveform: it stores
-    ``r(t)`` for all walkers so any waveform / relaxation hypothesis can be
-    applied post-hoc via
-    :func:`~dmipy_sim.replay.trajectories.replay`.  This is the
-    walk-once half of the replay invariant (positions depend only on
-    ``geometry, diffusivity, seed`` — see the module CLAUDE guide).
+    Unlike :func:`simulate`, this applies NO gradient waveform: it keeps every walker's path as its exact start and
+    end and the ``K`` sine bands of the bridge between them (and the cumulative boundary local time in the same
+    form), accumulated while the walk runs (:mod:`dmipy_sim.engine.accumulate`), so any waveform / relaxation
+    hypothesis is applied afterwards from the coefficients (:func:`~dmipy_sim.replay.bank.build_replay_pack`). This
+    is the walk-once half of the replay invariant (the bands depend only on ``geometry, diffusivity, seed``).
 
-    Sub-stepping: :func:`dmipy_sim.engine.physics.resolve_sub_steps` chooses the fine
-    sub-steps per saved step from the geometry's length scales and the channels
-    recorded (the surface criterion when the surface channel is recorded, the binding
-    criterion when ``kappa_MT > 0``), the same dispatch the fused engine uses.  Only
-    the position after each group of ``sub_steps`` inner steps is saved, so storage
-    is always ``(n_walkers, n_t, 3)`` at ``dt_save`` granularity.
+    The walk runs in blocks of ``h``: the band's own (:func:`~dmipy_sim.engine.accumulate.block_length`: ``omega_K h =
+    0.8`` at the top band ``omega_K = pi K / T``, a whole number of blocks of one step count each; 100 us at K = 256
+    over 100 ms) unless ``dt_save`` gives one. Inside a block the steps add the moments of their increments about the
+    block's centre (order :data:`~dmipy_sim.engine.accumulate.BLOCK_ORDER` = 3 by default) and every ring of blocks is
+    projected onto the cosine basis (:func:`~dmipy_sim.replay.compression.block_table`) into a float32 level-2
+    accumulator; at the end of a window the projections become the bridge's bands by integration by parts
+    (:func:`~dmipy_sim.replay.compression.cosine_band_scale`). Nothing is stored per block but the occupancy track of a
+    walk whose walkers can change pool, the bound fraction of a binding walk, the field's block means of a walk that
+    samples one, and the ``raw_subset``; a walker's device and host bytes do not grow with the block count otherwise.
+    A walk longer than one storage window (``window_T``, 100 ms) is accumulated window by window (RPK.md 4.3).
 
-    The walk states its cost before it starts: :func:`walk_cost` states the same resolution as a :class:`WalkCost`, and the walk
-    writes it as the ``cost`` row of its run (a walk on the JAX kernels that an installed backend accepts also
-    warns, naming the backend).
+    Sub-stepping: :func:`dmipy_sim.engine.physics.resolve_sub_steps` chooses the steps per block from the geometry's
+    length scales, the channels recorded (the surface criterion when the surface channel is recorded, the binding
+    criterion when ``kappa_MT > 0``) and the band ``K / (2 T)`` (``f_band`` overrides it), the same dispatch the fused
+    engine uses. The walk states its cost before it starts: :func:`walk_cost` states the same resolution as a
+    :class:`WalkCost`, and the walk writes it as the ``cost`` row of its run.
 
     Parameters
     ----------
@@ -1424,65 +1417,63 @@ def simulate_trajectories(
     diffusivity : float
         Diffusion coefficient in m²/s.
     geometry : Geometry
-        Boundary geometry.  Provides ``init_positions(n, key)`` and
-        ``reflect(r, step)``; for the recorded channels also
-        ``reflect_with_log_weight`` (surface local time) and/or ``permeate``.
+        Boundary geometry (a spec, a spec file or its dict too).
     T_max : float
         Total simulation duration in seconds.
-    dt_save : float
-        Time step between saved positions in seconds.
+    dt_save : float, optional
+        The block length (s) in place of the band's own.
     seed : int
         Master PRNG seed.
     walker_batch_size : int
-        Number of walkers per GPU batch.  Reduce if OOM (the batch loop also
-        auto-halves on an OOM exception).
+        Number of walkers per batch.  Reduce if OOM (the batch loop also auto-halves on an OOM exception).
     tiers : {"all", ()}
         Which replay tiers the walk records beyond the positions. ``"all"`` (default) records every
         channel the geometry supports -- the boundary local time (surface relaxivity, rho/D = 1) and
         the compartment occupancy (per-compartment T2/T1); with ``kappa_MT > 0`` also the bound
         fraction. ``()`` records positions only, a cheaper walk (no surface sub-step criterion) for a
-        gradient-only replay. FreeDiffusion records an all-zero boundary channel.
+        gradient-only replay.
     require_gpu : {None, True, False}
         GPU guard against a silent CPU fallback.  ``True`` raises if no GPU is
         visible; ``False`` opts out; ``None`` (default) warns for large CPU runs.
     r0 : array-like of shape (n_walkers, 3), optional
-        Caller-supplied seed positions (e.g. extra-axonal water outside a mesh).
-        When provided, ``geometry.init_positions()`` is skipped.
+        Caller-supplied seed positions; ``geometry.init_positions()`` is skipped.
     kappa_MT : float
-        Magnetization-transfer surface reactivity (m/s) for the PackedMyelinated-
-        Cylinders path.  ``0`` (default) leaves the walk
-        byte-for-byte identical to the pre-MT path (RNG stream + positions unchanged);
-        ``> 0`` binds free water at the myelin walls and returns a 7th ``bound_frac``
-        channel.  (For analytic geometries use :func:`dmipy_sim.simulate_mt_trajectories`.)
+        Magnetization-transfer surface reactivity (m/s) for the PackedMyelinatedCylinders path; ``> 0`` binds free
+        water at the myelin walls and records the bound fraction per block.
     dwell_time : float
         Mean bound-pool residence time (s); must be ``> 0`` when ``kappa_MT > 0``.
     equilibrate_binding : {'auto', 'burnin', 'off'}
         How the bound pool reaches thermal-equilibrium occupancy before t=0 (MT only);
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.
+    K : int, optional
+        The bands per axis and channel per window; the storage band by default
+        (:data:`~dmipy_sim.engine.accumulate.STORAGE_BAND_HZ`, K = 256 per 100 ms).
+    block_order : int, optional
+        The order ``m`` of the block table, 0..3 (:data:`~dmipy_sim.engine.accumulate.BLOCK_ORDER` = 3): the
+        quadrature error :func:`~dmipy_sim.replay.compression.quadrature_rel` (at the derived block 1.3e-7 of the top
+        band's phase variance; at ``m = 0`` the block ends' DST-I read in the continuous normalisation).
+    window_T : float, optional
+        The storage window (s) a longer walk is accumulated in; :data:`~dmipy_sim.replay.bank.WINDOW_T` by default.
+    raw_subset : int
+        Keep the first ``raw_subset`` walkers' positions, contact and pool label at every block end beside the
+        coefficients (``CoefficientWalk.raw_positions``; :meth:`~dmipy_sim.coefficient_walk.CoefficientWalk.saves`
+        is that subset as a walk of saves): the opt-in raw output, for a measured certificate, a visualisation or a
+        dense oracle.
     field_basis : FieldGrid, optional
-        A gridded susceptibility field basis (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`: a mesh,
-        a myelinated cylinder, a packed cell) the walk samples itself: at every sub-step the grid's channels are
-        read at the walker's position (the one the step kernel holds; a periodic grid wraps, :attr:`FieldGrid.periodic`)
-        and averaged over the save interval -- ``PersistentWalk.field_samples``, sample 0 the start position's,
-        what the pack's path channel encodes. A strand basis is sampled by
+        A gridded susceptibility field basis (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`) the walk
+        samples itself: at every step the grid's channels are read at the walker's position (a periodic grid wraps)
+        and averaged over the block -- ``CoefficientWalk.field_samples``, sample 0 the start position's, what the
+        pack's path channel encodes. A strand basis is sampled by
         :func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`.
     field_sample_every : int
-        The field's own save grid: the samples are the interval means of every that-many-th save interval only
-        (the saves ``every``, ``2 every``, ...), ``ceil(n_t / every)`` of them at ``every * dt``; the positions
-        keep every save.
+        The field's own grid: the block means of every that-many-th block only.
 
     Returns
     -------
-    PersistentWalk
-        ``positions`` (n_walkers, n_t, 3) in ``storage_dtype`` -- save ``k`` at ``t = k dt``, save 0 the start
-        (the initial position; its contact / occupancy entries are the initial state) -- ``dt`` (= T_max / (n_t - 1)),
-        ``sub_steps``, ``dt_sim``; with the default ``tiers="all"`` also ``boundary_local_time``
-        (n_walkers, n_t), the per-step boundary log-weight at rho/D = 1 (``-2 * sum d_perp`` over
-        the step's wall hits, non-positive), and ``compartment`` (n_walkers, n_t); with
-        ``kappa_MT > 0`` also ``bound_frac``; with ``field_basis`` also ``field_basis``, ``field_samples``
-        ``(n_walkers, ceil(n_t / field_sample_every), 7 | 13)`` and ``field_sample_every``. ``illegal_crossings``
-        counts the rejected wrong-side steps. With ``compress=K`` a compressed master dict is returned instead (see
-        :func:`trajectories.replay`).
+    CoefficientWalk
+        The coefficients per window, the contact, the occupancy (one label per walker on a substrate no walker leaves
+        its pool in, else per block), the quadratic variation per channel, the block record ``(h, m, rule, ...)``, the
+        raw subset when asked, ``illegal_crossings`` and the work record.
     bounce_budget : int, optional
         The bounce budget of this walk in place of the geometry's derived one (``geometry.bounce_loop.budget``),
         set on the geometry for the walk and restored after it. The derived budget is the worst case a step can
@@ -1495,13 +1486,13 @@ def simulate_trajectories(
         an installed backend (the ``dmipy_sim.backends`` entry point), or a backend object. An unknown name is
         refused naming what is installed; a backend that does not implement this walk (an engine class, a
         tier, a wall) refuses by name, and the paths only the JAX kernels implement (the myelinated substrates,
-        MT binding, in-walk field sampling, the compressed master, the compartment guard) are refused for any
+        MT binding, in-walk field sampling, the band accumulation (until dmipy-sim-cuda#73), the compartment guard) are refused for any
         other backend rather than fallen back from. ``work["backend"]`` and the run record say which backend
         walked. See :mod:`dmipy_sim.engine.backends`.
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
-    with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, backend=_backend_name)) as run, _bounce_budget_override(geometry, bounce_budget):
+    with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, dt_save=dt_save, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget):
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
         # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
@@ -1509,7 +1500,7 @@ def simulate_trajectories(
         check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
         res = _resolve_walk(geometry, diffusivity, T_max, dt_save, tiers=tiers, sub_steps=sub_steps, kappa_MT=kappa_MT,
                             dwell_time=dwell_time, f_band=f_band, seed=seed, enforce_compartment=enforce_compartment,
-                            field_basis=field_basis, compress=compress)
+                            field_basis=field_basis, K=K, block_order=block_order, window_T=window_T)
         record, n_t, dt_actual, sub_steps, dt_sim, step_rule = res.record, res.n_t, res.dt_actual, res.sub_steps, res.dt_sim, res.step_rule
         R_geom = res.length_scales.min_feature
         step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
@@ -1533,9 +1524,6 @@ def simulate_trajectories(
             if not isinstance(field_basis, FieldGrid):
                 raise TypeError(f"field_basis must be a FieldGrid (a gridded field read at the sub-step), got "
                                 f"{type(field_basis).__name__}; a strand basis is sampled by simulate_trajectories_adaptive")
-            if compress is not None:
-                raise NotImplementedError("compress= returns the walk as position coefficients; the in-walk field samples "
-                                          "have no coefficient form there. Walk uncompressed and pack with build_replay_pack.")
             if _f_every < 1:
                 raise ValueError(f"field_sample_every must be a positive integer, got {field_sample_every!r}")
             _f_arrays = field_basis.device_arrays()
@@ -1548,6 +1536,18 @@ def simulate_trajectories(
 
         def _reader(arrays):
             return _GridRead(arrays, _f_periodic) if _sampling else None
+
+        # ── The band accumulation: each block's step scan also forms the moments of the increments of the recorded
+        # position and of the cumulative local time (engine/accumulate.py), and the ring scan projects them onto the
+        # cosine basis
+        from .accumulate import moment_scan as _moment_scan
+        _m_blk = int(res.block_order)
+        _nch = int(_f_arrays[0].shape[0]) if _sampling else 0
+        _iscan_gen = lambda inner, init, n, read: _moment_scan(inner, init, n, lambda c: c[0], None, _m_blk, read=read, n_ch=_nch)
+        _iscan_relax = lambda inner, init, n, read: _moment_scan(inner, init, n, lambda c: c[0], lambda c: c[2], _m_blk,
+                                                                 read=read, n_ch=_nch)
+        _iscan_pm = lambda inner, init, n, read: _moment_scan(inner, init, n, lambda c: c[1], lambda c: c[3], _m_blk,
+                                                              read=read, n_ch=_nch)
 
         # ── The walk's work: wall encounters, crossings and budget exhaustions, summed per walker in the
         # carry and over the batches on the host, only when the geometry counts (`Geometry.count_walls`);
@@ -1658,32 +1658,8 @@ def simulate_trajectories(
                 return (jnp.where(keep, r_new, r_old),) + carry[1:3] + (bad,) + carry[4:], out
 
         def interval(carry, read):
-            carry_final, mean = _interval_scan(inner_step, carry, sub_steps, read)
+            carry_final, mean = _iscan_gen(inner_step, carry, sub_steps, read)
             return carry_final, carry_final[0], mean
-
-        def simulate_one_walker(r0_w, key_w, side_w, f_arrays):
-            # save 0 is the start (t = 0); saves 1..n_t-1 follow n_t-1 blocks of sub-steps
-            read = _reader(f_arrays)
-            (_, _, side_f, bad_f, work_f), positions, field = _save_scan(
-                interval, (r0_w, key_w, side_w, jnp.int32(0), _work0()), n_t - 1, read, _f_every)
-            positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-            # (n_t, 3), carried side, illegal-crossing count, the work, field samples
-            return positions, side_f, bad_f, work_f, _field_series(read, r0_w, field)
-
-        # ── Storage dtype for the returned channels ─────────────────────────────
-        # f32 by DEFAULT. The walk is f32, the pack is f32 (compression.pack_position_arrays)
-        # and SPEC 5.1 requires float32/float64 for `positions`, so f16 used to be the only
-        # non-f32 link in the chain -- and a biased one: f16's smallest normal is 6.1e-5, so a
-        # micron-scale coordinate in METRES is subnormal, with a flat ~6e-8 m quantum (12.5% of
-        # a 0.5 um coordinate). A compartment is populated up to its wall and empty beyond, so
-        # that quantum can only EJECT walkers, never recruit them: 3.1% of a confined population
-        # at R=0.5um, scaling as ~1/R. The signal never noticed (|dS| <= 1.3e-5) but compartment
-        # counting did. Pass storage_dtype=np.float16 to halve peak RAM on large walks, knowing
-        # positions are then unfit for inside/outside classification -- use `comp_traj` instead,
-        # which is computed here at f32 and stored as int8.
-        _sdt = np.dtype(storage_dtype).type
-        if _sdt not in (np.float16, np.float32, np.float64):
-            raise ValueError(f"storage_dtype must be float16/32/64, got {storage_dtype!r}")
 
         # ── Compartment channel (relaxation path only) ────────────────────────────
         # The geometry's own pool id, collapsed to two pools (0 extra, 1 enclosed): relaxation is
@@ -1745,51 +1721,21 @@ def simulate_trajectories(
                     r, r_uw, key, comp_id, work = carry
                     # dlog_accum resets each save so the emitted value is the per-save delta.
                     inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, work)
-                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, work_f), mean = _interval_scan(
+                    (r_final, r_uw_final, key_final, dlog_accum, comp_final, work_f), mean = _iscan_pm(
                         _inner_pm, inner_init, sub_steps, read)
                     return (r_final, r_uw_final, key_final, comp_final, work_f), \
                            (r_uw_final, dlog_accum, _compress_comp_pm(comp_final)), mean
 
-                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w, f_arrays):  # brem0 unused
-                    read = _reader(f_arrays)
-                    carry_f, (positions, dlog_boundary, comp_types), field = _save_scan(
-                        interval_pm, (r0_w, r0_w, key_w, comp0_w, _work0()), n_t - 1, read, _f_every)
-                    # save 0 is the start: the initial position, no contact yet, the initial pool
-                    positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-                    dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
-                    comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
-                    z = jnp.zeros_like(dlog_boundary)                       # placeholder bound_frac
-                    return positions, dlog_boundary, comp_types, z, carry_f[-1], _field_series(read, r0_w, field)
             else:
                 # ── MT path: bound_rem persists across saves ──
                 def interval_pm(carry, read):
                     r, r_uw, key, comp_id, bound_rem, work = carry
                     inner_init = (r, r_uw, key, jnp.float32(0.0), comp_id, bound_rem, jnp.float32(0.0), work)
                     (r_final, r_uw_final, key_final, dlog_accum, comp_final, bound_rem_f, bound_acc, work_f), mean = \
-                        _interval_scan(_inner_pm, inner_init, sub_steps, read)
+                        _iscan_pm(_inner_pm, inner_init, sub_steps, read)
                     bound_frac = bound_acc / jnp.float32(sub_steps)
                     return (r_final, r_uw_final, key_final, comp_final, bound_rem_f, work_f), \
                            (r_uw_final, dlog_accum, _compress_comp_pm(comp_final), bound_frac), mean
-
-                def simulate_one_walker_pm(r0_w, key_w, comp0_w, brem0_w, f_arrays):
-                    read = _reader(f_arrays)
-                    carry_f, (positions, dlog_boundary, comp_types, bound_frac), field = _save_scan(
-                        interval_pm, (r0_w, r0_w, key_w, comp0_w, brem0_w, _work0()), n_t - 1, read, _f_every)
-                    # save 0 is the start: the initial position, no contact yet, the initial pool and bound state
-                    positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-                    dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
-                    comp_types = jnp.concatenate([_compress_comp_pm(comp0_w)[None], comp_types])
-                    bound_frac = jnp.concatenate([(brem0_w > 0).astype(bound_frac.dtype)[None], bound_frac])
-                    return positions, dlog_boundary, comp_types, bound_frac, carry_f[-1], _field_series(read, r0_w, field)
-
-            _simulate_batch_pm_raw = cached_batch(
-                geometry, ("traj_packed_myelin", n_t, sub_steps, float(dt_sim), kappa_MT, dwell_time, _f_key),
-                lambda: jax.jit(jax.vmap(simulate_one_walker_pm, in_axes=(0, 0, 0, 0, None))))
-
-            def simulate_batch_pm(r0_b, keys_b, comp0_b, brem0_b):
-                pos, dlog, comp, bfrac, work_f, fs = _simulate_batch_pm_raw(r0_b, keys_b, comp0_b, brem0_b, _f_arrays)
-                _work_acc(work_f)
-                return pos, dlog, comp, bfrac, fs
 
         if record and not uses_myelin_traj:
             if has_permeability:
@@ -1860,36 +1806,11 @@ def simulate_trajectories(
             def interval_relax(carry, read):
                 r, key, side, bad, comp, work = carry
                 inner_init = (r, key, jnp.float32(0.0), jnp.float32(0.0), side, bad, comp, work)
-                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f, work_f), mean = _interval_scan(
+                (r_final, key_final, dlog_accum, comp_sum, side_f, bad_f, comp_f, work_f), mean = _iscan_relax(
                     inner_step_relax, inner_init, sub_steps, read)
                 # Fractional occupancy of pool 1 (the enclosed pool) over the saved interval.
                 comp_occ = comp_sum / jnp.float32(sub_steps)
                 return (r_final, key_final, side_f, bad_f, comp_f, work_f), (r_final, dlog_accum, comp_occ), mean
-
-            def simulate_one_walker_relax(r0_w, key_w, side_w, comp0_w, f_arrays):
-                read = _reader(f_arrays)
-                (_, _, _side_f, bad_f, _comp_f, work_f), (positions, dlog_boundary, comp_ids), field = _save_scan(
-                    interval_relax, (r0_w, key_w, side_w, jnp.int32(0), comp0_w, _work0()), n_t - 1, read, _f_every)
-                # save 0 is the start: the initial position, no contact yet, the initial occupancy
-                positions = jnp.concatenate([r0_w[None, :], positions], axis=0)
-                dlog_boundary = jnp.concatenate([jnp.zeros((1,), dlog_boundary.dtype), dlog_boundary])
-                comp_ids = jnp.concatenate([jnp.asarray(_pool2(comp0_w), comp_ids.dtype)[None], comp_ids])   # the same collapse as the kernel's
-                return positions, dlog_boundary, comp_ids, bad_f, work_f, _field_series(read, r0_w, field)
-
-            _simulate_batch_relax_raw = cached_batch(
-                geometry, ("traj_relax", n_t, sub_steps, float(dt_sim), diffusivity, _f_key, _counting),
-                lambda: jax.jit(jax.vmap(simulate_one_walker_relax, in_axes=(0, 0, 0, 0, None))))
-
-            def simulate_batch_relax(r0_b, keys_b):
-                comp0_b = jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32)
-                pos, dlog, comp, bad_f, work_f, fs = _simulate_batch_relax_raw(r0_b, keys_b, _side0(r0_b), comp0_b, _f_arrays)
-                _illegal_crossings[0] += int(jnp.sum(bad_f))
-                _work_acc(work_f)
-                return pos, dlog, comp, fs
-
-        _simulate_batch_raw = cached_batch(
-            geometry, ("traj", n_t, sub_steps, float(dt_sim), diffusivity, _f_key, _counting),
-            lambda: jax.jit(jax.vmap(simulate_one_walker, in_axes=(0, 0, 0, None))))
 
         # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
         # granted crossing change it thereafter (MC/DC's `initial_location`). The wrapper keeps
@@ -1906,12 +1827,6 @@ def simulate_trajectories(
         else:
             def _side0(r_b):
                 return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
-
-        def simulate_batch(r0_b, keys_b):
-            positions, _side_f, bad_f, work_f, fs = _simulate_batch_raw(r0_b, keys_b, _side0(r0_b), _f_arrays)
-            _illegal_crossings[0] += int(jnp.sum(bad_f))
-            _work_acc(work_f)
-            return positions, fs
 
         _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
 
@@ -1954,238 +1869,227 @@ def simulate_trajectories(
                                   "the burn-in cap; the saved walk may be under-equilibrated.",
                                   stacklevel=2)
 
-        all_batches = _Rows(n_walkers)                   # each channel written into one array as its batches arrive
-        all_dlog_batches = _Rows(n_walkers) if record else None
-        all_comp_batches = _Rows(n_walkers) if record else None
-        all_bound_batches = _Rows(n_walkers) if _mt_on else None
-        all_field_batches = _Rows(n_walkers) if _sampling else None
+        def _work_record():
+            """The refused-step count and the work record of the walk, with their warnings."""
+            # ── Refused-step report ─────────────────────────────────────────────────
+            # A step that leaves the walker in another pool WITHOUT a granted crossing is illegal by
+            # definition, and a geometry that detects one holds the walker still instead. So this is a
+            # diagnostic rather than a loss -- but a nonzero count is the engine refusing part of the
+            # walk, and the number belongs in the open where it can be seen.
+            illegal = int(_illegal_crossings[0])
+            if illegal:
+                import warnings
+                warnings.warn(
+                    f"{illegal} walker-steps were refused because they ended in another pool without a "
+                    f"granted crossing (permeability={permeability!r}); each walker was held at its own "
+                    f"position for that step. See PersistentWalk.illegal_crossings.",
+                    RuntimeWarning, stacklevel=3)
 
-        # compress=K: each batch leaves the device as the pack's own C0/C2 coefficients (two exact endpoints and K
-        # sine bands of the bridge per axis; the cumulative local time in the same form), so the host holds a
-        # batch of raw positions at a time and the walk at K+2 numbers per axis per walker
-        _compress = compress is not None
-        _cx = {"K": int(compress) if _compress else 0, "n_t": None}
-        all_blt_endpoints = _Rows(n_walkers) if (_compress and record) else None
-        all_blt_starts = _Rows(n_walkers) if (_compress and record) else None
-        if _compress and uses_myelin_traj:
-            raise NotImplementedError("compress= is not wired for myelinated-cylinder walks (the MT bound channel has "
-                                      "no bridge form); walk them uncompressed and pack with build_replay_pack.")
-        from ..replay.compression import bridge_coefficients_device, boundary_coefficients_device
+            # ── The work record: what the walk cost in wall encounters, for a cost model per substrate class
+            # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
+            # trajectories as any larger one, by the loop's own rule. A myelinated geometry has no `bounce_loop`
+            # of its own (its loop is sized per walk, from the step's `step_max`, inside the kernel build
+            # -- physics.make_myelin_substep / geometry.myelin.concentric_wall_kernel -- and carried on the
+            # trajectory step function instead); read THAT loop when the geometry has none, so the record names
+            # the budget that actually ran rather than reporting None for a walk that did use one.
+            _loop = geometry.bounce_loop
+            if _loop is None and step_fn_traj_pm is not None:
+                _loop = step_fn_traj_pm.bounce_loop
+            _counted = _counting and _work[3]
+            work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
+                        backend=_backend_name,
+                        step_rule=dict(step_rule, dt_p=float(dt_sim), sub_steps=int(sub_steps)),
+                        bounce_budget=(None if _loop is None else int(_loop.budget)),
+                        n_hits=(int(_work[0]) if _counted else None),
+                        n_crossings=(int(_work[1]) if _counted else None),
+                        exhausted_steps=(int(_work[2]) if _work[3] else None))
+            if _work[3] and _work[2]:
+                import warnings
+                warnings.warn(
+                    f"{_work[2]} walker-steps exhausted the bounce budget of {work['bounce_budget']} with path left "
+                    f"untested; the budget is too small for this substrate at this step. See PersistentWalk.work.",
+                    RuntimeWarning, stacklevel=3)
 
-        def _compress_pos(pos_dev):
-            """The batch's positions in the pack's C0 form, ``(b, K+2, 3)``, formed on the device: only the
-            coefficients cross to the host (#446)."""
-            C, K = bridge_coefficients_device(pos_dev, _cx["K"])
-            _cx["K"], _cx["n_t"] = int(K), int(pos_dev.shape[1])
-            return C
+            return illegal, work
 
         if _backend is not None:
             # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
-            # never fallen back from, and the backend may refuse the walk itself
-            _refusal = _backend_refusal(_backend, _backend_name, res, geometry)
-            if _refusal:
-                raise ValueError(_refusal)
-            _req = res.request
+            # never fallen back from -- the band accumulation is one of them until dmipy-sim-cuda#73
+            raise ValueError(_backend_refusal(_backend, _backend_name, res, geometry))
 
-            def _backend_batch(r0_b, keys_b):
-                res = _backend.walk_batch(_req, np.asarray(r0_b, np.float32), np.asarray(keys_b))
-                _illegal_crossings[0] += int(np.asarray(res.illegal, np.int64).sum())
-                _work_acc(res.work)
-                return res
+        from .accumulate import ring_scan, coefficient_form, PRECISION, ACCUMULATION, RING
+        from ..replay.compression import cosine_band_scale
+        from ..coefficient_walk import CoefficientWalk
+        K, m = int(res.K), int(res.block_order)
+        n_win = int(res.n_windows)
+        n_blocks = int(n_t) - 1
+        n_bw = n_blocks // n_win                                  # blocks per window
+        T_win = n_bw * float(dt_actual)
+        scale = jnp.asarray(cosine_band_scale(K, T_win), jnp.float32)
+        n_raw = int(min(max(int(raw_subset), 0), n_walkers))
+        # which occupancy a block emits: the track where a walker can change pool (a permeable wall, a binding walk),
+        # else nothing -- the walker's start label, the blocks that disagree with it counted
+        if record and uses_myelin_traj:
+            kind = "pm"
+            crossing = bool(_mt_on) or bool(np.any(np.asarray(geometry._kappa_inner_jax) > 0)) \
+                or bool(np.any(np.asarray(geometry._kappa_outer_jax) > 0))
+            pos_of = lambda c: c[1]
+        elif record:
+            kind, crossing, pos_of = "relax", bool(has_permeability), (lambda c: c[0])
+        else:
+            kind, crossing, pos_of = "gen", False, (lambda c: c[0])
+        _f_nch = int(_f_arrays[0].shape[0]) if _sampling else 0
 
-        for batch_idx, (start, end) in enumerate(run.batches(n_walkers, walker_batch_size)):
-            batch_size = end - start
+        def _walker(raw):
+            """One walker's walk, window by window: per window its coefficients, contact, quadratic variation and the
+            float32 chain's residual; per block what the walk keeps there (the occupancy of a walker that can change
+            pool, the bound fraction, the field's block means, and for the raw subset its positions, contact and
+            label at every block end)."""
+            def one(r0_w, key_w, side_w, comp0_w, brem0_w, f_arrays):
+                read = _reader(f_arrays)
+                if kind == "gen":
+                    carry0, interval_fn, has_blt = (r0_w, key_w, side_w, jnp.int32(0), _work0()), interval, False
+                    lab0 = jnp.int8(0)
+                    emit = (lambda ys: (ys, None, None, None, None)) if raw else None
+                    count = None
+                elif kind == "relax":
+                    carry0, interval_fn, has_blt = (r0_w, key_w, side_w, jnp.int32(0), comp0_w, _work0()), interval_relax, True
+                    lab0 = _pool2(comp0_w)
+                    emit = ((lambda ys: (ys[0] if raw else None, ys[1] if raw else None, ys[2] if (raw or crossing) else None,
+                                         None, None)) if (raw or crossing) else None)
+                    count = None if crossing else (lambda ys: jnp.rint(ys[2]) != lab0)
+                else:
+                    carry0 = ((r0_w, r0_w, key_w, comp0_w, brem0_w, _work0()) if _mt_on
+                              else (r0_w, r0_w, key_w, comp0_w, _work0()))
+                    interval_fn, has_blt = interval_pm, True
+                    lab0 = _compress_comp_pm(comp0_w)
+                    emit = ((lambda ys: (ys[0] if raw else None, ys[1] if raw else None, ys[2] if (raw or crossing) else None,
+                                         ys[3] if _mt_on else None, None)) if (raw or crossing or _mt_on) else None)
+                    count = None if crossing else (lambda ys: ys[2] != lab0)
 
-            current_r0 = r0_all[start:end]
-            current_keys = walker_keys_all[start:end]
-            if record and uses_myelin_traj:
-                current_comp0 = comp0_all[start:end]
-                current_brem0 = brem0_all[start:end]
+                def window(c, w):
+                    r_start = pos_of(c)
+                    c, ap, ab, e, n, (qp, qb), f = ring_scan(interval_fn, c, n_bw, K, m, has_blt=has_blt, emit=emit,
+                                                             count=count, read=read, every=_f_every, offset=w * n_bw)
+                    C, resid = coefficient_form(r_start, pos_of(c), ap, scale)
+                    blt = (jnp.zeros((0,), jnp.float32), jnp.float32(0.0)) if not has_blt else (scale * ab[1:], ab[0])
+                    return c, (C, resid, blt, qp, (jnp.float32(0.0) if qb is None else qb),
+                               (jnp.int32(0) if n is None else n), e, f)
 
-            success = False
-            while not success:
-                try:
-                    if record and uses_myelin_traj:
-                        pos_f32, dlog_f32, comp_f32, bfrac_f32, fs_f32 = simulate_batch_pm(
-                            current_r0, current_keys, current_comp0, current_brem0)
-                        all_batches.append(np.array(pos_f32).astype(_sdt))
-                        all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
-                        all_comp_batches.append(np.array(comp_f32).astype(np.int8))
-                        if _mt_on:
-                            all_bound_batches.append(np.array(bfrac_f32).astype(_sdt))
-                    elif record:
-                        if _backend is not None:
-                            _res = _backend_batch(current_r0, current_keys)
-                            pos_f32, dlog_f32, comp_f32, fs_f32 = _res.positions, _res.boundary_local_time, _res.compartment, None
-                        else:
-                            pos_f32, dlog_f32, comp_f32, fs_f32 = simulate_batch_relax(current_r0, current_keys)
-                        if _compress:
-                            all_batches.append(_compress_pos(pos_f32))
-                            # the cumulative local time in the pack's C2 form, formed on the device
-                            _start, _end, _bmodes = boundary_coefficients_device(dlog_f32, _cx["K"])
-                            all_blt_starts.append(_start)
-                            all_blt_endpoints.append(_end)
-                            all_dlog_batches.append(_bmodes)
-                        else:
-                            all_batches.append(np.array(pos_f32).astype(_sdt))
-                            all_dlog_batches.append(np.array(dlog_f32).astype(_sdt))
-                        # Permeable: fractional occupancy; else a discrete label, ROUNDED: the occupancy
-                        # is comp_sum / sub_steps and XLA may form it as comp_sum * (1/sub_steps), which
-                        # for some sub-step counts is 0.99999994 -- truncating that to int8 labelled every
-                        # intra walker "extra" (measured at sub_steps = 97).
-                        all_comp_batches.append(np.array(comp_f32).astype(_sdt) if has_permeability
-                                                else np.rint(np.array(comp_f32)).astype(np.int8))
-                    else:
-                        if _backend is not None:
-                            positions_f32, fs_f32 = _backend_batch(current_r0, current_keys).positions, None
-                        else:
-                            positions_f32, fs_f32 = simulate_batch(current_r0, current_keys)
-                        if _compress:
-                            all_batches.append(_compress_pos(positions_f32))
-                        else:
-                            all_batches.append(np.array(positions_f32).astype(_sdt))
-                    if _sampling:
-                        all_field_batches.append(np.asarray(fs_f32, np.float32))
-                    success = True
-                except Exception as e:
-                    err_str = str(e)
-                    if ("OOM" in err_str or "out of memory" in err_str.lower()
-                            or "RESOURCE_EXHAUSTED" in err_str):
-                        if _compress:
-                            # The compressed path already keeps peak device memory low; a
-                            # further sub-batch split here would need to compress each sub-slice
-                            # too. Not wired yet — surface a clear message instead of raw OOM.
-                            raise RuntimeError(
-                                "compress= hit GPU OOM within a walker batch; lower "
-                                "walker_batch_size (the compressed sub-batch fallback is not "
-                                "yet implemented).") from e
-                        new_sub_batch = batch_size // 2
-                        if new_sub_batch < 1000:
-                            raise RuntimeError(f"Batch size too small after OOM: {e}") from e
-                        log.info(f"  OOM: halving sub-batch to {new_sub_batch}")
-                        sub_pos_list = []
-                        sub_dlog_list = [] if record else None
-                        sub_comp_list = [] if record else None
-                        sub_bound_list = [] if _mt_on else None
-                        sub_field_list = [] if _sampling else None
-                        for ss in range(0, batch_size, new_sub_batch):
-                            se = min(ss + new_sub_batch, batch_size)
-                            if record and uses_myelin_traj:
-                                sp, sd, sc, sbf, sfs = simulate_batch_pm(
-                                    current_r0[ss:se], current_keys[ss:se],
-                                    current_comp0[ss:se], current_brem0[ss:se])
-                                sub_pos_list.append(np.array(sp).astype(_sdt))
-                                sub_dlog_list.append(np.array(sd).astype(_sdt))
-                                sub_comp_list.append(np.array(sc).astype(np.int8))
-                                if _mt_on:
-                                    sub_bound_list.append(np.array(sbf).astype(_sdt))
-                            elif record:
-                                if _backend is not None:
-                                    _res = _backend_batch(current_r0[ss:se], current_keys[ss:se])
-                                    sp, sd, sc, sfs = _res.positions, _res.boundary_local_time, _res.compartment, None
-                                else:
-                                    sp, sd, sc, sfs = simulate_batch_relax(
-                                        current_r0[ss:se], current_keys[ss:se])
-                                sub_pos_list.append(np.array(sp).astype(_sdt))
-                                sub_dlog_list.append(np.array(sd).astype(_sdt))
-                                sub_comp_list.append(np.array(sc).astype(_sdt) if has_permeability
-                                                     else np.rint(np.array(sc)).astype(np.int8))
-                            else:
-                                if _backend is not None:
-                                    sp, sfs = _backend_batch(current_r0[ss:se], current_keys[ss:se]).positions, None
-                                else:
-                                    sp, sfs = simulate_batch(current_r0[ss:se], current_keys[ss:se])
-                                sub_pos_list.append(np.array(sp).astype(_sdt))
-                            if _sampling:
-                                sub_field_list.append(np.asarray(sfs, np.float32))
-                        all_batches.append(np.concatenate(sub_pos_list, axis=0))
-                        if record:
-                            all_dlog_batches.append(np.concatenate(sub_dlog_list, axis=0))
-                            all_comp_batches.append(np.concatenate(sub_comp_list, axis=0))
-                            if _mt_on:
-                                all_bound_batches.append(np.concatenate(sub_bound_list, axis=0))
-                        if _sampling:
-                            all_field_batches.append(np.concatenate(sub_field_list, axis=0))
-                        success = True
-                    else:
-                        raise
+                c, (C, resid, blt, qp, qb, n, e, f) = jax.lax.scan(window, carry0, jnp.arange(n_win, dtype=jnp.int32))
+                flat = lambda a: None if a is None else a.reshape((n_win * n_bw,) + a.shape[2:])
+                e = (None,) * 5 if e is None else tuple(flat(x) for x in e)
+                z = jnp.zeros((0,), jnp.float32)
+                pos = jnp.concatenate([r0_w[None], e[0]], axis=0).astype(jnp.float32) if raw else z     # stored float32
+                dlog = jnp.concatenate([jnp.zeros((1,), jnp.float32), e[1]]).astype(jnp.float32) if (raw and has_blt) else z
+                occ = jnp.concatenate([jnp.asarray(lab0, e[2].dtype)[None], e[2]]) if e[2] is not None else z
+                bf = jnp.concatenate([(brem0_w > 0).astype(jnp.float32)[None], e[3]]) if e[3] is not None else z
+                fs = jnp.concatenate([read(r0_w)[None], flat(f)[_f_every - 1::_f_every]], axis=0) if read is not None else z
+                work_f = c[-1]
+                bad = c[3] if kind in ("gen", "relax") else jnp.int32(0)
+                return (C, resid, blt[1], blt[0], jnp.asarray(lab0).astype(jnp.int8), occ, bf, fs, pos, dlog, qp, qb,
+                        n.sum(), bad, work_f)
+            return one
 
-        # ── Refused-step report ─────────────────────────────────────────────────
-        # A step that leaves the walker in another pool WITHOUT a granted crossing is illegal by
-        # definition, and a geometry that detects one holds the walker still instead. So this is a
-        # diagnostic rather than a loss -- but a nonzero count is the engine refusing part of the
-        # walk, and the number belongs in the open where it can be seen.
-        illegal = int(_illegal_crossings[0])
-        if illegal:
+        def _batch_fn(raw):
+            return cached_batch(geometry, ("coefficient walk", kind, raw, crossing, n_t, n_win, sub_steps, float(dt_sim),
+                                           diffusivity, K, m, kappa_MT, dwell_time, _counting, _f_key),
+                                lambda: jax.jit(jax.vmap(_walker(raw), in_axes=(0, 0, 0, 0, 0, None))))
+
+        names = ("C", "resid", "blt_end", "blt_bands", "lab", "occ", "bfrac", "fs", "pos", "dlog", "qv_pos", "qv_blt")
+        rows = {k: _Rows(n_walkers) for k in names}
+        raw_rows = {k: _Rows(n_raw) for k in ("pos", "dlog", "occ")} if n_raw else None
+        dev = [0]
+
+        def _call(a, b, raw):
+            r0_b = r0_all[a:b]
+            comp0_b = (comp0_all[a:b] if kind == "pm" else
+                       jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32) if kind == "relax"
+                       else jnp.zeros((b - a,), jnp.int32))
+            out = _batch_fn(raw)(r0_b, walker_keys_all[a:b], _side0(r0_b), comp0_b, brem0_all[a:b], _f_arrays)
+            *arrs, n_dev, bad_f, work_f = out
+            _illegal_crossings[0] += int(jnp.sum(bad_f))
+            _work_acc(work_f)
+            dev[0] += int(jnp.sum(n_dev))
+            return {k: np.asarray(v) for k, v in zip(names, arrs)}
+
+        def _run(a, b, raw):
+            try:
+                return _call(a, b, raw)
+            except Exception as e:
+                msg = str(e)
+                if not ("OOM" in msg or "out of memory" in msg.lower() or "RESOURCE_EXHAUSTED" in msg) or b - a < 2000:
+                    raise
+                mid = (a + b) // 2
+                log.info(f"  OOM: halving the batch to {mid - a}")
+                lo, hi = _run(a, mid, raw), _run(mid, b, raw)
+                return {k: np.concatenate([lo[k], hi[k]], axis=0) for k in names}
+
+        for start, end in run.batches(n_walkers, walker_batch_size):
+            pieces = ([(start, min(end, n_raw), True)] if start < n_raw else []) + \
+                     ([(max(start, n_raw), end, False)] if end > n_raw else [])
+            for a, b, raw in pieces:
+                got = _run(a, b, raw)
+                for k in names:
+                    if k in ("pos", "dlog") or (k == "occ" and not crossing) or (k == "bfrac" and not _mt_on) \
+                            or (k == "fs" and not _sampling):
+                        continue
+                    rows[k].append(got[k])
+                if raw:
+                    raw_rows["pos"].append(np.asarray(got["pos"], np.float32))
+                    raw_rows["dlog"].append(np.asarray(got["dlog"], np.float32))
+                    o = np.asarray(got["occ"])                       # converted per batch: the walk held once
+                    raw_rows["occ"].append(o.astype(np.float32) if (crossing and kind == "relax") else np.rint(o).astype(np.int8))
+        illegal, work = _work_record()
+        resid = rows["resid"].array()
+        disp = rows["C"].array()[:, :, 1, :]
+        n_dev = int(dev[0])
+        if n_dev:
             import warnings
-            warnings.warn(
-                f"{illegal} walker-steps were refused because they ended in another pool without a "
-                f"granted crossing (permeability={permeability!r}); each walker was held at its own "
-                f"position for that step. See PersistentWalk.illegal_crossings.",
-                RuntimeWarning, stacklevel=2)
-
-        # ── The work record: what the walk cost in wall encounters, for a cost model per substrate class
-        # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
-        # trajectories as any larger one, by the loop's own rule. A myelinated geometry has no `bounce_loop`
-        # of its own (its loop is sized per walk, from the step's `step_max`, inside the kernel build
-        # -- physics.make_myelin_substep / geometry.myelin.concentric_wall_kernel -- and carried on the
-        # trajectory step function instead); read THAT loop when the geometry has none, so the record names
-        # the budget that actually ran rather than reporting None for a walk that did use one.
-        _loop = geometry.bounce_loop
-        if _loop is None and step_fn_traj_pm is not None:
-            _loop = step_fn_traj_pm.bounce_loop
-        _counted = _counting and _work[3]
-        work = dict(walker_steps=int(n_walkers) * (int(n_t) - 1) * int(sub_steps),
-                    backend=_backend_name,
-                    step_rule=dict(step_rule, dt_p=float(dt_sim), sub_steps=int(sub_steps)),
-                    bounce_budget=(None if _loop is None else int(_loop.budget)),
-                    n_hits=(int(_work[0]) if _counted else None),
-                    n_crossings=(int(_work[1]) if _counted else None),
-                    exhausted_steps=(int(_work[2]) if _work[3] else None))
-        if _work[3] and _work[2]:
-            import warnings
-            warnings.warn(
-                f"{_work[2]} walker-steps exhausted the bounce budget of {work['bounce_budget']} with path left "
-                f"untested; the budget is too small for this substrate at this step. See PersistentWalk.work.",
-                RuntimeWarning, stacklevel=2)
-
-        if _compress:
-            # the walk in the pack's own coefficient form: `pos_modes` holds [r(0), r(T) - r(0), the K sine bands]
-            # per axis, which `build_replay_pack` stores as they are and `compression.decode` expands
-            master = {
-                "compressed": True, "method": "bridge_dst", "K": _cx["K"],
-                "n_t": int(_cx["n_t"]), "dt_traj": dt_actual,
-                "sub_steps": sub_steps, "dt_sim": dt_sim,
-                "pos_modes": all_batches.array(),        # (N, K+2, 3) f32
-            }
-            if record:
-                master["blt_endpoint"] = all_blt_endpoints.array()  # (N,)
-                master["blt_start"] = all_blt_starts.array()        # (N,)
-                master["blt_modes"] = all_dlog_batches.array()      # (N, K)
-                master["comp_traj"] = all_comp_batches.array()      # (N, n_t)
-            return master
-
-        D_walk = None if diffusivity is None else float(diffusivity)
-        walk = PersistentWalk(all_batches.array(), float(dt_actual), int(sub_steps),
-                          float(dt_sim), illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk,
-                          geometry=geometry, work=work)
+            warnings.warn(f"{n_dev} walker-blocks ended on a pool label other than the walker's own on a substrate no walker "
+                          f"leaves its pool in; the walk records each walker's start label (CoefficientWalk.compartment)",
+                          RuntimeWarning, stacklevel=2)
+        records_surface = record and (has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated)
+        qv_p = rows["qv_pos"].array()
+        block = dict(h=float(dt_actual), m=m, precision=PRECISION, n_blocks=n_blocks, rule=res.block_rule, ring=int(RING),
+                     accumulation=ACCUMULATION,
+                     k0_residual_m=float(np.abs(resid).max()) if resid.size else 0.0,
+                     k0_residual_relative=(float(np.abs(resid).max() / max(np.sqrt(np.mean(disp ** 2)), 1e-300))
+                                           if resid.size else 0.0),
+                     quadratic_variation=dict(
+                         positions_mean_m2=[float(x) for x in qv_p.sum(axis=1).mean(axis=0)],
+                         positions_over_2DT=([float(x) / (2.0 * float(diffusivity) * float(T_max)) for x in qv_p.sum(axis=1).mean(axis=0)]
+                                             if diffusivity else None),
+                         boundary_mean_m2=(float(rows["qv_blt"].array().sum(axis=1).mean()) if records_surface else None)))
+        work = dict(work, block=block, label_deviations=n_dev)
+        comp = bfrac = None
+        raw_comp = None
         if record:
-            # a geometry without a log-weight reflection accumulates no boundary local time: the channel is then
-            # NOT a record of zero contact but the absence of a record, and a pack built from it must not claim the
-            # surface tier (a replay at rho would return an unattenuated signal without a word)
-            records_surface = has_reflect_with_log_weight or geometry._is_myelinated or geometry._is_packed_myelinated
-            blt = all_dlog_batches.array() if records_surface else None   # the myelin kernels accumulate it too
-            walk = PersistentWalk(walk.positions, walk.dt, walk.sub_steps, walk.dt_sim,
-                              boundary_local_time=blt,
-                              compartment=all_comp_batches.array(),
-                              bound_frac=(all_bound_batches.array() if _mt_on else None),
-                              illegal_crossings=illegal, seed=int(seed), diffusivity=D_walk, geometry=geometry, work=work)
-        if _sampling:
-            import dataclasses
-            walk = dataclasses.replace(walk, field_basis=field_basis, field_samples=all_field_batches.array(),
-                                       field_sample_every=_f_every)
-        object.__setattr__(walk, "run", run)
-        return walk
+            comp = rows["occ"].array() if crossing else rows["lab"].array().astype(np.int8)
+            if crossing and kind == "pm":
+                comp = comp.astype(np.int8)
+            if _mt_on:
+                bfrac = rows["bfrac"].array().astype(np.float32)
+            if n_raw:
+                raw_comp = raw_rows["occ"].array()
+        cw = CoefficientWalk(
+            position_coeffs=np.asarray(rows["C"].array(), np.float32), T=float(T_max), K=K, m=m, block=block,
+            n_windows=n_win, dt_sim=float(dt_sim), sub_steps=int(sub_steps),
+            boundary_endpoint=(rows["blt_end"].array().astype(np.float32) if records_surface else None),
+            boundary_bands=(rows["blt_bands"].array().astype(np.float32) if records_surface else None),
+            compartment=comp, bound_frac=bfrac,
+            field_basis=(field_basis if _sampling else None),
+            field_samples=(rows["fs"].array().astype(np.float32) if _sampling else None),
+            field_sample_every=_f_every,
+            raw_positions=(None if not n_raw else np.asarray(raw_rows["pos"].array(), np.float32)),
+            raw_boundary=(None if not (n_raw and records_surface) else raw_rows["dlog"].array()),
+            raw_compartment=raw_comp,
+            qv_positions=qv_p.astype(np.float32),
+            qv_boundary=(rows["qv_blt"].array().astype(np.float32) if records_surface else None),
+            illegal_crossings=illegal, seed=int(seed), diffusivity=(None if diffusivity is None else float(diffusivity)),
+            geometry=geometry, work=work)
+        object.__setattr__(cw, "run", run)
+        return cw
 
 
 def certify_bounce_budget(geometry, n_walkers, diffusivity, T_max, dt_save, *, margin=1, seed=0, **walk_kwargs):

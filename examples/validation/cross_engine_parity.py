@@ -124,7 +124,8 @@ def mcdc_walk(data, amp, wL, n, *, n_t=MCDC_N_T, batch=25_000, require_gpu=None,
     r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), n)
     dt = MCDC_TE / (n_t - 1)
     return d.simulate_trajectories(int(n), MCDC_D, geom, T_max=MCDC_TE, dt_save=dt, seed=SEED, tiers="all",
-                                   r0=r0, walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps)
+                                   r0=r0, walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps,
+                                   window_T=MCDC_TE, raw_subset=int(n)).saves()
 
 
 def mcdc_reference(data, amp, wL, seq):
@@ -227,7 +228,7 @@ def disimpy_walk(data, n, *, n_t=DISIMPY_N_T, batch=50_000, require_gpu=None, su
     dt = DISIMPY_TE / (int(n_t) - 1)
     return d.simulate_trajectories(int(n), DISIMPY_D, disimpy_geometry(data), T_max=DISIMPY_TE, dt_save=dt,
                                    seed=SEED, tiers="all", walker_batch_size=batch, require_gpu=require_gpu,
-                                   sub_steps=sub_steps)
+                                   sub_steps=sub_steps, window_T=DISIMPY_TE, raw_subset=int(n)).saves()
 
 
 def disimpy_analytic_walk(n, *, n_t=DISIMPY_N_T, require_gpu=None, sub_steps=None):
@@ -241,7 +242,8 @@ def disimpy_analytic_walk(n, *, n_t=DISIMPY_N_T, require_gpu=None, sub_steps=Non
     from dmipy_sim import Cylinder
     return d.simulate_trajectories(int(n), DISIMPY_D, Cylinder(radius=DISIMPY_RADIUS, orientation=(0, 0, 1)),
                                    T_max=DISIMPY_TE, dt_save=DISIMPY_TE / (int(n_t) - 1), seed=SEED,
-                                   tiers="all", require_gpu=require_gpu, sub_steps=sub_steps)
+                                   tiers="all", require_gpu=require_gpu, sub_steps=sub_steps, window_T=DISIMPY_TE,
+                                   raw_subset=int(n)).saves()
 
 
 def disimpy_reference(data):

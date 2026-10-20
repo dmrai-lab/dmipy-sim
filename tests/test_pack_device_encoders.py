@@ -11,8 +11,8 @@ from dmipy_sim.replay.compression import encode_bridge_dst, encode_boundary_brid
 def test_the_device_bridge_matches_the_numpy_route():
     rng = np.random.default_rng(3)
     X = np.cumsum(rng.normal(size=(300, 257, 3)).astype(np.float32) * 1e-7, axis=1) + 5e-6
-    a_np, m_np, _ = encode_bridge_dst(X, 32, device="numpy")
-    a_dv, m_dv, _ = encode_bridge_dst(X, 32, device="jax")
+    a_np, m_np, _ = encode_bridge_dst(X, 32, 1e-4, device="numpy")
+    a_dv, m_dv, _ = encode_bridge_dst(X, 32, 1e-4, device="jax")
     assert m_np == m_dv
     coeffs = lambda a: np.stack([np.asarray(a[k], np.float64) for k in ("pos_x", "pos_y", "pos_z")], axis=-1)   # (n_w, K+2, 3)
     C_np = coeffs(a_np); C_dv = coeffs(a_dv)
@@ -24,8 +24,8 @@ def test_the_device_bridge_matches_the_numpy_route():
 def test_the_device_local_time_matches_the_numpy_route():
     rng = np.random.default_rng(4)
     dlog = -(rng.random((300, 257)) < 0.2).astype(np.float32) * rng.random((300, 257)).astype(np.float32) * 1e-3
-    a_np, m_np = encode_boundary_bridge(dlog, 16, device="numpy")
-    a_dv, m_dv = encode_boundary_bridge(dlog, 16, device="jax")
+    a_np, m_np = encode_boundary_bridge(dlog, 16, 1e-4, device="numpy")
+    a_dv, m_dv = encode_boundary_bridge(dlog, 16, 1e-4, device="jax")
     assert m_np == m_dv
     np.testing.assert_allclose(a_dv["blt_endpoint"], a_np["blt_endpoint"], rtol=2e-6)
     np.testing.assert_array_equal(a_dv["blt_start"], a_np["blt_start"])
@@ -88,7 +88,7 @@ def test_voxel_floor_coded_device_matches_numpy_and_uses_the_vectorised_census()
     rng = np.random.default_rng(13)
     n_w, n_t, K = 400, 65, 8
     X = np.cumsum(rng.normal(0, 1e-7, (n_w, n_t, 3)).astype(np.float32), axis=1) + 5e-6
-    arrays, _, _ = encode_bridge_dst(X, K, device="numpy")
+    arrays, _, _ = encode_bridge_dst(X, K, 1e-4, device="numpy")
     C = read_position_coeffs(arrays, dtype=np.float64)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
     comp = np.zeros((n_w, n_t), np.int8)

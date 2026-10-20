@@ -95,8 +95,8 @@ def test_an_analytic_geometry_is_walked_in_its_own_frame_and_the_pack_says_so():
     provenance, and a pack built from its walk declares the identity frame -- the pose is a replay knob."""
     g = d.Cylinder(radius=2e-6, orientation=(1, 0, 0))
     assert np.allclose(g.spec.frame.axis, [0, 0, 1]) and any("pose" in t for t in g.spec.provenance["transformations"])
-    walk = d.simulate_trajectories(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False)
-    P = np.asarray(walk.positions)
+    walk = d.simulate_trajectories(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False, raw_subset=200)
+    P = np.asarray(walk.raw_positions)
     assert (np.hypot(P[..., 0], P[..., 1]) < 2e-6).all()                               # confined in x-y, free along z
     pk = build_replay_pack(walk, id="t/x", license="x", citation="x", K=4)
     F = np.asarray(pk.meta["walk_params"]["substrate_frame"])
@@ -144,8 +144,8 @@ def test_a_curved_tubes_structural_frame_builds_despite_the_walks_own_drifting_a
     line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
     g = d.CurvedCylinder(line, 2e-6)
     assert g.spec.frame.source == "structural" and np.allclose(g.spec.frame.axis, [0, 0, 1], atol=1e-6)
-    walk = d.simulate_trajectories(300, 2e-9, g, 5e-3, 5e-4, seed=2, require_gpu=False)
-    walk_angle = check_frame_against_walk(np.asarray(walk.positions), np.eye(3))
+    walk = d.simulate_trajectories(300, 2e-9, g, 5e-3, 5e-4, seed=2, require_gpu=False, raw_subset=300)
+    walk_angle = check_frame_against_walk(np.asarray(walk.raw_positions), np.eye(3))
     assert walk_angle > 5.0                            # the walk-based check would have refused this walk
     pk = build_replay_pack(walk, id="t/curved-structural", license="x", citation="x", K=4)
     assert np.allclose(pk.frame_axis, [0, 0, 1], atol=1e-5)

@@ -272,13 +272,12 @@ def _three_strands(tmp):
 
 @pytest.fixture(scope="module")
 def field_pack(tmp_path_factory):
-    """A strand pack with the path channel (C3), from the three-strand fixture with a sheath; the field read at
-    save resolution (fill_field), since this walk takes no adaptive step."""
-    from dmipy_sim.spec import walk_spec, fill_field
+    """A strand pack with the path channel (C3), from the three-strand fixture with a sheath; the field sampled in
+    the walk with adaptive steps."""
+    from dmipy_sim.spec import walk_spec
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
-    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False)
-    w = fill_field(w, w.field_basis)
+    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True)
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
 
 
