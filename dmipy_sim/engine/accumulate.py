@@ -270,6 +270,7 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
                reads_per_block=int(steps // n_read), at_step=bool(n_read == 1 and dt_rule < step_s), B0=float(B0), chi=float(chi),
                floor=float(floor), T_e=float(T_e), step_s=step_s, constant=READ_CONSTANT,
                constants=(None if constants is None else [float(x) for x in constants]),
+               constants_measured=bool(measured is not None),
                pools={str(name): dict(walkers=int(n), qv_increments=[float(x) for x in np.asarray(qv, np.float64).reshape(-1)],
                                       dt_f_rule=finite(rules[name]))
                       for name, (qv, n) in pools.items()})
