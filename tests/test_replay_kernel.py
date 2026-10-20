@@ -179,7 +179,7 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
     arrays, meta = _stored_path(traj, 16, DT)
     n_w = traj.shape[0]
     dlog = -np.abs(np.random.default_rng(0).normal(0, 1e-6, (n_w, N_T)))
-    B = np.cumsum(dlog, axis=1)                                       # the cumulative contact, its bridge at the saves
+    B = np.cumsum(dlog, axis=1)                                       # the cumulative contact at the block ends
     a2, cm = cx.encode_boundary_bands(np.zeros(n_w), B[:, -1], _order0_bands(B, 16, DT), T=meta["T"])
     arrays = {**arrays, **a2, "spin_weights": np.ones(n_w)}
     W = compile_scheme(_bipolar(), DT, 16)
@@ -189,8 +189,6 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
                                                arrays["spin_weights"], W, surface_logw=slw)))
     np.testing.assert_allclose(E_jx, E_np, rtol=1e-5)
     assert E_np[0] < replay_signal(arrays, W)[0]                      # the knob bites
-    with pytest.raises(TypeError):
-        replay_signal_jax(cx.read_position_coeffs(arrays), arrays["spin_weights"], W, blt_dct=dlog)
 
 
 # ── one field gate ────────────────────────────────────────────────────────────────────────

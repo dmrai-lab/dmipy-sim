@@ -339,7 +339,7 @@ dmipy_sim/
   sequences/    builders (pgse, pgste, ogse, cpmg, gre, ste, pte, from_waveform, ...), assemble (the mechanics), pulseq
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)
   substrate/    Substrate (calibrated white matter), biophysical constants
-  compartments.py  persistent_walk.py  constants.py   viz/  io/  math/
+  compartments.py  coefficient_walk.py  constants.py   viz/  io/  math/
 ```
 
 `CLAUDE.md` is the operational guide for agents and contributors: the geometry contract, the step

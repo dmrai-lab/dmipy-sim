@@ -30,7 +30,7 @@ does not grow with the block count. The bands are the projections of each walker
 T)`, and the pack is certified without a raw walk: the truncation from the free band variances, the block quadrature
 (`rel(m, h)` times each channel's measured quadratic variation), the container's quantisation and the split-half floor
 read from the coefficients. `raw_subset=n` keeps the first `n` walkers' block ends beside the bands
-(`walk.saves()`, a dense view that is never a pack's input), for a certificate measured on them
+(`walk.raw_positions`, `raw_boundary`, ...: the walk's own arrays, never a pack's input), for a certificate measured on them
 (`fidelity="measured"`: positions, contact, field path and Bloch) or a picture of the paths.
 
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
