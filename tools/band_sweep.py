@@ -86,7 +86,7 @@ def sweep_c3(a):
     for label, knob in cases:
         t0 = time.time()
         pk = build_replay_pack(walk, id=f"c3/{label}", K=a.c3_K, license="x", citation="x", susc_path_K=Kp, susc_path_bits=knob, device="numpy")
-        pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+        pm = pk.meta["compression"]["channels"]["susc_field_basis"]
         B = sum(np.asarray(v).nbytes for k, v in pk.arrays.items() if k.startswith("susc_path_dct")) / pk.n_walkers
         f = pk.meta["fidelity"]
         mean = (sum((r["modes"][1] - r["modes"][0]) * r["bits"] for r in pm["container"]) / Kp) if pm.get("container") else float(pm["bits"])
