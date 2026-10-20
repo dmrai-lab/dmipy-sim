@@ -1518,6 +1518,34 @@ def _susc_path_bloch_fidelity(positions, series_raw, arrays, pm, gm, env, *, h, 
     return dict(err=float(err), floor=float(floor), n_pulses=n_p, n_walkers=k)
 
 
+def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=None, quadrature=0.0):
+    """The contact tier's WALK-FREE certificate (RPK.md 9.4 rule 4, 9.5.5): the surface-weighted signal ``<exp((rho2 /
+    D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the battery's gates, read from the STORED
+    bridge (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge` on the pack's own arrays) against the same
+    reading of the walk's float bands (the container's quantisation of the surface rows), plus the local time's
+    quadrature term ``quadrature`` (``err_quadrature_surface`` of :func:`_derived_certificate`); the floor the coded
+    split-half spread of the stored reading. ``(err, floor, quantisation, quadrature, rho2_list)``, the largest over
+    the rows; no raw path is read."""
+    n = int(np.asarray(endpoint).shape[0])
+    w = np.ones(n) if w is None else np.asarray(w, np.float64)
+    rhos = [float(r) for r in (env.get("rho2_list") or [1e-4])]
+    n_s = int(round(float(T) / float(h))) + 1
+    exact, meta_x = _cx.encode_boundary_bands(np.zeros(n, np.float32), np.asarray(endpoint, np.float32), np.asarray(bands, np.float64),
+                                              T=float(T), dtype=np.float64, container=None)
+    perm = np.random.RandomState(0).permutation(n); A, B = perm[:n // 2], perm[n // 2:]
+    wmean = lambda x, idx: float(np.sum(w[idx] * x[idx]) / np.sum(w[idx]))
+    quant = floor = 0.0
+    for rho in rhos:
+        r = rho / float(D)
+        for gate in [None] + _battery_gates(n_s, 4):
+            s_dec = np.exp(np.asarray(_cx.surface_logweight_bridge(arrays, meta, r, gate, h), np.float64))
+            s_x = np.exp(np.asarray(_cx.surface_logweight_bridge(exact, meta_x, r, gate, h), np.float64))
+            quant = max(quant, abs(wmean(s_dec, slice(None)) - wmean(s_x, slice(None))))
+            floor = max(floor, abs(wmean(s_dec, A) - wmean(s_dec, B)))
+    return dict(err=float(quant + float(quadrature)), floor=float(floor), quantisation=float(quant), quadrature=float(quadrature),
+                n_walkers=n, rho2_list=rhos)
+
+
 def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     """The contact tier's measured certificate (RPK.md 9.4 rule 4) on the raw subset: the surface-weighted signal
     ``<exp((rho2 / D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the battery's gates (a
@@ -1831,14 +1859,22 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         a_, cm_ = _cx.encode_boundary_bands(np.zeros(cw.n_walkers, np.float32), np.asarray(cw.boundary_endpoint)[:, 0],
                                             np.asarray(cw.boundary_bands)[:, 0, :Kb], T=T, dtype=blt_dtype, container=bc)
         arrays.update(a_); chan_meta["boundary_local_time"] = cm_; channels["rho2"] = True
+        # the contact tier's own certificate (``err_surface`` / ``floor_surface``, what a family's contact tier reads):
+        # walk-free from the stored bridge -- the container's quantisation of the surface rows beside the local time's
+        # quadrature term, and the coded split-half floor of the surface rows; a measured certificate replaces it
+        # with the raw subset's reading
+        run.phase("certificate contact")
+        _sf = _surface_terms_walk_free(np.asarray(cw.boundary_endpoint)[:, 0], np.asarray(cw.boundary_bands)[:, 0, :Kb], arrays, cm_,
+                                       env, T=T, h=h, D=D, w=weights, quadrature=float(fid.get("err_quadrature_surface", 0.0)))
+        fid.update(err_surface=_sf["err"], floor_surface=_sf["floor"], surface_certified="walk_free", surface_rho2_list=_sf["rho2_list"],
+                   err_surface_quantisation=_sf["quantisation"], err_surface_quadrature=_sf["quadrature"])
         if fidelity == "measured" and cw.raw_boundary is not None:
-            run.phase("certificate contact")
             wr = None if weights is None else np.asarray(weights, np.float64)[:cw.raw_boundary.shape[0]]
             _sf = _surface_fidelity(cw.raw_boundary, arrays, cm_, env, h=h, D=D, w=wr)
-            fid.update(err_surface=_sf["err"], floor_surface=_sf["floor"], surface_measured_on=int(_sf["n_walkers"]),
-                       surface_rho2_list=_sf["rho2_list"])
-            fid["err_max"] = max(float(fid["err_max"]), float(_sf["err"])); fid["floor_max"] = max(float(fid["floor_max"]), float(_sf["floor"]))
-            fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+            fid.update(err_surface=_sf["err"], floor_surface=_sf["floor"], surface_certified="measured",
+                       surface_measured_on=int(_sf["n_walkers"]), surface_rho2_list=_sf["rho2_list"])
+        fid["err_max"] = max(float(fid["err_max"]), float(_sf["err"])); fid["floor_max"] = max(float(fid["floor_max"]), float(_sf["floor"]))
+        fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * float(fid["floor_max"]))
     if voxel_grid is not None:
         from ..phantom.grid import Grid
         if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
