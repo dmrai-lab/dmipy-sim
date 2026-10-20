@@ -39,7 +39,8 @@ def _dense_logweights(pk, seq, T2, T1, rho2):
     n_t, dt = pk.n_t, pk.dt
     G = np.asarray(seq.G); chi_wf = np.ones(G.shape[1]) if seq.chi_perp is None else np.asarray(seq.chi_perp).reshape(-1)
     active = bin_gate(np.ones(chi_wf.shape[0]), seq.dt, n_t, dt)[0]; chi = bin_gate(chi_wf, seq.dt, n_t, dt)[0]
-    comp = _cx.decode_occupancy(pk.arrays, ch["compartment"], n_t=n_t)["comp"]
+    comp = _cx.occupancy_at(pk.arrays, next(c for c in ch["compartment"]["columns"] if c["name"] == "comp"),
+                            np.arange(n_t) * dt)                                    # the pool at every block end
     lw = _cx.relaxation_logweight(comp, T2, T1, dt, chi, active)
     meta = dict(ch["boundary_local_time"])
     bands = _cx.bridge_bands(pk.arrays, meta)
@@ -81,10 +82,10 @@ def test_walker_phases_is_the_signal_before_the_exponential(pack, field_pack):
 
 
 def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
-    """The path route: the per-channel path integrals are the cosine modes contracted with the gate's DCT; the
-    decoded route (positions, the 13 channels on the save grid, the gate summed) is the oracle."""
-    from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
-    from dmipy_sim.replay._replay_kernel import field_gate, gradient_phase, effective_gradient
+    """The path route: the per-channel path integrals are the cosine modes contracted with the gate's cosine
+    projection; the dense route (the 13 channels' mode series evaluated finely, the held gate integrated against
+    it) is the oracle."""
+    from dmipy_sim.replay.bank import susc_path_coeffs, susc_path_field
     from dmipy_sim.replay.replay import GAMMA
     pk = field_pack
     seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
@@ -93,15 +94,20 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     w, ew, E = pk.walker_signals(seq_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
     # the oracle
     ch = pk.meta["compression"]["channels"]; gm = ch["susceptibility_grid"]
-    b, _ = susc_path_decode(pk.arrays, ch["susceptibility_path"], n_w=pk.n_walkers)
-    R = np.asarray(pk.pose_rotation(None), float) if False else np.eye(3)
+    Cf, _ = susc_path_coeffs(pk.arrays, ch["susc_field_basis"])                            # (n_w, 13, K_f) the stored modes
+    T = pk.T_window; K_f = Cf.shape[2]
+    sub = 256
+    tf = (np.arange((seq.G.shape[1] - 1) * sub) + 0.5) * float(seq.dt) / sub              # the held samples' pieces, finely
+    Em = np.sqrt(2.0 / T) * np.cos(np.pi * np.outer(np.arange(K_f), tf) / T); Em[0] = 1.0 / np.sqrt(T)
+    gate_f = np.asarray(seq.effective_gate, np.float64)[np.minimum((tf / float(seq.dt)).astype(int), seq.G.shape[1] - 1)]
+    b = np.einsum("wck,kt->wct", Cf, Em)                                                 # the field channels along the window
     dB = susc_path_field(b, np.asarray(b0_dir) / np.linalg.norm(b0_dir), B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8, has_aniso=bool(gm.get("has_aniso")))
-    phi_x = GAMMA * pk.dt * (dB * field_gate(seq, pk.n_t, pk.dt)[None, :]).sum(1)
+    phi_x = GAMMA * (float(seq.dt) / sub) * (dB * gate_f[None, :]).sum(1)
     # the gradient's phase: the held waveform against the stored path (the chord plus the bands' series), finely
     C = _cx.read_position_coeffs(pk.arrays, dtype=np.float64)
-    G = np.asarray(seq.G_eff, np.float64); sub = 256
-    t = (np.arange((G.shape[1] - 1) * sub) + 0.5) * float(seq.dt) / sub
-    T = pk.T_window; k = np.arange(1, C.shape[1] - 1)
+    G = np.asarray(seq.G_eff, np.float64)
+    t = tf
+    k = np.arange(1, C.shape[1] - 1)
     r = (C[:, None, 0, :] + C[:, None, 1, :] * (t / T)[None, :, None]
          + np.einsum("wkc,kt->wtc", C[:, 2:, :], np.sqrt(2.0 / T) * np.sin(np.pi * np.outer(k, t) / T)))
     g = G[:, np.minimum((t / float(seq.dt)).astype(int), G.shape[1] - 1), :]

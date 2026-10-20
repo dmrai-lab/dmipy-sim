@@ -157,24 +157,26 @@ def test_walk_spec_walks_an_analytic_spec_too():
 
 def test_the_bundle_diffusivity_refusal_names_routes_that_exist(tmp_path, monkeypatch):
     """The refusal sends the operator to the two supported ways of setting a pool's D -- the producer's own
-    argument and `SubstrateSpec.replace` -- and is raised before the number reaches the save-grid rule."""
-    from dmipy_sim.acquisition import scanners
+    argument and `SubstrateSpec.replace` -- and is raised before the number reaches the block rule or any walk."""
+    from dmipy_sim.engine import accumulate, core
     spec = _bundle_spec(tmp_path)
-    monkeypatch.setattr(scanners, "save_interval", lambda *a, **k: pytest.fail("the refused number reached the save grid"))
+    monkeypatch.setattr(accumulate, "block_length", lambda *a, **k: pytest.fail("the refused number reached the block rule"))
+    monkeypatch.setattr(core, "simulate_trajectories", lambda *a, **k: pytest.fail("the refused number reached a walk"))
     with pytest.raises(SpecError) as e:
-        walk_spec(spec, 8, 4e-4, diffusivity=0.6e-9, seed=0, require_gpu=False)   # dt_save derived
+        walk_spec(spec, 8, 4e-4, diffusivity=0.6e-9, seed=0, require_gpu=False)   # block derived
     msg = str(e.value)
     assert "the producer's own argument" in msg and "SubstrateSpec.replace" in msg
     assert "spec.replace(D={'extra': 6e-10, 'intra': 6e-10})" in msg      # the frozen myelin pool is not in it
     assert callable(getattr(SubstrateSpec, "replace"))                    # the route named is the route that exists
     out = spec.replace(D={"extra": 0.6e-9, "intra": 0.6e-9})
     assert (out.pool("extra").D, out.pool("intra").D, out.pool("myelin").D) == (0.6e-9, 0.6e-9, 0.0)
+    monkeypatch.undo()
     walk = walk_spec(out, 24, 4e-4, 2e-4, seed=0, n_probe=2_000, require_gpu=False, field_res=0.4e-6)
     assert walk.spec.pool("intra").D == 0.6e-9
 
 
 def test_walk_spec_refuses_a_diffusivity_a_bundle_walk_cannot_honour(tmp_path):
-    """A multi-surface spec walks each pool at its OWN D, so `diffusivity=` reached the save-grid rule and was
+    """A multi-surface spec walks each pool at its OWN D, so `diffusivity=` reached the block rule and was
     dropped: the published Winther G6 packs were asked for the study's 0.6e-9 and walked at the spec's 1.7e-9,
     and only the walk's run record said so."""
     spec = _bundle_spec(tmp_path)

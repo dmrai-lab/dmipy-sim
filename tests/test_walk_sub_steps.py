@@ -100,22 +100,23 @@ def test_the_observables_are_converged_at_the_collision_criterion():
     """
     from dmipy_sim.engine.core import simulate_trajectories
     mesh = _mesh_sphere()
-    dt_save, T_max, n = 2e-5, 5e-3, 3000
-    n_coll = collision_sub_steps(mesh, D, dt_save)
+    block_h, T_max, n = 2e-5, 5e-3, 3000
+    n_coll = collision_sub_steps(mesh, D, block_h)
 
     out = {}
     steps = {}
     for mult in (1, 4):
         target = n_coll * mult
         # n = ceil((L/(0.9*cell))^2), L = sqrt(6 D dt) -> invert for a target n
-        L = float(np.sqrt(6.0 * D * dt_save))
+        L = float(np.sqrt(6.0 * D * block_h))
         mesh.cell_size = float(L / (0.9 * np.sqrt(target)))
-        o = simulate_trajectories(n, D, mesh, T_max=T_max, dt_save=dt_save, seed=3, require_gpu=False)
+        o = simulate_trajectories(n, D, mesh, T_max=T_max, block_h=block_h, seed=3, require_gpu=False,
+                                raw_subset=n)
         steps[mult] = int(o.sub_steps)
-        tr = np.asarray(o.positions, np.float64)
+        tr = np.asarray(o.raw_positions, np.float64)
         disp = tr[:, -1, :] - tr[:, 0, :]
         out[mult] = (float((disp ** 2).sum(axis=1).mean() / (6.0 * T_max)),
-                     float(-np.asarray(o.boundary_local_time, np.float64).sum(axis=1).mean()))
+                     float(-np.asarray(o.raw_boundary, np.float64).sum(axis=1).mean()))
 
     # guard the lever itself: if the two runs used the same sub-step count this test proves nothing
     assert steps[4] >= 3 * steps[1], (
@@ -133,7 +134,7 @@ def test_a_slab_is_sub_stepped_by_its_width():
     Regression for 6d585fc, which refactored the core.py auto-tune into `physics.tolerance_sub_steps` and dropped
     its `length` fallback. `_geometry_radius` then returned None for a slab, the caller read that as "no scale
     to resolve", and every Box1D walk ran at ONE sub-step: step_l = sqrt(6*D*dt) = 6 um for a 2 um slab at
-    dt_save = 3 ms. Nothing raised; the boundary local time was simply garbled, inflating a fitted surface T2
+    block_h = 3 ms. Nothing raised; the boundary local time was simply garbled, inflating a fitted surface T2
     to 1.42 s against a Brownstein-Tarr 1.0 s. `tests/test_compression.py` caught it as a walk sanity check.
     """
     from dmipy_sim import Box1D
@@ -229,7 +230,7 @@ def test_an_analytic_pack_with_a_spatial_index_keeps_the_reflection_rule():
     here and returned 1 sub-step at step/R ~ 1.7, i.e. walkers stepping through tube walls."""
     from dmipy_sim.geometry.curved_cylinder import STEP_FRACTION
     pk = _disco_like_tubes()
-    dt = 53.5e-3 / 128                      # the DiSCo dt_save
+    dt = 53.5e-3 / 128                      # the DiSCo block_h
     D0 = 0.6e-9                             # the DiSCo diffusivity
     assert not getattr(pk, "radius_is_mesh_feature", False)
     assert pk.cell_size > 4 * pk.radius, "test pack no longer has the coarse-cell/fine-tube shape"

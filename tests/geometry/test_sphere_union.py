@@ -49,7 +49,7 @@ def test_internal_seam_is_not_a_wall():
     cen = np.array([[0, 0, -1.5e-6], [0, 0, 1.5e-6]]); rad = np.full(2, 3e-6)
     u = SphereUnion(cen, rad, pool="intra")
     one = SphereUnion(cen[:1], rad[:1], pool="intra")
-    kw = dict(T_max=4e-3, dt_save=4e-3, seed=0, require_gpu=False)
+    kw = dict(T_max=4e-3, block_h=4e-3, seed=0, require_gpu=False)
     def msd_z(g):
         w = d.simulate_trajectories(400, D0, g, **kw, raw_subset=400).saves()
         P = np.asarray(w.positions)

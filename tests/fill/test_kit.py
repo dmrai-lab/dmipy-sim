@@ -12,7 +12,7 @@ from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
 from dmipy_sim.engine.backends import Backend, write_request_directory
 from dmipy_sim.fill import Recipe
 from dmipy_sim.replay.bank import storage_band_hz
-from dmipy_sim.fill.kit import _pool_geometry, _sha256, assemble_request
+from dmipy_sim.fill.kit import _n_t_dt, _pool_geometry, _sha256, assemble_request
 
 
 class _Captured(Exception):
@@ -29,18 +29,22 @@ class _CaptureBackend(Backend):
     def refuses(self, request):
         return None
 
+    def refuses(self, request):
+        self.request = request                  # the producer asks the backend before it walks: the request is built
+        raise _Captured()
+
     def walk_batch(self, request, r0, keys, out=None):
         self.request = request
         raise _Captured()
 
 
-def _capture_request(geom, D, T_max, dt_save, *, seed, r0, field_basis, field_sample_every, field_reuse_intervals, f_band=None):
+def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None):
     """The live ``WalkRequest`` ``simulate_trajectories_adaptive`` would hand a backend for this pool -- aborted
     before any stepping, by ``_CaptureBackend``."""
     be = _CaptureBackend()
     try:
-        simulate_trajectories_adaptive(len(r0), D, geom, T_max, dt_save, seed=seed, r0=r0, require_gpu=False,
-                                       walker_batch_size=4096, field_basis=field_basis, field_sample_every=field_sample_every,
+        simulate_trajectories_adaptive(len(r0), D, geom, T_max, block_h, seed=seed, r0=r0, require_gpu=False,
+                                       walker_batch_size=4096, field_basis=field_basis,
                                        field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band)
     except _Captured:
         pass
@@ -117,7 +121,7 @@ def test_kit_without_a_field_variant(fake, tmp_path):
 @pytest.mark.parametrize("fixture_name", ["fake", "field_fake"])
 def test_kit_template_holds_the_scanner_class_band_not_the_save_grids_nyquist(fixture_name, request, tmp_path):
     """The kit's ``sub_steps``, kernel steps per class and step lengths are the plan's at the class's stored band,
-    as the recipe's own walk resolves them, and never more than the plan at the save grid's Nyquist frequency.
+    as the recipe's own walk resolves them, and never more than the plan at the block grid's Nyquist frequency.
     (This fake recipe's micron pores set the step through the pore term, so the two plans coincide here; on a
     substrate whose band term sets the step the band's is the smaller.)"""
     import json
@@ -126,8 +130,7 @@ def test_kit_template_holds_the_scanner_class_band_not_the_save_grids_nyquist(fi
     rc = Recipe(hub)
     ctx = rc.context(); g = ctx.tests; W = rc.man["walk"]
     out = rc.kit(tmp_path / "kit")
-    n_t = int(round(float(W["T_max_s"]) / rc.dt_save())) + 1
-    dt = float(W["T_max_s"]) / (n_t - 1)
+    n_t, dt = _n_t_dt(rc)
     band = storage_band_hz(W["scanner"])
     for pid in g.seeded:
         pool = g.pools[pid]
@@ -158,15 +161,17 @@ def test_a_batch_request_from_the_kit_matches_a_live_walk_requests_dump(fixture_
 
     geom = _pool_geometry(ctx, pid)
     D = float(g.pools[pid].D)
-    T_max, dt_save = float(W["T_max_s"]), rc.dt_save()
+    T_max = float(W["T_max_s"])
     r0 = _starts(ctx, pid, 40, seed=1000 + pid)
     seed = 555 + pid
     keys = np.random.default_rng(2000 + pid).integers(0, 2 ** 31 - 1, size=(len(r0), 2)).astype(np.uint32)
 
-    req = _capture_request(geom, D, T_max, dt_save, seed=seed, r0=r0, field_basis=basis,
-                           field_sample_every=int(W.get("field_sample_every", 1)), field_reuse_intervals=int(W.get("field_gather_every", 4)),
+    req = _capture_request(geom, D, T_max, rc.block_h(), seed=seed, r0=r0, field_basis=basis,
+                           field_reuse_intervals=int(W.get("field_gather_every", 4)),
                            f_band=storage_band_hz(W["scanner"]))
     assert (req.field is not None) == (basis is not None)
+    if req.field is not None:       # the live producer sizes the field's segment list from its start-position probe; a kit has no
+        req = req._replace(field=req.field._replace(list_k=256))        # walk to probe and writes the width a backend widens from
 
     oracle_dir = write_request_directory(req, r0, keys, tmp_path / f"oracle-{pool_name}")
     batch_dir = assemble_request(kit_dir, pool_name, r0, keys, seed, tmp_path / f"batch-{pool_name}")

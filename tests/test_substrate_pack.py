@@ -64,7 +64,8 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     e_7T = pk.replay(G_lab, orientation=R, tissue=pk.nominal, scanner=7.0)            # the scanner changed, the field turned
     assert e_7T[0] < e_nom[0]                                                      # a stronger field dephases more
     # a walk whose spec has no field source, walked without one: its pack leaves the tier out
-    walk_nf = dataclasses.replace(walk, spec=spec_without_source(walk.spec), field_basis=None, field_samples=None)
+    walk_nf = dataclasses.replace(walk, spec=spec_without_source(walk.spec), field_basis=None, field_coeffs=None, K_c3=None,
+                                  field_read_interval=None, qv_field=None, raw_field=None)
     pk2 = build_replay_pack(walk_nf, id="t/own", license="x", citation="x", K=8, envelope=ENV)
     assert pk2.has_relaxation and not pk2.has_field
     # a bare cylinder: occupancy and local time are recorded (T2 / rho2 come at replay), no field source

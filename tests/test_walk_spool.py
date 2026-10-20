@@ -1,4 +1,4 @@
-"""A walk as a file (`PersistentWalk.save` / `load`), the spool of a walk's batches in its run record, and the
+"""A walk as a file (`CoefficientWalk.save` / `load`), the spool of a walk's batches in its run record, and the
 resume that reads them back: a killed walk costs the batch in progress, not the walk."""
 import os
 import numpy as np
@@ -6,7 +6,7 @@ import pytest
 
 from dmipy_sim import Cylinder, simulate_trajectories
 from dmipy_sim.io.strands import write_tck, concat_centerlines
-from dmipy_sim.persistent_walk import PersistentWalk
+from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.spec import disco_spec, walk_spec
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -22,17 +22,19 @@ def spec(tmp_path_factory):
 
 def _walk(spec, run_dir=None, spool=False):
     return walk_spec(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-                     field_cutoff_max_m=25e-6, field_sample_every=4, walker_batch_size=20, run_dir=run_dir, spool=spool)
+                     field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=20, run_dir=run_dir, spool=spool)
 
 
 def test_a_walk_round_trips_through_its_file_and_packs(spec, tmp_path):
     w = _walk(spec)
     w.save(str(tmp_path / "w.walk"))
-    back = PersistentWalk.load(str(tmp_path / "w.walk"))
-    np.testing.assert_array_equal(back.positions, w.positions)
-    np.testing.assert_array_equal(back.boundary_local_time, w.boundary_local_time)
-    np.testing.assert_array_equal(back.field_samples, w.field_samples)
-    assert back.dt == w.dt and back.field_sample_every == 4 and back.spec.to_dict() == w.spec.to_dict() and back.geometry is None
+    back = CoefficientWalk.load(str(tmp_path / "w.walk"))
+    np.testing.assert_array_equal(back.position_coeffs, w.position_coeffs)
+    np.testing.assert_array_equal(back.boundary_endpoint, w.boundary_endpoint)
+    np.testing.assert_array_equal(back.boundary_bands, w.boundary_bands)
+    np.testing.assert_array_equal(back.field_coeffs, w.field_coeffs)
+    assert back.h == w.h and back.field_read_interval == w.field_read_interval and back.K_c3 == w.K_c3 == 4
+    assert back.spec.to_dict() == w.spec.to_dict() and back.geometry is None
     assert back.field_basis.meta == w.field_basis.meta and back.run["producer"] == "walk_spec" and back.stepping == w.stepping
     with pytest.raises(ValueError, match="evaluates nothing"):
         back.field_basis.channels(np.zeros((2, 3)))
@@ -41,10 +43,11 @@ def test_a_walk_round_trips_through_its_file_and_packs(spec, tmp_path):
     for k in pk.arrays:
         np.testing.assert_array_equal(pk.arrays[k], pk0.arrays[k])
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"] == pk0.meta["compression"]["channels"]["susceptibility_grid"]["source"]
-    plain = simulate_trajectories(50, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, dt_save=1e-4, seed=0, require_gpu=False,
-                                  raw_subset=50).saves()
-    plain.save(str(tmp_path / "p.walk")); back = PersistentWalk.load(str(tmp_path / "p.walk"))
-    np.testing.assert_array_equal(back.positions, plain.positions); assert back.field_basis is None
+    plain = simulate_trajectories(50, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, block_h=1e-4, seed=0, require_gpu=False,
+                                  raw_subset=50)
+    plain.save(str(tmp_path / "p.walk")); back = CoefficientWalk.load(str(tmp_path / "p.walk"))
+    np.testing.assert_array_equal(back.position_coeffs, plain.position_coeffs)
+    np.testing.assert_array_equal(back.raw_positions, plain.raw_positions); assert back.field_basis is None
 
 
 def test_a_spooled_walk_resumes_from_its_batches(spec, tmp_path):
@@ -56,16 +59,16 @@ def test_a_spooled_walk_resumes_from_its_batches(spec, tmp_path):
     assert len(files) == 6 and files[0].startswith("extra-batch-0000") or len(files) >= 2, files
     victim = os.path.join(d, "spool", files[-1]); os.remove(victim)
     w1 = _walk(spec, run_dir=d, spool=True)                            # the missing batch walked again, the rest read
-    np.testing.assert_array_equal(w1.positions, w0.positions)
-    np.testing.assert_array_equal(w1.boundary_local_time, w0.boundary_local_time)
-    np.testing.assert_array_equal(w1.field_samples, w0.field_samples)
+    np.testing.assert_array_equal(w1.position_coeffs, w0.position_coeffs)
+    np.testing.assert_array_equal(w1.boundary_bands, w0.boundary_bands)
+    np.testing.assert_array_equal(w1.field_coeffs, w0.field_coeffs)
     assert os.path.isfile(victim)
     from dmipy_sim import run as R
     rows = R.read_events(d)
     assert sum(1 for r in rows if r["kind"] == "start") == 2 and rows[-1]["kind"] == "end"
     assert [r["resumed"] for r in rows if r["kind"] == "start"] == [False, True]
     w2 = _walk(spec, run_dir=d, spool=True)                            # everything read back
-    np.testing.assert_array_equal(w2.positions, w0.positions)
+    np.testing.assert_array_equal(w2.position_coeffs, w0.position_coeffs)
     with pytest.raises(ValueError, match="another run"):
         walk_spec(spec, 61, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-                  field_cutoff_max_m=25e-6, field_sample_every=4, walker_batch_size=20, run_dir=d, spool=True)
+                  field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=20, run_dir=d, spool=True)

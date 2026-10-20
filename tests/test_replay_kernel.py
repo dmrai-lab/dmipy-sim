@@ -63,6 +63,26 @@ def _synthetic_trajectories(n_t=N_T, dt=DT):
     return out
 
 
+def _order0_bands(X, K, h):
+    """The bands of a bridge kept at its saves (``N + 1`` instants ``h`` apart, in axis 1) at block order 0: the
+    orthonormal DST-I of the saved bridge times ``sqrt(h) sinc(pi k / 2N)`` (the cosine projection of the increments
+    between saves at their midpoints). ``(n_w, K)`` for a scalar bridge, ``(n_w, K, 3)`` for a path."""
+    from scipy.fft import dst
+    N = X.shape[1] - 1
+    tau = (np.arange(N + 1) / N).reshape((1, -1) + (1,) * (X.ndim - 2))
+    u = X - (X[:, :1] + (X[:, -1:] - X[:, :1]) * tau)
+    b = dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
+    f = np.sqrt(h) * np.sinc(np.arange(1, K + 1) / (2.0 * N))
+    return b * (f[None, :, None] if b.ndim == 3 else f[None, :])
+
+
+def _stored_path(traj, K, dt):
+    """``(arrays, meta)`` of the pack a walk kept at its saves would hold: ``[x(0), x(T) - x(0), beta_1..K]`` per axis
+    at float32, the window ``T = N dt``."""
+    C = np.concatenate([traj[:, :1], (traj[:, -1] - traj[:, 0])[:, None], _order0_bands(traj, K, dt)], axis=1)
+    return cx.pack_position_arrays(C), dict(method=cx.POSITION_METHOD, K=K, T=(traj.shape[1] - 1) * dt)
+
+
 def _phase_scale():
     """gamma dt * first moment of |G|: the size of a phase a micron of displacement makes."""
     g = _bipolar()[0, :, 0]
@@ -84,7 +104,7 @@ def test_every_route_returns_the_closed_form_phase(case):
     # per-step increments summed
     routes["increments"] = phase_increments(effective_gradient(G, DT, N_T, DT)[0], traj, DT).sum(0)
     # the mode-space replay of the walk kept at its saves (K = n_t - 2)
-    arrays, meta, _ = cx.encode_bridge_dst(traj, N_T - 2, DT)
+    arrays, meta = _stored_path(traj, N_T - 2, DT)
     routes["mode space"] = cx.mode_space_phi(arrays, meta, G, DT)[:, 0]
     W = compile_scheme(G, DT, meta["K"])
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
@@ -161,7 +181,7 @@ def test_compiled_scheme_and_mode_space_read_one_projection():
     W = compile_scheme(G, DT, K)
     B = cx.band_projection(G, DT, T_TOTAL, K)
     np.testing.assert_allclose(W, (GAMMA * B).reshape(2, -1).T, rtol=0, atol=0)
-    arrays, meta, _ = cx.encode_bridge_dst(_synthetic_trajectories()[2][1], K, DT)
+    arrays, meta = _stored_path(_synthetic_trajectories()[2][1], K, DT)
     C = cx.read_position_coeffs(arrays, dtype=np.float64)
     np.testing.assert_allclose(cx.mode_space_phi(arrays, meta, G, DT), C.reshape(C.shape[0], -1) @ W,
                                rtol=1e-12)
@@ -172,10 +192,11 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
     import jax.numpy as jnp
     from dmipy_sim.replay.replay import surface_logweight
     traj = _synthetic_trajectories()[2][1]
-    arrays, meta, _ = cx.encode_bridge_dst(traj, 16, DT)
+    arrays, meta = _stored_path(traj, 16, DT)
     n_w = traj.shape[0]
     dlog = -np.abs(np.random.default_rng(0).normal(0, 1e-6, (n_w, N_T)))
-    a2, cm = cx.encode_boundary_bridge(dlog, 16, DT)
+    B = np.cumsum(dlog, axis=1)                                       # the cumulative contact, its bridge at the saves
+    a2, cm = cx.encode_boundary_bands(np.zeros(n_w), B[:, -1], _order0_bands(B, 16, DT), T=meta["T"])
     arrays = {**arrays, **a2, "spin_weights": np.ones(n_w)}
     W = compile_scheme(_bipolar(), DT, 16)
     slw = surface_logweight(arrays, 5e3, cm)
@@ -209,17 +230,17 @@ def test_one_field_gate():
 def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
     g = d.Sphere(2e-6, surface_relaxivity_t2=1e-6)
     kw = dict(seed=3, require_gpu=False)
-    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, f_band=0.5 / 5e-4, raw_subset=200, **kw).saves()
+    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, f_band=0.5 / 5e-4, raw_subset=200, **kw)
     mt = d.simulate_mt_trajectories(200, 2e-9, g, 2e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
-                                    equilibrate_binding="off", **kw)
-    assert mt.positions.dtype == np.float32 and mt.bound_frac.dtype == np.float32
+                                    equilibrate_binding="off", raw_subset=200, f_band=0.5 / 5e-4, **kw)
+    assert mt.position_coeffs.dtype == np.float32 and mt.raw_positions.dtype == np.float32
     assert mt.sub_steps == plain.sub_steps, "the two producers must take the same sub-step count"
-    np.testing.assert_array_equal(mt.positions, plain.positions)
-    np.testing.assert_array_equal(mt.boundary_local_time, plain.boundary_local_time)
-    assert (mt.bound_frac == 0).all()
-    mt16 = d.simulate_mt_trajectories(50, 2e-9, g, 1e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
-                                      equilibrate_binding="off", storage_dtype=np.float16, **kw)
-    assert mt16.positions.dtype == np.float16
+    np.testing.assert_array_equal(mt.position_coeffs, plain.position_coeffs)
+    np.testing.assert_array_equal(mt.raw_positions, plain.raw_positions)
+    np.testing.assert_array_equal(mt.boundary_bands, plain.boundary_bands)
+    np.testing.assert_array_equal(mt.boundary_endpoint, plain.boundary_endpoint)
+    np.testing.assert_array_equal(mt.raw_boundary, plain.raw_boundary)
+    assert not mt.has_binding and mt.bound_start is None and mt.bound_events is None and mt.raw_bound is None
 
 
 # ------------------------------------------------------------ one host kernel, any component subset (#200 item 9)

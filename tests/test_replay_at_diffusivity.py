@@ -28,10 +28,10 @@ def _same_walk(a, b):
     np.testing.assert_allclose(a[:, 2:] / np.sqrt(2.0), b[:, 2:], rtol=1e-6, atol=1e-7 * np.abs(b[:, 2:]).max())
 
 
-def _pack(tmp, geometry, D, T_, dt, name, seed=3, **kw):
-    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=12)
+def _pack(tmp, geometry, D, T_, dt, name, seed=3, K=12, **kw):
+    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
     out = tmp / f"{name}.rpk"
-    _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out), **kw)
+    _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=K, out_path=str(out), **kw)
     return read_rpk(str(out))
 
 
@@ -126,8 +126,11 @@ def test_slower_than_walked_is_refused_and_the_walk_must_cover_the_acquisition(f
         pk_d.replay(_seq(0.8 * T), tissue=Tissue(D=2 * D0))
 
 
-def test_the_prefix_of_a_view_is_the_view_of_the_prefix(free, tmp_path):
-    pk_d, pk_2d = free
+def test_the_prefix_of_a_view_is_the_view_of_the_prefix(tmp_path):
+    # a band the prefix's walk-free certificate accepts: free diffusion's bridge has all its bands, and a K = 12 pack
+    # over 40 ms (150 Hz) certifies at 2.6 x its floor already, which a prefix cannot improve
+    pk_d = _pack(tmp_path, d.FreeDiffusion(), D0, T, DT, "pd", K=24)
+    pk_2d = _pack(tmp_path, d.FreeDiffusion(), 2 * D0, T / 2, DT / 2, "p2d", K=24)
     seq = sequences.pgse([[1.0, 0.0, 0.0]], 1.5e-3, 4e-3, bvalues=[1.0e9], TE=T / 4, n_t=41, slew_rate=np.inf)
     a = pk_d.at_diffusivity(2 * D0).prefix(T / 4, out_path=str(tmp_path / "a.rpk"))
     b = pk_2d.prefix(T / 4, out_path=str(tmp_path / "b.rpk"))

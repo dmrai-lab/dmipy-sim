@@ -87,18 +87,18 @@ def test_the_projection_is_the_integral_of_the_held_waveform():
 # -------------------------------------------------------------------------------------------- exactness at m = 0
 @pytest.mark.parametrize("name", ["sphere", "cylinder", "packed cell", "mesh", "myelinated cylinder"])
 def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
-    """Same walk: the pack of its accumulation at ``block_order=0`` equals the pack of its block ends (every walker
-    kept, read at block order 0) to float32 rounding -- start and displacement exact, the bands, the contact and the
-    replay within the float32 accumulation, the occupancy identical -- and its bands are ``sqrt(h) sinc(pi k / 2N)``
-    times the DST-I of the block ends (#741)."""
+    """Same walk: its accumulation at ``block_order=0`` against its block ends (every walker kept) -- the start and the
+    displacement exact, the bands and the contact's bands ``sqrt(h) sinc(pi k / 2N)`` times the DST-I of the block ends
+    (#741) to float32 rounding, the occupancy read off the events at the block ends the raw one, and the measured
+    certificate (the battery replayed on the block ends against the bands) within the floor."""
     if name == "mesh":
         pytest.importorskip("trimesh")
-    row = _tool().exactness([name], n=200, T=0.008, dt_save=2e-4, K=16, sub_steps=3)[name]
+    row = _tool().exactness([name], n=200, T=0.008, block_h=2e-4, K=16, sub_steps=3)[name]
     assert row["start_m"] == 0.0 and row["displacement_rel"] <= 1e-6
-    assert row["bands_rel"] <= 2e-6 and row["bands_vs_sinc_dst1_rel"] <= 2e-6, row
-    assert row["replay_abs"] <= 1e-6, row
-    assert row.get("contact_bands_rel", 0.0) <= 5e-6 and row.get("contact_endpoint_rel", 0.0) <= 2e-6, row
+    assert row["bands_vs_sinc_dst1_rel"] <= 2e-6, row
+    assert row.get("contact_bands_vs_sinc_dst1_rel", 0.0) <= 5e-6 and row.get("contact_endpoint_rel", 0.0) <= 2e-6, row
     assert row.get("occupancy_equal", True), row
+    assert row["replay_err"] <= 2.0 * row["replay_floor"], row                   # the measured certificate on the block ends
 
 
 # ----------------------------------------------------------------------------------------------- the quadrature
@@ -133,12 +133,13 @@ def test_sphere_and_cylinder_agree_with_the_matrix_method():
 # ------------------------------------------------------------------------------------------------- the contact tier
 def test_the_contact_tier_is_admitted_at_the_signal():
     """The surface-relaxation rows at the envelope's largest rho2 on a reflecting sphere: the accumulated pack against
-    the pack of the same walk's block ends (the codec: the whole contact at TE = T, the contact gated at the
+    the dense reading of the same walk's block ends (the codec: the whole contact at TE = T, the contact gated at the
     acquisition's end at TE = T / 2) and against the fused engine (another walk), each within the replay's floor."""
     res = _quiet(_tool().surface, n=4000)
-    assert res["qv_contact_mean"] > 0 and res["err_quadrature_surface"] is not None
+    assert res["qv_contact_mean"] > 0 and res["quadrature_local_time"] is not None
+    assert res["err_surface"] <= 2.0 * res["floor_surface"] + 1e-9
     for row in res["rows"]:
-        for a_s, a_f, se in zip(row["acc_minus_saves"], row["acc_minus_fused"], row["se"]):
+        for a_s, a_f, se in zip(row["acc_minus_raw"], row["acc_minus_fused"], row["se"]):
             assert abs(a_s) <= 2.0 * se, row
             assert abs(a_f) <= 3.0 * np.sqrt(2.0) * se + 2e-3, row
 
@@ -199,7 +200,7 @@ def test_walk_cost_states_the_accumulators():
 @pytest.fixture(scope="module")
 def walks():
     g = d.Cylinder(radius=2.5e-6, orientation=(0, 0, 1))
-    kw = dict(T_max=0.01, dt_save=1e-4, seed=4, require_gpu=False, sub_steps=4)
+    kw = dict(T_max=0.01, block_h=1e-4, seed=4, require_gpu=False, sub_steps=4)
     return dict(c=_quiet(d.simulate_trajectories, 600, 2e-9, g, K=24, raw_subset=200, **kw),
                 z=_quiet(d.simulate_trajectories, 600, 2e-9, g, K=24, block_order=0, **kw))
 

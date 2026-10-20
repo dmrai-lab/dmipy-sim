@@ -94,22 +94,22 @@ def test_packed_myelin_kernel_takes_the_dispatched_count():
 
 def test_trajectory_producers_take_the_dispatched_count():
     g = _sphere_rho()
-    T_max, dt_save = 5 * DT, DT
-    n_plain = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0, require_gpu=False, tiers=()).sub_steps
-    assert n_plain == resolve_sub_steps(g, D, dt_save)
-    out = d.simulate_trajectories(64, D, g, T_max, dt_save, seed=0,
+    T_max, block_h = 5 * DT, DT
+    n_plain = d.simulate_trajectories(64, D, g, T_max, block_h, seed=0, require_gpu=False, tiers=()).sub_steps
+    assert n_plain == resolve_sub_steps(g, D, block_h)
+    out = d.simulate_trajectories(64, D, g, T_max, block_h, seed=0,
                                   require_gpu=False)
-    assert out.sub_steps == resolve_sub_steps(g, D, dt_save, surface=True)
+    assert out.sub_steps == resolve_sub_steps(g, D, block_h, surface=True)
     b = d.Box1D(4e-6, surface_relaxivity_t2=1e-6)                     # flat walls, a low band: the surface rule binds
-    n_box = d.simulate_trajectories(64, D, b, T_max, dt_save, seed=0, require_gpu=False, tiers=(), f_band=100.0).sub_steps
-    n_rho = d.simulate_trajectories(64, D, b, T_max, dt_save, seed=0, require_gpu=False, f_band=100.0).sub_steps
-    assert n_rho == resolve_sub_steps(b, D, dt_save, surface=True, f_band=100.0) > n_box == 1, \
+    n_box = d.simulate_trajectories(64, D, b, T_max, block_h, seed=0, require_gpu=False, tiers=(), f_band=100.0).sub_steps
+    n_rho = d.simulate_trajectories(64, D, b, T_max, block_h, seed=0, require_gpu=False, f_band=100.0).sub_steps
+    assert n_rho == resolve_sub_steps(b, D, block_h, surface=True, f_band=100.0) > n_box == 1, \
         "recording the boundary local time resolves the surface criterion"
 
-    mt = d.simulate_mt_trajectories(64, D, d.Sphere(2e-6), T_max, dt_save, kappa_MT=1e-5,
+    mt = d.simulate_mt_trajectories(64, D, d.Sphere(2e-6), T_max, block_h, kappa_MT=1e-5,
                                     dwell_time=1e-3, seed=0, require_gpu=False,
                                     equilibrate_binding="off")
-    assert mt.sub_steps == resolve_sub_steps(d.Sphere(2e-6), D, dt_save, surface=True, mt_dwell_time=1e-3)
+    assert mt.sub_steps == resolve_sub_steps(d.Sphere(2e-6), D, block_h, surface=True, mt_dwell_time=1e-3)
 
 
 # ── the consequence: fused == replay at the auto count ───────────────────────────────────

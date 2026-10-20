@@ -16,7 +16,7 @@ from dmipy_sim.engine.adaptive import adaptive_plan  # noqa: E402
 from dmipy_sim.engine.backends import FieldSampling, WalkRequest, format_request_value, write_request_directory  # noqa: E402
 from dmipy_sim.fill import Recipe  # noqa: E402
 from dmipy_sim.replay.bank import storage_band_hz  # noqa: E402
-from dmipy_sim.fill.kit import _pool_geometry, _sha256, assemble_request  # noqa: E402
+from dmipy_sim.fill.kit import _n_t_dt, _pool_geometry, _sha256, assemble_request  # noqa: E402
 
 
 def _starts(ctx, pid, n, seed):
@@ -55,9 +55,7 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
 
     geom = _pool_geometry(ctx, pid)
     D = float(g.pools[pid].D)
-    T_max, dt_save = float(W["T_max_s"]), rc.dt_save()
-    n_t = int(round(T_max / dt_save)) + 1
-    dt_actual = T_max / (n_t - 1)
+    n_t, dt_actual = _n_t_dt(rc)
     plan = adaptive_plan(geom, D, dt_actual, f_band=storage_band_hz(W["scanner"]))
 
     r0 = _starts(ctx, pid, 40, seed=3000 + pid)
@@ -66,7 +64,7 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
 
     field = None
     if basis is not None:
-        f_every = max(1, int(W.get("field_sample_every", 1)))
+        f_every = 1                              # the field is read every round: a read per block end at least
         f_reuse = max(1, int(W.get("field_gather_every", 4)))
         f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)
         f_reach = float(basis.gather_radius_m)
@@ -107,9 +105,7 @@ def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixt
 
     geom = _pool_geometry(ctx, pid)
     D = float(g.pools[pid].D)
-    T_max, dt_save = float(W["T_max_s"]), rc.dt_save()
-    n_t = int(round(T_max / dt_save)) + 1
-    dt_actual = T_max / (n_t - 1)
+    n_t, dt_actual = _n_t_dt(rc)
     plan = adaptive_plan(geom, D, dt_actual, f_band=storage_band_hz(W["scanner"]))
 
     r0 = _starts(ctx, pid, 40, seed=5000 + pid)
@@ -118,7 +114,7 @@ def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixt
 
     field = None
     if basis is not None:
-        f_every = max(1, int(W.get("field_sample_every", 1)))
+        f_every = 1                              # the field is read every round: a read per block end at least
         f_reuse = max(1, int(W.get("field_gather_every", 4)))
         f_margin = 6.0 * math.sqrt(2.0 * D * dt_actual * f_reuse)
         f_reach = float(basis.gather_radius_m)

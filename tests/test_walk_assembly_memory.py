@@ -10,7 +10,7 @@ UM = 1e-6
 
 
 def _walk(**kw):
-    return d.simulate_trajectories(3000, 2e-9, d.Sphere(3 * UM), T_max=4e-3, dt_save=2e-5, seed=0, tiers="all",
+    return d.simulate_trajectories(3000, 2e-9, d.Sphere(3 * UM), T_max=4e-3, block_h=2e-5, seed=0, tiers="all",
                                    require_gpu=False, raw_subset=3000, **kw)
 
 

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
+from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.spec import spec_of
@@ -20,12 +21,14 @@ N_W, N_T, DT, D0 = 40, 201, 1e-4, 2e-9                       # a 20 ms grid
 def _static_pack(K, seed=0):
     """Walkers that never move: the positions' bands are all zero, so only K and the grid say what the pack resolves."""
     rng = np.random.default_rng(seed)
-    r = rng.uniform(-2e-6, 2e-6, (N_W, 1, 3)).astype(np.float64)
-    traj = np.repeat(r, N_T, axis=1)
-    m = dict(traj=traj, dt_traj=DT, T_max=(N_T - 1) * DT, comp=np.zeros((N_W, N_T), np.int8), comp0=np.zeros(N_W, np.int64),
-             w=np.ones(N_W), dlog_b=np.zeros((N_W, N_T)), D_intra=D0, n_walkers=N_W, seed=seed,
-             substrate=spec_of(FreeDiffusion()).to_dict())
-    return build_replay_pack(m, id=f"t/static-K{K}", method="bridge_dst", envelope=_lean_env(), K=K, license="x", citation="x")
+    C = np.zeros((N_W, 1, K + 2, 3), np.float32)
+    C[:, 0, 0, :] = rng.uniform(-2e-6, 2e-6, (N_W, 3))                                # the start; no displacement, no band
+    walk = CoefficientWalk(
+        position_coeffs=C, T=(N_T - 1) * DT, K=K, m=0,
+        block=dict(h=DT, m=0, n_blocks=N_T - 1, rule="given", precision="float64", k0_residual_relative=0.0),
+        n_windows=1, dt_sim=DT, sub_steps=1, qv_positions=np.zeros((N_W, 1, 3), np.float32), seed=seed,
+        diffusivity=D0, spec=spec_of(FreeDiffusion()))
+    return build_replay_pack(walk, id=f"t/static-K{K}", envelope=_lean_env(), K=K, license="x", citation="x")
 
 
 def _ogse(f_hz, sigma, n_t=801):

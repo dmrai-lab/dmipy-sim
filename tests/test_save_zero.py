@@ -1,6 +1,5 @@
-"""Save 0 of a persistent walk is t = 0: the initial position, no wall contact yet, the initial pool and bound state.
-Before, the first stored sample was already one save interval into the walk, so the path ran one interval ahead of the
-waveform clock and the initial position was never stored."""
+"""Block end 0 of a walk's raw subset is t = 0: the initial position, no wall contact yet, the initial pool and bound
+state; the walk's own start labels (`compartment`, `bound_start`) are those of that sample."""
 import numpy as np
 
 import jax
@@ -18,18 +17,20 @@ def test_the_first_save_is_the_start_for_every_producer():
     # a single-pool geometry (positions + contact + occupancy through the relaxation kernel)
     g = d.Cylinder(3e-6, (0, 0, 1))
     r0 = np.asarray(g.init_positions(50, jax.random.PRNGKey(3)))
-    w = d.simulate_trajectories(50, D0, g, 1e-3, 2.5e-4, seed=0, r0=r0, require_gpu=False, raw_subset=50).saves()
-    np.testing.assert_allclose(np.asarray(w.positions)[:, 0], r0, atol=1e-12)
-    assert np.all(np.asarray(w.boundary_local_time)[:, 0] == 0) and w.n_t == 5
-    assert np.all(np.asarray(w.compartment)[:, 0] == np.asarray(w.compartment)[:, 0].astype(int))
+    w = d.simulate_trajectories(50, D0, g, 1e-3, 2.5e-4, seed=0, r0=r0, require_gpu=False, raw_subset=50)
+    np.testing.assert_allclose(np.asarray(w.raw_positions)[:, 0], r0, atol=1e-12)
+    assert np.all(np.asarray(w.raw_boundary)[:, 0] == 0) and w.n_blocks + 1 == 5
+    assert np.all(np.asarray(w.raw_compartment)[:, 0] == np.asarray(w.compartment))
     # a packed myelinated cell (the three-pool kernel)
     spec = Substrate.canonical(field_T=3.0).request(n_fibres=3, seed=1)
     pm = geometry_from_spec(spec)
     r0 = np.asarray(pm.init_positions(60, jax.random.PRNGKey(4)))
-    w = d.simulate_trajectories(60, D0, pm, 1e-3, 2.5e-4, seed=1, r0=r0, require_gpu=False, raw_subset=60).saves()
-    np.testing.assert_allclose(np.asarray(w.positions)[:, 0], r0, atol=1e-12)
-    assert np.all(np.asarray(w.boundary_local_time)[:, 0] == 0)
+    w = d.simulate_trajectories(60, D0, pm, 1e-3, 2.5e-4, seed=1, r0=r0, require_gpu=False, raw_subset=60)
+    np.testing.assert_allclose(np.asarray(w.raw_positions)[:, 0], r0, atol=1e-12)
+    assert np.all(np.asarray(w.raw_boundary)[:, 0] == 0)
+    assert np.all(np.asarray(w.raw_compartment)[:, 0] == np.asarray(w.compartment))
     # the MT producer: the initial bound state is the burn-in's equilibrium occupancy per walker
-    wm = simulate_mt_trajectories(60, D0, d.Cylinder(3e-6, (0, 0, 1)), 1e-3, 2.5e-4, 1e-4, 2e-4, seed=2, require_gpu=False)
-    assert set(np.unique(np.asarray(wm.bound_frac)[:, 0])) <= {0.0, 1.0} and np.all(np.asarray(wm.boundary_local_time)[:, 0] == 0)
-    assert np.asarray(wm.positions).shape[1] == 5
+    wm = simulate_mt_trajectories(60, D0, d.Cylinder(3e-6, (0, 0, 1)), 1e-3, 2.5e-4, 1e-4, 2e-4, seed=2, require_gpu=False, raw_subset=60)
+    assert set(np.unique(np.asarray(wm.raw_bound)[:, 0])) <= {0, 1} and np.all(np.asarray(wm.raw_boundary)[:, 0] == 0)
+    assert np.all(np.asarray(wm.raw_bound)[:, 0] == np.asarray(wm.bound_start))
+    assert np.asarray(wm.raw_positions).shape[1] == 5

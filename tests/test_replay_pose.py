@@ -25,7 +25,7 @@ def hollow():
     walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
     pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=ENV,
                            susc_path_K=16)
-    assert pk.has_field and "susceptibility_path" in pk.meta["compression"]["channels"]
+    assert pk.has_field and "susc_field_basis" in pk.meta["compression"]["channels"]
     return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])
 
 

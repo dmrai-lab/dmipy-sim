@@ -102,7 +102,7 @@ def _replay_case(request):
     G = np.asarray(wf.G_eff, np.float32)       # the effective gradient the kernel integrates
     chi = np.ones(n_t)
 
-    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False)
+    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False, raw_subset=n).saves()
     traj, dt_traj, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
     dlog, comp = out.boundary_local_time, out.compartment
     if name != "free":
@@ -178,29 +178,29 @@ def test_replay_surface_relaxivity_matches_simulate(_replay_case):
                 f"simulate(surface_relaxivity_t2)")
 
 
-def test_save_false_returns_4_tuple():
+def test_a_positions_only_walk_carries_no_channels():
     """A positions-only walk (tiers=()) carries no channels."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
     out = simulate_trajectories(2_000, D, d.Sphere(radius=R),
-                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False, tiers=())
+                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False, tiers=(), raw_subset=2_000)
     assert not (out.has_surface or out.has_compartments or out.has_binding)
-    traj, dt_actual, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
-    assert traj.shape == (2_000, n_t, 3)
-    # f32 by default since #78: the walk is f32, the pack is f32, and the .rpk spec
-    # permits only float32/float64 for `positions`. f16 is opt-in via storage_dtype.
-    assert traj.dtype == np.float32
+    assert out.compartment is None and out.boundary_bands is None and out.bound_start is None
+    traj = out.raw_positions
+    assert out.n_blocks + 1 == n_t and traj.shape == (2_000, n_t, 3)
+    # f32 since #78: the walk is f32, the pack is f32, and the .rpk spec permits only float32/float64 for `positions`.
+    assert traj.dtype == np.float32 and out.raw_boundary is None and out.raw_compartment is None
 
 
-def test_save_true_returns_6_tuple_shapes_dtypes():
-    """The default walk records the boundary local time (storage_dtype) and the compartment channel."""
+def test_the_default_walk_carries_the_surface_and_compartment_channels():
+    """The default walk records the boundary local time and the compartment channel."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
     out = simulate_trajectories(2_000, D, d.Cylinder(radius=R, orientation=[0, 0, 1]),
-                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False)
+                                dt * (n_t - 1), dt, seed=SEED, require_gpu=False, raw_subset=2_000)
     assert out.has_surface and out.has_compartments and not out.has_binding
-    traj, dt_actual, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
-    dlog, comp = out.boundary_local_time, out.compartment
+    assert out.compartment.shape == (2_000,) and not out.crossing           # an impermeable wall: one static label
+    traj, dlog, comp = out.raw_positions, out.raw_boundary, out.raw_compartment
     assert traj.shape == (2_000, n_t, 3) and traj.dtype == np.float32
     assert dlog.shape == (2_000, n_t) and dlog.dtype == np.float32
     assert comp.shape == (2_000, n_t)

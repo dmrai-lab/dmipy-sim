@@ -18,20 +18,21 @@ DT = 5e-4
 
 
 def _synth_pack(seed=0):
-    "A synthetic pack: random walker trajectories kept at N_T instants, stored as their bridge bands."
+    """A synthetic pack: random bridge coefficients ``[r(0), r(T) - r(0), beta_1 .. beta_K]`` per axis for a window
+    of ``(N_T - 1)`` blocks of ``DT``, the bands decaying like the bridge of a diffusing path (variance ~ 1 / k^2)."""
     rng = np.random.default_rng(seed)
-    # low-frequency-ish trajectories (bounded ~micron scale), so K modes capture them
-    traj = np.cumsum(rng.normal(0, 3e-7, size=(N_W, N_T, 3)), axis=1)
-    traj -= traj.mean(1, keepdims=True)
-    from dmipy_sim.replay.compression import encode_bridge_dst
-    arrays, cmeta, _ = encode_bridge_dst(traj, K, DT)          # (N_W, K+2, 3) per axis
-    arrays["spin_weights"] = np.ones(N_W, np.float32)
     T = (N_T - 1) * DT
+    C = np.empty((N_W, K + 2, 3))
+    C[:, 0, :] = rng.normal(0, 3e-6, (N_W, 3))
+    C[:, 1, :] = rng.normal(0, 3e-6, (N_W, 3))
+    C[:, 2:, :] = rng.normal(0, 1.0, (N_W, K, 3)) * 2e-6 / np.arange(1, K + 1)[None, :, None]
+    arrays = pack_position_arrays(C, np.float32)                  # one tensor per spatial axis
+    arrays["spin_weights"] = np.ones(N_W, np.float32)
     meta = {"walk_params": {"T_max": T, "block": {"h": DT, "m": 0, "n_blocks": N_T - 1},
                             "windows": {"n": 1, "T": T, "walks": [{"first": 0, "last": 0, "seed": 0}]}},
-            "compression": {"method": cmeta["method"], "K": K},
+            "compression": {"method": "bridge_dst", "K": K},
             "substrate": spec_of(FreeDiffusion()).to_dict()}                # free walkers: nothing magnetic
-    return arrays, meta, traj
+    return arrays, meta, C
 
 
 def _pgse(amp, delta, Delta, direction=(1., 0, 0)):
@@ -43,7 +44,7 @@ def _pgse(amp, delta, Delta, direction=(1., 0, 0)):
 def test_replay_equals_direct_phase():
     """Compiled replay == the integral of the held waveform against the stored path (the chord plus the bands'
     series), by a midpoint rule fine enough to see it."""
-    arrays, meta, traj = _synth_pack()
+    arrays, meta, _ = _synth_pack()
     pack = ReplayPack(arrays, meta)
     G = np.stack([_pgse(a, 10e-3, 30e-3) for a in (0.02, 0.05, 0.1)])   # (3, N_T, 3)
     T = (N_T - 1) * DT
@@ -96,14 +97,17 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     skipping -- a caller asking for surface relaxivity must never get an unattenuated signal back
     with no error.
     """
-    from dmipy_sim.replay.compression import (encode_boundary_bridge, decode_boundary_bridge,
+    from dmipy_sim.replay.compression import (encode_boundary_bands, decode_boundary_bridge,
                                        surface_logweight_series as surface_logweight)
     from dmipy_sim.replay.replay import surface_logweight as replay_slw
     arrays, meta, _ = _synth_pack()
     n_w = arrays["pos_x"].shape[0]
     rng = np.random.default_rng(1)
+    T = (N_T - 1) * DT
     dlog = -np.abs(rng.normal(0, 1e-6, (n_w, N_T)))          # engine convention: <= 0
-    a2, cm = encode_boundary_bridge(dlog, 16, DT)
+    # the contact channel in its stored form: the exact endpoints and the continuous bands of the cumulative contact
+    a2, cm = encode_boundary_bands(np.zeros(n_w), dlog.sum(1), rng.normal(0, 1e-7, (n_w, 16)), T=T)
+    cm["K"] = 16
     arrays = {**arrays, **a2}
     pack = ReplayPack(arrays, meta)
 

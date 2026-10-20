@@ -34,7 +34,7 @@ D = 2e-9
 # until occupancy plateaus, so it, not the saved walk, dominates the cost. k_f scales with it to hold
 # f_b = 1/3. Runs in ~24 s on one GPU.
 K_F, K_R = 200.0, 400.0
-T_MAX, DT_SAVE, N_WALKERS = 0.010, 2e-5, 3000
+T_MAX, BLOCK_H, N_WALKERS = 0.010, 2e-5, 3000
 SUBDIVISIONS = 3      # subdiv 2 halves the runtime but only shows -13% broken vs -33% here
 
 
@@ -63,12 +63,13 @@ def test_mesh_mt_reaches_the_analytic_bound_fraction():
     # misses encounters outright, and a missed encounter contributes no local time, so the binding rate is
     # under-counted rather than merely noisy. Measured on this geometry: at n_sub=4 the bound fraction is
     # exactly 0.0000, at 8 it is 12% low, and it converges from 16 (this picks 30).
-    n_sub = collision_sub_steps(mesh, D, DT_SAVE)
+    n_sub = collision_sub_steps(mesh, D, BLOCK_H)
 
-    out = simulate_mt_trajectories(N_WALKERS, D, mesh, T_MAX, DT_SAVE,
+    out = simulate_mt_trajectories(N_WALKERS, D, mesh, T_MAX, BLOCK_H,
                                    kappa_MT=kappa_mt, dwell_time=1.0 / K_R,
-                                   seed=5, sub_steps=n_sub, require_gpu=False)
-    bound = float(np.asarray(out.bound_frac, np.float64).mean())
+                                   seed=5, sub_steps=n_sub, require_gpu=False, raw_subset=N_WALKERS)
+    assert out.has_binding
+    bound = float(np.asarray(out.raw_bound, np.float64).mean())                # every walker at every block end
 
     rel = abs(bound - f_b) / f_b
     # Measured -1.47% on this exact configuration, and -32.92% on it before the fix, so the 6% bound sits
@@ -94,14 +95,14 @@ def test_the_mt_driver_walks_the_pool_its_seeds_name():
     Asserted on the pool the walkers occupy rather than on a bound fraction: `intra=False` seeds are the
     same `mesh_contains` rejection sampling the intra seeds use, so this pins the plumbing without also
     depending on the binding physics. `kappa_MT=0` skips the bound-pool burn-in (which would advance the
-    ensemble before the first saved step) and `dt_save` is set so one step displaces ~0.035 um against
+    ensemble before the first saved step) and `block_h` is set so one step displaces ~0.035 um against
     R=2 um, i.e. containment cannot flip by diffusion alone.
     """
     from dmipy_sim.fields.susceptibility_field import mesh_contains
     import jax
 
     mesh, _ = _mesh_sphere(subdivisions=2)
-    n, dt_save, n_t = 500, 1e-7, 4
+    n, block_h, n_t = 500, 1e-7, 4
     V64 = np.asarray(mesh.vertices, np.float64)
     F64 = np.asarray(mesh.faces, np.int64)
 
@@ -112,11 +113,11 @@ def test_the_mt_driver_walks_the_pool_its_seeds_name():
     assert frac_inside(r0_out) < 0.01, "the outside seeds are not outside; test cannot conclude anything"
 
     def first_step_pool(r0):
-        out = simulate_mt_trajectories(n, D, mesh, n_t * dt_save, dt_save, kappa_MT=0.0,
+        out = simulate_mt_trajectories(n, D, mesh, n_t * block_h, block_h, kappa_MT=0.0,
                                        dwell_time=1.0 / K_R, seed=11, r0=r0,
-                                       sub_steps=collision_sub_steps(mesh, D, dt_save),
-                                       require_gpu=False)
-        return frac_inside(np.asarray(out.positions)[:, 0, :])
+                                       sub_steps=collision_sub_steps(mesh, D, block_h),
+                                       require_gpu=False, raw_subset=n)
+        return frac_inside(np.asarray(out.raw_positions)[:, 0, :])
 
     # Self-guard: the default must still land inside, or an unrelated change could make this vacuous.
     default_in = first_step_pool(None)

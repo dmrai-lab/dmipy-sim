@@ -12,7 +12,7 @@ import dmipy_sim as d
 from dmipy_sim.io.caterpillar import read_caterpillar, write_caterpillar, points_inside_union
 from dmipy_sim.io.strands import read_strands, write_strands, read_tck, write_tck, concat_centerlines, read_diameters
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import (caterpillar_spec, strands_spec, disco_spec, walk_spec, fill_field, field_grid_of_spec,
+from dmipy_sim.spec import (caterpillar_spec, strands_spec, disco_spec, walk_spec, field_grid_of_spec,
                             geometry_from_spec, load_spec, SpecError, Seeding)
 from dmipy_sim.spec.tissue import Tissue
 from tests.conftest import spec_without_source
@@ -248,7 +248,7 @@ def test_disco_spec_is_two_tubes_per_strand_at_the_papers_diameters(disco_files,
     assert spec.validity.tiers == ["gradient", "relaxation", "surface", "field"] and spec.field_source_pools == [spec.pools[2]]
     assert spec.walls[0].surface.instances["radii"] == gt.walls[0].surface.instances["radii"]
     w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, field_res=0.5e-6, require_gpu=False, adaptive_steps=True)
-    ids = np.asarray(w.compartment)[:, 0]
+    ids = np.asarray(w.compartment)
     assert set(np.unique(ids)) == {0, 1} and w.field_basis is not None          # the two pools walk; the sheath is the source
 
 
@@ -278,7 +278,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
         field_grid_of_spec(spec, field_budget=1e3)                             # the grid route forced as a cross-check
     # the default field of a strand substrate is the per-segment closed form: no grid, a certified cutoff, a C3 pack
     from dmipy_sim.fields.strand_field import StrandFieldBasis
-    wf = walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field_budget=1e3, adaptive_steps=True)
+    wf = walk_spec(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field_budget=1e3, adaptive_steps=True, K=4)
     assert isinstance(wf.field_basis, StrandFieldBasis) and wf.field_basis.certificate["converged"]
     pkf = build_replay_pack(wf, id="t/strands-field", license="x", citation="x", K=4, susc_path_K=4)
     assert pkf.has_field and pkf.meta["compression"]["channels"]["susceptibility_grid"]["source"]["kind"] == "strand_superposition"
@@ -357,27 +357,27 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     spec = disco_spec(*disco_files, side_m=20e-6)
     spec_nf = spec_without_source(spec)      # seeding mechanics, not the field tier
     grid = Grid(shape=(4, 4, 4), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
-    w = walk_spec(spec_nf, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, K=4,
+    w = walk_spec(spec_nf, T_max=8e-4, block_h=2e-4, seed=0, require_gpu=False, K=4,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8}, census_draws=5000))
     with pytest.raises(TypeError, match="not both"):
-        walk_spec(spec, 50, 8e-4, 2e-4, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=4))
+        walk_spec(spec_nf, 50, 8e-4, 2e-4, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=4))
     # the same walk with adaptive steps: the same channels, the stepping recorded per pool
-    wa = walk_spec(spec_nf, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, adaptive_steps=True,
+    wa = walk_spec(spec_nf, T_max=8e-4, block_h=2e-4, seed=0, require_gpu=False, adaptive_steps=True,
                    seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 12, "intra": 8}, census_draws=5000))
     assert wa.n_walkers == w.n_walkers and wa.has_surface and wa.stepping["rule"] == "adaptive"
     assert set(wa.stepping["pools"]) == {"extra", "intra"} and wa.stepping["pools"]["extra"]["kernel_steps_ratio"] >= 1.0
-    np.testing.assert_array_equal(wa.positions[:, 0], w.position_coeffs[:, 0, 0])   # the same seeds
+    np.testing.assert_array_equal(wa.position_coeffs[:, 0, 0], w.position_coeffs[:, 0, 0])   # the same seeds
     # the field sampled by the walk: every walker has a series, the pack encodes it and replays the field
-    wf = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=0, require_gpu=False, adaptive_steps=True,
+    wf = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=0, require_gpu=False, adaptive_steps=True, K=4,
                    field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 6, "intra": 4}))
-    assert wf.field_samples is not None and wf.field_samples.shape == (wf.positions.shape[0], wf.positions.shape[1], 13)
-    assert not (np.asarray(wf.compartment)[:, 0] == 2).any()                     # nothing walks the dry sheath
+    assert wf.field_coeffs is not None and wf.field_coeffs.shape == (wf.n_walkers, wf.n_windows, wf.K_c3, 13)
+    assert not (np.asarray(wf.compartment) == 2).any()                     # nothing walks the dry sheath
     pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4)
-    pm2 = pkf2.meta["compression"]["channels"]["susceptibility_path"]
-    assert pkf2.has_field and pm2["sampling"] == "interval_mean_in_walk"
+    pm2 = pkf2.meta["compression"]["channels"]["susc_field_basis"]
+    assert pkf2.has_field and pm2["sampling"] == "accumulated_in_walk"
     assert pm2["iso_P_zz"] == "implied" and pm2["n_ch"] == 12 and pm2["trace_residual"] < 1e-4   # the closed form's trace identity, float32 samples
     from dmipy_sim.replay.bank import susc_path_decode
-    b_, names_ = susc_path_decode(pkf2.arrays, pm2); assert b_.shape[1] == 13 and names_[3] == "iso_P_zz"
+    b_, names_ = susc_path_decode(pkf2.arrays, pm2, n_t=pkf2.n_t); assert b_.shape[1] == 13 and names_[3] == "iso_P_zz"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)   # K = 3 over 0.8 ms: the field alone
     seq_gx, R = field_along(seq_g, (1, 0, 0))
     assert pkf2.replay(seq_gx, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))[0] != pkf2.replay(seq_g)[0]

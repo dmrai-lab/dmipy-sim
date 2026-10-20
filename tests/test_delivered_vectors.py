@@ -40,7 +40,7 @@ def layout(spec_grid):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-5, seed=31 + b, require_gpu=False, adaptive_steps=True,
+        w = walk_spec(spec, T_max=8e-4, block_h=2e-5, seed=31 + b, require_gpu=False, adaptive_steps=True, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/dm{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
                                        out_path=str(tmp / "dm_shards" / f"block-000{b}.p1.rpk")))

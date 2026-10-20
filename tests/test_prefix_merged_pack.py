@@ -9,7 +9,7 @@ from dmipy_sim.replay.bank import build_replay_pack, merge_packs, seed_value
 
 
 def _pack(seed, id):
-    walk = simulate_trajectories(200, 2e-9, Cylinder(4e-6, (0, 0, 1)), T_max=0.02, dt_save=2e-4,
+    walk = simulate_trajectories(200, 2e-9, Cylinder(4e-6, (0, 0, 1)), T_max=0.02, block_h=2e-4,
                                  seed=seed, require_gpu=False)
     return _float_pack(walk, id=id, license="CC-BY-4.0", citation="test", K=16)
 

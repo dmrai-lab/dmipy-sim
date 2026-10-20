@@ -44,9 +44,11 @@ def _field_phase(pk, seq):
 
 
 def test_a_stimulated_echo_accrues_no_field_phase_while_its_magnetisation_is_stored(field_pack):
-    """The field phase of a stimulated echo is the decoded field integrated over its two transverse periods only,
-    with the recall's sign: a gate that integrated the mixing time too misses it by the field's whole TM integral."""
-    from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
+    """The field phase of a stimulated echo is the stored field function integrated over its two transverse periods
+    only, with the recall's sign: a gate that integrated the mixing time too misses it by the field's whole TM
+    integral. The oracle is the gate written out from the pulses and the field function ``b(t) = sum_k c_k e_k(t)``
+    of the stored modes, integrated by the midpoint rule on a grid 50 times finer than the gate's."""
+    from dmipy_sim.replay.bank import susc_path_coeffs, susc_path_field
     pk = field_pack
     ste = _ste(pk)
     assert ste.stimulated_echo and ste.TM == pytest.approx(5.6e-4)
@@ -55,12 +57,19 @@ def test_a_stimulated_echo_accrues_no_field_phase_while_its_magnetisation_is_sto
     g = field_gate(ste, pk.n_t, pk.dt)
     np.testing.assert_allclose(g, gate_weights(hand, ste.dt, pk.n_t, pk.dt)[0], rtol=0, atol=1e-12)
     ch = pk.meta["compression"]["channels"]
-    b, _ = susc_path_decode(pk.arrays, ch["susceptibility_path"], n_w=pk.n_walkers)
+    meta = ch["susc_field_basis"]
+    C, _ = susc_path_coeffs(pk.arrays, meta)                            # (n_w, 13, K) modes, iso_P_zz re-inserted
+    T = float(meta["T"])
+    n_fine = 50 * (ste.n_t - 1)
+    t = (np.arange(n_fine) + 0.5) * (T / n_fine)
+    k = np.arange(C.shape[2])[:, None]
+    E = np.sqrt(2.0 / T) * np.cos(np.pi * k * t[None, :] / T); E[0] = 1.0 / np.sqrt(T)
     u = np.array([0.6, 0.0, 0.8])
-    dB = susc_path_field(b, u, B0=B0, chi_iso=TISSUE.chi_iso, chi_aniso=TISSUE.chi_aniso,
-                         has_aniso=bool(ch["susceptibility_grid"].get("has_aniso")))
-    expect = GAMMA * pk.dt * (dB * gate_weights(hand, ste.dt, pk.n_t, pk.dt)[0][None, :]).sum(1)
-    stored = GAMMA * pk.dt * (dB * gate_weights((hand == 0).astype(float), ste.dt, pk.n_t, pk.dt)[0][None, :]).sum(1)
+    dB = susc_path_field(C @ E, u, B0=B0, chi_iso=TISSUE.chi_iso, chi_aniso=TISSUE.chi_aniso,
+                         has_aniso=bool(ch["susceptibility_grid"].get("has_aniso")))          # (n_w, n_fine)
+    held = lambda gate: np.repeat(np.asarray(gate, float)[:-1], 50)                           # the held gate on the fine grid
+    expect = GAMMA * (T / n_fine) * (dB * held(hand)[None, :]).sum(1)
+    stored = GAMMA * (T / n_fine) * (dB * held(hand == 0)[None, :]).sum(1)
     assert np.abs(stored).max() > 1e-3                                  # the mixing time would carry a phase
     np.testing.assert_allclose(_field_phase(pk, ste), expect, rtol=0, atol=1e-7)
 

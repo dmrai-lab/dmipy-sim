@@ -24,12 +24,12 @@ R = 0.7182e-6                                   # DiSCo's thinnest strand
 D0 = 0.6e-9
 
 
-def _walk(g, r0, n_sub, T=2e-3, dt_save=2e-4):
-    return d.simulate_trajectories(len(r0), D0, g, T, dt_save, seed=1, r0=r0, sub_steps=n_sub, raw_subset=len(r0)).saves()
+def _walk(g, r0, n_sub, T=2e-3, block_h=2e-4):
+    return d.simulate_trajectories(len(r0), D0, g, T, block_h, seed=1, r0=r0, sub_steps=n_sub, raw_subset=len(r0))
 
 
-def _n_sub(frac, dt_save=2e-4):
-    return int(np.ceil(dt_save / ((R / frac) ** 2 / (6 * D0))))
+def _n_sub(frac, block_h=2e-4):
+    return int(np.ceil(block_h / ((R / frac) ** 2 / (6 * D0))))
 
 
 def _two_tubes(gap):
@@ -89,7 +89,7 @@ def test_the_hairpin_keeps_its_walkers_at_the_rule():
     r0 = r0[np.linalg.norm(r0, axis=1) < 6e-6][:20_000]
     msd = {}
     for frac in (12.0, STEP_FRACTION):
-        pos = np.asarray(_walk(g, r0, _n_sub(frac)).positions)
+        pos = np.asarray(_walk(g, r0, _n_sub(frac)).raw_positions)
         assert g.inside_any(pos[:, -1]).all(), frac
         msd[frac] = ((pos[:, -1] - pos[:, 0]) ** 2).mean(0)
     rel = np.abs(msd[STEP_FRACTION] / msd[12.0] - 1.0)
@@ -110,6 +110,6 @@ def test_the_contact_channel_in_a_narrow_gap_holds_at_the_rule():
     contact = {}
     for frac in (12.0, STEP_FRACTION):
         w = _walk(g, r0, int(np.ceil(2e-4 / ((Ro / frac) ** 2 / (6 * D0)))))
-        assert not g.inside_any(np.asarray(w.positions)[:, -1]).any(), frac
-        contact[frac] = float(np.asarray(w.boundary_local_time).sum(1).mean())
+        assert not g.inside_any(np.asarray(w.raw_positions)[:, -1]).any(), frac
+        contact[frac] = float(np.asarray(w.raw_boundary).sum(1).mean())
     assert abs(contact[STEP_FRACTION] / contact[12.0] - 1.0) < 0.03, contact

@@ -20,40 +20,45 @@ D0 = 2e-9
 
 
 def test_the_band_container_round_trips_to_nanometres_at_a_third_of_the_bytes():
-    rng = np.random.default_rng(0); n_w, n_t = 400, 253
-    X = np.cumsum(rng.normal(0, np.sqrt(2 * D0 * 4e-4), (n_w, n_t, 3)), axis=1) + 1e-3      # 100 ms at 1 mm
-    a_f, m_f, nb_f = _cx.encode_bridge_dst(X, 128, 1e-4)
-    a_b, m_b, nb_b = _cx.encode_bridge_dst(X, 128, 1e-4, container=_cx.TWO_LEVEL_CONTAINER)
-    assert nb_f / nb_b > 3.0 and m_b["container"] == [{"bands": [0, 16], "bits": 16}, {"bands": [16, 128], "bits": 8}]
-    assert a_b["pos_x_b0"].dtype == np.int16 and a_b["pos_x_b1"].dtype == np.int8 and a_b["pos_x_ends"].dtype == np.float32
-    Xf, Xb = _cx.decode(a_f, m_f, n_t=n_t), _cx.decode(a_b, m_b, n_t=n_t)
-    assert np.abs(Xb - Xf).max() < 1e-7 and np.sqrt(((Xb - Xf) ** 2).mean()) < 2e-8               # 100 nm max, 20 nm rms
-    np.testing.assert_array_equal(_cx.read_position_coeffs(a_b)[:, :2], _cx.read_position_coeffs(a_f)[:, :2])   # the endpoints exact
+    rng = np.random.default_rng(0); n_w, K = 400, 128
+    C = np.zeros((n_w, K + 2, 3)); C[:, 0] = 1e-3; C[:, 1] = rng.normal(0, 1e-5, (n_w, 3))
+    C[:, 2:] = rng.normal(0, 1, (n_w, K, 3)) * (1e-7 / np.arange(1, K + 1))[None, :, None]       # bands falling as 1/k
+    a_f = _cx.pack_position_arrays(C, dtype=np.float32)
+    a_b = _cx.pack_position_arrays(C, container=_cx.TWO_LEVEL_CONTAINER)
+    nb_f, nb_b = (sum(np.asarray(v).nbytes for v in a.values()) for a in (a_f, a_b))
+    assert nb_f / nb_b > 3.0 and a_b["pos_x_b0"].dtype == np.int16 and a_b["pos_x_b1"].dtype == np.int8 and a_b["pos_x_ends"].dtype == np.float32
+    Cf, Cb = _cx.read_position_coeffs(a_f), _cx.read_position_coeffs(a_b)
+    np.testing.assert_array_equal(Cb[:, :2], Cf[:, :2])                                           # the endpoints exact
+    assert np.abs(Cb[:, 2:] - C[:, 2:]).max() < 1e-9                                               # bands to the quantisation step
     with pytest.raises(ValueError, match="covers bands"):
-        _cx.encode_bridge_dst(X, 32, 1e-4, container=((16, 16),))
+        _cx.pack_position_arrays(C[:, :34], container=((16, 16),))
     with pytest.raises(ValueError, match="bits must be 3..16"):
-        _cx.encode_bridge_dst(X, 32, 1e-4, container=((None, 2),))
+        _cx.pack_position_arrays(C[:, :34], container=((None, 2),))
 
 
 def test_the_c2_container_and_the_static_c1_column():
-    rng = np.random.default_rng(1); n_w, n_t = 300, 121
-    ell = -np.abs(rng.normal(0, 1e-6, (n_w, n_t))) * (rng.uniform(size=(n_w, n_t)) < 0.3); ell[:, 0] = 0.0
-    a_f, m_f = _cx.encode_boundary_bridge(ell, 64, 1e-4, dtype=np.float32)    # continuous bands ~1e-6: float16 subnormal
-    a_b, m_b = _cx.encode_boundary_bridge(ell, 64, 1e-4, container=((None, 8),))
+    rng = np.random.default_rng(1); n_w, K, T = 300, 64, 0.012
+    end = -np.abs(rng.normal(0, 1e-5, n_w)); bands = rng.normal(0, 1, (n_w, K)) * (1e-7 / np.arange(1, K + 1))[None, :]
+    a_f, m_f = _cx.encode_boundary_bands(np.zeros(n_w, np.float32), end, bands, T=T, dtype=np.float32)
+    a_b, m_b = _cx.encode_boundary_bands(np.zeros(n_w, np.float32), end, bands, T=T, container=((None, 8),))
     assert "blt_bridge_dst" not in a_b and a_b["blt_b0"].dtype == np.int8 and _cx.has_c2(a_b) and _cx.c2_bands_K(a_b, {}) == 64
-    chi = np.ones(n_t); chi[0] = 0.0; chi[80:] = 0.0
+    n_t = 121; chi = np.ones(n_t); chi[0] = 0.0; chi[80:] = 0.0
     lw_f = _cx.surface_logweight_bridge(a_f, m_f, 3.0, chi, 1e-4); lw_b = _cx.surface_logweight_bridge(a_b, m_b, 3.0, chi, 1e-4)
     assert np.abs(lw_b - lw_f).max() < 5e-3 * np.abs(lw_f).max()
-    np.testing.assert_allclose(_cx.decode_boundary_bridge(a_b, m_b, n_t=n_t).sum(1), np.asarray(a_b["blt_endpoint"]), rtol=1e-5)
-    lab = np.repeat(rng.integers(0, 3, (n_w, 1)), n_t, axis=1)
-    a1, m1 = _cx.encode_occupancy({"comp": lab})
+    np.testing.assert_allclose(_cx.decode_boundary_bridge(a_b, m_b, n_t=n_t).sum(1), np.asarray(a_b["blt_endpoint"]), rtol=1e-5, atol=1e-10)
+    lab = rng.integers(0, 3, n_w)
+    a1, m1 = _cx.encode_static_occupancy(lab)
     assert list(a1) == ["comp_static"] and a1["comp_static"].dtype == np.int8 and m1["columns"][0]["kind"] == "static"
-    np.testing.assert_array_equal(_cx.decode_occupancy(a1, m1)["comp"], lab[:, 0])            # a static column: one label per walker
-    np.testing.assert_allclose(_cx.relaxation_logweight_runs(a1, m1["columns"][0], [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], 4e-4, chi, chi),
-                               _cx.relaxation_logweight(lab, [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], 4e-4, chi, chi), rtol=1e-12)
-    crossing = lab.copy(); crossing[0, 60:] = 2
-    a2, m2 = _cx.encode_occupancy({"comp": crossing})
-    assert m2["columns"][0]["kind"] == "label" and "comp_rle_vals" in a2                   # a crossing keeps the runs
+    np.testing.assert_array_equal(_cx.occupancy_events(a1, m1["columns"][0])[0], lab)             # a static column: one label per walker
+    act = np.ones(n_t); act[-1] = 0.0                                                         # the readout, held over nothing
+    gate = _cx.CumulativeGate(chi, 1e-4); on = _cx.CumulativeGate(act, 1e-4)
+    got = _cx.relaxation_logweight_runs(a1, m1["columns"][0], [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], gate, on, t1=(n_t - 1) * 1e-4)
+    dense = _cx.relaxation_logweight(np.repeat(lab[:, None], n_t, axis=1), [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], 1e-4, chi, act)
+    np.testing.assert_allclose(got, dense, rtol=1e-12)
+    from dmipy_sim.coefficient_walk import EventList
+    ev = EventList([0, 1] + [1] * (n_w - 1), [60 * 1e-4], [2])                                    # walker 0 crosses into pool 2
+    a2, m2 = _cx.encode_events_occupancy({"comp": (lab, ev)})
+    assert m2["columns"][0]["kind"] == "events" and "comp_events_t" in a2                           # a crossing keeps the events
 
 
 @pytest.fixture(scope="module")
@@ -157,8 +162,8 @@ def test_a_pack_with_a_five_bit_range_reads_back_and_replays(tmp_path):
 
 
 def test_the_two_level_container_still_reads_as_before():
-    rng = np.random.default_rng(3); X = np.cumsum(rng.normal(0, 1e-6, (50, 61, 3)), axis=1)
-    a, m, _ = _cx.encode_bridge_dst(X, 24, 1e-4, container=_cx.TWO_LEVEL_CONTAINER)
+    rng = np.random.default_rng(3); C = rng.normal(0, 1e-6, (50, 26, 3))
+    a = _cx.pack_position_arrays(C, container=_cx.TWO_LEVEL_CONTAINER)
     assert sorted(k for k in a if k.startswith("pos_x_b")) == ["pos_x_b0", "pos_x_b1"]
     sc = np.asarray(a["pos_band_scale"], np.float64)[0, 0]                        # (K,) the x scales
     by_hand = np.concatenate([a["pos_x_ends"], a["pos_x_b0"] * sc[:16], a["pos_x_b1"] * sc[16:]], axis=1)
@@ -203,28 +208,22 @@ def test_a_one_range_container_is_the_single_depth_form():
     assert path_codec([{"modes": [0, 8], "bits": 8}]) == 8 and path_codec(((None, 16),)) == 16 and path_codec(8) == 8
     assert isinstance(path_codec([{"modes": [0, 4], "bits": 8}, {"modes": [4, 8], "bits": 6}]), tuple)
     C = np.random.default_rng(0).normal(size=(10, 12, 8))
-    meta = dict(channel="susc_path_dct", K=8, n_t=40, n_ch=12, channels=[f"c{i}" for i in range(12)], iso_P_zz="stored")
+    meta = dict(channel="susc_field_basis", K=8, T=4e-3, n_ch=12, channels=[f"c{i}" for i in range(12)], iso_P_zz="stored")
     a, m = _quantise_susc_path(C, dict(meta), path_codec([{"modes": [0, 8], "bits": 8}]))
     assert list(a) == ["susc_path_dct", "susc_path_scale"] and a["susc_path_dct"].dtype == np.int8 and m["bits"] == 8 and "container" not in m
 
 
 def test_a_pack_with_a_field_stores_the_path_channel_in_a_container_and_replays(tmp_path):
-    from tests.test_field_sample_every import _walk
+    from tests.test_bank import _susc_walk
     from tests.replay_frames import field_along
-    from dmipy_sim.io.strands import write_tck, concat_centerlines
-    from dmipy_sim.spec import disco_spec
-    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
-    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6)
-    w = _walk(spec, 1)
+    w = _susc_walk(200, seed=3, K_c3=8)
     kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy")
     ref = build_replay_pack(w, id="t/p8", susc_path_bits=16, **kw)
     cont = [{"modes": [0, 2], "bits": 14}, {"modes": [2, 8], "bits": 6}]
     pk = build_replay_pack(w, id="t/pc", susc_path_bits=cont, out_path=str(tmp_path / "pc.rpk"), **kw)
-    pm = pk.meta["compression"]["channels"]["susceptibility_path"]
+    pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     assert pm["container"] == cont and "susc_path_dct" not in pk.arrays and "susc_path_dct_b1u6" in pk.arrays
-    assert np.isfinite(pk.meta["fidelity"]["err_susc_path"])
+    assert np.isfinite(pk.meta["fidelity"]["terms"]["field_read"])
     from dmipy_sim.replay.bank import read_rpk
     back = read_rpk(str(tmp_path / "pc.rpk"))
     seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
@@ -254,16 +253,13 @@ def test_the_derived_container_is_one_common_step_and_gains_a_bit_per_quartered_
     assert st[ok].max() / st[ok].min() < 5.0        # byte grouping moves a band by up to a few bits
 
 
-def test_the_default_pack_is_derived_for_its_floor_and_a_block_inherits_the_certifying_ranges(tmp_path):
-    walk = d.simulate_trajectories(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False,
-                                   raw_subset=400).saves()                     # a fill's block: a walk of saves
-    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3)
+def test_the_default_pack_is_derived_for_its_floor(tmp_path):
+    walk = d.simulate_trajectories(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=400)
+    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, fidelity="measured")
     q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3)
     assert p.meta["compression"]["container"] != _cx.band_curve(16, 10)
     assert sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in q.meta["compression"]["container"]) > \
         sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in p.meta["compression"]["container"])      # a lower floor: more bits
-    blk = build_replay_pack(walk, id="t/blk", K=16, license="x", citation="x", blt_temporal_K=16, fidelity="inherited", fidelity_from=p)
-    assert blk.meta["compression"]["container"] == p.meta["compression"]["container"]
-    # measured against the walk's saves, the error is what K = 16 of the saves' 20 bands drops plus the container's
-    # quantisation: within the floor of 400 walkers (0.084 against 0.117 measured)
+    # measured against the walk's block ends, the error is what K = 16 of the walk's bands drops plus the container's
+    # quantisation: within the floor of 400 walkers
     assert p.meta["fidelity"]["within_2x_floor"] and p.meta["fidelity"]["err_max"] < p.meta["fidelity"]["floor_max"]

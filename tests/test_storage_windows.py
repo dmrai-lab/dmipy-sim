@@ -1,8 +1,9 @@
 """A pack stores its walk in windows of one duration (RPK.md 4.3), and a replay across them is the sum of the windows'
-contractions: a walk stored in two windows replays as the same walk stored in one, on every tier and every scalar
-route, to the order-0 reading of its saves per window (1e-5 here, against certificates of 4e-3); a window is a pack
-of its own; a prefix of whole windows is a range of the file; a partial prefix re-encodes the decoded windows; the
-builder refuses a walk that is not a whole number of windows."""
+contractions: a walk accumulated in two windows replays as the same walk accumulated in one, on every tier and
+every scalar route, within the two packs' certified truncation (the bands per second are the same, the band
+truncation of each window its own); a window is a pack of its own; a prefix of whole windows is a range of the
+file; a partial prefix re-projects the windows it cuts; the producer refuses a walk that is not a whole number of
+windows."""
 import dataclasses
 
 import numpy as np
@@ -12,42 +13,59 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
-from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity, window_plan
+from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity
 from dmipy_sim.replay.study import walker_primitives
 from dmipy_sim.spec.substrate import Susceptibility
 from dmipy_sim.spec.tissue import Tissue
-from tests.test_bank import _lean_env, _slab_spec, _susc_master, _sample_susc
+from tests.test_bank import _lean_env, _slab_grid
 
-N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk; two windows of 10 ms
+N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk in 40 blocks; two windows of 10 ms
+T = (N_T - 1) * DT
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho2=2e-5, chi_iso=1e-7)
 TIS0 = TIS.replace(chi_iso=None)              # the same material read without a field: no scanner, no chi (#593)
 
 
-def _master():
-    m = _susc_master(n_w=N_W)
-    for k in ("traj", "comp", "dlog_b"):
-        m[k] = np.asarray(m[k])[:, :N_T]
-    m["T_max"] = (N_T - 1) * DT
-    comp = np.zeros((N_W, N_T), np.int8); comp[:200, 25:] = 1          # a third of the walkers cross in window 1
-    m["comp"] = comp
-    spec = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6).spec      # names for the two pools the walk labels,
-    m["substrate"] = spec.replace(                                       # one the slab field's source
-        susceptibility={"intra": Susceptibility(None, None, "none")},
-        validity=dataclasses.replace(spec.validity, tiers=list(spec.validity.tiers) + ["field"])).to_dict()
-    return _sample_susc(m)         # sampled after the slice to N_T, so the samples match the sliced trajectory
+def _geometry():
+    """One permeable cylinder in a periodic cell: walkers cross between the two named pools (events in C1)."""
+    return d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, permeability=2e-5)
+
+
+def _magnetic(spec):
+    """The cell's spec with its lumen a field source and the field tier declared (the synthetic grid stands in)."""
+    return spec.replace(susceptibility={"intra": Susceptibility(None, None, "none")},
+                        validity=dataclasses.replace(spec.validity, tiers=list(spec.validity.tiers) + ["field"]))
+
+
+def _walk(window_T, K, *, n_w=N_W, seed=0, T_max=T):
+    """The cell walked with C1 (events), C2 and C3 (the slab grid read in the walk, 16 modes), every walker's
+    block ends kept, in windows of ``window_T`` at ``K`` bands each."""
+    w = d.simulate_trajectories(n_w, 2e-9, _geometry(), T_max, DT, seed=seed, require_gpu=False, K=K, window_T=window_T,
+                                field_basis=_slab_grid(), K_c3=16, raw_subset=n_w)
+    return dataclasses.replace(w, spec=_magnetic(w.spec))
+
+
+def _kw(**more):
+    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, fidelity="measured")
+    kw.update(more)
+    return kw
 
 
 @pytest.fixture(scope="module")
 def packs():
-    """The same walk stored in one window and in two, every channel at the saves' own band count (the bridge at
-    K = n - 2, the field's cosine basis at K = n) in float32 containers, so the two differ by the order-0 reading of
-    the saves in each window and the containers' rounding."""
-    m = _master()
-    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, scanner="connectom")
-    one = _float_pack(m, id="t/one", K=N_T - 2, blt_temporal_K=N_T - 2, susc_path_K=N_T, window_T=(N_T - 1) * DT, **kw)
-    two = _float_pack(m, id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01, **kw)
-    return m, one, two
+    """The same walk accumulated in one window (K = 38) and in two (K = 19 each): the same bands per second, every
+    channel in float32 containers, so the two differ by each window's band truncation and the containers' rounding."""
+    w1, w2 = _walk(T, 38), _walk(0.01, 19)
+    npt.assert_array_equal(w1.raw_positions, w2.raw_positions)                 # one random stream: one walk
+    one = _float_pack(w1, id="t/one", K=38, blt_temporal_K=38, susc_path_K=16, window_T=T, **_kw())
+    two = _float_pack(w2, id="t/two", K=19, blt_temporal_K=19, susc_path_K=16, window_T=0.01, **_kw())
+    return w1, w2, one, two
+
+
+def _bound(*packs):
+    """What two packs of one walk may differ by: the sum of their walk-free bounds (the terms of RPK.md 9.4), which
+    hold for every acquisition within the envelope, not only the battery the measured certificate replayed."""
+    return sum(float(p.fidelity.get("err_derived", p.fidelity["err_max"])) for p in packs) + 1e-9
 
 
 def _seq(n_t=N_T, TE=None):
@@ -55,71 +73,77 @@ def _seq(n_t=N_T, TE=None):
 
 
 def test_the_layout_and_the_table(packs):
-    m, one, two = packs
-    assert one.n_windows == 1 and one.windows == dict(n=1, T=pytest.approx((N_T - 1) * DT), walks=[dict(first=0, last=0, seed=0)])
+    w1, w2, one, two = packs
+    assert one.n_windows == 1 and one.windows == dict(n=1, T=pytest.approx(T), walks=[dict(first=0, last=0, seed=0)])
     assert two.n_windows == 2 and two.windows["T"] == pytest.approx(0.01) and two._window_n_t == 21
     assert two.n_t == N_T and "n_t" not in two.meta["compression"] and two.K == 19
     assert {k: two.block[k] for k in ("h", "m", "precision", "n_blocks", "rule")} == dict(
-        h=pytest.approx(DT), m=0, precision="float64", n_blocks=N_T - 1, rule="saves")
+        h=pytest.approx(DT), m=w2.m, precision="float32", n_blocks=40, rule="given")
     assert set(two.meta["walk_params"]["qv"]) == {"positions", "local_time", "field"} and "terms" in two.fidelity
+    assert two.meta["walk_params"]["field_read_interval"] == pytest.approx(w2.field_read_interval)
     per_window = {k[3:] for k in two.arrays if k.startswith("s1/")}
-    assert {"pos_x", "pos_y", "pos_z", "blt_bridge_dst", "blt_start", "blt_endpoint", "comp_rle_vals", "comp_rle_lens",
-            "comp_rle_counts", "susc_path_dct", "susc_path_scale"} <= per_window
+    assert {"pos_x", "pos_y", "pos_z", "blt_bridge_dst", "blt_start", "blt_endpoint", "comp_events_offsets", "comp_events_t",
+            "comp_events_label", "susc_path_dct", "susc_path_scale"} <= per_window
     shared = {k for k in two.arrays if "/" not in k and k not in per_window}
-    assert shared == {"spin_weights"}                                    # the field is the path channel's: no grid
-    assert "comp_static" not in two.arrays                                  # a walk that crosses anywhere stores runs everywhere
+    assert shared == set()                                                  # the field is the path channel's: no grid; both pools weigh 1
+    assert "comp_static" not in two.arrays                                  # a walk that crosses stores events
+    assert two.meta["compression"]["channels"]["compartment"]["columns"][0]["kind"] == "events"
     f = two.fidelity
     assert f["certified"] == "measured" and len(f["windows"]) == 2 and f["within_2x_floor"]
+    assert all(w["measured_by"] == "raw_subset" and "err_surface" in w and "err_susc_path" in w for w in f["windows"])
 
 
 def test_a_window_is_the_pack_a_fresh_walk_of_it_would_be(packs):
-    m, one, two = packs
-    from dmipy_sim.replay.bank import _window_master
-    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    w1 = _float_pack(_window_master(m, 20, 40), id="t/two", K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01,
-                           license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16,
-                           _occupancy_runs=True)
+    w1, w2, one, two = packs
     s1 = two.window(1)
     assert s1.n_t == 21 and s1.n_windows == 1 and s1.windows["T"] == pytest.approx(0.01)
-    for k in w1.arrays:
-        npt.assert_array_equal(s1.arrays[k], w1.arrays[k], err_msg=k)
-    ends = [0, 20, 40]                                                     # the windows' ends are held exactly
-    npt.assert_allclose(two.positions()[:, ends], np.asarray(m["traj"])[:, ends], atol=1e-11)
+    npt.assert_array_equal(s1.r0, np.asarray(w2.raw_positions)[:, 20])            # the window opens on the exact position
+    npt.assert_array_equal(two.window(0).r0, np.asarray(w2.raw_positions)[:, 0])
+    # the window's own walk object packs to the same tensors
+    p1 = _float_pack(w2.window(1), id="t/two", K=19, blt_temporal_K=19, susc_path_K=16, window_T=0.01, **_kw())
+    for k in p1.arrays:
+        npt.assert_array_equal(s1.arrays[k], p1.arrays[k], err_msg=k)
+    # the events of window 1 are the walk's within it, timed on the walk's clock, opened by the label at its start
+    from dmipy_sim.coefficient_walk import events_within
+    ev, lab0 = events_within(w2.comp_events, w2.compartment, 0.01, 0.02)
+    from dmipy_sim.replay.compression import occupancy_events
+    start, got = occupancy_events(s1.arrays, s1.meta["compression"]["channels"]["compartment"]["columns"][0])
+    npt.assert_array_equal(start, lab0)
+    assert got == ev
 
 
 @pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS0), dict(tissue=TIS, scanner=3.0)])
 def test_two_windows_replay_as_one_on_every_tier(packs, knobs):
-    m, one, two = packs
-    seq = _seq()
-    npt.assert_allclose(two.replay(seq, complex_signal=True, **knobs), one.replay(seq, complex_signal=True, **knobs), atol=1e-4)
-    w1, ew1, E1 = one.walker_signals(seq, **knobs); w2, ew2, E2 = two.walker_signals(seq, **knobs)
-    npt.assert_allclose(ew2, ew1, rtol=1e-4); npt.assert_allclose(E2, E1, atol=2e-3)
+    w1, w2, one, two = packs
+    for seq in (_seq(), _seq(TE=T)):                                               # the echo inside the last window, and at the walk's end
+        npt.assert_allclose(two.replay(seq, complex_signal=True, **knobs), one.replay(seq, complex_signal=True, **knobs), atol=_bound(one, two))
+        w_1, ew1, E1 = one.walker_signals(seq, **knobs); w_2, ew2, E2 = two.walker_signals(seq, **knobs)
+        npt.assert_allclose(E2.mean(0), E1.mean(0), atol=_bound(one, two))
+    npt.assert_allclose(ew2, ew1, rtol=1e-4)      # at the walk's end: relaxation on the events exact, the contact the float32 endpoints
 
 
-def test_an_acquisition_off_the_save_grid_splits_exactly(packs):
-    m, one, two = packs
+def test_an_acquisition_off_the_block_grid_splits_exactly(packs):
+    w1, w2, one, two = packs
     seq = d.pgse([[1, 0, 0]], 0.0042, 0.0123, gradient_strengths=0.3, n_t=67, slew_rate=np.inf, TE=0.0198)
     npt.assert_allclose(two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True),
-                        one.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), atol=1e-4)
+                        one.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), atol=_bound(one, two))
 
 
-def test_the_primitives_and_the_pose_expansion_sum_over_windows(packs):
-    m, one, two = packs
-    seq = _seq()
+def test_the_primitives_sum_over_windows(packs):
+    w1, w2, one, two = packs
+    seq = _seq(TE=T)                                                               # the gate spans the walk: the contact is the endpoints
     p1, p2 = walker_primitives(one, seq), walker_primitives(two, seq)
-    npt.assert_allclose(p2.phi, p1.phi, atol=2e-3)                       # radians: the order-0 reading per window
     npt.assert_allclose(p2.exposure_t2, p1.exposure_t2, atol=1e-12); npt.assert_allclose(p2.exposure_t1, p1.exposure_t1, atol=1e-12)
     npt.assert_allclose(p2.contact, p1.contact, rtol=1e-4, atol=1e-9)   # float32 endpoints of the contact bridge
-    npt.assert_allclose(p2.field_iso, p1.field_iso, atol=1e-3 * np.abs(p1.field_iso).max())   # the int16 container of the path channel
-    r1 = one.pose_response(seq, tissue=TIS, scanner=3.0); r2 = two.pose_response(seq, tissue=TIS, scanner=3.0)
-    npt.assert_allclose(r2.coeffs, r1.coeffs, atol=1e-4)
+    npt.assert_allclose(np.exp(1j * p2.phi).mean(0), np.exp(1j * p1.phi).mean(0), atol=_bound(one, two))
+    npt.assert_allclose(p2.signal(TIS, 3.0), p1.signal(TIS, 3.0), atol=_bound(one, two))
     w, ew, E = two.walker_signals(seq, tissue=TIS, scanner=3.0)
     w_, ew_, E_ = p2.signals(TIS, 3.0)
     npt.assert_allclose(ew_, ew, rtol=1e-10); npt.assert_allclose(E_, E, atol=1e-10)
 
 
 def test_a_short_acquisition_reads_the_first_window_alone(packs):
-    m, one, two = packs
+    w1, w2, one, two = packs
     short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms
     blind = d.replay.ReplayPack({k: (np.full_like(v, np.nan) if k.startswith("s1/") and np.issubdtype(np.asarray(v).dtype, np.floating) else v)
                                  for k, v in two.arrays.items()}, two.meta)
@@ -128,27 +152,29 @@ def test_a_short_acquisition_reads_the_first_window_alone(packs):
     npt.assert_array_equal(a, two.window(0).replay(short, tissue=TIS, scanner=3.0, complex_signal=True))
 
 
-def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_encodes(packs):
-    m, one, two = packs
+def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_projects(packs):
+    w1, w2, one, two = packs
     pr = two.prefix(0.01)
     assert pr.n_windows == 1 and pr.n_t == 21 and set(pr.arrays) == set(two.window(0).arrays)
     for k in pr.arrays:
         npt.assert_array_equal(pr.arrays[k], two.window(0).arrays[k])
     assert pr.fidelity["combined"] == "bound_over_windows" and pr.meta["provenance"]["truncated"]["windows_kept"] == 1
-    pp = two.prefix(0.015)
-    assert pp.n_windows == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"]
+    with pytest.raises(ValueError, match="window"):                       # a prefix inside a later window: no re-projection across windows
+        two.prefix(0.015)
+    pp = one.prefix(0.015)
+    assert pp.n_windows == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"] and "err_reprojection" in pp.fidelity
     seq = d.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
-    npt.assert_allclose(pp.replay(seq, tissue=TIS0, complex_signal=True), two.replay(seq, tissue=TIS0, complex_signal=True), atol=3e-3)
+    npt.assert_allclose(pp.replay(seq, tissue=TIS0, complex_signal=True), one.replay(seq, tissue=TIS0, complex_signal=True),
+                        atol=2.0 * pp.fidelity["floor_max"])
 
 
-def test_the_plan_refuses_a_walk_that_is_not_whole_windows():
-    assert window_plan(41, 5e-4, 0.01) == (2, 21) and window_plan(41, 5e-4, 0.02) == (1, 41) and window_plan(41, 5e-4, 0.1) == (1, 41)
-    with pytest.raises(ValueError, match="window_T"):
-        window_plan(41, 5e-4, None)
-    with pytest.raises(ValueError, match="not a whole number"):
-        window_plan(41, 5e-4, 0.015)
-    with pytest.raises(ValueError, match="not a whole number of saves"):
-        window_plan(41, 5e-4, 0.0101)
+def test_the_producer_refuses_a_walk_that_is_not_whole_windows():
+    from dmipy_sim.engine.accumulate import window_count
+    assert window_count(0.02, 0.01) == (2, 0.01) and window_count(0.02, 0.02) == (1, 0.02) and window_count(0.02, 0.1)[0] == 1
+    with pytest.raises(ValueError, match="whole number"):
+        window_count(0.015, 0.01)
+    with pytest.raises(ValueError, match="whole number"):
+        d.simulate_trajectories(8, 2e-9, _geometry(), 0.015, DT, seed=0, require_gpu=False, K=8, window_T=0.01)
 
 
 def test_the_bound_over_windows():
@@ -162,14 +188,14 @@ def test_the_bound_over_windows():
 
 def test_a_pack_without_the_table_is_refused():
     with pytest.raises(ValueError, match="walk_params.windows"):
-        d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"n_t": 3}}).n_windows
+        d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"block": {"h": 1e-3}}}).n_windows
 
 
 def test_a_pack_with_the_earlier_table_is_refused(packs, tmp_path):
     """A header that names its window table ``walk_params.segments`` declares no window table, and is refused by name."""
     import copy
     from dmipy_sim.replay.replay import read_rpk, write_rpk
-    m, one, two = packs
+    w1, w2, one, two = packs
     meta = copy.deepcopy(two.meta)
     meta["walk_params"]["segments"] = meta["walk_params"].pop("windows")
     write_rpk(tmp_path / "earlier.rpk", two.arrays, meta)
@@ -179,7 +205,6 @@ def test_a_pack_with_the_earlier_table_is_refused(packs, tmp_path):
 
 def _crushed_train(n_echoes=8, beta=120.0):
     """A refocusing train of 2 ms echoes over 16 ms with a crusher pair about every pulse: echoes in both windows."""
-    import dataclasses
     from dmipy_sim import sequences
     s = sequences.cpmg(n_echoes, 2e-3, beta_deg=beta, gradient_directions=[[1.0, 0, 0]], bvalues=[0.0], n_t_per_echo=40)
     wins = [(float(e.t_s) - 0.5e-3, float(e.t_s) + 0.5e-3) for e in s.rf if e.label in ("refocus", "refocusing")]
@@ -190,39 +215,36 @@ def _crushed_train(n_echoes=8, beta=120.0):
 @pytest.mark.parametrize("knobs", [dict(), dict(tissue=TIS, scanner=3.0), dict(tissue=TIS0, b1_scale=0.9), dict(off_resonance_T=2e-7)])
 def test_the_bloch_route_hands_the_state_across_windows(packs, knobs, engine):
     """The vector-Bloch propagation over two windows, the refocusing pulse exactly on the join, equals the one-window
-    propagation to rounding; the state every walker leaves a window in is the state it starts the next in."""
-    m, one, two = packs
-    seq = _seq()                                                                  # the 180 at 10 ms: the boundary save
+    propagation within the two packs' band truncation (the route reads the stored path at the block ends: a
+    sampling of the same function the scalar route integrates); the state every walker leaves a window in is the
+    state it starts the next in."""
+    w1, w2, one, two = packs
+    seq = _seq()                                                                  # the 180 at 10 ms: the boundary block end
     a = one.replay_bloch(seq, complex_signal=True, jax=(engine == "jax"), **knobs)
     b = two.replay_bloch(seq, complex_signal=True, jax=(engine == "jax"), **knobs)
-    npt.assert_allclose(b, a, atol=1e-6)
-    if engine == "numpy":
-        w, ew, E1 = one.walker_signals(seq, **knobs) if "b1_scale" in knobs or "off_resonance_T" in knobs else (None, None, None)
-        if E1 is not None:
-            w, ew, E2 = two.walker_signals(seq, **knobs)
-            npt.assert_allclose(E2, E1, atol=2e-3)
+    npt.assert_allclose(b, a, atol=_bound(one, two))
 
 
 def test_a_crushed_train_spans_the_windows(packs):
-    m, one, two = packs
+    w1, w2, one, two = packs
     train = _crushed_train()
     a = one.replay_bloch(train, tissue=TIS0, complex_signal=True, jax=True)
     b = two.replay_bloch(train, tissue=TIS0, complex_signal=True, jax=True)
     assert a.shape == (1, 8)
-    npt.assert_allclose(b, a, atol=1e-5)
+    npt.assert_allclose(b, a, atol=_bound(one, two))
 
 
 def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
     """A short acquisition on a long pack is read at its own readout, not at the walk's end: the two-window pack,
     the one-window pack and the first window alone agree, and with an ideal pulse the scalar route agrees too, to
-    what the stored series holds between its block ends (the Bloch route reads it at the block ends, the scalar route
-    integrates it; largest here, at the saves' own band count)."""
-    m, one, two = packs
+    what the stored function holds between its block ends (the Bloch route reads it at the block ends, the scalar
+    route integrates it)."""
+    w1, w2, one, two = packs
     short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms of 20
     a = one.replay_bloch(short, tissue=TIS0, complex_signal=True)
     b = two.replay_bloch(short, tissue=TIS0, complex_signal=True)
     c = two.window(0).replay_bloch(short, tissue=TIS0, complex_signal=True)
-    npt.assert_allclose(b, a, atol=1e-5); npt.assert_allclose(c, b, atol=1e-8)
+    npt.assert_allclose(b, a, atol=_bound(one, two)); npt.assert_allclose(c, b, atol=1e-8)
     npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS0), rtol=2e-3)
 
 
@@ -258,118 +280,17 @@ def test_a_walk_continues_from_its_end_and_appends_as_windows():
     assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0
 
 
-def test_shards_of_a_windowed_walk_merge(packs, tmp_path):
+def test_shards_of_a_windowed_walk_merge(packs):
     """Two shards of the same substrate, each stored in two windows with a field path channel, merge into one pack
     of two windows whose every window's scale table carries a block axis and whose replay is the weight-combined shards'."""
     from dmipy_sim.replay.bank import merge_packs
-    m, one, two = packs
-    m2 = dict(m); rng = np.random.default_rng(3)
-    m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 5
-    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01)
-    b = _float_pack(m2, id="t/b", **kw)
+    w1, w2, one, two = packs
+    b = _float_pack(_walk(0.01, 19, seed=5), id="t/b", K=19, blt_temporal_K=19, susc_path_K=16, window_T=0.01, **_kw())
     merged = merge_packs([two, b], id="t/merged")
     assert merged.n_windows == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
     seq = _seq()
     Sa, Sb = two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), b.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True)
     npt.assert_allclose(merged.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), (Sa + Sb) / 2.0, atol=1e-6)
-
-
-def test_a_shard_inherits_a_windowed_certificate_window_by_window(packs):
-    """A shard of other walkers built in the same windows as a certifying pack stored in windows inherits, window
-    by window, the certifying window's error (``inherited_from`` names it), so the whole's bound is the sum over the
-    windows once, equal to the certifying pack's own bound, not that bound summed again over the windows; a
-    certifying pack with another number of windows is refused by name."""
-    m, one, two = packs
-    m2 = dict(m); rng = np.random.default_rng(7)
-    m2["traj"] = np.asarray(m["traj"]) + rng.normal(0, 1e-7, np.asarray(m["traj"]).shape); m2["seed"] = 11
-    env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, K=19, blt_temporal_K=19, susc_path_K=21, window_T=0.01)
-    b = _float_pack(m2, id="t/b-inherited", fidelity="inherited", fidelity_from=two, **kw)
-    cert = two.meta["fidelity"]; got = b.meta["fidelity"]
-    assert len(got["windows"]) == len(cert["windows"]) == 2
-    for mine, theirs in zip(got["windows"], cert["windows"]):
-        assert mine["certified"] == "inherited" and mine["inherited_from"]["err_max"] == pytest.approx(theirs["err_max"])
-        assert mine["err_max"] == pytest.approx(theirs["err_max"])
-    assert got["err_max"] == pytest.approx(sum(s["err_max"] for s in cert["windows"]))   # the bound over the windows, once
-    four = _float_pack(m, id="t/four", **{**kw, "K": 9, "blt_temporal_K": 9, "susc_path_K": 11, "window_T": 0.005})
-    with pytest.raises(ValueError, match="window"):
-        _float_pack(m2, id="t/b-wrong", fidelity="inherited", fidelity_from=four, **kw)
-
-
-# ------------------------------------------------------------------ the C2 band floor for a one-window pack (#528)
-# A reflecting-slab walk long enough to be several storage-rule windows (WINDOW_T = 100 ms): 400 steps of 2.5 ms
-# is 1 s, ten windows. Scaled from tests.test_bank._slab_master's construction (that one is fixed at ~100 ms).
-C2_N_T, C2_DT, C2_D0, C2_L = 401, 2.5e-3, 2e-9, 6e-6
-
-
-def _c2_slab_master(n_w=300, n_t=C2_N_T, dt=C2_DT, seed=0):
-    """A reflecting-slab (0<=x<=L) + free y,z walk at an arbitrary length -- the boundary-contact channel
-    :func:`tests.test_bank._slab_master` builds, parametrised in n_t/dt so it can span several storage-rule
-    windows."""
-    rng = np.random.default_rng(seed)
-    step = np.sqrt(2 * C2_D0 * dt)
-    x = rng.uniform(0, C2_L, n_w)
-    traj = np.zeros((n_w, n_t, 3)); dlog = np.zeros((n_w, n_t))
-    for t in range(n_t):
-        x = x + rng.normal(0, step, n_w)
-        hit_lo = x < 0; hit_hi = x > C2_L
-        x = np.where(hit_lo, -x, np.where(hit_hi, 2 * C2_L - x, x))
-        traj[:, t, 0] = x
-        dlog[:, t] = (hit_lo | hit_hi) * step
-    traj[:, :, 1:] = np.cumsum(rng.normal(0, step, (n_w, n_t, 2)), axis=1)
-    return dict(traj=traj, dt_traj=dt, T_max=(n_t - 1) * dt,
-                comp=np.zeros((n_w, n_t), np.int8), comp0=np.zeros(n_w, np.int64),
-                w=np.ones(n_w), dlog_b=-dlog, D_intra=C2_D0, n_walkers=n_w, seed=seed,
-                substrate=_slab_spec(length=C2_L, D=C2_D0))
-
-
-def test_a_one_window_pack_longer_than_the_storage_rule_gets_the_band_floor():
-    """A walk built as ONE window (window_T pinned at its own length) but longer than the storage rule's window
-    (WINDOW_T) gets a C2 band of at least 16 bands per storage-rule window (#528): its certificate carries the
-    window term (err_surface_window/floor_surface_window), and both the whole and the window pass within
-    tol x their floor."""
-    m = _c2_slab_master()
-    env = _lean_env()
-    T_walk = (C2_N_T - 1) * C2_DT
-    pk = _float_pack(m, id="t/c2-one", method="bridge_dst", envelope=env, K=64,
-                           license="CC-BY-4.0", citation="test", window_T=T_walk)
-    assert pk.n_windows == 1
-    c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
-    n_windows = int(round(T_walk / WINDOW_T))
-    assert n_windows == 10 and c2["K"] >= 16 * n_windows
-    f = pk.fidelity
-    assert "err_surface_window" in f and "floor_surface_window" in f
-    assert f["err_surface"] <= 2.0 * f["floor_surface"] + 1e-12
-    assert f["err_surface_window"] <= 2.0 * f["floor_surface_window"]
-    assert f["within_2x_floor"]
-
-
-def test_a_walk_built_in_its_storage_rule_windows_is_unchanged():
-    """The SAME walk built directly in its storage-rule windows (window_T left at the default) keeps the plain
-    ladder (K=8) and no window term: a window built directly (_build_windowed) already has its own endpoints,
-    so none of this applies to it."""
-    m = _c2_slab_master()
-    env = _lean_env()
-    pk = _float_pack(m, id="t/c2-seg", method="bridge_dst", envelope=env, K=64,
-                           license="CC-BY-4.0", citation="test")               # default window_T: 10 x 100 ms
-    assert pk.n_windows == 10
-    c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
-    assert c2["K"] == 8
-    assert "err_surface_window" not in pk.fidelity
-
-
-def test_a_walk_shorter_than_the_storage_rule_window_keeps_the_plain_ladder():
-    """A one-window walk within the storage rule's window (WINDOW_T) is never cut into windows narrower than
-    itself, so it needs none of this: the plain ladder (8, 16, 32, 64), exactly as before #528."""
-    m = _c2_slab_master(n_t=21, dt=C2_DT)                                      # 50 ms, under WINDOW_T's 100 ms
-    env = _lean_env()
-    pk = _float_pack(m, id="t/c2-short", method="bridge_dst", envelope=env, K=16,
-                           license="CC-BY-4.0", citation="test")
-    assert pk.n_windows == 1
-    c2 = pk.meta["compression"]["channels"]["boundary_local_time"]
-    assert c2["K"] in (8, 16, 32, 64)
-    assert "err_surface_window" not in pk.fidelity
 
 
 def _float_pack(*a, **k):

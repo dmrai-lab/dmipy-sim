@@ -277,7 +277,7 @@ def field_pack(tmp_path_factory):
     from dmipy_sim.spec import walk_spec
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
-    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True)
+    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
 
 

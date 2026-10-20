@@ -12,6 +12,7 @@ pool magnetic <=> ``"field"`` in ``validity.tiers`` <=> the field channel (C3) i
 write and at read, whatever the surface kind; a pack without an embedded spec declares nothing and is refused; an
 analytic or inert phantom substrate has no field by its kind."""
 import copy
+import dataclasses
 
 import numpy as np
 import pytest
@@ -37,7 +38,7 @@ MYELIN = Tissue(chi_iso=float(WM["chi_iso_myelin"]), chi_aniso=float(WM["delta_c
 
 
 def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
-    """A bipolar gradient echo on the pack's save grid."""
+    """A bipolar gradient echo on the pack's block grid."""
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -53,7 +54,7 @@ def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
 def absent_walk():
     """An impermeable cylinder: nothing in it is magnetic."""
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
-    return d.simulate_trajectories(400, D0, g, 6e-3, 3e-4, seed=1, require_gpu=False, raw_subset=400).saves()
+    return d.simulate_trajectories(400, D0, g, 6e-3, 3e-4, seed=1, require_gpu=False, K=8)
 
 
 @pytest.fixture(scope="module")
@@ -61,7 +62,7 @@ def present_walk():
     """One myelinated cylinder in a periodic cell, its field read along the walk: the myelin pool is magnetic."""
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
     return d.simulate_trajectories(600, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6),
-                                   raw_subset=600).saves()
+                                   K=8, K_c3=16)
 
 
 @pytest.fixture(scope="module")
@@ -150,7 +151,10 @@ def test_present_with_no_or_zero_chi_at_a_B0_is_the_field_free_signal(present):
 def test_present_with_chi_and_a_B0_replays_the_field(present):
     pk, seq = present
     S = pk.replay(seq, tissue=MYELIN, scanner=3.0, complex_signal=True)
-    assert np.abs(S - pk.replay(seq, complex_signal=True)).max() > 1e-4          # the field reaches the signal
+    # the field reaches the signal: 3.2e-5 on this cell (two sheath walkers at -0.07 / -0.10 rad, two lumen walkers at
+    # -0.01 rad, the extra pool at 4e-4 rad with B0 along the axis), the pack's per-walker phases within 3e-4 rad of
+    # the dense trapezoid over the raw block means; the save-grid route of #745 put 1.3e-3 here, its own error
+    assert np.abs(S - pk.replay(seq, complex_signal=True)).max() > 1e-5
     np.testing.assert_allclose(pk.walker_primitives(Acquisition(seq)).signal(MYELIN, 3.0, complex_signal=True), S, rtol=1e-9, atol=1e-12)
     np.testing.assert_allclose(pk.study(Study(Protocol([Acquisition(seq)]), tissues=[MYELIN], scanners=[3.0]))[0],
                                np.abs(S), rtol=1e-9, atol=1e-12)
@@ -245,13 +249,14 @@ def test_the_reader_refuses_every_mismatch_on_every_surface_kind(kind, surface_s
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_writers_refuse_every_mismatch_on_every_surface_kind(kind, surface_specs, absent_walk, present_walk, absent, present):
-    from dmipy_sim.replay.bank import _walk_master, merge_packs
+    from dmipy_sim.replay.bank import merge_packs
     spec, pool = surface_specs[kind]
-    master = {False: _walk_master(absent_walk), True: _walk_master(present_walk)}
+    walks = {False: absent_walk, True: present_walk}
     for (mag, tier, stored), msg in MISMATCHES:
         v = _variant(spec, pool, mag, tier)
         with pytest.raises(SpecError, match=msg):                        # build_replay_pack, before anything is encoded
-            build_replay_pack(dict(master[stored], substrate=v), id="t", license="x", citation="x", K=4)
+            build_replay_pack(dataclasses.replace(walks[stored], spec=SubstrateSpec.from_dict(v)), id="t", license="x", citation="x", K=4,
+                              weights=np.ones(walks[stored].n_walkers))        # (the spec of another surface kind: its pools hold other water)
         shard = _pack_with((present if stored else absent)[0], v)
         with pytest.raises(SpecError, match=msg):                        # merge_packs, on every shard
             merge_packs([shard, shard], id="t/merged")
@@ -322,11 +327,9 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
     bare.save(tmp_path / "bare.rpk")
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         ReplayPack.load(tmp_path / "bare.rpk")
-    m = d.simulate_trajectories(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False,
-                                raw_subset=50).saves()._bank_dict()
-    m.pop("substrate", None)
-    with pytest.raises(ValueError, match="embeds no substrate spec"):
-        build_replay_pack(m, id="t", license="x", citation="x", K=4)
+    w = d.simulate_trajectories(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False, K=4)
+    with pytest.raises(ValueError, match="walk carries none"):
+        build_replay_pack(dataclasses.replace(w, spec=None, geometry=None), id="t", license="x", citation="x", K=4)
 
 
 def test_a_closed_or_inert_substrate_has_no_field_by_its_kind():
@@ -382,9 +385,9 @@ def test_the_walk_stores_the_field_exactly_when_a_pool_is_magnetic(kind, tmp_pat
     else:
         magnetic, plain, res = _shell_union_spec(True), _shell_union_spec(False), dict(field_res=0.2e-6)
     wm, pm = _walk_and_pack(magnetic, **res)
-    assert wm.field_samples is not None and pm.has_field and pm.susceptibility_field == "present"
+    assert wm.field_coeffs is not None and pm.has_field and pm.susceptibility_field == "present"
     wp, pp = _walk_and_pack(plain)
-    assert wp.field_basis is None and wp.field_samples is None and not pp.has_field and pp.susceptibility_field == "absent"
+    assert wp.field_basis is None and wp.field_coeffs is None and not pp.has_field and pp.susceptibility_field == "absent"
 
 
 @pytest.mark.parametrize("kind", ["sphere", "label_volume", "cylinder"])
@@ -397,4 +400,4 @@ def test_a_magnetic_pool_no_field_route_computes_is_refused_before_the_walk(kind
     with pytest.raises(SpecError, match=f"is magnetic.*'{kind}'.*no field route"):
         walk_spec(spec, 20, 4e-4, 2e-4, seed=0, require_gpu=False)
     plain = SubstrateSpec.from_dict(_variant(spec.to_dict(), pool, False, False))
-    assert walk_spec(plain, 20, 4e-4, 2e-4, seed=0, diffusivity=D0, require_gpu=False).field_samples is None
+    assert walk_spec(plain, 20, 4e-4, 2e-4, seed=0, diffusivity=D0, require_gpu=False).field_coeffs is None

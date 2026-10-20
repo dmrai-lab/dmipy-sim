@@ -38,7 +38,7 @@ def _small_pack(R_um=0.5, n=8, seed=0, permeability=None):
 def test_the_kept_positions_are_float32():
     """A walk's kept block ends (its raw subset) are float32: in metres float16 is subnormal (below)."""
     geom = Cylinder(radius=2 * UM, orientation=(0., 0., 1.))
-    w = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3, dt_save=5e-4, seed=0,
+    w = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3, block_h=5e-4, seed=0,
                               require_gpu=False, raw_subset=64)
     assert w.raw_positions.dtype == np.float32 and w.position_coeffs.dtype == np.float32
 
@@ -98,7 +98,7 @@ def test_impermeable_pack_confines_intra_walkers_and_comp_traj_says_so():
     """
     geom = _small_pack(permeability=None)
     out = simulate_trajectories(n_walkers=64, diffusivity=D, geometry=geom, T_max=2e-3,
-                                dt_save=1e-3, seed=0, require_gpu=False,
+                                block_h=1e-3, seed=0, require_gpu=False,
                                 r0=_intra_r0(geom, 64), raw_subset=64)
     comp = np.asarray(out.raw_compartment)
     assert (comp != 0).all(), (
@@ -116,9 +116,10 @@ def test_permeable_pack_reports_a_real_compartment_history():
     from the stored positions, which is the classification f16 positions get wrong."""
     geom = _small_pack(permeability=1e-6)
     out = simulate_trajectories(n_walkers=256, diffusivity=D, geometry=geom, T_max=2e-3,
-                                dt_save=1e-3, seed=0, require_gpu=False,
-                                r0=_mixed_r0(geom, 128, 128))
-    comp = out.compartment                                                 # the per-block track: walkers can cross
+                                block_h=1e-3, seed=0, require_gpu=False,
+                                r0=_mixed_r0(geom, 128, 128), raw_subset=256)
+    comp = out.raw_compartment                                             # the per-block track: walkers can cross
+    assert out.crossing and out.comp_events is not None                    # a permeable wall: the label is an event list
     assert comp.max() > 0.0, "comp_traj is still constant zero for a permeable pack"
     assert comp.min() >= 0.0 and comp.max() <= 1.0, "occupancy must lie in [0, 1]"
     # both pools present at t=0: seeded-intra label 1, seeded-extra label 0
@@ -134,7 +135,7 @@ def test_zero_permeability_conserves_compartments():
     geom = _small_pack(permeability=0.0)
     n_intra = 256
     out = simulate_trajectories(n_walkers=512, diffusivity=D, geometry=geom, T_max=2e-3,
-                                dt_save=5e-4, seed=1, require_gpu=False,
+                                block_h=5e-4, seed=1, require_gpu=False,
                                 r0=_mixed_r0(geom, n_intra, 256, seed=1), raw_subset=512)
     comp = out.raw_compartment
     intra = comp > 0.5

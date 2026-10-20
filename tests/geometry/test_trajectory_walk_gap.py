@@ -52,7 +52,7 @@ def test_simulate_trajectories_refuses_an_unwalkable_geometry_before_any_device_
         raise AssertionError("seed_walkers was called: a walk was attempted")
     monkeypatch.setattr(core, "seed_walkers", _boom)
     with pytest.raises(NotImplementedError, match=r"_Unwalkable.*test stub"):
-        d.simulate_trajectories(8, D, _Unwalkable(), T_max=1e-3, dt_save=1e-3, require_gpu=False)
+        d.simulate_trajectories(8, D, _Unwalkable(), T_max=1e-3, block_h=1e-3, require_gpu=False)
 
 
 def test_walk_spec_refuses_an_unwalkable_geometry_before_calling_simulate_trajectories(monkeypatch):

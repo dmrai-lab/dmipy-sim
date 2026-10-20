@@ -20,7 +20,7 @@ from tests.conftest import spec_without_source
 
 def _shard(spec, grid, tmp, name, block, per, seed):
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, K=3,
+    w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
     os.makedirs(str(tmp / "shards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"))
@@ -128,7 +128,7 @@ def test_a_later_pass_appends_with_the_union_weights(spec_grid):
 def _curve_shard(spec, grid, tmp, name, block, per, seed, K):
     from dmipy_sim.replay.compression import band_curve
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=6e-3, dt_save=2e-4, seed=seed, require_gpu=False, K=K,
+    w = walk_spec(spec, T_max=6e-3, block_h=2e-4, seed=seed, require_gpu=False, K=K,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
     os.makedirs(str(tmp / "cshards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=K,
@@ -180,7 +180,7 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     packs = []
     for blk, seed in ((0, 7), (1, 8)):
         want = np.zeros(grid.shape, np.int64); want[blk] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, field_cutoff_max_m=25e-6, n_probe=20_000, adaptive_steps=True,
+        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3, K_c3=4, field_cutoff_max_m=25e-6, n_probe=20_000, adaptive_steps=True,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         os.makedirs(str(tmp / "pshards"), exist_ok=True)
         packs.append(build_replay_pack(w, id=f"t/p{blk}", license="x", citation="x", K=3, voxel_grid=grid, susc_path_K=4, susc_path_bits=cont, position_container=((None, 8),), blt_container=((None, 8),),
@@ -191,14 +191,14 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     pack = ReplayPack.open(out)
     assert pack.path_groups == [2, 4] and "susc_path_dct_b1u6" in pack.columns and "susc_path_dct" not in pack.columns
     v = pack.view(modes=4)
-    pm = v.meta["compression"]["channels"]["susceptibility_path"]
+    pm = v.meta["compression"]["channels"]["susc_field_basis"]
     assert pm["container"] == cont and pm["K"] == 4
     v2 = pack.view(modes=2)
-    assert v2.meta["compression"]["channels"]["susceptibility_path"]["container"] == cont[:1]
+    assert v2.meta["compression"]["channels"]["susc_field_basis"]["container"] == cont[:1]
     from dmipy_sim.replay.bank import susc_path_coeffs
-    C_full = susc_path_coeffs(v.arrays, pm)[0]; C_2 = susc_path_coeffs(v2.arrays, v2.meta["compression"]["channels"]["susceptibility_path"])[0]
+    C_full = susc_path_coeffs(v.arrays, pm)[0]; C_2 = susc_path_coeffs(v2.arrays, v2.meta["compression"]["channels"]["susc_field_basis"])[0]
     np.testing.assert_array_equal(C_2, C_full[:, :, :2])
-    C_m = susc_path_coeffs(merged.arrays, merged.meta["compression"]["channels"]["susceptibility_path"])[0]
+    C_m = susc_path_coeffs(merged.arrays, merged.meta["compression"]["channels"]["susc_field_basis"])[0]
     assert sorted(np.round(np.abs(C_m).sum(axis=(1, 2)), 12)) == sorted(np.round(np.abs(C_full).sum(axis=(1, 2)), 12))
 
 
@@ -206,7 +206,7 @@ def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):
     """A shard of ``block`` that walks only ``pools`` (the others get no walkers), in the container every shard of a
     fill shares (the certifying pack's, which the walker writes; shards built apart would each derive their own)."""
     want = np.zeros(grid.shape, np.int64); want[block] = per
-    w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=seed, require_gpu=False, K=3,
+    w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}))
     os.makedirs(out_dir, exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"),

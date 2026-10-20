@@ -42,7 +42,7 @@ def make_recipe(root, *, passes=True, field=False, far_grid=False):
                substrate=substrate,
                variants=dict(t=dict(field=bool(field))), default_variant="t",
                grid=dict(shape=list(shape), voxel_size_m=[1e-5] * 3, origin_m=[5e-6] * 3, attach="substrate"),
-               walk=dict(T_max_s=8e-4, dt_save_s=2e-4, scanner="connectom", floor_fraction=0.1, adaptive_steps=True, walker_batch_size=4096, census_draws=50),
+               walk=dict(T_max_s=8e-4, block_h_s=2e-4, scanner="connectom", adaptive_steps=True, walker_batch_size=4096, census_draws=50),
                pack=dict(K=3, K_path=4, position_container="bands", blt_container="bands", blt_K=2),
                plan=dict(file="plan/counts.npz", blocks="plan/blocks.json", walkers=96, n_blocks=2,
                          **(dict(passes=[dict(**{"pass": 1}, scale=0.5), dict(**{"pass": 2}, scale=0.5)]) if passes else {})))

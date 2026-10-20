@@ -1,5 +1,5 @@
 """The work of a walk (dmrai-lab/dmipy-sim#623): wall encounters, crossings and budget exhaustions on
-``PersistentWalk.work``, counted only when the geometry is asked to, never moving a walker.
+``CoefficientWalk.work``, counted only when the geometry is asked to, never moving a walker.
 
 Counting is a carried integer in the bounce loop and costs (+5 % on an analytic wall, measured on the L40S), so
 ``Geometry.count_walls`` is off by default and a counted walk must give the same trajectories as an uncounted one.
@@ -15,15 +15,15 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import simulate_trajectories
 from dmipy_sim.geometry._boundary import BounceLoop
-from dmipy_sim.persistent_walk import PersistentWalk
+from dmipy_sim.coefficient_walk import CoefficientWalk
 
 D = 2e-9
 R = 2e-6
 
 
 def _walk(g, n=256, seed=11, **kw):
-    """The walk with every walker's block ends kept, as a walk of saves."""
-    return simulate_trajectories(n, D, g, 2e-3, 0.5e-3, seed=seed, tiers="all", walker_batch_size=n, raw_subset=n, **kw).saves()
+    """The walk with every walker's block ends kept (``raw_positions``, ``raw_boundary``)."""
+    return simulate_trajectories(n, D, g, 2e-3, 0.5e-3, seed=seed, tiers="all", walker_batch_size=n, raw_subset=n, **kw)
 
 
 def _packed():
@@ -48,10 +48,10 @@ def test_counting_moves_no_walker_and_an_uncounted_walk_reports_none(make):
     plain = _walk(make())
     g = make(); g.count_walls = True
     counted = _walk(g)
-    np.testing.assert_array_equal(plain.positions, counted.positions)
-    np.testing.assert_array_equal(plain.boundary_local_time, counted.boundary_local_time)
+    np.testing.assert_array_equal(plain.raw_positions, counted.raw_positions)
+    np.testing.assert_array_equal(plain.raw_boundary, counted.raw_boundary)
     assert plain.work["n_hits"] is None and plain.work["exhausted_steps"] == 0      # exhaustion on every walk (#634)
-    assert plain.work["walker_steps"] == counted.work["walker_steps"] == plain.positions.shape[0] * 4 * plain.sub_steps
+    assert plain.work["walker_steps"] == counted.work["walker_steps"] == plain.n_walkers * plain.n_blocks * plain.sub_steps
     assert plain.work["bounce_budget"] == g.bounce_loop.budget
     assert counted.work["n_hits"] > 0 and counted.work["exhausted_steps"] == 0
     if getattr(g, "permeability", None) is None:
@@ -91,12 +91,12 @@ def test_exhausted_steps_certify_the_budget():
         cls.bounce_loop = property(lambda self, c=budget - 2: BounceLoop(c, count=self.count_walls))
         smaller = _walk(counted())
         assert smaller.work["exhausted_steps"] == 0
-        np.testing.assert_array_equal(smaller.positions, ref.positions)
+        np.testing.assert_array_equal(smaller.raw_positions, ref.raw_positions)
         cls.bounce_loop = property(lambda self: BounceLoop(1, count=self.count_walls))
         with pytest.warns(RuntimeWarning, match="exhausted the bounce budget"):
             one = _walk(counted())
         assert one.work["exhausted_steps"] > 0
-        assert (one.positions != ref.positions).any()
+        assert (one.raw_positions != ref.raw_positions).any()
     finally:
         cls.bounce_loop = original
 
@@ -105,7 +105,7 @@ def test_the_work_round_trips_through_the_walk_file(tmp_path):
     g = d.Sphere(R); g.count_walls = True
     w = _walk(g)
     w.save(tmp_path / "w.safetensors")
-    back = PersistentWalk.load(tmp_path / "w.safetensors")
+    back = CoefficientWalk.load(tmp_path / "w.safetensors")
     assert back.work == w.work
 
 
@@ -130,8 +130,8 @@ def test_the_myelinated_substrates_count_their_work_too(make):
     plain = _walk(make(), n=2048)
     g = make(); g.count_walls = True
     counted = _walk(g, n=2048)
-    np.testing.assert_array_equal(plain.positions, counted.positions)
-    np.testing.assert_array_equal(plain.boundary_local_time, counted.boundary_local_time)
+    np.testing.assert_array_equal(plain.raw_positions, counted.raw_positions)
+    np.testing.assert_array_equal(plain.raw_boundary, counted.raw_boundary)
     assert plain.work["n_hits"] is None
     assert counted.work["n_hits"] > 0 and counted.work["exhausted_steps"] == 0
     assert counted.work["n_crossings"] == 0                      # impermeable sheath by default
@@ -145,9 +145,9 @@ def test_a_binding_walk_counts_only_the_steps_that_happened():
     free = simulate_trajectories(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048)
     bound = simulate_trajectories(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048,
                                   kappa_MT=5e-4, dwell_time=2e-4, equilibrate_binding=False,
-                                  sub_steps=free.sub_steps)                                      # 2048: #555
-    assert bound.has_binding and bound.bound_frac.mean() > 0 and bound.sub_steps == free.sub_steps
-    taken = 1.0 - float(bound.bound_frac[:, 1:].mean())           # the share of sub-steps that happened
+                                  sub_steps=free.sub_steps, raw_subset=2048)                     # 2048: #555
+    assert bound.has_binding and bound.raw_bound.mean() > 0 and bound.sub_steps == free.sub_steps
+    taken = 1.0 - float(bound.raw_bound[:, 1:].mean())            # the share of sub-steps that happened
     assert 0 < bound.work["n_hits"] < free.work["n_hits"]
     assert bound.work["n_hits"] / free.work["n_hits"] == pytest.approx(taken, rel=0.15)
 
@@ -177,10 +177,10 @@ def test_a_smaller_budget_is_certified_by_its_own_exhaustion_count():
     small = _walk(g, bounce_budget=derived - 2)
     assert g.bounce_budget is None and g.bounce_loop.budget == derived            # restored
     assert small.work["bounce_budget"] == derived - 2 and small.work["exhausted_steps"] == 0
-    np.testing.assert_array_equal(small.positions, ref.positions)
+    np.testing.assert_array_equal(small.raw_positions, ref.raw_positions)
     with pytest.warns(RuntimeWarning, match="exhausted the bounce budget"):
         one = _walk(g, bounce_budget=1)
-    assert one.work["exhausted_steps"] > 0 and (one.positions != ref.positions).any()
+    assert one.work["exhausted_steps"] > 0 and (one.raw_positions != ref.raw_positions).any()
     with pytest.raises(ValueError, match="no bounce loop"):
         _walk(d.FreeDiffusion(), bounce_budget=3)
 
