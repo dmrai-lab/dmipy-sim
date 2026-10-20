@@ -74,7 +74,7 @@ def _f_inside(geom, t, dt):
     n_t = max(1, int(round(t / dt)))
     batch = int(min(NW, max(40000, 1.5e8 / max(1, n_t))))
     _, _, cf = simulate_fused(NW, D, _zero_waveform(n_t, dt), geom, seed=SEED,
-                        return_compartments='final', walker_batch_size=batch)
+                              return_compartments='final', walker_batch_size=batch)
     return float((np.asarray(cf) == 0).mean()), n_t * dt
 
 

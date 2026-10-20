@@ -192,17 +192,17 @@ def analytic_signal(shape, d_um, grid, *, modes=ANALYTIC_MODES):
 
 
 def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N):
-    """OUR direct measurement of the same quantity: the fused engine's walk of the pore with the gradient applied
-    in the walk (``dmipy_sim.engine.core.simulate(engine="fused")``, the oracle the replay is held to), each
+    """OUR direct measurement of the same quantity: the fused oracle's walk of the pore with the gradient applied
+    in the walk (``dmipy_sim.engine._fused.simulate_fused``, the oracle the replay is held to), each
     walker's own phase, and the analytic standard error over its walkers. No band and no codec stand between the
     walk and the number, so what the gate's ``reproduces-`` check compares is the pack's bands and the walker
     count -- and the ``published-`` check then compares both of them with the closed form."""
-    from dmipy_sim.engine.core import simulate
+    from dmipy_sim.engine._fused import simulate_fused
     seq = sequence(grid["delta_s"], grid["Delta_s"], b=grid["b_s_per_m2"], direction=grid["direction"],
                    n_t=grid["n_t"])
     _S, _log_w, phi = simulate_fused(int(n), D0, waveform=seq, geometry=geometry(shape, d_um),
-                               seed=pack_seed(pack_id(shape, d_um)), return_walker_signals=True,
-                               require_gpu=False)
+                                     seed=pack_seed(pack_id(shape, d_um)), return_walker_signals=True,
+                                     require_gpu=False)
     return _modulus_and_se(np.exp(1j * np.asarray(phi, np.float64)[:, 0]))
 
 
@@ -241,7 +241,6 @@ def snippet(uri):
     return f'''import numpy as np
 from dmipy_sim import pgse
 from dmipy_sim.replay import ReplayPack
-from dmipy_sim.engine._fused import simulate_fused
 
 pk = ReplayPack.load("{uri}")
 seq = pgse([{g["direction"]!r}], {g["delta_s"]!r}, {g["Delta_s"]!r}, bvalues=[{g["b_s_per_m2"]!r}],

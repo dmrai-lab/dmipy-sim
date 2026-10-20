@@ -191,7 +191,7 @@ def _mean_and_se(z):
 
 def direct_at(name, grid, work_dir, mcdc_data, disimpy_data, *, n=DIRECT_N):
     """OUR number at ``grid``: the fused engine's walk of the fixture's surface at its diffusivity and seeding, the
-    gradient applied in the walk (``dmipy_sim.engine.core.simulate(engine="fused")``, the oracle a replay is held
+    gradient applied in the walk (``dmipy_sim.engine._fused.simulate_fused``, the oracle a replay is held
     to), with its analytic standard error and, for an MC/DC fixture, the per-walker spread at THEIR walker count
     (``cross_engine_parity.floors``: their released file is one realisation and states no spread).
 
@@ -199,7 +199,7 @@ def direct_at(name, grid, work_dir, mcdc_data, disimpy_data, *, n=DIRECT_N):
     it again. The measurement is the one the record DECLARES, not the one where a difference happens to be largest.
     """
     import hashlib
-    from dmipy_sim.engine.core import simulate
+    from dmipy_sim.engine._fused import simulate_fused
     from dmipy_sim.spec import geometry_from_spec
     X = fixtures_module()
     cache_path = os.path.join(work_dir, ".direct-cache.json")
@@ -215,7 +215,7 @@ def direct_at(name, grid, work_dir, mcdc_data, disimpy_data, *, n=DIRECT_N):
             D = X.MCDC_D
             _S, n_theirs = X.mcdc_reference(mcdc_data, *mcdc_params(name), seq)
         _sig, _log_w, phi = simulate_fused(int(n), D, waveform=seq, geometry=geom, seed=X.SEED, r0=r0,
-                                     return_walker_signals=True, require_gpu=False)
+                                           return_walker_signals=True, require_gpu=False)
         phi = np.asarray(phi, np.float64)[:, grid["index"]]
         value, se = _mean_and_se(np.exp(1j * phi))
         _ours, theirs, _dof, _exact = X.floors(np.cos(phi)[None, :], n_theirs)
@@ -274,7 +274,6 @@ def snippet(uri):
 from dmipy_sim.replay import ReplayPack
 from examples.validation.cross_engine_parity import MCDC_N_T, MCDC_TE
 from dmipy_sim import pgse
-from dmipy_sim.engine._fused import simulate_fused
 
 pk = ReplayPack.load("{uri}")
 # the ActiveAx shell this fixture's number is read at, as a single PGSE row
