@@ -3,7 +3,7 @@
 Everything here is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical gradient,
 the schedule, the readout, and where the engine models one, the emergent voxel-scale ``crusher`` (windings over
 windows; a um cell-scale gradient cannot wind >> 2 pi across a cell, so the crusher acts at the mm scale it
-physically has). ``simulate_bloch`` runs one, applying its pulses
+physically has). The vector-Bloch oracle (``engine.bloch._simulate_bloch``) runs one, applying its pulses
 itself and so reads ``G``; a spin echo refocuses EMERGENTLY there, with no sign folding.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import numpy as np
 
 from ..acquisition.rf import RFEvent, RFSchedule
 from ..acquisition.scanner_sequence import ScannerSequence
-from .bloch import simulate_bloch
+from .bloch import _simulate_bloch
 from ..constants import GAMMA
 
 __all__ = ["bare_gradient_echo", "bare_spin_echo", "fexi", "saturation_pulse", "prepend_mt_prep",
@@ -60,7 +60,7 @@ def fexi(delta, t_mix, dt, *, g_filter, g_detect, Delta=None, delta_detect=None,
     Each bipolar block self-refocuses ``q→0`` (no 180 needed), so — unlike PGSTE — the mixing time
     carries no diffusion encoding (pure exchange weighting). The lobe separation ``Delta`` sets the
     diffusion time; a contiguous pair (``Delta=delta``) has too short a time to separate a
-    restricted pool (raise ``Delta`` / the gradient). Runs through :func:`simulate_bloch` (the
+    restricted pool (raise ``Delta`` / the gradient). Runs through the vector-Bloch oracle (the
     crusher + stimulated-echo storage select the filtered pathway — a scalar ``chi_perp`` walk
     cannot); exchange needs a **permeable** substrate. Returns a ``ScannerSequence`` whose
     ``notes`` name it; the per-measurement detection b-value is :func:`fexi_b_detect`.
@@ -209,7 +209,7 @@ def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, 
     for i, off in enumerate(offsets):
         sat = saturation_pulse(float(off), float(t_sat), b1_hz=float(w1_hz))          # the CW flip over the window
         seq = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=float(dt), rf=(sat,), family="mt-sat")
-        _, m = simulate_bloch(n_walkers, diffusivity, seq, geometry,
+        _, m = _simulate_bloch(n_walkers, diffusivity, seq, geometry,
                               T2=T2, T1=T1, kappa_MT=kappa_MT, dwell_time=dwell_time,
                               T2_bound=T2_bound, T1_bound=T1_bound, return_mz=True,
                               equilibrate_binding=equilibrate_binding, seed=seed)

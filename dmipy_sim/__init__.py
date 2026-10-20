@@ -1,8 +1,12 @@
-"""dmipy-sim: JAX Monte Carlo diffusion MRI simulator.
+"""dmipy-sim: JAX Monte Carlo diffusion MRI replay engine.
 
-Forward Monte-Carlo of spins diffusing under arbitrary free gradient waveforms
-``G(t)``, with surface relaxivity and membrane permeability baked into the walk.
-Shares one pulse-sequence and substrate interface with ``dmipy-fit``.
+A Monte Carlo walk's natural output is neither an acquisition-specific signal nor a trajectory history but an
+acquisition-independent set of sufficient projections, accumulated while the physics is simulated. The engine
+encodes as it goes: ``simulate_trajectories`` returns the :class:`CoefficientWalk` (per walker the exact endpoints and
+the sine-band projections of its path, its contact, its pool events, its field modes), ``build_replay_pack`` makes it
+a ``.rpk`` pack, and ``ReplayPack.replay`` contracts a pack with any waveform. ``simulate`` is the walk and the
+contraction in one call. Surface relaxivity and membrane permeability are baked into the walk. Shares one
+pulse-sequence and substrate interface with ``dmipy-fit``.
 """
 
 # Apply the GPU memory cap (DMIPY_GPU_MEM_GB) BEFORE any submodule imports JAX.
@@ -10,14 +14,10 @@ from .engine._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configu
 _apply_gpu_mem_cap()
 
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories, walk_cost, certify_bounce_budget
-# NB: the scalar trajectory-replay entrypoint is `dmipy_sim.replay.trajectories.replay`, NOT a bare
-# top-level `replay` — the name `dmipy_sim.replay` is the package of the .rpk pack forward (see below).
-from .replay.trajectories import (replay_bloch, replay_bloch_jax,
-                           finite_180_longitudinal_dwell)
+from .spec.walk import walk_spec
 from .engine.mt_walk import simulate_mt_trajectories
 from .coefficient_walk import CoefficientWalk
 from .compartments import Compartments, Pool, pool_id
-from .engine.bloch import simulate_bloch
 from .engine.pulse_sequence import (bare_gradient_echo, bare_spin_echo, fexi, fexi_b_detect,
                              saturation_pulse, prepend_mt_prep, emergent_z_spectrum)
 from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
@@ -57,14 +57,12 @@ from .replay.bank import build_replay_pack, build_to_floor, frame_from_axis, fra
 from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeWater, Inert, Peaks, ODF, Watson, Frames, Fan
 
 __all__ = [
-    "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "walk_cost", "certify_bounce_budget",
+    # the walk and its contraction: the producers return a CoefficientWalk
+    "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "walk_cost", "walk_spec",
+    "certify_bounce_budget", "simulate_mt_trajectories", "CoefficientWalk",
     # replay pack assembler (producer side of the substrate bank)
     "build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles",
-    # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
-    "replay_bloch", "replay_bloch_jax",
-    "finite_180_longitudinal_dwell",
-    "simulate_mt_trajectories", "CoefficientWalk", "Compartments", "Pool", "pool_id",
-    "simulate_bloch",
+    "Compartments", "Pool", "pool_id",
     "ScannerSequence", "Encoding", "Protocol",
     "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",
     "emergent_z_spectrum",
