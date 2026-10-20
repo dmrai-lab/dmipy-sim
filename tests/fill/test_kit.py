@@ -12,7 +12,7 @@ from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
 from dmipy_sim.engine.backends import Backend, write_request_directory
 from dmipy_sim.fill import Recipe
 from dmipy_sim.replay.bank import storage_band_hz
-from dmipy_sim.fill.kit import _n_t_dt, _pool_geometry, _sha256, assemble_request
+from dmipy_sim.fill.kit import _block_record, _pool_geometry, _sha256, assemble_request
 
 
 class _Captured(Exception):
@@ -38,14 +38,15 @@ class _CaptureBackend(Backend):
         raise _Captured()
 
 
-def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None):
+def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None, K=None, K_c3=None):
     """The live ``WalkRequest`` ``simulate_trajectories_adaptive`` would hand a backend for this pool -- aborted
     before any stepping, by ``_CaptureBackend``."""
     be = _CaptureBackend()
     try:
         simulate_trajectories_adaptive(len(r0), D, geom, T_max, block_h, seed=seed, r0=r0, require_gpu=False,
                                        walker_batch_size=4096, field_basis=field_basis,
-                                       field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band)
+                                       field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band, K=K,
+                                       **({} if field_basis is None else dict(K_c3=K_c3)))
     except _Captured:
         pass
     assert be.request is not None
@@ -91,11 +92,12 @@ def test_kit_layout_sha256_and_sections(field_fake, tmp_path):
         for name in ("request.txt", "request.json", "A.f32", "AB.f32", "AB2.f32", "rr.f32", "tube.i32", "cell_off.i32", "cell_ids.i32"):
             assert (pdir / name).is_file(), (pool, name)
     for name in ("fA.f32", "fAB.f32", "fAB2.f32", "fa.f32", "fb.f32", "fsid.i32", "fcell_off.i32", "fcell_ids.i32",
-                "fbox.i16", "far_full.u16", "far_full.json", "field_mean.f32"):
+                "fbox.i16", "far_full.u16", "far_full.json"):
         assert (out / name).is_file(), name
-    mean = np.fromfile(out / "field_mean.f32", np.float32)
-    assert mean.shape == (13,) and np.array_equal(mean, np.asarray(Recipe(hub).context().field_basis().mean, np.float32))
-    assert kit["files"]["field_mean.f32"] == _sha256(out / "field_mean.f32")
+    mean = np.asarray(Recipe(hub).context().field_basis().mean, np.float32)           # the field's mean is a line of the request
+    for pool in ("intra", "extra"):
+        req = json.loads((out / "pools" / pool / "request.json").read_text())
+        assert np.array_equal(np.asarray(req["field_mean"], np.float32), mean) and req["field_K_c3"] == 4 and req["field_read_every"] >= 1
     assert (out / "plan" / "blocks.json").is_file() and (out / "plan" / "counts.npz").is_file()
     assert (out / "manifest.json").is_file()
     assert "kit.json" not in kit["files"]
@@ -103,6 +105,19 @@ def test_kit_layout_sha256_and_sections(field_fake, tmp_path):
         assert _sha256(out / rel) == sha, rel
     # no certificate was built on this hub: the kit carries none, and does not pretend to
     assert not (out / "certificate").exists()
+    # the walk's block record and every pool's request in the backend's field order (dmipy-sim-cuda#78), the one table
+    W = kit["walk"]
+    assert W["K"] == 3 and W["block"]["m"] == 3 and W["windows"]["n"] == 1 and "n_t" not in W and "dt_save_s" not in W
+    assert W["T_max_s"] == pytest.approx(W["block"]["h"] * W["block"]["n_blocks"])
+    table = np.fromfile(out / "table.f64", np.float64)
+    assert table.size == W["block"]["n_blocks"] * (W["K"] + 1) * (W["block"]["m"] + 1)
+    from dmipy_sim.engine.backends import REQUEST_TEMPLATE_KEYS, FIELD_STRUCT_KEYS
+    for pool in ("intra", "extra"):
+        req = json.loads((out / "pools" / pool / "request.json").read_text())
+        assert [k for k in req if k in REQUEST_TEMPLATE_KEYS] == list(REQUEST_TEMPLATE_KEYS)
+        assert [k[6:] for k in req if k.startswith("field_")] == list(FIELD_STRUCT_KEYS)
+        assert req["K"] == 3 and req["m"] == 3 and req["ring"] == 64 and req["events"] == 0 and req["n_blocks"] == W["block"]["n_blocks"]
+        assert not {"n_t", "field_sample_every", "field_n_tf"} & set(req)
 
 
 def test_kit_without_a_field_variant(fake, tmp_path):
@@ -114,7 +129,6 @@ def test_kit_without_a_field_variant(fake, tmp_path):
     kit = json.loads((out / "kit.json").read_text())
     assert kit["field"]["present"] is False
     assert not (out / "far_full.u16").exists()
-    assert not (out / "field_mean.f32").exists() and "field_mean.f32" not in kit["files"]
     assert "field" not in (out / "pools" / "intra" / "request.json").read_text()
 
 
@@ -130,7 +144,7 @@ def test_kit_template_holds_the_scanner_class_band_not_the_save_grids_nyquist(fi
     rc = Recipe(hub)
     ctx = rc.context(); g = ctx.tests; W = rc.man["walk"]
     out = rc.kit(tmp_path / "kit")
-    n_t, dt = _n_t_dt(rc)
+    dt = _block_record(rc)["h"]
     band = storage_band_hz(W["scanner"])
     for pid in g.seeded:
         pool = g.pools[pid]
@@ -168,7 +182,7 @@ def test_a_batch_request_from_the_kit_matches_a_live_walk_requests_dump(fixture_
 
     req = _capture_request(geom, D, T_max, rc.block_h(), seed=seed, r0=r0, field_basis=basis,
                            field_reuse_intervals=int(W.get("field_gather_every", 4)),
-                           f_band=storage_band_hz(W["scanner"]))
+                           f_band=storage_band_hz(W["scanner"]), K=rc.man["pack"]["K"], K_c3=rc.man["pack"]["K_path"])
     assert (req.field is not None) == (basis is not None)
     if req.field is not None:       # the live producer sizes the field's segment list from its start-position probe; a kit has no
         req = req._replace(field=req.field._replace(list_k=256))        # walk to probe and writes the width a backend widens from

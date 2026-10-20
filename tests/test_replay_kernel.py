@@ -16,8 +16,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay import trajectories as T
 from dmipy_sim.replay import compression as cx
-from dmipy_sim.replay._replay_kernel import (effective_gradient, waveform_moments, gradient_phase, phase_increments,
-                                      field_gate)
+from dmipy_sim.replay._replay_kernel import effective_gradient, waveform_moments, gradient_phase, field_gate
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.replay.replay import compile_scheme, replay_signal, replay_signal_jax
 
@@ -99,10 +98,6 @@ def test_every_route_returns_the_closed_form_phase(case):
     # the kernel itself, and the numpy replay (return_walker_signals gives phi)
     routes["kernel"] = gradient_phase(effective_gradient(G, DT, N_T, DT), traj, DT)[0]
     routes["replay"] = T.replay(traj, DT, G, DT, return_walker_signals=True)[0][0]
-    # the pre-pulse azimuth with the cutoff at the end IS the full phase
-    routes["pre_pulse"] = T.pre_pulse_gradient_phase(traj, DT, G, DT, N_T)[0]
-    # per-step increments summed
-    routes["increments"] = phase_increments(effective_gradient(G, DT, N_T, DT)[0], traj, DT).sum(0)
     # the mode-space replay of the walk kept at its saves (K = n_t - 2)
     arrays, meta = _stored_path(traj, N_T - 2, DT)
     routes["mode space"] = cx.mode_space_phi(arrays, meta, G, DT)[:, 0]
@@ -118,21 +113,10 @@ def test_every_route_returns_the_closed_form_phase(case):
         assert err < t, f"{name} through {route}: |phi - exact| = {err:.3e} rad (tol {t:.1e})"
 
 
-def test_jax_routes_agree_with_numpy():
-    jax = pytest.importorskip("jax")
-    import jax.numpy as jnp
-    from dmipy_sim.replay._replay_kernel import gradient_phase_jax, effective_gradient_jax, phase_increments_jax
+def test_the_vector_bloch_replays_return_the_closed_form_phase():
+    pytest.importorskip("jax")
     _, traj, phi_exact, _ = _synthetic_trajectories()[2]
     G = _bipolar()
-    # float32 arithmetic: a relative 1e-5 of the phase scale
-    tol = 1e-5 * max(_phase_scale(), np.abs(phi_exact).max())
-    phi_j = np.asarray(gradient_phase_jax(effective_gradient_jax(jnp.asarray(G), DT, N_T, DT),
-                                          jnp.asarray(traj), DT))[0]
-    assert np.abs(phi_j - phi_exact).max() < tol
-    s_j = np.asarray(T.replay_jax(jnp.asarray(G), jnp.asarray(traj, dtype=jnp.float32), DT, DT))
-    assert np.abs(s_j - np.mean(np.cos(phi_exact))).max() < tol
-    inc = np.asarray(phase_increments_jax(effective_gradient_jax(jnp.asarray(G), DT, N_T, DT)[0], traj, DT)).sum(0)
-    assert np.abs(inc - phi_exact).max() < tol
     # the vector-Bloch replays: a 90 at t = 0 and no relaxation leave Mxy = exp(+-i phi) (the sign
     # is the rotation convention; the magnitude of the phase is the physics)
     rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0)]
@@ -195,7 +179,7 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
     arrays, meta = _stored_path(traj, 16, DT)
     n_w = traj.shape[0]
     dlog = -np.abs(np.random.default_rng(0).normal(0, 1e-6, (n_w, N_T)))
-    B = np.cumsum(dlog, axis=1)                                       # the cumulative contact, its bridge at the saves
+    B = np.cumsum(dlog, axis=1)                                       # the cumulative contact at the block ends
     a2, cm = cx.encode_boundary_bands(np.zeros(n_w), B[:, -1], _order0_bands(B, 16, DT), T=meta["T"])
     arrays = {**arrays, **a2, "spin_weights": np.ones(n_w)}
     W = compile_scheme(_bipolar(), DT, 16)
@@ -205,8 +189,6 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
                                                arrays["spin_weights"], W, surface_logw=slw)))
     np.testing.assert_allclose(E_jx, E_np, rtol=1e-5)
     assert E_np[0] < replay_signal(arrays, W)[0]                      # the knob bites
-    with pytest.raises(TypeError):
-        replay_signal_jax(cx.read_position_coeffs(arrays), arrays["spin_weights"], W, blt_dct=dlog)
 
 
 # ── one field gate ────────────────────────────────────────────────────────────────────────

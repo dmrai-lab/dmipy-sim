@@ -64,7 +64,7 @@ def test_the_jax_rounds_pass_the_void_invariant():
     g = case()
     r0 = case.starts(case.n_walkers, case.seed)
     w = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.block_h, seed=case.seed, tiers="all",
-                              walker_batch_size=case.n_walkers, r0=r0, require_gpu=False, raw_subset=case.n_walkers).saves()
+                              walker_batch_size=case.n_walkers, r0=r0, require_gpu=False, raw_subset=case.n_walkers)
     checks = backends.void_invariant(g, w)
     assert checks["contained"]["ok"] and checks["contained"]["n_inside"] == 0
     assert checks["illegal"]["ok"] and checks["illegal"]["n_illegal"] == 0
@@ -87,10 +87,10 @@ def test_a_walk_that_leaks_one_walker_into_the_tube_is_refused_by_the_invariant(
     r0 = case.starts(case.n_walkers, case.seed)
     cw = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.block_h, seed=case.seed, tiers="all",
                                walker_batch_size=case.n_walkers, r0=r0, require_gpu=False, raw_subset=case.n_walkers)
-    true_w = cw.saves()
-    pos = np.array(true_w.positions, copy=True)
+    true_w = cw
+    pos = np.array(true_w.raw_positions, copy=True)
     pos[0, -1] = np.array([100e-6, 100e-6, 100e-6], np.float32)       # the tube's axis: deep inside it
-    checks = backends.void_invariant(g, dataclasses.replace(true_w, positions=pos))
+    checks = backends.void_invariant(g, dataclasses.replace(true_w, raw_positions=pos))
     assert checks["contained"]["ok"] is False and checks["contained"]["n_inside"] >= 1
     # the leaked walker ends in its own pool (it started and ends outside), so the coarse end-vs-start guard
     # alone does not see it -- the per-block containment invariant is what catches it

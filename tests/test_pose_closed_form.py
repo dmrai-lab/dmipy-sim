@@ -15,17 +15,23 @@ from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 
-def _demo_pack(path, what):
-    """The machine-local CACTUS demo pack, skipped when it is absent or a pack this revision refuses by name."""
-    import os
-    if not os.path.exists(path):
-        pytest.skip(f"the CACTUS demo pack{what} is not on this machine")
-    try:
-        return read_rpk(path)
-    except ValueError as e:
-        if "re-walk the pack" not in str(e):
-            raise
-        pytest.skip(f"the CACTUS demo pack on this machine predates the continuous basis; re-walk it ({e})")
+@pytest.fixture(scope="module")
+def myelin_pack():
+    """A pack walked here by the producer: a periodic cell of three myelinated axons (1 um, g = 0.7, a 10 um cell),
+    1500 walkers over 30 ms in 0.5 ms blocks, every tier on and the cell's own susceptibility field read in the walk
+    (its periodic grid, :func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`): the field tier on the path
+    route. The step is pinned coarser than the sheath's own rule (``sub_steps=25``): this module compares the routes
+    of one pack with each other, never the walk with the physics."""
+    import warnings
+    from dmipy_sim.fields.susceptibility_field import field_grid_of
+    L = 10e-6
+    _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, np.asarray(c), L, N_max=4, D_intra=2e-9, D_extra=2e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        w = d.simulate_trajectories(1500, 2e-9, pm, 30e-3, 5e-4, seed=3, require_gpu=False, field_basis=field_grid_of(pm, res=0.4e-6),
+                                    sub_steps=25)
+    return build_replay_pack(w, id="t/myelin-cell", license="x", citation="x")
 
 
 @pytest.fixture(scope="module")
@@ -100,10 +106,10 @@ def test_encodings_the_closed_form_does_not_take_fall_back_or_refuse(pack):
         pack.pose_response(ste, method="magic")
 
 
-def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(seq):
-    """The 8k-walker CACTUS pack at four measurements: the closed form takes no samples, and its n = 0 column
+def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(myelin_pack):
+    """A walked myelinated cell at four measurements: the closed form takes no samples, and its n = 0 column
     composes the roll-averaged direct replay (the wall-clock is a measurement, not a test: #455)."""
-    pk = _demo_pack("/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk", "")
+    pk = myelin_pack
     seq30 = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]], 8e-3, 16e-3, bvalues=[3e9] * 4, TE=30e-3)
     # no tissue, no scanner: this pack's spec declares a nominal field, and a field response still takes the quadrature
     pr = pk.pose_response(seq30, keep=(8, 0))
@@ -135,23 +141,20 @@ def test_a_shell_is_one_body_and_its_directions_are_free(pack):
     assert p0.n_bodies == 1 and np.allclose(np.abs(p0.compose(Distribution.axis((0, 0, 1), 4, 0))), 1.0)
 
 
-@pytest.fixture(scope="module")
-def field_pack():
-    return _demo_pack("/home/rutger/dmrai-ws/packs/cactus_demo_xframe.rpk", " (field tier, path route)")
-
-
-def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(field_pack):
+def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(myelin_pack):
     """With a field the response is the product of the gradient's plane-wave expansion and the field factor's
     harmonics, coupled on both indices: exact against the direct posed replay with the field, equal to the
     quadrature route to that route's misfit, and no g x B0 frame anywhere (#197 step 3, #155)."""
-    pk = field_pack
+    pk = myelin_pack
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     seq_y, R_y = field_along(seq, (0.0, 1.0, 0.0))                   # the field along y of the specimen: a pose
     pc = pk.pose_response(seq_y, method="closed", pose=R_y, **kw)
     assert pc.n_samples == 0 and pc.field_lmax >= 2
+    # the two routes form the same phases in float32 on different paths: a rounding of a few ulps of the largest phase
+    f32 = 4 * float(np.finfo(np.float32).eps) * max(1.0, float(pc.phase_amplitude))
     for R in so3.haar_rotations(6, 2):
-        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=max(2e-6, f32))
     pq = pk.pose_response(seq_y, method="quadrature", pose=R_y, **kw)
     for d in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
         np.testing.assert_allclose(pc.compose(d), pq.compose(d), atol=3 * pq.misfit.max())
@@ -160,7 +163,7 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     pp = pk.pose_response(seq_x, method="closed", keep=(8, 0), pose=R_x, **kw)
     for R in so3.haar_rotations(2, 9):
         full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
-        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=2e-6)
+        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=max(2e-6, f32))
     assert np.isfinite(pp.coeffs).all()
 
 
@@ -247,11 +250,11 @@ def test_the_background_turns_with_the_specimen(pack, seq):
         assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8)
 
 
-def test_the_background_and_the_field_compose_in_closed_form(field_pack):
+def test_the_background_and_the_field_compose_in_closed_form(myelin_pack):
     """Field on: the field factor and the background factor are coupled walker by walker into one factor, then
     with the gradient -- three Wigner blocks, two couplings. Exact against the direct posed replay with the field
     to the field route's own precision (2e-6, as without a background)."""
-    pk = field_pack
+    pk = myelin_pack
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
@@ -300,7 +303,7 @@ def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pa
         assert np.all(err <= pr.misfit + 2e-8), (err, pr.misfit)
 
 
-def test_an_odf_composition_forms_only_the_pairs_its_band_couples(pack, field_pack):
+def test_an_odf_composition_forms_only_the_pairs_its_band_couples(pack, myelin_pack):
     """keep=(L, 0) with a background: on the host only the products of azimuthal orders |N| = |n| are formed
     (pose_device.paired_bodies), and the result is the n = 0 column of the full expansion, field off and on."""
     played = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 2e-3, 5e-3, gradient_strengths=[0.3] * 3,
@@ -311,8 +314,8 @@ def test_an_odf_composition_forms_only_the_pairs_its_band_couples(pack, field_pa
     seq = sequences.pgse([[1, 0, 0], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 2, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
-    full = field_pack.pose_response(played, method="closed", pose=R_y, **kw)
-    odf = field_pack.pose_response(played, method="closed", pose=R_y, keep=(8, 0), **kw)
+    full = myelin_pack.pose_response(played, method="closed", pose=R_y, **kw)
+    odf = myelin_pack.pose_response(played, method="closed", pose=R_y, keep=(8, 0), **kw)
     np.testing.assert_allclose(odf.coeffs, full.retained(8, 0), atol=1e-12)
 
 

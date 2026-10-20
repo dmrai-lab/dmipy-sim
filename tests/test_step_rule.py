@@ -93,6 +93,6 @@ def test_the_drivers_resolve_the_band_they_serve():
     assert set(rule["rules"]) >= {"step law", "collision lookup", "crossing", "surface local time"}
     w2 = d.simulate_trajectories(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False, f_band=100.0)
     assert w2.sub_steps <= w.sub_steps and w2.work["step_rule"]["f_band_hz"] == 100.0
-    from dmipy_sim.persistent_walk import merge_work
+    from dmipy_sim.coefficient_walk import merge_work
     assert merge_work([w.work, w.work])["step_rule"] == rule                   # a bundle's pools at one rule: the rule
     assert merge_work([w.work, w2.work])["step_rule"] == [rule, w2.work["step_rule"]]   # at different rules: each

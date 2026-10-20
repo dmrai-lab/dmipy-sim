@@ -59,7 +59,7 @@ def _waveforms():
 def test_the_windows_and_their_record(packs):
     parent, seg, p = packs
     assert parent.n_windows == 1 and seg.n_windows == 4
-    assert seg._window_n_t == 11 and seg.windows["T"] == pytest.approx(T / 4) and seg.n_t == N_T
+    assert seg.T_window == pytest.approx(T / 4) and seg.windows["T"] == pytest.approx(T / 4) and seg.n_t == N_T
     assert seg.K == 10                                                       # ceil(38 / 4): the bands per second kept
     assert seg.temporal_bandwidth_hz == pytest.approx(parent.temporal_bandwidth_hz, rel=0.06)
     r = seg.meta["provenance"]["rewindowed"]
@@ -85,8 +85,8 @@ def test_the_window_ends_are_the_parents_bridge(packs):
     """Every window's endpoints are the parent's stored bridge read at its ends, to float32 (the window map is
     closed-form; the parent's block ends are the raw subset's positions only to the parent's truncation)."""
     parent, seg, _ = packs
-    from dmipy_sim.replay.compression import decode_bridge_dst
-    X = decode_bridge_dst(parent.arrays, dict(K=parent.K, T=parent.T_window), n_t=5)   # the bridge at the window ends
+    from dmipy_sim.replay.compression import positions_at
+    X = positions_at(parent.arrays, dict(T=parent.T_window), np.arange(5) * T / 4)        # the bridge at the window ends
     for i in range(4):
         Ci = seg.window(i).position_coeffs
         npt.assert_allclose(Ci[:, 0, :], X[:, i, :], rtol=0, atol=1e-6 * np.abs(X).max())
@@ -278,10 +278,10 @@ def test_the_band_is_judged_over_the_windows_an_acquisition_spans(packs):
     from dmipy_sim.replay.replay import _duration
     parent, seg, _ = packs
     wf = _waveforms()
-    assert seg._span(_duration(wf["pgse_1"])) == (int(seg._window_n_t), 1)
-    assert seg._span(_duration(wf["pgse_2"])) == (2 * (int(seg._window_n_t) - 1) + 1, 2)
-    assert seg._span(_duration(wf["train_4"])) == (int(seg.n_t), 4)
-    assert parent._span(_duration(wf["pgse_1"])) == (int(parent.n_t), 1)
+    assert seg._span(_duration(wf["pgse_1"])) == (pytest.approx(seg.T_window), 1)
+    assert seg._span(_duration(wf["pgse_2"])) == (pytest.approx(2 * seg.T_window), 2)
+    assert seg._span(_duration(wf["train_4"])) == (pytest.approx(4 * seg.T_window), 4)
+    assert parent._span(_duration(wf["pgse_1"])) == (pytest.approx(parent.T_window), 1)
     one, two = seg.truncate(1), seg.truncate(2)
     for name, pk in (("pgse_1", one), ("pgse_2", two)):
         t = float(seg.fidelity["floor_max"])                                      # one tolerance: the spans compared

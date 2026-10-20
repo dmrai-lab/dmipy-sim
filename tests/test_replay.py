@@ -97,8 +97,7 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     skipping -- a caller asking for surface relaxivity must never get an unattenuated signal back
     with no error.
     """
-    from dmipy_sim.replay.compression import (encode_boundary_bands, decode_boundary_bridge,
-                                       surface_logweight_series as surface_logweight)
+    from dmipy_sim.replay.compression import encode_boundary_bands, local_time_at
     from dmipy_sim.replay.replay import surface_logweight as replay_slw
     arrays, meta, _ = _synth_pack()
     n_w = arrays["pos_x"].shape[0]
@@ -118,9 +117,9 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     assert E0 == pytest.approx(1.0, abs=1e-9)
     assert Er < 0.99 * E0, f"rho2 knob did not bite: {Er} vs {E0}"
 
-    # the endpoint path must equal summing the decoded per-save series
-    npt.assert_allclose(replay_slw(arrays, 5e3, cm),
-                        surface_logweight(decode_boundary_bridge(arrays, cm, n_t=N_T), 5e3), rtol=1e-6)
+    # the endpoint path is the stored function's total, B(T) - B(0)
+    B = local_time_at(arrays, cm, [0.0, T])
+    npt.assert_allclose(replay_slw(arrays, 5e3, cm), 5e3 * (B[:, 1] - B[:, 0]), rtol=1e-6)
 
     # a pack with no C2 must RAISE when rho2 is requested, not silently return the bare signal
     bare = {k: v for k, v in arrays.items() if not k.startswith("blt_")}
@@ -128,7 +127,3 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
         replay_signal(bare, W, rho2_over_D=5e3)
 
 
-def test_blt_dct_attribute_is_retired_loudly():
-    arrays, meta, _ = _synth_pack()
-    with pytest.raises(AttributeError, match="retired"):
-        ReplayPack(arrays, meta).blt_dct

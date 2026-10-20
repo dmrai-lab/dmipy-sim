@@ -6,8 +6,8 @@ the cumulative local time in the same form; the field (C3) the cosine modes of t
 walk's own read interval; the occupancy (C1) one label per walker and, on a substrate whose walkers can change pool,
 the events ``(t, label)`` of every change, exact in time; the MT bound column its bind / unbind events likewise.
 :func:`~dmipy_sim.replay.bank.build_replay_pack` takes it as it is. A walker's raw block ends exist only for the
-``raw_subset`` it was asked to keep, and :meth:`CoefficientWalk.saves` is that subset as a
-:class:`~dmipy_sim.persistent_walk.PersistentWalk`.
+``raw_subset`` it was asked to keep, as plain arrays on the walk (``raw_positions``, ``raw_boundary``,
+``raw_compartment``, ``raw_bound``, ``raw_field``): the dense oracle a measured certificate reads.
 """
 from dataclasses import dataclass, field
 from typing import Optional
@@ -412,19 +412,21 @@ class CoefficientWalk:
                   K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)
         return cls(**kw)
 
-    def saves(self):
-        """The raw subset as a :class:`~dmipy_sim.persistent_walk.PersistentWalk` of its block ends: positions, the
-        contact of the block ending at each (0 at the start), the pool label and bound state at every block end,
-        and the field's block means of those walkers. Refused when the walk kept no raw subset."""
-        from .persistent_walk import PersistentWalk
-        if self.raw_positions is None:
-            raise ValueError("this walk kept no raw positions: walk it with raw_subset=n")
-        n = int(self.raw_positions.shape[0])
-        head = lambda a: None if a is None else np.asarray(a)[:n]
-        return PersistentWalk(np.asarray(self.raw_positions), self.h, int(self.sub_steps), float(self.dt_sim),
-                              boundary_local_time=self.raw_boundary, compartment=self.raw_compartment,
-                              bound=self.raw_bound, illegal_crossings=int(self.illegal_crossings),
-                              seed=self.seed, diffusivity=self.diffusivity, geometry=self.geometry, spec=self.spec,
-                              weights=head(self.weights), field_basis=self.field_basis, field_samples=self.raw_field,
-                              field_read_interval=self.field_read_interval, stepping=self.stepping,
-                              run=self.run, work=self.work, scanner=self.scanner)
+
+def merge_work(works):
+    """The work record of a walk assembled from several (a bundle's pools, a fill's shards): the counts summed,
+    an entry None when any part has it None, ``bounce_budget`` the common value or, when the parts differ, the
+    largest, ``step_rule`` the one rule when the parts share it and the list of the parts' rules otherwise.
+    ``None`` when no part carries a record."""
+    works = [w for w in works if w]
+    if not works:
+        return None
+    out = {}
+    for key in ("walker_steps", "n_hits", "n_crossings", "exhausted_steps"):
+        vals = [w.get(key) for w in works]
+        out[key] = None if any(v is None for v in vals) else int(sum(vals))
+    budgets = [w.get("bounce_budget") for w in works if w.get("bounce_budget") is not None]
+    out["bounce_budget"] = None if not budgets else int(max(budgets))
+    rules = [w.get("step_rule") for w in works if w.get("step_rule") is not None]
+    out["step_rule"] = None if not rules else (rules[0] if all(r == rules[0] for r in rules) else rules)
+    return out

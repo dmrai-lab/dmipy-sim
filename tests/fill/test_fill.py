@@ -337,7 +337,7 @@ def test_the_pack_of_one_block_overlaps_the_walk_of_the_next(certified, monkeypa
 
 
 def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certified, monkeypatch):
-    """`--batch auto` takes the backend's `suggested_batch` for the walk (the walk's block count and the field's reads from the manifest)
+    """`--batch auto` takes the backend's `suggested_batch` for the walk's accumulators (the bands and the field's modes from the manifest)
     and refuses, by name, a backend without one."""
     import pytest
     from dmipy_sim.engine import backends
@@ -346,7 +346,7 @@ def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certifie
     class _Sized(backends.Backend):
         name = "sized"
         def __init__(self): self.asked = []
-        def suggested_batch(self, n_blocks_plus_1, **kw): self.asked.append((n_blocks_plus_1, kw)); return 777
+        def suggested_batch(self, K, **kw): self.asked.append((K, kw)); return 777
     hub, work = certified
     rc = Recipe(hub)
     be = _Sized()
@@ -354,10 +354,8 @@ def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certifie
     import dmipy_sim.fill.pipeline as pl
     monkeypatch.setattr(pl, "resolve", lambda name: be if name == "sized" else None, raising=False)
     o = dataclasses.replace(opts(work, host="h", block=0, loop=False), batch="auto", backend="sized")
-    from dmipy_sim.engine.accumulate import window_count
-    n_win, T_win = window_count(float(rc.man["walk"]["T_max_s"]))
-    n_blocks = n_win * int(round(T_win / rc.block_h()))
-    assert batch_size(o, rc) == 777 and be.asked[0][0] == n_blocks + 1
+    assert batch_size(o, rc) == 777 and be.asked[0][0] == rc.man["pack"]["K"]                 # the bands, not the walk's length
+    assert be.asked[0][1]["m"] == 3 and be.asked[0][1]["K_c3"] == 0                          # this recipe's variant has no field
     o = dataclasses.replace(opts(work, host="h", block=0, loop=False), batch="auto", backend="jax")
     with pytest.raises(ValueError, match="sizes no batch"):
         batch_size(o, rc)

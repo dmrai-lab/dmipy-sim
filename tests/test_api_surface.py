@@ -602,6 +602,9 @@ def test_a_backends_request_names_the_walk_and_no_save_grid():
     assert {"position_coeffs", "boundary_bands", "boundary_endpoint", "compartment", "qv_positions", "qv_boundary",
             "events", "bound_events", "field_bands", "field_qv", "dt_f", "saves", "precision", "K", "m"} <= set(CoefficientBatch._fields)
     assert not {"positions", "n_t"} & set(CoefficientBatch._fields)
+    from dmipy_sim.engine import backends
+    assert "n_t" not in backends.REQUEST_TEMPLATE_KEYS and {"block_h", "dt_sim", "K", "m", "ring", "events"} <= set(backends.REQUEST_TEMPLATE_KEYS)
+    assert not {"sample_every", "n_tf"} & set(backends.FIELD_STRUCT_KEYS) and {"K_c3", "read_every", "mean"} <= set(backends.FIELD_STRUCT_KEYS)
 
 
 def test_one_basis_and_no_header_with_a_save_grid():
@@ -613,9 +616,11 @@ def test_one_basis_and_no_header_with_a_save_grid():
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.replay import _refuse_predating
     for gone in ("BASES", "basis_of", "require_basis", "bridge_projection", "rank_of", "is_lossless_at",
-                 "encode_boundary_local_time", "decode_boundary_local_time", "surface_logweight_continuous"):
+                 "encode_boundary_local_time", "decode_boundary_local_time", "surface_logweight_continuous",
+                 "saves_basis", "decode_saves", "decode_bridge_dst", "decode_boundary_bridge", "_dst1_to_continuous",
+                 "relaxation_logweight", "surface_logweight_series"):
         assert not hasattr(cx, gone), gone
-    private = {"_dst_matrix", "_idst", "_bridge_positions"}
+    private = {"_dst_matrix", "_idst"}
     outside = set()
     for f in _SRC.rglob("*.py"):
         if f.name == "compression.py":
@@ -644,7 +649,63 @@ def test_one_basis_and_no_header_with_a_save_grid():
 #: in the package: a walk has a block (``block_h``), a pack a ``walk_params.block``, and the saves route's encoders,
 #: its RLE occupancy and its dense fidelity oracle are deleted rather than kept beside the band route.
 _SAVE_GRID_NAMES = (r"dt_save", r"field_sample_every", r"save_interval", r"fill_field", r"defer_field", r"FIELD_DT_CAP",
-                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*")
+                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*", r"PersistentWalk",
+                    r"persistent_walk", r"saves_basis", r"decode_saves", r"decode_bridge_dst", r"decode_boundary_bridge",
+                    r"_decoded_channels", r"_window_n_t", r"_dst1_to_continuous", r"pathway_sign_se", r"unwrap_periodic",
+                    r"replay_jax", r"pre_pulse_gradient_phase")
+
+
+#: the band readers: a window's duration is their ``T`` (the third positional argument, or ``T=``)
+_BAND_READERS = {"band_projection": 2, "band_projection_matrix": 2, "cosine_projection": 2, "path_field_integral": 3,
+                 "_compile_continuous": 3, "bridge_window_matrix": 0, "mode_window_matrix": 0, "bridge_basis": 2,
+                 "bridge_at": 2, "band_phase_variances": 2, "bridge_phase_variance": 2}
+_SAVE_COUNTS = re.compile(r"\b(?:n_t|n_s|n_seg|n_saves|_window_n_t|Nt|N_t)\b")
+
+
+#: the modules that READ a pack (the consumer routes): their band readers take a stated duration
+_READER_MODULES = ("replay/replay.py", "replay/columnar.py", "replay/study.py", "replay/pose_series.py",
+                   "replay/pose_device.py", "replay/continuation.py", "replay/phantom.py", "replay/time_segments.py",
+                   "replay/so3.py", "fill/consolidate.py")
+
+
+def _band_reader_T_args():
+    """``(file, line, T argument's source)`` of every call to a band reader in the reader modules."""
+    import ast
+    out = []
+    for f in (_SRC / m for m in _READER_MODULES):
+        src = f.read_text()
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", getattr(node.func, "attr", None))
+            if name not in _BAND_READERS:
+                continue
+            at = _BAND_READERS[name]
+            arg = next((k.value for k in node.keywords if k.arg == "T"), None)
+            if arg is None and len(node.args) > at:
+                arg = node.args[at]
+            if arg is not None:
+                out.append((str(f.relative_to(_SRC)), node.lineno, ast.get_source_segment(src, arg)))
+    return out
+
+
+def test_no_reader_indexes_a_band_by_a_save_count():
+    """Every band reader is handed a window's DURATION (``T_window``, a window table's ``T``, the walk's ``T``), never
+    one rebuilt from a count of saves (``(n_t - 1) * dt``): a band is a projection over an interval, and the interval is
+    what the pack states. The readers' windows are ``(pack, t0, T)``; ``ReplayPack`` keeps no per-window save count;
+    no reader reads ``compression.basis`` (only the refusal names it)."""
+    from dmipy_sim.replay.replay import ReplayPack
+    calls = _band_reader_T_args()
+    assert len(calls) >= 8, calls                                         # the scan sees the readers
+    bad = [c for c in calls if _SAVE_COUNTS.search(c[2] or "")]
+    assert not bad, f"a band reader is given a duration rebuilt from a save count: {bad}"
+    assert not hasattr(ReplayPack, "_window_n_t") and not hasattr(ReplayPack, "_decoded_channels")
+    reads = []
+    for f in sorted(_SRC.rglob("*.py")):
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            if re.search(r"""(?:\[|get\()\s*["']basis["']""", line) and "REFUSED" not in line:
+                reads.append(f"{f.relative_to(_SRC)}:{i}")
+    assert not reads, f"compression.basis is read in {reads}"
 
 
 def test_no_spelling_of_the_save_grid_survives_in_the_package():
@@ -659,8 +720,8 @@ def test_no_spelling_of_the_save_grid_survives_in_the_package():
 
 def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     """The fifth positional argument of every producer is ``block_h`` (the accumulation block, seconds); none takes a
-    walk's ``n_t`` or a ``dt_save``; none returns a ``PersistentWalk`` (that is the raw subset's view,
-    ``CoefficientWalk.saves()``, the only place the package constructs one besides its own ``load``)."""
+    walk's ``n_t`` or a ``dt_save``; every one returns a ``CoefficientWalk``, whose raw subset is its own arrays (no
+    view of saves)."""
     import inspect
     from dmipy_sim import CoefficientWalk
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
@@ -674,9 +735,7 @@ def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     assert not {"n_t", "dt_save"} & set(inspect.signature(walk_cost).parameters)
     fields = set(CoefficientWalk.__dataclass_fields__)
     assert not {"n_t", "dt", "dt_save", "positions", "boundary_local_time", "bound_frac", "field_samples", "field_sample_every"} & fields
-    built = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")
-             if f.name != "persistent_walk.py" and re.search(r"\bPersistentWalk\(", f.read_text())]
-    assert built == ["coefficient_walk.py"], f"a PersistentWalk is built outside CoefficientWalk.saves(): {built}"
+    assert not hasattr(CoefficientWalk, "saves") and not (_SRC / "persistent_walk.py").exists()
     cyl = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
     for walk in (simulate_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
                  simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):

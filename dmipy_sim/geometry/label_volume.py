@@ -452,7 +452,7 @@ class LabelVolume(Geometry):
         # its path untested, so it does not happen at all either.
         bad = (~done_f) | escaped
         # `illegal` is BOTH refusals, not the budget alone: a refused step is the engine holding a
-        # walker still, which `PersistentWalk.illegal_crossings` and its warning exist to report.
+        # walker still, which `CoefficientWalk.illegal_crossings` and its warning exist to report.
         n_hits = None if b.n_reflections is None else b.n_reflections + crossed_f.astype(jnp.int32)
         return WallHit(jnp.where(bad, r, p_out), jnp.where(bad, jnp.float32(0.0), dlog_f),
                        crossed_f & ~bad, bad, n_hits, b.exhausted)

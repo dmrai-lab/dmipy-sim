@@ -35,12 +35,12 @@ def test_walkers_seed_and_stay_on_their_side(pool):
     u = SphereUnion(cen, rad, pool=pool)
     r0 = np.asarray(u.init_positions(300, jax.random.PRNGKey(0)))
     assert (u.inside_any(r0) == (pool == "intra")).all()
-    w = d.simulate_trajectories(300, D0, u, 3e-3, 3e-4, seed=0, require_gpu=False, raw_subset=300).saves()
-    P = np.asarray(w.positions).reshape(-1, 3)
+    w = d.simulate_trajectories(300, D0, u, 3e-3, 3e-4, seed=0, require_gpu=False, raw_subset=300)
+    P = np.asarray(w.raw_positions).reshape(-1, 3)
     assert (u.inside_any(P) == (pool == "intra")).all()
     # a step the union refuses (its end on the wrong side, the walker held still) is REPORTED since #623, as the
     # mesh reports its own (#479); it was silent before. Measured 2 in 78,000 walker-steps on the intra pool.
-    assert w.has_surface and w.illegal_crossings <= 1e-3 * 300 * (w.positions.shape[1] - 1) * w.sub_steps
+    assert w.has_surface and w.illegal_crossings <= 1e-3 * 300 * (w.raw_positions.shape[1] - 1) * w.sub_steps
 
 
 def test_internal_seam_is_not_a_wall():
@@ -51,8 +51,8 @@ def test_internal_seam_is_not_a_wall():
     one = SphereUnion(cen[:1], rad[:1], pool="intra")
     kw = dict(T_max=4e-3, block_h=4e-3, seed=0, require_gpu=False)
     def msd_z(g):
-        w = d.simulate_trajectories(400, D0, g, **kw, raw_subset=400).saves()
-        P = np.asarray(w.positions)
+        w = d.simulate_trajectories(400, D0, g, **kw, raw_subset=400)
+        P = np.asarray(w.raw_positions)
         return float(((P[:, -1, 2] - P[:, 0, 2]) ** 2).mean())
     assert msd_z(u) > 1.3 * msd_z(one)
 
@@ -72,8 +72,8 @@ def test_the_voxel_fold_keeps_walkers_in_the_box_and_never_across_a_membrane():
     cen = rng.uniform(-6e-6, 6e-6, (15, 3)); rad = rng.uniform(1e-6, 2.5e-6, 15)
     lo, hi = np.full(3, -8e-6), np.full(3, 8e-6)
     u = SphereUnion(cen, rad, pool="extra", box=(lo, hi))
-    w = d.simulate_trajectories(300, D0, u, 4e-3, 4e-4, seed=1, require_gpu=False, raw_subset=300).saves()
-    P = np.asarray(w.positions).reshape(-1, 3)
+    w = d.simulate_trajectories(300, D0, u, 4e-3, 4e-4, seed=1, require_gpu=False, raw_subset=300)
+    P = np.asarray(w.raw_positions).reshape(-1, 3)
     assert (P >= lo - 1e-9).all() and (P <= hi + 1e-9).all()
     assert not u.inside_any(P).any()
     assert u.length_scales.min_feature == pytest.approx(rad.min()) and u.length_scales.lookup_cell > 0
@@ -86,9 +86,9 @@ def test_spec_round_trip():
     assert spec.domain.boundary == ["reflect"] * 3
     g = geometry_from_spec(spec)
     assert type(g) is SphereUnion and g.pool == "intra" and g.spec == spec
-    w1 = d.simulate_trajectories(40, D0, u, 4e-4, 2e-4, seed=1, require_gpu=False, raw_subset=40).saves()
-    w2 = d.simulate_trajectories(40, D0, g, 4e-4, 2e-4, seed=1, require_gpu=False, raw_subset=40).saves()
-    np.testing.assert_array_equal(w1.positions, w2.positions)
+    w1 = d.simulate_trajectories(40, D0, u, 4e-4, 2e-4, seed=1, require_gpu=False, raw_subset=40)
+    w2 = d.simulate_trajectories(40, D0, g, 4e-4, 2e-4, seed=1, require_gpu=False, raw_subset=40)
+    np.testing.assert_array_equal(w1.raw_positions, w2.raw_positions)
     with pytest.raises(ValueError, match="pool"):
         SphereUnion(np.zeros((1, 3)), [1e-6], pool="myelin")
 
@@ -99,5 +99,5 @@ def test_the_classifier_id_is_int32_under_x64(x64):
     the flag on teardown."""
     u = SphereUnion(*_chain(R=2e-6, half_len=4e-6), pool="intra")
     assert u.classify_position(jax.numpy.zeros(3)).dtype == jax.numpy.int32
-    w = d.simulate_trajectories(30, D0, u, 4e-4, 2e-4, seed=0, require_gpu=False, raw_subset=30).saves()
-    assert np.asarray(w.positions).shape[:2] == (30, 3) and w.illegal_crossings == 0
+    w = d.simulate_trajectories(30, D0, u, 4e-4, 2e-4, seed=0, require_gpu=False, raw_subset=30)
+    assert np.asarray(w.raw_positions).shape[:2] == (30, 3) and w.illegal_crossings == 0

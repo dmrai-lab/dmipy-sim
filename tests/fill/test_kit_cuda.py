@@ -12,11 +12,11 @@ pytest.importorskip("dmipy_sim_cuda")
 from dmipy_sim_cuda.backend import CudaBackend  # noqa: E402
 from dmipy_sim_cuda.cli import write_request  # noqa: E402
 
-from dmipy_sim.engine.adaptive import adaptive_plan  # noqa: E402
+from dmipy_sim.engine.adaptive import adaptive_plan, field_read_of, _spec_holder  # noqa: E402
 from dmipy_sim.engine.backends import FieldSampling, WalkRequest, format_request_value, write_request_directory  # noqa: E402
 from dmipy_sim.fill import Recipe  # noqa: E402
 from dmipy_sim.replay.bank import storage_band_hz  # noqa: E402
-from dmipy_sim.fill.kit import _n_t_dt, _pool_geometry, _sha256, assemble_request  # noqa: E402
+from dmipy_sim.fill.kit import _block_record, _pool_geometry, _sha256, assemble_request  # noqa: E402
 
 
 def _starts(ctx, pid, n, seed):
@@ -44,7 +44,8 @@ def _assert_dirs_match(a_dir, b_dir):
                                                      ("field_fake", "intra"), ("field_fake", "extra")])
 def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, pool_name, request, tmp_path):
     """A batch request assembled from the kit (no dmipy-sim, no spec, disk and arrays alone) is file-identical to
-    what ``dmipy_sim_cuda.cli.write_request`` itself writes for the SAME live ``WalkRequest``."""
+    what ``dmipy_sim_cuda.cli.write_request`` (dmipy-sim-cuda#78: one writer, the request, the field's modes, reads
+    and mean, the block table) writes for the SAME live ``WalkRequest``."""
     hub, _ = request.getfixturevalue(fixture_name)
     rc = Recipe(hub)
     ctx = rc.context(); g = ctx.tests; W = rc.man["walk"]
@@ -55,7 +56,7 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
 
     geom = _pool_geometry(ctx, pid)
     D = float(g.pools[pid].D)
-    n_t, dt_actual = _n_t_dt(rc)
+    blk = _block_record(rc); dt_actual = blk["h"]
     plan = adaptive_plan(geom, D, dt_actual, f_band=storage_band_hz(W["scanner"]))
 
     r0 = _starts(ctx, pid, 40, seed=3000 + pid)
@@ -71,13 +72,18 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
         f_radius = min(f_reach + f_margin, 2.0 * f_reach)
         field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
 
-    req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=n_t - 1, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
+    K_c3 = int(rc.man["pack"]["K_path"]) if field is not None else 0
+    dt_f = (field_read_of(_spec_holder(rc.spec(), geom), basis, None, D, blk["windows"]["T"], plan, rc.field_read_interval())["dt_f"]
+            if field is not None else 0.0)
+    req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=blk["n_blocks"], sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
                       diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
-                      bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field)
+                      bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field, K=blk["K"], m=blk["m"],
+                      K_c3=K_c3, field_read_interval=float(dt_f), events=0)
 
     real_dir = write_request(req, r0, keys, tmp_path / f"real-{pool_name}")
     batch_dir = assemble_request(kit_dir, pool_name, r0, keys, seed, tmp_path / f"batch-{pool_name}")
     _assert_dirs_match(real_dir, batch_dir)
+    assert (real_dir / "request.txt").read_bytes() == (batch_dir / "request.txt").read_bytes()      # the order too
 
 
 def _struct_dict(st):
@@ -105,7 +111,7 @@ def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixt
 
     geom = _pool_geometry(ctx, pid)
     D = float(g.pools[pid].D)
-    n_t, dt_actual = _n_t_dt(rc)
+    blk = _block_record(rc); dt_actual = blk["h"]
     plan = adaptive_plan(geom, D, dt_actual, f_band=storage_band_hz(W["scanner"]))
 
     r0 = _starts(ctx, pid, 40, seed=5000 + pid)
@@ -121,12 +127,19 @@ def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixt
         f_radius = min(f_reach + f_margin, 2.0 * f_reach)
         field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
 
-    req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=n_t - 1, sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
+    K_c3 = int(rc.man["pack"]["K_path"]) if field is not None else 0
+    dt_f = (field_read_of(_spec_holder(rc.spec(), geom), basis, None, D, blk["windows"]["T"], plan, rc.field_read_interval())["dt_f"]
+            if field is not None else 0.0)
+    req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=blk["n_blocks"], sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
                       diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
-                      bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field)
+                      bounce_budget=geom.bounce_budget, seed=seed, stepping=plan, field=field, K=blk["K"], m=blk["m"],
+                      K_c3=K_c3, field_read_interval=float(dt_f), events=0)
 
     out = write_request_directory(req, r0, keys, tmp_path / f"shared-{pool_name}")
     written = dict(line.split("=", 1) for line in (out / "request.txt").read_text().splitlines())
+
+    for name, expected in _struct_dict(CudaBackend.request_struct(req, len(r0))).items():
+        assert written[name] == expected, name
 
     st, _ = CudaBackend._strands(geom)
     for name, expected in _struct_dict(st).items():

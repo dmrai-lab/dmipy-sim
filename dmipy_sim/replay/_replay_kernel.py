@@ -1,38 +1,18 @@
-"""The replay primitives: one gradient phase, one resampler, one field gate.
+"""The block-end replay primitives: one gradient phase, one resampler, one field gate.
 
-Every route that turns a stored walk into a signal -- the raw numpy replay, its JAX twin, the
-compressed mode-space replay, the pre-pulse azimuth, the two vector-Bloch replays, the bank's
-susceptibility replay and the SH responder -- integrates the same quantity,
-``phi = gamma * dt * sum_t G(t) . r(t)``, on the same time grid. They read it from here.
+Every route that replays a walk at its block ends -- the dense replay of a raw subset, the two vector-Bloch
+replays and a measured certificate's oracle -- integrates the same quantity, ``phi = gamma * int G(t) . r(t) dt``
+against the piecewise-linear path through the block ends. They read it from here.
 
-* :func:`effective_gradient` gives a waveform's exact per-save weights against the piecewise-linear path
-  through the saves, from the waveform's own grid (:func:`waveform_moments`); no resampling of ``G``.
-* :func:`gradient_phase` is the total phase per (measurement, walker); :func:`phase_increments`
-  the per-step increments one measurement contributes, for a propagator that applies them in
-  order.
-* :func:`field_gate` is the acquisition's effective gate as per-save weights against a field sampled at the
-  saves: the one gate a static field, a uniform off-resonance and ``G_eff`` all accrue through.
-
-Each has a JAX twin (``*_jax``) where a consumer differentiates through it.
+* :func:`effective_gradient` gives a waveform's exact per-block-end weights against the piecewise-linear path
+  through the block ends, from the waveform's own grid (:func:`waveform_moments`); no resampling of ``G``.
+* :func:`gradient_phase` is the total phase per (measurement, walker).
+* :func:`field_gate` is the acquisition's effective gate as per-block-end weights against a field sampled at the
+  block ends: the one gate a static field, a uniform off-resonance and ``G_eff`` all accrue through.
 """
 import numpy as np
 
 from ..constants import GAMMA
-
-try:
-    import jax
-    import jax.numpy as jnp
-    _JAX = True
-except ImportError:  # pragma: no cover
-    _JAX = False
-
-_FULL = jax.lax.Precision.HIGHEST if _JAX else None     # no TF32 in a phase contraction
-
-_SAME_GRID_RTOL = 1e-9
-
-
-def _same_grid(dt_wf, dt_traj):
-    return abs(float(dt_wf) - float(dt_traj)) / max(abs(float(dt_traj)), 1e-30) <= _SAME_GRID_RTOL
 
 
 def _cumulative_at(G, dt_wf, times):
@@ -54,11 +34,11 @@ def _cumulative_at(G, dt_wf, times):
 
 def piece_moments(G, dt_wf, edges, n_t, dt_pack, t0=None):
     """Moments of the sample-and-hold waveform ``G`` over the **pieces** ``[edges[p], edges[p+1]]`` of the
-    walk, a cut of the save grid at the saves and at any further instants (an RF pulse, an echo): returns
-    ``A0`` = int G dt, ``A1`` = int G (t - t_k) dt with ``t_k`` the start of the save interval the piece lies in,
-    both ``(n_meas, n_pieces, 3)``, and ``k`` ``(n_pieces,)`` that save interval's index. A piece must not
-    straddle a save (the saves are among the edges). Exact. A waveform with a non-zero sample starting beyond
-    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there. With ``t0`` the saves are those of the
+    walk, a cut of the block grid at the block ends and at any further instants (an RF pulse, an echo): returns
+    ``A0`` = int G dt, ``A1`` = int G (t - t_k) dt with ``t_k`` the start of the block the piece lies in,
+    both ``(n_meas, n_pieces, 3)``, and ``k`` ``(n_pieces,)`` that block's index. A piece must not
+    straddle a block end (the block ends are among the edges). Exact. A waveform with a non-zero sample starting beyond
+    ``T = (n_t - 1) dt_pack`` is refused: the stored path ends there. With ``t0`` the block ends are those of the
     window of the walk starting at ``t0`` on the waveform's clock (RPK.md 4.3), the edges on that clock, and the
     waveform beyond the window is another window's.
     """
@@ -83,15 +63,15 @@ def piece_moments(G, dt_wf, edges, n_t, dt_pack, t0=None):
 
 
 def waveform_moments(G, dt_wf, n_t, dt_pack):
-    """Zeroth and first moments of the sample-and-hold waveform over the walk's save intervals
-    ``[t_k, t_{k+1}]``, ``k = 0 .. n_t - 2``: :func:`piece_moments` with the saves as the edges."""
+    """Zeroth and first moments of the sample-and-hold waveform over the walk's blocks
+    ``[t_k, t_{k+1}]``, ``k = 0 .. n_t - 2``: :func:`piece_moments` with the block ends as the edges."""
     A0, A1, _ = piece_moments(G, dt_wf, np.arange(int(n_t)) * float(dt_pack), n_t, dt_pack)
     return A0, A1
 
 
 def window_moments(G, dt_wf, n_t, dt_pack, t0):
     """:func:`waveform_moments` over the WINDOW of the walk that starts at ``t0`` on the waveform's clock (RPK.md
-    4.3): the save intervals ``[t0 + k dt_pack, t0 + (k + 1) dt_pack]``, ``k = 0 .. n_t - 2``, the first moment
+    4.3): the blocks ``[t0 + k dt_pack, t0 + (k + 1) dt_pack]``, ``k = 0 .. n_t - 2``, the first moment
     taken from each interval's own start. The waveform beyond the window belongs to the walk's other windows and
     is not refused here; :func:`piece_moments` refuses what lies beyond the whole walk."""
     G = np.asarray(G, np.float64)
@@ -103,7 +83,7 @@ def window_moments(G, dt_wf, n_t, dt_pack, t0):
 
 
 def piece_phase_weights(G, dt_wf, edges, n_t, dt_pack, t0=None):
-    """The precession of each piece as weights on the two saves bounding its interval: the phase of piece
+    """The precession of each piece as weights on the two block ends bounding its interval: the phase of piece
     ``p`` is ``w_lo[p] . r[k_p] + w_hi[p] . r[k_p + 1]`` (radians, gamma included), exact for the
     piecewise-linear path. Returns ``(w_lo, w_hi, k)`` with the weights ``(n_meas, n_pieces, 3)``; ``t0`` as in
     :func:`piece_moments`."""
@@ -123,19 +103,19 @@ def _held_samples(chi):
 
 
 def bin_gate(chi, dt_wf, n_t, dt_pack, t0=None):
-    """The fraction of each save's ACCUMULATION interval during which the gate ``chi`` is on. A save's boundary
-    local time, occupancy and bound fraction are accumulated over the step that ends at that save, so a gate on
+    """The fraction of each block end's ACCUMULATION interval during which the gate ``chi`` is on. A block end's boundary
+    local time, occupancy and bound fraction are accumulated over the step that ends at that block end, so a gate on
     them is the gate's average over ``[t_k - dt_pack, t_k]``, not its value at a sample: ``bin_gate(ones) == 1``
-    at every save but the first, which ends no step and weighs 0. ``(n_meas|1, n_t)``. For SAMPLED quantities
-    (positions, a field at the saves) use :func:`gate_weights` instead.
+    at every block end but the first, which ends no step and weighs 0. ``(n_meas|1, n_t)``. For SAMPLED quantities
+    (positions, a field at the block ends) use :func:`gate_weights` instead.
 
     A gate of ``n`` samples on a grid of ``dt_wf`` spans ``(n - 1) dt_wf``: its last sample sits at the readout
     (the sequence convention -- ``n_t`` samples at ``dt = TE / (n_t - 1)``, the readout at ``n_t - 1`` acting over
     nothing) and is held over nothing, so an acquisition of ``TE`` relaxes and accrues contact over ``TE``, not
-    over ``TE + dt_wf`` (dmipy-sim#225: one save interval of contact too many, 1 % at 0.2 um).
+    over ``TE + dt_wf`` (dmipy-sim#225: one block of contact too many, 1 % at 0.2 um).
 
-    With ``t0`` the saves are those of the WINDOW of the walk starting at ``t0`` on the gate's clock (RPK.md 4.3);
-    the window's first save ends no step of the window, so it weighs 0 as the walk's first save does."""
+    With ``t0`` the block ends are those of the WINDOW of the walk starting at ``t0`` on the gate's clock (RPK.md 4.3);
+    the window's first block end ends no step of the window, so it weighs 0 as the walk's first block end does."""
     chi = _held_samples(chi)
     Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
     t_hi = float(t0 or 0.0) + np.arange(int(n_t)) * float(dt_pack)
@@ -148,9 +128,9 @@ def bin_gate(chi, dt_wf, n_t, dt_pack, t0=None):
 
 
 def gate_weights(chi, dt_wf, n_t, dt_pack, t0=None):
-    """Per-save weights of a scalar sample-and-hold gate (a coherence gate ``chi(t)``, ``(n_wf,)`` or
+    """Per-block end weights of a scalar sample-and-hold gate (a coherence gate ``chi(t)``, ``(n_wf,)`` or
     ``(n_meas, n_wf)`` on its own grid): :func:`effective_gradient` of one component, ``(n_meas|1, n_t)``.
-    ``gate_weights(ones) `` sums to ``TE / dt_pack``: the exact duration in save units, the last sample being the
+    ``gate_weights(ones) `` sums to ``TE / dt_pack``: the exact duration in block end units, the last sample being the
     readout and held over nothing (as in :func:`bin_gate`). ``t0`` reads the window of the walk starting there."""
     chi = _held_samples(chi)
     Gc = np.zeros(chi.shape + (3,)); Gc[..., 0] = chi
@@ -158,32 +138,32 @@ def gate_weights(chi, dt_wf, n_t, dt_pack, t0=None):
 
 
 def field_gate(waveform, n_t, dt_pack, t0=None):
-    """The per-save weights that integrate a field SAMPLED at the saves over an acquisition: the acquisition's
+    """The per-block-end weights that integrate a field SAMPLED at the block ends over an acquisition: the acquisition's
     :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, RPK.md 6.6,
     times the transverse gate: zero while a stimulated echo's magnetisation is stored along B0) read on its grid onto
     the pack grid by :func:`gate_weights`, and zero beyond its echo -- so an acquisition shorter than the walk ends
     at its echo, and the field accrues through the one gate ``G_eff`` was folded with. A pathway-gated waveform
     (:mod:`dmipy_sim.replay.pathways`) carries its pathway's signed gate, its ``G`` already folded with it.
-    ``(n_t,)``; multiply per-save values by ``dt_pack`` and these weights. ``t0`` reads the window of the walk
+    ``(n_t,)``; multiply per-block-end values by ``dt_pack`` and these weights. ``t0`` reads the window of the walk
     starting there."""
     gate = waveform.effective_gate if waveform.gate is None else waveform.gate
     return gate_weights(np.asarray(gate, np.float64), float(waveform.dt), n_t, dt_pack, t0=t0)[0]
 
 
 def effective_gradient(G, dt_wf, n_t, dt_pack, t0=None):
-    """The per-save weights of a waveform against the path: ``(n_meas, n_t, n_c)`` for a waveform of ``n_c``
+    """The per-block-end weights of a waveform against the path: ``(n_meas, n_t, n_c)`` for a waveform of ``n_c``
     components (three, or the subset a consumer reads), such that
     ``gamma dt_pack sum_k Geff[k] . r[k]`` is **exactly** ``gamma int G(t) . r(t) dt`` for the piecewise-linear
-    path through the saves (the conditional mean of a Brownian path given its samples) and the
+    path through the block ends (the conditional mean of a Brownian path given its samples) and the
     sample-and-hold waveform on its own grid:
 
         Geff[k] dt_pack = (A0[k] - A1[k] / dt_pack) + A1[k-1] / dt_pack .
 
     On the pack's own grid this is the trapezoid rule; off it there is no interpolation of ``G`` at all, so
-    an edge between two saves carries exactly its b. Every replay route reads this one function.
+    an edge between two block ends carries exactly its b. Every replay route reads this one function.
 
-    With ``t0`` the saves are those of the WINDOW of the walk starting at ``t0`` on the waveform's clock (RPK.md
-    4.3): the weights of a save shared by two windows are split into the two half-intervals exactly, so the
+    With ``t0`` the block ends are those of the WINDOW of the walk starting at ``t0`` on the waveform's clock (RPK.md
+    4.3): the weights of a block end shared by two windows are split into the two half-intervals exactly, so the
     windows' phases sum to the whole walk's. Without it the whole walk is read and a gradient beyond it refused.
     """
     A0, A1 = waveform_moments(G, dt_wf, n_t, dt_pack) if t0 is None else window_moments(G, dt_wf, n_t, dt_pack, t0)
@@ -194,34 +174,12 @@ def effective_gradient(G, dt_wf, n_t, dt_pack, t0=None):
     return W / float(dt_pack)
 
 
-def effective_gradient_jax(G, dt_wf, n_t, dt_pack):
-    """:func:`effective_gradient` for a traced ``G`` (differentiable in ``G``), float32 output."""
-    n_meas, n_wf, n_c = G.shape
-    n_t = int(n_t)
-    dt_wf, dt_pack = float(dt_wf), float(dt_pack)
-    G = G.astype(jnp.float32)
-    e = np.arange(n_wf + 1) * dt_wf
-    tp = np.arange(n_t) * dt_pack
-    tc = np.clip(tp, 0.0, e[-1])
-    j = np.clip(np.searchsorted(e, tc, side="right") - 1, 0, n_wf - 1)           # static: the grids are known
-    w1 = jnp.asarray((e[1:] ** 2 - e[:-1] ** 2) / 2.0, jnp.float32)
-    Q0 = jnp.concatenate([jnp.zeros((n_meas, 1, n_c), jnp.float32), jnp.cumsum(G, axis=1) * jnp.float32(dt_wf)], axis=1)
-    Q1 = jnp.concatenate([jnp.zeros((n_meas, 1, n_c), jnp.float32), jnp.cumsum(G * w1[None, :, None], axis=1)], axis=1)
-    Q0p = Q0[:, j, :] + G[:, j, :] * jnp.asarray(tc - e[j], jnp.float32)[None, :, None]
-    Q1p = Q1[:, j, :] + G[:, j, :] * jnp.asarray((tc ** 2 - e[j] ** 2) / 2.0, jnp.float32)[None, :, None]
-    A0 = jnp.diff(Q0p, axis=1)
-    A1 = jnp.diff(Q1p, axis=1) - jnp.asarray(tp[:-1], jnp.float32)[None, :, None] * A0
-    z = jnp.zeros((n_meas, 1, n_c), jnp.float32)
-    W = jnp.concatenate([A0 - A1 / dt_pack, z], axis=1) + jnp.concatenate([z, A1 / dt_pack], axis=1)
-    return W / jnp.float32(dt_pack)
-
-
 _PHASE_CHUNK_BYTES = 256 * 2 ** 20     # float64 working copy of the trajectory per chunk
 
 
 def gradient_phase(G_traj, traj, dt, chunk_bytes=_PHASE_CHUNK_BYTES):
     """``gamma * dt * sum_t G[m, t] . r[w, t]`` -> ``(n_meas, n_walkers)`` float64, with ``G_traj`` the
-    waveform's per-save weights (:func:`effective_gradient`): the exact integral against the path.
+    waveform's per-block-end weights (:func:`effective_gradient`): the exact integral against the path.
 
     The contraction runs in float64 over walker chunks of at most ``chunk_bytes`` each, so a stored
     walk of 1e5 walkers by 1e3 steps (2.4 GB as float64) is never materialised whole. Each
@@ -238,34 +196,3 @@ def gradient_phase(G_traj, traj, dt, chunk_bytes=_PHASE_CHUNK_BYTES):
         out[:, a:a + step] = np.einsum('mr,wr->mw', G_flat,
                                        np.asarray(traj[a:a + step], np.float64).reshape(-1, row))
     return (GAMMA * float(dt)) * out
-
-
-def gradient_phase_jax(G_traj, traj, dt):
-    """:func:`gradient_phase` for traced operands (float32).
-
-    The contraction is pinned to full float32 precision: on a GPU the default lets XLA run a
-    float32 matmul at TF32 (10 mantissa bits), which on a phase of hundreds of radians is an
-    error of order 0.1 rad per walker and biases the signal by 10-20%.
-    """
-    return (float(GAMMA) * float(dt)) * jnp.einsum('mtx,wtx->mw', G_traj.astype(jnp.float32),
-                                                   traj.astype(jnp.float32), precision=_FULL)
-
-
-def phase_increments(G_m, traj, dt):
-    """Per-step increments ``gamma * dt * G_m[t] . r[w, t]`` of ONE measurement -> ``(n_t, n_walkers)``,
-    for a propagator that rotates the magnetisation step by step (the vector-Bloch replays)."""
-    G_m = np.asarray(G_m, np.float64)
-    traj = np.asarray(traj, np.float64)
-    return (GAMMA * float(dt)) * np.einsum('td,wtd->tw', G_m, traj)
-
-
-def phase_increment(g_t, r_t, dt):
-    """One step of :func:`phase_increments`: ``gamma * dt * r[w] . g`` -> ``(n_walkers,)``."""
-    return (GAMMA * float(dt)) * (np.asarray(r_t, np.float64) @ np.asarray(g_t, np.float64))
-
-
-def phase_increments_jax(G_m, traj, dt):
-    """:func:`phase_increments` for traced operands, at full float32 precision (see
-    :func:`gradient_phase_jax`)."""
-    return (float(GAMMA) * float(dt)) * jnp.einsum('td,wtd->tw', jnp.asarray(G_m), jnp.asarray(traj),
-                                                   precision=_FULL)

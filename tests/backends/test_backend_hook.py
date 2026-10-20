@@ -178,8 +178,8 @@ def test_the_raw_subset_is_the_backends_block_ends_and_the_events_are_joined():
     assert w.raw_positions.shape == (10, 5, 3) and w.raw_boundary.shape == (10, 5) and w.raw_compartment.shape == (10, 5)
     np.testing.assert_array_equal(w.raw_positions[:, 0], w.position_coeffs[:10, 0, 0])
     assert (w.raw_positions == w.raw_positions[:, :1]).all()
-    sv = w.saves()
-    assert sv.positions.shape == (10, 5, 3)
+    sv = w
+    assert sv.raw_positions.shape == (10, 5, 3)
     off, t, lab = w.comp_events
     assert off.shape == (65,) and off[-1] == 3 and t.shape == (3,) and lab.shape == (3,)
     assert [int(x) for x in np.flatnonzero(np.diff(off))] == [0, 10, 32]
@@ -346,8 +346,12 @@ def test_the_request_carries_the_step_law():
     """A backend's request states the step law beside the length scale: the pair's two atoms and the long one's
     probability, the values ``dmipy_sim.math.step_law`` defines, so no kernel holds a length of its own."""
     from dmipy_sim.math import step_law as sl
-    fields = backends.request_struct_fields(n_t=3, sub_steps=2, step_l=1e-6, kappa_over_D=0.0, record=False, count=False, budget=4)
+    fields = backends.request_struct_fields(n_blocks=2, sub_steps=2, step_l=1e-6, kappa_over_D=0.0, record=False, count=False, budget=4,
+                                            block_h=1e-4, dt_sim=5e-5, K=8, m=3, events=5, raw_subset=0)
+    assert fields["n_blocks"] == 2 and fields["ring"] == 64 and fields["events"] == 0      # no events on a walk that records none
     assert fields["atom_short"] == pytest.approx(sl.PAIR_SHORT, rel=1e-6)
     assert fields["atom_long"] == pytest.approx(sl.PAIR_LONG, rel=1e-6) and fields["atom_long"] == pytest.approx(sl.LONGEST_STEP, rel=1e-6)
     assert fields["p_long"] == pytest.approx(sl.PAIR_P_LONG, rel=1e-6)
-    assert list(fields) == ["n_t", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record", "count", "budget"]
+    assert list(fields) == list(backends.REQUEST_TEMPLATE_KEYS) == [
+        "n_blocks", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record", "count", "budget",
+        "seed", "block_h", "dt_sim", "K", "m", "ring", "events", "raw_subset"]                 # DscRequest, dmipy-sim-cuda#78

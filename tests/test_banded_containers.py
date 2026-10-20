@@ -15,6 +15,7 @@ from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.spec.tissue import Tissue
+from tests.conftest import dense_relaxation_logweight
 
 D0 = 2e-9
 
@@ -45,7 +46,8 @@ def test_the_c2_container_and_the_static_c1_column():
     n_t = 121; chi = np.ones(n_t); chi[0] = 0.0; chi[80:] = 0.0
     lw_f = _cx.surface_logweight_bridge(a_f, m_f, 3.0, chi, 1e-4); lw_b = _cx.surface_logweight_bridge(a_b, m_b, 3.0, chi, 1e-4)
     assert np.abs(lw_b - lw_f).max() < 5e-3 * np.abs(lw_f).max()
-    np.testing.assert_allclose(_cx.decode_boundary_bridge(a_b, m_b, n_t=n_t).sum(1), np.asarray(a_b["blt_endpoint"]), rtol=1e-5, atol=1e-10)
+    B = _cx.local_time_at(a_b, m_b, [0.0, T])                                                 # the bridge pinned at both ends
+    np.testing.assert_allclose(B[:, 1] - B[:, 0], np.asarray(a_b["blt_endpoint"]), rtol=1e-5, atol=1e-10)
     lab = rng.integers(0, 3, n_w)
     a1, m1 = _cx.encode_static_occupancy(lab)
     assert list(a1) == ["comp_static"] and a1["comp_static"].dtype == np.int8 and m1["columns"][0]["kind"] == "static"
@@ -53,7 +55,7 @@ def test_the_c2_container_and_the_static_c1_column():
     act = np.ones(n_t); act[-1] = 0.0                                                         # the readout, held over nothing
     gate = _cx.CumulativeGate(chi, 1e-4); on = _cx.CumulativeGate(act, 1e-4)
     got = _cx.relaxation_logweight_runs(a1, m1["columns"][0], [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], gate, on, t1=(n_t - 1) * 1e-4)
-    dense = _cx.relaxation_logweight(np.repeat(lab[:, None], n_t, axis=1), [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], 1e-4, chi, act)
+    dense = dense_relaxation_logweight(lab, [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], 1e-4, chi, act)
     np.testing.assert_allclose(got, dense, rtol=1e-12)
     from dmipy_sim.coefficient_walk import EventList
     ev = EventList([0, 1] + [1] * (n_w - 1), [60 * 1e-4], [2])                                    # walker 0 crosses into pool 2

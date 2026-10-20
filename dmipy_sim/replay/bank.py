@@ -601,7 +601,7 @@ def _depth(K, declared):
 
 def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
                             chunk=20_000, T=None, max_refocus_pulses=None):
-    """:func:`susc_path_encode` from the per-save field series itself, in the canonical channel order with
+    """:func:`susc_path_encode` from a field series of block means, in the canonical channel order with
     ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
     without a copy of the whole series. The ``iso_P_zz`` channel is implied by the trace identity
@@ -971,14 +971,14 @@ STORAGE_BAND_MARGIN = 1.4  #: the storage rule's margin over a class's certified
 
 
 def _walk_scanner(walk):
-    """The scanner class a walk's save grid was derived for (``PersistentWalk.scanner``, set by ``walk_spec``), or None."""
+    """The scanner class a walk's band was derived for (``CoefficientWalk.scanner``, set by ``walk_spec``), or None."""
     return getattr(walk, "scanner", None) if not isinstance(walk, dict) else walk.get("scanner")
 
 
 def class_band(scanner):
     """The band (Hz) a walk for scanner class ``scanner`` resolves its step for: the class's stored band
-    (:func:`storage_band_hz`, the certified band times its margin); ``None`` -- the save grid's Nyquist frequency --
-    when no class is named."""
+    (:func:`storage_band_hz`, the certified band times its margin); ``None`` -- the block's Nyquist frequency -- when
+    no class is named."""
     return None if scanner is None else float(storage_band_hz(scanner))
 
 
@@ -1291,7 +1291,7 @@ def _coefficient_weights(cw, weights):
 
 
 def join_windows(packs, *, fidelity, walks, walkers_shuffled):
-    """The packs of the consecutive windows of one walk -- each one window of the same saves, codec and band, as
+    """The packs of the consecutive windows of one walk -- each one window of the same block, codec and band, as
     :func:`build_replay_pack` writes one -- as ONE pack's ``(arrays, meta)`` (RPK.md 4.3): window 0's tensors under the
     channel names and window ``i``'s under ``s{i}/``, the tensors the walk shares (``_SHARED_KEYS``, the field grids)
     once, refused when two windows disagree in one; the channel numbers a codec measures the worst over the windows;

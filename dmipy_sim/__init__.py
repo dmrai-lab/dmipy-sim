@@ -12,12 +12,9 @@ _apply_gpu_mem_cap()
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories, walk_cost, certify_bounce_budget
 # NB: the scalar trajectory-replay entrypoint is `dmipy_sim.replay.trajectories.replay`, NOT a bare
 # top-level `replay` — the name `dmipy_sim.replay` is the package of the .rpk pack forward (see below).
-from .replay.trajectories import (unwrap_periodic, replay_jax,
-                           replay_bloch, replay_bloch_jax,
-                           finite_180_longitudinal_dwell, pre_pulse_gradient_phase,
-                           pathway_sign_se)
+from .replay.trajectories import (replay_bloch, replay_bloch_jax,
+                           finite_180_longitudinal_dwell)
 from .engine.mt_walk import simulate_mt_trajectories
-from .persistent_walk import PersistentWalk
 from .coefficient_walk import CoefficientWalk
 from .compartments import Compartments, Pool, pool_id
 from .engine.bloch import simulate_bloch
@@ -61,14 +58,12 @@ from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeW
 
 __all__ = [
     "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "walk_cost", "certify_bounce_budget",
-    # replay path: walk-once producer + scalar replay operators
-    "unwrap_periodic", "replay_jax",
     # replay pack assembler (producer side of the substrate bank)
     "build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles",
     # replay path: vector-Bloch + susceptibility + MT + refocusing helpers
     "replay_bloch", "replay_bloch_jax",
-    "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se",
-    "simulate_mt_trajectories", "PersistentWalk", "CoefficientWalk", "Compartments", "Pool", "pool_id",
+    "finite_180_longitudinal_dwell",
+    "simulate_mt_trajectories", "CoefficientWalk", "Compartments", "Pool", "pool_id",
     "simulate_bloch",
     "ScannerSequence", "Encoding", "Protocol",
     "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",

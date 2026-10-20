@@ -164,7 +164,7 @@ def figure(ph, pack_path, ang, dirs, S_g, S_b, out_gif, fps=10, slab_um=1.2):
     ax_map, ax_cur = fig.add_subplot(gs[:, 1]), fig.add_subplot(gs[:, 2])
 
     # the substrate: where the walkers start, in a thin slab so the strands read as cross-sections
-    p0 = pack.positions()[:, 0, :] * 1e6
+    p0 = np.asarray(pack.r0, np.float64) * 1e6
     pool = _pools(pack)
     keep = np.abs(p0[:, 2] - np.median(p0[:, 2])) < slab_um
     for pid in (2, 1, 0):                                                 # extra first, so the strands sit on top

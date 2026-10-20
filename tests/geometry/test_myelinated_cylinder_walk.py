@@ -38,9 +38,9 @@ def test_walk_spec_no_longer_refuses_the_isolated_cylinder():
 
 def test_pool_labels_agree_with_the_geometrys_own_classifier_at_every_save():
     g = _g()
-    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, block_h=5e-5, seed=0, require_gpu=False, raw_subset=2000).saves()
-    pos = np.asarray(w.positions)
-    comp = np.asarray(w.compartment)
+    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, block_h=5e-5, seed=0, require_gpu=False, raw_subset=2000)
+    pos = np.asarray(w.raw_positions)
+    comp = np.asarray(w.raw_compartment)
     cls = np.asarray(jax.vmap(jax.vmap(g.classify_position))(jnp.asarray(pos)))
     assert (comp == cls).all(), "the carried label disagrees with re-classifying the saved position"
 
@@ -55,8 +55,8 @@ def test_pool_labels_agree_with_the_geometrys_own_classifier_at_every_save():
 
 def test_boundary_local_time_is_non_positive():
     g = _g()
-    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, block_h=5e-5, seed=1, require_gpu=False, raw_subset=2000).saves()
-    blt = np.asarray(w.boundary_local_time)
+    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, block_h=5e-5, seed=1, require_gpu=False, raw_subset=2000)
+    blt = np.asarray(w.raw_boundary)
     assert blt.max() <= 0.0
     assert blt.min() < 0.0, "precondition: some walkers actually touched a wall"
 
@@ -67,8 +67,8 @@ def test_simulate_and_simulate_trajectories_report_the_same_compartment_at_t0():
     test_compartment_ids.test_simulate_and_simulate_trajectories_report_the_same_ids."""
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, _ = d.simulate(300, None, wf, _g(), seed=0, return_compartments="final", require_gpu=False)
-    out = d.simulate_trajectories(300, D, _g(), T_max=6e-3, block_h=2e-3, seed=0, require_gpu=False, raw_subset=300).saves()
-    comp0 = np.asarray(out.compartment)[:, 0]
+    out = d.simulate_trajectories(300, D, _g(), T_max=6e-3, block_h=2e-3, seed=0, require_gpu=False, raw_subset=300)
+    comp0 = np.asarray(out.raw_compartment)[:, 0]
     assert set(np.unique(origin)) <= {EXTRA, INTRA, MYELIN}
     assert (np.asarray(origin) == comp0).all()
     assert (comp0 == MYELIN).mean() > 0.05 and (comp0 == INTRA).mean() > 0.05

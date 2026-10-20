@@ -7,9 +7,10 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.compression import occupancy_at, relaxation_logweight
+from dmipy_sim.replay.compression import occupancy_at
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.spec.tissue import Tissue
+from tests.conftest import dense_relaxation_logweight
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
@@ -51,7 +52,7 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
                         np.arange(full.n_t) * full.dt)                   # the pool at every block end (an impermeable pack: static)
     from dmipy_sim.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # the acquisition ends at its echo: no relaxation
-    logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi, chi)   # counted over the walk beyond it
+    logw = dense_relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi, chi)   # counted over the walk beyond it
     W = _W(full, wf)
     from dmipy_sim.replay.compression import read_position_coeffs
     C = read_position_coeffs(full.arrays, dtype=np.float64)
@@ -170,7 +171,7 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=300)
     pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
     rho2 = 1e-5
-    cum = np.cumsum(np.asarray(walk.saves().boundary_local_time, np.float64), axis=1)   # per-block log-weight at rho2 / D = 1
+    cum = np.cumsum(np.asarray(walk.raw_boundary, np.float64), axis=1)   # per-block log-weight at rho2 / D = 1
     ref = np.exp(rho2 / D0 * cum[:, n]).mean()
     off = np.exp(rho2 / D0 * cum[:, n + 1]).mean()
     got = float(np.abs(pk.replay(fid, tissue=Tissue(rho2=rho2))[0]))

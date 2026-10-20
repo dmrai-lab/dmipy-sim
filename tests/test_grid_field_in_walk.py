@@ -96,14 +96,14 @@ def test_the_in_walk_sample_is_the_interval_mean_of_the_grid_at_the_sub_steps(ca
     w = d.simulate_trajectories(120, D0, geom, T, dt, seed=4, sub_steps=N_SUB, tiers=tiers, require_gpu=False,
                                 field_basis=fg, raw_subset=120)
     fine = d.simulate_trajectories(120, D0, geom, T, dt / N_SUB, seed=4, sub_steps=1, tiers=tiers, require_gpu=False,
-                                   raw_subset=120).saves()
-    np.testing.assert_allclose(w.raw_positions, fine.positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
+                                   raw_subset=120)
+    np.testing.assert_allclose(w.raw_positions, fine.raw_positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
     fr = w.block["field_read"]
     assert w.field_basis is fg and fr["n_read"] == 1 and fr["at_step"] and w.field_read_interval == pytest.approx(w.dt_sim)
     n_ch = 7 if fg.basis.get("aniso_G") is None else 13
     assert w.raw_field.shape == (120, w.n_blocks + 1, n_ch)
     assert w.field_coeffs.shape == (120, w.n_windows, w.K_c3, n_ch)
-    ref = _interval_means(fg, fine.positions, N_SUB)
+    ref = _interval_means(fg, fine.raw_positions, N_SUB)
     scale = np.abs(ref).max()
     # measured: 4.9e-7 (sphere, clamped dipole grid) and 6.4e-6 (packed cell, read in-cell on the device against the
     # unwrapped position wrapped on the host) of the channel scale, which changes by 0.34-0.74 of it between saves
@@ -111,7 +111,7 @@ def test_the_in_walk_sample_is_the_interval_mean_of_the_grid_at_the_sub_steps(ca
     # the modes: c_k = int e_k b dt of the window, against the exact projection of the dense reads' trapezoids; the
     # k = 0 mode is sqrt(h) times the block means' k = 0 DCT-II coefficient
     assert w.n_windows == 1
-    mode_ref = _modes_of(fg, fine.positions, w.dt_sim, w.T_window, w.K_c3)
+    mode_ref = _modes_of(fg, fine.raw_positions, w.dt_sim, w.T_window, w.K_c3)
     modes = np.asarray(w.field_coeffs, np.float64)[:, 0]
     assert np.abs(modes - mode_ref).max() <= 5e-3 * np.abs(mode_ref).max()   # measured 4.5e-4 (packed cell), 2.4e-3 (sphere, positions only)
     k0 = np.sqrt(w.h) * np.asarray(w.raw_field, np.float64)[:, 1:].sum(1) / np.sqrt(w.n_blocks)
@@ -136,9 +136,9 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     np.testing.assert_allclose(w2.raw_positions, w1.raw_positions, rtol=0, atol=1e-11)
     np.testing.assert_allclose(w2.position_coeffs, w1.position_coeffs, rtol=0, atol=1e-11)
     np.testing.assert_allclose(w2.boundary_bands, w1.boundary_bands, rtol=1e-4, atol=1e-12)
-    fine = d.simulate_trajectories(80, D0, geom, T, dt_sim, seed=5, sub_steps=1, require_gpu=False, raw_subset=80).saves()
+    fine = d.simulate_trajectories(80, D0, geom, T, dt_sim, seed=5, sub_steps=1, require_gpu=False, raw_subset=80)
     for w, n_read in ((w1, 1), (w2, 2)):
-        ref = _interval_means(fg, fine.positions, N_SUB, n_read)
+        ref = _interval_means(fg, fine.raw_positions, N_SUB, n_read)
         assert np.abs(w.raw_field - ref).max() <= 2e-5 * np.abs(ref).max()
     assert np.abs(w2.raw_field - w1.raw_field).max() > 1e-4 * np.abs(w1.raw_field).max()      # the coarser read is a different quadrature
     with pytest.raises(ValueError, match="go with field_basis"):
