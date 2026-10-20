@@ -142,6 +142,13 @@ class StrandFieldRecord:
         self.meta = dict(meta)
         self.channel_names = tuple(self.meta.get("channels") or CHANNEL_NAMES)
 
+    def gradient_scale(self):
+        """:meth:`StrandFieldBasis.gradient_scale` from the recorded thinnest sheath."""
+        t = self.meta.get("thinnest_sheath_m")
+        if t is None:
+            raise ValueError("this field record carries no thinnest sheath; the read rule needs the basis itself")
+        return 0.5 / float(t)
+
     def channels(self, points, *, chunk=None):
         raise ValueError("a StrandFieldRecord is the record of a basis a walk sampled: it evaluates nothing; rebuild the "
                          "basis from the spec (walk_spec builds it) to sample the field at new points")
@@ -256,7 +263,15 @@ class StrandFieldBasis:
         return dict(kind="strand_superposition", cutoff_m=self.cutoff_m, segments_max=self.segments_max, n_strands=self.n_strands,
                     n_segments=self.n_segments, domain=[list(map(float, self.domain[0])), list(map(float, self.domain[1]))],
                     channels=list(CHANNEL_NAMES), mean_subtracted=True, certificate=self.certificate,
+                    thinnest_sheath_m=float(np.min(self.outer_radii - self.inner_radii)),
                     far_grid=(None if self.far is None else self.far.meta))
+
+    def gradient_scale(self):
+        """``|grad b|`` (1/m): the largest gradient of the basis over a sheath -- the hollow cylinder's channels change
+        by order one half across the sheath (``M_P``'s ``S`` term jumps by ``1/2`` at the outer wall, ``iso_local``
+        by ``1/3`` at both), so the scale is ``1/2`` over the thinnest sheath, ``min(outer - inner)`` -- what the
+        field read's rule divides by (:func:`dmipy_sim.engine.accumulate.field_read_interval`)."""
+        return 0.5 / float(np.min(self.outer_radii - self.inner_radii))
 
     # ------------------------------------------------------------------ evaluation
     def within_device(self, *, radius_m=None, k=None):
