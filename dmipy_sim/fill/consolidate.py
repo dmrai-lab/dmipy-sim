@@ -9,9 +9,17 @@ to the union as a recertifying merge does (:func:`~dmipy_sim.replay.bank.union_w
 in the weights part they sit in, and a repaired pool's certificate row the union's count with the new pass's
 floor.
 
+The voxel grid is the recipe's, not a shard's: a shard that carries no per-voxel certificate (one a walker wrote,
+which measures no floor) is certified here on the recipe's grid (``--manifest``, else the repository's
+``manifest.json``; ``grid=`` from Python): its walkers binned by start voxel and pool, the split-half floor of each
+(voxel, pool) read from its coefficients (:func:`~dmipy_sim.replay.bank.voxel_certificate`). The shards of the
+layout read the field at the intervals of their own rounds; the layout records the coarsest and its term
+(:func:`~dmipy_sim.replay.bank.charge_field_read`).
+
     python -m dmipy_sim.fill.consolidate --repo OWNER/NAME --shards blocks/disco --out DIR --upload disco
+    python -m dmipy_sim.fill.consolidate --shards DIR_OF_SHARDS --manifest manifest.json --out DIR --blocks 0-3 --id NAME
     python -m dmipy_sim.fill.consolidate --repo OWNER/NAME --out DIR --upload disco --append DIR_OF_SHARDS --pass 3
-    consolidate(shards, out_dir, blocks=...)          # from Python, a directory of shards, nothing uploaded
+    consolidate(shards, out_dir, blocks=..., grid=...)          # from Python, a directory of shards, nothing uploaded
 
 The layout: ``manifest.json`` (the merged meta as :func:`~dmipy_sim.replay.bank.merge_packs` writes it, plus
 ``columnar`` -- the band and mode groups, the per-band variance tables the read predicates use -- and the column
@@ -243,14 +251,15 @@ class Consolidator:
     """The streaming pass: ``add(name, pack)`` per shard in block order, ``checkpoint`` after each, ``finish(id)``
     at the end (the tables, the index, the manifest); ``resume`` picks a checkpoint up."""
 
-    def __init__(self, out_dir, cap_bytes=1e9, uploader=None, scratch=None):
+    def __init__(self, out_dir, cap_bytes=1e9, uploader=None, scratch=None, grid=None):
         self.out, self.cap = out_dir, cap_bytes
+        self.recipe_grid = grid                           # the recipe's voxel grid: certifies a shard that carries none
         self.up = uploader or Uploader(None, None)
         self.scratch = scratch or os.path.join(out_dir, "scratch")
         os.makedirs(os.path.join(out_dir, "columns"), exist_ok=True); os.makedirs(self.scratch, exist_ok=True)
         self.columns = {}; self.scales = {}; self.certs = []; self.index = []; self.done = []
         self.n_rows = 0; self.n_blocks = 0
-        self.meta0 = None; self.ident0 = None; self.fid = []; self.chan = []; self.seeds = []; self.prov = []
+        self.meta0 = None; self.ident0 = None; self.fid = []; self.chan = []; self.reads = []; self.seeds = []; self.prov = []
         self.acc = {"band_sq": None, "band_n": 0, "band_max": None, "path_sq": None, "path_n": 0}
         self.grid = None; self.normalised = []; self.strays = 0; self.band_groups = None; self.path_groups = ()
         self.repaired = None
@@ -274,27 +283,49 @@ class Consolidator:
         self.normalised.append({"shard": name, "trace_residual": sp.get("trace_residual")})
         return meta
 
+    @staticmethod
+    def no_grid(name):
+        return ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel) and no voxel grid is given: the grid is "
+                          "the recipe's (consolidate(grid=...), --manifest), or the shards are packed with voxel_grid=")
+
+    def certify_voxels(self, name, pk):
+        """``pk.meta`` of a shard on the recipe's grid: a shard with a per-voxel certificate must be on that grid; one
+        without is certified here (:func:`~dmipy_sim.replay.bank.voxel_certificate`), and the voxel its walker
+        states (a writer's walker-leading ``voxel_ijk``) is checked against the binning of its start."""
+        from ..replay.bank import _agree, voxel_certificate
+        from ..phantom.grid import Grid
+        meta = pk.meta; pv = (meta.get("fidelity") or {}).get("per_voxel")
+        if pv is not None:
+            if self.recipe_grid is not None and not _agree(Grid.from_meta(pv["grid"]).to_meta(), self.recipe_grid.to_meta()):
+                raise ValueError(f"shard {name}: its per-voxel grid {pv['grid']!r} is not the recipe's {self.recipe_grid.to_meta()!r}")
+            return meta
+        if self.recipe_grid is None:
+            raise self.no_grid(name)
+        stated = pk.arrays.get("voxel_ijk")
+        arrays, pv = voxel_certificate(pk, self.recipe_grid)
+        if stated is not None and np.asarray(stated).shape == (int(meta["walk_params"]["n_walkers"]), 3):
+            ijk, _ = self.recipe_grid.bin(pk.r0)
+            elsewhere = int((np.asarray(stated, np.int64) != ijk).any(axis=1).sum())
+            if elsewhere:                  # a seed on a voxel face, binned into the neighbour once its start is stored
+                log.warning("%s: %d of %d walkers start in another voxel than the one they were seeded for", name, elsewhere, len(ijk))
+            pv["binned_off_stratum"] = elsewhere
+        pk.arrays = {**pk.arrays, **arrays}
+        meta = json.loads(json.dumps(meta)); meta["fidelity"] = dict(meta.get("fidelity") or {}, per_voxel=pv); pk.meta = meta
+        return meta
+
     def add(self, name, pk):
-        from ..replay.bank import _codec_signature, _agree, _spec_identity, _walk_identity, _MEASURED_CHANNEL_KEYS
+        from ..replay.bank import _codec_signature, _agree, _spec_identity, _walk_identity, _envelope_identity, field_read_record, _MEASURED_CHANNEL_KEYS
         from ..replay.compression import read_position_coeffs
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
         meta = self.normalise_path(name, pk, meta)
-        # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid
+        # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
+        # shard's own, else the recipe's)
         ident = dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
-                     substrate=_spec_identity(meta.get("substrate")), replay_envelope=meta.get("replay_envelope"),
-                     grid=(meta["fidelity"].get("per_voxel") or {}).get("grid"), names=sorted(k for k in pk.arrays if k != "band_block"))
-        no_grid = ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel): a layout's shards are packed "
-                             "with voxel_grid=")
-        if self.meta0 is None:
-            if ident["grid"] is None:
-                raise no_grid
-            self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
-            self.grid = Grid.from_meta(ident["grid"])
-            self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
-            pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
-            self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
-        else:
+                     substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
+                     grid=(meta["fidelity"].get("per_voxel") or {}).get("grid") or (None if self.recipe_grid is None else self.recipe_grid.to_meta()),
+                     names=sorted(k for k in pk.arrays if k not in ("band_block", "voxel_ijk", "voxel_certificate")))
+        if self.meta0 is not None:
             for k, v in ident.items():
                 if not _agree(v, self.ident0[k]):
                     where = k
@@ -305,7 +336,14 @@ class Consolidator:
                     raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
                                      "layout are one walk's, on one block and one window table")
         if ident["grid"] is None:
-            raise no_grid
+            raise self.no_grid(name)
+        meta = self.certify_voxels(name, pk)
+        if self.meta0 is None:
+            self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
+            self.grid = Grid.from_meta(ident["grid"])
+            self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
+            pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
+            self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
         ijk, inside = self.grid.bin(pk.r0)
         if not inside.all():
             raise ValueError(f"{name}: {int((~inside).sum())} walkers start outside the certificate grid")
@@ -370,7 +408,9 @@ class Consolidator:
         self.chan.append({c: {k: m.get(k) for k in _MEASURED_CHANNEL_KEYS} for c, m in (meta["compression"].get("channels") or {}).items() if isinstance(m, dict)})
         seed = meta["walk_params"]["seed"]
         self.seeds.append([int(x) for x in seed] if isinstance(seed, (list, tuple)) else int(seed))
-        self.prov.append(dict(id=meta.get("id"), n_walkers=n, shard=name, rounds=(meta.get("provenance") or {}).get("shards")))
+        read = field_read_record(meta); self.reads.append(read)
+        self.prov.append(dict(id=meta.get("id"), n_walkers=n, shard=name, rounds=(meta.get("provenance") or {}).get("shards"),
+                              **({} if read is None else dict(field_read_interval=read["interval"]))))
         self.done.append(name)
 
     # ---- checkpoint and resume
@@ -380,7 +420,7 @@ class Consolidator:
                 c.cur.flush()
         st = dict(done=self.done, n_rows=self.n_rows, n_blocks=self.n_blocks, columns={k: c.state() for k, c in self.columns.items()},
                   column_defs={k: [c.dtype.name, list(c.row_shape)] for k, c in self.columns.items()},
-                  index=self.index, seeds=self.seeds, prov=self.prov, fid=self.fid, chan=self.chan, meta0=self.meta0, ident0=self.ident0,
+                  index=self.index, seeds=self.seeds, prov=self.prov, fid=self.fid, chan=self.chan, reads=self.reads, meta0=self.meta0, ident0=self.ident0,
                   uploaded=list(self.up.done), normalised=self.normalised, band_groups=list(self.band_groups), path_groups=list(self.path_groups),
                   repaired=self.repaired)
         np.savez(os.path.join(self.out, "state.npz"), **{k: (np.asarray(v) if v is not None else np.zeros(0)) for k, v in self.acc.items()},
@@ -394,8 +434,10 @@ class Consolidator:
         from ..phantom.grid import Grid
         st = json.load(open(os.path.join(self.out, "state.json"))); z = np.load(os.path.join(self.out, "state.npz"))
         self.done, self.n_rows, self.n_blocks = st["done"], st["n_rows"], st["n_blocks"]
-        self.index = [tuple(r) for r in st["index"]]; self.seeds, self.prov, self.fid, self.chan = st["seeds"], st["prov"], st["fid"], st["chan"]
+        self.index = [tuple(r) for r in st["index"]]; self.seeds, self.prov, self.fid, self.chan, self.reads = st["seeds"], st["prov"], st["fid"], st["chan"], st["reads"]
         self.meta0, self.ident0 = st["meta0"], st["ident0"]; self.grid = Grid.from_meta(self.ident0["grid"])
+        if self.recipe_grid is None:                          # a pass appended to a layout is certified on the layout's grid
+            self.recipe_grid = self.grid
         self.band_groups, self.path_groups = tuple(st["band_groups"]), tuple(st["path_groups"]); self.repaired = st.get("repaired")
         on_hub = set(st["uploaded"]) | self.up.hub_files()
         for k, (dt, shape) in st["column_defs"].items():
@@ -417,6 +459,7 @@ class Consolidator:
     # ---- the end
     def finish(self, id):
         from safetensors.numpy import save_file
+        from ..replay.bank import charge_field_read, per_voxel_summary
         for c in self.columns.values():
             c.close_part()
         tables = {k: np.concatenate(v) for k, v in self.scales.items()}
@@ -460,7 +503,6 @@ class Consolidator:
                     old = cert[old_of[int(kk)]]; empty = c[j_][:, 0] == 0
                     c[j_][empty] = old[empty]; c[j_][~empty, 0] += old[~empty, 0]
         tables["voxel_certificate"] = c.astype(np.float32)
-        _n, _floor, _err = c[:, :, 0], c[:, :, 1], c[:, :, 2]; _ok = np.isfinite(_floor)
         fid = dict(self.fid[0])
         for k, agg in (("err_max", max), ("floor_max", max), ("noise_floor", max), ("err_surface", max), ("floor_surface", max)):
             vals = [f.get(k) for f in self.fid]
@@ -469,12 +511,7 @@ class Consolidator:
         if all("within_2x_floor" in f for f in self.fid):
             fid["within_2x_floor"] = bool(all(f["within_2x_floor"] for f in self.fid))
         fid.pop("per_family", None)
-        fid["per_voxel"] = dict(grid=self.ident0["grid"], pools=pools, n_voxels=int(len(rows)),
-                                walkers_min=int(_n[_n > 0].min()) if (_n > 0).any() else 0,
-                                floor_max=float(np.nanmax(_floor)) if _ok.any() else None, floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
-                                err_max=float(np.nanmax(_err)) if np.isfinite(_err).any() else None,
-                                within_2x_floor_fraction=(float(np.mean(_err[_ok] <= 2.0 * _floor[_ok])) if _ok.any() else None),
-                                thin_voxels=int(((_n > 0) & (_n < 2)).sum()), shards=len(self.done), recertified=bool(rep))
+        fid["per_voxel"] = per_voxel_summary(self.ident0["grid"], pools, c, shards=len(self.done), recertified=bool(rep))
         comp_meta = json.loads(json.dumps(self.meta0["compression"]))
         for c_, m in (comp_meta.get("channels") or {}).items():
             if isinstance(m, dict):
@@ -490,6 +527,7 @@ class Consolidator:
         meta = dict(self.meta0)
         meta.update(id=id, compression=comp_meta, fidelity=fid, walk_params=dict(self.meta0["walk_params"], n_walkers=self.n_rows, seed=self.seeds),
                     provenance=dict(self.meta0.get("provenance") or {}, shards=self.prov))
+        charge_field_read(meta, self.reads)                    # the blocks' rounds read the field at their own intervals: the layout states the coarsest
         meta["columnar"] = {"band_groups": list(self.band_groups), "path_groups": list(self.path_groups), "sorted_by": ["block", "voxel", "pool"],
                             "band_variance": (self.acc["band_sq"] / self.acc["band_n"]).T.tolist(),
                             "band_variance_max": (None if self.acc["band_max"] is None else self.acc["band_max"].T.tolist()),
@@ -570,14 +608,15 @@ def _fetch_block(b, names, sh, scratch, pass_, read_rpk):
     return merge_packs(paths, id=_block_name(b, names, pass_), overlap="recertify"), paths
 
 
-def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None, cap_bytes=1e9, resume=False):
+def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None, cap_bytes=1e9, resume=False, grid=None):
     """The shards of ``blocks`` (their indices; ``block-NNNN.p<pass>.rpk`` where it exists, else the whole block,
     else the block's round shards merged into the block's pack) from ``shards`` (a directory, or a prefix of
-    ``repo``) into the layout under ``out_dir``, published under ``upload`` on ``repo`` when given. Returns
-    ``(manifest, index)``."""
+    ``repo``) into the layout under ``out_dir``, published under ``upload`` on ``repo`` when given. ``grid`` is the
+    recipe's voxel grid (:func:`~dmipy_sim.fill.recipe.manifest_grid`): the per-voxel certificate of every shard that
+    carries none is measured on it. Returns ``(manifest, index)``."""
     from ..replay.replay import read_rpk
     sh = Shards(shards, repo); up = Uploader(repo, upload)
-    con = Consolidator(out_dir, cap_bytes, up)
+    con = Consolidator(out_dir, cap_bytes, up, grid=grid)
     if resume:
         con.resume()
     names_of = {b: _shard_names(b, sh, pass_) for b in blocks}
@@ -630,7 +669,7 @@ def append(shards_dir, out_dir, *, id, pass_, repo=None, upload=None, cap_bytes=
                 continue
             w[sel] = f_new / n_new
         pk.arrays["spin_weights"] = w.astype(np.float32)
-        repaired |= {int(k) for k in np.ravel_multi_index(tuple(np.asarray(pk.arrays["voxel_ijk"], np.int64).T), tuple(con.grid.shape))}
+        repaired |= {int(k) for k in np.unique(vox)}
         con._pending = getattr(con, "_pending", []) + [(name, pk)]
     # the old fractions, read from the weights parts once, then every new row's weight set to the union's
     man_old = _manifest_of(con, repo, upload)
@@ -715,6 +754,8 @@ def main():
     ap.add_argument("--blocks", default=None, help="'a-b' or a comma list of block indices (default: 0..n-blocks-1)"); ap.add_argument("--n-blocks", type=int, default=None)
     ap.add_argument("--pass", dest="pass_", type=int, default=1); ap.add_argument("--part-bytes", type=float, default=1e9)
     ap.add_argument("--resume", action="store_true"); ap.add_argument("--id", required=True)
+    ap.add_argument("--manifest", default=None, help="the recipe's manifest.json (its voxel grid certifies the shards that carry none); "
+                    "default with --repo: the repository's")
     ap.add_argument("--append", default=None, help="a directory of a later pass's shards to append to the layout under --out")
     a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -722,13 +763,22 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if a.append:
         append(a.append, a.out, id=a.id, pass_=a.pass_, repo=a.repo, upload=a.upload, cap_bytes=a.part_bytes); return
+    grid = None
+    if a.manifest or a.repo:
+        from .recipe import manifest_grid
+        path = a.manifest
+        if path is None:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(a.repo, "manifest.json", repo_type="dataset")
+        grid = manifest_grid(json.load(open(path)))
     if a.blocks is None:
         blocks = list(range(a.n_blocks))
     elif "-" in a.blocks:
         lo, hi = a.blocks.split("-"); blocks = list(range(int(lo), int(hi) + 1))
     else:
         blocks = [int(x) for x in a.blocks.split(",")]
-    consolidate(a.shards, a.out, blocks=blocks, id=a.id, pass_=a.pass_, repo=a.repo, upload=a.upload, cap_bytes=a.part_bytes, resume=a.resume)
+    consolidate(a.shards, a.out, blocks=blocks, id=a.id, pass_=a.pass_, repo=a.repo, upload=a.upload, cap_bytes=a.part_bytes, resume=a.resume,
+                grid=grid)
 
 
 if __name__ == "__main__":
