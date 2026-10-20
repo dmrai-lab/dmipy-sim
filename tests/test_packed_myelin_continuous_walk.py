@@ -11,7 +11,7 @@ import dmipy_sim as d
 from dmipy_sim import ScannerSequence
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack, grid_periodic_of
-from dmipy_sim.replay.trajectories import replay, unwrap_periodic
+from dmipy_sim.replay.trajectories import replay
 from dmipy_sim.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
@@ -36,6 +36,16 @@ def _fold(pos):
     return out
 
 
+def _unwrap(folded):
+    """The folded positions made continuous again in-plane: each block's displacement taken as its minimal image (a
+    step is far shorter than half the cell) and re-integrated from the start."""
+    out = np.array(folded, np.float64, copy=True)
+    dx = np.diff(out[..., :2], axis=-2)
+    dx -= L * np.round(dx / L)
+    out[..., 1:, :2] = out[..., :1, :2] + np.cumsum(dx, axis=-2)
+    return out
+
+
 def _jumps(pos):
     return int((np.abs(np.diff(np.asarray(pos)[..., :2], axis=-2)) > L / 2).sum())
 
@@ -53,65 +63,59 @@ def cwalk(pm):
     return dataclasses.replace(w, spec=spec_without_source(w.spec))
 
 
-@pytest.fixture(scope="module")
-def walk(cwalk):
-    """The raw subset at the block ends: the dense oracle of the continuous path."""
-    return cwalk.saves()
-
-
 def _assert_continuous(pos):
     pos = np.asarray(pos)
     folded = _fold(pos)
     assert _jumps(folded) > 50, "too few walkers crossed a cell face for the check to mean anything"
     assert _jumps(pos) == 0, "a saved in-plane step is longer than half the cell: the path is folded"
-    ref = unwrap_periodic(folded, L)                          # the folded convention, unwrapped after the fact,
+    ref = _unwrap(folded)                                     # the folded convention, unwrapped after the fact,
     ref = ref + (pos[:, :1, :] - ref[:, :1, :])               # from the walk's own start (a seed on a face folds)
     np.testing.assert_allclose(pos, ref, rtol=0, atol=1e-10)
     e2e = lambda p: np.var(p[:, -1, :] - p[:, 0, :], axis=0)
     np.testing.assert_allclose(e2e(pos), e2e(ref), rtol=1e-5)
 
 
-def test_a_packed_myelinated_walk_records_the_continuous_path(walk):
-    _assert_continuous(walk.positions)
+def test_a_packed_myelinated_walk_records_the_continuous_path(cwalk):
+    _assert_continuous(cwalk.raw_positions)
 
 
 def test_a_packed_myelinated_walk_with_binding_records_the_continuous_path():
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, _cell(), L, N_max=4, D_intra=D0, D_extra=D0)
     w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=1, require_gpu=False, kappa_MT=5e-5, dwell_time=1e-3,
-                                equilibrate_binding="off", raw_subset=300).saves()
+                                equilibrate_binding="off", raw_subset=300)
     assert w.has_binding
-    _assert_continuous(w.positions)
+    _assert_continuous(w.raw_positions)
 
 
 def test_a_packed_cylinders_walk_records_the_continuous_path():
     pc = d.PackedCylinders(np.array([1e-6] * 3), _cell(), L)
-    w = d.simulate_trajectories(300, D0, pc, 8e-3, 2e-4, seed=0, require_gpu=False, tiers="all", raw_subset=300).saves()
-    _assert_continuous(w.positions)
+    w = d.simulate_trajectories(300, D0, pc, 8e-3, 2e-4, seed=0, require_gpu=False, tiers="all", raw_subset=300)
+    _assert_continuous(w.raw_positions)
 
 
-def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(cwalk, walk):
+def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(cwalk):
     """A pack of the walk (the bands of the continuous path) replays an in-plane PGSE as the direct replay of the
     continuous trajectory at the block ends does; the folded trajectory replays something else (the jumps act as
     displacements)."""
-    n_t = walk.positions.shape[1]
+    n_t = cwalk.raw_positions.shape[1]
     pk = _float_pack(cwalk, id="test/pm-continuous", envelope=ENV, license="x", citation="x")
-    assert pk.n_t == n_t and pk.dt == pytest.approx(walk.dt)
+    assert pk.n_t == n_t and pk.dt == pytest.approx(cwalk.h)
     G = np.zeros((1, n_t, 3)); G[0, 2:12, 0] = 0.4; G[0, 22:32, 0] = -0.4
-    S_pack = pk.replay(ScannerSequence(G=G, dt=walk.dt))[0]
-    S_direct = replay(walk.positions, walk.dt, G, walk.dt)[0]
-    S_folded = replay(_fold(walk.positions), walk.dt, G, walk.dt)[0]
+    S_pack = pk.replay(ScannerSequence(G=G, dt=cwalk.h))[0]
+    S_direct = replay(cwalk.raw_positions, cwalk.h, G, cwalk.h)[0]
+    S_folded = replay(_fold(cwalk.raw_positions), cwalk.h, G, cwalk.h)[0]
     assert abs(S_pack - S_direct) < 5e-4          # the bands' series against the path through the saves (3.4e-4 measured)
     assert abs(S_folded - S_direct) > 20 * abs(S_pack - S_direct) and abs(S_folded - S_direct) > 0.01
 
 
-def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
+def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, cwalk):
     """The grid is one period of the field: a point and its images read the same field, through the grid and
     through the walk's own read -- a walker outside the primary cell has the modes of its image's field, and its
     pack's field tier replays them; a single cylinder's grid is a box and declares no period."""
     fg = field_grid_of(pm, res=0.2e-6, include_aniso=False)
     assert fg.periodic == (True, True, True)
     assert field_grid_of(d.MyelinatedCylinder(1e-6, 1.4e-6, (0, 0, 1), D0, D0), res=0.2e-6).periodic == (False,) * 3
-    p = _fold(walk.positions[:, -1, :]).astype(float)
+    p = _fold(cwalk.raw_positions[:, -1, :]).astype(float)
     base = fg.channels(p)
     for shift in ([L, 0, 0], [0, -L, 0], [-2 * L, 3 * L, 7e-6]):
         np.testing.assert_allclose(fg.channels(p + np.array(shift)), base, rtol=0, atol=1e-9 * np.abs(base).max())

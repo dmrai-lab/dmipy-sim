@@ -338,7 +338,7 @@ def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
         build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, envelope=_lean_env(), license="x", citation="x")
     with pytest.raises(TypeError, match="CoefficientWalk"):       # a walk of saves is not a pack's input
         build_replay_pack(d.simulate_trajectories(50, D0, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False,
-                                                  raw_subset=50).saves(), id="x", K=4, license="x", citation="x")
+                                                  raw_subset=50), id="x", K=4, license="x", citation="x")
     with pytest.raises(ValueError, match="measured"):             # a measured certificate needs the raw subset
         build_replay_pack(walk, id="x", K=8, fidelity="measured", license="x", citation="x")
 

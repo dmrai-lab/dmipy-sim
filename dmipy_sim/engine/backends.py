@@ -639,25 +639,26 @@ def adaptive_struct_fields(plan, R_max):
                steps_c=steps_c, step_l_c=step_l_c, reach_c=reach_c)
 
 
-def request_struct_fields(*, n_t, sub_steps, step_l, kappa_over_D, record, count, budget):
-    """The backend's ``DscRequest`` fields EXCEPT ``seed`` (a batch's own): the saves, the physics steps per save,
+def request_struct_fields(*, n_blocks, sub_steps, step_l, kappa_over_D, record, count, budget):
+    """The backend's ``DscRequest`` fields EXCEPT ``seed`` (a batch's own): the walk's ``n_blocks`` blocks (the
+    struct's ``n_t`` counts their ends, ``n_blocks + 1``), the physics steps per block,
     the step length's scale ``step_l = sqrt(6 D dt_sim)`` with the step law's two atoms and the long one's
     probability (:mod:`dmipy_sim.math.step_law`: a kernel multiplies the scale by the atom it draws and defines
     no length of its own), the membrane, what is recorded and counted, and the bounce budget."""
     from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG
-    return dict(n_t=int(n_t), sub_steps=int(sub_steps), step_l=_f32(step_l),
+    return dict(n_t=int(n_blocks) + 1, sub_steps=int(sub_steps), step_l=_f32(step_l),
                atom_short=_f32(PAIR_SHORT), atom_long=_f32(PAIR_LONG), p_long=_f32(PAIR_P_LONG),
                kappa_over_D=_f32(kappa_over_D), record=int(bool(record)), count=int(bool(count)), budget=int(budget))
 
 
-def crop_far_grid(values, origin_m, spacing_m, r0, n_blocks, block_h, diffusivity):
-    """The far grid cropped to what a batch of starts ``r0`` can reach: the starts' bounding box plus eight
-    sigma of the walk's excursion and three nodes, so a shard of a large substrate uploads a crop, never the
-    whole grid. Returns ``(crop.view(uint16), far_dims, far_origin)``."""
+def crop_far_grid(values, origin_m, spacing_m, r0, T, diffusivity):
+    """The far grid cropped to what a batch of starts ``r0`` can reach over a walk of ``T`` seconds: the starts'
+    bounding box plus eight sigma of the walk's excursion, ``8 sqrt(2 D T)``, and three nodes, so a shard of a large
+    substrate uploads a crop, never the whole grid. Returns ``(crop.view(uint16), far_dims, far_origin)``."""
     values = np.asarray(values)
     N = np.asarray(values.shape[:3])
     h = float(spacing_m)
-    T = float(block_h) * int(n_blocks)
+    T = float(T)
     margin = 8.0 * math.sqrt(2.0 * float(diffusivity) * T) + 3.0 * h
     r0 = np.asarray(r0, np.float64)
     origin = np.asarray(origin_m, np.float64)
@@ -688,7 +689,7 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
     r0 = np.ascontiguousarray(r0, np.float32); n = int(r0.shape[0])
     struct, arrays = strands_struct_fields(g)
     lines = dict(engine="strands", n=n)
-    lines.update(request_struct_fields(n_t=int(request.n_blocks) + 1, sub_steps=request.sub_steps,
+    lines.update(request_struct_fields(n_blocks=int(request.n_blocks), sub_steps=request.sub_steps,
                                        step_l=float(np.sqrt(6.0 * request.diffusivity * request.dt_sim)),
                                        kappa_over_D=request.kappa_over_D, record=request.record, count=request.count_walls,
                                        budget=(int(g.bounce_loop.budget) if g.bounce_loop is not None else 0)))
@@ -706,7 +707,7 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
         far_dims, far_origin = [0, 0, 0], [0.0, 0.0, 0.0]
         if basis.far is not None:
             crop, far_dims, far_origin = crop_far_grid(basis.far.values, basis.far.origin_m, basis.far.spacing_m,
-                                                       r0, int(request.n_blocks) + 1, request.block_h, request.diffusivity)
+                                                       r0, request.T, request.diffusivity)
             arrays["far.u16"] = crop
         lines["field_far_dims"] = far_dims; lines["field_far_origin"] = far_origin
     (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))

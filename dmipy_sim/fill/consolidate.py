@@ -293,7 +293,13 @@ class Consolidator:
         else:
             for k, v in ident.items():
                 if not _agree(v, self.ident0[k]):
-                    raise ValueError(f"shard {name} differs in {k}: {self.ident0[k]!r} vs {v!r}")
+                    where = k
+                    if isinstance(v, dict) and isinstance(self.ident0[k], dict):      # name the key that differs
+                        diff = sorted(set(v) ^ set(self.ident0[k]) | {j for j in set(v) & set(self.ident0[k])
+                                                                       if not _agree(v[j], self.ident0[k][j])})
+                        where = ", ".join(f"{k}.{j}" for j in diff) or k
+                    raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
+                                     "layout are one walk's, on one block and one window table")
         ijk, inside = self.grid.bin(pk.r0)
         if not inside.all():
             raise ValueError(f"{name}: {int((~inside).sum())} walkers start outside the certificate grid")

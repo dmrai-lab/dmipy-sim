@@ -102,9 +102,9 @@ def _replay_case(request):
     G = np.asarray(wf.G_eff, np.float32)       # the effective gradient the kernel integrates
     chi = np.ones(n_t)
 
-    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False, raw_subset=n).saves()
-    traj, dt_traj, sub_steps, dt_sim = out.positions, out.dt, out.sub_steps, out.dt_sim
-    dlog, comp = out.boundary_local_time, out.compartment
+    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False, raw_subset=n)
+    traj, dt_traj, sub_steps, dt_sim = out.raw_positions, out.h, out.sub_steps, out.dt_sim
+    dlog, comp = out.raw_boundary, out.raw_compartment
     if name != "free":
         assert sub_steps > 1, (f"[{name}] the producer took {sub_steps} sub-step; this parity "
                                f"must exercise the shared sub-step dispatch")

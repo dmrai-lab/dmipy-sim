@@ -22,7 +22,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import (simulate_bloch, simulate_trajectories, simulate_mt_trajectories,
                        replay_bloch, replay_bloch_jax,
-                       finite_180_longitudinal_dwell, pathway_sign_se,
+                       finite_180_longitudinal_dwell,
                        SusceptibilitySources, mt)
 from dmipy_sim.replay.trajectories import replay
 
@@ -42,8 +42,8 @@ def test_bloch_replay_matches_forward_spin_echo():
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
 
     fwd = simulate_bloch(N, D, replace(wf, rf=rf), geom, T2=T2, seed=seed, require_gpu=False)
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1).saves()
-    traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    traj, dt_tr, subs = walk.raw_positions, walk.h, walk.sub_steps
     assert subs == 1                                       # bit-identical walk to forward
     rep = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
     assert abs(np.real(fwd[0]) - np.real(rep[0])) < 5e-3
@@ -57,8 +57,8 @@ def test_susceptibility_replay_gre_and_se():
     TE, dt = 15e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1).saves()
-    traj, dt_tr, subs = walk.positions, walk.dt, walk.sub_steps
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    traj, dt_tr, subs = walk.raw_positions, walk.h, walk.sub_steps
     assert subs == 1
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
@@ -88,14 +88,14 @@ def test_scalar_susceptibility_replay_eps_p_refocus():
     TE, dt = 15e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
     geom = d.Sphere(radius=8e-6)
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1).saves()
-    traj, dt_tr = walk.positions, walk.dt
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    traj, dt_tr = walk.raw_positions, walk.h
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
     Z = np.zeros((1, n_t, 3)); chi = np.ones((1, n_t))
     gre = replay(traj, dt_tr, Z, dt, chi_perp=chi,
                         susceptibility=prov, eps_P=None)
-    eps = pathway_sign_se(n_t, dt, TE)[None, :]
+    eps = np.where(np.arange(n_t) * dt < 0.5 * TE, 1.0, -1.0)[None, :]      # the refocusing flips the static phase
     se = replay(traj, dt_tr, Z, dt, chi_perp=chi,
                        susceptibility=prov, eps_P=eps)
     assert se[0] > gre[0] + 0.1                    # SE refocuses the static dephasing
@@ -119,8 +119,8 @@ def test_mt_replay_zspectrum_matches_oracle():
     oracle = mt.mt_z_spectrum(offsets, w1_hz=w1_hz, t_sat=t_sat, T1a=T1, T2a=T2,
                               T1b=T1b, T2b=T2b, k_f=k_f, k_r=k_r)
     walk = simulate_mt_trajectories(
-        N, D, geom, t_sat, dt, kappa_MT, dwell, seed=seed, require_gpu=False, raw_subset=N).saves()
-    traj, dt_tr, subs, bfrac = walk.positions, walk.dt, walk.sub_steps, walk.bound.astype(float)
+        N, D, geom, t_sat, dt, kappa_MT, dwell, seed=seed, require_gpu=False, raw_subset=N)
+    traj, dt_tr, subs, bfrac = walk.raw_positions, walk.h, walk.sub_steps, walk.raw_bound.astype(float)
     # the equilibrated occupancy should track f_b = k_f/(k_f+k_r)
     assert abs(float(np.asarray(bfrac, float).mean()) - k_f / (k_f + k_r)) < 0.03
 
@@ -162,7 +162,7 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
                                seed=seed, require_gpu=False,
                                kappa_MT=5e-5, dwell_time=3e-3, raw_subset=N)
     assert on.has_binding
-    bf = np.asarray(on.saves().bound, dtype=float)
+    bf = np.asarray(on.raw_bound, dtype=float)
     assert bf.shape == (N, base.n_blocks + 1)                          # (n_walkers, block ends)
     assert bf.min() >= 0.0 and bf.max() <= 1.0 and bf.mean() > 0.0
 
@@ -175,8 +175,8 @@ def test_bloch_replay_jax_matches_numpy():
     n_t = int(round(TE / dt)) + 1
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = 0.015
     geom, T2 = d.Sphere(radius=8e-6), 100e-3
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1).saves()
-    traj, dt_tr = walk.positions, walk.dt
+    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    traj, dt_tr = walk.raw_positions, walk.h
     rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0),
           RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
     num = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
@@ -192,12 +192,3 @@ def test_finite_180_longitudinal_dwell():
     assert finite_180_longitudinal_dwell(0.0, tau) == pytest.approx(0.0)
     phi = np.linspace(0, 2 * np.pi, 100_000, endpoint=False)
     assert finite_180_longitudinal_dwell(phi, tau).mean() == pytest.approx(tau / 4, rel=1e-3)
-
-
-def test_pathway_sign_se():
-    """SE pathway sign flips +1 -> -1 at TE/2."""
-    n_t, dt, TE = 101, 1e-4, 10e-3
-    eps = pathway_sign_se(n_t, dt, TE)
-    t = np.arange(n_t) * dt
-    assert np.all(eps[t < TE / 2] == 1.0)
-    assert np.all(eps[t >= TE / 2] == -1.0)

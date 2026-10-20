@@ -12,7 +12,7 @@ from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
 from dmipy_sim.engine.backends import Backend, write_request_directory
 from dmipy_sim.fill import Recipe
 from dmipy_sim.replay.bank import storage_band_hz
-from dmipy_sim.fill.kit import _n_t_dt, _pool_geometry, _sha256, assemble_request
+from dmipy_sim.fill.kit import _block_record, _pool_geometry, _sha256, assemble_request
 
 
 class _Captured(Exception):
@@ -130,7 +130,7 @@ def test_kit_template_holds_the_scanner_class_band_not_the_save_grids_nyquist(fi
     rc = Recipe(hub)
     ctx = rc.context(); g = ctx.tests; W = rc.man["walk"]
     out = rc.kit(tmp_path / "kit")
-    n_t, dt = _n_t_dt(rc)
+    dt = _block_record(rc)["h"]
     band = storage_band_hz(W["scanner"])
     for pid in g.seeded:
         pool = g.pools[pid]

@@ -75,7 +75,7 @@ def _seq(n_t=N_T, TE=None):
 def test_the_layout_and_the_table(packs):
     w1, w2, one, two = packs
     assert one.n_windows == 1 and one.windows == dict(n=1, T=pytest.approx(T), walks=[dict(first=0, last=0, seed=0)])
-    assert two.n_windows == 2 and two.windows["T"] == pytest.approx(0.01) and two._window_n_t == 21
+    assert two.n_windows == 2 and two.windows["T"] == pytest.approx(0.01) and two.T_window == pytest.approx(0.01)
     assert two.n_t == N_T and "n_t" not in two.meta["compression"] and two.K == 19
     assert {k: two.block[k] for k in ("h", "m", "precision", "n_blocks", "rule")} == dict(
         h=pytest.approx(DT), m=w2.m, precision="float32", n_blocks=40, rule="given")

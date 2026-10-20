@@ -49,7 +49,7 @@ def test_a_walk_states_its_own_band_and_a_walk_of_saves_is_no_pack_input():
     """A walk that accumulated its bands states its own K and packs at it, with no class and no band stated; a walk
     kept at its saves (the raw subset's view) is no producer output and is refused by name."""
     with pytest.raises(TypeError, match="CoefficientWalk"):
-        build_replay_pack(_walk(raw_subset=300).saves(), id="t", license="x", citation="x")
+        build_replay_pack(_walk(raw_subset=300), id="t", license="x", citation="x")
     w = _walk()
     assert build_replay_pack(w, id="t", license="x", citation="x").K == w.K
 

@@ -91,8 +91,7 @@ def replay(
     positions and adding ``γ·dt·Σ_t ε_P(t)·ΔBz(r(t))`` to the gradient phase.  The
     provider bakes in B0 / fibre orientation / χ, so one walk replays any field by
     re-evaluating a different provider (no re-simulation).  ``eps_P`` is the pathway
-    sign for spin-echo refocusing (``+1`` before the 180° at ``TE/2``, ``−1`` after —
-    see :func:`pathway_sign_se`); pass ``eps_P=None`` for a gradient-echo / FID (no
+    sign for spin-echo refocusing (``+1`` before the 180° at ``TE/2``, ``−1`` after); pass ``eps_P=None`` for a gradient-echo / FID (no
     sign flip) and ``eps_P`` zeroed across the mixing time for PGSTE storage.
 
     NOTE (public vs private): the private engine also carried a packed-myelin phasor
@@ -267,7 +266,7 @@ def replay(
 
     # ── Susceptibility off-resonance phase (opt-in, provider-driven) ────────────
     # phi_susc[m,w] = γ · dt · Σ_t ε_P[m,t] · ΔBz(r[w,t]).  The 180° refocusing of the
-    # static field is handled by the ε_P sign flip at TE/2 (see pathway_sign_se); with
+    # static field is handled by the ε_P sign flip at TE/2; with
     # eps_P=None it defaults to chi_r (FID / gradient-echo: no sign flip, so any static
     # field dephases for the full readout — WARNING: do not use for a spin echo).
     if susceptibility is not None:

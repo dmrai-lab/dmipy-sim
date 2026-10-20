@@ -36,10 +36,21 @@ def _quiet(fn, *a, **kw):
         return fn(*a, **kw)
 
 
+def _dst1_to_continuous(K, n_t, T):
+    """Per band the factor taking the orthonormal DST-I band of a bridge sampled at ``n_t`` block ends to its continuous
+    band at block order 0 (the ``m = 0`` exactness relation): summation by parts gives the DST-I band ``sqrt(2 / N) /
+    (2 sin(pi k / 2N)) c_k`` with ``c_k`` the cosine projection of the increments between block ends at their midpoints
+    (``N = n_t - 1``), exactly; the continuous band of the same ``c_k`` is :func:`cosine_band_scale`. ``sqrt(h)`` times
+    ``sinc(k / 2N)``. The in-test reference, never a reader: no pack is on the block ends."""
+    N = int(n_t) - 1
+    k = np.arange(1, int(K) + 1, dtype=np.float64)
+    return cx.cosine_band_scale(K, T) * 2.0 * np.sin(np.pi * k / (2.0 * N)) / np.sqrt(2.0 / N)
+
+
 # ------------------------------------------------------------------------------------------------ the basis itself
 def test_the_order_zero_table_is_the_scaled_dst1_and_the_variances_their_limit():
     """The block table's order-0 projection of a path's increments, turned into bands (``cosine_band_scale``), IS
-    ``sqrt(h) sinc(pi k / 2N)`` times the orthonormal DST-I of the bridge at the block ends (``_dst1_to_continuous``);
+    ``sqrt(h) sinc(pi k / 2N)`` times the orthonormal DST-I of the bridge at the block ends (:func:`_dst1_to_continuous`);
     the free bridge's DST-I variances, read in the continuous normalisation, tend to ``2 D T^2 / (pi k)^2``; and the
     bands carry together the closed-form bridge variance."""
     from scipy.fft import dst
@@ -53,12 +64,12 @@ def test_the_order_zero_table_is_the_scaled_dst1_and_the_variances_their_limit()
     u = x - (x[:, :1] + (x[:, -1:] - x[:, :1]) * tau[None, :, None])
     ref = dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
     k = np.arange(1, K + 1)
-    np.testing.assert_allclose(cx._dst1_to_continuous(K, N + 1, T), np.sqrt(h) * np.sinc(k / (2.0 * N)), rtol=1e-12)
-    assert np.abs(beta - cx._dst1_to_continuous(K, N + 1, T)[None, :, None] * ref).max() <= 1e-12 * np.abs(beta).max()
+    np.testing.assert_allclose(_dst1_to_continuous(K, N + 1, T), np.sqrt(h) * np.sinc(k / (2.0 * N)), rtol=1e-12)
+    assert np.abs(beta - _dst1_to_continuous(K, N + 1, T)[None, :, None] * ref).max() <= 1e-12 * np.abs(beta).max()
     assert np.abs(c[:, 0] - (x[:, -1] - x[:, 0])).max() <= 1e-12 * np.abs(x).max()          # k = 0: the displacement
     D, n = 2e-9, 20000
     dst_var = D * (T / n) / (2.0 * np.sin(np.pi * np.arange(1, 9) / (2 * n)) ** 2)            # the DST-I's free variances
-    ratio = dst_var * cx._dst1_to_continuous(8, n + 1, T) ** 2 / cx.band_variances(8, T, D)
+    ratio = dst_var * _dst1_to_continuous(8, n + 1, T) ** 2 / cx.band_variances(8, T, D)
     assert np.abs(ratio - 1).max() < 1e-6
     G = rng.normal(size=(2, 38, 3))
     Wb = cx.band_projection(G, T / 37, T, 20000)[:, 2:]
@@ -212,8 +223,7 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
     np.testing.assert_allclose(cw.raw_positions[:, -1], cw.position_coeffs[:200, 0, 0] + cw.position_coeffs[:200, 0, 1],
                                rtol=0, atol=1e-12)
     np.testing.assert_array_equal(cw.position_coeffs[:, :, :2], walks["z"].position_coeffs[:, :, :2])
-    sv = cw.saves()
-    assert sv.positions.shape == (200, 101, 3) and sv.dt == pytest.approx(1e-4)
+    assert cw.h == pytest.approx(1e-4)
     pk = build_replay_pack(cw, id="t/derived", license="x", citation="x")
     fid = pk.fidelity
     assert fid["certified"] == "measured" and fid["measured_by"] == "walk_free_terms" and "basis" not in pk.meta["compression"]
@@ -295,8 +305,7 @@ def test_what_a_walk_does_not_carry_is_refused_by_name():
     cw = _quiet(d.simulate_trajectories, 50, 2e-9, g, 0.2, 2e-3, require_gpu=False, K=8, sub_steps=2)
     with pytest.raises(ValueError, match="window_T"):
         build_replay_pack(cw, id="t/x", license="x", citation="x", window_T=0.05)
-    with pytest.raises(ValueError, match="raw_subset"):
-        cw.saves()
+    assert cw.raw_positions is None                                    # no raw subset asked for, none kept
 
 
 def test_the_contact_is_the_gated_integral():
@@ -309,7 +318,8 @@ def test_the_contact_is_the_gated_integral():
     assert "n_t" not in meta
     np.testing.assert_allclose(cx.surface_logweight_bridge(arrays, meta, 2.0), 2.0 * (e - a), rtol=1e-6)
     gate = np.r_[np.ones(50), np.zeros(51)]                                                    # on over [0, T/2]
-    S, tau = cx.saves_basis(n_t, 50, 51, K, T=T)
-    B_half = a + (e - a) * tau[0] + (bands @ S)[:, 0]
+    B_half = cx.local_time_at(arrays, meta, [T / 2])[:, 0]
+    S, tau = cx.bridge_basis([T / 2], K, T)
+    np.testing.assert_allclose(B_half, a + (e - a) * tau[0] + (bands @ S)[:, 0], rtol=1e-6, atol=1e-14)
     np.testing.assert_allclose(cx.surface_logweight_bridge(arrays, meta, 1.0, gate, T / (n_t - 1)), B_half - a,
                                rtol=1e-5, atol=1e-14)

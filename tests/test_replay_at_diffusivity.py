@@ -146,7 +146,8 @@ def test_nothing_is_decoded_on_the_way(free, monkeypatch):
 
     def boom(*a, **k):
         raise AssertionError("a track was decoded")
-    monkeypatch.setattr(compression, "decode_boundary_bridge", boom)
+    monkeypatch.setattr(compression, "local_time_at", boom)
+    monkeypatch.setattr(compression, "positions_at", boom)
     monkeypatch.setattr(compression, "decode_occupancy", boom)
     monkeypatch.setattr(rp.ReplayPack, "positions", boom)
     pk_d.replay(seq, tissue=Tissue(D=2 * D0))

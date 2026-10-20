@@ -20,6 +20,7 @@ from dmipy_sim.replay._replay_kernel import bin_gate
 from dmipy_sim.acquisition.epg import pathway_weight
 from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
+from tests.conftest import dense_relaxation_logweight
 
 D0 = 2e-9
 
@@ -41,7 +42,7 @@ def _dense_logweights(pk, seq, T2, T1, rho2):
     active = bin_gate(np.ones(chi_wf.shape[0]), seq.dt, n_t, dt)[0]; chi = bin_gate(chi_wf, seq.dt, n_t, dt)[0]
     comp = _cx.occupancy_at(pk.arrays, next(c for c in ch["compartment"]["columns"] if c["name"] == "comp"),
                             np.arange(n_t) * dt)                                    # the pool at every block end
-    lw = _cx.relaxation_logweight(comp, T2, T1, dt, chi, active)
+    lw = dense_relaxation_logweight(comp, T2, T1, dt, chi, active)
     meta = dict(ch["boundary_local_time"])
     bands = _cx.bridge_bands(pk.arrays, meta)
     t = np.minimum(np.arange(chi_wf.shape[0]) * float(seq.dt), pk.T_window)
@@ -117,9 +118,9 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
 
 
 def test_no_route_decodes_a_track_or_a_trajectory(field_pack, monkeypatch):
-    """With the path channel present, T2, rho2 and the field replay without decoding anything to the save grid."""
+    """With the path channel present, T2, rho2 and the field replay without reading any stored function at instants."""
     pk = field_pack
-    for name in ("decode_occupancy", "decode_boundary_bridge"):
+    for name in ("decode_occupancy", "local_time_at", "positions_at"):
         monkeypatch.setattr(_cx, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"{name} was called")))
     monkeypatch.setattr(ReplayPack, "positions", lambda self: (_ for _ in ()).throw(AssertionError("positions() was decoded")))
     seq = _seqmod.pgse([[1, 0, 0]], 1e-4, 3e-4, bvalues=[5e8], TE=6e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)

@@ -12,6 +12,7 @@ import pytest
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.coefficient_walk import EventList, events_at_instants
 from dmipy_sim.constants import GAMMA
+from tests.conftest import dense_relaxation_logweight
 
 
 # --------------------------------------------------------------- position bands
@@ -51,7 +52,7 @@ def test_mode_space_phi_is_the_held_waveform_against_the_stored_bridge():
 
 
 def test_the_bridge_read_at_instants_is_its_series():
-    """``decode_bridge_dst`` reads the stored bridge at ``n_t`` instants of the window: the chord plus the sine series."""
+    """``positions_at`` reads the stored bridge at instants of the window: the chord plus the sine series."""
     rng = np.random.default_rng(2)
     n_w, K, n_t, T = 20, 12, 41, 0.02
     C = _bands(rng, n_w, K, T)
@@ -59,7 +60,7 @@ def test_the_bridge_read_at_instants_is_its_series():
     t = np.linspace(0.0, T, n_t)
     k = np.arange(1, K + 1)
     ref = C[:, None, 0] + C[:, None, 1] * (t / T)[None, :, None] + np.einsum("wkc,kt->wtc", C[:, 2:], np.sqrt(2.0 / T) * np.sin(np.pi * np.outer(k, t) / T))
-    npt.assert_allclose(cx.decode_bridge_dst(arrays, dict(K=K, T=T), n_t=n_t), ref, rtol=1e-10, atol=1e-18)
+    npt.assert_allclose(cx.positions_at(arrays, dict(T=T), t), ref, rtol=1e-10, atol=1e-18)
 
 
 # --------------------------------------------------------------- the contact bridge
@@ -195,7 +196,7 @@ def test_relaxation_on_the_runs_is_exact_at_the_event_instants():
     assert np.abs(got - dense).max() < 2e-3 * np.abs(dense).max()                      # the fine grid's resolution
     a1, m1 = cx.encode_static_occupancy(start)
     npt.assert_allclose(cx.relaxation_logweight_runs(a1, m1["columns"][0], T2, T1, gate, on, t1=T),
-                        cx.relaxation_logweight(np.repeat(start[:, None], n_g, axis=1), T2, T1, dt_g, chi, act), rtol=1e-12)
+                        dense_relaxation_logweight(start, T2, T1, dt_g, chi, act), rtol=1e-12)
 
 
 def test_c1_rejects_a_pre_columns_or_rle_pack_loudly():

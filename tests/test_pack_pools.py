@@ -34,8 +34,8 @@ def test_a_packed_cell_packs_both_pools_and_replays_to_the_trajectories():
     mixed = (f_intra * pack.replay(seq, compartment=1, complex_signal=True)
              + (1 - f_intra) * pack.replay(seq, compartment=0, complex_signal=True))
     assert np.allclose(pack.replay(seq, complex_signal=True), mixed, atol=1e-6), "every walker counts once, at its pool's water"
-    sv = walk.saves()
-    raw = np.asarray(replay(np.asarray(sv.positions), float(sv.dt), np.asarray(seq.G_eff), float(seq.dt)))
+    sv = walk
+    raw = np.asarray(replay(np.asarray(sv.raw_positions), float(sv.h), np.asarray(seq.G_eff), float(seq.dt)))
     real = np.real(pack.replay(seq, complex_signal=True))          # the raw replay is the cosine mean: compare like with like
     assert np.allclose(real, raw, atol=2e-2), (real, raw)
 

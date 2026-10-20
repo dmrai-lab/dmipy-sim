@@ -248,6 +248,20 @@ def pack():
     return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
 
 
+def dense_relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi, active):
+    """The relaxation log-weight of labels read on a block grid ``dt`` apart, ``comp`` ``(n_w, n)`` (or ``(n_w,)``, held):
+    ``-dt sum_t (chi_t r2(comp_t) + (active_t - chi_t)^+ r1(comp_t))`` with ``chi`` and ``active`` the gate and the
+    acquisition's extent binned there (0 at the first block end, which ends no block). The dense oracle of the runs a
+    pack's occupancy is relaxed over (``compression.relaxation_logweight_runs``)."""
+    chi = np.asarray(chi, np.float64).reshape(-1)
+    comp = np.asarray(comp).astype(np.int64)
+    if comp.ndim == 1:
+        comp = np.repeat(comp[:, None], chi.shape[0], axis=1)
+    r2, r1 = 1.0 / np.asarray(T2_per_comp, np.float64), 1.0 / np.asarray(T1_per_comp, np.float64)
+    lon = np.clip(np.asarray(active, np.float64).reshape(-1) - chi, 0.0, None)
+    return -float(dt) * (chi[None, :] * r2[comp] + lon[None, :] * r1[comp]).sum(1)
+
+
 def spec_without_source(spec, pool="myelin"):
     """``spec`` with ``pool``'s susceptibility (and the ``"field"`` tier it earns) removed: the tests that pass
     a field-declaring fixture spec to a mechanic (pack merge, consolidation, seeding, ...) they do not mean to
