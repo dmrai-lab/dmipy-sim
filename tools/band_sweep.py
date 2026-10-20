@@ -1,10 +1,12 @@
 """The band-container sweep of #727: which bit-depth curve a pack's position bands need.
 
-One cylinder walk is encoded under the two-level control container and under ``band_curve(K, b1)`` for each ``b1``.
-Each pack is measured on three things: its bytes per walker, its certificate (``err_max`` against ``floor_max``, and
-the container's own error against the float-container pack of the same walk), and the replayed rows of
-``tools/gen_step_law.py`` against both the float pack's replay and the exact propagator of the pore
-(``SteppedPore.continuous``). The candidate curve is the one whose container error sits at or under half the floor.
+One cylinder walk (the producer's coefficient walk, ``K`` bands over the window) is encoded under the two-level
+control container and under ``band_curve(K, b1)`` for each ``b1``. Each pack is measured on three things: its bytes
+per walker, its certificate (``err_max`` against ``floor_max``, and the container's own error against the
+float-container pack of the same walk over the envelope's battery, both read from their stored bands), and the
+replayed rows of ``tools/gen_step_law.py`` against both the float pack's replay and the exact propagator of the
+pore (``SteppedPore.continuous``). The candidate curve is the one whose container error sits at or under half the
+floor.
 
     JAX_PLATFORMS=cpu python tools/band_sweep.py --n 20000 --b1 16 14 13 12 11 10 --out sweep.json
 """
@@ -22,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-D0, T, DT, K = 2.0e-9, 0.100, 1.0e-4, 256
+D0, T, K = 2.0e-9, 0.100, 256
 DIAM = 5.0e-6
 
 
@@ -43,7 +45,18 @@ def blt_bytes_per_walker(pack):
     return sum(np.asarray(v).nbytes for k, v in pack.arrays.items() if k.startswith("blt_b")) / pack.n_walkers
 
 
-def strand_walk(n, T_s, dt, seed=3):
+def container_error(ref, pk, env):
+    """The largest difference over the envelope's battery between the float pack ``ref`` and the pack ``pk`` of the
+    same walk, each signal read from its stored bands (``compression.coded_phases``): the container's own error."""
+    from dmipy_sim.replay import compression as cx
+    h, n_t = float(ref.dt), int(ref.n_t)
+    G, _ = cx.acquisition_battery(n_t, h, env)
+    S = [np.exp(1j * cx.coded_phases(cx.read_position_coeffs(p.arrays), h, G, n_t, device="numpy")).mean(axis=0)
+         for p in (ref, pk)]
+    return float(np.abs(S[0] - S[1]).max())
+
+
+def strand_walk(n, T_s, seed=3):
     """A small strand substrate (three sheathed strands in a 20 um box) walked with its susceptibility field sampled in
     the walk, on the CPU: the walk the path channel (C3) is certified on."""
     import tempfile
@@ -55,7 +68,8 @@ def strand_walk(n, T_s, dt, seed=3):
     write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6)
     np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
-    return walk_spec(spec, n, T_s, dt, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True, field_cutoff_max_m=25e-6)
+    return walk_spec(spec, n, T_max=T_s, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True,
+                     field_cutoff_max_m=25e-6)
 
 
 def sweep_c3(a):
@@ -64,9 +78,9 @@ def sweep_c3(a):
     per walker."""
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import build_replay_pack
-    Kp, T_s, dt = a.path_K, a.c3_T, a.c3_dt
-    log(f"C3 walk: {a.c3_n} walkers on 3 strands, T {T_s}, dt_save {dt}, path modes {Kp}")
-    walk = strand_walk(a.c3_n, T_s, dt)
+    Kp, T_s = a.path_K, a.c3_T
+    log(f"C3 walk: {a.c3_n} walkers on 3 strands, T {T_s}, path modes {Kp}")
+    walk = strand_walk(a.c3_n, T_s)
     cases = [("native 16", 16), ("native 8", 8)] + [(f"curve b1={b:g}", cx.band_curve(Kp, b)) for b in a.c3_b1]
     rows_ = []
     for label, knob in cases:
@@ -96,7 +110,6 @@ def main(argv=None):
     ap.add_argument("--c3", action="store_true", help="sweep the path channel on a strand walk instead of the cylinder")
     ap.add_argument("--c3-n", type=int, default=5000)
     ap.add_argument("--c3-T", type=float, default=0.03)
-    ap.add_argument("--c3-dt", type=float, default=1e-4)
     ap.add_argument("--c3-K", type=int, default=32, help="position bands of the strand packs")
     ap.add_argument("--path-K", type=int, default=32)
     ap.add_argument("--c3-b1", type=float, nargs="+", default=[14, 12, 10, 9, 8, 7, 6])
@@ -113,11 +126,12 @@ def main(argv=None):
     from dmipy_sim.replay.bank import build_replay_pack
     import gen_step_law as gl
 
-    log(f"walk: {a.n} walkers, {DIAM * 1e6:.0f} um cylinder, D {D0}, T {T}, dt_save {DT}")
+    log(f"walk: {a.n} walkers, {DIAM * 1e6:.0f} um cylinder, D {D0}, T {T}, K {K} in the band's own blocks")
     geom = d.Cylinder(DIAM / 2, (0.0, 0.0, 1.0))
-    walk = d.simulate_trajectories(a.n, D0, geom, T, DT, seed=a.seed, require_gpu=False, tiers="all", K=K, window_T=T)
+    walk = d.simulate_trajectories(a.n, D0, geom, T, K=K, seed=a.seed, require_gpu=False, tiers="all", window_T=T)
     rows = gl.rows()
-    exact = {k: SteppedPore("cylinder", DIAM, D0, geom, n_modes=(8, 8)).continuous(gl.g_axis(s), DT) for k, s in rows.items()}
+    exact = {k: SteppedPore("cylinder", DIAM, D0, geom, n_modes=(8, 8)).continuous(gl.g_axis(s), gl.DT)
+             for k, s in rows.items()}
     log("exact:", exact)
 
     def build(label, container, blt_container=None, **kw):
@@ -129,20 +143,11 @@ def main(argv=None):
         log(f"{label}: built + replayed in {time.time() - t0:.0f} s")
         return pk, pos_b, tot_b, sig
 
-    master = walk._bank_dict()
-    _cx_env = cx.default_envelope
-
-    def surface_window(pk):
-        """The contact channel's per-window surface term (windows of T/4) of a pack against the raw contact."""
-        from dmipy_sim.replay.bank import _surface_fidelity
-        return _surface_fidelity(master, pk.arrays, pk.meta["compression"]["channels"]["boundary_local_time"],
-                                 _cx_env(), window_T=T / 4)
-
+    env = cx.default_envelope()
     ref, pos_f, tot_f, sig_f = build("float", None, None)
-    n_t = int(ref.n_t)
-    raw = cx.decoder(ref.arrays, ref.meta["compression"])
-    results = [dict(label="float K=256", bits_mean=32.0, pos_B=pos_f, total_B=tot_f, fid=dict(ref.meta["fidelity"], **{"err_surface_window": surface_window(ref)["err_window"], "floor_surface_window": surface_window(ref)["floor_window"]}), err_container=0.0,
-                    floor=ref.meta["fidelity"]["floor_max"], rows=sig_f, blt_B=blt_bytes_per_walker(ref))]
+    results = [dict(label="float K=256", bits_mean=32.0, pos_B=pos_f, total_B=tot_f, fid=dict(ref.meta["fidelity"]),
+                    err_container=0.0, floor=ref.meta["fidelity"]["floor_max"], rows=sig_f,
+                    blt_B=blt_bytes_per_walker(ref))]
     cases = [("two-level 16/8", cx.TWO_LEVEL_CONTAINER, (16 * 16 + 8 * (K - 16)) / K, cx.TWO_LEVEL_CONTAINER),
              ("derived (default)", "derived", None, "derived")]
     for b1 in a.b1:
@@ -155,27 +160,22 @@ def main(argv=None):
         if mean_bits is None:
             c_ = pk.meta["compression"]["container"]
             mean_bits = sum((r["bands"][1] - r["bands"][0]) * r["bits"] for r in c_) / K
-        sf = surface_window(pk)
-        fid.update(err_surface_window=sf["err_window"], floor_surface_window=sf["floor_window"])
-        mf = cx.measure_fidelity(np.asarray(raw(0, ref.n_walkers)), DT, cx.decoder(pk.arrays, pk.meta["compression"]))
-        results.append(dict(label=label, bits_mean=mean_bits, pos_B=pos_b, total_B=tot_b, fid=fid, err_container=mf["err_max"],
-                            floor=mf["floor_max"], rows=sig, blt_B=blt_bytes_per_walker(pk),
-                            container=pk.meta["compression"]["container"]))
+        results.append(dict(label=label, bits_mean=mean_bits, pos_B=pos_b, total_B=tot_b, fid=fid,
+                            err_container=container_error(ref, pk, env), floor=float(ref.meta["fidelity"]["floor_max"]),
+                            rows=sig, blt_B=blt_bytes_per_walker(pk), container=pk.meta["compression"]["container"]))
     print("\nBytes per walker of the pack ordered at sigma_star = 5e-3 (the default container is derived for that floor):")
     print("| container | pos B/walker | total B/walker | cert err_max | cert floor_max |"); print("|---|---|---|---|---|")
     for label, cont in (("two-level 16/8", cx.TWO_LEVEL_CONTAINER), ("derived (default)", "derived")):
         pk, pos_b, tot_b, _ = build(label, cont, cont, sigma_star=5e-3)
         print(f"| {label} | {pos_b:.0f} | {tot_b:.0f} | {pk.meta['fidelity']['err_max']:.2e} | {pk.meta['fidelity']['floor_max']:.2e} |")
-    out = dict(n=a.n, K=K, n_t=n_t, exact=exact, results=results)
-    print("\nC2 (contact channel, K=%d, same b1 curve; the whole-duration surface term is exact in the bridge's endpoints at any depth, "
-          "so the band is read by the per-window term, windows of T/4)" % a.blt_K)
-    print("| container | blt B/walker | err_surface | floor_surface | err_surface_window | floor_surface_window | err/floor (window) |")
-    print("|---|---|---|---|---|---|---|")
+    out = dict(n=a.n, K=K, block=dict(ref.block), exact=exact, results=results)
+    print("\nC2 (contact channel, K=%d, same b1 curve): the pack's own surface certificate" % a.blt_K)
+    print("| container | blt B/walker | err_surface | floor_surface | err/floor |")
+    print("|---|---|---|---|---|")
     for r in results:
-        f = r["fid"]; w_e, w_f = f.get("err_surface_window"), f.get("floor_surface_window")
-        print(f"| {r['label']} | {r['blt_B']:.0f} | {f.get('err_surface', float('nan')):.2e} | {f.get('floor_surface', float('nan')):.2e} | "
-              f"{w_e if w_e is None else format(w_e, '.2e')} | {w_f if w_f is None else format(w_f, '.2e')} | "
-              f"{'' if not w_f else format(w_e / w_f, '.1e')} |")
+        f = r["fid"]; e_, f_ = f.get("err_surface"), f.get("floor_surface")
+        print(f"| {r['label']} | {r['blt_B']:.0f} | {'-' if e_ is None else format(e_, '.2e')} | "
+              f"{'-' if f_ is None else format(f_, '.2e')} | {'' if not f_ else format(e_ / f_, '.1e')} |")
     print()
     hdr = "| container | mean bits | pos B/walker | total B/walker | cert err_max | cert floor_max | container err | err/floor | " + \
           " | ".join(f"{k}: replay-float, replay-exact" for k in rows) + " |"

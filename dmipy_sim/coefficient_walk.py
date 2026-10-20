@@ -194,6 +194,59 @@ class CoefficientWalk:
             raw_positions=cut(self.raw_positions), raw_boundary=cut(self.raw_boundary),
             raw_compartment=cut(self.raw_compartment), qv_positions=sl(self.qv_positions), qv_boundary=sl(self.qv_boundary))
 
+    #: the arrays a walk file holds (those present); the C1 event list as three tensors; the rest in the header
+    _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_frac", "field_samples",
+                    "raw_positions", "raw_boundary", "raw_compartment", "qv_positions", "qv_boundary", "weights")
+    _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "field_sample_every",
+                     "illegal_crossings", "seed", "diffusivity", "work", "scanner")
+
+    def save(self, path):
+        """The walk as one safetensors file: its arrays as tensors (the C1 event list as ``comp_events_offsets`` /
+        ``_t`` / ``_label``), the scalars, the block record, the spec and the run's summary as JSON under the ``"walk"``
+        header key. The geometry is not stored: the spec is the situation, and :meth:`load` gives the walk that. A walk
+        that sampled a field keeps its basis beside it, which this file does not hold, and is refused by name."""
+        import json
+        from safetensors.numpy import save_file
+        if self.field_basis is not None:
+            raise ValueError("this walk sampled a field basis, which a walk file does not hold; build its pack from the "
+                             "walk in memory")
+        arrays = {k: np.ascontiguousarray(getattr(self, k)) for k in self._FILE_ARRAYS if getattr(self, k) is not None}
+        if self.comp_events is not None:
+            off, t, lab = (np.ascontiguousarray(a) for a in self.comp_events)
+            arrays.update(comp_events_offsets=off, comp_events_t=t, comp_events_label=lab)
+        run = self.run
+        header = {k: getattr(self, k) for k in self._FILE_SCALARS}
+        header.update(spec=(None if self.spec is None else self.spec.to_dict()),
+                      run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
+                      geometry=(None if self.geometry is None else type(self.geometry).__name__))
+        save_file(arrays, str(path), metadata={"walk": json.dumps(header, default=float)})
+
+    @classmethod
+    def load(cls, path):
+        """The walk from :meth:`save`; a file that is not a coefficient walk is refused by name."""
+        import json
+        from safetensors import safe_open
+        arrays = {}
+        with safe_open(str(path), framework="numpy") as f:
+            h = json.loads((f.metadata() or {}).get("walk") or "{}")
+            for k in f.keys():
+                arrays[k] = f.get_tensor(k)
+        if "position_coeffs" not in arrays or "block" not in h:
+            raise ValueError(f"{path} is not a coefficient walk file (no position_coeffs / block); a walk kept at its saves "
+                             f"is not read by this revision -- re-walk it")
+        spec = None
+        if h.get("spec") is not None:
+            from .spec.substrate import SubstrateSpec
+            spec = SubstrateSpec.from_dict(h["spec"])
+        kw = {k: arrays.get(k) for k in cls._FILE_ARRAYS}
+        kw.update({k: h.get(k) for k in cls._FILE_SCALARS})
+        if "comp_events_offsets" in arrays:
+            kw["comp_events"] = (arrays["comp_events_offsets"], arrays["comp_events_t"], arrays["comp_events_label"])
+        kw.update(K=int(h["K"]), m=int(h["m"]), n_windows=int(h["n_windows"]), sub_steps=int(h["sub_steps"]),
+                  T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h.get("illegal_crossings") or 0),
+                  field_sample_every=int(h.get("field_sample_every") or 1), spec=spec, run=h.get("run"))
+        return cls(**kw)
+
     def saves(self):
         """The raw subset as a :class:`~dmipy_sim.persistent_walk.PersistentWalk` of its block ends: positions, the
         contact of the block ending at each (0 at the start), the pool label or occupancy per block, the bound

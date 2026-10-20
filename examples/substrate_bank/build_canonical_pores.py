@@ -7,14 +7,14 @@ reference is the closed form these shapes have and no tissue substrate does: the
 the Bloch-Torrey equation for a reflecting planar, cylindrical or spherical pore under a generalised gradient
 waveform, Codd & Callaghan 1999. Its grade is therefore ``analytic`` by the rule of #459.
 
-**The declaration carries no list of 600 packs.** The family IS the dataset's manifest: :func:`manifest_rows`
-reads ``manifest.json`` from the hub and every substrate, spec, pack id and recorded walk follows from a row.
-Nothing is re-walked and nothing is re-encoded; the walk and pack stages read the published packs and their
-recorded numbers, which is why the packs are fetched into the session's HF cache first.
+**The declaration carries no list of 600 packs.** The family is its grid: :func:`grid_rows` gives every substrate,
+pack id and dataset path from the three shapes and the diameters, and the walk stage walks each pack through the
+producer at the design's band (``K`` bands over the 100 ms window, accumulated in the band's own blocks; no path
+is kept), at its own seed.
 
 ::
 
-    HF_HUB_CACHE=~/.cache/hf-session JAX_PLATFORMS=cpu OMP_NUM_THREADS=8 \\
+    JAX_PLATFORMS=cpu OMP_NUM_THREADS=8 \\
       nice -n 10 python examples/substrate_bank/build_canonical_pores.py --work <the family dir> \\
       --stage source        # then reference, spec, design, walk, pack, gate, card, publish
 """
@@ -29,9 +29,9 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
-from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, LICENCE_NONE_STATED, Published,
-                                        Reference, ReferenceFamily, pack_seed, ReferenceQuantity, Publication, RecordedWalk,
-                                        Source, SourceFile, Systematic, Tier, Tolerance)
+from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference, ReferenceFamily,
+                                        pack_seed, ReferenceQuantity, Publication, Source, SourceFile, Systematic,
+                                        Tier, Tolerance)
 
 REPO = "SubstrateCommons/canonical-pores"
 LICENCE = "CC-BY-4.0"
@@ -75,13 +75,10 @@ QUANTITY_GRID = dict(delta_s=10e-3, Delta_s=40e-3, b_s_per_m2=1e9, direction=[1,
 #: difference, their band, their spec's round trip -- and the card says which carry a comparison.
 QUANTITY_DIAMETERS_UM = (10.0, 20.0)
 DIRECT_N = 20_000
-DIRECT_N_T = 1001
 
-
-def parse_pack_id(pack_id):
-    """``(shape, diameter_um)`` of a manifest row's pack id, ``canonical-pores/<shape>/d<NN.NN>um``."""
-    _family, shape, d = str(pack_id).split("/")
-    return shape, float(d[1:-2])
+#: The family's grid: three shapes at every diameter from 0.1 to 20 um in steps of 0.1 um.
+SHAPES = ("cylinder", "plane", "sphere")
+DIAMETERS_UM = tuple(round(0.1 * i, 1) for i in range(1, 201))
 
 
 def pack_id(shape, d_um):
@@ -94,64 +91,16 @@ def substrate_name(shape, d_um):
     return f"{shape}-d{d_um:05.2f}um"
 
 
-def manifest_rows(repo=REPO):
-    """Every pack of this family, as the dataset's own manifest lists it.
-
-    The declaration states no pack: 600 hand-written rows would be 600 chances to disagree with the dataset, and
-    the dataset is the thing being described. A row carries its id, path, sha256, walker count and certificate,
-    so the substrate list, the specs, the pack ids and the recorded walks all follow from it.
-    """
-    from huggingface_hub import hf_hub_download
-    m = json.load(open(hf_hub_download(repo, "manifest.json", repo_type="dataset")))
-    rows = {}
-    for r in m["packs"]:
-        shape, d_um = parse_pack_id(r["id"])
-        rows[substrate_name(shape, d_um)] = dict(r, shape=shape, d_um=d_um)
-    return rows
+def pack_path(shape, d_um):
+    """The pack's path in the dataset, ``packs/<shape>/d<NN.NN>um.rpk``."""
+    return f"packs/{shape}/d{d_um:05.2f}um.rpk"
 
 
-#: What no canonical-pores walk reported, and what 118 of the 600 did not report either. `build.py` logged the
-#: walker count, the floor, the codec error, the seconds and the bytes per pack (`status.jsonl`) and never the
-#: engine's step counters; the pack header carries no `sub_steps` field and the walk's own run record has no such
-#: event. 482 of the 600 DID record their peak resident bytes -- the largest is 56.4 GB, which is what the 60 GB
-#: budget is set by -- and 118 (105 planes, 9 cylinders, 4 spheres) recorded none, which is per pack and not per
-#: family: a `not_recorded` that says so in one sentence for all 600 is read as a substring and arms nothing.
-COUNTERS_NOT_RECORDED = ("sub_steps", "illegal_crossings")
-COUNTERS_EVIDENCE = (
-    "canonical-pores/build.py logged the walker count, the floor, the codec error, the seconds and the bytes per "
-    "pack (canonical-pores/status.jsonl) and never the engine's step counters; the pack header carries no "
-    "sub_steps field and the walk's own run record (provenance.run.walk.record) has no such event either")
-
-
-def recorded_peak(pack_path):
-    """Whether the walk that produced this pack recorded a resident peak, read from the pack's OWN header."""
-    from dmipy_sim.replay.publish import header_of
-    pr = header_of(pack_path).get("provenance") or {}
-    run = (pr.get("run") or {}).get("walk") or {}
-    return bool(run.get("peak_rss_bytes") or (pr.get("certified") or {}).get("peak_rss_gb"))
-
-
-def recorded_walk(row):
-    """The ``RecordedWalk`` arguments for one pack: the counters it did not report, named PER PACK.
-
-    Whether the peak was recorded is read from that pack's own header, so the 118 that lack one declare it and
-    the 482 that have one do not -- and the budget refusal stays armed for every pack of the second kind.
-    """
-    path = local_pack(row)
-    absent = COUNTERS_NOT_RECORDED + (() if recorded_peak(path) else ("peak_rss_bytes",))
-    return dict(pack_path=path, not_recorded=absent,
-                evidence=COUNTERS_EVIDENCE + ("; this pack's walk recorded no resident peak either, so the "
-                                              "budget is not checked against a measurement for it"
-                                              if "peak_rss_bytes" in absent else
-                                              "; this pack's walk DID record its resident peak, which is what "
-                                              "holds it to the design's budget"))
-
-
-def local_pack(row, repo=REPO):
-    """The row's pack as a local file: the published bytes, fetched into the HF cache and checked against the
-    manifest's own digest. Nothing is re-walked or re-encoded -- this IS the published pack."""
-    from huggingface_hub import hf_hub_download
-    return hf_hub_download(repo, row["path"], repo_type="dataset")
+def grid_rows(shapes=SHAPES, diameters_um=DIAMETERS_UM):
+    """Every pack of this family as a row ``{id, path, shape, d_um}`` by substrate name: the grid IS the
+    declaration, so the substrate list, the specs, the pack ids and the dataset paths all follow from it."""
+    return {substrate_name(shape, d): dict(id=pack_id(shape, d), path=pack_path(shape, d), shape=shape, d_um=float(d))
+            for shape in shapes for d in diameters_um}
 
 
 # ----------------------------------------------------------------- the spec producer
@@ -174,15 +123,15 @@ def spec_of(shape, d_um):
     return geometry(shape, d_um).spec
 
 
-def walk(spec, n, *, n_t, seed, sub_steps=None):
-    """The walk the pilot runs and a fresh pack would be built from: no relaxivity, every tier stored, at the
-    pack's own ``seed`` (``pack_seed`` of its id); ``sub_steps`` is the step pilot's coarse count, None the rule's."""
+def walk(spec, n, *, T, K, seed, sub_steps=None):
+    """The walk the pilot runs and every pack is built from: no relaxivity, every tier stored, ``K`` bands over the
+    window ``T`` in the band's own blocks, at the pack's own ``seed`` (``pack_seed`` of its id); ``sub_steps`` is the
+    step pilot's coarse count, None the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
     import dmipy_sim as d
     from dmipy_sim.spec import geometry_from_spec
-    dt = T / (n_t - 1)
-    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, dt_save=dt, seed=int(seed),
+    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
                                    tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
-                                   window_T=T, raw_subset=int(n)).saves()
+                                   window_T=float(T))
 
 
 # ----------------------------------------------------------------- the envelope and the declared waveforms
@@ -242,25 +191,19 @@ def analytic_signal(shape, d_um, grid, *, modes=ANALYTIC_MODES):
     return float(abs(MatrixPore(shape, float(d_um) * 1e-6, D0, n_modes=n_modes).signal(g[:, axis], float(seq.dt))))
 
 
-def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N, n_t=DIRECT_N_T):
-    """OUR direct measurement of the same quantity: a walk of the pore, read with the engine's own gradient
-    phase and no codec between the walk and the number, with the analytic standard error of its own walkers.
-
-    This is the route the pack's bands approximate, at the same D and the same waveform, so what the gate's
-    ``reproduces-`` check compares is the codec and the walker count -- and the ``published-`` check then
-    compares both of them with the closed form.
-    """
-    import dmipy_sim as d
-    from dmipy_sim.replay import _replay_kernel as rk
+def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N):
+    """OUR direct measurement of the same quantity: the fused engine's walk of the pore with the gradient applied
+    in the walk (``dmipy_sim.engine.core.simulate(engine="fused")``, the oracle the replay is held to), each
+    walker's own phase, and the analytic standard error over its walkers. No band and no codec stand between the
+    walk and the number, so what the gate's ``reproduces-`` check compares is the pack's bands and the walker
+    count -- and the ``published-`` check then compares both of them with the closed form."""
+    from dmipy_sim.engine.core import simulate
     seq = sequence(grid["delta_s"], grid["Delta_s"], b=grid["b_s_per_m2"], direction=grid["direction"],
                    n_t=grid["n_t"])
-    dt = T / (n_t - 1)
-    w = d.simulate_trajectories(int(n), D0, geometry(shape, d_um), T_max=T, dt_save=dt, seed=pack_seed(pack_id(shape, d_um)), tiers=(),
-                                require_gpu=False, walker_batch_size=2000, window_T=T, raw_subset=int(n)).saves()
-    G = rk.effective_gradient(np.asarray(seq.G_eff, np.float64), float(seq.dt), int(w.positions.shape[1]),
-                              float(w.dt))
-    phi = np.asarray(rk.gradient_phase(G, np.asarray(w.positions, np.float32), float(w.dt)), np.float64)
-    return _modulus_and_se(np.exp(1j * phi[0]))
+    _S, _log_w, phi = simulate(int(n), D0, waveform=seq, geometry=geometry(shape, d_um),
+                               seed=pack_seed(pack_id(shape, d_um)), return_walker_signals=True, engine="fused",
+                               require_gpu=False)
+    return _modulus_and_se(np.exp(1j * np.asarray(phi, np.float64)[:, 0]))
 
 
 def reproduce(pack, quantity, grid):
@@ -277,40 +220,18 @@ def reproduce(pack, quantity, grid):
                 n_walkers=int(pack.n_walkers))
 
 
-def served_vs_channel(pack, *, n_sample=20_000):
-    """How far the signal the pack SERVES is from the one its decoded positions channel holds, over every
-    declared waveform.
-
-    Both sides are the SAME ensemble -- the pack's first ``n_sample`` walkers -- so the difference is the codec
-    and nothing else: the served side is the per-walker phase the pack's bands give a consumer
-    (``walker_primitives``, the one band contraction every serving route reduces), the other is the phase of the
-    decoded path through the same walkers' saves. A subset only coarsens the resolution of the comparison; it
-    cannot move it, which taking the served mean over 250,000 walkers against a decoded mean over 20,000 would.
-
-    The walk is decoded once per walker range (``compression.decoder``) and every declared waveform read in that
-    pass: a 250,000-walker pack of 4,635 saves is 27 GB in float64, and decoding it once per waveform would be
-    four times that work for one number.
-
-    A pore of this family has one pool at water fraction 1, so its walkers weigh alike and the mean is the plain
-    one. A family whose pools weigh differently reads ``walker_signals`` instead.
-    """
-    from dmipy_sim.replay import _replay_kernel as rk
-    from dmipy_sim.replay import compression as cx
-    n_w = min(int(n_sample), int(pack.n_walkers))
-    n_t = int(pack.n_t)
-    seqs = [seq for _label, seq in waveforms()]
-    served = [np.abs(np.exp(1j * np.asarray(pack.walker_primitives(s).phi, np.float64)[:n_w]).mean(axis=0))
-              for s in seqs]
-    G = [rk.effective_gradient(np.asarray(s.G_eff, np.float64), float(s.dt), n_t, float(pack.dt)) for s in seqs]
-    dec = cx.decoder(pack.arrays, pack.meta["compression"])
-    acc = [np.zeros(g.shape[0], np.complex128) for g in G]
-    chunk = max(1, min(n_w, int(2e8 // (n_t * 3 * 8))))
-    for lo in range(0, n_w, chunk):
-        pos = np.asarray(dec(lo, min(lo + chunk, n_w)), np.float32)
-        for k, g in enumerate(G):
-            acc[k] += np.exp(1j * np.asarray(rk.gradient_phase(g, pos, float(pack.dt)), np.float64)).sum(axis=1)
-    return float(max(np.max(np.abs(np.atleast_1d(served[k]).ravel() - np.abs(acc[k] / n_w)))
-                     for k in range(len(seqs))))
+def served_vs_channel(pack):
+    """How far the signal the pack SERVES (``ReplayPack.replay``, the consumer's route) is from the one its stored
+    bands hold (``walker_primitives``: the bands contracted once per walker, the modulus of their mean), over every
+    declared waveform. A pore of this family has one pool at water fraction 1, so its walkers weigh alike and the
+    mean is the plain one. A family whose pools weigh differently reads ``walker_signals`` instead."""
+    out = 0.0
+    for _label, seq in waveforms():
+        served = np.abs(np.asarray(pack.replay(seq), np.float64)).ravel()
+        phi = np.asarray(pack.walker_primitives(seq).phi, np.float64)
+        held = np.abs(np.exp(1j * phi).mean(axis=0)).ravel()
+        out = max(out, float(np.max(np.abs(served - held))))
+    return out
 
 
 # ----------------------------------------------------------------- the "Use me" snippet
@@ -353,10 +274,10 @@ def measured_quantities(work_dir, rows, grid):
     for shape in ("cylinder", "plane", "sphere"):
         for d_um in QUANTITY_DIAMETERS_UM:
             name = substrate_name(shape, d_um)
-            if name not in rows:
-                raise SystemExit(f"{name} is not a pack of this family's manifest")
+            if name not in rows:                       # a family of a sub-grid records the quantities it holds
+                continue
             key = hashlib.sha256(json.dumps([shape, d_um, grid, ANALYTIC_MODES, ANALYTIC_MODES_FINE, DIRECT_N,
-                                             DIRECT_N_T, pack_seed(pack_id(shape, d_um))], sort_keys=True).encode()).hexdigest()
+                                             "fused", pack_seed(pack_id(shape, d_um))], sort_keys=True).encode()).hexdigest()
             if cache.get(name, {}).get("key") != key:
                 coarse = analytic_signal(shape, d_um, grid, modes=ANALYTIC_MODES)
                 fine = analytic_signal(shape, d_um, grid, modes=ANALYTIC_MODES_FINE)
@@ -388,24 +309,22 @@ def measured_quantities(work_dir, rows, grid):
                                    "sd / sqrt(N) / |S|. No fold, no split half, no seed spread"),
                     n_walkers=DIRECT_N, grid=grid, solver=grid["solver"],
                     source=(f"examples/substrate_bank/build_canonical_pores.py (direct_walk_signal): a "
-                            f"{DIRECT_N:,}-walker trajectory walk of the same pore at the same D over the same "
-                            f"window, at the pack's own seed ({pack_seed(pack_id(shape, d_um))}), read with the engine's own gradient phase and no codec between the walk "
+                            f"{DIRECT_N:,}-walker walk of the same pore at the same D by the fused engine, the "
+                            f"gradient applied in the walk, at the pack's own seed "
+                            f"({pack_seed(pack_id(shape, d_um))}), with no band and no codec between the walk "
                             f"and the number"))))
     return tuple(out)
 
 
 def family(work_dir, *, dry, create_dataset, rows=None):
-    rows = rows if rows is not None else manifest_rows()
+    rows = rows if rows is not None else grid_rows()
     grid = dict(QUANTITY_GRID)
     text = licence_text(os.path.join(work_dir, ".licence-cache"))
     import dmipy_sim
-    # built_commit / published_commit (dmipy-sim#499) is the current manifest schema; a row the live hub still
-    # serves from before that rename names the SAME fact as "commit" alone
-    commits = sorted({(r.get("built_commit") or r.get("commit")) for r in rows.values()
-                      if r.get("built_commit") or r.get("commit")})
+    from dmipy_sim.replay.reference import code_commit
     sources = [Source(
         key="dmipy-sim", url="https://github.com/dmrai-lab/dmipy-sim",
-        host_record=f"dmipy-sim at {', '.join(c[:8] for c in commits)}, the commit(s) the packs' manifest rows name",
+        host_record=f"dmipy-sim at {code_commit(require_clean=False)[:8]}, the commit the packs are walked at",
         licence_id=LICENCE, licence_url="https://creativecommons.org/licenses/by/4.0/", licence_text=text,
         redistributes_bytes=False,
         files=(SourceFile(path=os.path.join(os.path.dirname(os.path.abspath(dmipy_sim.__file__)),
@@ -442,10 +361,10 @@ def family(work_dir, *, dry, create_dataset, rows=None):
                           where="this family's walk", how="none in the walk: the packs store the boundary "
                                 "local time as a channel and rho2 is a replay knob, so the closed form's "
                                 "wall-relaxivity case is a sweep over one pack rather than 600 more walks"),
-            FreeParameter(name="save grid", value="the rule of dmipy-sim#143 at each pack's own walker count",
-                          unit="-", whose="ours", where="acquisition.scanners.save_interval",
-                          how="each pack's dt_save is the rule's at ITS walker count, so the 600 packs do not "
-                              "share one grid; each pack's own is in the walk record"),
+            FreeParameter(name="block", value="the band's own, h = 0.8 T / (pi K): 99.5 us at K = 256 over 100 ms",
+                          unit="s", whose="ours", where="dmipy_sim.engine.accumulate.block_length",
+                          how="the walk keeps the bands, not a path: each pack accumulates its K bands in blocks "
+                              "the band sets, the same for all 600, stated in every pack's walk_params.block"),
             FreeParameter(name="walk seed", value="one per pack, from its id", unit="-", whose="ours",
                           where="dmipy_sim.replay.reference.pack_seed",
                           how="the first four bytes of the SHA-256 of the pack's id, so no two packs share a "
@@ -488,11 +407,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
 
     pilot = substrate_name("sphere", 20.0)
     design = Design(
-        window_s=T, dt_save_s=T / 2000.0,
-        save_grid_why=("the pilot's own grid at the rule of dmipy-sim#143; each PUBLISHED pack's grid is that "
-                       "rule at ITS walker count, which is why the 600 do not share one and each pack's dt and "
-                       "n_t are in the walk record rather than here"),
-        K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
+        window_s=T, K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4, pilot_substrate=pilot,
@@ -500,18 +415,18 @@ def family(work_dir, *, dry, create_dataset, rows=None):
         tolerance=Tolerance(terms=("quantity.direct.se", "quantity.replay_se",
                                    "quantity.published.uncertainty", "pack.tiers.positions.err")),
         systematics=(Systematic(
-            name="save_grid_of_the_direct_walk", value=0.0,
-            measured_on="not measured: the term is the pack's own codec error instead",
-            evidence="the direct walk and the pack are on DIFFERENT save grids (1001 saves against the pack's "
-                     "own rule), and the difference that makes is bounded by the codec error the pack itself "
-                     "certifies over the battery, which the tolerance already carries as "
+            name="route_of_the_direct_walk", value=0.0,
+            measured_on="not measured: the term is the pack's own certified error instead",
+            evidence="the direct walk is the fused engine with the gradient applied at its own physics step and the "
+                     "pack replays K = 256 stored bands, and the difference the two routes make -- the bands' "
+                     "truncation, the block table's quadrature and the container's quantisation -- is what the pack "
+                     "itself certifies over the battery, which the tolerance already carries as "
                      "pack.tiers.positions.err. A second term for the same effect would double-count it."),))
 
     build = Build(
         specs={name: (lambda r=r: spec_of(r["shape"], r["d_um"])) for name, r in rows.items()},
         pack_id={name: r["id"] for name, r in rows.items()},
-        reproduce=reproduce, served_vs_channel=served_vs_channel, served_tier="positions", walk=walk,
-        recorded={name: RecordedWalk(**recorded_walk(r)) for name, r in rows.items()})
+        reproduce=reproduce, served_vs_channel=served_vs_channel, served_tier="positions", walk=walk)
 
     publication = Publication(repo=REPO, licence=LICENCE, citation=CITATION, snippet=snippet,
                               snippet_substrate=substrate_name("sphere", 10.0),
@@ -528,12 +443,14 @@ def main(argv=None):
     p.add_argument("--stage", default=None, help="run one stage (the protocol's order still holds)")
     p.add_argument("--dry", action="store_true", help="gate and render, upload nothing")
     p.add_argument("--create-dataset", action="store_true", help="create the dataset repository (explicit)")
+    p.add_argument("--diameters", type=float, nargs="+", default=None,
+                   help="a sub-grid of diameters (um), every shape at each: a family of those packs only")
     a = p.parse_args(argv)
     import logging
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     logging.getLogger("dmipy_sim").setLevel(logging.INFO)
-    os.environ.setdefault("HF_HUB_CACHE", os.path.expanduser("~/.cache/hf-session"))
-    fam = family(os.path.abspath(a.work), dry=a.dry, create_dataset=a.create_dataset)
+    rows = grid_rows(diameters_um=tuple(a.diameters)) if a.diameters else None
+    fam = family(os.path.abspath(a.work), dry=a.dry, create_dataset=a.create_dataset, rows=rows)
     fam.stage(a.stage) if a.stage else fam.run()
     print(f"records in {fam.records.dir}")
 

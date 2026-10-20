@@ -34,23 +34,25 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 D0 = 2.0e-9                 #: m^2/s, the free diffusivity of every measurement here
-DT = 1.0e-4                 #: s, the sequence's sample interval (the save interval of a walk)
+DT = 1.0e-4                 #: s, the rows' sample interval, which the operator steps the signal over
 T_SEQ = 0.100               #: s, the rows' TE
 N_T = 1001
 SLEW, G_CAP = 200.0, 0.30   #: T/m/s and T/m, the scanner the rows are built for
 F_BAND = 200.0              #: Hz, the clinical class band the cost section sizes steps for
+CERT_T, CERT_F_BAND, CERT_K = 0.04, 1000.0, 80   #: the certificate's window, band and K = 2 T f_band: the walks
+                                                 #: keep 80 bands in the band's own blocks of 127 us
 EPS = 1e-3                  #: the tolerance the engine declares (physics.STEP_TOLERANCE)
 
 TIERS = {
     "small": dict(levels=(0.5,), quad=dict(n_rad=60, n_th=16, n_a=32, n_b=64), op_modes=(6, 6),
                   fused_geoms=("sphere",), fused_rows=("OGSE 50 Hz",), fused_subs=(1, 2), fused_seeds=(11,),
-                  fused_n=10_000, cert_walkers=(2_000, 6_000), cert_ratio=4, pack_walkers=4_000, pack_ratio=4,
-                  cost_n=2_000, cost_saves=30, mesh_full=False),
+                  fused_n=10_000, cert_walkers=(2_000, 12_000), cert_ratio=4, pack_walkers=4_000, pack_ratio=4,
+                  cost_n=2_000, cost_T=0.02, mesh_full=False),
     "full": dict(levels=(0.1, 0.2, 0.3, 0.4, 0.5), quad=dict(n_rad=100, n_th=24, n_a=48, n_b=96), op_modes=(8, 8),
                  fused_geoms=("sphere", "cylinder"), fused_rows=("PGSE 10/40 b3000", "OGSE 50 Hz"),
                  fused_subs=(1, 2, 4), fused_seeds=(11, 12, 13, 14), fused_n=1_000_000,
                  cert_walkers=(4_000, 16_000, 64_000, 256_000), cert_ratio=4, pack_walkers=256_000, pack_ratio=1,
-                 cost_n=100_000, cost_saves=100, mesh_full=True),
+                 cost_n=100_000, cost_T=0.1, mesh_full=True),
 }
 SECTIONS = ("laws", "operator", "fused", "certificate", "cost", "outside")
 
@@ -219,24 +221,27 @@ def packing_certificate(cfg):
     step of a geometry that declares no pore, and the measurement says whether the convex (intra) and the concave
     (extra) side stay within what the envelope promises."""
     import dmipy_sim as d
+    from dmipy_sim.engine.accumulate import block_length
     from dmipy_sim.engine.physics import tolerance_sub_steps, regime_sub_steps
     from dmipy_sim.math.step_law import step_certificate, PILOT_STEP_RATIO
     radii, centers, L = packing()
-    T, f_band = 0.04, 1000.0
+    T, f_band, K = CERT_T, CERT_F_BAND, CERT_K
+    h = block_length(T, K)
     out = {}
     for pool in ("intra", "extra"):
         g = d.PackedSpheres(radii, centers, L, pool=pool)
-        n_rule = tolerance_sub_steps(g, D0, DT, f_band=f_band)
+        n_rule = tolerance_sub_steps(g, D0, h, f_band=f_band)
         n_fine = max(2, n_rule // cfg["pack_ratio"])
-        n_coarse = max(regime_sub_steps(g, D0, DT), n_fine // PILOT_STEP_RATIO)
+        n_coarse = max(regime_sub_steps(g, D0, h), n_fine // PILOT_STEP_RATIO)
         eps = EPS * n_rule / n_fine
         n = cfg["pack_walkers"]
         t0 = time.time()
-        fine = d.simulate_trajectories(n, D0, g, T, DT, seed=21, require_gpu=False, sub_steps=n_fine, window_T=T, raw_subset=n).saves()
-        coarse = d.simulate_trajectories(n, D0, g, T, DT, seed=22, require_gpu=False, sub_steps=n_coarse, window_T=T, raw_subset=n).saves()
-        cert = step_certificate(fine.positions, coarse.positions, DT, n_fine / n_coarse, f_band=f_band,
+        kw = dict(K=K, require_gpu=False, window_T=T, tiers=())
+        fine = d.simulate_trajectories(n, D0, g, T, seed=21, sub_steps=n_fine, **kw)
+        coarse = d.simulate_trajectories(n, D0, g, T, seed=22, sub_steps=n_coarse, **kw)
+        cert = step_certificate(fine.position_coeffs, coarse.position_coeffs, T, n_fine / n_coarse, f_band=f_band,
                                 eps_declared=eps)
-        out[pool] = dict(n_walkers=n, n_rule=n_rule, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps,
+        out[pool] = dict(n_walkers=n, n_rule=n_rule, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps, h_s=h, K=K,
                          radius_um=2.5, volume_fraction=float(4 / 3 * np.pi * (radii ** 3).sum() / L ** 3),
                          min_gap_um=float(g.min_gap * 1e6), seconds=time.time() - t0,
                          **{k: cert[k] for k in ("eps_measured", "eps_se", "floor", "resolves", "n_bins")})
@@ -303,23 +308,27 @@ def sec_fused(cfg, fig_dir):
 def sec_certificate(cfg, fig_dir):
     import dmipy_sim as d
     import matplotlib.pyplot as plt
+    from dmipy_sim.engine.accumulate import block_length
     from dmipy_sim.engine.physics import tolerance_sub_steps, regime_sub_steps
     from dmipy_sim.math.step_law import step_certificate, PILOT_STEP_RATIO
     g = d.Sphere(2e-6)
-    T, f_band = 0.04, 1000.0
-    n_rule = tolerance_sub_steps(g, D0, DT, f_band=f_band)
-    out = dict(radius_um=2.0, T=T, f_band_hz=f_band, n_rule=n_rule, ladder=[])
+    T, f_band, K = CERT_T, CERT_F_BAND, CERT_K
+    h = block_length(T, K)
+    n_rule = tolerance_sub_steps(g, D0, h, f_band=f_band)
+    out = dict(radius_um=2.0, T=T, f_band_hz=f_band, K=K, h_s=h, n_rule=n_rule, ladder=[])
     configs = [(cfg["cert_ratio"], n) for n in cfg["cert_walkers"]]
     if cfg["cert_ratio"] != 1:
         configs.append((1, cfg["cert_walkers"][-1]))                 # the rule's own step at the top of the ladder
     for ratio, n in configs:
         n_fine = max(2, n_rule // ratio)
-        n_coarse = max(regime_sub_steps(g, D0, DT), n_fine // PILOT_STEP_RATIO)
+        n_coarse = max(regime_sub_steps(g, D0, h), n_fine // PILOT_STEP_RATIO)
         eps = EPS * n_rule / n_fine
         t0 = time.time()
-        fine = d.simulate_trajectories(n, D0, g, T, DT, seed=1, require_gpu=False, sub_steps=n_fine, window_T=T, raw_subset=n).saves()
-        coarse = d.simulate_trajectories(n, D0, g, T, DT, seed=2, require_gpu=False, sub_steps=n_coarse, window_T=T, raw_subset=n).saves()
-        cert = step_certificate(fine.positions, coarse.positions, DT, n_fine / n_coarse, f_band=f_band, eps_declared=eps)
+        kw = dict(K=K, require_gpu=False, window_T=T, tiers=())
+        fine = d.simulate_trajectories(n, D0, g, T, seed=1, sub_steps=n_fine, **kw)
+        coarse = d.simulate_trajectories(n, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
+        cert = step_certificate(fine.position_coeffs, coarse.position_coeffs, T, n_fine / n_coarse, f_band=f_band,
+                                eps_declared=eps)
         rec = dict(n_walkers=n, ratio=ratio, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps, seconds=time.time() - t0,
                    **{k: cert[k] for k in ("eps_measured", "eps_se", "floor", "resolves", "n_bins")})
         out["ladder"].append(rec)
@@ -365,37 +374,41 @@ def cost_substrates(cfg):
 
 def sec_cost(cfg, fig_dir):
     import dmipy_sim as d
+    from dmipy_sim.engine.accumulate import block_length
     from dmipy_sim.engine.physics import sub_step_rules, collision_sub_steps, length_scales_of
     from dmipy_sim.math.step_law import LONGEST_STEP
     out = {}
-    T = cfg["cost_saves"] * DT
+    T = float(cfg["cost_T"])
+    K = int(math.ceil(2.0 * T * F_BAND))                 # the band's own bands over the walk, and its block
+    h = block_length(T, K)
+    n_blocks = int(round(T / h))
     for name, g in cost_substrates(cfg).items():
-        rules = sub_step_rules(g, D0, DT, f_band=F_BAND)
+        rules = sub_step_rules(g, D0, h, f_band=F_BAND)
         n = max(rules.values())
         ls = length_scales_of(g)
         rec = dict(rules={k: int(v) for k, v in rules.items()}, sub_steps=int(n), binds=max(rules, key=rules.get),
                    min_feature_um=None if ls.min_feature is None else ls.min_feature * 1e6,
                    lookup_cell_um=None if ls.lookup_cell is None else ls.lookup_cell * 1e6)
         if ls.min_feature:
-            rec["retired_R6"] = int(math.ceil(DT / ((ls.min_feature / 6) ** 2 / (6 * D0))))
+            rec["retired_R6"] = int(math.ceil(h / ((ls.min_feature / 6) ** 2 / (6 * D0))))
         if ls.lookup_cell:
             cs = ls.lookup_cell
-            rec["lookup_fixed_step"] = int(max(1, math.ceil((np.sqrt(6 * D0 * DT) / (0.9 * cs)) ** 2)))
-            rec["lookup_longest_atom"] = int(collision_sub_steps(g, D0, DT))
+            rec["lookup_fixed_step"] = int(max(1, math.ceil((np.sqrt(6 * D0 * h) / (0.9 * cs)) ** 2)))
+            rec["lookup_longest_atom"] = int(collision_sub_steps(g, D0, h))
             assert rec["lookup_longest_atom"] == rules["collision lookup"]
         try:
-            d.simulate_trajectories(min(2000, cfg["cost_n"]), D0, g, 2 * DT, DT, seed=5, require_gpu=False, sub_steps=n)
+            d.simulate_trajectories(min(2000, cfg["cost_n"]), D0, g, T, K=K, seed=5, require_gpu=False, sub_steps=n)
             t0 = time.time()
-            d.simulate_trajectories(cfg["cost_n"], D0, g, T, DT, seed=5, require_gpu=False, sub_steps=n)
+            d.simulate_trajectories(cfg["cost_n"], D0, g, T, K=K, seed=5, require_gpu=False, sub_steps=n)
             sec = time.time() - t0
         except ValueError as e:                      # a surface the bare producer cannot seed (an open CACTUS box)
             rec["not_walked"] = str(e).splitlines()[0][:160]
             out[name] = rec
             log(f"cost {name}: rules {rules} -> {n} ({rec['binds']}); not walked: {rec['not_walked']}")
             continue
-        rec.update(n_walkers=cfg["cost_n"], saves=cfg["cost_saves"], seconds=sec,
-                   walker_steps_per_s=cfg["cost_n"] * cfg["cost_saves"] * n / sec,
-                   walker_saves_per_s=cfg["cost_n"] * cfg["cost_saves"] / sec)
+        rec.update(n_walkers=cfg["cost_n"], K=K, h_s=h, n_blocks=n_blocks, seconds=sec,
+                   walker_steps_per_s=cfg["cost_n"] * n_blocks * n / sec,
+                   walker_blocks_per_s=cfg["cost_n"] * n_blocks / sec)
         out[name] = rec
         log(f"cost {name}: rules {rules} -> {n} ({rec['binds']}); {rec['walker_steps_per_s']:.2e} walker-steps/s")
     return out
@@ -545,10 +558,13 @@ def render(R, meta):
         L.append("## 4. The certificate's resolution")
         L.append("")
         L.append(f"The two-walk certificate on a {s['radius_um']:.0f} um sphere read to {s['f_band_hz']:.0f} Hz over "
-                 f"{s['T']*1e3:.0f} ms (the rule's count at `eps_D = 1e-3`: {s['n_rule']} sub-steps per {DT*1e6:.0f} us). "
-                 "The statistic is the noise-corrected rms over the band's bins of the relative difference between the fine "
-                 "and the coarse walk's spectra; its floor is the noise it cannot see under, falling as one over the square "
-                 "root of walkers times bins. A pilot resolves a tolerance when its floor is under it; the record says so.")
+                 f"{s['T']*1e3:.0f} ms, both walks keeping K = {s['K']} bands in the band's own blocks of "
+                 f"{s['h_s']*1e6:.0f} us (the rule's count at `eps_D = 1e-3`: {s['n_rule']} sub-steps per block). "
+                 "Each walk's diffusion spectrum is read off its stored bands, `D(f_k) = (pi k)^2 <beta_k^2> / (2 T^2)` "
+                 "at `f_k = k / (2 T)`; the statistic is the noise-corrected rms over the band's bands of the relative "
+                 "difference between the fine and the coarse walk's spectra, and its floor is the noise it cannot see "
+                 "under, falling as one over the square root of walkers times bands. A pilot resolves a tolerance when "
+                 "its floor is under it; the record says so.")
         L.append("")
         L.append("| walkers | fine / coarse | declared | measured | se | floor | resolves | seconds |")
         L.append("|---|---|---|---|---|---|---|---|")
@@ -563,7 +579,9 @@ def render(R, meta):
         s = R["cost"]
         L.append("## 5. The cost")
         L.append("")
-        L.append(f"Sub-steps per {DT*1e6:.0f} us sample that each rule asks for at `eps_D = 1e-3` and a {F_BAND:.0f} Hz band, "
+        h_us = next(iter(s.values())).get("h_s", DT) * 1e6
+        L.append(f"Sub-steps per block of the band's own {h_us:.0f} us that each rule asks for at `eps_D = 1e-3` and a "
+                 f"{F_BAND:.0f} Hz band, "
                  "the rule that binds, and the walk's throughput on this device. `R/6` is the retired reflection rule "
                  "(`delta_0 = min_feature / 6`), shown for the pores it applied to. On a mesh the collision lookup bounds the "
                  "LONGEST step by the cell: `fixed` is that count for a fixed step, `atom` for the pair's long atom, the "

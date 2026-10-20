@@ -34,5 +34,5 @@ def test_the_seed_is_a_key_jax_takes():
 
 
 def test_the_walk_records_the_seed_it_was_given():
-    w = B.walk(B.spec_of("plane", 8.5), 64, n_t=5, seed=pack_seed(B.pack_id("plane", 8.5)))
-    assert w.seed == pack_seed(B.pack_id("plane", 8.5))
+    w = B.walk(B.spec_of("plane", 8.5), 64, T=0.004, K=8, seed=pack_seed(B.pack_id("plane", 8.5)))
+    assert w.seed == pack_seed(B.pack_id("plane", 8.5)) and w.K == 8 and w.T == 0.004

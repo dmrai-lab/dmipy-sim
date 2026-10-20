@@ -10,13 +10,13 @@ acquisition and published to ``SubstrateCommons/parity-fixtures``:
   reference signal distributed with it.
 
 The fixtures, the specs, the walks, the references and the estimators are
-``examples/validation/cross_engine_parity.py``; this file is the family's DECLARATION and nothing else. The
-packs already exist and are neither re-walked nor re-encoded: the walk stage reads the counters the engine
-reported in the family's own build record and the pack stage reads the published packs.
+``examples/validation/cross_engine_parity.py``; this file is the family's DECLARATION and nothing else. Every pack
+is walked through the producer, ``K_BANDS`` bands over the fixture's own TE in the band's own blocks, and our
+direct number is the fused engine's walk of the same surface at the same seeding.
 
 ::
 
-    HF_HUB_CACHE=~/.cache/hf-session JAX_PLATFORMS=cpu OMP_NUM_THREADS=8 \\
+    JAX_PLATFORMS=cpu OMP_NUM_THREADS=8 \\
       nice -n 10 python examples/substrate_bank/build_parity_fixtures.py --mcdc-data DIR --disimpy-data DIR \\
       --work <the family dir> --stage source      # then reference, spec, design, walk, pack, gate, card
 """
@@ -31,12 +31,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
-                                        ReferenceFamily, ReferenceQuantity, Publication, RecordedWalk, Source,
-                                        SourceFile, Systematic, Tier, Tolerance)
+                                        ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
+                                        Systematic, Tier, Tolerance)
 
 REPO = "SubstrateCommons/parity-fixtures"
 SIGMA = 3e-3                #: the floor each pack was sized to
-K_BANDS = 64
+K_BANDS = 64                #: bands over the fixture's TE (cross_engine_parity.K_PARITY)
+DIRECT_N = 100_000          #: walkers of the fused engine's direct walk
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 4000
 FALSE_FAILURE_RATE = 0.01
@@ -118,33 +119,44 @@ def envelope_of(name, mcdc_data=None):
     return env
 
 
-def walk_of(name, mcdc_data, disimpy_data):
-    """The walk the pilot runs: the fixture's own acquisition, diffusivity and seeding, on the spec it is HANDED.
+def name_of_spec(spec):
+    """The fixture a spec is of, from its id: ``mcdc-robust/uAxon_d_1.0_amp_<amp>_wL_<wL>`` or the Disimpy mesh."""
+    sid = str(spec.id)
+    if sid.startswith("disimpy/"):
+        return "disimpy-cylinder"
+    stem = sid.split("/")[-1]
+    return f"mcdc-{stem.split('amp_')[1].split('_')[0]}-{stem.split('wL_')[1].split('_')[0]}"
+
+
+def walk_of(mcdc_data, disimpy_data):
+    """The walk the pilot and the walk stage run: the fixture's own acquisition window, diffusivity and seeding, on
+    the spec it is HANDED (the fixture read off the spec's id), ``K`` bands over the fixture's TE.
 
     The spec is the design stage's own, whose surface is cited by the resolved path the source record digested;
-    rebuilding it from the producer here would walk a spec cited by basename and resolve it somewhere else.
+    rebuilding it from the producer here would walk a spec cited by basename and resolve it somewhere else. The
+    window is the fixture's own TE: the design's ``T`` is its pilot fixture's, and a Disimpy pack's 70 ms is not an
+    MC/DC pack's 53.52 ms.
 
     A fixture is a reproducibility test against a reference engine, so it walks at the fixture's own fixed
     ``X.SEED`` and the per-pack ``seed`` the framework offers is not used.
     """
     X = fixtures_module()
 
-    def walk(spec, n, *, n_t, seed, sub_steps=None):
+    def walk(spec, n, *, T, K, seed, sub_steps=None):
         import dmipy_sim as d
         from dmipy_sim.spec import geometry_from_spec
         geom = geometry_from_spec(spec)
+        name = name_of_spec(spec)
         if is_mcdc(name):
             from dmipy_sim.io import mcdc
             p = X.mcdc_paths(mcdc_data, *mcdc_params(name))
             r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), int(n))
-            return d.simulate_trajectories(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE,
-                                           dt_save=X.MCDC_TE / (int(n_t) - 1), seed=X.SEED, tiers="all", r0=r0,
-                                           require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
-                                           window_T=X.MCDC_TE, raw_subset=int(n)).saves()
-        return d.simulate_trajectories(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE,
-                                       dt_save=X.DISIMPY_TE / (int(n_t) - 1), seed=X.SEED, tiers="all",
-                                       require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
-                                       window_T=X.DISIMPY_TE, raw_subset=int(n)).saves()
+            return d.simulate_trajectories(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE, K=int(K), seed=X.SEED,
+                                           tiers="all", r0=r0, require_gpu=False, walker_batch_size=2000,
+                                           sub_steps=sub_steps, window_T=X.MCDC_TE)
+        return d.simulate_trajectories(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE, K=int(K), seed=X.SEED,
+                                       tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
+                                       window_T=X.DISIMPY_TE)
     return walk
 
 
@@ -170,31 +182,6 @@ def published_value(name, grid, mcdc_data, disimpy_data):
     return float(np.asarray(X.disimpy_reference(disimpy_data)).ravel()[grid["index"]]), None
 
 
-def _decoded_cos_phi(pack, seq, *, chunk=4000, measurements=None):
-    """Per-walker ``exp(i phi)`` at every measurement of ``seq``, from the pack's DECODED positions.
-
-    This is the walk as the pack holds it, read with the engine's own gradient phase and no band contraction in
-    the reduction -- the route :func:`cross_engine_parity.walk_cos_phi` takes on a live walk. The walks that
-    became these packs were not retained (a 100,000-walker walk of 2,677 saves is 8 GB per fixture), and
-    re-walking to obtain a number the pack already holds is what the protocol forbids, so this is what "our
-    direct measurement" is for this family, and the record says so.
-    """
-    from dmipy_sim.replay import _replay_kernel as rk
-    from dmipy_sim.replay import compression as cx
-    n_w, n_t = int(pack.n_walkers), int(pack.n_t)
-    G_eff = np.asarray(seq.G_eff, np.float64)
-    if measurements is not None:                # one measurement costs 1/372 of the phase of the whole protocol
-        G_eff = G_eff[np.atleast_1d(np.arange(G_eff.shape[0])[measurements])]
-    G = rk.effective_gradient(G_eff, float(seq.dt), n_t, float(pack.dt))
-    dec = cx.decoder(pack.arrays, pack.meta["compression"])
-    out = np.empty((G.shape[0], n_w), np.complex128)
-    for lo in range(0, n_w, chunk):
-        hi = min(lo + chunk, n_w)
-        pos = np.asarray(dec(lo, hi), np.float32)
-        out[:, lo:hi] = np.exp(1j * np.asarray(rk.gradient_phase(G, pos, float(pack.dt)), np.float64))
-    return out
-
-
 def _mean_and_se(z):
     """``(|mean z|, relative analytic standard error of it)`` over walkers, by the delta method on the modulus."""
     m = z.mean()
@@ -202,25 +189,39 @@ def _mean_and_se(z):
     return float(abs(m)), float(np.std(proj, ddof=1) / np.sqrt(len(z)) / abs(m))
 
 
-def direct_at(name, grid, work_dir, mcdc_data):
-    """OUR number at ``grid``, measured on the pack's DECODED walk with its analytic standard error.
+def direct_at(name, grid, work_dir, mcdc_data, disimpy_data, *, n=DIRECT_N):
+    """OUR number at ``grid``: the fused engine's walk of the fixture's surface at its diffusivity and seeding, the
+    gradient applied in the walk (``dmipy_sim.engine.core.simulate(engine="fused")``, the oracle a replay is held
+    to), with its analytic standard error and, for an MC/DC fixture, the per-walker spread at THEIR walker count
+    (``cross_engine_parity.floors``: their released file is one realisation and states no spread).
 
-    Measured once and cached on the pack's own bytes and the grid, so every stage of a run does not decode the
-    same walk again. The recorded ``ours_at`` of this family's earlier build record is at the measurement where
-    the difference happened to be largest, which is a comparison chosen after seeing it; this is at the
-    measurement the record DECLARES.
+    Measured once and cached on the fixture, the grid and the walker count, so every stage of a run does not walk
+    it again. The measurement is the one the record DECLARES, not the one where a difference happens to be largest.
     """
     import hashlib
-    from dmipy_sim.replay import ReplayPack
-    path = os.path.join(work_dir, "packs", f"{name}.rpk")
+    from dmipy_sim.engine.core import simulate
+    from dmipy_sim.spec import geometry_from_spec
+    X = fixtures_module()
     cache_path = os.path.join(work_dir, ".direct-cache.json")
     cache = json.load(open(cache_path)) if os.path.exists(cache_path) else {}
-    key = hashlib.sha256(json.dumps([_sha(path), grid], sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps([name, grid, int(n), X.SEED, "fused"], sort_keys=True).encode()).hexdigest()
     if cache.get(name, {}).get("key") != key:
-        pack = ReplayPack.load(path)
-        z = _decoded_cos_phi(pack, sequence_of(name, mcdc_data), measurements=grid["index"])
-        value, se = _mean_and_se(z[0])
-        cache[name] = dict(key=key, value=dict(value=value, se=se, n_walkers=int(pack.n_walkers)))
+        seq = sequence_of(name, mcdc_data)
+        geom = geometry_from_spec(spec_of(name, mcdc_data, disimpy_data))
+        r0, D, n_theirs = None, X.DISIMPY_D, None
+        if is_mcdc(name):
+            from dmipy_sim.io import mcdc
+            r0 = mcdc.seed_positions(mcdc.read_ini_walkers(X.mcdc_paths(mcdc_data, *mcdc_params(name))["ini"]), int(n))
+            D = X.MCDC_D
+            _S, n_theirs = X.mcdc_reference(mcdc_data, *mcdc_params(name), seq)
+        _sig, _log_w, phi = simulate(int(n), D, waveform=seq, geometry=geom, seed=X.SEED, r0=r0,
+                                     return_walker_signals=True, engine="fused", require_gpu=False)
+        phi = np.asarray(phi, np.float64)[:, grid["index"]]
+        value, se = _mean_and_se(np.exp(1j * phi))
+        _ours, theirs, _dof, _exact = X.floors(np.cos(phi)[None, :], n_theirs)
+        cache[name] = dict(key=key, value=dict(value=value, se=se, n_walkers=int(n),
+                                               floor_theirs=float(theirs[0]), n_theirs=n_theirs))
+        os.makedirs(work_dir, exist_ok=True)
         with open(cache_path, "w") as fh:
             json.dump(cache, fh, indent=1, sort_keys=True)
     return cache[name]["value"]
@@ -243,8 +244,9 @@ def reproduce_of(mcdc_data, disimpy_data):
 
 def served_vs_channel_of(mcdc_data, disimpy_data):
     def served_vs_channel(pack):
-        """The largest difference over the fixture's whole protocol between the signal the pack SERVES and the
-        one its decoded positions hold, both reduced as the modulus of the ensemble mean.
+        """The largest difference over the fixture's whole protocol between the signal the pack SERVES
+        (``ReplayPack.replay``) and the one its stored bands hold (``walker_primitives``: the bands contracted
+        once per walker), both reduced as the modulus of the ensemble mean.
 
         Reducing one side as ``mean(cos phi)`` and the other as the modulus is what made this check read
         3.1e-3 at b = 13190 s/mm^2 and filed dmipy-sim#484 against the engine; the per-walker phases are in
@@ -253,32 +255,29 @@ def served_vs_channel_of(mcdc_data, disimpy_data):
         X = fixtures_module()
         seq = sequence_of(_name_of(pack), mcdc_data)
         served = np.abs(np.asarray(pack.replay(seq), np.complex128)).ravel()
-        z = _decoded_cos_phi(pack, seq)
-        return float(np.max(np.abs(served - X.ensemble_modulus(np.angle(z)))))
+        phi = np.asarray(pack.walker_primitives(seq).phi, np.float64).T
+        return float(np.max(np.abs(served - X.ensemble_modulus(phi))))
     return served_vs_channel
 
 
 def _name_of(pack):
-    """The fixture name of a published pack, from its id: ``parity-fixtures/<name>``."""
-    tail = str(pack.meta["id"]).split("/", 1)[1]
-    if tail.startswith("disimpy"):
-        return "disimpy-cylinder"
-    stem = tail.split("/")[-1]
-    amp = stem.split("amp_")[1].split("_")[0]
-    wL = stem.split("wL_")[1].split("_")[0]
-    return f"mcdc-{amp}-{wL}"
+    """The fixture name of a pack of this family, from its id ``parity-fixtures/<name>``."""
+    name = str(pack.meta["id"]).split("/", 1)[1]
+    if name not in FIXTURES:
+        raise ValueError(f"{pack.meta['id']!r} is not a pack of this family ({', '.join(FIXTURES)})")
+    return name
 
 
 # ----------------------------------------------------------------- the "Use me" snippet
 def snippet(uri):
     return f'''import numpy as np
 from dmipy_sim.replay import ReplayPack
-from examples.validation.cross_engine_parity import mcdc_envelope, MCDC_N_T, MCDC_TE
+from examples.validation.cross_engine_parity import MCDC_N_T, MCDC_TE
 from dmipy_sim import pgse
 
 pk = ReplayPack.load("{uri}")
 # the ActiveAx shell this fixture's number is read at, as a single PGSE row
-seq = pgse([[1.0, 0.0, 0.0]], 0.01015, 0.03578, bvalues=[1.319e10], TE=MCDC_TE, n_t=pk.n_t, slew_rate=np.inf)
+seq = pgse([[1.0, 0.0, 0.0]], 0.01015, 0.03578, bvalues=[1.319e10], TE=MCDC_TE, n_t=MCDC_N_T, slew_rate=np.inf)
 print("S = %.6f" % float(np.abs(np.asarray(pk.replay(seq))).ravel()[-1]))
 '''
 
@@ -290,7 +289,6 @@ def _read(path):
 
 def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
     X = fixtures_module()
-    build_record = json.load(open(os.path.join(work_dir, "records", "build.json")))["fixtures"]
     grids = {n: quantity_grid(n) for n in names}
 
     sources = []
@@ -347,17 +345,16 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                                    "hash. It is the file the spec cites, so it is the file whose digest the "
                                    "source record has to hold"))))
 
-    direct = {n: direct_at(n, grids[n], work_dir, mcdc_data) for n in names}
+    direct = {n: direct_at(n, grids[n], work_dir, mcdc_data, disimpy_data) for n in names}
     quantities = []
     for n in names:
         grid = grids[n]
         their_value, their_n = published_value(n, grid, mcdc_data, disimpy_data)
-        rec = build_record[n]["parity"]["served"]
         quantities.append(ReferenceQuantity(
             substrate=n, name="signal_at_top_b",
             published=Published(
                 value=their_value, unit="-",
-                uncertainty=(float(rec["floor_theirs_max"]) / abs(their_value) if their_n else 0.0),
+                uncertainty=(float(direct[n]["floor_theirs"]) / abs(their_value) if their_n else 0.0),
                 uncertainty_is=(f"their released file is ONE Monte-Carlo realisation of {their_n:,} walkers and "
                                 f"states no spread, so its standard error is the per-walker spread measured on "
                                 f"OUR walkers at THEIR count (cross_engine_parity.floors), which is what makes "
@@ -386,17 +383,17 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
             direct=Direct(
                 value=float(direct[n]["value"]), unit="-", se=float(direct[n]["se"]),
                 se_kind="delta_method",
-                se_derivation="the delta method on the modulus of the ensemble mean over the DECODED walk's "
+                se_derivation="the delta method on the modulus of the ensemble mean over the fused walk's "
                               "own walkers: each walker's phasor projected on the direction the modulus is "
                               "taken along, sd / sqrt(N) / |S|. No fold, no split half -- the "
                               "one-permutation split half this family used before swung the worst "
                               "measurement between 2.09 and 3.51 sigma over 200 seeds, and the family-wise "
                               "check failed for 49.5 % of them",
                 n_walkers=int(direct[n]["n_walkers"]), grid=grid, solver=grid["solver"],
-                source="examples/substrate_bank/build_parity_fixtures.py (direct_at): the pack's positions "
-                       "channel decoded and read with the engine's own gradient phase, no band contraction "
-                       "in the reduction. The walk that produced the pack was not retained (8 GB per "
-                       "fixture) and is not repeated")))
+                source="examples/substrate_bank/build_parity_fixtures.py (direct_at): the fused engine's walk "
+                       "of the same surface at the fixture's diffusivity and seeding, the gradient applied in the "
+                       "walk -- a walk of its own, independent of the pack's, with no band between the walk and "
+                       "the number")))
 
     reference = Reference(
         doi="10.3389/fninf.2020.00008",
@@ -447,17 +444,10 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                 "the gate carry a vector and therefore see it. What #488 weighs -- whether the residual is "
                 "MISST's own truncation or ours -- and the numbers it weighs it with are stated there, not "
                 "here: this card states only what its own records hold."),
-            "reproduces": ("The `reproduces-` comparison is DEGENERATE for this family and its 1e-9 sigma should be "
-                        "read as such. Our direct number is measured on the pack's own decoded positions, "
-                        "because the walk that produced the pack was not retained, so `reproduces-` and "
-                        "`served-equals-decoded` are two readings of one channel and differ only by the "
-                        "reduction. The comparison that carries information here is `published-`, against the "
-                        "other engine's released array."),
-            "direct": ("These packs' walks were not retained: a 100,000-walker walk of 2,677 saves is 8 GB per "
-                    "fixture. The direct numbers are therefore the ones the walk that produced each pack "
-                    "recorded, in this family's own records/build.json, measured by the estimator "
-                    "cross_engine_parity.floors owns. Nothing is re-walked to obtain a number a record "
-                    "already holds."),
+            "direct": ("Our direct number is the fused engine's own walk of each fixture, the gradient applied "
+                       "in the walk, at the fixture's seeding: an independent walk, so `reproduces-` compares the "
+                       "pack's stored bands with the engine's signal, and `published-` both with the other "
+                       "engine's released array."),
             "reduction": ("A pack's signal is the MODULUS of the weighted ensemble mean, and both references sum "
                        "cosines. Comparing one convention against the other read 1.2e-5 at b = 1925 s/mm^2 "
                        "and 3.1e-3 at 13190 and filed #484 against the engine; the per-walker phases are "
@@ -465,10 +455,7 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                        "same way.")})
 
     design = Design(
-        window_s=X.MCDC_TE, dt_save_s=X.MCDC_TE / (X.MCDC_N_T - 1),
-        save_grid_why=("MC/DC's own TE on a grid four times finer than their 5,000 steps, so every Delta, "
-                       "delta and pad of their scheme falls on a sample (io.mcdc.read_scheme's lattice rule)"),
-        K=K_BANDS, envelope=envelope_of(names[0], mcdc_data),
+        window_s=(X.MCDC_TE if is_mcdc(names[0]) else X.DISIMPY_TE), K=K_BANDS, envelope=envelope_of(names[0], mcdc_data),
         waveforms=lambda: _waveforms(names[0], mcdc_data),
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),
@@ -491,17 +478,7 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
         pack_id={n: f"parity-fixtures/{n}" for n in names},
         reproduce=reproduce_of(mcdc_data, disimpy_data),
         served_vs_channel=served_vs_channel_of(mcdc_data, disimpy_data), served_tier="positions",
-        walk=walk_of(names[0], mcdc_data, disimpy_data),
-        recorded={n: RecordedWalk(
-            pack_path=os.path.join(work_dir, "packs", f"{n}.rpk"),
-            sub_steps=int(build_record[n]["walk"]["sub_steps"]),
-            illegal_crossings=int(build_record[n]["walk"]["illegal_crossings"]),
-            evidence=(f"records/build.json of this family, fixtures.{n}.walk: the walk that produced the pack "
-                      f"reported sub_steps {build_record[n]['walk']['sub_steps']}, "
-                      f"{build_record[n]['walk']['illegal_crossings']} refused steps, "
-                      f"{build_record[n]['walk']['peak_rss_gb']} GB peak and "
-                      f"{build_record[n]['walk']['seconds']} s at code commit "
-                      f"{str(build_record[n]['walk']['code_commit'])[:8]}")) for n in names})
+        walk=walk_of(mcdc_data, disimpy_data))
 
     publication = Publication(repo=REPO, licence="LGPL-2.1", citation=X.MCDC_CITATION, snippet=snippet,
                               snippet_substrate=names[0],

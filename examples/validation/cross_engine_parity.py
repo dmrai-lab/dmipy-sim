@@ -14,7 +14,9 @@ compared at signal level, then published as one certified pack per fixture to ``
   MISST is an exact eigenfunction solution, so the tolerance is our floor alone.
 
 This module is the reproduction: the fixture constants, the substrate specs, the walks, the references and
-the two Monte-Carlo floors. ``tests/validation/test_cross_engine_parity.py`` asserts on it, and the pack
+the two Monte-Carlo floors. A walk here is the producer's :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`,
+``K_PARITY`` bands over the fixture's TE in the band's own blocks, and its signal is the gradient phase of those
+bands (:func:`walk_phase`), the contraction a pack of the walk replays. ``tests/validation/test_cross_engine_parity.py`` asserts on it, and the pack
 builder that publishes the family to ``SubstrateCommons/parity-fixtures`` imports it.
 
     DMIPY_SIM_MCDC_ROBUST_DIR=... DMIPY_SIM_DISIMPY_DIR=... python examples/validation/cross_engine_parity.py
@@ -26,11 +28,13 @@ import time
 import numpy as np
 
 SEED = 0
+#: The bands every parity walk keeps over its one window (the fixture's TE): the published packs' own count.
+K_PARITY = 64
 
 # ---------------------------------------------------------------------------------------- MC/DC, their run
 MCDC_TE = 0.05352            #: s, the configuration's `duration` and every row's TE
 MCDC_D = 0.6e-9              #: m^2/s, the configuration's `diffusivity`
-MCDC_N_T = 2677              #: saves over TE -> dt 20 us; 10704 / 2676 = 4, so every lobe edge is still on a sample
+MCDC_N_T = 2677              #: the scheme's samples over TE -> dt 20 us; 10704 / 2676 = 4, every lobe edge on a sample
 MCDC_SCHEME = "ActiveAxG140_PM.scheme"
 MCDC_CONF = "uAxon_d_1.0_amp_0.0_wL_4.0.conf"
 MCDC_LICENSE = "LGPL-2.1"
@@ -58,7 +62,7 @@ DISIMPY_D = 2e-9             #: m^2/s, `test_mesh_diffusion`
 DISIMPY_TE = 70e-3           #: s, the window the fixture's gradient array spans
 DISIMPY_DELTA = 30e-3        #: s, the timing MISST was evaluated at (the reference file's name)
 DISIMPY_BIGDELTA = 40e-3     #: s
-DISIMPY_N_T = 1401           #: saves over TE -> dt 50 us; 1400 = 7 x 200, so 30 ms, 40 ms and TE are on samples
+DISIMPY_N_T = 1401           #: the sequence's samples over TE -> dt 50 us; 1400 = 7 x 200: 30 ms, 40 ms, TE on samples
 DISIMPY_BVALUES = np.linspace(1.0, 3e9, 100)
 DISIMPY_RADIUS = 5e-6
 #: The resolution the MISST reference is DISTRIBUTED at: seven decimal places in
@@ -114,18 +118,18 @@ def mcdc_spec(data, amp, wL):
                      f"diffusivity and seeded from their own initial-walker list."))
 
 
-def mcdc_walk(data, amp, wL, n, *, n_t=MCDC_N_T, batch=25_000, require_gpu=None, sub_steps=None):
-    """One trajectory walk of an MC/DC axon, seeded MC/DC's way (their list, read cyclically)."""
+def mcdc_walk(data, amp, wL, n, *, K=K_PARITY, batch=25_000, require_gpu=None, sub_steps=None, raw_subset=0):
+    """One walk of an MC/DC axon, seeded MC/DC's way (their list, read cyclically): ``K`` bands over their TE in
+    the band's own blocks; ``raw_subset`` keeps that many walkers' block ends beside the bands."""
     import dmipy_sim as d
     from dmipy_sim.io import mcdc
     from dmipy_sim.spec import geometry_from_spec
     p = mcdc_paths(data, amp, wL)
     geom = geometry_from_spec(mcdc_spec(data, amp, wL))
     r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), n)
-    dt = MCDC_TE / (n_t - 1)
-    return d.simulate_trajectories(int(n), MCDC_D, geom, T_max=MCDC_TE, dt_save=dt, seed=SEED, tiers="all",
-                                   r0=r0, walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps,
-                                   window_T=MCDC_TE, raw_subset=int(n)).saves()
+    return d.simulate_trajectories(int(n), MCDC_D, geom, T_max=MCDC_TE, K=int(K), seed=SEED, tiers="all", r0=r0,
+                                   walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps,
+                                   window_T=MCDC_TE, raw_subset=int(raw_subset))
 
 
 def mcdc_reference(data, amp, wL, seq):
@@ -222,16 +226,16 @@ def disimpy_sequence(*, delta=DISIMPY_DELTA, Delta=DISIMPY_BIGDELTA, n_t=DISIMPY
                 TE=DISIMPY_TE, n_t=int(n_t), slew_rate=np.inf)
 
 
-def disimpy_walk(data, n, *, n_t=DISIMPY_N_T, batch=50_000, require_gpu=None, sub_steps=None):
-    """One trajectory walk of the Disimpy cylinder. ``sub_steps`` pins the sub-step count for the ladder."""
+def disimpy_walk(data, n, *, K=K_PARITY, batch=50_000, require_gpu=None, sub_steps=None):
+    """One walk of the Disimpy cylinder, ``K`` bands over the fixture's TE. ``sub_steps`` pins the sub-step count
+    for the ladder."""
     import dmipy_sim as d
-    dt = DISIMPY_TE / (int(n_t) - 1)
-    return d.simulate_trajectories(int(n), DISIMPY_D, disimpy_geometry(data), T_max=DISIMPY_TE, dt_save=dt,
-                                   seed=SEED, tiers="all", walker_batch_size=batch, require_gpu=require_gpu,
-                                   sub_steps=sub_steps, window_T=DISIMPY_TE, raw_subset=int(n)).saves()
+    return d.simulate_trajectories(int(n), DISIMPY_D, disimpy_geometry(data), T_max=DISIMPY_TE, K=int(K), seed=SEED,
+                                   tiers="all", walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps,
+                                   window_T=DISIMPY_TE)
 
 
-def disimpy_analytic_walk(n, *, n_t=DISIMPY_N_T, require_gpu=None, sub_steps=None):
+def disimpy_analytic_walk(n, *, K=K_PARITY, require_gpu=None, sub_steps=None):
     """The same walk on the ANALYTIC cylinder of the same radius: identical waveform, seed and walker count.
 
     This is how faceting and discretisation are separated from the engine (the repo's rule): whatever the mesh
@@ -241,9 +245,8 @@ def disimpy_analytic_walk(n, *, n_t=DISIMPY_N_T, require_gpu=None, sub_steps=Non
     import dmipy_sim as d
     from dmipy_sim import Cylinder
     return d.simulate_trajectories(int(n), DISIMPY_D, Cylinder(radius=DISIMPY_RADIUS, orientation=(0, 0, 1)),
-                                   T_max=DISIMPY_TE, dt_save=DISIMPY_TE / (int(n_t) - 1), seed=SEED,
-                                   tiers="all", require_gpu=require_gpu, sub_steps=sub_steps, window_T=DISIMPY_TE,
-                                   raw_subset=int(n)).saves()
+                                   T_max=DISIMPY_TE, K=int(K), seed=SEED, tiers="all", require_gpu=require_gpu,
+                                   sub_steps=sub_steps, window_T=DISIMPY_TE)
 
 
 def disimpy_reference(data):
@@ -252,22 +255,33 @@ def disimpy_reference(data):
 
 
 # ------------------------------------------------------------------------------------- floors and the table
-def walk_cos_phi(walk, seq, *, chunk=4000):
-    """Per-walker ``cos(phi)`` for every measurement of ``seq``, from the walk's own positions: ``(n_meas, n_w)``.
+def walk_phase(walk, seq, *, chunk=20_000):
+    """Per-walker gradient phase for every measurement of ``seq``, from the walk's own bands: ``(n_meas, n_w)``.
 
-    The engine's own gradient phase (``replay._replay_kernel.effective_gradient`` resamples the sequence onto the
-    walk's save grid, ``gradient_phase`` accumulates ``gamma dt sum G.r``), which is what ``simulate`` computes
-    fused and what a pack's bands reconstruct. The floors are measured through this, and the pack's own
-    ``walker_primitives(seq).phi`` is compared against it.
-    """
-    from dmipy_sim.replay import _replay_kernel as rk
-    n_t = walk.positions.shape[1]
-    G = rk.effective_gradient(np.asarray(seq.G_eff, np.float64), float(seq.dt), n_t, float(walk.dt))
-    out = []
-    for lo in range(0, walk.positions.shape[0], chunk):
-        phi = np.asarray(rk.gradient_phase(G, np.asarray(walk.positions[lo:lo + chunk], np.float32), float(walk.dt)))
-        out.append(np.cos(np.asarray(phi, np.float64)))
-    return np.concatenate(out, axis=1)
+    Each storage window's coefficients ``[x(t0), x(t0 + T) - x(t0), beta_1..beta_K]`` against the waveform's exact
+    projection on that window's bands (:func:`~dmipy_sim.replay.compression.band_projection`), ``gamma sum C W``,
+    summed over the windows: the contraction a pack of this walk replays (``ReplayPack.walker_primitives(seq).phi``),
+    with no container between the walk and the number."""
+    from dmipy_sim.constants import GAMMA
+    from dmipy_sim.replay.compression import band_projection
+    G = np.asarray(seq.G_eff, np.float64)
+    C = np.asarray(walk.position_coeffs)
+    T_w = float(walk.T_window)
+    n_win = int(walk.n_windows)
+    W = [GAMMA * band_projection(G, float(seq.dt), T_w, int(walk.K), t0=(None if n_win == 1 else i * T_w)).reshape(
+        G.shape[0], -1) for i in range(n_win)]
+    out = np.zeros((G.shape[0], C.shape[0]))
+    for lo in range(0, C.shape[0], chunk):
+        for i, W_i in enumerate(W):
+            out[:, lo:lo + chunk] += W_i @ np.asarray(C[lo:lo + chunk, i], np.float64).reshape(-1, W_i.shape[1]).T
+    return out
+
+
+def walk_cos_phi(walk, seq):
+    """Per-walker ``cos(phi)`` for every measurement of ``seq``, from the walk's own bands: ``(n_meas, n_w)``, the
+    REAL part of each walker's transverse magnetisation (:func:`walk_phase`). The floors are measured through this,
+    and the pack's own ``walker_primitives(seq).phi`` is compared against it."""
+    return np.cos(walk_phase(walk, seq))
 
 
 def pack_walker_phase(pack, seq):
@@ -458,7 +472,7 @@ def step_ladder(walks, reference, *, n_theirs=None, reference_quantisation=0.0):
     the step beyond its own noise, so ``step_independent`` is the property to hold. A sidedness or confinement
     defect reintroduces a step dependence, which is how #479 showed itself.
 
-    ``walks`` is ``[(step_m, PersistentWalk, sequence), ...]`` at decreasing sub-step length on the same
+    ``walks`` is ``[(step_m, CoefficientWalk, sequence), ...]`` at decreasing sub-step length on the same
     substrate, seed and acquisition. Returns the signed difference from ``reference`` at each step, the
     per-measurement Richardson extrapolation to zero step (first order, from the two finest steps, since a
     reflecting-wall Monte-Carlo step is first-order in the step length) and the floors.
@@ -493,8 +507,6 @@ def step_ladder(walks, reference, *, n_theirs=None, reference_quantisation=0.0):
 
 def disimpy_step_ladder(data, n, sub_steps=(4, 8), *, require_gpu=None):
     """``step_ladder`` on the Disimpy cylinder against MISST: one walk per sub-step count, same seed."""
-    import dmipy_sim as d
-    dt = DISIMPY_TE / (DISIMPY_N_T - 1)
     seq = disimpy_sequence()
     walks = []
     for ss in sub_steps:

@@ -13,8 +13,8 @@ raises BY NAME rather than a note to a reader:
 
 * the **walk** needs the adaptive surface step of dmipy-sim#478. The surface-local-time rule of
   :func:`~dmipy_sim.engine.physics.resolve_sub_steps` divides the 50 nm voxel by 8, and measured with that
-  rule on this substrate one 625 us save costs 48,001 sub-steps, one 25 us save 1,921, and the 15 nm
-  high-resolution tier is refused outright above a 100 us save (853,334 against the 100,000 cap). ``walk()``
+  rule on this substrate one block of the band's own 69.6 us (``K = 128`` over the 35 ms window) costs 5,344
+  sub-steps, and one block of the 15 nm high-resolution tier 59,378 (against the 100,000 cap). ``walk()``
   states those numbers and refuses.
 * the **spec** needs the composed label volume of dmipy-sim#503.
   :func:`~dmipy_sim.spec.label_volume_spec` reads ONE file, maps at most 256 label values and gives
@@ -38,6 +38,8 @@ import sys
 import time
 
 import numpy as np
+
+from dmipy_sim.engine.accumulate import block_length
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
@@ -96,8 +98,8 @@ DELTA = 6e-3        #: s: the released pulse length (paper §2.2)
 BIG_DELTA = 11.5e-3  #: s: the released inter-pulse duration (paper §2.2)
 BVALS = (0.0, 2e9, 3e9, 4e9)   #: s/m^2: the three released shells, b = 2, 3, 4 ms/um^2, plus b0
 N_DIRS = 43         #: directions per shell, uniform on the half sphere (paper §2.2)
-DT_SAVE = 25e-6     #: s: the save grid (see ``SAVE_GRID_WHY``)
 K_BANDS = 128       #: bands over the window
+BLOCK_S = block_length(TE, K_BANDS)   #: s: the band's own block, h = 0.8 T / (pi K) over the window: 69.6 us
 SIGMA = 5e-3        #: the floor per tier this family targets
 BUDGET_BYTES = 60_000_000_000
 PILOT_N = 4000
@@ -112,17 +114,12 @@ N_POINTS = 4_000_000
 SEED = 0
 SLAB_Y = 64
 
-#: The step counts of :func:`dmipy_sim.engine.physics.resolve_sub_steps` on this substrate, MEASURED with the
-#: engine's own rule at ``D0`` and quoted by ``walk()``'s refusal. ``None`` is a save grid the rule refuses
-#: outright (above ``MAX_SUB_STEPS`` = 100,000).
-SUB_STEPS = {("lm", 25e-6): 1_921, ("lm", 100e-6): 7_681, ("lm", 625e-6): 48_001, ("lm", 1e-3): 76_801,
-             ("hm", 25e-6): 21_334, ("hm", 100e-6): 85_334, ("hm", 625e-6): None, ("hm", 1e-3): None}
-
-SAVE_GRID_WHY = (
-    "the released acquisition's shortest gradient feature is the delta = 6 ms pulse, and 25 us samples it 240 "
-    "times; over the TE = 35 ms window that is 1,401 saves. It is also the coarsest grid at which the "
-    "high-resolution 15 nm tier is not refused by the sub-step rule (21,334 sub-steps per save against the "
-    "100,000 cap, where a 625 us grid needs 533,334)")
+#: The step counts of :func:`dmipy_sim.engine.physics.resolve_sub_steps` per block on this substrate, MEASURED with
+#: the engine's own rule at ``D0`` and quoted by ``walk()``'s refusal: with the surface tier (the surface-local-time
+#: rule binds) on the released 50 nm voxels and the 15 nm high-resolution tier, and without it on the 50 nm one
+#: (the step law binds).
+SUB_STEPS = {("lm", BLOCK_S): 5_344, ("hm", BLOCK_S): 59_378}
+SUB_STEPS_NO_SURFACE = {("lm", BLOCK_S): 334}
 
 #: The relaxivities the CONTACT tier's certificate is probed at. They are a probe of the channel and not a
 #: physical claim: this family fits no surface relaxivity and no permeability -- it stores the boundary local
@@ -272,28 +269,27 @@ def spec_of(substrate, data_dir, rois):
             f"walk, and #478 without #503 is an affordable walk with no spec") from e
 
 
-def walk(spec, n, *, n_t, seed, sub_steps=None):
+def walk(spec, n, *, T, K, seed, sub_steps=None):
     """The walk this family will run, and the refusal it is until dmipy-sim#478 lands.
 
     ``resolve_sub_steps``' surface-local-time rule divides the smallest feature -- here the voxel, since a
     segmentation can express no pore narrower than one -- by 8, and the whole walk is then stepped at that
     length whether or not a walker is anywhere near a wall. Measured with the engine's own rule at
-    ``D0 = 2 um^2/ms`` on a 50 nm label volume: 48,001 sub-steps per 625 us save, 1,921 per 25 us save (this
-    family's grid) and so 2,690,000 steps per walker over the TE = 35 ms window; on the 15 nm
-    high-resolution tier, 21,334 per 25 us save and a refusal above 100 us. Without the surface tier the
-    reflection rule asks 121 per 25 us save -- sixteen times less -- which is where the cost lives and what
-    an adaptive rule has to recover.
+    ``D0 = 2 um^2/ms`` on a 50 nm label volume: 5,344 sub-steps per block of the band's own 69.6 us
+    (``K = 128`` over the TE = 35 ms window), so 2,690,000 steps per walker over the window; on the 15 nm
+    high-resolution tier, 59,378 per block. Without the surface tier the step law asks 334 per block --
+    sixteen times less -- which is where the cost lives and what an adaptive rule has to recover.
     """
-    lm, hm = SUB_STEPS[("lm", 625e-6)], SUB_STEPS[("hm", 25e-6)]
+    lm, hm = SUB_STEPS[("lm", BLOCK_S)], SUB_STEPS[("hm", BLOCK_S)]
+    n_blocks = int(round(TE / BLOCK_S))
     raise ReferenceRefusal(
         f"walk: this family is not walked until dmipy-sim#478 (the adaptive surface step) lands. The "
-        f"surface-local-time rule of resolve_sub_steps needs {lm:,} sub-steps per 625 us save on the "
-        f"released 50 nm segmentation and {SUB_STEPS[('lm', DT_SAVE)]:,} on this family's {DT_SAVE * 1e6:g} us "
-        f"grid -- {int(round(TE / DT_SAVE)) * SUB_STEPS[('lm', DT_SAVE)]:,} steps per walker over the "
-        f"{TE * 1e3:g} ms window -- and {hm:,} per save on the 15 nm tier, which it refuses above a 100 us "
-        f"save. The rule is uniform in space; the substrate is not, and #478 is where the fine step becomes "
-        f"a near-wall step. Nothing about the geometry, the envelope or the walker count is waiting: this "
-        f"refusal is the pilot's, and the design record cannot be written without it")
+        f"surface-local-time rule of resolve_sub_steps needs {lm:,} sub-steps per block of {BLOCK_S * 1e6:.3g} us "
+        f"on the released 50 nm segmentation -- {n_blocks * lm:,} steps per walker over the {TE * 1e3:g} ms "
+        f"window -- and {hm:,} per block on the 15 nm tier. The rule is uniform in space; the substrate is not, "
+        f"and #478 is where the fine step becomes a near-wall step. Nothing about the geometry, the envelope or "
+        f"the walker count is waiting: this refusal is the pilot's, and the design record cannot be written "
+        f"without it")
 
 
 def reproduce(pack, quantity, grid):
@@ -692,11 +688,11 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
     pilot = min(names, key=lambda n: int(np.prod([rois[n]["crop"][i + 3] - rois[n]["crop"][i]
                                                  for i in range(3)])))
     design = Design(
-        window_s=TE, dt_save_s=DT_SAVE, save_grid_why=SAVE_GRID_WHY, K=K_BANDS, envelope=ENVELOPE,
+        window_s=TE, K=K_BANDS, envelope=ENVELOPE,
         waveforms=waveforms,
         # BOTH tiers, deliberately, and this is what makes #478 load-bearing rather than an optimisation: the
         # contact tier is the stored boundary local time, and declaring it puts the surface-local-time rule in
-        # force (1,921 sub-steps per 25 us save against the reflection rule's 121). A positions-only pack of
+        # force (5,344 sub-steps per block against the step law's 334). A positions-only pack of
         # this substrate is walkable today at a sixteenth of the cost -- and freezes rho2 and kappa into the
         # walk, which for a myelinated axon is the one thing a pack must not do
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),

@@ -325,6 +325,11 @@ class Tolerance:
 class Design:
     """What the packs serve and at what precision. The walker count is NOT here: the pilot measures it.
 
+    ``window_s`` is the walk's duration and ``K`` the bands per storage window (``window_s`` itself when it is under
+    the storage rule's 100 ms, else each 100 ms of it): the walk keeps the bands, not a path, and its block is the
+    band's own (``h = 0.8 T / (pi K)``, :func:`~dmipy_sim.engine.accumulate.block_length`), which the pilot's record
+    states with the windows and the quadratic variation it measured.
+
     ``waveforms`` is a callable returning ``((label, ScannerSequence), ...)`` -- every waveform the family
     DECLARES, which the pack stage checks against ``waveform_band`` and the gate then reads.
 
@@ -339,8 +344,6 @@ class Design:
     refused when it is not one of this family's substrates, and the design record carries it either way.
     """
     window_s: float
-    dt_save_s: float
-    save_grid_why: str
     K: int
     envelope: dict
     waveforms: object
@@ -389,8 +392,10 @@ class Build:
 
     ``specs`` maps a substrate name to a zero-argument callable returning its
     :class:`~dmipy_sim.spec.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
-    a count and a seed (``walk(spec, n, *, n_t, seed, sub_steps)``, ``sub_steps`` None for the engine's own rule and
-    a count for the step pilot's coarse walk) and is what the pilot and the walk stage call, with
+    a count and a seed over the design's window at its band (``walk(spec, n, *, T, K, seed, sub_steps) ->
+    CoefficientWalk``: ``T`` the window in seconds, ``K`` the bands per storage window, ``sub_steps`` None for the
+    engine's own rule and a count for the step pilot's coarse walk; the producer is called with keywords and no block,
+    so the block is the band's own) and is what the pilot and the walk stage call, with
     ``seed = pack_seed(pack_id)``: one seed per pack, so no two packs of a family share a random stream (a
     family walked at one seed has residuals that are one draw read many times); ``recorded`` gives a
     :class:`RecordedWalk` per substrate instead, for a family whose packs already exist and must not be
@@ -849,8 +854,8 @@ def _gate_checks(rec):
         check(st["eps_measured"] <= st["eps_declared"] + k * st["eps_se"],
               f"{name}/step-within-tolerance",
               f"the pilot measured the fine step's spectrum error at {st['eps_measured']:.2e} +- {st['eps_se']:.1e} over "
-              f"{st['n_bins']} bins to {st['f_band_hz']:.3g} Hz (steps {st['sub_steps_fine']} against "
-              f"{st['sub_steps_coarse']} per save), against the tolerance {st['eps_declared']:g} it was sized for, "
+              f"{st['n_bins']} bands to {st['f_band_hz']:.3g} Hz (steps {st['sub_steps_fine']} against "
+              f"{st['sub_steps_coarse']} per block), against the tolerance {st['eps_declared']:g} it was sized for, "
               f"within {k:.3g} standard errors"
               + ("" if st["resolves"] else f"; at {st['n_walkers']:,} walkers the pilot resolves the step error "
                                             f"only to {st['eps_se']:.1e}, so the rule, not this pilot, is what holds "
@@ -1046,7 +1051,7 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
                 pack_path=pack_path,
                 pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
-                n_t=int(round(float(wp["T_max"]) / float(wp["block"]["h"]))) + 1, dt_s=float(wp["block"]["h"]),
+                block=wp.get("block"), windows=wp.get("windows"), qv=wp.get("qv"),
                 sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
                 illegal_crossings=(None if recorded.illegal_crossings is None
                                    else int(recorded.illegal_crossings)),
@@ -1054,6 +1059,22 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
                 seconds=round(float(run.get("wall_s") or 0.0), 1), peak_rss_bytes=peak,
                 budget_checked=peak is not None, budget_bytes=int(budget), status=run.get("status"),
                 code_commit=(run.get("code") or {}).get("commit"))
+
+
+def _walk_params(walk):
+    """``(block, windows, qv)`` of a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` as its pack's header states
+    them (RPK.md 9.5): the block ``{h, m, n_blocks, rule}`` the bands were accumulated over, the storage windows
+    ``{n, T}``, and each channel's quadratic variation summed over the walk and averaged over the walkers (m^2 per
+    axis for the positions, the squared contact for the local time)."""
+    b = walk.block
+    block = dict(h=float(walk.h), m=int(walk.m), n_blocks=int(walk.n_blocks), rule=b.get("rule"))
+    windows = dict(n=int(walk.n_windows), T=float(walk.T_window))
+    qv = {}
+    if walk.qv_positions is not None:
+        qv["positions"] = [float(x) for x in np.asarray(walk.qv_positions, np.float64).sum(axis=1).mean(axis=0)]
+    if walk.qv_boundary is not None:
+        qv["local_time"] = float(np.asarray(walk.qv_boundary, np.float64).sum(axis=1).mean())
+    return block, windows, qv
 
 
 # --------------------------------------------------------------- the family
@@ -1322,7 +1343,7 @@ class ReferenceFamily:
         real window from which the walker count follows.
 
         The count is never an estimate: the pilot walks and PACKS ``pilot_n`` walkers over this family's own
-        window and save grid, and the record carries the measured floor, the measured bytes per walker of the
+        window at its own band, and the record carries the walk's block, windows and quadratic variation, the measured floor, the measured bytes per walker of the
         pack file and the measured resident bytes per walker of the pack stage. The floor scaling gives one
         count, the memory budget another, and the smaller wins; when they cannot both hold, the record states
         the trade and which tier holds.
@@ -1338,7 +1359,6 @@ class ReferenceFamily:
         if self.build.walk is None:
             raise ReferenceRefusal("design: the pilot walks, so build.walk is required even for a family whose packs "
                                    "already exist; the pilot is what makes the walker count measured")
-        n_t = int(round(d.window_s / d.dt_save_s)) + 1
         if d.pilot_substrate is not None and d.pilot_substrate not in spc["substrates"]:
             raise ReferenceRefusal(f"design: the pilot is declared on {d.pilot_substrate!r}, which is not one of "
                                    f"this family's {len(spc['substrates'])} substrates; the pilot walks a "
@@ -1349,26 +1369,34 @@ class ReferenceFamily:
         t0 = time.time()
         with _PeakRSS() as sampler:
             try:
-                walk = self.build.walk(spec, int(d.pilot_n), n_t=n_t, seed=pack_seed(self.build.pack_id[name]), sub_steps=None)
+                walk = self.build.walk(spec, int(d.pilot_n), T=float(d.window_s), K=int(d.K),
+                                       seed=pack_seed(self.build.pack_id[name]), sub_steps=None)
             except TypeError as e:
-                if "sub_steps" not in str(e):
+                if not any(k in str(e) for k in ("'T'", "'K'", "'sub_steps'")):
                     raise
-                raise ReferenceRefusal("design: build.walk takes (spec, n, *, n_t, seed, sub_steps): the step pilot walks the "
-                                       "substrate a second time at a stated sub-step count, so the hook must accept "
-                                       "sub_steps and pass it to the engine") from e
+                raise ReferenceRefusal("design: build.walk takes (spec, n, *, T, K, seed, sub_steps) and returns a "
+                                       "CoefficientWalk: the walk is the window at the design's band, and the step "
+                                       "pilot walks the substrate a second time at a stated sub-step count, so the hook "
+                                       "must accept all three and pass them to the engine") from e
         walk_s, walk_peak = time.time() - t0, sampler.peak
-        step = self._step_pilot(spec, name, walk, n_t, d)
-        if int(walk.positions.shape[1]) != n_t:
-            raise ReferenceRefusal(f"design: the pilot recorded {walk.positions.shape[1]} saves, the design's window "
-                                   f"is {n_t}; a pilot on a shorter window measures another pack's memory")
-        from .bank import _master_arrays, _measure_floor, build_replay_pack
-        floor0 = float(_measure_floor(_master_arrays(walk), d.envelope))
+        from ..coefficient_walk import CoefficientWalk
+        if not isinstance(walk, CoefficientWalk):
+            raise ReferenceRefusal(f"design: build.walk returned a {type(walk).__name__}; the walk is the producer's "
+                                   f"CoefficientWalk, its bands as they were accumulated")
+        if abs(float(walk.T) - float(d.window_s)) > 1e-9 * float(d.window_s) or int(walk.K) < int(d.K):
+            raise ReferenceRefusal(f"design: the pilot walked {float(walk.T):g} s at K = {walk.K} per window where the "
+                                   f"design declares {float(d.window_s):g} s at K = {d.K}; a pilot on another window or "
+                                   f"band measures another pack's memory and floor")
+        step = self._step_pilot(spec, name, walk, d)
+        block, windows, qv = _walk_params(walk)
+        from .bank import build_replay_pack
         t1 = time.time()
         import tempfile
         with _PeakRSS() as sampler:
             pk = build_replay_pack(walk, id=f"pilot/{self.name}", license="pilot", citation="pilot", K=int(d.K),
                                    envelope=d.envelope, position_container="bands", blt_container="bands",
                                    verbose=False)
+            floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded split-half floor on the envelope
             with tempfile.TemporaryDirectory(prefix="dmipy-pilot-") as tmp:
                 f = os.path.join(tmp, "pilot.rpk")
                 pk.save(f)
@@ -1441,11 +1469,12 @@ class ReferenceFamily:
                     counted="one reproduces- and one published- comparison per quantity of the reference record",
                     dof_is="the walker count the design sets, minus one: the smallest count any term's standard "
                            "error is measured over")
-        rec = dict(window_s=float(d.window_s), dt_save_s=float(d.dt_save_s), n_t=n_t, pass_band=band,
-                   save_grid_why=d.save_grid_why, K=int(d.K), envelope=d.envelope, waveforms=waveforms,
+        rec = dict(window_s=float(d.window_s), K=int(d.K), block=block, windows=windows, pass_band=band,
+                   envelope=d.envelope, waveforms=waveforms,
                    tiers=tiers, memory_budget_bytes=int(d.memory_budget_bytes), tolerance=tol,
                    systematics=systematics,
-                   pilot=dict(n_walkers=int(d.pilot_n), on_real_window=True, n_t=n_t, substrate=name,
+                   pilot=dict(n_walkers=int(d.pilot_n), on_real_window=True, block=block, windows=windows, qv=qv,
+                              substrate=name,
                               substrate_is=("declared" if d.pilot_substrate else
                                             "the first of this family's substrates in sorted order, undeclared"),
                               walk_seconds=round(walk_s, 1), pack_seconds=round(pack_s, 1),
@@ -1468,40 +1497,53 @@ class ReferenceFamily:
                    trade=trade)
         return self.records.write("design", rec, inputs_digest=inputs, previous_sha256=prev_sha)
 
-    def _step_pilot(self, spec, name, walk, n_t, d):
-        """The step certificate of the pilot (dmrai-lab/dmipy-sim#715): a second pilot of the same substrate on the same
-        save grid, stepping :data:`~dmipy_sim.math.step_law.PILOT_STEP_RATIO` times longer in time, and the measured
-        first-order error of the fine step's diffusion spectrum over the band the declared waveforms read, against
-        the tolerance the walk was sized for (its ``work["step_rule"]``). A pilot that cannot halve its step, or
-        whose standard error exceeds the tolerance, is refused by name: a certificate is a measurement."""
+    def _step_pilot(self, spec, name, walk, d):
+        """The step certificate of the pilot (dmrai-lab/dmipy-sim#715): a second pilot of the same substrate over the
+        same window at the same band and block, stepping :data:`~dmipy_sim.math.step_law.PILOT_STEP_RATIO` times
+        longer in time, and the measured first-order error of the fine step's diffusion spectrum, read off the two
+        walks' stored bands (:func:`~dmipy_sim.math.step_law.step_certificate`), over the band the declared waveforms
+        read (capped at the walk's own top band ``K / (2 T)``), against the tolerance the walk was sized for (its
+        ``work["step_rule"]``). A pilot that cannot step coarser within its block, or whose standard error exceeds the
+        tolerance, is refused by name: a certificate is a measurement."""
         from ..acquisition.waveforms import band_hz
         from ..math.step_law import PILOT_STEP_RATIO, step_certificate
         rule = (walk.work or {}).get("step_rule") or {}
         if not rule or rule.get("eps_D") is None:
             raise ReferenceRefusal(f"design: the pilot walk of {name!r} carries no step rule (work['step_rule']); the step "
                                    f"certificate holds the walk to the tolerance it was sized for, and this walk states none")
+        h_us = float(walk.h) * 1e6
         n_fine = int(walk.sub_steps)
         if n_fine < 2:
-            raise ReferenceRefusal(f"design: the pilot of {name!r} walks one physics step per save, which the step "
-                                   f"certificate cannot step coarser; a save grid this close to the physics step "
-                                   f"leaves the step unmeasured -- declare a finer dt_save_s")
+            raise ReferenceRefusal(f"design: the pilot of {name!r} walks one physics step per block of {h_us:.4g} us, which "
+                                   f"the step certificate cannot step coarser; a block this close to the physics step "
+                                   f"leaves the step unmeasured -- the block is the band's own (h = 0.8 T / (pi K)), so a "
+                                   f"longer one is a smaller K per window")
         regime = int((rule.get("rules") or {}).get("regime") or 1)        # the coarse walk stays in the first-order regime
         n_coarse = max(n_fine // (PILOT_STEP_RATIO if n_fine >= PILOT_STEP_RATIO else 2), regime)
         if n_coarse >= n_fine:
             raise ReferenceRefusal(f"design: the pilot of {name!r} steps at the first-order regime's ceiling ({n_fine} per "
-                                   f"save, the regime asks {regime}); the step certificate cannot step coarser within the "
-                                   f"regime, so the step is unmeasured -- declare a finer dt_save_s")
+                                   f"block of {h_us:.4g} us, the regime asks {regime}); the step certificate cannot step "
+                                   f"coarser within the regime, so the step is unmeasured -- the block is the band's own "
+                                   f"(h = 0.8 T / (pi K)), so a longer one is a smaller K per window")
         ratio = n_fine / n_coarse
+        T_w = float(walk.T_window)
+        top = int(walk.K) / (2.0 * T_w)                                   # the walk's own top band
         bands = [band_hz(np.asarray(seq.G_eff), float(seq.dt)) for _, seq in self.design.waveforms()]
         bands = [b for b in bands if b is not None]
-        f_band = float(max(bands)) if bands else float(rule.get("f_band_hz") or 0.5 / float(walk.dt))
-        f_band = min(f_band, 0.5 / float(walk.dt))
+        f_band = float(max(bands)) if bands else float(rule.get("f_band_hz") or top)
+        f_band = min(f_band, top)
         t0 = time.time()
-        coarse = self.build.walk(spec, int(d.pilot_n), n_t=n_t, seed=pack_seed(self.build.pack_id[name]) + 1, sub_steps=n_coarse)
-        cert = step_certificate(np.asarray(walk.positions), np.asarray(coarse.positions), float(walk.dt), ratio,
+        coarse = self.build.walk(spec, int(d.pilot_n), T=float(d.window_s), K=int(d.K),
+                                 seed=pack_seed(self.build.pack_id[name]) + 1, sub_steps=n_coarse)
+        if abs(float(coarse.h) - float(walk.h)) > 1e-12 * float(walk.h) or int(coarse.K) != int(walk.K):
+            raise ReferenceRefusal(f"design: the coarse pilot of {name!r} accumulated K = {coarse.K} over blocks of "
+                                   f"{float(coarse.h) * 1e6:.4g} us against the fine pilot's K = {walk.K} over {h_us:.4g} "
+                                   f"us; the certificate compares two walks of one band and block")
+        cert = step_certificate(np.asarray(walk.position_coeffs), np.asarray(coarse.position_coeffs), T_w, ratio,
                                 f_band=f_band, eps_declared=float(rule["eps_D"]))
-        return dict(cert, sub_steps_fine=n_fine, sub_steps_coarse=n_coarse, dt_p_s=float(walk.dt_sim),
-                    band_is=("the largest band the declared waveforms read" if bands else "the walk's own band"),
+        return dict(cert, sub_steps_fine=n_fine, sub_steps_coarse=n_coarse, dt_p_s=float(walk.dt_sim), block_h_s=float(walk.h),
+                    band_is=("the largest band the declared waveforms read" if bands and f_band < top else
+                             "the walk's own top band, K / (2 T)" if bands else "the walk's own band"),
                     rules=rule.get("rules"), coarse_walk_seconds=round(time.time() - t0, 1), illegal_crossings_coarse=int(coarse.illegal_crossings or 0))
 
     # ---------------- 5. walk
@@ -1552,7 +1594,8 @@ class ReferenceFamily:
         rss0 = _rss_bytes()
         t0 = time.time()
         with _PeakRSS() as sampler:
-            walk = self.build.walk(spec, n, n_t=int(des["n_t"]), seed=pack_seed(self.build.pack_id[name]), sub_steps=None)
+            walk = self.build.walk(spec, n, T=float(des["window_s"]), K=int(des["K"]),
+                                   seed=pack_seed(self.build.pack_id[name]), sub_steps=None)
         seconds, peak = time.time() - t0, sampler.peak
         out_dir = os.path.join(self.dir, "walks")
         os.makedirs(out_dir, exist_ok=True)
@@ -1564,8 +1607,9 @@ class ReferenceFamily:
                 f"{int(des['memory_budget_bytes']) / 1e9:.2f} GB budget, where the pilot projected "
                 f"{projected / 1e9:.2f} GB; the budget is a hard cap and the measurement, not the projection, "
                 f"is what it is held against")
+        block, windows, qv = _walk_params(walk)
         return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=_sha256_file(path),
-                    n_walkers=int(n), n_t=int(walk.positions.shape[1]), dt_s=float(walk.dt),
+                    n_walkers=int(n), K=int(walk.K), block=block, windows=windows, qv=qv,
                     sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
                     seconds=round(seconds, 1), peak_rss_bytes=int(peak), rss_bytes_before=int(rss0),
                     projected_rss_bytes=int(projected), budget_bytes=int(des["memory_budget_bytes"]),
@@ -1598,9 +1642,9 @@ class ReferenceFamily:
         return self.records.write("pack", dict(substrates=out), inputs_digest=inputs, previous_sha256=prev_sha)
 
     def _build_pack(self, name, w, des):
-        from ..persistent_walk import PersistentWalk
+        from ..coefficient_walk import CoefficientWalk
         from .bank import build_replay_pack
-        walk = PersistentWalk.load(os.path.join(self.dir, w["walk_path"]))
+        walk = CoefficientWalk.load(os.path.join(self.dir, w["walk_path"]))
         pack = build_replay_pack(walk, id=self.build.pack_id[name], envelope=des["envelope"], K=int(des["K"]),
                                  position_container="bands", blt_container="bands",
                                  license=self.publication.licence, citation=self.publication.citation,
@@ -1650,7 +1694,8 @@ class ReferenceFamily:
         return dict(
             pack=dict(_digest(local), path_local=os.path.relpath(local, self.dir) if local.startswith(self.dir) else local,
                       id=pack.meta["id"], license=pack.meta.get("license"), citation=pack.meta.get("citation"),
-                      K=int(pack.K), n_t=int(pack.n_t), dt_s=float(pack.dt), T_s=float((pack.n_t - 1) * pack.dt),
+                      K=int(pack.K), T_s=float(pack.meta["walk_params"]["T_max"]), block=dict(pack.block),
+                      windows=dict(pack.windows), qv=(pack.meta["walk_params"].get("qv") or {}),
                       n_walkers=int(pack.n_walkers), band_hz=float(pack.temporal_bandwidth_hz),
                       channels=["positions", *sorted(cx.get("channels") or {})],
                       substrate_id=(pack.meta.get("substrate") or {}).get("id"),
@@ -1792,7 +1837,7 @@ class ReferenceFamily:
                 continue
             uri = publish_pack(local, self.publication.repo, path=path, hub=hub, published_commit=commit,
                                message=f"{self.name}: {name} ({row['n_walkers']:,} walkers, K={row['K']}, "
-                                       f"{row['T_s']:g} s at {row['dt_s'] * 1e6:.0f} us)")
+                                       f"{row['T_s']:g} s in blocks of {row['block']['h'] * 1e6:.4g} us)")
             uploaded.append(dict(substrate=name, path=path, sha256=row["sha256"], uri=uri))
         # the gate's verdict belongs in the manifest, which is what a consumer reads: a withheld pack was left
         # advertised beside the others with nothing to say it had failed (its bytes are the maintainer's to
@@ -1964,8 +2009,10 @@ def _render_card(name, repo, rec, gate, previews, snippet_shown, snippet_ran, hu
               + ". A caveat keyed on a pack's own name is about THAT pack, and the card puts it beside it."]
     if des.get("trade"):
         L += ["", f"**The trade the design records:** {des['trade']}"]
-    L += ["", f"The save grid is {des['dt_save_s'] * 1e6:.0f} us over {des['window_s']:g} s "
-              f"({des['n_t']:,} saves): {des['save_grid_why']}", "",
+    L += ["", f"Every walk keeps {des['K']} bands per storage window ({des['windows']['n']} window"
+              f"{'s' if des['windows']['n'] != 1 else ''} of {des['windows']['T']:g} s over {des['window_s']:g} s), "
+              f"accumulated in the band's own blocks of {des['block']['h'] * 1e6:.4g} us "
+              f"(h = 0.8 T / (pi K), order {des['block']['m']}); no path is kept.", "",
           "| pack | walk | sub-steps | refused steps | wall time | peak resident | budget |",
           "|---|---|---|---|---|---|---|"]
     def counter(w, key):
