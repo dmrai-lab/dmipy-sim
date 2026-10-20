@@ -330,9 +330,8 @@ def _window_maps(pack, P, n_t_wf, dt_wf):
     (:func:`~dmipy_sim.replay.compression.band_projection_matrix`), the map every closed-form route reads."""
     from .compression import band_projection_matrix
     from .replay import GAMMA
-    dt = P["dt"]
-    return np.concatenate([GAMMA * band_projection_matrix(n_t_wf, dt_wf, (n_s - 1) * dt, pack.K, t0=t0)
-                           for _seg, t0, n_s in P["windows"]], 0)
+    return np.concatenate([GAMMA * band_projection_matrix(n_t_wf, dt_wf, T_s, pack.K, t0=t0)
+                           for _seg, t0, T_s in P["windows"]], 0)
 
 
 def _timing_key(wf):
@@ -575,7 +574,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
         mu = np.zeros((n_w, max(n_h, 1), 3)); n_bg = np.zeros((n_w, 3)); A = np.zeros(n_c)
         row0 = 0
         nu = None
-        for seg, _t0, _n_s in P0["windows"]:
+        for seg, _t0, _T_s in P0["windows"]:
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1, 3)   # (n_w, K+2, 3)
             k = C.shape[1]
             sl = slice(row0, row0 + k); row0 += k

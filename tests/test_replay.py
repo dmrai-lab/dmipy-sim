@@ -128,7 +128,3 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
         replay_signal(bare, W, rho2_over_D=5e3)
 
 
-def test_blt_dct_attribute_is_retired_loudly():
-    arrays, meta, _ = _synth_pack()
-    with pytest.raises(AttributeError, match="retired"):
-        ReplayPack(arrays, meta).blt_dct

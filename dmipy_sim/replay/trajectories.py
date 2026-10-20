@@ -4,9 +4,9 @@ The replay invariant (see ``core.simulate_trajectories``): walker positions ``r(
 on ``(geometry, diffusivity, seed)`` -- never on ``G(t)``, T2, T1 or rho. Those gate ``log_w``/phase only, so one walk
 serves every acquisition and relaxation hypothesis. A pack replays the walk from its bands
 (:class:`~dmipy_sim.replay.replay.ReplayPack`); the ``replay*`` functions below replay a walk kept at its block ends
-(a :class:`~dmipy_sim.persistent_walk.PersistentWalk`: the ``raw_subset`` of a
-:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, ``CoefficientWalk.saves()``, which no producer returns and no pack is
-built from) through the piecewise-linear path between the block ends.
+(the ``raw_subset`` of a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, ``raw_positions``, or a pack's bands
+evaluated at its block ends, :meth:`~dmipy_sim.replay.replay.ReplayPack.positions`) through the piecewise-linear path
+between the block ends.
 """
 
 import functools
@@ -60,158 +60,9 @@ def _sample_delta_bz(field_fn, trajectories):
     return np.asarray(samp(tj), dtype=np.float64)
 
 
-def pathway_sign_se(n_t, dt, TE, te_frac=0.5):
-    """Refocusing pathway sign ``ε_P(t) ∈ {+1, −1}`` for a spin echo (flip at ``TE/2``).
-
-    Susceptibility (and any static off-resonance) that accrues before the 180° pulse is
-    conjugated after it, so in the SCALAR replay path
-    (:func:`replay`) the static phase must be summed with a sign
-    that flips at the pulse: ``ε_P = +1`` for ``t < te_frac·TE`` and ``−1`` after.  (The
-    vector-Bloch replay :func:`replay_bloch` needs no ``ε_P`` — its explicit 180°
-    rotation conjugates the phase emergently.)  For PGSTE, zero ``ε_P`` across the mixing
-    time (stored transverse phase is parked on ``Mz``); build that mask directly.
-
-    Parameters
-    ----------
-    n_t : int      number of samples on the grid.
-    dt : float     grid time step (s).
-    TE : float     echo time (s); the 180° fires at ``te_frac·TE``.
-    te_frac : float  fractional pulse position (0.5 = mid-TE spin echo).
-    """
-    t = np.arange(int(n_t), dtype=np.float64) * float(dt)
-    return np.where(t < float(te_frac) * float(TE), 1.0, -1.0)
-
-
-def unwrap_periodic(traj, cell_size, periodic_axes=(0, 1)):
-    """Reconstruct CONTINUOUS positions from periodic-wrapped trajectory positions.
-
-    The walks of this engine's periodic substrates record continuous positions already;
-    this is for a trajectory folded into the cell ``[-L/2, L/2)`` along the periodic
-    axes (another simulator's output, or a walk saved in-cell). The gradient phase
-    ``gamma * integral G.r dt`` must use the CONTINUOUS lab-frame position, else every
-    periodic boundary crossing injects a spurious ``~q*L`` phase into the (refocused)
-    encoding -- artificially attenuating the diffusion-weighted signal, worse in
-    smaller cells.
-
-    This undoes the wrapping along ``periodic_axes`` by detecting per-save jumps
-    larger than ``L/2`` (a wrap) and re-integrating the minimal-image displacement
-    from t=0.  Non-periodic axes (e.g. the fibre axis z of a cylinder pack) are
-    left untouched.
-
-    VALIDITY: assumes the true per-save displacement is < L/2 on the periodic axes
-    (so a jump > L/2 is unambiguously a wrap).  This holds whenever the save step
-    is fine enough that ``sqrt(2 D dt) < L/2``, ``dt`` the interval between the saved positions -- the normal case.  A warning
-    is emitted if a periodic axis shows displacements suspiciously close to L/2.
-
-    Parameters
-    ----------
-    traj : np.ndarray, shape (..., n_t, 3)
-        Wrapped positions (any leading batch dims; time is axis -2).
-    cell_size : float
-        Periodic cell side length L (m).
-    periodic_axes : tuple of int
-        Spatial axes (0=x,1=y,2=z) that are periodic.  Cylinders/myelin: (0,1);
-        spheres: (0,1,2).
-
-    Returns
-    -------
-    np.ndarray, float32, same shape as ``traj`` — continuous positions.
-    """
-    out = np.asarray(traj, dtype=np.float32).copy()
-    L = np.float32(cell_size)
-    for ax in periodic_axes:
-        x = out[..., ax]                              # (..., n_t)
-        dx = np.diff(x, axis=-1)
-        dx -= L * np.round(dx / L)                    # minimal-image displacement
-        if np.any(np.abs(dx) > 0.45 * float(L)):
-            import warnings
-            warnings.warn(
-                "unwrap_periodic: per-save displacement approaches L/2 on a "
-                "periodic axis; the trajectory save step may be too coarse for "
-                "unambiguous unwrapping. Use a finer interval between the saved positions.", RuntimeWarning)
-        x_cont = np.empty_like(x)
-        x_cont[..., 0] = x[..., 0]
-        x_cont[..., 1:] = x[..., :1] + np.cumsum(dx, axis=-1)
-        out[..., ax] = x_cont
-    return out
-
-
-def replay_jax(
-    G,
-    trajectory,
-    dt_traj: float,
-    dt_wf=None,
-    weights=None,
-    stimulated_echo: bool = False,
-):
-    """JAX-differentiable waveform replay on stored walker trajectories.
-
-    Computes the diffusion-weighted signal by accumulating the gradient-
-    position dot product along each walker's trajectory using JAX operations:
-
-        φ_m,w = γ · dt_traj · Σ_t  G_resampled[m,t,:] · traj[w,t,:]
-        E[m]  = mean_w( cos(φ_m,w) )   or weighted mean if weights given
-
-    Fully differentiable with respect to ``G`` via ``jax.grad``.
-
-    Parameters
-    ----------
-    G : jnp.ndarray, shape (n_meas, n_t_wf, 3)
-        Gradient waveform array in T/m.  JAX-traced (differentiable).
-    trajectory : jnp.ndarray, shape (n_walkers, n_t_traj, 3)
-        Walker positions in metres.  Treated as a constant (not differentiated).
-        float16 or float32; cast to float32 internally.
-    dt_traj : float
-        Trajectory time step in seconds.
-    dt_wf : float or None
-        ScannerSequence time step in seconds.  If None, assumed equal to ``dt_traj``
-        (no resampling).
-    weights : jnp.ndarray, shape (n_walkers,) or None
-        Optional per-walker importance weights.  If None, uniform mean is used.
-        Weights are normalised to sum to 1 internally.
-    stimulated_echo : bool
-        If True, multiply the returned signal by 0.5 to account for the
-        cos(phi1) storage step in PGSTE sequences.  Pass
-        ``stimulated_echo=wf.stimulated_echo`` when replaying a ScannerSequence
-        built by :func:`pgste`.
-
-    Returns
-    -------
-    signals : jnp.ndarray, shape (n_meas,)
-        Signal attenuation E = <cos(φ)> in [0, 1], differentiable w.r.t. G.
-        Scaled by 0.5 when ``stimulated_echo=True``.
-
-    Notes
-    -----
-    When ``dt_wf != dt_traj``, G is resampled to the trajectory time grid
-    using linear interpolation (``jnp.interp`` vmapped over measurements and
-    axes) — this is JAX-differentiable.
-    """
-    if not _JAX_AVAILABLE:
-        raise ImportError(
-            "JAX is required for replay_jax. "
-            "Install jax or use replay for NumPy."
-        )
-
-    n_walkers, n_t_traj, _ = trajectory.shape
-    G_r = effective_gradient_jax(G, dt_wf, n_t_traj, dt_traj)
-    phi = gradient_phase_jax(G_r, trajectory, dt_traj)                 # (n_meas, n_walkers)
-
-    # --- Weighted average ---
-    if weights is None:
-        signals = jnp.mean(jnp.cos(phi), axis=1)
-    else:
-        w_norm = weights / (jnp.sum(weights) + 1e-30)
-        signals = jnp.einsum('mw,w->m', jnp.cos(phi), w_norm)
-
-    if stimulated_echo:
-        signals = signals * jnp.float32(0.5)
-    return signals
-
-
 def replay(
     trajectory,
-    dt_traj: float,
+    h: float,
     G,
     dt_wf: float,
     *,
@@ -255,9 +106,9 @@ def replay(
     -------
     For each measurement m and walker w:
 
-        phi[m,w]   = γ · dt_traj · Σ_t  G_r[m,t,:] · r[w,t,:]
-        log_w[m,w] = -Σ_t chi[m,t] · dt_traj / T2                  (T2 term)
-                   - Σ_t (1 - chi[m,t]) · dt_traj / T1             (T1 term)
+        phi[m,w]   = γ · h · Σ_t  G_r[m,t,:] · r[w,t,:]
+        log_w[m,w] = -Σ_t chi[m,t] · h / T2                  (T2 term)
+                   - Σ_t (1 - chi[m,t]) · h / T1             (T1 term)
                    + (surface_relaxivity/D) · Σ_t chi[m,t] · dlog_bnd_unit[w,t]
                                                      (surface_relaxivity term)
         E[m] = mean_w( exp(log_w[m,w]) · cos(phi[m,w]) )
@@ -270,9 +121,9 @@ def replay(
 
     Parameters
     ----------
-    trajectory : np.ndarray, shape (n_walkers, n_t_traj, 3)
+    trajectory : np.ndarray, shape (n_walkers, n_h, 3)
         Walker positions in metres.  float16 or float32.
-    dt_traj : float
+    h : float
         Trajectory time step in seconds.
     G : np.ndarray, shape (n_meas, n_t_wf, 3)
         Gradient waveform in T/m.
@@ -284,9 +135,9 @@ def replay(
         trajectory time grid internally.  1D input is broadcast over all
         measurements; 2D input (n_meas, n_t_wf) allows per-measurement chi.
         ``None`` (default) uses all-ones (no gating) — a pure gradient replay.
-    dlog_boundary_unit : np.ndarray, shape (n_walkers, n_t_traj), or None
-        Per-step accumulated boundary log-weight with surface_relaxivity/D = 1, a walk of
-        saves' ``boundary_local_time``.  Required when
+    dlog_boundary_unit : np.ndarray, shape (n_walkers, n_h), or None
+        Per-step accumulated boundary log-weight with surface_relaxivity/D = 1, a walk's
+        block ends' ``boundary_local_time``.  Required when
         surface_relaxivity is not None.  Non-positive (boundary hits reduce signal).
     T2 : float or None
         Transverse relaxation time constant in seconds.
@@ -298,8 +149,8 @@ def replay(
         Diffusion coefficient in m²/s.  Required when surface_relaxivity is not None.
     stimulated_echo : bool
         If True, multiply signal by 0.5 for PGSTE cos(phi1) storage factor.
-    comp_traj : np.ndarray, shape (n_walkers, n_t_traj), or None
-        Per-walker compartment ID at each trajectory time step, a walk of saves'
+    comp_traj : np.ndarray, shape (n_walkers, n_h), or None
+        Per-walker compartment ID at each trajectory time step, a raw subset's
         ``compartment``.  Required when
         T2_per_comp or T1_per_comp is provided.  An integer array indexes the
         per-compartment arrays directly; a float array is the fractional
@@ -336,7 +187,7 @@ def replay(
 
     G = np.asarray(G, dtype=np.float64)
     n_meas, n_t_wf, _ = G.shape
-    n_walkers, n_t_traj, _ = trajectory.shape
+    n_walkers, n_h, _ = trajectory.shape
 
     if chi_perp is None:
         chi_perp = np.ones(n_t_wf)          # no gating → pure gradient replay
@@ -344,15 +195,15 @@ def replay(
 
     per_meas_chi = chi_perp.ndim == 2  # (n_meas, n_t_wf) vs (n_t_wf,)
 
-    G_traj = effective_gradient(G, dt_wf, n_t_traj, dt_traj)         # exact per-save weights (n_meas, n_t_traj, 3)
+    G_traj = effective_gradient(G, dt_wf, n_h, h)         # exact per-block-end weights (n_meas, n_h, 3)
 
     # ── the coherence gate on the walk's block grid, without resampling: a block end's contact and occupancy are accumulated
     # over the block ending at it, so the gate is averaged over that interval (bin_gate); the sampled field below
     # reads the gate through the path interpolant (gate_weights)
-    chi_r = bin_gate(chi_perp, dt_wf, n_t_traj, dt_traj)              # (n_meas | 1, n_t_traj)
-    ones_r = bin_gate(np.ones(np.asarray(G).shape[1]), dt_wf, n_t_traj, dt_traj)   # the acquisition's own extent
+    chi_r = bin_gate(chi_perp, dt_wf, n_h, h)              # (n_meas | 1, n_h)
+    ones_r = bin_gate(np.ones(np.asarray(G).shape[1]), dt_wf, n_h, h)   # the acquisition's own extent
 
-    phi = gradient_phase(G_traj, trajectory, dt_traj)                 # (n_meas, n_walkers)
+    phi = gradient_phase(G_traj, trajectory, h)                 # (n_meas, n_walkers)
 
     # ── T2/T1 log-weights — scalar (walker-independent) and per-walker ────────
     log_w_scalar = np.zeros(n_meas, dtype=np.float64)          # (n_meas,)
@@ -365,7 +216,7 @@ def replay(
         (float) comp_traj is the time-fraction in pool 1 (the enclosed pool) of a
         2-compartment permeable geometry; the inverse rate is the
         occupancy-weighted average ``(1-f)·inv_arr[0] + f·inv_arr[1]`` (exact
-        for compartment-weighted bulk relaxation, resolving intra-save crossings).
+        for compartment-weighted bulk relaxation, resolving intra-block end crossings).
         """
         comp = np.asarray(comp)
         if np.issubdtype(comp.dtype, np.floating):
@@ -374,30 +225,30 @@ def replay(
                     "Fractional (float) comp_traj requires exactly 2 entries in "
                     f"the per-compartment relaxation array; got {inv_arr.shape[0]}.")
             f = comp.astype(np.float64)
-            return inv_arr[0] + f * (inv_arr[1] - inv_arr[0])   # (n_walkers, n_t_traj)
+            return inv_arr[0] + f * (inv_arr[1] - inv_arr[0])   # (n_walkers, n_h)
         return inv_arr[comp]                                     # discrete index
 
     if T2_per_comp is not None:
         if comp_traj is None:
             raise ValueError("comp_traj required when T2_per_comp is provided.")
         T2_arr = np.asarray(T2_per_comp, dtype=np.float64)
-        inv_T2_at_step = _inv_rate_at_step(1.0 / T2_arr, comp_traj)   # (n_walkers, n_t_traj)
+        inv_T2_at_step = _inv_rate_at_step(1.0 / T2_arr, comp_traj)   # (n_walkers, n_h)
         # log_w_t2[m,w] = -dt * chi_r[m,:] @ inv_T2_at_step[w,:].T
-        log_w_t2 = -dt_traj * (chi_r @ inv_T2_at_step.T)   # (n_meas, n_walkers)
+        log_w_t2 = -h * (chi_r @ inv_T2_at_step.T)   # (n_meas, n_walkers)
         log_w_per_walker = log_w_per_walker + log_w_t2
     elif T2 is not None:
-        log_w_scalar -= (dt_traj / T2) * chi_r.sum(axis=1)  # (n_meas,)
+        log_w_scalar -= (h / T2) * chi_r.sum(axis=1)  # (n_meas,)
 
     if T1_per_comp is not None:
         if comp_traj is None:
             raise ValueError("comp_traj required when T1_per_comp is provided.")
         T1_arr = np.asarray(T1_per_comp, dtype=np.float64)
-        inv_T1_at_step = _inv_rate_at_step(1.0 / T1_arr, comp_traj)   # (n_walkers, n_t_traj)
-        chi_inv_r = ones_r - chi_r  # the longitudinal periods (n_meas, n_t_traj) or (1, n_t_traj)
-        log_w_t1 = -dt_traj * (chi_inv_r @ inv_T1_at_step.T)   # (n_meas, n_walkers)
+        inv_T1_at_step = _inv_rate_at_step(1.0 / T1_arr, comp_traj)   # (n_walkers, n_h)
+        chi_inv_r = ones_r - chi_r  # the longitudinal periods (n_meas, n_h) or (1, n_h)
+        log_w_t1 = -h * (chi_inv_r @ inv_T1_at_step.T)   # (n_meas, n_walkers)
         log_w_per_walker = log_w_per_walker + log_w_t1
     elif T1 is not None:
-        log_w_scalar -= (dt_traj / T1) * (ones_r.sum(1) - chi_r.sum(axis=1))  # (n_meas,)
+        log_w_scalar -= (h / T1) * (ones_r.sum(1) - chi_r.sum(axis=1))  # (n_meas,)
 
     # ── Surface relaxivity walker-dependent log-weight ────────────────────────
     # log_w_surf[m,w] = (surface_relaxivity/D) * chi_r[m,:] @ dlog_bnd_unit[w,:].T
@@ -409,7 +260,7 @@ def replay(
             raise ValueError(
                 "dlog_boundary_unit must be provided when surface_relaxivity is not None.  "
                 "Re-run simulate_trajectories with tiers=\"all\".")
-        dlog_bnd = np.asarray(dlog_boundary_unit, dtype=np.float64)  # (n_walkers, n_t_traj)
+        dlog_bnd = np.asarray(dlog_boundary_unit, dtype=np.float64)  # (n_walkers, n_h)
         log_w_surf = (surface_relaxivity / D) * (chi_r @ dlog_bnd.T) # (n_meas, n_walkers)
         log_w_per_walker = log_w_per_walker + log_w_surf
 
@@ -422,12 +273,12 @@ def replay(
     # field dephases for the full readout — WARNING: do not use for a spin echo).
     if susceptibility is not None:
         field_fn = _resolve_field_fn(susceptibility)
-        dB = _sample_delta_bz(field_fn, trajectory)             # (n_walkers, n_t_traj)
+        dB = _sample_delta_bz(field_fn, trajectory)             # (n_walkers, n_h)
         if eps_P is not None:
-            eps_r = gate_weights(eps_P, dt_wf, n_t_traj, dt_traj)   # (n_meas | 1, n_t_traj)
+            eps_r = gate_weights(eps_P, dt_wf, n_h, h)   # (n_meas | 1, n_h)
         else:
             eps_r = chi_r                                       # FID approximation
-        phi = phi + GAMMA * dt_traj * (eps_r @ dB.T)            # (n_meas, n_walkers)
+        phi = phi + GAMMA * h * (eps_r @ dB.T)            # (n_meas, n_walkers)
 
     # ── Signal ────────────────────────────────────────────────────────────────
     signals = np.mean(np.exp(log_w_total) * np.cos(phi), axis=1)  # (n_meas,)
@@ -486,23 +337,6 @@ def finite_180_longitudinal_dwell(phi_pre, tau_180, phi_B1=0.0):
     return np.sin(np.asarray(phi_pre, dtype=np.float64) - phi_B1) ** 2 * (0.5 * tau_180)
 
 
-def pre_pulse_gradient_phase(trajectories, dt_traj, G, dt_wf, cutoff_wf_idx):
-    """Gradient phase accumulated before an instant: ``phi_pre[m, w] = gamma int_0^{t_c} G . r dt`` with
-    ``t_c = cutoff_wf_idx * dt_wf`` (the 180's index on the waveform grid), exact for the piecewise-linear path
-    (the last piece ends at ``t_c`` wherever it falls between saves). Feed the result to
-    :func:`finite_180_longitudinal_dwell`. Susceptibility off-resonance adds to this azimuth separately."""
-    traj = np.asarray(trajectories, np.float64)
-    n_w, n_t, _ = traj.shape
-    T = (n_t - 1) * float(dt_traj)
-    t_c = float(np.clip(cutoff_wf_idx * float(dt_wf), 0.0, T))
-    saves = np.arange(n_t) * float(dt_traj)
-    edges = np.append(saves[saves < t_c * (1.0 - 1e-12)], t_c)
-    if edges.size < 2:
-        return np.zeros((np.asarray(G).shape[0], n_w))
-    w_lo, w_hi, k = piece_phase_weights(G, dt_wf, edges, n_t, dt_traj)          # (n_meas, n_p, 3)
-    return (np.einsum("mpd,wpd->mw", w_lo, traj[:, k, :]) + np.einsum("mpd,wpd->mw", w_hi, traj[:, k + 1, :]))
-
-
 _BLOCH_PHASE_TABLE_BYTES = 512 * 2 ** 20      # device budget for one batch of per-piece phase tables
 
 
@@ -510,7 +344,7 @@ class _BlochTerms(NamedTuple):
     """The operator of a vector-Bloch replay per PIECE of the walk -- the block grid cut at every RF instant -- in
     the order the propagator applies them: the RF rotations that open the piece, free precession over it,
     transverse wall attenuation, relaxation."""
-    k: np.ndarray               # (n_p,) save interval each piece lies in
+    k: np.ndarray               # (n_p,) block each piece lies in
     w_lo: np.ndarray            # (n_meas, n_p, 3) precession weight on r[k] (gamma included)
     w_hi: np.ndarray            # (n_meas, n_p, 3) precession weight on r[k + 1]
     flips: np.ndarray           # (n_p, n_ev) RF rotation opening each piece, per event slot, rad (0 = none)
@@ -524,28 +358,28 @@ class _BlochTerms(NamedTuple):
     echo_pieces: object         # tuple of piece indices after which the echoes are read, or None
 
 
-def _bloch_timeline(rf_events, n_t, dt_traj, t0=None):
-    """Cut the walk at the saves and at every RF instant. Returns the edges (sorted, ``(n_p + 1,)``), the
+def _bloch_timeline(rf_events, n_t, h, t0=None):
+    """Cut the walk at the block ends and at every RF instant. Returns the edges (sorted, ``(n_p + 1,)``), the
     rotations opening each piece ``[(piece, flip, axis), ...]`` and the pulse windows
     ``[(t0, t1, carrier rad/s), ...]`` over which a carrier offset and slice-select off-resonance act.
 
-    With ``t0`` the saves are those of the WINDOW of the walk starting at ``t0`` on the schedule's clock (RPK.md
+    With ``t0`` the block ends are those of the WINDOW of the walk starting at ``t0`` on the schedule's clock (RPK.md
     4.3), every time on that clock: an instant belongs to the window ``(t0, t0 + T]`` (and ``t = 0`` to the first),
     a finite pulse's sub-rotations each to theirs, its carrier window clipped to the walk's window; nothing is
     refused, since what lies outside is another window's (the whole schedule is checked against the whole walk
     once, without ``t0``)."""
-    T = (int(n_t) - 1) * float(dt_traj)
-    tol = 1e-9 * float(dt_traj)
+    T = (int(n_t) - 1) * float(h)
+    tol = 1e-9 * float(h)
     start = 0.0 if t0 is None else float(t0)
     end = start + T
-    saves = start + np.arange(int(n_t)) * float(dt_traj)
+    ends = start + np.arange(int(n_t)) * float(h)
     inside = (lambda t: (t > start + tol or (start == 0.0 and t >= -tol)) and t <= end + tol)
     rots, windows, instants = [], [], []
     for e in RFSchedule(rf_events):
         t_s, dur = e.t_s, e.duration_s
         if t0 is None and (t_s < -tol or t_s > T + tol):
             raise ValueError(f"RF event at t = {t_s:.6g} s lies outside the walk [0, {T:.6g}] s")
-        nsub = max(1, int(round(dur / float(dt_traj)))) if dur > 0.0 else 1
+        nsub = max(1, int(round(dur / float(h)))) if dur > 0.0 else 1
         ts = (np.clip(t_s - dur / 2.0 + (np.arange(nsub) + 0.5) * dur / nsub, 0.0, None) if dur > 0.0
               else np.array([t_s]))
         dflips, axes = e.flip_split(nsub)                                  # even, or by the pulse's envelope
@@ -555,7 +389,7 @@ def _bloch_timeline(rf_events, n_t, dt_traj, t0=None):
                 rots.append((t, float(f), float(ax)))
                 instants.append(t)
         windows.append((max(start, t_s - dur / 2.0), min(end, t_s + dur / 2.0), 2.0 * np.pi * e.offset_hz))   # one per event; empty outside the window
-    times = np.sort(np.concatenate([saves, np.asarray(instants, np.float64)]))
+    times = np.sort(np.concatenate([ends, np.asarray(instants, np.float64)]))
     edges = [times[0]]
     for t in times[1:]:
         if t - edges[-1] > tol:
@@ -570,7 +404,7 @@ def _bloch_timeline(rf_events, n_t, dt_traj, t0=None):
     return edges, rotations, windows
 
 
-def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, comp_traj,
+def _bloch_replay_terms(trajectory, h, G, dt_wf, rf_events, *, T2, T1, comp_traj,
                         T2_per_comp, T1_per_comp, susceptibility, extra_phase_per_step,
                         dlog_boundary_unit, surface_relaxivity, D, b1_scale, slice_offsets,
                         slice_gradient, bound_frac, T2_bound, T1_bound, off_resonance_bound,
@@ -580,19 +414,19 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
     Both Bloch replays consume this; the numpy loop and the JAX scan then differ only in how they iterate the
     identical operator, which is what makes the numpy one the reference.
 
-    The walk is cut at the saves and at every RF instant (:func:`_bloch_timeline`). Over each piece the gradient
+    The walk is cut at the block ends and at every RF instant (:func:`_bloch_timeline`). Over each piece the gradient
     precession is exact for the piecewise-linear path (:func:`_replay_kernel.piece_phase_weights`), relaxation
-    runs for the piece's duration, and the per-save wall contact and off-resonance are shared by duration. A
+    runs for the piece's duration, and the per-block-end wall contact and off-resonance are shared by duration. A
     hard pulse is one rotation at its instant; a finite pulse of ``duration_s`` is ``round(duration/dt)``
     sub-rotations spread over its window with the flip split evenly (or by its envelope); its carrier
     ``offset_hz`` and, with ``slice_offsets``/``slice_gradient``, the slice-select off-resonance act over the
     window (a hard pulse has no window). An MT ``bound_frac`` blends the relaxation rates toward the bound
-    pool's per save and adds the bound pool's off-resonance precession by occupancy.
+    pool's per block end and adds the bound pool's off-resonance precession by occupancy.
     """
     G = np.asarray(G, np.float64)
     n_meas = G.shape[0]
     n_w, n_t, _ = trajectory.shape
-    dt = float(dt_traj)
+    dt = float(h)
     edges, rotations, windows = _bloch_timeline(rf_events, n_t, dt, t0=t0)
     w_lo, w_hi, k = piece_phase_weights(G, dt_wf, edges, n_t, dt, t0=t0)       # (n_meas, n_p, 3), (n_p,)
     n_p = k.size
@@ -608,9 +442,9 @@ def _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, *, T2, T1, com
         return np.full((n_t, 1), 0.0 if scalar is None else 1.0 / float(scalar))
     invT2 = rate(T2_per_comp, T2)
     invT1 = rate(T1_per_comp, T1)
-    # a save's occupancy, contact and bound fraction are accumulated over the step ENDING at it, so the piece in
-    # save interval [t_k, t_{k+1}] reads them at k + 1; a sampled quantity (a field at the saves) is read through
-    # the path interpolant with the piece's unit moments (lo on save k, hi on save k + 1)
+    # a block end's occupancy, contact and bound fraction are accumulated over the step ENDING at it, so the piece in
+    # block [t_k, t_{k+1}] reads them at k + 1; a sampled quantity (a field at the block ends) is read through
+    # the path interpolant with the piece's unit moments (lo on block end k, hi on block end k + 1)
     k1 = np.minimum(k + 1, n_t - 1)
     a_rel, b_rel = edges[:-1] - start - k * dt, edges[1:] - start - k * dt
     u_hi = (b_rel ** 2 - a_rel ** 2) / (2.0 * dt)                            # int (t - t_k) dt / dt
@@ -684,7 +518,7 @@ def _bloch_replay_output(sig_last, M_last, echo_out, echo_steps, return_walker_s
     return sig_last
 
 
-def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
+def replay_bloch(trajectory, h, G, dt_wf, rf_events, *,
                  T2=None, T1=None, comp_traj=None,
                  T2_per_comp=None, T1_per_comp=None,
                  susceptibility=None, extra_phase_per_step=None,
@@ -699,7 +533,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     Propagates each walker's magnetisation ``M = (Mx, My, Mz)`` through the ACTUAL sequence operators -- RF
     rotations from ``rf_events``, the physical gradient precession ``gamma int G(t) . r_w(t) dt``, per-comp
     T2/T1, surface relaxivity, an optional susceptibility off-resonance field, and an optional MT bound-pool
-    blend -- piece by piece, the walk cut at every save and every RF instant, so the phase accrued before a
+    blend -- piece by piece, the walk cut at every block end and every RF instant, so the phase accrued before a
     pulse is flipped by it exactly wherever the pulse falls (:func:`_bloch_replay_terms`). The forward-engine
     counterpart is :func:`dmipy_sim.engine.bloch.simulate_bloch`.
 
@@ -714,17 +548,17 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     rf_events : RFSchedule or sequence of RFEvent
         The pulses (:class:`~dmipy_sim.acquisition.rf.RFEvent`, fields ``t_s``, ``flip_deg``, ``axis_deg``,
         ``duration_s``, ``offset_hz``); ``axis_deg`` is the B1 phase (0 = x, 90 = y); ``duration_s = 0`` is an
-        instantaneous hard pulse at ``t_s`` (any instant, not a save); ``offset_hz`` an off-resonance carrier
+        instantaneous hard pulse at ``t_s`` (any instant, not a block end); ``offset_hz`` an off-resonance carrier
         over a finite pulse.
     T2, T1 / T2_per_comp, T1_per_comp, comp_traj : as in :func:`replay`.
     susceptibility : a :mod:`dmipy_sim.fields.susceptibility` provider or ``r -> dBz`` callable, sampled along
-        the walk; mutually exclusive with ``extra_phase_per_step`` (the pre-baked per-save increment).
-    bound_frac, T2_bound, T1_bound, off_resonance_bound : the MT bound-pool blend per save.
+        the walk; mutually exclusive with ``extra_phase_per_step`` (the pre-baked per-block-end increment).
+    bound_frac, T2_bound, T1_bound, off_resonance_bound : the MT bound-pool blend per block end.
     b1_scale : transmit (B1+) scale of every flip; per walker for an inhomogeneous field.
     slice_offsets, slice_gradient : slice-select off-resonance ``gamma G_slice z_w`` during finite pulses.
     weights : (n_w,) ensemble weights of the walker mean.
     echo_steps, echo_per_walker : record ``Mxy`` at these SAVE indices, per walker if asked.
-    t0, M_init, return_state : ``trajectory`` as ONE WINDOW of a longer walk (RPK.md 4.3): its first save sits
+    t0, M_init, return_state : ``trajectory`` as ONE WINDOW of a longer walk (RPK.md 4.3): its first block end sits
         at ``t0`` on the sequence's clock, every walker starts the window at ``M_init`` ``(n_meas, 3, n_w)`` (the
         state the previous window left it in; equilibrium when None), and with ``return_state`` the state every
         measurement leaves every walker in at the window's end, ``(n_meas, 3, n_w)``, is returned before the
@@ -737,7 +571,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
         per-walker (3, n_w) final magnetisation of the last measurement when ``return_walker_signals``; with
         ``return_state``, ``(M_all, <the above>)``.
     """
-    tm = _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, T2=T2, T1=T1,
+    tm = _bloch_replay_terms(trajectory, h, G, dt_wf, rf_events, T2=T2, T1=T1,
                              comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
                              susceptibility=susceptibility, extra_phase_per_step=extra_phase_per_step,
                              dlog_boundary_unit=dlog_boundary_unit,
@@ -790,7 +624,7 @@ def replay_bloch(trajectory, dt_traj, G, dt_wf, rf_events, *,
     return (M_all, out) if return_state else out
 
 
-def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
+def replay_bloch_jax(trajectory, h, G, dt_wf, rf_events, *,
                      T2=None, T1=None, comp_traj=None,
                      T2_per_comp=None, T1_per_comp=None,
                      susceptibility=None, extra_phase_per_step=None,
@@ -810,7 +644,7 @@ def replay_bloch_jax(trajectory, dt_traj, G, dt_wf, rf_events, *,
     """
     if not _JAX_AVAILABLE:
         raise RuntimeError("JAX not available; use replay_bloch.")
-    tm = _bloch_replay_terms(trajectory, dt_traj, G, dt_wf, rf_events, T2=T2, T1=T1,
+    tm = _bloch_replay_terms(trajectory, h, G, dt_wf, rf_events, T2=T2, T1=T1,
                              comp_traj=comp_traj, T2_per_comp=T2_per_comp, T1_per_comp=T1_per_comp,
                              susceptibility=susceptibility, extra_phase_per_step=extra_phase_per_step,
                              dlog_boundary_unit=dlog_boundary_unit,
@@ -851,7 +685,7 @@ if _JAX_AVAILABLE:
     @functools.partial(jax.jit, static_argnames=("echo_idx", "per_walker"))
     def _bloch_scan_batch(W_b, M0_b, r_lo, r_hi, flips, axes, b1, dphi_extra, surf, E2, E1, wn, *, echo_idx, per_walker):
         """One batch of measurements of :func:`replay_bloch_jax`: ``vmap`` over ``W_b`` ``(n_b, 2, n_p, 3)`` (the
-        piece weights on the two bounding saves) and ``M0_b`` ``(n_b, 3, n_w)`` (the state every walker starts in)
+        piece weights on the two bounding block ends) and ``M0_b`` ``(n_b, 3, n_w)`` (the state every walker starts in)
         of a ``lax.scan`` over the pieces. Module-level and jitted on array arguments, so the executable is reused
         by every call of the same shapes."""
         n_w = r_lo.shape[0]

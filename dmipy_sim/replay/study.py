@@ -277,7 +277,7 @@ def walker_primitives(pack, acquisition):
     from .replay import _band_phase, _path_field_channels, _gated_contact, _has_aniso
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
-    n_w, dt, ch = P["n_w"], P["dt"], P["ch"]
+    n_w, ch = P["n_w"], P["ch"]
     col = n_ids = None
     if pack.has_relaxation:
         from .compression import is_current_c1, decode_occupancy
@@ -292,20 +292,20 @@ def walker_primitives(pack, acquisition):
     phi = _band_phase(P)                                        # the one band contraction, windows summed
     exposure_t2 = exposure_t1 = contact = contact_t1 = None
     chi_c, act_c = P["gate_cum"]
-    for j, (seg, t0, n_s) in enumerate(P["windows"]):
-        t1 = t0 + (n_s - 1) * dt
+    for j, (seg, t0, T_s) in enumerate(P["windows"]):
+        t1 = t0 + T_s
         if col is not None:
             e2 = np.stack([-relaxation_logweight_runs(seg.arrays, col, unit[p].tolist(), zero, chi_c, act_c, t0=t0, t1=t1) for p in range(n_ids)], axis=1)
             e1 = np.stack([-relaxation_logweight_runs(seg.arrays, col, zero, unit[p].tolist(), chi_c, act_c, t0=t0, t1=t1) for p in range(n_ids)], axis=1)
             exposure_t2 = e2 if exposure_t2 is None else exposure_t2 + e2
             exposure_t1 = e1 if exposure_t1 is None else exposure_t1 + e1
         if has_c2(seg.arrays):
-            c_s = np.asarray(_gated_contact(P["windows"], P["window_gates"], P["gate_wf"], j, 1.0, ch.get("boundary_local_time")),
+            c_s = np.asarray(_gated_contact(P["windows"], P["gate_wf"], j, 1.0, ch.get("boundary_local_time")),
                              np.float64)
             contact = c_s if contact is None else contact + c_s
             # the SAME channel, gated by the complement (on while stored along B0): the longitudinal contact
             # rho1 reads at reduction time, built once here exactly as `contact` is (dmipy-sim#574)
-            c1_s = np.asarray(_gated_contact(P["windows"], P["window_gates"], P["gate_wf"], j, 1.0, ch.get("boundary_local_time"),
+            c1_s = np.asarray(_gated_contact(P["windows"], P["gate_wf"], j, 1.0, ch.get("boundary_local_time"),
                                              parallel=True), np.float64)
             contact_t1 = c1_s if contact_t1 is None else contact_t1 + c1_s
     field_iso = field_aniso = None

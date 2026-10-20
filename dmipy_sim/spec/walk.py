@@ -644,7 +644,7 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
     contact, the field at its seat: the ``k = 0`` mode alone, ``sqrt(T) b(seat)``); the compartment is the pool id
     per walker (static: a bundle's walls are impermeable)."""
     import dataclasses
-    from ..persistent_walk import merge_work
+    from ..coefficient_walk import merge_work
     walks = [w for _, w in parts if not isinstance(w, np.ndarray)]
     w0 = walks[0]
     for w in walks[1:]:

@@ -27,7 +27,6 @@ from ..acquisition.waveforms import band_hz
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn,
                       make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
                       seed_walkers, pair_step)
-from ..persistent_walk import PersistentWalk
 from ..run import Run, current
 from ..acquisition.scanner_sequence import Protocol
 
@@ -213,8 +212,8 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
     # the walk on the waveform's own grid, every walker kept at its block ends (the raw subset is the whole walk), the
     # step resolved at that grid's Nyquist frequency as the fused engine resolves it; one band, which nothing reads
     walk = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, dt, K=1, f_band=0.5 / dt, raw_subset=n_walkers,
-                                 window_T=T_max, **st_kwargs).saves()
-    traj, dt_traj, dlog, comp = walk.positions, walk.dt, walk.boundary_local_time, walk.compartment
+                                 window_T=T_max, **st_kwargs)
+    traj, h, dlog, comp = walk.raw_positions, walk.h, walk.raw_boundary, walk.raw_compartment
 
     relax_kw = dict(T2=T2, T1=T1)
     if has_per_comp:                                   # per-compartment overrides scalar
@@ -228,7 +227,7 @@ def _simulate_via_replay(n_walkers, diffusivity, waveform, geometry, *, seed,
                         D=float(diffusivity))
 
     signals = replay(
-        traj, dt_traj, G, dt, chi_perp=chi,
+        traj, h, G, dt, chi_perp=chi,
         stimulated_echo=bool(getattr(waveform, 'stimulated_echo', False)),
         **relax_kw)
     return np.asarray(signals, dtype=np.float32)
@@ -1558,9 +1557,8 @@ def simulate_trajectories(
         The storage window (s) a longer walk is accumulated in; :data:`~dmipy_sim.replay.bank.WINDOW_T` by default.
     raw_subset : int
         Keep the first ``raw_subset`` walkers' positions, contact, pool label, bound state and field block means at
-        every block end beside the coefficients (``CoefficientWalk.raw_positions`` ...;
-        :meth:`~dmipy_sim.coefficient_walk.CoefficientWalk.saves` is that subset as a walk of block ends): the opt-in
-        raw output, for a measured certificate, a visualisation or a dense oracle.
+        every block end beside the coefficients, as plain arrays (``CoefficientWalk.raw_positions``,
+        ``raw_boundary``, ``raw_compartment``, ``raw_bound``, ``raw_field``): the opt-in raw output, for a measured certificate, a visualisation or a dense oracle.
     field_basis : FieldGrid, optional
         A gridded susceptibility field basis (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`) the walk
         reads itself at the kernel's position (a periodic grid wraps) every ``field_read_interval`` seconds, the

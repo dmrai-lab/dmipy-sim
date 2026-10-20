@@ -136,7 +136,7 @@ class Geometry(ABC):
     #: larger budget, by the loop's own rule), and a pack refuses a walk that exhausted it.
     bounce_budget = None
 
-    #: Count the wall encounters of every step (`WallHit.n_hits`, summed by a walk into ``PersistentWalk.work``).
+    #: Count the wall encounters of every step (`WallHit.n_hits`, summed by a walk into ``CoefficientWalk.work``).
     #: Off by default because it is a carried integer in the loop and costs (+5 % on an analytic wall, measured);
     #: the pilot walk that calibrates a substrate's cost per hit turns it on, a production walk pays nothing.
     count_walls = False

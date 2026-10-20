@@ -292,16 +292,16 @@ def parity_cases():
 
 
 def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
-    """The void case's invariant (dmrai-lab/dmipy-sim#675): every recorded save of every walker in ``w`` lies
+    """The void case's invariant (dmrai-lab/dmipy-sim#675): every block end of every walker of ``w``'s raw subset lies
     outside every tube of ``g`` -- tested by the geometry's own exact classifier
     (:meth:`~dmipy_sim.geometry.base.Geometry.classify_positions_exact` / :meth:`~dmipy_sim.geometry.base.Geometry.pool_of`),
     never a hand-rolled radial formula -- no walker was granted an illegal crossing, and more than
-    ``near_wall_fraction`` of the walkers come within ``wall_margin_m`` of a wall at some save (the geometry's own
+    ``near_wall_fraction`` of the walkers come within ``wall_margin_m`` of a wall at some block end (the geometry's own
     :meth:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders.wall_scales`; the premise -- enough walkers
     reach the wall for the first two checks to mean something). Returns ``{check: {..., ok}}``; a failure here is
     a hard violation of the backend under test, never a rate comparison."""
-    n, n_t, _ = w.positions.shape
-    flat = np.asarray(w.positions, np.float64).reshape(-1, 3)
+    n, n_t, _ = w.raw_positions.shape
+    flat = np.asarray(w.raw_positions, np.float64).reshape(-1, 3)
     pool = np.asarray(g.pool_of(g.classify_positions_exact(flat))).reshape(n, n_t)
     n_inside = int((pool != 0).sum())
     illegal = int(np.asarray(w.illegal_crossings).sum())
@@ -374,7 +374,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
             sd = seed if case.seed is None else case.seed
             try:
                 w = simulate_trajectories(nw, 2e-9, g, Tm, bh, seed=sd, tiers="all", walker_batch_size=nw,
-                                          r0=case.starts(nw, sd), backend=backend, raw_subset=nw).saves()
+                                          r0=case.starts(nw, sd), backend=backend, raw_subset=nw)
             except ValueError as e:
                 if "refuses" in str(e) or "does not" in str(e):
                     out.append(dict(case=name, ok=None, refused=str(e))); continue
