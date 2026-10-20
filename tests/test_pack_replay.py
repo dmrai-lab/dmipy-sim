@@ -7,7 +7,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.compression import decode_occupancy, relaxation_logweight
+from dmipy_sim.replay.compression import occupancy_at, relaxation_logweight
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.spec.tissue import Tissue
 
@@ -47,7 +47,8 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     full, plain = packs
     wf = _wf(full.n_t, full.dt)
     ch = full.meta["compression"]["channels"]["compartment"]
-    comp = decode_occupancy(full.arrays, ch, n_t=full.n_t)["comp"]
+    comp = occupancy_at(full.arrays, next(c for c in ch["columns"] if c["name"] == "comp"),
+                        np.arange(full.n_t) * full.dt)                   # the pool at every block end (an impermeable pack: static)
     from dmipy_sim.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # the acquisition ends at its echo: no relaxation
     logw = relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi, chi)   # counted over the walk beyond it

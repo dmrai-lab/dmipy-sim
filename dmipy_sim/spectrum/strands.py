@@ -18,7 +18,7 @@ for its whole length, as :func:`~dmipy_sim.spec.producers.disco_spec` requires. 
 from one pilot: a tiny 25 um realisation of the SAME statistics is walked on the JAX engine
 (:func:`~dmipy_sim.spec.walk.walk_spec`) at ``n_pilot = ceil(1 / target_floor**2)`` walkers per pool -- the
 textbook Monte-Carlo floor ``1/sqrt(n)`` this codebase already cites throughout (``scanners.py``'s
-``save_interval`` derivation, ``replay.bank.storage_band_hz``'s certificate) -- which both proves the geometry
+band derivation, ``replay.bank.storage_band_hz``'s certificate) -- which both proves the geometry
 and its seeding are walkable and gives ``n_pilot`` its floor by construction (``floor_pilot = 1/sqrt(n_pilot)``).
 Because the strand statistics are translation-invariant across columns, that SAME ``n_pilot`` is the target for
 every occupied voxel of every larger grid: the per-voxel CENSUS (the pool's local volume fraction, read off the
@@ -158,9 +158,8 @@ def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, 
                            "pick a different generator seed")
     spec = disco_spec(tracks, diam, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=PILOT_EDGE_M, field=False)
     T_safe = min((PILOT_EDGE_M / 16.0) ** 2 / (2.0 * HALO_FREE_DIFFUSIVITY_M2_S), 1e-3)
-    dt_save = T_safe / 20.0
     t0 = time.time()
-    walk_spec(spec, n_pilot * 2, T_safe, dt_save, seed=pseed, require_gpu=False, n_probe=max(20_000, n_pilot * 4))
+    walk_spec(spec, n_pilot * 2, T_safe, seed=pseed, require_gpu=False, n_probe=max(20_000, n_pilot * 4))
     log.info("spectrum.strands: pilot walked %d walkers/pool in %.1f s (T_max=%.2g s)", n_pilot, time.time() - t0, T_safe)
     floor_pilot = 1.0 / np.sqrt(n_pilot)
     return n_pilot, float(floor_pilot), pilot_dir
@@ -240,8 +239,7 @@ def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, 
         variants=dict(field=dict(field=far_grid_rel is not None)), default_variant="field",
         grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
                   attach="substrate"),
-        walk=dict(T_max_s=float(T_max_s), dt_save_s=float(T_max_s) / 200.0, scanner=scanner, floor_fraction=0.1,
-                  adaptive_steps=True, walker_batch_size=4096, census_draws=200),
+        walk=dict(T_max_s=float(T_max_s), scanner=scanner, adaptive_steps=True, walker_batch_size=4096, census_draws=200),
         pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="bands",
                   blt_container="bands", blt_K=mode_count(T_max_s, scanner)),
         plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),

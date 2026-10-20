@@ -29,7 +29,7 @@ why a view is exact: it is not an approximation of another walk, it IS that walk
 
 ## In time: `at_diffusivity`
 
-A path walked at `D` and read on a grid divided by `a` is a path walked at `a D`: the stored coefficients are
+A path walked at `D` and read on a time axis divided by `a` (the block `h / a`, the window `T / a`) is a path walked at `a D`: the stored coefficients are
 duration-agnostic. The same path crosses a permeable wall with the walked probability per encounter, which goes as
 `kappa sqrt(dt / D)`, so the view is the walk at `(a D, a kappa)` and at no other pair.
 
@@ -47,15 +47,15 @@ fast = pack.at_diffusivity(4e-9)                                  # a = 2: the s
 print(fast.diffusivity, fast.permeability, fast.dt, fast.n_t)    # 4e-9, 2e-5 (the pair), h / 2, the same blocks
 print(fast.meta["provenance"]["diffusivity_scaled"]["a"])        # 2.0, with walked and replayed values beside it
 try:
-    pack.at_diffusivity(1e-9)                                     # a < 1 stretches the grid: refused
+    pack.at_diffusivity(1e-9)                                     # a < 1 stretches the block: refused
 except ValueError as e:
     print(str(e)[:60])
 ```
 
-Why only faster. The certificate was measured on the walked grid. Dividing the grid keeps the codec error and the
+Why only faster. The certificate was measured at the walked block. Dividing the block keeps the codec error and the
 floor what they were, but the in-step integration bias goes as `D dt^2`, which is `D_walk dt_walk^2 / a`: it falls
-for `a > 1` and grows for `a < 1` past what the walk's save interval was chosen to keep below the floor. A published
-pack does not carry what would re-certify a stretched grid, so a slower replay is refused rather than returned
+for `a > 1` and grows for `a < 1` past what the walk's block was chosen to keep below the floor. A published
+pack does not carry what would re-certify a stretched block, so a slower replay is refused rather than returned
 uncertified. The view is also shorter, `T / a`, and an acquisition must fit it. `Tissue(D=...)` on any replay route
 takes this view; `Tissue(kappa=...)` takes it by the permeability, and the two stated together must sit on the
 walk's line `kappa / D`.
@@ -82,8 +82,7 @@ print(np.allclose(half.replay(seq, tissue=Tissue(rho2=rho2)), pack.replay(seq_s,
 
 Each channel follows in its own space. The gradient phase `gamma G . s x` makes the view at `G` the pack at `s G`.
 The surface term `rho2 ell / D` with `ell -> s ell` and `D -> s^2 D` makes the view at `rho2` the pack at `rho2 / s`.
-The relaxation gates, the compartment labels and the field path channel are unchanged; the grid route reads the
-scaled positions against the scaled grid.
+The relaxation gates, the compartment labels and the field path channel are unchanged.
 
 Where it stops: the battery. The codec error and the floor were measured over a battery of acquisitions up to
 `replay_envelope.acquisition.b_max`, the pack's own, not a scanner's. The view at `b` reads the walk at `s^2 b`, so

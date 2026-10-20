@@ -15,7 +15,7 @@ def _pack(interior):
 
 def _walk(g, **kw):
     return d.simulate_trajectories(400, D, g, 1e-3, 2.5e-4, seed=5, require_gpu=False, tiers="all",
-                                   walker_batch_size=400, raw_subset=400, **kw).saves()
+                                   walker_batch_size=400, raw_subset=400, **kw)
 
 
 def test_counting_reports_the_bounces_and_changes_no_position():
@@ -23,14 +23,14 @@ def test_counting_reports_the_bounces_and_changes_no_position():
         plain = _walk(_pack(interior))
         g = _pack(interior); g.count_walls = True
         counted = _walk(g)
-        np.testing.assert_array_equal(plain.positions, counted.positions)
-        np.testing.assert_array_equal(plain.boundary_local_time, counted.boundary_local_time)
+        np.testing.assert_array_equal(plain.raw_positions, counted.raw_positions)
+        np.testing.assert_array_equal(plain.raw_boundary, counted.raw_boundary)
         np.testing.assert_array_equal(plain.compartment, counted.compartment)
         assert plain.work["n_hits"] is None
         assert counted.work["n_hits"] > 0, interior
         assert counted.work["n_crossings"] == 0 and counted.work["exhausted_steps"] == 0
         # the hits are the contact: a walker that bounced has a non-zero local time, one that did not has none
-        blt = np.asarray(counted.boundary_local_time)
+        blt = np.asarray(counted.raw_boundary)
         assert (blt != 0).any()
 
 

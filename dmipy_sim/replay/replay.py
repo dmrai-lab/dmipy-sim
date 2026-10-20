@@ -13,7 +13,7 @@ The forward is exact and cheap. The signal is
     E = < w_i exp(i phi_i) > / < w_i > ,   phi_i(m) = gamma * dt * sum_t G_m(t) . r_i(t)
 
 and because the phase is linear in position it is a contraction of the stored coefficients ``C_i`` (the two
-endpoints and the ``K`` bands, :func:`~dmipy_sim.replay.compression.encode_bridge_dst`) with the waveform's
+endpoints and the ``K`` bands the walk accumulated, :mod:`dmipy_sim.engine.accumulate`) with the waveform's
 projection on the same basis,
 
     phi_i(m) = sum_{k,c} C_{i,k,c} * W_{m,k,c},
@@ -78,6 +78,10 @@ def read_rpk(path):
 #: field route this revision does not read
 REFUSED_KEYS = (("walk_params", "n_t"), ("walk_params", "dt_traj"), ("walk_params", "cell_size"), ("compression", "n_t"),
                 ("compression", "dt_traj"), ("compression", "basis"))
+#: the channel spellings a pack of this revision never carries: the path channel on its own save grid
+#: (``susceptibility_path`` with ``n_t`` / ``dt``), the occupancy as runs on the block grid (``kind`` ``label`` / ``fraction``)
+REFUSED_CHANNEL_KEYS = ("susceptibility_path",)
+REFUSED_COLUMN_KINDS = ("label", "fraction")
 
 
 def _refuse_predating(meta, where):
@@ -89,6 +93,12 @@ def _refuse_predating(meta, where):
     cx = meta.get("compression") or {}
     found = [f"{a}.{b}" for a, b in REFUSED_KEYS if b in (wp if a == "walk_params" else cx)]
     found += [f"walk_params.windows.{k}" for k in ("n_t", "dt_traj") if k in (wp.get("windows") or {})]
+    chans = cx.get("channels") or {}
+    found += [f"compression.channels.{k}" for k in REFUSED_CHANNEL_KEYS if k in chans]
+    found += [f"compression.channels.susc_field_basis.{k}" for k in ("n_t", "dt") if k in (chans.get("susc_field_basis") or {})]
+    for col in (chans.get("compartment") or {}).get("columns") or []:
+        if col.get("kind") in REFUSED_COLUMN_KINDS:
+            found.append(f"compression.channels.compartment.columns[{col.get('name')}].kind = {col['kind']}")
     if cx.get("method") == "identity":
         found.append("compression.method = identity")
     if not found and "block" not in wp:
@@ -497,149 +507,84 @@ class ReplayPack:
         return extend_pack(self, T_add, seed=seed, out_path=out_path, require_gpu=require_gpu, envelope=envelope, device=device)
 
     def _decoded_channels(self, start=0, stop=None):
-        """The per-save channels of the walk at saves ``start .. stop - 1`` (the whole walk by default), decoded window
-        by window and joined on the shared saves: ``comp`` / ``bound`` tracks ``(n_w, n_t)``, the contact increments
-        ``ell`` ``(n_w, n_t)`` and the path series ``(series (n_w, n_ch, n_tf), names)`` -- each ``None`` when the pack
-        lacks the channel. The windows outside the saves are not read, and the bridge and path channels are
-        evaluated at those saves alone; the path series holds the field samples its own grid places there."""
+        """The per-block channels of the walk at block ends ``start .. stop - 1`` (the whole walk by default), each
+        window's stored function read on them and joined on the shared block ends: the ``comp`` / ``bound`` labels
+        ``(n_w, n_t)`` (the events evaluated at the block ends, :func:`~dmipy_sim.replay.compression.occupancy_at`),
+        the contact increments ``ell`` ``(n_w, n_t)`` and the field series ``(series (n_w, n_ch, n_t), names)`` --
+        each ``None`` when the pack lacks the channel. A reader's sampling of the stored functions (RPK.md 9.5.4),
+        what the dense oracles read; no stored form is a grid."""
         from .bank import susc_path_decode
-        from .compression import decode_occupancy, decode_boundary_bridge
+        from .compression import occupancy_at, decode_boundary_bridge
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
         out = dict(comp=None, bound=None, ell=None, path=None)
         comps, bounds, ells, series = [], [], [], []
         names = None
+        dt = float(self.dt)
         start = int(start); stop = int(self.n_t) if stop is None else int(stop)
-        for j, (w, _, n_seg) in enumerate(self._windows()):
-            off = j * (n_seg - 1)                                      # the window's first save on the walk
+        for j, (w, t0, n_seg) in enumerate(self._windows()):
+            off = j * (n_seg - 1)                                      # the window's first block end on the walk
             if off >= stop:
                 break
-            lo = max(start - off, 0 if j == 0 else 1)                  # the shared save is the previous window's
+            lo = max(start - off, 0 if j == 0 else 1)                  # the shared block end is the previous window's
             hi = min(stop - off, n_seg)
             if lo >= hi:
                 continue
             if "compartment" in ch:
-                occ = decode_occupancy(w.arrays, ch["compartment"])
-                comp = np.asarray(occ["comp"])
-                comps.append(comp[:, lo:hi] if comp.ndim == 2 else comp)
-                if "bound" in occ:
-                    b = np.asarray(occ["bound"]); bounds.append(b[:, lo:hi] if b.ndim == 2 else b)
+                times = (off + np.arange(lo, hi)) * dt
+                for col in ch["compartment"]["columns"]:
+                    (comps if col["name"] == "comp" else bounds).append(occupancy_at(w.arrays, col, times))
             if "boundary_local_time" in ch:
                 bm = dict(ch["boundary_local_time"])
                 bm.setdefault("K", _cx_bands_K(w.arrays, bm))
                 ells.append(np.asarray(decode_boundary_bridge(w.arrays, bm, start=lo, n_cut=hi, n_t=n_seg)))
-            if "susceptibility_path" in ch:
-                pm = ch["susceptibility_path"]
-                n_tf, dt_f = _path_grid(pm, n_seg, float(self.dt))
-                every = max(1, int(round(dt_f / float(self.dt))))
-                f_lo, f_hi = -(-lo // every), -(-hi // every)          # the field samples at saves lo .. hi - 1
-                if f_lo < f_hi:
-                    ser, names = susc_path_decode(w.arrays, pm, n_w=self.n_walkers, start=f_lo, n_cut=f_hi)
-                    series.append(ser)
+            if "susc_field_basis" in ch:
+                ser, names = susc_path_decode(w.arrays, ch["susc_field_basis"], n_t=n_seg, n_w=self.n_walkers, start=lo, n_cut=hi)
+                series.append(ser)
         if comps:
-            out["comp"] = np.concatenate(comps, axis=1) if comps[0].ndim == 2 else comps[0]
+            out["comp"] = np.concatenate(comps, axis=1)
         if bounds:
-            out["bound"] = np.concatenate(bounds, axis=1) if bounds[0].ndim == 2 else bounds[0]
+            out["bound"] = np.concatenate(bounds, axis=1)
         if ells:
             out["ell"] = np.concatenate(ells, axis=1)
         if series:
             out["path"] = (np.concatenate(series, axis=2), names)
         return out
 
-    def _window_walk(self, start, stop):
-        """Saves ``start .. stop - 1`` of this walk as the bank's master dict a fresh walk of that stretch would have
-        recorded, and the path channel's decoded series there (``(series (n_w, n_ch, n_tf), names)`` or ``None``):
-        the positions a :class:`~dmipy_sim.replay.compression.LazyWalk` decoded per walker range from the
-        coefficients of the windows the stretch spans on the pack's basis, never held whole (#449 item 3); the occupancy and the
-        contact at those saves (the contact of the first save 0 when the stretch starts past the walk's first: it
-        ends no step of the stretch); the weights, spec, frame, diffusivity and seed."""
-        from .bank import seed_value
-        from .compression import LazyWalk, decode_saves, read_position_coeffs
-        start, stop = int(start), int(stop)
-        dt = float(self.dt)
-        decoded = self._decoded_channels(start=start, stop=stop)
-        wp = dict(self.meta.get("walk_params", {}) or {})
-        spans = []                                                     # (coefficients, saves of the window, first save read, end)
-        for j, (w, _, n_seg) in enumerate(self._windows()):
-            off = j * (n_seg - 1)
-            if off >= stop:
-                break
-            lo = max(start - off, 0 if j == 0 else 1)
-            hi = min(stop - off, n_seg)
-            if lo < hi:
-                spans.append((read_position_coeffs(w.arrays, dtype=np.float64), n_seg, lo, hi))
-        n_w = spans[0][0].shape[0]
-
-        def _positions(a, b):
-            return np.concatenate([decode_saves(C[a:b], n_seg, lo, hi, T=(n_seg - 1) * dt)
-                                   for C, n_seg, lo, hi in spans], axis=1)
-
-        m = dict(traj=LazyWalk(_positions, (n_w, stop - start, 3)), dt_traj=dt, T_max=(stop - start - 1) * dt,
-                 walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)),
-                 seed=seed_value(wp.get("seed", 0)), substrate_frame=self.substrate_frame,
-                 susceptibility_field=self.susceptibility_field)
-        if "spin_weights" in self.arrays:
-            m["w"] = np.asarray(self.arrays["spin_weights"], np.float64)
-        if self.meta.get("substrate") is not None:
-            m["substrate"] = self.meta["substrate"]
-        if wp.get("diffusivity") is not None:
-            m["D_intra"] = float(wp["diffusivity"])
-        if decoded["comp"] is not None:
-            m["comp"] = decoded["comp"]
-            if decoded["bound"] is not None:
-                m["bfrac"] = decoded["bound"]
-        if decoded["ell"] is not None:
-            ell = np.array(decoded["ell"], copy=True)
-            if start > 0:
-                ell[:, 0] = 0.0
-            m["dlog_b"] = ell
-        return m, decoded["path"]
-
     def rewindow(self, T_seg, *, out_path, id=None, max_dropped_fraction=1e-3, envelope=None, tol=2.0):
         """This one-window walk stored in windows of ``T_seg`` seconds (RPK.md 4.3), so that a consumer holds only
         the windows its acquisitions reach (#525).
 
-        The windows are a whole number of saves and share their boundary saves: ``n_seg - 1`` is the largest save
-        count at most ``round(T_seg / dt)`` whose windows cover the walk up to a trailing remainder of at most
-        ``max_dropped_fraction`` of its saves; the remainder is dropped (``saves_dropped``), and a walk that would
-        leave more is refused. Every window is the parent's channels decoded on its saves and re-encoded by
-        :func:`~dmipy_sim.replay.bank.build_replay_pack` as one window of its own (:meth:`_window_walk`): the positions
-        per walker range from the parent's coefficients at the parent's bands per second, ``K_seg = round(K T_seg /
-        T)``, doubled until window 0's certificate passes as :meth:`prefix` does; the occupancy runs cut at the
-        boundary save; the contact as the window's own cumulative local time at the band window 0's surface
-        certificate chooses; the path channel at the band and container
-        :func:`~dmipy_sim.replay.bank.derive_susc_path_K` derives on window 0 from the decoded series. Window 0's
-        bands are every window's. Each window's certificate (``fidelity.windows[i]``) is measured against the
-        parent's decoded saves on it -- the re-encode error -- and the whole's is the bound over them
-        (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`, ``combined = "bound_over_windows"``); a window outside
-        ``tol`` times its floor is refused. ``provenance.rewindowed`` records the parent (id, sha256 of its file,
-        certificate), ``T_seg``, ``n_seg``, the bands and ``saves_dropped``.
-
-        ``envelope`` is the battery every window is certified over: by default
+        Every window is the parent's stored functions cut to it and re-projected on the window's own basis
+        (:func:`~dmipy_sim.replay.bank.window_of_pack`: the bridge and the field modes by their closed-form window
+        maps, the events sliced), at the parent's bands per second (``K_seg = ceil(K T_seg / T)``, doubled until
+        window 0's certificate passes), joined by :func:`~dmipy_sim.replay.bank.join_windows`. A whole number of
+        windows cover the walk up to a trailing remainder of at most ``max_dropped_fraction`` of its duration,
+        which is dropped (``time_dropped``); a walk that would leave more is refused. Each window's certificate
+        (``fidelity.windows[i]``) carries the walk-free terms and the re-projection's measured truncation against
+        the parent's exact reading of the window, and the whole's is the bound over them
+        (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`); a window outside ``tol`` times its floor is
+        refused. ``provenance.rewindowed`` records the parent (id, sha256 of its file, certificate), ``T_seg``, the
+        bands and ``time_dropped``. ``envelope`` is the battery every window is certified over: by default
         :func:`~dmipy_sim.replay.compression.default_envelope` with the parent's field strengths (``B0_list``) and
-        the refocusing depth its path channel serves (``max_refocus_pulses``)."""
+        the refocusing depth its field channel serves (``max_refocus_pulses``)."""
         import copy
         import hashlib
-        from .bank import build_replay_pack, combine_window_fidelity, join_windows
+        from .bank import window_of_pack, combine_window_fidelity, join_windows
         from .compression import default_envelope
-        from ..fields.strand_field import StrandFieldRecord
         if self.n_windows != 1:
             raise ValueError(f"this pack already stores its walk in {self.n_windows} windows of "
                              f"{float(self.windows['T']) * 1e3:.3f} ms; rewindow reads a one-window walk")
-        dt, n_t = float(self.dt), int(self.n_t)
-        T = (n_t - 1) * dt
-        steps = None
-        for s_ in range(int(round(float(T_seg) / dt)), 1, -1):
-            if (n_t - 1) // s_ >= 2 and (n_t - 1) % s_ <= float(max_dropped_fraction) * n_t:
-                steps = s_
-                break
-        if steps is None:
-            raise ValueError(f"a {T * 1e3:.3f} ms walk of {n_t} saves (dt {dt * 1e6:.2f} us) has no division into windows of at "
-                             f"most {float(T_seg) * 1e3:.3f} ms that drops at most {max_dropped_fraction:g} of its saves; "
-                             "give a T_seg that divides it, or a larger max_dropped_fraction")
-        n = (n_t - 1) // steps
-        dropped = (n_t - 1) - n * steps
+        T = float(self.T_window)
+        T_seg = float(T_seg)
+        n = int(np.floor(T / T_seg * (1.0 + 1e-9)))
+        if n < 2:
+            raise ValueError(f"a {T * 1e3:.3f} ms walk holds fewer than two windows of {T_seg * 1e3:.3f} ms")
+        dropped = T - n * T_seg
+        if dropped > float(max_dropped_fraction) * T + 1e-12:
+            raise ValueError(f"windows of {T_seg * 1e3:.3f} ms leave {dropped * 1e3:.3f} ms of the {T * 1e3:.3f} ms walk uncovered, "
+                             f"more than {max_dropped_fraction:g} of it; give a T_seg that divides it, or a larger max_dropped_fraction")
         ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
-        pm = ch.get("susceptibility_path")
+        pm = ch.get("susc_field_basis")
         env = dict(envelope) if envelope is not None else default_envelope()
         if envelope is None:
             B0s = ((self.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("B0_list")
@@ -647,67 +592,31 @@ class ReplayPack:
                 env["B0_list"] = list(B0s)
             if pm is not None and pm.get("max_refocus_pulses"):
                 env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])
-        if (ch.get("susceptibility_grid") or {}).get("arrays_in_pack"):
-            raise ValueError("this pack's field tier samples its stored grid at the decoded positions, which holds only while "
-                             "the positions are lossless; re-encoded windows are not, so it is not rewindowed")
-        from .bank import path_codec_of
-        containers = dict(position_container=_container_of(self.meta["compression"].get("container")))
-        c2 = ch.get("boundary_local_time")                            # the parent's contact channel, or None
-        if c2 is not None:
-            containers.update(blt_container=_container_of(c2.get("container")),
-                              blt_dtype=(np.float32 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])))
-        col = next((c for c in (ch.get("compartment") or {}).get("columns", []) if c["name"] == "comp"), None)
-        crosses = col is not None and col["kind"] != "static"
-        K = max(2, int(round(self.K * steps / (n_t - 1))))
-        K_cap = min(int(self.K), steps - 1)                           # the bridge's interior: n_seg - 2 bands
-        blt_K, path_K, path_bits = None, ("auto" if pm is not None else None), ((path_codec_of(pm) or 16) if pm is not None else 8)
-        spec = self.substrate
-        chi_iso = None
-        if spec is not None:
-            from ..spec.tissue import Tissue
-            chi_iso = Tissue.from_spec(spec).chi_iso
-        stamp = id or f"{self.meta.get('id')}/seg{steps * dt * 1e3:.0f}ms"
+        K = max(2, int(np.ceil(self.K * T_seg / T)))
+        stamp = id or f"{self.meta.get('id')}/seg{T_seg * 1e3:.0f}ms"
         packs, tried = [], []
+        blt_K = path_K = None
         for i in range(n):
-            m, path = self._window_walk(i * steps, (i + 1) * steps + 1)
-            if path is not None:
-                series, names = path
-                m["susc_field_samples"] = np.ascontiguousarray(np.transpose(series, (0, 2, 1)), np.float32)   # (n_w, n_t, n_ch)
-                del series, path
-                m["susc_field_sampler"] = StrandFieldRecord(dict(ch.get("susceptibility_grid") or {}, channels=list(names)))
-                m["susc_chi_iso"] = chi_iso
             while True:
-                pk = build_replay_pack(m, id=stamp, license=self.license, citation=self.citation, K=K, blt_temporal_K=blt_K,
-                                       susc_path_K=path_K, susc_path_bits=path_bits, envelope=env, tol=tol,
-                                       window_T=steps * dt, _occupancy_runs=crosses, _window_of_plan=True, **containers)
+                pk = window_of_pack(self, i * T_seg, T_seg, K=K, blt_K=blt_K, path_K=path_K, id=stamp, envelope=env)
                 fid = pk.meta["fidelity"]
-                if i > 0 or fid["err_max"] <= tol * fid["floor_max"] or K >= K_cap:
+                if i > 0 or fid["err_reprojection"] <= tol * fid["floor_max"] or K >= int(self.K):
                     break
                 tried.append(K)
-                K = min(2 * K, K_cap)
-            if fid["err_max"] > tol * fid["floor_max"]:
-                raise ValueError(f"window {i} of {n} re-encoded at K = {K} does not reproduce the parent's decoded saves within "
-                                 f"{tol:g} x its Monte-Carlo floor (error {fid['err_max']:.3g}, floor {fid['floor_max']:.3g})")
+                K = min(2 * K, int(self.K))
+            if fid["err_reprojection"] > tol * fid["floor_max"]:                 # what the window ADDS to the parent's own terms
+                raise ValueError(f"window {i} of {n} re-projected at K = {K} does not reproduce the parent's reading of it within "
+                                 f"{tol:g} x its Monte-Carlo floor (re-projection error {fid['err_reprojection']:.3g}, floor {fid['floor_max']:.3g})")
             if i == 0:
                 c2 = (pk.meta["compression"].get("channels") or {}).get("boundary_local_time")
-                if c2 is not None:
-                    if c2.get("mode") != "bridge_dst":
-                        raise ValueError(f"window 0's contact channel chose {c2.get('mode')!r}; a pack in windows keeps the bridge form")
-                    blt_K = int(c2["K"])
-                pw = (pk.meta["compression"].get("channels") or {}).get("susceptibility_path")
-                if pw is not None:
-                    path_K, path_bits = int(pw["K"]), path_codec_of(pw)
-            (pk.meta["compression"].get("channels") or {}).pop("susceptibility_grid", None)
+                blt_K = None if c2 is None else int(c2["K"])
+                pw = (pk.meta["compression"].get("channels") or {}).get("susc_field_basis")
+                path_K = None if pw is None else int(pw["K"])
             packs.append(pk)
-            del m
         fid = combine_window_fidelity([pk.meta["fidelity"] for pk in packs])
         wp = self.meta.get("walk_params", {}) or {}
         arrays, meta = join_windows(packs, fidelity=fid, walks=[dict(first=0, last=n - 1, seed=wp.get("seed"))],
                                      walkers_shuffled=bool(self.meta.get("compression", {}).get("precision_tiers", {}).get("walkers_shuffled", False)))
-        if "susceptibility_grid" in ch:
-            meta["compression"]["channels"]["susceptibility_grid"] = copy.deepcopy(ch["susceptibility_grid"])
-        if pm is not None:
-            meta["compression"]["channels"]["susceptibility_path"]["sampling"] = "the parent's path channel decoded on the window"
         src = self.source
         if src is not None and not str(src).startswith("hf://"):
             h = hashlib.sha256()
@@ -721,22 +630,11 @@ class ReplayPack:
         meta["provenance"] = dict(copy.deepcopy(self.meta.get("provenance") or {}), rewindowed=dict(
             parent_id=self.meta.get("id"), parent_sha256=parent_sha, parent_digest=(self.digest if parent_sha is None else None),
             parent_fidelity=dict(err_max=pf.get("err_max"), floor_max=pf.get("floor_max"), certified=pf.get("certified")),
-            T_seg=float(steps * dt), n_seg=int(n), saves_per_window=int(steps + 1), saves_dropped=int(dropped),
-            parent_K=int(self.K), K=int(K), K_tried=tried + [int(K)], blt_K=blt_K,
-            path_K=(None if pm is None else path_K), path_bits=(None if pm is None else path_bits),
-            contact=(None if c2 is None else dict(
-                inherited=True, parent_K=int(c2["K"]), parent_T=float((n_t - 1) * dt),
-                note="the parent's contact channel is band-limited over its whole walk; a window's cumulative local "
-                     "time is the parent's decoded one cut there, so the parent's truncation (a windowed increment can "
-                     "exceed zero, which the true one never does) is inherited, not re-measured: the pack's "
-                     "replay_envelope.tissue.rho2_over_D_max states up to which rho2 / D the windowed contact lies within "
-                     "the floor (#528). A build from the walk (bank._build_windowed) encodes each window's own.")),
-            note="every window the parent's channels decoded on its saves and re-encoded; its certificate is the re-encode "
-                 "error against the parent's decoded saves, on top of the parent's own certificate"))
-        if id is not None:
-            meta["id"] = id
-        else:
-            meta["id"] = stamp
+            T_seg=float(T_seg), n_seg=int(n), time_dropped=float(dropped),
+            parent_K=int(self.K), K=int(K), K_tried=tried + [int(K)], blt_K=blt_K, path_K=path_K,
+            note="every window the parent's stored functions cut to it and re-projected on its basis; its certificate carries the "
+                 "re-projection's truncation measured against the parent's exact reading of the window, beside the walk-free terms"))
+        meta["id"] = id if id is not None else stamp
         meta["license"], meta["citation"] = self.license, self.citation
         out = ReplayPack(arrays, meta, source=None)
         if out.has_surface:
@@ -854,9 +752,9 @@ class ReplayPack:
 
     @property
     def has_field(self):
-        """C3: a susceptibility path channel or the static field grid."""
+        """C3: the field channel (the field's modes along the path)."""
         ch = (self.meta.get("compression", {}).get("channels", {}) or {})
-        return ch.get("susceptibility_path") is not None or "susc_grid_iso_local" in self.arrays
+        return ch.get("susc_field_basis") is not None
 
     @property
     def susceptibility_field(self):
@@ -910,7 +808,7 @@ class ReplayPack:
         return self.at_diffusivity(float(self.diffusivity) * float(kappa) / float(k0))
 
     def at_diffusivity(self, D):
-        """This pack read at the bulk diffusivity ``D``: the same arrays on the save grid divided by
+        """This pack read at the bulk diffusivity ``D``: the same arrays on the block grid divided by
         ``a = D / diffusivity`` (dmipy-sim#289).
 
         THE PAIR, AND THE COMPUTE IT SAVES. Across a permeable wall the walk realised a crossing probability
@@ -956,7 +854,7 @@ class ReplayPack:
         if a < 1.0:
             raise ValueError(
                 f"a replay at D = {float(D):.3g} m^2/s is slower than the walk's {float(D0):.3g} (a = {a:.3f}), "
-                f"which stretches the save grid and grows the in-step integration bias as 1/a beyond what the "
+                f"which stretches the block grid and grows the in-step integration bias as 1/a beyond what the "
                 f"pack's certificate covers. Faster than walked is free; slower needs a walk at that "
                 f"diffusivity, or a pack that recorded enough to re-certify a stretched grid, which this one did "
                 f"not (dmipy-sim#289)")
@@ -970,9 +868,11 @@ class ReplayPack:
         cx = meta.get("compression") or {}
         if cx.get("temporal_bandwidth_hz") is not None:
             cx["temporal_bandwidth_hz"] = float(cx["temporal_bandwidth_hz"]) * a
-        pm = (cx.get("channels") or {}).get("susceptibility_path")
-        if pm is not None and pm.get("dt") is not None:
-            pm["dt"] = float(pm["dt"]) / a                   # the path channel's own grid follows too
+        pm = (cx.get("channels") or {}).get("susc_field_basis")
+        if pm is not None:
+            pm["T"] = float(pm["T"]) / a                     # the field's modes are read over the shorter window
+            if pm.get("read_interval") is not None:
+                pm["read_interval"] = float(pm["read_interval"]) / a
         # the view's situation IS the walk at (a D, a kappa): the embedded spec says so, wall by wall and pool by
         # pool, so that the view's own permeability and diffusivity read as what it realises
         kappa = {}
@@ -1002,6 +902,10 @@ class ReplayPack:
         c2 = (cx.get("channels") or {}).get("boundary_local_time")
         if c2 is not None and c2.get("T") is not None:
             c2["T"] = float(c2["T"]) / a
+        # the events' instants on the shorter clock
+        for k in list(arrays):
+            if k.split("/")[-1].endswith("_events_t"):
+                arrays[k] = np.asarray(arrays[k], np.float64) / a
         out = ReplayPack(arrays, meta, source=self.source)
         return out
 
@@ -1155,14 +1059,14 @@ class ReplayPack:
     def positions(self):
         """The ``(n_walkers, n_t, 3)`` positions at the block ends decoded from the bands (float64): the series
         evaluated there; a pack of several windows decodes each window and joins them on the shared block ends."""
-        from .compression import decode, require_position_method
+        from .compression import decode_bridge_dst, require_position_method
         if self.n_windows > 1:
             return np.concatenate([w.positions()[:, (0 if j == 0 else 1):] for j, (w, _, _) in enumerate(self._windows())], axis=1)
         cx = self.meta.get("compression", {})
         n_t = int(self.n_t)
         meta = {"method": require_position_method(cx.get("method")), "K": int(cx.get("K", 0)),
                 "T": (n_t - 1) * float(self.dt)}
-        return np.asarray(decode(self.arrays, meta, n_t=n_t), np.float64)
+        return np.asarray(decode_bridge_dst(self.arrays, meta, n_t=n_t), np.float64)
 
     def _by_pool(self, values, what):
         """A tissue's per-pool ``T2`` / ``T1`` as the list by pool id over every pool of the embedded spec:
@@ -1357,27 +1261,19 @@ class ReplayPack:
         The gradient term is :func:`_band_phase` and nothing else, so it is the same number
         :func:`~dmipy_sim.replay.study.walker_primitives` contracts, on every route and at every ``b``
         (dmipy-sim#484)."""
-        from ._replay_kernel import field_gate
         n_w, dt = P["n_w"], P["dt"]
         phi = _band_phase(P, W=P.get("W"))                                            # (n_w, n_meas)
         if P["B0"] is None:                                                          # a field term of zero (field_term)
             return phi
-        from ..fields.susceptibility_field import assemble_field, sample_grid
         ch, b0_dir, B0, chi_aniso = P["ch"], P["b0_dir"], P["B0"], P["chi_aniso"]
         gm = ch["susceptibility_grid"]
         chi_i = float(P["chi_iso"])
-        if ch.get("susceptibility_path") is not None:                                # the path route: every term a contraction
-            from ..fields.hollow_cylinder import contract
-            Psi, names = _path_field_channels(P, waveform)
-            aniso = chi_aniso if (_has_aniso(gm, names) and chi_aniso) else 0.0
-            return phi + contract(Psi, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=aniso)[:, None]
-        from .bank import grid_basis_of, grid_periodic_of                            # the grid route samples the field along the path
-        phi_x = np.zeros(n_w)
-        for seg, t0, n_s in P["windows"]:
-            dB = sample_grid(assemble_field(grid_basis_of(seg.arrays, gm), b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=chi_aniso),
-                             seg.positions(), np.asarray(gm["origin"], float), gm["voxel_size"], periodic=grid_periodic_of(gm))
-            phi_x = phi_x + GAMMA * dt * (dB * field_gate(waveform, n_s, dt, t0=t0)[None, :]).sum(1)
-        return phi + phi_x[:, None]
+        if ch.get("susc_field_basis") is None:
+            raise ValueError("this replay has a field term and the pack carries no field channel (C3)")
+        from ..fields.hollow_cylinder import contract                                 # the field route: every term a contraction
+        Psi, names = _path_field_channels(P, waveform)
+        aniso = chi_aniso if (_has_aniso(gm, names) and chi_aniso) else 0.0
+        return phi + contract(Psi, b0_dir, B0=float(B0), chi_iso=chi_i, chi_aniso=aniso)[:, None]
 
     def replay_bloch(self, waveform, *, b1_scale=None, off_resonance_T=None, tissue=None, scanner=None,
                      orientation=None, compartment=None, jax=False, complex_signal=False, per_walker=False,
@@ -1414,7 +1310,7 @@ class ReplayPack:
         if view is not self:
             return view.replay_bloch(waveform, b1_scale=b1_scale, off_resonance_T=off_resonance_T, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment, jax=jax, complex_signal=complex_signal, per_walker=per_walker, crusher_seed=crusher_seed)
         from .trajectories import replay_bloch as _rb, replay_bloch_jax as _rbj, _bloch_timeline
-        from .compression import decode_occupancy, decode_boundary_bridge
+        from .compression import occupancy_at, decode_boundary_bridge
         from ._replay_kernel import gate_weights
         P = self._prepare(waveform, tissue=tissue, scanner=scanner, orientation=orientation, compartment=compartment,
                           relaxation=False, surface=False, pathway=False)
@@ -1512,7 +1408,7 @@ class ReplayPack:
             if b1_scale is not None:
                 kw["b1_scale"] = b1_scale
             if relax is not None:
-                kw.update(comp_traj=decode_occupancy(seg.arrays, ch["compartment"], n_t=n_s)["comp"], **relax)
+                kw.update(comp_traj=occupancy_at(seg.arrays, col, t0 + np.arange(n_s) * dt), **relax)
             if surface is not None:
                 meta = dict(ch.get("boundary_local_time") or {})
                 meta.setdefault("K", _cx_bands_K(seg.arrays, meta))
@@ -1541,22 +1437,18 @@ class ReplayPack:
         return S if complex_signal else np.abs(S)
 
     def _field_along_walk(self, P, pos):
-        """The susceptibility off-resonance each walker sees at each save, from whichever C3 route the pack
-        carries: the compressed path coefficients, or the stored field basis sampled along the walk."""
+        """The susceptibility off-resonance each walker sees at each block end, the field's stored modes read there
+        (sample 0 the series at the window's start, sample ``j`` its mean over block ``j``)."""
         from .bank import susc_path_decode, susc_path_field
-        from ..fields.susceptibility_field import assemble_field, sample_grid
         if P["B0"] is None:
             return np.zeros((P["n_w"], self.n_t))                                     # a field term of zero (field_term)
         gm = P["ch"]["susceptibility_grid"]
-        pm = P["ch"].get("susceptibility_path")
-        if pm is not None:
-            b, _ = susc_path_decode(self.arrays, pm, n_w=P["n_w"])
-            return susc_path_field(b, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
-                                   chi_aniso=P["chi_aniso"], has_aniso=bool(gm.get("has_aniso")))
-        from .bank import grid_basis_of, grid_periodic_of
-        return sample_grid(assemble_field(grid_basis_of(self.arrays, gm), P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
-                                          chi_aniso=P["chi_aniso"]),
-                           pos, np.asarray(gm["origin"], float), gm["voxel_size"], periodic=grid_periodic_of(gm))
+        pm = P["ch"].get("susc_field_basis")
+        if pm is None:
+            raise ValueError("this replay has a field term and the pack carries no field channel (C3)")
+        b, _ = susc_path_decode(self.arrays, pm, n_t=int(self.n_t), n_w=P["n_w"])
+        return susc_path_field(b, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
+                               chi_aniso=P["chi_aniso"], has_aniso=bool(gm.get("has_aniso")))
 
     def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True,
                  pathway=True):
@@ -1576,7 +1468,7 @@ class ReplayPack:
         readout no SINGLE amplitude describes -- a train at any flip but 180 -- is refused by
         :func:`~dmipy_sim.acquisition.epg.pathway_weight`, and the vector route is precisely the one that
         does not need one, since it carries every pathway itself."""
-        from .compression import require_position_method, decode_occupancy
+        from .compression import require_position_method, CumulativeGate
         from ._replay_kernel import effective_gradient, bin_gate
         require_position_method(self.method)
         # two gradients: the PHYSICAL one (``G``, for the vector-Bloch route, which applies the pulses itself)
@@ -1630,12 +1522,14 @@ class ReplayPack:
         window_gates = [(bin_gate(chi_wf, dt_chi, n_s, dt, t0=t0)[0], bin_gate(np.ones(chi_wf.shape[0]), dt_chi, n_s, dt, t0=t0)[0])
                         for _, t0, n_s in windows]
         gate_wf = (chi_wf, dt_chi)                                     # the gate on its own grid, which a continuous C2 reads
+        # the gates' running integrals, what the occupancy's runs between events are weighed by (no grid, RPK.md 9.5.7)
+        gate_cum = (CumulativeGate(chi_wf, dt_chi), CumulativeGate(np.ones(chi_wf.shape[0]), dt_chi))
         logw = np.zeros(n_w)
         if (T2 is not None or T1 is not None) and relaxation:
             if not self.has_relaxation:
                 raise ValueError("T2 / T1 were given but the pack carries no compartment channel (C1); build it "
                                  "from a walk with tiers='all'")
-            from .compression import relaxation_logweight_runs, is_current_c1
+            from .compression import relaxation_logweight_runs, is_current_c1, decode_occupancy
             if not is_current_c1(ch["compartment"]):
                 decode_occupancy(self.arrays, ch["compartment"])              # raises with the re-encode message
             col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
@@ -1648,8 +1542,8 @@ class ReplayPack:
             if len(T2v) < n_ids or len(T1v) < n_ids:
                 raise ValueError(f"the compartment channel addresses pool id {n_ids - 1} and the embedded spec "
                                  f"declares {min(len(T2v), len(T1v))} pools: the pack is inconsistent")
-            for (seg, _, _), (chi_s, act_s) in zip(windows, window_gates):
-                logw = logw + relaxation_logweight_runs(seg.arrays, col, T2v, T1v, dt, chi_s, act_s)   # on the runs, never a track
+            for seg, t0, n_s in windows:                                   # on the runs between events, never a track
+                logw = logw + relaxation_logweight_runs(seg.arrays, col, T2v, T1v, gate_cum[0], gate_cum[1], t0=t0, t1=t0 + (n_s - 1) * dt)
         if rho2 is not None and float(rho2) != 0.0 and surface:
             D_walk = self.diffusivity if D is None else D
             if D_walk is None:
@@ -1680,13 +1574,12 @@ class ReplayPack:
         return dict(G=G, dt=dt, n_t=n_t, dt_wf=dt_wf, ch=ch, n_w=n_w, w=w, ew=ew, norm=norm, B0=B0,
                     pathway=(pathway_weight(waveform) if pathway else 1.0), voxel=voxel,
                     b0_dir=b0_dir, chi_iso=chi_iso, chi_aniso=chi_aniso, T2=T2, T1=T1, rho2=rho2, rho1=rho1, D=D,
-                    chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates, gate_wf=gate_wf)
+                    chi=chi, active=active, G_eff_wf=G_eff, windows=windows, window_gates=window_gates, gate_wf=gate_wf,
+                    gate_cum=gate_cum)
 
     def _n_pool_ids(self, col):
         """How many pool ids the ``comp`` column addresses, read over every window."""
-        if col["kind"] == "fraction":
-            return 2
-        key = "comp_static" if col["kind"] == "static" else "comp_rle_vals"
+        key = "comp_static" if col["kind"] == "static" else "comp_events_label"
         return int(max(int(np.max(w.arrays[key])) for w, _, _ in self._windows())) + 1
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
@@ -1833,15 +1726,15 @@ class ReplayPack:
 
     def _select(self, compartment, ew, norm, w, ch, n_w):
         """Restrict the ensemble mean to ``compartment`` (a pool id or a walker mask)."""
-        from .compression import decode_occupancy
+        from .compression import occupancy_events
         if compartment is None:
             return ew, norm
         sel = np.asarray(compartment)
         if sel.dtype != bool:
             if "compartment" not in ch:
                 raise ValueError("compartment= by id needs the pack's compartment channel")
-            ids = np.asarray(decode_occupancy(self.arrays, ch["compartment"])["comp"])
-            ids = ids[:, 0] if ids.ndim == 2 else ids
+            col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
+            ids = occupancy_events(self.arrays, col)[0]                   # the pool at the walk's start
             sel = ids.astype(int) == int(sel)
         if sel.shape[0] != n_w:
             raise ValueError(f"compartment mask has {sel.shape[0]} entries for {n_w} walkers")
@@ -1939,18 +1832,20 @@ class ReplayPack:
                          f"within this one")
 
     def prefix(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
-        """This walk re-encoded to the shorter echo time ``TE`` (s), at the same bands per second (#199).
+        """This walk cut at the shorter echo time ``TE`` (s) and re-projected on the prefix's own basis, at the same
+        bands per second (#199).
 
-        The TE-prefix property (RPK.md 3) makes the first ``ceil(TE / dt)`` saves a valid walk to ``TE``. Every
-        channel is decoded, cut there and re-encoded with its own codec through
-        :func:`~dmipy_sim.replay.bank.build_replay_pack`, so the result is a pack like any other with its own
-        fidelity certificate -- and that certificate is what licenses the prefix: re-pinning the bridge at ``TE``
-        is a new truncation, measured against the parent's decoded prefix on the fidelity battery, and a prefix
-        whose replay error exceeds ``tol`` times its Monte-Carlo floor is refused rather than written. The band
-        starts at the same bands per second, ``K' = ceil(K TE / T)``, and is doubled (up to the parent's ``K``)
-        until the certificate passes: a short prefix needs more than its share, since the pinned residual's
-        truncation error does not scale with the duration (#199: 100 ms at K = 48 prefixes to 25 ms at 12 but
-        needs 12, not 6, at 12.5 ms). ``K=`` fixes the band instead and is refused as it stands.
+        The TE-prefix property (RPK.md 3) makes the walk to ``TE`` a valid walk. Every channel's stored function is
+        cut there in closed form (:func:`~dmipy_sim.replay.bank.window_of_pack`: the bridge and the field modes by
+        their window maps, the events sliced), so the result is a pack like any other with its own certificate --
+        and that certificate is what licenses the prefix: re-pinning the bridge at ``TE`` is a new truncation,
+        measured against the parent's exact reading of the window on the fidelity battery
+        (``fidelity.err_reprojection``), and a prefix whose re-projection error exceeds ``tol`` times its
+        Monte-Carlo floor is refused rather than written. The band starts at the same bands per second,
+        ``K' = ceil(K TE / T)``, and is doubled (up to the parent's ``K``) until the certificate passes: a short
+        prefix needs more than its share, since the pinned residual's truncation error does not scale with the
+        duration. ``K=`` fixes the band instead and is refused as it stands. On a pack of several windows a prefix
+        on whole windows is a range of them (``truncate``); a cut inside a later window is refused by name.
         ``provenance.prefix`` records the parent (digest, id, T, K), the cut and every band tried.
         """
         dt, n_t = float(self.dt), int(self.n_t)
@@ -1958,95 +1853,46 @@ class ReplayPack:
         n_cut = int(round(float(TE) / dt)) + 1
         if n_cut < 3 or n_cut > n_t:
             raise ValueError(f"TE = {TE * 1e3:.3f} ms is not a prefix of this {T * 1e3:.3f} ms walk (dt {dt * 1e6:.1f} us): "
-                             f"it needs at least three saves and at most the walk's {n_t}")
+                             f"it needs at least two blocks and at most the walk's {n_t - 1}")
         if self.n_windows > 1:
             steps = self._window_n_t - 1
             whole = (n_cut - 1) // steps + (1 if (n_cut - 1) % steps else 0)      # the windows the prefix lies in
             if (n_cut - 1) % steps == 0:
                 out = self.truncate(whole, id=id, out_path=out_path)             # a prefix of whole windows is a range read
                 return out
-            return self.truncate(whole)._prefix_within(TE, K=K, out_path=out_path, tol=tol, id=id, provenance=provenance)
+            raise ValueError(f"TE = {TE * 1e3:.3f} ms cuts inside window {whole - 1} of this pack's {self.n_windows}: a prefix "
+                             "of a window table is a whole number of its windows (truncate), or the prefix of one window")
         return self._prefix_within(TE, K=K, out_path=out_path, tol=tol, id=id, provenance=provenance)
 
     def _prefix_within(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
-        """:meth:`prefix` by re-encoding: every channel decoded over the windows the prefix spans, cut and
-        re-encoded as one window through :func:`~dmipy_sim.replay.bank.build_replay_pack`."""
-        from .bank import build_replay_pack, susc_path_encode_series, susc_path_series_fidelity
-        dt, n_t = float(self.dt), int(self.n_t)
-        T = (n_t - 1) * dt
-        n_cut = int(round(float(TE) / dt)) + 1
-        T_cut = (n_cut - 1) * dt
+        """:meth:`prefix` by re-projection: the stored functions cut at ``TE`` and re-projected on the prefix's basis
+        (:func:`~dmipy_sim.replay.bank.window_of_pack` at ``t0 = 0``), as one window of its own duration."""
+        from .bank import window_of_pack
+        T = float(self.T_window)
+        T_cut = float(TE)
         K_new = int(K) if K is not None else max(2, int(np.ceil(self.K * T_cut / T)))
-        ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
-        # the prefix's positions are never held whole: the builder, its encoder and its certificate read them per
-        # walker range, decoded from the parent's coefficients where they are read, window by window (#449 item 3)
-        m, path = self._window_walk(0, n_cut)
-        if path is None and self.susceptibility_field == "present":
-            raise ValueError("this pack carries its field channel (C3) as the stored grid read at the decoded positions, "
-                             "which holds only while the positions are lossless; a re-encoded prefix is not, so it is "
-                             "not prefixed")
-        blt_K = None
-        if "boundary_local_time" in ch and self.has_surface:
-            bm = dict(ch["boundary_local_time"])
-            bm.setdefault("K", _cx_bands_K(self.window(0).arrays, bm))
-            blt_K = max(2, int(np.ceil(bm["K"] * T_cut / T)))
-        from .bank import path_codec_of
-        path_series = None
-        if path is not None:
-            series, names = path
-            _n_tf, _dt_f = _path_grid(ch["susceptibility_path"], self._window_n_t, dt)
-            path_series = (series, names,
-                           max(2, int(np.ceil(int(ch["susceptibility_path"]["K"]) * T_cut / T))),
-                           path_codec_of(ch["susceptibility_path"]) or 8)
         tried = []
         while True:
             prov = dict(provenance or {})
             prov["prefix"] = dict(parent_digest=self.digest, parent_id=self.meta.get("id"), parent_T_s=T, parent_K=int(self.K),
                                   TE_s=T_cut, K=K_new, K_tried=tried + [K_new],
-                                  note="re-encoded from the parent's decoded prefix; the band starts at the parent's bands "
-                                       "per second and doubles until the certificate passes")
-            # m (a windowed master dict, not a PersistentWalk) carries no susc_field_basis key, so this build has no
-            # field tier; the path series is added back below, re-encoded from the parent's decoded prefix
-            pk = build_replay_pack(m, id=id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms", license=self.license,
-                                   citation=self.citation, K=K_new, tol=tol, blt_temporal_K=blt_K, provenance=prov,
-                                   window_T=T_cut, _window_of_plan=True)    # a prefix is one window of its own duration
+                                  note="the parent's stored functions cut at TE and re-projected on the prefix's basis; the band "
+                                       "starts at the parent's bands per second and doubles until the certificate passes")
+            pk = window_of_pack(self, 0.0, T_cut, K=K_new, id=(id or f"{self.meta.get('id')}/prefix-{T_cut * 1e3:.0f}ms"), provenance=prov)
             fid = pk.meta.get("fidelity", {})
-            if K is not None or fid.get("within_2x_floor", True) or K_new >= int(self.K):
+            # what the prefix ADDS is judged: its re-projection against the parent's exact reading of the window; the
+            # walk-free terms the parent carries (its band truncation at the free variances) are inherited, scaled
+            if K is not None or fid["err_reprojection"] <= tol * fid["floor_max"] or K_new >= int(self.K):
                 break
             tried.append(K_new)
             K_new = min(2 * K_new, int(self.K))
-        if path_series is not None:
-            series, names, Kp, bits = path_series
-            a, pm = susc_path_encode_series(series, names, K=Kp, bits=bits, dt=_dt_f,
-                                            max_refocus_pulses=self.meta["compression"]["channels"]["susceptibility_path"].get("max_refocus_pulses"))
-            pk.arrays.update(a)
-            pk.meta["compression"]["channels"]["susceptibility_path"] = pm
-            g = dict(ch.get("susceptibility_grid", {})); g.update(arrays_in_pack=False, replay_route="path")
-            pk.meta["compression"]["channels"]["susceptibility_grid"] = g
-            pk.meta["replay_envelope"]["field"] = True
-            pk.meta["replay_envelope"].setdefault("acquisition", {})["max_refocusing_pulses"] = int(pm["max_refocus_pulses"])
-            # the field tier is certified as the producer certifies it (GRE, SE, the CPMG train it advertises),
-            # against the parent's decoded prefix, which is the reference this child has
-            spec = self.substrate
-            chi_i = None
-            if spec is not None:
-                from ..spec.tissue import Tissue
-                chi_i = Tissue.from_spec(spec).chi_iso
-            cf = susc_path_series_fidelity(series, pk.arrays, pm, g, w=self.spin_weights, dt=_dt_f,
-                                           env=self.meta.get("replay_envelope", {}).get("acquisition"),
-                                           chi_iso=float(chi_i or 1.06e-6))
-            fid = pk.meta.setdefault("fidelity", {})
-            fid.update(err_susc_path=cf["err"], floor_susc_path=cf["floor"], susc_path_pulses_certified=cf["n_pulses_certified"],
-                       err_max=max(float(fid.get("err_max", 0.0)), cf["err"]),
-                       floor_max=max(float(fid.get("floor_max", 0.0)), cf["floor"]))
-            fid["within_2x_floor"] = bool(fid["err_max"] <= tol * fid["floor_max"])
-        fid = pk.meta.get("fidelity", {})
-        if not fid.get("within_2x_floor", True):
-            raise ValueError(f"the prefix at TE = {T_cut * 1e3:.1f} ms with K' = {K_new} does not reproduce the parent's decoded "
-                             f"prefix within {tol:g} x its Monte-Carlo floor (error {fid.get('err_max'):.3g}, floor "
+        if fid["err_reprojection"] > tol * fid["floor_max"]:
+            raise ValueError(f"the prefix at TE = {T_cut * 1e3:.1f} ms with K' = {K_new} does not reproduce the parent's reading of "
+                             f"it within {tol:g} x its Monte-Carlo floor (re-projection error {fid.get('err_reprojection'):.3g}, floor "
                              f"{fid.get('floor_max'):.3g}); give a larger K= or keep the parent")
         if out_path is not None:
             write_rpk(out_path, pk.arrays, pk.meta)
+            pk.source = out_path
         return pk
 
     @property
@@ -2924,8 +2770,8 @@ class ReplayPack:
         route) scaled by ``B0``, ``chi_iso``, ``chi_aniso``. Raises, as the quadrature route does, when the pack
         cannot supply it."""
         B0, chi_iso, chi_aniso = P["B0"], P["chi_iso"], P["chi_aniso"]
-        if P["ch"].get("susceptibility_path") is None:
-            raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
+        if P["ch"].get("susc_field_basis") is None:
+            raise ValueError("the pose expansion with a field needs the pack's field channel (C3)")
         Psi, names = _path_field_channels(P, waveform)                           # the one read of C3, windows summed
         i_p = names.index("iso_P_xx")
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
@@ -3023,11 +2869,11 @@ class ReplayPack:
 
         Psi = names = i_p = i_a = None
         if B0 is not None:
-            pm = self.meta.get("compression", {}).get("channels", {}).get("susceptibility_path")
+            pm = self.meta.get("compression", {}).get("channels", {}).get("susc_field_basis")
             if pm is None:
-                raise ValueError("the pose expansion with a field needs the pack's susc_path channel (C3 path route)")
+                raise ValueError("the pose expansion with a field needs the pack's field channel (C3)")
             from .bank import path_field_integral
-            Psi, names = path_field_integral(self.arrays, pm, waveform, n_t, dt)         # (n_w, n_ch)
+            Psi, names = path_field_integral(self.arrays, pm, waveform, (n_t - 1) * dt)   # (n_w, n_ch)
             i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
@@ -3543,12 +3389,6 @@ def _container_of(ranges):
     return tuple((None if i == len(ranges) - 1 else int(r["bands"][1]), int(r["bits"])) for i, r in enumerate(ranges))
 
 
-def _path_grid(pm, n_t, dt):
-    """The path channel's own save grid ``(n_t, dt)``: the walk's when the field was read at every save, else the
-    coarser grid the producer recorded (``field_sample_every`` saves per field sample)."""
-    return int(pm.get("n_t", n_t)), float(pm.get("dt", dt))
-
-
 def _compile_continuous(X, dt_wf, K, T, t0, gyromagnetic_ratio=GAMMA):
     """``(K + 2, n)``: ``gamma`` times the projection (:func:`~dmipy_sim.replay.compression.band_projection`) of each of
     the ``n`` courses ``X`` ``(n, n_wf, 1)`` on its own grid ``dt_wf`` onto the bands of the window of ``T`` seconds
@@ -3602,10 +3442,10 @@ def _path_field_channels(P, waveform):
     :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` turns into the isotropic and anisotropic terms for
     :meth:`ReplayPack._walker_phases` and :func:`~dmipy_sim.replay.study.walker_primitives` alike."""
     from .bank import path_field_integral
-    pm = P["ch"]["susceptibility_path"]
+    pm = P["ch"]["susc_field_basis"]
     Psi = names = None
     for seg, t0, n_s in P["windows"]:
-        Psi_s, names = path_field_integral(seg.arrays, pm, waveform, n_s, P["dt"], t0=t0, n_w=P["n_w"])
+        Psi_s, names = path_field_integral(seg.arrays, pm, waveform, (n_s - 1) * P["dt"], t0=t0, n_w=P["n_w"])
         Psi = Psi_s if Psi is None else Psi + Psi_s
     return Psi, names
 

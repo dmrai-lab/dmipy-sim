@@ -185,9 +185,9 @@ def test_a_cost_is_frozen_and_its_row_is_its_fields():
 def test_the_cost_takes_the_walks_arguments():
     import inspect
     sig, walk = inspect.signature(d.walk_cost).parameters, inspect.signature(d.simulate_trajectories).parameters
-    assert list(sig)[:5] == list(walk)[:5] == ["n_walkers", "diffusivity", "geometry", "T_max", "dt_save"]
+    assert list(sig)[:5] == list(walk)[:5] == ["n_walkers", "diffusivity", "geometry", "T_max", "block_h"]
     assert sig["walker_batch_size"].default == walk["walker_batch_size"].default
-    kw = dict(n_walkers=N, diffusivity=D, geometry=d.Sphere(radius=2e-6), T_max=T, dt_save=DT, tiers=())
+    kw = dict(n_walkers=N, diffusivity=D, geometry=d.Sphere(radius=2e-6), T_max=T, block_h=DT, tiers=())
     assert d.walk_cost(**kw).sub_steps == d.simulate_trajectories(**kw).sub_steps
 
 

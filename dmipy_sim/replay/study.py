@@ -288,13 +288,15 @@ def walker_primitives(pack, acquisition):
         # exposure per pool: a unit rate in one pool and none (an infinite time) in the others
         unit = np.where(np.eye(n_ids) > 0, 1.0, np.inf); zero = [np.inf] * n_ids
     from .compression import has_c2
-    pm = ch.get("susceptibility_path")
+    pm = ch.get("susc_field_basis")
     phi = _band_phase(P)                                        # the one band contraction, windows summed
     exposure_t2 = exposure_t1 = contact = contact_t1 = None
-    for j, ((seg, t0, n_s), (chi_s, act_s)) in enumerate(zip(P["windows"], P["window_gates"])):
+    chi_c, act_c = P["gate_cum"]
+    for j, (seg, t0, n_s) in enumerate(P["windows"]):
+        t1 = t0 + (n_s - 1) * dt
         if col is not None:
-            e2 = np.stack([-relaxation_logweight_runs(seg.arrays, col, unit[p].tolist(), zero, dt, chi_s, act_s) for p in range(n_ids)], axis=1)
-            e1 = np.stack([-relaxation_logweight_runs(seg.arrays, col, zero, unit[p].tolist(), dt, chi_s, act_s) for p in range(n_ids)], axis=1)
+            e2 = np.stack([-relaxation_logweight_runs(seg.arrays, col, unit[p].tolist(), zero, chi_c, act_c, t0=t0, t1=t1) for p in range(n_ids)], axis=1)
+            e1 = np.stack([-relaxation_logweight_runs(seg.arrays, col, zero, unit[p].tolist(), chi_c, act_c, t0=t0, t1=t1) for p in range(n_ids)], axis=1)
             exposure_t2 = e2 if exposure_t2 is None else exposure_t2 + e2
             exposure_t1 = e1 if exposure_t1 is None else exposure_t1 + e1
         if has_c2(seg.arrays):

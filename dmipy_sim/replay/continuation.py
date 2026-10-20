@@ -20,18 +20,16 @@ def end_state(pack):
     """``(r_end (n_w, 3), pool (n_w,) or None)``: where every walker is at the walk's end, read from the last window's
     exact endpoints (the bands hold both ends of a window exactly), and the pool it is in there, its last occupancy
     label when the pack carries the compartment channel."""
-    from .compression import read_position_coeffs, decode_occupancy
+    from .compression import read_position_coeffs, occupancy_at
     seg = pack.window(pack.n_windows - 1)
     C = read_position_coeffs(seg.arrays, dtype=np.float64)
     r_end = np.ascontiguousarray(C[:, 0, :] + C[:, 1, :])
     ch = (pack.meta.get("compression", {}).get("channels") or {})
     pool = None
     if "compartment" in ch:
-        comp = np.asarray(decode_occupancy(seg.arrays, ch["compartment"])["comp"])
-        pool = comp[:, -1] if comp.ndim == 2 else comp
-        if np.issubdtype(pool.dtype, np.floating):
-            pool = np.rint(pool)
-        pool = pool.astype(np.int64)
+        col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
+        T_end = float(pack.meta["walk_params"]["T_max"])
+        pool = occupancy_at(seg.arrays, col, [T_end])[:, 0].astype(np.int64)      # the label held at the walk's end
     return r_end, pool
 
 
@@ -43,10 +41,9 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     walks pool by pool, and the walk is returned in the pack's walker order either way, so that walker ``w`` of the
     continuation is walker ``w`` of the pack.
 
-    A spec that declares a susceptibility source has its field sampled in the walk, since a continuation keeps no
-    raw walk of its own to defer to (:func:`~dmipy_sim.spec.walk.fill_field` needs one kept on purpose): a gridded
-    source by every walk, a strand source with ``adaptive_steps=True`` regardless of what is given
-    (:func:`~dmipy_sim.spec.walk.field_source_kind`)."""
+    A spec that declares a susceptibility source has its field read in the walk at the pack's own band and read
+    interval: a gridded source by every walk, a strand source with ``adaptive_steps=True`` regardless of what is
+    given (:func:`~dmipy_sim.spec.walk.field_source_kind`)."""
     from ..engine.core import simulate_trajectories
     from ..spec.build import geometry_from_spec
     from ..spec.walk import walk_spec, _needs_bundle_walk, field_source_kind, _single_geometry_field_grid
@@ -63,15 +60,18 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     r_end, pool = end_state(pack)
     n_w = r_end.shape[0]
     tiers = "all" if (pack.has_relaxation or pack.has_surface) else ()
+    ch = pack.meta["compression"].get("channels") or {}
+    pm = ch.get("susc_field_basis") or {}
+    field_kw = dict(K_c3=int(pm["K"]), field_read_interval=pm.get("read_interval")) if pm else {}
     if not _needs_bundle_walk(spec):
         g = geometry_from_spec(spec)
         D = pack.diffusivity
         if D is None:
             raise ValueError("the pack records no diffusivity to continue the walk at")
         fb = _single_geometry_field_grid(spec, g, None, None) if field_source_kind(spec) == "grid" else None
-        w = simulate_trajectories(n_w, float(D), g, T_max=float(T_add), dt_save=dt, seed=int(seed), r0=r_end.astype(np.float32),
+        w = simulate_trajectories(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
-                                  K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg)
+                                  K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg, **(field_kw if fb is not None else {}))
         walk = dataclasses.replace(w, geometry=g, spec=spec) if w.spec is None else w
         return walk
     if pool is None:
@@ -87,14 +87,11 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
                        weights={names[pid]: weights[pool == pid] for pid in ids}, grid=grid, seed=int(seed))
     if field_source_kind(spec) == "strands":
         adaptive_steps = True
-    w = walk_spec(spec, T_max=float(T_add), dt_save=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
+    w = walk_spec(spec, T_max=float(T_add), block_h=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
                   walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers,
-                  **({} if adaptive_steps else dict(K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg)))
+                  K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg, **field_kw)
     inv = np.empty_like(order); inv[order] = np.arange(order.size)                     # back to the pack's order
-    if hasattr(w, "take"):
-        return w.take(inv)
-    fields = {k: (None if getattr(w, k) is None else np.asarray(getattr(w, k))[inv]) for k in w._FILE_ARRAYS}
-    return dataclasses.replace(w, **fields)
+    return w.take(inv)
 
 
 def _container_of(ranges):
@@ -111,33 +108,34 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
     and the whole's certificate the bound over every window (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`)."""
     from .bank import path_codec_of, build_replay_pack, combine_window_fidelity, _is_shared_key, _precision_tiers, _MEASURED_CHANNEL_KEYS
     from ..coefficient_walk import CoefficientWalk
-    accumulated = isinstance(walk, CoefficientWalk)
+    if not isinstance(walk, CoefficientWalk):
+        raise TypeError(f"a continuation is the CoefficientWalk continue_walk returns; got {type(walk).__name__}")
     seg = pack.windows
     cm = pack.meta["compression"]; ch = cm.get("channels") or {}
     if int(walk.n_walkers) != int(pack.n_walkers):
         raise ValueError(f"the continuation walks {walk.n_walkers} walkers, the pack {pack.n_walkers}")
     r_end, _ = end_state(pack)
-    start = np.asarray(walk.position_coeffs[:, 0, 0, :] if accumulated else walk.positions[:, 0, :], np.float64)
+    start = np.asarray(walk.position_coeffs[:, 0, 0, :], np.float64)
     if not np.allclose(start, r_end, atol=1e-9 * max(1.0, float(np.abs(r_end).max()))):
         raise ValueError("the continuation does not start where the pack's walk ended")
-    h = float(walk.h if accumulated else walk.dt)
+    h = float(walk.h)
     if abs(h - float(pack.dt)) > 1e-9 * float(pack.dt):
         raise ValueError(f"the continuation's block {h:.6g} s is not the pack's {float(pack.dt):.6g} s")
     c2 = ch.get("boundary_local_time") or {}
-    pm = ch.get("susceptibility_path") or {}
+    pm = ch.get("susc_field_basis") or {}
     kw = dict(K=int(pack.K), window_T=float(seg["T"]), envelope=envelope, device=device,
               weights=np.asarray(pack.spin_weights, np.float64), license=pack.license, citation=pack.citation,
               position_container=(None if cm.get("container") is None else _container_of(cm["container"])),
               blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float32 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])),
-              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=((path_codec_of(pm) or 8) if pm else 8))
-    if not accumulated:
-        kw.update(method=cm.get("method"), _occupancy_runs=("comp_rle_counts" in pack.arrays), _window_of_plan=True)
+              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=((path_codec_of(pm) or 8) if pm else None))
     kw["blt_container"] = _container_of(c2["container"]) if c2.get("dtype") == "bands" else None      # the parent's, float or banded
+    S0 = int(seg["n"])
+    walk = walk.shift_time(S0 * float(seg["T"]))                      # its events on the pack's clock (RPK.md 9.5.7)
     new = build_replay_pack(walk, id=f"{pack.id}", **kw)
     if sorted(k for k in new.window(0).arrays) != sorted(k for k in pack.window(0).arrays):
         raise ValueError(f"the continuation stores {sorted(new.window(0).arrays)} where the pack stores {sorted(pack.window(0).arrays)}; "
                          "a continuation carries the channels of the pack and no others")
-    S0, S1 = int(seg["n"]), int(new.n_windows)
+    S1 = int(new.n_windows)
     arrays = dict(pack.arrays)
     for i in range(S1):
         for k, v in new.window(i).arrays.items():

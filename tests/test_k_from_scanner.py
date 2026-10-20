@@ -45,10 +45,10 @@ def _walk(**kw):
     return d.simulate_trajectories(300, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False, **kw)
 
 
-def test_a_walk_with_no_class_and_no_stated_band_is_refused_by_name():
-    """A walk kept at its saves states no band and is refused by name; a walk that accumulated its bands states
-    its own K and packs at it."""
-    with pytest.raises(ValueError, match="scanner=.*K=.*temporal_bandwidth_hz=.*never searched"):
+def test_a_walk_states_its_own_band_and_a_walk_of_saves_is_no_pack_input():
+    """A walk that accumulated its bands states its own K and packs at it, with no class and no band stated; a walk
+    kept at its saves (the raw subset's view) is no producer output and is refused by name."""
+    with pytest.raises(TypeError, match="CoefficientWalk"):
         build_replay_pack(_walk(raw_subset=300).saves(), id="t", license="x", citation="x")
     w = _walk()
     assert build_replay_pack(w, id="t", license="x", citation="x").K == w.K

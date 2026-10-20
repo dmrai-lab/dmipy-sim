@@ -51,4 +51,4 @@ def test_bloch_and_mt_drivers_take_a_spec():
                                   np.asarray(simulate_bloch(60, D0, replace(seq, rf=rf), g, **kw)))
     w_s = simulate_mt_trajectories(40, D0, spec, 1e-3, 2.5e-4, 0.0, 0.0, seed=2, require_gpu=False)
     w_g = simulate_mt_trajectories(40, D0, g, 1e-3, 2.5e-4, 0.0, 0.0, seed=2, require_gpu=False)
-    np.testing.assert_array_equal(w_s.positions, w_g.positions)
+    np.testing.assert_array_equal(w_s.position_coeffs, w_g.position_coeffs)

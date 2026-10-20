@@ -85,7 +85,7 @@ def test_the_view_says_what_it_realises(packs):
     ls = view.meta["provenance"]["length_scaled"]
     assert ls["s"] == s and ls["b_max"]["walked"] == env0["b_max"] and ls["diffusivity"]["walked"] == D0
     assert view.at_length_scale(2.0).meta["provenance"]["length_scaled"]["s"] == pytest.approx(1.0)   # cumulative
-    for k in ("comp_rle_vals", "spin_weights"):
+    for k in ("comp_events_offsets", "comp_events_t", "comp_events_label", "spin_weights"):
         assert view.arrays[k] is pk.arrays[k]                                 # no length: shared
     assert pk.at_length_scale(1.0) is pk
     seq = _seq(T / 2)

@@ -47,7 +47,7 @@ def test_the_split_equals_the_superposition():
 
 def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     """A DiSCo-form spec walked with the far grid: the same positions as without (the field does not steer the
-    walk), the field samples within the split's error of the plain ones, the pack's field meta carries the grid."""
+    walk), the field modes within the split's error of the plain ones, the pack's field meta carries the grid."""
     rng = np.random.default_rng(1)
     cls, ri, ro = _strands(rng, n=12, side=20e-6)
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
@@ -57,19 +57,19 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
     far = plain.build_far_grid(0.5e-6, 10e-6, blend_m=3e-6)
     far.save(str(tmp_path / "far.npy")); back = FarGrid.load(str(tmp_path / "far.npy"))
     np.testing.assert_array_equal(back.values, far.values); assert back.meta == far.meta
-    kw = dict(T_max=6e-4, dt_save=5e-5, seed=5, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-              field_cutoff_m=25e-6, field_cutoff_max_m=25e-6)
+    kw = dict(T_max=6e-4, block_h=5e-5, seed=5, n_probe=20_000, require_gpu=False, adaptive_steps=True,
+              field_cutoff_m=25e-6, field_cutoff_max_m=25e-6, K=6, K_c3=4)
     w0 = walk_spec(spec, 40, **kw)
     w1 = walk_spec(spec, 40, field_far=str(tmp_path / "far.npy"), **kw)
-    np.testing.assert_array_equal(w1.positions, w0.positions)
-    d = w1.field_samples - w0.field_samples
-    assert np.sqrt((d ** 2).sum()) / np.sqrt((w0.field_samples ** 2).sum()) < 5e-2      # measured 3.1 % on this 0.5 um grid: the segments' end fields are sharper than a line's
+    np.testing.assert_array_equal(w1.position_coeffs, w0.position_coeffs)
+    d = w1.field_coeffs - w0.field_coeffs
+    assert np.sqrt((d ** 2).sum()) / np.sqrt((w0.field_coeffs ** 2).sum()) < 5e-2      # measured 3.1 % on this 0.5 um grid: the segments' end fields are sharper than a line's
     assert w1.field_basis.far is not None and w1.field_basis.certificate["far_grid"]["sha256"] == far.sha256
     from dmipy_sim.spec import WalkContext                                        # the context: the basis and grid kept across walks
     ctx = WalkContext(spec, field_far=str(tmp_path / "far.npy"))
     w2 = walk_spec(spec, 40, context=ctx, **kw); w3 = walk_spec(spec, 40, context=ctx, **kw)
-    np.testing.assert_array_equal(w2.positions, w1.positions); np.testing.assert_array_equal(w2.field_samples, w1.field_samples)
-    np.testing.assert_array_equal(w3.field_samples, w2.field_samples)
+    np.testing.assert_array_equal(w2.position_coeffs, w1.position_coeffs); np.testing.assert_array_equal(w2.field_coeffs, w1.field_coeffs)
+    np.testing.assert_array_equal(w3.field_coeffs, w2.field_coeffs)
     assert w2.field_basis is ctx.field_basis() and w3.field_basis is w2.field_basis and ctx.key[1] == far.sha256
     with pytest.raises(ValueError, match="another far grid"):
         ctx.check(spec, plain.build_far_grid(0.5e-6, 10e-6, blend_m=2e-6))
@@ -120,7 +120,7 @@ def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(tmp_path,
     tck, dia = str(tmp_path / "t3.tck"), str(tmp_path / "d3.txt")
     write_tck(tck, *concat_centerlines([c + 0.0 for c in cls]), coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
-    kw = dict(T_max=6e-4, dt_save=5e-5, seed=5, n_probe=2000, require_gpu=False, adaptive_steps=True,
+    kw = dict(T_max=6e-4, block_h=5e-5, seed=5, n_probe=2000, require_gpu=False, adaptive_steps=True,
               field_cutoff_m=25e-6, field_cutoff_max_m=25e-6)
 
     n_geom, n_field = [0], [0]
@@ -144,7 +144,7 @@ def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(tmp_path,
 
     monkeypatch.undo()
     w0 = walk_spec(spec, 40, **kw)                                  # no context at all: unaffected, same to the bit
-    np.testing.assert_array_equal(w0.positions, w1.positions)
-    np.testing.assert_array_equal(w1.positions, w2.positions)
-    np.testing.assert_array_equal(w0.field_samples, w1.field_samples)
-    np.testing.assert_array_equal(w1.field_samples, w2.field_samples)
+    np.testing.assert_array_equal(w0.position_coeffs, w1.position_coeffs)
+    np.testing.assert_array_equal(w1.position_coeffs, w2.position_coeffs)
+    np.testing.assert_array_equal(w0.field_coeffs, w1.field_coeffs)
+    np.testing.assert_array_equal(w1.field_coeffs, w2.field_coeffs)

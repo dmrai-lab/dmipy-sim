@@ -175,7 +175,7 @@ def pool_census(preds, grid, *, census_draws=200, seed=0):
 
 
 def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_max_s, scanner, counts_rel,
-                   blocks_rel, total_walkers, n_blocks, dt_save_divisor=200.0):
+                   blocks_rel, total_walkers, n_blocks):
     """A recipe-shaped ``manifest.json`` for a substrate kind :mod:`dmipy_sim.fill` does not read yet
     (``substrate["kind"]`` is not ``"disco"``): the SAME outer shape (``code``, ``substrate``, ``grid``,
     ``walk``, ``pack``, ``plan``) dmipy_sim.spectrum.strands.strands's own manifest uses, so a reader
@@ -192,8 +192,7 @@ def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_m
         variants=dict(field=dict(field=False)), default_variant="field",
         grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
                   attach="substrate"),
-        walk=dict(T_max_s=float(T_max_s), dt_save_s=float(T_max_s) / dt_save_divisor, scanner=scanner,
-                  floor_fraction=0.1, adaptive_steps=False, walker_batch_size=4096, census_draws=200),
+        walk=dict(T_max_s=float(T_max_s), scanner=scanner, adaptive_steps=False, walker_batch_size=4096, census_draws=200),
         pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="bands",
                   blt_container="bands", blt_K=mode_count(T_max_s, scanner)),
         plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),

@@ -1,8 +1,9 @@
 # The pack
 
 A replay pack is a walk stored once: for every walker, its positions over the walk as a bridge (the exact start
-and end, and `K` sine bands between them), the pool it was in, its accumulated wall contact, and, when the substrate
-has a field source, the field along its path as a few cosine modes. The pack also carries the substrate spec it was
+and end, and `K` sine bands between them), the pool it was in (one label, or the events of every change), its
+accumulated wall contact, and, when the substrate has a field source, the field along its path as a few cosine
+modes. The pack also carries the substrate spec it was
 walked from, the walk's parameters, and a certificate: the codec's error and the Monte-Carlo floor, measured over a
 battery of acquisitions. Nothing in it is a signal, and not one T2, relaxivity or susceptibility value is applied
 in it; those are what a replay brings.
@@ -22,20 +23,22 @@ pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citatio
 print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
 
-The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs, block by block (the
-band's own block, `omega_K h = 0.8` at the top band, `pack.block["h"]`), and returns a `CoefficientWalk` whose memory
+There is no save grid. The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs,
+block by block (`block_h`, the fifth argument; by default the band's own block `h = 0.8 T / (pi K)`, `omega_K h = 0.8`
+at the top band, `pack.block["h"]`), and returns a `CoefficientWalk` whose memory
 does not grow with the block count. The bands are the projections of each walker's bridge on `sqrt(2 / T) sin(pi k t /
 T)`, and the pack is certified without a raw walk: the truncation from the free band variances, the block quadrature
 (`rel(m, h)` times each channel's measured quadratic variation), the container's quantisation and the split-half floor
 read from the coefficients. `raw_subset=n` keeps the first `n` walkers' block ends beside the bands
-(`walk.saves()`), for a certificate measured on them (`fidelity="measured"`) or a picture of the paths.
+(`walk.saves()`, a dense view that is never a pack's input), for a certificate measured on them
+(`fidelity="measured"`: positions, contact, field path and Bloch) or a picture of the paths.
 
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
 replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's `K` is the storage band by
 default (256 bands per 100 ms); `walk_spec` walks the scanner class's certified band times the storage margin, and
 `build_replay_pack(walk, scanner="prisma")` or `K=` stores a smaller band of a walk. The walk's length `T` is the longest echo time the pack can
-replay; a shorter one is a prefix.
+replay; a shorter one is a prefix (`pack.prefix(TE)`, below).
 
 A walk is accumulated in **storage windows** of one duration, 100 ms by default (`simulate_trajectories(window_T=)`),
 consecutive windows sharing their boundary instant: a walk within one window is one, a longer walk a whole number of
@@ -46,9 +49,12 @@ contractions. `pack.windows` is the table. A walk is continued rather than re-wa
 resumes every walker from the last window's exact endpoint in the pool it is in, walks one more window on the
 pack's own substrate with the fresh seed, and appends it with its own certificate (`pack.end_state()` is where the
 walkers are; `replay.continuation` holds the two steps). A pack written as one long window is stored in shorter ones
-by `pack.rewindow(0.1, out_path=...)`: every window is the parent's channels decoded at its block ends and re-encoded
-at the parent's bands per second, certified against them, and a trailing remainder of at most `max_dropped_fraction`
-of the blocks that no whole window covers is dropped and recorded (`provenance.rewindowed`).
+by `pack.rewindow(0.1, out_path=...)`: every window is the parent's stored bands and field modes cut to it and
+re-projected on the window's own basis in closed form (`bank.window_of_pack`; nothing is decoded to block ends) at
+the parent's bands per second, and its certificate carries `err_reprojection`, the window's replay of the battery
+against the parent's own reading of it. A trailing remainder of at most `max_dropped_fraction` of the walk that no
+whole window covers is dropped and recorded (`provenance.rewindowed`). `pack.prefix(TE)` is the same re-projection
+onto `[0, TE]`, one window, certified the same way.
 
 ## What it holds
 
@@ -59,15 +65,18 @@ print(round(pack.meta["fidelity"]["floor_max"], 2))                # the certifi
 ```
 
 - `pos_*`: the positions, as ends and bands. Bare diffusion needs only these.
-- `comp_static` (or a run-length form): the pool of every walker over the walk, for T2 and T1 per pool.
+- `comp_static` (one label per walker) or the events columns `comp_events_*` (`bound_events_*` for an MT walk): the
+  pool of every walker over the walk, exact in time, for T2 and T1 per pool.
 - `blt_*`: the boundary local time, for surface relaxivity.
-- `susc_path_*`, when the substrate has a field source: the field's channels along the path, for the sheath's
-  susceptibility at a scanner's field.
+- `susc_path_*`, when the substrate has a field source: the cosine modes of the field's channels along the path,
+  for the sheath's susceptibility at a scanner's field. The walk reads the field itself every `field_read_interval`
+  seconds, derived from the basis's gradient scale, and accumulates `K_c3` modes per window, a band a pilot fixes
+  before the walk (`bank.derive_field_band`); `compression.channels.susc_field_basis` records `K` and `T`.
 
 A pack's susceptibility field, `pack.susceptibility_field`, is its substrate's pools' own: `"present"` when a pool
 carries a `susceptibility` block (it is magnetic), `"absent"` when none does and the field is identically zero. Three
 things say the same and must agree -- a magnetic pool, the `"field"` tier in the spec's `validity.tiers`, and the
-field channel (`susc_path_*` or the field grid) stored in the pack -- and a pack, layout or spec in which they
+field channel (`susc_path_*`) stored in the pack -- and a pack, layout or spec in which they
 disagree is refused by name when it is written and when it is read
 (`dmipy_sim.spec.susceptibility_field_of`), as is a pack that embeds no spec. What a tissue's chi and a scanner may
 then do is the [scanner](scanner.md) page's rule.
@@ -99,7 +108,7 @@ offset-binary values, most significant bit first, under `pos_x_b2u7` (`u<bits>` 
 the ranges (`compression.container`, `{"bands": [k0, k1], "bits": b}`); a reader reads every container a pack names,
 so packs written with the two-level container (16 bands at 16 bits, the rest at 8) read unchanged. The contact
 channel takes the same container; the field path channel takes ranges over its modes (`{"modes": [k0, k1], ...}`)
-and defaults to one 8-bit range.
+and defaults to one range at the depth its band pilot chose (8 bit without one).
 
 ## Saving, loading, opening
 
@@ -110,9 +119,16 @@ pack.save(os.path.join(tmp, "cylinder.rpk"))
 from dmipy_sim.replay import ReplayPack
 same = ReplayPack.load(os.path.join(tmp, "cylinder.rpk"))
 assert same.n_walkers == pack.n_walkers
+
+from dmipy_sim.coefficient_walk import CoefficientWalk
+walk.save(os.path.join(tmp, "cylinder.walk"))                     # the walk is a file of its own: bands, events, spec
+assert CoefficientWalk.load(os.path.join(tmp, "cylinder.walk")).n_walkers == walk.n_walkers
 ```
 
-A pack whose header carries a save grid (`n_t` / `dt_traj`), a declared `compression.basis` or a
+`CoefficientWalk.save` / `load` are the walk file (safetensors); `build_replay_pack` builds the same pack from either
+the walk a producer returned or the one loaded.
+
+A pack whose header carries a time grid of saves (`n_t` / `dt_traj`), a declared `compression.basis` or a
 `walk_params.cell_size` predates the continuous basis and is refused by name on load (RPK.md 9.5.1): its bands are
 another basis's numbers, so its substrate is walked again; a pack is never converted.
 

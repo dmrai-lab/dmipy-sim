@@ -1,7 +1,7 @@
-"""A persistent walk of a periodic packed substrate records the CONTINUOUS path: the gradient phase of a replay is
-``gamma * integral G . r dt`` on the lab position, and a path folded into the cell adds a jump of one cell side to
-every walker that crosses a face. The field tier of such a pack reads its periodic grid wrapped, so a walker
-outside the primary cell sees the field of its image."""
+"""A walk of a periodic packed substrate records the CONTINUOUS path (its raw subset's block ends, and the bands a pack
+stores): the gradient phase of a replay is ``gamma * integral G . r dt`` on the lab position, and a path folded into
+the cell adds a jump of one cell side to every walker that crosses a face. The field tier of such a walk reads its
+periodic grid wrapped, so a walker outside the primary cell sees the field of its image."""
 import dataclasses
 
 import numpy as np
@@ -10,16 +10,16 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import ScannerSequence
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
-from dmipy_sim.persistent_walk import PersistentWalk
-from dmipy_sim.spec.walk import fill_field
 from dmipy_sim.replay.bank import build_replay_pack, grid_periodic_of
 from dmipy_sim.replay.trajectories import replay, unwrap_periodic
 from dmipy_sim.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
+from tests.test_grid_field_in_walk import _modes_of
 
 D0 = 2e-9
 L = 10e-6
+K_BANDS = 38                      # bands per window: two fewer than the 40 blocks of the walk
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
            B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 
@@ -46,12 +46,17 @@ def pm():
 
 
 @pytest.fixture(scope="module")
-def walk(pm):
-    import dataclasses
-    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300).saves()
+def cwalk(pm):
+    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS)
     # this fixture is about the continuous path, not the susceptibility tier: the geometry's spec declares one
-    # (dmipy-sim#539 -- a walk without field_basis/field_samples of a source-declaring spec is refused a pack)
+    # (dmipy-sim#539 -- a walk without field_basis/field_coeffs of a source-declaring spec is refused a pack)
     return dataclasses.replace(w, spec=spec_without_source(w.spec))
+
+
+@pytest.fixture(scope="module")
+def walk(cwalk):
+    """The raw subset at the block ends: the dense oracle of the continuous path."""
+    return cwalk.saves()
 
 
 def _assert_continuous(pos):
@@ -84,23 +89,25 @@ def test_a_packed_cylinders_walk_records_the_continuous_path():
     _assert_continuous(w.positions)
 
 
-def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(walk):
-    """A lossless pack of the walk replays an in-plane PGSE as the direct replay of the continuous trajectory does;
-    the folded trajectory replays something else (the jumps act as displacements)."""
+def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(cwalk, walk):
+    """A pack of the walk (the bands of the continuous path) replays an in-plane PGSE as the direct replay of the
+    continuous trajectory at the block ends does; the folded trajectory replays something else (the jumps act as
+    displacements)."""
     n_t = walk.positions.shape[1]
-    pk = _float_pack(walk, id="test/pm-continuous", K=n_t - 2, envelope=ENV, license="x",
-                           citation="x")
+    pk = _float_pack(cwalk, id="test/pm-continuous", envelope=ENV, license="x", citation="x")
+    assert pk.n_t == n_t and pk.dt == pytest.approx(walk.dt)
     G = np.zeros((1, n_t, 3)); G[0, 2:12, 0] = 0.4; G[0, 22:32, 0] = -0.4
     S_pack = pk.replay(ScannerSequence(G=G, dt=walk.dt))[0]
     S_direct = replay(walk.positions, walk.dt, G, walk.dt)[0]
     S_folded = replay(_fold(walk.positions), walk.dt, G, walk.dt)[0]
-    assert abs(S_pack - S_direct) < 5e-4          # the bands' series against the path through the saves (2e-4 measured)
+    assert abs(S_pack - S_direct) < 5e-4          # the bands' series against the path through the saves (3.4e-4 measured)
     assert abs(S_folded - S_direct) > 20 * abs(S_pack - S_direct) and abs(S_folded - S_direct) > 0.01
 
 
 def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
     """The grid is one period of the field: a point and its images read the same field, through the grid and
-    through a pack's field tier; a single cylinder's grid is a box and declares no period."""
+    through the walk's own read -- a walker outside the primary cell has the modes of its image's field, and its
+    pack's field tier replays them; a single cylinder's grid is a box and declares no period."""
     fg = field_grid_of(pm, res=0.2e-6, include_aniso=False)
     assert fg.periodic == (True, True, True)
     assert field_grid_of(d.MyelinatedCylinder(1e-6, 1.4e-6, (0, 0, 1), D0, D0), res=0.2e-6).periodic == (False,) * 3
@@ -111,19 +118,25 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, walk):
     clamped = FieldGrid(fg.basis, fg.origin)                                   # the same grid read without its period
     assert np.abs(clamped.channels(p + np.array([L, 0, 0])) - base).max() > 0.1 * np.abs(base).max()
 
-    n_t = walk.positions.shape[1]
-    folded = PersistentWalk(_fold(walk.positions), walk.dt, walk.sub_steps, walk.dt_sim,
-                            boundary_local_time=walk.boundary_local_time, compartment=walk.compartment,
-                            seed=walk.seed, diffusivity=walk.diffusivity, geometry=pm)
-    packs = [_float_pack(fill_field(w, fg), id="test/pm-field", K=n_t - 2, envelope=ENV, license="x", citation="x")
-             for w in (dataclasses.replace(walk, spec=pm.spec), folded)]   # the field source's own spec
-    gm = packs[0].meta["compression"]["channels"]["susceptibility_grid"]
+    # the walk reads the grid at every step (one step per block: the reads are the block ends of its raw subset); its
+    # modes are the trapezoid projection of the reads at the FOLDED positions, which are the images' reads
+    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS,
+                                sub_steps=1, field_basis=fg)
+    pos = np.asarray(w.raw_positions, np.float64)
+    assert _jumps(pos) == 0 and _jumps(_fold(pos)) > 50                         # the walkers do leave the cell
+    modes = np.asarray(w.field_coeffs, np.float64)[:, 0]
+    ref = _modes_of(fg, _fold(pos), w.dt_sim, w.T_window, w.K_c3)
+    assert np.abs(modes - ref).max() <= 5e-3 * np.abs(ref).max()
+    wrapped_wrong = _modes_of(clamped, pos, w.dt_sim, w.T_window, w.K_c3)    # the unwrapped path on a clamped grid: another field
+    assert np.abs(wrapped_wrong - ref).max() > 0.01 * np.abs(ref).max()
+
+    pk = _float_pack(w, id="test/pm-field", envelope=ENV, license="x", citation="x")
+    gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["periodic"] == [True, True, True] and grid_periodic_of(gm) == (True, True, True)
-    G0 = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=walk.dt)
+    G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)
     G_lab, R = field_along(G0, (1, 0, 0))
-    S = [pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6))[0] for pk in packs]
-    assert S[0] < 0.99                                                          # the field dephases
-    assert S[0] == pytest.approx(S[1], abs=1e-6)                                # every walker reads its image's field
+    S = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6))[0]
+    assert S < 0.99                                                             # the field dephases
 
 
 def _float_pack(*a, **k):

@@ -50,7 +50,7 @@ def test_250um_is_walkable_by_walk_spec(entry_250um):
     spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=250e-6, field=False)
     w = walk_spec(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
-    assert np.isfinite(w.positions).all()
+    assert np.isfinite(w.position_coeffs).all()
 
 
 @pytest.mark.parametrize("edge_m", [1e-3])
@@ -71,7 +71,7 @@ def test_1mm_is_walkable_and_has_a_plan(edge_m, tmp_path):
                       os.path.join(r["out_dir"], "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=edge_m, field=False)
     w = walk_spec(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
-    assert np.isfinite(w.positions).all()
+    assert np.isfinite(w.position_coeffs).all()
 
 
 def test_5mm_two_tiles_differ():

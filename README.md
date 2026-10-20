@@ -33,7 +33,7 @@ flowchart LR
         G3["analytic geometries: Cylinder, Sphere, Mesh, ..."]
     end
     SPEC["SubstrateSpec (.sub.json)<br/>domain · pools · walls and their physics<br/>seeding · request vs realisation · nominal values"]
-    ENGINE["dmipy-sim engine<br/>walk_spec / simulate<br/>sub-steps from the spec's smallest feature<br/>save grid from the scanner class"]
+    ENGINE["dmipy-sim engine<br/>walk_spec / simulate<br/>sub-steps from the spec's smallest feature<br/>the band from the scanner class, accumulated in the walk"]
     RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
     subgraph knobs["replay knobs"]
         direction TB
@@ -89,7 +89,7 @@ spec = sub.request(n_fibres=300, seed=0)         # refuses an infeasible packing
 spec.save("wm.sub.json")
 
 # 1. walk once, from the spec and nothing else -- positions, occupancy and boundary local time are recorded
-walk = walk_spec(spec, 200_000, T_max=0.05, seed=0)            # the save grid is derived (scanner="connectom" by default)
+walk = walk_spec(spec, 200_000, T_max=0.05, seed=0)            # the band is the scanner class's (scanner="connectom" by default)
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one
 #    T2, rho2 or chi value lives in the pack; those are what a replay applies
@@ -270,10 +270,12 @@ Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inn
 `spec.caterpillar_spec(csv)`, `spec.label_volume_spec(image)` (a segmented micro-CT / EM / mask volume in NRRD,
 MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
 domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
-The save grid is not a knob: `walk_spec` derives `dt_save` from the strongest waveform a scanner class can
-deliver (`scanner="prisma" | "magnus" | "connectom" | ...`, or `(G_max, slew)`), the walker count and `T_max`,
-so the replay's in-step phase error stays below a tenth of the walk's own noise floor; pack size is set by K,
-not by the grid.
+There is no save grid: `walk_spec` accumulates the scanner class's certified band
+(`scanner="prisma" | "magnus" | "connectom" | ...`), `K` sine bands per 100 ms storage window, while the walk
+runs -- the positions, the wall contact and the field as band projections of their running integrals, the
+occupancy as events exact in time -- so the walk's memory and the pack's size are set by `K`, never by the walk's
+length or resolution, and the pack certifies itself without a raw path (the block quadrature, the field read, the
+truncation and the rounding are closed-form terms of `fidelity.terms`).
 
 Wall and pool properties are set on the geometry and baked into the walk:
 

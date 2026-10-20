@@ -608,18 +608,22 @@ def field_tables_window(basis, lo_m, hi_m, margin_m):
     return dims_gmin, arrays
 
 
-def field_struct_fields(basis, radius_m, sample_every, reuse, list_k, n_tf):
+def field_struct_fields(basis, radius_m, sample_every, reuse, list_k, n_tf, K_c3=0, read_every=0):
     """The backend's ``DscField`` fields EXCEPT ``far_dims``/``far_origin`` (the crop, a batch's own) -- built
-    from ``basis``'s own arrays and the sampling settings, with no ``r0``."""
+    from ``basis``'s own arrays and the sampling settings, with no ``r0``. ``K_c3`` / ``read_every`` are the field
+    accumulated in a coefficient walk (dmipy-sim#742): its cosine modes per channel and the rounds between reads
+    (0: after every step); ``mean`` is the basis's domain mean the kernel subtracts at every read, written only
+    when the field is accumulated (zeros otherwise, as the backend's own struct holds it)."""
     _, fcell_ids = csr_cells(np.asarray(basis._CELL))
     far = basis.far
+    mean = [_f32(x) for x in np.asarray(basis.mean, np.float32)] if int(K_c3) else [0.0] * 13
     return dict(n_seg=int(basis.n_segments), nnz=int(fcell_ids.shape[0]), dims=[int(x) for x in basis._dims],
                gmin=[_f32(x) for x in np.asarray(basis._gmin)], cs=_f32(basis._CS), radius=_f32(radius_m),
                reach=_f32(basis.gather_radius_m), gate_radii=_f32(basis.NEAREST_GATE_RADII),
                has_far=int(far is not None), near_m=_f32(far.near_m if far is not None else 0.0),
                blend_m=_f32(far.blend_m if far is not None else 0.0), far_h=_f32(far.spacing_m if far is not None else 0.0),
                sample_every=int(sample_every), reuse=int(reuse), list_k=max(1, int(list_k)),
-               n_tf=int(n_tf), segments_max=int(basis.segments_max))
+               n_tf=int(n_tf), segments_max=int(basis.segments_max), K_c3=int(K_c3), read_every=int(read_every), mean=mean)
 
 
 def adaptive_struct_fields(plan, R_max):
@@ -646,14 +650,14 @@ def request_struct_fields(*, n_t, sub_steps, step_l, kappa_over_D, record, count
                kappa_over_D=_f32(kappa_over_D), record=int(bool(record)), count=int(bool(count)), budget=int(budget))
 
 
-def crop_far_grid(values, origin_m, spacing_m, r0, n_t, dt_save, diffusivity):
+def crop_far_grid(values, origin_m, spacing_m, r0, n_blocks, block_h, diffusivity):
     """The far grid cropped to what a batch of starts ``r0`` can reach: the starts' bounding box plus eight
     sigma of the walk's excursion and three nodes, so a shard of a large substrate uploads a crop, never the
     whole grid. Returns ``(crop.view(uint16), far_dims, far_origin)``."""
     values = np.asarray(values)
     N = np.asarray(values.shape[:3])
     h = float(spacing_m)
-    T = float(dt_save) * (int(n_t) - 1)
+    T = float(block_h) * int(n_blocks)
     margin = 8.0 * math.sqrt(2.0 * float(diffusivity) * T) + 3.0 * h
     r0 = np.asarray(r0, np.float64)
     origin = np.asarray(origin_m, np.float64)

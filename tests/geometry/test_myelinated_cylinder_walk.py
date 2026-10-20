@@ -38,7 +38,7 @@ def test_walk_spec_no_longer_refuses_the_isolated_cylinder():
 
 def test_pool_labels_agree_with_the_geometrys_own_classifier_at_every_save():
     g = _g()
-    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, dt_save=5e-5, seed=0, require_gpu=False, raw_subset=2000).saves()
+    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, block_h=5e-5, seed=0, require_gpu=False, raw_subset=2000).saves()
     pos = np.asarray(w.positions)
     comp = np.asarray(w.compartment)
     cls = np.asarray(jax.vmap(jax.vmap(g.classify_position))(jnp.asarray(pos)))
@@ -55,19 +55,19 @@ def test_pool_labels_agree_with_the_geometrys_own_classifier_at_every_save():
 
 def test_boundary_local_time_is_non_positive():
     g = _g()
-    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, dt_save=5e-5, seed=1, require_gpu=False, raw_subset=2000).saves()
+    w = d.simulate_trajectories(2000, D, g, T_max=1e-3, block_h=5e-5, seed=1, require_gpu=False, raw_subset=2000).saves()
     blt = np.asarray(w.boundary_local_time)
     assert blt.max() <= 0.0
     assert blt.min() < 0.0, "precondition: some walkers actually touched a wall"
 
 
 def test_simulate_and_simulate_trajectories_report_the_same_compartment_at_t0():
-    """`simulate`'s return_compartments='final' label and simulate_trajectories' comp_traj[:, 0]
+    """`simulate`'s return_compartments='final' label and simulate_trajectories' raw compartment at block end 0
     are the same classifier, collapsed the same way -- the isolated-cylinder analogue of
     test_compartment_ids.test_simulate_and_simulate_trajectories_report_the_same_ids."""
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, _ = d.simulate(300, None, wf, _g(), seed=0, return_compartments="final", require_gpu=False)
-    out = d.simulate_trajectories(300, D, _g(), T_max=6e-3, dt_save=2e-3, seed=0, require_gpu=False, raw_subset=300).saves()
+    out = d.simulate_trajectories(300, D, _g(), T_max=6e-3, block_h=2e-3, seed=0, require_gpu=False, raw_subset=300).saves()
     comp0 = np.asarray(out.compartment)[:, 0]
     assert set(np.unique(origin)) <= {EXTRA, INTRA, MYELIN}
     assert (np.asarray(origin) == comp0).all()
@@ -82,10 +82,9 @@ def test_a_replay_pack_of_the_walk_agrees_with_the_fused_signal():
     wf = d.set_b(d.pgse([[1, 0, 0]], 1e-3, 3e-3, gradient_strengths=0.08, n_t=60, slew_rate=np.inf), 5e8)
     s_fused = float(np.asarray(d.simulate(N, None, wf, _g(), seed=0, require_gpu=False)).ravel()[0])
 
-    w = d.simulate_trajectories(N, D, _g(), T_max=T_max, dt_save=T_max / 60, seed=0, require_gpu=False, raw_subset=N).saves()
+    w = d.simulate_trajectories(N, D, _g(), T_max=T_max, block_h=T_max / 60, K=59, seed=0, require_gpu=False)
     w = dataclasses.replace(w, spec=spec_without_source(w.spec))      # the bare signal: no field tier here
-    n_t = w.positions.shape[1]
-    pk = build_replay_pack(w, id="test/isolated-myelin-pgse", K=n_t - 2, license="x", citation="x")
+    pk = build_replay_pack(w, id="test/isolated-myelin-pgse", K=w.K, license="x", citation="x")
     tissue = Tissue(T2={"intra": 0.05, "myelin": 0.01, "extra": 0.08})
     s_replay = float(np.asarray(pk.replay(wf, tissue=tissue)).ravel()[0])
 
@@ -101,8 +100,8 @@ def test_kappa_mt_is_refused_for_the_isolated_cylinder_before_any_device_work(mo
         raise AssertionError("seed_walkers was called: a walk was attempted")
     monkeypatch.setattr(core, "seed_walkers", _boom)
     with pytest.raises(NotImplementedError, match=r"MyelinatedCylinder.*PackedMyelinatedCylinders"):
-        d.simulate_trajectories(8, D, _g(), T_max=1e-3, dt_save=1e-3, require_gpu=False,
-                                kappa_MT=1e-3, dwell_time=1e-3, raw_subset=8).saves()
+        d.simulate_trajectories(8, D, _g(), T_max=1e-3, block_h=1e-3, require_gpu=False,
+                                kappa_MT=1e-3, dwell_time=1e-3)
 
 
 def test_kappa_mt_still_walks_on_the_packed_class():
@@ -111,8 +110,8 @@ def test_kappa_mt_still_walks_on_the_packed_class():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, D_intra=D, D_extra=D)
-    w = d.simulate_trajectories(300, D, pm, T_max=8e-3, dt_save=2e-4, seed=1, require_gpu=False,
-                                kappa_MT=5e-5, dwell_time=1e-3, equilibrate_binding="off", raw_subset=300).saves()
+    w = d.simulate_trajectories(300, D, pm, T_max=8e-3, block_h=2e-4, seed=1, require_gpu=False,
+                                kappa_MT=5e-5, dwell_time=1e-3, equilibrate_binding="off")
     assert w.has_binding
 
 

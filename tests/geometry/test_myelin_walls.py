@@ -221,18 +221,18 @@ def test_lumen_boundary_local_time_is_brownstein_tarr():
     """The unit boundary local time recorded on the lumen wall (`rho/D = 1`) accrues at
     `2 D / R` per unit time -- Brownstein-Tarr `rho S/V` for a cylinder -- and at the same rate the
     `Cylinder` producer records, since they now share one estimator."""
-    R_l, N, T_max, dt_save = 2e-6, 20_000, 4e-3, 2e-4
+    R_l, N, T_max, block_h = 2e-6, 20_000, 4e-3, 2e-4
     c, L = _pack([R_l] * 4, 0.7, 0.5, seed=0)
     pm = d.PackedMyelinatedCylinders([R_l] * 4, 0.7, c, L, N_max=4)
-    out = d.simulate_trajectories(N, D, pm, T_max, dt_save, seed=5,
-                                  require_gpu=False, raw_subset=N).saves()
-    dlog, comp = np.asarray(out.boundary_local_time), np.asarray(out.compartment)
+    out = d.simulate_trajectories(N, D, pm, T_max, block_h, seed=5,
+                                  require_gpu=False, raw_subset=N)
+    dlog, comp = np.asarray(out.raw_boundary), np.asarray(out.raw_compartment)
     intra = (comp == 1).all(axis=1)
-    rate_pm = -dlog[intra].mean() / dt_save
+    rate_pm = -dlog[intra].mean() / block_h
     cyl = d.Cylinder(R_l, (0, 0, 1))
-    out_c = d.simulate_trajectories(N, D, cyl, T_max, dt_save, seed=5,
-                                    require_gpu=False, raw_subset=N).saves()
-    rate_c = -np.asarray(out_c.boundary_local_time).mean() / dt_save
+    out_c = d.simulate_trajectories(N, D, cyl, T_max, block_h, seed=5,
+                                    require_gpu=False, raw_subset=N)
+    rate_c = -np.asarray(out_c.raw_boundary).mean() / block_h
     theory = 2 * D / R_l
     for name, rate in (("packed myelin lumen", rate_pm), ("Cylinder", rate_c)):
         assert abs(rate / theory - 1) < 0.05, f"{name}: rho S/V = {rate:.4g} vs 2D/R = {theory:.4g}"

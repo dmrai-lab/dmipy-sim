@@ -17,13 +17,15 @@ import pytest
 
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion
-from dmipy_sim.persistent_walk import PersistentWalk
+from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.fod import FOD
 from dmipy_sim.spec import spec_of
 
 N_T, DT = 65, 2.0e-4
+#: the diffusivity a pack of standing walkers records: negligible, so no waveform needs a band the bands do not hold
+STATIC_D = 1e-18
 POS = np.array([[1.0, 0, 0], [0, 1.0, 0], [0.6, 0.6, 0.5],
                 [-0.8, 0.2, -0.5], [0, 0, 1.0], [-0.3, -0.9, 0.2]]) * 3.0e-6
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], delta_frac=0.2, Delta_frac=0.5, ogse_periods=[1],
@@ -32,10 +34,18 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], delta_frac=0.2, Delta_frac=0.5, o
 
 @pytest.fixture(scope="module")
 def pack():
-    """Six walkers standing still at chosen positions: a walk with no diffusion and no statistics."""
-    walk = PersistentWalk(positions=np.repeat(POS[:, None, :], N_T, axis=1), dt=DT, sub_steps=1, dt_sim=DT,
-                          spec=spec_of(FreeDiffusion()))               # walkers in no substrate: nothing magnetic
-    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=8, envelope=ENV)
+    """Six walkers standing still at chosen positions: a walk with no diffusion and no statistics, as the bands a
+    walk of them would hold (the start; no displacement; no band) and the raw positions that certify them."""
+    K, T = 8, (N_T - 1) * DT
+    C = np.zeros((len(POS), 1, K + 2, 3), np.float32)
+    C[:, 0, 0, :] = POS
+    walk = CoefficientWalk(
+        position_coeffs=C, T=T, K=K, m=0,
+        block=dict(h=DT, m=0, n_blocks=N_T - 1, rule="given", precision="float64", k0_residual_relative=0.0),
+        n_windows=1, dt_sim=DT, sub_steps=1, raw_positions=np.repeat(POS[:, None, :], N_T, axis=1).astype(np.float32),
+        qv_positions=np.zeros((len(POS), 1, 3), np.float32), seed=0,
+        diffusivity=STATIC_D, spec=spec_of(FreeDiffusion()))            # walkers in no substrate: nothing magnetic
+    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=K, envelope=ENV, fidelity="measured")
     assert pk.fidelity["err_max"] < 1e-8                        # a straight line is compressed exactly
     return pk
 

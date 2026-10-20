@@ -59,7 +59,8 @@ def test_a_filled_block_costs_its_claim_and_one_commit(certified):
     assert not [f for f in files if f.startswith("claims/")]
     assert {f"blocks/t/block-000{b}.p{p}.rpk" for b in (0, 1) for p in (1, 2)} <= files
     s = json.load(open(hub.get("blocks/t/block-0000.p1.json")))
-    assert s["pass"] == 1 and s["pass_scale"] == 0.5 and s["walkers"] > 0 and s["certified"] == "inherited" and s["host"] == "h1"
+    assert s["pass"] == 1 and s["pass_scale"] == 0.5 and s["walkers"] > 0 and s["certified"] == "measured" and s["host"] == "h1"
+    # (a coefficient walk certifies itself walk-free: no shard inherits a certificate)
     assert not os.listdir(work)                                     # nothing left behind
     sm = summarise(collect(hub, "t"))
     assert sm["shards"] == 4 and sm["contributors"]["h1"]["shards"] == 4 and sm["per_pass"][1]["blocks_done"] == 2
@@ -160,15 +161,19 @@ def test_the_rounds_of_a_block_merge_to_the_shard_walked_by_hand(certified):
     shard = read_rpk(hub.get("blocks/t/block-0000.p1.rpk"))
     s = json.load(open(hub.get("blocks/t/block-0000.p1.json")))
     assert s["rounds"] == 3 and shard.meta["provenance"]["shards"] and len(shard.meta["provenance"]["shards"]) == 3
-    row, P = rc.table[0], rc.passes[0]; W = rc.man["walk"]; cert = json.load(open(hub.get("certificate/t.json")))
+    from dmipy_sim.replay.bank import _container_of_meta
+    row, P = rc.table[0], rc.passes[0]; W = rc.man["walk"]; PK = rc.man["pack"]
+    cert = json.load(open(hub.get("certificate/t.json")))["compression"]         # every shard of the fill packs in the certifying pack's container
+    pos_c, blt_c = _container_of_meta(cert["container"]), _container_of_meta(cert["channels"]["boundary_local_time"]["container"])
     packs = []
     for r in range(3):
         seeding, seed, n_plan, tot, scale = round_seeding(rc, row, r, 3, P, None)
-        w = walk_spec(rc.spec(), T_max=W["T_max_s"], dt_save=rc.dt_save(), seeding=draw_seeds(rc.spec(), seeding, seed, context=rc.context()), seed=seed,
+        w = walk_spec(rc.spec(), T_max=W["T_max_s"], block_h=rc.block_h(), seeding=draw_seeds(rc.spec(), seeding, seed, context=rc.context()), seed=seed,
                       require_gpu=False, walker_batch_size=W["walker_batch_size"], adaptive_steps=True, scanner=W["scanner"],
-                      floor_fraction=W["floor_fraction"], context=rc.context())
-        packs.append(build_replay_pack(w, id=f"hand/{r}", license="x", citation="x", K=3, position_container="bands", blt_container="bands",
-                                       voxel_grid=rc.grid(), out_path=os.path.join(work, f"hand{r}.rpk"), device="numpy", fidelity="inherited", fidelity_from=cert))
+                      K=PK["K"], context=rc.context())
+        packs.append(build_replay_pack(w, id=f"hand/{r}", license="x", citation="x", K=PK["K"], scanner=W["scanner"], position_container=pos_c, blt_container=blt_c,
+                                       voxel_grid=rc.grid(), out_path=os.path.join(work, f"hand{r}.rpk"), device="numpy",
+                                       fidelity="derived", blt_temporal_K=PK["blt_K"]))
     hand = merge_packs(packs, id="hand/merged", out_path=os.path.join(work, "hand.rpk"), overlap="recertify", device="numpy")
     assert hand.n_walkers == shard.n_walkers == s["walkers"]
     for k in shard.arrays:
@@ -332,7 +337,7 @@ def test_the_pack_of_one_block_overlaps_the_walk_of_the_next(certified, monkeypa
 
 
 def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certified, monkeypatch):
-    """`--batch auto` takes the backend's `suggested_batch` for the walk (n_t and the field's samples from the manifest)
+    """`--batch auto` takes the backend's `suggested_batch` for the walk (the walk's block count and the field's reads from the manifest)
     and refuses, by name, a backend without one."""
     import pytest
     from dmipy_sim.engine import backends
@@ -341,7 +346,7 @@ def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certifie
     class _Sized(backends.Backend):
         name = "sized"
         def __init__(self): self.asked = []
-        def suggested_batch(self, n_t, **kw): self.asked.append((n_t, kw)); return 777
+        def suggested_batch(self, n_blocks_plus_1, **kw): self.asked.append((n_blocks_plus_1, kw)); return 777
     hub, work = certified
     rc = Recipe(hub)
     be = _Sized()
@@ -349,7 +354,10 @@ def test_batch_auto_asks_the_backend_and_refuses_one_that_sizes_nothing(certifie
     import dmipy_sim.fill.pipeline as pl
     monkeypatch.setattr(pl, "resolve", lambda name: be if name == "sized" else None, raising=False)
     o = dataclasses.replace(opts(work, host="h", block=0, loop=False), batch="auto", backend="sized")
-    assert batch_size(o, rc) == 777 and be.asked[0][0] == int(round(rc.man["walk"]["T_max_s"] / rc.dt_save())) + 1
+    from dmipy_sim.engine.accumulate import window_count
+    n_win, T_win = window_count(float(rc.man["walk"]["T_max_s"]))
+    n_blocks = n_win * int(round(T_win / rc.block_h()))
+    assert batch_size(o, rc) == 777 and be.asked[0][0] == n_blocks + 1
     o = dataclasses.replace(opts(work, host="h", block=0, loop=False), batch="auto", backend="jax")
     with pytest.raises(ValueError, match="sizes no batch"):
         batch_size(o, rc)

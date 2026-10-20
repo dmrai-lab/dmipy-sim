@@ -151,7 +151,7 @@ def test_a_label_volume_spec_written_on_one_machine_resolves_on_another(tmp_path
     assert resolved == str(machine_b / os.path.basename(cite))
     g2 = geometry_from_spec(spec)                         # the SAME spec dict, unmodified, read on "machine B"
     assert np.array_equal(g2.labels, lab)
-    w = simulate_trajectories(50, 2e-9, g2, T_max=4e-4, dt_save=2e-4, seed=1, require_gpu=False)
+    w = simulate_trajectories(50, 2e-9, g2, T_max=4e-4, block_h=2e-4, seed=1, require_gpu=False)
     assert w.n_walkers == 50
 
 

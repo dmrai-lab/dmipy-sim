@@ -63,7 +63,7 @@ CROSSING_P_MAX = 3e-3
 """The largest per-hit crossing probability a permeable walk steps at: ``p = 2 (kappa / D) d_perp`` is the
 first-order transmission of a step ending ``d_perp`` past a membrane of permeability ``kappa``, exact as
 ``p -> 0``. Measured on a periodic packing of 300 cylinders (radii 1-3 um, D = 2e-9 m^2/s, kappa = 30 um/s,
-0.2 ms saves, 100k walkers): the fraction of walkers exchanged by 5 ms is 0.2332, 0.2287, 0.2324 and 0.2313
+0.2 ms blocks, 100k walkers): the fraction of walkers exchanged by 5 ms is 0.2332, 0.2287, 0.2324 and 0.2313
 (each +/- 0.0013) at p = 3.7e-3, 2.3e-3, 1.2e-3 and 6.0e-4, flat within the 1 % resolution of the count over
 the whole range, and the PGSE signals move within their split-half errors; the constant sits just under the
 largest probability measured."""
@@ -225,7 +225,7 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
     parameter: ``min_feature`` is ``feature_radius``, a MESH-RESOLUTION parameter, so a pore rule on it tightened as a
     mesh was refined while the pore stayed the size it always was. What bounds a mesh step is the 27-cell collision
     lookup -- outrun it and the wall is missed entirely. Measured on the 366-fibre CACTUS bundle (feature_radius
-    0.186um, cell 0.124um, dt_save 0.1ms, D=2e-9): a pore rule on the feature asked for 1256 sub-steps, the
+    0.186um, cell 0.124um, block 0.1ms, D=2e-9): a pore rule on the feature asked for 1256 sub-steps, the
     collision criterion for 97, and across 97 -> 314 the apparent perpendicular diffusivity scatters +/-1.3% with no
     trend, the accumulated boundary local time moves +0.16%, and containment is flat (97.45% -> 97.02%). A mesh's
     step error is what the two-step pilot of its build measures (#715).
@@ -374,7 +374,7 @@ def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = F
 
 def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool = False,
                       mt_dwell_time=None, override=None, eps_D: float = STEP_TOLERANCE, f_band: float = None) -> int:
-    """Fine sub-steps per waveform step (a walk's block, a kept walk's save interval) for a walk on ``geometry``.
+    """Fine sub-steps per waveform step (a walk's block) for a walk on ``geometry``.
 
     Every driver -- the fused scan (:func:`make_step_fn`, :func:`make_packed_myelin_step_fn`),
     the trajectory producer (:func:`~dmipy_sim.engine.core.simulate_trajectories`), the vector-Bloch

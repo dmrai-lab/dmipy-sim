@@ -91,7 +91,7 @@ def test_a_mesh_pair_measures_its_shell(tmp_path):
 def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     inner, outer = _thin_axon(tmp_path)
     spec = winther_spec(inner, outer, scale=1e-6, pad=0.5e-6)
-    w = walk_spec(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3)
+    w = walk_spec(spec, 120, 8e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3, K_c3=4)
     vs = np.asarray(w.field_basis.basis["voxel_size"], float)
     np.testing.assert_allclose(vs, field_resolution(spec.validity.thinnest_shell), rtol=0.02)   # a whole count of nodes
     cert = w.field_basis.certificate                                                          # the raster checked
@@ -100,7 +100,7 @@ def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     fg = field_grid_of_spec(spec)                                                             # the same raster, standalone
     np.testing.assert_array_equal(fg.basis["iso_local"], w.field_basis.basis["iso_local"])
     from dmipy_sim.replay.bank import build_replay_pack
-    assert w.field_samples is not None                                                      # sampled in the walk
+    assert w.field_coeffs is not None                                                       # read in the walk
     pk = build_replay_pack(w, id="t/raster", license="x", citation="x", K=3, susc_path_K=4)
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["raster"]["res_m"] == cert["res_m"]
     with pytest.raises(SpecError, match="thinnest shell of 0.1"):

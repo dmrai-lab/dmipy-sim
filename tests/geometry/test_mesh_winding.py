@@ -145,7 +145,7 @@ def test_the_lumen_reads_as_interior_and_no_step_is_refused_once_the_faces_agree
     assert refused_raw.mean() > 0.15, "the file's own normals no longer cost the walk its steps"
 
     reported = np.asarray(jax.jit(jax.vmap(lambda q, s: raw.interact(q, s).illegal))(jnp.asarray(p), step))
-    assert (reported == refused_raw).all(), "a refused step is not the one PersistentWalk.illegal_crossings counts"
+    assert (reported == refused_raw).all(), "a refused step is not the one CoefficientWalk.illegal_crossings counts"
 
 
 def test_one_inward_cell_of_a_bundle_is_turned_though_the_bundle_looks_consistent():

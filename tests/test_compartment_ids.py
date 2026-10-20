@@ -105,7 +105,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, final = d.simulate(300, None, wf, pm, seed=0, return_compartments="final",
                                   require_gpu=False)
-    out = d.simulate_trajectories(300, 2e-9, pm, T_max=6e-3, dt_save=2e-3, seed=0, require_gpu=False)
+    out = d.simulate_trajectories(300, 2e-9, pm, T_max=6e-3, block_h=2e-3, seed=0, require_gpu=False)
     comp0 = np.asarray(out.compartment)                                 # one label per walker: nobody crosses
     assert set(np.unique(origin)) <= {EXTRA, INTRA, MYELIN}
     assert (np.asarray(origin) == comp0).all()
@@ -115,14 +115,15 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
 @pytest.mark.parametrize("name", ["Sphere", "Cylinder", "Ellipsoid", "PermeableSlab1D",
                                   "PermeableShell", "PackedCylinders", "Mesh"])
 def test_comp_traj_is_the_geometrys_own_label(name):
-    """`simulate_trajectories`' compartment channel at t=0 is the classifier collapsed to two pools."""
+    """`simulate_trajectories`' compartment channel is the classifier collapsed to two pools: the walk's start label
+    and the raw subset's label at the first block end."""
     import jax
     g = _geometries()[name]
     r0 = g.init_positions(128, jax.random.PRNGKey(3))
-    out = d.simulate_trajectories(128, D, g, T_max=2e-4, dt_save=1e-4, seed=3, r0=r0, require_gpu=False)
-    comp = np.asarray(out.compartment)
-    comp = comp[:, 1] if comp.ndim == 2 else comp                      # over the first block, or the label
+    out = d.simulate_trajectories(128, D, g, T_max=2e-4, block_h=1e-4, seed=3, r0=r0, require_gpu=False, raw_subset=128)
     want = np.minimum(np.asarray(g.classify_positions_exact(r0)), 1)
+    assert (np.asarray(out.compartment) == want).all() and (out.raw_compartment[:, 0] == want).all()
+    comp = np.asarray(out.raw_compartment)[:, 1]                        # after the first block
     if g.permeability is not None:
         # a permeable wall may be crossed within the interval
         assert np.abs(comp - want).max() <= 1.0 and (np.round(comp) == want).mean() > 0.95
@@ -153,6 +154,6 @@ def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
 def test_the_discrete_label_is_rounded_not_truncated(sub_steps):
     """The occupancy is comp_sum / sub_steps; XLA may compute it as comp_sum * (1 / sub_steps), which for
     some counts is 0.99999994. Truncating that to int8 labelled every intra walker "extra" at 97 sub-steps."""
-    out = d.simulate_trajectories(32, D, d.Cylinder(3e-6, (0, 0, 1)), T_max=2e-3, dt_save=5e-4, seed=0,
-                                  require_gpu=False, sub_steps=sub_steps)
-    assert (np.asarray(out.compartment) == 1).all()
+    out = d.simulate_trajectories(32, D, d.Cylinder(3e-6, (0, 0, 1)), T_max=2e-3, block_h=5e-4, seed=0,
+                                  require_gpu=False, sub_steps=sub_steps, raw_subset=32)
+    assert (np.asarray(out.compartment) == 1).all() and (np.asarray(out.raw_compartment) == 1).all()

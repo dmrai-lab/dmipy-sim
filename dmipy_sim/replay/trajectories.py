@@ -1,11 +1,12 @@
-"""ScannerSequence application to walker paths kept at their saves: the dense replay, the oracle of a pack's.
+"""ScannerSequence application to walker paths kept at their block ends: the dense replay, the oracle of a pack's.
 
 The replay invariant (see ``core.simulate_trajectories``): walker positions ``r(t)`` and boundary events depend ONLY
 on ``(geometry, diffusivity, seed)`` -- never on ``G(t)``, T2, T1 or rho. Those gate ``log_w``/phase only, so one walk
 serves every acquisition and relaxation hypothesis. A pack replays the walk from its bands
-(:class:`~dmipy_sim.replay.replay.ReplayPack`); the ``replay*`` functions below replay a walk kept at its saves
-(a :class:`~dmipy_sim.persistent_walk.PersistentWalk`: the adaptive or MT producer's, or a band-accumulating walk's
-``raw_subset`` through ``CoefficientWalk.saves()``) through the piecewise-linear path between the saves.
+(:class:`~dmipy_sim.replay.replay.ReplayPack`); the ``replay*`` functions below replay a walk kept at its block ends
+(a :class:`~dmipy_sim.persistent_walk.PersistentWalk`: the ``raw_subset`` of a
+:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, ``CoefficientWalk.saves()``, which no producer returns and no pack is
+built from) through the piecewise-linear path between the block ends.
 """
 
 import functools
@@ -99,7 +100,7 @@ def unwrap_periodic(traj, cell_size, periodic_axes=(0, 1)):
 
     VALIDITY: assumes the true per-save displacement is < L/2 on the periodic axes
     (so a jump > L/2 is unambiguously a wrap).  This holds whenever the save step
-    is fine enough that ``sqrt(2 D dt_save) < L/2`` -- the normal case.  A warning
+    is fine enough that ``sqrt(2 D dt) < L/2``, ``dt`` the interval between the saved positions -- the normal case.  A warning
     is emitted if a periodic axis shows displacements suspiciously close to L/2.
 
     Parameters
@@ -127,7 +128,7 @@ def unwrap_periodic(traj, cell_size, periodic_axes=(0, 1)):
             warnings.warn(
                 "unwrap_periodic: per-save displacement approaches L/2 on a "
                 "periodic axis; the trajectory save step may be too coarse for "
-                "unambiguous unwrapping. Use a finer dt_save.", RuntimeWarning)
+                "unambiguous unwrapping. Use a finer interval between the saved positions.", RuntimeWarning)
         x_cont = np.empty_like(x)
         x_cont[..., 0] = x[..., 0]
         x_cont[..., 1:] = x[..., :1] + np.cumsum(dx, axis=-1)
@@ -345,8 +346,8 @@ def replay(
 
     G_traj = effective_gradient(G, dt_wf, n_t_traj, dt_traj)         # exact per-save weights (n_meas, n_t_traj, 3)
 
-    # ── the coherence gate on the save grid, without resampling: a save's contact and occupancy are accumulated
-    # over the step ending at it, so the gate is averaged over that interval (bin_gate); the sampled field below
+    # ── the coherence gate on the walk's block grid, without resampling: a block end's contact and occupancy are accumulated
+    # over the block ending at it, so the gate is averaged over that interval (bin_gate); the sampled field below
     # reads the gate through the path interpolant (gate_weights)
     chi_r = bin_gate(chi_perp, dt_wf, n_t_traj, dt_traj)              # (n_meas | 1, n_t_traj)
     ones_r = bin_gate(np.ones(np.asarray(G).shape[1]), dt_wf, n_t_traj, dt_traj)   # the acquisition's own extent
@@ -506,7 +507,7 @@ _BLOCH_PHASE_TABLE_BYTES = 512 * 2 ** 20      # device budget for one batch of p
 
 
 class _BlochTerms(NamedTuple):
-    """The operator of a vector-Bloch replay per PIECE of the walk -- the save grid cut at every RF instant -- in
+    """The operator of a vector-Bloch replay per PIECE of the walk -- the block grid cut at every RF instant -- in
     the order the propagator applies them: the RF rotations that open the piece, free precession over it,
     transverse wall attenuation, relaxation."""
     k: np.ndarray               # (n_p,) save interval each piece lies in

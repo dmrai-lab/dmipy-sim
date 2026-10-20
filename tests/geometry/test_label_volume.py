@@ -708,7 +708,7 @@ def test_a_refused_step_is_counted_by_the_engine():
     engine says so.
 
     The refusal is reported as `WallHit.illegal`, which the trajectory producer accumulates into
-    `PersistentWalk.illegal_crossings` and warns about; a refusal the engine cannot see is the walk
+    `CoefficientWalk.illegal_crossings` and warns about; a refusal the engine cannot see is the walk
     quietly standing still. The kernel's budget, four crossings per grid plane plus sixteen, is out of
     reach of a diffusion step at any rule the engine picks (the voxelised R = 5 um sphere at 50,000
     walkers x 41 saves refuses 0 of 2,050,000 steps at 2, 2.5, 3 and 3.5 voxels per step), so the test
@@ -727,8 +727,8 @@ def test_a_refused_step_is_counted_by_the_engine():
         dt = (voxels * h) ** 2 / (6 * D)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            walk = simulate_trajectories(500, D, g, T_max=3 * dt, dt_save=dt, seed=0, sub_steps=1, require_gpu=False,
-                                         raw_subset=500, window_T=3 * dt).saves()      # one window: the step is dt
+            walk = simulate_trajectories(500, D, g, T_max=3 * dt, block_h=dt, seed=0, sub_steps=1, require_gpu=False,
+                                         window_T=3 * dt)      # one window: the step is dt
         return walk, [w for w in caught if "were refused" in str(w.message)]
 
     walk, refused = walk_at(20.0)                                    # within the budget: nothing to refuse
@@ -754,8 +754,8 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     R, h = 5e-6, 1e-6
     lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 8e-6, h)
     g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
-    walk = simulate_trajectories(4000, D, g, T_max=0.02, dt_save=5e-4, seed=0, require_gpu=False, raw_subset=4000).saves()
-    assert walk.boundary_local_time is not None and walk.compartment is not None
+    walk = simulate_trajectories(4000, D, g, T_max=0.02, block_h=5e-4, seed=0, require_gpu=False)
+    assert walk.has_surface and walk.has_compartments
     pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", scanner="connectom")
     assert pack.substrate.walls[0].surface.kind == "label_volume"
     assert [p.name for p in pack.substrate.pools] == ["free", "grain"]

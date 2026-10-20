@@ -39,12 +39,21 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         events = (np.zeros((n + 1,), np.int64), np.zeros((0,), np.float64), np.zeros((0,), np.int8))
     if events is False:                                               # a backend that keeps no event list
         events = None
+    field_bands = field_qv = None
+    if request.field is not None:                                     # the field: every mode 0, the start's bare channels at every block end
+        field_qv = np.zeros((n, 13))
+        if request.K_c3:
+            field_bands = np.zeros((n, 13, int(request.K_c3)))
+        if saves is not None:
+            fs = np.repeat(np.asarray(request.field.basis.channels(r0), np.float32)[:, None, :], int(request.n_blocks) + 1, axis=1)
+            saves = saves._replace(field_samples=fs)
     return backends.CoefficientBatch(
         C, np.zeros(n) if rec else None, np.zeros(n) if rec else None,
         (np.zeros((n, K)) if blt_bands is None else np.asarray(blt_bands, np.float64)) if rec else None,
         comp if rec else None, zero.copy(), work, K, int(request.m), int(request.sub_steps), precision, saves=saves,
         qv_positions=(np.zeros((n, 3)) if qv is None else qv), qv_boundary=(np.zeros(n) if rec else None),
-        events=(events if rec else None), k0_residual=k0_residual)
+        events=(events if rec else None), k0_residual=k0_residual, field_bands=field_bands, field_qv=field_qv,
+        dt_f=(float(request.field_read_interval) if request.field is not None else None))
 
 
 class _Still(backends.Backend):
@@ -234,105 +243,70 @@ def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
                   adaptive_steps=True)
 
 
-class _StillSaves(backends.Backend):
-    """The adaptive producer's backend (a walk of saves, dmipy-sim#742): walkers that never move."""
-    name = "still_saves"
-
-    def __init__(self, refuse=None):
-        self._refuse = refuse
-        self.requests = []
-
-    def refuses(self, request):
-        return self._refuse
-
-    def walk_batch(self, request, r0, keys, *, out=None):
-        self.requests.append(request); self.outs = getattr(self, "outs", []) + [out]
-        n = r0.shape[0]; n_t = request.n_blocks + 1
-        pos = np.repeat(np.asarray(r0, np.float32)[:, None, :], n_t, axis=1)
-        if out is not None:                                           # a backend may write into the producer's arrays
-            out["positions"][...] = pos; pos = out["positions"]
-        zero = np.zeros((n,), np.int32)
-        blt = np.zeros((n, n_t), np.float32) if request.record else None
-        comp = np.ones((n, n_t), np.float32) if request.record else None
-        work = ((zero.copy(), zero.copy(), zero.copy()) if request.count_walls else (None, None, zero.copy()))
-        field = None
-        if request.field is not None:                                 # the field's channels at the start, at every sample
-            f = request.field
-            n_tf = len(range(0, n_t, f.sample_every))
-            field = np.repeat(np.asarray(f.basis.channels(np.asarray(r0, np.float32)), np.float32)[:, None, :], n_tf, axis=1)
-        return backends.WalkBatch(pos, blt, comp, zero.copy(), work, field_samples=field)
-
-
 def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():
+    """The adaptive producer walks a backend in the coefficient form too (#742): the request carries the plan, the
+    block, the band and the raw subset; the walk takes the batch's bands and signs the record with the backend's
+    name and no stepping counts (a backend's batch carries none); a backend handing back saves is refused by name."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive, AdaptivePlan, adaptive_plan
     g = backends.parity_cases()["strands_intra"]()
-    still = _StillSaves()
-    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=still)
-    assert (w.positions == w.positions[:, :1]).all() and w.work["backend"] == "still_saves" and w.stepping["backend"] == "still_saves"
-    assert w.stepping["kernel_steps"] is None and w.work["walker_steps"] is None      # the stub counted nothing
+    still = _Still()
+    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=still, K=6)
+    assert w.position_coeffs.shape == (64, 1, 8, 3) and (w.position_coeffs[:, 0, 1:] == 0).all()
+    assert w.work["backend"] == "still" and w.stepping["backend"] == "still"
+    assert w.stepping["kernel_steps"] is None and w.work["walker_steps"] is None      # the batch counted nothing
+    assert w.raw_positions is None and w.comp_events is None and w.compartment.shape == (64,)
     req = still.requests[0]
     assert isinstance(req, backends.WalkRequest) and isinstance(req.stepping, AdaptivePlan)
-    assert req.K == 0 and req.n_blocks == 4 and req.block_h == pytest.approx(2.5e-4)   # a walk of saves until #742
+    assert req.K == 6 and req.m == 3 and req.n_blocks == 4 and req.block_h == pytest.approx(2.5e-4) and req.raw_subset == 0
+    assert req.K_c3 == 0 and req.field_read_interval == 0.0 and req.events == 0 and req.field is None
     assert req.sub_steps == req.stepping.n_min == w.sub_steps and req.kappa_over_D == 0.0 and req.record
-    assert req.stepping == adaptive_plan(g, D, 2.5e-4)
+    assert req.stepping == adaptive_plan(g, D, 2.5e-4)._replace(candidate_k=req.stepping.candidate_k)
     assert req.stepping.n_rounds * req.stepping.steps_per_round == req.stepping.n_min
     assert len(req.stepping.steps_c) == req.stepping.n_classes and req.stepping.steps_c[0] == req.stepping.steps_per_round
     with pytest.raises(ValueError, match="refuses this walk of PackedCurvedCylinders: no strands"):
         simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64,
-                                       backend=_StillSaves(refuse="no strands"))
-
-
-class _FakeComp(backends.Backend):
-    """A backend whose record states an arbitrary start pool (not the geometry's own classification of ``r0``),
-    to prove the adaptive producer takes it from the batch's ``compartment`` column 0 and runs no second
-    classification of the starts through JAX."""
-    name = "fakecomp"
-
-    def __init__(self, comp0):
-        self.comp0 = np.asarray(comp0, np.float32)
-
-    def refuses(self, request):
-        return None
-
-    def walk_batch(self, request, r0, keys, *, out=None):
-        n = r0.shape[0]; n_t = request.n_blocks + 1
-        pos = np.repeat(np.asarray(r0, np.float32)[:, None, :], n_t, axis=1)
-        blt = np.zeros((n, n_t), np.float32)
-        comp = np.repeat(self.comp0[:, None], n_t, axis=1)
-        zero = np.zeros((n,), np.int32)
-        return backends.WalkBatch(pos, blt, comp, zero.copy(), (None, None, zero.copy()))
+                                       backend=_Still(refuse="no strands"))
+    with pytest.raises(ValueError, match="a walk of saves is refused"):
+        simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=_Saves())
+    with pytest.raises(ValueError, match="several storage windows"):
+        simulate_trajectories_adaptive(64, D, g, 2e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=_Still(),
+                                       window_T=1e-3)
 
 
 def test_the_adaptive_producer_takes_the_start_pool_from_the_batch():
+    """The walk's start pool is the batch's ``compartment`` (no second classification of the starts through JAX)."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
     g = backends.parity_cases()["strands_intra"]()                     # every walker is seeded inside a tube:
     n = 32                                                              # classify_positions_exact would give pool 1 for all
-    comp0 = np.zeros(n, np.float32); comp0[::2] = 1.0                   # a pattern no real classification of these starts gives
-    be = _FakeComp(comp0)
-    w = simulate_trajectories_adaptive(n, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=n, backend=be)
-    np.testing.assert_array_equal(np.asarray(w.compartment[:, 0]), comp0.astype(np.int8))
+    comp0 = np.zeros(n, np.int8); comp0[::2] = 1                        # a pattern no real classification of these starts gives
+    w = simulate_trajectories_adaptive(n, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=n, backend=_Still(comp=comp0))
+    np.testing.assert_array_equal(np.asarray(w.compartment), comp0)
     assert w.illegal_crossings == 0
 
 
 def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_subtracts_the_mean():
+    """With a strand field the request carries the sampling (the basis, the block means at every block end, the
+    list's reuse and width) and the read (``K_c3``, ``field_read_interval``); the walk takes the batch's field modes
+    and quadratic variation, and the raw subset's block means with the basis's mean subtracted."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     g = backends.parity_cases()["strands_intra"]()
     basis = StrandFieldBasis(g.centerlines, 0.7 * g.radii, g.radii, cutoff_m=8e-6, domain=(g.box[0], g.box[1]))
-    still = _StillSaves()
+    still = _Still()
     w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=still,
-                                       field_basis=basis, field_sample_every=2, field_reuse_intervals=3)
+                                       field_basis=basis, field_reuse_intervals=3, K_c3=2, raw_subset=64, K=6)
     req = still.requests[0]
     f = req.field
-    assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 2 and f.reuse_intervals == 3
+    assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 1 and f.reuse_intervals == 3
     assert f.radius_m >= basis.gather_radius_m and f.list_k == 256            # no JAX probe with a backend: the given width
-    assert w.field_samples.shape == (64, 3, 13) and w.field_sample_every == 2 and w.field_basis is basis
-    assert still.outs[0] is not None and set(still.outs[0]) == {"positions", "boundary_local_time", "field_samples"}
-    assert still.outs[0]["positions"].shape == (64, w.positions.shape[1], 3) and still.outs[0]["field_samples"].shape == (64, 3, 13)
-    # the stub returned the start's bare channels at every sample: the record holds them with the mean subtracted
-    expect = np.asarray(basis.channels(np.asarray(w.positions[:, 0])), np.float32) - np.asarray(basis.mean, np.float32)
-    np.testing.assert_allclose(w.field_samples[:, 0], expect, rtol=1e-5, atol=1e-7)
-    np.testing.assert_allclose(w.field_samples[:, 2], expect, rtol=1e-5, atol=1e-7)
+    assert req.K_c3 == 2 and req.field_read_interval == pytest.approx(w.field_read_interval) and w.field_read_interval > 0
+    assert req.raw_subset == 64
+    assert w.field_coeffs.shape == (64, 1, 2, 13) and w.K_c3 == 2 and w.field_basis is basis and w.qv_field.shape == (64, 1, 13)
+    assert w.raw_positions.shape == (64, 5, 3) and w.raw_field.shape == (64, 5, 13)
+    # the stub returned the start's bare channels at every block end: the record holds them with the mean subtracted
+    expect = np.asarray(basis.channels(np.asarray(w.raw_positions[:, 0])), np.float32) - np.asarray(basis.mean, np.float32)
+    np.testing.assert_allclose(w.raw_field[:, 0], expect, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(w.raw_field[:, 2], expect, rtol=1e-5, atol=1e-7)
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():

@@ -119,7 +119,7 @@ def test_a_pack_records_the_runs_that_made_it(tmp_path, monkeypatch):
     from dmipy_sim import Cylinder, simulate_trajectories
     from dmipy_sim.replay.bank import build_replay_pack
     monkeypatch.setenv("DMIPY_SIM_RUN_DIR", str(tmp_path / "runs"))
-    w = simulate_trajectories(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, dt_save=1e-4, seed=0, require_gpu=False, K=8)
+    w = simulate_trajectories(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, block_h=1e-4, seed=0, require_gpu=False, K=8)
     assert w.run is not None and w.run.status == "ok" and w.run.summary["producer"] == "simulate_trajectories"
     out = tmp_path / "r.rpk"
     pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out))
@@ -155,10 +155,12 @@ def test_every_long_producer_opens_a_run():
     from dmipy_sim.replay.phantom import ReplayPhantom
     from dmipy_sim.replay.replay import ReplayPack
     for f in (core.simulate, core.simulate_cpmg, core.simulate_trajectories, adaptive.simulate_trajectories_adaptive,
-              bloch.simulate_bloch, mt_walk.simulate_mt_trajectories, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
+              bloch.simulate_bloch, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
               StrandFieldBasis.build_far_grid, ReplayPhantom.replay, ReplayPhantom.replay_train, ReplayPhantom.replay_bloch,
               ReplayPack.pose_responses):
         assert "with Run(" in inspect.getsource(f), f.__name__
+    # the MT producer is a thin wrapper of simulate_trajectories: its walk is that producer's, with that producer's record
+    assert "return simulate_trajectories(" in inspect.getsource(mt_walk.simulate_mt_trajectories)
     # and ONE batch loop: no producer counts its own batches
     for mod in (core, adaptive, bloch, mt_walk):
         assert "n_batches" not in inspect.getsource(mod), mod.__name__

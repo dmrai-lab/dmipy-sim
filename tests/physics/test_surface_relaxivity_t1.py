@@ -199,7 +199,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, dt_save=2e-4, seed=23 + b, require_gpu=False, K=3,
+        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=23 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))

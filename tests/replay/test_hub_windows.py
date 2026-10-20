@@ -22,7 +22,7 @@ import dmipy_sim as d
 from dmipy_sim.replay.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
 from dmipy_sim.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
-from tests.test_bank import _slab_master, _lean_env, D0, L
+from tests.test_bank import _lean_env, D0, L
 
 pytest.importorskip("huggingface_hub")        # the window reads monkeypatch its cache constant; absent, these tests are skipped
 
@@ -44,19 +44,18 @@ def _fixture_spec():
                          Validity(L, ["gradient", "surface"])).validate().to_dict()
 
 
-def _fixture_master():
-    m = _slab_master(n_w=N_W, seed=0)
-    for k in ("traj", "comp", "dlog_b"):
-        m[k] = np.asarray(m[k])[:, :N_T]
-    m["T_max"] = (N_T - 1) * DT
-    m["substrate"] = _fixture_spec()
-    return m
+def _fixture_walk():
+    """The reflecting slab walked for 30 ms in blocks of 0.5 ms and accumulated in three windows of 10 ms, 19 bands
+    each, on the fixture's substrate (one pool, a relaxing face)."""
+    import dataclasses
+    w = d.simulate_trajectories(N_W, D0, d.Box1D(L), (N_T - 1) * DT, DT, seed=0, require_gpu=False, K=19, window_T=0.01)
+    return dataclasses.replace(w, spec=SubstrateSpec.from_dict(_fixture_spec()))
 
 
 def _fixture_pack():
-    """A tiny, deterministic 3-window pack (positions + C1 + C2): bridge_dst at K=19 over 21-save, 10 ms
+    """A tiny, deterministic 3-window pack (positions + C1 + C2): bridge_dst at K=19 over 20-block, 10 ms
     windows -- small enough to serve from memory, with real ``sN/`` tensors to select by byte range."""
-    return d.build_replay_pack(_fixture_master(), id="test/windows-fixture", K=19, envelope=_lean_env(),
+    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, envelope=_lean_env(),
                                window_T=0.01, license="CC-BY-4.0", citation="dmipy-sim window-read test fixture")
 
 
@@ -195,7 +194,7 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)},
                       {"id": "o/p", "windows_present": 2,
-                       "walk_params": {"n_t": 3, "windows": {"n": 2, "n_t": 3, "T": 1e-3, "walks": []}}})
+                       "walk_params": {"block": {"h": 5e-4, "m": 0, "n_blocks": 2}, "windows": {"n": 2, "T": 1e-3, "walks": []}}})
 
     def fake_load(cls, uri, *, windows=None, **kw):
         seen["uri"], seen["windows"] = uri, windows

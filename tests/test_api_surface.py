@@ -637,3 +637,47 @@ def test_one_basis_and_no_header_with_a_save_grid():
         with pytest.raises(ValueError, match=r"This pack carries `" + key + r".*which this revision does not read; "
                                              r"re-walk the pack with a conformant producer\. A pack is never converted"):
             _refuse_predating(old, "old.rpk")
+
+
+# ── the save grid is gone: no spelling of it survives, and every producer returns the bands ───────────────────
+#: The names of the save grid and of the routes that read or wrote a walk kept at its saves. None is spelled anywhere
+#: in the package: a walk has a block (``block_h``), a pack a ``walk_params.block``, and the saves route's encoders,
+#: its RLE occupancy and its dense fidelity oracle are deleted rather than kept beside the band route.
+_SAVE_GRID_NAMES = (r"dt_save", r"field_sample_every", r"save_interval", r"fill_field", r"defer_field", r"FIELD_DT_CAP",
+                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*")
+
+
+def test_no_spelling_of_the_save_grid_survives_in_the_package():
+    pat = re.compile(r"\b(?:" + "|".join(_SAVE_GRID_NAMES) + r")\b")
+    hits = {}
+    for f in sorted(_SRC.rglob("*.py")):
+        found = sorted({m.group(0) for m in pat.finditer(f.read_text())})
+        if found:
+            hits[str(f.relative_to(_SRC))] = found
+    assert not hits, f"the save grid is spelled in {hits}"
+
+
+def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
+    """The fifth positional argument of every producer is ``block_h`` (the accumulation block, seconds); none takes a
+    walk's ``n_t`` or a ``dt_save``; none returns a ``PersistentWalk`` (that is the raw subset's view,
+    ``CoefficientWalk.saves()``, the only place the package constructs one besides its own ``load``)."""
+    import inspect
+    from dmipy_sim import CoefficientWalk
+    from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
+    from dmipy_sim.engine.core import simulate_trajectories, walk_cost
+    from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
+    from dmipy_sim.spec import walk_spec
+    for fn, at in ((simulate_trajectories, 4), (simulate_mt_trajectories, 4), (simulate_trajectories_adaptive, 4), (walk_spec, 3)):
+        names = list(inspect.signature(fn).parameters)
+        assert names[at] == "block_h", (fn.__qualname__, names[:6])
+        assert not {"n_t", "dt_save", "field_sample_every", "fill_field", "defer_field"} & set(names), fn.__qualname__
+    assert not {"n_t", "dt_save"} & set(inspect.signature(walk_cost).parameters)
+    fields = set(CoefficientWalk.__dataclass_fields__)
+    assert not {"n_t", "dt", "dt_save", "positions", "boundary_local_time", "bound_frac", "field_samples", "field_sample_every"} & fields
+    built = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")
+             if f.name != "persistent_walk.py" and re.search(r"\bPersistentWalk\(", f.read_text())]
+    assert built == ["coefficient_walk.py"], f"a PersistentWalk is built outside CoefficientWalk.saves(): {built}"
+    cyl = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
+    for walk in (simulate_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
+                 simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
+        assert isinstance(walk, CoefficientWalk) and walk.h == pytest.approx(5e-4)

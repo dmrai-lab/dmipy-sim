@@ -4,83 +4,108 @@
 
 A replay pack compresses positions because the gradient phase is **linear** in position:
 `φ_G = γ∫G·r dt`, `G` is smooth, so by Parseval only the low temporal modes of `r` matter — that is what
-`compile_scheme` exploits, and why `K ≪ n_t` is exact for gradients.
+`compile_scheme` exploits, and why `K ≪` the number of block ends is exact for gradients.
 
 Susceptibility breaks that, because `φ_χ = γ∫s(t)·ΔB(r(t))dt` puts a **nonlinear** map `r → ΔB` between
 the stored quantity and the observable. Truncating `r`'s spectrum perturbs `ΔB` unpredictably. Measured on
-a real axon (n_t=1601): the susceptibility residual is `1.7e-1` at K=256 and `6.7e-2` at K=1024 against a
+a real axon (1601 instants): the susceptibility residual is `1.7e-1` at K=256 and `6.7e-2` at K=1024 against a
 Monte-Carlo floor of `2.6e-2`, collapsing to `2.2e-4` only when the position transform is **lossless**.
-That forced `K = n_t`, ~720 MB packs, and a Monte-Carlo floor 6–14× weaker than the canonical
-cylinder/sphere/plane reference set — for which `ε = 1e-3` is affordable precisely *because* its positions
-compress.
+Evaluating the field from stored positions forces `K` to the full length of the walk, ~720 MB packs, and a
+Monte-Carlo floor 6–14× weaker than the canonical cylinder/sphere/plane reference set — for which `ε = 1e-3`
+is affordable precisely *because* its positions compress.
 
 ## The insight
 
 The nonlinearity lives **only** in `r → ΔB`. Everything downstream is linear: the time integral, the
 sequence gate `s(t)`, the `Q(H)` direction contraction, and the `χ` scaling. So evaluate the nonlinearity
-once, at full walk resolution, during the build — then compress the **linear** representation.
+once, **in the walk**, at the walker's own position — then compress the **linear** representation.
 
-Concretely: store the field basis **sampled along the path**, `b_c(t) = basis_c(r(t))`, temporally
-compressed, instead of storing `r(t)` well enough to re-evaluate the field. The same Parseval argument
-then applies verbatim, just to the right quantity.
+Concretely: the walk reads the field basis at its position every `field_read_interval` seconds, `b_c(t) =
+basis_c(r(t))`, and accumulates the **cosine modes** of the trapezoid of the reads, `c_k = ∫ e_k b_c dt` with
+`e_0 = 1/√T`, `e_k = √(2/T) cos(πkt/T)` over the storage window `T`. The pack stores those modes instead of
+`r(t)` well enough to re-evaluate the field. The same Parseval argument then applies verbatim, just to the
+right quantity. Nothing is stored along the walk: the accumulator holds `K_c3` modes per channel whatever
+the number of reads.
 
 Why truncation is then affordable is **not** that `b(t)` is smooth — it is not. Measured on a real axon,
 truncating the stored channels to K=512 still leaves ~60% of the peak field unreproduced, and K=32 leaves
-~90%: a walker crosses ~1 µm field structure every save step, so `b_c(t)` is broadband, and its DCT decays
-slowly. (An earlier version of this document claimed the opposite; it was wrong.)
+~90%: a walker crosses ~1 µm field structure between consecutive reads, so `b_c(t)` is broadband, and its
+cosine spectrum decays slowly.
 
 What *is* narrowband is the **observable**. The phase only ever sees `b(t)` integrated against the
 sequence gate, `∫s(t)·b(t)dt`, and `s(t)` is a slow square wave — one sign flip for a spin echo, `n_p` for
-a CPMG train. By Parseval that inner product depends only on the first ~`2·n_p` DCT modes of `b`, so the
+a CPMG train. By Parseval that inner product depends only on the first ~`2·n_p` modes of `b`, so the
 field content truncation destroys is content no realisable gate can integrate. The consequence is that
 **K is a declared capability, not a fidelity setting** (see *Choosing K*), and that field-space error is
 the wrong metric to certify against — the gate-integrated signal is the right one.
 
+## How the walk reads the field
+
+The read interval is derived, not chosen: `engine.accumulate.field_read_interval(D, T_e, grad_b, B0, chi,
+floor)` holds the read error `v_read = (γ B0 χ)² 2 D T_e grad_b² dt_f²` under `FIELD_READ_FLOOR² = 1e-6`
+(the floor is 1e-3) at `B0 = 7 T` and `χ = 1.06e-6` unless the envelope or the spec say otherwise, with
+`grad_b` the basis's largest gradient over the sheath (`gradient_scale()`), `T_e` the storage window and `D`
+the walk's diffusivity. The walk reads at the largest divisor of its steps per block within that interval;
+when the rule asks for less than the physics step, **the read is the step** (a read along the chord between
+two steps carries the same bridge deviation), and the pack's envelope states the `B0·χ` product the term
+holds under (`B0_chi_max_T`). `CoefficientWalk.block["field_read"]` records the interval, the number of reads,
+the rule and its term (`field_read_term`), and the certificate carries it as `fidelity.terms.field_read`.
+
+A gridded basis (`FieldGrid`, from `fields.susceptibility_field.field_grid_of`) is read by
+`simulate_trajectories(field_basis=)`; a strand basis (`StrandFieldBasis`) by the adaptive producer, at the
+end of every `n_read`-th round. `walk_spec` builds and passes the basis whenever a pool of the spec is a field
+source: there is no switch and no deferral.
+
 ## The channel
 
 ```
-susc_path_dct       (N_w, n_ch, K) float16   temporal DCT-II coefficients of b_c(t), per walker
+susc_path_dct       (N_w, n_ch, K) int8 | int16    cosine modes c_k of b_c(t), per walker
+susc_path_scale     (n_ch, K) float32              per-(channel, mode) scale of the integer container
                     (walkers LEADING so a prefix read is one contiguous byte range -- see Precision tiers)
 ```
-with channel metadata:
+A container of several depths stores `susc_path_dct_b<i>[u<bits>]` per mode range instead (the same ranges
+as the band containers of `compression`). The channel metadata, `compression.channels.susc_field_basis`:
 ```
-{ "channel": "susc_path_dct", "K": 32, "n_t": 1601, "n_ch": 6,
+{ "channel": "susc_field_basis", "K": 32, "T": 0.1, "n_ch": 6,
   "channels": ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_xy", "iso_P_xz", "iso_P_yz"],
   "iso_P_zz": "implied",        # = 3*iso_local - iso_P_xx - iso_P_yy, see Trace identity
-  "chi_iso_reference": 1.06e-6, "delta_chi_a": 0.0 }
+  "bits": 8, "max_refocus_pulses": 16, "sampling": "accumulated_in_walk",
+  "read_interval": 1.0e-4, "band": {...the pilot's record...}, "read": {...the walk's read record...} }
 ```
-The channels are **geometry only** — `B0` direction, `B0` magnitude, `χ_iso` and `χ_aniso` all remain
-replay knobs, applied by the same `Q(H)` contraction the grid form uses.
+There is no `n_t` and no `dt`: the modes are a function on the window `[0, T]`, read at whatever instants a
+consumer names. The channels are **geometry only** — `B0` direction, `B0` magnitude, `χ_iso` and `χ_aniso` all
+remain replay knobs, applied by the same `Q(H)` contraction (`bank.susc_path_field`).
 
-**f16 is sufficient** (measured, not assumed). Storing the K=32 coefficients as float16 instead of
-float32 changes the replayed signal by 1.8e-08 (spin echo) and 7.9e-07 (CPMG-16), against this pack
-family's Monte-Carlo floor of 9.4e-03 — four to five orders of margin. f16 halves the dominant term.
+`compression.channels.susceptibility_grid` records only the field's placement (origin, voxel size, shape,
+periodicity, `arrays_in_pack: false`, `replay_route: "path"`): the grid is not in the pack, and every
+consumer reads the path.
+
+**The integer container is sufficient** (certified, not assumed). The depth, 8 or 16 bits per mode with a
+per-(channel, mode) scale, is chosen with the band on the pilot (*Choosing K*): the narrower container
+is taken whenever its codec error on the certificate's battery is within the pilot's floor.
 
 **Trace identity: 7 channels → 6 stored.** The dipole kernel is traceless in the sense that the six
-`iso_P` components satisfy `P_xx + P_yy + P_zz = 3·iso_local` exactly, so `iso_P_zz` is redundant and is
-reconstructed at read time. Verified to **4.7e-16** relative (machine precision) — *but only when the
-source grid carries no k-space apodisation*. With `kspace_lowpass=0.5` the identity breaks (7.1e-02
-relative) because the window is applied to `iso_P` and not to `iso_local`; the two are then no longer the
-same field. `mesh_field_basis` therefore defaults to `kspace_lowpass=None`, which the oracle calibration
-independently prefers (lumen null 0.073% of χB₀ vs 0.098%, identical sheath amplitude 0.999× analytic).
-Dropping `iso_P_zz` saves 1/7 = 14% of the channel with no approximation.
-
-> Provenance note: the 29 Winther packs in `packs_v1_weighted/` were built before this was understood,
-> with the inherited `kspace_lowpass=0.5`. Their physics is unaffected (both settings clear the oracle),
-> but they cannot use the trace identity and their metadata claims a setting that was not used. The
-> pending rebuild picks up `kspace_lowpass=None` and the 6-channel form.
+`iso_P` components satisfy `P_xx + P_yy + P_zz = 3·iso_local` exactly, and the identity is linear, so it
+holds in mode space: `iso_P_zz` is redundant and is reconstructed at read time. The encoder leaves it out
+when the modes satisfy the identity to `atol_trace` (recorded as `trace_residual`) and stores all seven
+otherwise. The identity holds to machine precision — *but only when the source grid carries no k-space
+apodisation*: with `kspace_lowpass=0.5` it breaks (7.1e-02 relative) because the window is applied to
+`iso_P` and not to `iso_local`; the two are then no longer the same field. Dropping `iso_P_zz` saves 1/7 =
+14% of the channel with no approximation.
 
 ### Consuming it
 
 *Scalar phase* — the gate enters by Parseval, exactly parallel to `compile_scheme`:
 ```
-ŝ = dct(s)[:K]                     # compile the sequence gate once
-φ_χ = γ·dt · Σ_c Q_c(H)·χ_c · (coeffs[:,c] @ ŝ)
+g = cosine_projection(gate, dt_gate, T, K)         # the gate's modes, once per acquisition (compression)
+Psi = γ · Σ_k g_k c_k                              # bank.path_field_integral: (N_w, n_ch)
+φ_χ = Σ_c Q_c(H)·χ_c · Psi[:, c]                   # bank.susc_path_field
 ```
-*Vector-Bloch* (the primary path) — reconstruct `b(t)` and hand it to the existing per-step interface:
+*Vector-Bloch* (the primary path) — read the modes at the instants the route steps on and hand the field to
+the existing per-step interface:
 ```
-b = idct(coeffs, n=n_t, axis=-1)                   # (N_w, n_ch, n_t)
-dB = χ_iso·(b[:,0] − Q(H)·b[:,1:7]) + χ_aniso·(Q(H)·b[:,7:13])     # (N_w, n_t)
+b, names = susc_path_decode(arrays, meta, n_t=n)   # (N_w, n_ch, n): the modes read at n instants of [0, T]
+dB = χ_iso·(b[:,0] − Q(H)·b[:,1:7]) + χ_aniso·(Q(H)·b[:,7:13])     # (N_w, n)
 replay_bloch(..., extra_phase_per_step = γ·dt·dB)
 ```
 
@@ -91,7 +116,7 @@ a comb filter that passes field fluctuations near its echo spacing, so the requi
 number of refocusing pulses (roughly `K ≳ 2×n_pulses`). Everything else — orientation, b-value, the
 diffusion×susceptibility cross-term — is far less demanding.
 
-Measured on `winther/G6/axon06` (n_t=1601, MC floor 9.4e-3), error of the **vector-Bloch** signal against
+Measured on `winther/G6/axon06` (1601 instants, MC floor 9.4e-3), error of the **vector-Bloch** signal against
 the full-resolution field:
 
 | case | K=16 | **K=32** | K=64 |
@@ -101,69 +126,47 @@ the full-resolution field:
 | b=3e9 ⊥, spin echo (cross-term) | 3.2e-4 | **3.8e-4** | 1.3e-4 |
 | b=1e9 ⊥, **CPMG 16 echoes** | 2.4e-2 ✗ | **1.5e-3** | 4.5e-4 |
 
-**K=32 is the default**: ≥25× below the MC floor for single-refocus and gradient-on cases, 6× below it for
-a 16-echo train. K=16 is *not* safe — it fails CPMG-16 outright. The pack therefore declares its
-capability, alongside the acquisition envelope it already declares:
+K=32 is ≥25× below the MC floor for single-refocus and gradient-on cases, 6× below it for a 16-echo train;
+K=16 fails CPMG-16 outright.
+
+**The band is fixed before the walk.** `bank.derive_field_band` walks a pilot of `PILOT_WALKERS` = 1024
+walkers that keeps its block means (`raw_subset`), tries the rungs of `SUSC_PATH_LADDER` (16, 32, 64, …) in
+ascending band, the narrower container first, and takes the first `(K_c3, bits)` whose codec error — the
+truncated, quantised modes contracted for each field strength and direction of the envelope's battery,
+decoded on the block grid and gated by GRE, spin echo, the CPMG train the rung serves and a stimulated echo
+— is within the split-half floor of the pilot's own series. A refocusing depth the envelope declares
+(`max_refocus_pulses`) puts a floor of `2×` that depth under the ladder; the position band is the point past
+which the tier costs more than the walk it rides on, and the record says when the ladder went beyond it. The
+production walk accumulates `K_c3` modes and nothing is re-derived on its reads afterwards; a fill's shards
+take the certifying pack's `K_c3`. The pack declares its capability, alongside the acquisition envelope it
+already declares:
 ```
-replay_envelope.field_modes           = 32
-replay_envelope.max_refocusing_pulses = 16      # ~K/2; beyond this, rebuild with a larger K
+replay_envelope.field_modes           = K_c3
+replay_envelope.max_refocusing_pulses = K_c3 / 2     # beyond this, re-walk with a larger band
+replay_envelope.field_read            = the read's term and the B0·χ it holds under
 ```
+A pack stores `susc_path_K` modes, a prefix of the walk's `K_c3` (never more).
 
-## Two pack products
+## What it costs
 
-The scalar and Bloch paths have genuinely different needs, so one artefact serving both is bad at both.
-Both are written from **one** walk and one field-basis solve, sharing provenance:
+A walker's field channel is `n_ch × K` integers: 6 × 32 at 8 bit is 192 B, at 16 bit 384 B. Positions cost
+`3 (K + 2)` coefficients at the position container's depth, and the field tier no longer has a claim on that
+band: positions fall back to `K ≪` the number of block ends, which is all the gradient tier ever needed
+(Parseval-exact), where a field evaluated from stored positions forced them lossless.
 
-| | stores | per walker | serves |
-|---|---|---|---|
-| **light** | positions + gated moments `∫s·b_c dt` | ~460 B | PGSE/scalar-phase fitting, any B0/χ, declared gate family |
-| **Bloch** | positions + `susc_path_dct` (6×K, f16) | **840 B** (K_pos=32, K_susc=32) / 1224 B (K_susc=64) | emergent RF: CPMG, stimulated echo, MT, any B0/χ |
+Measured at 1601 instants on a Winther axon, by sweeping the position band against the floor the
+52,000-walker ensemble has (6.34e-3, extrapolated from a 6,000-walker subsample and consistent with this
+family's measured 9.4e-3 at 31,000):
 
-Neither carries the **static field-basis grid**. That is not merely a size choice — it is a *correctness*
-constraint. The grid route (`replay_susc` via `sample_grid`) evaluates the field at codec-**decoded**
-positions, so it is only sound while the position codec is lossless; the path route samples the
-full-resolution walk at build time, which is exactly what frees the positions to be lossy. Shipping both
-next to lossy positions would advertise a replay route whose accuracy silently depends on a property the
-pack no longer has, so `build_replay_pack` omits the grid arrays whenever `susc_path_K` is set and the
-positions are not lossless, and records `replay_route` in the channel metadata. The grid ships as a
-companion artefact (`<id>.field.rpk`, ~144 MB cropped f16, per-substrate not per-walker) for regenerating
-the channel at a different K or for a new walk.
-
-## What this buys
-
-Measured, for one Winther axon at `n_t=1601`, `N_w=52,000`:
-
-| | per walker | pack |
+| K_pos | position-codec err | err / floor(52k) |
 |---|---|---|
-| lossless positions (K=n_t f32) + in-pack f16 field grid | 19.3 kB | **1100 MB** |
-| positions K_pos=128 f32 + `susc_path_dct` 6×32 f16 + C2 + weights | 1.99 kB | **≤ 98.7 MB** |
-| same at K_susc=64 (CPMG ≤ 32) | 2.37 kB | ≤ 117.7 MB |
+| 8 | 7.08e-03 | 1.12 |
+| 16 | 1.60e-03 | 0.25 |
+| **32** | **2.55e-04** | **0.04** |
 
-`K_pos = 128` in that row is a conservative placeholder. The assembler auto-selects the position modes
-against the gradient envelope, and it is now free to pick a small number because susceptibility no longer
-constrains it. **Measured at production `n_t=1601`**, by decoding a v1 pack (whose positions are lossless,
-so they give the true trajectory) and sweeping K against the floor the 52,000-walker ensemble will have
-(6.34e-3, extrapolated from a 6,000-walker subsample and consistent with this family's measured 9.4e-3 at
-31,000):
-
-| K_pos | position-codec err | err / floor(52k) | pack at K_susc=32 | at K_susc=64 |
-|---|---|---|---|---|
-| 8 | 7.08e-03 | 1.12 | 27.4 MB | 46.4 MB |
-| 16 | 1.60e-03 | 0.25 | 31.7 MB | 50.7 MB |
-| **32** | **2.55e-04** | **0.04** | **41.7 MB** | **60.7 MB** |
-
-So a production pack is **27--61 MB**, not the ~99 MB placeholder: **18--40x** smaller than v1's 1100 MB.
-
-**Do not simply take the auto-selected K here.** With the default `tol = 2x floor` the selector passes
-`K_pos = 8`, whose codec error (7.1e-3) *exceeds* the statistical floor (6.3e-3) -- the compression would
-be the dominant error source. That is an acceptable trade for an ordinary pack and the wrong one for a
-reference dataset, whose whole claim is that replay is indistinguishable from the walk. `K_pos = 32` puts
-the codec 25x below the floor for ~288 B/walker, and is the recommended pin.
-
-An end-to-end build on a synthetic myelinated cylinder (n_t=201) confirms the rest of the design:
-`route=path`, `zz=implied` (6 channels), C2 present, prefix unbiased (23.9% myelin in the first 2,000 rows
-vs 23.9% overall), weights collapsed to max/min=1.008, and `err_susc_path = 2.9e-4` at K=32 against a
-3.0e-2 floor (103x below; 243x at K=64).
+A band whose codec error exceeds the statistical floor makes the compression the dominant error source, an
+acceptable trade for an ordinary pack and the wrong one for a reference dataset, whose whole claim is that
+replay is indistinguishable from the walk; K_pos = 32 puts the codec 25× below the floor.
 
 **The cross-term survives the position truncation**, which is the thing to check before accepting any of
 this: the reported physics is diffusion × susceptibility, so it would be no good to compress positions if
@@ -171,57 +174,35 @@ that decorrelated the two phases. It does not, because the codec is *walker-pres
 gradient phase and its field history carry the same index, so `exp(i(φ_G + φ_χ))` is formed per walker
 before any ensemble average and their correlation is exact by construction. Position truncation perturbs
 `φ_G` alone, by the amount the gradient tier already certifies against the MC floor — it cannot leak into
-`φ_χ`, which no longer depends on the stored positions at all.
-
-**11×** smaller. The saving is *not* mainly the field tier being cheap — it is that the susceptibility tier
-no longer has a claim on the position codec. Lossless positions were never wanted for their own sake; they
-were forced because grid-sampling needed exact `r(t)`. Remove that coupling and positions fall back to
-`K ≪ n_t`, which is all the gradient tier ever needed (Parseval-exact).
-
-Prefix reads then make the *typical* pull small: `ε=1e-2` is ~1 MB, `ε=3e-3` ~11 MB, and the full
-`ε=1e-3` reference ~99 MB — so a user exploring 29 axons pulls tens of MB, not tens of GB.
+`φ_χ`, which does not depend on the stored positions at all.
 
 ## The C2 (surface / boundary-local-time) tier belongs in the budget
 
-Easy to forget, because an impermeable membrane has no *exchange* tier -- but the intra-axonal walkers
-strike the myelin inner wall constantly (measured contact density 12.1% of steps at n_t=1601), so the
+Easy to forget, because an impermeable membrane has no *exchange* tier — but the intra-axonal walkers
+strike the myelin inner wall constantly (measured contact density 12.1% of steps at 1601 instants), so the
 **surface tier is real**: rho2 is a replay knob, not zero by construction. It is also the channel an
-analytic MT tier is derived from (contact statistics / S:V at the myelin surface). The first generation of
-axon packs discarded it -- `simulate_trajectories(save_relaxation_data=True)` was called and its
-`dlog_boundary_unit` output dropped -- so those packs can do neither surface relaxivity nor MT.
+analytic MT tier is derived from (contact statistics / S:V at the myelin surface). A walk records it with
+`tiers="all"` (the default).
 
-Its cost depends entirely on the codec, and **the default picks the wrong one**:
+The contact is stored in the same bridge form as the positions: the cumulative local time's two exact
+endpoints (`blt_start`, `blt_endpoint`) and its `K` bands (`blt_bridge_dst`, or the integer container
+`blt_b<i>[u<bits>]` with `blt_band_scale`; `build_replay_pack(blt_temporal_K=, blt_container=)`). Its cost
+does not scale with the length of the walk: measured at K=32 in float16, 66 B/walker, with an ensemble error
+of 6e-6 .. 7e-6 (K=64: 130 B, 2e-6 .. 2e-5) against a split-half floor of 1.9e-2 — 2 to 5 thousand times the
+truncation error.
 
-| codec | B/walker at n_t=1601 | scales with n_t? | ensemble error (rho2=1e-5..1e-4) |
-|---|---|---|---|
-| sparse CSR (**auto-selected**) | 574 | **yes** (cost ~ contact count) | exact |
-| `boundary_bridge` K=32, f16 | **66** | no | 6e-6 .. 7e-6 |
-| `boundary_bridge` K=64, f16 | 130 | no | 2e-6 .. 2e-5 |
+### Per-walker budget
 
-against a split-half floor of 1.9e-2 -- 2 to 5 thousand times the truncation error. So **K=32 in f16 at
-66 B/walker** is the right setting, and it keeps the tier flat in walk length.
-
-Two defaulting problems produce the 574 B outcome and both need fixing:
-1. `encode_boundary_local_time` chooses only between *sparse* and *dense*; `encode_boundary_bridge` is
-   opt-in via `blt_temporal_K`. For a long mesh substrate the default therefore takes the expensive,
-   n_t-scaling branch. The producer must pass `blt_temporal_K` (or the encoder should consider the bridge
-   branch in its size comparison).
-2. `encode_boundary_bridge` writes float32, while the canonical packs store `blt_bridge_dst` as float16 -- which is
-   where the 2x difference between 130 B and 260 B comes from. f16 is demonstrably sufficient here.
-
-### Revised per-walker budget
-
-| component | f32 positions/field | all-f16 |
+| component | 8-bit field | 16-bit field |
 |---|---|---|
-| positions, K=64 | 768 B | 384 B |
-| `susc_path_dct`, 7x32 | 896 B | 448 B |
-| **C2 `blt_bridge_dst`, K=32 f16** | **66 B** | **66 B** |
-| compartment RLE + weights | ~18 B | ~18 B |
-| **total** | **~1.75 KB** | **~0.92 KB** |
+| positions, K=64 (float32) | 768 B | 768 B |
+| `susc_path_dct`, 6×32 | 192 B | 384 B |
+| C2 bands, K=32 float16 | 66 B | 66 B |
+| compartment (`comp_static`) + weights | ~5 B | ~5 B |
 
-C2 is therefore ~4% of the pack, not the ~14% it is in the canonical shards and not the ~32% the auto
-codec would make it. Whether the field channel itself survives f16 is untested -- the spin-echo
-cancellation is precision-sensitive -- and that is the single remaining factor-of-two on the table.
+The compartment channel is one `int8` per walker (`comp_static`) when no walker changes pool. A walk whose
+walkers cross walls writes the events of every change (`comp_events_offsets` / `_t` / `_label`, RPK.md 9.5.7)
+instead, ragged per walker and priced by the number of events.
 
 ## Precision tiers: one artefact, pull only what your accuracy needs
 
@@ -232,8 +213,8 @@ so a consumer who wants a coarser floor simply reads *fewer rows*. `safetensors`
 10 000 rows = 192 MB in 0.024 s, linear in N), and because the header carries per-tensor byte offsets a
 remote client can range-GET a prefix instead of the file.
 
-With the measured per-walker budget above (**840 B** at K_pos=32/K_susc=32, C2 and weights included),
-anchored on the measured floor of `9.4e-3` at 31 000 walkers (`n(eps) = 31000*(9.4e-3/eps)^2`):
+Anchored on a measured floor of `9.4e-3` at 31 000 walkers (`n(eps) = 31000*(9.4e-3/eps)^2`) and a budget of
+840 B per walker:
 
 | tier | floor eps | walkers | bytes per axon |
 |---|---|---|---|
@@ -243,58 +224,53 @@ anchored on the measured floor of `9.4e-3` at 31 000 walkers (`n(eps) = 31000*(9
 | reference | 0.0017 | ~947,806 | ~759 MB |
 | canonical parity | 0.001 | ~2,739,160 | ~2.14 GB |
 
-Three things must hold for a prefix read to be *valid*, and one of them was violated by the first
-generation of packs:
+Three things must hold for a prefix read to be *valid*:
 
-1. **Walkers must be stored SHUFFLED.** The pools were stacked (all intra, then all myelin), so the first
-   10 000 rows of an existing pack are 10 000 intra and *zero* myelin -- a prefix reader would silently get
-   an axon with no myelin pool. Walkers are exchangeable, so a deterministic shuffle at build time fixes it;
-   verified afterwards, a shuffled prefix is unbiased with error inside the `1/sqrt(N)` envelope
-   (N=1 000 -> 1.2e-4, N=10 000 -> 5.4e-5 against the full-pack value).
-
-   Implemented as: a producer that shuffles applies one permutation to every walker-indexed array
-   (`traj`, `dlog_b`, `comp`, `comp0`, `w`) and sets `walkers_shuffled=True` on the master;
-   `build_replay_pack` copies that into `compression.precision_tiers`, which also carries
-   `bytes_per_walker`, `floor_at_full_n` and the per-eps walker counts so a consumer computes the
-   prefix length rather than guessing it. **The producer asserts the property — the assembler cannot
-   detect it.** A pack whose producer does not declare it gets `usable: false` and an explicit warning
-   note instead of tiers that quietly invite a biased read.
+1. **Walkers must be stored SHUFFLED.** A walk that seeds pool by pool (all intra, then all myelin) has a
+   prefix of one pool and *zero* of the other. Walkers are exchangeable, so `walk_spec` joins the pools'
+   walks under one permutation of every walker-indexed array (`spec.walk._join_pool_walks`), after which a
+   prefix is an unbiased subsample (N=1 000 -> 1.2e-4, N=10 000 -> 5.4e-5 against the full-pack value).
+   `build_replay_pack` records `compression.precision_tiers` with `walkers_shuffled`, which also carries
+   `bytes_per_walker`, `floor_at_full_n` and the per-eps walker counts so a consumer computes the prefix
+   length rather than guessing it. **The builder cannot detect the property:** a pack whose walkers are not
+   declared shuffled gets `usable: false` and an explicit note instead of tiers that quietly invite a biased
+   read, and `merge_packs` declares the shards' concatenation unshuffled.
 2. **Walkers must be the leading axis** of every per-walker tensor, so a prefix is one contiguous byte
-   range: `dct_coeffs` is `(N_w, K, 3)` already, and `susc_path_dct` is therefore specified as
-   `(N_w, n_ch, K)` -- *not* `(n_ch, N_w, K)`, which would make a walker prefix a strided scatter.
-   The per-walker compartment RLE is unaffected: each walker's label is constant in time, so it is one run
-   per row whatever the row order.
-3. **The tier map must be declared**, not left to the reader to guess:
-   ```
-   precision_tiers = [{"eps": 3e-2, "n_walkers": 3000}, {"eps": 1e-2, "n_walkers": 27000},
-                      {"eps": 3e-3, "n_walkers": 304000}, {"eps": 1e-3, "n_walkers": 2740000}]
-   ```
-   derived from the pack's own measured floor, so `eps(N) = floor_measured * sqrt(N_full / N)`.
+   range: `pos_x` is `(N_w, K+2, 3)`-leading already, and `susc_path_dct` is therefore specified as
+   `(N_w, n_ch, K)` -- *not* `(n_ch, N_w, K)`, which would make a walker prefix a strided scatter. The
+   events columns are the exception: their rows are events, not walkers, so they are read whole and
+   counted as fixed overhead (`precision_tiers.not_prefix_sliceable`).
+3. **The tier map must be declared**, not left to the reader to guess, derived from the pack's own floor, so
+   `eps(N) = floor_measured * sqrt(N_full / N)`.
 
-**The field grid ships as a companion artefact** (`<id>.field.rpk`), not inside the pack. Once the path
-channel exists the grid is not needed for replay at all -- only for regenerating the channel at a different
-K or for a new walk -- and at ~144 MB it would otherwise dominate a 45 MB working-tier pull.
-
-This makes the size question a consumer choice rather than a dataset property: the bank stores one
-reference-grade artefact per substrate, and a user pulling a single mesh replay for a fitting experiment
-takes ~45 MB of it.
+The field basis is a function of the embedded spec (`spec.walk.field_grid_of_spec`, the strand basis from
+the spec's strands), so the pack carries no field grid: only the channel, whose modes were read from it.
 
 ## Fidelity gate
 
-The channel must be certified the way every other tier is: reconstruct at the stored K, compare against
-the **full-resolution** field along the same walk, over a battery that **includes a CPMG train** (the
-binding case), and require the error to sit below the pack's own split-half Monte-Carlo floor. The
-existing `_susc_grid_fidelity` certifies grid quantisation and position-codec error; this one certifies
-the temporal truncation, and both belong in the pack's `fidelity` block.
+The channel is certified the way every other tier is: the stored (truncated, quantised) modes decoded
+against the walk's own reads, over a battery that **includes a CPMG train** at the declared depth (the
+binding case), under the envelope's field strengths and directions, with the error required to sit below
+the split-half Monte-Carlo floor.
+
+* The default certificate (`fidelity="derived"`) carries the **pilot's** measurement of the pair it chose
+  (`err_susc_path`, `floor_susc_path`, `susc_path_measured_on: "pilot"`) and the read's term
+  (`fidelity.terms.field_read`), with the quadrature of the field's block accumulation under
+  `fidelity.terms.quadrature.field`.
+* `fidelity="measured"` re-measures it on the walk's raw subset (`raw_subset=n`): the scalar gates
+  (`_susc_path_fidelity`) and the vector-Bloch path (`_susc_path_bloch_fidelity`), recorded as
+  `err_susc_path` / `err_susc_bloch` with `susc_path_measured_on: "raw_subset"`.
 
 ## Limitations
 
 - The path channel is **tied to its walk**. Arbitrary spatial questions (re-seeding, sampling the field at
-  new positions) need the grid, which is why the grid is retained.
+  new positions) need the field basis, which the embedded spec regenerates.
 - K is a **declared capability**, not a universal constant. A pack built for 16-echo trains is not valid
-  for a 64-echo train; the envelope says so, and the grid allows a rebuild.
+  for a 64-echo train; the envelope says so, and a larger band means a re-walk.
+- A pack's field strength is bounded by its read: where the read is the step, the envelope's `B0_chi_max_T`
+  is the largest `B0·χ` the field-read term holds under.
 - Anisotropic (`aniso_G`) channels were not exercised in the measurements above — the packs measured were
   built isotropic (matching their source study). Enabling them raises `n_ch` 7 → 13 and needs the same
   K-sweep before being trusted.
-- MT with emergent binding evolves a bound pool sequentially; it uses the same reconstructed `b(t)`, but
-  its own mode requirement has not been measured separately.
+- MT with emergent binding evolves a bound pool sequentially; it uses the same read `b(t)`, but its own
+  mode requirement has not been measured separately.

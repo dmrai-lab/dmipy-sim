@@ -38,7 +38,7 @@ def pack_paths(walk, tmp_path_factory):
 
 
 def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3, rf=None):
-    """A PGSE on the pack's save grid, as a bare gradient echo (rf None) or with a physical spin-echo schedule."""
+    """A PGSE on the pack's block grid, as a bare gradient echo (rf None) or with a physical spin-echo schedule."""
     from dmipy_sim.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))

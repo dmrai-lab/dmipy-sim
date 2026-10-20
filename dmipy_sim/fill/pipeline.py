@@ -3,7 +3,7 @@ itself.
 
 The next round's seeds are drawn on the CPU (:func:`dmipy_sim.spec.draw_seeds`) in a thread while this round
 walks, the next block claimed ahead for its first round; the pack runs in a THREAD of this process, directly from
-the block's rounds' :class:`~dmipy_sim.persistent_walk.PersistentWalk` objects (its rounds merged with
+the block's rounds' :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` objects (its rounds merged with
 ``overlap="recertify"``) -- no ``.walk`` file, no reload (dmipy-sim#678: the disk round trip was the handoff's
 cost, not the pack's; ``build_replay_pack`` on the walk already in memory is ~12 s against ~24 s for a subprocess
 that paid its own start, JAX init and an 11 s write + reload of the same arrays). ``--keep`` still writes each
@@ -130,11 +130,15 @@ def batch_size(o, rc):
     be = resolve(o.backend)
     if be is None or not hasattr(be, "suggested_batch"):
         raise ValueError(f"--batch auto: backend {o.backend!r} sizes no batch from its device; give --batch N or the manifest's")
-    W = rc.man["walk"]; dt = rc.dt_save(); n_t = int(round(W["T_max_s"] / dt)) + 1
+    from ..engine.accumulate import window_count, block_length
+    from ..replay.bank import mode_count
+    W = rc.man["walk"]
+    n_win, T_win = window_count(float(W["T_max_s"]))
+    h = rc.block_h() or block_length(T_win, int(rc.man["pack"].get("K") or mode_count(T_win, W["scanner"])))
+    n_blocks = n_win * int(round(T_win / h))
     field = susceptibility_field_of(rc.spec()) == "present"
-    n_tf = len(range(0, n_t, int(W.get("field_sample_every", 1)))) if field else 0
-    n = int(be.suggested_batch(n_t, record=True, field_samples=n_tf, list_k=256, tables_bytes=4 << 30))
-    log.info("batch auto: %d walkers per launch for this device (n_t %d, %d field samples)", n, n_t, n_tf)
+    n = int(be.suggested_batch(n_blocks + 1, record=True, field_samples=(n_blocks + 1 if field else 0), list_k=256, tables_bytes=4 << 30))
+    log.info("batch auto: %d walkers per launch for this device (%d blocks, field %s)", n, n_blocks, field)
     return n
 
 
@@ -153,21 +157,22 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
     log.info("%s round %d/%d: voxels %s, plan %d walkers, scale %.4f -> %s", name, r + 1, k, row["voxels"], seeds["tot"], seeds["scale"], seeds["n_plan"])
     run_dir, out = round_paths(o.workdir, name, r, k)
     t0 = time.time()
-    w = walk_spec(spec, T_max=W["T_max_s"], dt_save=(rc.dt_save() if W["adaptive_steps"] else None),
-                  seeding=seeds["drawn"], seed=seeds["seed"],
+    P = rc.man["pack"]
+    field = susceptibility_field_of(spec) == "present"
+    w = walk_spec(spec, T_max=W["T_max_s"], block_h=rc.block_h(), seeding=seeds["drawn"], seed=seeds["seed"],
                   require_gpu=o.require_gpu, walker_batch_size=batch_size(o, rc), adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
-                  floor_fraction=W["floor_fraction"], field_sample_every=int(W.get("field_sample_every", 1)),
+                  K=P.get("K"), **(dict(K_c3=P.get("K_path"), field_read_interval=rc.field_read_interval()) if field else {}),
                   context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir,
                   spool=(o.backend == "jax"),                        # the resume of a killed hour-long walk; a backend's shard is redone, not resumed
                   backend=o.backend)
     t_walk = time.time() - t0
     n_r = int(w.n_walkers)
-    n_t, step = (int(w.n_t), float(w.dt)) if hasattr(w, "positions") else (int(w.n_blocks) + 1, float(w.h))
+    n_blocks, step = int(w.n_blocks), float(w.h)
     comp = np.asarray(w.compartment)
-    pools = np.bincount((comp[:, 0] if comp.ndim == 2 else comp).astype(int)).tolist()
-    log.info("%s round %d/%d: walked %d walkers x %.0f ms (%d intervals of %.3g s) in %.0f s; pools %s", name, r + 1, k, n_r,
-             W["T_max_s"] * 1e3, n_t - 1, step, t_walk, pools)
-    rd = dict(walk=out, run_dir=run_dir, n_walkers=int(n_r), n_t=int(n_t), dt_save=step, t_walk=t_walk, pools=pools,
+    pools = np.bincount(comp.astype(int)).tolist()
+    log.info("%s round %d/%d: walked %d walkers x %.0f ms (%d blocks of %.3g s) in %.0f s; pools %s", name, r + 1, k, n_r,
+             W["T_max_s"] * 1e3, n_blocks, step, t_walk, pools)
+    rd = dict(walk=out, run_dir=run_dir, n_walkers=int(n_r), n_blocks=int(n_blocks), block_h=step, t_walk=t_walk, pools=pools,
               scale=seeds["scale"], plan=seeds["tot"], round=r)
     return w, rd
 
@@ -176,9 +181,7 @@ def save_walk(w, rd):
     """The round's walk written as one file beside the shard (``--keep``, or :meth:`Fill.drain` recovering a
     block whose pack never ran); the spool dropped once the file is whole. Not the pack's handoff any more
     (dmipy-sim#678): the pack stage reads the walk object directly, in memory."""
-    if not hasattr(w, "save"):
-        raise ValueError("a walk that accumulates its bands keeps no saves to write: --keep is for an adaptive walk")
-    t0 = time.time(); w.save(rd["walk"])
+    t0 = time.time(); w.save(rd["walk"])                         # CoefficientWalk.save: the walk as one safetensors file
     shutil.rmtree(os.path.join(rd["run_dir"], "spool"), ignore_errors=True)
     log.info("%s saved in %.0f s", os.path.basename(rd["walk"]), time.time() - t0)
 
@@ -191,7 +194,7 @@ def drop_spool(rd):
 
 def _pack_block(job, walk_of):
     """The pack stage: the block's rounds packed from their walks (``walk_of(r, rd)`` returns round ``r``'s
-    :class:`~dmipy_sim.persistent_walk.PersistentWalk`), the rounds merged, the summary and the certificate
+    :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`), the rounds merged, the summary and the certificate
     written beside the shard. ``job`` is the dict the walk stage built (:meth:`Fill.job_of`); shared by
     :func:`pack_in_process` (the walks already in memory) and :func:`pack_job` (reloaded from ``--keep``'s
     files, for :meth:`Fill.drain`). Returns the summary dict."""
@@ -199,16 +202,22 @@ def _pack_block(job, walk_of):
     from ..phantom import Grid
     man, P = job["manifest"], job["manifest"]["pack"]
     G = man["grid"]; grid = Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
-    fid = dict(fidelity="measured", blt_temporal_K=P["blt_K"]) if job["certify"] else dict(fidelity="inherited", fidelity_from=job["certificate"])
+    fid = dict(fidelity="derived", blt_temporal_K=P["blt_K"])             # every coefficient walk certifies itself walk-free
+    pos_c, blt_c = P["position_container"], P["blt_container"]
+    cc = None if job["certify"] else (job.get("certificate") or {}).get("compression")
+    if cc is not None and "container" in cc:                              # one container for every shard of the fill: the certifying pack's
+        from ..replay.bank import _container_of_meta
+        pos_c = _container_of_meta(cc["container"])
+        bc = (cc.get("channels") or {}).get("boundary_local_time") or {}
+        if bc.get("dtype") == "bands":
+            blt_c = _container_of_meta(bc.get("container"))
     rounds = job["rounds"]; k = len(rounds); out = job["out"]; t0 = time.time(); packs = []
     for r, rd in enumerate(rounds):
         w = walk_of(r, rd)
-        if not hasattr(w, "positions"):                     # a coefficient walk certifies itself walk-free
-            fid = dict(fidelity="derived", blt_temporal_K=P["blt_K"])
         out_r = out if k == 1 else out[:-4] + f".round{r}.rpk"
         pk = build_replay_pack(w, id=f"{man['id']}/{job['variant']}/{job['name']}{'-certifying' if job['certify'] else ''}" + (f"/round-{r}" if k > 1 else ""),
-                               license=man["license"], citation=man["citation"], K=P.get("K"), scanner=man["walk"]["scanner"], position_container=P["position_container"],
-                               blt_container=P["blt_container"], susc_path_K=(P["K_path"] if w.field_samples is not None else None), voxel_grid=grid,
+                               license=man["license"], citation=man["citation"], K=P.get("K"), scanner=man["walk"]["scanner"], position_container=pos_c,
+                               blt_container=blt_c, susc_path_K=(P["K_path"] if w.field_coeffs is not None else None), voxel_grid=grid,
                                out_path=out_r, device=job["device"], provenance=dict(job["provenance"], round=(r if k > 1 else None), rounds=k), **fid)
         packs.append(out_r); del w
     if k > 1:
@@ -229,7 +238,7 @@ def _pack_block(job, walk_of):
                    **{"pass": job.get("pass"), "pass_scale": job.get("pass_scale", 1.0)},
                    certified=pk.meta["fidelity"]["certified"], floor_max=float(pk.meta["fidelity"]["floor_max"]),
                    box=job["box"], seed=job["seed"], budget=job["budget"], scale=rounds[0]["scale"], walkers=int(n_w), pools=pools,
-                   n_t=rounds[0]["n_t"], dt_save_s=rounds[0]["dt_save"], t_walk_s=sum(rd["t_walk"] for rd in rounds), t_pack_s=t_pack,
+                   n_blocks=rounds[0]["n_blocks"], block_h_s=rounds[0]["block_h"], t_walk_s=sum(rd["t_walk"] for rd in rounds), t_pack_s=t_pack,
                    size_bytes=os.path.getsize(out), sha256=sha256_of(out), certificate=cert, rounds=k,
                    run=pk.meta.get("provenance", {}).get("run"), finished=C.stamp())
     json.dump(summary, open(out[:-4] + ".json", "w"), indent=1)
@@ -241,7 +250,7 @@ def _pack_block(job, walk_of):
 
 
 def pack_in_process(job, walks):
-    """The live pipeline's pack (dmipy-sim#678): the block's rounds packed from the :class:`PersistentWalk`
+    """The live pipeline's pack (dmipy-sim#678): the block's rounds packed from the :class:`CoefficientWalk`
     objects the walk stage already produced, in this process -- no ``.walk`` write, no reload. Runs in a thread
     (:meth:`Fill.start_pack`) while the next block's walk proceeds on the device; ``walks[r]`` is round ``r``'s
     walk, in the order ``job["rounds"]`` lists them."""
@@ -252,8 +261,8 @@ def pack_job(job):
     """Recovering a block whose pack never ran (:meth:`Fill.drain`): the rounds' ``.walk`` files on disk --
     written by ``--keep``, or left by a worker that died after saving but before packing -- loaded, packed and
     removed; the walk files were the handoff then, the shard is the artifact now."""
-    from ..persistent_walk import PersistentWalk
-    summary = _pack_block(job, lambda r, rd: PersistentWalk.load(rd["walk"]))
+    from ..coefficient_walk import CoefficientWalk
+    summary = _pack_block(job, lambda r, rd: CoefficientWalk.load(rd["walk"]))
     for rd in job["rounds"]:
         os.remove(rd["walk"])
     return summary
