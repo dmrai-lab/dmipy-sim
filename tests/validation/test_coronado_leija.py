@@ -172,15 +172,19 @@ def test_the_sub_step_counts_the_refusal_quotes_are_the_engines_own():
                 resolve_sub_steps(g, B.D0, dt, surface=True)
         else:
             assert resolve_sub_steps(g, B.D0, dt, surface=True) == declared, (tier, dt)
+    for (tier, dt), declared in sorted(B.SUB_STEPS_NO_SURFACE.items()):
+        vox = np.asarray(B.VOXEL_LM if tier == "lm" else B.VOXEL_HM)
+        g = LabelVolume(lab, vox, pools={0: "extra", 1: "intra"}, pool="intra", origin=-4.0 * vox)
+        assert resolve_sub_steps(g, B.D0, dt, surface=False, f_band=B.K_BANDS / (2 * B.TE)) == declared, (tier, dt)
 
 
 def test_the_walk_refuses_by_name_with_the_number_that_makes_it_a_refusal(tmp_path):
     fam, _ = _family(tmp_path, ["sham_25_contra_cc"])
     with pytest.raises(ReferenceRefusal) as e:
-        fam.build.walk(None, 10, n_t=2, seed=0)
+        fam.build.walk(None, 10, T=B.TE, K=B.K_BANDS, seed=0)
     assert "dmipy-sim#478" in str(e.value)
-    assert f"{B.SUB_STEPS[('lm', 625e-6)]:,}" in str(e.value)
-    assert f"{B.SUB_STEPS[('lm', B.DT_SAVE)]:,}" in str(e.value)
+    assert f"{B.SUB_STEPS[('lm', B.BLOCK_S)]:,}" in str(e.value)
+    assert f"{B.SUB_STEPS[('hm', B.BLOCK_S)]:,}" in str(e.value)
 
 
 def test_the_chain_stops_at_the_spec_stage_and_the_design_stage_cannot_reach_its_pilot(tmp_path):
