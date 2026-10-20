@@ -23,15 +23,16 @@ pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citatio
 print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
 
-There is no save grid. The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs,
+The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs,
 block by block (`block_h`, the fifth argument; by default the band's own block `h = 0.8 T / (pi K)`, `omega_K h = 0.8`
 at the top band, `pack.block["h"]`), and returns a `CoefficientWalk` whose memory
 does not grow with the block count. The bands are the projections of each walker's bridge on `sqrt(2 / T) sin(pi k t /
 T)`, and the pack is certified without a raw walk: the truncation from the free band variances, the block quadrature
 (`rel(m, h)` times each channel's measured quadratic variation), the container's quantisation and the split-half floor
 read from the coefficients. `raw_subset=n` keeps the first `n` walkers' block ends beside the bands
-(`walk.raw_positions`, `raw_boundary`, ...: the walk's own arrays, never a pack's input), for a certificate measured on them
-(`fidelity="measured"`: positions, contact, field path and Bloch) or a picture of the paths.
+(`walk.raw_positions`, `walk.raw_boundary`, `walk.raw_compartment`, `walk.raw_field`: a dense reference that is never a
+pack's input), for a certificate measured on them (`fidelity="measured"`: positions, contact, field and Bloch) or a
+picture of the paths.
 
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
