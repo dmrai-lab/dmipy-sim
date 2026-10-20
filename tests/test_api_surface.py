@@ -602,6 +602,9 @@ def test_a_backends_request_names_the_walk_and_no_save_grid():
     assert {"position_coeffs", "boundary_bands", "boundary_endpoint", "compartment", "qv_positions", "qv_boundary",
             "events", "bound_events", "field_bands", "field_qv", "dt_f", "saves", "precision", "K", "m"} <= set(CoefficientBatch._fields)
     assert not {"positions", "n_t"} & set(CoefficientBatch._fields)
+    from dmipy_sim.engine import backends
+    assert "n_t" not in backends.REQUEST_TEMPLATE_KEYS and {"block_h", "dt_sim", "K", "m", "ring", "events"} <= set(backends.REQUEST_TEMPLATE_KEYS)
+    assert not {"sample_every", "n_tf"} & set(backends.FIELD_STRUCT_KEYS) and {"K_c3", "read_every", "mean"} <= set(backends.FIELD_STRUCT_KEYS)
 
 
 def test_one_basis_and_no_header_with_a_save_grid():

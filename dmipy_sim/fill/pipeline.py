@@ -121,7 +121,8 @@ def draw_round(rc, row, r, k, P, budget):
 
 def batch_size(o, rc):
     """The walk's ``walker_batch_size``: the option, the manifest's, or with ``batch="auto"`` what the backend sizes from
-    its device for this walk (dmrai-lab/dmipy-sim-cuda#18: the fewer of what the memory holds and what stays resident;
+    its device for this walk's accumulators -- its bands ``K`` at the table's order ``m`` and the field's modes, whatever
+    the walk's length (dmrai-lab/dmipy-sim-cuda#18, #78: the fewer of what the memory holds and what stays resident;
     the walk time is the slowest walker's chain, so a card is used by filling it). A backend without
     ``suggested_batch`` is refused by name: the manifest's number is the choice then, never a guess."""
     if o.batch != "auto":
@@ -130,15 +131,12 @@ def batch_size(o, rc):
     be = resolve(o.backend)
     if be is None or not hasattr(be, "suggested_batch"):
         raise ValueError(f"--batch auto: backend {o.backend!r} sizes no batch from its device; give --batch N or the manifest's")
-    from ..engine.accumulate import window_count, block_length
-    from ..replay.bank import mode_count
-    W = rc.man["walk"]
-    n_win, T_win = window_count(float(W["T_max_s"]))
-    h = rc.block_h() or block_length(T_win, int(rc.man["pack"].get("K") or mode_count(T_win, W["scanner"])))
-    n_blocks = n_win * int(round(T_win / h))
+    from .kit import _block_record
+    blk = _block_record(rc)
     field = susceptibility_field_of(rc.spec()) == "present"
-    n = int(be.suggested_batch(n_blocks + 1, record=True, field_samples=(n_blocks + 1 if field else 0), list_k=256, tables_bytes=4 << 30))
-    log.info("batch auto: %d walkers per launch for this device (%d blocks, field %s)", n, n_blocks, field)
+    K_c3 = int(rc.man["pack"].get("K_path") or 0) if field else 0
+    n = int(be.suggested_batch(int(blk["K"]), m=int(blk["m"]), record=True, events=0, K_c3=K_c3, list_k=256, tables_bytes=4 << 30))
+    log.info("batch auto: %d walkers per launch for this device (K %d, m %d, field modes %d)", n, blk["K"], blk["m"], K_c3)
     return n
 
 

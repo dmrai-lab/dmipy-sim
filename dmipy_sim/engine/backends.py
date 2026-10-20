@@ -438,16 +438,24 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
 # executes a WalkRequest; the strands engine's request DIRECTORY (request.txt + the strand/adaptive/field
 # tables) is serialised once, here, from the geometry's/plan's/basis's own arrays -- never read back by a
 # backend's own ctypes struct, which is a different consumer of the same numbers (a live library call, not a
-# file). dmipy_sim_cuda.cli.write_request calls write_request_directory for the strands engine; a substrate
-# kit (dmipy_sim.fill.kit) builds the same files from a template, never installing dmipy_sim_cuda to do it.
+# file). dmipy_sim_cuda.cli.write_request (dmipy-sim-cuda#78) writes the same files from its ctypes structs, field
+# by field under their names; a substrate kit (dmipy_sim.fill.kit) builds them from a template, never installing
+# dmipy_sim_cuda to do it.
 # ─────────────────────────────────────────────────────────────────────────────
 
 #: the strand-walk tables of one pool's geometry, the file names a request directory writes them under
 STRAND_ARRAY_NAMES = ("A.f32", "AB.f32", "AB2.f32", "rr.f32", "tube.i32", "cell_off.i32", "cell_ids.i32")
 #: the field basis's own tables, shared by every pool that samples it
 FIELD_ARRAY_NAMES = ("fA.f32", "fAB.f32", "fAB2.f32", "fa.f32", "fb.f32", "fsid.i32", "fcell_off.i32", "fcell_ids.i32", "fbox.i16")
-#: the request-struct fields that stay in a kit's template (everything but ``n`` and ``seed``, which are a batch's own)
-REQUEST_TEMPLATE_KEYS = ("n_t", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record", "count", "budget")
+#: the request-struct fields, in the backend's ``DscRequest`` field order: a kit's template holds them all, a batch
+#: setting its own ``seed`` and its ``raw_subset`` (at most its walkers)
+REQUEST_TEMPLATE_KEYS = ("n_blocks", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record",
+                         "count", "budget", "seed", "block_h", "dt_sim", "K", "m", "ring", "events", "raw_subset")
+#: the field-struct fields, in the backend's ``DscField`` field order (``far_dims`` / ``far_origin`` a batch's crop)
+FIELD_STRUCT_KEYS = ("n_seg", "nnz", "dims", "gmin", "cs", "radius", "reach", "gate_radii", "has_far", "near_m", "blend_m",
+                     "far_dims", "far_origin", "far_h", "reuse", "list_k", "segments_max", "K_c3", "read_every", "mean")
+#: the terms the backend projects a window of blocks with: a ring of ``RING_TERMS // (m + 1)`` blocks by default
+RING_TERMS = 256
 #: the strands-struct fields, in the backend's ``DscStrands`` field order
 STRANDS_STRUCT_KEYS = ("n_seg", "nnz", "dims", "gmin", "cs", "interior", "box_reflect", "lo", "hi", "nudge")
 
@@ -608,12 +616,13 @@ def field_tables_window(basis, lo_m, hi_m, margin_m):
     return dims_gmin, arrays
 
 
-def field_struct_fields(basis, radius_m, sample_every, reuse, list_k, n_tf, K_c3=0, read_every=0):
-    """The backend's ``DscField`` fields EXCEPT ``far_dims``/``far_origin`` (the crop, a batch's own) -- built
-    from ``basis``'s own arrays and the sampling settings, with no ``r0``. ``K_c3`` / ``read_every`` are the field
-    accumulated in a coefficient walk (dmipy-sim#742): its cosine modes per channel and the rounds between reads
-    (0: after every step); ``mean`` is the basis's domain mean the kernel subtracts at every read, written only
-    when the field is accumulated (zeros otherwise, as the backend's own struct holds it)."""
+def field_struct_fields(basis, radius_m, reuse, list_k, K_c3=0, read_every=0):
+    """The backend's ``DscField`` fields in its field order (:data:`FIELD_STRUCT_KEYS`) -- built from ``basis``'s own
+    arrays and the sampling settings, with no ``r0``: ``far_dims`` / ``far_origin`` (the crop, a batch's own) are
+    zeros here for the batch to set. ``K_c3`` / ``read_every`` are the field accumulated in the walk
+    (dmipy-sim#742): its cosine modes per channel and the rounds between reads (0: after every step); ``mean`` is
+    the basis's domain mean the kernel subtracts at every read, written only when the field is accumulated (zeros
+    otherwise, as the backend's own struct holds it)."""
     _, fcell_ids = csr_cells(np.asarray(basis._CELL))
     far = basis.far
     mean = [_f32(x) for x in np.asarray(basis.mean, np.float32)] if int(K_c3) else [0.0] * 13
@@ -621,9 +630,9 @@ def field_struct_fields(basis, radius_m, sample_every, reuse, list_k, n_tf, K_c3
                gmin=[_f32(x) for x in np.asarray(basis._gmin)], cs=_f32(basis._CS), radius=_f32(radius_m),
                reach=_f32(basis.gather_radius_m), gate_radii=_f32(basis.NEAREST_GATE_RADII),
                has_far=int(far is not None), near_m=_f32(far.near_m if far is not None else 0.0),
-               blend_m=_f32(far.blend_m if far is not None else 0.0), far_h=_f32(far.spacing_m if far is not None else 0.0),
-               sample_every=int(sample_every), reuse=int(reuse), list_k=max(1, int(list_k)),
-               n_tf=int(n_tf), segments_max=int(basis.segments_max), K_c3=int(K_c3), read_every=int(read_every), mean=mean)
+               blend_m=_f32(far.blend_m if far is not None else 0.0), far_dims=[0, 0, 0], far_origin=[0.0, 0.0, 0.0],
+               far_h=_f32(far.spacing_m if far is not None else 0.0), reuse=int(reuse), list_k=max(1, int(list_k)),
+               segments_max=int(basis.segments_max), K_c3=int(K_c3), read_every=int(read_every), mean=mean)
 
 
 def adaptive_struct_fields(plan, R_max):
@@ -639,22 +648,22 @@ def adaptive_struct_fields(plan, R_max):
                steps_c=steps_c, step_l_c=step_l_c, reach_c=reach_c)
 
 
-def request_struct_fields(*, n_blocks, sub_steps, step_l, kappa_over_D, record, count, budget):
-    """The backend's ``DscRequest`` fields EXCEPT ``seed`` (a batch's own): the walk's ``n_blocks`` blocks (the
-    struct's ``n_t`` counts their ends, ``n_blocks + 1``), the physics steps per block,
-    the step length's scale ``step_l = sqrt(6 D dt_sim)`` with the step law's two atoms and the long one's
-    probability (:mod:`dmipy_sim.math.step_law`: a kernel multiplies the scale by the atom it draws and defines
-    no length of its own), the membrane, what is recorded and counted, and the bounce budget."""
+def request_struct_fields(*, n_blocks, sub_steps, step_l, kappa_over_D, record, count, budget, block_h, dt_sim, K, m,
+                          events, raw_subset, ring=None, seed=0):
+    """The backend's ``DscRequest`` fields in its field order (:data:`REQUEST_TEMPLATE_KEYS`): the walk's ``n_blocks``
+    blocks of ``sub_steps`` physics steps, the step length's scale ``step_l = sqrt(6 D dt_sim)`` with the step law's
+    two atoms and the long one's probability (:mod:`dmipy_sim.math.step_law`: a kernel multiplies the scale by the
+    atom it draws and defines no length of its own), the membrane, what is recorded and counted, the bounce budget,
+    the ``seed`` (a batch's own), the block ``block_h`` and the step ``dt_sim`` (s, in double precision), the bands
+    ``K`` at the block table's order ``m``, the ``ring`` of blocks projected at once (``RING_TERMS // (m + 1)`` by
+    default), C1's event capacity (``events`` of a recorded walk, 0 otherwise) and the raw subset."""
     from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG
-    return dict(n_t=int(n_blocks) + 1, sub_steps=int(sub_steps), step_l=_f32(step_l),
+    return dict(n_blocks=int(n_blocks), sub_steps=int(sub_steps), step_l=_f32(step_l),
                atom_short=_f32(PAIR_SHORT), atom_long=_f32(PAIR_LONG), p_long=_f32(PAIR_P_LONG),
-               kappa_over_D=_f32(kappa_over_D), record=int(bool(record)), count=int(bool(count)), budget=int(budget))
-
-
-#: the coefficient form's request keys, in the order the walker reads them after the request's own
-COEFFICIENT_REQUEST_KEYS = ("K", "dt_sim", "n_b", "m", "ring", "events", "field_K_c3", "field_read_every", "field_read_interval")
-#: the terms a block's ring projects at a time, over the table's ``m + 1`` orders (the CUDA walker's default ring)
-RING_TERMS = 256
+               kappa_over_D=_f32(kappa_over_D), record=int(bool(record)), count=int(bool(count)), budget=int(budget),
+               seed=int(seed) & 0xFFFFFFFFFFFFFFFF, block_h=float(block_h), dt_sim=float(dt_sim), K=int(K), m=int(m),
+               ring=(RING_TERMS // (int(m) + 1) if ring is None else int(ring)), events=(int(events) if record else 0),
+               raw_subset=max(int(raw_subset), 0))
 
 
 def field_read_every(dt_f, plan, block):
@@ -671,50 +680,12 @@ def field_read_every(dt_f, plan, block):
     return best
 
 
-def coefficient_request_fields(request):
-    """The coefficient form's request lines of ``request`` (a :class:`WalkRequest` with ``K > 0``), in
-    :data:`COEFFICIENT_REQUEST_KEYS`' order: the band ``K``, the step, the block's steps ``n_b`` (``sub_steps``), the
-    table's order ``m``, the ring (:data:`RING_TERMS` over ``m + 1``), the C1 event capacity, and with the field
-    accumulated (``K_c3 > 0``, an adaptive strand walk) its modes, the rounds between reads
-    (:func:`field_read_every`) and the read interval those rounds make. The block table beside them is
-    :func:`block_table_of`."""
-    K, m = int(request.K), int(request.m)
-    if K <= 0:
-        raise ValueError("a coefficient request needs the band K > 0")
-    block = int(request.sub_steps)
-    lines = dict(K=K, dt_sim=float(request.dt_sim), n_b=block, m=m, ring=RING_TERMS // (m + 1), events=int(request.events))
-    if int(request.K_c3):
-        if request.field is None or request.stepping is None:
-            raise ValueError("K_c3 > 0 accumulates the field of an adaptive strand walk, and this request samples none")
-        every = field_read_every(float(request.field_read_interval), request.stepping, block)
-        lines.update(field_K_c3=int(request.K_c3), field_read_every=int(every),
-                     field_read_interval=float(every * float(request.stepping.dt_round) if every else 0.0))
-    return lines
-
-
 def block_table_of(request):
     """The block table a coefficient request is walked against, ``(n_blocks, K + 1, m + 1)`` float64 over the walk
     (:func:`~dmipy_sim.replay.compression.block_table`): one storage window, since a backend accumulates one window
     per walk (several are refused by name)."""
     from ..replay.compression import block_table
     return np.ascontiguousarray(block_table(float(request.T), int(request.n_blocks), int(request.K), int(request.m)), np.float64)
-
-
-def write_coefficient_lines(out_dir, request):
-    """Append ``request``'s coefficient form (:func:`coefficient_request_fields`) to ``out_dir/request.txt``
-    (:func:`write_request_directory` must already have written it) and drop ``table.f64`` (:func:`block_table_of`)
-    and, with the field accumulated, ``field_mean.f32`` beside it: the walker then accumulates the bands as the
-    producer does."""
-    out = Path(out_dir)
-    if not (out / "request.txt").exists():
-        raise FileNotFoundError(f"{out / 'request.txt'} does not exist: write_request_directory(request, ...) first")
-    lines = coefficient_request_fields(request)
-    block_table_of(request).tofile(out / "table.f64")
-    if "field_K_c3" in lines:
-        np.asarray(request.field.basis.mean, np.float32).tofile(out / "field_mean.f32")
-    with open(out / "request.txt", "a") as fh:
-        fh.write("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
-    return out
 
 
 def crop_far_grid(values, origin_m, spacing_m, r0, T, diffusivity):
@@ -739,14 +710,17 @@ def crop_far_grid(values, origin_m, spacing_m, r0, T, diffusivity):
 
 def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
     """The request directory of a live, resolved ``WalkRequest`` whose geometry is the strands engine:
-    ``request.txt`` (the ``DscRequest`` fields, the engine's name, the ``DscStrands`` fields, and -- when the
-    request carries them -- the ``DscAdaptive`` and ``DscField`` fields, each prefixed ``adaptive_``/``field_``),
-    ``r0.f32``, ``keys.u32`` and the strand/field tables beside it (the far grid CROPPED to what ``r0`` can
-    reach, :func:`crop_far_grid`). This is dmipy-sim's side of the backend protocol: every value comes from the
-    geometry's/plan's/basis's own arrays, with the float32 truncation the backend's ctypes request structs apply
-    on assignment (:func:`strands_struct_fields`, :func:`adaptive_struct_fields`, :func:`field_struct_fields`) --
-    so this is exactly what ``dmipy_sim_cuda.cli.write_request`` writes for the strands engine, byte for byte,
-    without that package installed. ``classify`` is the CUDA CLI's own flag and is not written here."""
+    ``request.txt`` (the engine's name, ``n``, the ``DscRequest`` fields -- the blocks, the step, the seed, the bands
+    ``K`` at order ``m``, the ring, the event capacity, the raw subset --, the ``DscStrands`` fields, and when the
+    request carries them the ``DscAdaptive`` and ``DscField`` fields, each prefixed ``adaptive_`` / ``field_``: the
+    field's ``K_c3`` modes read every ``read_every`` rounds and its ``mean``), ``r0.f32``, ``keys.u32``, the block
+    table ``table.f64`` (:func:`block_table_of`) and the strand / field tables beside it (the far grid CROPPED to
+    what ``r0`` can reach, :func:`crop_far_grid`). dmipy-sim's side of the backend protocol: every value comes from
+    the geometry's / plan's / basis's own arrays, with the float32 truncation the backend's ctypes structs apply on
+    assignment (:func:`request_struct_fields`, :func:`strands_struct_fields`, :func:`adaptive_struct_fields`,
+    :func:`field_struct_fields`) -- what ``dmipy_sim_cuda.cli.write_request`` writes for the strands engine
+    (dmipy-sim-cuda#78), byte for byte, without that package installed. ``classify`` is the CUDA CLI's own flag and
+    is not written here."""
     from ..geometry.curved_cylinder import PackedCurvedCylinders
     g = request.geometry
     if not isinstance(g, PackedCurvedCylinders):
@@ -758,24 +732,26 @@ def write_request_directory(request: WalkRequest, r0, keys, out_dir) -> Path:
     lines.update(request_struct_fields(n_blocks=int(request.n_blocks), sub_steps=request.sub_steps,
                                        step_l=float(np.sqrt(6.0 * request.diffusivity * request.dt_sim)),
                                        kappa_over_D=request.kappa_over_D, record=request.record, count=request.count_walls,
-                                       budget=(int(g.bounce_loop.budget) if g.bounce_loop is not None else 0)))
-    lines["seed"] = int(request.seed) & 0xFFFFFFFFFFFFFFFF
+                                       budget=(int(g.bounce_loop.budget) if g.bounce_loop is not None else 0),
+                                       seed=request.seed, block_h=request.block_h, dt_sim=request.dt_sim, K=request.K, m=request.m,
+                                       events=request.events, raw_subset=min(int(request.raw_subset), n)))
     lines.update(struct)
     if request.stepping is not None:
         lines["adaptive"] = 1
         lines.update({f"adaptive_{k}": v for k, v in adaptive_struct_fields(request.stepping, g._Rmax).items()})
-    if request.field is not None:
+    if request.stepping is not None and request.field is not None:
         f = request.field; basis = f.basis
-        n_tf = len(range(0, int(request.n_blocks) + 1, int(f.sample_every)))
-        lines["field"] = 1
-        lines.update({f"field_{k}": v for k, v in field_struct_fields(basis, f.radius_m, f.sample_every, f.reuse_intervals, f.list_k, n_tf).items()})
+        K_c3 = int(request.K_c3)
+        every = field_read_every(float(request.field_read_interval), request.stepping, int(request.sub_steps)) if K_c3 else 0
+        fields = field_struct_fields(basis, f.radius_m, f.reuse_intervals, f.list_k, K_c3=K_c3, read_every=every)
         arrays.update(field_tables(basis))
-        far_dims, far_origin = [0, 0, 0], [0.0, 0.0, 0.0]
         if basis.far is not None:
-            crop, far_dims, far_origin = crop_far_grid(basis.far.values, basis.far.origin_m, basis.far.spacing_m,
-                                                       r0, request.T, request.diffusivity)
+            crop, fields["far_dims"], fields["far_origin"] = crop_far_grid(basis.far.values, basis.far.origin_m, basis.far.spacing_m,
+                                                                           r0, request.T, request.diffusivity)
             arrays["far.u16"] = crop
-        lines["field_far_dims"] = far_dims; lines["field_far_origin"] = far_origin
+        lines["field"] = 1
+        lines.update({f"field_{k}": v for k, v in fields.items()})
+    block_table_of(request).tofile(out / "table.f64")
     (out / "request.txt").write_text("".join(f"{k}={format_request_value(v)}\n" for k, v in lines.items()))
     r0.tofile(out / "r0.f32")
     np.ascontiguousarray(keys, np.uint32).reshape(n, -1)[:, :2].copy().tofile(out / "keys.u32")
