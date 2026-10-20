@@ -704,7 +704,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
             if not isinstance(w, np.ndarray):
                 r = w.block["field_read"]
                 own = (r.get("pools") or {}).get(name_of_pool[pid], {})
-                pools[name_of_pool[pid]] = dict(own, dt_f=float(w.field_read_interval), n_read=int(r["n_read"]), rule=r["rule"])
+                pools[name_of_pool[pid]] = dict(own, dt_f=float(w.field_read_interval), n_read=int(r["n_read"]), rule=r["rule"],
+                                                constants=r.get("constants"))
         block["field_read"] = dict(w_read.block["field_read"], pools=pools)
         consts = [r.get("constants") for r in reads if r.get("constants") is not None]
         if consts:

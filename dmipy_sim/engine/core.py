@@ -1654,12 +1654,13 @@ def simulate_trajectories(
         _rd = [(1, float(dt_sim), (), True)]                # the read the batches take: the step's, then the walk's
 
         def _call(a, b, raw, cap, K_c3, rd=None):
-            r0_b = r0_all[a:b]
-            comp0_b = (comp0_all[a:b] if kind_name == "pm" else
+            sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
+            r0_b = r0_all[sel]
+            comp0_b = (comp0_all[sel] if kind_name == "pm" else
                        jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32) if kind_name in ("relax", "mt")
-                       else jnp.zeros((b - a,), jnp.int32))
-            out = _batch_fn(raw, cap, K_c3, _rd[0] if rd is None else rd)(r0_b, walker_keys_all[a:b], _side0(r0_b), comp0_b,
-                                                                       brem0_all[a:b], _f_arrays)
+                       else jnp.zeros((r0_b.shape[0],), jnp.int32))
+            out = _batch_fn(raw, cap, K_c3, _rd[0] if rd is None else rd)(r0_b, walker_keys_all[sel], _side0(r0_b), comp0_b,
+                                                                       brem0_all[sel], _f_arrays)
             *arrs, ev_c, ev_b, n_dev, bad_f, work_f = out
             got = {k: np.asarray(v) for k, v in zip(names, arrs)}
             for key, ev in (("c", ev_c), ("b", ev_b)):                      # the events compacted per batch: (counts, t, label)
@@ -1675,11 +1676,12 @@ def simulate_trajectories(
             under the names of the JAX batch, the walk converting nothing -- a backend that hands back a walk of saves
             is refused by name."""
             from .backends import CoefficientBatch
-            n_b = b - a
+            sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
+            n_b = int(r0_all[sel].shape[0])
             req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0),
                                        events=(int(cap) if cap else res.request.events))
-            r0_b = np.ascontiguousarray(np.asarray(r0_all[a:b]), np.float32)
-            keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[a:b]), np.uint32)
+            r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
+            keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
             batch = _backend.walk_batch(req, r0_b, keys_b)
             if not isinstance(batch, CoefficientBatch):
                 raise ValueError(f"backend {_backend_name!r} returned a {type(batch).__name__} for the coefficient walk; the "
@@ -1734,12 +1736,14 @@ def simulate_trajectories(
         # ── The pilots: the events buffer's capacity (the largest count a pilot walker reached, with a margin) and
         # the field's band (the ladder on the pilot's block means), each a walk of the first PILOT_WALKERS walkers
         # thrown away afterwards; the production program is compiled once they are known.
-        n_pilot = int(min(PILOT_WALKERS, n_walkers))
+        from .accumulate import pilot_walkers
+        pidx = pilot_walkers(n_walkers)                    # spread over the walk: its walkers are seeded pool by pool
+        n_pilot = int(pidx.shape[0])
         cap = res.events_capacity
         events_record = None
         if (ev_comp_on or ev_bound_on) and cap is None:
             run.phase("events pilot", walkers=n_pilot)
-            got, _, _, _ = _walk_batch(0, n_pilot, False, 0, None)
+            got, _, _, _ = _walk_batch(pidx, None, False, 0, None)
             top = max(got["ev_max_c"] if ev_comp_on else 0, got["ev_max_b"] if ev_bound_on else 0)
             cap = int(np.ceil(EVENTS_MARGIN[0] * top)) + int(EVENTS_MARGIN[1])
             events_record = dict(rule="pilot", pilot_walkers=n_pilot, pilot_max_changes=int(top), capacity=cap,
@@ -1751,13 +1755,16 @@ def simulate_trajectories(
             cap = 0
         K_c3_ = res.K_c3
         field_band = None
-        if _sampling and (K_c3_ is None or res.field_read["rule"] == "pilot"):
+        if _sampling:
             # the field's pilot reads every step: the read series' quadratic variation per pool (the read's rule), the
-            # trapezoid's constant at every coarser read the block allows, and the block means (the field band's ladder)
+            # trapezoid's constant at every coarser read the block allows (what the walk's read is charged at, given
+            # or derived), and the block means (the field band's ladder)
             from .accumulate import read_checks, field_read_of_pilot, field_rule_scale, FIELD_READ_FLOOR
+            import time as _time
             checks = read_checks(sub_steps)
             run.phase("field pilot", walkers=n_pilot)
-            got, _, _, _ = _walk_batch(0, n_pilot, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
+            _t0 = _time.time()
+            got, _, _, _ = _walk_batch(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
             B0, chi = field_rule_scale(geometry.spec, envelope)
             qd = np.asarray(got["qv_d"], np.float64)                                   # (n_pilot, n_win, n_ch)
             chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, 2, n_checks, n_ch)
@@ -1770,7 +1777,7 @@ def simulate_trajectories(
                                              err_sq=(chk[:, :, 0] ** 2).mean(axis=(0, 1)) if checks else None,
                                              qv_checks=chk[:, :, 1].mean(axis=(0, 1)) if checks else None, qv_all=qd.mean(axis=(0, 1)),
                                              channels=list(field_basis.channel_names))
-            field_read["pilot_walkers"] = int(n_pilot)
+            field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0))
             res = res._replace(field_read=field_read)
             if K_c3_ is None:
                 from ..replay.bank import derive_field_band

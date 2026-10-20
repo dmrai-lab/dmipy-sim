@@ -490,7 +490,9 @@ def _read_compare(fine, other, *, B0, chi, names, pools=None):
     and pool: the gated integral of every channel ``I_c = int s b_c dt`` from the modes (a gradient echo and a spin
     echo over the window), its difference per walker, the measured constant ``kappa_c = Var(dI_c) / (dt_f^2 <QV_c>)``
     against the constant the certificate charges, and the channel's signal ``|<exp(i gamma B0 chi I_c)>|`` against the
-    fine walk's with the channel's term ``(gamma B0 chi dt_f)^2 kappa_c <QV_c> / 2`` and the split-half standard error.
+    fine walk's with the channel's term ``(gamma B0 chi dt_f)^2 kappa_c <QV_c> / 2`` (a bound on the bias) and the
+    standard error of the difference (the walkers' own spread of it: its first-order, zero-mean part), ``z`` the
+    excess of the difference over the term in those errors (within the term when ``z <= 2``).
     ``pools`` is ``{name: (label, dt_f)}`` (a bundle's pools read at their own intervals)."""
     from dmipy_sim.constants import GAMMA
     from dmipy_sim.engine.accumulate import read_constants
@@ -525,10 +527,12 @@ def _read_compare(fine, other, *, B0, chi, names, pools=None):
             S_f = [np.exp(1j * phase * I_f[gi, sel, c]) for gi in range(2)]
             S_o = [np.exp(1j * phase * I_o[gi, sel, c]) for gi in range(2)]
             diff = [float(abs(abs(S_o[gi].mean()) - abs(S_f[gi].mean()))) for gi in range(2)]
-            se = [float(np.std(np.real(S_f[gi] * np.conj(S_f[gi].mean() / abs(S_f[gi].mean())))) / np.sqrt(sel.sum())) for gi in range(2)]
+            u = [S_f[gi].mean() / abs(S_f[gi].mean()) for gi in range(2)]
+            se = [float(np.std(np.real((S_o[gi] - S_f[gi]) * np.conj(u[gi]))) / np.sqrt(sel.sum())) for gi in range(2)]
+            z = [float((diff[gi] - term) / se[gi]) if se[gi] > 0 else (0.0 if diff[gi] <= term else float("inf")) for gi in range(2)]
             rows[name] = dict(qv_increments=q, kappa_measured_GRE_SE=k_meas, kappa_charged=float(kappa[c]),
-                              term_charged=float(term), signal_diff_GRE_SE=diff, se=se,
-                              within_term=bool(max(diff) <= term + 1e-15), kappa_within=bool(max(k_meas) <= kappa[c]))
+                              term_charged=float(term), signal_diff_GRE_SE=diff, se_diff=se, z=z,
+                              within_term=bool(max(z) <= 2.0), kappa_within=bool(max(k_meas) <= kappa[c]))
         out[pname] = dict(walkers=int(sel.sum()), dt_f=float(dt_f), channels=rows,
                           all_within_term=bool(all(r["within_term"] for r in rows.values())),
                           all_kappa_within=bool(all(r["kappa_within"] for r in rows.values())),
@@ -544,8 +548,14 @@ def _signal_compare(fine, other, seq, kw, env):
     po = build_replay_pack(other, id="read/other", license="x", citation="x", envelope=env)
     S0, se0 = _ensemble(pf, seq, **kw)
     S1, _ = _ensemble(po, seq, **kw)
-    return dict(S_fine=S0.tolist(), S=S1.tolist(), diff=(S1 - S0).tolist(), se=se0.tolist(), term_charged=po.fidelity["terms"]["field_read"],
-                term_fine=pf.fidelity["terms"]["field_read"], within_term=bool(np.abs(S1 - S0).max() <= po.fidelity["terms"]["field_read"] + 1e-15),
+    _, ew0, E0 = pf.walker_signals(seq, **kw)
+    _, ew1, E1 = po.walker_signals(seq, **kw)
+    u = (ew0[:, None] * E0).sum(0); u = u / np.abs(u)
+    se_d = np.std(np.real((ew1[:, None] * E1 - ew0[:, None] * E0) * np.conj(u)[None, :]), axis=0) / np.sqrt(E0.shape[0])
+    term = po.fidelity["terms"]["field_read"]
+    z = (np.abs(S1 - S0) - term) / np.where(se_d > 0, se_d, np.inf)
+    return dict(S_fine=S0.tolist(), S=S1.tolist(), diff=(S1 - S0).tolist(), se=se0.tolist(), se_diff=se_d.tolist(), z=z.tolist(),
+                term_charged=term, term_fine=pf.fidelity["terms"]["field_read"], within_term=bool(np.max(z) <= 2.0),
                 env_B0_chi_max_T=po.meta["replay_envelope"]["field_read"].get("B0_chi_max_T"))
 
 
@@ -777,16 +787,18 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
     rows["myelinated C0+C2"], walks["myelinated C0+C2"] = best(my, K=K)
     rows["myelinated C0+C2+C3"], walks["myelinated C0+C2+C3"] = best(my, K=K, field_basis=fg)
     w3 = walks["myelinated C0+C2+C3"]
-    # the same walk with its band and read given (no pilot): what the pilot costs, and a read once per block
-    rows["myelinated C0+C2+C3, read given (no pilot)"], _ = best(my, K=K, field_basis=fg, K_c3=int(w3.K_c3),
-                                                                  field_read_interval=float(w3.field_read_interval))
+    # the same walk with its band given and a read once per block: what a coarse read costs (the pilot still runs:
+    # every field walk measures its read series and the trapezoid's constant)
     rows["myelinated C0+C2+C3, read once per block"], walks["myelinated C0+C2+C3, read once per block"] = best(
         my, K=K, field_basis=fg, K_c3=int(w3.K_c3), field_read_interval=float(w3.h))
+    pilot_s = {k: float(w.block["field_read"].get("pilot_seconds", 0.0)) for k, w in walks.items() if w.block.get("field_read")}
     shares = dict(accumulation=1.0 - rows["cylinder C0 minimal (K=1, m=0)"] / rows["cylinder C0"],
                   contact=1.0 - rows["cylinder C0"] / rows["cylinder C0+C2"],
                   field_read=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3"],
-                  field_read_without_pilot=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, read given (no pilot)"],
-                  field_read_once_per_block=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, read once per block"])
+                  field_read_without_pilot=1.0 - rows["myelinated C0+C2"] / (rows["myelinated C0+C2+C3"] - pilot_s["myelinated C0+C2+C3"]),
+                  field_read_once_per_block=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, read once per block"],
+                  field_read_once_per_block_without_pilot=1.0 - rows["myelinated C0+C2"] / (
+                      rows["myelinated C0+C2+C3, read once per block"] - pilot_s["myelinated C0+C2+C3, read once per block"]))
     cost = {}
     for L in lengths:
         for name, g, kw in (("cylinder C0", cyl, dict(tiers=())), ("cylinder C0+C2", cyl, {}), ("myelinated C0+C2+C3", my, dict(field_basis=fg))):
@@ -799,7 +811,7 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
         dev = str(jax.devices()[0])
     except Exception:
         dev = "?"
-    return dict(device=dev, n=n, T=T, K=K, seconds=rows, walker_steps_per_second={k: n * int(walks.get(k, w3).sub_steps) * int(walks.get(k, w3).n_blocks) / v
+    return dict(device=dev, n=n, T=T, K=K, seconds=rows, pilot_seconds=pilot_s, walker_steps_per_second={k: n * int(walks.get(k, w3).sub_steps) * int(walks.get(k, w3).n_blocks) / v
                                                                                    for k, v in rows.items() if k in walks},
                 shares=shares, steps=dict(cylinder=dict(sub_steps=int(walks["cylinder C0"].sub_steps), dt_sim=float(walks["cylinder C0"].dt_sim)),
                                           myelinated=dict(sub_steps=int(w3.sub_steps), dt_sim=float(w3.dt_sim), K_c3=int(w3.K_c3),

@@ -73,7 +73,8 @@ def test_the_default_interval_is_the_rule_on_the_pilots_read_series(spec, walks)
     for name, p in fr["pools"].items():
         qv = np.asarray(p["qv_increments"])
         assert qv.shape == (13,) and (qv >= 0).all() and qv.sum() > 0              # the walkers move through the field
-        assert p["dt_f_rule"] == pytest.approx(field_read_rule(qv, fr["B0"], fr["chi"], fr["floor"], fr["constants"]))
+        assert p["dt_f_rule"] == pytest.approx(field_read_rule(qv, fr["B0"], fr["chi"], fr["floor"], p["constants"]))
+        assert np.all(np.asarray(fr["constants"]) >= np.asarray(p["constants"]))          # the bundle charges the largest
     assert len(fr["constants"]) == 13 and min(fr["constants"]) >= 1.0 / 12.0 - 1e-15
     assert fr["measured_constants"]                                               # measured at the coarser reads
     n_read, dt_f = field_read_steps(fr["dt_f_rule"], fr["step_s"], int(round(wd.block["h"] / fr["step_s"])))

@@ -162,7 +162,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                                             T_max=T_max, block_h=block_h, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
         from .accumulate import (block_length, default_K, window_count, BLOCK_ORDER, PRECISION, PILOT_WALKERS,
-                                 coefficient_form, field_mode_form, field_rule_scale, read_checks)
+                                 coefficient_form, field_mode_form, field_rule_scale, read_checks, pilot_walkers)
         from ..replay.compression import block_table, cosine_band_scale
         from ..coefficient_walk import CoefficientWalk
         if not hasattr(geometry, "wall_scales"):
@@ -417,7 +417,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                 raise ValueError(f"backend {_backend_name!r} refuses this walk of {type(geometry).__name__}: {_reason}")
 
         n_raw = int(min(max(int(raw_subset), 0), n_walkers))
-        n_pilot = int(min(PILOT_WALKERS, n_walkers))
+        pidx = pilot_walkers(n_walkers)                                  # spread over the walk, not its first walkers
+        n_pilot = int(pidx.shape[0])
 
         def _walk_batch(s, e, *, raw, K_f, rd=None):
             """The walk of walkers ``s:e``: the accumulators per window, the quadratic variation, the raw block ends
@@ -428,8 +429,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             half_dt = jnp.float32(0.5 * dt_f_)
             half_dt_d = jnp.asarray(checks_, jnp.float32) * jnp.float32(0.5 * float(dt_round)) if checks_ else None
             rpb = n_rounds // int(n_read_)
-            nb = e - s
-            r = jnp.asarray(r0_all[s:e]); keys = keys_all[s:e]
+            sel = slice(s, e) if e is not None else np.asarray(s)              # a range of walkers, or a pilot's indices
+            nb = int(r0_all[sel].shape[0])
+            r = jnp.asarray(r0_all[sel]); keys = keys_all[sel]
             C_out = np.empty((nb, n_win, K + 2, 3), np.float32); resid_out = np.empty((nb, n_win, 3), np.float32)
             blt_end = np.empty((nb, n_win), np.float32); blt_bands = np.empty((nb, n_win, K), np.float32)
             qv_pos = np.empty((nb, n_win, 3), np.float32); qv_blt = np.empty((nb, n_win), np.float32)
@@ -509,7 +511,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         pos[:, t] = np.asarray(r); dlog_raw[:, t] = np.asarray(dlog_blk)
                         if sampling and not keep_reads:
                             fs_raw[:, t] = np.asarray(F[:, 0, :] / jnp.float32(dt_actual))
-                    run.progress(s + nb * t / n_t, n_walkers)
+                    if e is not None:                                            # the pilot reports no walk progress
+                        run.progress(s + nb * t / n_t, n_walkers)
                 C, resid = jax.vmap(lambda a, b_, ap: coefficient_form(a, b_, ap, scale))(r_start, r, acc)
                 C_out[:, w] = np.asarray(C); resid_out[:, w] = np.asarray(resid)
                 blt_end[:, w] = np.asarray(acc_b[:, 0]); blt_bands[:, w] = np.asarray(scale[None, :] * acc_b[:, 1:])
@@ -521,7 +524,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     if K_f:
                         fc_out[:, w] = np.asarray(jax.vmap(lambda a: field_mode_form(a, T_win))(acc_f))
             comp_end = np.minimum(np.asarray(geometry.classify_positions_exact(r), np.int32), 1)
-            n_illegal = int((comp_end != comp_all[s:e]).sum())
+            n_illegal = int((comp_end != comp_all[sel]).sum())
             out = dict(C=C_out, resid=resid_out, blt_end=blt_end, blt_bands=blt_bands, qv_pos=qv_pos, qv_blt=qv_blt)
             if sampling:
                 out["qv_f"] = qv_f; out["qv_d"] = qv_d
@@ -542,9 +545,10 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             pool from the batch (no second classification), the raw subset's block ends and the field's block means
             (the pilot's input, the basis's mean subtracted); nothing converted, a walk of saves refused by name."""
             from .backends import CoefficientBatch
-            nb = e - s
-            r0_b = np.ascontiguousarray(r0_all[s:e], np.float32)
-            keys_b = np.ascontiguousarray(np.asarray(keys_all[s:e]), np.uint32)
+            sel = slice(s, e) if e is not None else np.asarray(s)
+            nb = int(r0_all[sel].shape[0])
+            r0_b = np.ascontiguousarray(r0_all[sel], np.float32)
+            keys_b = np.ascontiguousarray(np.asarray(keys_all[sel]), np.uint32)
             n_read_, dt_f_, _checks, keep_reads = rd if rd is not None else _rd[0]
             if sampling and raw and keep_reads:
                 raise ValueError(f"backend {_backend_name!r}: the raw subset of a walk that reads the field keeps the reads at the "
@@ -565,7 +569,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                  f"the batch of {nb} walkers at K = {K} has {(nb, K + 2, 3)}")
             if batch.boundary_endpoint is None or batch.boundary_bands is None or batch.compartment is None or batch.qv_boundary is None:
                 raise ValueError(f"backend {_backend_name!r} returned no contact or compartment channel for the adaptive walk")
-            comp_all[s:e] = np.minimum(np.asarray(batch.compartment, np.int32), 1).astype(np.int8)
+            comp_all[sel] = np.minimum(np.asarray(batch.compartment, np.int32), 1).astype(np.int8)
             out = dict(C=C[:, None], resid=(np.zeros((nb, 1, 3), np.float32) if batch.k0_residual is None
                                            else np.asarray(batch.k0_residual, np.float32)[:, None]),
                        blt_end=np.asarray(batch.boundary_endpoint, np.float32)[:, None],
@@ -606,34 +610,35 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         _batch = _walk_batch if _backend is None else _backend_batch
         _rd = [(1, float(dt_round), (), True)]                       # the read the batches take: the round's, then the walk's
         nonlocal_k = [k_cand]
-        # ── the field's pilot: the first PILOT_WALKERS walkers reading every round -- the read series' quadratic
-        # variation (the read's rule), the trapezoid's constant at every coarser read a block allows, and the block
-        # means (the field band's ladder)
+        # ── the field's pilot: PILOT_WALKERS walkers spread over the walk reading every round -- the read series'
+        # quadratic variation (the read's rule), the trapezoid's constant at every coarser read a block allows (what
+        # the walk's read is charged at, given or derived), and the block means (the field band's ladder)
         field_band = None
         if sampling:
-            if K_c3 is None or field_read["rule"] == "pilot":
-                checks = read_checks(n_rounds) if _backend is None else ()
-                run.phase("field pilot", walkers=n_pilot)
-                got, _ = _batch(0, n_pilot, raw=K_c3 is None, K_f=None, rd=(1, float(dt_round), checks, False))
-                B0, chi = field_rule_scale(_spec_holder(spec, geometry).spec, envelope)
-                qd = np.asarray(got["qv_d"], np.float64)
-                name_of = {int(p.id): p.name for p in ((spec or geometry.spec).pools if (spec or geometry.spec) is not None else [])}
-                labels = np.asarray(comp_all[:n_pilot], np.int64)
-                pools = {name_of.get(int(l), str(int(l))): (qd[labels == l].mean(axis=(0, 1)), int((labels == l).sum()))
-                         for l in np.unique(labels)}
-                chk = got.get("chk")
-                chk = None if chk is None else np.asarray(chk, np.float64)            # (n_pilot, n_win, 2, n_checks, n_ch)
-                field_read = field_read_of(_spec_holder(spec, geometry), envelope, T_win, plan, given=field_read_interval,
-                                           pools=pools, checks=checks, err_sq=(None if chk is None else (chk[:, :, 0] ** 2).mean(axis=(0, 1))),
-                                           qv_checks=(None if chk is None else chk[:, :, 1].mean(axis=(0, 1))),
-                                           qv_all=qd.mean(axis=(0, 1)), channels=list(field_basis.channel_names))
-                field_read["pilot_walkers"] = int(n_pilot)
-                if K_c3 is None:
-                    from ..replay.bank import derive_field_band
-                    K_f, bits, field_band = derive_field_band(np.asarray(got["fs"], np.float32)[:, 1:], list(field_basis.channel_names),
-                                                               float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
-                                                               floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
-                    field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
+            import time as _time
+            checks = read_checks(n_rounds) if _backend is None else ()
+            run.phase("field pilot", walkers=n_pilot)
+            _t0 = _time.time()
+            got, _ = _batch(pidx, None, raw=K_c3 is None, K_f=None, rd=(1, float(dt_round), checks, False))
+            B0, chi = field_rule_scale(_spec_holder(spec, geometry).spec, envelope)
+            qd = np.asarray(got["qv_d"], np.float64)
+            name_of = {int(p.id): p.name for p in ((spec or geometry.spec).pools if (spec or geometry.spec) is not None else [])}
+            labels = np.asarray(comp_all[pidx], np.int64)
+            pools = {name_of.get(int(l), str(int(l))): (qd[labels == l].mean(axis=(0, 1)), int((labels == l).sum()))
+                     for l in np.unique(labels)}
+            chk = got.get("chk")
+            chk = None if chk is None else np.asarray(chk, np.float64)            # (n_pilot, n_win, 2, n_checks, n_ch)
+            field_read = field_read_of(_spec_holder(spec, geometry), envelope, T_win, plan, given=field_read_interval,
+                                       pools=pools, checks=checks, err_sq=(None if chk is None else (chk[:, :, 0] ** 2).mean(axis=(0, 1))),
+                                       qv_checks=(None if chk is None else chk[:, :, 1].mean(axis=(0, 1))),
+                                       qv_all=qd.mean(axis=(0, 1)), channels=list(field_basis.channel_names))
+            field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0))
+            if K_c3 is None:
+                from ..replay.bank import derive_field_band
+                K_f, bits, field_band = derive_field_band(np.asarray(got["fs"], np.float32)[:, 1:], list(field_basis.channel_names),
+                                                           float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
+                                                           floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
+                field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
             if K_c3 is not None:
                 K_f = int(K_c3)
                 if K_f < 1 or K_f > n_bw:

@@ -83,6 +83,15 @@ def field_rule_scale(spec, env=None):
     return B0, float(chi)
 
 
+def pilot_walkers(n_walkers, n_pilot=None):
+    """The walkers a pilot walks: :data:`PILOT_WALKERS` (or ``n_pilot``) indices spread evenly over the walk's
+    ``n_walkers`` -- a producer seeds its walkers pool by pool, so the first ones are one pool, and a pilot of them
+    would measure that pool alone."""
+    n_walkers = int(n_walkers)
+    n_pilot = min(int(PILOT_WALKERS if n_pilot is None else n_pilot), n_walkers)
+    return np.unique(np.round(np.linspace(0, n_walkers - 1, n_pilot)).astype(np.int64))
+
+
 def default_K(T):
     """The bands of a window of ``T`` seconds at :data:`STORAGE_BAND_HZ`: ``ceil(2 f T)``."""
     return max(1, int(np.ceil(2.0 * STORAGE_BAND_HZ * float(T) - 1e-9)))
