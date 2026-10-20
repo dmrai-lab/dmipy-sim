@@ -363,7 +363,7 @@ def test_the_parity_harness_admits_what_is_installed():
     if not names:
         pytest.skip("no backend beside jax is installed: nothing to compare")
     for name in names:
-        report = backends.parity_report(name, n_walkers=2000)
+        report = backends.parity_report(name)
         bad = [r for r in report if r["ok"] is False]
         assert not bad, f"{name}: {bad}"
 
