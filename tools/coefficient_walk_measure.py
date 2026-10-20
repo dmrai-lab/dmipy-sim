@@ -421,7 +421,8 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
             S_f = np.asarray(d.simulate(int(r0.shape[0]), D, seq2, cell, seed=seed + 100, r0=r0, require_gpu=require_gpu), np.float64).reshape(-1)
         c2[f"rho2 = {rho_:g} m/s (rho R / D = {rho_ * r_in / D:.2g})"] = dict(rho=rho_, rho_over_D=rho_ / D, b=[0.0, 1e9, 2e9], replay=S.tolist(),
                                                                             fused=S_f.tolist(), diff=(S - S_f).tolist(), se=se.tolist())
-    out["C2_lumen_vs_fused"] = dict(n_lumen=int(r0.shape[0]), rows=c2, B0_chi_max_T=fr.get("B0_chi_max_T"))
+    out["C2_lumen_vs_fused"] = dict(n_lumen=int(r0.shape[0]), rows=c2)
+    out["field_read_envelope"] = pk.meta["replay_envelope"]["field_read"]
     # ── C3: GRE and SE at B0 with the field at theta to the axis. The forward vector-Bloch engine does not step the
     # myelinated substrates (their kernel is physics.make_myelin_step_fn), so the myelinated cylinder's field tier is
     # held to the pack's own Bloch-route certificate on its raw subset (err_susc_bloch above) and to the scalar route
