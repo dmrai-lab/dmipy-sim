@@ -280,11 +280,15 @@ class Consolidator:
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
         meta = self.normalise_path(name, pk, meta)
-        ident = dict(compression=_codec_signature(meta["compression"]),
-                     walk_params=_walk_identity(meta["walk_params"]),
+        # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid
+        ident = dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
                      substrate=_spec_identity(meta.get("substrate")), replay_envelope=meta.get("replay_envelope"),
-                     grid=meta["fidelity"]["per_voxel"]["grid"], names=sorted(k for k in pk.arrays if k != "band_block"))
+                     grid=(meta["fidelity"].get("per_voxel") or {}).get("grid"), names=sorted(k for k in pk.arrays if k != "band_block"))
+        no_grid = ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel): a layout's shards are packed "
+                             "with voxel_grid=")
         if self.meta0 is None:
+            if ident["grid"] is None:
+                raise no_grid
             self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
             self.grid = Grid.from_meta(ident["grid"])
             self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
@@ -300,6 +304,8 @@ class Consolidator:
                         where = ", ".join(f"{k}.{j}" for j in diff) or k
                     raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
                                      "layout are one walk's, on one block and one window table")
+        if ident["grid"] is None:
+            raise no_grid
         ijk, inside = self.grid.bin(pk.r0)
         if not inside.all():
             raise ValueError(f"{name}: {int((~inside).sum())} walkers start outside the certificate grid")
