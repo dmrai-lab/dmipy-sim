@@ -52,9 +52,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
     15 um and the gather is the field's main cost, so 16 halves the field's share of the walk.
 
-    ``field_read_interval`` is the interval (s) between the walk's reads of the field, DERIVED from the field's
-    spatial scale and ``D`` unless given (:func:`~dmipy_sim.engine.accumulate.field_read_interval`; a read is never
-    finer than the walk's step or round), and ``K_c3`` the field channel's band (modes per window), derived on a
+    ``field_read_interval`` is the interval (s) between the walk's reads of the field, DERIVED per pool from its
+    pilot unless given (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`: the read series' measured quadratic
+    variation; a read is never finer than the walk's step or round), and ``K_c3`` the field channel's band (modes per window), derived on a
     pilot unless given (:func:`~dmipy_sim.replay.bank.derive_field_band`; a fill passes the certifying pack's).
 
     ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
@@ -660,10 +660,10 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
         for w in walks[1:]:
             if int(w.K_c3) != K_f:
                 raise SpecError("the pools of a bundle read the field at one band; two walks disagree")
-        # a pool's read snaps to a whole number of ITS rounds per block, so the pools' intervals can differ: the pack
-        # records the coarsest read and its term, the bound that holds for every pool
+        # every pool reads at its own interval (its pilot's, snapped to a whole number of ITS steps per block): the pack
+        # records the coarsest read, and its certificate charges the term at it on every pool's read series
         w_read = max(walks, key=lambda w: float(w.field_read_interval))
-    pc, be, bb, ids, wts, fc, qf, qp, qb = [], [], [], [], [], [], [], [], []
+    pc, be, bb, ids, wts, fc, qf, qd, qp, qb = [], [], [], [], [], [], [], [], [], []
     for pid, w in parts:
         if isinstance(w, np.ndarray):                                  # a frozen shell: held at its seat
             n = len(w)
@@ -676,6 +676,7 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
                 modes = np.zeros((n, n_win, K_f, n_ch), np.float32)
                 modes[:, :, 0, :] = (np.sqrt(T_w) * _frozen_channels(field, w))[:, None, :]
                 fc.append(modes); qf.append(np.zeros((n, n_win, n_ch), np.float32))
+                qd.append(np.zeros((n, n_win, n_ch), np.float32))            # a frozen walker reads one value
         else:
             n = w.n_walkers
             pc.append(np.asarray(w.position_coeffs, np.float32)); qp.append(np.asarray(w.qv_positions, np.float32))
@@ -683,6 +684,7 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
                 be.append(np.asarray(w.boundary_endpoint)); bb.append(np.asarray(w.boundary_bands)); qb.append(np.asarray(w.qv_boundary))
             if sampled:
                 fc.append(np.asarray(w.field_coeffs, np.float32)); qf.append(np.asarray(w.qv_field, np.float32))
+                qd.append(np.asarray(w.qv_field_increments, np.float32))
         ids.append(np.full(n, pid, np.int8))
         wts.append(np.asarray(weights_of[pid], float))
     n_tot = sum(len(i) for i in ids)
@@ -692,8 +694,14 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(w0.diffusivity)
     block = dict(w0.block)
-    if sampled and w_read is not w0:
-        block["field_read"] = dict(w_read.block["field_read"])
+    if sampled:
+        # the coarsest pool's read; every pool's own record under ``pools``, and the largest trapezoid constant per
+        # channel any pool's pilot charged
+        reads = [w.block["field_read"] for w in walks]
+        block["field_read"] = dict(w_read.block["field_read"], pools={k: v for r in reads for k, v in (r.get("pools") or {}).items()})
+        consts = [r.get("constants") for r in reads if r.get("constants") is not None]
+        if consts:
+            block["field_read"]["constants"] = [float(x) for x in np.max(np.asarray(consts, np.float64), axis=0)]
     for key in ("k0_residual_m", "k0_residual_relative"):
         block[key] = float(max(w.block.get(key, 0.0) for w in walks))
     name_of = {p.id: p.name for p in spec.pools}
@@ -704,6 +712,7 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
         w0, position_coeffs=cat(pc), boundary_endpoint=(cat(be) if surface else None),
         boundary_bands=(cat(bb) if surface else None), compartment=cat(ids), comp_events=None, bound_start=None, bound_events=None,
         field_basis=(field if sampled else None), field_coeffs=(cat(fc) if sampled else None), qv_field=(cat(qf) if sampled else None),
+        qv_field_increments=(cat(qd) if sampled else None),
         field_read_interval=(w_read.field_read_interval if sampled else w0.field_read_interval),
         raw_positions=None, raw_boundary=None, raw_compartment=None, raw_bound=None, raw_field=None, qv_positions=cat(qp),
         qv_boundary=(cat(qb) if surface else None), seed=int(seed), diffusivity=D_ref, geometry=None, spec=spec,
@@ -816,8 +825,9 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
             w = simulate_trajectories(n, float(pool.D), geo, T_max=T_max, block_h=block_h, seed=seed + 13 * pid, r0=r0,
                                       field_basis=fg, **({} if fg is None else field_kw), **walk_kw)
         if w.field_coeffs is not None and field_kw.get("K_c3") is None:
-            # the first walked pool's pilot sets the band and the read for the pools after it: one channel, one band
-            field_kw = dict(K_c3=int(w.K_c3), field_read_interval=float(w.field_read_interval))
+            # the first walked pool's pilot sets the band for the pools after it (one channel, one band); every pool's
+            # own pilot sets its read
+            field_kw = dict(field_kw, K_c3=int(w.K_c3))
         walked = w
         works.append(w.work)
         parts.append((pid, w))

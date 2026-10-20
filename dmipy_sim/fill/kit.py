@@ -85,10 +85,10 @@ def _request_lines(rc, pid, blk, geom, plan, sampling):
     """``(request fields, K_c3, read_every)`` of one pool's walk as the live walk hands it to a backend: the
     ``DscRequest`` fields (:func:`~dmipy_sim.engine.backends.request_struct_fields`: the blocks, the plan's finest
     step, the band ``K`` at the table's order ``m``, no events -- a strand substrate is impermeable --, the seed and
-    the raw subset a batch's own, 0 here), and with the field its modes -- the manifest's ``pack.K_path``, which a kit
-    cannot pilot -- and the rounds between its reads (:func:`~dmipy_sim.engine.adaptive.field_read_of`: the
-    manifest's ``walk.field_read_interval_s`` or the rule's). A walk of several storage windows is refused by name: a
-    backend accumulates one window per walk."""
+    the raw subset a batch's own, 0 here), and with the field its modes -- the manifest's ``pack.K_path`` -- and the
+    rounds between its reads (:func:`~dmipy_sim.engine.adaptive.field_read_of` at the manifest's
+    ``walk.field_read_interval_s``), both of which a kit cannot pilot. A walk of several storage windows is refused by
+    name: a backend accumulates one window per walk."""
     from ..engine.adaptive import field_read_of, _spec_holder
     from ..engine.backends import field_read_every
     if int(blk["windows"]["n"]) != 1:
@@ -101,8 +101,11 @@ def _request_lines(rc, pid, blk, geom, plan, sampling):
         if not K_c3:
             raise ValueError("a kit's request states the field's band: the manifest's pack.K_path (a band a pilot derives "
                              "needs a walk, which a kit is built without)")
-        dt_f = field_read_of(_spec_holder(rc.spec(), geom), rc.context().field_basis(), None, D, float(blk["windows"]["T"]), plan,
-                             rc.field_read_interval())["dt_f"]
+        given = rc.field_read_interval()
+        if given is None:
+            raise ValueError("a kit's request states the field's read: the manifest's walk.field_read_interval_s (a read a pilot "
+                             "derives from the read series' quadratic variation needs a walk, which a kit is built without)")
+        dt_f = field_read_of(_spec_holder(rc.spec(), geom), None, float(blk["windows"]["T"]), plan, given=given)["dt_f"]
         every = field_read_every(dt_f, plan, int(plan.n_min))
     fields = request_struct_fields(n_blocks=int(blk["n_blocks"]), sub_steps=int(plan.n_min), step_l=float(np.sqrt(6.0 * D * plan.dt_min)),
                                    kappa_over_D=0.0, record=True, count=bool(geom.count_walls),

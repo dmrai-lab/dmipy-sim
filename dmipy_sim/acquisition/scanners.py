@@ -25,7 +25,7 @@ view of the catalogue: ``(G_max, slew_max)`` per class.
 
 A walk's resolution is the band's: the block the walk accumulates in and the step the step law resolves read the
 class's certified band (:func:`dmipy_sim.replay.bank.storage_band_hz`), never a save grid, and a field source is read
-at the interval its spatial scale sets (:func:`dmipy_sim.engine.accumulate.field_read_interval`).
+at the interval a pilot's read series sets (:func:`dmipy_sim.engine.accumulate.field_read_of_pilot`).
 """
 from dataclasses import dataclass
 

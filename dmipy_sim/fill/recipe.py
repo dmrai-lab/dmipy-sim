@@ -9,8 +9,8 @@ A manifest holds (the DiSCo replay dataset is the reference):
 - ``variants``: named walks of the substrate (``field`` on or off), ``default_variant``;
 - ``grid``: the voxel grid a shard's certificate is on (``shape``, ``voxel_size_m``, ``origin_m``);
 - ``walk``: ``T_max_s``, ``scanner``, ``walker_batch_size``, ``adaptive_steps``, ``field_gather_every``, ``census_draws``,
-  and optionally ``block_h_s`` (the block, else the band's own) and ``field_read_interval_s`` (the field read, else the
-  rule's);
+  and optionally ``block_h_s`` (the block, else the band's own) and ``field_read_interval_s`` (the field read, else
+  each pool's pilot's; a kit needs it);
 - ``pack``: ``K`` (optional: absent, the shard's band is ``walk.scanner``'s by the storage rule, #643), ``K_path`` (the
   field channel's band, which every shard's walk accumulates: the certifying pack's), ``blt_K``, ``position_container``,
   ``blt_container``;
@@ -116,7 +116,8 @@ class Recipe:
 
     def field_read_interval(self):
         """The field read's interval (s) when the manifest states one (``walk.field_read_interval_s``), else ``None``:
-        derived from the field's spatial scale (:func:`~dmipy_sim.engine.accumulate.field_read_interval`)."""
+        derived by each pool's walk from its pilot (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`); a kit
+        needs it stated."""
         v = self.man["walk"].get("field_read_interval_s")
         return None if v is None else float(v)
 

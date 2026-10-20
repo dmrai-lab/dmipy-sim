@@ -171,15 +171,17 @@ class CoefficientWalk:
         The MT bound state (0 free, 1 bound) every walker starts in, of a binding walk.
     bound_events : EventList or None
         Its bind / unbind events.
-    field_basis, field_coeffs, K_c3, field_read_interval, qv_field
+    field_basis, field_coeffs, K_c3, field_read_interval, qv_field, qv_field_increments
         The field basis the walk read and its modes ``(n_walkers, n_windows, K_c3 + 1, n_ch)`` on the window's
         orthonormal cosine basis, ``c_k = int e_k b dt``, accumulated from reads every ``field_read_interval``
         seconds at the kernel's position (the trapezoid between consecutive reads); ``qv_field`` ``(n_walkers,
-        n_windows, n_ch)`` the sum of the squared increments ``(b dt_f)^2`` per component.
+        n_windows, n_ch)`` the sum of the squared increments ``(b dt_f)^2`` per component, ``qv_field_increments``
+        the same shape, the read series' quadratic variation ``sum (b_{i+1} - b_i)^2`` per component (the field
+        read's term, RPK.md 9.5.5).
     raw_positions, raw_boundary, raw_compartment, raw_bound, raw_field : arrays of the first ``n_raw`` walkers or None
         Their positions ``(n_raw, n_blocks + 1, 3)``, contact per block, pool label and bound state at every block
-        end (int8), and the field's block means ``(n_raw, n_blocks + 1, n_ch)`` (sample 0 the start's read), kept
-        with ``raw_subset=``.
+        end (int8), and the field's reads at the walk's read instants ``(n_raw, n_blocks * reads_per_block + 1,
+        n_ch)``, read ``i`` at ``i * field_read_interval`` (read 0 the start's), kept with ``raw_subset=``.
     qv_positions : (n_walkers, n_windows, 3) float32
         Each walker's quadratic variation per window and axis, ``sum (dx)^2`` over every step (``2 D T_w`` per axis
         for a free walk): what the block table's error is proportional to.
@@ -205,6 +207,7 @@ class CoefficientWalk:
     K_c3: Optional[int] = None
     field_read_interval: Optional[float] = None
     qv_field: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    qv_field_increments: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     raw_positions: Optional[np.ndarray] = None
     raw_boundary: Optional[np.ndarray] = None
     raw_compartment: Optional[np.ndarray] = None
@@ -275,10 +278,18 @@ class CoefficientWalk:
         return None if self.field_basis is None else list(self.field_basis.channel_names)
 
     @property
+    def reads_per_block(self):
+        """The field reads per block (``h / field_read_interval``), 0 without a field."""
+        if self.field_read_interval is None:
+            return 0
+        return max(int(round(float(self.h) / float(self.field_read_interval))), 1)
+
+    @property
     def nbytes(self):
         """Host bytes of the walk's arrays."""
         n = sum(np.asarray(a).nbytes for a in (self.position_coeffs, self.boundary_endpoint, self.boundary_bands,
                                                 self.compartment, self.bound_start, self.field_coeffs, self.qv_field,
+                                                self.qv_field_increments,
                                                 self.raw_positions, self.raw_boundary, self.raw_compartment, self.raw_bound,
                                                 self.raw_field, self.qv_positions, self.qv_boundary) if a is not None)
         for ev in (self.comp_events, self.bound_events):
@@ -288,7 +299,7 @@ class CoefficientWalk:
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
-                      "qv_field", "qv_positions", "qv_boundary", "weights")
+                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights")
 
     def take(self, idx):
         """The walk of the walkers ``idx`` (an index array), in that order; the raw subset is kept only when ``idx``
@@ -320,6 +331,8 @@ class CoefficientWalk:
         ts = float(self.block.get("t_start", 0.0))
         k0, k1 = i * n_bw, (i + 1) * n_bw + 1
         cut = lambda a: None if a is None else np.asarray(a)[:, k0:k1]
+        rpb = self.reads_per_block
+        cut_reads = lambda a: None if a is None else np.asarray(a)[:, k0 * rpb:(k1 - 1) * rpb + 1]
         sl = lambda a: None if a is None else np.asarray(a)[:, i:i + 1]
         comp, comp_ev = self.compartment, self.comp_events
         if comp_ev is not None:
@@ -332,9 +345,9 @@ class CoefficientWalk:
             block=dict(self.block, n_blocks=n_bw, window=dict(index=i, of=n, t0=ts + i * T_w)),
             boundary_endpoint=sl(self.boundary_endpoint), boundary_bands=sl(self.boundary_bands),
             compartment=comp, comp_events=comp_ev, bound_start=bnd, bound_events=bnd_ev,
-            field_coeffs=sl(self.field_coeffs), qv_field=sl(self.qv_field),
+            field_coeffs=sl(self.field_coeffs), qv_field=sl(self.qv_field), qv_field_increments=sl(self.qv_field_increments),
             raw_positions=cut(self.raw_positions), raw_boundary=cut(self.raw_boundary),
-            raw_compartment=cut(self.raw_compartment), raw_bound=cut(self.raw_bound), raw_field=cut(self.raw_field),
+            raw_compartment=cut(self.raw_compartment), raw_bound=cut(self.raw_bound), raw_field=cut_reads(self.raw_field),
             qv_positions=sl(self.qv_positions), qv_boundary=sl(self.qv_boundary))
 
     def shift_time(self, t_start):
@@ -349,7 +362,7 @@ class CoefficientWalk:
 
     #: the arrays a walk file holds (those present); the events as three tensors each; the rest in the header
     _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
-                    "qv_field", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
+                    "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
                     "qv_boundary", "weights")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
                      "illegal_crossings", "seed", "diffusivity", "work", "scanner", "stepping")
