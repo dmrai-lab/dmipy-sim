@@ -2521,6 +2521,10 @@ def _build_from_coefficients(cw, *, id, license, citation, weights, envelope, to
                          "walk it with simulate_trajectories(raw_subset=n), or build with fidelity='derived'")
     if cw.spec is None:
         raise ValueError("a pack embeds the substrate spec its walk was driven by, and this walk carries none")
+    if cw.comp_events is not None:
+        raise NotImplementedError("this walk keeps C1 as an event list (CoefficientWalk.comp_events, dmipy-sim#747), which "
+                                  "this builder does not write yet: the comp_events tensors are dmipy-sim#742's; nothing "
+                                  "is converted to the occupancy track")
     T_win = float(cw.T_window)
     if window_T is not None and abs(T_win - float(window_T)) > 1e-9 * T_win and T_win > float(window_T):
         raise ValueError(f"this walk was accumulated in windows of {T_win * 1e3:.4g} ms and a pack stores windows of "

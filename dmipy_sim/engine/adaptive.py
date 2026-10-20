@@ -332,7 +332,7 @@ interval mean as before).
         hits_total = 0 if bool(geometry.count_walls) else None
         if _backend is not None:
             plan = plan._replace(candidate_k=int(k_cand))
-            req = WalkRequest(geometry=geometry, n_t=int(n_t), dt_save=float(dt_actual), sub_steps=int(n_min), dt_sim=float(dt_min),
+            req = WalkRequest(geometry=geometry, block_h=float(dt_actual), n_blocks=int(n_t) - 1, sub_steps=int(n_min), dt_sim=float(dt_min),
                               diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geometry.count_walls),
                               bounce_budget=geometry.bounce_budget, seed=int(seed), stepping=plan,
                               field=(FieldSampling(field_basis, f_every, f_reuse, float(f_radius), int(f_k)) if sampling else None))

@@ -45,8 +45,13 @@ class CoefficientWalk:
     boundary_bands : (n_walkers, n_windows, K) float32 or None
         Its bridge bands.
     compartment : (n_walkers,) int8, (n_walkers, n_blocks + 1) or None
-        The pool label per walker (a substrate no walker leaves its pool in), else the per-block track (sample 0 the
-        start; a permeable wall's fractional occupancy as float32, a label as int8).
+        The pool label per walker (a substrate no walker leaves its pool in, or the start's pool of a walk kept as
+        events), else the per-block track (sample 0 the start; a permeable wall's fractional occupancy as float32,
+        a label as int8).
+    comp_events : (offsets, t, label) or None
+        C1 as an event list (dmipy-sim#742, #747; a backend's walk): walker ``w``'s pool changes are the entries
+        ``offsets[w] .. offsets[w + 1]`` of ``t`` (s, the start of the step that ended in the pool entered) and
+        ``label`` (int8, the pool entered); ``compartment`` is then each walker's start pool.
     bound_frac : (n_walkers, n_blocks + 1) or None
         The bound fraction per block of a binding (MT) walk.
     field_basis, field_samples, field_sample_every
@@ -72,6 +77,7 @@ class CoefficientWalk:
     boundary_endpoint: Optional[np.ndarray] = None
     boundary_bands: Optional[np.ndarray] = None
     compartment: Optional[np.ndarray] = None
+    comp_events: Optional[tuple] = None
     bound_frac: Optional[np.ndarray] = None
     field_basis: object = field(default=None, compare=False, repr=False)
     field_samples: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
@@ -132,10 +138,10 @@ class CoefficientWalk:
     @property
     def nbytes(self):
         """Host bytes of the walk's arrays."""
-        return int(sum(np.asarray(a).nbytes for a in (self.position_coeffs, self.boundary_endpoint, self.boundary_bands,
-                                                       self.compartment, self.bound_frac, self.field_samples,
-                                                       self.raw_positions, self.raw_boundary, self.raw_compartment,
-                                                       self.qv_positions, self.qv_boundary) if a is not None))
+        arrays = [self.position_coeffs, self.boundary_endpoint, self.boundary_bands, self.compartment, self.bound_frac,
+                  self.field_samples, self.raw_positions, self.raw_boundary, self.raw_compartment, self.qv_positions,
+                  self.qv_boundary] + list(self.comp_events or ())
+        return int(sum(np.asarray(a).nbytes for a in arrays if a is not None))
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_frac", "field_samples",
@@ -151,6 +157,12 @@ class CoefficientWalk:
         keep_raw = n_raw and idx.shape[0] >= n_raw and np.array_equal(idx[:n_raw], np.arange(n_raw))
         if not keep_raw:
             out.update(raw_positions=None, raw_boundary=None, raw_compartment=None)
+        if self.comp_events is not None:
+            off, t, lab = (np.asarray(a) for a in self.comp_events)
+            counts = np.diff(off)[idx]
+            new_off = np.zeros(idx.shape[0] + 1, np.int64); np.cumsum(counts, out=new_off[1:])
+            sel = np.concatenate([np.arange(off[w], off[w + 1]) for w in idx]) if idx.size else np.zeros(0, np.int64)
+            out["comp_events"] = (new_off, t[sel], lab[sel])
         return dataclasses.replace(self, **out)
 
     def window(self, i):
@@ -162,6 +174,8 @@ class CoefficientWalk:
             raise IndexError(f"window {i} of a walk of {n}")
         if n == 1:
             return self
+        if self.comp_events is not None:
+            raise ValueError("a walk kept as events is accumulated in one window (dmipy-sim#747); window(i) does not cut an event list")
         n_bw = self.n_blocks // n
         k0, k1 = i * n_bw, (i + 1) * n_bw + 1
         cut = lambda a: None if a is None else (a if np.ndim(a) == 1 else np.asarray(a)[:, k0:k1])
