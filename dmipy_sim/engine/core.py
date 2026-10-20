@@ -1620,7 +1620,7 @@ def simulate_trajectories(
                     fc = jnp.zeros((0, 0), jnp.float32) if af is None else field_mode_form(af, T_win)
                     return c, (C, resid, blt, qp, (jnp.float32(0.0) if qb is None else qb), fc,
                                (jnp.zeros((0,), jnp.float32) if qf is None else qf), (jnp.zeros((0,), jnp.float32) if qd is None else qd),
-                               (jnp.zeros((0, 0), jnp.float32) if ec is None else ec), (jnp.int32(0) if n is None else n), e)
+                               (jnp.zeros((2, 0, 0), jnp.float32) if ec is None else ec), (jnp.int32(0) if n is None else n), e)
 
                 c, (C, resid, blt, qp, qb, fc, qf, qd, ec, n, e) = jax.lax.scan(window, carry0, jnp.arange(n_win, dtype=jnp.int32))
                 flat = lambda a: None if a is None else a.reshape((n_win * n_bw,) + a.shape[2:])
@@ -1706,7 +1706,7 @@ def simulate_trajectories(
                    "qv_f": (np.zeros((n_b, 1, 0), np.float32) if batch.field_qv is None else np.asarray(batch.field_qv, np.float32)[:, None]),
                    "qv_d": (np.zeros((n_b, 1, 0), np.float32) if batch.field_qv_increments is None
                             else np.asarray(batch.field_qv_increments, np.float32)[:, None]),
-                   "chk": np.zeros((n_b, 1, 0, 0), np.float32),
+                   "chk": np.zeros((n_b, 1, 2, 0, 0), np.float32),
                    "qv_pos": (np.zeros((n_b, 1, 3), np.float32) if batch.qv_positions is None else np.asarray(batch.qv_positions, np.float32)[:, None]),
                    "qv_blt": (z1 if batch.qv_boundary is None else np.asarray(batch.qv_boundary, np.float32)[:, None])}
             sv = batch.saves
@@ -1760,14 +1760,15 @@ def simulate_trajectories(
             got, _, _, _ = _walk_batch(0, n_pilot, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
             B0, chi = field_rule_scale(geometry.spec, envelope)
             qd = np.asarray(got["qv_d"], np.float64)                                   # (n_pilot, n_win, n_ch)
-            chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, n_checks, n_ch)
+            chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, 2, n_checks, n_ch)
             labels = np.asarray(got["lab"]).astype(np.int64) if has_lab else np.zeros(qd.shape[0], np.int64)
             name_of = {int(p.id): p.name for p in (geometry.spec.pools if geometry.spec is not None else [])}
             pools = {name_of.get(int(l), str(int(l))): (qd[labels == l].mean(axis=(0, 1)), int((labels == l).sum()))
                      for l in np.unique(labels)}
             field_read = field_read_of_pilot(pools, B0=B0, chi=chi, step_s=float(dt_sim), steps=int(sub_steps), T_e=float(T_win),
                                              floor=FIELD_READ_FLOOR, given=field_read_interval, checks=checks,
-                                             err_sq=(chk ** 2).mean(axis=(0, 1)) if checks else None, qv_all=qd.mean(axis=(0, 1)),
+                                             err_sq=(chk[:, :, 0] ** 2).mean(axis=(0, 1)) if checks else None,
+                                             qv_checks=chk[:, :, 1].mean(axis=(0, 1)) if checks else None, qv_all=qd.mean(axis=(0, 1)),
                                              channels=list(field_basis.channel_names))
             field_read["pilot_walkers"] = int(n_pilot)
             res = res._replace(field_read=field_read)

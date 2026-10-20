@@ -15,12 +15,15 @@ function the tests read and a table this script prints:
 
 * ``multiphysics`` -- ONE walk on a myelinated cylinder with C0-C3 (#742), packed walk-free, replayed against the
   matrix method (C0), the fused engine's surface relaxation (C2) and the forward vector-Bloch field (C3);
-* ``strands``    -- the field read's interval on the strands fixture: the derived interval against coarser ones,
-  the signal difference against the term the rule charges (the constant);
+* ``strands``    -- the field read on the strands fixture (the adaptive producer): the read each pool's pilot derives
+  from its measured read series, and the walk at it and at a read once per block against the same walk read every
+  round, per channel and at the signal, against the term the certificate charges;
+* ``read_check`` -- the same on the myelinated cylinder of ``multiphysics``, against the same walk read every step;
 * ``permeable``  -- the event form of C1: a permeable cell's per-pool T2 replayed from the events against the fused engine;
 * ``mt``         -- the MT bound column as events: the bound fraction over time against the fused MT engine;
-* ``timing``     -- seconds per tier on this device (C0, C0 + C2, C0 + C2 + C3), the accumulation's and the field
-  read's shares, the device bytes per walker at two walk lengths.
+* ``timing``     -- seconds per tier on this device (C0, C0 + C2, C0 + C1 + C2, + C3 at the derived read and at a
+  read once per block), the accumulation's and the field read's shares, the device bytes per walker at two walk
+  lengths.
 
     python tools/coefficient_walk_measure.py --what exactness quadrature memory oracle
     python tools/coefficient_walk_measure.py --what multiphysics timing --n 20000 --gpu --json out.json
@@ -404,15 +407,15 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         c0[name] = dict(replay=S.tolist(), matrix_method=Sm.tolist(), diff=(S - Sm).tolist(), se=se.tolist(),
                         band_needed=int(pk.waveform_band(seq)[1]))
     out["C0_lumen_vs_matrix_method"] = c0
-    # ── C2: the lumen's contact at rho against the fused engine seeded at the same lumen starts
-    lumen_raw = np.asarray(w.compartment)[:n_raw] == 1
-    r0 = np.asarray(w.raw_positions, np.float32)[:n_raw][lumen_raw, 0]
+    # ── C2: the lumen's contact at rho against the fused engine seeded at the same lumen starts (every lumen walker's
+    # exact start, the coefficients' first entry)
+    mask = np.asarray(w.compartment) == 1
+    r0 = np.asarray(w.position_coeffs, np.float32)[mask, 0, 0, :]
     seq2 = d.pgse([[1, 0, 0]] * 3, 0.1 * T, 0.4 * T, bvalues=[0.0, 1e9, 2e9], TE=T, n_t=4001, slew_rate=np.inf)
-    mask = np.zeros(n, bool); mask[:n_raw] = lumen_raw
     c2 = {}
     for rho_ in sorted(env["rho2_list"]):
         cell = d.Cylinder(radius=r_in, orientation=(0, 0, 1), surface_relaxivity_t2=rho_)
-        S, se = _ensemble(pm, seq2, tissue=Tissue(rho2=rho_), compartment=mask)
+        S, se = _ensemble(pk, seq2, tissue=Tissue(rho2=rho_), compartment=mask)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             S_f = np.asarray(d.simulate(int(r0.shape[0]), D, seq2, cell, seed=seed + 100, r0=r0, require_gpu=require_gpu), np.float64).reshape(-1)
@@ -476,52 +479,123 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     return out
 
 
-def read_constant(*, n=4000, D=2e-9, T=0.02, K=52, seed=5, B0=7.0, chi=1.06e-6, theta_deg=90.0, sub_steps=36, factors=(2, 4, 6, 12, 36),
-                  r_in=2e-6, r_out=3e-6, require_gpu=None):
-    """The field read's constant on the myelinated cylinder: the walk at a read EVERY STEP (the derived read, which
-    the rule puts at the step here) against the SAME walk (same seed, same keys: the read does not touch the path)
-    reading every ``factor``-th step (``field_read_interval=`` overriding the rule, ``sub_steps`` pinned so that the
-    factors divide the block), the field modes alone differing, replayed under a gradient echo at ``B0`` with
-    ``chi_iso = chi`` (the rule's own envelope) and the field at ``theta_deg`` to the axis. Per factor the signal
-    difference (the read's error), the term the rule charges at that interval (``accumulate.field_read_term``, half the
-    midpoint sum's variance) and their ratio: the constant to state beside the term."""
+def _read_gates(T, n=4001):
+    """The gates a read is checked under over a window of ``T``: a gradient echo and a spin echo, ``(2, n, 1)``."""
+    t = np.arange(n) * (T / (n - 1))
+    return np.stack([np.ones(n), np.where(t < 0.5 * T, 1.0, -1.0)])[:, :, None], T / (n - 1)
+
+
+def _read_compare(fine, other, *, B0, chi, names, pools=None):
+    """The walk ``other`` (read at its interval) against ``fine`` (the same walk read every step or round), per channel
+    and pool: the gated integral of every channel ``I_c = int s b_c dt`` from the modes (a gradient echo and a spin
+    echo over the window), its difference per walker, the measured constant ``kappa_c = Var(dI_c) / (dt_f^2 <QV_c>)``
+    against the constant the certificate charges, and the channel's signal ``|<exp(i gamma B0 chi I_c)>|`` against the
+    fine walk's with the channel's term ``(gamma B0 chi dt_f)^2 kappa_c <QV_c> / 2`` and the split-half standard error.
+    ``pools`` is ``{name: (label, dt_f)}`` (a bundle's pools read at their own intervals)."""
+    from dmipy_sim.constants import GAMMA
+    from dmipy_sim.engine.accumulate import read_constants
+    from dmipy_sim.replay.compression import cosine_projection
+    if not np.array_equal(np.asarray(other.position_coeffs), np.asarray(fine.position_coeffs)):
+        raise AssertionError("the read moved the walk")
+    T = float(fine.T_window)
+    gates, dtg = _read_gates(T)
+    K = int(fine.K_c3)
+    g = cosine_projection(gates, dtg, T, K)[:, :, 0]                                   # (2, K)
+    I_f = np.einsum("gk,wkc->gwc", g, np.asarray(fine.field_coeffs, np.float64)[:, 0])
+    I_o = np.einsum("gk,wkc->gwc", g, np.asarray(other.field_coeffs, np.float64)[:, 0])
+    dI = I_o - I_f
+    qv = np.asarray(other.qv_field_increments, np.float64)[:, 0]                         # (n_w, n_ch): the charged QV
+    fr = other.block["field_read"]
+    kappa = read_constants(fr.get("constants"), qv.shape[1])
+    lab = np.asarray(other.compartment) if other.compartment is not None else np.zeros(qv.shape[0], int)
+    pools = pools or {"all": (None, float(other.field_read_interval))}
+    phase = GAMMA * float(B0) * float(chi)
+    out = {}
+    for pname, (label, dt_f) in pools.items():
+        sel = np.ones(qv.shape[0], bool) if label is None else (lab == label)
+        if not sel.any():
+            continue
+        rows = {}
+        for c, name in enumerate(names):
+            q = float(qv[sel, c].mean())
+            if q <= 0.0:
+                continue
+            k_meas = [float(np.var(dI[gi, sel, c]) / (dt_f ** 2 * q)) for gi in range(2)]
+            term = 0.5 * (phase * dt_f) ** 2 * kappa[c] * q
+            S_f = [np.exp(1j * phase * I_f[gi, sel, c]) for gi in range(2)]
+            S_o = [np.exp(1j * phase * I_o[gi, sel, c]) for gi in range(2)]
+            diff = [float(abs(abs(S_o[gi].mean()) - abs(S_f[gi].mean()))) for gi in range(2)]
+            se = [float(np.std(np.real(S_f[gi] * np.conj(S_f[gi].mean() / abs(S_f[gi].mean())))) / np.sqrt(sel.sum())) for gi in range(2)]
+            rows[name] = dict(qv_increments=q, kappa_measured_GRE_SE=k_meas, kappa_charged=float(kappa[c]),
+                              term_charged=float(term), signal_diff_GRE_SE=diff, se=se,
+                              within_term=bool(max(diff) <= term + 1e-15), kappa_within=bool(max(k_meas) <= kappa[c]))
+        out[pname] = dict(walkers=int(sel.sum()), dt_f=float(dt_f), channels=rows,
+                          all_within_term=bool(all(r["within_term"] for r in rows.values())),
+                          all_kappa_within=bool(all(r["kappa_within"] for r in rows.values())),
+                          kappa_max=(max(max(r["kappa_measured_GRE_SE"]) for r in rows.values()) if rows else None))
+    return out
+
+
+def _signal_compare(fine, other, seq, kw, env):
+    """The whole ensemble's replay of ``seq`` from the packs of ``fine`` and ``other``: ``|S|`` of each, the
+    difference, the split-half standard error and the term ``other``'s certificate charges."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    pf = build_replay_pack(fine, id="read/fine", license="x", citation="x", envelope=env)
+    po = build_replay_pack(other, id="read/other", license="x", citation="x", envelope=env)
+    S0, se0 = _ensemble(pf, seq, **kw)
+    S1, _ = _ensemble(po, seq, **kw)
+    return dict(S_fine=S0.tolist(), S=S1.tolist(), diff=(S1 - S0).tolist(), se=se0.tolist(), term_charged=po.fidelity["terms"]["field_read"],
+                term_fine=pf.fidelity["terms"]["field_read"], within_term=bool(np.abs(S1 - S0).max() <= po.fidelity["terms"]["field_read"] + 1e-15),
+                env_B0_chi_max_T=po.meta["replay_envelope"]["field_read"].get("B0_chi_max_T"))
+
+
+def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0, r_in=2e-6, r_out=3e-6, require_gpu=None):
+    """The field read on the myelinated cylinder of :func:`multiphysics` (``K`` bands over ``T`` at block order 3,
+    the derived block): the read the pilot derives per pool (the record), the walk at it, and the SAME walk (same
+    seed and keys: the read does not touch the path) read every step and once per block (``field_read_interval=``,
+    the field band fixed at the derived walk's), each compared with the per-step read per channel and pool
+    (:func:`_read_compare`) and at the signal (a gradient echo at ``0.8 T``, ``B0``, the rule's ``chi``, the field at
+    ``theta_deg`` to the axis); the seconds of each walk."""
+    import time
     import dmipy_sim as d
     from dmipy_sim.acquisition.waveforms import rotate_waveform
-    from dmipy_sim.engine.accumulate import field_read_term
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     from dmipy_sim.replay import compression as cx
-    from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_sim.spec.tissue import Tissue
     g = _myelin(D, r_in, r_out)
     fg = field_grid_of(g)
     env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)])
+    secs = {}
+
+    def walk(name, **kw):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            t0 = time.time()
+            w = d.simulate_trajectories(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
+                                        envelope=env, **kw)
+            secs[name] = time.time() - t0
+        return w
+    derived = walk("derived")
+    fr = dict(derived.block["field_read"])
+    K_c3 = int(derived.K_c3)
+    fine = walk("every step", field_read_interval=float(derived.dt_sim), K_c3=K_c3)
+    block = walk("once per block", field_read_interval=float(derived.h), K_c3=K_c3)
+    chi = float(fr["chi"])
+    names = list(fg.channel_names)
+    pools = {name: (lab, None) for lab, name in ((0, "extra"), (1, "intra"), (2, "myelin"))}
     th = np.deg2rad(float(theta_deg)); R = _pose_with_field_along((np.sin(th), 0.0, np.cos(th)))
     seq = rotate_waveform(bare_gradient_echo(0.8 * T, 1e-5), R)
     kw = dict(scanner=B0, tissue=Tissue(chi_iso=chi), orientation=R)
-    walk = lambda **k: d.simulate_trajectories(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
-                                               sub_steps=sub_steps, envelope=env, K_c3=min(16, K), **k)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        fine = walk()
-    fr = dict(fine.block["field_read"])
-    pf = build_replay_pack(fine, id="read/fine", license="x", citation="x", envelope=env)
-    S0, se0 = _ensemble(pf, seq, **kw)
-    rows = []
-    for f in factors:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            coarse = walk(field_read_interval=f * float(fine.dt_sim))
-        assert np.array_equal(coarse.position_coeffs, fine.position_coeffs), "the read moved the walk"
-        pc = build_replay_pack(coarse, id="read/coarse", license="x", citation="x", envelope=env)
-        S, se = _ensemble(pc, seq, **kw)
-        dt_f = float(coarse.field_read_interval)
-        term = field_read_term(dt_f, D, 0.8 * T, fr["grad_b_per_m"], B0, chi)
-        rows.append(dict(factor=f, n_read=int(coarse.block["field_read"]["n_read"]), interval_s=dt_f, S=float(S[0]), diff=float(S[0] - S0[0]),
-                         se=float(se0[0]), term=float(term), ratio=float(abs(S[0] - S0[0]) / term), term_recorded=float(coarse.block["field_read"]["term"])))
-    return dict(n=n, T=T, sub_steps=int(fine.sub_steps), dt_sim=float(fine.dt_sim), K_c3=int(fine.K_c3), S_fine=float(S0[0]), se=float(se0[0]),
-                fine=dict(interval_s=float(fine.field_read_interval), dt_f_rule=fr.get("dt_f_rule"), n_read=fr.get("n_read"), at_step=fr.get("at_step"),
-                          grad_b_per_m=fr["grad_b_per_m"], term=fr.get("term")), rows=rows)
+    out = dict(n=n, T=T, K=int(derived.K), sub_steps=int(derived.sub_steps), dt_sim=float(derived.dt_sim), h=float(derived.h),
+               K_c3=K_c3, seconds=secs, field_read={k: v for k, v in fr.items()}, compare={})
+    for name, w in (("derived", derived), ("once per block", block)):
+        dt_f = float(w.field_read_interval)
+        out["compare"][name] = dict(interval_s=dt_f, n_read=int(w.block["field_read"]["n_read"]),
+                                    per_channel=_read_compare(fine, w, B0=B0, chi=chi, names=names,
+                                                              pools={k: (lab, dt_f) for k, (lab, _) in pools.items()}),
+                                    signal=_signal_compare(fine, w, seq, kw, env))
+    return out
 
 
 def _strands_spec(tmp):
@@ -535,50 +609,52 @@ def _strands_spec(tmp):
     return disco_spec(tck, dia, side_m=20e-6)
 
 
-def strands(*, n=300, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, chi=1.06e-6, factors=(2, 4, 8), require_gpu=False):
-    """The field read's interval on the strands fixture (the adaptive producer): the walk at the DERIVED interval (the
-    rule of ``accumulate.field_read_interval`` on the basis's gradient scale, floored at the producer's finest read,
-    the round) against the same walk reading the field every ``factor`` times that interval -- the same positions
-    and contact (the read does not touch the walk), the field modes alone differ -- replayed under a gradient echo
-    at ``B0`` with ``chi_iso = chi`` (the envelope the term is stated at). Per factor the signal difference against
-    the term the rule charges at that interval (``accumulate.field_read_term``), and their ratio: the constant."""
+def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0, require_gpu=False):
+    """The field read on the strands fixture (the adaptive producer, ``walk_spec(adaptive_steps=True)``): the read
+    each pool's pilot derives from its measured read series (the bundle's record), the walk at it, and the SAME walk
+    read every round of each pool and once per block (``field_read_interval=``, the band fixed at the derived walk's),
+    each compared with the per-round read per channel and pool (:func:`_read_compare`, each pool at its own interval)
+    and at the signal (a gradient echo at ``0.8 T``, ``B0``, the rule's ``chi``, the field across the strands)."""
     import tempfile
-    from dmipy_sim.engine.accumulate import field_read_term
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
-    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    from dmipy_sim.replay import compression as cx
     from dmipy_sim.spec import walk_spec
     from dmipy_sim.spec.tissue import Tissue
+    import time
     spec = _strands_spec(tempfile.mkdtemp())
-    from dmipy_sim.replay import compression as cx
-    env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[90])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        fine = walk_spec(spec, n, T, block_h, seed=seed, n_probe=20_000, require_gpu=require_gpu, adaptive_steps=True, K=K, envelope=env)
-    fr = dict(fine.block["field_read"])
-    pf = build_replay_pack(fine, id="strands/fine", license="x", citation="x", envelope=env)
-    seq = bare_gradient_echo(0.8 * T, 1e-5)
-    from dmipy_sim.acquisition.waveforms import rotate_waveform
-    R = _pose_with_field_along((1.0, 0.0, 0.0))
-    seq_lab = rotate_waveform(seq, R)
-    kw = dict(scanner=B0, tissue=Tissue(chi_iso=chi), orientation=R)
-    S0, se0 = _ensemble(pf, seq_lab, **kw)
-    rows = []
-    for f in factors:
-        dt_f = f * float(fine.field_read_interval)
+    env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)])
+    secs = {}
+
+    def walk(name, **kw):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            coarse = walk_spec(spec, n, T, block_h, seed=seed, n_probe=20_000, require_gpu=require_gpu, adaptive_steps=True, K=K,
-                               envelope=env, field_read_interval=dt_f, K_c3=fine.K_c3)
-        assert np.array_equal(coarse.position_coeffs, fine.position_coeffs), "the read moved the walk"
-        pc = build_replay_pack(coarse, id="strands/coarse", license="x", citation="x", envelope=env)
-        S, se = _ensemble(pc, seq_lab, **kw)
-        term = field_read_term(float(coarse.field_read_interval), float(fine.diffusivity), 0.8 * T, fr["grad_b_per_m"], B0, chi)
-        rows.append(dict(factor=f, interval_s=float(coarse.field_read_interval), n_read=int(coarse.block["field_read"]["n_read"]),
-                         diff=float(np.abs(S - S0).max()), se=float(se0.max()), z=float(np.abs(S - S0).max() / (np.sqrt(2.0) * se0.max())),
-                         term=float(term), ratio=float(np.abs(S - S0).max() / term), term_recorded=float(coarse.block["field_read"]["term"]),
-                         term_recorded_at=dict(B0=fr.get("B0"), chi=fr.get("chi"), T_e=fr.get("T_e"))))
-    return dict(fine=dict(interval_s=float(fine.field_read_interval), dt_f_rule=fr.get("dt_f_rule"), at_step=fr.get("at_step"),
-                          n_read=fr.get("n_read"), grad_b_per_m=fr["grad_b_per_m"], term=fr.get("term"), K_c3=int(fine.K_c3)), rows=rows)
+            t0 = time.time()
+            w = walk_spec(spec, n, T, block_h, seed=seed, n_probe=20_000, require_gpu=require_gpu, adaptive_steps=True, K=K,
+                          envelope=env, **kw)
+            secs[name] = time.time() - t0
+        return w
+    derived = walk("derived")
+    fr = dict(derived.block["field_read"])
+    K_c3 = int(derived.K_c3)
+    rounds = {name: float(st["round_s"]) for name, st in (derived.stepping.get("pools") or {}).items()}
+    fine = walk("every round", field_read_interval=min(rounds.values()), K_c3=K_c3)
+    block = walk("once per block", field_read_interval=float(derived.h), K_c3=K_c3)
+    chi = float(fr["chi"])
+    names = list(derived.field_basis.channel_names)
+    ids = {p.name: p.id for p in spec.pools}
+    R = _pose_with_field_along((1.0, 0.0, 0.0))
+    seq = rotate_waveform(bare_gradient_echo(0.8 * T, 1e-5), R)
+    kw = dict(scanner=B0, tissue=Tissue(chi_iso=chi), orientation=R)
+    out = dict(n=n, T=T, K=int(derived.K), h=float(derived.h), K_c3=K_c3, rounds_s=rounds, seconds=secs,
+               field_read={k: v for k, v in fr.items()}, compare={})
+    for name, w in (("derived", derived), ("once per block", block)):
+        pr = w.block["field_read"]["pools"]
+        out["compare"][name] = dict(pools={p: dict(dt_f=v["dt_f"], n_read=v["n_read"], rule=v["rule"]) for p, v in pr.items()},
+                                    per_channel=_read_compare(fine, w, B0=B0, chi=chi, names=names,
+                                                              pools={p: (ids[p], float(v["dt_f"])) for p, v in pr.items()}),
+                                    signal=_signal_compare(fine, w, seq, kw, env))
+    return out
 
 
 def _permeable_mesh(kappa, T2=None, R=3e-6, L=10e-6, subdivisions=3):
@@ -700,9 +776,17 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
     rows["cylinder C0+C2"], walks["cylinder C0+C2"] = best(cyl, K=K)
     rows["myelinated C0+C2"], walks["myelinated C0+C2"] = best(my, K=K)
     rows["myelinated C0+C2+C3"], walks["myelinated C0+C2+C3"] = best(my, K=K, field_basis=fg)
+    w3 = walks["myelinated C0+C2+C3"]
+    # the same walk with its band and read given (no pilot): what the pilot costs, and a read once per block
+    rows["myelinated C0+C2+C3, read given (no pilot)"], _ = best(my, K=K, field_basis=fg, K_c3=int(w3.K_c3),
+                                                                  field_read_interval=float(w3.field_read_interval))
+    rows["myelinated C0+C2+C3, read once per block"], walks["myelinated C0+C2+C3, read once per block"] = best(
+        my, K=K, field_basis=fg, K_c3=int(w3.K_c3), field_read_interval=float(w3.h))
     shares = dict(accumulation=1.0 - rows["cylinder C0 minimal (K=1, m=0)"] / rows["cylinder C0"],
                   contact=1.0 - rows["cylinder C0"] / rows["cylinder C0+C2"],
-                  field_read=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3"])
+                  field_read=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3"],
+                  field_read_without_pilot=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, read given (no pilot)"],
+                  field_read_once_per_block=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, read once per block"])
     cost = {}
     for L in lengths:
         for name, g, kw in (("cylinder C0", cyl, dict(tiers=())), ("cylinder C0+C2", cyl, {}), ("myelinated C0+C2+C3", my, dict(field_basis=fg))):
@@ -715,19 +799,19 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
         dev = str(jax.devices()[0])
     except Exception:
         dev = "?"
-    w3 = walks["myelinated C0+C2+C3"]
     return dict(device=dev, n=n, T=T, K=K, seconds=rows, walker_steps_per_second={k: n * int(walks.get(k, w3).sub_steps) * int(walks.get(k, w3).n_blocks) / v
                                                                                    for k, v in rows.items() if k in walks},
                 shares=shares, steps=dict(cylinder=dict(sub_steps=int(walks["cylinder C0"].sub_steps), dt_sim=float(walks["cylinder C0"].dt_sim)),
                                           myelinated=dict(sub_steps=int(w3.sub_steps), dt_sim=float(w3.dt_sim), K_c3=int(w3.K_c3),
-                                                          field_read=w3.block["field_read"])), bytes=cost)
+                                                          field_read={k: v for k, v in w3.block["field_read"].items()
+                                                                      if k not in ("measured_constants",)})), bytes=cost)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--what", nargs="+", default=["exactness", "quadrature", "memory", "oracle", "surface"],
                     choices=["exactness", "quadrature", "memory", "oracle", "surface", "multiphysics", "strands", "permeable", "mt", "timing",
-                             "read_constant"])
+                             "read_check"])
     ap.add_argument("--memory-probe", nargs=6, metavar=("MODE", "BLOCK_H", "N", "T", "DT_SIM", "K"))
     ap.add_argument("--n", type=int, default=None, help="walkers for the admissions and the timing")
     ap.add_argument("--T", type=float, default=None, help="walk duration (s) for the admissions and the timing")
@@ -746,7 +830,7 @@ def main(argv=None):
     for what in a.what:
         fn = globals()[what]
         extra = dict(kw)
-        if what in ("multiphysics", "permeable", "mt", "timing", "read_constant") and a.gpu:
+        if what in ("multiphysics", "permeable", "mt", "timing", "read_check", "strands") and a.gpu:
             extra["require_gpu"] = True
         if what == "multiphysics" and a.n_raw is not None:
             extra["n_raw"] = a.n_raw
@@ -758,7 +842,7 @@ def main(argv=None):
             import dmipy_sim as d
             out[what] = fn(d.FreeDiffusion(), **extra)
         elif what == "strands":
-            out[what] = fn(**{k: v for k, v in extra.items() if k != "require_gpu"})
+            out[what] = fn(**{k: v for k, v in extra.items() if k not in ("T", "K")})        # the fixture's own window and band
         else:
             out[what] = fn(**extra)
         print(f"== {what}"); print(json.dumps(out[what], indent=1, default=float))

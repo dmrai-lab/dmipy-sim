@@ -698,7 +698,14 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
         # the coarsest pool's read; every pool's own record under ``pools``, and the largest trapezoid constant per
         # channel any pool's pilot charged
         reads = [w.block["field_read"] for w in walks]
-        block["field_read"] = dict(w_read.block["field_read"], pools={k: v for r in reads for k, v in (r.get("pools") or {}).items()})
+        name_of_pool = {p.id: p.name for p in spec.pools}
+        pools = {}
+        for pid, w in parts:
+            if not isinstance(w, np.ndarray):
+                r = w.block["field_read"]
+                own = (r.get("pools") or {}).get(name_of_pool[pid], {})
+                pools[name_of_pool[pid]] = dict(own, dt_f=float(w.field_read_interval), n_read=int(r["n_read"]), rule=r["rule"])
+        block["field_read"] = dict(w_read.block["field_read"], pools=pools)
         consts = [r.get("constants") for r in reads if r.get("constants") is not None]
         if consts:
             block["field_read"]["constants"] = [float(x) for x in np.max(np.asarray(consts, np.float64), axis=0)]

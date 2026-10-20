@@ -330,10 +330,13 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         @jax.jit
         def _check_reads(E, bpd, b_prev, b, hit, half_dt, half_dt_d):
             """The trapezoid's checks of a pilot that reads every round: per check ``d`` the trapezoid of every ``d``-th
-            read (``hit`` where this read is one) less the trapezoid of every read."""
+            read (``hit`` where this read is one) less the trapezoid of every read, and the quadratic variation of the
+            series of every ``d``-th read (``E`` ``(nb, 2, n_checks, n_ch)``)."""
             inc = (b_prev + b) * half_dt
-            E = E - inc[:, None, :] + jnp.where(hit[None, :, None], (bpd + b[:, None, :]) * half_dt_d[None, :, None], 0.0)
-            return E, jnp.where(hit[None, :, None], b[:, None, :], bpd)
+            h3 = hit[None, :, None]
+            e_d = E[:, 0] - inc[:, None, :] + jnp.where(h3, (bpd + b[:, None, :]) * half_dt_d[None, :, None], 0.0)
+            q_d = E[:, 1] + jnp.where(h3, (b[:, None, :] - bpd) ** 2, 0.0)
+            return jnp.stack([e_d, q_d], axis=1), jnp.where(h3, b[:, None, :], bpd)
 
         @jax.jit
         def _project(acc, M, row, table_f, acc_f, F):
@@ -433,7 +436,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             fc_out = np.empty((nb, n_win, K_f, n_ch), np.float32) if (sampling and K_f) else None
             qv_f = np.empty((nb, n_win, n_ch), np.float32) if sampling else None
             qv_d = np.empty((nb, n_win, n_ch), np.float32) if sampling else None
-            chk = np.empty((nb, n_win, len(checks_), n_ch), np.float32) if (sampling and checks_) else None
+            chk = np.empty((nb, n_win, 2, len(checks_), n_ch), np.float32) if (sampling and checks_) else None
             pos = np.empty((nb, n_t, 3), np.float32) if raw else None
             dlog_raw = np.zeros((nb, n_t), np.float32) if raw else None
             n_fs = (n_blocks * rpb + 1) if keep_reads else n_t
@@ -455,7 +458,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                 qp = jnp.zeros((nb, 3), jnp.float32); qb = jnp.zeros((nb,), jnp.float32)
                 qf = jnp.zeros((nb, n_ch), jnp.float32) if sampling else None
                 qd = jnp.zeros((nb, n_ch), jnp.float32) if sampling else None
-                ec = jnp.zeros((nb, len(checks_), n_ch), jnp.float32) if (sampling and checks_) else None
+                ec = jnp.zeros((nb, 2, len(checks_), n_ch), jnp.float32) if (sampling and checks_) else None
                 blt_a = jnp.zeros((nb,), jnp.float32)
                 for b in range(n_bw):
                     t = w * n_bw + b + 1                                             # the block's end on the walk, 1-based
@@ -619,8 +622,10 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                 pools = {name_of.get(int(l), str(int(l))): (qd[labels == l].mean(axis=(0, 1)), int((labels == l).sum()))
                          for l in np.unique(labels)}
                 chk = got.get("chk")
+                chk = None if chk is None else np.asarray(chk, np.float64)            # (n_pilot, n_win, 2, n_checks, n_ch)
                 field_read = field_read_of(_spec_holder(spec, geometry), envelope, T_win, plan, given=field_read_interval,
-                                           pools=pools, checks=checks, err_sq=(None if chk is None else (np.asarray(chk, np.float64) ** 2).mean(axis=(0, 1))),
+                                           pools=pools, checks=checks, err_sq=(None if chk is None else (chk[:, :, 0] ** 2).mean(axis=(0, 1))),
+                                           qv_checks=(None if chk is None else chk[:, :, 1].mean(axis=(0, 1))),
                                            qv_all=qd.mean(axis=(0, 1)), channels=list(field_basis.channel_names))
                 field_read["pilot_walkers"] = int(n_pilot)
                 if K_c3 is None:
@@ -705,12 +710,12 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         return walk
 
 
-def field_read_of(spec_holder, envelope, T_win, plan, *, given=None, pools=None, checks=None, err_sq=None, qv_all=None,
-                  channels=None):
+def field_read_of(spec_holder, envelope, T_win, plan, *, given=None, pools=None, checks=None, err_sq=None, qv_checks=None,
+                  qv_all=None, channels=None):
     """The field read of an adaptive walk of ``plan`` (its rounds per block, ``plan.dt_round``) in a window of ``T_win``
     seconds (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot` on rounds): from a pilot that read every round
-    (``pools`` the read series' quadratic variation per pool, ``checks`` / ``err_sq`` / ``qv_all`` its measurement of
-    the trapezoid's constant), at the envelope's ``B0`` and the spec's ``chi``, or the ``given`` interval; read every
+    (``pools`` the read series' quadratic variation per pool, ``checks`` / ``err_sq`` / ``qv_checks`` its measurement
+    of the trapezoid's constant, ``qv_all`` over every pool), at the envelope's ``B0`` and the spec's ``chi``, or the ``given`` interval; read every
     ``n_read`` rounds, never finer than a round. Without a pilot and without ``given`` the read is the round (the
     pilot's own). The record ``CoefficientWalk.block["field_read"]`` carries; a substrate kit's request takes its
     ``n_read`` with the interval the recipe gives."""
@@ -719,7 +724,7 @@ def field_read_of(spec_holder, envelope, T_win, plan, *, given=None, pools=None,
     pilot = bool(pools)
     out = field_read_of_pilot(pools or {}, B0=B0, chi=chi, step_s=float(plan.dt_round), steps=int(plan.n_rounds), T_e=float(T_win),
                               floor=FIELD_READ_FLOOR, given=(given if (given is not None or pilot) else float(plan.dt_round)),
-                              checks=checks, err_sq=err_sq, qv_all=qv_all, channels=channels)
+                              checks=checks, err_sq=err_sq, qv_checks=qv_checks, qv_all=qv_all, channels=channels)
     if given is None and not pilot:
         out["rule"] = "pilot"
     return out

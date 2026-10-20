@@ -194,38 +194,40 @@ def read_checks(steps):
     return tuple(d for d in range(2, steps + 1) if steps % d == 0)
 
 
-def measured_read_constants(err_sq, qv_increments, step_s, checks):
+def measured_read_constants(err_sq, qv_checks, step_s, checks):
     """The trapezoid's constant per check and channel measured on a pilot that read every step: ``err_sq`` ``(n_checks,
     n_ch)`` the walkers' mean of ``E_d^2``, ``E_d`` the integral of the read series by the trapezoid of every ``d``-th
-    read less its integral by the trapezoid of every read, over the window; ``qv_increments`` ``(n_ch,)`` the walkers'
-    mean quadratic variation of the per-step reads. ``kappa_c(d) = <E_d^2> / ((d dt)^2 <QV_c>)``, :data:`READ_CONSTANT`
-    for a field linear over ``d`` steps; ``{d: (n_ch,)}``, NaN on a channel that does not vary."""
-    err_sq = np.asarray(err_sq, np.float64); qv = np.asarray(qv_increments, np.float64)
+    read less its integral by the trapezoid of every read, over the window; ``qv_checks`` ``(n_checks, n_ch)`` the
+    walkers' mean quadratic variation of the series of every ``d``-th read -- the series a walk reading every ``d``
+    steps measures and is charged on. ``kappa_c(d) = <E_d^2> / ((d dt)^2 <QV_c(d)>)``, :data:`READ_CONSTANT` for a
+    field linear over ``d`` steps; ``{d: (n_ch,)}``, NaN on a channel that does not vary."""
+    err_sq = np.asarray(err_sq, np.float64); qv = np.asarray(qv_checks, np.float64)
     out = {}
     for i, d in enumerate(checks):
         with np.errstate(divide="ignore", invalid="ignore"):
-            k = err_sq[i] / ((float(d) * float(step_s)) ** 2 * qv)
-        out[int(d)] = np.where(qv > 0.0, k, np.nan)
+            k = err_sq[i] / ((float(d) * float(step_s)) ** 2 * qv[i])
+        out[int(d)] = np.where(qv[i] > 0.0, k, np.nan)
     return out
 
 
 def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_FLOOR, given=None, checks=None,
-                        err_sq=None, qv_all=None, channels=None):
+                        err_sq=None, qv_checks=None, qv_all=None, channels=None):
     """The field read of a walk of ``steps`` physics steps of ``step_s`` seconds per block, in a window of ``T_e``
     seconds, from its pilot (RPK.md 9.5.5). ``pools`` is ``{name: (qv_increments (n_ch,), walkers)}``, the pilot's
     walkers' mean quadratic variation of the read series per pool, read at every step; per pool the rule's interval
     (:func:`field_read_rule` at ``B0`` and ``chi``), the walk's read the finest over its pools (one interval serves
     every walker of a walk), at the largest divisor of the block's steps that fits it (:func:`field_read_steps`).
-    ``given`` (s) replaces the rule's interval. ``checks`` / ``err_sq`` / ``qv_all`` are the pilot's measurement of
-    the trapezoid's constant (:func:`read_checks`, the walkers' mean ``E_d^2`` per check and channel, the walkers'
-    mean quadratic variation over every pool): the constant charged on a channel is the larger of
+    ``given`` (s) replaces the rule's interval. ``checks`` / ``err_sq`` / ``qv_checks`` are the pilot's measurement of
+    the trapezoid's constant (:func:`read_checks`, the walkers' mean ``E_d^2`` and quadratic variation of every
+    ``d``-th read per check and channel, :func:`measured_read_constants`), ``qv_all`` the walkers' mean quadratic
+    variation of the per-step reads over every pool: the constant charged on a channel is the larger of
     :data:`READ_CONSTANT` and the one measured at the walk's read (at the finest check when the read is the step),
     and a measured constant above it moves the read again. Returns the record a walk carries in
     ``CoefficientWalk.block["field_read"]``."""
     step_s, steps = float(step_s), int(steps)
     measured = None
-    if checks and err_sq is not None and qv_all is not None:
-        measured = measured_read_constants(err_sq, qv_all, step_s, checks)
+    if checks and err_sq is not None and qv_checks is not None:
+        measured = measured_read_constants(err_sq, qv_checks, step_s, checks)
     n_ch = None
     for qv, _n in pools.values():
         n_ch = int(np.asarray(qv).reshape(-1).shape[0])
@@ -315,9 +317,10 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     every ``n_read``-th step (``length`` a multiple of it) and the TRAPEZOID increment of each read interval,
     ``(b_prev + b) dt_f / 2``, at the interval's midpoint: ``F_j`` (m+1, n_ch), ``Qf = sum (inc)^2`` (n_ch,) and the
     read series' quadratic variation ``Qd = sum (b - b_prev)^2`` (n_ch,), the last read carried in ``b_prev``; with
-    ``checks`` (divisors of ``length``, a walk that reads every step) ``E`` (n_checks, n_ch): per check ``d`` the
-    trapezoid of every ``d``-th read less the trapezoid of every read, over the block (the pilot's measurement of the
-    trapezoid's constant, :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch),
+    ``checks`` (divisors of ``length``, a walk that reads every step) ``E`` (2, n_checks, n_ch): per check ``d`` the
+    trapezoid of every ``d``-th read less the trapezoid of every read, over the block, and the quadratic variation of
+    the series of every ``d``-th read (the pilot's measurement of the trapezoid's constant,
+    :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch),
     the block's ``length / n_read`` reads at the ends of its read intervals; with an events buffer the label after
     every step recorded on change at the global step ``step0 + i + 1``. Returns ``(carry, (M, B, Q, Qb, F, Qf, Qd, E,
     reads))`` (None where a channel is not recorded)."""
@@ -372,7 +375,9 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
             qd = qd + db * db                                                # the read series' quadratic variation
             if checks:
                 hit = ((g + 1) % ds == 0)[:, None]                           # the d-th reads: the coarser trapezoids
-                ec = ec - inc[None, :] + jnp.where(hit, (bpd + b[None, :]) * half_dt_d, 0.0)
+                e_d = ec[0] - inc[None, :] + jnp.where(hit, (bpd + b[None, :]) * half_dt_d, 0.0)
+                q_d = ec[1] + jnp.where(hit, (b[None, :] - bpd) ** 2, 0.0)
+                ec = jnp.stack([e_d, q_d])
                 bpd = jnp.where(hit, b[None, :], bpd)
             bp = b
         return (cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec), (b if keep_reads else None)
@@ -385,7 +390,7 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     qf0 = jnp.zeros((int(n_ch),), jnp.float32) if read is not None else None
     qd0 = jnp.zeros((int(n_ch),), jnp.float32) if read is not None else None
     bpd0 = jnp.broadcast_to(b_prev[None, :], (len(checks), int(n_ch))) if (read is not None and checks) else None
-    ec0 = jnp.zeros((len(checks), int(n_ch)), jnp.float32) if (read is not None and checks) else None
+    ec0 = jnp.zeros((2, len(checks), int(n_ch)), jnp.float32) if (read is not None and checks) else None
     (phys, mp, mb, qp, qb, ev_c, ev_b, b_prev, mf, qf, qd, _bpd, ec), reads = jax.lax.scan(
         group, (phys, m0, b0, q0, qb0, ev_c, ev_b, b_prev, f0, qf0, qd0, bpd0, ec0), jnp.arange(n_groups, dtype=jnp.int32))
     return (phys, b_prev, ev_c, ev_b), (mp, mb, qp, qb, mf, qf, qd, ec, reads)
@@ -395,8 +400,8 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
     """The ``n_blocks`` blocks of one walker (one window): ``interval(carry, b) -> (carry, ys, (M, B, Q, Qb, F, Qf, Qd,
     E, reads))`` walks block ``b`` (its moments from :func:`moment_scan`; ``b + offset`` is the walk-wide block index).
     Returns ``(carry, acc_pos (K+1, 3), acc_blt (K+1,) or None, acc_field (K_c3, n_ch) or None, emitted, counted,
-    (qv_pos (3,), qv_blt () or None, qv_field (n_ch,) or None, qv_increments (n_ch,) or None, checks (n_checks, n_ch)
-    or None))``: the accumulators of the cosine projections
+    (qv_pos (3,), qv_blt () or None, qv_field (n_ch,) or None, qv_increments (n_ch,) or None, checks (2, n_checks,
+    n_ch) or None))``: the accumulators of the cosine projections
     (:func:`~dmipy_sim.replay.compression.block_table` evaluated per ring, the field's ``K_c3`` modes ``k = 0 .. K_c3 - 1`` at its own band),
     ``emit(ys)`` stacked over the blocks (None without ``emit``), ``count(ys)`` summed over them (int32; None without
     ``count``), each channel's quadratic variation over the window (the field's of its trapezoid increments and of its
@@ -438,7 +443,7 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
              jnp.int32(0) if count is not None else None, jnp.zeros((3,), jnp.float32),
              jnp.float32(0.0) if has_blt else None, jnp.zeros((int(n_ch),), jnp.float32) if reads_f else None,
              jnp.zeros((int(n_ch),), jnp.float32) if reads_f else None,
-             jnp.zeros((int(n_checks), int(n_ch)), jnp.float32) if (reads_f and n_checks) else None)
+             jnp.zeros((2, int(n_checks), int(n_ch)), jnp.float32) if (reads_f and n_checks) else None)
     n_full, rem = divmod(n_blocks, RING)
     parts = []
     if n_full:
