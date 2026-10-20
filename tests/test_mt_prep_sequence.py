@@ -7,7 +7,7 @@ mainly demonstrates the plumbing + free-water specificity (the broad bound-pool 
 is added in Piece E).  Free diffusion, small walker counts, fast.
 """
 import numpy as np
-from dmipy_sim import simulate_bloch
+from dmipy_sim.engine.bloch import _simulate_bloch
 from dmipy_sim import RFEvent
 import pytest
 
@@ -39,7 +39,7 @@ def test_mt_prep_structure():
 def test_spin_echo_readout_T2():
     dt, TE, T2 = 2e-4, 20e-3, 0.06
     seq = bare_spin_echo(TE, dt)
-    s = simulate_bloch(2000, D, seq, FreeDiffusion(), T2=T2, seed=0)
+    s = _simulate_bloch(2000, D, seq, FreeDiffusion(), T2=T2, seed=0)
     assert abs(s[0]) == pytest.approx(np.exp(-TE / T2), rel=0.03)
 
 
@@ -51,8 +51,8 @@ def test_crusher_dephases_transverse():
     base = ScannerSequence(G=G, dt=dt, rf=exc)
     crushed = ScannerSequence(G=G, dt=dt, rf=exc,
                             crusher=dict(windows_s=[(dt, n_t * dt)], n_cycles=32.0))
-    s_free = simulate_bloch(4000, D, base, FreeDiffusion(), seed=0)
-    s_crush = simulate_bloch(4000, D, crushed, FreeDiffusion(), seed=0)
+    s_free = _simulate_bloch(4000, D, base, FreeDiffusion(), seed=0)
+    s_crush = _simulate_bloch(4000, D, crushed, FreeDiffusion(), seed=0)
     assert abs(s_free[0]) == pytest.approx(1.0, rel=1e-2)   # coherent, undephased
     assert abs(s_crush[0]) < 0.1                            # ensemble dephased away
 
@@ -64,7 +64,7 @@ def test_mt_prep_free_water_specificity():
 
     def mtr(offset_hz, flip_deg):
         prep = saturation_pulse(offset_hz, 5e-3, flip_deg=flip_deg)
-        s = simulate_bloch(4000, D, prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0), FreeDiffusion(), T2=0.05, T1=1.0, seed=0)
+        s = _simulate_bloch(4000, D, prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0), FreeDiffusion(), T2=0.05, T1=1.0, seed=0)
         return abs(s[0])
 
     base = mtr(0.0, 0.0)                          # flip 0 -> no saturation (same timeline)

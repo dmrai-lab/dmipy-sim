@@ -50,6 +50,7 @@ def test_invalid_pools_and_names_fail_at_construction():
 import numpy as np
 
 import dmipy_sim as d
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 
@@ -69,8 +70,8 @@ def test_mesh_takes_compartments_and_the_dict_spelling_is_the_same_walk():
     as_dicts = d.Mesh(V, F, feature_radius=1e-6, compartments={"intra": {"T2": 0.02, "D": 1e-9, "surface_relaxivity_t2": 2e-6},
                                                                 "extra": {"T2": 0.2, "D": 1e-9}})
     assert as_dicts.compartments == comps
-    s_new = d.simulate(300, None, _wf(), m, seed=0, require_gpu=False, engine="fused")
-    s_dicts = d.simulate(300, None, _wf(), as_dicts, seed=0, require_gpu=False, engine="fused")
+    s_new = simulate_fused(300, None, _wf(), m, seed=0, require_gpu=False)
+    s_dicts = simulate_fused(300, None, _wf(), as_dicts, seed=0, require_gpu=False)
     np.testing.assert_array_equal(np.asarray(s_new), np.asarray(s_dicts))
     with pytest.raises(ValueError, match="no myelin pool"):
         d.Mesh(V, F, compartments={"myelin": {"T2": 0.01}})
@@ -88,8 +89,8 @@ def test_myelinated_cylinder_takes_compartments():
     as_dicts = d.MyelinatedCylinder(2e-6, 3e-6, compartments={"intra": {"T2": 0.05}, "myelin": {"T2": 0.01},
                                                              "extra": {"T2": 0.08}}, **kw)
     assert (as_dicts.T2_extra, as_dicts.T2_intra, as_dicts.T2_myelin) == (0.08, 0.05, 0.01)
-    s_new = d.simulate(300, None, _wf(), g, seed=0, require_gpu=False, engine="fused")
-    s_dicts = d.simulate(300, None, _wf(), as_dicts, seed=0, require_gpu=False, engine="fused")
+    s_new = simulate_fused(300, None, _wf(), g, seed=0, require_gpu=False)
+    s_dicts = simulate_fused(300, None, _wf(), as_dicts, seed=0, require_gpu=False)
     np.testing.assert_array_equal(np.asarray(s_new), np.asarray(s_dicts))
     with pytest.raises(TypeError):                                     # a pool's T2 has one spelling
         d.MyelinatedCylinder(2e-6, 3e-6, T2_intra=0.05, **kw)

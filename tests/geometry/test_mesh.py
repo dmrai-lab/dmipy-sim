@@ -16,6 +16,7 @@ import pytest
 
 from dmipy_sim import simulate, Sphere, Mesh, load_ply, set_b
 from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_sim.engine._fused import simulate_fused
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -162,9 +163,9 @@ def test_return_positions_full():
     V, F = _icosphere(3)
     g = Mesh(V, F)
     wf = _short_wf(2, 100)
-    sig, pos = simulate(300, D, wf, g, seed=1, return_positions='full')
+    sig, pos = simulate_fused(300, D, wf, g, seed=1, return_positions='full')
     assert pos.shape == (300, 100, 3)                     # per-timestep positions
-    sig2, fin = simulate(300, D, wf, g, seed=1, return_positions=True)
+    sig2, fin = simulate_fused(300, D, wf, g, seed=1, return_positions=True)
     npt.assert_allclose(pos[:, -1, :], np.asarray(fin), atol=1e-9)   # last step == final
     npt.assert_array_equal(np.asarray(sig), np.asarray(sig2))        # identical physics
     assert (np.linalg.norm(pos.reshape(-1, 3), axis=1) < R * 1.02).mean() > 0.99
@@ -214,7 +215,7 @@ def test_orientation_is_acquisition_rotation():
     assert g_plain._orient_R is None
     assert g_orient._orient_R is not None                 # mesh->lab rotation stored
     # walk is native-frame in both -> radial confinement about the mesh-z axis
-    _, pos = simulate(400, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
+    _, pos = simulate_fused(400, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
     pos = np.asarray(pos)
     assert (np.linalg.norm(pos[:, :2], axis=1) < 4e-6 * 1.03).mean() > 0.99
 
@@ -255,7 +256,7 @@ def test_periodic_tube_confinement_and_zwrap():
     g = Mesh(V, F, periodic=(False, False, True),
              voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, 12e-6],
              feature_radius=4e-6)
-    _, pos = simulate(600, D, _short_wf(1, 120), g, seed=1, return_positions=True)
+    _, pos = simulate_fused(600, D, _short_wf(1, 120), g, seed=1, return_positions=True)
     pos = np.asarray(pos)
     rad = np.linalg.norm(pos[:, :2], axis=1)
     assert (rad < 4e-6 * 1.03).mean() > 0.99      # radial confinement (no wall leak)

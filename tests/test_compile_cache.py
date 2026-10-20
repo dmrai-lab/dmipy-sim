@@ -11,6 +11,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine import core
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 
@@ -26,9 +27,9 @@ def _entries(geometry):
 def test_a_sweep_over_b_and_seed_reuses_one_program():
     g = d.Sphere(3e-6)
     assert not _entries(g)
-    s1 = d.simulate(1000, D, _wf(5e8), g, seed=0, require_gpu=False, engine="fused")
-    s2 = d.simulate(1000, D, _wf(1.5e9), g, seed=7, require_gpu=False, engine="fused")
-    s3 = d.simulate(1000, D, _wf(1.5e9, direction=(0, 0, 1)), g, seed=7, require_gpu=False, engine="fused")
+    s1 = simulate_fused(1000, D, _wf(5e8), g, seed=0, require_gpu=False)
+    s2 = simulate_fused(1000, D, _wf(1.5e9), g, seed=7, require_gpu=False)
+    s3 = simulate_fused(1000, D, _wf(1.5e9, direction=(0, 0, 1)), g, seed=7, require_gpu=False)
     entries = _entries(g)
     assert len(entries) == 1, list(entries)
     fn = next(iter(entries.values()))
@@ -39,26 +40,26 @@ def test_a_sweep_over_b_and_seed_reuses_one_program():
 
 def test_a_new_shape_or_configuration_is_a_new_program_and_a_knob_change_too():
     g = d.Sphere(3e-6)
-    d.simulate(1000, D, _wf(1e9), g, seed=0, require_gpu=False, engine="fused")
-    d.simulate(1000, D, _wf(1e9, n_t=150), g, seed=0, require_gpu=False, engine="fused")          # new n_t
-    d.simulate(1000, D, _wf(1e9), g, seed=0, T2=0.05, require_gpu=False, engine="fused")          # T2 baked in
-    d.simulate(1000, D, _wf(1e9), g, seed=0, return_compartments="final", require_gpu=False, engine="fused")
+    simulate_fused(1000, D, _wf(1e9), g, seed=0, require_gpu=False)
+    simulate_fused(1000, D, _wf(1e9, n_t=150), g, seed=0, require_gpu=False)          # new n_t
+    simulate_fused(1000, D, _wf(1e9), g, seed=0, T2=0.05, require_gpu=False)          # T2 baked in
+    simulate_fused(1000, D, _wf(1e9), g, seed=0, return_compartments="final", require_gpu=False)
     n = len(_entries(g))
     assert n == 4, n
-    d.simulate(500, D, _wf(1e9), g, seed=0, require_gpu=False, engine="fused")                     # new N: same entry
+    simulate_fused(500, D, _wf(1e9), g, seed=0, require_gpu=False)                     # new N: same entry
     assert len(_entries(g)) == 4
     g.surface_substep_frac = 0.0                                                   # a knob
-    d.simulate(1000, D, _wf(1e9), g, seed=0, require_gpu=False, engine="fused")
+    simulate_fused(1000, D, _wf(1e9), g, seed=0, require_gpu=False)
     assert len(_entries(g)) == 5
 
 
 def test_the_cached_run_is_the_fresh_run_to_the_bit():
     wf = _wf(1e9)
     g = d.Cylinder(2e-6, (0, 0, 1), surface_relaxivity_t2=1e-6)
-    d.simulate(800, D, _wf(3e8), g, seed=1, require_gpu=False, engine="fused")                      # warm the cache
-    cached = np.asarray(d.simulate(800, D, wf, g, seed=2, T2=0.1, require_gpu=False, engine="fused"))
-    fresh = np.asarray(d.simulate(800, D, wf, d.Cylinder(2e-6, (0, 0, 1), surface_relaxivity_t2=1e-6),
-                                  seed=2, T2=0.1, require_gpu=False, engine="fused"))
+    simulate_fused(800, D, _wf(3e8), g, seed=1, require_gpu=False)                      # warm the cache
+    cached = np.asarray(simulate_fused(800, D, wf, g, seed=2, T2=0.1, require_gpu=False))
+    fresh = np.asarray(simulate_fused(800, D, wf, d.Cylinder(2e-6, (0, 0, 1), surface_relaxivity_t2=1e-6),
+                                  seed=2, T2=0.1, require_gpu=False))
     np.testing.assert_array_equal(cached, fresh)
 
 
@@ -71,15 +72,16 @@ def test_every_engine_path_caches():
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
     for g, diff in ((m, D), (mc, None), (pm, None)):
-        d.simulate(500, diff, _wf(5e8), g, seed=0, require_gpu=False, engine="fused")
-        d.simulate(500, diff, _wf(1e9), g, seed=3, require_gpu=False, engine="fused")
+        simulate_fused(500, diff, _wf(5e8), g, seed=0, require_gpu=False)
+        simulate_fused(500, diff, _wf(1e9), g, seed=3, require_gpu=False)
         entries = _entries(g)
         assert len(entries) == 1 and next(iter(entries.values()))._cache_size() == 1, type(g).__name__
     cp = d.cpmg(3, 10e-3, gradient_strengths=0.0, gradient_directions=[[0, 0, 1]], n_t_per_echo=20)
     sp = d.Sphere(4e-6)
     d.simulate_cpmg(300, D, cp, sp, T2=0.05, seed=0, require_gpu=False)
+    n = len(_entries(sp))
     d.simulate_cpmg(300, D, cp, sp, T2=0.05, seed=1, require_gpu=False)
-    assert any(k[0][0] == "cpmg" for k in _entries(sp))
+    assert n >= 1 and len(_entries(sp)) == n                    # the train rides on the producer's program
 
 
 def test_the_cache_dies_with_the_geometry():
@@ -87,7 +89,7 @@ def test_the_cache_dies_with_the_geometry():
     collector frees both. A module-level table keyed by the geometry would have pinned it."""
     import gc, weakref
     g = d.Sphere(3e-6)
-    d.simulate(500, D, _wf(1e9), g, seed=0, require_gpu=False, engine="fused")
+    simulate_fused(500, D, _wf(1e9), g, seed=0, require_gpu=False)
     assert _entries(g)
     ref = weakref.ref(g)
     del g
@@ -107,8 +109,8 @@ def test_the_replay_producer_caches_too():
     # plain batch function it does not call on a relaxation run; that one never compiles)
     sizes = sorted(fn._cache_size() for fn in _entries(g).values())
     assert sizes == [0, 1, 1] or sizes == [1, 1], sizes
-    # the replay engine of simulate() rides on the producer: a b-sweep compiles nothing new
+    # the coefficient route of simulate() rides on the producer: a b-sweep compiles nothing new
     n0 = len(_entries(g))
     for b in (5e8, 1e9, 2e9):
-        d.simulate(400, D, _wf(b, n_t=5), g, seed=0, require_gpu=False, engine="replay")
+        d.simulate(400, D, _wf(b, n_t=5), g, seed=0, require_gpu=False)
     assert len(_entries(g)) == n0 + 1 or len(_entries(g)) == n0 + 2

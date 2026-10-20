@@ -6,7 +6,7 @@ independent of the mixing time (there are no pools to exchange). The AXR exchang
 needs a permeable packed substrate and is a heavier GPU demo, not a unit test.
 """
 import numpy as np
-from dmipy_sim import simulate_bloch
+from dmipy_sim.engine.bloch import _simulate_bloch
 import pytest
 
 from dmipy_sim import FreeDiffusion
@@ -14,7 +14,7 @@ from dmipy_sim.engine.pulse_sequence import fexi, fexi_b_detect
 
 
 def _adc(seq, D=2e-9, n=6000):
-    S = simulate_bloch(n, D, seq, FreeDiffusion(), seed=1, require_gpu=False)  # (n_meas,)
+    S = _simulate_bloch(n, D, seq, FreeDiffusion(), seed=1, require_gpu=False)  # (n_meas,)
     S = np.abs(np.asarray(S))
     return -np.log(S[1] / S[0]) / fexi_b_detect(seq)[1]
 
@@ -46,6 +46,6 @@ def test_filter_attenuates_stored_signal():
     """Turning the diffusion filter on must reduce the stored b=0 signal."""
     off = fexi(delta=6e-3, t_mix=30e-3, dt=2e-4, g_filter=0.0, g_detect=[0.0])
     on = fexi(delta=6e-3, t_mix=30e-3, dt=2e-4, g_filter=0.5, g_detect=[0.0])
-    S_off = abs(complex(simulate_bloch(6000, 2e-9, off, FreeDiffusion(), seed=1, require_gpu=False)[0]))
-    S_on = abs(complex(simulate_bloch(6000, 2e-9, on, FreeDiffusion(), seed=1, require_gpu=False)[0]))
+    S_off = abs(complex(_simulate_bloch(6000, 2e-9, off, FreeDiffusion(), seed=1, require_gpu=False)[0]))
+    S_on = abs(complex(_simulate_bloch(6000, 2e-9, on, FreeDiffusion(), seed=1, require_gpu=False)[0]))
     assert S_on < 0.7 * S_off

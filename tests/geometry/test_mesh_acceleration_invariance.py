@@ -34,6 +34,7 @@ from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.sequences import pgse
 
 from tests._containment import inside as contains
+from dmipy_sim.engine._fused import simulate_fused
 
 UM = 1e-6
 D = 1.0e-9
@@ -89,7 +90,7 @@ def _run(subdivisions, r0_um):
 
     wf = set_b(pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.05, n_t=200), 5e8)
     r0 = np.ascontiguousarray(r0_um * UM, dtype=np.float32)
-    out = simulate(len(r0), D, wf, mesh, seed=SEED, return_positions=True, require_gpu=False, r0=r0)
+    out = simulate_fused(len(r0), D, wf, mesh, seed=SEED, return_positions=True, require_gpu=False, r0=r0)
     arrs = [np.asarray(a) for a in out]
     signal = float(np.atleast_1d(arrs[0]).ravel()[0])
     pos = [a for a in arrs if a.ndim == 2 and a.shape == r0.shape][-1]

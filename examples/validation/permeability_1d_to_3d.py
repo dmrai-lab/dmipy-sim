@@ -24,6 +24,7 @@ from scipy.optimize import brentq
 
 from dmipy_sim import simulate, ScannerSequence, PermeableSlab1D
 from dmipy_sim.geometry import PermeableShell
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9            # m^2/s
 NW = 500_000        # walkers (raise for tighter statistics)
@@ -72,7 +73,7 @@ def _zero_waveform(n_t, dt):
 def _f_inside(geom, t, dt):
     n_t = max(1, int(round(t / dt)))
     batch = int(min(NW, max(40000, 1.5e8 / max(1, n_t))))
-    _, _, cf = simulate(NW, D, _zero_waveform(n_t, dt), geom, seed=SEED,
+    _, _, cf = simulate_fused(NW, D, _zero_waveform(n_t, dt), geom, seed=SEED,
                         return_compartments='final', walker_batch_size=batch)
     return float((np.asarray(cf) == 0).mean()), n_t * dt
 

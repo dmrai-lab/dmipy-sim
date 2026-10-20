@@ -740,3 +740,30 @@ def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     for walk in (simulate_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
                  simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
         assert isinstance(walk, CoefficientWalk) and walk.h == pytest.approx(5e-4)
+
+
+# ── the public surface is the replay surface; the fused engine is an internal oracle (#740) ──────────────────────
+def test_the_public_surface_is_the_replay_surface():
+    """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
+    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk_spec``, the pack side
+    (``build_replay_pack``, ``read_rpk``, ``ReplayPack``) and the phantom and scanner objects. No walk of saves, no
+    positions-replay helper and no forward integrator is exported: the fused scalar engine and the forward vector-Bloch
+    engine are the oracles the replay is held to, underscored and imported by the admissions that hold it."""
+    import inspect
+    from dmipy_sim.engine import bloch, core
+    for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "simulate_mt_trajectories",
+                 "walk_cost", "walk_spec", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
+                 "Phantom", "ScannerSequence", "ScannerLimits"):
+        assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
+    gone = ("PersistentWalk", "simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
+            "replay_bloch_jax", "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se")
+    for name in gone:
+        assert name not in dmipy_sim.__all__ and not hasattr(dmipy_sim, name), name
+    params = set(inspect.signature(dmipy_sim.simulate).parameters)
+    assert not {"engine", "return_positions", "return_compartments", "return_walker_signals"} & params, params
+    assert "simulate_fused" not in vars(core) and "simulate_bloch" not in vars(bloch)
+    from dmipy_sim.engine._fused import simulate_fused
+    assert callable(simulate_fused) and callable(bloch._simulate_bloch)
+    exporting = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")
+                 if re.search(r"__all__[^\n]*[\"'](?:simulate_fused|_simulate_bloch|simulate_bloch)[\"']", f.read_text())]
+    assert not exporting, f"an oracle is exported from {exporting}"

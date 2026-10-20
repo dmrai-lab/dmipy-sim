@@ -2,17 +2,18 @@
 
 The physics (emergent Z-spectrum vs the two-pool oracle) is validated in the slow
 ``test_mt_zspectrum.py``.  Here we only check that the helper is a *faithful wrapper*:
-over a tiny MC run it must reproduce a hand-written ``simulate_bloch`` offset sweep with
+over a tiny MC run it must reproduce a hand-written ``_simulate_bloch`` offset sweep with
 identical parameters and seed, and return the right shape.  Small/`off`-equilibrated so it
 stays in the ~1-min fast tier.
 """
 
 from dataclasses import replace
+from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
 from dmipy_sim import ScannerSequence
 from dmipy_sim import RFEvent
 
-from dmipy_sim import Sphere, simulate_bloch, emergent_z_spectrum
+from dmipy_sim import Sphere, emergent_z_spectrum
 
 # tiny, deterministic config (fast tier: small N, short saturation, no burn-in)
 R, D = 2e-6, 1e-9
@@ -29,7 +30,7 @@ def _manual_sweep():
     out = []
     for off in OFFSETS:
         rf = [RFEvent(CFG["t_sat"] / 2, flip, axis_deg=0.0, duration_s=CFG["t_sat"], offset_hz=float(off))]
-        _, mz = simulate_bloch(CFG["n_walkers"], D, replace(wf, rf=rf), Sphere(radius=R), T2=CFG["T2"], T1=CFG["T1"], kappa_MT=CFG["kappa_MT"], dwell_time=CFG["dwell_time"], T2_bound=CFG["T2_bound"], return_mz=True, equilibrate_binding="off", seed=CFG["seed"])
+        _, mz = _simulate_bloch(CFG["n_walkers"], D, replace(wf, rf=rf), Sphere(radius=R), T2=CFG["T2"], T1=CFG["T1"], kappa_MT=CFG["kappa_MT"], dwell_time=CFG["dwell_time"], T2_bound=CFG["T2_bound"], return_mz=True, equilibrate_binding="off", seed=CFG["seed"])
         out.append(float(mz[0]))
     return np.array(out)
 

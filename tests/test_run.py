@@ -155,7 +155,7 @@ def test_every_long_producer_opens_a_run():
     from dmipy_sim.replay.phantom import ReplayPhantom
     from dmipy_sim.replay.replay import ReplayPack
     for f in (core.simulate, core.simulate_cpmg, core.simulate_trajectories, adaptive.simulate_trajectories_adaptive,
-              bloch.simulate_bloch, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
+              bloch._simulate_bloch, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
               StrandFieldBasis.build_far_grid, ReplayPhantom.replay, ReplayPhantom.replay_train, ReplayPhantom.replay_bloch,
               ReplayPack.pose_responses):
         assert "with Run(" in inspect.getsource(f), f.__name__

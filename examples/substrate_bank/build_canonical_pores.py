@@ -200,8 +200,8 @@ def direct_walk_signal(shape, d_um, grid, *, n=DIRECT_N):
     from dmipy_sim.engine.core import simulate
     seq = sequence(grid["delta_s"], grid["Delta_s"], b=grid["b_s_per_m2"], direction=grid["direction"],
                    n_t=grid["n_t"])
-    _S, _log_w, phi = simulate(int(n), D0, waveform=seq, geometry=geometry(shape, d_um),
-                               seed=pack_seed(pack_id(shape, d_um)), return_walker_signals=True, engine="fused",
+    _S, _log_w, phi = simulate_fused(int(n), D0, waveform=seq, geometry=geometry(shape, d_um),
+                               seed=pack_seed(pack_id(shape, d_um)), return_walker_signals=True,
                                require_gpu=False)
     return _modulus_and_se(np.exp(1j * np.asarray(phi, np.float64)[:, 0]))
 
@@ -241,6 +241,7 @@ def snippet(uri):
     return f'''import numpy as np
 from dmipy_sim import pgse
 from dmipy_sim.replay import ReplayPack
+from dmipy_sim.engine._fused import simulate_fused
 
 pk = ReplayPack.load("{uri}")
 seq = pgse([{g["direction"]!r}], {g["delta_s"]!r}, {g["Delta_s"]!r}, bvalues=[{g["b_s_per_m2"]!r}],

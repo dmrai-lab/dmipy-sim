@@ -26,7 +26,7 @@ for _f in list(_sys.meta_path):
 # MUST be configured before anything triggers a JAX computation, hence the position here.
 #
 # Both test tiers are compile-bound, not compute-bound (#91, #93). Measured on one
-# `simulate_bloch` call, the cost is independent of problem size -- 400 walkers x 201 steps
+# `_simulate_bloch` call, the cost is independent of problem size -- 400 walkers x 201 steps
 # takes 7.98 s while 25 walkers x 21 steps takes 5.09 s -- because every call re-traces and
 # recompiles. The cause is that every `jax.jit` in the package is built INSIDE a function
 # body over a fresh closure, so jit's in-memory cache keys on a new object each time and can

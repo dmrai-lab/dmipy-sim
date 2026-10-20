@@ -9,6 +9,7 @@ import pytest
 
 from dmipy_sim.engine import gpu
 from dmipy_sim.engine.gpu import gpu_available, check_gpu, free_gpu_memory, list_gpu_processes
+from dmipy_sim.engine._fused import simulate_fused
 
 
 def test_gpu_available_is_bool():
@@ -69,7 +70,7 @@ def test_walker_batching_matches_single_shot_and_analytic():
 
     single = np.abs(np.real(np.asarray(
         simulate(n_walkers=NW, diffusivity=D, waveform=wf, geometry=geom, seed=0))))
-    batched, pos = simulate(n_walkers=NW, diffusivity=D, waveform=wf, geometry=geom,
+    batched, pos = simulate_fused(n_walkers=NW, diffusivity=D, waveform=wf, geometry=geom,
                             seed=0, walker_batch_size=20_000, return_positions=True)
     batched = np.abs(np.real(np.asarray(batched)))
 
@@ -89,7 +90,7 @@ def test_walker_batches_run_and_carry_distinct_seeds():
 
     bvecs = np.array([[1.0, 0.0, 0.0]])
     wf = set_b(pgse(bvecs, 0.005, 0.01, gradient_strengths=1.0, n_t=40), np.array([1.0e9]))
-    _, _, phi = simulate(n_walkers=400, diffusivity=2.0e-9, waveform=wf, geometry=FreeDiffusion(),
+    _, _, phi = simulate_fused(n_walkers=400, diffusivity=2.0e-9, waveform=wf, geometry=FreeDiffusion(),
                          seed=3, walker_batch_size=200, return_walker_signals=True, require_gpu=False)
     phi = np.asarray(phi).reshape(400, -1)
     assert not np.allclose(phi[:200], phi[200:])

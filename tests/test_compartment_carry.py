@@ -22,6 +22,7 @@ from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.sequences import pgse
 
 from ._containment import inside as contains
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 1.0e-9
 
@@ -102,7 +103,7 @@ def test_labels_agree_with_exact_containment_at_the_end_of_a_short_walk():
     mesh, tri = _thick_tube()
     wf = set_b(pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, gradient_strengths=0.05, n_t=20), 5e7)
 
-    out = simulate(300, D, wf, mesh, seed=7, return_compartments='final',
+    out = simulate_fused(300, D, wf, mesh, seed=7, return_compartments='final',
                    return_positions=True, require_gpu=False)
     arrs = [np.asarray(a) for a in out]
     pos = [a for a in arrs if a.ndim == 2 and a.shape[-1] == 3][-1]

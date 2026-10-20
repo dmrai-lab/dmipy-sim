@@ -1,6 +1,6 @@
 """Forward vector-Bloch engine (Piece B of the MT staging ladder).
 
-Pins ``dmipy_sim.engine.bloch.simulate_bloch`` -- the single-pass engine that carries
+Pins ``dmipy_sim.engine.bloch._simulate_bloch`` -- the single-pass engine that carries
 M=(Mx,My,Mz) through real RF pulses + gradient + relaxation (no replay, no
 susceptibility) -- against analytic Bloch results and against the scalar cos-phi
 engine (``core.simulate``), which it must reproduce on the identical walk.
@@ -16,7 +16,7 @@ from dmipy_sim import RFEvent
 import pytest
 
 from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
-from dmipy_sim.engine.bloch import simulate_bloch
+from dmipy_sim.engine.bloch import _simulate_bloch
 
 D = 2e-9
 
@@ -31,7 +31,7 @@ def test_transverse_decays_at_T2():
     n_t, dt, T2 = 200, 2e-4, 0.05
     wf = _zero_waveform(n_t, dt)                       # no gradient
     exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]   # 90_y -> Mx
-    s = simulate_bloch(2000, D, replace(wf, rf=exc), FreeDiffusion(), T2=T2, seed=0)
+    s = _simulate_bloch(2000, D, replace(wf, rf=exc), FreeDiffusion(), T2=T2, seed=0)
     T = n_t * dt
     assert abs(s[0]) == pytest.approx(np.exp(-T / T2), rel=0.02)
     assert abs(np.angle(s[0])) < 1e-3                 # no gradient/offset -> no phase
@@ -42,7 +42,7 @@ def test_inversion_recovery_T1():
     n_t, dt, T1 = 300, 5e-4, 0.8
     wf = _zero_waveform(n_t, dt)
     inv = [RFEvent(0.0, 180.0, axis_deg=0.0)]    # 180_x inverts Mz
-    _, mz = simulate_bloch(2000, D, replace(wf, rf=inv), FreeDiffusion(), T1=T1, M0=1.0, seed=0, return_mz=True)
+    _, mz = _simulate_bloch(2000, D, replace(wf, rf=inv), FreeDiffusion(), T1=T1, M0=1.0, seed=0, return_mz=True)
     T = n_t * dt
     assert mz[0] == pytest.approx(1.0 - 2.0 * np.exp(-T / T1), abs=0.01)
 
@@ -52,7 +52,7 @@ def test_off_resonance_precession():
     n_t, dt, f = 200, 1e-5, 200.0                     # fine dt; f*T=0.4 turn (no wrap)
     wf = _zero_waveform(n_t, dt)
     exc = [RFEvent(0.0, 90.0, axis_deg=90.0)]
-    s = simulate_bloch(2000, D, replace(wf, rf=exc), FreeDiffusion(), off_resonance_hz=f, seed=0)     # no relaxation
+    s = _simulate_bloch(2000, D, replace(wf, rf=exc), FreeDiffusion(), off_resonance_hz=f, seed=0)     # no relaxation
     T = n_t * dt
     assert abs(s[0]) == pytest.approx(1.0, rel=1e-3)   # magnitude conserved
     assert np.angle(s[0]) == pytest.approx(2.0 * np.pi * f * T, rel=1e-3)
@@ -66,7 +66,7 @@ def test_pgse_parity_with_scalar_engine():
     scalar = simulate(N, D, wf, geom, seed=seed, require_gpu=False)  # <cos phi>
     # 90_y -> Mx = cos phi, then the waveform's own 180: G is the physical same-sign pair, the pulse refocuses
     rf = [RFEvent(0.0, 90.0, axis_deg=90.0)] + [e for e in wf.rf if e.flip_deg == 180]
-    vec = simulate_bloch(N, D, replace(wf, rf=rf), geom, seed=seed)              # no relaxation
+    vec = _simulate_bloch(N, D, replace(wf, rf=rf), geom, seed=seed)              # no relaxation
     tol = max(0.02, 1.0 / np.sqrt(N))
     # same seed + FreeDiffusion (identity reflect) => bit-identical walk
     assert np.real(vec[0]) == pytest.approx(float(scalar[0]), abs=tol)
@@ -85,7 +85,7 @@ def test_cpmg_refocuses_static_offset():
     refocus = [RFEvent((2 * k + 1) * (TE / 2), 180.0, axis_deg=0.0)
                for k in range(n_echo)]                               # 180_x train
 
-    ec = simulate_bloch(4000, D, replace(wf, rf=exc + refocus, readout=echo_steps), FreeDiffusion(), T2=T2, off_resonance_hz=f, seed=0)[0]
+    ec = _simulate_bloch(4000, D, replace(wf, rf=exc + refocus, readout=echo_steps), FreeDiffusion(), T2=T2, off_resonance_hz=f, seed=0)[0]
     # echoes track T2 and the static offset is REFOCUSED (phase ~0 at every echo)
     for k in range(n_echo):
         t = (k + 1) * TE
@@ -93,5 +93,5 @@ def test_cpmg_refocuses_static_offset():
         assert abs(np.angle(ec[k])) < 0.15
 
     # control: WITHOUT the 180 train the same static offset dephases the phase away
-    free = simulate_bloch(4000, D, replace(wf, rf=exc, readout=echo_steps), FreeDiffusion(), T2=T2, off_resonance_hz=f, seed=0)[0]
+    free = _simulate_bloch(4000, D, replace(wf, rf=exc, readout=echo_steps), FreeDiffusion(), T2=T2, off_resonance_hz=f, seed=0)[0]
     assert abs(np.angle(free[-1])) > 1.0                            # large unrefocused phase

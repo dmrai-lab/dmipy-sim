@@ -30,6 +30,7 @@ CPU by default (``JAX_PLATFORMS=cpu`` is set unless the environment says otherwi
 from __future__ import annotations
 
 import argparse
+from dmipy_sim.engine.bloch import _simulate_bloch
 import json
 import os
 import subprocess
@@ -349,7 +350,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
       axis, ``chi_aniso = dchi_a``: the scalar route against the pack's vector-Bloch route beside the pack's own
       ``_susc_path_bloch_fidelity`` (``err_susc_bloch``); and, since the forward vector-Bloch engine does not step
       the myelinated substrates, the cross-engine oracle on the SAME hollow-cylinder field: the one-axon periodic
-      cell's extra-axonal pool walked with the exact periodic grid, against ``simulate_bloch`` with
+      cell's extra-axonal pool walked with the exact periodic grid, against ``_simulate_bloch`` with
       ``MyelinSusceptibility`` (its periodic images to ``n_images=6``) on that pool.
 
     Every row carries both signals, their difference and the replay's standard error."""
@@ -423,7 +424,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     # held to the pack's own Bloch-route certificate on its raw subset (err_susc_bloch above) and to the scalar route
     # against the pack's vector-Bloch route; the cross-engine oracle is the SAME hollow-cylinder field on the one-axon
     # periodic cell's extra-axonal pool (PackedCylinders, which the forward engine steps), walked with the exact periodic
-    # field grid and replayed against simulate_bloch with MyelinSusceptibility (its images: n_images=2).
+    # field grid and replayed against _simulate_bloch with MyelinSusceptibility (its images: n_images=2).
     th = np.deg2rad(float(theta_deg))
     d_sub = (np.sin(th), 0.0, np.cos(th))
     R = _pose_with_field_along(d_sub)
@@ -464,8 +465,8 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         S_b = np.abs(pk2.replay_bloch(seq_lab, complex_signal=True, jax=True, **kw3)).reshape(-1)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            S_f = np.abs(np.asarray(d.simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov, require_gpu=require_gpu))).reshape(-1)
-            S_g = np.abs(np.asarray(d.simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov_grid, require_gpu=require_gpu))).reshape(-1)
+            S_f = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov, require_gpu=require_gpu))).reshape(-1)
+            S_g = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov_grid, require_gpu=require_gpu))).reshape(-1)
         c3x[name] = dict(TE=TE3, replay_scalar=S.tolist(), replay_bloch=S_b.tolist(), fused_bloch_images=S_f.tolist(), fused_bloch_grid=S_g.tolist(),
                          diff_scalar_grid=(S - S_g).tolist(), diff_bloch_grid=(S_b - S_g).tolist(), diff_scalar_images=(S - S_f).tolist(),
                          se=se.tolist(), z_grid=(np.abs(S - S_g) / (np.sqrt(2.0) * se)).tolist())
@@ -636,7 +637,7 @@ def permeable(*, n=4000, D=2e-9, T=0.025, seed=2, kappa=2e-5, T2=(0.03, 0.08), r
 
 def mt(*, n=4000, D=2e-9, T=0.05, R=3e-6, seed=3, kappa_MT=2e-5, dwell=2e-3, require_gpu=None):
     """The MT bound column as events: a sphere walked with binding (``simulate_mt_trajectories``), the bound fraction
-    over time read off the events at 51 instants against the fused vector-Bloch MT engine's (``simulate_bloch(...,
+    over time read off the events at 51 instants against the fused vector-Bloch MT engine's (``_simulate_bloch(...,
     return_bound_frac=True)``, another walk of the same count under a bare gradient echo), and both against the
     two-pool equilibrium ``f_b`` of ``engine.mt``; the largest difference against the binomial standard error."""
     import dmipy_sim as d
@@ -653,7 +654,7 @@ def mt(*, n=4000, D=2e-9, T=0.05, R=3e-6, seed=3, kappa_MT=2e-5, dwell=2e-3, req
     seq = bare_gradient_echo(T, dt)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        _, bf_f = d.simulate_bloch(n, D, seq, g, seed=seed + 100, kappa_MT=kappa_MT, dwell_time=dwell, return_bound_frac=True,
+        _, bf_f = _simulate_bloch(n, D, seq, g, seed=seed + 100, kappa_MT=kappa_MT, dwell_time=dwell, return_bound_frac=True,
                                    require_gpu=require_gpu)
     bf_f = np.asarray(bf_f, np.float64)
     idx = np.rint(times / dt).astype(int)

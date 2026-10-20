@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 EXTRA, INTRA, MYELIN = 0, 1, 2
@@ -103,7 +104,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
-    _, origin, final = d.simulate(300, None, wf, pm, seed=0, return_compartments="final",
+    _, origin, final = simulate_fused(300, None, wf, pm, seed=0, return_compartments="final",
                                   require_gpu=False)
     out = d.simulate_trajectories(300, 2e-9, pm, T_max=6e-3, block_h=2e-3, seed=0, require_gpu=False)
     comp0 = np.asarray(out.compartment)                                 # one label per walker: nobody crosses
@@ -143,8 +144,8 @@ def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
     m = d.Mesh(V, F, feature_radius=0.5e-6, permeability=2e-5, compartments={"intra": {"T2": 0.03}, "extra": {"T2": 0.3}})
     wf = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 9e-3, gradient_strengths=0.1, n_t=120, slew_rate=np.inf), 5e8)
     N = 6_000
-    s_f = np.asarray(d.simulate(N, D, wf, m, seed=2, engine="fused", require_gpu=False)).ravel()
-    s_r = np.asarray(d.simulate(N, D, wf, m, seed=2, engine="replay", require_gpu=False)).ravel()
+    s_f = np.asarray(simulate_fused(N, D, wf, m, seed=2, require_gpu=False)).ravel()
+    s_r = np.asarray(d.simulate(N, D, wf, m, seed=2, require_gpu=False)).ravel()
     assert abs(s_f[0] - s_r[0]) < max(0.02, 3.0 / np.sqrt(N)), f"fused {s_f[0]:.4f} vs replay {s_r[0]:.4f}"
     # and the intra T2 actually acted: a walk that started inside decays toward exp(-TE/T2_intra)
     assert s_f[0] < 0.9
