@@ -32,6 +32,13 @@ FULL = {"pass": None, "scale": 1.0}   # the whole block in one shard: a plan wit
 log = logging.getLogger("dmipy_sim.fill")
 
 
+def manifest_grid(man):
+    """The voxel grid a manifest states (``grid``: ``shape``, ``voxel_size_m``, ``origin_m``), attached to the substrate."""
+    from ..phantom import Grid
+    G = man["grid"]
+    return Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
+
+
 class Recipe:
     """The manifest and what it names, resolved once; the block table; the plan's counts per voxel."""
 
@@ -79,9 +86,7 @@ class Recipe:
         return self._context
 
     def grid(self):
-        from ..phantom import Grid
-        G = self.man["grid"]
-        return Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
+        return manifest_grid(self.man)
 
     def counts(self, row, budget=None, pass_scale=1.0):
         """The plan's counts per pool in the block's voxels at the pass's scale, then scaled down to ``budget``

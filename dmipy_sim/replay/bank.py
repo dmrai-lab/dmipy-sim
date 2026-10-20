@@ -325,6 +325,48 @@ def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chu
     return ijk, pools, N, floor, np.full_like(floor, np.nan)
 
 
+def _start_pool(arrays, meta):
+    """The pool each walker starts in (a column ``(n, 1)``), from the occupancy channel; ``None`` without one."""
+    ch = (meta["compression"].get("channels") or {}).get("compartment")
+    if ch is None:
+        return None
+    col = next(c for c in ch["columns"] if c["name"] == "comp")
+    return _cx.occupancy_events(arrays, col)[0][:, None]
+
+
+def per_voxel_summary(grid_meta, pools, cert, **extra):
+    """``fidelity.per_voxel`` for the certificate rows ``cert`` ``(n_voxels, n_pools, 3)`` (walkers, floor, error per
+    voxel and pool) on the grid ``grid_meta``: the counts and the floors' and errors' extremes, with ``extra`` keys
+    (``shards``, ``recertified``) beside them."""
+    c = np.asarray(cert, np.float64)
+    n, floor, err = c[:, :, 0], c[:, :, 1], c[:, :, 2]; ok = np.isfinite(floor)
+    return dict(grid=grid_meta, pools=[int(p) for p in pools], n_voxels=int(c.shape[0]),
+                walkers_min=int(n[n > 0].min()) if (n > 0).any() else 0,
+                floor_max=float(np.nanmax(floor)) if ok.any() else None,
+                floor_median=float(np.nanmedian(floor)) if ok.any() else None,
+                err_max=float(np.nanmax(err)) if np.isfinite(err).any() else None,
+                within_2x_floor_fraction=(float(np.mean(err[ok] <= 2.0 * floor[ok])) if ok.any() else None),
+                thin_voxels=int(((n > 0) & (n < 2)).sum()), **extra)
+
+
+def voxel_certificate(pack, grid, *, envelope=None, device="auto"):
+    """The per-voxel certificate of a pack that carries none, as its arrays and its summary: a shard whose writer
+    measures no floor (the grid is the recipe's, not the shard's). The walkers are binned on ``grid`` by where they
+    start and by pool and the split-half floor of each (voxel, pool) is read from the coefficients
+    (:func:`voxel_floor_coded`, over ``envelope``'s battery, default the envelope every pack is built against), the
+    codec-error column ``nan``: the pack's error is ``fidelity.err_max`` and its terms. Returns
+    ``({"voxel_ijk": ..., "voxel_certificate": ...}, per_voxel)``, the pair a pack built with ``voxel_grid=``
+    carries."""
+    arrays, meta = pack.arrays, pack.meta
+    w = None if "spin_weights" not in arrays else np.asarray(arrays["spin_weights"], np.float64)
+    C = _cx.read_position_coeffs(arrays, dtype=np.float64)
+    ijk, pools, n, floor, err = voxel_floor_coded(C, float(pack.dt), int(pack.n_t), grid, _start_pool(arrays, meta),
+                                                  envelope or _cx.default_envelope(), w=w, device=device)
+    cert = np.stack([n.astype(np.float64), floor, err], axis=-1)
+    return (dict(voxel_ijk=ijk.astype(np.int32), voxel_certificate=cert.astype(np.float32)),
+            per_voxel_summary(grid.to_meta(), pools, cert, shards=1, recertified=False))
+
+
 def voxel_floor(pack, grid, waveform, *, shells=None, **replay_knobs):
     """The per-voxel, per-pool split-half Monte-Carlo floor of a pack's replay of ``waveform`` -- the acquisition
     the pack is meant for, rather than the envelope battery the build certifies against -- as dense volumes on
@@ -725,6 +767,9 @@ def grid_basis_of(arrays, grid_meta):
 # --------------------------------------------------------------- pack generation
 #: per-channel numbers a codec MEASURES on the walk it encoded (not parameters): two shards of one fill differ in them
 _MEASURED_CHANNEL_KEYS = ("trace_residual", "band")
+#: the field channel's read, which each pool of a bundle makes at its own interval: a record of the walk, not a codec
+#: parameter (:func:`charge_field_read` states the bundle's)
+_FIELD_READ_CHANNEL_KEYS = ("read", "read_interval")
 
 
 def _codec_signature(comp):
@@ -732,7 +777,7 @@ def _codec_signature(comp):
     a channel's trace residual): what two shards of one fill must agree on."""
     sig = {k: v for k, v in comp.items() if k != "precision_tiers"}
     if "channels" in sig:
-        sig["channels"] = {c: ({k: v for k, v in m.items() if k not in _MEASURED_CHANNEL_KEYS} if isinstance(m, dict) else m)
+        sig["channels"] = {c: ({k: v for k, v in m.items() if k not in _MEASURED_CHANNEL_KEYS + _FIELD_READ_CHANNEL_KEYS} if isinstance(m, dict) else m)
                            for c, m in sig["channels"].items()}
     return sig
 
@@ -759,15 +804,64 @@ def union_weights(w, shard, voxel, pool):
 
 
 def _walk_identity(wp):
-    """The walk parameters that shards of one walk share: everything but the walker count and the seeds, the
-    window table's walks compared without theirs."""
-    out = {k: v for k, v in wp.items() if k not in ("n_walkers", "seed", "qv")}      # qv: each shard's own measure
+    """The walk parameters that shards of one walk share: everything but the walker count, the seeds and the
+    field read interval (each pool reads the field at its own, :func:`charge_field_read`), the window table's
+    walks compared without theirs."""
+    out = {k: v for k, v in wp.items() if k not in ("n_walkers", "seed", "qv", "field_read_interval")}      # qv: each shard's own measure
     if isinstance(out.get("block"), dict):                  # the block's definition, not what each shard measured on it
         out["block"] = {k: out["block"].get(k) for k in ("h", "m", "n_blocks", "rule")}
     seg = out.get("windows")
     if isinstance(seg, dict):
         out["windows"] = dict(seg, walks=[{k: v for k, v in w.items() if k != "seed"} for w in seg.get("walks", [])])
     return out
+
+
+def _envelope_identity(env):
+    """A pack's ``replay_envelope`` without its field read (a pool's own, :func:`charge_field_read`): what shards of
+    one walk share."""
+    return {k: v for k, v in env.items() if k != "field_read"} if isinstance(env, dict) else env
+
+
+def field_read_record(meta):
+    """What a pack states about its field read, or ``None`` without a field channel: the interval
+    (``walk_params.field_read_interval``), the term (``fidelity.terms.field_read``), the envelope's entry and the
+    path channel's own record of the read."""
+    interval = (meta.get("walk_params") or {}).get("field_read_interval")
+    if interval is None:
+        return None
+    ch = ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") or {}
+    return dict(interval=float(interval), term=((meta.get("fidelity") or {}).get("terms") or {}).get("field_read"),
+                envelope=(meta.get("replay_envelope") or {}).get("field_read"), read=ch.get("read"),
+                channel_interval=ch.get("read_interval"))
+
+
+def charge_field_read(meta, records):
+    """``meta`` (the metadata of a pack made of several shards, or of a layout of several blocks) states the field read
+    of ``records`` (:func:`field_read_record` per shard) as the producer states a bundle's
+    (:func:`~dmipy_sim.spec.walk._join_pool_walks`): every shard reads the field at its own interval (a pool's read
+    snaps to a whole number of its own rounds per block), and the pack records the COARSEST -- in
+    ``walk_params.field_read_interval``, the envelope's ``field_read`` and the path channel's ``read`` -- with the
+    term charged at it: ``fidelity.terms.field_read`` is the largest of the shards' (the term is ``dt_f`` squared,
+    so the coarsest shard's), and ``err_max`` covers the terms. The shards' own intervals are the ``provenance``
+    record's. ``meta`` is changed in place; its nested dicts are replaced, never edited."""
+    if all(r is None for r in records):
+        return meta
+    if any(r is None for r in records):
+        raise ValueError("some of the shards read the field and others do not; the shards of one walk carry one set of channels")
+    coarse = records[int(np.argmax([r["interval"] for r in records]))]
+    meta["walk_params"] = dict(meta["walk_params"], field_read_interval=coarse["interval"])
+    if coarse["envelope"] is not None:
+        meta["replay_envelope"] = dict(meta["replay_envelope"], field_read=coarse["envelope"])
+    comp = dict(meta["compression"]); chans = dict(comp["channels"]); pm = dict(chans["susc_field_basis"])
+    for key, val in (("read", coarse["read"]), ("read_interval", coarse["channel_interval"])):
+        if val is not None:
+            pm[key] = val
+    chans["susc_field_basis"] = pm; comp["channels"] = chans; meta["compression"] = comp
+    terms = [r["term"] for r in records if r["term"] is not None]
+    if terms:
+        fid = dict(meta["fidelity"]); fid["terms"] = dict(fid["terms"], field_read=float(max(terms)))
+        meta["fidelity"] = _cover_terms(fid)
+    return meta
 
 
 def _spec_identity(spec):
@@ -829,10 +923,11 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         comp = same("compression", lambda pk: _codec_signature(pk.meta["compression"]))
         wp = same("walk_params", lambda pk: _walk_identity(pk.meta["walk_params"]))
         same("substrate", lambda pk: _spec_identity(pk.meta.get("substrate")))
-        same("replay_envelope", lambda pk: pk.meta.get("replay_envelope"))
+        same("replay_envelope", lambda pk: _envelope_identity(pk.meta.get("replay_envelope")))
         pv0 = same("per-voxel grid", lambda pk: ((pk.meta.get("fidelity") or {}).get("per_voxel") or {}).get("grid"))
         same("array names", lambda pk: sorted(pk.arrays))
         n = [int(pk.meta["walk_params"]["n_walkers"]) for pk in pks]
+        reads = [field_read_record(pk.meta) for pk in pks]
         arrays = {}
         scale_keys = [k for k in pks[0].arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]   # every window's
         # a scale table with a block axis: the band scales carry one from the start ((n_blocks, ...)); the path channel's
@@ -848,8 +943,8 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
             for k in scale_keys:
                 arrays[k] = np.concatenate([table(pk, k) for pk in pks])
         for k in pks[0].arrays:
-            if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
-                continue
+            if k in ("voxel_certificate", "band_block") or (k == "voxel_ijk" and pv0 is not None) or k in scale_keys:
+                continue                                                      # (without a certificate ``voxel_ijk`` is the walkers' own)
             if k.startswith("susc_grid_"):                                    # the substrate's field grid: one table, every shard's
                 for pk in pks[1:]:
                     if not np.array_equal(np.asarray(pk.arrays[k]), np.asarray(pks[0].arrays[k])):
@@ -901,11 +996,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                                  "shard, unless the merge recertifies (overlap='recertify')")
             if overlap == "recertify":                                        # the union's floors from the merged coefficients
                 grid = Grid.from_meta(pv0)
-                ch = (pks[0].meta["compression"].get("channels") or {}).get("compartment")
-                comp = None
-                if ch is not None:
-                    col = next(c for c in ch["columns"] if c["name"] == "comp")
-                    comp = _cx.occupancy_events(arrays, col)[0][:, None]          # the pool at the walk's start
+                comp = _start_pool(arrays, pks[0].meta)                           # the pool at the walk's start
                 C = _cx.read_position_coeffs(arrays, dtype=np.float64)
                 _w = None
                 if "spin_weights" in arrays:                                  # the union's weights, not the shards'
@@ -929,15 +1020,15 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                 rows = np.array(sorted(order.values()))
             arrays["voxel_ijk"] = ijk[rows].astype(np.int32); c = cert[rows]
             arrays["voxel_certificate"] = c.astype(np.float32)
-            _n, _floor, _err = c[:, :, 0], c[:, :, 1], c[:, :, 2]; _ok = np.isfinite(_floor)
-            fid["per_voxel"] = dict(grid=pv0, pools=pools, n_voxels=int(len(rows)),
-                                    walkers_min=int(_n[_n > 0].min()) if (_n > 0).any() else 0,
-                                    floor_max=float(np.nanmax(_floor)) if _ok.any() else None,
-                                    floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
-                                    err_max=float(np.nanmax(_err)) if np.isfinite(_err).any() else None,
-                                    within_2x_floor_fraction=(float(np.mean(_err[_ok] <= 2.0 * _floor[_ok])) if _ok.any() else None),
-                                    thin_voxels=int(((_n > 0) & (_n < 2)).sum()), shards=len(pks),
-                                    recertified=bool(overlap == "recertify"))
+            fid["per_voxel"] = per_voxel_summary(pv0, pools, c, shards=len(pks), recertified=bool(overlap == "recertify"))
+        elif overlap == "recertify" and "spin_weights" in arrays and "voxel_ijk" in arrays:
+            # shards without a certificate (a writer that measures no floor) carry their walkers' own voxels: the union's
+            # weights need no grid, a voxel is a row of ``voxel_ijk``
+            comp = _start_pool(arrays, pks[0].meta)
+            _, _key = np.unique(np.asarray(arrays["voxel_ijk"], np.int64), axis=0, return_inverse=True)
+            _pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(len(_key), np.int64)
+            arrays["spin_weights"] = union_weights(np.asarray(arrays["spin_weights"], np.float64), np.repeat(np.arange(len(pks)), n),
+                                                   _key.reshape(-1), _pid).astype(np.float32)
         n_all = int(sum(n))
         comp_meta = dict(pks[0].meta["compression"])
         if "channels" in comp_meta:                                      # the measured numbers: the worst over the shards
@@ -957,7 +1048,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         meta.update(id=id, compression=comp_meta, fidelity=fid,
                     walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds,
                                      windows=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])])),
-                    provenance=dict(pks[0].meta.get("provenance") or {}, shards=[dict(id=pk.meta.get("id"), n_walkers=int(m)) for pk, m in zip(pks, n)]))
+                    provenance=dict(pks[0].meta.get("provenance") or {}, shards=[
+                        dict(id=pk.meta.get("id"), n_walkers=int(m), **({} if r is None else dict(field_read_interval=r["interval"])))
+                        for pk, m, r in zip(pks, n, reads)]))
+        charge_field_read(meta, reads)                                   # each shard read the field at its own interval; the pack states the coarsest
         out = ReplayPack(arrays, meta)
         out.susceptibility_field                                         # the merged pack holds the equivalence
         if out_path is not None:
@@ -1883,14 +1977,8 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         _ijk, _pools, _n, _floor, _err = voxel_floor_coded(Cq, h, n_t, voxel_grid, comp, env, w=_w, device=device)
         arrays["voxel_ijk"] = _ijk.astype(np.int32)
         arrays["voxel_certificate"] = np.stack([_n.astype(np.float32), _floor.astype(np.float32), _err.astype(np.float32)], axis=-1)
-        _ok = np.isfinite(_floor)
-        fid = dict(fid, per_voxel=dict(grid=voxel_grid.to_meta(), pools=[int(p) for p in _pools], n_voxels=int(_ijk.shape[0]),
-                                       walkers_min=int(_n[_n > 0].min()) if (_n > 0).any() else 0,
-                                       floor_max=float(np.nanmax(_floor)) if _ok.any() else None,
-                                       floor_median=float(np.nanmedian(_floor)) if _ok.any() else None,
-                                       err_max=None, within_2x_floor_fraction=None,
-                                       thin_voxels=int(((_n > 0) & (_n < 2)).sum())))
-        if sigma_star is not None and _ok.any():
+        fid = dict(fid, per_voxel=per_voxel_summary(voxel_grid.to_meta(), _pools, np.stack([_n, _floor, _err], axis=-1)))
+        if sigma_star is not None and np.isfinite(_floor).any():
             fid["per_voxel"]["meets_target"] = bool(np.nanmax(_floor) <= sigma_star)
     if sigma_star is not None:
         fid.update(target_floor=float(sigma_star),
