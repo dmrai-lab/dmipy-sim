@@ -38,7 +38,8 @@ class _CaptureBackend(Backend):
         raise _Captured()
 
 
-def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None, K=None, K_c3=None):
+def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_reuse_intervals, f_band=None, K=None, K_c3=None,
+                     field_read_interval=None):
     """The live ``WalkRequest`` ``simulate_trajectories_adaptive`` would hand a backend for this pool -- aborted
     before any stepping, by ``_CaptureBackend``."""
     be = _CaptureBackend()
@@ -46,7 +47,7 @@ def _capture_request(geom, D, T_max, block_h, *, seed, r0, field_basis, field_re
         simulate_trajectories_adaptive(len(r0), D, geom, T_max, block_h, seed=seed, r0=r0, require_gpu=False,
                                        walker_batch_size=4096, field_basis=field_basis,
                                        field_reuse_intervals=field_reuse_intervals, backend=be, f_band=f_band, K=K,
-                                       **({} if field_basis is None else dict(K_c3=K_c3)))
+                                       **({} if field_basis is None else dict(K_c3=K_c3, field_read_interval=field_read_interval)))
     except _Captured:
         pass
     assert be.request is not None
@@ -182,7 +183,8 @@ def test_a_batch_request_from_the_kit_matches_a_live_walk_requests_dump(fixture_
 
     req = _capture_request(geom, D, T_max, rc.block_h(), seed=seed, r0=r0, field_basis=basis,
                            field_reuse_intervals=int(W.get("field_gather_every", 4)),
-                           f_band=storage_band_hz(W["scanner"]), K=rc.man["pack"]["K"], K_c3=rc.man["pack"]["K_path"])
+                           f_band=storage_band_hz(W["scanner"]), K=rc.man["pack"]["K"], K_c3=rc.man["pack"]["K_path"],
+                           field_read_interval=rc.field_read_interval())
     assert (req.field is not None) == (basis is not None)
     if req.field is not None:       # the live producer sizes the field's segment list from its start-position probe; a kit has no
         req = req._replace(field=req.field._replace(list_k=256))        # walk to probe and writes the width a backend widens from
