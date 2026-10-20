@@ -177,7 +177,7 @@ def run_rock(name, data_dir, *, n_walkers, T_max, sample_ms, sub_echo, walker_ba
     dt = seq.dt
     # The WALK's step, which is what the physics is resolved at: the engine divides the sequence's dt
     # into `resolve_sub_steps` fine steps (here the surface-relaxivity rule's quarter of a voxel), so
-    # sqrt(6 D dt) is the save interval's displacement and not the step. `sub_steps` overrides the
+    # sqrt(6 D dt) is the displacement over the waveform's step and not the walk's step. `sub_steps` overrides the
     # rule, which is how the rule itself is measured.
     from dmipy_sim.engine.physics import resolve_sub_steps
     n_sub = int(sub_steps) if sub_steps else resolve_sub_steps(g, D0, dt, surface=True)

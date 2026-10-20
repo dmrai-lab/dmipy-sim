@@ -105,7 +105,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
         k = np.arange(1, K + 1)
         exact = np.sqrt(cw.h) * np.sinc(k / (2.0 * N))[None, :, None] * dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
         row = dict(n_blocks=int(cw.n_blocks), start_m=float(np.abs(X[:, 0] - B[:, 0]).max()),
-                   displacement_rel=rel(X[:, -1] - X[:, 0], B[:, 1]), bands_vs_sinc_dst1_rel=rel(exact, B[:, 2:]),
+                   displacement_rel=rel(X[:, -1] - X[:, 0], B[:, 1]), bands_vs_block_ends_rel=rel(exact, B[:, 2:]),
                    replay_err=float(acc.fidelity["err_max"]), replay_floor=float(acc.fidelity["floor_max"]))
         if cw.raw_boundary is not None:
             ell = np.asarray(cw.raw_boundary, np.float64)
@@ -113,7 +113,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
             uc = Bc - (Bc[:, :1] + (Bc[:, -1:] - Bc[:, :1]) * tau[None, :])
             exact_c = np.sqrt(cw.h) * np.sinc(k / (2.0 * N))[None, :] * dst(uc[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
             row.update(contact_endpoint_rel=rel(Bc[:, -1], np.asarray(cw.boundary_endpoint)[:, 0]),
-                       contact_bands_vs_sinc_dst1_rel=rel(exact_c, np.asarray(cw.boundary_bands)[:, 0]),
+                       contact_bands_vs_block_ends_rel=rel(exact_c, np.asarray(cw.boundary_bands)[:, 0]),
                        contact_err=float(acc.fidelity.get("err_surface", 0.0)), contact_floor=float(acc.fidelity.get("floor_surface", 0.0)))
         if cw.raw_compartment is not None:
             from dmipy_sim.coefficient_walk import events_at_instants
@@ -182,8 +182,8 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
 
 
 # -------------------------------------------------------------------------------------------------------- memory
-def _probe(mode, dt_save, n, T, dt_sim, K):
-    """One walk in this process (``mode`` ``"accumulated"``: the bands alone; ``"saves"``: every walker's block ends
+def _probe(mode, block_h, n, T, dt_sim, K):
+    """One walk in this process (``mode`` ``"accumulated"``: the bands alone; ``"raw_subset"``: every walker's block ends
     kept beside them, ``raw_subset=n``): VmHWM (from /proc/self/status) over the walk's second call, the high-water
     mark reset after the first (which compiles), and the device's peak bytes when it reports them."""
     import dmipy_sim as d
@@ -193,7 +193,7 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
             for line in f:
                 if line.startswith(key + ":"):
                     return int(line.split()[1]) * 1024
-    kw = dict(T_max=T, block_h=dt_save, seed=1, require_gpu=False, sub_steps=int(round(dt_save / dt_sim)),
+    kw = dict(T_max=T, block_h=block_h, seed=1, require_gpu=False, sub_steps=int(round(block_h / dt_sim)),
               walker_batch_size=n, K=K, raw_subset=(0 if mode == "accumulated" else n))
     geom = d.Cylinder(radius=4e-6, orientation=(0, 0, 1))
     with warnings.catch_warnings():
@@ -204,7 +204,7 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
         with open("/proc/self/clear_refs", "w") as f:
             f.write("5")                                                          # the high-water mark := now
         w = d.simulate_trajectories(n, 2e-9, geom, **kw)
-    out = dict(mode=mode, block_h=dt_save, n_blocks=int(w.n_blocks), host_peak_over_base=vm("VmHWM") - base,
+    out = dict(mode=mode, block_h=block_h, n_blocks=int(w.n_blocks), host_peak_over_base=vm("VmHWM") - base,
                walk_host_bytes=int(w.nbytes))
     try:
         import jax
@@ -216,13 +216,13 @@ def _probe(mode, dt_save, n, T, dt_sim, K):
     print(json.dumps(out))
 
 
-def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, dt_saves=(5e-4, 1.25e-4, 3.125e-5)):
+def memory(*, n=20000, T=0.01, dt_sim=3.125e-6, K=32, block_hs=(5e-4, 1.25e-4, 3.125e-5)):
     """``memory_probe`` in a fresh process per (mode, block): the accumulated walk's peak host bytes against the same
     walk keeping every walker's block ends, over blocks spanning 16x at a fixed ``K`` and a fixed physics step (the
     walkers take the same steps at every block), a cylinder recording every tier."""
     rows = []
-    for mode in ("accumulated", "saves"):
-        for h in dt_saves:
+    for mode in ("accumulated", "raw_subset"):
+        for h in block_hs:
             # one malloc arena: glibc's per-thread arenas hold freed blocks of XLA's worker threads and add tens of MB
             # of noise to the high-water mark, the same for both modes
             r = subprocess.run([sys.executable, __file__, "--memory-probe", mode, repr(h), str(n), repr(T), repr(dt_sim), str(K)],

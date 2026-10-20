@@ -567,7 +567,7 @@ class RFSchedule(tuple):
 
         A refocusing pulse inverts the accumulated phase, so ``s`` flips after it; a stimulated echo does the same
         across its storage/recall pair, so ``s`` flips at RECALL. It is a sign per sample, not a quadrature
-        weight: :func:`dmipy_sim.replay._replay_kernel.gate_weights` reads a gate onto a path's saves.
+        weight: :func:`dmipy_sim.replay._replay_kernel.gate_weights` reads a gate onto a path's block ends.
         """
         t = np.asarray(t_grid, dtype=np.float64)
         s = np.ones_like(t, dtype=np.float32)

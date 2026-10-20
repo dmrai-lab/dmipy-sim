@@ -92,7 +92,7 @@ def pgse(pack, dirs, b=B_VALUE, delta=6.0e-3, Delta=1.5e-2, refocus=True):
     """A PGSE over the pack's duration, one measurement per direction, its 180 midway between the lobes -- or,
     with ``refocus=False``, the same diffusion weighting read as a gradient echo (a bipolar pair, no 180), which
     keeps the static field dephasing a spin echo would have refocused. The replay is exact in time, so the
-    sequence lives on its own raster, not the pack's save grid."""
+    sequence lives on its own raster, not the pack's block grid."""
     TE = (pack.n_t - 1) * pack.dt
     bvals = [float(b)] * len(dirs)
     if refocus:
