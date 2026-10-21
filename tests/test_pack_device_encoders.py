@@ -50,12 +50,11 @@ def test_the_device_field_series_encoder_matches_the_numpy_route():
     from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
     rng = np.random.default_rng(11)
     n_w, n_t = 517, 65
-    S = rng.normal(0, 1e-7, (n_w, n_t, 13)).astype(np.float32)
-    S[:, :, 3] = 3 * S[:, :, 0] - S[:, :, 1] - S[:, :, 2]            # the trace identity: iso_P_zz is implied
+    S = rng.normal(0, 1e-7, (n_w, n_t, 12)).astype(np.float32)
     a_np, m_np = susc_path_encode_series(S, CHANNEL_NAMES, K=8, container=((None, 8),), layout="wtc", device="numpy", chunk=37)
     a_dv, m_dv = susc_path_encode_series(S, CHANNEL_NAMES, K=8, container=((None, 8),), layout="wtc", device="jax", chunk=37)
-    assert {k: v for k, v in m_np.items() if k != "trace_residual"} == {k: v for k, v in m_dv.items() if k != "trace_residual"}
-    assert m_np["bits"] == 8 and m_np["n_ch"] == 12                              # iso_P_zz dropped on both routes
+    assert m_np == m_dv
+    assert m_np["bits"] == 8 and m_np["n_ch"] == 12 and "iso_P_zz" not in m_np["channels"]
     dq = lambda a: a["susc_path_dct"].astype(np.float64) * a["susc_path_scale"].astype(np.float64)[None]
     q_np, q_dv = dq(a_np), dq(a_dv)
     scale = np.abs(q_np).max()

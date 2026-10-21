@@ -41,10 +41,11 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         events = None
     field_bands = field_qv = field_qv_increments = None
     if request.field is not None:                                     # the field: every mode 0, the start's bare channels at every block end
-        field_qv = np.zeros((n, 13))
-        field_qv_increments = np.zeros((n, 13)) if field_increments else None
+        n_ch = len(request.field.basis.channel_names)
+        field_qv = np.zeros((n, n_ch))
+        field_qv_increments = np.zeros((n, n_ch)) if field_increments else None
         if request.K_c3:
-            field_bands = np.zeros((n, 13, int(request.K_c3)))
+            field_bands = np.zeros((n, n_ch, int(request.K_c3)))
         if saves is not None:
             fs = np.repeat(np.asarray(request.field.basis.channels(r0), np.float32)[:, None, :], int(request.n_blocks) + 1, axis=1)
             saves = saves._replace(field_samples=fs)
@@ -307,13 +308,13 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     fr = w.block["field_read"]
     assert fr["rule"] == "pilot" and fr["constants_measured"] and w.stepping["field_pilot_backend"] == "jax"
     assert all(r.field_read_interval == pytest.approx(w.field_read_interval) for r in still.requests)   # the backend walks the walk only
-    assert walk.K_c3 == 2 and w.field_coeffs.shape == (64, 1, 2, 13) and w.K_c3 == 2 and w.field_basis is basis
-    assert w.qv_field.shape == (64, 1, 13) and w.qv_field_increments.shape == (64, 1, 13)
+    assert walk.K_c3 == 2 and w.field_coeffs.shape == (64, 1, 2, 12) and w.K_c3 == 2 and w.field_basis is basis
+    assert w.qv_field.shape == (64, 1, 12) and w.qv_field_increments.shape == (64, 1, 12)
     with pytest.raises(ValueError, match="the backend does not return the field increments"):
         simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=_Still(field_increments=False), **kw)
     raw = _Still()
     wr = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=raw, raw_subset=16, **kw)
-    assert wr.raw_field.shape == (16, wr.n_blocks * wr.reads_per_block + 1, 13) and wr.stepping["raw_subset_backend"] == "jax"
+    assert wr.raw_field.shape == (16, wr.n_blocks * wr.reads_per_block + 1, 12) and wr.stepping["raw_subset_backend"] == "jax"
     assert all(int(r.raw_subset) == 0 for r in raw.requests)                     # the backend walks no raw subset
 
 

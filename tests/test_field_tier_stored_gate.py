@@ -58,7 +58,7 @@ def test_a_stimulated_echo_accrues_no_field_phase_while_its_magnetisation_is_sto
     np.testing.assert_allclose(g, gate_weights(hand, ste.dt, pk.n_t, pk.dt)[0], rtol=0, atol=1e-12)
     ch = pk.meta["compression"]["channels"]
     meta = ch["susc_field_basis"]
-    C, _ = susc_path_coeffs(pk.arrays, meta)                            # (n_w, 13, K) modes, iso_P_zz re-inserted
+    C, _ = susc_path_coeffs(pk.arrays, meta)                            # (n_w, n_ch, K) modes, the canonical channels
     T = float(meta["T"])
     n_fine = 50 * (ste.n_t - 1)
     t = (np.arange(n_fine) + 0.5) * (T / n_fine)

@@ -370,7 +370,7 @@ def write_block_kit(rc, row, out_dir):
         crop, far_dims, far_origin = crop_far_grid(far.values, far.origin_m, far.spacing_m, np.array([lo_m, hi_m]),
                                                    float(blk["T"]), D_max)
         np.ascontiguousarray(crop).tofile(out / "far_full.u16")
-        # the full array shape (the spatial crop's 3 dims PLUS the 13 channels, write_kit's own "shape" spelling
+        # the full array shape (the spatial crop's 3 dims PLUS the 12 channels, write_kit's own "shape" spelling
         # for far_full.json) -- not far_dims (3 only, the DscField struct's own field_far_dims)
         json.dump(dict(origin_m=far_origin, spacing_m=float(far.spacing_m), near_m=float(far.near_m),
                        blend_m=float(far.blend_m), cutoff_m=float(far.cutoff_m), shape=list(crop.shape)),

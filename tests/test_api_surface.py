@@ -871,3 +871,34 @@ def test_the_time_segment_layout_is_partitions_in_words(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps({"format": "time_segments/1"}))
     with pytest.raises(ValueError, match="time_segments/1"):
         ts.read_manifest(str(tmp_path))
+
+
+# ── the field carries twelve components: iso_P_zz is the reader's (RPK.md 5.3) ───────────────────────────────────
+def test_the_field_carries_twelve_components_and_iso_P_zz_is_never_one():
+    """Every field basis emits, the walk accumulates and the pack stores ``iso_local``, five ``iso_P`` and six
+    ``aniso_G``; ``iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy`` is formed by the contraction. A producer that offers
+    the thirteenth is refused, and so is a pack that lists it."""
+    import inspect
+    from dmipy_sim.fields import hollow_cylinder as hc
+    from dmipy_sim.replay import bank
+    from dmipy_sim.replay.replay import _refuse_predating
+    assert len(hc.CHANNEL_NAMES) == 12 and "iso_P_zz" not in hc.CHANNEL_NAMES and hc.ISO_CHANNEL_NAMES == hc.CHANNEL_NAMES[:6]
+    cyl = hc.HollowCylinderField(np.zeros((1, 2)), [1e-6], [2e-6])
+    assert cyl.channels(np.array([[3e-6, 0.0, 0.0], [0.0, 1.5e-6, 0.0]])).shape == (2, 12)
+    # the contraction forms the thirteenth: the field of a tensor with a trace is the 13-channel contraction
+    rng = np.random.default_rng(0); c = rng.normal(size=(5, 12)); H = [0.3, -0.5, 0.8]
+    P = hc.iso_P6(c); q = hc.q_of_H(H)
+    np.testing.assert_allclose(P[:, 2], 3 * c[:, 0] - c[:, 1] - c[:, 2])
+    np.testing.assert_allclose(hc.field_terms(c, H)[0], c[:, 0] - P @ q, atol=1e-12)
+    np.testing.assert_allclose(hc.field_terms(c, H)[1], c[:, 6:12] @ q) and hc.field_terms(c[:, :6], H)[1] is None
+    # refusals by name
+    with pytest.raises(ValueError, match="iso_P_zz"):
+        bank.susc_path_encode_modes(np.zeros((4, 3, 13)), ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz",
+                                                         "aniso_G_xx", "aniso_G_yy", "aniso_G_zz", "aniso_G_xy", "aniso_G_xz", "aniso_G_yz"],
+                                    T=1e-3, container=None)
+    for sfb in ({"channels": ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"]}, {"iso_P_zz": "stored", "channels": ["iso_local"]}):
+        meta = {"walk_params": {"block": {}, "qv": {"field_increments": [0.0]}}, "compression": {"channels": {"susc_field_basis": sfb}}}
+        with pytest.raises(ValueError, match="iso_P_zz"):
+            _refuse_predating(meta, "p.rpk")
+    assert "implied" not in inspect.signature(bank.FieldCodec.__init__).parameters
+    assert "atol_trace" not in inspect.signature(bank.susc_path_encode_modes).parameters

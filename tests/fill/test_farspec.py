@@ -8,7 +8,7 @@ from dmipy_sim.fill.farspec import FIELD_CHANNELS, N_SHELLS, _layout, pack_far, 
 
 H = 2.5e-6
 N = (24, 20, 16)
-XX, YY, ZZ, LOC = (FIELD_CHANNELS.index(c) for c in ("iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_local"))
+LOC = FIELD_CHANNELS.index("iso_local")
 
 
 def _mode(n, m):
@@ -16,15 +16,14 @@ def _mode(n, m):
 
 
 def _smooth(m_list, shape=N):
-    """A 13-channel field of a few long modes plus a per-channel offset, with iso_local = 0 and iso_P_zz = -(xx + yy)."""
+    """A 12-channel field of a few long modes plus a per-channel offset, with iso_local = 0."""
     nx, ny, nz = shape
-    v = np.zeros(shape + (13,))
-    for c in range(13):
+    v = np.zeros(shape + (12,))
+    for c in range(12):
         for (a, b, d) in m_list:
             v[..., c] += (c + 1) * 0.1 * _mode(nx, a)[:, None, None] * _mode(ny, b)[None, :, None] * _mode(nz, d)[None, None, :]
         v[..., c] += 0.5 * c
     v[..., LOC] = 0
-    v[..., ZZ] = -(v[..., XX] + v[..., YY])
     return v.astype(np.float16)
 
 
@@ -46,19 +45,17 @@ def test_smooth_field_round_trips_within_the_quantization_bound():
     assert out.dtype == np.float16 and out.shape == v.shape
     b = _bound(p)
     err = np.abs(out.astype(np.float64) - v.astype(np.float64))
-    stored = [FIELD_CHANNELS.index(c) for c in FIELD_CHANNELS if c not in ("iso_local", "iso_P_zz")]
+    stored = [FIELD_CHANNELS.index(c) for c in FIELD_CHANNELS if c != "iso_local"]
     for j, ch in enumerate(stored):
         assert np.all(err[..., ch] <= b[j] + np.spacing(np.abs(v[..., ch]).max()).astype(np.float64) * 1.5), ch
     assert np.all(out[..., LOC] == 0)
-    np.testing.assert_allclose(out[..., ZZ].astype(np.float64), -(out[..., XX].astype(np.float64) + out[..., YY].astype(np.float64)),
-                               atol=0.1, rtol=2e-3)       # rebuilt in float32, then cast: differs by the cast of the sum
 
 
 def test_a_short_wavelength_component_is_lost_alone():
     smooth = _smooth([(1, 1, 0)]).astype(np.float64)
     nx = N[0]
-    short = 0.3 * np.cos(2 * np.pi * (nx // 2) * np.arange(nx) / nx)[:, None, None, None] * np.ones(N + (13,))   # 2 nodes = 5 um
-    short[..., LOC] = 0; short[..., ZZ] = -(short[..., XX] + short[..., YY])
+    short = 0.3 * np.cos(2 * np.pi * (nx // 2) * np.arange(nx) / nx)[:, None, None, None] * np.ones(N + (12,))   # 2 nodes = 5 um
+    short[..., LOC] = 0
     out = unpack_far(pack_far((smooth + short).astype(np.float32), H)).astype(np.float64)
     np.testing.assert_allclose(out, smooth, rtol=3e-3, atol=5e-3)
 
@@ -73,9 +70,9 @@ def test_an_empty_shell_has_scale_zero_and_round_trips():
     v = _smooth([(1, 0, 0)])            # one low mode: the high shells are empty of power
     p = pack_far(v, H)
     assert (p["scale"][-1] < 1e-3 * p["scale"].max()).all()
-    z = pack_far(np.zeros(N + (13,), np.float16), H)
+    z = pack_far(np.zeros(N + (12,), np.float16), H)
     assert (z["scale"] == 0).all() and not z["q16"].any() and not z["q8"].any()
-    assert np.array_equal(unpack_far(z), np.zeros(N + (13,), np.float16))
+    assert np.array_equal(unpack_far(z), np.zeros(N + (12,), np.float16))
 
 
 def test_kept_fraction_at_10um_on_2p5um_grid():

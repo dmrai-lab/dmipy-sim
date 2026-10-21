@@ -21,7 +21,7 @@ def _kinked_strand(n=7, step=3e-6, turn_deg=20.0, seed=0):
 
 
 def test_a_curved_strand_matches_the_rasterised_route():
-    """One sheathed strand with 20-degree joints (DiSCo's median): the superposition's 13 channels against the
+    """One sheathed strand with 20-degree joints (DiSCo's median): the superposition's 12 channels against the
     k-space route on a box, inside the lumen, the sheath and outside (measured 5.0 / 3.6 / 0.8 / 0.7 % of the
     component's maximum; a 54-degree joint, DiSCo's sharpest, measures 8.9 / 8.4 / 3.6 / 0.6 %)."""
     cl = _kinked_strand(); a, b = 0.8e-6, 1.4e-6
@@ -32,7 +32,7 @@ def test_a_curved_strand_matches_the_rasterised_route():
     shape = tuple(basis["shape"]); vs = np.asarray(basis["voxel_size"]); org = np.asarray(origin)
     ax = [org[k] + (np.arange(shape[k]) + 0.5) * vs[k] for k in range(3)]
     X, Y, Z = np.meshgrid(*ax, indexing="ij"); P = np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1)
-    K = np.concatenate([basis["iso_local"].reshape(-1, 1), basis["iso_P"].reshape(6, -1).T, basis["aniso_G"].reshape(6, -1).T], 1)
+    K = np.concatenate([basis["iso_local"].reshape(-1, 1), basis["iso_P"][[0, 1, 3, 4, 5]].reshape(5, -1).T, basis["aniso_G"].reshape(6, -1).T], 1)
     sel = np.all(np.abs(P) < 3.5e-6, axis=1)                                  # away from the box's images
     sf = StrandFieldBasis([cl], [a], [b], cutoff_m=20e-6, domain=(lo, hi))
     C = sf.channels(P[sel]); Kc = K[sel]
@@ -43,9 +43,9 @@ def test_a_curved_strand_matches_the_rasterised_route():
     regions = {"lumen": dist < a - 0.15e-6, "sheath": (dist > a + 0.15e-6) & (dist < b - 0.15e-6),
                "near": (dist > b + 0.15e-6) & (dist < 3 * b), "far": dist > 3 * b}
     tol = {"lumen": 0.08, "sheath": 0.08, "near": 0.04, "far": 0.03}      # far: the 14 um box's images (b / 10 um)^2
-    group_scale = {0: np.abs(Kc[:, 0]).max(), 1: np.abs(Kc[:, 1:7]).max(), 2: np.abs(Kc[:, 7:13]).max()}
+    group_scale = {0: np.abs(Kc[:, 0]).max(), 1: np.abs(Kc[:, 1:6]).max(), 2: np.abs(Kc[:, 6:12]).max()}
     for j, name in enumerate(CHANNEL_NAMES):
-        scale = group_scale[0 if j == 0 else (1 if j < 7 else 2)]             # relative to the group's field scale
+        scale = group_scale[0 if j == 0 else (1 if j < 6 else 2)]             # relative to the group's field scale
         Cj = C[:, j] - C[:, j].mean() + Kc[:, j].mean()                       # the grid's mean is over its whole box
         for r, s in regions.items():
             assert s.sum() > 50, r
@@ -68,16 +68,16 @@ def test_the_domain_mean_is_the_closed_form():
     P = rng.uniform(lo, hi, (60000, 3))
     sampled = sf.channels(P).mean(0)                                           # mean subtracted: should be ~0
     scale = np.abs(sf.mean).max()
-    d_all = np.full(len(P), np.inf); twice = np.zeros((len(P), 7)); nearest = np.zeros((len(P), 7))
+    d_all = np.full(len(P), np.inf); twice = np.zeros((len(P), 6)); nearest = np.zeros((len(P), 6))
     for c, a, b in zip(cls, ra, rb):
         A = c[0]; AB = c[1] - c[0]; u = AB / np.linalg.norm(AB); t = np.clip(((P - A) @ AB) / (AB @ AB), 0, 1)
         d = np.linalg.norm(P - (A + t[:, None] * AB), axis=1); m = ((d > a) & (d < b)).astype(float)
-        P2 = 0.5 * np.array([1 - u[0] ** 2, 1 - u[1] ** 2, 1 - u[2] ** 2, -u[0] * u[1], -u[0] * u[2], -u[1] * u[2]])
+        P2 = 0.5 * np.array([1 - u[0] ** 2, 1 - u[1] ** 2, -u[0] * u[1], -u[0] * u[2], -u[1] * u[2]])
         loc = m[:, None] * np.concatenate([[1 / 3], P2])[None]
         twice += loc; new = d < d_all; nearest = np.where(new[:, None], loc, nearest); d_all = np.minimum(d_all, d)
     overlap = (twice - nearest).mean(0)                                        # the local terms the closed form counts twice
-    assert scale > 1e-4 and np.abs(sampled[:7] + overlap).max() < 0.08 * scale, ((sampled[:7] + overlap) / scale)
-    assert np.abs(sampled[7:]).max() < 0.08 * scale, (sampled / scale)        # 60k samples of a field whose outside terms average out by cos 2a
+    assert scale > 1e-4 and np.abs(sampled[:6] + overlap).max() < 0.08 * scale, ((sampled[:6] + overlap) / scale)
+    assert np.abs(sampled[6:]).max() < 0.08 * scale, (sampled / scale)        # 60k samples of a field whose outside terms average out by cos 2a
 
 
 def test_the_cutoff_error_falls_with_the_cutoff_and_the_field_contracts():
@@ -115,7 +115,8 @@ def _segment_field(P, A_, B_, a, b):
     Lt = (E * i0[:, None, None] - 3 * (rr_ * j0[:, None, None] - ru * j1[:, None, None] + UU * j2[:, None, None])) / (4 * np.pi)
     A = np.pi * (b ** 2 - a ** 2); T = 0.5 * (E - UU) - E / 3; LT = Lt @ T
     sym6 = lambda M: np.stack([M[:, 0, 0], M[:, 1, 1], M[:, 2, 2], M[:, 0, 1], M[:, 0, 2], M[:, 1, 2]], 1)
-    return np.concatenate([np.zeros((len(P), 1)), sym6(A * Lt), sym6(-0.5 * A * (LT + np.swapaxes(LT, 1, 2)))], 1)
+    sym5 = lambda M: np.stack([M[:, 0, 0], M[:, 1, 1], M[:, 0, 1], M[:, 0, 2], M[:, 1, 2]], 1)
+    return np.concatenate([np.zeros((len(P), 1)), sym5(A * Lt), sym6(-0.5 * A * (LT + np.swapaxes(LT, 1, 2)))], 1)
 
 
 def _finite_line_sum(cls, ra, rb, P, cutoff):
@@ -123,12 +124,12 @@ def _finite_line_sum(cls, ra, rb, P, cutoff):
     (float64); within the nearest strand's gate, that strand's terms are its nearest segment's whole infinite
     cylinder (the lowest index at a tie)."""
     from dmipy_sim.fields.hollow_cylinder import hollow_cylinder_basis
-    out = np.zeros((len(P), 13)); d_best = np.full(len(P), np.inf); corr = np.zeros((len(P), 13))
+    out = np.zeros((len(P), 12)); d_best = np.full(len(P), np.inf); corr = np.zeros((len(P), 12))
     for c, a, b in zip(cls, ra, rb):
         A_ = c[:-1]; AB = c[1:] - c[:-1]; L = np.linalg.norm(AB, axis=1); U = AB / L[:, None]
         zA = ((P[:, None, :] - A_[None]) * U[None]).sum(-1)
         t = np.clip(zA / L[None], 0, 1); d = np.linalg.norm(P[:, None, :] - (A_[None] + t[..., None] * AB[None]), axis=-1)
-        K = np.stack([_segment_field(P, A_[k], A_[k] + AB[k], a, b) for k in range(len(A_))], 1)          # (n, s, 13)
+        K = np.stack([_segment_field(P, A_[k], A_[k] + AB[k], a, b) for k in range(len(A_))], 1)          # (n, s, 12)
         own = (K * (d < cutoff)[..., None]).sum(1); out += own
         d1 = d.min(1); j = (d <= d1[:, None] + 1e-6 * cutoff).argmax(1); new = d1 < d_best - 1e-6 * cutoff
         x = np.clip((d1 - b) / (StrandFieldBasis.NEAREST_GATE_RADII * b), 0, 1); g = x * x * (3 - 2 * x)
@@ -151,8 +152,8 @@ def test_a_segment_is_the_line_up_close_and_a_dipole_far_away():
     L = 2e-6; zc = 60e-6; r = rv + zc * u; rhat = r / np.linalg.norm(r); A = np.pi * (b ** 2 - a ** 2)   # (L / r)^2 = 1e-3; float32 holds a 2 um piece at 60 um
     far = np.asarray(segment_basis(rv, u, -zc - L / 2, -zc + L / 2, a, b))
     dip = A * L * (np.eye(3) - 3 * np.outer(rhat, rhat)) / (4 * np.pi * np.linalg.norm(r) ** 3)
-    want = np.array([dip[0, 0], dip[1, 1], dip[2, 2], dip[0, 1], dip[0, 2], dip[1, 2]])
-    np.testing.assert_allclose(far[1:7], want, rtol=5e-3, atol=2e-3 * np.abs(want).max())
+    want = np.array([dip[0, 0], dip[1, 1], dip[0, 1], dip[0, 2], dip[1, 2]])                 # zz is the trace's
+    np.testing.assert_allclose(far[1:6], want, rtol=5e-3, atol=2e-3 * np.abs(want).max())
     cuts = np.linspace(-40e-6, 40e-6, 9)
     whole = np.asarray(segment_basis(rv, u, cuts[0], cuts[-1], a, b))
     pieces = sum(np.asarray(segment_basis(rv, u, z1, z2, a, b)) for z1, z2 in zip(cuts[:-1], cuts[1:]))
@@ -208,3 +209,25 @@ def test_the_field_is_continuous_across_joints_and_free_ends():
     Q = rng.uniform(-8e-6, 8e-6, (300, 3))
     np.testing.assert_allclose(StrandFieldBasis(many, [1e-6], [1.5e-6], cutoff_m=100e-6).channels(Q),
                                StrandFieldBasis(one, [1e-6], [1.5e-6], cutoff_m=100e-6).channels(Q), atol=1e-6, rtol=0)
+
+
+def test_a_far_grid_stored_with_thirteen_channels_is_read_as_twelve(tmp_path):
+    """The DiSCo far grid on the hub keeps all thirteen channels on disk: the reader drops ``iso_P_zz`` (index 3) as it
+    reads, slab by slab, and the engine sees twelve."""
+    from dmipy_sim.fields.strand_field import FarGrid
+    rng = np.random.default_rng(5)
+    v13 = rng.normal(size=(6, 5, 4, 13)).astype(np.float16)
+    json_ = dict(origin_m=[0.0, 0.0, 0.0], spacing_m=2.5e-6, near_m=8e-6, blend_m=3e-6, cutoff_m=20e-6)
+    import json as _json
+    np.save(tmp_path / "far13.npy", v13); _json.dump(json_, open(tmp_path / "far13.json", "w"))
+    g = FarGrid.load(str(tmp_path / "far13.npy"))
+    assert g.values.shape == (6, 5, 4, 12) and g.shape == (6, 5, 4)
+    want = np.delete(v13, 3, axis=-1)
+    np.testing.assert_array_equal(np.asarray(g.values), want)
+    np.testing.assert_array_equal(g.values[2:4, 1:3], want[2:4, 1:3])
+    g.save(str(tmp_path / "far12.npy"))                                        # saved, it is the twelve
+    g2 = FarGrid.load(str(tmp_path / "far12.npy"))
+    assert g2.values.shape == (6, 5, 4, 12) and g2.sha256 == g.sha256
+    np.save(tmp_path / "far7.npy", v13[..., :7]); _json.dump(json_, open(tmp_path / "far7.json", "w"))
+    with pytest.raises(ValueError, match="12 channels"):
+        FarGrid.load(str(tmp_path / "far7.npy"))

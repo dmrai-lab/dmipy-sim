@@ -3,7 +3,7 @@ substrate's susceptibility field (:mod:`dmipy_sim.fields.strand_field`) and the 
 forward Bloch engine (:class:`dmipy_sim.fields.susceptibility.MyelinSusceptibility`).
 
 The sheath ``a < r < b`` carries the susceptibility tensor ``chi_I I + chi_A (n n^T - I/3)`` with ``n`` the radial
-(lipid) director. The along-B0 field, in the same 13-component basis the k-space route stores
+(lipid) director. The along-B0 field, in the same basis the k-space route stores (13 components of 12 degrees of freedom; 12 are carried)
 (:func:`dmipy_sim.fields.susceptibility_field.field_basis`), is
 
     dB/B0 = chi_I [ m/3 - H.M_P.H ] + chi_A H.M_A.H
@@ -20,7 +20,7 @@ of B0 from the point's radial direction). The lumen field is the Wharton-Bowtell
 ln(1/g)``, uniform and zero with B0 along the fibre; outside, ``(chi_I + chi_A/6) (b^2 - a^2) sin^2 theta cos 2
 alpha / (2 r^2)`` (Wharton & Bowtell 2012, PNAS 109:18559, their eq. 2 with the anisotropic term in this tensor
 convention). The forms were derived from the k-space dipole kernel itself (a 4096^2 two-dimensional solve of one
-annulus at 0.02 um, fitted region by region) and agree with it on all 13 components. Every component is the bare
+annulus at 0.02 um, fitted region by region) and agree with it on all 13 components (``iso_P_zz`` included). Every component is the bare
 superposition value: the k-space route subtracts its domain mean (the Lorentz reference), a uniform offset that
 a magnitude signal cannot see and that :meth:`StrandFieldBasis.channels` subtracts analytically.
 """
@@ -29,9 +29,12 @@ from __future__ import annotations
 import numpy as np
 import jax.numpy as jnp
 
-#: the 13 channels, in the order the pack's path channel stores them
-CHANNEL_NAMES = ("iso_local",) + tuple(f"iso_P_{c}" for c in ("xx", "yy", "zz", "xy", "xz", "yz")) \
+#: the 12 channels, in the order the pack's path channel stores them (RPK.md 5.3): ``iso_P_zz`` is never carried, a
+#: reader forms it as ``3 iso_local - iso_P_xx - iso_P_yy`` (the dipole kernel is traceless)
+CHANNEL_NAMES = ("iso_local",) + tuple(f"iso_P_{c}" for c in ("xx", "yy", "xy", "xz", "yz")) \
     + tuple(f"aniso_G_{c}" for c in ("xx", "yy", "zz", "xy", "xz", "yz"))
+#: the isotropic channels, the whole set of a source without an anisotropic part
+ISO_CHANNEL_NAMES = CHANNEL_NAMES[:6]
 
 
 def _sym6(M):
@@ -39,11 +42,17 @@ def _sym6(M):
     return jnp.stack([M[..., 0, 0], M[..., 1, 1], M[..., 2, 2], M[..., 0, 1], M[..., 0, 2], M[..., 1, 2]], axis=-1)
 
 
+def _sym5(M):
+    """``(..., 3, 3)`` symmetric -> ``(..., 5)`` in the (xx, yy, xy, xz, yz) order: the traceless block's stored
+    components, ``zz`` being ``3 iso_local - xx - yy``."""
+    return jnp.stack([M[..., 0, 0], M[..., 1, 1], M[..., 0, 1], M[..., 0, 2], M[..., 1, 2]], axis=-1)
+
+
 def hollow_cylinder_basis(rho_vec, u, a, b):
-    """The 13 basis channels of one infinite hollow cylinder at points given by ``rho_vec`` ``(..., 3)``, the
+    """The 12 basis channels of one infinite hollow cylinder at points given by ``rho_vec`` ``(..., 3)``, the
     vector from the axis to the point (perpendicular to the axis), ``u`` ``(..., 3)`` the unit axis, ``a`` and
-    ``b`` ``(...)`` the inner and outer radii (metres). Returns ``(..., 13)``: ``iso_local``, the six components
-    of ``M_P``, the six of ``M_A`` (see the module docstring). Traceable (jax.numpy); broadcasts over leading
+    ``b`` ``(...)`` the inner and outer radii (metres). Returns ``(..., 12)``: ``iso_local``, the five stored
+    components of ``M_P`` (``zz`` follows from its trace), the six of ``M_A`` (see the module docstring). Traceable (jax.numpy); broadcasts over leading
     axes."""
     rho_vec = jnp.asarray(rho_vec); u = jnp.asarray(u)
     a = jnp.asarray(a, rho_vec.dtype); b = jnp.asarray(b, rho_vec.dtype)
@@ -70,11 +79,11 @@ def hollow_cylinder_basis(rho_vec, u, a, b):
     cU_A = jnp.where(sheath, -1.0 / 9.0, 0.0)
     cS_A = jnp.where(sheath, -(1.0 + a2 / r2) / 12.0, jnp.where(out, (b2 - a2) / (12.0 * r2), 0.0))
     MA = cP_A[..., None, None] * P + cU_A[..., None, None] * UU + cS_A[..., None, None] * S
-    return jnp.concatenate([(m / 3.0)[..., None], _sym6(MP), _sym6(MA)], axis=-1)
+    return jnp.concatenate([(m / 3.0)[..., None], _sym5(MP), _sym6(MA)], axis=-1)
 
 
 def segment_basis(rho_vec, u, z1, z2, a, b):
-    """The 13 channels of one FINITE segment of the hollow cylinder, seen from outside the sheath: the dipole kernel
+    """The 12 channels of one FINITE segment of the hollow cylinder, seen from outside the sheath: the dipole kernel
     ``D = (I - 3 n n^T) / (4 pi r^3)`` integrated in closed form along the segment, whose ends are at axial
     coordinates ``z1 < z2`` from the point's foot on the axis (``c(z') = foot + z' u``, ``p - c = rho_vec - z' u``),
     times the sheath's cross-section ``pi (b^2 - a^2)``: ``M_P = A L``, ``M_A = -A sym(L T)`` with ``L`` the
@@ -107,11 +116,11 @@ def segment_basis(rho_vec, u, z1, z2, a, b):
         return c * ((i0 if diag else 0.0) - 3.0 * (ri * rj * j0 - (ri * uj + ui * rj) * j1 + ui * uj * j2))
     Lxx = L6(rx, rx, ux, ux, True); Lyy = L6(ry, ry, uy, uy, True); Lzz = L6(rz, rz, uz, uz, True)
     Lxy = L6(rx, ry, ux, uy, False); Lxz = L6(rx, rz, ux, uz, False); Lyz = L6(ry, rz, uy, uz, False)
-    MP = jnp.stack([Lxx, Lyy, Lzz, Lxy, Lxz, Lyz], axis=-1)                   # A L
     # M_A = -A sym(L T) with T = P/2 - I/3 = I/6 - u u^T/2:  -[A L / 6 - sym((A L u) u^T) / 2]
     wx = Lxx * ux + Lxy * uy + Lxz * uz; wy = Lxy * ux + Lyy * uy + Lyz * uz; wz = Lxz * ux + Lyz * uy + Lzz * uz   # (A L) u
     MA = jnp.stack([-(Lxx / 6.0 - wx * ux / 2.0), -(Lyy / 6.0 - wy * uy / 2.0), -(Lzz / 6.0 - wz * uz / 2.0),
                     -(Lxy / 6.0 - (wx * uy + wy * ux) / 4.0), -(Lxz / 6.0 - (wx * uz + wz * ux) / 4.0), -(Lyz / 6.0 - (wy * uz + wz * uy) / 4.0)], axis=-1)
+    MP = jnp.stack([Lxx, Lyy, Lxy, Lxz, Lyz], axis=-1)                         # A L, its zz being - (xx + yy): traceless
     return jnp.concatenate([jnp.zeros(rho.shape + (1,), dt), MP, MA], axis=-1)
 def q_of_H(b0_dir):
     """``Q(H) = (Hx^2, Hy^2, Hz^2, 2 Hx Hy, 2 Hx Hz, 2 Hy Hz)``: the contraction weights of the six symmetric
@@ -120,20 +129,35 @@ def q_of_H(b0_dir):
     return np.array([h[0] ** 2, h[1] ** 2, h[2] ** 2, 2 * h[0] * h[1], 2 * h[0] * h[2], 2 * h[1] * h[2]])
 
 
-def field_terms(channels, b0_dir, axis=-1):
-    """The two susceptibility terms of the channels along ``axis`` (``iso_local, iso_P (6), aniso_G (6)`` in that
-    order, 7 or 13 of them) for a field direction: ``(iso, aniso)`` with ``iso = iso_local - Q . iso_P`` and
-    ``aniso = Q . aniso_G`` (``None`` when the channels carry no anisotropic basis). ``dB = B0 (chi_iso iso +
-    chi_aniso aniso)``: the one contraction of every route, grid, path and pack. A torch tensor is contracted on
-    its own device in float64 (a float32 matmul on CUDA is TF32) and stays there; anything else on the host."""
+def iso_P6(channels):
+    """``(..., 6)`` ``iso_P`` in the (xx, yy, zz, xy, xz, yz) order from the channels ``(..., 6 | 12)``, ``iso_P_zz`` formed
+    as ``3 iso_local - iso_P_xx - iso_P_yy``."""
+    c = np.asarray(channels)
+    return np.concatenate([c[..., 1:3], (3.0 * c[..., 0] - c[..., 1] - c[..., 2])[..., None], c[..., 3:6]], axis=-1)
+
+
+def iso_weights(b0_dir):
+    """``(6,)``: the weights of ``(iso_local, iso_P_xx, iso_P_yy, iso_P_xy, iso_P_xz, iso_P_yz)`` in the isotropic
+    term ``iso_local - Q . iso_P`` once ``iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy`` is formed."""
     q = q_of_H(b0_dir)
+    return np.array([1.0 - 3.0 * q[2], -(q[0] - q[2]), -(q[1] - q[2]), -q[3], -q[4], -q[5]])
+
+
+def field_terms(channels, b0_dir, axis=-1):
+    """The two susceptibility terms of the channels along ``axis`` (``iso_local, iso_P (5), aniso_G (6)`` in that
+    order, 6 or 12 of them: ``iso_P_zz`` is formed from the trace identity) for a field direction: ``(iso, aniso)``
+    with ``iso = iso_local - Q . iso_P`` and ``aniso = Q . aniso_G`` (``None`` when the channels carry no
+    anisotropic basis). ``dB = B0 (chi_iso iso + chi_aniso aniso)``: the one contraction of every route, grid, path
+    and pack. A torch tensor is contracted on its own device in float64 (a float32 matmul on CUDA is TF32) and stays
+    there; anything else on the host."""
+    q, w = q_of_H(b0_dir), iso_weights(b0_dir)
     if type(channels).__module__.split(".")[0] == "torch":
         import torch
-        c = torch.movedim(channels, axis, -1).to(torch.float64); qt = torch.as_tensor(q, device=c.device)
-        return c[..., 0] - c[..., 1:7] @ qt, (c[..., 7:13] @ qt if c.shape[-1] >= 13 else None)
+        c = torch.movedim(channels, axis, -1).to(torch.float64); qt = torch.as_tensor(q, device=c.device); wt = torch.as_tensor(w, device=c.device)
+        return c[..., :6] @ wt, (c[..., 6:12] @ qt if c.shape[-1] >= 12 else None)
     c = np.moveaxis(np.asarray(channels, float), axis, -1)
-    iso = c[..., 0] - c[..., 1:7] @ q
-    aniso = c[..., 7:13] @ q if c.shape[-1] >= 13 else None
+    iso = c[..., :6] @ w
+    aniso = c[..., 6:12] @ q if c.shape[-1] >= 12 else None
     return iso, aniso
 
 
@@ -145,7 +169,7 @@ def contract(channels, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0, axis=-1):
         dB = dB + float(chi_iso) * iso
     if chi_aniso:
         if aniso is None:
-            raise ValueError("these channels carry no anisotropic basis (7 of 13); chi_aniso must be 0")
+            raise ValueError("these channels carry no anisotropic basis (6 of 12); chi_aniso must be 0")
         dB = dB + float(chi_aniso) * aniso
     return dB * float(B0)
 
@@ -213,7 +237,7 @@ class HollowCylinderField:
         return cls(meta["centers"], meta["inner_radii"], meta["outer_radii"], L=meta.get("L"), n_images=meta.get("n_images", CELL_IMAGES))
 
     def device_read(self):
-        """``(arrays, read, key)``: the device arrays a walk passes as arguments, ``read(arrays, r) -> (13,)`` at one
+        """``(arrays, read, key)``: the device arrays a walk passes as arguments, ``read(arrays, r) -> (12,)`` at one
         position (traceable, float32, elementwise: no matmul touches a position), and the key a compiled walk is
         cached on."""
         import jax.numpy as jnp
@@ -241,7 +265,7 @@ class HollowCylinderField:
         return arrays, read, key
 
     def channels(self, points):
-        """``(n, 13)`` basis channels at ``points`` ``(n, 3)`` (metres), the device read evaluated on the host."""
+        """``(n, 12)`` basis channels at ``points`` ``(n, 3)`` (metres), the device read evaluated on the host."""
         import jax
         arrays, read, _ = self.device_read()
         P = np.asarray(points, np.float32).reshape(-1, 3)

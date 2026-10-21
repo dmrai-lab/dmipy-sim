@@ -100,8 +100,8 @@ class FieldGridRecord:
 
     def __init__(self, meta):
         self.meta = dict(meta)
-        from .hollow_cylinder import CHANNEL_NAMES
-        self.channel_names = CHANNEL_NAMES if self.meta.get("has_aniso") else CHANNEL_NAMES[:7]
+        from .hollow_cylinder import CHANNEL_NAMES, ISO_CHANNEL_NAMES
+        self.channel_names = CHANNEL_NAMES if self.meta.get("has_aniso") else ISO_CHANNEL_NAMES
         self.origin = np.asarray(self.meta["origin"], float)
         self.periodic = tuple(bool(p) for p in self.meta.get("periodic") or (False, False, False))
         self.certificate = self.meta.get("raster")
@@ -137,20 +137,29 @@ class FieldGrid(NamedTuple):
 
     @property
     def channel_names(self):
-        """The channels :meth:`channels` returns, in order: ``iso_local``, the six ``iso_P``, and the six
-        ``aniso_G`` when the basis carries them."""
-        from .hollow_cylinder import CHANNEL_NAMES
-        return CHANNEL_NAMES if self.basis.get("aniso_G") is not None else CHANNEL_NAMES[:7]
+        """The channels :meth:`channels` returns, in order: ``iso_local``, the five stored ``iso_P`` (``iso_P_zz`` is
+        formed from the trace), and the six ``aniso_G`` when the basis carries them."""
+        from .hollow_cylinder import CHANNEL_NAMES, ISO_CHANNEL_NAMES
+        return CHANNEL_NAMES if self.basis.get("aniso_G") is not None else ISO_CHANNEL_NAMES
+
+    @property
+    def trace_residual(self):
+        """The trace identity's residual of this basis, ``max |iso_P_xx + iso_P_yy + iso_P_zz - 3 iso_local| / (3 max
+        |iso_local|)``: 0 for an un-apodised dipole solve, the diagnostic a producer states for a grid whose numerics
+        break it (a k-space window applied to ``iso_P`` but not to ``iso_local``). None when there is no local term."""
+        loc = np.asarray(self.basis["iso_local"], float); P = np.asarray(self.basis["iso_P"], float)
+        scale = float(np.abs(loc).max())
+        return None if scale == 0.0 else float(np.abs(P[0] + P[1] + P[2] - 3.0 * loc).max() / (3.0 * scale))
 
     def grids(self, dtype=np.float64):
-        """The basis grids stacked in :attr:`channel_names` order, ``(7 | 13, nx, ny, nz)``."""
-        g = [np.asarray(self.basis["iso_local"], dtype)] + [np.asarray(self.basis["iso_P"][c], dtype) for c in range(6)]
+        """The basis grids stacked in :attr:`channel_names` order, ``(6 | 12, nx, ny, nz)``."""
+        g = [np.asarray(self.basis["iso_local"], dtype)] + [np.asarray(self.basis["iso_P"][c], dtype) for c in (0, 1, 3, 4, 5)]
         if self.basis.get("aniso_G") is not None:
             g += [np.asarray(self.basis["aniso_G"][c], dtype) for c in range(6)]
         return np.stack(g)
 
     def channels(self, points):
-        """``(n, 7 | 13)`` basis channels at ``points`` ``(n, 3)`` (metres), trilinear on the grid: the same
+        """``(n, 6 | 12)`` basis channels at ``points`` ``(n, 3)`` (metres), trilinear on the grid: the same
         protocol as :meth:`dmipy_sim.fields.strand_field.StrandFieldBasis.channels`."""
         P = np.asarray(points, float).reshape(-1, 3)
         vs = np.asarray(self.basis["voxel_size"], float); org = np.asarray(self.origin, float)
@@ -165,14 +174,14 @@ class FieldGrid(NamedTuple):
 
     def device_read(self):
         """``(arrays, read, key)``: the device arrays a walk passes as arguments (:meth:`device_arrays`), ``read(arrays,
-        r) -> (7 | 13,)`` at one position (:func:`grid_channels_at`, the periodic axes wrapped), and the key a compiled
+        r) -> (6 | 12,)`` at one position (:func:`grid_channels_at`, the periodic axes wrapped), and the key a compiled
         walk is cached on."""
         periodic = tuple(bool(p) for p in self.periodic)
         arrays = self.device_arrays()
         return arrays, (lambda a, r: grid_channels_at(*a, periodic, r)), ("grid", tuple(arrays[0].shape), periodic)
 
     def channels_at_device(self):
-        """The jitted ``(n, 3) -> (n, 7 | 13)`` read of :func:`grid_channels_at` on the device, float32: the read a
+        """The jitted ``(n, 3) -> (n, 6 | 12)`` read of :func:`grid_channels_at` on the device, float32: the read a
         walk takes at every sub-step (:func:`dmipy_sim.engine.core.simulate_trajectories` with ``field_basis=``)."""
         import jax
         arrays, periodic = self.device_arrays(), tuple(bool(p) for p in self.periodic)

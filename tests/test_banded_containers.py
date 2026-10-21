@@ -308,7 +308,7 @@ def test_the_field_container_is_one_common_step_in_the_contracted_field():
     rng = np.random.default_rng(1); n_w, K, T = 4000, 32, 0.1
     names = list(CHANNEL_NAMES)
     amp = 1e-2 / (1.0 + 0.1 * np.arange(K))                                   # a red spectrum, in field-basis units
-    C = rng.normal(size=(n_w, K, 13)) * amp[None, :, None]
+    C = rng.normal(size=(n_w, K, 12)) * amp[None, :, None]
     kw = dict(B0=7.0, chi_iso=1e-7, chi_aniso=1e-8)
     depth = {}
     for f in (2e-2, 5e-3, 1.25e-3):
@@ -357,8 +357,8 @@ def test_the_default_field_container_is_derived_and_the_quantisation_term_carrie
 
 @pytest.fixture(scope="module")
 def straight_cylinder_walk():
-    """A myelinated cylinder along z walked with its closed-form field: ``iso_P_zz`` is zero and the trace identity
-    holds, the z-components ``iso_P_xz``, ``iso_P_yz``, ``aniso_G_xz``, ``aniso_G_yz`` are zero in every walker."""
+    """A myelinated cylinder along z walked with its closed-form field: the z-components ``iso_P_xz``, ``iso_P_yz``,
+    ``aniso_G_xz``, ``aniso_G_yz`` are zero in every walker."""
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_sim.replay import compression as cx
     g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D0, D0)
@@ -368,27 +368,25 @@ def straight_cylinder_walk():
     return w, env
 
 
-def test_the_trace_component_and_the_zero_components_are_not_stored(straight_cylinder_walk):
+def test_the_zero_components_are_not_stored_and_the_trace_component_is_never_a_channel(straight_cylinder_walk):
     from dmipy_sim.replay import bank
     w, env = straight_cylinder_walk
     C = np.asarray(w.field_coeffs, np.float64)[:, 0]
     names = list(w.field_channel_names)
-    assert len(names) == 13
+    assert len(names) == 12 and "iso_P_zz" not in names
     zero = ["iso_P_xz", "iso_P_yz", "aniso_G_xz", "aniso_G_yz"]
     assert all(np.abs(C[..., names.index(n)]).max() == 0.0 for n in zero)
     kw = dict(license="x", citation="x", envelope=env, device="numpy")
     full = build_replay_pack(w, id="t/f", field_container=None, **kw)
     pk = build_replay_pack(w, id="t/z", **kw)
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
-    assert pm["iso_P_zz"] == "implied" and pm["trace_residual"] < 1e-5
-    assert set(pm["zero_components"]) == set(zero) and pm["n_ch"] == 13 - 1 - len(zero) == len(pm["channels"])
+    assert "iso_P_zz" not in pm and "iso_P_zz" not in pm["channels"]
+    assert set(pm["zero_components"]) == set(zero) and pm["n_ch"] == 12 - len(zero) == len(pm["channels"])
     assert not set(zero) & set(pm["channels"]) and pk.arrays["susc_path_scale"].shape == (pm["n_ch"], pm["K"])
-    # the reader returns the full canonical set, the omitted components zero and the trace component rebuilt
+    # the reader returns the full canonical twelve, the omitted components zero
     Cq, nq = bank.susc_path_coeffs(pk.arrays, pm)
-    assert nq == names and Cq.shape == (300, 13, pm["K"])
+    assert nq == names and Cq.shape == (300, 12, pm["K"])
     assert all(np.all(Cq[:, nq.index(n)] == 0.0) for n in zero)
-    iz = nq.index("iso_P_zz")
-    np.testing.assert_allclose(Cq[:, iz], 3 * Cq[:, 0] - Cq[:, 1] - Cq[:, 2])
     assert np.abs(Cq - np.transpose(C, (0, 2, 1))).max() < 0.05 * np.abs(C).max()      # the container's own error
     # the replay of the field is the float pack's, to the container's quantisation
     from dmipy_sim import RFEvent, ScannerSequence
@@ -417,10 +415,9 @@ def test_a_shard_takes_the_certifying_packs_layout_or_is_refused(straight_cylind
     C2 = C.copy(); C2[..., names.index("iso_P_xz")] = 1e-2 * np.abs(C).max()
     with pytest.raises(ValueError, match="iso_P_xz"):
         bank.susc_path_encode_modes(C2, names, T=w.T, container=bank.FieldCodec.of(pm))
-    # a layout that implies iso_P_zz where the identity fails: refused
-    C3 = C.copy(); C3[..., names.index("iso_P_zz")] += 1e-2 * np.abs(C).max()
-    with pytest.raises(ValueError, match="trace identity"):
-        bank.susc_path_encode_modes(C3, names, T=w.T, container=bank.FieldCodec.of(pm))
+    # a field that offers iso_P_zz is refused by name, whatever the layout
+    with pytest.raises(ValueError, match="iso_P_zz"):
+        bank.susc_path_encode_modes(np.concatenate([C, C[..., :1]], axis=-1), names + ["iso_P_zz"], T=w.T, container=bank.FieldCodec.of(pm))
 
 
 def test_the_contact_container_is_held_to_the_contacts_own_floor():

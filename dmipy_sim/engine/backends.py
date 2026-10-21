@@ -126,7 +126,7 @@ class WalkBatch(NamedTuple):
     work: tuple                       #: (hits | None, crossings | None, exhausted) per walker, int32 arrays
     counters: object = None           #: what else the backend counted over the batch (an adaptive walk's
                                       #: ``dict(n_free=, n_kernel_steps=)``), or None when it reports none
-    field_samples: object = None      #: (n, n_tf, 13) float32 the bare interval means of the field's channels at the
+    field_samples: object = None      #: (n, n_tf, n_ch) float32 the bare interval means of the field's channels at the
                                       #: sampled saves (sample 0 the start's reading; no mean subtracted), or None
 
 
@@ -183,7 +183,7 @@ class Backend:
         :class:`CoefficientBatch`, with the block ends of the first ``request.raw_subset`` walkers as its ``saves``.
         A request with ``K = 0`` is the adaptive producer's walk of saves (a :class:`WalkBatch`; ``out``, when given,
         is a dict of that producer's own contiguous float32 arrays -- ``positions`` (n, n_t, 3),
-        ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, 13) -- a backend may write
+        ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, n_ch) -- a backend may write
         into instead of allocating its own, dmipy-sim-cuda#33)."""
         raise NotImplementedError
 
@@ -627,7 +627,7 @@ def field_struct_fields(basis, radius_m, reuse, list_k, K_c3=0, read_every=0):
     otherwise, as the backend's own struct holds it)."""
     _, fcell_ids = csr_cells(np.asarray(basis._CELL))
     far = basis.far
-    mean = [_f32(x) for x in np.asarray(basis.mean, np.float32)] if int(K_c3) else [0.0] * 13
+    mean = [_f32(x) for x in np.asarray(basis.mean, np.float32)] if int(K_c3) else [0.0] * len(basis.channel_names)
     return dict(n_seg=int(basis.n_segments), nnz=int(fcell_ids.shape[0]), dims=[int(x) for x in basis._dims],
                gmin=[_f32(x) for x in np.asarray(basis._gmin)], cs=_f32(basis._CS), radius=_f32(radius_m),
                reach=_f32(basis.gather_radius_m), gate_radii=_f32(basis.NEAREST_GATE_RADII),
@@ -694,7 +694,6 @@ def crop_far_grid(values, origin_m, spacing_m, r0, T, diffusivity):
     """The far grid cropped to what a batch of starts ``r0`` can reach over a walk of ``T`` seconds: the starts'
     bounding box plus eight sigma of the walk's excursion, ``8 sqrt(2 D T)``, and three nodes, so a shard of a large
     substrate uploads a crop, never the whole grid. Returns ``(crop.view(uint16), far_dims, far_origin)``."""
-    values = np.asarray(values)
     N = np.asarray(values.shape[:3])
     h = float(spacing_m)
     T = float(T)

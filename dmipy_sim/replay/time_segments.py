@@ -452,7 +452,7 @@ def _walk_view(walk, weights=None):
             fc = np.asarray(cw.field_coeffs, np.float32)[:, 0, :int(walk.K_c3), :]
             a["susc_path_dct"] = np.ascontiguousarray(np.transpose(fc, (0, 2, 1)))
             channels["susc_field_basis"] = dict(channel="susc_field_basis", K=int(walk.K_c3), T=T_w, n_ch=len(names),
-                                                channels=list(names), iso_P_zz="stored", sampling="accumulated_in_walk",
+                                                channels=list(names), sampling="accumulated_in_walk",
                                                 read_interval=walk.field_read_interval)
             channels["susceptibility_grid"] = dict(has_aniso="aniso_G_xx" in names, arrays_in_pack=False, replay_route="path")
         arrays.update({p + k: v for k, v in a.items()})

@@ -96,7 +96,7 @@ def test_the_in_walk_read_is_the_grid_at_the_sub_steps(case):
     np.testing.assert_allclose(w.raw_positions, fine.raw_positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
     fr = w.block["field_read"]
     assert w.field_basis is fg and fr["n_read"] == 1 and w.field_read_interval == pytest.approx(w.dt_sim)
-    n_ch = 7 if fg.basis.get("aniso_G") is None else 13
+    n_ch = 6 if fg.basis.get("aniso_G") is None else 12
     assert w.raw_field.shape == (120, w.n_blocks * N_SUB + 1, n_ch) and w.reads_per_block == N_SUB
     assert w.field_coeffs.shape == (120, w.n_windows, w.K_c3, n_ch)
     ref = _reads(fg, fine.raw_positions)
@@ -183,14 +183,14 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
     w = walk_spec(geom.spec, 600, 5e-3, seed=2, require_gpu=False)
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs is not None
     assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
-    assert w.field_coeffs.shape == (600, w.n_windows, w.K_c3, 13)
+    assert w.field_coeffs.shape == (600, w.n_windows, w.K_c3, 12)
     pk = build_replay_pack(w, id=f"test/{family}-in-walk", license="x", citation="x", envelope=ENV)
     ch = pk.meta["compression"]["channels"]
     assert pk.has_field and ch["susc_field_basis"]["sampling"] == "accumulated_in_walk"
     assert ch["susceptibility_grid"]["replay_route"] == "path" and not ch["susceptibility_grid"]["arrays_in_pack"]
     assert "susc_grid_iso_local" not in pk.arrays and "err_susc_se" not in pk.meta["fidelity"]
     f = pk.meta["fidelity"]
-    assert f["err_susc_path"] <= 2.0 * f["floor_susc_path"]
+    assert f["err_susc_path"] <= 2.0 * f["floor_max"]                           # the band alone plus the container, against the pack's floor
     assert f["within_2x_floor"]
 
 
@@ -200,7 +200,7 @@ def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_
     pytest.importorskip("trimesh")
     from tests.test_mesh_spec import _bundle_spec
     w = walk_spec(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
-    assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs.shape == (120, w.n_windows, w.K_c3, 13)
+    assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs.shape == (120, w.n_windows, w.K_c3, 12)
     ids = np.asarray(w.compartment)
     frozen = np.asarray(w.field_coeffs)[ids == 2]
     assert (frozen[:, :, 1:] == 0).all()                                           # held: no modulation
