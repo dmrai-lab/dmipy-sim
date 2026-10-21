@@ -211,7 +211,7 @@ READ_CHECK_RATIO = 1.5
 
 def read_checks(steps):
     """The read intervals, in steps, at which a pilot that reads every step measures the trapezoid's constant: a
-    ladder ``2, 3, 4, 6, 9, ...`` (ratio :data:`READ_CHECK_RATIO`) up to the block's ``steps``, the block itself the
+    ladder ``2, 3, 4, 7, 10, 15, 23, ...`` (ratio :data:`READ_CHECK_RATIO`, rounded) up to the block's ``steps``, the block itself the
     last rung; a walk's read is charged at the rung at or above it (:func:`field_read_of_pilot`)."""
     steps = int(steps)
     out, d = [], 2.0
