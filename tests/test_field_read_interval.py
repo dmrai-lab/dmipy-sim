@@ -142,7 +142,7 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     the weight-averaged replay of the shards."""
     from dmipy_sim.replay.bank import merge_packs, susc_path_coeffs
     pks = [_float_pack(_walk(spec, BLOCK, seed=s_), id=f"t/shard-{s_}", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
-                       out_path=str(tmp_path / f"s{s_}.rpk"))
+                       field_container=((None, 8),), out_path=str(tmp_path / f"s{s_}.rpk"))
            for s_ in (3, 4)]
     m = merge_packs([str(tmp_path / "s3.rpk"), str(tmp_path / "s4.rpk")], id="t/merged")
     pm = m.meta["compression"]["channels"]["susc_field_basis"]
