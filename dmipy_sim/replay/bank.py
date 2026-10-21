@@ -550,20 +550,22 @@ def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=N
     """The field channel's band and container on a pilot spread over the walk's pools: :func:`derive_field_band` on
     each pool's walkers (``pools`` ``{name: index array into series}``), the walk taking the widest band and the
     deeper container any pool needs -- a pool whose field is smooth (a uniform lumen, a far extra space) must not set
-    the band of one whose field is not. ``(K_c3, bits, record)``, the record every pool's own under ``pools``."""
-    per, K, bits = {}, 1, 8
+    the band of one whose field is not. ``(K_c3, bits, record)``: the record is the binding pool's (its ladder, its
+    error and floor at the band; ``binding_pool``), with every pool's own under ``pools``."""
+    per, recs = {}, {}
     for name, idx in pools.items():
         idx = np.asarray(idx)
         if idx.size < 2:
             continue
         k_p, b_p, rec = derive_field_band(np.asarray(series)[idx], names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
+        recs[str(name)] = (int(k_p), int(b_p), rec)
         per[str(name)] = dict({k: v for k, v in rec.items() if k != "ladder"}, walkers=int(idx.size), bits=int(b_p))
-        K, bits = max(K, int(k_p)), max(bits, int(b_p))
-    if not per:
+    if not recs:
         return derive_field_band(series, names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
-    return int(K), int(bits), dict(rule="pilot per pool", K=int(K), bits=int(bits),
-                                   criterion="each pool's band by derive_field_band on its own pilot walkers, the widest taken",
-                                   pools=per)
+    binding = max(recs, key=lambda nm: (recs[nm][0], recs[nm][1]))
+    K, bits = recs[binding][0], max(b for _, b, _ in recs.values())
+    return int(K), int(bits), dict(recs[binding][2], binding_pool=binding, pools=per,
+                                   per_pool="each pool's band by its own pilot walkers, the widest taken")
 
 
 def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):

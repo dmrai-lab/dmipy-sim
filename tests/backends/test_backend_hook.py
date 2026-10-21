@@ -288,11 +288,11 @@ def test_the_adaptive_producer_takes_the_start_pool_from_the_batch():
 
 def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots_read():
     """With a strand field the request carries the sampling (the basis, the list's reuse and width) and the read
-    (``K_c3``, ``field_read_interval``): the pilot's batch reads every round, the walk's batches at the read the
-    pilot's measured read series gives (a series that does not vary: once per block); the walk takes the batch's
-    field modes, its quadratic variation and its read series' quadratic variation. A backend that returns no read
-    series' quadratic variation is refused by name, and so is a raw subset of a field walk (its oracle is the reads at
-    the walk's read instants, which a backend's block means are not)."""
+    (``K_c3``, ``field_read_interval``): the pilot walks on the JAX kernels whatever the backend (the read series'
+    quadratic variation, the trapezoid's constants and the band are the producer's own measurement), the backend's
+    batches at the read the pilot derives; the walk takes the batch's field modes, its quadratic variation and its
+    read series' quadratic variation. The raw subset of a field walk is walked by the JAX kernels too (its reads at
+    the read instants). A backend that returns no read series' quadratic variation is refused by name."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     g = backends.parity_cases()["strands_intra"]()
@@ -300,21 +300,21 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     kw = dict(seed=3, require_gpu=False, walker_batch_size=64, field_basis=basis, field_reuse_intervals=3, K_c3=2, K=6)
     still = _Still()
     w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=still, **kw)
-    pilot, walk = still.requests[0], still.requests[-1]
+    walk = still.requests[-1]
     f = walk.field
     assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 1 and f.reuse_intervals == 3
     assert f.radius_m >= basis.gather_radius_m and f.list_k == 256            # no JAX probe with a backend: the given width
-    assert pilot.field_read_interval == pytest.approx(pilot.stepping.dt_round)          # the pilot reads every round
     fr = w.block["field_read"]
-    assert fr["rule"] == "pilot" and fr["n_read"] == pilot.stepping.n_rounds              # a still series: once per block
-    assert walk.K_c3 == 2 and walk.field_read_interval == pytest.approx(w.field_read_interval) == pytest.approx(2.5e-4)
-    assert w.field_coeffs.shape == (64, 1, 2, 13) and w.K_c3 == 2 and w.field_basis is basis and w.qv_field.shape == (64, 1, 13)
-    assert w.qv_field_increments.shape == (64, 1, 13) and not w.qv_field_increments.any()
+    assert fr["rule"] == "pilot" and fr["constants_measured"] and w.stepping["field_pilot_backend"] == "jax"
+    assert all(r.field_read_interval == pytest.approx(w.field_read_interval) for r in still.requests)   # the backend walks the walk only
+    assert walk.K_c3 == 2 and w.field_coeffs.shape == (64, 1, 2, 13) and w.K_c3 == 2 and w.field_basis is basis
+    assert w.qv_field.shape == (64, 1, 13) and w.qv_field_increments.shape == (64, 1, 13)
     with pytest.raises(ValueError, match="the backend does not return the field increments"):
         simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=_Still(field_increments=False), **kw)
-    with pytest.raises(ValueError, match="keeps the reads at the walk's read instants"):
-        simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=_Still(), raw_subset=64,
-                                       field_read_interval=2.5e-4, **kw)
+    raw = _Still()
+    wr = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=raw, raw_subset=16, **kw)
+    assert wr.raw_field.shape == (16, wr.n_blocks * wr.reads_per_block + 1, 13) and wr.stepping["raw_subset_backend"] == "jax"
+    assert all(int(r.raw_subset) == 0 for r in raw.requests)                     # the backend walks no raw subset
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():

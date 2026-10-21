@@ -118,15 +118,18 @@ def test_the_in_walk_read_is_the_grid_at_the_sub_steps(case):
 
 
 def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
-    """(b) A given ``field_read_interval`` of two steps reads the field every second step (the largest divisor of the
-    block's steps within it): the walk itself is unchanged -- the same positions, bands and contact, only the field
-    differs, the raw subset keeping ITS reads -- and an interval below the step is the step."""
+    """(b) A given ``field_read_interval`` of two steps reads the field every second step, one of three every third
+    step and at the block's end (a read need not divide the block: the last interval of a block of four is one step):
+    the walk itself is unchanged -- the same positions, bands and contact, only the field differs, the raw subset
+    keeping ITS reads at their instants and the modes the exact projection of their trapezoids, each over its own
+    length -- and an interval below the step is the step."""
     geom, fg = _packed(), field_grid_of(_packed(), res=0.1 * UM)
     T, dt = 1.8e-3, 2e-4
     dt_sim = dt / N_SUB
     kw = dict(seed=5, sub_steps=N_SUB, require_gpu=False, field_basis=fg, raw_subset=80)
     w1 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=dt_sim, **kw)
     w2 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=2 * dt_sim, **kw)
+    w3 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=3 * dt_sim, **kw)
     w0 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=0.1 * dt_sim, **kw)
     assert w1.n_blocks == 9 and w1.block["field_read"]["n_read"] == 1 and w2.block["field_read"]["n_read"] == 2
     assert w2.field_read_interval == pytest.approx(2 * dt_sim) and w1.field_read_interval == pytest.approx(dt_sim)
@@ -139,6 +142,16 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     for w, n_read in ((w1, 1), (w2, 2)):
         ref = _reads(fg, fine.raw_positions, n_read)
         assert w.raw_field.shape == ref.shape and np.abs(w.raw_field - ref).max() <= 2e-5 * np.abs(ref).max()
+    fr3 = w3.block["field_read"]
+    assert fr3["n_read"] == 3 and fr3["reads_per_block"] == 2 and w3.field_read_interval == pytest.approx(3 * dt_sim)
+    at = np.round(w3.field_read_instants / dt_sim).astype(int)                     # every 3rd step and every block end
+    assert at[:5].tolist() == [0, 3, 4, 7, 8] and at[-1] == w3.n_blocks * N_SUB
+    ch = fg.channels(np.asarray(fine.raw_positions, np.float64).reshape(-1, 3)).reshape(80, fine.raw_positions.shape[1], -1)
+    ref3 = ch[:, at]
+    assert w3.raw_field.shape == ref3.shape and np.abs(w3.raw_field - ref3).max() <= 2e-5 * np.abs(ref3).max()
+    v = 0.5 * (ref3[:, :-1] + ref3[:, 1:]) * np.diff(at * dt_sim)[None, :, None]    # each trapezoid over its own length
+    k0 = v.sum(1) / np.sqrt(w3.T_window)
+    np.testing.assert_allclose(np.asarray(w3.field_coeffs, np.float64)[:, 0, 0], k0, rtol=0, atol=2e-5 * np.abs(k0).max())
     a, b = np.asarray(w1.field_coeffs, np.float64), np.asarray(w2.field_coeffs, np.float64)
     assert np.abs(b - a).max() > 1e-5 * np.abs(a).max()                         # the coarser read is a different quadrature
     with pytest.raises(ValueError, match="go with field_basis"):
@@ -201,3 +214,30 @@ def test_a_spec_without_a_source_carries_no_field():
     assert w.field_basis is None and w.field_coeffs is None
     pk = build_replay_pack(w, id="test/no-source", license="x", citation="x", K=8, envelope=ENV)
     assert not pk.has_field
+
+
+def test_the_closed_form_hollow_cylinder_is_read_in_the_walk():
+    """The myelinated cylinder's field in closed form (:class:`HollowCylinderField`, the forward Bloch provider's
+    ``MyelinSusceptibility`` field on every channel): read at the walker's own position, the lumen's field is uniform
+    -- its read series does not vary, so the lumen asks for no read -- and the walk, its pack and its file carry it."""
+    import jax
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField, contract
+    from dmipy_sim.fields.susceptibility import MyelinSusceptibility
+    g = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
+    f = HollowCylinderField.of(g)
+    P = np.random.default_rng(0).uniform(-4 * UM, 4 * UM, (40, 3))
+    ms = MyelinSusceptibility(centers=[[0, 0]], inner_radii=[1 * UM], outer_radii=[1.5 * UM], L=1.0, delta_chi_a=-1e-7, B0=7.0,
+                              theta=np.pi / 2, alpha=0.0, periodic=False, n_images=0)
+    ref = np.array([float(ms.delta_bz_fn()(jax.numpy.asarray(p, jax.numpy.float32))) for p in P])
+    np.testing.assert_allclose(contract(f.channels(P), [1.0, 0.0, 0.0], B0=7.0, chi_aniso=-1e-7), ref, rtol=1e-5, atol=1e-6 * np.abs(ref).max())
+    w = d.simulate_trajectories(300, D0, g, 4e-3, seed=3, K=12, window_T=4e-3, field_basis=f, require_gpu=False)
+    fr = w.block["field_read"]
+    assert fr["pools"]["intra"]["dt_f_rule"] is None and not np.any(fr["pools"]["intra"]["qv_increments"])   # uniform lumen
+    assert sum(fr["pools"]["extra"]["qv_increments"]) > 0 and set(w.block["field_band"]["pools"]) >= {"extra", "intra"}
+    pk = build_replay_pack(w, id="test/closed-form", license="x", citation="x", envelope=ENV)
+    assert pk.has_field and pk.meta["compression"]["channels"]["susceptibility_grid"]["source"]["kind"] == "hollow_cylinder"
+    import tempfile, os
+    path = os.path.join(tempfile.mkdtemp(), "w.walk")
+    w.save(path)
+    back = d.CoefficientWalk.load(path)
+    assert isinstance(back.field_basis, HollowCylinderField) and back.field_basis.meta == f.meta
