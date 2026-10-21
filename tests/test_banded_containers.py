@@ -281,7 +281,7 @@ def test_a_field_range_stores_the_registrys_bit_layout_at_every_depth(bits):
     from dmipy_sim.replay.bank import _quantise_susc_path, susc_path_coeffs
     rng = np.random.default_rng(bits); n_w, n_ch, K, K0 = 12, 4, 12, 8
     C = rng.normal(size=(n_w, n_ch, K))
-    meta = dict(channel="susc_field_basis", K=K, T=4e-3, n_ch=n_ch, channels=["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"], iso_P_zz="stored")
+    meta = dict(channel="susc_field_basis", K=K, T=4e-3, n_ch=n_ch, channels=[f"c{i}" for i in range(n_ch)], iso_P_zz="stored")
     a, m = _quantise_susc_path(C, dict(meta), [{"modes": [0, K0], "bits": bits}, {"modes": [K0, K], "bits": 3}])
     name = _cx.range_name("susc_path_dct", 0, bits)
     t = np.asarray(a[name])
@@ -353,3 +353,71 @@ def test_the_default_field_container_is_derived_and_the_quantisation_term_carrie
     assert f["err_susc_bloch"] <= f["floor_susc_bloch"]
     back = read_rpk(str(tmp_path / "pd.rpk"))
     np.testing.assert_array_equal(back.arrays["susc_path_scale"], pk.arrays["susc_path_scale"])
+
+
+@pytest.fixture(scope="module")
+def straight_cylinder_walk():
+    """A myelinated cylinder along z walked with its closed-form field: ``iso_P_zz`` is zero and the trace identity
+    holds, the z-components ``iso_P_xz``, ``iso_P_yz``, ``aniso_G_xz``, ``aniso_G_yz`` are zero in every walker."""
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+    from dmipy_sim.replay import compression as cx
+    g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D0, D0)
+    env = dict(cx.default_envelope(), B0_list=[7.0], theta_deg=[90.0], max_refocus_pulses=4)
+    w = d.simulate_trajectories(300, D0, g, 0.01, seed=1, require_gpu=False, K=16, window_T=0.01, field_basis=HollowCylinderField.of(g),
+                                envelope=env)
+    return w, env
+
+
+def test_the_trace_component_and_the_zero_components_are_not_stored(straight_cylinder_walk):
+    from dmipy_sim.replay import bank
+    w, env = straight_cylinder_walk
+    C = np.asarray(w.field_coeffs, np.float64)[:, 0]
+    names = list(w.field_channel_names)
+    assert len(names) == 13
+    zero = ["iso_P_xz", "iso_P_yz", "aniso_G_xz", "aniso_G_yz"]
+    assert all(np.abs(C[..., names.index(n)]).max() == 0.0 for n in zero)
+    kw = dict(license="x", citation="x", envelope=env, device="numpy")
+    full = build_replay_pack(w, id="t/f", field_container=None, **kw)
+    pk = build_replay_pack(w, id="t/z", **kw)
+    pm = pk.meta["compression"]["channels"]["susc_field_basis"]
+    assert pm["iso_P_zz"] == "implied" and pm["trace_residual"] < 1e-5
+    assert set(pm["zero_components"]) == set(zero) and pm["n_ch"] == 13 - 1 - len(zero) == len(pm["channels"])
+    assert not set(zero) & set(pm["channels"]) and pk.arrays["susc_path_scale"].shape == (pm["n_ch"], pm["K"])
+    # the reader returns the full canonical set, the omitted components zero and the trace component rebuilt
+    Cq, nq = bank.susc_path_coeffs(pk.arrays, pm)
+    assert nq == names and Cq.shape == (300, 13, pm["K"])
+    assert all(np.all(Cq[:, nq.index(n)] == 0.0) for n in zero)
+    iz = nq.index("iso_P_zz")
+    np.testing.assert_allclose(Cq[:, iz], 3 * Cq[:, 0] - Cq[:, 1] - Cq[:, 2])
+    assert np.abs(Cq - np.transpose(C, (0, 2, 1))).max() < 0.05 * np.abs(C).max()      # the container's own error
+    # the replay of the field is the float pack's, to the container's quantisation
+    from dmipy_sim import RFEvent, ScannerSequence
+    nt = pk.n_t; dt = pk.dt; TE = (nt - 1) * dt
+    ten = Tissue(chi_iso=-1e-7, chi_aniso=-1e-7)
+    for rf in ([RFEvent(0.0, 90)], [RFEvent(0.0, 90), RFEvent(TE / 2, 180)]):
+        seq = ScannerSequence(G=np.zeros((1, nt, 3)), dt=dt, rf=rf)
+        E = pk.walker_signals(seq, scanner=7.0, tissue=ten)[2][:, 0]; E0 = full.walker_signals(seq, scanner=7.0, tissue=ten)[2][:, 0]
+        assert np.abs(np.angle(E / E0)).max() < 0.1
+    nb = lambda p: sum(v.nbytes for k, v in p.arrays.items() if k.startswith("susc_path_dct")) / p.n_walkers
+    assert nb(pk) < nb(full) * 0.5
+
+
+def test_a_shard_takes_the_certifying_packs_layout_or_is_refused(straight_cylinder_walk):
+    from dmipy_sim.replay import bank
+    w, env = straight_cylinder_walk
+    kw = dict(license="x", citation="x", envelope=env, device="numpy")
+    pk = build_replay_pack(w, id="t/z", **kw)
+    pm = pk.meta["compression"]["channels"]["susc_field_basis"]
+    again = build_replay_pack(w, id="t/z2", field_container=pm, **kw)
+    pm2 = again.meta["compression"]["channels"]["susc_field_basis"]
+    assert pm2["channels"] == pm["channels"] and pm2["container"] == pm["container"] and sorted(again.arrays) == sorted(pk.arrays)
+    C = np.asarray(w.field_coeffs, np.float64)[:, 0]
+    names = list(w.field_channel_names)
+    # a component the layout drops, nonzero in these modes: refused by name
+    C2 = C.copy(); C2[..., names.index("iso_P_xz")] = 1e-2 * np.abs(C).max()
+    with pytest.raises(ValueError, match="iso_P_xz"):
+        bank.susc_path_encode_modes(C2, names, T=w.T, container=bank.FieldCodec.of(pm))
+    # a layout that implies iso_P_zz where the identity fails: refused
+    C3 = C.copy(); C3[..., names.index("iso_P_zz")] += 1e-2 * np.abs(C).max()
+    with pytest.raises(ValueError, match="trace identity"):
+        bank.susc_path_encode_modes(C3, names, T=w.T, container=bank.FieldCodec.of(pm))

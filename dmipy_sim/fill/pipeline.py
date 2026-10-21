@@ -201,7 +201,7 @@ def _pack_block(job, walk_of):
     man, P = job["manifest"], job["manifest"]["pack"]
     G = man["grid"]; grid = Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
     fid = dict(fidelity="derived", blt_temporal_K=P["blt_K"])             # every coefficient walk certifies itself walk-free
-    pos_c, blt_c = P["position_container"], P["blt_container"]
+    pos_c, blt_c, field_c = P["position_container"], P["blt_container"], P.get("field_container", "derived")
     cc = None if job["certify"] else (job.get("certificate") or {}).get("compression")
     if cc is not None and "container" in cc:                              # one container for every shard of the fill: the certifying pack's
         from ..replay.bank import _container_of_meta
@@ -209,13 +209,15 @@ def _pack_block(job, walk_of):
         bc = (cc.get("channels") or {}).get("boundary_local_time") or {}
         if bc.get("dtype") == "bands":
             blt_c = _container_of_meta(bc.get("container"))
+        if (cc.get("channels") or {}).get("susc_field_basis"):            # and its field layout: the container and the channels stored
+            field_c = cc["channels"]["susc_field_basis"]
     rounds = job["rounds"]; k = len(rounds); out = job["out"]; t0 = time.time(); packs = []
     for r, rd in enumerate(rounds):
         w = walk_of(r, rd)
         out_r = out if k == 1 else out[:-4] + f".round{r}.rpk"
         pk = build_replay_pack(w, id=f"{man['id']}/{job['variant']}/{job['name']}{'-certifying' if job['certify'] else ''}" + (f"/round-{r}" if k > 1 else ""),
                                license=man["license"], citation=man["citation"], K=P.get("K"), scanner=man["walk"]["scanner"], position_container=pos_c,
-                               blt_container=blt_c, susc_path_K=(P["K_path"] if w.field_coeffs is not None else None), voxel_grid=grid,
+                               blt_container=blt_c, field_container=field_c, susc_path_K=(P["K_path"] if w.field_coeffs is not None else None), voxel_grid=grid,
                                out_path=out_r, device=job["device"], provenance=dict(job["provenance"], round=(r if k > 1 else None), rounds=k), **fid)
         packs.append(out_r); del w
     if k > 1:

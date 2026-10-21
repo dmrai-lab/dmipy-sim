@@ -241,7 +241,7 @@ def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, 
                   attach="substrate"),
         walk=dict(T_max_s=float(T_max_s), scanner=scanner, adaptive_steps=True, walker_batch_size=4096, census_draws=200),
         pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="derived",
-                  blt_container="derived", blt_K=mode_count(T_max_s, scanner)),
+                  blt_container="derived", field_container="derived", blt_K=mode_count(T_max_s, scanner)),
         plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),
     )
     path = os.path.join(variant_dir, "manifest.json")

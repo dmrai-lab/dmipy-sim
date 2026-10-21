@@ -13,7 +13,7 @@ A manifest holds (the DiSCo replay dataset is the reference):
   each pool's pilot's; a kit needs it);
 - ``pack``: ``K`` (optional: absent, the shard's band is ``walk.scanner``'s by the storage rule, #643), ``K_path`` (the
   field channel's band, which every shard's walk accumulates: the certifying pack's), ``blt_K``, ``position_container``,
-  ``blt_container``;
+  ``blt_container``, ``field_container`` (each ``"derived"`` or ranges; a shard of a fill takes the certifying pack's);
 - ``plan``: ``file`` (an ``.npz`` of ``count_<pool>`` arrays on the grid), ``blocks`` (a JSON table of voxel
   boxes with their seeds), optional ``passes`` (each ``{pass, scale}``: a share of every block's counts, filled
   as its own shard from its own seed stream).
