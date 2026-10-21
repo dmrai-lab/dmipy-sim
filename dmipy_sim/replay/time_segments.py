@@ -53,7 +53,10 @@ the envelope's largest ``B0 chi`` with the budget split equally over the channel
 rows' trace identity ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` holds within half the step the channels take
 without it (the pack checks the same residual; reconstructing the channel then moves no rounded value); the background
 at ``background_amplitude``. A field within half its step of zero on every row (a channel the gate refocuses, a
-component the substrate's symmetry zeroes) rounds to zero on every row and is not stored. Each tier column is its own term at the floor's budget.
+component the substrate's symmetry zeroes) rounds to zero on every row and is not stored. Each tier column is its own
+term at the floor's budget. A rounding of rms ``sigma`` rad per walker moves a voxel's signal by about ``sigma`` times
+its Monte-Carlo floor and biases it by ``sigma^2 / 2``; the manifest's ``certificate.rounding`` states each partition's
+realised ``sigma^2`` beside its budget.
 
 **Rows and consolidation.** :func:`segment_rows` writes one block's rows: per partition and tier column one float
 file, the rows in (voxel, pool) order, the declarations in ``rows.json``. :func:`write_time_segment_layout` takes the
