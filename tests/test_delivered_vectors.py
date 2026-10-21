@@ -191,12 +191,8 @@ def test_a_layout_without_background_refuses_a_magnet_gradient(layout):
     term the same delivery replays."""
     sm, merged, grid, n_t, dirs, tmp = layout
     plain_rows = str(tmp / "dm_plain_rows")
-    import json
-    rec = json.load(open(os.path.join(dirs[0], "rows.json")))
-    # the rows of block 0 written again without the background
-    from dmipy_sim.replay.replay import ReplayPack
-    pk = merged
-    segment_rows(pk, _shapes(n_t), plain_rows, grid=grid, g_max=G_MAX, tiers=True, floor_target=rec["source"]["floor_target"])
+    # the merged pack's rows written again without the background
+    segment_rows(merged, _shapes(n_t), plain_rows, grid=grid, g_max=G_MAX, tiers=True)     # the pack's own declared floor
     write_time_segment_layout([plain_rows], str(tmp / "dm_plain"))
     plain = TimeSegmentLayout(str(tmp / "dm_plain"))
     assert not any(grp.get("background") for grp in plain.manifest["groups"].values())
