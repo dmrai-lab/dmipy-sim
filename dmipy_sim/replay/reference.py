@@ -1394,7 +1394,7 @@ class ReferenceFamily:
         import tempfile
         with _PeakRSS() as sampler:
             pk = build_replay_pack(walk, id=f"pilot/{self.name}", license="pilot", citation="pilot", K=int(d.K),
-                                   envelope=d.envelope, position_container="bands", blt_container="bands",
+                                   envelope=d.envelope, position_container="derived", blt_container="derived",
                                    verbose=False)
             floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded split-half floor on the envelope
             with tempfile.TemporaryDirectory(prefix="dmipy-pilot-") as tmp:
@@ -1646,7 +1646,7 @@ class ReferenceFamily:
         from .bank import build_replay_pack
         walk = CoefficientWalk.load(os.path.join(self.dir, w["walk_path"]))
         pack = build_replay_pack(walk, id=self.build.pack_id[name], envelope=des["envelope"], K=int(des["K"]),
-                                 position_container="bands", blt_container="bands",
+                                 position_container="derived", blt_container="derived",
                                  license=self.publication.licence, citation=self.publication.citation,
                                  verbose=False)
         out_dir = os.path.join(self.dir, "packs")

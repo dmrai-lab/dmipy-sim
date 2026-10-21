@@ -52,8 +52,8 @@ def test_the_device_field_series_encoder_matches_the_numpy_route():
     n_w, n_t = 517, 65
     S = rng.normal(0, 1e-7, (n_w, n_t, 13)).astype(np.float32)
     S[:, :, 3] = 3 * S[:, :, 0] - S[:, :, 1] - S[:, :, 2]            # the trace identity: iso_P_zz is implied
-    a_np, m_np = susc_path_encode_series(S, CHANNEL_NAMES, K=8, bits=8, layout="wtc", device="numpy", chunk=37)
-    a_dv, m_dv = susc_path_encode_series(S, CHANNEL_NAMES, K=8, bits=8, layout="wtc", device="jax", chunk=37)
+    a_np, m_np = susc_path_encode_series(S, CHANNEL_NAMES, K=8, container=((None, 8),), layout="wtc", device="numpy", chunk=37)
+    a_dv, m_dv = susc_path_encode_series(S, CHANNEL_NAMES, K=8, container=((None, 8),), layout="wtc", device="jax", chunk=37)
     assert {k: v for k, v in m_np.items() if k != "trace_residual"} == {k: v for k, v in m_dv.items() if k != "trace_residual"}
     assert m_np["bits"] == 8 and m_np["n_ch"] == 12                              # iso_P_zz dropped on both routes
     dq = lambda a: a["susc_path_dct"].astype(np.float64) * a["susc_path_scale"].astype(np.float64)[None]
@@ -61,8 +61,8 @@ def test_the_device_field_series_encoder_matches_the_numpy_route():
     scale = np.abs(q_np).max()
     assert np.abs(q_np - q_dv).max() < 1e-2 * scale                              # float32 DCT + a device quantisation
     # bits=None skips the container: the device's float32 coefficients against the numpy route's float64 ones
-    a_np32, _ = susc_path_encode_series(S, CHANNEL_NAMES, K=8, bits=None, layout="wtc", device="numpy")
-    a_dv32, _ = susc_path_encode_series(S, CHANNEL_NAMES, K=8, bits=None, layout="wtc", device="jax")
+    a_np32, _ = susc_path_encode_series(S, CHANNEL_NAMES, K=8, container=None, layout="wtc", device="numpy")
+    a_dv32, _ = susc_path_encode_series(S, CHANNEL_NAMES, K=8, container=None, layout="wtc", device="jax")
     scale32 = np.abs(a_np32["susc_path_dct"].astype(np.float64)).max()
     assert np.abs(a_dv32["susc_path_dct"].astype(np.float64) - a_np32["susc_path_dct"].astype(np.float64)).max() < 1e-5 * scale32
 

@@ -1773,11 +1773,11 @@ def simulate_trajectories(
             res = res._replace(field_read=field_read)
             if K_c3_ is None:
                 from ..replay.bank import derive_field_band_per_pool
-                K_c3_, bits, field_band = derive_field_band_per_pool(
+                K_c3_, field_band = derive_field_band_per_pool(
                     np.asarray(got["fs"], np.float32)[:, 1:], {name_of.get(int(l), str(int(l))): np.flatnonzero(labels == l) for l in np.unique(labels)},
                     list(field_basis.channel_names), float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
                     floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
-                field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
+                field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers))
         if _sampling:
             K_c3_ = int(K_c3_)
             if K_c3_ < 1 or K_c3_ > n_bw:

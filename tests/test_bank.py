@@ -17,7 +17,7 @@ import pytest
 
 from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
                        compile_scheme, replay_signal)
-from dmipy_sim.replay import bank
+from dmipy_sim.replay import bank, compression as cx_
 from dmipy_sim.constants import GAMMA
 from dmipy_sim.spec.tissue import Tissue
 from dmipy_sim.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Susceptibility, Validity
@@ -174,9 +174,12 @@ def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capa
     assert K == w.K_c3 and pm["T"] == pytest.approx(T_WALK) and "n_t" not in pm and "dt" not in pm
     assert pm["iso_P_zz"] == "implied" and pm["n_ch"] == 6 and pm["sampling"] == "accumulated_in_walk"
     assert pm["max_refocus_pulses"] == K // 2 and pm["read_interval"] == pytest.approx(w.field_read_interval)
-    # the pilot's depth (8 bits) over the modes above k = 0; the k = 0 mode (the window's integral) at 16 bits
-    assert w.block["field_band"]["bits"] == 8 and pm["container"] == [{"modes": [0, 1], "bits": 16}, {"modes": [1, K], "bits": 8}]
-    assert pk.arrays["susc_path_dct_b0"].dtype == np.int16 and pk.arrays["susc_path_dct_b1"].dtype == np.int8
+    # the container is derived for the walk's own mode scales at the pack's floor: ranges of modes at 3..16 bits, each
+    # stored under its range's tensor, the field's quantisation carried in the pack's quantisation term
+    cont = pm["container"]
+    assert cont[0]["modes"][0] == 0 and cont[-1]["modes"][1] == K and all(3 <= r["bits"] <= 16 for r in cont)
+    assert all(cx_.range_name("susc_path_dct", i, r["bits"]) in pk.arrays for i, r in enumerate(cont)) and "susc_path_dct" not in pk.arrays
+    assert 0.0 < pk.fidelity["err_quantisation_field"] <= pk.fidelity["err_quantisation"]
     assert pk.arrays["susc_path_scale"].shape == (pm["n_ch"], K)
     assert pk.meta["walk_params"]["field_read_interval"] == pytest.approx(w.field_read_interval)
     assert "field" in pk.meta["walk_params"]["qv"] and "field" in pk.fidelity["terms"]["quadrature"] and "field_read" in pk.fidelity["terms"]
@@ -291,8 +294,8 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
     from dmipy_sim.replay import compression as cx
     w = _susc_walk(200, seed=7, K_c3=32)
     coeffs, names, T, K = np.asarray(w.field_coeffs, np.float64)[:, 0], list(w.field_channel_names), w.T, w.K_c3
-    a8, pm8 = bank.susc_path_encode_modes(coeffs, names, T=T, bits=8)
-    a16, pm16 = bank.susc_path_encode_modes(coeffs[:, :K // 2], names, T=T, bits=16)
+    a8, pm8 = bank.susc_path_encode_modes(coeffs, names, T=T, container=((None, 8),))
+    a16, pm16 = bank.susc_path_encode_modes(coeffs[:, :K // 2], names, T=T, container=((None, 16),))
     ref = np.transpose(coeffs, (0, 2, 1))                                                  # the walk's own float64 modes
     assert a8["susc_path_dct"].nbytes + a8["susc_path_scale"].nbytes < ref.astype(np.float64).nbytes
     assert a8["susc_path_dct"].nbytes <= a16["susc_path_dct"].nbytes    # same or less space
@@ -315,7 +318,7 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
     assert err(a8, pm8, K // 2) < err(a16, pm16, K // 2)
     assert err(a8, pm8, 1) < 1e-2
     with pytest.raises(ValueError, match="bits must be"):
-        bank.susc_path_encode_modes(coeffs, names, T=T, bits=6)
+        bank.susc_path_encode_modes(coeffs, names, T=T, container=6)
 
 
 # ------------------------------------------------------------------ the builder takes a CoefficientWalk
@@ -346,34 +349,36 @@ def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
 
 
 def test_the_field_tiers_band_is_derived_on_the_walk():
-    """The band and the container are fixed BEFORE the walk by the producer's pilot: the first pair, in ascending
-    band with the narrower container first, whose codec error on the certificate's battery is within the pilot's
-    floor, and the record of every pair read travels with the channel; the pack takes the walk's band."""
+    """The band is fixed BEFORE the walk by the producer's pilot: the first rung, in ascending band, whose codec error on
+    the certificate's battery -- in the container derived for the rung's mode scales at its floor -- is within the
+    pilot's floor, and the record of every rung read travels with the channel; the pack takes the walk's band."""
     from dmipy_sim.replay.bank import SUSC_PATH_LADDER
     w = _susc_walk(300, seed=8, envelope=_env7(theta_deg=[0, 90]))
     band = w.block["field_band"]
-    assert band["rule"] == "pilot" and band["pilot_walkers"] > 0
+    assert band["rule"] == "pilot" and band["pilot_walkers"] > 0 and "bits" not in band
     pk = build_replay_pack(w, id="test/slab-susc-auto", envelope=_env7(theta_deg=[0, 90]), K=16, license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
-    assert pm["band"] == band and (pm["K"] in SUSC_PATH_LADDER or pm["K"] == N_T - 1) and band["bits"] in (8, 16)
-    depth = pm["bits"] if pm.get("container") is None else pm["container"][-1]["bits"]       # the modes above k = 0
-    assert depth == band["bits"]
-    order = [(r["K"], r["bits"]) for r in band["ladder"]]
-    rungs = {(r["K"], r["bits"]): r for r in band["ladder"]}
-    chosen = rungs[(pm["K"], depth)]
-    assert chosen["floor"] > 0 and order == sorted(order)                             # ascending band, narrower container first
+    assert pm["band"] == band and (pm["K"] in SUSC_PATH_LADDER or pm["K"] == N_T - 1)
+    order = [r["K"] for r in band["ladder"]]
+    rungs = {r["K"]: r for r in band["ladder"]}
+    chosen = rungs[pm["K"]]
+    assert chosen["floor"] > 0 and order == sorted(order)                             # ascending band
+    assert chosen["container"] == band["container"] and band["container"][-1]["modes"][1] == pm["K"]
+    assert all(3 <= r["bits"] <= 16 for r in chosen["container"])
+    assert chosen["err_truncation"] >= 0.0                                           # the band alone, modes in float
     if band["within_floor"]:
         assert chosen["err"] <= chosen["floor"]
-        before = order[:order.index((pm["K"], depth))]
-        assert all(rungs[p]["err"] > rungs[p]["floor"] for p in before)                # the first pair within the floor
-        assert order[-1] == (pm["K"], depth)                                          # and the ladder stopped there
+        assert all(rungs[k]["err"] > rungs[k]["floor"] for k in order[:order.index(pm["K"])])      # the first rung within the floor
+        assert order[-1] == pm["K"]                                                  # and the ladder stopped there
     else:
         best = min(r["err"] for r in rungs.values())
         assert chosen["err"] <= 1.03 * best
     assert band["above_position_band"] == (pm["K"] > w.K)
     assert pm["max_refocus_pulses"] == pm["K"] // 2
-    # the pilot's reading is the pack's certificate of the channel
-    assert pk.fidelity["susc_path_measured_on"] == "pilot" and pk.fidelity["err_susc_path"] == pytest.approx(chosen["err"], rel=1e-5)
+    # the pilot's reading is the pack's certificate of the channel: what the band drops, with the container's
+    # quantisation read back from the stored steps
+    assert pk.fidelity["susc_path_measured_on"] == "pilot"
+    assert pk.fidelity["err_susc_path"] == pytest.approx(chosen["err_truncation"] + pk.fidelity["err_quantisation_field"], rel=1e-4)
 
 
 def test_a_declared_train_depth_puts_a_floor_under_the_ladder():

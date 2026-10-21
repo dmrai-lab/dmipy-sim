@@ -358,7 +358,7 @@ def _shuffled_starts(g, n, seed):
 
 
 def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6, rho=None, theta_deg=90.0, n_raw=None,
-                 r_in=2e-6, r_out=3e-6, require_gpu=None, susc_path_bits=None, field="closed"):
+                 r_in=2e-6, r_out=3e-6, require_gpu=None, field_bits=None, field="closed"):
     """ONE multiphysics walk on a myelinated cylinder (a restricted lumen of radius ``r_in``, a stuck sheath to
     ``r_out`` whose susceptibility is the field source, ``fields.hollow_cylinder``'s closed form as the basis
     (``field="raster"``: the rasterised sheath), the extra space outside, the starts in a random order so that the
@@ -403,14 +403,14 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
                                     raw_subset=n_raw, envelope=env, r0=_shuffled_starts(g, n, seed))
         t_walk = time.time() - t0
         t0 = time.time()
-        bits_kw = {} if susc_path_bits is None else dict(susc_path_bits=int(susc_path_bits))   # the pilot's depth unless given
+        bits_kw = {} if field_bits is None else dict(field_container=int(field_bits))   # derived for the floor unless a flat depth is given
         pk = build_replay_pack(w, id="admission/myelin", license="x", citation="x", envelope=env, **bits_kw)
         t_pack = time.time() - t0
         pm = build_replay_pack(w, id="admission/myelin-measured", license="x", citation="x", envelope=env, fidelity="measured", **bits_kw)
     bytes_pack = sum(np.asarray(v).nbytes for v in pk.arrays.values())
     fr = dict(w.block["field_read"]); fb = {k: v for k, v in w.block["field_band"].items() if k != "ladder"}
     out = dict(walk=dict(n=n, n_raw=n_raw, T=T, K=int(w.K), m=int(w.m), h=float(w.h), n_blocks=int(w.n_blocks), sub_steps=int(w.sub_steps),
-                         susc_path_bits=(susc_path_bits if susc_path_bits is not None else "pilot"),
+                         field_container=(int(field_bits) if field_bits is not None else "derived"),
                          dt_sim=float(w.dt_sim), K_c3=int(w.K_c3), field_read=fr, field_band=fb, seconds=t_walk, pack_seconds=t_pack,
                          pack_bytes_per_walker=bytes_pack / n, pools=dict(zip(*[x.tolist() for x in np.unique(w.compartment, return_counts=True)]))),
                certificate=dict(walk_free=dict(terms=pk.fidelity["terms"], err_max=pk.fidelity["err_max"], floor_max=pk.fidelity["floor_max"]),
@@ -860,7 +860,7 @@ def main(argv=None):
     ap.add_argument("--T", type=float, default=None, help="walk duration (s) for the admissions and the timing")
     ap.add_argument("--K", type=int, default=None, help="bands for the admissions and the timing")
     ap.add_argument("--n-raw", type=int, default=None, help="the raw subset of the multiphysics walk (its measured certificate)")
-    ap.add_argument("--bits", type=int, default=None, help="the multiphysics pack's field-mode depth (8 | 16), the pilot's unless given")
+    ap.add_argument("--bits", type=int, default=None, help="the multiphysics pack's field-mode depth (8 | 16), derived for the floor unless given")
     ap.add_argument("--gpu", action="store_true", help="require the JAX device to be a GPU (the timing table)")
     ap.add_argument("--field", default=None, choices=["closed", "raster"], help="the myelin field multiphysics / read_check read")
     ap.add_argument("--json", default=None, help="write every result as JSON here")
@@ -881,7 +881,7 @@ def main(argv=None):
         if what in ("multiphysics", "read_check") and a.field is not None:
             extra["field"] = a.field
         if what == "multiphysics" and a.bits is not None:
-            extra["susc_path_bits"] = a.bits
+            extra["field_bits"] = a.bits
         if what in ("exactness", "quadrature", "memory", "oracle", "surface"):
             extra = {k: v for k, v in kw.items() if k in fn.__code__.co_varnames}
         if what == "quadrature":

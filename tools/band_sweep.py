@@ -74,18 +74,18 @@ def strand_walk(n, T_s, seed=3):
 
 def sweep_c3(a):
     """The path channel's container sweep: the same strand walk packed with the path modes (``Kp``) in native 16 and 8
-    bit and in ``band_curve(Kp, b1)``, each pack's ``err_susc_path`` against ``floor_susc_path`` and the path bytes
+    bit, derived for the floor, and in ``band_curve(Kp, b1)``, each pack's ``err_susc_path`` against ``floor_susc_path`` and the path bytes
     per walker."""
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import build_replay_pack
     Kp, T_s = a.path_K, a.c3_T
     log(f"C3 walk: {a.c3_n} walkers on 3 strands, T {T_s}, path modes {Kp}")
     walk = strand_walk(a.c3_n, T_s)
-    cases = [("native 16", 16), ("native 8", 8)] + [(f"curve b1={b:g}", cx.band_curve(Kp, b)) for b in a.c3_b1]
+    cases = [("native 16", 16), ("native 8", 8), ("derived", "derived")] + [(f"curve b1={b:g}", cx.band_curve(Kp, b)) for b in a.c3_b1]
     rows_ = []
     for label, knob in cases:
         t0 = time.time()
-        pk = build_replay_pack(walk, id=f"c3/{label}", K=a.c3_K, license="x", citation="x", susc_path_K=Kp, susc_path_bits=knob, device="numpy")
+        pk = build_replay_pack(walk, id=f"c3/{label}", K=a.c3_K, license="x", citation="x", susc_path_K=Kp, field_container=knob, device="numpy")
         pm = pk.meta["compression"]["channels"]["susc_field_basis"]
         B = sum(np.asarray(v).nbytes for k, v in pk.arrays.items() if k.startswith("susc_path_dct")) / pk.n_walkers
         f = pk.meta["fidelity"]

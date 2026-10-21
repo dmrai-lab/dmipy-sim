@@ -89,13 +89,15 @@ susc_path_dct       (N_w, n_ch, K) int8 | int16    cosine modes c_k of b_c(t), p
 susc_path_scale     (n_ch, K) float32              per-(channel, mode) scale of the integer container
                     (walkers LEADING so a prefix read is one contiguous byte range -- see Precision tiers)
 ```
-A container of several depths stores `susc_path_dct_b<i>[u<bits>]` per mode range instead (the same ranges
-as the band containers of `compression`). The channel metadata, `compression.channels.susc_field_basis`:
+The pack's container stores `susc_path_dct_b<i>[u<bits>]` per mode range instead (the same ranges and the same
+bit layout as the band containers of `compression`; the single-depth tensor above is the form of one native range
+and is read, never derived). The channel metadata, `compression.channels.susc_field_basis`:
 ```
 { "channel": "susc_field_basis", "K": 32, "T": 0.1, "n_ch": 6,
   "channels": ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_xy", "iso_P_xz", "iso_P_yz"],
   "iso_P_zz": "implied",        # = 3*iso_local - iso_P_xx - iso_P_yy, see Trace identity
-  "bits": 8, "max_refocus_pulses": 16, "sampling": "accumulated_in_walk",
+  "bits": null, "dtype": "bands", "container": [{"modes": [0, 8], "bits": 9}, {"modes": [8, 32], "bits": 7}],
+  "max_refocus_pulses": 16, "sampling": "accumulated_in_walk",
   "read_interval": 1.0e-4, "band": {...the pilot's record...}, "read": {...the walk's read record...} }
 ```
 There is no `n_t` and no `dt`: the modes are a function on the window `[0, T]`, read at whatever instants a
@@ -106,9 +108,23 @@ remain replay knobs, applied by the same `Q(H)` contraction (`bank.susc_path_fie
 periodicity, `arrays_in_pack: false`, `replay_route: "path"`): the grid is not in the pack, and every
 consumer reads the path.
 
-**The integer container is sufficient** (certified, not assumed). The depth, 8 or 16 bits per mode with a
-per-(channel, mode) scale, is chosen with the band on the pilot (*Choosing K*): the narrower container
-is taken whenever its codec error on the certificate's battery is within the pilot's floor.
+**The integer container is sufficient** (certified, not assumed), and it is derived, not chosen from two depths.
+The depth of a mode range is `bits_k = ceil(log2(a_k / step)) + 1`, clipped to 3..16, with `a_k` the mode's
+maximum over the walkers *after the channels are contracted into the field `dB`* at the envelope's largest `B0` and
+the worst field direction (`bank.field_channel_weights`) and `step` common to the modes
+(`bank.DerivedFieldContainer`): a unit-modulus gate weighs the modes by `g_k` with `sum_k g_k^2 <= T`, so one step
+costs at most `gamma^2 T step^2 / 12` of phase variance whatever the gate, and
+`compression.derive_container(..., phase=gamma^2 T)` holds that to the pack's quantisation budget at its floor
+(the same `eps` rule as the positions'). The field is nearly white above its mean, so the depths of the modes sit
+within a few bits of one another and the floor, not the band, carries the bytes. The pack derives the container
+from the modes the walk accumulated (`build_replay_pack(field_container="derived")`, an explicit container of ranges
+or `None` for float otherwise); the pilot derives one on its own scales for the rung it reads
+(`band.container`).
+
+The pack's `fidelity.err_quantisation` covers the field: the realised steps of `susc_path_scale`, contracted at
+the worst direction and weighted by the battery's gates (`bank.field_quantisation`), give a phase noise that adds in
+variance to the positions'; `err_quantisation_field` is the field's term alone. `err_susc_path` is the pilot's
+error of the band alone (`band.err_truncation`, the modes held in float) plus that term.
 
 **Trace identity: 7 channels → 6 stored.** The dipole kernel is traceless in the sense that the six
 `iso_P` components satisfy `P_xx + P_yy + P_zz = 3·iso_local` exactly, and the identity is linear, so it
@@ -157,8 +173,8 @@ K=16 fails CPMG-16 outright.
 
 **The band is fixed before the walk.** `bank.derive_field_band` walks a pilot of `PILOT_WALKERS` = 1024
 walkers that keeps its block means (`raw_subset`), tries the rungs of `SUSC_PATH_LADDER` (16, 32, 64, …) in
-ascending band, the narrower container first, and takes the first `(K_c3, bits)` whose codec error — the
-truncated, quantised modes contracted for each field strength and direction of the envelope's battery,
+ascending band, and takes the first `K_c3` whose codec error — the
+truncated modes, held in the container derived for the rung's own scales at its floor, contracted for each field strength and direction of the envelope's battery,
 decoded on the block grid and gated by GRE, spin echo, the CPMG train the rung serves and a stimulated echo
 — is within the split-half floor of the pilot's own series. A refocusing depth the envelope declares
 (`max_refocus_pulses`) puts a floor of `2×` that depth under the ladder; the position band is the point past
