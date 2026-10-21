@@ -1925,6 +1925,15 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
                 n_walkers=n, rho2_list=rhos)
 
 
+def _contact_floor(endpoint, bands, env, *, T, h, D, w=None):
+    """The floor the contact channel's container is derived against: the coded split-half floor of the surface reading
+    of the walk's float bands (:func:`_surface_terms_walk_free`), which the container barely moves."""
+    n = int(np.asarray(endpoint).shape[0])
+    a, m = _cx.encode_boundary_bands(np.zeros(n, np.float32), np.asarray(endpoint, np.float32), np.asarray(bands, np.float64),
+                                     T=float(T), dtype=np.float64, container=None)
+    return float(_surface_terms_walk_free(endpoint, bands, a, m, env, T=T, h=h, D=D, w=w)["floor"])
+
+
 def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     """The contact tier's measured certificate (RPK.md 9.4 rule 4) on the raw subset: the surface-weighted signal
     ``<exp((rho2 / D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the battery's transverse
@@ -2256,7 +2265,10 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
             raise ValueError(f"the walk accumulated {cw.K} contact bands; blt_temporal_K={Kb} asks for more")
         bc = _container(blt_container)
         if isinstance(bc, _cx.DerivedContainer):
-            bc = bc.bound(floor=floor_t, dt=h, env=env, weight=max(env.get("rho2_list") or [1e-4]) / D)
+            # held to the contact's own floor (the surface reading's split-half spread) where it is the tighter
+            bc = bc.bound(floor=min(floor_t, _contact_floor(np.asarray(cw.boundary_endpoint)[:, 0], np.asarray(cw.boundary_bands)[:, 0, :Kb],
+                                                            env, T=T, h=h, D=D, w=weights)),
+                          dt=h, env=env, weight=max(env.get("rho2_list") or [1e-4]) / D)
         a_, cm_ = _cx.encode_boundary_bands(np.zeros(cw.n_walkers, np.float32), np.asarray(cw.boundary_endpoint)[:, 0],
                                             np.asarray(cw.boundary_bands)[:, 0, :Kb], T=T, dtype=blt_dtype, container=bc)
         arrays.update(a_); chan_meta["boundary_local_time"] = cm_; channels["rho2"] = True
@@ -2511,7 +2523,8 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         a_new, e_new = vn[:, 0], vn[:, 0] + vn[:, 1]
         bc = _container(blt_container if blt_container is not None else _container_of_meta(bm.get("container")))
         if isinstance(bc, _cx.DerivedContainer):
-            bc = bc.bound(floor=floor_t, dt=h_new, env=env, weight=rho)
+            bc = bc.bound(floor=min(floor_t, _contact_floor((e_new - a_new).astype(np.float32), vn[:, 2:], env, T=T_new, h=h_new, D=D, w=w)),
+                          dt=h_new, env=env, weight=rho)
         a_, cm_ = _cx.encode_boundary_bands(np.zeros_like(a_new, dtype=np.float32), (e_new - a_new).astype(np.float32),
                                             vn[:, 2:], T=T_new, dtype=blt_dtype, container=bc)
         arrays.update(a_); chan_meta["boundary_local_time"] = cm_; channels["rho2"] = True

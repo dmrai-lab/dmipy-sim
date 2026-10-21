@@ -421,3 +421,26 @@ def test_a_shard_takes_the_certifying_packs_layout_or_is_refused(straight_cylind
     C3 = C.copy(); C3[..., names.index("iso_P_zz")] += 1e-2 * np.abs(C).max()
     with pytest.raises(ValueError, match="trace identity"):
         bank.susc_path_encode_modes(C3, names, T=w.T, container=bank.FieldCodec.of(pm))
+
+
+def test_the_contact_container_is_held_to_the_contacts_own_floor():
+    """The contact's container is derived against the tighter of the pack's floor and the surface reading's own
+    split-half floor (``floor_surface``): more bits than the pack's floor alone asks for, and a quantisation, read
+    back walk-free, well inside that floor."""
+    from dmipy_sim.replay import bank
+    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2)
+    f = p.meta["fidelity"]
+    assert f["floor_surface"] > 0 and f["err_surface_quantisation"] <= 0.5 * f["floor_surface"] and f["err_surface"] <= f["floor_surface"]
+    c2 = np.asarray(walk.boundary_endpoint)[:, 0]; bands = np.asarray(walk.boundary_bands)[:, 0, :16]
+    env = _cx.default_envelope()
+    assert bank._contact_floor(c2, bands, env, T=walk.T, h=walk.h, D=D0) == pytest.approx(f["floor_surface"], rel=0.2)
+    # the container follows that floor: a tighter one asks for more bits than the pack's floor alone
+    bits = lambda q: sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in q.meta["compression"]["channels"]["boundary_local_time"]["container"])
+    real = bank._contact_floor
+    bank._contact_floor = lambda *a, **k: 1e-6
+    try:
+        tight = build_replay_pack(walk, id="t/c2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2)
+    finally:
+        bank._contact_floor = real
+    assert bits(tight) > bits(p)
