@@ -336,11 +336,33 @@ def _myelin(D, r_in, r_out):
     return d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), D, D)              # D_myelin = 0: the sheath's water stuck
 
 
+def _myelin_field(g, field):
+    """The field a myelinated substrate's walk reads: ``"closed"`` the hollow cylinder's closed form
+    (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`, exact at the walker's position; a cell's with its
+    periodic images, the forward Bloch provider's), ``"raster"`` the sheath rasterised by ``field_grid_of``."""
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+    from dmipy_sim.fields.susceptibility_field import field_grid_of
+    if field == "closed":
+        return HollowCylinderField.of(g)
+    if field == "raster":
+        return field_grid_of(g)
+    raise ValueError(f"field is 'closed' or 'raster', got {field!r}")
+
+
+def _shuffled_starts(g, n, seed):
+    """``n`` starts of ``g``'s own seeding in a random order: the geometry seeds pool by pool, and a raw subset or a
+    pilot of the first walkers would be one pool."""
+    import jax
+    r0 = np.asarray(g.init_positions(int(n), jax.random.PRNGKey(int(seed))), np.float32)
+    return r0[np.random.default_rng(int(seed) + 77).permutation(r0.shape[0])]
+
+
 def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6, rho=None, theta_deg=90.0, n_raw=None,
-                 r_in=2e-6, r_out=3e-6, require_gpu=None, susc_path_bits=None):
+                 r_in=2e-6, r_out=3e-6, require_gpu=None, susc_path_bits=None, field="closed"):
     """ONE multiphysics walk on a myelinated cylinder (a restricted lumen of radius ``r_in``, a stuck sheath to
-    ``r_out`` whose susceptibility is the field source, ``fields.hollow_cylinder``'s grid as the basis, the extra
-    space outside): C0 + C1 (static) + C2 (the contact) + C3 (the field read in the walk at its derived interval),
+    ``r_out`` whose susceptibility is the field source, ``fields.hollow_cylinder``'s closed form as the basis
+    (``field="raster"``: the rasterised sheath), the extra space outside, the starts in a random order so that the
+    raw subset holds every pool): C0 + C1 (static) + C2 (the contact) + C3 (the field read in the walk at its derived interval),
     ``K`` bands over ``T`` at block order 3 with the derived block, packed walk-free and with the measured certificate
     on its raw subset, and replayed against three oracles:
 
@@ -353,8 +375,9 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
       axis, ``chi_aniso = dchi_a``: the scalar route against the pack's vector-Bloch route beside the pack's own
       ``_susc_path_bloch_fidelity`` (``err_susc_bloch``); and, since the forward vector-Bloch engine does not step
       the myelinated substrates, the cross-engine oracle on the SAME hollow-cylinder field: the one-axon periodic
-      cell's extra-axonal pool walked with the exact periodic grid, against ``_simulate_bloch`` with
-      ``MyelinSusceptibility`` (its periodic images to ``n_images=6``) on that pool.
+      cell's extra-axonal pool walked with the closed form and its periodic images (``n_images=6``), against
+      ``_simulate_bloch`` with ``MyelinSusceptibility`` (the same closed form, the same images) on that pool (and,
+      with ``field="raster"``, the cell's periodic grid against the forward engine on that grid).
 
     Every row carries both signals, their difference and the replay's standard error."""
     import dmipy_sim as d
@@ -369,7 +392,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     import time
     n_raw = n if n_raw is None else min(int(n_raw), n)
     g = _myelin(D, r_in, r_out)
-    fg = field_grid_of(g)
+    fg = _myelin_field(g, field)
     env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)], max_refocus_pulses=8, rho2_list=[1e-5, 1e-4])
     rho = max(env["rho2_list"]) if rho is None else float(rho)
     env["rho2_list"] = sorted(set(env["rho2_list"]) | {rho})
@@ -377,7 +400,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         warnings.simplefilter("ignore")
         t0 = time.time()
         w = d.simulate_trajectories(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
-                                    raw_subset=n_raw, envelope=env)
+                                    raw_subset=n_raw, envelope=env, r0=_shuffled_starts(g, n, seed))
         t_walk = time.time() - t0
         t0 = time.time()
         bits_kw = {} if susc_path_bits is None else dict(susc_path_bits=int(susc_path_bits))   # the pilot's depth unless given
@@ -446,7 +469,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     import dataclasses
     cellp = d.PackedCylinders([r_out], [[0.0, 0.0]], L, orientation=(0.0, 0.0, 1.0), pool="extra")
     cellm = d.PackedMyelinatedCylinders([r_in], [r_in / r_out], [[0.0, 0.0]], L, D_intra=D, D_extra=D, D_myelin=0.0)
-    fg2 = field_grid_of(cellm)
+    fg2 = _myelin_field(cellm, field)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         w2 = d.simulate_trajectories(n, D, cellp, T, seed=seed + 7, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg2,
@@ -460,8 +483,10 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     # images (n_images=6) beside it are the independent physics
     from dmipy_sim.fields.hollow_cylinder import contract
     from dmipy_sim.fields.susceptibility import GridSusceptibility
-    dB = contract(np.moveaxis(fg2.grids(), 0, -1), d_sub, B0=B0, chi_iso=0.0, chi_aniso=dchi_a)
-    prov_grid = GridSusceptibility(dB=dB, origin=np.asarray(fg2.origin, float), voxel_size=np.asarray(fg2.basis["voxel_size"], float), periodic=True)
+    prov_grid = prov                                                     # the closed form: the walk read the provider's field
+    if field == "raster":
+        dB = contract(np.moveaxis(fg2.grids(), 0, -1), d_sub, B0=B0, chi_iso=0.0, chi_aniso=dchi_a)
+        prov_grid = GridSusceptibility(dB=dB, origin=np.asarray(fg2.origin, float), voxel_size=np.asarray(fg2.basis["voxel_size"], float), periodic=True)
     c3x = {}
     for name, seq in seqs3:
         seq_lab = rotate_waveform(seq, R)
@@ -470,11 +495,14 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             S_f = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov, require_gpu=require_gpu))).reshape(-1)
-            S_g = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov_grid, require_gpu=require_gpu))).reshape(-1)
+            S_g = (S_f if prov_grid is prov else
+                   np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov_grid, require_gpu=require_gpu))).reshape(-1))
         c3x[name] = dict(TE=TE3, replay_scalar=S.tolist(), replay_bloch=S_b.tolist(), fused_bloch_images=S_f.tolist(), fused_bloch_grid=S_g.tolist(),
                          diff_scalar_grid=(S - S_g).tolist(), diff_bloch_grid=(S_b - S_g).tolist(), diff_scalar_images=(S - S_f).tolist(),
                          se=se.tolist(), z_grid=(np.abs(S - S_g) / (np.sqrt(2.0) * se)).tolist())
-    out["C3_cell_extra_vs_forward_bloch"] = dict(B0=B0, chi_aniso=dchi_a, theta_deg=theta_deg, cell_m=L, n=n, rows=c3x,
+    out["field"] = field
+    out["raw_subset_pools"] = dict(zip(*[x.tolist() for x in np.unique(np.asarray(w.compartment)[:n_raw], return_counts=True)]))
+    out["C3_cell_extra_vs_forward_bloch"] = dict(B0=B0, chi_aniso=dchi_a, theta_deg=theta_deg, cell_m=L, n=n, rows=c3x, field=field,
                                                  walk=dict(K_c3=int(w2.K_c3), field_read=w2.block["field_read"]),
                                                  certificate={k: pk2.fidelity[k] for k in ("err_susc_path", "floor_susc_path", "err_susc_bloch", "floor_susc_bloch") if k in pk2.fidelity})
     return out
@@ -560,7 +588,8 @@ def _signal_compare(fine, other, seq, kw, env):
                 env_B0_chi_max_T=po.meta["replay_envelope"]["field_read"].get("B0_chi_max_T"))
 
 
-def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0, r_in=2e-6, r_out=3e-6, require_gpu=None):
+def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0, r_in=2e-6, r_out=3e-6, require_gpu=None,
+               field="closed"):
     """The field read on the myelinated cylinder of :func:`multiphysics` (``K`` bands over ``T`` at block order 3,
     the derived block): the read the pilot derives per pool (the record), the walk at it, and the SAME walk (same
     seed and keys: the read does not touch the path) read every step and once per block (``field_read_interval=``,
@@ -575,7 +604,7 @@ def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0,
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.spec.tissue import Tissue
     g = _myelin(D, r_in, r_out)
-    fg = field_grid_of(g)
+    fg = _myelin_field(g, field)
     env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)])
     secs = {}
 
@@ -598,7 +627,7 @@ def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0,
     th = np.deg2rad(float(theta_deg)); R = _pose_with_field_along((np.sin(th), 0.0, np.cos(th)))
     seq = rotate_waveform(bare_gradient_echo(0.8 * T, 1e-5), R)
     kw = dict(scanner=B0, tissue=Tissue(chi_iso=chi), orientation=R)
-    out = dict(n=n, T=T, K=int(derived.K), sub_steps=int(derived.sub_steps), dt_sim=float(derived.dt_sim), h=float(derived.h),
+    out = dict(field=field, n=n, T=T, K=int(derived.K), sub_steps=int(derived.sub_steps), dt_sim=float(derived.dt_sim), h=float(derived.h),
                K_c3=K_c3, seconds=secs, field_read={k: v for k, v in fr.items()}, compare={})
     for name, w in (("derived", derived), ("once per block", block)):
         dt_f = float(w.field_read_interval)
@@ -771,7 +800,7 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
     r_in = 2e-6
     cyl = d.Cylinder(radius=r_in, orientation=(0, 0, 1))
     my = _myelin(D, r_in, 3e-6)
-    fg = field_grid_of(my)
+    fg = _myelin_field(my, "closed")
 
     def best(g, **kw):
         ts = []
@@ -788,18 +817,17 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
     rows["myelinated C0+C2"], walks["myelinated C0+C2"] = best(my, K=K)
     rows["myelinated C0+C2+C3"], walks["myelinated C0+C2+C3"] = best(my, K=K, field_basis=fg)
     w3 = walks["myelinated C0+C2+C3"]
-    # the same walk with its band given and a read once per block: what a coarse read costs (the pilot still runs:
-    # every field walk measures its read series and the trapezoid's constant)
-    rows["myelinated C0+C2+C3, read once per block"], walks["myelinated C0+C2+C3, read once per block"] = best(
-        my, K=K, field_basis=fg, K_c3=int(w3.K_c3), field_read_interval=float(w3.h))
+    # one raster row: the sheath rasterised, its trilinear read smearing the jump over a voxel
+    rows["myelinated C0+C2+C3, raster"], walks["myelinated C0+C2+C3, raster"] = best(my, K=K, field_basis=_myelin_field(my, "raster"))
     pilot_s = {k: float(w.block["field_read"].get("pilot_seconds", 0.0)) for k, w in walks.items() if w.block.get("field_read")}
     shares = dict(accumulation=1.0 - rows["cylinder C0 minimal (K=1, m=0)"] / rows["cylinder C0"],
                   contact=1.0 - rows["cylinder C0"] / rows["cylinder C0+C2"],
                   field_read=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3"],
                   field_read_without_pilot=1.0 - rows["myelinated C0+C2"] / (rows["myelinated C0+C2+C3"] - pilot_s["myelinated C0+C2+C3"]),
-                  field_read_once_per_block=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, read once per block"],
-                  field_read_once_per_block_without_pilot=1.0 - rows["myelinated C0+C2"] / (
-                      rows["myelinated C0+C2+C3, read once per block"] - pilot_s["myelinated C0+C2+C3, read once per block"]))
+                  pilot=pilot_s["myelinated C0+C2+C3"] / rows["myelinated C0+C2+C3"],
+                  field_read_raster=1.0 - rows["myelinated C0+C2"] / rows["myelinated C0+C2+C3, raster"],
+                  field_read_raster_without_pilot=1.0 - rows["myelinated C0+C2"] / (
+                      rows["myelinated C0+C2+C3, raster"] - pilot_s["myelinated C0+C2+C3, raster"]))
     cost = {}
     for L in lengths:
         for name, g, kw in (("cylinder C0", cyl, dict(tiers=())), ("cylinder C0+C2", cyl, {}), ("myelinated C0+C2+C3", my, dict(field_basis=fg))):
@@ -817,7 +845,9 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
                 shares=shares, steps=dict(cylinder=dict(sub_steps=int(walks["cylinder C0"].sub_steps), dt_sim=float(walks["cylinder C0"].dt_sim)),
                                           myelinated=dict(sub_steps=int(w3.sub_steps), dt_sim=float(w3.dt_sim), K_c3=int(w3.K_c3),
                                                           field_read={k: v for k, v in w3.block["field_read"].items()
-                                                                      if k not in ("measured_constants",)})), bytes=cost)
+                                                                      if k not in ("measured_constants",)},
+                                                          raster_field_read={k: v for k, v in walks["myelinated C0+C2+C3, raster"].block["field_read"].items()
+                                                                             if k not in ("measured_constants",)})), bytes=cost)
 
 
 def main(argv=None):
@@ -832,6 +862,7 @@ def main(argv=None):
     ap.add_argument("--n-raw", type=int, default=None, help="the raw subset of the multiphysics walk (its measured certificate)")
     ap.add_argument("--bits", type=int, default=None, help="the multiphysics pack's field-mode depth (8 | 16), the pilot's unless given")
     ap.add_argument("--gpu", action="store_true", help="require the JAX device to be a GPU (the timing table)")
+    ap.add_argument("--field", default=None, choices=["closed", "raster"], help="the myelin field multiphysics / read_check read")
     ap.add_argument("--json", default=None, help="write every result as JSON here")
     a = ap.parse_args(argv)
     if a.memory_probe:
@@ -847,6 +878,8 @@ def main(argv=None):
             extra["require_gpu"] = True
         if what == "multiphysics" and a.n_raw is not None:
             extra["n_raw"] = a.n_raw
+        if what in ("multiphysics", "read_check") and a.field is not None:
+            extra["field"] = a.field
         if what == "multiphysics" and a.bits is not None:
             extra["susc_path_bits"] = a.bits
         if what in ("exactness", "quadrature", "memory", "oracle", "surface"):

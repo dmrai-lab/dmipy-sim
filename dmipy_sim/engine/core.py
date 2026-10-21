@@ -387,18 +387,6 @@ def _record_channels(tiers):
     raise ValueError(f"tiers must be 'all' (record every channel the geometry supports) or () "
                      f"(positions only), got {tiers!r}")
 
-class _GridRead:
-    """The field basis channels at a walker's position, read from a :class:`FieldGrid` passed to the walk as device
-    arrays ``(grids, origin, voxel_size)`` (:meth:`FieldGrid.device_arrays`): ``read(r) -> (n_ch,)``."""
-
-    def __init__(self, arrays, periodic):
-        self.arrays, self.periodic, self.n_ch = arrays, periodic, int(arrays[0].shape[0])
-
-    def __call__(self, r):
-        from ..fields.susceptibility_field import grid_channels_at
-        return grid_channels_at(*self.arrays, self.periodic, r)
-
-
 class _Rows:
     """The rows of one walk channel, written into a single preallocated array as the walker batches arrive.
 
@@ -464,7 +452,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     """The resolution every walk shares: its storage windows, its band ``K`` per window, its blocks (the band's own,
     :func:`~dmipy_sim.engine.accumulate.block_length`, unless ``block_h`` gives one), the sub-step count per block
     (``physics.resolve_sub_steps`` over the rules ``physics.sub_step_rules`` at the band ``K / (2 T)``), the field
-    read's interval (a given one at the largest divisor of the step count within it, else the step: the pilot's read,
+    read's interval (a given one, read every ``n`` steps within it and at every block end, else the step: the pilot's read,
     which :func:`simulate_trajectories` replaces by the read the pilot derives,
     :func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`), the geometries this walk cannot represent
     (refused), and the :class:`WalkResolution` a backend is handed. :func:`simulate_trajectories` walks what this
@@ -1052,8 +1040,10 @@ def simulate_trajectories(
         their field reads at the walk's read instants beside the coefficients, as plain arrays
         (``CoefficientWalk.raw_positions``, ``raw_boundary``, ``raw_compartment``, ``raw_bound``, ``raw_field``):
         the opt-in raw output, for a measured certificate, a visualisation or a dense oracle.
-    field_basis : FieldGrid, optional
-        A gridded susceptibility field basis (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`) the walk
+    field_basis : FieldGrid or HollowCylinderField, optional
+        A susceptibility field basis the walk reads on the device (``device_read``): a raster
+        (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`) or the closed form of parallel hollow cylinders
+        (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`), which the walk
         reads itself at the kernel's position (a periodic grid wraps) every ``field_read_interval`` seconds, the
         trapezoid of consecutive reads accumulated onto ``K_c3 + 1`` cosine modes per window
         (``CoefficientWalk.field_coeffs``), what the pack's field channel stores. A strand basis is read by
@@ -1067,9 +1057,9 @@ def simulate_trajectories(
         The interval (s) between the walk's reads of the field. None derives it from a pilot of
         :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers that reads every step
         (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`: per pool the measured quadratic variation of the
-        read series, ``v_read`` under the floor's square at the envelope's ``B0`` and the spec's ``chi``, the finest
-        over the pools; the trapezoid's constant measured per channel on the same pilot); the walk reads at the
-        largest divisor of its step count within it, the step itself when the rule asks for less
+        read series, the term ``v_read / 2`` at the floor at the envelope's ``B0`` and the spec's ``chi``, the finest
+        over the pools; the trapezoid's constant measured per channel and the field band per pool on the same pilot);
+        the walk reads every ``n`` steps within it and at every block end, the step itself when the rule asks for less
         (``CoefficientWalk.block["field_read"]`` records the rule, the pools and the constants, and the pack's
         certificate charges the term from the walk's own quadratic variation).
     events_capacity : int, optional
@@ -1126,25 +1116,23 @@ def simulate_trajectories(
               f"step_l={float(step_l_sim)*1e6:.4f} µm"
               + (f", step_l/R={float(step_l_sim)/float(R_geom):.4f}" if R_geom else ""))
 
-        # ── In-walk field read: a gridded basis read at the kernel's position every n_read steps, passed to the
-        # walk as arguments
+        # ── In-walk field read: the basis read at the kernel's position (a grid, or the closed form), its arrays passed
+        # to the walk as arguments
         _sampling = field_basis is not None
         if _sampling:
-            from ..fields.susceptibility_field import FieldGrid
-            if not isinstance(field_basis, FieldGrid):
-                raise TypeError(f"field_basis must be a FieldGrid (a gridded field read in the walk), got "
-                                f"{type(field_basis).__name__}; a strand basis is read by simulate_trajectories_adaptive")
-            _f_arrays = field_basis.device_arrays()
-            _f_periodic = tuple(bool(p) for p in field_basis.periodic)
-            _f_key = ("field", tuple(_f_arrays[0].shape), _f_periodic)
+            if not hasattr(field_basis, "device_read"):
+                raise TypeError(f"field_basis must be read on the device in the walk (a FieldGrid or a HollowCylinderField, "
+                                f"device_read), got {type(field_basis).__name__}; a strand basis is read by "
+                                f"simulate_trajectories_adaptive")
+            _f_arrays, _f_read, _f_key = field_basis.device_read()
+            _n_ch = len(field_basis.channel_names)
         else:
             if K_c3 is not None or field_read_interval is not None:
                 raise ValueError("K_c3 and field_read_interval are the field channel's band and read interval: they go with field_basis=")
-            _f_arrays, _f_periodic, _f_key = (), None, None
-        _n_ch = int(_f_arrays[0].shape[0]) if _sampling else 0
+            _f_arrays, _f_read, _f_key, _n_ch = (), None, None, 0
 
         def _reader(arrays):
-            return _GridRead(arrays, _f_periodic) if _sampling else None
+            return (lambda r: _f_read(arrays, r)) if _sampling else None
 
         # the cost: what this walk costs and which rule sized it, in the run's record before the walk starts
         _announce_cost(run, _cost_of(res, geometry, n_walkers, walker_batch_size, _backend_name, n_ch=_n_ch))
@@ -1433,8 +1421,12 @@ def simulate_trajectories(
 
         _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
 
-        comp0_all = (jnp.asarray(geometry._init_compartments)
-                     if (record and uses_myelin_traj) else None)
+        # the myelinated kernels' start compartments: the seeding's own, or the given starts' classified (the seeding
+        # leaves its labels on the geometry, which describe the seeding's positions, not a caller's)
+        comp0_all = None
+        if record and uses_myelin_traj:
+            comp0_all = (jnp.asarray(geometry._init_compartments) if r0 is None
+                         else jax.vmap(geometry.classify_position)(jnp.asarray(r0_all)).astype(jnp.int32))
 
         # ── MT bound-pool equilibration (kappa_MT > 0) ──
         # An all-free start under-fills the macromolecular pool and biases the transfer;
@@ -1780,10 +1772,11 @@ def simulate_trajectories(
             field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0))
             res = res._replace(field_read=field_read)
             if K_c3_ is None:
-                from ..replay.bank import derive_field_band
-                K_c3_, bits, field_band = derive_field_band(np.asarray(got["fs"], np.float32)[:, 1:], list(field_basis.channel_names),
-                                                             float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
-                                                             floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
+                from ..replay.bank import derive_field_band_per_pool
+                K_c3_, bits, field_band = derive_field_band_per_pool(
+                    np.asarray(got["fs"], np.float32)[:, 1:], {name_of.get(int(l), str(int(l))): np.flatnonzero(labels == l) for l in np.unique(labels)},
+                    list(field_basis.channel_names), float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
+                    floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
                 field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
         if _sampling:
             K_c3_ = int(K_c3_)

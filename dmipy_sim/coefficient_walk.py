@@ -279,10 +279,23 @@ class CoefficientWalk:
 
     @property
     def reads_per_block(self):
-        """The field reads per block (``h / field_read_interval``), 0 without a field."""
+        """The field reads per block (every ``n_read`` steps and at the block's end), 0 without a field."""
         if self.field_read_interval is None:
             return 0
-        return max(int(round(float(self.h) / float(self.field_read_interval))), 1)
+        fr = self.block.get("field_read") or {}
+        if fr.get("reads_per_block") is not None:
+            return int(fr["reads_per_block"])
+        return max(int(np.ceil(float(self.h) / float(self.field_read_interval) - 1e-9)), 1)
+
+    @property
+    def field_read_instants(self):
+        """The instants (s, from the walk's start) of the field reads a raw subset keeps, ``(n_blocks *
+        reads_per_block + 1,)``: read 0 at the start, then every ``n_read`` steps and at every block end."""
+        from .engine.accumulate import read_intervals
+        fr = self.block.get("field_read") or {}
+        steps, n_read, step_s = int(fr["steps_per_block"]), int(fr["n_read"]), float(fr["step_s"])
+        within = np.cumsum(read_intervals(steps, n_read)) * step_s
+        return np.concatenate([[0.0], (np.arange(int(self.n_blocks))[:, None] * float(self.h) + within[None, :]).ravel()])
 
     @property
     def nbytes(self):
@@ -373,7 +386,8 @@ class CoefficientWalk:
         as JSON under the ``"walk"`` header key. The geometry is not stored: the spec is the situation, and
         :meth:`load` gives the walk that; the field basis comes back as its record
         (:class:`~dmipy_sim.fields.strand_field.StrandFieldRecord` /
-        :class:`~dmipy_sim.fields.susceptibility_field.FieldGridRecord`), from which a pack is built the same."""
+        :class:`~dmipy_sim.fields.susceptibility_field.FieldGridRecord`; a closed-form field is rebuilt from its record),
+        from which a pack is built the same."""
         import json
         from safetensors.numpy import save_file
         arrays = {k: np.ascontiguousarray(getattr(self, k)) for k in self._FILE_ARRAYS if getattr(self, k) is not None}
@@ -384,7 +398,8 @@ class CoefficientWalk:
         fb = self.field_basis
         header = {k: getattr(self, k) for k in self._FILE_SCALARS}
         header.update(spec=(None if self.spec is None else self.spec.to_dict()),
-                      field=(None if fb is None else dict(kind=("grid" if hasattr(fb, "basis") else "strands"), meta=fb.meta)),
+                      field=(None if fb is None else dict(kind=("grid" if hasattr(fb, "basis") else "hollow_cylinder"
+                                                                if fb.meta.get("kind") == "hollow_cylinder" else "strands"), meta=fb.meta)),
                       run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
                       geometry=(None if self.geometry is None else type(self.geometry).__name__))
         save_file(arrays, str(path), metadata={"walk": json.dumps(header, default=float)})
@@ -411,6 +426,9 @@ class CoefficientWalk:
             if h["field"]["kind"] == "grid":
                 from .fields.susceptibility_field import FieldGridRecord
                 basis = FieldGridRecord(h["field"]["meta"])
+            elif h["field"]["kind"] == "hollow_cylinder":                 # the closed form: its record IS the field
+                from .fields.hollow_cylinder import HollowCylinderField
+                basis = HollowCylinderField.from_meta(h["field"]["meta"])
             else:
                 from .fields.strand_field import StrandFieldRecord
                 basis = StrandFieldRecord(h["field"]["meta"])

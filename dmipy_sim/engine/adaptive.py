@@ -139,10 +139,11 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
     the 27-cell gather at every step.
 
     With ``field_basis`` (a :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`) the walk READS the field's
-    channels itself at the end of every ``n_read``-th round at the walker's position, ``n_read`` the largest divisor
-    of the rounds per block whose interval is within the read rule's ``dt_f`` (:func:`field_read_of`, unless
-    ``field_read_interval`` gives one: a pilot of :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers reads
-    every round and measures the read series' quadratic variation and the trapezoid's constant; the round itself
+    channels itself at the end of every ``n_read``-th round and of every block at the walker's position, ``n_read``
+    the most rounds within the read rule's ``dt_f`` (:func:`field_read_of`, unless ``field_read_interval`` gives one:
+    a pilot of :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers, walked by the JAX kernels whatever the
+    backend, reads every round and measures the read series' quadratic variation and the trapezoid's constant; the
+    field band per pool; the round itself
     when the rule asks for less -- the read is never sub-stepped along a round), the TRAPEZOID of consecutive reads
     accumulated onto ``K_c3`` cosine modes per window and the read series' quadratic variation beside them (``K_c3``
     given, or derived on the same pilot's block means by :func:`~dmipy_sim.replay.bank.derive_field_band`). Once per ``field_reuse_intervals``
@@ -319,23 +320,25 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         K_f = None
 
         @jax.jit
-        def _read_moments(F, Qf, Qd, b_prev, b, j_mid, half_dt_f):
+        def _read_moments(F, Qf, Qd, b_prev, b, j_mid, half_dt_f, w_q):
             """The trapezoid increment of a read interval added to the field's moments at the interval's midpoint, its
-            square to ``Qf`` and the read series' increment squared to ``Qd``."""
+            square to ``Qf`` and the read series' increment, length-weighted by ``w_q = dt_i / dt_f``, squared to
+            ``Qd``."""
             inc = (b_prev + b) * half_dt_f
             pw = (jnp.float32(j_mid) / n_rounds - 0.5) ** js
-            db = b - b_prev
+            db = (b - b_prev) * w_q
             return F + pw[None, :, None] * inc[:, None, :], Qf + inc * inc, Qd + db * db
 
         @jax.jit
-        def _check_reads(E, bpd, b_prev, b, hit, half_dt, half_dt_d):
+        def _check_reads(E, bpd, b_prev, b, hit, half_dt, half_dt_d, w_d):
             """The trapezoid's checks of a pilot that reads every round: per check ``d`` the trapezoid of every ``d``-th
-            read (``hit`` where this read is one) less the trapezoid of every read, and the quadratic variation of the
-            series of every ``d``-th read (``E`` ``(nb, 2, n_checks, n_ch)``)."""
+            read and the block's end (``hit`` where this read is one, ``half_dt_d`` half its interval) less the
+            trapezoid of every read, and the quadratic variation of the series of those reads (``E`` ``(nb, 2,
+            n_checks, n_ch)``)."""
             inc = (b_prev + b) * half_dt
             h3 = hit[None, :, None]
             e_d = E[:, 0] - inc[:, None, :] + jnp.where(h3, (bpd + b[:, None, :]) * half_dt_d[None, :, None], 0.0)
-            q_d = E[:, 1] + jnp.where(h3, (b[:, None, :] - bpd) ** 2, 0.0)
+            q_d = E[:, 1] + jnp.where(h3, ((b[:, None, :] - bpd) * w_d[None, :, None]) ** 2, 0.0)
             return jnp.stack([e_d, q_d], axis=1), jnp.where(h3, b[:, None, :], bpd)
 
         @jax.jit
@@ -426,9 +429,10 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             (n_read, dt_f, checks, reads)`` -- every ``n_read`` rounds, the trapezoid's ``checks`` of a pilot that
             reads every round, and the raw subset's reads at their instants (``reads``) or each block's mean."""
             n_read_, dt_f_, checks_, keep_reads = rd if rd is not None else _rd[0]
-            half_dt = jnp.float32(0.5 * dt_f_)
-            half_dt_d = jnp.asarray(checks_, jnp.float32) * jnp.float32(0.5 * float(dt_round)) if checks_ else None
-            rpb = n_rounds // int(n_read_)
+            from .accumulate import read_intervals
+            spans = read_intervals(n_rounds, n_read_)                          # every n_read rounds and the block's end
+            ends = set(np.cumsum(spans).tolist())
+            rpb = len(spans)
             sel = slice(s, e) if e is not None else np.asarray(s)              # a range of walkers, or a pilot's indices
             nb = int(r0_all[sel].shape[0])
             r = jnp.asarray(r0_all[sel]); keys = keys_all[sel]
@@ -495,14 +499,20 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                 log.info("adaptive: candidate list widened to %d (a walker had %d segments in reach)", nonlocal_k[0], int(n_max))
                             n_kernel_0 += n_c * steps_c[c]; start += n_c
                         dlog_blk = dlog_blk + dlog_int
-                        if sampling and (j + 1) % n_read_ == 0:
+                        if sampling and (j + 1) in ends:
+                            span = (j + 1) - (((j + 1) - 1) // n_read_) * n_read_     # this read interval's rounds
                             b_now = at_dev(r, seg, keep)
-                            F, qf, qd = _read_moments(F, qf, qd, b_prev, b_now, jnp.float32(j + 1 - 0.5 * n_read_), half_dt)
+                            F, qf, qd = _read_moments(F, qf, qd, b_prev, b_now, jnp.float32(j + 1 - 0.5 * span),
+                                                      jnp.float32(0.5 * span * dt_round), jnp.float32(span / n_read_))
                             if ec is not None:
-                                hit = jnp.asarray([(j + 1) % d == 0 for d in checks_])
-                                ec, bpd = _check_reads(ec, bpd, b_prev, b_now, hit, half_dt, half_dt_d)
+                                k = j + 1
+                                hit = jnp.asarray([k % d == 0 or k == n_rounds for d in checks_])
+                                span_d = [(d if k % d == 0 else k % d) for d in checks_]
+                                half_d = jnp.asarray([0.5 * sp * dt_round for sp in span_d], jnp.float32)
+                                w_d = jnp.asarray([sp / d for sp, d in zip(span_d, checks_)], jnp.float32)
+                                ec, bpd = _check_reads(ec, bpd, b_prev, b_now, hit, jnp.float32(0.5 * dt_round), half_d, w_d)
                             if raw and keep_reads:
-                                fs_raw[:, (t - 1) * rpb + (j + 1) // n_read_] = np.asarray(b_now)
+                                fs_raw[:, (t - 1) * rpb + int(np.searchsorted(sorted(ends), j + 1)) + 1] = np.asarray(b_now)
                             b_prev = b_now
                     acc, acc_f = _project(acc, M, table[b], (None if table_f is None else table_f[b]), acc_f, F)
                     acc_b = _project_b(acc_b, B, table[b])
@@ -541,18 +551,16 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         def _backend_batch(s, e, *, raw, K_f, rd=None):
             """The walk of walkers ``s:e`` through the backend (#747, #742): its
             :class:`~dmipy_sim.engine.backends.CoefficientBatch` under the names of the JAX batch -- the bands as the
-            backend finished them, the contact, the field's modes at ``K_f`` and its quadratic variation, the start
-            pool from the batch (no second classification), the raw subset's block ends and the field's block means
-            (the pilot's input, the basis's mean subtracted); nothing converted, a walk of saves refused by name."""
+            backend finished them, the contact, the field's modes at ``K_f``, its quadratic variation and its read
+            series' quadratic variation, the start pool from the batch (no second classification), the raw subset's
+            block ends (a field walk's pilot and raw subset are walked by the JAX kernels); nothing converted, a walk
+            of saves refused by name."""
             from .backends import CoefficientBatch
             sel = slice(s, e) if e is not None else np.asarray(s)
             nb = int(r0_all[sel].shape[0])
             r0_b = np.ascontiguousarray(r0_all[sel], np.float32)
             keys_b = np.ascontiguousarray(np.asarray(keys_all[sel]), np.uint32)
             n_read_, dt_f_, _checks, keep_reads = rd if rd is not None else _rd[0]
-            if sampling and raw and keep_reads:
-                raise ValueError(f"backend {_backend_name!r}: the raw subset of a walk that reads the field keeps the reads at the "
-                                 f"walk's read instants (the measured certificate's oracle); the backend returns block means")
             rq = req._replace(raw_subset=(nb if raw else 0), K_c3=int(K_f or 0),
                               field_read_interval=(float(dt_f_) if sampling else 0.0))
             batch = _backend.walk_batch(rq, r0_b, keys_b)
@@ -599,12 +607,6 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     raise ValueError(f"backend {_backend_name!r} returned block ends of shape {pos.shape} for {nb} walkers over {n_blocks} blocks")
                 out["pos"] = pos
                 out["dlog"] = (np.zeros((nb, n_t), np.float32) if sv.boundary_local_time is None else np.asarray(sv.boundary_local_time, np.float32))
-                if sampling:
-                    fs = sv.field_samples
-                    if fs is None or np.asarray(fs).shape != (nb, n_t, n_ch):
-                        raise ValueError(f"backend {_backend_name!r} returned field block means of shape "
-                                         f"{None if fs is None else np.asarray(fs).shape} for the raw subset; {(nb, n_t, n_ch)} are needed")
-                    out["fs"] = np.asarray(fs, np.float32) - np.asarray(field_basis.mean, np.float32)[None, None, :]
             return out, dict(n_free=None, n_kernel_steps=None, n_illegal=int(np.asarray(batch.illegal, np.int64).sum()))
 
         _batch = _walk_batch if _backend is None else _backend_batch
@@ -616,10 +618,12 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         field_band = None
         if sampling:
             import time as _time
-            checks = read_checks(n_rounds) if _backend is None else ()
+            checks = read_checks(n_rounds)
             run.phase("field pilot", walkers=n_pilot)
             _t0 = _time.time()
-            got, _ = _batch(pidx, None, raw=K_c3 is None, K_f=None, rd=(1, float(dt_round), checks, False))
+            # the pilot walks on the JAX kernels whatever the walk's backend: its reads, checks and block means are
+            # the producer's own (1024 walkers), so a backend walk is charged at measured constants too
+            got, _ = _walk_batch(pidx, None, raw=K_c3 is None, K_f=None, rd=(1, float(dt_round), checks, False))
             B0, chi = field_rule_scale(_spec_holder(spec, geometry).spec, envelope)
             qd = np.asarray(got["qv_d"], np.float64)
             name_of = {int(p.id): p.name for p in ((spec or geometry.spec).pools if (spec or geometry.spec) is not None else [])}
@@ -634,10 +638,11 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                        qv_all=qd.mean(axis=(0, 1)), channels=list(field_basis.channel_names))
             field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0))
             if K_c3 is None:
-                from ..replay.bank import derive_field_band
-                K_f, bits, field_band = derive_field_band(np.asarray(got["fs"], np.float32)[:, 1:], list(field_basis.channel_names),
-                                                           float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
-                                                           floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
+                from ..replay.bank import derive_field_band_per_pool
+                K_f, bits, field_band = derive_field_band_per_pool(
+                    np.asarray(got["fs"], np.float32)[:, 1:], {name_of.get(int(l), str(int(l))): np.flatnonzero(labels == l) for l in np.unique(labels)},
+                    list(field_basis.channel_names), float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
+                    floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
                 field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
             if K_c3 is not None:
                 K_f = int(K_c3)
@@ -659,7 +664,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         n_free += int(hdr["n_free"]); n_kernel_steps += int(hdr["n_kernel_steps"])
                         log.info("  adaptive: batch %d read from the spool (%d walkers)", bi, b_ - a)
                 if got is None:
-                    got, cnt = _batch(a, b_, raw=raw, K_f=K_f)
+                    # a field walk's raw subset is walked by the JAX kernels: it keeps the reads at the read instants
+                    got, cnt = (_walk_batch if (raw and sampling) else _batch)(a, b_, raw=raw, K_f=K_f)
                     k_cand = nonlocal_k[0]
                     n_illegal += cnt["n_illegal"]
                     if _backend is None:
@@ -685,7 +691,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         kernel_steps_ratio=((total_steps / max(n_kernel_steps, 1)) if counted else None), steps_per_round_by_class=steps_c,
                         radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma),
                         eps_D=float(plan.eps_D), f_band_hz=float(plan.f_band_hz), dt_band_s=float(plan.dt_band_s),
-                        round_s=float(dt_round), rounds_per_block=int(n_rounds), backend=_backend_name)
+                        round_s=float(dt_round), rounds_per_block=int(n_rounds), backend=_backend_name,
+                        field_pilot_backend=(JAX if sampling else None),
+                        raw_subset_backend=(None if not n_raw else JAX if sampling else _backend_name))
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")
         block = dict(h=float(dt_actual), m=m, precision=PRECISION, n_blocks=int(n_blocks), rule=block_rule, ring=1,
                      accumulation="the moments of each block summed per step for the kernel-stepped walkers and per ROUND for the "
