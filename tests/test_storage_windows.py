@@ -297,5 +297,5 @@ def _float_pack(*a, **k):
     """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
-    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
     return build_replay_pack(*a, **k)
