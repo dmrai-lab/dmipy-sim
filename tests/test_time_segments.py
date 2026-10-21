@@ -1,6 +1,8 @@
-"""The time-segment layout (dmipy-sim#505): a columnar pack contracted once against a waveform's shape, in tiles, replays
-every amplitude and direction of that shape as the columnar image does, with the same split-half floor; a shape
-is one direction with amplitude-invariant ramps, and a b-value maps to an amplitude through the recorded unit b."""
+"""The time-segment layout (dmipy-sim#505, #770): partitions of the walk's time, the segment vectors contracted at the
+source -- from the walk's float coefficients beside its pack, or from a quantised pack -- the widths derived per segment
+and tier field, per-block rows consolidated into tiles; the image of every sequence piecewise constant on a stored
+partition (a PGSE, a stimulated echo's three segments, a double diffusion encoding's four) is the sibling pack's replay
+within the layout's rounding term, bare and with the tiers."""
 from __future__ import annotations
 import json
 import os
@@ -9,448 +11,379 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.columnar import ColumnarPack
-from dmipy_sim.replay.compression import BUDGET
-from dmipy_sim.replay.time_segments import TimeSegmentLayout, write_time_segment_layout, _profile
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
-from dmipy_sim.fill.consolidate import consolidate
+from dmipy_sim.replay.bank import build_replay_pack, merge_packs
+from dmipy_sim.replay.time_segments import (FORMAT, Partition, TimeSegmentLayout, _walk_view, read_manifest, rounding_eps,
+                                             segment_rows, write_time_segment_layout)
 from dmipy_sim.spec import walk_spec, StratifiedByVoxel
-from tests.conftest import spec_without_source
+from dmipy_sim.spec.tissue import Tissue
+
+UM = 1e-6
+D0 = 2e-9
+G_MAX = 1.0                                                        # T/m: the envelope's gradient (the walk names no class)
+N_T, TE = 201, 0.02                                                # a 0.1 ms grid over a 20 ms echo
+TISSUE = Tissue(T2={"intra": 0.07, "extra": 0.06, "myelin": 0.015}, T1={"intra": 1.0, "extra": 1.2, "myelin": 0.4},
+                rho2=2e-5, chi_iso=-1e-7, chi_aniso=-1e-8)
+
+
+def _sequences():
+    """A PGSE, a PGSTE and a DDE (two bipolar pairs about the spin echo's pulse) on a 0.1 ms grid, and the stimulated
+    echo's mixing time."""
+    se = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
+    ste = d.pgste([[0, 0, 1]], 3e-3, 10e-3, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    G = np.zeros((1, N_T, 3), np.float32)
+    for i0, v in ((5, [0, 0, 0.1]), (35, [0, 0, -0.1]), (105, [0.1, 0, 0]), (135, [-0.1, 0, 0])):
+        G[0, i0:i0 + 25, :] = v
+    dde = se.with_gradient(G)
+    lobes = Partition.of("lobes", ste).segments
+    eg = np.asarray(ste.effective_gate)
+    z = np.flatnonzero(eg == 0); z = z[(z * ste.dt > lobes[0][1]) & (z * ste.dt < lobes[1][0])]
+    mixing = (z[0] * ste.dt, (z[-1] + 1) * ste.dt)
+    return se, ste, dde, mixing
+
+
+def _partitions():
+    se, ste, dde, mixing = _sequences()
+    lobes = Partition.of("lobes", ste).segments
+    return {"pgse": Partition.of("pgse", se), "pgste": Partition.of("pgste", ste, segments=[lobes[0], mixing, lobes[1]]),
+            "dde": Partition.of("dde", dde)}
 
 
 @pytest.fixture(scope="module")
-def layout(spec_grid):
-    """Two blocks of the three-strand spec consolidated into columns, and their n_t."""
-    spec, grid, tmp = spec_grid
-    spec = spec_without_source(spec)      # consolidation mechanics, not the field tier
-    os.makedirs(str(tmp / "sm_shards"), exist_ok=True)
-    n_t = None
-    for b in (0, 1):
-        want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=11 + b, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        pk = build_replay_pack(w, id=f"t/sm{b}", license="x", citation="x", K=3, voxel_grid=grid,
-                               out_path=str(tmp / "sm_shards" / f"block-000{b}.p1.rpk"))
-        n_t = pk.n_t
-    consolidate(str(tmp / "sm_shards"), str(tmp / "sm_layout"), blocks=[0, 1], id="t/sm-columns")
-    return ColumnarPack(str(tmp / "sm_layout")), grid, n_t, tmp
+def myelin(tmp_path_factory):
+    """A myelinated cylinder walked with its closed-form field, the contact and the pools (1200 walkers, 30 ms); its
+    pack at a declared floor target on a 2 x 2 voxel grid; the segment rows from the walk and from the pack and their
+    layouts."""
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+    from dmipy_sim.phantom.grid import Grid
+    tmp = tmp_path_factory.mktemp("segments")
+    g = d.MyelinatedCylinder(2.0 * UM, 2.8 * UM, (0, 0, 1), D0, D0)
+    w = d.simulate_trajectories(1200, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
+    r0 = np.asarray(w.position_coeffs)[:, 0, 0, :]
+    lo, hi = r0.min(0), r0.max(0)
+    vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
+    grid = Grid(shape=(2, 2, 1), voxel_size_m=tuple(vs), origin_m=(lo[0] - 1e-9 + vs[0] / 2, lo[1] - 1e-9 + vs[1] / 2, 0.0))
+    pk = build_replay_pack(w, id="t/segments", license="x", citation="x", sigma_star=0.02, voxel_grid=grid)
+    parts = _partitions()
+    rec_w = segment_rows(w, parts, str(tmp / "rows_walk"), grid=grid, pack=pk, g_max=G_MAX, tiers=True, background=True)
+    rec_p = segment_rows(pk, parts, str(tmp / "rows_pack"), grid=grid, g_max=G_MAX, tiers=True, background=True)
+    mw = write_time_segment_layout([str(tmp / "rows_walk")], str(tmp / "lay_walk"))
+    mp = write_time_segment_layout([str(tmp / "rows_pack")], str(tmp / "lay_pack"))
+    return dict(walk=w, pack=pk, grid=grid, parts=parts, rec_w=rec_w, rec_p=rec_p, mw=mw, mp=mp, tmp=tmp,
+                lw=TimeSegmentLayout(str(tmp / "lay_walk")), lp=TimeSegmentLayout(str(tmp / "lay_pack")))
 
 
-def _shape(n_t, delta=0.2e-3, Delta=0.5e-3, g=0.05, direction=(0.0, 0.0, 1.0)):
-    return d.pgse([list(direction)], delta, Delta, gradient_strengths=g, n_t=n_t, slew_rate=np.inf)
-
-
-def test_the_vectors_replay_every_amplitude_and_direction_of_the_shape(layout):
-    """Six directions at three amplitudes of one shape: the layout's image equals the columnar image of the
-    same acquisitions (built as one sequence at those b-values) within the vector container's share of the floor
-    target, its floor the study's split-half floor alike, and NaN sits exactly where the columns have no rows."""
-    col, grid, n_t, tmp = layout
-    out = str(tmp / "sm_moments")
-    manifest = write_time_segment_layout(col, {"a": _shape(n_t), "c": _shape(n_t, delta=0.2e-3, Delta=0.4e-3, g=0.02)}, out,
-                                   tol=1e-9, chunk_rows=7)                  # two shapes on one grid: one contraction
-    assert manifest["n_rows"] == col.n_rows and manifest["K"] == col.K and manifest["source"]["n_rows"] == col.n_rows
-    sm = TimeSegmentLayout(out)
-    assert sm.shapes == ["a", "c"] and sm.vectors("a").shape == (sm.n_tiles, sm.tile, 3) and sm.vectors("a").dtype == np.float32
-    bound = BUDGET * manifest["shapes"]["a"]["vector"]["floor_target"]
-    assert sm.n_rows == col.n_rows and sm.n_tiles * sm.tile >= col.n_rows
-    # the tiles hold every row once: the per-voxel weight sums are the columns' own, and a padding row weighs nothing
-    full = col.view(); ijk, _ = grid.bin(full.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
-    np.testing.assert_allclose(sm.weights.sum(1), np.bincount(v, full.spin_weights, minlength=sm.n_vox), rtol=1e-6)
-    assert (np.asarray(sm._column("w")) > 0).sum() == col.n_rows
-    rng = np.random.default_rng(3)
+def _acquisitions():
+    se, ste, dde, _ = _sequences()
+    rng = np.random.default_rng(0)
     u = rng.normal(size=(6, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
-    dirs = np.concatenate([u, u, u, [[0, 0, 1]]]); b = np.r_[np.full(6, 2e8), np.full(6, 1e9), np.full(6, 3e9), 0.0]
-    S, floor = sm.image("a", b, dirs)
-    seq = d.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
-    S_col, _, plan = col.image(seq, tol=1e-9, chunk_rows=5)
-    assert S.shape == S_col.shape == tuple(grid.shape) + (19,)
-    np.testing.assert_array_equal(np.isnan(S), np.isnan(S_col))
-    err = np.nanmax(np.abs(S - S_col))
-    assert err < bound, err                   # the packed vectors against the float64 image: 0.021 of 0.059 measured
-    np.testing.assert_allclose(np.nan_to_num(S[..., -1]), np.nan_to_num(S_col[..., -1]) , atol=1e-6)   # b = 0 is 1
-    _, floor_study, _ = col.image(Study(Protocol([Acquisition(seq)])), tol=1e-9, chunk_rows=5)
-    np.testing.assert_array_equal(np.isnan(floor), np.isnan(floor_study[0]))
-    assert np.nanmax(np.abs(floor - floor_study[0])) < bound
-    S_c, _ = sm.image("c", b[:6], dirs[:6])                                   # the second shape of the shared pass
-    seq_c = d.pgse(dirs[:6].tolist(), 0.2e-3, 0.4e-3, bvalues=b[:6], n_t=n_t, slew_rate=np.inf)
-    S_col_c, _, _ = col.image(seq_c, tol=1e-9, chunk_rows=5)
-    assert np.nanmax(np.abs(S_c - S_col_c)) < bound and np.nanmax(np.abs(S_c - S[..., :6])) > 1e-3
+    b = np.r_[np.full(6, 1e9), np.full(6, 3e9), 0.0]; dirs = np.concatenate([u, u, [[0, 0, 1]]])
+    G = np.asarray(dde.G)[0]
+    return dict(pgse=d.pgse(dirs.tolist(), 4e-3, 10e-3, bvalues=b, TE=TE, n_t=N_T, slew_rate=np.inf),
+                pgste=d.pgste(dirs.tolist(), 3e-3, 10e-3, bvalues=b, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0)),
+                dde=d.ScannerSequence(G=np.stack([G * a for a in (0.3, 0.7, 1.0)] + [G * np.array([[-1.0, 1.0, 1.0]]) * 0.5]),
+                                      dt=se.dt, rf=se.rf, readout=se.readout))
 
 
-def test_the_amplitude_of_a_b_value_is_the_shapes_own(layout):
-    """``g = sqrt(b / b_unit)``: the recorded unit b makes the builder's own b at any amplitude."""
-    col, grid, n_t, tmp = layout
-    sm = TimeSegmentLayout(str(tmp / "sm_moments"))
-    seq = _shape(n_t, g=0.123)
-    g = sm.amplitude("a", d.calc_b(seq))
-    np.testing.assert_allclose(g, 0.123, rtol=1e-6)
-    np.testing.assert_array_equal(sm.amplitude("a", [0.0]), [0.0])
-    with pytest.raises(ValueError, match="negative"):
-        sm.amplitude("a", [-1.0])
-    m = json.load(open(os.path.join(str(tmp / "sm_moments"), "manifest.json")))
-    assert m["shapes"]["a"]["build_spec"][0] == "pgse" and m["shapes"]["a"]["encoding"]["delta"] == [0.2e-3]
-    assert m["code"]["package"] == "dmipy-sim" and m["source"]["manifest_sha256"]
+def _per_voxel(src, grid, seq, **kw):
+    """``(n_vox, n_meas)``: the per-voxel ensemble magnitude of ``src``'s replay (walker by walker, start voxels)."""
+    w, ew, E = src.walker_signals(seq, **kw)
+    ijk, _ = grid.bin(src.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
+    num = np.stack([np.bincount(v, (ew * E[:, k]).real, minlength=grid.n_voxels)
+                    + 1j * np.bincount(v, (ew * E[:, k]).imag, minlength=grid.n_voxels) for k in range(E.shape[1])], 1)
+    return np.abs(num / np.bincount(v, w, minlength=grid.n_voxels)[:, None])
 
 
-def test_a_layout_of_another_format_is_refused_by_name(layout):
-    """A manifest written as ``shape_moments/3`` (each shape's packed vector under ``moment``) is not a
-    ``time_segments/1`` layout and is refused by name; it is rebuilt from its packs."""
+def _term(sigma2, floor):
+    """The rounding's term on a voxel's signal: ``3 sigma`` times its Monte-Carlo floor (a random phase of rms ``sigma``
+    per walker moves the mean by ``sigma`` times its own spread) plus the bias ``sigma^2 / 2``."""
+    return 3.0 * np.sqrt(sigma2) * floor + 0.5 * sigma2
+
+
+def test_a_partition_is_read_from_its_sequence():
+    """A PGSE is two lobes under the gate's +1 and -1, a stimulated echo's mixing time is a segment its gate stores, a
+    DDE's two bipolar pairs are four lobes; ``b_matrix`` is the b-value of refocused levels (the builder's own b to its
+    rectangular rule), and a PGSE's reach is ``min(G_max, sqrt(b_max / b_unit))``; a segment across a pulse is refused."""
+    from dmipy_sim.acquisition.waveforms import calc_b
+    parts = _partitions()
+    se, ste, dde, mixing = _sequences()
+    assert parts["pgse"].gate == (1, -1) and parts["pgste"].gate == (1, 0, -1) and parts["dde"].gate == (1, 1, -1, -1)
+    assert parts["pgste"].segments[1] == pytest.approx(mixing)
+    for name, seq in (("pgse", se), ("dde", dde)):
+        L = parts[name].levels(seq)
+        b = np.einsum("msc,st,mtc->m", L, parts[name].b_matrix(), L)
+        np.testing.assert_allclose(b, calc_b(seq), rtol=2e-3)
+    b_unit = float(calc_b(se)[0]) / 0.1 ** 2
+    reach = parts["pgse"].reach(G_MAX, 3e9)
+    np.testing.assert_allclose(reach, min(G_MAX, np.sqrt(3e9 / b_unit)), rtol=2e-3)
+    assert parts["pgste"].reach(G_MAX, 3e9)[1] == 0.0
+    lo = parts["pgse"].segments
+    with pytest.raises(ValueError, match="changes sign"):
+        Partition.of("across", se, segments=[lo[0], (lo[0][1], lo[1][1])])
+
+
+def test_a_sequence_that_does_not_fit_is_refused_by_name():
+    """Off the segments, not constant on one, unbalanced, on a stored segment, off the grid: each refused by name."""
+    parts = _partitions()
+    se, ste, dde, _ = _sequences()
+    G = np.asarray(se.G).copy(); G[0, 2, 2] = 0.05
+    with pytest.raises(ValueError, match="outside the segments"):
+        parts["pgse"].levels(se.with_gradient(G))
+    G = np.asarray(se.G).copy(); i = int(round(parts["pgse"].segments[0][0] / se.dt)); G[0, i, 2] *= 0.5
+    with pytest.raises(ValueError, match="not constant"):
+        parts["pgse"].levels(se.with_gradient(G))
+    G = np.asarray(se.G).copy(); i = int(round(parts["pgse"].segments[1][0] / se.dt)); G[0, i:i + 40, 2] *= 0.5
+    with pytest.raises(ValueError, match="net moment"):
+        parts["pgse"].levels(se.with_gradient(G))
+    coarse = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=61, slew_rate=np.inf)
+    with pytest.raises(ValueError, match="grid"):
+        parts["dde"].levels(coarse)
+    p = Partition("stored", ((0.0, 1e-3), (1e-3, 2e-3), (2e-3, 3e-3)), (1, 0, -1))
+    G = np.zeros((1, N_T, 3), np.float32); G[0, 0:10, 0] = 0.1; G[0, 10:20, 0] = 0.1; G[0, 20:30, 0] = 0.2
+    with pytest.raises(ValueError, match="stores"):
+        p.levels(se.with_gradient(G))
+
+
+def test_the_images_equal_the_sibling_packs_replay(myelin):
+    """The acceptance of #770 on a walk with contact and field: a PGSE, a PGSTE (the stimulated echo's group) and a DDE,
+    bare and with T2 / T1 / rho2 / the field at 7 T, from the layout written from the walk's float coefficients and from
+    the one written from the quantised pack, against the pack's replay voxel by voxel -- within the rounding's term
+    (the pack's quantisation added for the walk's layout), and the walk's layout against the walk's own float replay
+    within its own rounding alone."""
+    M = myelin
+    view = _walk_view(M["walk"])
+    for name, seq in _acquisitions().items():
+        rw, rp = M["mw"]["partitions"][name]["rounding"], M["mp"]["partitions"][name]["rounding"]
+        for kw in ({}, dict(tissue=TISSUE, scanner=7.0)):
+            ref = _per_voxel(M["pack"], M["grid"], seq, **kw)
+            exact = _per_voxel(view, M["grid"], seq, **kw)
+            Sw, fw = M["lw"].image(seq, **kw); Sp, fp = M["lp"].image(seq, **kw)
+            Sw, Sp = Sw.reshape(ref.shape), Sp.reshape(ref.shape)
+            fl = float(np.nanmax(fw))
+            assert np.abs(Sw - exact).max() < _term(rw["variance"], fl), (name, kw)
+            assert np.abs(Sw - ref).max() < _term(rw["variance"] + rp["source_quantisation"], fl), (name, kw)
+            assert np.abs(Sp - ref).max() < _term(rp["variance"], fl), (name, kw)
+            assert np.abs(Sw - ref).max() < 0.25 * fl                     # well inside the Monte-Carlo floor
+
+
+def test_the_widths_are_derived_per_segment_and_the_walk_needs_no_more_bits_than_the_pack(myelin):
+    """The manifest records the rule per segment: ``step = sqrt(12 R / n) / reach`` with ``R`` the floor's budget
+    (``eps^2``; from the pack ``eps^2`` less the pack's band quantisation contracted through the partition), each
+    component's bits and scale against its largest value, its word and offset; a segment its gate stores holds none.
+    For one floor the walk's widths are never wider than the pack's and its budget is the larger."""
+    M = myelin
+    eps = rounding_eps(0.02)
+    for name in M["parts"]:
+        pw, pp = M["mw"]["partitions"][name], M["mp"]["partitions"][name]
+        assert pw["rounding"]["budget"] == pytest.approx(eps ** 2) and pw["rounding"]["source_quantisation"] == 0.0
+        assert pp["rounding"]["budget"] == pytest.approx(eps ** 2 - pp["rounding"]["source_quantisation"])
+        assert pp["rounding"]["source_quantisation"] > 0.0
+        assert pw["rounding"]["variance"] <= pw["rounding"]["budget"] * (1 + 1e-9)
+        n = sum(1 for s in pw["segments"] if s["q_max"] > 0)
+        for sw, sp in zip(pw["segments"], pp["segments"]):
+            assert set(sw) >= {"q_max", "floor_target", "bits", "offsets", "word", "scale", "step"}
+            if sw["q_max"] == 0:
+                assert sw["bits"] == [0, 0, 0] and sp["bits"] == [0, 0, 0]
+                continue
+            assert sw["step"] == pytest.approx(np.sqrt(12 * eps ** 2 / n) / sw["q_max"])
+            assert all(bw <= bp for bw, bp in zip(sw["bits"], sp["bits"]))
+            assert all(s <= sw["step"] * (1 + 1e-9) for s in sw["scale"])
+        assert pw["n_words"] <= pp["n_words"]
+    assert M["mw"]["source"]["kind"] == "walk" and M["mp"]["source"]["kind"] == "pack"
+    assert M["mw"]["source"]["walk"]["starts_sha256"] and M["mw"]["source"]["pack"]["id"] == "t/segments"
+    assert M["mw"]["certificate"]["terms"] == M["pack"].meta["fidelity"]["terms"]
+
+
+def test_the_tier_columns_are_words(myelin):
+    """Every tier and background column is uint32 words; a group's contact and field channels share one word array
+    (12 channels at most once the trace identity holds, a channel zero on every row not stored), its background
+    another; the bytes per walker of the tiers are a fraction of the float32 columns' 52 + 4 + 12; the decoded contact
+    and channels are the rows' within half a step."""
+    M = myelin
+    lay = M["lw"]
+    for g, grp in M["mw"]["groups"].items():
+        assert np.load(os.path.join(lay.path, grp["column"]), mmap_mode="r").dtype == np.uint32
+        assert np.load(os.path.join(lay.path, grp["background"]["column"]), mmap_mode="r").dtype == np.uint32
+        assert len(grp["field"]["stored"]) <= (12 if grp["field"]["iso_P_zz"] == "implied" else 13)
+        assert 4 * (grp["tier_words"]["n_words"] + grp["background"]["n_words"]) < 0.5 * (52 + 4 + 12)
+        cols = lay.tier_columns(g)
+        rows = os.path.join(str(M["tmp"]), "rows_walk")
+        vox = np.load(os.path.join(rows, "voxel.npy"))
+        contact = np.load(os.path.join(rows, f"contact_{g}.npy"))
+        step = next(f["scale"] for f in grp["tier_words"]["fields"] if f["name"] == "contact")
+        got = np.sort(cols["contact"][np.asarray(lay._column("w")) > 0])
+        np.testing.assert_allclose(got, np.sort(contact), atol=0.5 * step + 1e-12)
+        assert len(vox) == len(contact) == M["walk"].n_walkers
+    assert M["mw"]["bytes_per_walker"]["total"] == 4 + 1 + sum(4 * p["n_words"] for p in M["mw"]["partitions"].values()) + \
+        sum(4 * (grp["tier_words"]["n_words"] + grp["background"]["n_words"]) for grp in M["mw"]["groups"].values())
+
+
+def test_a_sequence_beyond_the_envelope_and_a_foreign_pack_are_refused(myelin):
+    """A row above b_max or G_max is refused by name; a walk's rows need its own pack."""
+    M = myelin
+    with pytest.raises(ValueError, match="b_max"):
+        M["lw"].image(d.pgse([[0, 0, 1]], 4e-3, 10e-3, bvalues=[5e9], TE=TE, n_t=N_T, slew_rate=np.inf))
+    se, _, dde, _ = _sequences()
+    with pytest.raises(ValueError, match="G_max"):
+        M["lw"].image(dde.with_gradient(np.asarray(dde.G) * 12.0))
+    with pytest.raises(ValueError, match="fits no stored partition"):
+        M["lw"].image(d.pgse([[0, 0, 1]], 3e-3, 10e-3, bvalues=[1e9], TE=TE, n_t=N_T, slew_rate=np.inf))
+    other = M["walk"].take(np.arange(M["walk"].n_walkers)[::-1])
+    with pytest.raises(ValueError, match="not this walk's pack"):
+        segment_rows(other, M["parts"], str(M["tmp"] / "foreign"), grid=M["grid"], pack=M["pack"], g_max=G_MAX)
+    with pytest.raises(ValueError, match="sibling"):
+        segment_rows(M["walk"], M["parts"], str(M["tmp"] / "nopack"), grid=M["grid"], g_max=G_MAX)
+
+
+def test_a_layout_of_another_format_is_refused_by_name(myelin, tmp_path):
+    """A ``time_segments/1`` manifest (one vector per shape) is not read: it is written again from its walk's rows."""
     import shutil
-    col, grid, n_t, tmp = layout
-    src, old = str(tmp / "sm_moments"), str(tmp / "sm_earlier")
-    shutil.copytree(src, old)
+    old = str(tmp_path / "old")
+    shutil.copytree(myelin["lw"].path, old)
     m = json.load(open(os.path.join(old, "manifest.json")))
-    m["format"] = "shape_moments/3"
-    m["shapes"] = {n: {("moment" if k == "vector" else k): v for k, v in rec.items()} for n, rec in m["shapes"].items()}
+    m["format"] = "time_segments/1"
     json.dump(m, open(os.path.join(old, "manifest.json"), "w"))
-    with pytest.raises(ValueError, match="not a time_segments/1 layout"):
+    with pytest.raises(ValueError, match=f"not a {FORMAT} layout"):
         TimeSegmentLayout(old)
+    with pytest.raises(ValueError, match="time_segments/1"):
+        read_manifest(old)
 
 
-def test_a_shape_is_one_direction_with_amplitude_invariant_ramps(layout):
-    col, grid, n_t, tmp = layout
-    s, u, g = _profile(_shape(n_t, g=0.07, direction=(0.6, 0.0, 0.8)))
-    assert abs(s).max() == pytest.approx(1.0) and g == pytest.approx(0.07) and np.allclose(u, [0.6, 0, 0.8])
-    with pytest.raises(ValueError, match="one-row"):
-        _profile(d.pgse([[1, 0, 0], [0, 1, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf))
-    with pytest.raises(ValueError, match="slew_rate=np.inf"):
-        _profile(d.pgse([[0, 0, 1]], 1e-3, 2e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=200.0))
-    with pytest.raises(ValueError, match="one direction"):
-        _profile(d.pte([0, 0, 1], 0.4e-3, bvalues=[1e9], n_t=n_t, slew_rate=np.inf))
-    with pytest.raises(ValueError, match="at least one"):
-        write_time_segment_layout(col, {}, str(tmp / "sm_none"))
-
-
-def test_directions_must_match_and_be_unit(layout):
-    col, grid, n_t, tmp = layout
-    sm = TimeSegmentLayout(str(tmp / "sm_moments"))
-    with pytest.raises(ValueError, match="match"):
-        sm.image("a", [1e9, 1e9], [[0, 0, 1]])
-    with pytest.raises(ValueError, match="unit"):
-        sm.image("a", [1e9], [[0, 0, 2]])
-    with pytest.raises(KeyError):
-        sm.vectors("b")
-
-
-def test_the_bands_are_judged_at_the_shapes_own_amplitude_and_the_device_rows_can_be_released(layout):
-    """A shape built at a tenth of the amplitude needs no more bands than one built at the full amplitude (the
-    truncation error scales with the amplitude squared, and the manifest records the amplitude judged at); after
-    ``release`` the device holds the shared rows only."""
-    col, grid, n_t, tmp = layout
-    out = str(tmp / "sm_amp")
-    lo = write_time_segment_layout(col, {"lo": _shape(n_t, g=0.005)}, out, tol=1e-9, chunk_rows=7)
-    assert lo["shapes"]["lo"]["amplitude_built"] == pytest.approx(0.005) and lo["K"] <= col.K
-    sm = TimeSegmentLayout(str(tmp / "sm_moments"))
-    sm.image("a", [1e9], [[0, 0, 1]]); sm.image("c", [1e9], [[0, 0, 1]])
-    assert {k[1] for k in sm._device} == {"w", "tiles", "a", "c"}
-    sm.release(keep=["c"])
-    assert {k[1] for k in sm._device} == {"w", "tiles", "c"}
-
-
-def test_the_torch_backend_is_the_jax_image(layout):
-    """dmipy-sim#510: the same acquisitions on both backends agree to float32 arithmetic, NaN and floor alike; two
-    torch calls are identical; a non-resident call leaves nothing on the device; the backend name is checked."""
-    torch = pytest.importorskip("torch")
-    col, grid, n_t, tmp = layout
-    sm = TimeSegmentLayout(str(tmp / "sm_moments"))
-    rng = np.random.default_rng(5)
-    u = rng.normal(size=(5, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
-    dirs = np.concatenate([u, u, [[0, 0, 1]]]); b = np.r_[np.full(5, 5e8), np.full(5, 2.5e9), 0.0]
-    S_j, f_j = sm.image("a", b, dirs)
-    torch.use_deterministic_algorithms(True)
-    S_t, f_t = sm.image("a", b, dirs, backend="torch", device="cpu")
-    np.testing.assert_array_equal(np.isnan(S_j), np.isnan(S_t))
-    err = np.nanmax(np.abs(S_j - S_t)); assert err < 2e-6, err            # measured 7.6e-8 on the fixture (CPU)
-    assert np.nanmax(np.abs(f_j - f_t)) < 2e-6
-    S_t2, _ = sm.image("a", b, dirs, backend="torch", device="cpu")
-    np.testing.assert_array_equal(np.nan_to_num(S_t), np.nan_to_num(S_t2))
-    before = set(sm._device)
-    S_t3, _ = sm.image("c", b[:3], dirs[:3], backend="torch", device="cpu", resident=False)
-    assert set(sm._device) == before and np.isfinite(S_t3).any()
-    with pytest.raises(ValueError, match="backend"):
-        sm.image("a", b, dirs, backend="numpy")
-
-
-def test_preload_keeps_the_padded_host_arrays_and_changes_no_number(layout):
-    """After ``preload`` the device copies are built from the host cache; the image is the same and a non-resident
-    call still leaves nothing on the device."""
-    torch = pytest.importorskip("torch")
-    col, grid, n_t, tmp = layout
-    sm = TimeSegmentLayout(str(tmp / "sm_moments"))
-    b = np.array([1e9, 0.0]); dirs = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
-    before, _ = sm.image("a", b, dirs, backend="torch", device="cpu", resident=False)
-    sm.preload(["a"])
-    assert set(sm._host) == {"w", "tiles", "a"} and sm._host["a"].shape == (-(-sm.n_tiles // sm.TILES) * sm.TILES, sm.tile)
-    after, _ = sm.image("a", b, dirs, backend="torch", device="cpu", resident=False)
-    np.testing.assert_array_equal(np.nan_to_num(before), np.nan_to_num(after))
-    assert not any(k[1] == "a" for k in sm._device)
-    sm.preload()
-    assert set(sm._host) == {"w", "tiles", "a", "c"}
-
-
-def test_the_weights_are_read_once_per_layout(layout):
-    """The per-voxel weight sums are the layout's, not the image's: every image after the first reads neither the
-    weight nor the tile column again for them (on DiSCo a float64 copy of 153 M rows per call)."""
-    col, grid, n_t, tmp = layout
-    sm = TimeSegmentLayout(str(tmp / "sm_moments"))
-    reads = []
-    column = sm._column
-    sm._column = lambda name: (reads.append(name), column(name))[1]
-    b = np.array([1e9, 0.0]); dirs = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
-    first, _ = sm.image("a", b, dirs, resident=True)          # the device copy is kept: only the weights could read again
-    n_first = len(reads)
-    second, _ = sm.image("a", b, dirs, resident=True)
-    assert "w" in reads[:n_first] and reads[n_first:] == [], reads
-    np.testing.assert_array_equal(np.nan_to_num(first), np.nan_to_num(second))
-
-
+# ------------------------------------------------------------------ several blocks, the mechanics of the reader
 @pytest.fixture(scope="module")
-def layout_field(spec_grid):
-    """Two blocks of the three-strand spec walked WITH the sheath's field (C3) and the contact and occupancy tiers,
-    consolidated into columns; the merged pack beside it."""
-    from dmipy_sim.replay.bank import merge_packs
+def blocks(spec_grid):
+    """Two blocks of the three-strand spec walked with the sheath's field, the contact and the pools, each packed and
+    its rows written from the walk; the layout of both blocks and the merged pack."""
     spec, grid, tmp = spec_grid
-    os.makedirs(str(tmp / "sf_shards"), exist_ok=True)
-    packs = []
+    packs, dirs = [], []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
         w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        packs.append(build_replay_pack(w, id=f"t/sf{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
-                                       out_path=str(tmp / "sf_shards" / f"block-000{b}.p1.rpk")))
-    consolidate(str(tmp / "sf_shards"), str(tmp / "sf_layout"), blocks=[0, 1], id="t/sf-columns")
-    return ColumnarPack(str(tmp / "sf_layout")), merge_packs(packs, id="t/sf-merged"), grid, packs[0].n_t, tmp
+        pk = build_replay_pack(w, id=f"t/sb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid)
+        packs.append(pk)
+        dirs.append(str(tmp / f"sb_rows{b}"))
+        segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3,
+                     tiers=True, background=True)
+    m = write_time_segment_layout(dirs, str(tmp / "sb_layout"))
+    return TimeSegmentLayout(str(tmp / "sb_layout")), merge_packs(packs, id="t/sb-merged"), grid, packs[0].n_t, m, tmp
 
 
-def _per_voxel(pack, grid, w, ew, E):
-    ijk, _ = grid.bin(pack.r0); v = np.ravel_multi_index(ijk.T, grid.shape); keys, inv = np.unique(v, return_inverse=True)
-    num = np.zeros((len(keys), E.shape[1]), complex); den = np.zeros(len(keys))
-    np.add.at(num, inv, ew[:, None] * E); np.add.at(den, inv, w)
-    return keys, np.abs(num / den[:, None])
-
-
-def test_the_tiers_are_the_studys_terms_on_every_pathway(layout_field):
-    """dmipy-sim#514: a spin-echo shape and a stimulated-echo shape in one layout with tiers; the image under a tissue
-    (T2 and T1 per pool, rho2, chi) at 3 T equals the merged pack's ``walker_signals`` per voxel within the vector
-    container's share of the floor target (the two backends to float32 arithmetic)
-    -- the stimulated echo's storage time carries T1 and its pathway amplitude, its gate the field and the contact;
-    the bare image is the pathway-scaled bare replay; a field asked of the bare layout is refused by name."""
-    from dmipy_sim.spec.tissue import Tissue
-    col, merged, grid, n_t, tmp = layout_field
+def _strand_partitions(n_t):
     se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
-    ste = d.pgste([[0, 0, 1]], 0.2e-3, 0.4e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-    out = str(tmp / "sf_moments")
-    manifest = write_time_segment_layout(col, {"se": se, "ste": ste}, out, tol=1e-9, chunk_rows=7, tiers=True)
-    tiers = manifest["tiers"]
-    assert tiers["relaxation"] and len(tiers["groups"]) == 2 and all(g["contact"] and g["field"] for g in tiers["groups"].values())
-    g_ste = next(g for g in tiers["groups"].values() if "ste" in g["shapes"])
-    assert g_ste["pathway"] == pytest.approx(0.5, abs=1e-12) and g_ste["tau_t1"] > 0
-    sm = TimeSegmentLayout(out)
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
-    rng = np.random.default_rng(9); u = rng.normal(size=(4, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
-    for name, base, delta, Delta in (("se", se, 0.2e-3, 0.5e-3), ("ste", ste, 0.2e-3, 0.4e-3)):
-        b = np.array([1e9, 1e9, 3e9, 0.0]); dirs = np.concatenate([u[:3], [[0, 0, 1]]])
-        if name == "se":
-            seq = d.pgse(dirs.tolist(), delta, Delta, bvalues=b, n_t=n_t, slew_rate=np.inf)
-        else:
-            seq = d.pgste(dirs.tolist(), delta, Delta, bvalues=b, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-        S, floor = sm.image(name, b, dirs, tissue=t, scanner=3.0)
-        w, ew, E = merged.walker_signals(seq, tissue=t, scanner=3.0)
-        keys, ref = _per_voxel(merged, grid, w, ew, E)
-        got = S.reshape(-1, 4)[keys]
-        err = np.abs(got - ref).max(); bound = BUDGET * manifest["shapes"][name]["vector"]["floor_target"]
-        assert err < bound, (name, err, bound)                          # the packed vectors against float64: 0.017 of 0.054 measured (se)
-        torch = pytest.importorskip("torch")
-        St, _ = sm.image(name, b, dirs, tissue=t, scanner=3.0, backend="torch", device="cpu")   # the torch tiered kernel
-        assert np.nanmax(np.abs(St - S)) < 5e-6
-        S0, _ = sm.image(name, b, dirs)                                  # bare: the pathway amplitude alone
-        w0, ew0, E0 = merged.walker_signals(seq)
-        _, ref0 = _per_voxel(merged, grid, w0, ew0, E0)
-        assert np.abs(S0.reshape(-1, 4)[keys] - ref0).max() < bound
-    bare = TimeSegmentLayout(str(tmp / "sm_moments"))
-    with pytest.raises(ValueError, match="tiers"):
-        bare.image("a", [1e9], [[0, 0, 1]], tissue=t, scanner=3.0)
+    return {"se": se}
 
 
-def test_the_field_direction_is_a_knob(layout_field):
-    """The same tissue at 3 T with B0 along x: the image equals the per-voxel signal built from the pack's field
-    channels contracted for x (``field_terms``) within the vector container's share of the floor target, and differs
-    from the z image; a non-unit direction is refused."""
-    from dmipy_sim.spec.tissue import Tissue
-    from dmipy_sim.replay.study import Acquisition, Primitives
-    from dmipy_sim.replay.replay import _path_field_channels
-    from dmipy_sim.fields.hollow_cylinder import field_terms
-    col, merged, grid, n_t, tmp = layout_field
-    sm = TimeSegmentLayout(str(tmp / "sf_moments"))
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
-    b = np.array([1e9, 2e9]); dirs = np.array([[0.6, 0.0, 0.8], [0.0, 1.0, 0.0]])
-    seq = d.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
-    Sx, _ = sm.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=(1.0, 0.0, 0.0))
-    Sz, _ = sm.image("se", b, dirs, tissue=t, scanner=3.0)
-    prim = merged.walker_primitives(Acquisition(seq))
-    P = merged._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
-    Psi, names = _path_field_channels(P, seq)
-    iso, aniso = field_terms(Psi, [1.0, 0.0, 0.0])
-    prim_x = Primitives(w=prim.w, phi=prim.phi, field_iso=iso, field_aniso=aniso if aniso is not None else np.zeros_like(iso),
-                        exposure_t2=prim.exposure_t2, exposure_t1=prim.exposure_t1, contact=prim.contact, D_walk=prim.D_walk,
-                        voxel=prim.voxel, pathway=prim.pathway, by_pool=prim.by_pool, susceptibility_field=prim.susceptibility_field)
-    w, ew, E = prim_x.signals(t, 3.0)
-    keys, ref = _per_voxel(merged, grid, w, ew, E)
-    assert np.abs(Sx.reshape(-1, 2)[keys] - ref).max() < BUDGET * sm.manifest["shapes"]["se"]["vector"]["floor_target"]
-    assert np.nanmax(np.abs(Sx - Sz)) > 1e-6                            # the direction changes the field phase
-    with pytest.raises(ValueError, match="unit"):
-        sm.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=(0, 0, 2))
+def _strand_protocol(n_t, n=4):
+    rng = np.random.default_rng(5)
+    u = rng.normal(size=(n, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    b = np.r_[np.full(n, 1e9), 0.0]; dirs = np.concatenate([u, [[0, 0, 1]]])
+    return d.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
 
 
-def test_the_files_a_layout_needs_include_its_tier_columns(layout_field):
-    """TimeSegmentLayout.files, what the Hub opener downloads: the manifest, w, tiles, every vector column, and with tiers
-    the pool column and every group's contact and field columns; restricted to some shapes it keeps the tiers."""
-    col, merged, grid, n_t, tmp = layout_field
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
-    ste = d.pgste([[0, 0, 1]], 0.2e-3, 0.4e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-    out = tmp / "sf_files"
-    m = write_time_segment_layout(col, {"se": se, "ste": ste}, str(out), tol=1e-9, chunk_rows=7, tiers=True)
-    files = TimeSegmentLayout.files(m)
-    assert "manifest.json" in files and m["columns"]["w"] in files and m["columns"]["tiles"] in files
-    assert m["tiers"]["pool_column"] in files
-    for grp in m["tiers"]["groups"].values():
-        assert all(f in files for f in grp["columns"].values())
-    shapes = [s for s in m["columns"] if s not in ("w", "tiles")]
-    assert all(m["columns"][s] in files for s in shapes)
-    some = TimeSegmentLayout.files(m, shapes[:1])
-    assert m["columns"][shapes[0]] in some and m["tiers"]["pool_column"] in some
-    assert len(shapes) == 1 or m["columns"][shapes[1]] not in some
-    assert set(os.listdir(out)) >= set(files)                      # the written layout has every file the opener lists
+def test_the_blocks_consolidate_into_one_layout(blocks):
+    """Two blocks' rows tiled into one layout: every row once (the per-voxel weight sums are the merged pack's, a padding
+    row weighs nothing), each voxel's halves alternate, and the image is the merged pack's replay per voxel within the
+    rounding's term, bare and with the tiers."""
+    lay, merged, grid, n_t, m, tmp = blocks
+    assert lay.n_rows == merged.n_walkers and (np.asarray(lay._column("w")) > 0).sum() == merged.n_walkers
+    ijk, _ = grid.bin(merged.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
+    np.testing.assert_allclose(lay.weights.sum(1), np.bincount(v, merged.spin_weights, minlength=lay.n_vox), rtol=1e-6)
+    assert [b["n_rows"] for b in m["source"]["blocks"]] == [len(np.load(str(tmp / f"sb_rows{i}" / "voxel.npy"))) for i in (0, 1)]
+    seq = _strand_protocol(n_t)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3},
+               rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    for kw in ({}, dict(tissue=t, scanner=3.0)):
+        S, floor = lay.image(seq, **kw)
+        ref = _per_voxel(merged, grid, seq, **kw)
+        got = S.reshape(ref.shape)
+        live = np.isfinite(got[:, 0])
+        sig2 = m["partitions"]["se"]["rounding"]["variance"]
+        assert np.abs(got[live] - ref[live]).max() < _term(sig2, float(np.nanmax(floor)))
+    with pytest.raises(ValueError, match="gate"):
+        lay.image(d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, bvalues=[1e9], n_t=2 * n_t - 1, slew_rate=np.inf), tissue=t, scanner=3.0)
 
 
-def test_the_tier_maps_are_the_walkers_voxel_means(layout_field):
-    """``tier_maps``: the per-voxel walk-weighted means of the pool membership, the contact term, the contact tier's
-    factor and the field phase equal the same means taken on the host from the columns, on both backends; without a
-    tissue there is no contact factor, without a scanner no phase; the direction changes the phase's spread."""
-    from dmipy_sim.spec.tissue import Tissue
-    col, merged, grid, n_t, tmp = layout_field
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
-    out = str(tmp / "sf_maps")
-    write_time_segment_layout(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
-    sm = TimeSegmentLayout(out)
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
-    g, grp = sm._tier_group("se")
-    tiles = np.asarray(sm._column("tiles")); w = np.asarray(sm._column("w"), np.float64)
-    pool = np.asarray(sm._column("pool")); c = np.asarray(sm._column(f"contact_{g}"), np.float64)
-
-    def host_mean(x):
-        num = np.bincount(tiles, (w * x[:len(tiles)]).sum(1), minlength=2 * sm.n_vox).reshape(-1, 2).sum(1)
-        den = np.bincount(tiles, w.sum(1), minlength=2 * sm.n_vox).reshape(-1, 2).sum(1)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            return np.where(den > 0, num / den, np.nan).reshape(grid.shape)
-
-    u = np.array([0.6, 0.0, 0.8])
-    _, rho_D, a_iso, a_aniso, _ = sm.terms("se", t, 3.0)
-    iso, aniso = sm._field_terms(g, u); phase = a_iso * iso + a_aniso * aniso
-    ref = dict(intra=host_mean(pool == 1), extra=host_mean(pool == 0), contact=host_mean(c), contact_weight=host_mean(np.exp(rho_D * c)),
-               phase=host_mean(phase), phase_std=np.sqrt(np.maximum(host_mean(phase * phase) - host_mean(phase) ** 2, 0.0)))
-    for backend, device in (("jax", None), ("torch", "cpu")):
-        if backend == "torch":
-            pytest.importorskip("torch")
-        maps = sm.tier_maps("se", t, 3.0, backend=backend, device=device, b0_direction=u)
-        for name in ("intra", "extra"):
-            np.testing.assert_allclose(maps["pool"][name], ref[name], atol=1e-6, equal_nan=True)
-        for name in ("contact", "contact_weight", "phase", "phase_std"):
-            np.testing.assert_allclose(maps[name], ref[name], atol=1e-6, equal_nan=True), (backend, name)
-        bare = sm.tier_maps("se", backend=backend, device=device)
-        assert bare["contact_weight"] is None and bare["phase"] is None and bare["phase_std"] is None
-        np.testing.assert_allclose(bare["contact"], ref["contact"], atol=1e-6, equal_nan=True)
-        along_z = sm.tier_maps("se", t, 3.0, backend=backend, device=device)
-        assert np.nanmax(np.abs(along_z["phase_std"] - maps["phase_std"])) > 0
+def test_blocks_that_disagree_are_refused(blocks, spec_grid):
+    """Rows of two layouts (another partition) are not consolidated together."""
+    lay, merged, grid, n_t, m, tmp = blocks
+    rec = json.load(open(str(tmp / "sb_rows1" / "rows.json")))
+    rec["partitions"]["se"]["segments"][0][0] += 1e-5
+    bad = str(tmp / "sb_rows_bad"); os.makedirs(bad, exist_ok=True)
+    import shutil
+    for f in os.listdir(str(tmp / "sb_rows1")):
+        shutil.copy(str(tmp / "sb_rows1" / f), bad)
+    json.dump(rec, open(os.path.join(bad, "rows.json"), "w"))
+    with pytest.raises(ValueError, match="partitions"):
+        write_time_segment_layout([str(tmp / "sb_rows0"), bad], str(tmp / "sb_bad_layout"))
 
 
-def test_a_direction_the_host_has_not_contracted_is_contracted_on_the_device(layout_field):
-    """The torch backend contracts the field channels for a new direction on its device: the per-row terms equal the
-    host's contraction, the tiered image at that direction equals the host-fed image, the pair is cached once when
-    resident and made once per call otherwise, and the host holds no copy of the terms."""
+def test_the_torch_backend_is_the_jax_image(blocks):
+    """dmipy-sim#510: the same sequence on both backends agrees to float32 arithmetic, bare and tiered, NaN and floor
+    alike; two torch calls are identical; a non-resident call leaves nothing on the device; the backend is checked."""
     torch = pytest.importorskip("torch")
-    from dmipy_sim.spec.tissue import Tissue
-    col, merged, grid, n_t, tmp = layout_field
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
-    out = str(tmp / "sf_device")
-    write_time_segment_layout(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
-    u = np.array([0.6, 0.0, 0.8]); b = np.array([1e9, 3e9, 0.0]); dirs = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]])
-    host = TimeSegmentLayout(out); g, _ = host._tier_group("se")
-    iso_h, aniso_h = host._field_terms(g, u)
-    dev = TimeSegmentLayout(out)
-    iso_d, aniso_d = dev._field_terms(g, u, device="cpu")
-    np.testing.assert_allclose(iso_d.numpy(), iso_h, atol=1e-6); np.testing.assert_allclose(aniso_d.numpy(), aniso_h, atol=1e-6)
-    S_host, _ = host.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u)                       # jax, the host terms
-    S_dev, _ = dev.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu")
-    assert not any(k.startswith("field_") for k in dev._host), "the device route keeps no host copy of the terms"
-    assert sum(k[1].startswith("field_iso_") for k in dev._device) == 1
-    np.testing.assert_allclose(S_dev, S_host, atol=5e-6, equal_nan=True)
-    S_again, _ = dev.image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu")
-    np.testing.assert_array_equal(S_again, S_dev)
-    S_once, _ = TimeSegmentLayout(out).image("se", b, dirs, tissue=t, scanner=3.0, b0_direction=u, backend="torch", device="cpu", resident=False)
-    np.testing.assert_allclose(S_once, S_dev, atol=1e-7, equal_nan=True)
+    lay, merged, grid, n_t, m, tmp = blocks
+    seq = _strand_protocol(n_t, 5)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    torch.use_deterministic_algorithms(True)
+    for kw in ({}, dict(tissue=t, scanner=3.0, b0_direction=(0.6, 0.0, 0.8))):
+        S_j, f_j = lay.image(seq, **kw)
+        S_t, f_t = lay.image(seq, backend="torch", device="cpu", **kw)
+        np.testing.assert_array_equal(np.isnan(S_j), np.isnan(S_t))
+        assert np.nanmax(np.abs(S_j - S_t)) < 5e-6 and np.nanmax(np.abs(f_j - f_t)) < 5e-6
+    S_t2, _ = lay.image(seq, backend="torch", device="cpu")
+    np.testing.assert_array_equal(np.nan_to_num(S_t2), np.nan_to_num(lay.image(seq, backend="torch", device="cpu")[0]))
+    before = set(lay._device)
+    lay.image(seq, backend="torch", device="cpu", resident=False)
+    assert set(lay._device) == before
+    with pytest.raises(ValueError, match="backend"):
+        lay.image(seq, backend="numpy")
 
 
-def test_the_preloaded_field_terms_are_the_ones_the_image_uses(layout_field):
-    """preload() names the field terms with the same direction key image() looks them up by, so a preloaded layout
-    contracts nothing at the default direction (the pool's parent preloads, its worker inherits)."""
-    col, merged, grid, n_t, tmp = layout_field
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
-    out = str(tmp / "sf_preload")
-    write_time_segment_layout(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
-    sm = TimeSegmentLayout(out)
-    sm.preload(["se"])
-    g, _ = sm._tier_group("se")
-    sm._set_b0_direction((0.0, 0.0, 1.0))
-    assert all(name in sm._host for name in sm._tier_columns("se")), sorted(sm._host)
-    calls = []
-    original = sm._field_terms
-    sm._field_terms = lambda *a, **k: calls.append(a) or original(*a, **k)
-    from dmipy_sim.spec.tissue import Tissue
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
-    sm.image("se", np.array([1e9]), np.array([[0, 0, 1.0]]), tissue=t, scanner=3.0)
-    assert calls == [], "the default direction's terms were contracted again"
-
-
-def test_the_field_direction_cache_is_bounded(layout_field):
-    """dmipy-sim#517: the per-direction field-term cache has a small, stated capacity
-    (``TimeSegmentLayout.FIELD_DIRECTION_CACHE``), not a dict that grows with every new B0 direction a Space's visitors
-    ask for. More distinct directions than the bound: the host and every backend's device copies never hold more
-    than the bound's worth at once, the most recently used direction is always still cached, and asking for an
-    evicted one again rebuilds it (correctly) rather than erroring."""
-    from dmipy_sim.spec.tissue import Tissue
-    col, merged, grid, n_t, tmp = layout_field
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
-    out = str(tmp / "sf_direction_bound")
-    write_time_segment_layout(col, {"se": se}, out, tol=1e-9, chunk_rows=7, tiers=True)
-    sm = TimeSegmentLayout(out)
-    n = sm.FIELD_DIRECTION_CACHE
-    assert n < 10                                        # a small capacity, not an unbounded dict
-    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
-    g, _ = sm._tier_group("se")
+def test_the_field_direction_is_a_knob_and_its_cache_is_bounded(blocks):
+    """The field direction changes the field phase; the per-direction terms are a bounded LRU (dmipy-sim#517) on the
+    host and the device; a direction asked again after eviction is rebuilt to the same image."""
+    lay, merged, grid, n_t, m, tmp = blocks
+    seq = _strand_protocol(n_t, 2)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    Sz, _ = lay.image(seq, tissue=t, scanner=3.0)
+    Sx, _ = lay.image(seq, tissue=t, scanner=3.0, b0_direction=(1.0, 0.0, 0.0))
+    assert np.nanmax(np.abs(Sx - Sz)) > 1e-7
+    with pytest.raises(ValueError, match="unit"):
+        lay.image(seq, tissue=t, scanner=3.0, b0_direction=(0, 0, 2))
     rng = np.random.default_rng(4)
-    dirs = rng.normal(size=(2 * n + 3, 3)); dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+    dirs = rng.normal(size=(lay.FIELD_DIRECTION_CACHE + 3, 3)); dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+    for u in dirs:
+        lay.image(seq, tissue=t, scanner=3.0, b0_direction=tuple(u))
+        assert len(lay._field_direction_lru) <= lay.FIELD_DIRECTION_CACHE
+        assert len([k for k in lay._host if k.startswith("field_iso_")]) <= lay.FIELD_DIRECTION_CACHE
+    S_again, _ = lay.image(seq, tissue=t, scanner=3.0, b0_direction=tuple(dirs[0]))
+    S_fresh, _ = TimeSegmentLayout(lay.path).image(seq, tissue=t, scanner=3.0, b0_direction=tuple(dirs[0]))
+    np.testing.assert_allclose(S_again, S_fresh, atol=1e-7, equal_nan=True)
 
-    def field_names(d_):
-        return {k for k in d_ if k.startswith(("field_iso_", "field_aniso_"))}
 
-    for i, u in enumerate(dirs):
-        sm.image("se", np.array([1e9]), np.array([u]), tissue=t, scanner=3.0, b0_direction=tuple(u))
-        assert len(sm._field_direction_lru) <= n
-        host_fields = field_names(sm._host)
-        dev_fields = field_names(k[1] for k in sm._device)
-        assert len(host_fields) <= 2 * n, host_fields                  # iso + aniso per (group, direction) pair
-        assert len(dev_fields) <= 2 * n, dev_fields
-        # the direction just used is always still resident (never its own eviction victim)
-        d_now = sm._direction_key(u)
-        assert f"field_iso_{g}@{d_now}" in sm._host and f"field_iso_{g}@{d_now}" in dev_fields
-        if i >= n:                                                     # an older direction, past the bound, is gone
-            d_old = sm._direction_key(dirs[i - n])
-            assert f"field_iso_{g}@{d_old}" not in sm._host
-    # asking again for a long-evicted direction rebuilds it rather than failing, and agrees with a fresh layout
-    d0 = tuple(dirs[0])
-    S_again, _ = sm.image("se", np.array([1e9]), np.array([d0]), tissue=t, scanner=3.0, b0_direction=d0)
-    S_fresh, _ = TimeSegmentLayout(out).image("se", np.array([1e9]), np.array([d0]), tissue=t, scanner=3.0, b0_direction=d0)
-    np.testing.assert_allclose(S_again, S_fresh, atol=1e-6, equal_nan=True)
+def test_the_tier_maps_and_the_files(blocks):
+    """``tier_maps`` are the walk-weighted means of the decoded tier columns per voxel; ``files`` lists every column a
+    layout needs (restricted to some partitions it keeps the tiers); the weights are read once per layout."""
+    lay, merged, grid, n_t, m, tmp = blocks
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    g = m["partitions"]["se"]["group"]
+    tiles = np.asarray(lay._column("tiles")); w = np.asarray(lay._column("w"), np.float64)
+    c = lay.tier_columns(g)["contact"].astype(np.float64)
+    num = np.bincount(tiles, (w * c).sum(1), minlength=2 * lay.n_vox).reshape(-1, 2).sum(1)
+    den = np.bincount(tiles, w.sum(1), minlength=2 * lay.n_vox).reshape(-1, 2).sum(1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ref = np.where(den > 0, num / den, np.nan).reshape(grid.shape)
+    maps = lay.tier_maps("se", t, 3.0)
+    np.testing.assert_allclose(maps["contact"], ref, atol=1e-6, equal_nan=True)
+    assert maps["phase"] is not None and lay.tier_maps("se")["phase"] is None
+    files = TimeSegmentLayout.files(m)
+    assert "manifest.json" in files and "w.npy" in files and "tiles.npy" in files and "pool.npy" in files
+    assert all(os.path.exists(os.path.join(lay.path, f)) for f in files)
+    assert m["partitions"]["se"]["column"] in files and m["groups"][g]["column"] in files
+    fresh = TimeSegmentLayout(lay.path); reads = []
+    column = fresh._column
+    fresh._column = lambda name: (reads.append(name), column(name))[1]
+    seq = _strand_protocol(n_t, 1)
+    fresh.image(seq); n_first = len(reads)
+    fresh.image(seq)
+    assert "w" in reads[:n_first] and reads[n_first:] == []

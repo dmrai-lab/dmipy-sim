@@ -36,7 +36,7 @@ at the floor's budget ``eps^2`` (:func:`~dmipy_sim.replay.compression.container_
 / reach_s`` over the ``n`` segments that carry a phase: the split that minimises the bits (stationary ``sum_s -3 log
 delta_s + lambda sum_s reach_s^2 delta_s^2`` gives ``reach_s delta_s`` equal), where weighting the budget by ``(reach_s
 d_s)^2`` would equalise the segments' relative precision instead. A segment the gate stores carries no phase and no
-bits. Each component takes ``ceil(log2(a / delta_s)) + 1`` bits against its largest ``|m|`` over the walkers
+bits. Each component takes ``ceil(log2(a / delta_s + 1)) + 1`` bits against its largest ``|m|`` over the walkers
 (:func:`field_code`), a two's-complement bit field; a walker's fields of one partition are placed first-fit into as few
 32-bit words as hold them, no field across a word (:func:`word_layout`): a short partition shares one word, a long
 one takes two. The manifest records per segment ``{"q_max", "floor_target", "step", "bits", "offsets", "word",
@@ -127,8 +127,9 @@ def rounding_eps(floor_target, *, budget=None, kappa=None):
 
 
 def field_code(a_max, step):
-    """``(bits, scale)`` of fields whose values reach ``a_max`` at the quantisation ``step`` (arrays of one shape):
-    ``ceil(log2(a / step)) + 1`` bits, at least :data:`FIELD_BITS_MIN`, the scale ``a / (2^(bits-1) - 1)``. A field
+    """``(bits, scale)`` of fields whose values reach ``a_max`` at the quantisation ``step`` (arrays of one shape): the
+    fewest bits whose largest code reaches ``a`` in steps of at most ``step``, ``ceil(log2(a / step + 1)) + 1``, at least
+    :data:`FIELD_BITS_MIN`, and the scale ``a / (2^(bits-1) - 1) <= step``. A field
     within half a step of zero on every row rounds to zero on every row and holds 0 bits (it is not stored), as does a
     field whose step is infinite (it carries nothing). More than :data:`FIELD_BITS_MAX` bits is refused by name."""
     a = np.asarray(a_max, np.float64)
@@ -136,7 +137,7 @@ def field_code(a_max, step):
     live = np.isfinite(st) & (st > 0) & (a > 0.5 * np.where(np.isfinite(st), st, 0.0))
     bits = np.zeros(a.shape, int)
     with np.errstate(divide="ignore", invalid="ignore"):
-        need = np.ceil(np.log2(np.where(live, a / np.where(live, st, 1.0), 1.0))) + 1
+        need = np.ceil(np.log2(np.where(live, a / np.where(live, st, 1.0), 1.0) + 1.0)) + 1
     bits[live] = np.maximum(need[live], FIELD_BITS_MIN).astype(int)
     if np.any(bits > FIELD_BITS_MAX):
         raise ValueError(f"a field needs {int(bits.max())} bits at its derived step and a field holds at most "
@@ -826,16 +827,21 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
     for key, what in (("grid", "the grid"), ("background", "the background")):
         _same(recs, key, what)
     for r in recs[1:]:
-        for k in ("kind", "floor_target", "eps", "envelope", "background_amplitude"):
+        for k in ("kind", "floor_target", "eps", "background_amplitude"):
             if json.dumps(r["source"][k], sort_keys=True, default=float) != json.dumps(recs[0]["source"][k], sort_keys=True, default=float):
                 raise ValueError(f"the blocks' rows disagree on the source's {k}: they are not rows of one layout")
+        for k in ("b_max", "G_max"):
+            if float(r["source"]["envelope"][k]) != float(recs[0]["source"]["envelope"][k]):
+                raise ValueError(f"the blocks' rows disagree on the envelope's {k}: they are not rows of one layout")
         if {n: (p["segments"], p["gate"], p["group"]) for n, p in r["partitions"].items()} != \
                 {n: (p["segments"], p["gate"], p["group"]) for n, p in recs[0]["partitions"].items()}:
             raise ValueError("the blocks' rows disagree on the partitions: they are not rows of one layout")
         if {g: (x["rf"], x["dt"], x["n_t"], x["readout"], x["contact"], bool(x["field"])) for g, x in r["groups"].items()} != \
                 {g: (x["rf"], x["dt"], x["n_t"], x["readout"], x["contact"], bool(x["field"])) for g, x in recs[0]["groups"].items()}:
             raise ValueError("the blocks' rows disagree on the sequence groups: they are not rows of one layout")
-    r0 = recs[0]; src = r0["source"]; env = src["envelope"]
+    r0 = recs[0]; src = r0["source"]
+    # the tiers' widths at the largest rho2 / D and B0 chi any block's source states (each pack's field read is its own)
+    env = dict(src["envelope"], **{k: max(float(r["source"]["envelope"][k]) for r in recs) for k in ("rho2_over_D_max", "B0_chi_max_T")})
     grid = Grid.from_meta(r0["grid"]); n_vox = int(np.prod(grid.shape))
     floor, eps = float(src["floor_target"]), float(src["eps"])
     partitions = _partition_codes(recs, floor, eps)
@@ -863,15 +869,21 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
     np.save(os.path.join(out_dir, "tiles.npy"), tiles)
     mm = lambda name, dtype, extra=(): np.lib.format.open_memmap(os.path.join(out_dir, name), mode="w+", dtype=dtype, shape=(n_tiles, TILE) + extra)
     out = {"w": (mm("w.npy", np.float32), None)}
-    for name, p in partitions.items():
-        out[f"p_{name}"] = (mm(p["column"], np.uint32, (p["n_words"],)), p)
+    for name, p in partitions.items():                       # a word array of no words (every field zero) is not stored
+        if p["n_words"]:
+            out[f"p_{name}"] = (mm(p["column"], np.uint32, (p["n_words"],)), p)
+        else:
+            p["column"] = None
     if r0["tiers"]:
         out["pool"] = (mm("pool.npy", np.uint8), None)
     for g, grp in groups.items():
         if grp["tier_words"] is not None:
             out[f"t_{g}"] = (mm(grp["column"], np.uint32, (grp["tier_words"]["n_words"],)), grp)
         if grp.get("background"):
-            out[f"bg_{g}"] = (mm(grp["background"]["column"], np.uint32, (grp["background"]["n_words"],)), grp["background"])
+            if grp["background"]["n_words"]:
+                out[f"bg_{g}"] = (mm(grp["background"]["column"], np.uint32, (grp["background"]["n_words"],)), grp["background"])
+            else:
+                grp["background"]["column"] = None
     # pass 2: each block's rows packed into their places
     seen = np.zeros(n_vox, np.int64); t0 = time.time(); done = 0
     for b, rec in zip(blocks, recs):
@@ -1021,13 +1033,13 @@ class TimeSegmentLayout:
         """Every column of a layout by name -> file: ``w``, ``tiles``, ``p_<partition>``, with tiers ``pool`` and
         ``t_<g>`` per sequence group, with the background ``bg_<g>``."""
         cols = dict(manifest["columns"])
-        cols.update({f"p_{n}": p["column"] for n, p in manifest["partitions"].items()})
+        cols.update({f"p_{n}": p["column"] for n, p in manifest["partitions"].items() if p.get("column")})
         if manifest.get("tiers"):
             cols["pool"] = manifest["tiers"]["pool_column"]
         for g, grp in manifest["groups"].items():
             if grp.get("column"):
                 cols[f"t_{g}"] = grp["column"]
-            if grp.get("background"):
+            if (grp.get("background") or {}).get("column"):
                 cols[f"bg_{g}"] = grp["background"]["column"]
         return cols
 
@@ -1096,7 +1108,9 @@ class TimeSegmentLayout:
         """``(n_tiles, tile, n_seg, 3)`` float32: every row's segment vectors (0 on padding), decoded from the words."""
         scale, layout, _ = self._code(partition)
         n_seg = len(self.partitions[partition].segments)
-        v = unpack_words(self._column(f"p_{partition}"), scale, layout)
+        words = (self._column(f"p_{partition}") if f"p_{partition}" in self.columns(self.manifest)
+                 else np.zeros((self.n_tiles, self.tile, 1), np.uint32))
+        v = unpack_words(words, scale, layout)
         return v.reshape(v.shape[:2] + (n_seg, 3))
 
     def tier_columns(self, g):
@@ -1317,8 +1331,8 @@ class TimeSegmentLayout:
             a = np.full(n_pad, 2 * self.n_vox, np.int32); a[:self.n_tiles] = self._column("tiles")
         elif name in ("w", "pool"):
             a = np.zeros((n_pad, self.tile), np.uint8 if name == "pool" else np.float32); a[:self.n_tiles] = self._column(name)
-        elif name.startswith("t_") and not self.manifest["groups"][name[2:]].get("column"):
-            a = np.zeros((n_pad, self.tile, 1), np.int32)                # a group with no tier words: one zero word
+        elif name not in self.columns(self.manifest):           # a word array with no words (every field zero): one zero word
+            a = np.zeros((n_pad, self.tile, 1), np.int32)
         else:
             words = self._column(name)
             a = np.zeros((n_pad,) + tuple(words.shape[1:]), np.uint32); a[:self.n_tiles] = words
