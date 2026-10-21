@@ -656,8 +656,8 @@ _SAVE_GRID_NAMES = (r"dt_save", r"field_sample_every", r"save_interval", r"fill_
 
 
 #: the band readers: a window's duration is their ``T`` (the third positional argument, or ``T=``)
-_BAND_READERS = {"band_projection": 2, "band_projection_matrix": 2, "cosine_projection": 2, "path_field_integral": 3,
-                 "_compile_continuous": 3, "bridge_window_matrix": 0, "mode_window_matrix": 0, "bridge_basis": 2,
+_BAND_READERS = {"band_projection": 2, "band_projection_matrix": 2, "segment_projection": 1, "cosine_projection": 2,
+                 "path_field_integral": 3, "_compile_continuous": 3, "bridge_window_matrix": 0, "mode_window_matrix": 0, "bridge_basis": 2,
                  "bridge_at": 2, "band_phase_variances": 2, "bridge_phase_variance": 2}
 _SAVE_COUNTS = re.compile(r"\b(?:n_t|n_s|n_seg|n_saves|_window_n_t|Nt|N_t)\b")
 
@@ -849,3 +849,25 @@ def test_no_band_channel_container_is_flat_or_fixed_by_default():
             bank._field_container(spelling)
         with pytest.raises(ValueError, match="derived"):
             bank._container(spelling)
+
+
+def test_the_time_segment_layout_is_partitions_in_words(tmp_path):
+    """#770: the layout stores partitions of the walk's time, not shapes -- no writer of a vector per shape (the shape
+    profile, the per-shape contraction, the background stamp over a columnar source and the shape-vector width helpers
+    are gone; the writers take a block's rows and partitions); every column the layout writes is uint32 words but the
+    weights (float32) and the pool (uint8), so no tier column is float32; and no reader of ``time_segments/1``."""
+    import inspect
+    import json
+    from dmipy_sim.replay import time_segments as ts
+    for gone in ("stamp_background", "vector_width", "vector_code", "vector_fields", "pack_vectors", "unpack_vectors",
+                 "_contractions", "_profile", "_axis_sequence", "_pack_column", "_vector_declaration", "_background_rows"):
+        assert not hasattr(ts, gone), gone
+    assert list(inspect.signature(ts.write_time_segment_layout).parameters)[:2] == ["blocks", "out_dir"]
+    assert list(inspect.signature(ts.segment_rows).parameters)[:3] == ["source", "partitions", "out_dir"]
+    src = inspect.getsource(ts.write_time_segment_layout)
+    maps = re.findall(r"\bmm\(([^,]+),\s*np\.(\w+)", src)
+    assert maps and all(dtype == "uint32" or (name, dtype) in (('"w.npy"', "float32"), ('"pool.npy"', "uint8")) for name, dtype in maps), maps
+    assert ts.FORMAT == "time_segments/2"
+    (tmp_path / "manifest.json").write_text(json.dumps({"format": "time_segments/1"}))
+    with pytest.raises(ValueError, match="time_segments/1"):
+        ts.read_manifest(str(tmp_path))

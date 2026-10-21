@@ -579,7 +579,7 @@ def _background_sequence(seq, amplitude=1.0):
 
 def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_target=None, g_max=None, tiers=False,
                  background=False, background_amplitude=BACKGROUND_AMPLITUDE, weights=None):
-    """One block's segment rows written to ``out_dir``: per partition (``{name: sequence}`` or :class:`Partition`\\ s)
+    """One block's segment rows written to ``out_dir``: per partition (``{name: sequence}`` or :class:`Partition` objects)
     its segment vectors, per sequence group (the partitions sharing a grid, an RF schedule and a readout) with
     ``tiers`` the pool, gated contact and field channels, with ``background`` the background vector, the weights and
     each row's voxel on ``grid`` (the pack's per-voxel grid when None), every column float in (voxel, pool) order, and
@@ -817,7 +817,9 @@ def _layout_of(rec):
 
 def write_time_segment_layout(blocks, out_dir, *, progress=None):
     """The layout of the segment rows in the directories ``blocks`` (:func:`segment_rows`, one per block), written to
-    ``out_dir``: the blocks' declarations checked equal, every width derived from the blocks' largest values, the rows
+    ``out_dir``: the blocks' declarations checked equal (the partitions, the groups, the grid, the source's kind, the
+    envelope's ``b_max`` and ``G_max``), every width derived from the blocks' largest values at the smallest floor
+    target any block declares and the largest ``rho2 / D`` and ``B0 chi`` any states, the rows
     placed into tiles (each voxel's rows alternating between its split halves in block and row order) and packed, in two
     passes over the rows that hold one block at a time. ``progress(rows, seconds)`` is called after every block.
     Returns the manifest."""
@@ -827,7 +829,7 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
     for key, what in (("grid", "the grid"), ("background", "the background")):
         _same(recs, key, what)
     for r in recs[1:]:
-        for k in ("kind", "floor_target", "eps", "background_amplitude"):
+        for k in ("kind", "background_amplitude"):
             if json.dumps(r["source"][k], sort_keys=True, default=float) != json.dumps(recs[0]["source"][k], sort_keys=True, default=float):
                 raise ValueError(f"the blocks' rows disagree on the source's {k}: they are not rows of one layout")
         for k in ("b_max", "G_max"):
@@ -843,7 +845,8 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
     # the tiers' widths at the largest rho2 / D and B0 chi any block's source states (each pack's field read is its own)
     env = dict(src["envelope"], **{k: max(float(r["source"]["envelope"][k]) for r in recs) for k in ("rho2_over_D_max", "B0_chi_max_T")})
     grid = Grid.from_meta(r0["grid"]); n_vox = int(np.prod(grid.shape))
-    floor, eps = float(src["floor_target"]), float(src["eps"])
+    floor = min(float(r["source"]["floor_target"]) for r in recs)       # the most demanding block's floor holds for all
+    eps = rounding_eps(floor)
     partitions = _partition_codes(recs, floor, eps)
     groups = {}
     for g, g0 in r0["groups"].items():
@@ -985,7 +988,7 @@ def _code():
 # ------------------------------------------------------------------ the layout
 class TimeSegmentLayout:
     """The time-segment layout at ``path``, tiles memory-mapped from disk: ``manifest``, ``grid``, ``partitions`` (the
-    stored :class:`Partition`\\ s by name), and :meth:`image` -- a whole grid under any sequence piecewise constant on a
+    stored :class:`Partition` objects by name), and :meth:`image` -- a whole grid under any sequence piecewise constant on a
     stored partition, on the device. Open a Hub layout with :meth:`open`."""
 
     TILES = 4096                                                        # tiles per device chunk (2^19 rows)
@@ -1077,8 +1080,14 @@ class TimeSegmentLayout:
 
     def fit(self, sequence, partition=None):
         """``(partition, levels)``: the stored partition ``sequence`` fits (``partition`` names one, else the first that
-        fits) and its rows' effective gradients on the segments ``(n_meas, n_seg, 3)``; refused by name when none fits."""
-        names = list(self.partitions) if partition is None else [partition]
+        fits among those whose group plays the sequence's gate, then among the rest) and its rows' effective gradients
+        on the segments ``(n_meas, n_seg, 3)``; refused by name when none fits."""
+        if partition is None:
+            key = _group_key(_sequence(sequence))
+            own = [n for n in self.partitions if self._gate_key(n) == key]
+            names = own + [n for n in self.partitions if n not in own]
+        else:
+            names = [partition]
         reasons = []
         for name in names:
             if name not in self.partitions:
@@ -1158,13 +1167,16 @@ class TimeSegmentLayout:
         logw = -(float(grp["tau_t2"] or 0.0) * np.asarray(rt["invT2"], np.float64) + float(grp["tau_t1"] or 0.0) * np.asarray(rt["invT1"], np.float64))
         return (logw, float(rt["rho2_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))
 
+    def _gate_key(self, partition):
+        """The gate ``partition``'s group was read under, spelled as :func:`_group_key` spells a sequence's."""
+        _, grp = self._group(partition)
+        return json.dumps(dict(dt=float(grp["dt"]), n_t=int(grp["n_t"]), rf=grp["rf"], readout=grp["readout"]), sort_keys=True, default=float)
+
     def _check_gate(self, partition, sequence):
         """Refuse a tiered image of a sequence whose gate (grid, RF schedule, readout) is not the one ``partition``'s
         tiers were read under."""
         g, grp = self._group(partition)
-        seq = _sequence(sequence)
-        mine = json.dumps(dict(dt=float(grp["dt"]), n_t=int(grp["n_t"]), rf=grp["rf"], readout=grp["readout"]), sort_keys=True, default=float)
-        if _group_key(seq) != mine:
+        if _group_key(_sequence(sequence)) != self._gate_key(partition):
             raise ValueError(f"the tiers of partition {partition!r} were read under group {g}'s gate (its grid, RF schedule "
                              "and readout), and this sequence plays another")
 
@@ -1460,6 +1472,12 @@ class TimeSegmentLayout:
         ijk = np.stack(np.unravel_index(live, tuple(self.grid.shape)), axis=1)
         d = delivered_vectors(scanner, grid, plateau, e, voxels=ijk, to_scanner=to_scanner, nonlinearity=nonlinearity,
                               background=background, concomitant=concomitant, transmit=transmit)
+        durations = self.partitions[name].durations
+        net = np.abs(np.einsum("vmsc,s->vmc", d.q, durations)).max(initial=0.0)
+        if net > _RTOL * (float(np.abs(d.q).max(initial=0.0)) or 1.0) * float(durations.sum()):
+            raise ValueError("the machine's delivered gradient leaves a net moment at the readout (a Maxwell term "
+                             "the encoding does not refocus, as a bipolar pair's does not): a segment vector is the path "
+                             "relative to the walker's start, which only a refocused encoding does not see")
         return Delivered(partition=name, voxels=live, levels=L, q=d.q, g0=d.g0, kappa=d.kappa)
 
     def image(self, sequence, *, partition=None, backend="jax", device=None, resident=True, tissue=None, scanner=None,

@@ -281,9 +281,9 @@ def _moments_dir(tmp, spec, stored):
     from dmipy_sim.replay.time_segments import FORMAT, TILE
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "manifest.json").write_text(json.dumps(dict(
-        format=FORMAT, n_rows=0, n_tiles=0, tile=TILE, columns=dict(w="w.npy", tiles="tiles.npy"),
-        source=dict(grid=Grid(shape=(1, 1, 1), voxel_size_m=(1e-3,) * 3).to_meta(), pack="t"),
-        tiers=dict(substrate=spec, groups=dict(g0=dict(field=stored))))))
+        format=FORMAT, n_rows=0, n_tiles=0, tile=TILE, columns=dict(w="w.npy", tiles="tiles.npy"), partitions={},
+        grid=Grid(shape=(1, 1, 1), voxel_size_m=(1e-3,) * 3).to_meta(), source=dict(pack=dict(id="t")),
+        tiers=dict(substrate=spec), groups=dict(g0=dict(field=(dict(channels=[], stored=[]) if stored else None))))))
     return str(tmp)
 
 
