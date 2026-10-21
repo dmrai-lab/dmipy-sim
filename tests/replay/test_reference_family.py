@@ -595,7 +595,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     from dmipy_sim.coefficient_walk import CoefficientWalk
     walk = CoefficientWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
     build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENV, license="CC-BY-4.0",
-                      citation="a test pack", position_container="bands", blt_container="bands",
+                      citation="a test pack", position_container="derived", blt_container="derived",
                       verbose=False).save(real)
     (tmp_path / "bare").mkdir(exist_ok=True)
     fam = _family(tmp_path / "bare",

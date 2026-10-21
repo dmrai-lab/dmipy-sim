@@ -824,3 +824,28 @@ def test_the_public_surface_is_the_replay_surface():
     exporting = [str(f.relative_to(_SRC)) for f in _SRC.rglob("*.py")
                  if re.search(r"__all__[^\n]*[\"'](?:simulate_fused|_simulate_bloch|simulate_bloch)[\"']", f.read_text())]
     assert not exporting, f"an oracle is exported from {exporting}"
+
+
+# ── every band channel's container is derived; none is flat or a fixed curve by default (#769) ──────────────────
+def test_no_band_channel_container_is_flat_or_fixed_by_default():
+    """Positions, contact and field are held in containers derived per pack against its floor (``"derived"``); the
+    registry's flat depth and the fixed curve are only ever stated explicitly, and the spelling of the old default is
+    gone. The field's builder knob is a container, not a depth: no ``susc_path_bits``, no two-depth ladder."""
+    import inspect
+    from dmipy_sim.replay import bank
+    p = inspect.signature(bank.build_replay_pack).parameters
+    assert [p[k].default for k in ("position_container", "blt_container", "field_container")] == ["derived"] * 3
+    assert "susc_path_bits" not in p
+    w = inspect.signature(bank.window_of_pack).parameters
+    assert "susc_path_bits" not in w and w["field_container"].default is None            # None: the parent's own ranges
+    assert not hasattr(bank, "path_container")
+    assert "containers" not in inspect.signature(bank.derive_field_band).parameters
+    assert inspect.signature(bank.susc_path_encode_modes).parameters["container"].default is inspect.Parameter.empty
+    assert inspect.signature(bank.susc_path_encode_series).parameters["container"].default is None
+    assert isinstance(bank._field_container("derived"), bank.DerivedFieldContainer)
+    assert isinstance(bank._container("derived"), dmipy_sim.replay.compression.DerivedContainer)
+    for spelling in ("bands", "flat", "pilot"):
+        with pytest.raises(ValueError, match="derived"):
+            bank._field_container(spelling)
+        with pytest.raises(ValueError, match="derived"):
+            bank._container(spelling)

@@ -46,7 +46,7 @@ def _walk(window_T, K, *, n_w=N_W, seed=0, T_max=T):
 
 def _kw(**more):
     env = dict(_lean_env(), B0_list=[3.0], theta_deg=[0])
-    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, susc_path_bits=16, fidelity="measured")
+    kw = dict(license="CC-BY-4.0", citation="test", envelope=env, blt_dtype=np.float32, field_container=((None, 16),), fidelity="measured")
     kw.update(more)
     return kw
 

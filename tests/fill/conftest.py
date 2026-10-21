@@ -44,7 +44,7 @@ def make_recipe(root, *, passes=True, field=False, far_grid=False):
                grid=dict(shape=list(shape), voxel_size_m=[1e-5] * 3, origin_m=[5e-6] * 3, attach="substrate"),
                walk=dict(T_max_s=8e-4, block_h_s=2e-4, scanner="connectom", adaptive_steps=True, walker_batch_size=4096, census_draws=50,
                          **(dict(field_read_interval_s=1e-4) if field else {})),
-               pack=dict(K=3, K_path=4, position_container="bands", blt_container="bands", blt_K=2),
+               pack=dict(K=3, K_path=4, position_container="derived", blt_container="derived", blt_K=2),
                plan=dict(file="plan/counts.npz", blocks="plan/blocks.json", walkers=96, n_blocks=2,
                          **(dict(passes=[dict(**{"pass": 1}, scale=0.5), dict(**{"pass": 2}, scale=0.5)]) if passes else {})))
     json.dump(man, open(os.path.join(root, "manifest.json"), "w"), indent=1)

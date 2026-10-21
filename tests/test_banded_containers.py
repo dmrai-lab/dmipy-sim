@@ -69,7 +69,7 @@ def packs(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("bands")
     f = build_replay_pack(walk, id="t/float", K=8, license="x", citation="x", blt_temporal_K=8)
     b = build_replay_pack(walk, id="t/bands", K=8, license="x", citation="x", blt_temporal_K=8,
-                          position_container=((4, 16), (None, 8)), blt_container="bands", out_path=str(tmp / "bands.rpk"))
+                          position_container=((4, 16), (None, 8)), blt_container="derived", out_path=str(tmp / "bands.rpk"))
     return f, b, tmp
 
 
@@ -149,9 +149,9 @@ def test_the_curve_is_the_rule_grouped_into_whole_bytes():
 
 def test_a_pack_with_a_five_bit_range_reads_back_and_replays(tmp_path):
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="bands",
+    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived",
                           position_container=((4, 16), (None, 8)))
-    p = build_replay_pack(walk, id="t/p", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="bands",
+    p = build_replay_pack(walk, id="t/p", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived",
                           position_container=((8, 12), (None, 5)), out_path=str(tmp_path / "p.rpk"))
     cont = p.meta["compression"]["container"]
     assert any(r["bits"] == 5 for r in cont) and any(k.endswith("u5") for k in p.arrays)
@@ -176,7 +176,7 @@ def test_the_two_level_container_still_reads_as_before():
 
 def test_the_contact_channel_takes_a_curve_and_replays(tmp_path):
     walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="bands")
+    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived")
     c = _cx.band_curve(16, 12)
     p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, blt_container=c,
                           position_container=c, out_path=str(tmp_path / "c.rpk"))
@@ -220,9 +220,9 @@ def test_a_pack_with_a_field_stores_the_path_channel_in_a_container_and_replays(
     from tests.replay_frames import field_along
     w = _susc_walk(200, seed=3, K_c3=8)
     kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy")
-    ref = build_replay_pack(w, id="t/p8", susc_path_bits=16, **kw)
+    ref = build_replay_pack(w, id="t/p8", field_container=((None, 16),), **kw)
     cont = [{"modes": [0, 2], "bits": 14}, {"modes": [2, 8], "bits": 6}]
-    pk = build_replay_pack(w, id="t/pc", susc_path_bits=cont, out_path=str(tmp_path / "pc.rpk"), **kw)
+    pk = build_replay_pack(w, id="t/pc", field_container=cont, out_path=str(tmp_path / "pc.rpk"), **kw)
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     assert pm["container"] == cont and "susc_path_dct" not in pk.arrays and "susc_path_dct_b1u6" in pk.arrays
     assert np.isfinite(pk.meta["fidelity"]["terms"]["field_read"])
@@ -265,3 +265,91 @@ def test_the_default_pack_is_derived_for_its_floor(tmp_path):
     # measured against the walk's block ends, the error is what K = 16 of the walk's bands drops plus the container's
     # quantisation: within the floor of 400 walkers
     assert p.meta["fidelity"]["within_2x_floor"] and p.meta["fidelity"]["err_max"] < p.meta["fidelity"]["floor_max"]
+
+
+# ------------------------------------------------------------------ the field channel's derived container
+
+def _spec_unpack(row, bits, m):
+    """The registry's rule, bit by bit: a row's values side by side, MSB first, offset-binary (``q + 2**(bits-1)``),
+    the last byte zero-padded."""
+    s = "".join(f"{int(b):08b}" for b in row)
+    return [int(s[i * bits:(i + 1) * bits], 2) - (1 << (bits - 1)) for i in range(m)]
+
+
+@pytest.mark.parametrize("bits", list(range(3, 17)))
+def test_a_field_range_stores_the_registrys_bit_layout_at_every_depth(bits):
+    from dmipy_sim.replay.bank import _quantise_susc_path, susc_path_coeffs
+    rng = np.random.default_rng(bits); n_w, n_ch, K, K0 = 12, 4, 12, 8
+    C = rng.normal(size=(n_w, n_ch, K))
+    meta = dict(channel="susc_field_basis", K=K, T=4e-3, n_ch=n_ch, channels=["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"], iso_P_zz="stored")
+    a, m = _quantise_susc_path(C, dict(meta), [{"modes": [0, K0], "bits": bits}, {"modes": [K0, K], "bits": 3}])
+    name = _cx.range_name("susc_path_dct", 0, bits)
+    t = np.asarray(a[name])
+    scale = np.asarray(a["susc_path_scale"], np.float64)
+    q_want = np.rint(C / scale[None]).astype(int)
+    if bits in (8, 16):
+        assert t.dtype == (np.int8 if bits == 8 else np.int16) and t.shape == (n_w, n_ch, K0)
+        np.testing.assert_array_equal(t, q_want[:, :, :K0])
+    else:
+        assert t.dtype == np.uint8 and t.shape == (n_w, n_ch, -(-K0 * bits // 8)) and name.endswith(f"u{bits}")
+        for w in range(n_w):
+            for c in range(n_ch):
+                assert _spec_unpack(t[w, c], bits, K0) == list(q_want[w, c, :K0])
+    got, _ = susc_path_coeffs(a, m)
+    np.testing.assert_allclose(got, q_want * scale[None])
+
+
+def test_the_field_container_is_one_common_step_in_the_contracted_field():
+    """Bits follow the contracted amplitude of the modes (one step across them), gain a bit per quartered floor, stay in
+    3..16, and the realised phase noise of the stored steps is within the budget the floor allows."""
+    from dmipy_sim.constants import GAMMA
+    from dmipy_sim.replay import bank
+    from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+    rng = np.random.default_rng(1); n_w, K, T = 4000, 32, 0.1
+    names = list(CHANNEL_NAMES)
+    amp = 1e-2 / (1.0 + 0.1 * np.arange(K))                                   # a red spectrum, in field-basis units
+    C = rng.normal(size=(n_w, K, 13)) * amp[None, :, None]
+    kw = dict(B0=7.0, chi_iso=1e-7, chi_aniso=1e-8)
+    depth = {}
+    for f in (2e-2, 5e-3, 1.25e-3):
+        fc = bank.DerivedFieldContainer(floor=f, **kw)
+        a, m = bank.susc_path_encode_modes(C, names, T=T, container=fc)
+        cont = m["container"]
+        assert cont[0]["modes"][0] == 0 and cont[-1]["modes"][1] == K and all(3 <= r["bits"] <= 16 for r in cont)
+        assert all((r["modes"][1] - r["modes"][0]) * r["bits"] % 8 == 0 for r in cont[:-1])
+        depth[f] = np.concatenate([[r["bits"]] * (r["modes"][1] - r["modes"][0]) for r in cont])
+        assert depth[f][0] >= depth[f][-1]                                       # the redder modes hold more bits
+        # the realised noise of the stored steps against the unit-modulus bound the derivation holds to the budget
+        eps = bank.field_quantisation(a, m, _cx.default_envelope(), T=T, h=T / 200, **kw)
+        assert 0.0 < eps <= _cx.container_eps(f) * 1.0001
+    assert 0.5 < depth[5e-3].mean() - depth[2e-2].mean() < 1.5 and 0.5 < depth[1.25e-3].mean() - depth[5e-3].mean() < 1.5
+    # the measured phase error of the stored modes under the gradient echo (all the weight on mode 0) and a spin echo
+    fc = bank.DerivedFieldContainer(floor=5e-3, **kw)
+    a, m = bank.susc_path_encode_modes(C, names, T=T, container=fc)
+    Cq, _ = bank.susc_path_coeffs(a, m)
+    ref = np.transpose(C, (0, 2, 1))
+    h = T / 200; n_t = 201
+    for gate in (np.ones(n_t), bank._cpmg_gate(n_t, 1)):
+        g = _cx.cosine_projection(gate.reshape(1, -1, 1), h, T, K)[0, :, 0]
+        for dvec in ([0, 0, 1], [1, 0, 0], [1, 1, 1]):
+            phi = lambda X: GAMMA * bank.susc_path_field(X, np.asarray(dvec, float), B0=7.0, chi_iso=1e-7, chi_aniso=1e-8, has_aniso=True) @ g
+            assert np.std(phi(Cq) - phi(ref)) <= bank.field_quantisation(a, m, _cx.default_envelope(), T=T, h=h, **kw) * 1.05
+
+
+def test_the_default_field_container_is_derived_and_the_quantisation_term_carries_it(tmp_path):
+    from tests.test_bank import _susc_walk, _env7
+    from dmipy_sim.replay.bank import read_rpk
+    env = _env7(theta_deg=[0, 90])
+    w = _susc_walk(200, seed=3, K_c3=8, envelope=env)
+    kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy", envelope=env, fidelity="measured")
+    pk = build_replay_pack(w, id="t/pd", out_path=str(tmp_path / "pd.rpk"), **kw)
+    fl = build_replay_pack(w, id="t/pf", field_container=None, **kw)
+    pm = pk.meta["compression"]["channels"]["susc_field_basis"]
+    assert pm["container"] and "susc_path_dct" not in pk.arrays and pm["bits"] is None
+    f, f0 = pk.meta["fidelity"], fl.meta["fidelity"]
+    assert f0["err_quantisation_field"] == 0.0                                   # the float container adds none
+    assert f["err_quantisation"] >= f["err_quantisation_field"] > 0.0 and f["err_quantisation"] > f0["err_quantisation"]
+    # the Bloch route certifies the stored container within its floor
+    assert f["err_susc_bloch"] <= f["floor_susc_bloch"]
+    back = read_rpk(str(tmp_path / "pd.rpk"))
+    np.testing.assert_array_equal(back.arrays["susc_path_scale"], pk.arrays["susc_path_scale"])

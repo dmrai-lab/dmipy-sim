@@ -410,7 +410,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     bytes_pack = sum(np.asarray(v).nbytes for v in pk.arrays.values())
     fr = dict(w.block["field_read"]); fb = {k: v for k, v in w.block["field_band"].items() if k != "ladder"}
     out = dict(walk=dict(n=n, n_raw=n_raw, T=T, K=int(w.K), m=int(w.m), h=float(w.h), n_blocks=int(w.n_blocks), sub_steps=int(w.sub_steps),
-                         field_container=(int(field_bits) if field_bits is not None else "bands"),
+                         field_container=(int(field_bits) if field_bits is not None else "derived"),
                          dt_sim=float(w.dt_sim), K_c3=int(w.K_c3), field_read=fr, field_band=fb, seconds=t_walk, pack_seconds=t_pack,
                          pack_bytes_per_walker=bytes_pack / n, pools=dict(zip(*[x.tolist() for x in np.unique(w.compartment, return_counts=True)]))),
                certificate=dict(walk_free=dict(terms=pk.fidelity["terms"], err_max=pk.fidelity["err_max"], floor_max=pk.fidelity["floor_max"]),

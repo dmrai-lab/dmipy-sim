@@ -150,7 +150,7 @@ def test_the_path_channel_read_on_a_cut_is_the_whole_one_cut():
     rng = np.random.default_rng(8)
     n_w, n_t, K = 300, 240, 9
     C = rng.normal(size=(n_w, K, 7))
-    pa, pm = susc_path_encode_modes(C, list(CHANNEL_NAMES[:7]), T=(n_t - 1) * 1e-4, bits=16)
+    pa, pm = susc_path_encode_modes(C, list(CHANNEL_NAMES[:7]), T=(n_t - 1) * 1e-4, container=((None, 16),))
     pwhole, _ = susc_path_decode(pa, pm, n_t=n_t)
     for start, stop in ((0, 60), (59, 120), (120, 240), (1, 2), (239, 240)):
         np.testing.assert_allclose(susc_path_decode(pa, pm, n_t=n_t, start=start, n_cut=stop)[0], pwhole[:, :, start:stop], atol=1e-9)
@@ -178,5 +178,5 @@ def _float_pack(*a, **k):
     """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
-    k.setdefault("position_container", None); k.setdefault("blt_container", None)
+    k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
     return build_replay_pack(*a, **k)

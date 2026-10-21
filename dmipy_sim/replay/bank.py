@@ -701,14 +701,14 @@ class DerivedFieldContainer:
 
 
 def _field_container(spec):
-    """The field channel's container from the builder's knob: ``None`` (the float container), ``"bands"`` (the
+    """The field channel's container from the builder's knob: ``None`` (the float container), ``"derived"`` (the
     default, :class:`DerivedFieldContainer`), a :class:`DerivedFieldContainer`, or an explicit container of ranges
     of modes (:func:`path_codec`)."""
     if spec is None or isinstance(spec, DerivedFieldContainer):
         return spec
     if isinstance(spec, str):
-        if spec not in ("bands", "derived"):
-            raise ValueError(f"the field container is None, 'bands', or ranges of modes; got {spec!r}")
+        if spec != "derived":
+            raise ValueError(f"the field container is None, 'derived', or ranges of modes; got {spec!r}")
         return DerivedFieldContainer()
     return path_codec(spec)
 
@@ -1423,15 +1423,15 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
 
 
 def _container(spec):
-    """A band container from the builder's knob: ``None`` (the float container), ``"bands"`` (the registry's
-    default, :data:`compression.BAND_CONTAINER`, the curve ``band_curve(K, 10)`` of the pack's own K) or an explicit ``((upto, bits), ...)`` or the ``[{"bands", "bits"}, ...]`` of
-    :func:`compression.band_curve`."""
+    """A band container from the builder's knob: ``None`` (the float container), ``"derived"`` (the default,
+    :data:`compression.BAND_CONTAINER`: derived per pack against its floor) or an explicit ``((upto, bits), ...)`` or the
+    ``[{"bands", "bits"}, ...]`` of :func:`compression.band_curve`."""
     if spec is None:
         return None
     if isinstance(spec, (_cx.BandCurve, _cx.DerivedContainer)):
         return spec
     if isinstance(spec, str):
-        if spec not in ("bands", "derived"):
+        if spec != "derived":
             raise ValueError(f"container must be None, 'derived', or ((upto, bits), ...); got {spec!r}")
         return _cx.BAND_CONTAINER
     return tuple((None if u is None else int(u), int(b)) for u, b in
@@ -1922,7 +1922,7 @@ def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
 # ------------------------------------------------------------------------------------------ the pack from the walk
 def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=None, K=None, temporal_bandwidth_hz=None,
                       scanner=None, sigma_star=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
-                      susc_path_K=None, field_container="bands", voxel_grid=None, position_container="bands", blt_container="bands",
+                      susc_path_K=None, field_container="derived", voxel_grid=None, position_container="derived", blt_container="derived",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False, fidelity=None, device="auto",
                       window_T=None, pack_license=None, pack_license_url=None):
     """Assemble a self-certifying replay pack from a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`: the bands
@@ -1943,7 +1943,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     choose it.
 
     ``position_container``, ``blt_container`` and ``field_container`` are the band containers of the position,
-    contact and field channels: ``"bands"`` (the default) is :data:`compression.BAND_CONTAINER` for the first two and
+    contact and field channels: ``"derived"`` (the default) is :data:`compression.BAND_CONTAINER` for the first two and
     :class:`DerivedFieldContainer` for the field, each derived per pack against the pack's floor; ``None`` the float
     container; an explicit ``((upto, bits), ...)`` or :func:`compression.band_curve` list is taken as given.
 
@@ -2386,7 +2386,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     :func:`mode_window_matrix`; RPK.md 9.5.4), the events sliced to the window, exactly -- what ``prefix`` (``t0 =
     0``) and ``rewindow`` build. ``K`` / ``blt_K`` / ``path_K`` are the window's bands (the parent's bands per second
     by default, at least 2); ``position_container``, ``blt_container`` and ``field_container`` the window's
-    containers (None: the parent's own ranges; ``"bands"``: derived for the window's floor). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
+    containers (None: the parent's own ranges; ``"derived"``: derived for the window's floor). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
     truncation measured on the battery -- the parent's exact replay of the window (its bands with the waveform at
     ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``."""
     from ..constants import GAMMA

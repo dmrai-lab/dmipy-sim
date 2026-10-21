@@ -81,7 +81,7 @@ def sweep_c3(a):
     Kp, T_s = a.path_K, a.c3_T
     log(f"C3 walk: {a.c3_n} walkers on 3 strands, T {T_s}, path modes {Kp}")
     walk = strand_walk(a.c3_n, T_s)
-    cases = [("native 16", 16), ("native 8", 8), ("derived", "bands")] + [(f"curve b1={b:g}", cx.band_curve(Kp, b)) for b in a.c3_b1]
+    cases = [("native 16", 16), ("native 8", 8), ("derived", "derived")] + [(f"curve b1={b:g}", cx.band_curve(Kp, b)) for b in a.c3_b1]
     rows_ = []
     for label, knob in cases:
         t0 = time.time()

@@ -193,8 +193,8 @@ def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_m
         grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
                   attach="substrate"),
         walk=dict(T_max_s=float(T_max_s), scanner=scanner, adaptive_steps=False, walker_batch_size=4096, census_draws=200),
-        pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="bands",
-                  blt_container="bands", blt_K=mode_count(T_max_s, scanner)),
+        pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="derived",
+                  blt_container="derived", blt_K=mode_count(T_max_s, scanner)),
         plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),
     )
     path = os.path.join(variant_dir, "manifest.json")
