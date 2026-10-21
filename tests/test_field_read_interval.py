@@ -1,17 +1,18 @@
 """The strand field along the walk is read every ``field_read_interval`` seconds: ``walk_spec(field_read_interval=)``
 gives the interval the adaptive producer reads the field at (snapped to a whole number of the pool's rounds per
-block, never finer than a round), or derives it from the field's spatial scale; the walk and the pack record it, and
-the replay gates the stored modes on it.
+block, never finer than a round), or each pool's pilot derives it; the walk and the pack record it, and the replay
+gates the stored modes on it.
 
-The derived interval is the rule of :func:`dmipy_sim.engine.accumulate.field_read_interval` on the basis's
-``gradient_scale()`` -- the read that keeps the field's quadrature below the certificate's floor -- and the rule's
-term is charged in the pack's ``fidelity.terms.field_read``. The walk's reads steer nothing: a coarser read keeps
-the positions and the contact identical and changes only the field's modes."""
+The derived interval is the rule of :func:`dmipy_sim.engine.accumulate.field_read_rule` on the pilot's measured read
+series (its quadratic variation per pool, RPK.md 9.5.5) -- the read that keeps ``v_read`` under the floor's square --
+and the term the pack's certificate charges is ``(gamma B0 chi)^2 dt_f^2 / 12 x (sum_c sqrt(QV_c))^2`` of the walk's own read series
+(``fidelity.terms.field_read``). The walk's reads steer nothing: a coarser read keeps the positions and the contact
+identical and changes only the field's modes."""
 import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.engine.accumulate import field_read_interval
+from dmipy_sim.engine.accumulate import field_read_rule, field_read_term, field_read_B0_chi_max, field_read_steps
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import disco_spec, walk_spec
@@ -19,6 +20,7 @@ from dmipy_sim.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 BLOCK = 1e-4                       # the walk's block: two rounds of the extra pool, four of the intra pool
+FINE = BLOCK / 4                   # a given read finer than the derived one: every round of each pool
 
 
 @pytest.fixture(scope="module")
@@ -37,41 +39,47 @@ def _walk(spec, interval=None, seed=3):
 
 @pytest.fixture(scope="module")
 def walks(spec):
-    """The default (derived) read and a given one of a whole block."""
-    return _walk(spec), _walk(spec, BLOCK)
+    """The default (derived) read and a given finer one."""
+    return _walk(spec), _walk(spec, FINE)
 
 
 def test_the_field_is_read_at_its_interval_and_the_walk_is_unchanged(walks):
-    """A coarser given interval: the same walk (positions, contact), the field's modes differ, the walk records the
-    read it made (``block["field_read"]``, ``field_read_interval``)."""
+    """A finer given interval: the same walk (positions, contact), the field's modes differ, the walk records the
+    read it made (``block["field_read"]``, ``field_read_interval``); the bundle states its coarsest pool's read, the
+    given interval snapped to that pool's round (never finer than a round)."""
     wd, wc = walks
     np.testing.assert_array_equal(wc.position_coeffs, wd.position_coeffs)
     np.testing.assert_array_equal(wc.boundary_bands, wd.boundary_bands)
     np.testing.assert_array_equal(wc.boundary_endpoint, wd.boundary_endpoint)
     fd, fc = wd.block["field_read"], wc.block["field_read"]
-    assert fd["rule"] == "derived" and fc["rule"] == "given" and fc["dt_f_rule"] == pytest.approx(BLOCK)
-    assert wc.field_read_interval == pytest.approx(BLOCK) and fc["dt_f"] == pytest.approx(BLOCK)
-    assert wd.field_read_interval < wc.field_read_interval == pytest.approx(BLOCK)         # the default reads at the step
-    assert fd["at_step"] and not fc["at_step"]
+    assert fd["rule"] == "pilot" and fc["rule"] == "given" and fc["dt_f_rule"] == pytest.approx(FINE)
+    assert wc.field_read_interval == pytest.approx(BLOCK / 2) == fc["dt_f"]               # the extra pool's round
+    assert fc["at_step"] and fc["n_read"] == 1                                            # the given read is below its round
+    assert wc.field_read_interval < wd.field_read_interval                               # the derived read is coarser here
     assert wd.field_coeffs.shape == wc.field_coeffs.shape == (60, 1, wd.K_c3, 13)
     a, b = np.asarray(wd.field_coeffs, np.float64), np.asarray(wc.field_coeffs, np.float64)
     assert np.abs(a - b).max() > 1e-5 * np.abs(a).max()                           # a different quadrature of the same field
     assert np.abs(a - b).max() < 0.1 * np.abs(a).max()                            # of the same function
 
 
-def test_the_default_interval_is_the_rule_on_the_bases_gradient_scale(spec, walks):
-    """The derived interval is :func:`field_read_interval` of the field's gradient scale, ``D`` and the window, at the
-    envelope's field strength and the spec's chi; a read finer than the walk's step is the step itself."""
-    wd, wc = walks
+def test_the_default_interval_is_the_rule_on_the_pilots_read_series(spec, walks):
+    """Each pool's pilot reads every round and measures its read series' quadratic variation; the pool's interval is
+    :func:`field_read_rule` of it at the envelope's field strength and the spec's chi (``v_read`` under the floor's
+    square), snapped to the pool's rounds (never finer than a round); the bundle records the coarsest pool's read and
+    every pool's own, and the trapezoid's constant measured on the pilot at every coarser read the block allows."""
+    wd, _ = walks
     fr = wd.block["field_read"]
-    grad_b = wd.field_basis.gradient_scale()
-    assert fr["grad_b_per_m"] == pytest.approx(grad_b)
-    rule = field_read_interval(fr["D"], fr["T_e"], grad_b, fr["B0"], fr["chi"], fr["floor"])
-    assert fr["dt_f_rule"] == pytest.approx(rule) and rule > 0
-    assert fr["T_e"] == pytest.approx(wd.T_window) and fr["D"] == pytest.approx(wd.diffusivity)
-    if rule < wd.block["round_s"]:
-        assert fr["at_step"] and fr["dt_f"] == pytest.approx(wd.block["round_s"])         # never finer than a round
-    assert wc.block["field_read"]["term"] >= fr["term"]                           # a coarser read charges a larger term
+    assert set(fr["pools"]) == {"intra", "extra"} and fr["pilot_walkers"] > 0
+    for name, p in fr["pools"].items():
+        qv = np.asarray(p["qv_increments"])
+        assert qv.shape == (13,) and (qv >= 0).all() and qv.sum() > 0              # the walkers move through the field
+        assert p["dt_f_rule"] == pytest.approx(field_read_rule(qv, fr["B0"], fr["chi"], fr["floor"], p["constants"]))
+        assert np.all(np.asarray(fr["constants"]) >= np.asarray(p["constants"]))          # the bundle charges the largest
+    assert len(fr["constants"]) == 13 and min(fr["constants"]) >= 1.0 / 12.0 - 1e-15
+    assert fr["measured_constants"]                                               # measured at the coarser reads
+    n_read, dt_f = field_read_steps(fr["dt_f_rule"], fr["step_s"], int(round(wd.block["h"] / fr["step_s"])))
+    assert (n_read, wd.field_read_interval) == (fr["n_read"], pytest.approx(dt_f)) and dt_f == pytest.approx(fr["dt_f"])
+    assert fr["at_step"] == (fr["dt_f_rule"] < fr["step_s"])
 
 
 def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
@@ -80,7 +88,7 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
     and a prefix keeps the read."""
     wd, wc = walks
     pks = {}
-    for name, w in (("derived", wd), ("coarse", wc)):
+    for name, w in (("derived", wd), ("fine", wc)):
         pks[name] = _float_pack(w, id=f"t/read-{name}", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
                                 out_path=str(tmp_path / f"{name}.rpk"))
         pk = pks[name]; fr = w.block["field_read"]
@@ -90,11 +98,15 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
         assert pk.meta["walk_params"]["field_read_interval"] == pytest.approx(w.field_read_interval)
         env = pk.meta["replay_envelope"]["field_read"]
         assert env["interval_s"] == pytest.approx(w.field_read_interval) and env["at_step"] == fr["at_step"]
-        assert env["B0_chi_max_T"] == pytest.approx(fr["B0_chi_max_T"])
-        assert pk.fidelity["terms"]["field_read"] == pytest.approx(fr["term"])            # the rule's term
+        qv = pk.meta["walk_params"]["qv"]["field_increments"]                      # the walk's own read series
+        np.testing.assert_allclose(qv, np.asarray(w.qv_field_increments, np.float64)[:, 0].mean(0), rtol=1e-6)
+        at = env["term_at"]
+        assert env["B0_chi_max_T"] == pytest.approx(field_read_B0_chi_max(w.field_read_interval, qv, at["floor"], fr["constants"]))
+        term = field_read_term(w.field_read_interval, qv, at["B0"], at["chi"], fr["constants"])
+        assert pk.fidelity["terms"]["field_read"] == pytest.approx(term, rel=1e-4) and term > 0
         assert pm["max_refocus_pulses"] == 2 and np.isfinite(pk.fidelity["terms"]["quadrature"]["field"])
-    assert pks["coarse"].fidelity["terms"]["field_read"] >= pks["derived"].fidelity["terms"]["field_read"]
-    pk = pks["coarse"]
+    assert pks["derived"].fidelity["terms"]["field_read"] >= pks["fine"].fidelity["terms"]["field_read"]
+    pk = pks["derived"]
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
     seq_x, R = field_along(seq, (1, 0, 0))
@@ -109,7 +121,10 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
     child = pk.prefix(4e-4, K=4)
     assert child.meta["compression"]["channels"]["susc_field_basis"]["read"] == pm["read"]
     assert child.meta["replay_envelope"]["field_read"] == pk.meta["replay_envelope"]["field_read"]
-    assert child.fidelity["terms"]["field_read"] == pytest.approx(pk.fidelity["terms"]["field_read"])
+    # half the window, half the reads: the read series' QV and the term at the same interval halve
+    np.testing.assert_allclose(child.meta["walk_params"]["qv"]["field_increments"],
+                               0.5 * np.asarray(pk.meta["walk_params"]["qv"]["field_increments"]), rtol=1e-6)
+    assert child.fidelity["terms"]["field_read"] == pytest.approx(0.5 * pk.fidelity["terms"]["field_read"], rel=1e-4)
 
 
 def test_the_read_interval_needs_the_adaptive_producer(spec):

@@ -79,7 +79,7 @@ def test_the_layout_and_the_table(packs):
     assert two.n_t == N_T and "n_t" not in two.meta["compression"] and two.K == 19
     assert {k: two.block[k] for k in ("h", "m", "precision", "n_blocks", "rule")} == dict(
         h=pytest.approx(DT), m=w2.m, precision="float32", n_blocks=40, rule="given")
-    assert set(two.meta["walk_params"]["qv"]) == {"positions", "local_time", "field"} and "terms" in two.fidelity
+    assert set(two.meta["walk_params"]["qv"]) == {"positions", "local_time", "field", "field_increments"} and "terms" in two.fidelity
     assert two.meta["walk_params"]["field_read_interval"] == pytest.approx(w2.field_read_interval)
     per_window = {k[3:] for k in two.arrays if k.startswith("s1/")}
     assert {"pos_x", "pos_y", "pos_z", "blt_bridge_dst", "blt_start", "blt_endpoint", "comp_events_offsets", "comp_events_t",

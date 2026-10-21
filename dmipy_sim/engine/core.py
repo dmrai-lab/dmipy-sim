@@ -458,40 +458,19 @@ class WalkResolution(NamedTuple):
     events_capacity: object = None  #: the events buffer per walker and column, or None for "a pilot sizes it"
 
 
-def _field_rule_inputs(geometry, field_basis, env=None):
-    """``(B0, chi, grad_b)`` the field read's rule and the field band's pilot are derived at: the envelope's largest
-    field strength (:data:`~dmipy_sim.engine.accumulate.FIELD_RULE_B0` when it states none), the spec's nominal
-    susceptibility scale of the magnetic pools (``|chi_iso| + |chi_aniso|``, the certificate's own
-    :data:`~dmipy_sim.engine.accumulate.FIELD_RULE_CHI` when the spec states none), and the basis's largest
-    gradient over the sheath (``gradient_scale``)."""
-    from .accumulate import FIELD_RULE_B0, FIELD_RULE_CHI
-    B0 = float(max(env.get("B0_list") or [FIELD_RULE_B0])) if env else FIELD_RULE_B0
-    chi = None
-    spec = geometry.spec
-    if spec is not None:
-        vals = []
-        for p in spec.field_source_pools:
-            s = p.susceptibility
-            vals.append(abs(float(s.chi_iso or 0.0)) + abs(float(s.chi_aniso or 0.0)))
-        if vals and max(vals) > 0.0:
-            chi = max(vals)
-    if chi is None:
-        chi = FIELD_RULE_CHI
-    return B0, chi, float(field_basis.gradient_scale())
-
-
 def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", sub_steps=None, kappa_MT=0.0, dwell_time=0.0,
                   f_band=None, seed=42, enforce_compartment=False, field_basis=None, K=None, block_order=None, window_T=None,
                   K_c3=None, field_read_interval=None, events_capacity=None, raw_subset=0, envelope=None):
     """The resolution every walk shares: its storage windows, its band ``K`` per window, its blocks (the band's own,
     :func:`~dmipy_sim.engine.accumulate.block_length`, unless ``block_h`` gives one), the sub-step count per block
     (``physics.resolve_sub_steps`` over the rules ``physics.sub_step_rules`` at the band ``K / (2 T)``), the field
-    read's interval (:func:`~dmipy_sim.engine.accumulate.field_read_interval` at the envelope's ``B0`` and ``chi``,
-    unless given, then the largest divisor of the step count within it), the geometries this walk cannot represent
+    read's interval (a given one at the largest divisor of the step count within it, else the step: the pilot's read,
+    which :func:`simulate_trajectories` replaces by the read the pilot derives,
+    :func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`), the geometries this walk cannot represent
     (refused), and the :class:`WalkResolution` a backend is handed. :func:`simulate_trajectories` walks what this
     returns and :func:`walk_cost` reports it, so a cost and a walk state one count."""
-    from .accumulate import (block_length, BLOCK_ORDER, default_K, window_count, field_read_interval as _fri,
-                             field_read_steps, field_read_term, field_read_B0_chi_max, FIELD_READ_FLOOR)
+    from .accumulate import (block_length, BLOCK_ORDER, default_K, window_count, field_rule_scale, field_read_of_pilot,
+                             FIELD_READ_FLOOR)
     record = _record_channels(tiers)
     n_windows, T_win = window_count(T_max, window_T)
     K = default_K(T_win) if K is None else int(K)
@@ -548,23 +527,17 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
             "compartment state and would return an unrestricted walk.")
 
     permeability = geometry.permeability
-    # the field read: the rule's interval from the field's spatial scale and D (RPK.md 9.5.5), or the caller's,
-    # then the largest divisor of the block's steps within it; the step itself when the rule asks for less
+    # the field read: the caller's interval, or the pilot's (RPK.md 9.5.5) -- until the pilot has measured the read
+    # series, the read is the step (the pilot's own, and the cost's bound)
     field_read = None
     if field_basis is not None:
-        B0, chi, grad_b = _field_rule_inputs(geometry, field_basis, envelope)
-        T_e = float(T_win)
+        B0, chi = field_rule_scale(geometry.spec, envelope)
+        if field_read_interval is not None and not float(field_read_interval) > 0.0:
+            raise ValueError(f"field_read_interval is the interval (s) between the walk's reads of the field, positive; got {field_read_interval!r}")
+        field_read = field_read_of_pilot({}, B0=B0, chi=chi, step_s=dt_sim, steps=n_sub, T_e=float(T_win), floor=FIELD_READ_FLOOR,
+                                         given=(dt_sim if field_read_interval is None else float(field_read_interval)))
         if field_read_interval is None:
-            dt_rule, f_rule = _fri(diffusivity, T_e, grad_b, B0, chi, FIELD_READ_FLOOR), "derived"
-        else:
-            dt_rule, f_rule = float(field_read_interval), "given"
-            if not dt_rule > 0.0:
-                raise ValueError(f"field_read_interval is the interval (s) between the walk's reads of the field, positive; got {field_read_interval!r}")
-        n_read, dt_f = field_read_steps(dt_rule, dt_sim, n_sub)
-        field_read = dict(rule=f_rule, dt_f_rule=float(dt_rule), dt_f=float(dt_f), n_read=int(n_read), at_step=bool(n_read == 1 and dt_rule < dt_sim),
-                          B0=float(B0), chi=float(chi), grad_b_per_m=float(grad_b), D=float(diffusivity), T_e=T_e, floor=float(FIELD_READ_FLOOR),
-                          term=float(field_read_term(dt_f, diffusivity, T_e, grad_b, B0, chi)),
-                          B0_chi_max_T=float(field_read_B0_chi_max(dt_f, diffusivity, T_e, grad_b, FIELD_READ_FLOOR)))
+            field_read["rule"] = "pilot"
     # which occupancy the walk keeps: events where a walker can change pool (a permeable wall, a binding walk)
     crossing = bool(record) and (bool(permeability is not None and float(permeability) > 0.0)
                                  or (geometry._is_myelinated or geometry._is_packed_myelinated) and (
@@ -1075,9 +1048,10 @@ def simulate_trajectories(
     window_T : float, optional
         The storage window (s) a longer walk is accumulated in; :data:`~dmipy_sim.replay.bank.WINDOW_T` by default.
     raw_subset : int
-        Keep the first ``raw_subset`` walkers' positions, contact, pool label, bound state and field block means at
-        every block end beside the coefficients, as plain arrays (``CoefficientWalk.raw_positions``,
-        ``raw_boundary``, ``raw_compartment``, ``raw_bound``, ``raw_field``): the opt-in raw output, for a measured certificate, a visualisation or a dense oracle.
+        Keep the first ``raw_subset`` walkers' positions, contact, pool label and bound state at every block end and
+        their field reads at the walk's read instants beside the coefficients, as plain arrays
+        (``CoefficientWalk.raw_positions``, ``raw_boundary``, ``raw_compartment``, ``raw_bound``, ``raw_field``):
+        the opt-in raw output, for a measured certificate, a visualisation or a dense oracle.
     field_basis : FieldGrid, optional
         A gridded susceptibility field basis (:class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`) the walk
         reads itself at the kernel's position (a periodic grid wraps) every ``field_read_interval`` seconds, the
@@ -1090,11 +1064,14 @@ def simulate_trajectories(
         (:func:`~dmipy_sim.replay.bank.derive_field_band`: the first band whose codec error on the certificate's
         battery is within its floor); a fill inherits the certifying pack's.
     field_read_interval : float, optional
-        The interval (s) between the walk's reads of the field. None derives it
-        (:func:`~dmipy_sim.engine.accumulate.field_read_interval`: ``v_read`` under the floor's square at the
-        envelope's ``B0`` and the spec's ``chi``); the walk reads at the largest divisor of its step count within
-        it, the step itself when the rule asks for less (``CoefficientWalk.block["field_read"]`` records the rule
-        and the term, and the pack's envelope states the ``B0 chi`` the term holds under).
+        The interval (s) between the walk's reads of the field. None derives it from a pilot of
+        :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers that reads every step
+        (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`: per pool the measured quadratic variation of the
+        read series, ``v_read`` under the floor's square at the envelope's ``B0`` and the spec's ``chi``, the finest
+        over the pools; the trapezoid's constant measured per channel on the same pilot); the walk reads at the
+        largest divisor of its step count within it, the step itself when the rule asks for less
+        (``CoefficientWalk.block["field_read"]`` records the rule, the pools and the constants, and the pack's
+        certificate charges the term from the walk's own quadratic variation).
     events_capacity : int, optional
         The events buffer per walker and column, in place of the pilot's.
     envelope : dict, optional
@@ -1160,11 +1137,10 @@ def simulate_trajectories(
             _f_arrays = field_basis.device_arrays()
             _f_periodic = tuple(bool(p) for p in field_basis.periodic)
             _f_key = ("field", tuple(_f_arrays[0].shape), _f_periodic)
-            _n_read, _dt_f = int(res.field_read["n_read"]), float(res.field_read["dt_f"])
         else:
             if K_c3 is not None or field_read_interval is not None:
                 raise ValueError("K_c3 and field_read_interval are the field channel's band and read interval: they go with field_basis=")
-            _f_arrays, _f_periodic, _f_key, _n_read, _dt_f = (), None, None, 1, 0.0
+            _f_arrays, _f_periodic, _f_key = (), None, None
         _n_ch = int(_f_arrays[0].shape[0]) if _sampling else 0
 
         def _reader(arrays):
@@ -1590,12 +1566,15 @@ def simulate_trajectories(
         ev_comp_on = has_lab and crossing
         ev_bound_on = kind.bound_of is not None and binding
 
-        def _walker(raw, cap, K_c3):
+        def _walker(raw, cap, K_c3, rd):
             """One walker's walk, window by window: per window its coefficients, contact, field modes, quadratic
             variation and the float32 chain's residual; the events of its label and bound state (a buffer of
-            ``cap`` entries each, counted past it); for the raw subset its positions, contact, label, bound state and
-            field block mean at every block end. ``K_c3`` is the field's band (``None``: the field is read for the raw
-            block means alone)."""
+            ``cap`` entries each, counted past it); for the raw subset its positions, contact, label and bound state
+            at every block end and its field reads. ``K_c3`` is the field's band (``None``: the field is read for the
+            pilot alone); ``rd = (n_read, dt_f, checks, reads)`` the read every ``n_read`` steps of ``dt_f`` seconds
+            in all, the trapezoid's ``checks`` of a pilot that reads every step, and whether the raw subset keeps the
+            reads at their instants (``reads``) or each block's mean (a pilot's, for the field band)."""
+            _n_read, _dt_f, _checks, _keep_reads = rd
             def one(r0_w, key_w, side_w, comp0_w, brem0_w, f_arrays):
                 read = _reader(f_arrays)
                 if kind_name == "gen":
@@ -1621,11 +1600,11 @@ def simulate_trajectories(
                     phys_a = c[0]
                     blt_a = kind.blt_of(phys_a) if has_blt else None
                     c, mom = _moment_scan(kind, c, sub_steps, m, read=read, n_ch=_n_ch, n_read=_n_read, dt_f=_dt_f,
-                                          step0=b * sub_steps)
+                                          step0=b * sub_steps, checks=_checks, keep_reads=(raw and _keep_reads))
                     phys = c[0]
                     ys = (kind.pos_of(phys), (kind.blt_of(phys) - blt_a) if has_blt else None,
                           kind.label_of(phys) if has_lab else None, kind.bound_of(phys) if kind.bound_of is not None else None,
-                          (mom[4][0] / h_f32) if read is not None else None)
+                          (None if read is None else mom[8] if _keep_reads else mom[4][0] / h_f32))
                     return c, ys, mom
 
                 emit = (lambda ys: ys) if raw else None
@@ -1633,15 +1612,17 @@ def simulate_trajectories(
 
                 def window(c, w):
                     r_start = kind.pos_of(c[0])
-                    c, ap, ab, af, e, n, (qp, qb, qf), = ring_scan(interval, c, n_bw, K, m, has_blt=has_blt, K_c3=K_c3,
-                                                                   n_ch=_n_ch, emit=emit, count=count, offset=w * n_bw)
+                    c, ap, ab, af, e, n, (qp, qb, qf, qd, ec), = ring_scan(interval, c, n_bw, K, m, has_blt=has_blt, K_c3=K_c3,
+                                                                           n_ch=_n_ch, emit=emit, count=count, offset=w * n_bw,
+                                                                           n_checks=len(_checks))
                     C, resid = coefficient_form(r_start, kind.pos_of(c[0]), ap, scale)
                     blt = (jnp.zeros((0,), jnp.float32), jnp.float32(0.0)) if not has_blt else (scale * ab[1:], ab[0])
                     fc = jnp.zeros((0, 0), jnp.float32) if af is None else field_mode_form(af, T_win)
                     return c, (C, resid, blt, qp, (jnp.float32(0.0) if qb is None else qb), fc,
-                               (jnp.zeros((0,), jnp.float32) if qf is None else qf), (jnp.int32(0) if n is None else n), e)
+                               (jnp.zeros((0,), jnp.float32) if qf is None else qf), (jnp.zeros((0,), jnp.float32) if qd is None else qd),
+                               (jnp.zeros((2, 0, 0), jnp.float32) if ec is None else ec), (jnp.int32(0) if n is None else n), e)
 
-                c, (C, resid, blt, qp, qb, fc, qf, n, e) = jax.lax.scan(window, carry0, jnp.arange(n_win, dtype=jnp.int32))
+                c, (C, resid, blt, qp, qb, fc, qf, qd, ec, n, e) = jax.lax.scan(window, carry0, jnp.arange(n_win, dtype=jnp.int32))
                 flat = lambda a: None if a is None else a.reshape((n_win * n_bw,) + a.shape[2:])
                 e = (None,) * 5 if e is None else tuple(flat(x) for x in e)
                 z = jnp.zeros((0,), jnp.float32)
@@ -1649,33 +1630,37 @@ def simulate_trajectories(
                 dlog = jnp.concatenate([jnp.zeros((1,), jnp.float32), e[1]]).astype(jnp.float32) if (raw and has_blt) else z
                 occ = jnp.concatenate([lab0[None], e[2]]) if (raw and e[2] is not None) else jnp.zeros((0,), jnp.int8)
                 bnd = jnp.concatenate([bnd0[None], e[3]]) if (raw and e[3] is not None) else jnp.zeros((0,), jnp.int8)
-                fs = jnp.concatenate([b_prev0[None], e[4]], axis=0) if (raw and e[4] is not None) else jnp.zeros((0, 0), jnp.float32)
+                fs = (jnp.concatenate([b_prev0[None], e[4].reshape((-1, _n_ch))], axis=0) if (raw and e[4] is not None)
+                      else jnp.zeros((0, 0), jnp.float32))         # the reads at their instants, or each block's mean
                 phys, _bp, ev_c, ev_b = c
                 evz = (jnp.int32(0), jnp.zeros((0,), jnp.int32), jnp.zeros((0,), jnp.int8))
                 ev_c_out = evz if ev_c is None else (ev_c.n, ev_c.steps, ev_c.labels)
                 ev_b_out = evz if ev_b is None else (ev_b.n, ev_b.steps, ev_b.labels)
                 work_f = phys[-1]
                 bad = phys[3] if kind_name == "gen" else (phys[4] if kind_name in ("relax", "mt") else jnp.int32(0))
-                return (C, resid, blt[1], blt[0], lab0, bnd0, fc, qf, occ, bnd, fs, pos, dlog, qp, qb,
+                return (C, resid, blt[1], blt[0], lab0, bnd0, fc, qf, qd, ec, occ, bnd, fs, pos, dlog, qp, qb,
                         ev_c_out, ev_b_out, n.sum(), bad, work_f)
             return one
 
-        def _batch_fn(raw, cap, K_c3):
+        def _batch_fn(raw, cap, K_c3, rd):
             return cached_batch(geometry, ("coefficient walk", kind_name, raw, cap, K_c3, crossing, binding, n_blocks, n_win,
                                            sub_steps, float(dt_sim), diffusivity, K, m, kappa_MT, dwell_time, _counting,
-                                           _f_key, _n_read),
-                                lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3), in_axes=(0, 0, 0, 0, 0, None))))
+                                           _f_key, rd),
+                                lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd), in_axes=(0, 0, 0, 0, 0, None))))
 
-        names = ("C", "resid", "blt_end", "blt_bands", "lab", "bnd", "fc", "qv_f", "occ", "bound", "fs", "pos", "dlog",
+        names = ("C", "resid", "blt_end", "blt_bands", "lab", "bnd", "fc", "qv_f", "qv_d", "chk", "occ", "bound", "fs", "pos", "dlog",
                  "qv_pos", "qv_blt")
         dev = [0]
+        _rd = [(1, float(dt_sim), (), True)]                # the read the batches take: the step's, then the walk's
 
-        def _call(a, b, raw, cap, K_c3):
-            r0_b = r0_all[a:b]
-            comp0_b = (comp0_all[a:b] if kind_name == "pm" else
+        def _call(a, b, raw, cap, K_c3, rd=None):
+            sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
+            r0_b = r0_all[sel]
+            comp0_b = (comp0_all[sel] if kind_name == "pm" else
                        jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32) if kind_name in ("relax", "mt")
-                       else jnp.zeros((b - a,), jnp.int32))
-            out = _batch_fn(raw, cap, K_c3)(r0_b, walker_keys_all[a:b], _side0(r0_b), comp0_b, brem0_all[a:b], _f_arrays)
+                       else jnp.zeros((r0_b.shape[0],), jnp.int32))
+            out = _batch_fn(raw, cap, K_c3, _rd[0] if rd is None else rd)(r0_b, walker_keys_all[sel], _side0(r0_b), comp0_b,
+                                                                       brem0_all[sel], _f_arrays)
             *arrs, ev_c, ev_b, n_dev, bad_f, work_f = out
             got = {k: np.asarray(v) for k, v in zip(names, arrs)}
             for key, ev in (("c", ev_c), ("b", ev_b)):                      # the events compacted per batch: (counts, t, label)
@@ -1686,16 +1671,17 @@ def simulate_trajectories(
 
         _backend_block = {}                                                  # how the backend accumulated: precision, window, summation
 
-        def _backend_call(a, b, raw, cap, K_c3):
+        def _backend_call(a, b, raw, cap, K_c3, rd=None):
             """One batch through the backend (#747): its :class:`~dmipy_sim.engine.backends.CoefficientBatch` laid out
             under the names of the JAX batch, the walk converting nothing -- a backend that hands back a walk of saves
             is refused by name."""
             from .backends import CoefficientBatch
-            n_b = b - a
+            sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
+            n_b = int(r0_all[sel].shape[0])
             req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0),
                                        events=(int(cap) if cap else res.request.events))
-            r0_b = np.ascontiguousarray(np.asarray(r0_all[a:b]), np.float32)
-            keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[a:b]), np.uint32)
+            r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
+            keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
             batch = _backend.walk_batch(req, r0_b, keys_b)
             if not isinstance(batch, CoefficientBatch):
                 raise ValueError(f"backend {_backend_name!r} returned a {type(batch).__name__} for the coefficient walk; the "
@@ -1720,6 +1706,9 @@ def simulate_trajectories(
                    "fc": (np.zeros((n_b, 1, 0, 0), np.float32) if batch.field_bands is None
                           else np.transpose(np.asarray(batch.field_bands, np.float32), (0, 2, 1))[:, None]),
                    "qv_f": (np.zeros((n_b, 1, 0), np.float32) if batch.field_qv is None else np.asarray(batch.field_qv, np.float32)[:, None]),
+                   "qv_d": (np.zeros((n_b, 1, 0), np.float32) if batch.field_qv_increments is None
+                            else np.asarray(batch.field_qv_increments, np.float32)[:, None]),
+                   "chk": np.zeros((n_b, 1, 2, 0, 0), np.float32),
                    "qv_pos": (np.zeros((n_b, 1, 3), np.float32) if batch.qv_positions is None else np.asarray(batch.qv_positions, np.float32)[:, None]),
                    "qv_blt": (z1 if batch.qv_boundary is None else np.asarray(batch.qv_boundary, np.float32)[:, None])}
             sv = batch.saves
@@ -1745,14 +1734,16 @@ def simulate_trajectories(
         _walk_batch = _call if _backend is None else _backend_call
 
         # ── The pilots: the events buffer's capacity (the largest count a pilot walker reached, with a margin) and
-        # the field's band (the ladder on the pilot's block means), each a walk of the first PILOT_WALKERS walkers
+        # the field's band (the ladder on the pilot's block means), each a walk of PILOT_WALKERS walkers spread over the walk (accumulate.pilot_walkers)
         # thrown away afterwards; the production program is compiled once they are known.
-        n_pilot = int(min(PILOT_WALKERS, n_walkers))
+        from .accumulate import pilot_walkers
+        pidx = pilot_walkers(n_walkers)                    # spread over the walk: its walkers are seeded pool by pool
+        n_pilot = int(pidx.shape[0])
         cap = res.events_capacity
         events_record = None
         if (ev_comp_on or ev_bound_on) and cap is None:
             run.phase("events pilot", walkers=n_pilot)
-            got, _, _, _ = _walk_batch(0, n_pilot, False, 0, None)
+            got, _, _, _ = _walk_batch(pidx, None, False, 0, None)
             top = max(got["ev_max_c"] if ev_comp_on else 0, got["ev_max_b"] if ev_bound_on else 0)
             cap = int(np.ceil(EVENTS_MARGIN[0] * top)) + int(EVENTS_MARGIN[1])
             events_record = dict(rule="pilot", pilot_walkers=n_pilot, pilot_max_changes=int(top), capacity=cap,
@@ -1764,19 +1755,42 @@ def simulate_trajectories(
             cap = 0
         K_c3_ = res.K_c3
         field_band = None
-        if _sampling and K_c3_ is None:
-            from ..replay.bank import derive_field_band
+        if _sampling:
+            # the field's pilot reads every step: the read series' quadratic variation per pool (the read's rule), the
+            # trapezoid's constant at every coarser read the block allows (what the walk's read is charged at, given
+            # or derived), and the block means (the field band's ladder)
+            from .accumulate import read_checks, field_read_of_pilot, field_rule_scale, FIELD_READ_FLOOR
+            import time as _time
+            checks = read_checks(sub_steps)
             run.phase("field pilot", walkers=n_pilot)
-            got, _, _, _ = _walk_batch(0, n_pilot, True, 0, None)
-            B0, chi, _ = _field_rule_inputs(geometry, field_basis, envelope)
-            K_c3_, bits, field_band = derive_field_band(np.asarray(got["fs"], np.float32)[:, 1:], list(field_basis.channel_names),
-                                                         float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
-                                                         floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
-            field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
-        elif _sampling:
+            _t0 = _time.time()
+            got, _, _, _ = _walk_batch(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
+            B0, chi = field_rule_scale(geometry.spec, envelope)
+            qd = np.asarray(got["qv_d"], np.float64)                                   # (n_pilot, n_win, n_ch)
+            chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, 2, n_checks, n_ch)
+            labels = np.asarray(got["lab"]).astype(np.int64) if has_lab else np.zeros(qd.shape[0], np.int64)
+            name_of = {int(p.id): p.name for p in (geometry.spec.pools if geometry.spec is not None else [])}
+            pools = {name_of.get(int(l), str(int(l))): (qd[labels == l].mean(axis=(0, 1)), int((labels == l).sum()))
+                     for l in np.unique(labels)}
+            field_read = field_read_of_pilot(pools, B0=B0, chi=chi, step_s=float(dt_sim), steps=int(sub_steps), T_e=float(T_win),
+                                             floor=FIELD_READ_FLOOR, given=field_read_interval, checks=checks,
+                                             err_sq=(chk[:, :, 0] ** 2).mean(axis=(0, 1)) if checks else None,
+                                             qv_checks=chk[:, :, 1].mean(axis=(0, 1)) if checks else None, qv_all=qd.mean(axis=(0, 1)),
+                                             channels=list(field_basis.channel_names))
+            field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0))
+            res = res._replace(field_read=field_read)
+            if K_c3_ is None:
+                from ..replay.bank import derive_field_band
+                K_c3_, bits, field_band = derive_field_band(np.asarray(got["fs"], np.float32)[:, 1:], list(field_basis.channel_names),
+                                                             float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
+                                                             floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
+                field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers), bits=int(bits))
+        if _sampling:
             K_c3_ = int(K_c3_)
             if K_c3_ < 1 or K_c3_ > n_bw:
                 raise ValueError(f"K_c3 is the field's modes per window, 1..{n_bw} (the blocks of a window); got {K_c3_}")
+            _n_read, _dt_f = int(res.field_read["n_read"]), float(res.field_read["dt_f"])
+            _rd[0] = (_n_read, _dt_f, (), True)                                        # the walk's read; the raw subset keeps the reads
         else:
             K_c3_ = None
 
@@ -1813,7 +1827,7 @@ def simulate_trajectories(
                 for k in names:
                     if k in ("pos", "dlog", "occ", "bound", "fs"):
                         continue
-                    if (k == "fc" or k == "qv_f") and not _sampling:
+                    if k == "chk" or (k in ("fc", "qv_f", "qv_d") and not _sampling):
                         continue
                     rows[k].append(got[k])
                 if raw:
@@ -1890,6 +1904,7 @@ def simulate_trajectories(
             field_coeffs=(np.asarray(rows["fc"].array(), np.float32) if _sampling else None),
             K_c3=K_c3_, field_read_interval=(float(_dt_f) if _sampling else None),
             qv_field=(np.asarray(rows["qv_f"].array(), np.float32) if _sampling else None),
+            qv_field_increments=(np.asarray(rows["qv_d"].array(), np.float32) if _sampling else None),
             raw_positions=(None if not n_raw else np.asarray(raw_rows["pos"].array(), np.float32)),
             raw_boundary=(None if not (n_raw and records_surface) else raw_rows["dlog"].array()),
             raw_compartment=raw_comp, raw_bound=raw_bound, raw_field=raw_field,

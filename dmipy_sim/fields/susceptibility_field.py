@@ -108,12 +108,6 @@ class FieldGridRecord:
         self.basis = dict(voxel_size=np.asarray(self.meta["voxel_size"], float), shape=tuple(int(s) for s in self.meta["shape"]),
                           aniso_G=(True if self.meta.get("has_aniso") else None))
 
-    def gradient_scale(self):
-        g = self.meta.get("gradient_scale")
-        if g is None:
-            raise ValueError("this field record carries no gradient scale; the read rule needs the grid itself")
-        return float(g)
-
 
 class FieldGrid(NamedTuple):
     """A substrate's static susceptibility field on a voxel grid, ready for a replay pack's field tier.
@@ -136,11 +130,10 @@ class FieldGrid(NamedTuple):
 
     @property
     def meta(self):
-        """The grid's record (:class:`FieldGridRecord`): placement, shape, periodicity, raster certificate, the
-        gradient scale the field read rule divides by."""
+        """The grid's record (:class:`FieldGridRecord`): placement, shape, periodicity, raster certificate."""
         return dict(origin=np.asarray(self.origin, float).tolist(), voxel_size=np.asarray(self.basis["voxel_size"], float).tolist(),
                     shape=[int(s) for s in self.basis["shape"]], has_aniso=(self.basis.get("aniso_G") is not None),
-                    periodic=[bool(p) for p in self.periodic], raster=self.certificate, gradient_scale=float(self.gradient_scale()))
+                    periodic=[bool(p) for p in self.periodic], raster=self.certificate)
 
     @property
     def channel_names(self):
@@ -177,21 +170,6 @@ class FieldGrid(NamedTuple):
         arrays, periodic = self.device_arrays(), tuple(bool(p) for p in self.periodic)
         f = jax.jit(jax.vmap(lambda r, a: grid_channels_at(*a, periodic, r), in_axes=(0, None)))
         return lambda points: f(points, arrays)
-
-    def gradient_scale(self):
-        """``|grad b|`` (1/m): the largest gradient magnitude of any channel over the grid, the per-axis differences
-        between voxel centres combined in quadrature (the gradient the trilinear read sees; the sheath, resolved at
-        :data:`FIELD_NODES_ACROSS` nodes, sets it) -- what the field read's rule divides by
-        (:func:`dmipy_sim.engine.accumulate.field_read_interval`)."""
-        vs = _as_voxel_size(self.basis["voxel_size"], 3)
-        top = 0.0
-        for g in self.grids():
-            g2 = 0.0
-            for a in range(3):
-                if g.shape[a] >= 2:
-                    g2 += float(np.max(np.abs(np.diff(g, axis=a)))) ** 2 / float(vs[a]) ** 2
-            top = max(top, float(np.sqrt(g2)))
-        return top
 
 
 def grid_channels_at(grids, origin, voxel_size, periodic, r):

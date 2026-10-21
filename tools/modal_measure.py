@@ -1,5 +1,6 @@
-"""The measurements of ``tools/coefficient_walk_measure.py`` on a cloud T4 (Modal; one container per run), for the
-timing table of dmrai-lab/dmipy-sim#742 and the C0 throughput against another checkout of the package.
+"""The measurements of ``tools/coefficient_walk_measure.py`` on a cloud T4 (Modal; one container per run, 32 GB of host
+memory), for the admissions and the timing tables (dmrai-lab/dmipy-sim#742, #760) and the C0 throughput against
+another checkout of the package.
 
     modal run tools/modal_measure.py --what "timing multiphysics" --n 20000 --t-max 0.1 --k-bands 256 --out t4.json
     MEASURE_COMPARE_DIR=/path/to/other/checkout modal run tools/modal_measure.py --what timing --n 20000 --out t4.json
@@ -70,7 +71,7 @@ def _run(what, n, T, K, compare_dir, n_raw=0, bits=0):
     return out
 
 
-@app.function(image=image, gpu="T4", timeout=3 * 3600)
+@app.function(image=image, gpu="T4", timeout=3 * 3600, memory=32768)
 def measure(what: str, n: int, t_max: float, k_bands: int, compare: bool, n_raw: int = 0, bits: int = 0) -> dict:
     return _run(what, n, t_max, k_bands, compare, n_raw, bits)
 

@@ -16,7 +16,7 @@ R = 2e-6
 
 
 def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=None, comp=None, events=None,
-                      qv=None, k0_residual=None):
+                      qv=None, k0_residual=None, field_increments=True):
     """A :class:`~dmipy_sim.engine.backends.CoefficientBatch` of walkers that never move (their start exact, every band
     0 unless ``bands`` / ``blt_bands`` give them), with the block ends of the request's ``raw_subset`` as saves."""
     r0 = np.asarray(r0, np.float32)
@@ -39,9 +39,10 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         events = (np.zeros((n + 1,), np.int64), np.zeros((0,), np.float64), np.zeros((0,), np.int8))
     if events is False:                                               # a backend that keeps no event list
         events = None
-    field_bands = field_qv = None
+    field_bands = field_qv = field_qv_increments = None
     if request.field is not None:                                     # the field: every mode 0, the start's bare channels at every block end
         field_qv = np.zeros((n, 13))
+        field_qv_increments = np.zeros((n, 13)) if field_increments else None
         if request.K_c3:
             field_bands = np.zeros((n, 13, int(request.K_c3)))
         if saves is not None:
@@ -53,6 +54,7 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         comp if rec else None, zero.copy(), work, K, int(request.m), int(request.sub_steps), precision, saves=saves,
         qv_positions=(np.zeros((n, 3)) if qv is None else qv), qv_boundary=(np.zeros(n) if rec else None),
         events=(events if rec else None), k0_residual=k0_residual, field_bands=field_bands, field_qv=field_qv,
+        field_qv_increments=field_qv_increments,
         dt_f=(float(request.field_read_interval) if request.field is not None else None))
 
 
@@ -284,29 +286,35 @@ def test_the_adaptive_producer_takes_the_start_pool_from_the_batch():
     assert w.illegal_crossings == 0
 
 
-def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_subtracts_the_mean():
-    """With a strand field the request carries the sampling (the basis, the block means at every block end, the
-    list's reuse and width) and the read (``K_c3``, ``field_read_interval``); the walk takes the batch's field modes
-    and quadratic variation, and the raw subset's block means with the basis's mean subtracted."""
+def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots_read():
+    """With a strand field the request carries the sampling (the basis, the list's reuse and width) and the read
+    (``K_c3``, ``field_read_interval``): the pilot's batch reads every round, the walk's batches at the read the
+    pilot's measured read series gives (a series that does not vary: once per block); the walk takes the batch's
+    field modes, its quadratic variation and its read series' quadratic variation. A backend that returns no read
+    series' quadratic variation is refused by name, and so is a raw subset of a field walk (its oracle is the reads at
+    the walk's read instants, which a backend's block means are not)."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     g = backends.parity_cases()["strands_intra"]()
     basis = StrandFieldBasis(g.centerlines, 0.7 * g.radii, g.radii, cutoff_m=8e-6, domain=(g.box[0], g.box[1]))
+    kw = dict(seed=3, require_gpu=False, walker_batch_size=64, field_basis=basis, field_reuse_intervals=3, K_c3=2, K=6)
     still = _Still()
-    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=still,
-                                       field_basis=basis, field_reuse_intervals=3, K_c3=2, raw_subset=64, K=6)
-    req = still.requests[0]
-    f = req.field
+    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=still, **kw)
+    pilot, walk = still.requests[0], still.requests[-1]
+    f = walk.field
     assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 1 and f.reuse_intervals == 3
     assert f.radius_m >= basis.gather_radius_m and f.list_k == 256            # no JAX probe with a backend: the given width
-    assert req.K_c3 == 2 and req.field_read_interval == pytest.approx(w.field_read_interval) and w.field_read_interval > 0
-    assert req.raw_subset == 64
+    assert pilot.field_read_interval == pytest.approx(pilot.stepping.dt_round)          # the pilot reads every round
+    fr = w.block["field_read"]
+    assert fr["rule"] == "pilot" and fr["n_read"] == pilot.stepping.n_rounds              # a still series: once per block
+    assert walk.K_c3 == 2 and walk.field_read_interval == pytest.approx(w.field_read_interval) == pytest.approx(2.5e-4)
     assert w.field_coeffs.shape == (64, 1, 2, 13) and w.K_c3 == 2 and w.field_basis is basis and w.qv_field.shape == (64, 1, 13)
-    assert w.raw_positions.shape == (64, 5, 3) and w.raw_field.shape == (64, 5, 13)
-    # the stub returned the start's bare channels at every block end: the record holds them with the mean subtracted
-    expect = np.asarray(basis.channels(np.asarray(w.raw_positions[:, 0])), np.float32) - np.asarray(basis.mean, np.float32)
-    np.testing.assert_allclose(w.raw_field[:, 0], expect, rtol=1e-5, atol=1e-7)
-    np.testing.assert_allclose(w.raw_field[:, 2], expect, rtol=1e-5, atol=1e-7)
+    assert w.qv_field_increments.shape == (64, 1, 13) and not w.qv_field_increments.any()
+    with pytest.raises(ValueError, match="the backend does not return the field increments"):
+        simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=_Still(field_increments=False), **kw)
+    with pytest.raises(ValueError, match="keeps the reads at the walk's read instants"):
+        simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=_Still(), raw_subset=64,
+                                       field_read_interval=2.5e-4, **kw)
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():

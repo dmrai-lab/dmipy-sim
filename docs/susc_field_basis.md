@@ -45,15 +45,31 @@ the wrong metric to certify against — the gate-integrated signal is the right 
 
 ## How the walk reads the field
 
-The read interval is derived, not chosen: `engine.accumulate.field_read_interval(D, T_e, grad_b, B0, chi,
-floor)` holds the read error `v_read = (γ B0 χ)² 2 D T_e grad_b² dt_f²` under `FIELD_READ_FLOOR² = 1e-6`
-(the floor is 1e-3) at `B0 = 7 T` and `χ = 1.06e-6` unless the envelope or the spec say otherwise, with
-`grad_b` the basis's largest gradient over the sheath (`gradient_scale()`), `T_e` the storage window and `D`
-the walk's diffusivity. The walk reads at the largest divisor of its steps per block within that interval;
-when the rule asks for less than the physics step, **the read is the step** (a read along the chord between
-two steps carries the same bridge deviation), and the pack's envelope states the `B0·χ` product the term
-holds under (`B0_chi_max_T`). `CoefficientWalk.block["field_read"]` records the interval, the number of reads,
-the rule and its term (`field_read_term`), and the certificate carries it as `fidelity.terms.field_read`.
+The read interval is derived from what the walk measures, not from an assumed gradient (replay-pack-spec
+`RPK.md` 9.5.5). Between two reads the walker moves `sqrt(2 D dt_f)`, and the trapezoid of the two reads misses
+the path's deviation from the chord; over a walk that adds to the field phase an independent term whose variance
+is set by the field the walker actually crossed, the quadratic variation of the read series:
+
+```
+QV_c   = sum_i (b_{c,i+1} - b_{c,i})^2          ~ 2 D int |grad b_c(x(t))|^2 dt    (per channel, measured)
+v_read = (gamma B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2                       kappa_c = 1/12 (the trapezoid)
+fidelity.terms.field_read = v_read / 2
+```
+
+The walk accumulates `QV_c` beside the trapezoid (one multiply-add per read, `CoefficientWalk.qv_field_increments`)
+and the pack writes its walkers' mean as `walk_params.qv.field_increments`. Before the walk, a pilot of
+`PILOT_WALKERS` walkers reads every step: per pool it measures `QV_c` and the rule
+(`engine.accumulate.field_read_rule`) gives the coarsest interval holding `v_read` under `FIELD_READ_FLOOR² = 1e-6`
+at the envelope's `B0` and the spec's `χ` (`B0 = 7 T`, `χ = 1.06e-6` when neither states one); the walk reads at the
+finest pool's interval, at the largest divisor of its steps per block within it (`field_read_of_pilot`). The same
+pilot measures the trapezoid's constant per channel at every coarser read the block allows (the trapezoid of every
+`d`-th read against that of every read, `measured_read_constants`); a channel whose constant exceeds `1/12` (the
+chord's curvature across a sheath) is charged at the measured one. When the floor would ask for less than the
+physics step, **the read is the step** (a read along the chord between two steps carries the same bridge
+deviation), and the pack's envelope states the `B0·χ` product under which the term stays below the floor
+(`B0_chi_max_T`). `CoefficientWalk.block["field_read"]` records the rule, the interval, the reads per block, every
+pool's measured `QV` and interval, and the constants; a bundle walked pool by pool reads each pool at its own
+interval and states the coarsest, and the certificate charges the term there on every pool's read series.
 
 A gridded basis (`FieldGrid`, from `fields.susceptibility_field.field_grid_of`) is read by
 `simulate_trajectories(field_basis=)`; a strand basis (`StrandFieldBasis`) by the adaptive producer, at the

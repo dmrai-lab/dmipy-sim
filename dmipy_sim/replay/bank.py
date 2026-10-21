@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 import numpy as np
 
 from ..run import Run, _code
-from ..engine.accumulate import FIELD_RULE_CHI, FIELD_RULE_B0
+from ..engine.accumulate import FIELD_RULE_CHI, FIELD_RULE_B0, field_read_term, field_read_B0_chi_max, field_rule_scale
 
 from . import compression as _cx
 from ..acquisition.rf import RFEvent
@@ -823,15 +823,39 @@ def _envelope_identity(env):
     return {k: v for k, v in env.items() if k != "field_read"} if isinstance(env, dict) else env
 
 
+def _finite_or_none(x):
+    """``x`` as a float, or ``None`` where it is not finite (a read series that does not vary bounds no ``B0 chi``)."""
+    return float(x) if np.isfinite(float(x)) else None
+
+
+def _merged_qv(qvs, n):
+    """``{"qv": ...}``: the walkers' mean quadratic variation of shards of one walk (RPK.md 9.5.5), each entry the
+    walker-weighted mean of the shards' (``n`` their walker counts); ``{}`` when a shard carries none."""
+    if not qvs or any(not isinstance(q, dict) for q in qvs):
+        return {}
+    w = np.asarray(n, np.float64) / float(np.sum(n))
+    out = {}
+    for k in qvs[0]:
+        vals = [q.get(k) for q in qvs]
+        if any(v is None for v in vals):
+            continue
+        a = (w.reshape((-1,) + (1,) * np.asarray(vals[0]).ndim) * np.asarray(vals, np.float64)).sum(0)
+        out[k] = [float(x) for x in a] if np.ndim(a) else float(a)
+    return dict(qv=out)
+
+
 def field_read_record(meta):
     """What a pack states about its field read, or ``None`` without a field channel: the interval
-    (``walk_params.field_read_interval``), the term (``fidelity.terms.field_read``), the envelope's entry and the
-    path channel's own record of the read."""
-    interval = (meta.get("walk_params") or {}).get("field_read_interval")
+    (``walk_params.field_read_interval``), the term (``fidelity.terms.field_read``), the read series' quadratic
+    variation (``walk_params.qv.field_increments``, the walkers' mean) and the walker count it is the mean over, the
+    envelope's entry and the path channel's own record of the read."""
+    wp = meta.get("walk_params") or {}
+    interval = wp.get("field_read_interval")
     if interval is None:
         return None
     ch = ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") or {}
     return dict(interval=float(interval), term=((meta.get("fidelity") or {}).get("terms") or {}).get("field_read"),
+                qv_increments=(wp.get("qv") or {}).get("field_increments"), n_walkers=int(wp.get("n_walkers") or 0),
                 envelope=(meta.get("replay_envelope") or {}).get("field_read"), read=ch.get("read"),
                 channel_interval=ch.get("read_interval"))
 
@@ -842,26 +866,40 @@ def charge_field_read(meta, records):
     (:func:`~dmipy_sim.spec.walk._join_pool_walks`): every shard reads the field at its own interval (a pool's read
     snaps to a whole number of its own rounds per block), and the pack records the COARSEST -- in
     ``walk_params.field_read_interval``, the envelope's ``field_read`` and the path channel's ``read`` -- with the
-    term charged at it: ``fidelity.terms.field_read`` is the largest of the shards' (the term is ``dt_f`` squared,
-    so the coarsest shard's), and ``err_max`` covers the terms. The shards' own intervals are the ``provenance``
-    record's. ``meta`` is changed in place; its nested dicts are replaced, never edited."""
+    term charged at it on the merged read series: ``walk_params.qv.field_increments`` the walker-weighted mean of the
+    shards', ``fidelity.terms.field_read`` half of ``v_read`` at the coarsest interval
+    (:func:`~dmipy_sim.engine.accumulate.field_read_term` at the envelope's ``B0`` and ``chi``, the largest trapezoid
+    constant per channel any shard charged), the envelope's ``B0_chi_max_T`` at it, and ``err_max`` covers the terms.
+    The shards' own intervals are the ``provenance`` record's. ``meta`` is changed in place; its nested dicts are
+    replaced, never edited."""
     if all(r is None for r in records):
         return meta
     if any(r is None for r in records):
         raise ValueError("some of the shards read the field and others do not; the shards of one walk carry one set of channels")
+    if any(r["qv_increments"] is None for r in records):
+        raise ValueError("a shard carries no walk_params.qv.field_increments (RPK.md 9.5.5), which the merged field read's "
+                         "term is charged on; re-walk it with a conformant producer")
     coarse = records[int(np.argmax([r["interval"] for r in records]))]
-    meta["walk_params"] = dict(meta["walk_params"], field_read_interval=coarse["interval"])
+    n = np.asarray([max(r["n_walkers"], 1) for r in records], np.float64)
+    qv = (n[:, None] * np.asarray([r["qv_increments"] for r in records], np.float64)).sum(0) / n.sum()
+    consts = [((r.get("read") or {}).get("constants")) for r in records]
+    consts = None if all(c is None for c in consts) else np.max([c for c in consts if c is not None], axis=0)
+    env = coarse["envelope"] or {}
+    at = env.get("term_at") or {}
+    term = field_read_term(coarse["interval"], qv, at.get("B0"), at.get("chi"), consts)
+    wp = dict(meta["walk_params"], field_read_interval=coarse["interval"])
+    wp["qv"] = dict(wp.get("qv") or {}, field_increments=[float(x) for x in qv])
+    meta["walk_params"] = wp
     if coarse["envelope"] is not None:
-        meta["replay_envelope"] = dict(meta["replay_envelope"], field_read=coarse["envelope"])
+        meta["replay_envelope"] = dict(meta["replay_envelope"], field_read=dict(
+            coarse["envelope"], B0_chi_max_T=_finite_or_none(field_read_B0_chi_max(coarse["interval"], qv, at.get("floor") or 1e-3, consts))))
     comp = dict(meta["compression"]); chans = dict(comp["channels"]); pm = dict(chans["susc_field_basis"])
     for key, val in (("read", coarse["read"]), ("read_interval", coarse["channel_interval"])):
         if val is not None:
             pm[key] = val
     chans["susc_field_basis"] = pm; comp["channels"] = chans; meta["compression"] = comp
-    terms = [r["term"] for r in records if r["term"] is not None]
-    if terms:
-        fid = dict(meta["fidelity"]); fid["terms"] = dict(fid["terms"], field_read=float(max(terms)))
-        meta["fidelity"] = _cover_terms(fid)
+    fid = dict(meta["fidelity"]); fid["terms"] = dict(fid["terms"], field_read=float(term))
+    meta["fidelity"] = _cover_terms(fid)
     return meta
 
 
@@ -1052,7 +1090,8 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         seg0 = pks[0].meta["walk_params"].get("windows") or {}
         meta.update(id=id, compression=comp_meta, fidelity=fid,
                     walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds,
-                                     windows=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])])),
+                                     windows=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])]),
+                                     **_merged_qv([pk.meta["walk_params"].get("qv") for pk in pks], n)),
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[
                         dict(id=pk.meta.get("id"), n_walkers=int(m), **({} if r is None else dict(field_read_interval=r["interval"])))
                         for pk, m, r in zip(pks, n, reads)]))
@@ -1137,6 +1176,8 @@ def combine_window_fidelity(fids):
                                         for c in t0["quadrature"]})
         if any("rounding" in f["terms"] for f in fids):
             out["terms"]["rounding"] = float(sum(f["terms"].get("rounding", 0.0) for f in fids))
+        if any("field_read" in f["terms"] for f in fids):
+            out["terms"]["field_read"] = float(sum(f["terms"].get("field_read", 0.0) for f in fids))
     if "err_max" in out and "floor_max" in out:
         out["within_2x_floor"] = bool(out["err_max"] <= 2.0 * out["floor_max"])
     return _cover_terms(out)
@@ -1536,9 +1577,18 @@ def _field_scale(env, spec=None):
     return chi_i, chi_a
 
 
+def read_interval_means(reads):
+    """A raw subset's field reads at the walk's read instants ``(n_w, n_reads + 1, n_ch)`` as the series a field
+    oracle integrates: sample 0 the start's read, sample ``i`` the mean of the chord over read interval ``i``, ``(b_{i-1}
+    + b_i) / 2`` -- the trapezoid the walk accumulated, interval by interval."""
+    b = np.asarray(reads, np.float64)
+    return np.concatenate([b[:, :1], 0.5 * (b[:, :-1] + b[:, 1:])], axis=1)
+
+
 def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi=None):
-    """Certify the field channel AT ITS DECLARED CAPABILITY on a raw subset's block means: the stored (truncated,
-    quantised) modes decoded on the subset's block grid against the walk's own reads, under the gates the pack claims
+    """Certify the field channel AT ITS DECLARED CAPABILITY on a raw subset's reads: the stored (truncated, quantised)
+    modes decoded on the walk's read intervals (``h`` the read interval, ``series_raw`` the chord's mean over each,
+    :func:`read_interval_means`) against the walk's own reads, under the gates the pack claims
     (:func:`_battery_gates`: GRE, spin echo, the CPMG train at ``max_refocus_pulses`` and a stimulated echo), over the
     envelope's field strengths and directions, against the split-half floor of the reference."""
     series_raw = np.asarray(series_raw, np.float64)                                    # (n_w, n_t, n_ch), sample 0 the start's
@@ -1563,19 +1613,20 @@ def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi=None)
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p, n_walkers=int(n_w))
 
 
-def _susc_path_bloch_fidelity(positions, series_raw, arrays, pm, gm, env, *, h, w=None, chi=None, n_sub=8000):
+def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi=None, n_sub=8000):
     """Certify the field channel ON THE VECTOR-BLOCH PATH -- the primary consumer -- on a raw subset: the scalar gate in
     :func:`_susc_path_fidelity` integrates the right quantity but does not exercise the Bloch operator, where the RF
     rotations do NOT commute with the field's z-precession and relaxation interleaves between pulses. This drives
-    ``replay_bloch`` on the subset's block ends with the STORED channel decoded there against the walk's own reads,
-    at spin echo and at the CPMG train the pack advertises, against the split-half floor OF THAT SUBSAMPLE."""
+    ``replay_bloch`` (no gradient: the positions do not enter) on the walk's read intervals (``h``, ``series_raw`` as
+    :func:`_susc_path_fidelity` takes it) with the STORED channel decoded there against the walk's own reads, at spin
+    echo and at the CPMG train the pack advertises, against the split-half floor OF THAT SUBSAMPLE."""
     from ..constants import GAMMA
     from .trajectories import replay_bloch
-    pos = np.asarray(positions, np.float64)
     series_raw = np.asarray(series_raw, np.float64)
-    k = int(min(n_sub, pos.shape[0]))
-    pos, series_raw = pos[:k], series_raw[:k]
-    n_t = pos.shape[1]
+    k = int(min(n_sub, series_raw.shape[0]))
+    series_raw = series_raw[:k]
+    n_t = series_raw.shape[1]
+    pos = np.broadcast_to(np.zeros((1, 1, 3)), (k, n_t, 3))  # no gradient: the positions are never read
     dt = float(h); TE = (n_t - 1) * dt
     w = np.ones(k) if w is None else np.asarray(w, np.float64)[:k]
     b_dec, _ = susc_path_decode(arrays, pm, n_t=n_t, n_w=k)
@@ -1669,10 +1720,14 @@ def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     return dict(err=float(err), floor=float(floor), n_walkers=int(n_raw), rho2_list=rhos)
 
 
-def _field_terms(T, h, m, K_c3, qv_field, env, chi, read_term):
+def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
     """The field channel's bounded terms (RPK.md 9.5.5): ``quadrature.field``, half of ``(gamma B0 chi)^2 sum_k g_k^2
     rel(m, omega_k h) QV_f / T`` over the battery's gates (:func:`_battery_gates`, their cosine projections on the
-    window) at the envelope's largest ``B0`` and the certificate's chi, and ``field_read``, the walk's recorded term."""
+    window) at the envelope's largest ``B0`` and the certificate's chi, and ``field_read``, half of ``v_read = (gamma
+    B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2`` (:func:`~dmipy_sim.engine.accumulate.field_read_term`) from ``read`` =
+    ``{dt_f, qv_increments, constants, B0, chi}``: the walk's read interval, its read series' quadratic variation per
+    channel (the walkers' mean), the trapezoid's constants and the envelope's ``B0`` and the rule's ``chi``
+    (:func:`~dmipy_sim.engine.accumulate.field_rule_scale`)."""
     from ..constants import GAMMA
     n_t = int(round(float(T) / float(h))) + 1
     gates = np.stack(_battery_gates(n_t, max(1, int(K_c3) // 2)))                       # (n_g, n_t) on the block grid
@@ -1682,7 +1737,11 @@ def _field_terms(T, h, m, K_c3, qv_field, env, chi, read_term):
     B0 = float(max(env.get("B0_list") or [FIELD_RULE_B0]))
     qv = float(np.sum(qv_field))                                                           # over the components: a bound
     v = (GAMMA * B0 * float(chi)) ** 2 * (g ** 2 * rel[None, :]).sum(axis=1) * qv / float(T)
-    return dict(quadrature=float(0.5 * v.max()), field_read=float(read_term), B0=B0, chi=float(chi))
+    term = field_read_term(read["dt_f"], read["qv_increments"], read["B0"], read["chi"], read.get("constants"))
+    return dict(quadrature=float(0.5 * v.max()), field_read=float(term), B0=B0, chi=float(chi),
+                read=dict(B0=float(read["B0"]), chi=float(read["chi"]), interval_s=float(read["dt_f"]),
+                          B0_chi_max_T=_finite_or_none(field_read_B0_chi_max(read["dt_f"], read["qv_increments"], read.get("floor", 1e-3),
+                                                                             read.get("constants")))))
 
 
 # ------------------------------------------------------------------------------------------ the pack from the walk
@@ -1864,8 +1923,14 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     if has_field:
         fr = cw.block.get("field_read") or {}
         K_f = int(cw.K_c3 if susc_path_K is None else susc_path_K)
+        if cw.qv_field_increments is None:
+            raise ValueError("this walk carries no read series' quadratic variation (CoefficientWalk.qv_field_increments), which "
+                             "the field read's term is measured on (RPK.md 9.5.5); walk it again")
+        B0_r, chi_r = field_rule_scale(spec, env)
         field_terms = _field_terms(T, h, cw.m, K_f, np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0), env, chi_scale[0],
-                                   fr.get("term", 0.0))
+                                   dict(dt_f=float(cw.field_read_interval), B0=B0_r, chi=chi_r, floor=float(fr.get("floor", 1e-3)),
+                                        qv_increments=np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0),
+                                        constants=fr.get("constants")))
     fid = _derived_certificate(scales, T=T, h=h, K=K, m=cw.m, D=D, env=env, floor=floor,
                                qv_pos=(None if cw.qv_positions is None
                                        else np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)),
@@ -1924,10 +1989,10 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                        susc_path_walkers=int(band.get("pilot_walkers", 0)))
         if fidelity == "measured" and cw.raw_field is not None:
             run.phase("certificate path")
-            wr = None if weights is None else np.asarray(weights, np.float64)[:cw.raw_field.shape[0]]
-            _pf = _susc_path_fidelity(cw.raw_field, arrays, _pm, chan_meta["susceptibility_grid"], env, h=h, w=wr, chi=chi_scale)
-            _bf = _susc_path_bloch_fidelity(cw.raw_positions, cw.raw_field, arrays, _pm, chan_meta["susceptibility_grid"], env,
-                                            h=h, w=wr, chi=chi_scale)
+            series, h_f = read_interval_means(cw.raw_field), float(cw.field_read_interval)   # the walk's own reads, interval by interval
+            wr = None if weights is None else np.asarray(weights, np.float64)[:series.shape[0]]
+            _pf = _susc_path_fidelity(series, arrays, _pm, chan_meta["susceptibility_grid"], env, h=h_f, w=wr, chi=chi_scale)
+            _bf = _susc_path_bloch_fidelity(series, arrays, _pm, chan_meta["susceptibility_grid"], env, h=h_f, w=wr, chi=chi_scale)
             fid.update(err_susc_path=_pf["err"], floor_susc_path=_pf["floor"], susc_path_pulses_certified=_pf["n_pulses_certified"],
                        susc_path_measured_on="raw_subset", susc_path_walkers=int(_pf["n_walkers"]),
                        err_susc_bloch=_bf["err"], floor_susc_bloch=_bf["floor"], susc_bloch_walkers=_bf["n_walkers"])
@@ -2004,6 +2069,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     wp_field = {}
     if channels["susceptibility"]:
         qv["field"] = [float(x) for x in np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0)]
+        qv["field_increments"] = [float(x) for x in np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0)]
         wp_field["field_read_interval"] = float(cw.field_read_interval)
     fid["terms"] = _terms_of(dict(fid, has_contact=cw.boundary_bands is not None, field=field_terms))
     _cover_terms(_measured_truncation(fid) if fid.get("measured_by") == "raw_subset" else fid)
@@ -2018,9 +2084,10 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     if channels["susceptibility"]:
         fr = cw.block.get("field_read") or {}
         # RPK.md 9.4 rule 5: a read at the step narrows the pack's reach, stated in the envelope, never hidden in fidelity
+        rd = field_terms["read"]
         replay_env["field_read"] = dict(interval_s=float(cw.field_read_interval), at_step=bool(fr.get("at_step", False)),
-                                        B0_chi_max_T=float(fr.get("B0_chi_max_T", np.inf)) if fr else None,
-                                        term_at=dict(B0=fr.get("B0"), chi=fr.get("chi"), floor=fr.get("floor")))
+                                        B0_chi_max_T=rd["B0_chi_max_T"],
+                                        term_at=dict(B0=rd["B0"], chi=rd["chi"], floor=fr.get("floor")))
     meta = dict(
         rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
         walk_params=dict(n_walkers=cw.n_walkers, T_max=T, diffusivity=D, seed=seed,
@@ -2251,9 +2318,16 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
                 e_rep = max(e_rep, float(np.abs(S_chi - S_par).max()))
         err_rep["field"] = e_rep
         qv_f = None if qv.get("field") is None else np.asarray(qv["field"], np.float64) * (T_new / T)
+        if qv.get("field_increments") is None:
+            raise ValueError("this pack carries no walk_params.qv.field_increments (RPK.md 9.5.5), which the field read's term "
+                             "of a window is charged on; re-walk it with a conformant producer")
         read = pm.get("read") or {}
+        at = ((pack.meta.get("replay_envelope") or {}).get("field_read") or {}).get("term_at") or {}
+        B0_r, chi_r = field_rule_scale(pack.substrate, env)
         field_terms = _field_terms(T_new, h_new, int(blk["m"]), Kf_new, qv_f if qv_f is not None else np.zeros(1), env, chi_i,
-                                   read.get("term", 0.0))
+                                   dict(dt_f=float(wp["field_read_interval"]), B0=B0_r, chi=chi_r, floor=float(at.get("floor") or 1e-3),
+                                        qv_increments=np.asarray(qv["field_increments"], np.float64) * (T_new / T),
+                                        constants=read.get("constants")))
     # the occupancy: events sliced to the window
     if "compartment" in ch:
         from ..coefficient_walk import events_within
@@ -2298,7 +2372,8 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     env_out.pop("tissue", None)                                       # the contact envelope is restated on the new window
     wp_new = dict(wp, T_max=T_new, windows=dict(n=1, T=T_new, walks=[dict(first=0, last=0, seed=wp.get("seed"))]),
                   block=dict(blk, n_blocks=n_new), qv={k: v for k, v in dict(positions=(None if qv_pos is None else [float(x) for x in qv_pos]),
-                                                                              local_time=qv_b, field=(None if pm is None or qv.get("field") is None else [float(x) for x in np.asarray(qv["field"]) * (T_new / T)])).items() if v is not None})
+                                                                              local_time=qv_b, field=(None if pm is None or qv.get("field") is None else [float(x) for x in np.asarray(qv["field"]) * (T_new / T)]),
+                                                                              field_increments=(None if pm is None or qv.get("field_increments") is None else [float(x) for x in np.asarray(qv["field_increments"]) * (T_new / T)])).items() if v is not None})
     meta = dict(rpk_schema_version=RPK_SCHEMA_VERSION, id=(id or pack.meta.get("id")), compression=comp_meta, walk_params=wp_new,
                 replay_envelope=env_out, fidelity=fid,
                 provenance=dict(provenance or copy_provenance(pack.meta.get("provenance")), code=_code(),

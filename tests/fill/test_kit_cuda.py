@@ -73,7 +73,7 @@ def test_a_kit_batch_matches_dmipy_sim_cudas_own_write_request(fixture_name, poo
         field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
 
     K_c3 = int(rc.man["pack"]["K_path"]) if field is not None else 0
-    dt_f = (field_read_of(_spec_holder(rc.spec(), geom), basis, None, D, blk["windows"]["T"], plan, rc.field_read_interval())["dt_f"]
+    dt_f = (field_read_of(_spec_holder(rc.spec(), geom), None, blk["windows"]["T"], plan, given=rc.field_read_interval())["dt_f"]
             if field is not None else 0.0)
     req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=blk["n_blocks"], sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
                       diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),
@@ -128,7 +128,7 @@ def test_the_shared_writer_matches_cudabackends_own_structs_field_for_field(fixt
         field = FieldSampling(basis, f_every, f_reuse, float(f_radius), 256)
 
     K_c3 = int(rc.man["pack"]["K_path"]) if field is not None else 0
-    dt_f = (field_read_of(_spec_holder(rc.spec(), geom), basis, None, D, blk["windows"]["T"], plan, rc.field_read_interval())["dt_f"]
+    dt_f = (field_read_of(_spec_holder(rc.spec(), geom), None, blk["windows"]["T"], plan, given=rc.field_read_interval())["dt_f"]
             if field is not None else 0.0)
     req = WalkRequest(geometry=geom, block_h=dt_actual, n_blocks=blk["n_blocks"], sub_steps=int(plan.n_min), dt_sim=float(plan.dt_min),
                       diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geom.count_walls),

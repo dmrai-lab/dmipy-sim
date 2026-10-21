@@ -159,6 +159,8 @@ class CoefficientBatch(NamedTuple):
     field_bands: object = None        #: (n, n_ch, K_c3) float64 the field's channels (less the domain mean) on the
                                       #: cosine basis of [0, T], or None
     field_qv: object = None           #: (n, n_ch) float64 each channel's sum (b dt_f)^2 over its reads, or None
+    field_qv_increments: object = None  #: (n, n_ch) float64 each channel's read series' quadratic variation, the sum
+                                        #: of (b_{i+1} - b_i)^2 over its reads (RPK.md 9.5.5), or None
     dt_f: object = None               #: the field's read interval (s); 0.0 a read after every step; None no field
     k0_residual: object = None        #: (n, 3) float64 ``c_0 - (x(T) - x(0))``, the accumulation's measured residual
                                       #: on the k = 0 mode, when the backend reports it; None otherwise
