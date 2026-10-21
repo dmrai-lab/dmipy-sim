@@ -195,7 +195,7 @@ def test_the_widths_are_derived_per_segment_and_the_walk_needs_no_more_bits_than
 
 def test_the_tier_columns_are_words(myelin):
     """Every tier and background column is uint32 words; a group's contact and field channels share one word array
-    (12 channels at most once the trace identity holds, a channel zero on every row not stored), its background
+    (the basis's twelve components, RPK.md 5.3, iso_P_zz formed by the reader; a component zero on every row not stored), its background
     another; the bytes per walker of the tiers are a fraction of the float32 columns' 52 + 4 + 12; the decoded contact
     and channels are the rows' within half a step."""
     M = myelin
@@ -203,7 +203,8 @@ def test_the_tier_columns_are_words(myelin):
     for g, grp in M["mw"]["groups"].items():
         assert np.load(os.path.join(lay.path, grp["column"]), mmap_mode="r").dtype == np.uint32
         assert np.load(os.path.join(lay.path, grp["background"]["column"]), mmap_mode="r").dtype == np.uint32
-        assert len(grp["field"]["stored"]) <= (12 if grp["field"]["iso_P_zz"] == "implied" else 13)
+        assert "iso_P_zz" not in grp["field"]["channels"] and len(grp["field"]["channels"]) == 12
+        assert set(grp["field"]["stored"]) <= set(grp["field"]["channels"])
         assert 4 * (grp["tier_words"]["n_words"] + grp["background"]["n_words"]) < 0.5 * (52 + 4 + 12)
         cols = lay.tier_columns(g)
         rows = os.path.join(str(M["tmp"]), "rows_walk")

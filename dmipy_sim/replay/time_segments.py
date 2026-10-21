@@ -48,10 +48,10 @@ channels (``t_<g>.npy``, one word array), and with ``background`` its background
 the acquisition (``bg_<g>.npy``; ``e`` the effective gate, what a magnet's constant gradient ``g0`` encodes as ``g0 .
 n``). The contact enters as the weight ``exp((rho2 / D) c)``, a rounding ``delta`` a relative weight error ``(rho2 / D)
 delta``, held at the envelope's largest ``rho2 / D``; the field as ``B0 (chi_iso A + chi_aniso B)`` with ``A, B`` the
-channels contracted with coefficients of modulus at most 1 (2 for ``iso_local`` when ``iso_P_zz`` is implied), held at
-the envelope's largest ``B0 chi`` with the budget split equally over the channels; ``iso_P_zz`` is not stored when the
-rows' trace identity ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` holds within half the step the channels take
-without it (the pack checks the same residual; reconstructing the channel then moves no rounded value); the background
+channels contracted with coefficients of modulus at most 1, held at the envelope's largest ``B0 chi`` with the budget
+split equally over the basis's twelve components (RPK.md 5.3: ``iso_local``, ``iso_P`` xx, yy, xy, xz, yz, ``aniso_G``
+(6); ``iso_P_zz`` is never stored, the reader forms ``3 iso_local - iso_P_xx - iso_P_yy`` before the contraction, so
+``iso_local``'s coefficient is bounded by 2 and its step halved); the background
 at ``background_amplitude``. A field within half its step of zero on every row (a channel the gate refocuses, a
 component the substrate's symmetry zeroes) rounds to zero on every row and is not stored. Each tier column is its own
 term at the floor's budget. A rounding of rms ``sigma`` rad per walker moves a voxel's signal by about ``sigma`` times
@@ -551,12 +551,10 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude):
         if prim.field_iso is not None:
             P = view._prepare(gate_seq, tissue=None, scanner=None, orientation=None, compartment=None)
             Psi, names = _path_field_channels(P, gate_seq)
-            Psi = np.asarray(Psi, np.float64)
+            keep = [i for i, nm in enumerate(names) if nm != "iso_P_zz"]       # the basis's components (RPK.md 5.3)
+            Psi = np.asarray(Psi, np.float64)[:, keep]
             rows["field"] = Psi
-            rec["field"] = dict(channels=list(names), amax=np.abs(Psi).max(axis=0).tolist())
-            if {"iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"} <= set(names):
-                i0, ix, iy, iz = (names.index(k) for k in ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"))
-                rec["field"]["trace_abs"] = float(np.abs(Psi[:, ix] + Psi[:, iy] + Psi[:, iz] - 3.0 * Psi[:, i0]).max(initial=0.0))
+            rec["field"] = dict(channels=[names[i] for i in keep], amax=np.abs(Psi).max(axis=0).tolist())
         rec["D_walk"] = prim.D_walk
     if background:
         P = view._prepare(_background_sequence(gate_seq), tissue=None, scanner=None, orientation=None, compartment=None)
@@ -753,9 +751,9 @@ def _partition_codes(recs, floor, eps):
 
 
 def _tier_codes(recs, g, eps, env):
-    """The group's tier word layout: the contact at ``sqrt(12) eps / (rho2/D)_max``, the field channels each at
-    ``sqrt(12 / n) eps / (B0 chi_max alpha_c)`` (``iso_P_zz`` implied when the blocks' largest trace residual is within
-    half that step), a field that rounds to zero on every row of every block not stored."""
+    """The group's tier word layout: the contact at ``sqrt(12) eps / (rho2/D)_max``, the basis's components (no
+    ``iso_P_zz``) each at ``sqrt(12 / n) eps / (B0 chi_max alpha_c)``, a field that rounds to zero on every row of every
+    block not stored."""
     g0 = recs[0]["groups"][g]
     fields = []
     if g0.get("contact"):
@@ -764,25 +762,14 @@ def _tier_codes(recs, g, eps, env):
                            q_max=env["rho2_over_D_max"]))
     field_rec = None
     if g0.get("field"):
-        names = list(g0["field"]["channels"])
+        names = list(g0["field"]["channels"])                         # the basis's components: no iso_P_zz (RPK.md 5.3)
         amax = np.max([np.asarray(r["groups"][g]["field"]["amax"], np.float64) for r in recs], axis=0)
-        residual = None
-        if "trace_abs" in g0["field"]:
-            residual = max(float(r["groups"][g]["field"]["trace_abs"]) for r in recs)
-        # iso_P_zz is implied when the trace identity's residual is within half the step the channels take with it
-        # implied: reconstructing it then moves no rounded value
-        n_implied = len(names) - 1
-        step_implied = np.sqrt(12.0 / n_implied) * eps / env["B0_chi_max_T"]
-        implied = residual is not None and residual <= 0.5 * step_implied
-        cand = [nm for nm in names if not (implied and nm == "iso_P_zz")]
-        n = len(cand)
-        for nm in cand:
-            alpha = 2.0 if (implied and nm == "iso_local") else 1.0
+        n = len(names)
+        for nm in names:
+            alpha = 2.0 if nm == "iso_local" else 1.0                  # iso_P_zz = 3 iso_local - xx - yy enters iso too
             fields.append(dict(name=nm, amax=float(amax[names.index(nm)]), q_max=env["B0_chi_max_T"] * alpha,
                                step=float(np.sqrt(12.0 / n) * eps / (env["B0_chi_max_T"] * alpha))))
-        field_rec = dict(channels=names, iso_P_zz=("implied" if implied else "stored"), trace_residual=residual)
-    if not fields:
-        return None, field_rec
+        field_rec = dict(channels=names)
     bits, scale = field_code([f["amax"] for f in fields], [f["step"] for f in fields])
     if field_rec is not None:
         field_rec["stored"] = [f["name"] for f, b in zip(fields, bits) if b and f["name"] != "contact"]
@@ -1234,28 +1221,20 @@ class TimeSegmentLayout:
                     del self._device[dk]
 
     def _channels_of(self, g, words, xp):
-        """The full channel set (``iso_local, iso_P (6)[, aniso_G (6)]``) of group ``g`` from int32 tier ``words`` on
-        ``xp`` (numpy or torch), float64: the stored channels decoded, ``iso_P_zz`` from the trace identity when it is
-        implied, a channel not stored zero."""
-        grp = self.manifest["groups"][g]; f = grp["field"]
+        """The channels the contraction reads (``iso_local, iso_P (6)[, aniso_G (6)]``) of group ``g`` from int32 tier
+        ``words`` on ``xp`` (numpy or torch), float64: the stored components decoded, a component not stored zero, and
+        ``iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy`` formed from them (RPK.md 5.3)."""
+        f = self.manifest["groups"][g]["field"]
         layout, scale, names = self._tier_code(g)
         vals = dict(zip(names, _decode(words, scale, layout)))
-        full = []
-        zero = None
-        for nm in f["channels"]:
-            v = vals.get(nm)
-            if v is None and not (nm == "iso_P_zz" and f["iso_P_zz"] == "implied"):
-                if zero is None:
-                    zero = words[..., 0] * 0
-                v = zero
-            full.append(v)
-        if f["iso_P_zz"] == "implied":
-            i = f["channels"].index("iso_P_zz")
-            full[i] = 3.0 * full[f["channels"].index("iso_local")] - full[f["channels"].index("iso_P_xx")] - full[f["channels"].index("iso_P_yy")]
+        zero = words[..., 0] * 0
+        comp = {nm: (vals.get(nm) if vals.get(nm) is not None else zero) for nm in f["channels"]}
+        comp["iso_P_zz"] = 3.0 * comp["iso_local"] - comp["iso_P_xx"] - comp["iso_P_yy"]
+        order = f["channels"][:3] + ["iso_P_zz"] + f["channels"][3:]
         if xp == "torch":
             import torch
-            return torch.stack([x.to(torch.float64) for x in full], dim=-1)
-        return np.stack([np.asarray(x, np.float64) for x in full], axis=-1)
+            return torch.stack([comp[nm].to(torch.float64) for nm in order], dim=-1)
+        return np.stack([np.asarray(comp[nm], np.float64) for nm in order], axis=-1)
 
     def _field_terms(self, g, b0_direction, device=None):
         """``(iso, aniso)`` per row of group ``g`` for ``b0_direction`` (a unit vector in the substrate frame), from the
