@@ -454,6 +454,20 @@ def _ste_gate(n_t, t=None):
     return np.where(t < 0.25, 1.0, np.where(t < 0.75, 0.0, -1.0))
 
 
+def _surface_gates(n_t, n_pulses=4):
+    """The gates the contact tier is certified under on an ``n_t``-sample window: the battery's
+    (:func:`_battery_gates`) TRANSVERSE ON-TIME, ``|chi|``. The surface weight ``exp(-(rho / D) l)`` is a positive,
+    monotone functional of the local time ``l`` and a 180 degree pulse does not change its sign, so a refocusing
+    pulse leaves the gate on: a gradient echo, a spin echo and a CPMG train read the whole window, and a stimulated
+    echo is off while its magnetisation is stored along B0. Each distinct gate once."""
+    out = []
+    for g in _battery_gates(n_t, n_pulses):
+        g = np.abs(g)
+        if not any(np.array_equal(g, o) for o in out):
+            out.append(g)
+    return out
+
+
 def _battery_gates(n_t, n_pulses, t=None):
     """The gates the field tier is certified under on an ``n_t``-sample window (at the fractions ``t`` of it, uniform
     by default): a gradient echo, a spin echo, the CPMG train at the tier's depth ``n_pulses``, and a stimulated echo
@@ -1712,14 +1726,15 @@ def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi
     return dict(err=float(err), floor=float(floor), n_pulses=n_p, n_walkers=k)
 
 
-def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=None, quadrature=0.0):
+def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=None, quadrature=0.0, gates=None):
     """The contact tier's WALK-FREE certificate (RPK.md 9.4 rule 4, 9.5.5): the surface-weighted signal ``<exp((rho2 /
-    D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the battery's gates, read from the STORED
-    bridge (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge` on the pack's own arrays) against the same
-    reading of the walk's float bands (the container's quantisation of the surface rows), plus the local time's
-    quadrature term ``quadrature`` (``err_quadrature_surface`` of :func:`_derived_certificate`); the floor the coded
-    split-half spread of the stored reading. ``(err, floor, quantisation, quadrature, rho2_list)``, the largest over
-    the rows; no raw path is read."""
+    D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the transverse on-time gates ``gates``
+    (``(n_s,)`` arrays on the block grid; default :func:`_surface_gates`, the battery's), read from the STORED bridge
+    (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge` on the pack's own arrays) against the same reading
+    of the walk's float bands (the container's quantisation of the surface rows), plus the local time's quadrature
+    term ``quadrature`` (``err_quadrature_surface`` of :func:`_derived_certificate`); the floor the coded split-half
+    spread of the stored reading. ``(err, floor, quantisation, quadrature, rho2_list)``, the largest over the rows;
+    no raw path is read."""
     n = int(np.asarray(endpoint).shape[0])
     w = np.ones(n) if w is None else np.asarray(w, np.float64)
     rhos = [float(r) for r in (env.get("rho2_list") or [1e-4])]
@@ -1731,7 +1746,7 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
     quant = floor = 0.0
     for rho in rhos:
         r = rho / float(D)
-        for gate in [None] + _battery_gates(n_s, 4):
+        for gate in [None] + (_surface_gates(n_s) if gates is None else list(gates)):
             s_dec = np.exp(np.asarray(_cx.surface_logweight_bridge(arrays, meta, r, gate, h), np.float64))
             s_x = np.exp(np.asarray(_cx.surface_logweight_bridge(exact, meta_x, r, gate, h), np.float64))
             quant = max(quant, abs(wmean(s_dec, slice(None)) - wmean(s_x, slice(None))))
@@ -1742,10 +1757,11 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
 
 def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     """The contact tier's measured certificate (RPK.md 9.4 rule 4) on the raw subset: the surface-weighted signal
-    ``<exp((rho2 / D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the battery's gates (a
-    gradient echo, a spin echo, a four-pulse train, a stimulated echo; the ungated total is the bridge's exact
-    endpoint), from the stored bridge (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge`) against the
-    raw block contacts, and the split-half floor of the raw reading: ``(err, floor)`` the largest over the rows."""
+    ``<exp((rho2 / D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the battery's transverse
+    on-time gates (:func:`_surface_gates`: the whole window, and a stimulated echo's two transverse quarters; the
+    ungated total is the bridge's exact endpoint), from the stored bridge
+    (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge`) against the raw block contacts, and the
+    split-half floor of the raw reading: ``(err, floor)`` the largest over the rows."""
     raw = np.asarray(raw_boundary, np.float64)                                   # (n_raw, n_blocks + 1): block j's contact at sample j
     n_raw, n_s = raw.shape
     w = np.ones(n_raw) if w is None else np.asarray(w, np.float64)
@@ -1755,7 +1771,7 @@ def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     err = floor = 0.0
     for rho in rhos:
         r = rho / float(D)
-        for gate in [None] + _battery_gates(n_s, 4):
+        for gate in [None] + _surface_gates(n_s):
             lw_dec = np.asarray(_cx.surface_logweight_bridge(arrays, meta, r, gate, h), np.float64)[:n_raw]
             lw_raw = r * (raw[:, 1:].sum(1) if gate is None else raw[:, 1:] @ np.asarray(gate, np.float64)[:-1])
             s_dec, s_raw = np.exp(lw_dec), np.exp(lw_raw)
