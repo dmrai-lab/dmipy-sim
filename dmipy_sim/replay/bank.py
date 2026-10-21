@@ -480,25 +480,29 @@ SUSC_PATH_LADDER = (16, 32, 64, 128, 256, 512, 1024, 2048)
 
 
 def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w=None, ladder=SUSC_PATH_LADDER,
-                      containers=(8, 16), floor_scale=1.0):
-    """The field channel's band and container derived on a PILOT's block means: ``(K_c3, bits, record)``.
+                      floor_scale=1.0):
+    """The field channel's band derived on a PILOT's block means: ``(K_c3, record)``.
 
     ``series`` ``(n_w, n_blocks, n_ch)`` are the pilot walkers' block means of the field's channels (the walk's own
     reads, trapezoid over each block of ``h`` seconds; :attr:`~dmipy_sim.coefficient_walk.CoefficientWalk.raw_field`
     without its first sample). The series' cosine modes are ``c_k = sqrt(h) X_k`` with ``X`` its orthonormal DCT-II
     (the block-mean quadrature of ``int e_k b dt``), exact at ``K = n_blocks``; the rungs of ``ladder`` below it are
-    read in ascending band, the narrower container first, each as the pack's certificate reads it -- the modes
-    truncated to the rung and quantised, contracted for each field strength and direction of the envelope's
-    battery, decoded on the block grid and gated by GRE, spin echo, the CPMG train the rung serves and a stimulated
-    echo (:func:`_battery_gates`) -- against the split-half floor of the pilot's own series. The first pair within
-    the floor is the band and the container; ``K_max`` (the position band) is the point past which the tier costs
-    more than the walk it rides on, and the record says when the ladder went beyond it. A refocusing depth the
-    envelope declares (``max_refocus_pulses``) puts a floor of twice that under the ladder. When no pair reaches the
-    floor at all, the pair of least error is taken, the cheapest among those within three per cent of it. The floor
-    the pairs are held to is the PRODUCTION walk's: the pilot's split-half floor times ``floor_scale`` (``sqrt(n_pilot
-    / n_walkers)``: a pilot of a thousand walkers has a floor four times the ten-thousand-walker walk it sizes, and a
-    band within the pilot's floor alone falls short of the walk's). The band is fixed BEFORE the production walk
-    (#742): the walk accumulates ``K_c3`` modes and nothing is re-derived on its samples afterwards."""
+    read in ascending band, each as the pack's certificate reads it -- the modes truncated to the rung and held in
+    the container :class:`DerivedFieldContainer` derives for the rung's own mode scales at the rung's floor,
+    contracted for each field strength and direction of the envelope's battery, decoded on the block grid and gated
+    by GRE, spin echo, the CPMG train the rung serves and a stimulated echo (:func:`_battery_gates`) -- against the
+    split-half floor of the pilot's own series. The first rung within the floor is the band; ``K_max`` (the position
+    band) is the point past which the tier costs more than the walk it rides on, and the record says when the ladder
+    went beyond it. A refocusing depth the envelope declares (``max_refocus_pulses``) puts a floor of twice that
+    under the ladder. When no rung reaches the floor at all, the rung of least error is taken, the narrowest among
+    those within three per cent of it. The floor the rungs are held to is the PRODUCTION walk's: the pilot's
+    split-half floor times ``floor_scale`` (``sqrt(n_pilot / n_walkers)``: a pilot of a thousand walkers has a floor
+    four times the ten-thousand-walker walk it sizes, and a band within the pilot's floor alone falls short of the
+    walk's). The band is fixed BEFORE the production walk (#742): the walk accumulates ``K_c3`` modes and nothing is
+    re-derived on its samples afterwards; the pack's container is derived afterwards from the modes the walk
+    accumulated (:func:`build_replay_pack`), the rung's container on the pilot's scales being the record's
+    ``container``. Each rung's ``err_truncation`` is its error with the modes held in float: what the band alone
+    drops."""
     from scipy.fft import idct
     series = np.asarray(series, np.float64)
     n_w, n_t, n_ch = series.shape
@@ -509,7 +513,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t] + ([min(min_K, n_t)] if min_K else [])))
     rungs = [k for k in rungs if k >= min_K] or [n_t]
     top = rungs[-1]
-    arrays_top, meta_top = susc_path_encode_series(series, names, K=top, bits=None, layout="wtc", dtype=np.float64,
+    arrays_top, meta_top = susc_path_encode_series(series, names, K=top, container=None, layout="wtc", dtype=np.float64,
                                                    device="numpy", T=float(h) * n_t)
     coeffs = np.asarray(arrays_top["susc_path_dct"], np.float64) / np.sqrt(float(h))    # the DCT-II of the means: the series' own grid
     has_aniso = coeffs.shape[1] >= 12
@@ -524,62 +528,71 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     for b0, th in settings:
         t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
         raw[(b0, th)] = np.asarray(contract(series, d, B0=b0, chi_iso=chi_i, chi_aniso=ca), np.float64)         # (n_w, n_t)
-    err, floor, order = {}, {}, []
+    stored = meta_top["channels"]; implied = meta_top["iso_P_zz"] == "implied"
+
+    def read(a_k, m_k, k, gates):
+        """the worst gated-phase error of the modes ``a_k`` against the series, and the series' own split-half floor"""
+        C, _names = susc_path_coeffs(a_k, m_k)
+        e_max = f_max = 0.0
+        for b0, th in settings:
+            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+            cd = susc_path_field(C, d, B0=b0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)       # (n_w, k)
+            f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
+            e, f = _gate_battery(raw[(b0, th)], f_dec, gates, w, A, Bh, float(h))
+            e_max, f_max = max(e_max, e), max(f_max, f)
+        return e_max, f_max
+
+    err, floor, trunc, cont, order = {}, {}, {}, {}, []
     chosen = None
     for k in rungs:
-        for bits in containers:
-            e_max = f_max = 0.0
-            n_p = _depth(k, depth)
-            a_k, m_k = _quantise_susc_path(np.asarray(coeffs[:, :, :k], np.float64), dict(meta_top, K=k, max_refocus_pulses=n_p),
-                                           path_container(bits, k))
-            C, _names = susc_path_coeffs(a_k, m_k)
-            gates = _battery_gates(n_t, max(1, n_p))
-            for b0, th in settings:
-                t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-                cd = susc_path_field(C, d, B0=b0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)       # (n_w, k)
-                f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
-                e, f = _gate_battery(raw[(b0, th)], f_dec, gates, w, A, Bh, float(h))
-                e_max, f_max = max(e_max, e), max(f_max, f)
-            err[(k, bits)], floor[(k, bits)] = e_max, f_max * float(floor_scale); order.append((k, bits))
-            if e_max <= f_max * float(floor_scale):
-                chosen = (k, bits); break
-        if chosen is not None:
-            break
+        n_p = _depth(k, depth)
+        gates = _battery_gates(n_t, max(1, n_p))
+        meta_k = dict(meta_top, K=k, max_refocus_pulses=n_p)
+        c_k = np.asarray(coeffs[:, :, :k], np.float64)
+        e_tr, f_max = read({"susc_path_dct": c_k}, dict(meta_k, bits=None, dtype="float64"), k, gates)   # the band alone, modes in float
+        fl = f_max * float(floor_scale)
+        ranges = DerivedFieldContainer(floor=fl, B0=max(B0s), chi_iso=chi_i, chi_aniso=ca).ranges(np.abs(c_k).max(axis=0), stored, implied, float(h) * n_t)
+        a_k, m_k = _quantise_susc_path(c_k, meta_k, ranges)
+        e_max, _ = read(a_k, m_k, k, gates)
+        err[k], floor[k], trunc[k], cont[k] = e_max, fl, e_tr, ranges; order.append(k)
+        if e_max <= fl:
+            chosen = k; break
     if chosen is None:
         best = min(err.values())
-        chosen = min([p for p in order if err[p] <= 1.03 * best], key=lambda p: (p[0] * p[1], p[0]))
-    K, bits = chosen
+        chosen = min([k for k in order if err[k] <= 1.03 * best])
+    K = chosen
     record = dict(rule="pilot",
-                  criterion="the first (band, container) pair in ascending band, the narrower container first, whose codec error on "
-                            "the certificate's battery is within the pilot's floor; failing every pair, the cheapest among the least errors",
-                  ladder=[dict(K=int(k), bits=int(b), err=float(err[(k, b)]), floor=float(floor[(k, b)])) for k, b in order],
+                  criterion="the first rung in ascending band whose codec error on the certificate's battery, in the container derived "
+                            "for its mode scales at its floor, is within the pilot's floor; failing every rung, the narrowest among the least errors",
+                  ladder=[dict(K=int(k), err=float(err[k]), err_truncation=float(trunc[k]), floor=float(floor[k]),
+                               container=[dict(r) for r in cont[k]]) for k in order],
                   K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) or None), above_position_band=bool(K > int(K_max)),
-                  within_floor=bool(err[chosen] <= floor[chosen]), err=float(err[chosen]), floor=float(floor[chosen]),
+                  within_floor=bool(err[K] <= floor[K]), err=float(err[K]), err_truncation=float(trunc[K]), floor=float(floor[K]),
+                  container=[dict(r) for r in cont[K]],
                   floor_is="the pilot's split-half floor scaled to the production walk's count (x floor_scale)",
                   floor_scale=float(floor_scale), B0_list=[float(b) for b in B0s], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
-    return int(K), int(bits), record
+    return int(K), record
 
 
 def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=None, chi=None, floor_scale=1.0):
-    """The field channel's band and container on a pilot spread over the walk's pools: :func:`derive_field_band` on
-    each pool's walkers (``pools`` ``{name: index array into series}``), the walk taking the widest band and the
-    deeper container any pool needs -- a pool whose field is smooth (a uniform lumen, a far extra space) must not set
-    the band of one whose field is not. ``(K_c3, bits, record)``: the record is the binding pool's (its ladder, its
-    error and floor at the band; ``binding_pool``), with every pool's own under ``pools``."""
+    """The field channel's band on a pilot spread over the walk's pools: :func:`derive_field_band` on each pool's
+    walkers (``pools`` ``{name: index array into series}``), the walk taking the widest band any pool needs -- a pool
+    whose field is smooth (a uniform lumen, a far extra space) must not set the band of one whose field is not.
+    ``(K_c3, record)``: the record is the binding pool's (its ladder, its error and floor at the band; ``binding_pool``),
+    with every pool's own under ``pools``."""
     per, recs = {}, {}
     for name, idx in pools.items():
         idx = np.asarray(idx)
         if idx.size < 2:
             continue
-        k_p, b_p, rec = derive_field_band(np.asarray(series)[idx], names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
-        recs[str(name)] = (int(k_p), int(b_p), rec)
-        per[str(name)] = dict({k: v for k, v in rec.items() if k != "ladder"}, walkers=int(idx.size), bits=int(b_p))
+        k_p, rec = derive_field_band(np.asarray(series)[idx], names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
+        recs[str(name)] = (int(k_p), rec)
+        per[str(name)] = dict({k: v for k, v in rec.items() if k != "ladder"}, walkers=int(idx.size))
     if not recs:
         return derive_field_band(series, names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
-    binding = max(recs, key=lambda nm: (recs[nm][0], recs[nm][1]))
-    K, bits = recs[binding][0], max(b for _, b, _ in recs.values())
-    return int(K), int(bits), dict(recs[binding][2], binding_pool=binding, pools=per,
-                                   per_pool="each pool's band by its own pilot walkers, the widest taken")
+    binding = max(recs, key=lambda nm: (recs[nm][0], recs[nm][1]["err"] / max(recs[nm][1]["floor"], 1e-300)))
+    return int(recs[binding][0]), dict(recs[binding][1], binding_pool=binding, pools=per,
+                                       per_pool="each pool's band by its own pilot walkers, the widest taken")
 
 
 def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
@@ -598,10 +611,10 @@ def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
 
 
 def path_codec(bits):
-    """The path channel's storage knob in its one normal form: an ``int`` 8 or 16 (one native depth over every mode,
-    the single-depth container), or the tuple ``((upto, bits), ...)`` of a container with several ranges or a
-    bit-packed depth (:func:`compression.band_curve`'s list is accepted, its ranges naming ``modes`` or ``bands``).
-    ``None`` is the float form."""
+    """The path channel's storage knob in its one normal form: ``None`` (the float form), an ``int`` 8 or 16 (one
+    native depth over every mode, the registry's single-depth container), or the tuple ``((upto, bits), ...)`` of a
+    container of ranges of modes (:func:`compression.band_curve`'s list is accepted, its ranges naming ``modes`` or
+    ``bands``) at depths 3..16."""
     if bits is None:
         return None
     if isinstance(bits, (int, np.integer)):
@@ -616,17 +629,6 @@ def path_codec(bits):
     return c
 
 
-def path_container(bits, K):
-    """The path channel's container for a depth the pilot or the caller states: an ``int`` depth below 16 over ``K``
-    modes is the k = 0 mode (the window's integral of each channel: the whole of a gradient echo's phase, whose 8-bit
-    step over the walkers' spread is a fraction of a radian on the walkers that cross the sheath) at 16 bits and the
-    modes above it at that depth, as ranges (:func:`path_codec`); 16 bits and a stated container are taken as given."""
-    c = path_codec(bits)
-    if isinstance(c, (int, np.integer)) and int(c) < 16 and int(K) > 1:
-        return path_codec([{"modes": [0, 1], "bits": 16}, {"modes": [1, int(K)], "bits": int(c)}])
-    return c
-
-
 def path_codec_of(pm):
     """:func:`path_codec` of a path channel's metadata: its ``container`` when it has one, else its ``bits``."""
     if pm.get("container") is not None:
@@ -634,15 +636,116 @@ def path_codec_of(pm):
     return path_codec(pm.get("bits") or None)
 
 
-def _quantise_susc_path(coeffs, meta, bits, *, device="numpy"):
-    """The integer container of the path-field coefficients: a per-(channel, mode) scale, ``bits`` wide -- or, for a
+#: the field directions the container is derived and certified for: the cube's three axes, six face diagonals and four
+#: body diagonals (the contraction is quadratic in the direction, so its worst case over the sphere sits among them)
+FIELD_DIRECTIONS = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, -1, 0], [1, 0, 1], [1, 0, -1], [0, 1, 1], [0, 1, -1],
+                             [1, 1, 1], [1, 1, -1], [1, -1, 1], [-1, 1, 1]], np.float64)
+
+
+def field_channel_weights(stored, implied_zz, *, B0, chi_iso, chi_aniso=0.0, directions=FIELD_DIRECTIONS):
+    """The weight of each STORED channel in the field ``dB`` (T) a replay contracts, per direction: ``(n_dir,
+    n_stored)`` (:func:`~dmipy_sim.fields.hollow_cylinder.contract` on unit channels). The ``iso_P_zz`` the decoder
+    re-inserts, ``3 iso_local - iso_P_xx - iso_P_yy``, passes its weight on to the three channels it is made of."""
+    from ..fields.hollow_cylinder import contract
+    full = list(stored)
+    if implied_zz:
+        full.insert(full.index("iso_P_xy"), "iso_P_zz")
+    n = len(full)
+    ca = float(chi_aniso) if n >= 13 else 0.0
+    W = np.stack([contract(np.eye(n), d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, axis=-1) for d in np.asarray(directions, np.float64)])
+    if implied_zz:
+        z, i0, ix, iy = (full.index(c) for c in ("iso_P_zz", "iso_local", "iso_P_xx", "iso_P_yy"))
+        W[:, i0] += 3.0 * W[:, z]; W[:, ix] -= W[:, z]; W[:, iy] -= W[:, z]
+        W = np.delete(W, z, axis=1)
+    return W
+
+
+def _contracted_modes(X, W):
+    """``(n_dir, K)``: the amplitude per mode ``X`` ``(n_ch, K)`` of the stored channels (their maximum, or their
+    quantisation step) as the contracted field sees it, the channels' weights ``W`` ``(n_dir, n_ch)`` added in
+    quadrature."""
+    return np.sqrt(np.einsum("dc,ck->dk", np.asarray(W, np.float64) ** 2, np.asarray(X, np.float64) ** 2))
+
+
+class DerivedFieldContainer:
+    """The default container of the field channel, derived per pack by :meth:`ranges` from the mode scales the encoder
+    measures and the floor the pack is ordered at (``floor`` None is filled by the builder). The step is common to
+    the modes in the contracted field ``dB`` at the envelope's largest ``B0`` and the worst field direction: a mode
+    of maximum ``a_k`` (the stored channels contracted, :func:`field_channel_weights`) at ``b`` bits has step ``a_k /
+    (2^(b-1) - 1)``, and a gate of unit modulus weighs the modes by ``g_k`` with ``sum_k g_k^2 <= T``, so one step
+    ``s`` costs a phase variance of at most ``gamma^2 T s^2 / 12`` whatever the gate:
+    :func:`compression.derive_container` with ``phase = gamma^2 T`` holds it to the pack's quantisation budget,
+    ``bits_k = ceil(log2(a_k / s)) + 1`` clipped to 3..16, equal-bit runs grown to whole bytes. The depth is the
+    mode's, not the band's: the field is nearly white above its mean, so the modes' depths sit within a few bits
+    of one another and the byte count is carried by the floor."""
+
+    def __init__(self, floor=None, B0=None, chi_iso=None, chi_aniso=0.0, budget=_cx.BUDGET):
+        self.floor, self.B0, self.chi_iso, self.chi_aniso, self.budget = floor, B0, chi_iso, chi_aniso, float(budget)
+
+    def bound(self, **kw):
+        d = dict(floor=self.floor, B0=self.B0, chi_iso=self.chi_iso, chi_aniso=self.chi_aniso, budget=self.budget); d.update(kw)
+        return DerivedFieldContainer(**d)
+
+    def ranges(self, amax, stored, implied_zz, T):
+        """``[{"modes": [k0, k1], "bits": b}, ...]`` for the stored channels' per-mode maxima ``amax`` ``(n_ch, K)``."""
+        if self.floor is None or self.B0 is None or self.chi_iso is None:
+            raise ValueError("a derived field container needs the pack's floor and the field's B0 and chi; the builder supplies them")
+        from ..constants import GAMMA
+        W = field_channel_weights(stored, implied_zz, B0=self.B0, chi_iso=self.chi_iso, chi_aniso=self.chi_aniso)
+        a = _contracted_modes(amax, W).max(axis=0)
+        r = _cx.derive_container(a, a.shape[0], max(float(self.floor), 1e-300), phase=GAMMA ** 2 * float(T), budget=self.budget)
+        return [{"modes": [int(x["bands"][0]), int(x["bands"][1])], "bits": int(x["bits"])} for x in r]
+
+    def __repr__(self):
+        return f"DerivedFieldContainer(floor={self.floor}, B0={self.B0}, budget={self.budget:g})"
+
+
+def _field_container(spec):
+    """The field channel's container from the builder's knob: ``None`` (the float container), ``"bands"`` (the
+    default, :class:`DerivedFieldContainer`), a :class:`DerivedFieldContainer`, or an explicit container of ranges
+    of modes (:func:`path_codec`)."""
+    if spec is None or isinstance(spec, DerivedFieldContainer):
+        return spec
+    if isinstance(spec, str):
+        if spec not in ("bands", "derived"):
+            raise ValueError(f"the field container is None, 'bands', or ranges of modes; got {spec!r}")
+        return DerivedFieldContainer()
+    return path_codec(spec)
+
+
+def field_quantisation(arrays, pm, env, *, T, h, B0, chi_iso, chi_aniso=0.0):
+    """The rms phase (rad) the stored field container adds: the realised steps of ``susc_path_scale`` (a step is
+    its own width, noise ``step^2 / 12``), contracted at the field strength ``B0`` and the worst direction
+    (:func:`field_channel_weights`), weighted by the battery's gates (:func:`_battery_gates` at the depth the pack
+    advertises, their cosine projections on the window) -- the worst gate of the worst direction. 0 for the float
+    container."""
+    from ..constants import GAMMA
+    if "susc_path_scale" not in arrays:
+        return 0.0
+    K = int(pm["K"])
+    step = np.asarray(arrays["susc_path_scale"], np.float64)
+    step = step.max(axis=0) if step.ndim == 3 else step                   # a merged pack: the widest block's
+    W = field_channel_weights(pm["channels"], pm.get("iso_P_zz") == "implied", B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
+    n_t = int(round(float(T) / float(h))) + 1
+    gates = np.stack(_battery_gates(n_t, max(1, int(pm.get("max_refocus_pulses") or K // 2))))
+    g = _cx.cosine_projection(gates[:, :, None], float(h), float(T), K)[:, :, 0]               # (n_g, K)
+    var = _contracted_modes(step, W) ** 2 / 12.0                                              # (n_dir, K)
+    return float(GAMMA * np.sqrt(np.einsum("gk,dk->gd", g ** 2, var).max()))
+
+
+_ZERO_STEP = float(np.finfo(np.float32).tiny)
+
+
+def _quantise_susc_path(coeffs, meta, container, *, device="numpy"):
+    """The integer container of the path-field coefficients: a per-(channel, mode) scale (the quantisation step; a
+    mode that is zero in every walker has the smallest float32 for a step, which decodes it to zero) -- for a
     container of ranges (:func:`path_codec`), each range of modes at its own depth, bit-packed along the modes
     below or between the native depths (:func:`compression.quantise_bands`' layout), under ``susc_path_dct_b<i>[u<bits>]``
-    with the ranges in ``meta["container"]``. In the single-depth form the
+    with the ranges in ``meta["container"]``; or, for the single-depth form, one native depth over every mode. In the single-depth form the
     reduction (the scale's max-abs over every walker) and the round/clip run on the JAX device when ``device``
     resolves to one (float32: the container is already lossy, so this loses nothing the quantisation does not),
     host numpy (float64, the reference) otherwise."""
-    bits = path_codec(bits)
+    bits = path_codec(container)
     if not isinstance(bits, (int, np.integer)):
         K = coeffs.shape[2]
         ranges = _cx._band_ranges(bits, K)
@@ -650,7 +753,7 @@ def _quantise_susc_path(coeffs, meta, bits, *, device="numpy"):
         scale = np.ones(amax.shape, np.float64); arrays, cont = {}, []
         for i, (k0, k1, b) in enumerate(ranges):
             lim = 2 ** (b - 1) - 1
-            sc = amax[:, k0:k1] / lim; sc[sc == 0] = 1.0
+            sc = amax[:, k0:k1] / lim; sc[sc == 0] = _ZERO_STEP
             scale[:, k0:k1] = sc
             q = np.clip(np.rint(coeffs[:, :, k0:k1] / sc[None]), -lim, lim)           # (n_w, n_ch, m)
             t = _cx._store_range(np.swapaxes(q, 1, 2), b)                              # (n_w, m | bytes, n_ch)
@@ -663,13 +766,13 @@ def _quantise_susc_path(coeffs, meta, bits, *, device="numpy"):
     lim = 2 ** (bits - 1) - 1
     if _cx.resolve_device(device) == "numpy":
         scale = np.abs(coeffs).max(axis=0) / lim                     # (n_ch, K), per channel AND band
-        scale[scale == 0] = 1.0
+        scale[scale == 0] = _ZERO_STEP
         q = np.clip(np.rint(coeffs / scale), -lim, lim).astype(itype)
     else:
         import jax.numpy as jnp
         c = jnp.asarray(coeffs, jnp.float32)
         scale = np.asarray(jnp.max(jnp.abs(c), axis=0)) / lim
-        scale[scale == 0] = 1.0
+        scale[scale == 0] = _ZERO_STEP
         q = np.asarray(jnp.clip(jnp.round(c / jnp.asarray(scale, jnp.float32)[None]), -lim, lim)).astype(itype)
     meta["bits"] = int(bits); meta["dtype"] = np.dtype(itype).name
     return {"susc_path_dct": q, "susc_path_scale": np.asarray(scale, np.float32)}, meta
@@ -681,9 +784,10 @@ def _depth(K, declared):
     return int(min(int(K) // 2, int(declared))) if declared else int(K) // 2
 
 
-def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
+def susc_path_encode_series(series, names, *, K=32, container=None, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
                             chunk=20_000, T=None, max_refocus_pulses=None):
-    """:func:`susc_path_encode` from a field series of block means, in the canonical channel order with
+    """The field channel's tensors and descriptor from a field series of block means (``container`` None: the float
+    form at ``dtype``; else :func:`path_codec`'s), in the canonical channel order with
     ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
     without a copy of the whole series. The ``iso_P_zz`` channel is implied by the trace identity
@@ -723,10 +827,10 @@ def susc_path_encode_series(series, names, *, K=32, bits=8, dtype=np.float16, la
     meta = dict(channel="susc_field_basis", K=K, n_ch=len(keep), channels=[names[i] for i in keep],
                 iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
                 max_refocus_pulses=_depth(K, max_refocus_pulses), **({} if T is None else dict(T=float(T))))
-    if bits is None:
+    if container is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
-    return _quantise_susc_path(coeffs, meta, bits, device=device)
+    return _quantise_susc_path(coeffs, meta, container, device=device)
 
 
 def has_susc_path(arrays):
@@ -1391,9 +1495,10 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     (pi k)^2`` (``QV_c = 2 D T`` on a free walk, where it is the free band variance's statement), on the contact half
     of ``(rho / D)^2 sum_k rel(m, h, omega_k) 2 QV_B / (pi k)^2`` per jump of a gate at the envelope's largest ``rho /
     D`` (an ungated contact is the exact endpoint) (:func:`compression.quadrature_rel`); the QUANTISATION of the
-    stored container, the random phase ``eps^2 = gamma^2 sum_k W_k^2 step_k^2 / 12`` of its realised steps at
+    stored containers, the random phase ``eps^2 = gamma^2 sum_k W_k^2 step_k^2 / 12`` of the positions' realised steps
+    and the field's (``field["quantisation_eps"]``, :func:`field_quantisation`: its own phase, added in variance) at
     ``KAPPA eps`` floors and its bias ``eps^2 / 2``, in quadrature (:func:`compression.derive_container`'s budget,
-    read back); and the split-half floor ``floor`` (:func:`compression.measure_floor_coded`). The error per
+    read back per container; ``err_quantisation_field`` is the field's term alone); and the split-half floor ``floor`` (:func:`compression.measure_floor_coded`). The error per
     measurement is the sum of the three. ``rounding_rel`` (a float32 accumulation's measured relative rounding of
     its bands, ``block.k0_residual_relative``) adds the ROUNDING term of RPK.md 9.5.5: a relative error ``r`` on
     every band is a phase error correlated with the phase, ``|<e^{i phi (1 + r)}> - <e^{i phi}>| <= r sqrt(<phi^2>)
@@ -1419,7 +1524,9 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     else:
         step2 = np.mean(np.asarray(scales, np.float64) ** 2, axis=0)                           # (3, K) over the walkers
         eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
-    quant = np.sqrt((_cx.KAPPA * eps * float(floor["floor_max"])) ** 2 + (eps ** 2 / 2.0) ** 2)
+    eps_f = 0.0 if field is None else float(field.get("quantisation_eps", 0.0))               # the field's, a phase of its own
+    quant_of = lambda e: np.sqrt((_cx.KAPPA * e * float(floor["floor_max"])) ** 2 + (e ** 2 / 2.0) ** 2)
+    quant = quant_of(np.sqrt(eps ** 2 + eps_f ** 2))                                          # independent phases add in variance
     rounding = None if rounding_rel is None else float(rounding_rel) * float(np.sqrt(2.0 * _battery_b_max(env) * float(D)))
     field_err = 0.0 if field is None else float(field["quadrature"]) + float(field["field_read"])     # the field's terms (:func:`_field_terms`)
     err = trunc + quad + quant + quad_surface + (0.0 if rounding is None else rounding) + field_err
@@ -1432,7 +1539,8 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
                 err_truncation=float(trunc.max()), err_quadrature=float(quad.max()), err_quantisation=float(quant.max()),
                 err_quadrature_surface=float(quad_surface),
                 **({} if rounding is None else dict(err_rounding=rounding)),
-                **({} if field is None else dict(err_quadrature_field=float(field["quadrature"]), err_field_read=float(field["field_read"]))),
+                **({} if field is None else dict(err_quadrature_field=float(field["quadrature"]), err_field_read=float(field["field_read"]),
+                                                 err_quantisation_field=float(quant_of(eps_f)))),
                 err_max=float(err.max()), floor_max=float(floor["floor_max"]), noise_floor=float(floor["noise_floor"]),
                 within_2x_floor=bool(err.max() <= 2.0 * float(floor["floor_max"])), per_family=per,
                 quadrature=dict(m=int(m), h=h, f_band_hz=float(K) / (2.0 * T), h_round=(None if h_round is None else float(h_round)),
@@ -1515,14 +1623,16 @@ def join_windows(packs, *, fidelity, walks, walkers_shuffled):
 
 
 # ------------------------------------------------------------------------------------------ the field channel (C3)
-def susc_path_encode_modes(coeffs, names, *, T, bits=8, atol_trace=1e-4, max_refocus_pulses=None, read_interval=None,
-                           device="numpy"):
+def susc_path_encode_modes(coeffs, names, *, T, container, atol_trace=1e-4, max_refocus_pulses=None, read_interval=None,
+                           device="numpy", dtype=np.float32):
     """The field channel's tensors and descriptor from the modes a walk ACCUMULATED (``coeffs`` ``(n_w, K, n_ch)``, the
     window's orthonormal cosine modes ``c_k = int e_k b dt``, ``k = 0..K-1``, in the canonical channel order with
     ``names``): the ``iso_P_zz`` channel is implied by the trace identity ``iso_P_xx + iso_P_yy + iso_P_zz = 3
     iso_local`` and left out when the modes satisfy it to ``atol_trace`` (linear, so it holds in mode space); the
-    modes are stored in the integer container (``bits`` 8 / 16, or ranges over the modes) under ``susc_path_dct``
-    with ``susc_path_scale`` (CODEC_REGISTRY ``susc_field_basis``). The descriptor carries ``K``, ``T`` (the
+    modes are stored in ``container``: ranges of modes at their own depths (:func:`path_codec`; a
+    :class:`DerivedFieldContainer` is derived here, against the modes' own scales and its floor), or one native depth
+    8 / 16, under ``susc_path_dct`` with ``susc_path_scale`` (CODEC_REGISTRY ``susc_field_basis``); ``None`` stores the
+    float tensor at ``dtype``. The descriptor carries ``K``, ``T`` (the
     window), the channels, the read interval and the refocusing depth the band serves."""
     coeffs = np.transpose(np.asarray(coeffs, np.float64), (0, 2, 1))                   # (n_w, n_ch, K)
     names = list(names)
@@ -1542,8 +1652,13 @@ def susc_path_encode_modes(coeffs, names, *, T, bits=8, atol_trace=1e-4, max_ref
                 max_refocus_pulses=_depth(K, max_refocus_pulses), sampling="accumulated_in_walk")
     if read_interval is not None:
         meta["read_interval"] = float(read_interval)
-    arrays, meta = _quantise_susc_path(np.ascontiguousarray(coeffs[:, keep, :]), meta, bits, device=device)
-    return arrays, meta
+    coeffs = np.ascontiguousarray(coeffs[:, keep, :])
+    if container is None:
+        meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
+        return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
+    if isinstance(container, DerivedFieldContainer):
+        container = container.ranges(np.abs(coeffs).max(axis=0), meta["channels"], drop_zz, T)
+    return _quantise_susc_path(coeffs, meta, container, device=device)
 
 
 def _mode_sample_matrix(K, T, n_t, start=0, stop=None, edges=None):
@@ -1807,15 +1922,14 @@ def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
 # ------------------------------------------------------------------------------------------ the pack from the walk
 def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=None, K=None, temporal_bandwidth_hz=None,
                       scanner=None, sigma_star=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
-                      susc_path_K=None, susc_path_bits=None, voxel_grid=None, position_container="bands", blt_container="bands",
+                      susc_path_K=None, field_container="bands", voxel_grid=None, position_container="bands", blt_container="bands",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False, fidelity=None, device="auto",
                       window_T=None, pack_license=None, pack_license_url=None):
     """Assemble a self-certifying replay pack from a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`: the bands
     stored as the walk accumulated them, at its ``K`` or a stated smaller band, window by window (RPK.md 4.3), in
     the builder's containers; the contact (C2) in the same form; the occupancy (C1) as the static label or the
     events of a walk whose walkers change pool (RPK.md 9.5.7), the MT bound column likewise; the field (C3) as the
-    modes the walk read along the path (``susc_path_K`` a smaller band of the walk's ``K_c3``, ``susc_path_bits``
-    the container: the pilot's pair by default). There is no other input: a pack is never built from samples.
+    modes the walk read along the path (``susc_path_K`` a smaller band of the walk's ``K_c3``). There is no other input: a pack is never built from samples.
 
     ``license`` is the SOURCE substrate's licence, which a pack never relicenses (RPK.md 10); ``pack_license`` is
     the terms the pack file itself is distributed under, as an SPDX expression, with ``pack_license_url`` where
@@ -1828,9 +1942,10 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     walked at). Nothing is searched on the walk: the certificate measures whether the band holds, it does not
     choose it.
 
-    ``position_container`` and ``blt_container`` are the band containers of the position and contact channels:
-    ``"bands"`` (the default) is :data:`compression.BAND_CONTAINER`, derived per pack; ``None`` the float container;
-    an explicit ``((upto, bits), ...)`` or :func:`compression.band_curve` list is taken as given.
+    ``position_container``, ``blt_container`` and ``field_container`` are the band containers of the position,
+    contact and field channels: ``"bands"`` (the default) is :data:`compression.BAND_CONTAINER` for the first two and
+    :class:`DerivedFieldContainer` for the field, each derived per pack against the pack's floor; ``None`` the float
+    container; an explicit ``((upto, bits), ...)`` or :func:`compression.band_curve` list is taken as given.
 
     ``fidelity`` is what the pack certifies (RPK.md 9.4 rule 4): ``"derived"`` (the default), the walk-free
     certificate (:func:`_derived_certificate`: the truncation from the free band variances, the block quadrature
@@ -1881,14 +1996,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
         if n == 1:
             pack = _build_coefficient_window(cw, id=id, K=K, temporal_bandwidth_hz=temporal_bandwidth_hz,
                                              blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K,
-                                             susc_path_bits=susc_path_bits, voxel_grid=voxel_grid, run=run, **kw)
+                                             field_container=field_container, voxel_grid=voxel_grid, run=run, **kw)
         else:
             packs = []
             for i in range(n):
                 run.phase(f"window {i + 1} of {n}")
                 pk = _build_coefficient_window(cw.window(i), id=id, K=K, temporal_bandwidth_hz=temporal_bandwidth_hz,
                                                blt_temporal_K=blt_temporal_K, susc_path_K=susc_path_K,
-                                               susc_path_bits=susc_path_bits, voxel_grid=(voxel_grid if i == 0 else None),
+                                               field_container=field_container, voxel_grid=(voxel_grid if i == 0 else None),
                                                run=run, **kw)
                 if i == 0:                                    # window 0's band, containers and channel bands are every window's
                     cm0 = pk.meta["compression"]
@@ -1902,7 +2017,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                             kw["blt_container"] = ch0["boundary_local_time"]["container"]
                     if ch0.get("susc_field_basis") is not None:
                         susc_path_K = int(ch0["susc_field_basis"]["K"])
-                        susc_path_bits = path_codec_of(ch0["susc_field_basis"]) or 8
+                        field_container = path_codec_of(ch0["susc_field_basis"])
                 packs.append(pk)
             fid = _round_certificate(combine_window_fidelity([pk.meta["fidelity"] for pk in packs]))
             if sigma_star is not None:
@@ -1924,7 +2039,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
 
 
 def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K, temporal_bandwidth_hz, scanner,
-                              sigma_star, provenance, blt_temporal_K, blt_dtype, susc_path_K, susc_path_bits, voxel_grid,
+                              sigma_star, provenance, blt_temporal_K, blt_dtype, susc_path_K, field_container, voxel_grid,
                               position_container, blt_container, diffusivity, substrate_frame, verbose, fidelity, device,
                               pack_license, pack_license_url, run):
     """One window of :func:`build_replay_pack` as a pack of its own (``cw`` a one-window walk; its block record names
@@ -1983,14 +2098,28 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     if has_field:
         fr = cw.block.get("field_read") or {}
         K_f = int(cw.K_c3 if susc_path_K is None else susc_path_K)
+        if K_f < 1 or K_f > int(cw.K_c3):
+            raise ValueError(f"the walk accumulated {cw.K_c3} field modes per window; susc_path_K={K_f} asks for more (or none)")
         if cw.qv_field_increments is None:
             raise ValueError("this walk carries no read series' quadratic variation (CoefficientWalk.qv_field_increments), which "
                              "the field read's term is measured on (RPK.md 9.5.5); walk it again")
         B0_r, chi_r = field_rule_scale(spec, env)
+        band = dict(cw.block.get("field_band") or {})
+        fc = _field_container(field_container)
+        if isinstance(fc, DerivedFieldContainer):                  # derived against the pack's floor, like the positions'
+            fc = fc.bound(floor=floor_t, B0=B0_r, chi_iso=chi_scale[0], chi_aniso=chi_scale[1])
+        run.phase("field channel")
+        names = list(cw.field_basis.channel_names)
+        _a, _pm = susc_path_encode_modes(np.asarray(cw.field_coeffs, np.float64)[:, 0, :K_f, :], names, T=T, container=fc,
+                                         max_refocus_pulses=env.get("max_refocus_pulses"), read_interval=cw.field_read_interval,
+                                         device=device)
+        _pm["band"] = dict(band) if band else dict(rule="given", K=K_f)
+        _pm["read"] = {k: v for k, v in (cw.block.get("field_read") or {}).items()}
         field_terms = _field_terms(T, h, cw.m, K_f, np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0), env, chi_scale[0],
                                    dict(dt_f=float(cw.field_read_interval), B0=B0_r, chi=chi_r, floor=float(fr.get("floor", 1e-3)),
                                         qv_increments=np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0),
                                         constants=fr.get("constants")))
+        field_terms["quantisation_eps"] = field_quantisation(_a, _pm, env, T=T, h=h, B0=B0_r, chi_iso=chi_scale[0], chi_aniso=chi_scale[1])
     fid = _derived_certificate(scales, T=T, h=h, K=K, m=cw.m, D=D, env=env, floor=floor,
                                qv_pos=(None if cw.qv_positions is None
                                        else np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)),
@@ -2018,19 +2147,6 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         from ..fields.strand_field import StrandFieldBasis, StrandFieldRecord
         from ..fields.hollow_cylinder import HollowCylinderField
         field = cw.field_basis
-        names = list(field.channel_names)
-        band = dict(cw.block.get("field_band") or {})
-        K_f = int(cw.K_c3 if susc_path_K is None else susc_path_K)
-        if K_f < 1 or K_f > int(cw.K_c3):
-            raise ValueError(f"the walk accumulated {cw.K_c3} field modes per window; susc_path_K={K_f} asks for more (or none)")
-        depth = susc_path_bits if susc_path_bits is not None else int(band.get("bits") or 8)
-        bits = path_container(depth, K_f)
-        run.phase("field channel")
-        _a, _pm = susc_path_encode_modes(np.asarray(cw.field_coeffs, np.float64)[:, 0, :K_f, :], names, T=T, bits=bits,
-                                         max_refocus_pulses=env.get("max_refocus_pulses"), read_interval=cw.field_read_interval,
-                                         device=device)
-        _pm["band"] = dict(band) if band else dict(rule="given", K=K_f)
-        _pm["read"] = {k: v for k, v in (cw.block.get("field_read") or {}).items()}
         arrays.update(_a); chan_meta["susc_field_basis"] = _pm
         if isinstance(field, (FieldGrid, FieldGridRecord)):
             fm = field.meta
@@ -2045,9 +2161,10 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         else:
             raise TypeError(f"a walk's field_basis is a FieldGrid, a HollowCylinderField or a StrandFieldBasis (or their records), got {type(field).__name__}")
         channels["susceptibility"] = True
-        # the pilot's measurement of the band at its rung: the field's codec error against the pilot's reads
-        if band.get("err") is not None and int(band.get("K", K_f)) == K_f and int(band.get("bits", 0) or 0) == int(depth if isinstance(depth, (int, np.integer)) else 0):
-            fid.update(err_susc_path=float(band["err"]), floor_susc_path=float(band["floor"]),
+        # the pilot's measurement of the band at its rung: what the band alone drops from the pilot's reads, with the
+        # field container's quantisation read back from the stored steps
+        if band.get("err_truncation") is not None and int(band.get("K", K_f)) == K_f:
+            fid.update(err_susc_path=float(band["err_truncation"]) + float(fid["err_quantisation_field"]), floor_susc_path=float(band["floor"]),
                        susc_path_pulses_certified=int(_pm["max_refocus_pulses"]), susc_path_measured_on="pilot",
                        susc_path_walkers=int(band.get("pilot_walkers", 0)))
         if fidelity == "measured" and cw.raw_field is not None:
@@ -2263,12 +2380,13 @@ def mode_window_matrix(T, K, t0, T_new, K_new):
 
 
 def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None, envelope=None, position_container=None,
-                   blt_container=None, blt_dtype=np.float32, susc_path_bits=None, device="auto", provenance=None):
+                   blt_container=None, blt_dtype=np.float32, field_container=None, device="auto", provenance=None):
     """The window ``[t0, t0 + T_new]`` of a one-window ``pack`` as a pack of its own, every band-stored channel the
     stored function cut and re-projected on the window's basis (:func:`bridge_window_matrix`,
     :func:`mode_window_matrix`; RPK.md 9.5.4), the events sliced to the window, exactly -- what ``prefix`` (``t0 =
     0``) and ``rewindow`` build. ``K`` / ``blt_K`` / ``path_K`` are the window's bands (the parent's bands per second
-    by default, at least 2). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
+    by default, at least 2); ``position_container``, ``blt_container`` and ``field_container`` the window's
+    containers (None: the parent's own ranges; ``"bands"``: derived for the window's floor). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
     truncation measured on the battery -- the parent's exact replay of the window (its bands with the waveform at
     ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``."""
     from ..constants import GAMMA
@@ -2357,8 +2475,12 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         Kf_new = min(Kf_new, int(pm["K"]))
         Mf = mode_window_matrix(T, int(pm["K"]), t0, T_new, Kf_new)
         Cfn = np.einsum("jk,wck->wcj", Mf, Cf)
-        bits = susc_path_bits if susc_path_bits is not None else (path_codec_of(pm) or 8)
-        a_, pm_new = susc_path_encode_modes(np.transpose(Cfn, (0, 2, 1)), names, T=T_new, bits=bits,
+        chi_i, ca = _field_scale(env, pack.substrate)
+        B0_r, chi_r = field_rule_scale(pack.substrate, env)
+        fc = _field_container(field_container if field_container is not None else path_codec_of(pm))
+        if isinstance(fc, DerivedFieldContainer):
+            fc = fc.bound(floor=floor_t, B0=B0_r, chi_iso=chi_i, chi_aniso=ca)
+        a_, pm_new = susc_path_encode_modes(np.transpose(Cfn, (0, 2, 1)), names, T=T_new, container=fc,
                                             max_refocus_pulses=env.get("max_refocus_pulses") or pm.get("max_refocus_pulses"),
                                             read_interval=pm.get("read_interval"), device=device)
         pm_new["band"] = dict(rule="reprojected", parent_K=int(pm["K"]), K=Kf_new)
@@ -2366,7 +2488,6 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         arrays.update(a_); chan_meta["susc_field_basis"] = pm_new
         chan_meta["susceptibility_grid"] = dict(ch.get("susceptibility_grid") or {})
         channels["susceptibility"] = True
-        chi_i, ca = _field_scale(env, pack.substrate)
         gm = chan_meta["susceptibility_grid"]
         gates = np.stack(_battery_gates(n_t_new, max(1, Kf_new // 2)))
         g_par = cosine_projection(gates[:, :-1, None], h_new, T, int(pm["K"]), t0=-t0)[:, :, 0]
@@ -2388,11 +2509,11 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
                              "of a window is charged on; re-walk it with a conformant producer")
         read = pm.get("read") or {}
         at = ((pack.meta.get("replay_envelope") or {}).get("field_read") or {}).get("term_at") or {}
-        B0_r, chi_r = field_rule_scale(pack.substrate, env)
         field_terms = _field_terms(T_new, h_new, int(blk["m"]), Kf_new, qv_f if qv_f is not None else np.zeros(1), env, chi_i,
                                    dict(dt_f=float(wp["field_read_interval"]), B0=B0_r, chi=chi_r, floor=float(at.get("floor") or 1e-3),
                                         qv_increments=np.asarray(qv["field_increments"], np.float64) * (T_new / T),
                                         constants=read.get("constants")))
+        field_terms["quantisation_eps"] = field_quantisation(a_, pm_new, env, T=T_new, h=h_new, B0=B0_r, chi_iso=chi_i, chi_aniso=ca)
     # the occupancy: events sliced to the window
     if "compartment" in ch:
         from ..coefficient_walk import events_within

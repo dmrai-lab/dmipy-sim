@@ -394,14 +394,15 @@ def container_eps(floor_target, *, budget=BUDGET, kappa=KAPPA):
     return min(float(budget) / (np.sqrt(2.0) * float(kappa)), float(np.sqrt(budget * float(floor_target))))
 
 
-def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGET, kappa=KAPPA, b_min=3,
-                     b_max=16, weight=None):
+def derive_container(scales, K, floor_target, *, n_t=None, dt=None, env=None, budget=BUDGET, kappa=KAPPA, b_min=3,
+                     b_max=16, weight=None, phase=None):
     """The ranges ``[{"bands": [k0, k1], "bits": b}, ...]`` of one common quantisation step across the bands.
 
     A band quantised at ``b`` bits against its scale ``a_k`` (the block's maximum) has step ``a_k / (2^(b-1) - 1)``
     and noise ``step^2 / 12``. The noise is a random phase per walker with variance
     ``eps^2 = S step^2 / 12`` for one step common to the bands, ``S`` the phase variance per unit step variance of
-    the envelope's worst waveform (:func:`_phase_weight`; a contact channel: ``weight^2 K``). It costs the mean signal
+    the envelope's worst waveform (:func:`_phase_weight`; a contact channel: ``weight^2 K``; a channel that states its
+    own, such as the field's ``gamma^2 T``: ``phase``). It costs the mean signal
     two ways: a random term, ``kappa * eps`` times the walkers' split-half floor, which does not depend on the number
     of walkers, and a bias ``eps^2 / 2``, which does not fall with them while the floor does. Holding both under
     ``budget`` x ``floor_target`` (each at its share, so that the two sum in quadrature to at most ``budget``)::
@@ -413,7 +414,8 @@ def derive_container(scales, K, floor_target, *, n_t, dt, env=None, budget=BUDGE
     to whole bytes, the last taking the remainder, as :func:`band_curve`."""
     scales = np.asarray(scales, np.float64).ravel()[:int(K)]
     eps = container_eps(floor_target, budget=budget, kappa=kappa)
-    S = float(weight) ** 2 * int(K) if weight is not None else _phase_weight(int(K), int(n_t), float(dt), _env_key(env))
+    S = (float(phase) if phase is not None else float(weight) ** 2 * int(K) if weight is not None
+         else _phase_weight(int(K), int(n_t), float(dt), _env_key(env)))
     step = float(np.sqrt(12.0) * eps / np.sqrt(S))
     bits = np.clip(np.ceil(np.log2(np.maximum(scales, 1e-300) / step)) + 1, b_min, b_max).astype(int)
     return _group_bits(bits)

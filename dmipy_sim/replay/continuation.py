@@ -127,7 +127,7 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
               weights=np.asarray(pack.spin_weights, np.float64), license=pack.license, citation=pack.citation,
               position_container=(None if cm.get("container") is None else _container_of(cm["container"])),
               blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float32 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])),
-              susc_path_K=(int(pm["K"]) if pm else None), susc_path_bits=((path_codec_of(pm) or 8) if pm else None))
+              susc_path_K=(int(pm["K"]) if pm else None), field_container=(path_codec_of(pm) if pm else None))
     kw["blt_container"] = _container_of(c2["container"]) if c2.get("dtype") == "bands" else None      # the parent's, float or banded
     S0 = int(seg["n"])
     walk = walk.shift_time(S0 * float(seg["T"]))                      # its events on the pack's clock (RPK.md 9.5.7)
