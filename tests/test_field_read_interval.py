@@ -157,6 +157,90 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     np.testing.assert_allclose(m.replay(seq, **kw)[0], (W[0] * S[0] + W[1] * S[1]) / (W[0] + W[1]), rtol=1e-6)
 
 
+STEP, STEPS = 1e-5, 7              # the reference walk: blocks of seven steps
+
+
+def _tiny_walk(n_read, n_blocks, grid):
+    """10 walkers of ``n_blocks`` blocks of ``STEPS`` steps reading ``grid`` every ``n_read`` steps (and at each block's
+    end), with the same walk as ``n_blocks * STEPS`` blocks of one step: its raw positions are the walk's position at
+    every step."""
+    from tests.test_bank import D0, L
+    T = n_blocks * STEPS * STEP
+    kw = dict(require_gpu=False, field_basis=grid, K=4, K_c3=1, raw_subset=10, seed=1, window_T=T)
+    w = d.simulate_trajectories(10, D0, d.Box1D(L), T, STEPS * STEP, sub_steps=STEPS, field_read_interval=(n_read + 1e-3) * STEP, **kw)
+    per_step = d.simulate_trajectories(10, D0, d.Box1D(L), T, STEP, sub_steps=1, **kw)
+    return w, per_step
+
+
+@pytest.mark.parametrize("n_read, n_blocks", [(1, 1), (2, 1), (3, 1), (STEPS, 1), (2, 3)])
+def test_the_window_mean_is_the_length_weighted_trapezoid_of_the_reads_at_the_kernels_positions(n_read, n_blocks):
+    """A tiny walk (10 walkers, ``n_blocks`` blocks of seven steps) read every ``n_read`` steps and at every block's end
+    (a block's last interval the shorter one when ``n_read`` does not divide seven): the grid read at the walk's position
+    at each read instant (computed here, in numpy, from the same walk stepped one step per block), the trapezoid of
+    those reads weighted by each interval's own length, is the k = 0 mode times ``sqrt(T)`` -- the walk's accumulated
+    mode, the raw subset's reads, and the measured oracle's block means (:func:`read_block_means`) and interval means
+    (:func:`read_interval_means`) all state it, at every read interval."""
+    from tests.test_bank import _slab_grid
+    from dmipy_sim.engine.accumulate import read_intervals
+    from dmipy_sim.replay.bank import read_block_means, read_interval_means
+    grid = _slab_grid()
+    w, per_step = _tiny_walk(n_read, n_blocks, grid)
+    n_steps = n_blocks * STEPS
+    steps = np.rint(np.asarray(w.field_read_instants) / STEP).astype(int)                       # the read instants, in steps
+    expect_steps = np.concatenate([[0], np.concatenate([b * STEPS + np.cumsum(read_intervals(STEPS, n_read)) for b in range(n_blocks)])])
+    np.testing.assert_array_equal(steps, expect_steps)
+    assert w.reads_per_block == len(read_intervals(STEPS, n_read)) and steps[-1] == n_steps
+    P = np.asarray(per_step.raw_positions, np.float64)                                           # (10, n_steps + 1, 3)
+    np.testing.assert_allclose(np.asarray(w.raw_positions, np.float64), P[:, ::STEPS], rtol=0, atol=1e-12)
+    b = grid.channels(P.reshape(-1, 3)).reshape(10, n_steps + 1, -1)[:, steps]                    # the reads, float64 on the host
+    raw = np.asarray(w.raw_field, np.float64)
+    assert raw.shape == b.shape
+    np.testing.assert_allclose(raw, b, rtol=0, atol=2e-5 * np.abs(b).max())
+    dt = np.diff(steps) * STEP
+    window = (0.5 * (b[:, :-1] + b[:, 1:]) * dt[None, :, None]).sum(1)                           # the window integral of the chord
+    mode0 = np.asarray(w.field_coeffs, np.float64)[:, 0, 0] * np.sqrt(w.T)
+    np.testing.assert_allclose(mode0, window, rtol=0, atol=2e-5 * np.abs(window).max())
+    h = STEPS * STEP
+    blocks = read_block_means(raw, w.field_read_instants, w.reads_per_block, h)                   # (10, n_blocks + 1, n_ch)
+    np.testing.assert_allclose(blocks[:, 1:].sum(1) * h, window, rtol=0, atol=2e-5 * np.abs(window).max())
+    series = read_interval_means(raw)
+    np.testing.assert_allclose((series[:, 1:] * np.diff(w.field_read_instants)[None, :, None]).sum(1), window, rtol=0, atol=2e-5 * np.abs(window).max())
+
+
+@pytest.mark.parametrize("interval", [0.75 * BLOCK, BLOCK])
+def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_its_reads(spec, monkeypatch, interval):
+    """The adaptive producer reads every ``n`` rounds and at every block's end (a pool of three rounds a block read
+    every two ends on a one-round interval): each pool's k = 0 mode is the window integral of the chord through the
+    raw subset's reads at the walk's read instants, each interval weighted by its own length."""
+    import dmipy_sim.spec.walk as spec_walk
+    from dmipy_sim.engine.accumulate import read_intervals
+    pools = []
+    join = spec_walk._join_pool_walks
+    monkeypatch.setattr(spec_walk, "_join_pool_walks", lambda parts, *a, **k: (pools.extend(w for _, w in parts if not isinstance(w, np.ndarray)), join(parts, *a, **k))[1])
+    walk_spec(spec, 24, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
+              raw_subset=12, field_read_interval=interval)
+    assert len(pools) == 2
+    uneven = 0
+    for w in pools:
+        fr = w.block["field_read"]
+        spans = read_intervals(fr["steps_per_block"], fr["n_read"])
+        uneven += len(set(spans)) > 1
+        E, raw = w.field_read_instants, np.asarray(w.raw_field, np.float64)
+        np.testing.assert_allclose(np.diff(E)[:len(spans)], np.asarray(spans) * fr["step_s"], rtol=1e-9)
+        window = (0.5 * (raw[:, :-1] + raw[:, 1:]) * np.diff(E)[None, :, None]).sum(1)
+        mode0 = np.asarray(w.field_coeffs, np.float64)[:raw.shape[0], 0, 0] * np.sqrt(w.T)
+        np.testing.assert_allclose(mode0, window, rtol=0, atol=2e-5 * np.abs(window).max())
+    assert uneven == (interval < BLOCK)
+
+
+def test_the_cost_counts_the_reads_of_a_block_with_its_shorter_last_interval():
+    """``walk_cost`` states the reads per block: every ``n_read`` steps and the block's end."""
+    from tests.test_bank import D0, L, _slab_grid
+    from dmipy_sim.engine.core import walk_cost
+    c = walk_cost(10, D0, d.Box1D(L), STEPS * STEP, STEPS * STEP, sub_steps=STEPS, field_basis=_slab_grid(), field_read_interval=(2 + 1e-3) * STEP)
+    assert (c.field_reads_per_block, c.field_read_interval) == (4, pytest.approx(2 * STEP))
+
+
 def _float_pack(*a, **k):
     """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
     derived integer default does not promise."""

@@ -630,7 +630,7 @@ class WalkCost:
     backends_refusing: dict           #: the other installed backends that refuse it, ``{name: reason}``
     K_c3: object = None               #: the field's band per window, or None for "a pilot derives it" (no field: 0)
     field_read_interval: object = None  #: the field read's interval (s), or None without a field
-    field_reads_per_block: object = None  #: reads per block, or None without a field
+    field_reads_per_block: object = None  #: reads per block (every ``n_read`` steps and the block's end), or None without a field
     events_capacity: object = None    #: the events buffer per walker and column, or None for "a pilot sizes it" (no events: 0)
     measured: object = None           #: :class:`WalkMeasured`, or None when not measured
     profile: object = None            #: :class:`WalkProfile`, or None unless ``measure="profile"``
@@ -673,7 +673,7 @@ def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, batch
         backend=backend_name, backends_accepting=accepting, backends_refusing=refusing,
         K_c3=(0 if res.field_read is None else res.K_c3),
         field_read_interval=(None if res.field_read is None else res.field_read["dt_f"]),
-        field_reads_per_block=(None if res.field_read is None else int(res.sub_steps) // int(res.field_read["n_read"])),
+        field_reads_per_block=(None if res.field_read is None else int(res.field_read["reads_per_block"])),
         events_capacity=(res.events_capacity if has_events else 0))
 
 
