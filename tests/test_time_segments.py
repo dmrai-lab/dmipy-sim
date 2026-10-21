@@ -388,3 +388,40 @@ def test_the_tier_maps_and_the_files(blocks):
     fresh.image(seq); n_first = len(reads)
     fresh.image(seq)
     assert "w" in reads[:n_first] and reads[n_first:] == []
+
+
+def test_from_a_pack_the_tiers_carry_the_packs_own_quantisation(myelin):
+    """The layout's certificate is a sum of terms: from a pack it carries the pack's own quantisation of the gated
+    contact and field (:func:`tier_quantisation_terms`) beside the tiers' rounding, at the same widths as from the walk,
+    and ``err_max`` covers both; from the walk those terms are zero. The stated contact and field terms bound the pack's
+    per-walker departure from the walk's float contraction (and are not vacuous for the contact); a floor target below
+    the pack's own term is refused by name."""
+    from dmipy_sim.replay.time_segments import tier_quantisation_terms, _gate_sequence
+    from dmipy_sim.replay.study import Acquisition
+    from dmipy_sim.replay.replay import _path_field_channels
+    from dmipy_sim.fields.hollow_cylinder import field_terms
+    M = myelin
+    cw, cp = M["mw"]["certificate"], M["mp"]["certificate"]
+    for g in M["mp"]["groups"]:
+        assert cw["tiers"][g]["source"] == dict(contact=0.0, field=0.0)
+        assert cp["tiers"][g]["source"]["contact"] > 0.0 and cp["tiers"][g]["source"]["field"] > 0.0
+        for fw, fp in zip(M["mw"]["groups"][g]["tier_words"]["fields"], M["mp"]["groups"][g]["tier_words"]["fields"]):
+            assert fw["name"] == fp["name"] and fw["step"] == pytest.approx(fp["step"])      # the same rule from either source
+    assert cw["err_max"] == pytest.approx(cw["err_rounding"]) and cp["err_max"] > cp["err_rounding"]
+    view = _walk_view(M["walk"])
+    env = M["rec_p"]["source"]["envelope"]
+    for name in ("pgse", "pgste"):
+        gate = _gate_sequence(M["parts"][name].template)
+        q_c, q_f = tier_quantisation_terms(M["pack"], gate, env)
+        c_p = M["pack"].walker_primitives(Acquisition(gate)).contact; c_w = view.walker_primitives(Acquisition(gate)).contact
+        rms_c = env["rho2_over_D_max"] * np.sqrt(np.mean((c_p - c_w) ** 2))
+        assert 0.05 * np.sqrt(q_c) < rms_c <= np.sqrt(q_c), (name, rms_c, np.sqrt(q_c))
+        f = []
+        for src in (M["pack"], view):
+            Psi, _ = _path_field_channels(src._prepare(gate, tissue=None, scanner=None, orientation=None, compartment=None), gate)
+            f.append(np.asarray(field_terms(np.asarray(Psi), [0.0, 0.0, 1.0])[0]))
+        assert env["B0_chi_max_T"] * np.sqrt(np.mean((f[0] - f[1]) ** 2)) <= np.sqrt(q_f), name
+    tight = str(M["tmp"] / "rows_pack_tight")
+    segment_rows(M["pack"], M["parts"], tight, grid=M["grid"], g_max=G_MAX, tiers=True, floor_target=1e-5)
+    with pytest.raises(ValueError, match="pack's own"):
+        write_time_segment_layout([tight], str(M["tmp"] / "lay_tight"))

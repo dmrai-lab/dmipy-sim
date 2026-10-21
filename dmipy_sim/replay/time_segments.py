@@ -54,7 +54,10 @@ split equally over the basis's twelve components (RPK.md 5.3: ``iso_local``, ``i
 ``iso_local``'s coefficient is bounded by 2 and its step halved); the background
 at ``background_amplitude``. A field within half its step of zero on every row (a channel the gate refocuses, a
 component the substrate's symmetry zeroes) rounds to zero on every row and is not stored. Each tier column is its own
-term at the floor's budget. A rounding of rms ``sigma`` rad per walker moves a voxel's signal by about ``sigma`` times
+term at the floor's budget. From a pack the layout's certificate also carries the pack's own quantisation of the contact
+and the field through the gate (:func:`tier_quantisation_terms`) as terms of their own, beside its rounding (the widths
+are the same as from the walk), and ``err_max`` covers both: the same bits, more error; a floor target below the pack's
+own term, stated by the caller, is refused by name, since no width meets it. A rounding of rms ``sigma`` rad per walker moves a voxel's signal by about ``sigma`` times
 its Monte-Carlo floor and biases it by ``sigma^2 / 2``; the manifest's ``certificate.rounding`` states each partition's
 realised ``sigma^2`` beside its budget.
 
@@ -422,6 +425,52 @@ def quantisation_term(pack, partition, b_max):
     return float(b_max) * max(lam, 0.0)
 
 
+def tier_quantisation_terms(pack, gate_seq, env):
+    """``(contact, field)``: the pack's own quantisation of the gated contact and of the gated field channels at their
+    worst over the envelope, rad^2 of phase (the contact's relative weight error counted as a phase, as its width is).
+    Each contraction is linear in the stored bands / modes, so a step ``s_k`` (the largest over the scale tables) is a
+    variance ``w_k^2 s_k^2 / 12`` with ``w_k`` the contraction's weight on it: the contact's ``(rho2 / D)_max`` times the
+    gated bridge's weights (:func:`~dmipy_sim.replay.replay.surface_logweight` of unit bands), each field component's
+    ``B0 chi_max alpha_c gamma g_k`` with ``g_k`` the gate's cosine projection (``alpha`` 2 on ``iso_local``, which the
+    layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
+    walker holds no step (its scale is a placeholder). Zero for a float container."""
+    from ..constants import GAMMA
+    from . import compression as cx
+    from .bank import susc_path_coeffs
+    from .replay import surface_logweight
+    chi = np.asarray(gate_seq.chi_perp if gate_seq.chi_perp is not None else np.ones(gate_seq.n_t), np.float64)
+    eg = np.asarray(gate_seq.effective_gate, np.float64)[:-1]               # the field's gate, the readout held over nothing
+    ch = (pack.meta.get("compression") or {}).get("channels") or {}
+    v_c = v_f = 0.0
+    for win, t0, T_w in pack._windows():
+        if t0 >= gate_seq.T:
+            break
+        cm = ch.get("boundary_local_time")
+        if cm and "blt_band_scale" in win.arrays:
+            sc = np.asarray(win.arrays["blt_band_scale"], np.float64)
+            step2 = (sc.reshape(-1, sc.shape[-1]) ** 2).max(axis=0)
+            live = np.abs(cx.bridge_bands(win.arrays, cm)).max(axis=0)[:step2.shape[0]] > 0
+            step2 = np.where(live, step2, 0.0)
+            K = step2.shape[0]
+            a_, m_ = cx.encode_boundary_bands(np.zeros(K, np.float32), np.zeros(K, np.float32), np.eye(K), T=T_w,
+                                              dtype=np.float32, container=None)
+            w = np.asarray(surface_logweight(a_, 1.0, m_, chi, float(gate_seq.dt), t0=t0), np.float64)
+            v_c += float(np.sum(w ** 2 * step2) / 12.0)
+        pm = ch.get("susc_field_basis")
+        if pm and "susc_path_scale" in win.arrays:
+            S = np.asarray(win.arrays["susc_path_scale"], np.float64)
+            step2 = (S.reshape((-1,) + S.shape[-2:]) ** 2).max(axis=0)          # (stored components, K)
+            C, full = susc_path_coeffs(win.arrays, pm)
+            amax = np.abs(C).max(axis=0)                                        # (full components, K)
+            stored = list(pm["channels"])
+            live = np.stack([amax[full.index(nm), :step2.shape[1]] > 0 for nm in stored])
+            step2 = np.where(live, step2, 0.0)
+            g = cx.cosine_projection(eg.reshape(1, -1, 1), float(gate_seq.dt), T_w, step2.shape[1], t0=t0)[0, :, 0]
+            alpha = np.array([2.0 if nm == "iso_local" else (0.0 if nm == "iso_P_zz" else 1.0) for nm in stored])
+            v_f += float(np.sum((alpha[:, None] * GAMMA * g[None, :]) ** 2 * step2) / 12.0)
+    return env["rho2_over_D_max"] ** 2 * v_c, env["B0_chi_max_T"] ** 2 * v_f
+
+
 def _walk_view(walk, weights=None):
     """The walk's float coefficients as an uncertified in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`: per
     window the positions, the contact and the field modes in the float containers and the occupancy's events, exactly
@@ -653,6 +702,8 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     for key, (g, seq, names) in groups.items():
         rows, rec = _group_tiers(view, _gate_sequence(seq), tiers=tiers, background=background,
                                  background_amplitude=background_amplitude)
+        q_c, q_f = (0.0, 0.0) if kind == "walk" or not tiers else tier_quantisation_terms(view, _gate_sequence(seq), env)
+        rec["quantisation"] = dict(contact=float(q_c), field=float(q_f))
         rec.update(partitions=names, rf=seq.rf.to_dicts(), dt=float(seq.dt), n_t=int(seq.n_t),
                    readout=[int(i) for i in seq.readout])
         if "pool" in rows:
@@ -683,7 +734,8 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         n_pools = next((r.get("pools") for r in group_rec.values() if r.get("pools") is not None), None)
         tier_rec = dict(relaxation=n_pools is not None, pools=n_pools, D_walk=D_walk, substrate=meta.get("substrate"))
     record = dict(format=ROWS_FORMAT, n_rows=int(n), grid=grid.to_meta(),
-                  source=dict(src, floor_target=float(floor), eps=float(eps), envelope=env,
+                  source=dict(src, floor_target=float(floor), floor_target_stated=floor_target is not None, eps=float(eps),
+                              envelope=env,
                               background_amplitude=float(background_amplitude)),
                   certificate=certificate, partitions=part_rec, groups=group_rec, tiers=tier_rec, background=bool(background),
                   code=_code(), created=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
@@ -784,6 +836,57 @@ def _tier_codes(recs, g, eps, env):
     return dict(fields=fields, n_words=int(n_words)), field_rec
 
 
+def _source_tier_terms(recs, g, eps):
+    """``{contact, field}``: the source's own quantisation of group ``g``'s tiers (rad^2, the largest over the blocks; 0
+    from a walk). A floor target a caller STATED (``segment_rows(floor_target=)``) whose budget ``eps^2`` is below it is
+    refused by name, since no width meets it; the pack's own declared target is taken as it is and the certificate
+    states the error."""
+    out = {k: max(float((r["groups"][g].get("quantisation") or {}).get(k, 0.0)) for r in recs) for k in ("contact", "field")}
+    stated = any(r["source"].get("floor_target_stated") for r in recs)
+    for k, q in out.items():
+        if stated and q >= eps ** 2:
+            raise ValueError(f"the pack's own quantisation of group {g}'s {k} is {np.sqrt(q):.3g} rad, above the floor "
+                             f"target's budget of {eps:.3g} rad: no width meets that target from this pack -- ask for a "
+                             "larger floor target, or write the segment rows from the walk")
+    return out
+
+
+def _tier_rounding(grp, env, background_amplitude):
+    """``{contact, field, background}``: the realised rounding variance (rad^2) of a group's tier fields at their scales
+    -- the contact's ``((rho2/D)_max scale)^2 / 12``, the components' ``sum (B0 chi_max alpha_c scale_c)^2 / 12``, the
+    background's ``(g0_max max scale)^2 / 12``."""
+    out = dict(contact=0.0, field=0.0, background=0.0)
+    for f in ((grp.get("tier_words") or {}).get("fields") or []):
+        v = (float(f["q_max"]) * float(f["scale"])) ** 2 / 12.0
+        out["contact" if f["name"] == "contact" else "field"] += v
+    bg = grp.get("background")
+    if bg and bg.get("n_words"):
+        out["background"] = (float(background_amplitude) * max(s for s, b in zip(bg["scale"], bg["bits"]) if b)) ** 2 / 12.0 \
+            if any(bg["bits"]) else 0.0
+    return out
+
+
+def _certificate(r0, recs, partitions, groups, env, background_amplitude, eps):
+    """The layout's certificate: the source's terms, per partition its rounding and its source's band quantisation, per
+    group its tiers' rounding and its source's tier quantisation (a pack's: :func:`tier_quantisation_terms`), all
+    rad^2, and ``err_max``, the worst image's signal error over the partitions with their group's tiers, half the summed
+    phase variances (the criterion of every other term, as a field read's ``v / 2``); beside it ``err_rounding``, the
+    same without the source's terms, which the floor target holds (``eps^2 / 2`` per term). From a pack ``err_max`` may
+    exceed the floor target's: the same widths, the pack's own error added."""
+    tiers = {g: dict(rounding=_tier_rounding(grp, env, background_amplitude), source=grp["source_quantisation"])
+             for g, grp in groups.items()}
+    err, err_r = 0.0, 0.0
+    for name, p in partitions.items():
+        t = tiers[p["group"]]
+        rounding = p["rounding"]["variance"] + sum(t["rounding"].values())
+        source = p["rounding"]["source_quantisation"] + sum(t["source"].values())
+        err, err_r = max(err, 0.5 * (rounding + source)), max(err_r, 0.5 * rounding)
+    return dict(source=r0["source"]["kind"], terms=r0["certificate"]["terms"],
+                source_terms_per_block=[r["certificate"] for r in recs],
+                rounding={name: p["rounding"] for name, p in partitions.items()}, tiers=tiers,
+                err_max=float(err), err_rounding=float(err_r), floor_term=float(0.5 * eps ** 2))
+
+
 def _background_code(recs, g, eps, amplitude):
     a = np.max([np.asarray(r["groups"][g]["background_amax"], np.float64) for r in recs], axis=0)
     step = float(np.sqrt(12.0) * eps / float(amplitude))
@@ -843,7 +946,8 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
         tw, field_rec = _tier_codes(recs, g, eps, env) if r0["tiers"] else (None, None)
         grp = {k: g0[k] for k in ("partitions", "rf", "dt", "n_t", "readout", "pathway", "tau_t2", "tau_t1")}
         grp.update(contact=bool(g0.get("contact")), field=field_rec, tier_words=tw,
-                   column=(f"t_{g}.npy" if tw is not None else None))
+                   column=(f"t_{g}.npy" if tw is not None else None),
+                   source_quantisation=_source_tier_terms(recs, g, eps))
         if g0.get("background"):
             grp["background"] = dict(_background_code(recs, g, eps, src["background_amplitude"]), column=f"bg_{g}.npy")
         groups[g] = grp
@@ -926,9 +1030,7 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
                     background_amplitude=src["background_amplitude"],
                     blocks=[dict(path=os.path.basename(os.path.normpath(b)), n_rows=int(r["n_rows"]), walk=r["source"]["walk"],
                                  pack=r["source"]["pack"]) for b, r in zip(blocks, recs)]),
-        certificate=dict(source=src["kind"], terms=r0["certificate"]["terms"],
-                         source_terms_per_block=[r["certificate"] for r in recs],
-                         rounding={name: p["rounding"] for name, p in partitions.items()}),
+        certificate=_certificate(r0, recs, partitions, groups, env, src["background_amplitude"], eps),
         partitions=partitions, groups=groups, tiers=tiers,
         columns=dict(w="w.npy", tiles="tiles.npy"),
         bytes_per_walker=_bytes_per_walker(partitions, groups, tiers),
