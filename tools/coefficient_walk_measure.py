@@ -862,6 +862,7 @@ def main(argv=None):
     ap.add_argument("--n-raw", type=int, default=None, help="the raw subset of the multiphysics walk (its measured certificate)")
     ap.add_argument("--bits", type=int, default=None, help="the multiphysics pack's field-mode depth (8 | 16), the pilot's unless given")
     ap.add_argument("--gpu", action="store_true", help="require the JAX device to be a GPU (the timing table)")
+    ap.add_argument("--field", default=None, choices=["closed", "raster"], help="the myelin field multiphysics / read_check read")
     ap.add_argument("--json", default=None, help="write every result as JSON here")
     a = ap.parse_args(argv)
     if a.memory_probe:
@@ -877,6 +878,8 @@ def main(argv=None):
             extra["require_gpu"] = True
         if what == "multiphysics" and a.n_raw is not None:
             extra["n_raw"] = a.n_raw
+        if what in ("multiphysics", "read_check") and a.field is not None:
+            extra["field"] = a.field
         if what == "multiphysics" and a.bits is not None:
             extra["susc_path_bits"] = a.bits
         if what in ("exactness", "quadrature", "memory", "oracle", "surface"):

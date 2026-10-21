@@ -1421,8 +1421,12 @@ def simulate_trajectories(
 
         _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
 
-        comp0_all = (jnp.asarray(geometry._init_compartments)
-                     if (record and uses_myelin_traj) else None)
+        # the myelinated kernels' start compartments: the seeding's own, or the given starts' classified (the seeding
+        # leaves its labels on the geometry, which describe the seeding's positions, not a caller's)
+        comp0_all = None
+        if record and uses_myelin_traj:
+            comp0_all = (jnp.asarray(geometry._init_compartments) if r0 is None
+                         else jax.vmap(geometry.classify_position)(jnp.asarray(r0_all)).astype(jnp.int32))
 
         # ── MT bound-pool equilibration (kappa_MT > 0) ──
         # An all-free start under-fills the macromolecular pool and biases the transfer;

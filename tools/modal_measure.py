@@ -43,7 +43,7 @@ print(json.dumps(dict(device=str(jax.devices()[0]), seconds=min(ts[1:]), compile
 """
 
 
-def _run(what, n, T, K, compare_dir, n_raw=0, bits=0):
+def _run(what, n, T, K, compare_dir, n_raw=0, bits=0, field=""):
     env = dict(os.environ, JAX_PLATFORMS="cuda", PYTHONPATH="/root/sim")
     out = {}
     if what:
@@ -58,6 +58,8 @@ def _run(what, n, T, K, compare_dir, n_raw=0, bits=0):
             args += ["--n-raw", str(n_raw)]
         if bits:
             args += ["--bits", str(bits)]
+        if field:
+            args += ["--field", field]
         t0 = time.time()
         p = subprocess.run(args, capture_output=True, text=True, env=env)
         out["tool"] = dict(returncode=p.returncode, seconds=time.time() - t0, stdout_tail=p.stdout[-4000:], stderr_tail=p.stderr[-4000:])
@@ -72,14 +74,15 @@ def _run(what, n, T, K, compare_dir, n_raw=0, bits=0):
 
 
 @app.function(image=image, gpu="T4", timeout=3 * 3600, memory=32768)
-def measure(what: str, n: int, t_max: float, k_bands: int, compare: bool, n_raw: int = 0, bits: int = 0) -> dict:
-    return _run(what, n, t_max, k_bands, compare, n_raw, bits)
+def measure(what: str, n: int, t_max: float, k_bands: int, compare: bool, n_raw: int = 0, bits: int = 0, field: str = "") -> dict:
+    return _run(what, n, t_max, k_bands, compare, n_raw, bits, field)
 
 
 @app.local_entrypoint()
-def main(what: str = "timing", n: int = 0, t_max: float = 0.0, k_bands: int = 0, out: str = "t4.json", n_raw: int = 0, bits: int = 0):
+def main(what: str = "timing", n: int = 0, t_max: float = 0.0, k_bands: int = 0, out: str = "t4.json", n_raw: int = 0, bits: int = 0,
+         field: str = ""):
     t0 = time.time()
-    res = measure.remote(what, n, t_max, k_bands, bool(COMPARE), n_raw, bits)
+    res = measure.remote(what, n, t_max, k_bands, bool(COMPARE), n_raw, bits, field)
     res["launch_to_result_s"] = round(time.time() - t0, 1)
     Path(out).write_text(json.dumps(res, indent=1, default=str))
     print(json.dumps({k: v for k, v in res.items() if k != "results"}, indent=1, default=str)[:6000])
