@@ -349,8 +349,9 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     every ``n_read`` steps and at the block's end (:func:`read_intervals`: the last interval the shorter one when
     ``n_read`` does not divide ``length``; ``dt_f = n_read dt`` the full interval) and the TRAPEZOID increment of each
     read interval, ``(b_prev + b) tau_i / 2`` over its own length ``tau_i``, at the interval's midpoint: ``F_j`` (m+1,
-    n_ch), ``Qf = sum (inc)^2`` (n_ch,) and the read series' quadratic variation ``Qd = sum (b - b_prev)^2``
-    (n_ch,), the last read carried in ``b_prev``; with ``checks`` (a walk that reads every step) ``E`` (2, n_checks,
+    n_ch), ``Qf = sum (inc)^2`` (n_ch,) and the read series' quadratic variation ``Qd = sum ((b - b_prev) tau_i /
+    dt_f)^2`` (n_ch,; a shorter interval length-weighted, so that ``dt_f^2 / 12 Qd`` is the sum of every interval's own
+    bridge variance, RPK.md 9.5.5), the last read carried in ``b_prev``; with ``checks`` (a walk that reads every step) ``E`` (2, n_checks,
     n_ch): per check ``d`` the trapezoid of every ``d``-th read and the block's end less the trapezoid of every read,
     over the block, and the quadratic variation of the series of those reads (the pilot's measurement of the
     trapezoid's constant, :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch)
@@ -396,6 +397,7 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     def group_of(L):
         """A read interval of ``L`` steps starting at step ``start`` of the block (``L`` static)."""
         half = jnp.float32(0.5 * L * dt_step)
+        wq = jnp.float32(L / n_read)                       # a shorter interval enters the QV as (db dt_i / dt_f)^2
 
         def group(c, start):
             cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec = c
@@ -408,14 +410,14 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
                 tau = (start.astype(jnp.float32) + 0.5 * L) * inv_len - 0.5        # the interval's midpoint
                 mf = mf + (tau ** js)[:, None] * inc[None, :]
                 qf = qf + inc * inc
-                db = b - bp
+                db = (b - bp) * wq
                 qd = qd + db * db                                                # the read series' quadratic variation
                 if checks:                                                       # the d-th reads and the block's end
                     k = start + 1
                     hit = (k % ds == 0) | (k == length)
                     span = jnp.where(k % ds == 0, ds, k % ds).astype(jnp.float32)[:, None]
                     e_d = ec[0] - inc[None, :] + jnp.where(hit[:, None], (bpd + b[None, :]) * span * half_dt, 0.0)
-                    q_d = ec[1] + jnp.where(hit[:, None], (b[None, :] - bpd) ** 2, 0.0)
+                    q_d = ec[1] + jnp.where(hit[:, None], ((b[None, :] - bpd) * span / ds.astype(jnp.float32)[:, None]) ** 2, 0.0)
                     ec = jnp.stack([e_d, q_d])
                     bpd = jnp.where(hit[:, None], b[None, :], bpd)
                 bp = b

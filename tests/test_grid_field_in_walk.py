@@ -152,6 +152,10 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     v = 0.5 * (ref3[:, :-1] + ref3[:, 1:]) * np.diff(at * dt_sim)[None, :, None]    # each trapezoid over its own length
     k0 = v.sum(1) / np.sqrt(w3.T_window)
     np.testing.assert_allclose(np.asarray(w3.field_coeffs, np.float64)[:, 0, 0], k0, rtol=0, atol=2e-5 * np.abs(k0).max())
+    # the read series' QV, the block's last (shorter) interval length-weighted: (db dt_i / dt_f)^2 (RPK.md 9.5.5)
+    wq = np.diff(at) / 3.0
+    qv = ((np.diff(np.asarray(w3.raw_field, np.float64), axis=1) * wq[None, :, None]) ** 2).sum(1)
+    np.testing.assert_allclose(np.asarray(w3.qv_field_increments, np.float64)[:, 0], qv, rtol=1e-3, atol=1e-6 * qv.max())
     a, b = np.asarray(w1.field_coeffs, np.float64), np.asarray(w2.field_coeffs, np.float64)
     assert np.abs(b - a).max() > 1e-5 * np.abs(a).max()                         # the coarser read is a different quadrature
     with pytest.raises(ValueError, match="go with field_basis"):

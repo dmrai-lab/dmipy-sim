@@ -320,16 +320,17 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         K_f = None
 
         @jax.jit
-        def _read_moments(F, Qf, Qd, b_prev, b, j_mid, half_dt_f):
+        def _read_moments(F, Qf, Qd, b_prev, b, j_mid, half_dt_f, w_q):
             """The trapezoid increment of a read interval added to the field's moments at the interval's midpoint, its
-            square to ``Qf`` and the read series' increment squared to ``Qd``."""
+            square to ``Qf`` and the read series' increment, length-weighted by ``w_q = dt_i / dt_f``, squared to
+            ``Qd``."""
             inc = (b_prev + b) * half_dt_f
             pw = (jnp.float32(j_mid) / n_rounds - 0.5) ** js
-            db = b - b_prev
+            db = (b - b_prev) * w_q
             return F + pw[None, :, None] * inc[:, None, :], Qf + inc * inc, Qd + db * db
 
         @jax.jit
-        def _check_reads(E, bpd, b_prev, b, hit, half_dt, half_dt_d):
+        def _check_reads(E, bpd, b_prev, b, hit, half_dt, half_dt_d, w_d):
             """The trapezoid's checks of a pilot that reads every round: per check ``d`` the trapezoid of every ``d``-th
             read and the block's end (``hit`` where this read is one, ``half_dt_d`` half its interval) less the
             trapezoid of every read, and the quadratic variation of the series of those reads (``E`` ``(nb, 2,
@@ -337,7 +338,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             inc = (b_prev + b) * half_dt
             h3 = hit[None, :, None]
             e_d = E[:, 0] - inc[:, None, :] + jnp.where(h3, (bpd + b[:, None, :]) * half_dt_d[None, :, None], 0.0)
-            q_d = E[:, 1] + jnp.where(h3, (b[:, None, :] - bpd) ** 2, 0.0)
+            q_d = E[:, 1] + jnp.where(h3, ((b[:, None, :] - bpd) * w_d[None, :, None]) ** 2, 0.0)
             return jnp.stack([e_d, q_d], axis=1), jnp.where(h3, b[:, None, :], bpd)
 
         @jax.jit
@@ -502,12 +503,14 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                             span = (j + 1) - (((j + 1) - 1) // n_read_) * n_read_     # this read interval's rounds
                             b_now = at_dev(r, seg, keep)
                             F, qf, qd = _read_moments(F, qf, qd, b_prev, b_now, jnp.float32(j + 1 - 0.5 * span),
-                                                      jnp.float32(0.5 * span * dt_round))
+                                                      jnp.float32(0.5 * span * dt_round), jnp.float32(span / n_read_))
                             if ec is not None:
                                 k = j + 1
                                 hit = jnp.asarray([k % d == 0 or k == n_rounds for d in checks_])
-                                half_d = jnp.asarray([0.5 * (d if k % d == 0 else k % d) * dt_round for d in checks_], jnp.float32)
-                                ec, bpd = _check_reads(ec, bpd, b_prev, b_now, hit, jnp.float32(0.5 * dt_round), half_d)
+                                span_d = [(d if k % d == 0 else k % d) for d in checks_]
+                                half_d = jnp.asarray([0.5 * sp * dt_round for sp in span_d], jnp.float32)
+                                w_d = jnp.asarray([sp / d for sp, d in zip(span_d, checks_)], jnp.float32)
+                                ec, bpd = _check_reads(ec, bpd, b_prev, b_now, hit, jnp.float32(0.5 * dt_round), half_d, w_d)
                             if raw and keep_reads:
                                 fs_raw[:, (t - 1) * rpb + int(np.searchsorted(sorted(ends), j + 1)) + 1] = np.asarray(b_now)
                             b_prev = b_now
