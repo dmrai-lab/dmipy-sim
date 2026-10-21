@@ -70,6 +70,25 @@ def _length_inside(A, AB, lo, hi):
     return np.maximum(t1 - t0, 0.0) * np.linalg.norm(AB, axis=1)
 
 
+class _WithoutTrace:
+    """A far grid stored with all thirteen channels (``iso_P_zz`` at index 3: the grids built before the pack carried
+    twelve), read as the twelve the engine carries: ``iso_P_zz`` is dropped as the file is read, slab by slab, and the
+    file stays as it is (RPK.md 5.3: ``iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy`` is never stored)."""
+
+    def __init__(self, a):
+        self._a = a
+        self.shape = tuple(a.shape[:-1]) + (12,); self.dtype = a.dtype; self.ndim = a.ndim
+
+    def __getitem__(self, idx):
+        return np.delete(np.asarray(self._a[idx]), 3, axis=-1)
+
+    def __array__(self, dtype=None, copy=None):
+        out = np.empty(self.shape, self.dtype if dtype is None else dtype)
+        for i in range(self.shape[0]):
+            out[i] = self[i]
+        return out
+
+
 @dataclass(frozen=True)
 class FarGrid:
     """The far part of a strand substrate's field on a coarse grid: the superposition over every segment within the
@@ -81,7 +100,7 @@ class FarGrid:
     short-range direct part and a smooth mesh part, with a smoothstep in place of the Gaussian): a dipole line's
     1/r^2 tail cannot be cut, and summing every segment at every walker sample cannot be paid, so the near part is
     summed exactly and the far part, which the switch has made smooth, is tabulated once -- once per substrate,
-    since the strands never move, unlike an N-body code's mesh (issue #217). ``values`` ``(nx, ny, nz, 13)`` on the
+    since the strands never move, unlike an N-body code's mesh (issue #217). ``values`` ``(nx, ny, nz, 12)`` on the
     nodes ``origin + (i, j, k) * spacing_m``; ``cutoff_m`` the superposition cutoff the grid summed to. On disk a
     ``.npy`` of the values with a ``.json`` of the rest beside it; :meth:`load` maps the values from the file, so
     the host holds no copy of a grid that lives on the device (DiSCo's is 1.7 GB)."""
@@ -119,7 +138,7 @@ class FarGrid:
     def save(self, path):
         """The grid: ``path`` (``.npy``, the values) and its ``.json`` beside it (origin, spacing, switch, cutoff)."""
         npy, meta = self._paths(path)
-        np.save(npy, np.ascontiguousarray(self.values))
+        np.save(npy, np.ascontiguousarray(np.asarray(self.values)))
         json.dump(dict(origin_m=[float(x) for x in self.origin_m], spacing_m=float(self.spacing_m), near_m=float(self.near_m),
                        blend_m=float(self.blend_m), cutoff_m=float(self.cutoff_m)), open(meta, "w"), indent=1)
 
@@ -128,7 +147,12 @@ class FarGrid:
         """The grid from ``path`` (``.npy``), its values memory-mapped: the file backs them, the host keeps no copy."""
         npy, meta = cls._paths(path)
         m = json.load(open(meta))
-        return cls(tuple(float(x) for x in m["origin_m"]), float(m["spacing_m"]), np.load(npy, mmap_mode="r"), float(m["near_m"]),
+        v = np.load(npy, mmap_mode="r")
+        if v.shape[-1] == 13:                                       # a grid stored with iso_P_zz: read without it
+            v = _WithoutTrace(v)
+        elif v.shape[-1] != 12:
+            raise ValueError(f"a far grid carries 12 channels (or 13 with iso_P_zz, which is dropped on reading); {npy} has {v.shape[-1]}")
+        return cls(tuple(float(x) for x in m["origin_m"]), float(m["spacing_m"]), v, float(m["near_m"]),
                    float(m["blend_m"]), float(m["cutoff_m"]))
 
 
@@ -223,11 +247,11 @@ class StrandFieldBasis:
 
     # ------------------------------------------------------------------ the mean over the domain (closed form)
     def _domain_mean(self):
-        """The 13 channels averaged over the domain: per strand, its length inside the domain times the uniform
+        """The 12 channels averaged over the domain: per strand, its length inside the domain times the uniform
         parts of its lumen and sheath fields (the cos 2 alpha terms average to zero around every strand)."""
         lo, hi = np.asarray(self.domain[0]), np.asarray(self.domain[1])
         V = float(np.prod(hi - lo))
-        mean = np.zeros(13)
+        mean = np.zeros(12)
         for c, a, b in zip(self.centerlines, self.inner_radii, self.outer_radii):
             seg = c[1:] - c[:-1]; L = np.linalg.norm(seg, axis=1)
             w = _length_inside(c[:-1], seg, lo, hi)                                    # per segment, the length in the box
@@ -237,15 +261,16 @@ class StrandFieldBasis:
             u = seg[keep] / L[keep][:, None]; w = w[keep]
             UU = np.einsum("k,ki,kj->ij", w, u, u); Pt = np.eye(3) * w.sum() - UU              # length-weighted
             sym6 = lambda M: np.array([M[0, 0], M[1, 1], M[2, 2], M[0, 1], M[0, 2], M[1, 2]])
+            sym5 = lambda M: np.array([M[0, 0], M[1, 1], M[0, 1], M[0, 2], M[1, 2]])
             f_l = np.pi * a ** 2 / V; f_s = np.pi * (b ** 2 - a ** 2) / V
             mean[0] += f_s * w.sum() / 3.0
-            mean[1:7] += f_s * 0.5 * sym6(Pt)
-            mean[7:13] += f_l * 0.5 * np.log(b / a) * sym6(Pt) + f_s * ((0.5 * annulus_mean_log(a, b) - 5.0 / 18.0) * sym6(Pt) - sym6(UU) / 9.0)
+            mean[1:6] += f_s * 0.5 * sym5(Pt)
+            mean[6:12] += f_l * 0.5 * np.log(b / a) * sym6(Pt) + f_s * ((0.5 * annulus_mean_log(a, b) - 5.0 / 18.0) * sym6(Pt) - sym6(UU) / 9.0)
         return mean
 
     @property
     def mean(self):
-        """The 13-channel domain mean that :meth:`channels` subtracts."""
+        """The 12-channel domain mean that :meth:`channels` subtracts."""
         return self._mean.copy()
 
     channel_names = CHANNEL_NAMES
@@ -317,7 +342,7 @@ class StrandFieldBasis:
         ix = jnp.clip(i0[0] + jnp.arange(-1, 3), 0, self._FAR_N[0] - 1)
         iy = jnp.clip(i0[1] + jnp.arange(-1, 3), 0, self._FAR_N[1] - 1)
         iz = jnp.clip(i0[2] + jnp.arange(-1, 3), 0, self._FAR_N[2] - 1)
-        cube = self._FAR[ix[:, None, None], iy[None, :, None], iz[None, None, :]].astype(jnp.float32)   # (4, 4, 4, 13)
+        cube = self._FAR[ix[:, None, None], iy[None, :, None], iz[None, None, :]].astype(jnp.float32)   # (4, 4, 4, 12)
         return jnp.einsum("a,b,c,abcd->d", wx, wy, wz, cube)
 
     def _segment(self, p, seg):
@@ -325,7 +350,7 @@ class StrandFieldBasis:
         outside the sheath (:func:`segment_basis`: the dipole kernel integrated along it, continued at the surface
         within the sheath's radius), its infinite cylinder's whole basis (the interior formulas inside: what the
         nearest segment carries within the gate), and the distance from ``p`` to it (to the capsule, what the
-        cutoff and the switch measure): ``(K (k, 13), C_inf (k, 13), d (k,))``."""
+        cutoff and the switch measure): ``(K (k, 12), C_inf (k, 12), d (k,))``."""
         A, AB, AB2, ra, rb = self._A, self._AB, self._AB2, self._a, self._b
         As = A[seg]; ABs = AB[seg]
         L = jnp.sqrt(AB2[seg]); u = ABs / L[:, None]
@@ -343,11 +368,11 @@ class StrandFieldBasis:
         return K, d
 
     def _channels_kernel(self, weight, *, gate=True):
-        """``(p, segments, keep) -> (13,)`` summing the kept segments within the gather radius with ``weight(d)``
+        """``(p, segments, keep) -> (12,)`` summing the kept segments within the gather radius with ``weight(d)``
         (``d`` the distance to the segment): the whole field, the near part ``1 - S``, or the far part ``S``. Every
         segment's term is its exact field (:meth:`_segment`); with ``gate``, the nearest strand's own terms are replaced
         by its nearest segment's whole cylinder within the gate (``NEAREST_GATE_RADII``; at a tie, the lower segment
-        index), the only local terms there are (membership, not a field: ``tr M_P = 3 iso_local`` holds); the far
+        index), the only local terms there are (membership, not a field: ``tr M_P = 3 iso_local`` holds, ``iso_P_zz`` being formed from it); the far
         part carries no local term (the gate ends before the switch starts)."""
         reach = jnp.float32(self.gather_radius_m); n_seg = self.n_segments
         g_w = jnp.float32(self.NEAREST_GATE_RADII); tie = jnp.float32(1e-6 * self.gather_radius_m)   # float32 rounding
@@ -369,7 +394,7 @@ class StrandFieldBasis:
         return one
 
     def channels_at_device(self):
-        """The jitted, vmapped ``(p, segments, keep) -> (13,)``: the bare channels at ``p`` from the given segments
+        """The jitted, vmapped ``(p, segments, keep) -> (12,)``: the bare channels at ``p`` from the given segments
         (each its exact segment field, the radial vector taken at ``p``), summed
         over the kept ones within the gather radius of ``p`` (a list gathered with a margin is masked here); with a far
         grid, the near part ``(1 - S)`` of those plus the grid's far part at ``p``. No mean is subtracted here."""
@@ -431,7 +456,7 @@ class StrandFieldBasis:
             origin = lo
             ijk = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), -1).reshape(-1, 3)
             P = (origin[None, :] + ijk * h).astype(np.float32)
-            out = np.empty((P.shape[0], 13), np.float32)
+            out = np.empty((P.shape[0], 12), np.float32)
             log = logging.getLogger("dmipy_sim")
             if all_strands:                                          # every strand, no cutoff: the exact far part
                 at_all = self.far_channels_all_device(near, blend)
@@ -461,12 +486,12 @@ class StrandFieldBasis:
                         raise ValueError(f"a node has more than segments_max={self.segments_max} segments within the cutoff")
                     out[i:i + m] = np.asarray(at(Pd, seg, keep))[:m]
                 cutoff = self.cutoff_m
-            values = out.reshape(tuple(n) + (13,)).astype(dtype)
+            values = out.reshape(tuple(n) + (12,)).astype(dtype)
             return FarGrid(tuple(float(x) for x in origin), h, values, near, blend, cutoff)
 
     def far_channels_all_device(self, near_m, blend_m):
         """The jitted far part at a chunk of points summed over EVERY segment (no cutoff, no gather): ``(chunk, 3)
-        -> (chunk, 13)``, the segments taken in blocks of ``FAR_BLOCK`` so the device holds ``chunk x FAR_BLOCK``
+        -> (chunk, 12)``, the segments taken in blocks of ``FAR_BLOCK`` so the device holds ``chunk x FAR_BLOCK``
         terms at a time; what the exact far grid is built with."""
         n_seg = self.n_segments; blk = int(self.FAR_BLOCK); n_blk = -(-n_seg // blk)
         idx = np.arange(n_blk * blk); msk = idx < n_seg; idx = np.where(msk, idx, 0)
@@ -499,14 +524,14 @@ class StrandFieldBasis:
         return batch
 
     def channels(self, points, *, chunk=None):
-        """``(n, 13)`` channels at ``points`` ``(n, 3)`` (metres), domain mean subtracted."""
+        """``(n, 12)`` channels at ``points`` ``(n, 3)`` (metres), domain mean subtracted."""
         P = np.asarray(points, np.float32).reshape(-1, 3)
         if self._batch is None:
             self._batch = self._build()
         if chunk is None:                                       # ~2 GB of device arrays per chunk: the candidates'
             k_max = min(self.segments_max + 1, 27 * self._cap)  # distances and the closed form
             chunk = max(64, int(2e9 // max(27 * self._cap * 48 + k_max * 9 * 4 * 24, 1)))
-        out = np.empty((P.shape[0], 13), np.float64)
+        out = np.empty((P.shape[0], 12), np.float64)
         logging.getLogger("dmipy_sim").debug("StrandFieldBasis.channels: %d points in chunks of %d", P.shape[0], chunk)
         for i in range(0, P.shape[0], chunk):
             Pc = P[i:i + chunk]; m = Pc.shape[0]
@@ -537,4 +562,4 @@ class StrandFieldBasis:
         c1 = self.channels(points); c2 = self.with_cutoff(2.0 * self.cutoff_m).channels(points)
         d = (c1 - c2) - (c1 - c2).mean(0); r = c2 - c2.mean(0)
         rel = lambda sl: float(np.sqrt((d[:, sl] ** 2).sum() / max((r[:, sl] ** 2).sum(), 1e-300)))
-        return {"iso": rel(slice(0, 7)), "aniso": rel(slice(7, 13))}
+        return {"iso": rel(slice(0, 6)), "aniso": rel(slice(6, 12))}

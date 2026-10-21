@@ -16,14 +16,14 @@ A, B = 1.0e-6, 1.4e-6
 
 @pytest.fixture(scope="module")
 def kspace():
-    """One hollow cylinder along z on a 20 um box at 0.1 um (images ~0.2 %), the 13 k-space channels per voxel."""
+    """One hollow cylinder along z on a 20 um box at 0.1 um (images ~0.2 %), the 12 carried k-space channels per voxel."""
     lo, hi = np.array([-10e-6, -10e-6, -0.3e-6]), np.array([10e-6, 10e-6, 0.3e-6])
     fg = field_grid_of(d.MyelinatedCylinder(A, B, (0, 0, 1), 1.7e-9, 1.7e-9), res=0.1e-6, box=(lo, hi), mask_supersample=4)
     bs = fg.basis; shape = tuple(bs["shape"]); vs = np.asarray(bs["voxel_size"]); org = np.asarray(fg.origin)
     ax = [org[k] + (np.arange(shape[k]) + 0.5) * vs[k] for k in range(3)]
     X, Y, Z = np.meshgrid(*ax, indexing="ij")
     P = np.stack([X.ravel(), Y.ravel(), Z.ravel()], 1)
-    K = np.concatenate([bs["iso_local"].reshape(-1, 1), bs["iso_P"].reshape(6, -1).T, bs["aniso_G"].reshape(6, -1).T], 1)
+    K = np.concatenate([bs["iso_local"].reshape(-1, 1), bs["iso_P"][[0, 1, 3, 4, 5]].reshape(5, -1).T, bs["aniso_G"].reshape(6, -1).T], 1)
     return P, K
 
 
@@ -38,7 +38,7 @@ def test_every_channel_matches_the_kspace_route_in_every_region(kspace):
     tol = {"lumen": 0.03, "sheath": 0.06, "near": 0.02, "far": 0.01}       # of the component's max |value|
     for j, name in enumerate(CHANNEL_NAMES):
         scale = np.abs(K[:, j]).max()
-        if scale < 1e-9:                                                   # xz, yz, zz(iso) vanish for an axis along z
+        if scale < 1e-9:                                                   # xz, yz vanish for an axis along z
             assert np.abs(C[:, j] - C[:, j].mean()).max() < 1e-9, name
             continue
         Cj = C[:, j] - C[:, j].mean()                                      # the k-space grids are zero-mean
@@ -50,7 +50,7 @@ def test_every_channel_matches_the_kspace_route_in_every_region(kspace):
 def test_the_contraction_is_the_grid_assembly(kspace):
     """`contract` on channels equals `assemble_field` on the grids the channels came from."""
     P, K = kspace
-    basis = {"iso_local": K[:, 0], "iso_P": K[:, 1:7].T, "aniso_G": K[:, 7:13].T, "shape": (len(P),), "voxel_size": np.ones(1)}
+    basis = {"iso_local": K[:, 0], "iso_P": np.concatenate([K[:, 1:3], (3 * K[:, 0] - K[:, 1] - K[:, 2])[:, None], K[:, 3:6]], 1).T, "aniso_G": K[:, 6:12].T, "shape": (len(P),), "voxel_size": np.ones(1)}
     for H in ([0.3, -0.4, 0.86], [1.0, 0.0, 0.0]):
         got = contract(K, H, B0=3.0, chi_iso=-0.05e-6, chi_aniso=-0.1e-6)
         want = assemble_field(basis, H, B0=3.0, chi_iso=-0.05e-6, chi_aniso=-0.1e-6)
@@ -71,7 +71,7 @@ def test_the_bloch_myelin_provider_is_the_closed_form_everywhere(theta_deg, alph
     ph = np.array([0.0, 0.4, 1.1, 2.0, 3.0, 4.2, 5.0, 6.0])
     p = np.stack([r * np.cos(ph), r * np.sin(ph), np.zeros(8)], 1)
     C = np.asarray(hollow_cylinder_basis(p, np.tile([0.0, 0.0, 1.0], (8, 1)), np.full(8, A), np.full(8, B)))
-    want = dchi * B0 * (C[:, 7:13] @ q_of_H(H))
+    want = dchi * B0 * (C[:, 6:12] @ q_of_H(H))
     got = np.asarray(f(jnp.asarray(p, jnp.float32)))
     np.testing.assert_allclose(got, want, rtol=2e-4, atol=1e-13)
 

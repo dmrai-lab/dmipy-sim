@@ -56,7 +56,7 @@ def test_the_field_is_read_at_its_interval_and_the_walk_is_unchanged(walks):
     assert wc.field_read_interval == pytest.approx(BLOCK / 2) == fc["dt_f"]               # the extra pool's round
     assert fc["at_step"] and fc["n_read"] == 1                                            # the given read is below its round
     assert wc.field_read_interval < wd.field_read_interval                               # the derived read is coarser here
-    assert wd.field_coeffs.shape == wc.field_coeffs.shape == (60, 1, wd.K_c3, 13)
+    assert wd.field_coeffs.shape == wc.field_coeffs.shape == (60, 1, wd.K_c3, 12)
     a, b = np.asarray(wd.field_coeffs, np.float64), np.asarray(wc.field_coeffs, np.float64)
     assert np.abs(a - b).max() > 1e-5 * np.abs(a).max()                           # a different quadrature of the same field
     assert np.abs(a - b).max() < 0.1 * np.abs(a).max()                            # of the same function
@@ -72,10 +72,10 @@ def test_the_default_interval_is_the_rule_on_the_pilots_read_series(spec, walks)
     assert set(fr["pools"]) == {"intra", "extra"} and fr["pilot_walkers"] > 0
     for name, p in fr["pools"].items():
         qv = np.asarray(p["qv_increments"])
-        assert qv.shape == (13,) and (qv >= 0).all() and qv.sum() > 0              # the walkers move through the field
+        assert qv.shape == (12,) and (qv >= 0).all() and qv.sum() > 0              # the walkers move through the field
         assert p["dt_f_rule"] == pytest.approx(field_read_rule(qv, fr["B0"], fr["chi"], fr["floor"], p["constants"]))
         assert np.all(np.asarray(fr["constants"]) >= np.asarray(p["constants"]))          # the bundle charges the largest
-    assert len(fr["constants"]) == 13 and min(fr["constants"]) >= 1.0 / 12.0 - 1e-15
+    assert len(fr["constants"]) == 12 and min(fr["constants"]) >= 1.0 / 12.0 - 1e-15
     assert fr["measured_constants"]                                               # measured at the coarser reads
     n_read, dt_f = field_read_steps(fr["dt_f_rule"], fr["step_s"], int(round(wd.block["h"] / fr["step_s"])))
     assert (n_read, wd.field_read_interval) == (fr["n_read"], pytest.approx(dt_f)) and dt_f == pytest.approx(fr["dt_f"])

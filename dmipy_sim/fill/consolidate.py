@@ -261,28 +261,10 @@ class Consolidator:
         self.n_rows = 0; self.n_blocks = 0
         self.meta0 = None; self.ident0 = None; self.fid = []; self.chan = []; self.reads = []; self.seeds = []; self.prov = []
         self.acc = {"band_sq": None, "band_n": 0, "band_max": None, "path_sq": None, "path_n": 0}
-        self.grid = None; self.normalised = []; self.strays = 0; self.band_groups = None; self.path_groups = ()
+        self.grid = None; self.strays = 0; self.band_groups = None; self.path_groups = ()
         self.repaired = None
 
     # ---- a shard
-    def normalise_path(self, name, pk, meta):
-        """A shard whose path channel STORES ``iso_P_zz`` brought to the layout of one that implies it: the stored
-        channel dropped from the coefficients and the scale table, the channel declared implied (``-(P_xx + P_yy)``,
-        what every consumer of the implied form computes), the shard's measured trace residual kept."""
-        sp = (meta.get("compression", {}).get("channels") or {}).get("susc_field_basis")
-        if not sp or sp.get("iso_P_zz") != "stored":
-            return meta
-        i = list(sp["channels"]).index("iso_P_zz")
-        arrays = dict(pk.arrays)
-        for k in [k for k in arrays if k.startswith("susc_path_dct")]:        # the single tensor or every range of a container
-            arrays[k] = np.delete(np.asarray(arrays[k]), i, axis=1)
-        arrays["susc_path_scale"] = np.delete(np.asarray(arrays["susc_path_scale"]), i, axis=-2)
-        meta = json.loads(json.dumps(meta)); sp = meta["compression"]["channels"]["susc_field_basis"]
-        sp["channels"] = [c for c in sp["channels"] if c != "iso_P_zz"]; sp["n_ch"] = len(sp["channels"]); sp["iso_P_zz"] = "implied"
-        pk.arrays = arrays; pk.meta = meta
-        self.normalised.append({"shard": name, "trace_residual": sp.get("trace_residual")})
-        return meta
-
     @staticmethod
     def no_grid(name):
         return ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel) and no voxel grid is given: the grid is "
@@ -318,7 +300,6 @@ class Consolidator:
         from ..replay.compression import read_position_coeffs
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
-        meta = self.normalise_path(name, pk, meta)
         # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
         # shard's own, else the recipe's)
         ident = dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
@@ -421,7 +402,7 @@ class Consolidator:
         st = dict(done=self.done, n_rows=self.n_rows, n_blocks=self.n_blocks, columns={k: c.state() for k, c in self.columns.items()},
                   column_defs={k: [c.dtype.name, list(c.row_shape)] for k, c in self.columns.items()},
                   index=self.index, seeds=self.seeds, prov=self.prov, fid=self.fid, chan=self.chan, reads=self.reads, meta0=self.meta0, ident0=self.ident0,
-                  uploaded=list(self.up.done), normalised=self.normalised, band_groups=list(self.band_groups), path_groups=list(self.path_groups),
+                  uploaded=list(self.up.done), band_groups=list(self.band_groups), path_groups=list(self.path_groups),
                   repaired=self.repaired)
         np.savez(os.path.join(self.out, "state.npz"), **{k: (np.asarray(v) if v is not None else np.zeros(0)) for k, v in self.acc.items()},
                  **{f"scale__{k}__{i}": a for k, arrs in self.scales.items() for i, a in enumerate(arrs)},
@@ -445,7 +426,7 @@ class Consolidator:
             for rec in c.parts:
                 if rec["file"] not in on_hub and os.path.exists(os.path.join(self.out, rec["file"])):
                     self.up.put(os.path.join(self.out, rec["file"]), rec["file"])
-        self.up.done = list(on_hub); self.normalised = list(st.get("normalised") or [])
+        self.up.done = list(on_hub)
         for k in self.acc:
             a = z[k]; self.acc[k] = (int(a) if k.endswith("_n") else (None if a.size == 0 else a))
         for f in z.files:
@@ -532,7 +513,7 @@ class Consolidator:
                             "band_variance": (self.acc["band_sq"] / self.acc["band_n"]).T.tolist(),
                             "band_variance_max": (None if self.acc["band_max"] is None else self.acc["band_max"].T.tolist()),
                             "path_mode_variance": (None if self.acc["path_sq"] is None else (self.acc["path_sq"] / self.acc["path_n"]).tolist()),
-                            "path_zz_dropped": self.normalised, "stray_certificate_rows": self.strays,
+                            "stray_certificate_rows": self.strays,
                             "repair": (None if not rep else dict(voxels=len(rep["voxels"]), shards=len(self.done) - rep["first_shard"]))}
         columns = {k: c_.manifest(self.n_rows) for k, c_ in self.columns.items()}
         for k, v in tables.items():

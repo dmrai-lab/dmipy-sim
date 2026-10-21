@@ -132,7 +132,7 @@ def _field_basis_for_slab(shape=(24, 24, 24), seed=3):
     """A smooth synthetic field basis on a grid spanning the slab walk.
 
     iso_P is built so the exact trace identity P_xx+P_yy+P_zz == 3*iso_local holds (as it does for an
-    un-apodised dipole solve), which is what lets the encoder drop iso_P_zz.
+    un-apodised dipole solve), which is what a reader's iso_P_zz = 3 iso_local - xx - yy rests on.
     """
     rng = np.random.default_rng(seed)
     lo, hi = -8e-6, 14e-6
@@ -163,16 +163,16 @@ def _env7(**kw):
 
 def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capability():
     """The pack of a walk that read the field: the modes accumulated IN the walk on the window's cosine basis, the
-    band fixed by the producer's pilot, ``iso_P_zz`` implied by the trace identity, no save grid in the descriptor,
+    band fixed by the producer's pilot, ``iso_P_zz`` not a channel (a reader forms it), no save grid in the descriptor,
     and the measured certificate at the CPMG depth the band serves."""
     w = _susc_walk(300, seed=2)
-    assert w.has_field and w.field_coeffs.shape == (300, 1, w.K_c3, 7) and w.block["field_band"]["rule"] == "pilot"
+    assert w.has_field and w.field_coeffs.shape == (300, 1, w.K_c3, 6) and w.block["field_band"]["rule"] == "pilot"
     pk = build_replay_pack(w, id="test/slab-susc", envelope=_env7(), K=16, fidelity="measured",
                            license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     K = pm["K"]
     assert K == w.K_c3 and pm["T"] == pytest.approx(T_WALK) and "n_t" not in pm and "dt" not in pm
-    assert pm["iso_P_zz"] == "implied" and pm["n_ch"] == 6 and pm["sampling"] == "accumulated_in_walk"
+    assert "iso_P_zz" not in pm["channels"] and pm["n_ch"] == 6 and pm["sampling"] == "accumulated_in_walk" and pm["trace_residual"] < 1e-9
     assert pm["max_refocus_pulses"] == K // 2 and pm["read_interval"] == pytest.approx(w.field_read_interval)
     # the container is derived for the walk's own mode scales at the pack's floor: ranges of modes at 3..16 bits, each
     # stored under its range's tensor, the field's quantisation carried in the pack's quantisation term
@@ -183,9 +183,9 @@ def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capa
     assert pk.arrays["susc_path_scale"].shape == (pm["n_ch"], K)
     assert pk.meta["walk_params"]["field_read_interval"] == pytest.approx(w.field_read_interval)
     assert "field" in pk.meta["walk_params"]["qv"] and "field" in pk.fidelity["terms"]["quadrature"] and "field_read" in pk.fidelity["terms"]
-    # decode restores all 7 channels in canonical order, on a reader's sampling of the window
+    # decode returns the 6 channels in canonical order, on a reader's sampling of the window
     b, names = bank.susc_path_decode(pk.arrays, pm, n_t=N_T)
-    assert names[:4] == ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"] and b.shape == (300, 7, N_T)
+    assert names[:4] == ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_xy"] and b.shape == (300, 6, N_T)
     f = pk.fidelity
     assert f["susc_path_pulses_certified"] == K // 2
     assert f["err_susc_path"] <= 2.0 * f["floor_susc_path"] + 1e-9
@@ -197,7 +197,7 @@ def test_the_modes_are_the_block_means_cosine_transform():
     at the walk's read instants, over the block): ``c_k = sqrt(h) X_k`` with ``X`` the orthonormal DCT-II of the means
     (the block-mean quadrature of the trapezoid reads), the k = 0 mode the window integral."""
     from scipy.fft import dct
-    w = _susc_walk(120, seed=5)
+    w = _susc_walk(120, seed=5, field_read_interval=DT / 11)                # a read every step: the raw reads are the walk's
     from dmipy_sim.replay.compression import quadrature_rel
     r = np.asarray(w.raw_field, np.float64)
     trap = 0.5 * (r[:, :-1] + r[:, 1:])                                                    # one per read interval
@@ -214,18 +214,19 @@ def test_the_modes_are_the_block_means_cosine_transform():
     assert (rel[1:] <= bound[1:] + 1e-5).all(), (rel, bound)
 
 
-def test_susc_path_keeps_zz_when_trace_identity_is_broken():
-    """A k-space window applied to iso_P but not iso_local breaks the identity; the encoder must
-    detect that and store all six iso_P rather than reconstruct a wrong zz."""
+def test_a_broken_trace_identity_is_a_recorded_diagnostic_and_zz_is_still_formed():
+    """A k-space window applied to iso_P but not iso_local breaks the identity. The pack carries twelve components
+    regardless (RPK.md 5.3): the residual the grid measured is recorded as ``trace_residual`` and ``iso_P_zz`` is
+    formed from the trace at read, never stored."""
     fb, origin = _field_basis_for_slab()
     fb = dict(fb, iso_P=fb["iso_P"] * 1.05)                                 # break the trace
     w = _slab_walk(200, seed=3, field_basis=FieldGrid(fb, origin), magnetic=True)
     pk = build_replay_pack(w, id="test/slab-susc-broken", envelope=_env7(), K=16, license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
-    assert pm["iso_P_zz"] == "stored" and pm["n_ch"] == 7
-    assert pm["trace_residual"] > 1e-6
+    assert "iso_P_zz" not in pm["channels"] and pm["n_ch"] == 6 and "iso_P_zz" not in pm
+    assert pm["trace_residual"] > 1e-3 and pm["trace_residual"] == pytest.approx(FieldGrid(fb, origin).trace_residual)
     b, names = bank.susc_path_decode(pk.arrays, pm, n_t=N_T)
-    assert b.shape[1] == 7 and names.count("iso_P_zz") == 1
+    assert b.shape[1] == 6 and "iso_P_zz" not in names
 
 
 def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_path():

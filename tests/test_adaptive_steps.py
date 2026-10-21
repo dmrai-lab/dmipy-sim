@@ -97,7 +97,7 @@ def test_the_walk_samples_the_field_it_carries():
                           domain=(np.full(3, -10e-6), np.full(3, 10e-6)))
     w = simulate_trajectories_adaptive(400, D, g, 1e-3, 2.5e-4, seed=4, require_gpu=False, walker_batch_size=400,
                                        sub_steps=64, steps_per_round=64, field_basis=sf, raw_subset=400)
-    assert w.raw_field.shape == (400, 5, 13) and w.field_basis is sf and w.has_field
+    assert w.raw_field.shape == (400, 5, 12) and w.field_basis is sf and w.has_field
     at = [sf.channels(w.raw_positions[:, k]) for k in range(5)]
     for k in range(5):
         np.testing.assert_allclose(w.raw_field[:, k], at[k], rtol=0, atol=2e-6)
@@ -107,7 +107,7 @@ def test_the_walk_samples_the_field_it_carries():
     w2 = simulate_trajectories_adaptive(400, D, g, 1e-3, 2.5e-4, seed=4, require_gpu=False, walker_batch_size=400,
                                         sub_steps=64, steps_per_round=16, field_basis=sf, raw_subset=400,
                                         field_read_interval=2.5e-4 / 4)
-    assert w2.raw_field.shape == (400, 17, 13) and w2.reads_per_block == 4
+    assert w2.raw_field.shape == (400, 17, 12) and w2.reads_per_block == 4
     for k in range(5):
         np.testing.assert_allclose(w2.raw_field[:, 4 * k], sf.channels(w2.raw_positions[:, k]), rtol=0, atol=2e-6)
     assert np.abs(w2.raw_field[:, 2] - w2.raw_field[:, 4]).max() > 1e-4         # the field along the way

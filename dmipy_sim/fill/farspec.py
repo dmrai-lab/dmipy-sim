@@ -1,6 +1,6 @@
 """The far grid's crop as a truncated, shell-quantized spectrum (dmrai-lab/tessera#49 step 6): ``far_spec.npz``.
 
-A block kit carries the far-field crop ``V`` (float16, shape ``(nx, ny, nz, 13)``, the 13 channels of
+A block kit carries the far-field crop ``V`` (float16, shape ``(nx, ny, nz, 12)``, the 12 channels of
 :data:`FIELD_CHANNELS`) so the walker can sample the susceptibility field away from the strands. The field is
 smooth at the scale of the walk, so the crop is stored as the Fourier coefficients of its wavenumbers up to
 ``k_cut = 2 pi / wavelength_min_m``, quantized per shell the way the replay pack's container quantizes bands:
@@ -16,14 +16,15 @@ smooth at the scale of the walk, so the crop is stored as the Fourier coefficien
 ``q16``       int16 ``(n16, 11, 2)``  (re, im) of the 16-bit shells' coefficients scaled by ``scale`` to ``[-32767, 32767]``;
 ``q8``        int8 ``(n8, 11, 2)``    the same for the 8-bit shells, to ``[-127, 127]``.
 
-The stored channels are :data:`STORED` (11 of the 13): ``iso_local`` is zero in the far part (:func:`pack_far`
-refuses a crop where it is not) and ``iso_P_zz = 3 iso_local - xx - yy = -(xx + yy)`` is rebuilt. There is no index:
+The stored channels are :data:`STORED` (11 of the 12): ``iso_local`` is zero in the far part (:func:`pack_far`
+refuses a crop where it is not) and is rebuilt as zero (``iso_P_zz`` is not a channel: ``3 iso_local - xx - yy``, formed by
+the reader). There is no index:
 the kept set is the wavenumbers ``|k| <= k_cut`` of the ``rfftn`` grid ``(nx, ny, nz // 2 + 1)`` (``k = 2 pi
 fftfreq / spacing`` on axes 0 and 1, ``rfftfreq`` on axis 2); the coefficients run by increasing shell
 ``floor(|k| / k_cut * n_shells)`` (clipped to ``n_shells - 1``) and within a shell in C order of that grid.
 
 :func:`unpack_far` rebuilds the mask and shells, dequantizes (``q * scale / 32767`` or ``/ 127``), scatters, inverts
-with ``irfftn(s=shape)``, adds the mean, rebuilds the two channels and casts to float16. It uses numpy only, so a
+with ``irfftn(s=shape)``, adds the mean, rebuilds ``iso_local`` and casts to float16. It uses numpy only, so a
 node without dmipy-sim ports it verbatim."""
 from __future__ import annotations
 
@@ -32,11 +33,11 @@ import zipfile
 
 import numpy as np
 
-FIELD_CHANNELS = ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz",
+FIELD_CHANNELS = ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_xy", "iso_P_xz", "iso_P_yz",
                   "aniso_G_xx", "aniso_G_yy", "aniso_G_zz", "aniso_G_xy", "aniso_G_xz", "aniso_G_yz")
-STORED = tuple(c for c in FIELD_CHANNELS if c not in ("iso_local", "iso_P_zz"))
+STORED = tuple(c for c in FIELD_CHANNELS if c != "iso_local")
 _STORED_IDX = [FIELD_CHANNELS.index(c) for c in STORED]
-_XX, _YY, _ZZ, _LOC = (FIELD_CHANNELS.index(c) for c in ("iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_local"))
+_LOC = FIELD_CHANNELS.index("iso_local")
 N_SHELLS = 16
 K16 = 2.0 * np.pi / 20e-6
 
@@ -87,7 +88,7 @@ def pack_far(values, spacing_m, wavelength_min_m=10e-6, *, n_shells=N_SHELLS, k1
 
 
 def unpack_far(npz):
-    """The float16 crop ``(nx, ny, nz, 13)`` of a packed far field (:func:`pack_far`'s dict or the loaded ``.npz``)."""
+    """The float16 crop ``(nx, ny, nz, 12)`` of a packed far field (:func:`pack_far`'s dict or the loaded ``.npz``)."""
     shape = tuple(int(s) for s in npz["shape"]); nx, ny, nz = shape
     n_shells = int(npz["n_shells"])
     index, shell, n16 = _layout(shape, float(npz["spacing_m"]), float(npz["k_cut"]), n_shells, float(npz["k16"]))
@@ -101,7 +102,6 @@ def unpack_far(npz):
         F.reshape(-1)[index] = (ri[:, j, 0] + 1j * ri[:, j, 1]).astype(np.complex64)
         out[..., ch] = np.fft.irfftn(F, s=shape, axes=(0, 1, 2)).astype(np.float32) + mean[j]
     out[..., _LOC] = 0
-    out[..., _ZZ] = -(out[..., _XX] + out[..., _YY])
     return out.astype(np.float16)
 
 

@@ -316,7 +316,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         table = jnp.asarray(block_table(1.0, n_bw, K, m), jnp.float32)                       # (n_bw, K+1, m+1)
         scale = jnp.asarray(cosine_band_scale(K, T_win), jnp.float32)
         hi = jax.lax.Precision.HIGHEST
-        n_ch = 13 if sampling else 0
+        n_ch = 12 if sampling else 0
         K_f = None
 
         @jax.jit

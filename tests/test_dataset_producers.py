@@ -370,14 +370,14 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     # the field sampled by the walk: every walker has a series, the pack encodes it and replays the field
     wf = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=0, require_gpu=False, adaptive_steps=True, K=4,
                    field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 6, "intra": 4}))
-    assert wf.field_coeffs is not None and wf.field_coeffs.shape == (wf.n_walkers, wf.n_windows, wf.K_c3, 13)
+    assert wf.field_coeffs is not None and wf.field_coeffs.shape == (wf.n_walkers, wf.n_windows, wf.K_c3, 12)
     assert not (np.asarray(wf.compartment) == 2).any()                     # nothing walks the dry sheath
     pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4)
     pm2 = pkf2.meta["compression"]["channels"]["susc_field_basis"]
     assert pkf2.has_field and pm2["sampling"] == "accumulated_in_walk"
-    assert pm2["iso_P_zz"] == "implied" and pm2["n_ch"] == 12 and pm2["trace_residual"] < 1e-4   # the closed form's trace identity, float32 samples
+    assert pm2["n_ch"] == 12 and "iso_P_zz" not in pm2["channels"]        # twelve carried; the trace is the reader's
     from dmipy_sim.replay.bank import susc_path_decode
-    b_, names_ = susc_path_decode(pkf2.arrays, pm2, n_t=pkf2.n_t); assert b_.shape[1] == 13 and names_[3] == "iso_P_zz"
+    b_, names_ = susc_path_decode(pkf2.arrays, pm2, n_t=pkf2.n_t); assert b_.shape[1] == 12 and names_[3] == "iso_P_xy"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)   # K = 3 over 0.8 ms: the field alone
     seq_gx, R = field_along(seq_g, (1, 0, 0))
     assert pkf2.replay(seq_gx, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))[0] != pkf2.replay(seq_g)[0]

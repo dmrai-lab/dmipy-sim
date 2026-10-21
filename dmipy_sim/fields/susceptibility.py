@@ -182,7 +182,7 @@ class MyelinSusceptibility:
             rho_vec = jnp.stack([dx, dy, jnp.zeros_like(dx)], axis=-1)            # (N, M, 3)
             C = hollow_cylinder_basis(rho_vec, jnp.broadcast_to(u, rho_vec.shape),
                                       jnp.broadcast_to(a[:, None], dx.shape), jnp.broadcast_to(b[:, None], dx.shape))
-            return scale * jnp.sum(C[..., 7:13] @ q)
+            return scale * jnp.sum(C[..., 6:12] @ q)
 
         return delta_bz
 

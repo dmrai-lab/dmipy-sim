@@ -33,6 +33,7 @@ from ..engine.accumulate import FIELD_RULE_CHI, FIELD_RULE_B0, field_read_term, 
 from . import compression as _cx
 from ..acquisition.rf import RFEvent
 from .replay import ReplayPack, read_rpk, write_rpk
+from ..fields.hollow_cylinder import CHANNEL_NAMES as _PATH_CHANNELS, ISO_CHANNEL_NAMES as _ISO_PATH_CHANNELS
 from ..spec.substrate import susceptibility_field_of
 
 __all__ = ["build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles", "frame_of_spec", "check_frame_against_walk",
@@ -516,7 +517,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     arrays_top, meta_top = susc_path_encode_series(series, names, K=top, container=None, layout="wtc", dtype=np.float64,
                                                    device="numpy", T=float(h) * n_t)
     coeffs = np.asarray(arrays_top["susc_path_dct"], np.float64) / np.sqrt(float(h))    # the DCT-II of the means: the series' own grid
-    has_aniso = coeffs.shape[1] >= 12
+    has_aniso = any(n.startswith("aniso_G") for n in meta_top["channels"])
     w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
     chi_i = float(chi) if chi is not None else float(FIELD_RULE_CHI)
     ca = 0.1 * chi_i if has_aniso else 0.0
@@ -528,7 +529,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     for b0, th in settings:
         t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
         raw[(b0, th)] = np.asarray(contract(series, d, B0=b0, chi_iso=chi_i, chi_aniso=ca), np.float64)         # (n_w, n_t)
-    stored = meta_top["channels"]; implied = meta_top["iso_P_zz"] == "implied"
+    stored = meta_top["channels"]
 
     def read(a_k, m_k, k, gates):
         """the worst gated-phase error of the modes ``a_k`` against the series, and the series' own split-half floor"""
@@ -551,7 +552,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         c_k = np.asarray(coeffs[:, :, :k], np.float64)
         e_tr, f_max = read({"susc_path_dct": c_k}, dict(meta_k, bits=None, dtype="float64"), k, gates)   # the band alone, modes in float
         fl = f_max * float(floor_scale)
-        ranges = DerivedFieldContainer(floor=fl, B0=max(B0s), chi_iso=chi_i, chi_aniso=ca).ranges(np.abs(c_k).max(axis=0), stored, implied, float(h) * n_t)
+        ranges = DerivedFieldContainer(floor=fl, B0=max(B0s), chi_iso=chi_i, chi_aniso=ca).ranges(np.abs(c_k).max(axis=0), stored, float(h) * n_t)
         a_k, m_k = _quantise_susc_path(c_k, meta_k, ranges)
         e_max, _ = read(a_k, m_k, k, gates)
         err[k], floor[k], trunc[k], cont[k] = e_max, fl, e_tr, ranges; order.append(k)
@@ -642,21 +643,18 @@ FIELD_DIRECTIONS = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, -1,
                              [1, 1, 1], [1, 1, -1], [1, -1, 1], [-1, 1, 1]], np.float64)
 
 
-def field_channel_weights(stored, implied_zz, *, B0, chi_iso, chi_aniso=0.0, directions=FIELD_DIRECTIONS):
+def field_channel_weights(stored, *, B0, chi_iso, chi_aniso=0.0, directions=FIELD_DIRECTIONS):
     """The weight of each STORED channel in the field ``dB`` (T) a replay contracts, per direction: ``(n_dir,
-    n_stored)`` (:func:`~dmipy_sim.fields.hollow_cylinder.contract` on unit channels of the canonical order, 13 with
-    an ``aniso_G`` channel stored, else 7). The ``iso_P_zz`` the decoder re-inserts, ``3 iso_local - iso_P_xx -
-    iso_P_yy``, passes its weight on to the three channels it is made of; a component the pack leaves out has no
-    weight to carry."""
+    n_stored)`` (:func:`~dmipy_sim.fields.hollow_cylinder.contract` on unit channels of the canonical order, twelve
+    with an ``aniso_G`` channel stored, else six; ``iso_P_zz`` is formed from the trace inside the contraction, so its
+    weight is already carried by ``iso_local``, ``iso_P_xx`` and ``iso_P_yy``). A component the pack leaves out has
+    no weight to carry."""
     from ..fields.hollow_cylinder import contract
     stored = list(stored)
-    full = list(_PATH_CHANNELS if any(n.startswith("aniso_G") for n in stored) else _PATH_CHANNELS[:7])
+    full = list(_PATH_CHANNELS if any(n.startswith("aniso_G") for n in stored) else _ISO_PATH_CHANNELS)
     n = len(full)
-    ca = float(chi_aniso) if n >= 13 else 0.0
+    ca = float(chi_aniso) if n >= 12 else 0.0
     W = np.stack([contract(np.eye(n), d, B0=B0, chi_iso=chi_iso, chi_aniso=ca, axis=-1) for d in np.asarray(directions, np.float64)])
-    if implied_zz:
-        z, i0, ix, iy = (full.index(c) for c in ("iso_P_zz", "iso_local", "iso_P_xx", "iso_P_yy"))
-        W[:, i0] += 3.0 * W[:, z]; W[:, ix] -= W[:, z]; W[:, iy] -= W[:, z]
     return W[:, [full.index(c) for c in stored]]
 
 
@@ -686,12 +684,12 @@ class DerivedFieldContainer:
         d = dict(floor=self.floor, B0=self.B0, chi_iso=self.chi_iso, chi_aniso=self.chi_aniso, budget=self.budget); d.update(kw)
         return DerivedFieldContainer(**d)
 
-    def ranges(self, amax, stored, implied_zz, T):
+    def ranges(self, amax, stored, T):
         """``[{"modes": [k0, k1], "bits": b}, ...]`` for the stored channels' per-mode maxima ``amax`` ``(n_ch, K)``."""
         if self.floor is None or self.B0 is None or self.chi_iso is None:
             raise ValueError("a derived field container needs the pack's floor and the field's B0 and chi; the builder supplies them")
         from ..constants import GAMMA
-        W = field_channel_weights(stored, implied_zz, B0=self.B0, chi_iso=self.chi_iso, chi_aniso=self.chi_aniso)
+        W = field_channel_weights(stored, B0=self.B0, chi_iso=self.chi_iso, chi_aniso=self.chi_aniso)
         a = _contracted_modes(amax, W).max(axis=0)
         r = _cx.derive_container(a, a.shape[0], max(float(self.floor), 1e-300), phase=GAMMA ** 2 * float(T), budget=self.budget)
         return [{"modes": [int(x["bands"][0]), int(x["bands"][1])], "bits": int(x["bits"])} for x in r]
@@ -701,20 +699,20 @@ class DerivedFieldContainer:
 
 
 class FieldCodec:
-    """A stated layout of the field channel: its container (``None``: float), the channels stored and whether
-    ``iso_P_zz`` is implied. What a shard of a fill and a window of a pack take from the pack they belong to, so that
-    every piece of one pack has the same tensors; built from a pack's descriptor ``compression.channels.susc_field_basis``
+    """A stated layout of the field channel: its container (``None``: float) and the channels stored. What a shard of a
+    fill and a window of a pack take from the pack they belong to, so that every piece of one pack has the same
+    tensors; built from a pack's descriptor ``compression.channels.susc_field_basis``
     (``build_replay_pack(field_container=descriptor)``)."""
 
-    def __init__(self, container, channels, implied_zz):
-        self.container, self.channels, self.implied_zz = container, list(channels), bool(implied_zz)
+    def __init__(self, container, channels):
+        self.container, self.channels = container, list(channels)
 
     @classmethod
     def of(cls, pm):
-        return cls(path_codec_of(pm), pm["channels"], pm.get("iso_P_zz") == "implied")
+        return cls(path_codec_of(pm), pm["channels"])
 
     def __repr__(self):
-        return f"FieldCodec({self.container!r}, channels={self.channels}, implied_zz={self.implied_zz})"
+        return f"FieldCodec({self.container!r}, channels={self.channels})"
 
 
 def _field_container(spec):
@@ -745,7 +743,7 @@ def field_quantisation(arrays, pm, env, *, T, h, B0, chi_iso, chi_aniso=0.0):
     K = int(pm["K"])
     step = np.asarray(arrays["susc_path_scale"], np.float64)
     step = step.max(axis=0) if step.ndim == 3 else step                   # a merged pack: the widest block's
-    W = field_channel_weights(pm["channels"], pm.get("iso_P_zz") == "implied", B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
+    W = field_channel_weights(pm["channels"], B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
     n_t = int(round(float(T) / float(h))) + 1
     gates = np.stack(_battery_gates(n_t, max(1, int(pm.get("max_refocus_pulses") or K // 2))))
     g = _cx.cosine_projection(gates[:, :, None], float(h), float(T), K)[:, :, 0]               # (n_g, K)
@@ -804,16 +802,14 @@ def _depth(K, declared):
     return int(min(int(K) // 2, int(declared))) if declared else int(K) // 2
 
 
-def susc_path_encode_series(series, names, *, K=32, container=None, dtype=np.float16, layout="wct", atol_trace=1e-4, device="auto",
+def susc_path_encode_series(series, names, *, K=32, container=None, dtype=np.float16, layout="wct", device="auto",
                             chunk=20_000, T=None, max_refocus_pulses=None):
     """The field channel's tensors and descriptor from a field series of block means (``container`` None: the float
     form at ``dtype``; else :func:`path_codec`'s), in the canonical channel order with
-    ``names``: ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
+    ``names`` (the twelve of :data:`~dmipy_sim.fields.hollow_cylinder.CHANNEL_NAMES`, or the six isotropic ones):
+    ``(n_w, n_ch, n_t)`` (``layout="wct"``, what a decoded path channel gives) or ``(n_w, n_t, n_ch)``
     (``layout="wtc"``, the interval means a walk sampled), encoded in walker chunks of ``chunk`` on ``device``
-    without a copy of the whole series. The ``iso_P_zz`` channel is implied by the trace identity
-    ``iso_P_xx + iso_P_yy + iso_P_zz = 3 iso_local`` and left out when the series satisfies it to ``atol_trace``
-    (the closed-form strand field does exactly, and a series sampled in float32 over a few hundred strands keeps it
-    to ~1e-5; a windowed k-space grid breaks it at the percent level); the decoder re-inserts it. ``T`` is the
+    without a copy of the whole series. ``T`` is the
     window the series spans (s): the modes are the DCT-II of the ``n_t`` means times ``sqrt(T / n_t)``, the
     block-mean quadrature of the window's orthonormal cosine modes (:func:`derive_field_band` reads the DCT itself).
     The pilot's route: a production pack stores the modes the walk accumulated (:func:`susc_path_encode_modes`)."""
@@ -825,32 +821,29 @@ def susc_path_encode_series(series, names, *, K=32, container=None, dtype=np.flo
     names = list(names)
     if len(names) != n_ch:
         raise ValueError(f"{len(names)} channel names for {n_ch} channels")
+    _refuse_trace_component(names)
     K = int(min(K, n_t))
     take = lambda sl: (np.transpose(series[sl], (0, 2, 1)) if layout == "wct" else series[sl])   # (rows, n_t, n_ch)
-    # the trace identity is judged on a sample of walkers in float64 (a whole chunk in float64 was 1.7 GB of host copy)
-    probe = np.asarray(take(slice(0, min(2000, n_w))), np.float64)
-    drop_zz = False; trace_res = None
-    if {"iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"} <= set(names):
-        i0, ix, iy, iz = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"))
-        tr = probe[..., ix] + probe[..., iy] + probe[..., iz]
-        scale = float(np.max(np.abs(probe[..., i0]))) or 1.0
-        trace_res = float(np.max(np.abs(tr - 3.0 * probe[..., i0]))) / (3.0 * scale)
-        drop_zz = bool(trace_res <= atol_trace)
-    keep = [i for i, n in enumerate(names) if not (drop_zz and n == "iso_P_zz")]
-    drop = None if len(keep) == n_ch else keep                   # a dropped channel is selected past the host copy
-    coeffs = np.empty((n_w, len(keep), K), np.float64)
+    coeffs = np.empty((n_w, n_ch, K), np.float64)
     for i in range(0, n_w, chunk):
         ch = take(slice(i, i + chunk))                           # the series' own dtype, read in place -- no copy
-        coeffs[i:i + chunk] = _cx.dct_bands_series(ch, K, device=device, keep=drop)   # one cached device jit for every chunk
+        coeffs[i:i + chunk] = _cx.dct_bands_series(ch, K, device=device)   # one cached device jit for every chunk
     if T is not None:
         coeffs *= np.sqrt(float(T) / n_t)
-    meta = dict(channel="susc_field_basis", K=K, n_ch=len(keep), channels=[names[i] for i in keep],
-                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
+    meta = dict(channel="susc_field_basis", K=K, n_ch=n_ch, channels=names,
                 max_refocus_pulses=_depth(K, max_refocus_pulses), **({} if T is None else dict(T=float(T))))
     if container is None:
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
     return _quantise_susc_path(coeffs, meta, container, device=device)
+
+
+def _refuse_trace_component(names):
+    """``iso_P_zz`` is never a stored or accumulated component (RPK.md 5.3): a reader forms it from ``3 iso_local -
+    iso_P_xx - iso_P_yy``. A producer that hands one over is refused by name."""
+    if "iso_P_zz" in names:
+        raise ValueError("the field channel carries twelve components: iso_P_zz is never stored (RPK.md 5.3), a reader forms it "
+                         "as 3 iso_local - iso_P_xx - iso_P_yy; this field offers it")
 
 
 def has_susc_path(arrays):
@@ -859,13 +852,15 @@ def has_susc_path(arrays):
 
 
 def susc_path_coeffs(arrays, meta):
-    """Dequantised C3 coefficients with ``iso_P_zz`` re-inserted -- ``(n_w, n_ch_full, K)``.
+    """Dequantised C3 coefficients in the canonical channel order -- ``(n_w, n_ch_full, K)``, twelve channels
+    (``iso_local``, five ``iso_P``, six ``aniso_G``) or the six isotropic ones: a component the pack leaves out
+    (``zero_components``, an absent ``aniso_G`` block) is zero. ``iso_P_zz`` is not a channel here: the contraction
+    forms it from the trace (:func:`~dmipy_sim.fields.hollow_cylinder.field_terms`), and a descriptor that lists it is
+    refused.
 
     The ONE place that undoes the storage container. ``susc_path_dct`` may be an integer array whose
     scale lives in ``susc_path_scale`` (see :func:`susc_path_encode`), so reading it raw yields
-    integers ~1e3 off with no error -- every consumer goes through here. The zz identity is applied
-    in coefficient space; the DCT is linear, so this is identical to applying it after the transform.
-    """
+    integers ~1e3 off with no error -- every consumer goes through here."""
     if meta.get("container") is not None:
         parts = []
         for i, r in enumerate(meta["container"]):
@@ -883,16 +878,12 @@ def susc_path_coeffs(arrays, meta):
         else:
             C = C * S[None]
     names = list(meta["channels"])
-    implied = meta.get("iso_P_zz") == "implied"
-    if implied or (names and all(n in _PATH_CHANNELS for n in names)):
-        # the canonical order (7 channels, or 13 with an ``aniso_G`` channel stored): a component the pack leaves out
-        # is zero, and the implied ``iso_P_zz`` is rebuilt from the identity
-        full = list(_PATH_CHANNELS if any(n.startswith("aniso_G") for n in names) else _PATH_CHANNELS[:7])
-        if implied or names != full:
+    _refuse_trace_component(names)
+    if names and all(n in _PATH_CHANNELS for n in names):
+        full = list(_PATH_CHANNELS if any(n.startswith("aniso_G") for n in names) else _ISO_PATH_CHANNELS)
+        if names != full:
             out = np.zeros((C.shape[0], len(full), C.shape[2]), C.dtype)
             out[:, [full.index(n) for n in names]] = C
-            if implied:
-                out[:, full.index("iso_P_zz")] = 3.0 * out[:, 0] - out[:, 1] - out[:, 2]
             C, names = out, full
     return C, names
 
@@ -901,12 +892,8 @@ def susc_path_field(b, b0_dir, *, B0, chi_iso, chi_aniso=0.0, has_aniso=False):
     """``dB(t)`` per walker ``(n_w, n_t)`` from the decoded path channels ``(n_w, n_ch, n_t)`` for one
     ``(B0, direction, chi)``: :func:`~dmipy_sim.fields.hollow_cylinder.contract` along the channel axis."""
     from ..fields.hollow_cylinder import contract
-    aniso = chi_aniso if (has_aniso and chi_aniso and b.shape[1] >= 13) else 0.0
+    aniso = chi_aniso if (has_aniso and chi_aniso and b.shape[1] >= 12) else 0.0
     return contract(b, b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=aniso, axis=1)
-
-
-_PATH_CHANNELS = ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz",
-                  "aniso_G_xx", "aniso_G_yy", "aniso_G_zz", "aniso_G_xy", "aniso_G_xz", "aniso_G_yz")
 
 
 def held_voxels(cert):
@@ -1649,59 +1636,50 @@ def join_windows(packs, *, fidelity, walks, walkers_shuffled):
 
 
 # ------------------------------------------------------------------------------------------ the field channel (C3)
-def susc_path_encode_modes(coeffs, names, *, T, container, atol_trace=1e-4, max_refocus_pulses=None, read_interval=None,
-                           device="numpy", dtype=np.float32):
+def susc_path_encode_modes(coeffs, names, *, T, container, atol_zero=1e-4, trace_residual=None, max_refocus_pulses=None,
+                           read_interval=None, device="numpy", dtype=np.float32):
     """The field channel's tensors and descriptor from the modes a walk ACCUMULATED (``coeffs`` ``(n_w, K, n_ch)``, the
     window's orthonormal cosine modes ``c_k = int e_k b dt``, ``k = 0..K-1``, in the canonical channel order with
-    ``names``). Two kinds of component are not stored: ``iso_P_zz``, implied by the trace identity ``iso_P_xx +
-    iso_P_yy + iso_P_zz = 3 iso_local`` and left out when the modes satisfy it to ``atol_trace`` of their scale
-    (linear, so it holds in mode space; the descriptor's ``trace_residual`` is the measured number), and a component
-    whose modes are zero in every walker to ``atol_trace`` of the largest channel's (the z-components of a
-    straight cylinder along z, the ``aniso_G`` block of a source without an anisotropic part; named in
-    ``zero_components``), which a reader returns as zeros. The modes are stored in ``container``: ranges of modes at
+    ``names``: the twelve of :data:`~dmipy_sim.fields.hollow_cylinder.CHANNEL_NAMES`, or the six isotropic ones).
+    ``iso_P_zz`` is never a component (RPK.md 5.3: a reader forms it from the trace); a walk that offers it is refused.
+    A component whose modes are zero in every walker to ``atol_zero`` of the largest channel's (the z-components of a
+    straight cylinder along z, the ``aniso_G`` block of a source without an anisotropic part) is not stored: it is
+    named in ``zero_components`` and a reader returns zeros. The modes are stored in ``container``: ranges of modes at
     their own depths (:func:`path_codec`; a :class:`DerivedFieldContainer` is derived here, against the stored
     channels' own scales and its floor), or one native depth 8 / 16, under ``susc_path_dct`` with ``susc_path_scale``
     (CODEC_REGISTRY ``susc_field_basis``); ``None`` stores the float tensor at ``dtype``; a :class:`FieldCodec` states
-    the channels as well (the certifying pack's, which a shard of a fill takes), and a walk whose dropped components
-    are not within ``atol_trace`` is refused by name. The descriptor carries ``K``, ``T`` (the window), the
-    channels, the read interval and the refocusing depth the band serves."""
+    the channels as well (the certifying pack's, which a shard of a fill takes), and a walk that carries a component
+    the layout leaves out is refused by name. The descriptor carries ``K``, ``T`` (the window), the channels, the
+    read interval, the refocusing depth the band serves and ``trace_residual`` (a diagnostic: the identity's residual
+    the field source measured, :attr:`~dmipy_sim.fields.susceptibility_field.FieldGrid.trace_residual`)."""
     coeffs = np.transpose(np.asarray(coeffs, np.float64), (0, 2, 1))                   # (n_w, n_ch, K)
     names = list(names)
     n_w, n_ch, K = coeffs.shape
     if len(names) != n_ch:
         raise ValueError(f"{len(names)} channel names for {n_ch} channels")
+    _refuse_trace_component(names)
     codec = container if isinstance(container, FieldCodec) else None
     if codec is not None:
         container = codec.container
-    trace_res = None
-    if {"iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"} <= set(names):
-        i0, ix, iy, iz = (names.index(n) for n in ("iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"))
-        tr = coeffs[:, ix] + coeffs[:, iy] + coeffs[:, iz]
-        scale = float(np.max(np.abs(coeffs[:, i0]))) or 1.0
-        trace_res = float(np.max(np.abs(tr - 3.0 * coeffs[:, i0]))) / (3.0 * scale)
-    drop_zz = (trace_res is not None and trace_res <= atol_trace) if codec is None else codec.implied_zz
-    if codec is not None and drop_zz and not (trace_res is not None and trace_res <= atol_trace):
-        raise ValueError(f"the stated field layout implies iso_P_zz, and these modes satisfy the trace identity to "
-                         f"{trace_res} of their scale, not to {atol_trace}; the walk is refused rather than a component reconstructed wrongly")
     amax = np.abs(coeffs).max(axis=(0, 2))
-    zero = [n for i, n in enumerate(names) if amax[i] <= atol_trace * float(amax.max()) and not (drop_zz and n == "iso_P_zz")]
+    zero = [n for i, n in enumerate(names) if amax[i] <= atol_zero * float(amax.max())]
     if codec is not None:
         stored = list(codec.channels)
         missing = [n for n in stored if n not in names]
         if missing:
             raise ValueError(f"the stated field layout stores {missing}, which the walk's channels do not carry")
-        lost = [n for n in names if n not in stored and not (drop_zz and n == "iso_P_zz") and n not in zero]
+        lost = [n for n in names if n not in stored and n not in zero]
         if lost:
-            raise ValueError(f"the stated field layout leaves out {lost}, which these modes carry above {atol_trace} of the "
+            raise ValueError(f"the stated field layout leaves out {lost}, which these modes carry above {atol_zero} of the "
                              "largest channel; the walk is refused rather than a component dropped")
         keep = [names.index(n) for n in stored]
-        zero = [n for n in names if n not in stored and n != "iso_P_zz"]
+        zero = [n for n in names if n not in stored]
     else:
         if zero and len(zero) == len(names):
             zero = zero[1:]
-        keep = [i for i, n in enumerate(names) if not (drop_zz and n == "iso_P_zz") and n not in zero]
+        keep = [i for i, n in enumerate(names) if n not in zero]
     meta = dict(channel="susc_field_basis", K=int(K), T=float(T), n_ch=len(keep), channels=[names[i] for i in keep],
-                iso_P_zz=("implied" if drop_zz else "stored"), trace_residual=trace_res,
+                trace_residual=(None if trace_residual is None else float(trace_residual)),
                 max_refocus_pulses=_depth(K, max_refocus_pulses), sampling="accumulated_in_walk")
     if zero:
         meta["zero_components"] = zero
@@ -1712,7 +1690,7 @@ def susc_path_encode_modes(coeffs, names, *, T, container, atol_trace=1e-4, max_
         meta["bits"] = None; meta["dtype"] = np.dtype(dtype).name
         return {"susc_path_dct": np.asarray(coeffs, dtype)}, meta
     if isinstance(container, DerivedFieldContainer):
-        container = container.ranges(np.abs(coeffs).max(axis=0), meta["channels"], drop_zz, T)
+        container = container.ranges(np.abs(coeffs).max(axis=0), meta["channels"], T)
     return _quantise_susc_path(coeffs, meta, container, device=device)
 
 
@@ -1745,8 +1723,8 @@ def _mode_sample_matrix(K, T, n_t, start=0, stop=None, edges=None):
 
 def susc_path_decode(arrays, meta, *, n_t, n_w=None, n_cut=None, start=0, edges=None):
     """The field's channels per walker on ``n_t`` samples of the window ``meta["T"]`` -- sample 0 the series at ``t =
-    0``, sample ``j`` its mean over block ``j`` (:func:`_mode_sample_matrix`) -- from the stored modes, ``iso_P_zz``
-    re-inserted: ``(field (n_w, n_ch_full, n_samples), names)`` in the canonical channel order. ``start`` / ``n_cut``
+    0``, sample ``j`` its mean over block ``j`` (:func:`_mode_sample_matrix`) -- from the stored modes, the omitted components
+    zero: ``(field (n_w, n_ch_full, n_samples), names)`` in the canonical channel order. ``start`` / ``n_cut``
     read the samples ``start .. n_cut - 1`` only. A reader's sampling of the stored function (RPK.md 9.5.4), what
     the Bloch route and the dense oracles read; the scalar route contracts the modes (:func:`path_field_integral`)."""
     C, names = susc_path_coeffs(arrays, meta)
@@ -1763,8 +1741,8 @@ def path_field_integral(arrays, meta, waveform, T, *, t0=None, n_w=None):
     The names are in the canonical order, what :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` reads."""
     from ..constants import GAMMA
     Cs, names = susc_path_coeffs(arrays, meta)
-    if tuple(names) != _PATH_CHANNELS[:len(names)]:
-        raise ValueError(f"the path channels are stored as {names}, not in the canonical order {_PATH_CHANNELS[:len(names)]}")
+    if tuple(names) not in (tuple(_PATH_CHANNELS), tuple(_ISO_PATH_CHANNELS)):
+        raise ValueError(f"the path channels are stored as {names}, not in the canonical order {tuple(_PATH_CHANNELS)}")
     if n_w is not None:
         Cs = Cs[:n_w]
     gate = waveform.effective_gate if waveform.gate is None else waveform.gate
@@ -2175,6 +2153,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         run.phase("field channel")
         names = list(cw.field_basis.channel_names)
         _a, _pm = susc_path_encode_modes(np.asarray(cw.field_coeffs, np.float64)[:, 0, :K_f, :], names, T=T, container=fc,
+                                         trace_residual=getattr(cw.field_basis, "trace_residual", None),
                                          max_refocus_pulses=env.get("max_refocus_pulses"), read_interval=cw.field_read_interval,
                                          device=device)
         _pm["band"] = dict(band) if band else dict(rule="given", K=K_f)
@@ -2548,7 +2527,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         fc = _field_container(field_container if field_container is not None else FieldCodec.of(pm))
         if isinstance(fc, DerivedFieldContainer):
             fc = fc.bound(floor=floor_t, B0=B0_r, chi_iso=chi_i, chi_aniso=ca)
-        a_, pm_new = susc_path_encode_modes(np.transpose(Cfn, (0, 2, 1)), names, T=T_new, container=fc,
+        a_, pm_new = susc_path_encode_modes(np.transpose(Cfn, (0, 2, 1)), names, T=T_new, container=fc, trace_residual=pm.get("trace_residual"),
                                             max_refocus_pulses=env.get("max_refocus_pulses") or pm.get("max_refocus_pulses"),
                                             read_interval=pm.get("read_interval"), device=device)
         pm_new["band"] = dict(rule="reprojected", parent_K=int(pm["K"]), K=Kf_new)

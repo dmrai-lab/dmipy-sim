@@ -95,7 +95,7 @@ and is read, never derived). The channel metadata, `compression.channels.susc_fi
 ```
 { "channel": "susc_field_basis", "K": 32, "T": 0.1, "n_ch": 6,
   "channels": ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_xy", "iso_P_xz", "iso_P_yz"],
-  "iso_P_zz": "implied",        # = 3*iso_local - iso_P_xx - iso_P_yy, see Trace identity
+  "trace_residual": 0.0,        # a diagnostic of the source's trace identity, see Trace identity
   "bits": null, "dtype": "bands", "container": [{"modes": [0, 8], "bits": 9}, {"modes": [8, 32], "bits": 7}],
   "max_refocus_pulses": 16, "sampling": "accumulated_in_walk",
   "read_interval": 1.0e-4, "band": {...the pilot's record...}, "read": {...the walk's read record...} }
@@ -126,14 +126,17 @@ the worst direction and weighted by the battery's gates (`bank.field_quantisatio
 variance to the positions'; `err_quantisation_field` is the field's term alone. `err_susc_path` is the pilot's
 error of the band alone (`band.err_truncation`, the modes held in float) plus that term.
 
-**Trace identity: 7 channels → 6 stored.** The dipole kernel is traceless in the sense that the six
-`iso_P` components satisfy `P_xx + P_yy + P_zz = 3·iso_local` exactly, and the identity is linear, so it
-holds in mode space: `iso_P_zz` is redundant and is reconstructed at read time. The encoder leaves it out
-when the modes satisfy the identity to `atol_trace` (recorded as `trace_residual`) and stores all seven
-otherwise. The identity holds to machine precision — *but only when the source grid carries no k-space
-apodisation*: with `kspace_lowpass=0.5` it breaks (7.1e-02 relative) because the window is applied to
-`iso_P` and not to `iso_local`; the two are then no longer the same field. Dropping `iso_P_zz` saves 1/7 =
-14% of the channel with no approximation.
+**Trace identity: 13 components, 12 carried.** The dipole kernel is traceless, so the six `iso_P` components satisfy
+`P_xx + P_yy + P_zz = 3·iso_local` exactly in the continuum and for every source geometry, and the identity is
+linear, so it holds in mode space. `iso_P_zz` is therefore never a channel: the field bases emit, the walk
+accumulates and the pack stores `iso_local`, `iso_P (xx, yy, xy, xz, yz)` and `aniso_G (6)` (RPK.md 5.3), and the
+reader forms `iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy` inside the contraction
+(`fields.hollow_cylinder.field_terms`, `iso_P6`). A pack that lists `iso_P_zz` is refused by name. A source whose
+numerics break the identity (a k-space window applied to `iso_P` and not to `iso_local`: 7.1e-02 relative at
+`kspace_lowpass=0.5`) states the residual it measured as `trace_residual`
+(`FieldGrid.trace_residual`), a diagnostic only: the field the pack carries is the twelve. A component that is zero
+in every walker (the z-components of a straight cylinder along z, the `aniso_G` block of a source without an
+anisotropic part) is not stored either; it is named in `zero_components` and a reader returns zeros.
 
 ### Consuming it
 
@@ -147,7 +150,7 @@ Psi = γ · Σ_k g_k c_k                              # bank.path_field_integral
 the existing per-step interface:
 ```
 b, names = susc_path_decode(arrays, meta, n_t=n)   # (N_w, n_ch, n): the modes read at n instants of [0, T]
-dB = χ_iso·(b[:,0] − Q(H)·b[:,1:7]) + χ_aniso·(Q(H)·b[:,7:13])     # (N_w, n)
+dB = χ_iso·(b[:,0] − Q(H)·iso_P6(b[:,:6])) + χ_aniso·(Q(H)·b[:,6:12])     # (N_w, n); iso_P_zz = 3 b[:,0] − b[:,1] − b[:,2]
 replay_bloch(..., extra_phase_per_step = γ·dt·dB)
 ```
 
@@ -312,7 +315,7 @@ the split-half Monte-Carlo floor.
 - A pack's field strength is bounded by its read: where the read is the step, the envelope's `B0_chi_max_T`
   is the largest `B0·χ` the field-read term holds under.
 - Anisotropic (`aniso_G`) channels were not exercised in the measurements above — the packs measured were
-  built isotropic (matching their source study). Enabling them raises `n_ch` 7 → 13 and needs the same
+  built isotropic (matching their source study). Enabling them raises `n_ch` 6 → 12 and needs the same
   K-sweep before being trusted.
 - MT with emergent binding evolves a bound pool sequentially; it uses the same read `b(t)`, but its own
   mode requirement has not been measured separately.

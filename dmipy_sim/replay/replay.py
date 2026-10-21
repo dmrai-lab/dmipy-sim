@@ -92,7 +92,7 @@ REFUSED_TENSOR_INFIX = "_rle_"
 def _refuse_predating(meta, where, tensors=()):
     """Refuse, by name, a pack this revision does not read (RPK.md 9.5.1): a header with ``n_t`` or ``dt_traj`` (in
     ``walk_params``, its window table or ``compression``), ``compression.basis``, ``walk_params.cell_size``, the
-    channel ``susceptibility_path``, the codec ``identity``, no ``walk_params.block``, or a field channel without
+    channel ``susceptibility_path``, a field channel carrying ``iso_P_zz`` (the thirteenth component is never stored), the codec ``identity``, no ``walk_params.block``, or a field channel without
     ``walk_params.qv.field_increments`` (its field read charged by a retired rule); a tensor of the registry's
     refused forms among ``tensors`` (their names; a window's ``s{i}/`` prefix is read through). Its tensors are not
     decoded: a coefficient read against the wrong basis is a plausible number, not an error. A pack is never
@@ -103,7 +103,10 @@ def _refuse_predating(meta, where, tensors=()):
     found += [f"walk_params.windows.{k}" for k in ("n_t", "dt_traj") if k in (wp.get("windows") or {})]
     chans = cx.get("channels") or {}
     found += [f"compression.channels.{k}" for k in REFUSED_CHANNEL_KEYS if k in chans]
-    found += [f"compression.channels.susc_field_basis.{k}" for k in ("n_t", "dt") if k in (chans.get("susc_field_basis") or {})]
+    sfb = chans.get("susc_field_basis") or {}
+    found += [f"compression.channels.susc_field_basis.{k}" for k in ("n_t", "dt") if k in sfb]
+    if "iso_P_zz" in sfb or "iso_P_zz" in (sfb.get("channels") or []):       # RPK.md 5.3: iso_P_zz is never stored
+        found.append("compression.channels.susc_field_basis carrying iso_P_zz")
     for col in (chans.get("compartment") or {}).get("columns") or []:
         if col.get("kind") in REFUSED_COLUMN_KINDS:
             found.append(f"compression.channels.compartment.columns[{col.get('name')}].kind = {col['kind']}")
@@ -2736,10 +2739,10 @@ class ReplayPack:
         if P["ch"].get("susc_field_basis") is None:
             raise ValueError("the pose expansion with a field needs the pack's field channel (C3)")
         Psi, names = _path_field_channels(P, waveform)                           # the one read of C3, windows summed
-        i_p = names.index("iso_P_xx")
+        from ..fields.hollow_cylinder import iso_P6
         i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         a = float(chi_iso) * float(B0) * Psi[:, names.index("iso_local")]
-        six = -float(chi_iso) * float(B0) * Psi[:, i_p:i_p + 6]
+        six = -float(chi_iso) * float(B0) * iso_P6(Psi)
         if chi_aniso and i_a is not None:
             six = six + float(chi_aniso) * float(B0) * Psi[:, i_a:i_a + 6]
         xx, yy, zz, xy, xz, yz = six.T                                         # u^T A u = xx x^2 + ... + 2 xy x y + ...
@@ -2831,14 +2834,14 @@ class ReplayPack:
             for b_ in range(3):
                 Q[:, :, a, b_] = C[:, b_::3] @ Wa
 
-        Psi = names = i_p = i_a = None
+        Psi = names = i_a = None
         if B0 is not None:
             pm = self.meta.get("compression", {}).get("channels", {}).get("susc_field_basis")
             if pm is None:
                 raise ValueError("the pose expansion with a field needs the pack's field channel (C3)")
             from .bank import path_field_integral
+            from ..fields.hollow_cylinder import iso_P6
             Psi, names = path_field_integral(self.arrays, pm, waveform, T_w)   # (n_w, n_ch)
-            i_p = names.index("iso_P_xx")
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
 
@@ -2850,7 +2853,7 @@ class ReplayPack:
         field_terms = None
         if Psi is not None:
             field_terms = (float(chi_iso) * float(B0), (float(chi_aniso) * float(B0) if (chi_aniso and i_a is not None) else 0.0), b,
-                           Psi[:, names.index("iso_local")], Psi[:, i_p:i_p + 6], (Psi[:, i_a:i_a + 6] if i_a is not None else None))
+                           Psi[:, names.index("iso_local")], iso_P6(Psi), (Psi[:, i_a:i_a + 6] if i_a is not None else None))
         run = current()
         _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
 
