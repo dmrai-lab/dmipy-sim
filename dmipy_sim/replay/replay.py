@@ -105,7 +105,7 @@ def _refuse_predating(meta, where, tensors=()):
     found += [f"compression.channels.{k}" for k in REFUSED_CHANNEL_KEYS if k in chans]
     sfb = chans.get("susc_field_basis") or {}
     found += [f"compression.channels.susc_field_basis.{k}" for k in ("n_t", "dt") if k in sfb]
-    if "iso_P_zz" in sfb or "iso_P_zz" in (sfb.get("channels") or []):       # RPK.md 5.3: iso_P_zz is never stored
+    if sfb.get("iso_P_zz") == "stored" or "iso_P_zz" in (sfb.get("channels") or []):       # RPK.md 5.3: iso_P_zz is never stored
         found.append("compression.channels.susc_field_basis carrying iso_P_zz")
     for col in (chans.get("compartment") or {}).get("columns") or []:
         if col.get("kind") in REFUSED_COLUMN_KINDS:

@@ -896,7 +896,7 @@ def test_the_field_carries_twelve_components_and_iso_P_zz_is_never_one():
         bank.susc_path_encode_modes(np.zeros((4, 3, 13)), ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz",
                                                          "aniso_G_xx", "aniso_G_yy", "aniso_G_zz", "aniso_G_xy", "aniso_G_xz", "aniso_G_yz"],
                                     T=1e-3, container=None)
-    for sfb in ({"channels": ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"]}, {"iso_P_zz": "implied", "channels": ["iso_local"]}):
+    for sfb in ({"channels": ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz"]}, {"iso_P_zz": "stored", "channels": ["iso_local"]}):
         meta = {"walk_params": {"block": {}, "qv": {"field_increments": [0.0]}}, "compression": {"channels": {"susc_field_basis": sfb}}}
         with pytest.raises(ValueError, match="iso_P_zz"):
             _refuse_predating(meta, "p.rpk")
