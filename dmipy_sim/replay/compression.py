@@ -239,6 +239,25 @@ def band_projection(G, dt_wf, T, K, *, t0=None):
     return out
 
 
+def segment_projection(segments, T, K, *, t0=None):
+    """THE projection of time segments on a pack's bands, ``(n_seg, K + 2)``: per segment ``[a, b]`` (s, on the walk's
+    clock) its indicator's ``M0``, ``M1`` and ``W_k`` over the window ``[t0, t0 + T]`` (the segment clipped to it), in
+    the closed form :func:`band_projection` sums piece by piece (:func:`_piece_weights`) -- what that projection gives a
+    waveform equal to 1 on the segment and 0 elsewhere, wherever the segment's edges fall. A walk stored as ``C =
+    [x(0), x(T) - x(0), beta_1..beta_K]`` has ``int_a^b x dt = sum C W`` per axis."""
+    T = float(T)
+    start = 0.0 if t0 is None else float(t0)
+    S = np.asarray(segments, np.float64).reshape(-1, 2)
+    a = np.clip(S[:, 0] - start, 0.0, T); b = np.clip(S[:, 1] - start, 0.0, T)
+    b = np.maximum(a, b)
+    out = np.zeros((S.shape[0], int(K) + 2))
+    out[:, 0] = b - a
+    out[:, 1] = (b * b - a * a) / (2.0 * T)
+    if int(K):
+        out[:, 2:] = _piece_weights(a, b, T, np.arange(1, int(K) + 1))
+    return out
+
+
 def band_projection_matrix(n_wf, dt_wf, T, K, *, t0=None):
     """``(K + 2, n_wf)``: :func:`band_projection` as a matrix on a waveform's ``n_wf`` samples (one axis) -- column ``n``
     the projection of the unit sample ``n`` held over its interval, zero for a sample outside the window."""
