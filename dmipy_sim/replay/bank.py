@@ -437,26 +437,28 @@ def voxel_fidelity_volumes(pack):
 _ISO_P_NAMES = ("xx", "yy", "zz", "xy", "xz", "yz")
 
 
-def _cpmg_gate(n_t, n_pulses):
-    """Transverse-phase gate for a CPMG train of ``n_pulses`` 180s at the usual (k+1/2)*TE/n times."""
-    t = np.arange(n_t) / max(n_t - 1, 1)
+def _cpmg_gate(n_t, n_pulses, t=None):
+    """Transverse-phase gate for a CPMG train of ``n_pulses`` 180s at the usual (k+1/2)*TE/n times, on ``n_t`` samples
+    at the fractions ``t`` of the window (uniform by default)."""
+    t = np.arange(n_t) / max(n_t - 1, 1) if t is None else np.asarray(t, np.float64)
     s = np.ones(n_t)
     for k in range(n_pulses):                       # each 180 flips the accumulated-phase sign
         s[t >= (k + 0.5) / n_pulses] *= -1.0
     return s
 
 
-def _ste_gate(n_t):
+def _ste_gate(n_t, t=None):
     """Transverse-phase gate of a stimulated echo filling the window: transverse for its first quarter, stored along
     z (accruing nothing) for the half between the store and the recall, then transverse with the recall's sign."""
-    t = np.arange(n_t) / max(n_t - 1, 1)
+    t = np.arange(n_t) / max(n_t - 1, 1) if t is None else np.asarray(t, np.float64)
     return np.where(t < 0.25, 1.0, np.where(t < 0.75, 0.0, -1.0))
 
 
-def _battery_gates(n_t, n_pulses):
-    """The gates the field tier is certified under on an ``n_t``-sample window: a gradient echo, a spin echo, the CPMG
-    train at the tier's depth ``n_pulses``, and a stimulated echo (its mixing time stored)."""
-    return [np.ones(n_t), _cpmg_gate(n_t, 1), _cpmg_gate(n_t, n_pulses), _ste_gate(n_t)]
+def _battery_gates(n_t, n_pulses, t=None):
+    """The gates the field tier is certified under on an ``n_t``-sample window (at the fractions ``t`` of it, uniform
+    by default): a gradient echo, a spin echo, the CPMG train at the tier's depth ``n_pulses``, and a stimulated echo
+    (its mixing time stored)."""
+    return [np.ones(n_t), _cpmg_gate(n_t, 1, t), _cpmg_gate(n_t, n_pulses, t), _ste_gate(n_t, t)]
 
 
 #: the bands the field tier is tried at, in order, when its band is derived on the walk
@@ -544,15 +546,36 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     return int(K), int(bits), record
 
 
+def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=None, chi=None, floor_scale=1.0):
+    """The field channel's band and container on a pilot spread over the walk's pools: :func:`derive_field_band` on
+    each pool's walkers (``pools`` ``{name: index array into series}``), the walk taking the widest band and the
+    deeper container any pool needs -- a pool whose field is smooth (a uniform lumen, a far extra space) must not set
+    the band of one whose field is not. ``(K_c3, bits, record)``, the record every pool's own under ``pools``."""
+    per, K, bits = {}, 1, 8
+    for name, idx in pools.items():
+        idx = np.asarray(idx)
+        if idx.size < 2:
+            continue
+        k_p, b_p, rec = derive_field_band(np.asarray(series)[idx], names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
+        per[str(name)] = dict({k: v for k, v in rec.items() if k != "ladder"}, walkers=int(idx.size), bits=int(b_p))
+        K, bits = max(K, int(k_p)), max(bits, int(b_p))
+    if not per:
+        return derive_field_band(series, names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
+    return int(K), int(bits), dict(rule="pilot per pool", K=int(K), bits=int(bits),
+                                   criterion="each pool's band by derive_field_band on its own pilot walkers, the widest taken",
+                                   pools=per)
+
+
 def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
     """The worst gated-phase replay error between two per-walker field series over ``gates``, and the split-half
     floor of the reference: ``(err, floor)``."""
     from ..constants import GAMMA
     wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
     err = floor = 0.0
+    dt = np.broadcast_to(np.asarray(dt, np.float64), (f_raw.shape[1],))                # a sample's interval (s)
     for g in gates:
-        cr = np.cos(GAMMA * dt * (f_raw * g[None, :]).sum(1))
-        cd = np.cos(GAMMA * dt * (f_dec * g[None, :]).sum(1))
+        cr = np.cos(GAMMA * (f_raw * (g * dt)[None, :]).sum(1))
+        cd = np.cos(GAMMA * (f_dec * (g * dt)[None, :]).sum(1))
         err = max(err, abs(wmean(cr, slice(None)) - wmean(cd, slice(None))))
         floor = max(floor, abs(wmean(cr, A) - wmean(cr, B)))
     return err, floor
@@ -1507,12 +1530,15 @@ def susc_path_encode_modes(coeffs, names, *, T, bits=8, atol_trace=1e-4, max_ref
     return arrays, meta
 
 
-def _mode_sample_matrix(K, T, n_t, start=0, stop=None):
+def _mode_sample_matrix(K, T, n_t, start=0, stop=None, edges=None):
     """``(K, n)``: the orthonormal cosine modes of a window of ``T`` seconds read as the samples ``start .. stop - 1``
     of ``n_t`` -- sample 0 the series at ``t = 0``, sample ``j >= 1`` its mean over the block ``[(j - 1) h, j h]``,
-    ``h = T / (n_t - 1)`` (the block-mean reading a raw subset's block means are compared with)."""
+    ``h = T / (n_t - 1)`` (the block-mean reading a raw subset's block means are compared with), or over
+    ``[edges[j - 1], edges[j]]`` with ``edges`` ``(n_t,)`` the instants of a series on intervals of their own lengths
+    (a walk's read instants)."""
     n_t = int(n_t); stop = n_t if stop is None else int(stop); start = int(start)
     h = float(T) / (n_t - 1)
+    E = (np.arange(n_t) * h) if edges is None else np.asarray(edges, np.float64)
     j = np.arange(start, stop)
     k = np.arange(int(K))[:, None]
     om = np.pi * k / float(T)
@@ -1523,15 +1549,15 @@ def _mode_sample_matrix(K, T, n_t, start=0, stop=None):
         D[:, at0] = e_k0
     jb = j[~at0]
     if jb.size:
-        a, b = (jb - 1) * h, jb * h
+        a, b = E[jb - 1], E[jb]
         with np.errstate(divide="ignore", invalid="ignore"):
-            m = np.sqrt(2.0 / float(T)) * (np.sin(om * b[None, :]) - np.sin(om * a[None, :])) / om / h
+            m = np.sqrt(2.0 / float(T)) * (np.sin(om * b[None, :]) - np.sin(om * a[None, :])) / om / (b - a)[None, :]
         m[0] = 1.0 / np.sqrt(float(T))
         D[:, ~at0] = m
     return D
 
 
-def susc_path_decode(arrays, meta, *, n_t, n_w=None, n_cut=None, start=0):
+def susc_path_decode(arrays, meta, *, n_t, n_w=None, n_cut=None, start=0, edges=None):
     """The field's channels per walker on ``n_t`` samples of the window ``meta["T"]`` -- sample 0 the series at ``t =
     0``, sample ``j`` its mean over block ``j`` (:func:`_mode_sample_matrix`) -- from the stored modes, ``iso_P_zz``
     re-inserted: ``(field (n_w, n_ch_full, n_samples), names)`` in the canonical channel order. ``start`` / ``n_cut``
@@ -1540,7 +1566,7 @@ def susc_path_decode(arrays, meta, *, n_t, n_w=None, n_cut=None, start=0):
     C, names = susc_path_coeffs(arrays, meta)
     if n_w is not None:
         C = C[:int(n_w)]
-    D = _mode_sample_matrix(C.shape[2], float(meta["T"]), int(n_t), start, n_cut)
+    D = _mode_sample_matrix(C.shape[2], float(meta["T"]), int(n_t), start, n_cut, edges=edges)
     return C @ D, names
 
 
@@ -1585,21 +1611,37 @@ def read_interval_means(reads):
     return np.concatenate([b[:, :1], 0.5 * (b[:, :-1] + b[:, 1:])], axis=1)
 
 
-def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi=None):
+def read_block_means(reads, edges, reads_per_block, h):
+    """A raw subset's reads at the walk's read instants as each block's mean of the chord through them, ``(n_w,
+    n_blocks + 1, n_ch)`` (sample 0 the start's read): exact, since every block ends on a read."""
+    b = np.asarray(reads, np.float64); E = np.asarray(edges, np.float64)
+    trap = 0.5 * (b[:, :-1] + b[:, 1:]) * np.diff(E)[None, :, None]
+    n_w, n_r, n_ch = trap.shape
+    blocks = trap.reshape(n_w, n_r // int(reads_per_block), int(reads_per_block), n_ch).sum(2) / float(h)
+    return np.concatenate([b[:, :1], blocks], axis=1)
+
+
+def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h=None, edges=None, w=None, chi=None):
     """Certify the field channel AT ITS DECLARED CAPABILITY on a raw subset's reads: the stored (truncated, quantised)
-    modes decoded on the walk's read intervals (``h`` the read interval, ``series_raw`` the chord's mean over each,
-    :func:`read_interval_means`) against the walk's own reads, under the gates the pack claims
+    modes decoded on the walk's read intervals (``edges`` the read instants, ``series_raw`` the chord's mean over each
+    interval, :func:`read_interval_means`; or ``h`` a uniform interval) against the walk's own reads, each interval
+    weighted by its own length, under the gates the pack claims
     (:func:`_battery_gates`: GRE, spin echo, the CPMG train at ``max_refocus_pulses`` and a stimulated echo), over the
     envelope's field strengths and directions, against the split-half floor of the reference."""
     series_raw = np.asarray(series_raw, np.float64)                                    # (n_w, n_t, n_ch), sample 0 the start's
     n_w, n_t = series_raw.shape[0], series_raw.shape[1]
     w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
-    b_dec, _ = susc_path_decode(arrays, pm, n_t=n_t, n_w=n_w)
+    b_dec, _ = susc_path_decode(arrays, pm, n_t=n_t, n_w=n_w, edges=edges)
     chi_i, ca = chi if chi is not None else _field_scale(env)
     if not gm.get("has_aniso"):
         ca = 0.0
     n_p = int(pm.get("max_refocus_pulses") or 1)
-    gates = _battery_gates(n_t, n_p)
+    if edges is None:
+        gates, dt = _battery_gates(n_t, n_p), float(h)
+    else:
+        E = np.asarray(edges, np.float64)
+        gates = _battery_gates(n_t, n_p, t=E / E[-1])
+        dt = np.concatenate([[0.0], np.diff(E)])                         # each interval its own length; the start holds none
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     err = floor = 0.0
     from ..fields.hollow_cylinder import contract
@@ -1608,7 +1650,7 @@ def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi=None)
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
             f_raw = contract(series_raw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
             f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=bool(gm.get("has_aniso")))
-            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, float(h))
+            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
             err, floor = max(err, e), max(floor, f)
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p, n_walkers=int(n_w))
 
@@ -1956,6 +1998,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     if has_field:
         from ..fields.susceptibility_field import FieldGrid, FieldGridRecord
         from ..fields.strand_field import StrandFieldBasis, StrandFieldRecord
+        from ..fields.hollow_cylinder import HollowCylinderField
         field = cw.field_basis
         names = list(field.channel_names)
         band = dict(cw.block.get("field_band") or {})
@@ -1976,11 +2019,13 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
             chan_meta["susceptibility_grid"] = dict(
                 origin=fm["origin"], voxel_size=fm["voxel_size"], shape=fm["shape"], has_aniso=bool(fm["has_aniso"]),
                 periodic=fm["periodic"], arrays_in_pack=False, replay_route="path", raster=fm.get("raster"))
+        elif isinstance(field, HollowCylinderField):
+            chan_meta["susceptibility_grid"] = dict(has_aniso=True, arrays_in_pack=False, replay_route="path", source=field.meta)
         elif isinstance(field, (StrandFieldBasis, StrandFieldRecord)):
             chan_meta["susceptibility_grid"] = dict(has_aniso=("aniso_G_xx" in names), arrays_in_pack=False,
                                                     replay_route="path", source=field.meta)
         else:
-            raise TypeError(f"a walk's field_basis is a FieldGrid or a StrandFieldBasis (or their records), got {type(field).__name__}")
+            raise TypeError(f"a walk's field_basis is a FieldGrid, a HollowCylinderField or a StrandFieldBasis (or their records), got {type(field).__name__}")
         channels["susceptibility"] = True
         # the pilot's measurement of the band at its rung: the field's codec error against the pilot's reads
         if band.get("err") is not None and int(band.get("K", K_f)) == K_f and int(band.get("bits", 0) or 0) == int(depth if isinstance(depth, (int, np.integer)) else 0):
@@ -1989,10 +2034,12 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                        susc_path_walkers=int(band.get("pilot_walkers", 0)))
         if fidelity == "measured" and cw.raw_field is not None:
             run.phase("certificate path")
-            series, h_f = read_interval_means(cw.raw_field), float(cw.field_read_interval)   # the walk's own reads, interval by interval
+            series, edges = read_interval_means(cw.raw_field), cw.field_read_instants   # the walk's own reads, interval by interval
             wr = None if weights is None else np.asarray(weights, np.float64)[:series.shape[0]]
-            _pf = _susc_path_fidelity(series, arrays, _pm, chan_meta["susceptibility_grid"], env, h=h_f, w=wr, chi=chi_scale)
-            _bf = _susc_path_bloch_fidelity(series, arrays, _pm, chan_meta["susceptibility_grid"], env, h=h_f, w=wr, chi=chi_scale)
+            _pf = _susc_path_fidelity(series, arrays, _pm, chan_meta["susceptibility_grid"], env, edges=edges, w=wr, chi=chi_scale)
+            # the Bloch route on the block grid: the chord's exact block means (a block ends on a read)
+            _bf = _susc_path_bloch_fidelity(read_block_means(cw.raw_field, edges, cw.reads_per_block, h), arrays, _pm,
+                                            chan_meta["susceptibility_grid"], env, h=h, w=wr, chi=chi_scale)
             fid.update(err_susc_path=_pf["err"], floor_susc_path=_pf["floor"], susc_path_pulses_certified=_pf["n_pulses_certified"],
                        susc_path_measured_on="raw_subset", susc_path_walkers=int(_pf["n_walkers"]),
                        err_susc_bloch=_bf["err"], floor_susc_bloch=_bf["floor"], susc_bloch_walkers=_bf["n_walkers"])

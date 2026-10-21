@@ -59,12 +59,18 @@ fidelity.terms.field_read = v_read / 2
 The walk accumulates `QV_c` beside the trapezoid (one multiply-add per read, `CoefficientWalk.qv_field_increments`)
 and the pack writes its walkers' mean as `walk_params.qv.field_increments`. Before the walk, a pilot of
 `PILOT_WALKERS` walkers reads every step: per pool it measures `QV_c` and the rule
-(`engine.accumulate.field_read_rule`) gives the coarsest interval holding `v_read` under `FIELD_READ_FLOOR² = 1e-6`
-at the envelope's `B0` and the spec's `χ` (`B0 = 7 T`, `χ = 1.06e-6` when neither states one); the walk reads at the
-finest pool's interval, at the largest divisor of its steps per block within it (`field_read_of_pilot`). The same
-pilot measures the trapezoid's constant per channel at every coarser read the block allows (the trapezoid of every
-`d`-th read against that of every read, `measured_read_constants`); a channel whose constant exceeds `1/12` (the
-chord's curvature across a sheath) is charged at the measured one. When the floor would ask for less than the
+(`engine.accumulate.field_read_rule`) gives the coarsest interval holding the term `v_read / 2` at or below
+`FIELD_READ_FLOOR = 1e-3` (the criterion of every other term; `v_read` itself is never compared with the floor's
+square) at the envelope's `B0` and the spec's `χ` (`B0 = 7 T`, `χ = 1.06e-6` when neither states one); the walk reads
+at the finest pool's interval, every `n` steps and at every block end, a block's last interval the shorter one and its
+trapezoid weighted by its own length (`field_read_of_pilot`, `read_intervals`). The same pilot measures the
+trapezoid's constant per channel on a ladder of coarser reads (the trapezoid of every `d`-th read and the block end
+against that of every read, `measured_read_constants`); a channel whose constant exceeds `1/12` (the chord's
+curvature across a sheath) is charged at the measured one, at the rung at or above the walk's read; and the field
+band per pool (`bank.derive_field_band_per_pool`, the widest). The pilot is walked by the JAX kernels whatever the
+walk's backend. A myelinated cylinder is read in closed form (`fields.hollow_cylinder.HollowCylinderField`, exact
+at the walker's position); a raster's trilinear read smears the sheath's jump over a voxel, which a walker near a
+wall reads as a gradient (its QV and its constants say so). When the floor would ask for less than the
 physics step, **the read is the step** (a read along the chord between two steps carries the same bridge
 deviation), and the pack's envelope states the `B0·χ` product under which the term stays below the floor
 (`B0_chi_max_T`). `CoefficientWalk.block["field_read"]` records the rule, the interval, the reads per block, every

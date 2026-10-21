@@ -163,6 +163,14 @@ class FieldGrid(NamedTuple):
         return (jnp.asarray(self.grids(np.float32)), jnp.asarray(np.asarray(self.origin, float).ravel(), jnp.float32),
                 jnp.asarray(_as_voxel_size(self.basis["voxel_size"], 3), jnp.float32))
 
+    def device_read(self):
+        """``(arrays, read, key)``: the device arrays a walk passes as arguments (:meth:`device_arrays`), ``read(arrays,
+        r) -> (7 | 13,)`` at one position (:func:`grid_channels_at`, the periodic axes wrapped), and the key a compiled
+        walk is cached on."""
+        periodic = tuple(bool(p) for p in self.periodic)
+        arrays = self.device_arrays()
+        return arrays, (lambda a, r: grid_channels_at(*a, periodic, r)), ("grid", tuple(arrays[0].shape), periodic)
+
     def channels_at_device(self):
         """The jitted ``(n, 3) -> (n, 7 | 13)`` read of :func:`grid_channels_at` on the device, float32: the read a
         walk takes at every sub-step (:func:`dmipy_sim.engine.core.simulate_trajectories` with ``field_basis=``)."""

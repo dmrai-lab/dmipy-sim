@@ -23,11 +23,12 @@ variation of channel ``c``'s read series (:func:`moment_scan` accumulates it bes
 per read) and ``kappa_c`` the trapezoid's constant, :data:`READ_CONSTANT` ``= 1/12`` for a field linear over one read
 or the larger constant a pilot measured on that channel (:func:`read_constants`). The certificate's term is
 ``field_read = v_read / 2`` (:func:`field_read_term`). A walk's read is derived from a PILOT's ``QV`` per pool
-(:func:`field_read_of_pilot`): the coarsest interval holding ``v_read`` under the square of :data:`FIELD_READ_FLOOR`
-at the envelope's ``B0`` and ``chi`` (:func:`field_read_rule`), the finest over the walk's pools, read at the largest
-divisor of the block's steps that fits it (:func:`field_read_steps`; never finer than the step, never coarser than
-the block); a read the floor would want finer than the step is the step, and the envelope states the ``B0 chi``
-product under which the term stays below the floor (:func:`field_read_B0_chi_max`, RPK.md 9.4 rule 5).
+(:func:`field_read_of_pilot`): the coarsest interval holding the TERM at or below :data:`FIELD_READ_FLOOR` at the
+envelope's ``B0`` and ``chi`` (:func:`field_read_rule`; the criterion of every other term), the finest over the walk's
+pools, read every ``n`` steps (:func:`field_read_steps`; never finer than the step, never coarser than the block) and
+at every block end, a block's last interval the shorter one, so that the block's moments are exact at its ends; a
+read the floor would want finer than the step is the step, and the envelope states the ``B0 chi`` product under which
+the term stays below the floor (:func:`field_read_B0_chi_max`, RPK.md 9.4 rule 5).
 """
 import math
 from typing import NamedTuple
@@ -54,7 +55,7 @@ BLOCK_OMEGA_H = 0.8
 STORAGE_BAND_HZ = 1280.0
 
 #: the floor the field read's rule holds its term to (the signal floor a storage-grade pack is ordered at,
-#: ``build_to_floor``'s ``sigma_star``): ``v_read <= FIELD_READ_FLOOR^2`` at the envelope's ``B0`` and ``chi``
+#: ``build_to_floor``'s ``sigma_star``): ``v_read / 2 <= FIELD_READ_FLOOR`` at the envelope's ``B0`` and ``chi``
 FIELD_READ_FLOOR = 1e-3
 
 #: the field strength (T) and susceptibility scale the read rule, the field band and the field's certificate terms are
@@ -166,13 +167,13 @@ def field_read_term(dt_f, qv_increments, B0, chi, constants=None):
 
 
 def field_read_rule(qv_increments, B0, chi, floor=FIELD_READ_FLOOR, constants=None):
-    """The read interval ``dt_f`` (s) that holds ``v_read`` under ``floor^2`` for a walk whose read series has the
-    quadratic variation ``qv_increments`` per channel: ``floor / (gamma B0 chi sum_c sqrt(kappa_c QV_c))``; ``inf``
-    for a series that does not vary (a stuck pool, a uniform field)."""
+    """The read interval ``dt_f`` (s) that holds the term ``v_read / 2`` at ``floor`` for a walk whose read series
+    has the quadratic variation ``qv_increments`` per channel (RPK.md 9.5.5): ``sqrt(2 floor) / (gamma B0 chi sum_c
+    sqrt(kappa_c QV_c))``; ``inf`` for a series that does not vary (a stuck pool, a uniform field)."""
     denom = GAMMA * float(B0) * float(chi) * math.sqrt(_read_weight(qv_increments, constants))
     if not denom > 0.0:
         return math.inf
-    return float(floor) / denom
+    return math.sqrt(2.0 * float(floor)) / denom
 
 
 def field_read_B0_chi_max(dt_f, qv_increments, floor=FIELD_READ_FLOOR, constants=None):
@@ -185,25 +186,42 @@ def field_read_B0_chi_max(dt_f, qv_increments, floor=FIELD_READ_FLOOR, constants
 
 
 def field_read_steps(dt_f_rule, dt_sim, sub_steps):
-    """``(n_read, dt_f)``: the read every ``n_read`` steps, the largest divisor of the block's ``sub_steps`` whose
-    interval ``n_read dt_sim`` is within the rule's ``dt_f_rule`` -- the step itself when the rule asks for less
-    than a step (a read along the chord between two steps carries the same bridge deviation: the read is never
-    sub-stepped), the block when the rule allows more than one."""
+    """``(n_read, dt_f)``: the read every ``n_read`` steps (and at every block end), the most steps, at most the
+    block's ``sub_steps``, whose interval ``n_read dt_sim`` is within the rule's ``dt_f_rule`` -- the step itself
+    when the rule asks for less than a step (a read along the chord between two steps carries the same bridge
+    deviation: the read is never sub-stepped), the block when the rule allows more than one. ``dt_f`` is the longest
+    interval, the one the term is charged at; a block's last interval, ``sub_steps mod n_read`` steps, is shorter."""
     sub_steps = int(sub_steps)
     ratio = float(dt_f_rule) / float(dt_sim) * (1.0 + 1e-9)
-    n_max = sub_steps if not math.isfinite(ratio) else int(math.floor(ratio))
-    n = 1
-    for d in range(1, sub_steps + 1):
-        if sub_steps % d == 0 and d <= n_max:
-            n = d
+    n = sub_steps if not math.isfinite(ratio) else int(min(max(math.floor(ratio), 1), sub_steps))
     return n, n * float(dt_sim)
 
 
+def read_intervals(steps, n_read):
+    """The read intervals of a block of ``steps`` steps read every ``n_read`` (and at its end), in steps: ``n_read``
+    each, the last ``steps mod n_read`` when it does not divide."""
+    steps, n_read = int(steps), int(n_read)
+    q, r = divmod(steps, n_read)
+    return (n_read,) * q + ((r,) if r else ())
+
+
+#: the most coarser reads a pilot measures the trapezoid's constant at: a geometric ladder over the block's steps
+READ_CHECK_RATIO = 1.5
+
+
 def read_checks(steps):
-    """The read intervals, in steps, at which a pilot that reads every step measures the trapezoid's constant: every
-    divisor ``d > 1`` of the block's ``steps`` (the intervals :func:`field_read_steps` can choose)."""
+    """The read intervals, in steps, at which a pilot that reads every step measures the trapezoid's constant: a
+    ladder ``2, 3, 4, 6, 9, ...`` (ratio :data:`READ_CHECK_RATIO`) up to the block's ``steps``, the block itself the
+    last rung; a walk's read is charged at the rung at or above it (:func:`field_read_of_pilot`)."""
     steps = int(steps)
-    return tuple(d for d in range(2, steps + 1) if steps % d == 0)
+    out, d = [], 2.0
+    while int(round(d)) < steps:
+        if not out or int(round(d)) > out[-1]:
+            out.append(int(round(d)))
+        d *= READ_CHECK_RATIO
+    if steps >= 2:
+        out.append(steps)
+    return tuple(out)
 
 
 def measured_read_constants(err_sq, qv_checks, step_s, checks):
@@ -228,7 +246,7 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
     seconds, from its pilot (RPK.md 9.5.5). ``pools`` is ``{name: (qv_increments (n_ch,), walkers)}``, the pilot's
     walkers' mean quadratic variation of the read series per pool, read at every step; per pool the rule's interval
     (:func:`field_read_rule` at ``B0`` and ``chi``), the walk's read the finest over its pools (one interval serves
-    every walker of a walk), at the largest divisor of the block's steps that fits it (:func:`field_read_steps`).
+    every walker of a walk), every ``n`` steps and at every block end (:func:`field_read_steps`).
     ``given`` (s) replaces the rule's interval. ``checks`` / ``err_sq`` / ``qv_checks`` are the pilot's measurement of
     the trapezoid's constant (:func:`read_checks`, the walkers' mean ``E_d^2`` and quadratic variation of every
     ``d``-th read per check and channel, :func:`measured_read_constants`), ``qv_all`` the walkers' mean quadratic
@@ -244,10 +262,11 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
     for qv, _n in pools.values():
         n_ch = int(np.asarray(qv).reshape(-1).shape[0])
 
-    def at_read(n):                                    # the constants measured at a read of n steps (the finest check at the step)
+    def at_read(n):                                    # the constants measured at the rung at or above a read of n steps
         if measured is None:
             return None
-        return read_constants(measured[n] if n in measured else measured[min(measured)], n_ch)
+        up = [d for d in measured if d >= n]
+        return read_constants(measured[min(up) if up else max(measured)], n_ch)
 
     constants, seen = None, set()
     while True:
@@ -267,8 +286,8 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
         weight = np.asarray(qv_all, np.float64)
     finite = lambda x: float(x) if math.isfinite(float(x)) else None          # a series that does not vary sets no interval
     out = dict(rule=("given" if given is not None else "pilot"), dt_f_rule=finite(dt_rule), dt_f=float(dt_f), n_read=int(n_read),
-               reads_per_block=int(steps // n_read), at_step=bool(n_read == 1 and dt_rule < step_s), B0=float(B0), chi=float(chi),
-               floor=float(floor), T_e=float(T_e), step_s=step_s, constant=READ_CONSTANT,
+               reads_per_block=len(read_intervals(steps, n_read)), at_step=bool(n_read == 1 and dt_rule < step_s), B0=float(B0), chi=float(chi),
+               floor=float(floor), T_e=float(T_e), step_s=step_s, steps_per_block=int(steps), constant=READ_CONSTANT,
                constants=(None if constants is None else [float(x) for x in constants]),
                constants_measured=bool(measured is not None),
                pools={str(name): dict(walkers=int(n), qv_increments=[float(x) for x in np.asarray(qv, np.float64).reshape(-1)],
@@ -326,32 +345,33 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     """One block of ``length`` steps of ``kind`` from ``carry = (phys, b_prev, ev_comp, ev_bound)``: the physics carry
     stepped ``length`` times, with the moments of the increments ``M_j = sum_i tau_i^j (pos(c_i+1) - pos(c_i))`` (m+1,
     3) and the same ``B_j`` of the cumulative local time, ``tau_i = (i + 1/2) / length - 1/2``; each channel's
-    quadratic variation ``Q = sum_i (dx_i)^2`` per axis and ``Qb = sum_i (dlog_i)^2``; with ``read`` the field read at
-    every ``n_read``-th step (``length`` a multiple of it) and the TRAPEZOID increment of each read interval,
-    ``(b_prev + b) dt_f / 2``, at the interval's midpoint: ``F_j`` (m+1, n_ch), ``Qf = sum (inc)^2`` (n_ch,) and the
-    read series' quadratic variation ``Qd = sum (b - b_prev)^2`` (n_ch,), the last read carried in ``b_prev``; with
-    ``checks`` (divisors of ``length``, a walk that reads every step) ``E`` (2, n_checks, n_ch): per check ``d`` the
-    trapezoid of every ``d``-th read less the trapezoid of every read, over the block, and the quadratic variation of
-    the series of every ``d``-th read (the pilot's measurement of the trapezoid's constant,
-    :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch),
-    the block's ``length / n_read`` reads at the ends of its read intervals; with an events buffer the label after
-    every step recorded on change at the global step ``step0 + i + 1``. Returns ``(carry, (M, B, Q, Qb, F, Qf, Qd, E,
-    reads))`` (None where a channel is not recorded)."""
+    quadratic variation ``Q = sum_i (dx_i)^2`` per axis and ``Qb = sum_i (dlog_i)^2``; with ``read`` the field read
+    every ``n_read`` steps and at the block's end (:func:`read_intervals`: the last interval the shorter one when
+    ``n_read`` does not divide ``length``; ``dt_f = n_read dt`` the full interval) and the TRAPEZOID increment of each
+    read interval, ``(b_prev + b) tau_i / 2`` over its own length ``tau_i``, at the interval's midpoint: ``F_j`` (m+1,
+    n_ch), ``Qf = sum (inc)^2`` (n_ch,) and the read series' quadratic variation ``Qd = sum (b - b_prev)^2``
+    (n_ch,), the last read carried in ``b_prev``; with ``checks`` (a walk that reads every step) ``E`` (2, n_checks,
+    n_ch): per check ``d`` the trapezoid of every ``d``-th read and the block's end less the trapezoid of every read,
+    over the block, and the quadratic variation of the series of those reads (the pilot's measurement of the
+    trapezoid's constant, :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch)
+    at the ends of the block's read intervals; with an events buffer the label after every step recorded on change at
+    the global step ``step0 + i + 1``. Returns ``(carry, (M, B, Q, Qb, F, Qf, Qd, E, reads))`` (None where a channel
+    is not recorded)."""
     phys, b_prev, ev_c, ev_b = carry
     length, n_read, m = int(length), int(n_read), int(m)
-    if length % n_read:
-        raise ValueError(f"the field is read every {n_read} steps, which does not divide the block's {length}")
+    if not 1 <= n_read <= length:
+        raise ValueError(f"the field is read every {n_read} steps of a block of {length}: between 1 and the block")
     checks = tuple(int(d) for d in checks)
-    if checks and (n_read != 1 or any(length % d for d in checks)):
-        raise ValueError(f"the trapezoid's checks {checks} need a read at every step and divisors of the block's {length} steps")
-    n_groups = length // n_read
+    if checks and (n_read != 1 or any(not 2 <= d <= length for d in checks)):
+        raise ValueError(f"the trapezoid's checks {checks} need a read at every step and reads of 2 .. {length} steps")
+    n_full, rem = divmod(length, n_read)
     has_b = kind.blt_of is not None
     js = jnp.arange(m + 1, dtype=jnp.float32)
     inv_len = jnp.float32(1.0 / length)
-    half_dt_f = jnp.float32(0.5 * float(dt_f))
+    dt_step = float(dt_f) / n_read
     s0 = jnp.int32(0) if step0 is None else jnp.asarray(step0).astype(jnp.int32)
     ds = jnp.asarray(checks, jnp.int32) if checks else None
-    half_dt_d = (jnp.asarray(checks, jnp.float32) * half_dt_f)[:, None] if checks else None
+    half_dt = jnp.float32(0.5 * dt_step)
 
     def step(c, i):
         cc, mp, mb, qp, qb, evc, evb = c
@@ -373,27 +393,34 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
             evb = _events_step(evb, kind.bound_of(cc), s0 + i + 1)
         return (cc, mp, mb, qp, qb, evc, evb), None
 
-    def group(c, g):
-        cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec = c
-        idx = g * n_read + jnp.arange(n_read, dtype=jnp.int32)
-        (cc, mp, mb, qp, qb, evc, evb), _ = jax.lax.scan(step, (cc, mp, mb, qp, qb, evc, evb), idx)
-        b = None
-        if read is not None:
-            b = read(kind.read_pos_of(cc))
-            inc = (bp + b) * half_dt_f                                       # the trapezoid over the read interval
-            tau = ((g.astype(jnp.float32) + 0.5) * n_read) * inv_len - 0.5     # the interval's midpoint
-            mf = mf + (tau ** js)[:, None] * inc[None, :]
-            qf = qf + inc * inc
-            db = b - bp
-            qd = qd + db * db                                                # the read series' quadratic variation
-            if checks:
-                hit = ((g + 1) % ds == 0)[:, None]                           # the d-th reads: the coarser trapezoids
-                e_d = ec[0] - inc[None, :] + jnp.where(hit, (bpd + b[None, :]) * half_dt_d, 0.0)
-                q_d = ec[1] + jnp.where(hit, (b[None, :] - bpd) ** 2, 0.0)
-                ec = jnp.stack([e_d, q_d])
-                bpd = jnp.where(hit, b[None, :], bpd)
-            bp = b
-        return (cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec), (b if keep_reads else None)
+    def group_of(L):
+        """A read interval of ``L`` steps starting at step ``start`` of the block (``L`` static)."""
+        half = jnp.float32(0.5 * L * dt_step)
+
+        def group(c, start):
+            cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec = c
+            idx = start + jnp.arange(L, dtype=jnp.int32)
+            (cc, mp, mb, qp, qb, evc, evb), _ = jax.lax.scan(step, (cc, mp, mb, qp, qb, evc, evb), idx)
+            b = None
+            if read is not None:
+                b = read(kind.read_pos_of(cc))
+                inc = (bp + b) * half                                            # the trapezoid over the read interval
+                tau = (start.astype(jnp.float32) + 0.5 * L) * inv_len - 0.5        # the interval's midpoint
+                mf = mf + (tau ** js)[:, None] * inc[None, :]
+                qf = qf + inc * inc
+                db = b - bp
+                qd = qd + db * db                                                # the read series' quadratic variation
+                if checks:                                                       # the d-th reads and the block's end
+                    k = start + 1
+                    hit = (k % ds == 0) | (k == length)
+                    span = jnp.where(k % ds == 0, ds, k % ds).astype(jnp.float32)[:, None]
+                    e_d = ec[0] - inc[None, :] + jnp.where(hit[:, None], (bpd + b[None, :]) * span * half_dt, 0.0)
+                    q_d = ec[1] + jnp.where(hit[:, None], (b[None, :] - bpd) ** 2, 0.0)
+                    ec = jnp.stack([e_d, q_d])
+                    bpd = jnp.where(hit[:, None], b[None, :], bpd)
+                bp = b
+            return (cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec), (b if keep_reads else None)
+        return group
 
     m0 = jnp.zeros((m + 1, 3), jnp.float32)
     b0 = jnp.zeros((m + 1,), jnp.float32) if has_b else None
@@ -404,8 +431,12 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     qd0 = jnp.zeros((int(n_ch),), jnp.float32) if read is not None else None
     bpd0 = jnp.broadcast_to(b_prev[None, :], (len(checks), int(n_ch))) if (read is not None and checks) else None
     ec0 = jnp.zeros((2, len(checks), int(n_ch)), jnp.float32) if (read is not None and checks) else None
-    (phys, mp, mb, qp, qb, ev_c, ev_b, b_prev, mf, qf, qd, _bpd, ec), reads = jax.lax.scan(
-        group, (phys, m0, b0, q0, qb0, ev_c, ev_b, b_prev, f0, qf0, qd0, bpd0, ec0), jnp.arange(n_groups, dtype=jnp.int32))
+    c = (phys, m0, b0, q0, qb0, ev_c, ev_b, b_prev, f0, qf0, qd0, bpd0, ec0)
+    c, reads = jax.lax.scan(group_of(n_read), c, jnp.arange(n_full, dtype=jnp.int32) * n_read)
+    if rem:                                                                      # the block's end: the shorter interval
+        c, last = group_of(rem)(c, jnp.int32(n_full * n_read))
+        reads = None if reads is None else jnp.concatenate([reads, last[None]], axis=0)
+    phys, mp, mb, qp, qb, ev_c, ev_b, b_prev, mf, qf, qd, _bpd, ec = c
     return (phys, b_prev, ev_c, ev_b), (mp, mb, qp, qb, mf, qf, qd, ec, reads)
 
 
