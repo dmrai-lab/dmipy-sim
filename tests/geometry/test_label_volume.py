@@ -212,13 +212,7 @@ def test_metaimage_is_read_in_millimetres(tmp_path):
 
 
 def test_a_tiff_stack_is_one_image_whether_it_is_a_directory_or_a_multi_page_file(tmp_path):
-    """The same volume in the two TIFF containers reads back as the same array.
-
-    A directory of slices and the multi-page file of those slices are one image; reading them into
-    two different index orders would make them two substrates, silently, and no shape check catches
-    it on a non-cubic volume. Measured on a 4x6x10 volume: both come back equal to the source, and to
-    each other; before, the directory branch returned `vol.transpose(1, 0, 2)`.
-    """
+    """A directory of slices and a multi-page TIFF preserve the same ``(x, y, z)`` volume."""
     tifffile = pytest.importorskip("tifffile")
     vol = (np.arange(4 * 6 * 10, dtype=np.uint8).reshape(4, 6, 10) % 3)     # (nx, ny, nz), non-cubic
     tifffile.imwrite(tmp_path / "multi.tif", np.transpose(vol, (2, 1, 0)))  # (z, y, x)
@@ -230,6 +224,42 @@ def test_a_tiff_stack_is_one_image_whether_it_is_a_directory_or_a_multi_page_fil
     b = read_label_volume(d, voxel_size=1e-6)
     assert np.array_equal(a.labels, vol) and np.array_equal(b.labels, vol)
     assert np.allclose(a.voxel_size, 1e-6) and np.allclose(b.voxel_size, 1e-6)
+
+
+@pytest.mark.parametrize("slices", [
+    (("s1.tif", 1), ("s2.tif", 2), ("s10.tiff", 10)),
+    (("s010.TIF", 10), ("s001.tiff", 1), ("s002.TiF", 2)),
+])
+def test_tiff_directory_slices_are_sorted_by_numeric_index(tmp_path, slices):
+    """Directory slice names sort numerically, including unpadded and mixed-case suffixes."""
+    tifffile = pytest.importorskip("tifffile")
+    directory = tmp_path / "slices"
+    directory.mkdir()
+    for name, index in slices:
+        tifffile.imwrite(directory / name, np.full((3, 2), index, np.uint8))
+
+    expected = np.stack([np.full((2, 3), i, np.uint8) for i in (1, 2, 10)], axis=2)
+    volume = read_label_volume(directory, voxel_size=(1e-6, 2e-6, 3e-6))
+    assert np.array_equal(volume.labels, expected)
+    assert np.allclose(volume.voxel_size, [1e-6, 2e-6, 3e-6])
+    assert np.array_equal(volume.origin, np.zeros(3))
+
+
+@pytest.mark.parametrize(("names", "message"), [
+    (("slice.tif",), "no numeric slice index"),
+    (("slice1_part2.tif",), "ambiguous numeric slice indices"),
+    (("s1.tif", "s01.TIFF"), "duplicate numeric slice index 1"),
+])
+def test_tiff_directory_rejects_missing_ambiguous_or_duplicate_indices(tmp_path, names, message):
+    """Every TIFF slice name identifies exactly one distinct numeric index."""
+    tifffile = pytest.importorskip("tifffile")
+    directory = tmp_path / "slices"
+    directory.mkdir()
+    for name in names:
+        tifffile.imwrite(directory / name, np.zeros((2, 3), np.uint8))
+
+    with pytest.raises(LabelVolumeError, match=message):
+        read_label_volume(directory, voxel_size=1e-6)
 
 
 def test_a_tiff_stack_takes_its_voxel_size_from_the_imagej_tags_when_it_has_them(tmp_path):
