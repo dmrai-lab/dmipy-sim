@@ -301,6 +301,27 @@ def read_nifti(path, *, voxel_size=None):
 
 
 # ------------------------------------------------------------------------------------ TIFF stack
+def _tiff_directory_files(path):
+    path = os.fspath(path)
+    files = [f for f in os.listdir(path) if f.lower().endswith((".tif", ".tiff"))]
+    if not files:
+        raise LabelVolumeError(f"{path}: the directory holds no .tif slices")
+    indexed = []
+    for f in files:
+        nums = re.findall(r"\d+", f)
+        if not nums:
+            raise LabelVolumeError(f"{path}: the slice {f!r} has no numeric index")
+        if len(nums) > 1:
+            raise LabelVolumeError(f"{path}: the slice {f!r} has an ambiguous numeric index {nums}")
+        indexed.append((int(nums[0]), f))
+    indexed.sort()
+    indices = [i for i, _ in indexed]
+    if len(indices) != len(set(indices)):
+        dups = sorted({i for i in indices if indices.count(i) > 1})
+        raise LabelVolumeError(f"{path}: the directory has a duplicate numeric index {dups}")
+    return [os.path.join(path, f) for _, f in indexed]
+
+
 def read_tiff(path, *, voxel_size=None):
     """A TIFF stack through ``tifffile``: a multi-page file, or a directory whose ``.tif`` files are
     the slices in name order (the slowest index).
@@ -315,10 +336,8 @@ def read_tiff(path, *, voxel_size=None):
         raise LabelVolumeError(f"{path}: reading a TIFF stack needs tifffile (pip install tifffile)") from e
     vox = None
     if os.path.isdir(path):
-        files = sorted(f for f in os.listdir(path) if f.lower().endswith((".tif", ".tiff")))
-        if not files:
-            raise LabelVolumeError(f"{path}: the directory holds no .tif slices")
-        planes = [tifffile.imread(os.path.join(path, f)) for f in files]
+        files = _tiff_directory_files(path)
+        planes = [tifffile.imread(f) for f in files]
         if any(p.ndim != 2 or p.shape != planes[0].shape for p in planes):
             raise LabelVolumeError(f"{path}: the slices are not 2-D images of one shape")
         a = np.stack(planes, axis=0)                    # (z, y, x): the slice index is slowest
@@ -570,8 +589,7 @@ def payload_files(path, *, format=None):
     fmt = format_of(path) if format is None else str(format).lower()
     out = [path]
     if os.path.isdir(path):
-        return sorted(os.path.join(path, f) for f in os.listdir(path)
-                      if f.lower().endswith((".tif", ".tiff")))
+        return _tiff_directory_files(path)
     if fmt in ("nrrd", "mhd"):
         with open(path, "rb") as fh:
             head = fh.read(8192).decode("utf-8", "replace")
