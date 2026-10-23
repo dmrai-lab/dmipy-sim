@@ -248,6 +248,83 @@ def test_a_tiff_stack_takes_its_voxel_size_from_the_imagej_tags_when_it_has_them
         read_label_volume(tmp_path / "ij.tif", voxel_size=1e-6)
 
 
+def test_tiff_directory_slices_are_sorted_by_numeric_index(tmp_path):
+    """Directory slices named s1, s2, s10 must be read in numeric order, not lexical.
+
+    Lexical sorting places s10 before s2; numeric sorting puts them in order 1, 2, 10.
+    The slice at z=0 must have value 1, at z=1 value 2, at z=2 value 10."""
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "scrambled"
+    d.mkdir()
+    for label, value in [(1, 1), (2, 2), (10, 10)]:
+        tifffile.imwrite(d / f"s{label}.tif", np.full((4, 5), value, dtype=np.uint8))
+    v = read_label_volume(d, voxel_size=1e-6)
+    assert v.labels.shape == (5, 4, 3)
+    assert np.array_equal(v.labels[:, :, 0], 1)
+    assert np.array_equal(v.labels[:, :, 1], 2)
+    assert np.array_equal(v.labels[:, :, 2], 10)
+
+
+def test_tiff_directory_rejects_absent_slice_index(tmp_path):
+    """A slice file with no numeric index in its name is refused with a clear error."""
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "no_index"
+    d.mkdir()
+    tifffile.imwrite(d / "slice.tif", np.zeros((3, 3), np.uint8))
+    with pytest.raises(LabelVolumeError, match="missing a numeric index"):
+        read_label_volume(d, voxel_size=1e-6)
+
+
+def test_tiff_directory_rejects_ambiguous_slice_index(tmp_path):
+    """A slice file with multiple digit sequences in its name is refused as ambiguous."""
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "ambiguous"
+    d.mkdir()
+    tifffile.imwrite(d / "slice_1_2.tif", np.zeros((3, 3), np.uint8))
+    with pytest.raises(LabelVolumeError, match="multiple digit sequences"):
+        read_label_volume(d, voxel_size=1e-6)
+
+
+def test_tiff_directory_rejects_duplicate_slice_index(tmp_path):
+    """Two slice files with the same numeric index are refused as duplicates."""
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "duplicate"
+    d.mkdir()
+    tifffile.imwrite(d / "s1.tif", np.zeros((3, 3), np.uint8))
+    tifffile.imwrite(d / "slice_1.tif", np.zeros((3, 3), np.uint8))
+    with pytest.raises(LabelVolumeError, match="duplicate slice index 1"):
+        read_label_volume(d, voxel_size=1e-6)
+
+
+def test_tiff_directory_with_zero_padded_names(tmp_path):
+    """Zero-padded slice names like s001.tif, s002.tif, s010.tif are read correctly."""
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "padded"
+    d.mkdir()
+    for label, value in [(1, 1), (2, 2), (10, 10)]:
+        tifffile.imwrite(d / f"s{label:03d}.tif", np.full((4, 5), value, dtype=np.uint8))
+    v = read_label_volume(d, voxel_size=1e-6)
+    assert v.labels.shape == (5, 4, 3)
+    assert np.array_equal(v.labels[:, :, 0], 1)
+    assert np.array_equal(v.labels[:, :, 1], 2)
+    assert np.array_equal(v.labels[:, :, 2], 10)
+
+
+def test_tiff_directory_with_mixed_case_extensions(tmp_path):
+    """Mixed-case .tif/.tiff extensions are handled correctly."""
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "mixed"
+    d.mkdir()
+    tifffile.imwrite(d / "s1.TIF", np.full((4, 5), 1, dtype=np.uint8))
+    tifffile.imwrite(d / "s2.tiff", np.full((4, 5), 2, dtype=np.uint8))
+    tifffile.imwrite(d / "s3.Tiff", np.full((4, 5), 3, dtype=np.uint8))
+    v = read_label_volume(d, voxel_size=1e-6)
+    assert v.labels.shape == (5, 4, 3)
+    assert np.array_equal(v.labels[:, :, 0], 1)
+    assert np.array_equal(v.labels[:, :, 1], 2)
+    assert np.array_equal(v.labels[:, :, 2], 3)
+
+
 def test_nifti_is_read_in_the_units_its_header_declares(tmp_path):
     """NIfTI's zooms are in the unit of ``xyzt_units``, millimetres being the format's default, and the
     origin is the affine's translation in the same unit: a 0.3 mm isotropic volume at an offset of
