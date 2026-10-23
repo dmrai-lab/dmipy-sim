@@ -301,9 +301,44 @@ def read_nifti(path, *, voxel_size=None):
 
 
 # ------------------------------------------------------------------------------------ TIFF stack
+def _slice_index(name, path):
+    """The numeric slice index from a TIFF filename stem (the trailing integer).
+
+    ``s002.tif``, ``s2.tif`` and ``s2.tiff`` all carry index 2; a name with no trailing integer, or
+    whose stem consists entirely of digits but is otherwise ambiguous, is refused by name.
+    """
+    stem = os.path.splitext(name)[0]
+    m = re.search(r"(\d+)$", stem)
+    if m is None:
+        raise LabelVolumeError(
+            f"{path}: the slice file {name!r} has no trailing integer in its name; "
+            f"slices must be named with a numeric index (e.g. 's001.tif', 'slice_10.tiff')")
+    return int(m.group(1))
+
+
+def _sorted_slices(names, path):
+    """``names`` sorted by numeric slice index; absent or duplicate indices are refused by name."""
+    indexed = []
+    for name in names:
+        idx = _slice_index(name, path)
+        indexed.append((idx, name))
+    indexed.sort(key=lambda t: t[0])
+    seen = {}
+    for idx, name in indexed:
+        if idx in seen:
+            raise LabelVolumeError(
+                f"{path}: slice index {idx} appears in both {seen[idx]!r} and {name!r}; "
+                f"each z-slice must have a distinct numeric index")
+        seen[idx] = name
+    return [name for _, name in indexed]
+
+
 def read_tiff(path, *, voxel_size=None):
-    """A TIFF stack through ``tifffile``: a multi-page file, or a directory whose ``.tif`` files are
-    the slices in name order (the slowest index).
+    """A TIFF stack through ``tifffile``: a multi-page file, or a directory whose ``.tif`` /
+    ``.tiff`` files are the slices ordered by their numeric index (the slowest index).
+
+    Slice files must carry a trailing integer in their name (``s1.tif``, ``slice_010.tiff``); absent
+    or duplicate indices are refused by name.  Zero-padding and mixed-case extensions are accepted.
 
     A TIFF carries in-plane resolution tags at best and no slice spacing at all, so the voxel size
     comes from ``voxel_size=``; the ImageJ ``spacing`` / ``unit`` tags are read when the file has them.
@@ -315,9 +350,10 @@ def read_tiff(path, *, voxel_size=None):
         raise LabelVolumeError(f"{path}: reading a TIFF stack needs tifffile (pip install tifffile)") from e
     vox = None
     if os.path.isdir(path):
-        files = sorted(f for f in os.listdir(path) if f.lower().endswith((".tif", ".tiff")))
-        if not files:
+        names = [f for f in os.listdir(path) if f.lower().endswith((".tif", ".tiff"))]
+        if not names:
             raise LabelVolumeError(f"{path}: the directory holds no .tif slices")
+        files = _sorted_slices(names, path)
         planes = [tifffile.imread(os.path.join(path, f)) for f in files]
         if any(p.ndim != 2 or p.shape != planes[0].shape for p in planes):
             raise LabelVolumeError(f"{path}: the slices are not 2-D images of one shape")
