@@ -302,8 +302,8 @@ def read_nifti(path, *, voxel_size=None):
 
 # ------------------------------------------------------------------------------------ TIFF stack
 def read_tiff(path, *, voxel_size=None):
-    """A TIFF stack through ``tifffile``: a multi-page file, or a directory whose ``.tif`` files are
-    the slices in name order (the slowest index).
+    """A TIFF stack through ``tifffile``: a multi-page file, or a directory whose ``.tif`` files each
+    have one numeric slice index in the name, sorted by that index (the slowest axis).
 
     A TIFF carries in-plane resolution tags at best and no slice spacing at all, so the voxel size
     comes from ``voxel_size=``; the ImageJ ``spacing`` / ``unit`` tags are read when the file has them.
@@ -315,10 +315,27 @@ def read_tiff(path, *, voxel_size=None):
         raise LabelVolumeError(f"{path}: reading a TIFF stack needs tifffile (pip install tifffile)") from e
     vox = None
     if os.path.isdir(path):
-        files = sorted(f for f in os.listdir(path) if f.lower().endswith((".tif", ".tiff")))
+        files = []
+        indices = {}
+        for name in os.listdir(path):
+            if not name.lower().endswith((".tif", ".tiff")):
+                continue
+            numbers = re.findall(r"\d+", os.path.splitext(name)[0])
+            if not numbers:
+                raise LabelVolumeError(f"{path}: TIFF slice {name!r} has no numeric slice index")
+            if len(numbers) != 1:
+                raise LabelVolumeError(f"{path}: TIFF slice {name!r} has ambiguous numeric slice indices "
+                                       f"{numbers}")
+            index = int(numbers[0])
+            if index in indices:
+                raise LabelVolumeError(f"{path}: duplicate numeric slice index {index} in "
+                                       f"{indices[index]!r} and {name!r}")
+            indices[index] = name
+            files.append((index, name))
         if not files:
             raise LabelVolumeError(f"{path}: the directory holds no .tif slices")
-        planes = [tifffile.imread(os.path.join(path, f)) for f in files]
+        planes = [tifffile.imread(os.path.join(path, name))
+                  for _, name in sorted(files)]
         if any(p.ndim != 2 or p.shape != planes[0].shape for p in planes):
             raise LabelVolumeError(f"{path}: the slices are not 2-D images of one shape")
         a = np.stack(planes, axis=0)                    # (z, y, x): the slice index is slowest
