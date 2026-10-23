@@ -260,9 +260,9 @@ def test_tiff_directory_slices_are_sorted_by_numeric_index(tmp_path):
         tifffile.imwrite(d / f"s{label}.tif", np.full((4, 5), value, dtype=np.uint8))
     v = read_label_volume(d, voxel_size=1e-6)
     assert v.labels.shape == (5, 4, 3)
-    assert np.array_equal(v.labels[:, :, 0], 1)
-    assert np.array_equal(v.labels[:, :, 1], 2)
-    assert np.array_equal(v.labels[:, :, 2], 10)
+    assert np.array_equal(v.labels[:, :, 0], np.full((5, 4), 1, dtype=np.uint8))
+    assert np.array_equal(v.labels[:, :, 1], np.full((5, 4), 2, dtype=np.uint8))
+    assert np.array_equal(v.labels[:, :, 2], np.full((5, 4), 10, dtype=np.uint8))
 
 
 def test_tiff_directory_rejects_absent_slice_index(tmp_path):
@@ -305,9 +305,9 @@ def test_tiff_directory_with_zero_padded_names(tmp_path):
         tifffile.imwrite(d / f"s{label:03d}.tif", np.full((4, 5), value, dtype=np.uint8))
     v = read_label_volume(d, voxel_size=1e-6)
     assert v.labels.shape == (5, 4, 3)
-    assert np.array_equal(v.labels[:, :, 0], 1)
-    assert np.array_equal(v.labels[:, :, 1], 2)
-    assert np.array_equal(v.labels[:, :, 2], 10)
+    assert np.array_equal(v.labels[:, :, 0], np.full((5, 4), 1, dtype=np.uint8))
+    assert np.array_equal(v.labels[:, :, 1], np.full((5, 4), 2, dtype=np.uint8))
+    assert np.array_equal(v.labels[:, :, 2], np.full((5, 4), 10, dtype=np.uint8))
 
 
 def test_tiff_directory_with_mixed_case_extensions(tmp_path):
@@ -320,9 +320,9 @@ def test_tiff_directory_with_mixed_case_extensions(tmp_path):
     tifffile.imwrite(d / "s3.Tiff", np.full((4, 5), 3, dtype=np.uint8))
     v = read_label_volume(d, voxel_size=1e-6)
     assert v.labels.shape == (5, 4, 3)
-    assert np.array_equal(v.labels[:, :, 0], 1)
-    assert np.array_equal(v.labels[:, :, 1], 2)
-    assert np.array_equal(v.labels[:, :, 2], 3)
+    assert np.array_equal(v.labels[:, :, 0], np.full((5, 4), 1, dtype=np.uint8))
+    assert np.array_equal(v.labels[:, :, 1], np.full((5, 4), 2, dtype=np.uint8))
+    assert np.array_equal(v.labels[:, :, 2], np.full((5, 4), 3, dtype=np.uint8))
 
 
 def test_nifti_is_read_in_the_units_its_header_declares(tmp_path):
