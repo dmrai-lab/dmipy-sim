@@ -232,6 +232,50 @@ def test_a_tiff_stack_is_one_image_whether_it_is_a_directory_or_a_multi_page_fil
     assert np.allclose(a.voxel_size, 1e-6) and np.allclose(b.voxel_size, 1e-6)
 
 
+def test_tiff_directory_slices_are_sorted_numerically_not_lexically(tmp_path):
+    """A directory of slices is sorted by the numeric index in the filename, not lexically:
+    s10.tif comes after s2.tif, and not before it. A filename with no index, two indices or a
+    duplicate index is refused."""
+    tifffile = pytest.importorskip("tifffile")
+    vol = (np.arange(4 * 4 * 11, dtype=np.uint8).reshape(4, 4, 11) % 3)
+    d = tmp_path / "numeric"
+    d.mkdir()
+    # s1, s2, ..., s10: lexical sort would put s10 between s1 and s2
+    for k in range(vol.shape[2]):
+        tifffile.imwrite(d / f"s{k + 1}.tif", vol[:, :, k].T)
+    v = read_label_volume(d, voxel_size=1e-6)
+    assert np.array_equal(v.labels, vol)
+
+    (tmp_path / "absent").mkdir()
+    tifffile.imwrite(tmp_path / "absent/no_index.tif", np.zeros((4, 4), np.uint8))
+    with pytest.raises(LabelVolumeError, match="no numeric index"):
+        read_label_volume(tmp_path / "absent", voxel_size=1e-6)
+
+    (tmp_path / "ambiguous").mkdir()
+    tifffile.imwrite(tmp_path / "ambiguous/s1_v2.tif", np.zeros((4, 4), np.uint8))
+    with pytest.raises(LabelVolumeError, match="ambiguous numeric index"):
+        read_label_volume(tmp_path / "ambiguous", voxel_size=1e-6)
+
+    (tmp_path / "duplicate").mkdir()
+    tifffile.imwrite(tmp_path / "duplicate/s1.tif", np.zeros((4, 4), np.uint8))
+    tifffile.imwrite(tmp_path / "duplicate/slice1.tif", np.zeros((4, 4), np.uint8))
+    with pytest.raises(LabelVolumeError, match="duplicate numeric index"):
+        read_label_volume(tmp_path / "duplicate", voxel_size=1e-6)
+
+
+def test_payload_files_sorts_tiff_directory_numerically(tmp_path):
+    """payload_files returns the slices of a TIFF directory in numeric order."""
+    from dmipy_sim.io.label_volume import payload_files
+    tifffile = pytest.importorskip("tifffile")
+    d = tmp_path / "payload"
+    d.mkdir()
+    # s2, s10, s1: sorted numerically they are s1, s2, s10
+    for k in [2, 10, 1]:
+        tifffile.imwrite(d / f"s{k}.tif", np.zeros((4, 4), np.uint8))
+    files = payload_files(d)
+    assert [os.path.basename(f) for f in files] == ["s1.tif", "s2.tif", "s10.tif"]
+
+
 def test_a_tiff_stack_takes_its_voxel_size_from_the_imagej_tags_when_it_has_them(tmp_path):
     """A TIFF carries in-plane resolution at best and no slice spacing, so the voxel size comes from
     ``voxel_size=``; an ImageJ stack that states ``spacing`` and ``unit`` is read from the tags, in
