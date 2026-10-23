@@ -232,6 +232,62 @@ def test_a_tiff_stack_is_one_image_whether_it_is_a_directory_or_a_multi_page_fil
     assert np.allclose(a.voxel_size, 1e-6) and np.allclose(b.voxel_size, 1e-6)
 
 
+@pytest.mark.parametrize("fmt", [
+    # (name_template, ext) pairs that exercise numeric sort
+    ("s{}", ".tif"),
+    ("slice_{:03d}", ".tiff"),
+])
+def test_tiff_directory_sorts_by_numeric_index_not_lexically(tmp_path, fmt):
+    """Slices s1, s2, s10 must land in z-order 0, 1, 2 -- not lexical order 0, 2, 1.
+
+    Lexical sort places s10 before s2, scrambling the z order of any stack with more than 9 slices.
+    The fix reads the trailing integer and sorts numerically; this test encodes a unique label in each
+    slice so the wrong order is detectable as a corrupted volume.
+    """
+    tifffile = pytest.importorskip("tifffile")
+    tmpl, ext = fmt
+    vol = np.zeros((4, 5, 3), np.uint8)          # (nx, ny, nz), three z-slices
+    for k in range(3):
+        vol[:, :, k] = k + 1                     # slice 0->label1, slice 1->label2, slice 2->label3
+    d = tmp_path / "numeric"
+    d.mkdir()
+    for k, idx in enumerate([1, 2, 10]):         # indices 1, 2, 10: lexically s10 < s2
+        name = tmpl.format(idx) + ext
+        tifffile.imwrite(d / name, vol[:, :, k].T)   # (y, x)
+    result = read_label_volume(d, voxel_size=1e-6)
+    assert np.array_equal(result.labels, vol), (
+        f"z-order is wrong: got labels {[int(result.labels[0, 0, k]) for k in range(3)]} "
+        f"expected {[1, 2, 3]}")
+
+
+def test_tiff_directory_refuses_slices_without_a_numeric_index(tmp_path):
+    """A slice file with no trailing integer in its name has no defined z position and is refused."""
+    tifffile = pytest.importorskip("tifffile")
+    from dmipy_sim.io.label_volume import LabelVolumeError
+    d = tmp_path / "noindex"
+    d.mkdir()
+    plane = np.zeros((4, 4), np.uint8)
+    tifffile.imwrite(d / "s1.tif", plane)
+    tifffile.imwrite(d / "noindex.tif", plane)    # no trailing integer
+    with pytest.raises(LabelVolumeError, match="no trailing integer"):
+        read_label_volume(d, voxel_size=1e-6)
+
+
+def test_tiff_directory_refuses_duplicate_slice_indices(tmp_path):
+    """Two files with the same numeric index (e.g. s02.tif and s2.tif) map to the same z position
+    and are refused, naming both filenames."""
+    tifffile = pytest.importorskip("tifffile")
+    from dmipy_sim.io.label_volume import LabelVolumeError
+    d = tmp_path / "dup"
+    d.mkdir()
+    plane = np.zeros((4, 4), np.uint8)
+    tifffile.imwrite(d / "s1.tif", plane)
+    tifffile.imwrite(d / "s02.tif", plane)
+    tifffile.imwrite(d / "s2.tif", plane)         # same index as s02
+    with pytest.raises(LabelVolumeError, match="slice index 2"):
+        read_label_volume(d, voxel_size=1e-6)
+
+
 def test_a_tiff_stack_takes_its_voxel_size_from_the_imagej_tags_when_it_has_them(tmp_path):
     """A TIFF carries in-plane resolution at best and no slice spacing, so the voxel size comes from
     ``voxel_size=``; an ImageJ stack that states ``spacing`` and ``unit`` is read from the tags, in
