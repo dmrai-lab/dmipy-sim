@@ -248,6 +248,47 @@ def test_a_tiff_stack_takes_its_voxel_size_from_the_imagej_tags_when_it_has_them
         read_label_volume(tmp_path / "ij.tif", voxel_size=1e-6)
 
 
+@pytest.mark.parametrize("names", [
+    ("s1.tif", "s2.tif", "s10.tif"),
+    ("s001.tif", "s02.tif", "s10.tif"),
+    ("s1.TIF", "s2.tiff", "s10.Tif"),
+])
+def test_tiff_directory_slices_are_sorted_by_numeric_index(tmp_path, names):
+    """Slice indices order a non-cubic volume, with its in-plane labels intact."""
+    tifffile = pytest.importorskip("tifffile")
+    vol = np.arange(3 * 4 * 3, dtype=np.uint8).reshape(3, 4, 3)
+    for k in (2, 0, 1):
+        tifffile.imwrite(tmp_path / names[k], vol[:, :, k].T)
+    (tmp_path / "README.txt").write_text("not an image")
+    result = read_label_volume(tmp_path, voxel_size=1e-6)
+    assert np.array_equal(result.labels, vol)
+    assert np.allclose(result.voxel_size, 1e-6)
+
+
+@pytest.mark.parametrize("filename", ["alpha.tif", "s1a2.tif"])
+def test_tiff_directory_ambiguous_filename_is_refused(tmp_path, filename):
+    """A slice has exactly one numeric index in its filename stem."""
+    tifffile = pytest.importorskip("tifffile")
+    tifffile.imwrite(tmp_path / filename, np.zeros((3, 4), np.uint8))
+    with pytest.raises(LabelVolumeError, match="cannot infer slice order") as exc:
+        read_label_volume(tmp_path, voxel_size=1e-6)
+    assert filename in str(exc.value) and str(tmp_path) in str(exc.value)
+
+
+@pytest.mark.parametrize("names", [
+    ("s1.tif", "slice_1.tif"),
+    ("s1.TIF", "s001.tiff"),
+])
+def test_tiff_directory_duplicate_indices_are_refused(tmp_path, names):
+    """Duplicate slice indices name both conflicting files in the refusal."""
+    tifffile = pytest.importorskip("tifffile")
+    for filename in names:
+        tifffile.imwrite(tmp_path / filename, np.zeros((3, 4), np.uint8))
+    with pytest.raises(LabelVolumeError, match="duplicate slice index 1") as exc:
+        read_label_volume(tmp_path, voxel_size=1e-6)
+    assert all(filename in str(exc.value) for filename in names)
+
+
 def test_nifti_is_read_in_the_units_its_header_declares(tmp_path):
     """NIfTI's zooms are in the unit of ``xyzt_units``, millimetres being the format's default, and the
     origin is the affine's translation in the same unit: a 0.3 mm isotropic volume at an offset of
