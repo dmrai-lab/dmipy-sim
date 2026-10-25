@@ -261,10 +261,104 @@ def field_read_statistics(reads, *, step_s, rounds_per_block, blocks_per_window,
             ends = np.cumsum(spans); starts = ends - spans
             coarse = (0.5 * (values[:, starts] + values[:, ends]) *
                       (spans * float(step_s))[None, :, None]).sum(axis=1)
-            measured[:, window, 0, i] += coarse - fine
+            difference = np.where(np.all(values == values[:, :1], axis=1), 0.0, coarse - fine)
+            measured[:, window, 0, i] += difference
             measured[:, window, 1, i] += np.sum(
                 ((values[:, ends] - values[:, starts]) * (spans / float(d))[None, :, None]) ** 2, axis=1)
     return dict(means=means, qv_field=qv, qv_increments=qd, checks=measured)
+
+
+def calibrate_field_reads(reads, *, labels, pool_names, step_s, rounds_per_block, blocks_per_window,
+                          B0, chi, T_e, floor, confidence=.99, given=None):
+    """Choose a measured read interval, with simultaneous jackknife-ratio uncertainty.
+
+    The empirical comparison is against the every-round reference, not the continuous path. Its residual error
+    must still be covered by the scoped final-answer budget. No constant is borrowed from a different read rung.
+    """
+    from statistics import NormalDist
+    rounds = int(rounds_per_block)
+    confidence = float(confidence)
+    if not 0 < confidence < 1:
+        raise ValueError("field-read confidence is in (0, 1)")
+    candidates = set(read_checks(rounds))
+    if given is not None:
+        candidates.add(field_read_steps(float(given), float(step_s), rounds)[0])
+    checks = tuple(sorted(d for d in candidates if d > 1))
+    statistics = field_read_statistics(reads, step_s=step_s, rounds_per_block=rounds,
+                                       blocks_per_window=blocks_per_window, checks=checks)
+    labels = np.asarray(labels)
+    if labels.shape != (len(reads),):
+        raise ValueError("one pool label is required per calibration walker")
+    pools = {int(label):np.flatnonzero(labels == label) for label in np.unique(labels)}
+    channels = int(np.asarray(reads).shape[-1])
+    comparisons = max(1, (rounds - 1) * channels * len(pools))
+    z = NormalDist().inv_cdf(1 - (1 - confidence) / comparisons)
+    bounds, qv_at, details = {}, {}, {}
+    resolved = all(len(indices) >= 2 for indices in pools.values())
+    for i, d in enumerate(checks):
+        upper = np.full(channels, READ_CONSTANT)
+        qv_pools = {}
+        for label, indices in pools.items():
+            # Windows of one walker are not independent Monte Carlo replicates.
+            error = np.mean(statistics["checks"][indices, :, 0, i] ** 2, axis=1)
+            qv = np.mean(statistics["checks"][indices, :, 1, i], axis=1)
+            n = len(indices); sx = error.sum(axis=0); sq = qv.sum(axis=0)
+            scale = (d * float(step_s)) ** 2
+            point = np.divide(sx, scale * sq, out=np.zeros_like(sx), where=sq > 0)
+            alias = (sq == 0) & (sx > 0)
+            if n > 1:
+                denominator = scale * (sq - qv)
+                leave_one = np.divide(sx - error, denominator, out=np.zeros_like(error), where=denominator > 0)
+                invalid = np.any((denominator <= 0) & (sx - error > 0), axis=0)
+                se = np.sqrt((n - 1) / n * np.sum((leave_one - leave_one.mean(axis=0)) ** 2, axis=0))
+                value = point + z * se
+                value[alias | invalid] = np.inf
+            else:
+                value = np.full(channels, np.inf)
+            upper = np.maximum(upper, value)
+            qv_pools[label] = qv.mean(axis=0)
+        bounds[d] = upper
+        qv_at[d] = qv_pools
+        details[str(d)] = [float(v) if np.isfinite(v) else None for v in upper]
+    finite = [value for value in bounds.values() if np.isfinite(value).all()]
+    bounds[1] = np.maximum.reduce(finite) if finite else np.full(channels, READ_CONSTANT)
+    qv_at[1] = {label:statistics["qv_increments"][indices].mean(axis=(0,1)) for label,indices in pools.items()}
+    terms = {d:max(field_read_term(d*step_s, qv_at[d][label], B0, chi, constants) for label in pools)
+             for d,constants in bounds.items() if np.isfinite(constants).all()}
+    if given is not None:
+        selected = field_read_steps(float(given), float(step_s), rounds)[0]
+        if selected not in terms:
+            raise ValueError(f"the given field read has unresolved or aliased reference variation at rung {selected} "
+                             f"with pool counts {[len(v) for v in pools.values()]}; choose a finer interval or resolve its pilot")
+    else:
+        feasible = [d for d,term in terms.items() if term <= floor]
+        selected = max(feasible) if feasible else 1
+    fine_pools = {pool_names.get(label,str(label)):(qv_at[1][label], len(indices)) for label,indices in pools.items()}
+    output = field_read_of_pilot(fine_pools, B0=B0, chi=chi, step_s=step_s, steps=rounds, T_e=T_e,
+                                 floor=floor, given=given if given is not None else selected*step_s)
+    output.update(rule="given" if given is not None else "pilot", constants=bounds[selected].tolist(),
+                  constants_measured=bool(checks), constants_measured_at_read=bool(selected > 1),
+                  measured_constants=details, term_pilot=float(terms[selected]),
+                  budget_met=bool(terms[selected] <= floor), calibration_resolved=bool(resolved),
+                  constant_evidence=dict(method="simultaneous_one_sided_normal_jackknife_ratio",
+                                         reference="every-round trapezoids", confidence=confidence, z=z,
+                                         comparisons=comparisons, selected_rung=int(selected),
+                                         finest_read=(selected == 1)))
+    limit = min(field_read_B0_chi_max(selected*step_s, value, floor, bounds[selected])
+                for value in qv_at[selected].values())
+    output["B0_chi_max_T_pilot"] = float(limit) if np.isfinite(limit) else None
+    output["candidate_terms"] = {str(d):float(terms[d]) if d in terms else None for d in sorted(bounds)}
+    for label, indices in pools.items():
+        own = output["pools"][pool_names.get(label, str(label))]
+        own.update(constants=bounds[selected].tolist(),
+                   selected_qv_increments=qv_at[selected][label].tolist(),
+                   term_pilot=float(field_read_term(selected*step_s, qv_at[selected][label], B0, chi, bounds[selected])),
+                   dt_f_rule=float(field_read_rule(qv_at[1][label], B0, chi, floor, bounds[selected])))
+    if given is None and not output["budget_met"]:
+        output["dt_f_rule"] = min(field_read_rule(value, B0, chi, floor, bounds[1]) for value in qv_at[1].values())
+        output["at_step"] = bool(output["dt_f_rule"] < step_s)
+    return output, statistics
+
 
 def measured_read_constants(err_sq, qv_checks, step_s, checks):
     """The trapezoid's constant per check and channel measured on a pilot that read every step: ``err_sq`` ``(n_checks,

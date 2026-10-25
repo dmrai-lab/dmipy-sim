@@ -481,7 +481,7 @@ SUSC_PATH_LADDER = (16, 32, 64, 128, 256, 512, 1024, 2048)
 
 
 def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w=None, ladder=SUSC_PATH_LADDER,
-                      floor_scale=1.0):
+                      floor_scale=1.0, target_floor=None):
     """The field channel's band derived on a PILOT's block means: ``(K_c3, record)``.
 
     ``series`` ``(n_w, n_blocks, n_ch)`` are the pilot walkers' block means of the field's channels (the walk's own
@@ -503,8 +503,19 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     re-derived on its samples afterwards; the pack's container is derived afterwards from the modes the walk
     accumulated (:func:`build_replay_pack`), the rung's container on the pilot's scales being the record's
     ``container``. Each rung's ``err_truncation`` is its error with the modes held in float: what the band alone
-    drops."""
+    drops.
+
+    With target_floor, selection and the container use that explicit numerical error
+    budget independently of walker count. No fallback above budget is admitted.
+    The finite gate battery remains diagnostic; callers must validate their query domain.
+    floor_scale is retained for legacy split-half diagnostics and cannot be combined
+    with target_floor.
+    """
     from scipy.fft import idct
+    if target_floor is not None:
+        target_floor = float(target_floor)
+        if not np.isfinite(target_floor) or target_floor <= 0 or float(floor_scale) != 1.0:
+            raise ValueError("an explicit field error budget is positive and is not scaled by a walker count")
     series = np.asarray(series, np.float64)
     n_w, n_t, n_ch = series.shape
     names = list(names)
@@ -551,7 +562,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         meta_k = dict(meta_top, K=k, max_refocus_pulses=n_p)
         c_k = np.asarray(coeffs[:, :, :k], np.float64)
         e_tr, f_max = read({"susc_path_dct": c_k}, dict(meta_k, bits=None, dtype="float64"), k, gates)   # the band alone, modes in float
-        fl = f_max * float(floor_scale)
+        fl = f_max * float(floor_scale) if target_floor is None else target_floor
         ranges = DerivedFieldContainer(floor=fl, B0=max(B0s), chi_iso=chi_i, chi_aniso=ca).ranges(np.abs(c_k).max(axis=0), stored, float(h) * n_t)
         a_k, m_k = _quantise_susc_path(c_k, meta_k, ranges)
         e_max, _ = read(a_k, m_k, k, gates)
@@ -559,6 +570,9 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         if e_max <= fl:
             chosen = k; break
     if chosen is None:
+        if target_floor is not None:
+            raise ValueError(f"no field band/container meets the requested error budget {target_floor:g}; "
+                             f"best measured error {min(err.values()):g}")
         best = min(err.values())
         chosen = min([k for k in order if err[k] <= 1.03 * best])
     K = chosen
@@ -570,12 +584,13 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                   K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) or None), above_position_band=bool(K > int(K_max)),
                   within_floor=bool(err[K] <= floor[K]), err=float(err[K]), err_truncation=float(trunc[K]), floor=float(floor[K]),
                   container=[dict(r) for r in cont[K]],
-                  floor_is="the pilot's split-half floor scaled to the production walk's count (x floor_scale)",
+                  floor_is=("the explicit numerical field error budget" if target_floor is not None else
+                            "the pilot's split-half floor scaled to the production walk's count (x floor_scale)"),
                   floor_scale=float(floor_scale), B0_list=[float(b) for b in B0s], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
     return int(K), record
 
 
-def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=None, chi=None, floor_scale=1.0):
+def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=None, chi=None, floor_scale=1.0, target_floor=None):
     """The field channel's band on a pilot spread over the walk's pools: :func:`derive_field_band` on each pool's
     walkers (``pools`` ``{name: index array into series}``), the walk taking the widest band any pool needs -- a pool
     whose field is smooth (a uniform lumen, a far extra space) must not set the band of one whose field is not.
@@ -586,11 +601,11 @@ def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=N
         idx = np.asarray(idx)
         if idx.size < 2:
             continue
-        k_p, rec = derive_field_band(np.asarray(series)[idx], names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
+        k_p, rec = derive_field_band(np.asarray(series)[idx], names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale, target_floor=target_floor)
         recs[str(name)] = (int(k_p), rec)
         per[str(name)] = dict({k: v for k, v in rec.items() if k != "ladder"}, walkers=int(idx.size))
     if not recs:
-        return derive_field_band(series, names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale)
+        return derive_field_band(series, names, h, env, K_max=K_max, B0=B0, chi=chi, floor_scale=floor_scale, target_floor=target_floor)
     binding = max(recs, key=lambda nm: (recs[nm][0], recs[nm][1]["err"] / max(recs[nm][1]["floor"], 1e-300)))
     return int(recs[binding][0]), dict(recs[binding][1], binding_pool=binding, pools=per,
                                        per_pool="each pool's band by its own pilot walkers, the widest taken")
@@ -2290,7 +2305,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         comp_meta["channels"] = chan_meta
     fid = _round_certificate(fid)
     seed = seed_value(cw.seed)
-    block = {k: v for k, v in dict(cw.block).items() if k not in ("window", "quadratic_variation", "field_read", "field_band", "events", "t_start")}
+    block = {k: v for k, v in dict(cw.block).items() if k not in ("window", "quadratic_variation", "field_read", "field_band", "calibration_scope", "calibration_pools", "events", "t_start")}
     qv = dict(positions=[float(x) for x in np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)])
     if cw.boundary_bands is not None:
         qv["local_time"] = float(np.mean(cw.qv_boundary))

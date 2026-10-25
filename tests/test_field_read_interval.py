@@ -77,8 +77,11 @@ def test_the_default_interval_is_the_rule_on_the_pilots_read_series(spec, walks)
         assert np.all(np.asarray(fr["constants"]) >= np.asarray(p["constants"]))          # the bundle charges the largest
     assert len(fr["constants"]) == 12 and min(fr["constants"]) >= 1.0 / 12.0 - 1e-15
     assert fr["measured_constants"]                                               # measured at the coarser reads
-    n_read, dt_f = field_read_steps(fr["dt_f_rule"], fr["step_s"], int(round(wd.block["h"] / fr["step_s"])))
-    assert (n_read, wd.field_read_interval) == (fr["n_read"], pytest.approx(dt_f)) and dt_f == pytest.approx(fr["dt_f"])
+    # Selection uses the actual candidate's QV and uncertainty bound; a theoretical
+    # rule computed from the finest QV cannot stand in for that candidate measurement.
+    feasible = [int(d) for d, term in fr["candidate_terms"].items() if term is not None and term <= fr["floor"]]
+    assert fr["n_read"] == (max(feasible) if feasible else 1)
+    assert wd.field_read_interval == pytest.approx(fr["n_read"] * fr["step_s"]) == pytest.approx(fr["dt_f"])
     assert fr["at_step"] == (fr["dt_f_rule"] < fr["step_s"])
 
 
@@ -217,7 +220,7 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
     pools = []
     join = spec_walk._join_pool_walks
     monkeypatch.setattr(spec_walk, "_join_pool_walks", lambda parts, *a, **k: (pools.extend(w for _, w in parts if not isinstance(w, np.ndarray)), join(parts, *a, **k))[1])
-    walk_spec(spec, 24, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
+    walk_spec(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
               raw_subset=12, field_read_interval=interval)
     assert len(pools) == 2
     uneven = 0

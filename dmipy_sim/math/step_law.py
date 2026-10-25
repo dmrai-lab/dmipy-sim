@@ -432,6 +432,6 @@ def assess_step_certificate(certificate, *, z=3.0):
     upper = measured + z * se
     resolved = bool(certificate.get("resolves", False)) and floor < declared
     status = "unresolved" if not resolved else "passed" if upper <= declared else "over_budget"
-    return dict(status=status, upper=upper, declared=declared, z=z,
+    return dict(certificate, status=status, upper=upper, declared=declared, z=z,
                 confidence=0.5 * (1.0 + math.erf(z / math.sqrt(2.0))),
                 metric="relative_diffusion_spectrum_rms", method="one_sided_normal_delta_approximation")
