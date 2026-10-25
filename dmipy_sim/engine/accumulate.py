@@ -224,6 +224,48 @@ def read_checks(steps):
     return tuple(out)
 
 
+
+def field_read_statistics(reads, *, step_s, rounds_per_block, blocks_per_window, checks):
+    """Read-series calibration, shared by native and JAX pilots.
+
+    Reads are mean-subtracted field channels at every round, including the initial value. Each block's
+    last interval is kept at its actual length. Error integrals sum over a window before squaring, whereas
+    increment variations sum squared increments. Only one block is promoted to float64 at a time.
+    """
+    reads = np.asarray(reads)
+    rounds, blocks = int(rounds_per_block), int(blocks_per_window)
+    checks = tuple(int(d) for d in checks)
+    if reads.ndim != 3 or rounds < 1 or blocks < 1 or not np.isfinite(step_s) or step_s <= 0:
+        raise ValueError("field reads need (walkers, rounds + 1, channels), positive step and block dimensions")
+    n_steps = reads.shape[1] - 1
+    if n_steps < 1 or n_steps % (rounds * blocks) or any(not 2 <= d <= rounds for d in checks):
+        raise ValueError("the read series must cover whole windows and checks within each block")
+    n, _, channels = reads.shape
+    windows = n_steps // (rounds * blocks)
+    means = np.empty((n, windows * blocks, channels), np.float32)
+    qv = np.zeros((n, windows, channels), np.float64)
+    qd = np.zeros_like(qv)
+    measured = np.zeros((n, windows, 2, len(checks), channels), np.float64)
+    for block in range(windows * blocks):
+        values = np.asarray(reads[:, block * rounds:(block + 1) * rounds + 1], np.float64)
+        if not np.isfinite(values).all():
+            raise ValueError("field calibration reads must be finite")
+        window = block // blocks
+        increments = 0.5 * (values[:, :-1] + values[:, 1:]) * float(step_s)
+        fine = increments.sum(axis=1)
+        means[:, block] = fine / (rounds * float(step_s))
+        qv[:, window] += np.sum(increments ** 2, axis=1)
+        qd[:, window] += np.sum(np.diff(values, axis=1) ** 2, axis=1)
+        for i, d in enumerate(checks):
+            spans = np.asarray(read_intervals(rounds, d), np.int64)
+            ends = np.cumsum(spans); starts = ends - spans
+            coarse = (0.5 * (values[:, starts] + values[:, ends]) *
+                      (spans * float(step_s))[None, :, None]).sum(axis=1)
+            measured[:, window, 0, i] += coarse - fine
+            measured[:, window, 1, i] += np.sum(
+                ((values[:, ends] - values[:, starts]) * (spans / float(d))[None, :, None]) ** 2, axis=1)
+    return dict(means=means, qv_field=qv, qv_increments=qd, checks=measured)
+
 def measured_read_constants(err_sq, qv_checks, step_s, checks):
     """The trapezoid's constant per check and channel measured on a pilot that read every step: ``err_sq`` ``(n_checks,
     n_ch)`` the walkers' mean of ``E_d^2``, ``E_d`` the integral of the read series by the trapezoid of every ``d``-th

@@ -409,3 +409,29 @@ def step_certificate(C_fine, C_coarse, T, ratio, *, f_band, eps_declared):
                      "(D_coarse - D_fine) / ((ratio - 1) D_fine), D(f_k) = (pi k)^2 <beta_k^2> / (2 T^2) read off "
                      "the stored bands, the first-order error of the fine step's diffusion spectrum, which the "
                      "slowest mode's rate error bounds; the gate holds it to eps_declared within its pass band")
+
+
+def assess_step_certificate(certificate, *, z=3.0):
+    """The measured step diagnostic, separate from an absolute MR-signal accuracy certificate.
+
+    A pass needs a resolved pilot and an upper error estimate below the declared tolerance. The confidence
+    is a one-sided normal/delta-method approximation, not a deterministic bound or a signal-error conversion.
+    A noisy pilot is unresolved rather than evidence that the theoretical step rule has been measured.
+    """
+    import math
+    z = float(z)
+    if not math.isfinite(z) or z <= 0:
+        raise ValueError("the step check needs a finite positive confidence multiplier")
+    fields = ("eps_measured", "eps_se", "floor", "eps_declared")
+    values = {key:certificate.get(key) for key in fields}
+    if any(value is None or not math.isfinite(float(value)) or float(value) < 0 for value in values.values()):
+        return dict(status="unresolved", upper=None, metric="relative_diffusion_spectrum_rms")
+    measured, se, floor, declared = (float(values[key]) for key in fields)
+    if declared <= 0:
+        raise ValueError("the declared step tolerance must be positive")
+    upper = measured + z * se
+    resolved = bool(certificate.get("resolves", False)) and floor < declared
+    status = "unresolved" if not resolved else "passed" if upper <= declared else "over_budget"
+    return dict(status=status, upper=upper, declared=declared, z=z,
+                confidence=0.5 * (1.0 + math.erf(z / math.sqrt(2.0))),
+                metric="relative_diffusion_spectrum_rms", method="one_sided_normal_delta_approximation")
