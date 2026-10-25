@@ -1,0 +1,53 @@
+{
+  "benchmark_only": true,
+  "physical_admission": false,
+  "window_s": 0.1,
+  "K": 260,
+  "K_c3": 32,
+  "field_T": 0.1,
+  "geometry": "small strands_extra fixture",
+  "device": {
+    "sms": 40,
+    "max_threads_per_sm": 1024,
+    "regs_per_sm": 65536,
+    "free_bytes": 15315107840,
+    "total_bytes": 15645278208
+  },
+  "measurements": [
+    {
+      "walkers": 20000,
+      "mode": "fresh",
+      "seconds": 13.067754895,
+      "backend_calls": 2,
+      "pilot_seconds": 8.724644184112549,
+      "read_charge": 5.169619927742568e-06
+    },
+    {
+      "walkers": 20000,
+      "mode": "reused",
+      "seconds": 2.9824656460000014,
+      "backend_calls": 1,
+      "pilot_seconds": 0
+    },
+    {
+      "walkers": 50000,
+      "mode": "reused",
+      "seconds": 6.754709021,
+      "backend_calls": 1,
+      "pilot_seconds": 0
+    },
+    {
+      "walkers": 100000,
+      "mode": "reused",
+      "seconds": 13.450238826,
+      "backend_calls": 2,
+      "pilot_seconds": 0
+    }
+  ],
+  "public_python_sha256": "a466323f4682255e995d8a9fb0edb57c46a2004b046853948e52995228e7dd91",
+  "cuda_source_commit": "065b428883c92245e2d836d9c83c901a37ea5229",
+  "modal_run_id": "26ae29a61a9a4e9fa0a4c048e88b4f3e",
+  "cleanup_confirmed": true,
+  "evidence": "Synthetic evidence only to exercise reuse mechanics, not physical admission; small parity_cases strands_extra geometry.",
+  "warning": "Fresh time includes first-call initialization and calibration. Warm times are not isolated kernel timings or full DiSCo estimates."
+}

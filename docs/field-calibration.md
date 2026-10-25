@@ -27,3 +27,23 @@ Numerical bias does not shrink with production walker count. assess_accuracy add
 A reused calibration is not a certificate of a new shard's Monte Carlo precision. Assess production statistical uncertainty again from that run's outputs, and combine it with the applicable numerical bounds. In particular, changing the number or distribution of walkers can change statistical reliability even when the numerical settings remain reusable.
 
 The current API consumes trusted bounds; it does not yet obtain all query-specific trajectory, spatial-field, C2/C3 refinement and representation evidence, nor wire Tessera production admission to those checks. Tests marked synthetic verify workflow mechanics only. Do not use them as DiSCo production evidence. Issue #765 remains open for that integration and physical validation.
+
+## Native reuse benchmark
+
+One bounded T4 run used the small strands_extra parity fixture, a 100 ms window,
+C0 K=260, C3 K=32 and B0=0.1 T. The first 20k call took 13.07 s, including
+8.72 s in the pilot phase. Reused calls measured:
+
+| Walkers | Total seconds | Production backend calls | Calibration calls |
+| ---: | ---: | ---: | ---: |
+| 20,000 | 2.98 | 1 | 0 |
+| 50,000 | 6.75 | 1 | 0 |
+| 100,000 | 13.45 | 2 | 0 |
+
+These are host-call times, including preparation and output handling. The first
+call includes initialization and calibration; it is not a kernel-only comparison.
+The workflow used explicitly synthetic accuracy evidence to exercise reuse, so it
+does not establish physical accuracy or predict full DiSCo throughput. Native field
+execution was checked by replacing the JAX field reader with a function that raises.
+The bounded controller confirmed cleanup. Machine-readable measurements and source
+identity are in field-calibration-benchmark.json.

@@ -232,7 +232,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     read_saved, band_saved = saved_settings
                     if ((K_c3 is not None and int(K_c3) != int(band_saved["K"])) or
                             (field_read_interval is not None and
-                             not np.isclose(float(field_read_interval), float(read_saved["dt_f"]), rtol=1e-12, atol=0))):
+                             (int(field_read["n_read"]) != int(read_saved["n_read"]) or
+                              not np.isclose(float(field_read["dt_f"]), float(read_saved["dt_f"]), rtol=1e-12, atol=0)))):
                         raise ValueError("explicit field band/read conflicts with the validated calibration")
         elif K_c3 is not None or field_read_interval is not None:
             raise ValueError("K_c3 and field_read_interval are the field channel's band and read interval: they go with field_basis=")

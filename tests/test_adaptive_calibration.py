@@ -32,9 +32,20 @@ def test_a_valid_scoped_record_skips_the_hidden_pilot_and_does_not_depend_on_cou
         pytest.fail("a reused calibration must not run its pilot again")
     monkeypatch.setattr(accumulate, "calibrate_field_reads", no_pilot)
     reused = adaptive.simulate_trajectories_adaptive(24, 2e-9, geometry, seed=19,
-                                                   field_calibration=calibration, **kw)
+                                                   field_calibration=calibration,
+                                                   field_read_interval=original.field_read_interval + .1*original.stepping["round_s"], **kw)
     assert reused.n_walkers == 24 and reused.K_c3 == original.K_c3
     assert reused.block["field_read"]["reused"] and reused.block["field_read"]["pilot_seconds"] == 0
     assert reused.stepping["field_pilot_backend"] is None
     with pytest.raises(ValueError, match="physics"):
         adaptive.simulate_trajectories_adaptive(24, 3e-9, geometry, field_calibration=calibration, **kw)
+
+    # Actual protocol/field budgets are part of the scope, not descriptive labels.
+    for override, group in [
+        (dict(envelope=dict(B0_list=[3.])), "query"),
+        (dict(query_scope=dict(kw["query_scope"], identity="different-RF-and-tissue")), "query"),
+        (dict(calibration_floor=.002), "numerics"),
+    ]:
+        with pytest.raises(ValueError, match=group):
+            adaptive.simulate_trajectories_adaptive(24, 2e-9, geometry,
+                field_calibration=calibration, **dict(kw, **override))
