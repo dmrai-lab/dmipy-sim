@@ -60,7 +60,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     ``field_calibration`` maps every diffusing seeded pool name to its validated
     :class:`~dmipy_sim.engine.calibration.FieldCalibration`. Reuse checks physical, numerical,
     query and backend scope before walking; records never cross pools. ``query_scope`` states
-    the protocol/tissue identity, absolute complex-signal target and confidence.
+    the scanner-capability/tissue identity, absolute complex-signal target and confidence.
     ``calibration_floor`` sets the numerical field budget independently of walker count.
     These options require adaptive strand fields; see ``docs/field-calibration.md``.
 
