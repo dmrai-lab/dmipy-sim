@@ -8,6 +8,7 @@ their DST-I on five engine classes, the quadrature against a walk accumulated pe
 walk and a 0.8 um slab, the matrix method on a sphere and a cylinder, and the walk's host memory over blocks spanning
 16x (the quadrature and the memory are minutes of walking on a CPU: the slow tier).
 """
+import dmipy_replay.replay.compression as _r_compression
 import importlib.util
 import warnings
 from pathlib import Path
@@ -16,7 +17,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -44,7 +45,7 @@ def _dst1_to_continuous(K, n_t, T):
     ``sinc(k / 2N)``. The in-test reference, never a reader: no pack is on the block ends."""
     N = int(n_t) - 1
     k = np.arange(1, int(K) + 1, dtype=np.float64)
-    return cx.cosine_band_scale(K, T) * 2.0 * np.sin(np.pi * k / (2.0 * N)) / np.sqrt(2.0 / N)
+    return _r_compression.cosine_band_scale(K, T) * 2.0 * np.sin(np.pi * k / (2.0 * N)) / np.sqrt(2.0 / N)
 
 
 # ------------------------------------------------------------------------------------------------ the basis itself
@@ -59,7 +60,7 @@ def test_the_order_zero_table_is_the_scaled_dst1_and_the_variances_their_limit()
     h = T / N
     x = np.cumsum(rng.normal(size=(4, N + 1, 3)), axis=1)
     c = np.einsum("bk,wbd->wkd", cx.block_table(1.0, N, K, 0)[:, :, 0], np.diff(x, axis=1))
-    beta = cx.cosine_band_scale(K, T)[None, :, None] * c[:, 1:]
+    beta = _r_compression.cosine_band_scale(K, T)[None, :, None] * c[:, 1:]
     tau = np.arange(N + 1) / N
     u = x - (x[:, :1] + (x[:, -1:] - x[:, :1]) * tau[None, :, None])
     ref = dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
@@ -69,12 +70,12 @@ def test_the_order_zero_table_is_the_scaled_dst1_and_the_variances_their_limit()
     assert np.abs(c[:, 0] - (x[:, -1] - x[:, 0])).max() <= 1e-12 * np.abs(x).max()          # k = 0: the displacement
     D, n = 2e-9, 20000
     dst_var = D * (T / n) / (2.0 * np.sin(np.pi * np.arange(1, 9) / (2 * n)) ** 2)            # the DST-I's free variances
-    ratio = dst_var * _dst1_to_continuous(8, n + 1, T) ** 2 / cx.band_variances(8, T, D)
+    ratio = dst_var * _dst1_to_continuous(8, n + 1, T) ** 2 / _r_compression.band_variances(8, T, D)
     assert np.abs(ratio - 1).max() < 1e-6
     G = rng.normal(size=(2, 38, 3))
-    Wb = cx.band_projection(G, T / 37, T, 20000)[:, 2:]
-    np.testing.assert_allclose((Wb ** 2 * cx.band_variances(20000, T, D)[None, :, None]).sum((1, 2)),
-                               cx.bridge_phase_variance(G, T / 37, T, D), rtol=1e-6)
+    Wb = _r_compression.band_projection(G, T / 37, T, 20000)[:, 2:]
+    np.testing.assert_allclose((Wb ** 2 * _r_compression.band_variances(20000, T, D)[None, :, None]).sum((1, 2)),
+                               _r_compression.bridge_phase_variance(G, T / 37, T, D), rtol=1e-6)
 
 
 def test_the_projection_is_the_integral_of_the_held_waveform():
@@ -83,7 +84,7 @@ def test_the_projection_is_the_integral_of_the_held_waveform():
     rng = np.random.default_rng(1)
     T, n = 0.01, 37
     G = rng.normal(size=(2, n + 1, 3))
-    W = cx.band_projection(G, T / n, T, 8)
+    W = _r_compression.band_projection(G, T / n, T, 8)
     nf = 10000 * n                                                                          # pieces aligned with the samples
     t = (np.arange(nf) + 0.5) * T / nf
     g = G[:, np.minimum((t / (T / n)).astype(int), n), :]
@@ -92,7 +93,7 @@ def test_the_projection_is_the_integral_of_the_held_waveform():
         assert np.abs(num - W[:, 1 + k]).max() <= 2e-4 * np.abs(W[:, 1 + k]).max()
     np.testing.assert_allclose(W[:, 0], (g.sum(1) * T / nf), rtol=1e-4, atol=1e-12)
     Gs = np.concatenate([np.zeros((2, 10, 3)), G], axis=1)                                   # the same waveform 10 samples later
-    np.testing.assert_allclose(cx.band_projection(Gs, T / n, T, 8, t0=10 * T / n), W, rtol=1e-9, atol=1e-15)
+    np.testing.assert_allclose(_r_compression.band_projection(Gs, T / n, T, 8, t0=10 * T / n), W, rtol=1e-9, atol=1e-15)
 
 
 # -------------------------------------------------------------------------------------------- exactness at m = 0
@@ -258,7 +259,7 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
     """The same walk accumulated at order 3 and at order 0 replays alike within the two certificates; the views keep
     it: a faster diffusivity (the bands renormalised by ``a^(-1/2)``) and a prefix (re-encoded from the bands at the
     block ends)."""
-    from dmipy_sim.spec.tissue import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     pc = build_replay_pack(walks["c"], id="t/c", license="x", citation="x")
     pz = build_replay_pack(walks["z"], id="t/z", license="x", citation="x")
     seq = d.pgse([[1, 0, 0], [0, 0, 1]], 1e-3, 3e-3, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
@@ -316,10 +317,10 @@ def test_the_contact_is_the_gated_integral():
     a = np.zeros(5); e = -rng.uniform(1e-7, 1e-6, 5); bands = rng.normal(size=(5, K)) * 1e-8
     arrays, meta = cx.encode_boundary_bands(a, e, bands, T=T)
     assert "n_t" not in meta
-    np.testing.assert_allclose(cx.surface_logweight_bridge(arrays, meta, 2.0), 2.0 * (e - a), rtol=1e-6)
+    np.testing.assert_allclose(_r_compression.surface_logweight_bridge(arrays, meta, 2.0), 2.0 * (e - a), rtol=1e-6)
     gate = np.r_[np.ones(50), np.zeros(51)]                                                    # on over [0, T/2]
-    B_half = cx.local_time_at(arrays, meta, [T / 2])[:, 0]
-    S, tau = cx.bridge_basis([T / 2], K, T)
+    B_half = _r_compression.local_time_at(arrays, meta, [T / 2])[:, 0]
+    S, tau = _r_compression.bridge_basis([T / 2], K, T)
     np.testing.assert_allclose(B_half, a + (e - a) * tau[0] + (bands @ S)[:, 0], rtol=1e-6, atol=1e-14)
-    np.testing.assert_allclose(cx.surface_logweight_bridge(arrays, meta, 1.0, gate, T / (n_t - 1)), B_half - a,
+    np.testing.assert_allclose(_r_compression.surface_logweight_bridge(arrays, meta, 1.0, gate, T / (n_t - 1)), B_half - a,
                                rtol=1e-5, atol=1e-14)

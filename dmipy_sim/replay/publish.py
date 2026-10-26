@@ -33,25 +33,12 @@ MANIFEST = "manifest.json"
 README = "README.md"
 CONTRACT = ("id", "license", "citation", "fidelity")     # what a published pack must carry in its header
 
-__all__ = ["publish", "fetch", "fetch_windows", "parse_uri", "is_hub_uri", "manifest_row", "render_readme",
-           "header_of", "window_prefix", "code_commit"]
+__all__ = ["publish", "manifest_row", "render_readme",
+           "header_of", "code_commit"]
 
 
-# ------------------------------- URIs -------------------------------
-def is_hub_uri(x):
-    """Whether ``x`` names a file on the hub (``hf://owner/name/path``)."""
-    return isinstance(x, str) and x.startswith("hf://")
 
 
-def parse_uri(uri):
-    """``hf://owner/name/path/to/file`` -> ``("owner/name", "path/to/file")``; anything else is refused."""
-    if not is_hub_uri(uri):
-        raise ValueError(f"not a hub URI: {uri!r} (expected hf://owner/name/path/to/file.rpk)")
-    parts = uri[len("hf://"):].split("/", 2)
-    if len(parts) < 3 or not all(parts):
-        raise ValueError(f"a hub URI names a repository and a file, hf://owner/name/path/to/file.rpk: {uri!r}")
-    owner, name, path = parts
-    return f"{owner}/{name}", path
 
 
 def uri_of(repo, path):
@@ -391,196 +378,28 @@ def _publish_file(local, meta, repo, *, path, hub, message, published_commit=Non
     return uri_of(repo, path)
 
 
-# ------------------------------- load -------------------------------
-def fetch(uri):
-    """``hf://owner/name/path.rpk`` -> the file's local cache path, its sha256 checked against the dataset's
-    manifest when the manifest has a row for it (a mismatch raises). Refuses a URI that is not a ``.rpk``."""
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as e:
-        raise ImportError(f"loading {uri} needs huggingface_hub: pip install \"dmipy-sim[bank]\"") from e
-    repo, path = parse_uri(uri)
-    if not path.endswith(".rpk"):
-        raise ValueError(f"{uri}: ReplayPack.load takes a pack (.rpk); the manifest and the card are not packs")
-    local = hf_hub_download(repo, path, repo_type="dataset")
-    try:
-        with open(hf_hub_download(repo, MANIFEST, repo_type="dataset")) as f:
-            manifest = json.load(f)
-    except Exception as e:                                        # no manifest: nothing to check against
-        if not is_not_found(e):
-            raise
-        return local
-    rows = [r for r in manifest.get("packs") or [] if r.get("path") == path]
-    if rows and rows[0].get("sha256"):
-        got = sha256_of(local)
-        if got != rows[0]["sha256"]:
-            raise ValueError(f"{uri}: the file's sha256 is {got}, the manifest says {rows[0]['sha256']}; refusing to load it")
-    return local
 
 
-# ------------------------------- windowed load (RPK.md 4.3) -------------------------------
-_ST_DTYPES = {"BOOL": "bool", "U8": "uint8", "I8": "int8", "I16": "int16", "U16": "uint16",
-              "I32": "int32", "U32": "uint32", "I64": "int64", "U64": "uint64",
-              "F16": "float16", "F32": "float32", "F64": "float64"}
 
 
-def window_prefix(windows):
-    """``windows`` (a ``range`` or a sequence of window indices) as the plain count ``k`` it must be: a prefix
-    ``0, 1, ..., k-1``. The walk is continuous (RPK.md 4.3), so a pack cannot serve window 2 without window 1,
-    and any other selection is refused by name rather than silently read as a prefix."""
-    seq = list(windows)
-    if not seq or seq != list(range(len(seq))):
-        raise ValueError(f"windows must be a prefix range(k) (0, 1, ..., k-1), the walk being continuous; got {windows!r}")
-    return len(seq)
 
 
-def _auth_headers():
-    """``Authorization: Bearer <token>`` for a logged-in hub read, or no header for an anonymous one."""
-    try:
-        from huggingface_hub import get_token
-        tok = get_token()
-    except Exception:
-        tok = None
-    return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
-def _range_get(url, start, end, session, headers):
-    """Bytes ``[start, end]`` (inclusive) of ``url`` via one HTTP Range request; a server that ignores the header
-    and answers 200 with the whole body is sliced to the same bytes rather than trusted as the range."""
-    r = session.get(url, headers={**headers, "Range": f"bytes={start}-{end}"}, timeout=60)
-    r.raise_for_status()
-    body = r.content
-    return body if r.status_code == 206 else body[start:end + 1]
 
 
-def _fetch_header(url, session, headers):
-    """A pack's safetensors header at ``url``, from two Range requests: the 8-byte little-endian length, then
-    that many bytes of JSON (tensor name -> ``{dtype, shape, data_offsets}``, plus ``__metadata__``)."""
-    n = int.from_bytes(_range_get(url, 0, 7, session, headers), "little")
-    header = json.loads(_range_get(url, 8, 8 + n - 1, session, headers))
-    return n, header
 
 
-def _coalesce(ranges):
-    """Sorted ``(start, end)`` inclusive byte ranges with every adjacent or overlapping pair merged into one."""
-    out = []
-    for s, e in sorted(ranges):
-        if out and s <= out[-1][1] + 1:
-            out[-1] = (out[-1][0], max(out[-1][1], e))
-        else:
-            out.append((s, e))
-    return out
 
 
-def _window_tensor_names(names, i, per_window):
-    """The tensor names of window ``i``: window 0's are the unprefixed per-window names, window ``i > 0``'s
-    its ``s{i}/`` ones. The shared tensors (weights, a static label, the field grid, the voxel tables) are not a
-    window's -- they are fetched once, regardless of ``i``."""
-    if i == 0:
-        return sorted(per_window)
-    p = f"s{int(i)}/"
-    return [n for n in names if n.startswith(p)]
 
 
-def _read_cached_windows(local_path):
-    """``(k, arrays)`` already written at ``local_path`` by an earlier windowed fetch -- ``(None, None)`` when
-    nothing is cached there yet."""
-    if not os.path.isfile(local_path):
-        return None, None
-    from .replay import read_rpk
-    pack = read_rpk(local_path)
-    k = pack.meta.get("windows_present")
-    return (None if k is None else int(k)), pack.arrays
 
 
-def _windows_cache_path(repo, path, revision):
-    """Where a windowed read of ``hf://repo/path`` at ``revision`` is cached locally: a file beside the hub's
-    own cache, keyed on the repository, the file and the pinned revision (not on ``k`` -- a later, larger
-    ``k`` rewrites this same file rather than starting a new one, RPK.md 8.3)."""
-    from huggingface_hub.constants import HF_HUB_CACHE
-    owner, name = repo.split("/", 1)
-    d = os.path.join(HF_HUB_CACHE, f"datasets--{owner}--{name}--windows", revision)
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, path.replace("/", "__"))
 
 
-def _fetch_windows_to(url, k, local_path, *, revision, session=None):
-    """The implementation behind :func:`fetch_windows`, taking a plain resolvable ``url`` rather than resolving
-    one itself -- a Hub resolve URL in production, a local test server's in :mod:`tests`, so the byte-range
-    selection runs the same code path with no Hub involved."""
-    import requests
-    cached_k, cached_arrays = _read_cached_windows(local_path)
-    if cached_k is not None and cached_k >= k:
-        return local_path
-    sess = session or requests.Session()
-    headers = _auth_headers()
-    header_len, header = _fetch_header(url, sess, headers)
-    data_base = 8 + header_len
-    names = [n for n in header if n != "__metadata__"]
-    meta = json.loads((header.get("__metadata__") or {}).get("rpk") or "{}")
-    n_total = int(((meta.get("walk_params") or {}).get("windows") or {}).get("n") or 1)
-    if k > n_total:
-        raise ValueError(f"{url}: this pack stores {n_total} window(s); windows=range({k}) asks for more than it has")
-    per_window = {n[3:] for n in names if n.startswith("s1/")}
-    want_from = 0 if cached_k is None else cached_k
-    wanted = [n for n in names if "/" not in n and n not in per_window] if want_from == 0 else []
-    for i in range(want_from, k):
-        wanted += _window_tensor_names(names, i, per_window)
-    byte_ranges = {n: (header[n]["data_offsets"][0] + data_base, header[n]["data_offsets"][1] + data_base - 1)
-                   for n in wanted}
-    merged = _coalesce(byte_ranges.values())
-    fetched = {r: _range_get(url, r[0], r[1], sess, headers) for r in merged}
-    new_arrays = {}
-    for n, (s, e) in byte_ranges.items():
-        ms, me = next(r for r in merged if r[0] <= s and e <= r[1])
-        blob = fetched[(ms, me)][s - ms: e - ms + 1]
-        dtype = header[n]["dtype"]
-        np_dtype = _ST_DTYPES.get(dtype)
-        if np_dtype is None:
-            raise NotImplementedError(f"{n}: safetensors dtype {dtype!r} has no numpy mapping for a windowed read")
-        new_arrays[n] = np.frombuffer(blob, dtype=np_dtype).reshape(header[n]["shape"])
-    arrays = dict(cached_arrays or {}, **new_arrays)
-    bytes_fetched = sum(e - s + 1 for s, e in merged)
-    out_meta = dict(meta, windows_present=k)
-    prov = dict(out_meta.get("provenance") or {})
-    # a sha256 of the whole pack cannot be checked against a part of it: what is checkable is recorded instead --
-    # the pinned revision this read came from and the bytes it fetched to get here
-    prov["hub_window_read"] = dict(revision=revision, windows_present=k, bytes_fetched=bytes_fetched)
-    out_meta["provenance"] = prov
-    from .replay import write_rpk
-    write_rpk(local_path, arrays, out_meta)
-    return local_path
 
 
-def fetch_windows(uri, windows, *, url=None, revision=None):
-    """``hf://owner/name/path.rpk``'s leading windows (RPK.md 4.3) -> the local cache path of a ``.rpk`` holding
-    just them. ``windows`` is a prefix ``range(k)`` of window indices (:func:`window_prefix`).
-
-    The pack's header is fetched with one HTTP Range request at the dataset's pinned revision; the shared
-    tensors and windows ``0..k-1`` are selected from it and their byte ranges fetched (adjacent ranges
-    coalesced into one request each), then written as a local safetensors file in the hub cache, keyed on
-    ``(repo, revision, path)``. A later call for a larger ``k`` reads what that file already holds and fetches
-    only the newly-needed windows, rewriting it in place.
-
-    The whole-file sha256 check (:func:`fetch`) does not apply here -- a part of a file has no sha256 of the
-    whole to be checked against -- so the written pack instead records the revision and the bytes this read
-    fetched, in ``provenance.hub_window_read``.
-
-    ``url=`` / ``revision=`` override the Hub's own URL and revision resolution: how a test drives this past a
-    plain HTTP server, with no Hub call at all."""
-    repo, path = parse_uri(uri)
-    if not path.endswith(".rpk"):
-        raise ValueError(f"{uri}: ReplayPack.load takes a pack (.rpk); the manifest and the card are not packs")
-    k = window_prefix(windows)
-    if revision is None:
-        from huggingface_hub import HfApi
-        revision = HfApi().dataset_info(repo).sha
-    resolve_url = url
-    if resolve_url is None:
-        from huggingface_hub import hf_hub_url
-        resolve_url = hf_hub_url(repo, path, repo_type="dataset", revision=revision)
-    local = _windows_cache_path(repo, path, revision)
-    return _fetch_windows_to(resolve_url, k, local, revision=revision)
 
 
 # ------------------------------- CLI -------------------------------

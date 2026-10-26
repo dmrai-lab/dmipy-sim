@@ -16,8 +16,20 @@ from datetime import date
 
 import numpy as np
 
-from .substrate import (SubstrateSpec, Domain, Frame, Pool, Susceptibility, Surface, Wall, Directional, Sided,
-                        Seeding, Validity, SpecError)
+from dmipy_replay.spec.substrate import (
+    SubstrateSpec,
+    Domain,
+    Frame,
+    Pool,
+    Susceptibility,
+    Surface,
+    Wall,
+    Directional,
+    Sided,
+    Seeding,
+    Validity,
+    SpecError,
+)
 
 _UM = 1e-6
 
@@ -213,7 +225,7 @@ def chain_frame(centers, r_in, cell_id):
     file order, as CATERPillar writes them. Returns ``(F, axis)`` with ``F`` :func:`~dmipy_sim.replay.bank.frame_from_axis`
     of the axis, signed towards ``+z``. On ``myelin15`` the tapering large axons put this axis 5.7 deg from ``z``,
     where the walk's principal displacement axis lands too; a bare ``z`` is refused at build."""
-    from ..replay.bank import frame_from_axis
+    from dmipy_replay.replay.field import frame_from_axis
     centers = np.asarray(centers, float); r_in = np.asarray(r_in, float); cell_id = np.asarray(cell_id)
     Q = np.zeros((3, 3))
     for cid in np.unique(cell_id):

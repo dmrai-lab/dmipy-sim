@@ -7,8 +7,8 @@ off-resonance carrier, slice-select, per-walker B1+, the MT bound-pool blend, su
 phase, surface relaxivity, per-compartment relaxation, weights and per-walker echo readout.
 """
 import numpy as np
-from dmipy_sim.acquisition.rf import B1Pulse, RFEvent
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.rf import B1Pulse, RFEvent
+from dmipy_replay.constants import GAMMA
 import pytest
 
 from dmipy_sim.replay.trajectories import replay_bloch, replay_bloch_jax

@@ -7,7 +7,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 
 @pytest.fixture(scope="module")
@@ -78,7 +78,7 @@ def test_a_prefix_of_a_field_pack_re_projects_the_path_channel_and_certifies_it(
     onto the window's own cosine basis (``bank.mode_window_matrix``) and certifies the result against the parent's
     exact reading of the window on the producer's battery (GRE, SE, the CPMG train it advertises)."""
     from tests.test_bank import _susc_walk, _lean_env
-    from dmipy_sim.replay.bank import susc_path_decode
+    from dmipy_replay.replay.field import susc_path_decode
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     parent = _float_pack(_susc_walk(300), id="test/slab-susc", envelope=env, K=16, susc_path_K=16, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
@@ -103,8 +103,8 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     """The field route ends at the echo too: a spin echo or gradient echo shorter than the walk integrates the
     off-resonance under ITS gate, zero beyond its echo, so the parent and its prefix agree to the certificate."""
     from tests.test_bank import _susc_walk, _lean_env
-    from dmipy_sim.replay.bank import susc_path_decode, susc_path_field
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.replay.field import susc_path_decode, susc_path_field
+    from dmipy_replay.constants import GAMMA
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     parent = _float_pack(_susc_walk(300), id="test/slab-susc", envelope=env, K=16, susc_path_K=16, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
@@ -145,8 +145,9 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
 
 def test_the_path_channel_read_on_a_cut_is_the_whole_one_cut():
     """The field modes evaluated at samples ``start .. n_cut - 1`` equal the whole reading cut there."""
-    from dmipy_sim.replay.bank import susc_path_decode, susc_path_encode_modes
-    from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+    from dmipy_replay.replay.field import susc_path_decode
+    from dmipy_sim.replay.bank import susc_path_encode_modes
+    from dmipy_replay.replay.field import CHANNEL_NAMES
     rng = np.random.default_rng(8)
     n_w, n_t, K = 300, 240, 9
     C = rng.normal(size=(n_w, K, 7))

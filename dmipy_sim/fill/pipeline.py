@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..spec.substrate import susceptibility_field_of
+from dmipy_replay.spec.substrate import susceptibility_field_of
 
 from . import claims as C
 from .hub import sha256_of

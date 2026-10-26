@@ -8,8 +8,8 @@ those attacks so they cannot come back.
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition import maxwell, solid_harmonics as sh
-from dmipy_sim.acquisition.scanners import SCANNERS, ScannerLimits
+from dmipy_replay.acquisition import maxwell, solid_harmonics as sh
+from dmipy_replay.acquisition.scanners import SCANNERS, ScannerLimits
 
 P = maxwell.probe_points(0.05)
 ON_AXIS = np.array([[0.0, 0.0, 0.05], [0.0, 0.0, -0.03], [0.0, 0.0, 0.08]])

@@ -21,7 +21,7 @@ from dmipy_sim.geometry import (
     Box1D,
     Ellipsoid,
 )
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.engine._fused import simulate_fused
 
 

@@ -15,7 +15,7 @@ from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.time_segments import (FORMAT, Partition, TimeSegmentLayout, _walk_view, read_manifest, rounding_eps,
                                              segment_rows, write_time_segment_layout)
 from dmipy_sim.spec import walk_spec, StratifiedByVoxel
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 UM = 1e-6
 D0 = 2e-9
@@ -103,7 +103,7 @@ def test_a_partition_is_read_from_its_sequence():
     """A PGSE is two lobes under the gate's +1 and -1, a stimulated echo's mixing time is a segment its gate stores, a
     DDE's two bipolar pairs are four lobes; ``b_matrix`` is the b-value of refocused levels (the builder's own b to its
     rectangular rule), and a PGSE's reach is ``min(G_max, sqrt(b_max / b_unit))``; a segment across a pulse is refused."""
-    from dmipy_sim.acquisition.waveforms import calc_b
+    from dmipy_replay.acquisition.waveforms import calc_b
     parts = _partitions()
     se, ste, dde, mixing = _sequences()
     assert parts["pgse"].gate == (1, -1) and parts["pgste"].gate == (1, 0, -1) and parts["dde"].gate == (1, 1, -1, -1)
@@ -398,8 +398,8 @@ def test_from_a_pack_the_tiers_carry_the_packs_own_quantisation(myelin):
     the pack's own term is refused by name."""
     from dmipy_sim.replay.time_segments import tier_quantisation_terms, _gate_sequence
     from dmipy_sim.replay.study import Acquisition
-    from dmipy_sim.replay.replay import _path_field_channels
-    from dmipy_sim.fields.hollow_cylinder import field_terms
+    from dmipy_replay.replay.replay import _path_field_channels
+    from dmipy_replay.replay.field import field_terms
     M = myelin
     cw, cp = M["mw"]["certificate"], M["mp"]["certificate"]
     for g in M["mp"]["groups"]:

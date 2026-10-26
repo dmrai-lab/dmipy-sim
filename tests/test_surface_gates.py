@@ -6,6 +6,7 @@ does not change its sign, the gate for C2 is on / off (``ScannerSequence.chi_per
 read the same gates, so a PGSE and a spin echo of one TE certify alike and the two routes agree on a pack with a
 refocused battery.
 """
+import dmipy_replay.replay.compression as _r_compression
 import warnings
 
 import numpy as np
@@ -13,7 +14,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack, sequences
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_sim.replay import bank
 
 D0, R, T, H = 2e-9, 3e-6, 0.02, 5e-4
@@ -80,7 +81,7 @@ def test_a_pgse_and_a_spin_echo_of_the_same_te_certify_alike(packs):
     from dmipy_sim.replay import compression as cx
     pk, _ = packs
     ch = pk.meta["compression"]["channels"]["boundary_local_time"]
-    endpoint, bands = np.asarray(pk.arrays["blt_endpoint"], np.float64), cx.bridge_bands(pk.arrays, ch)
+    endpoint, bands = np.asarray(pk.arrays["blt_endpoint"], np.float64), _r_compression.bridge_bands(pk.arrays, ch)
     pgse = sequences.pgse([[1, 0, 0]], 4e-3, 10e-3, bvalues=[1e9], TE=T, n_t=201, slew_rate=np.inf)
     se = sequences.cpmg(1, T / 2, n_t_per_echo=100)
 

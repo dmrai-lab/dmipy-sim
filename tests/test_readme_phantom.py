@@ -1,6 +1,7 @@
 """The README's phantom snippets run (#162, #186): every ```python block under "Replay phantoms" is executed
 against a small pack standing in for the CACTUS / DiSCo ones, with the names the prose defines around it. A
 snippet that stops running fails here, by block."""
+import dmipy_replay.replay.so3 as _r_so3
 import importlib.util
 import re
 from pathlib import Path
@@ -36,7 +37,7 @@ def test_the_readme_phantom_snippets_run(stand_in_pack, tmp_path, monkeypatch):
     from dmipy_sim.replay import so3
     ns = {"annulus": ring.annulus, "frames": ring.frames,                       # the volumes the prose points at
           "dirs": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-          "rotation": so3.rotation_of((0.3, 0.5, 0.81)),
+          "rotation": _r_so3.rotation_of((0.3, 0.5, 0.81)),
           "kappa_map": 1.0, "f_myelin": np.full((40, 40, 40), 0.2), "np": np}
     blocks = _blocks()
     assert len(blocks) == 2, "the section has a composition block and a partition block"

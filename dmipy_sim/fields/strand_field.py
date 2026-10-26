@@ -51,7 +51,8 @@ from ..geometry._grid import NEIGHBOUR_OFFSETS, bucket_by_bbox, gather
 import jax
 import jax.numpy as jnp
 
-from .hollow_cylinder import hollow_cylinder_basis, segment_basis, contract, annulus_mean_log, CHANNEL_NAMES
+from .hollow_cylinder import hollow_cylinder_basis, segment_basis, annulus_mean_log
+from dmipy_replay.replay.field import contract, CHANNEL_NAMES
 from ..engine.tables import jit_with_tables
 from ..run import Run
 

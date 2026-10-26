@@ -27,7 +27,7 @@ Its own error budget, measured: 6.4e-6 against the analytic on-axis loop field, 
 """
 import numpy as np
 
-from . import solid_harmonics
+from dmipy_replay.acquisition import solid_harmonics
 
 MU0 = 4.0e-7 * np.pi
 SEGMENTS = 720                 # per closed turn; the discretisation error is 6.3e-6 here and falls as 1/n^2

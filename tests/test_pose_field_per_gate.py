@@ -10,7 +10,7 @@ import pytest
 
 from dmipy_sim import sequences
 from dmipy_sim.replay import so3
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 KW = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
 

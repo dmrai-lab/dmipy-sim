@@ -20,7 +20,7 @@ def end_state(pack):
     """``(r_end (n_w, 3), pool (n_w,) or None)``: where every walker is at the walk's end, read from the last window's
     exact endpoints (the bands hold both ends of a window exactly), and the pool it is in there, its last occupancy
     label when the pack carries the compartment channel."""
-    from .compression import read_position_coeffs, occupancy_at
+    from dmipy_replay.replay.compression import read_position_coeffs, occupancy_at
     seg = pack.window(pack.n_windows - 1)
     C = read_position_coeffs(seg.arrays, dtype=np.float64)
     r_end = np.ascontiguousarray(C[:, 0, :] + C[:, 1, :])

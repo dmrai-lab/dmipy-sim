@@ -15,8 +15,8 @@ from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity
 from dmipy_sim.replay.study import walker_primitives
-from dmipy_sim.spec.substrate import Susceptibility
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.substrate import Susceptibility
+from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _slab_grid
 
 N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk in 40 blocks; two windows of 10 ms
@@ -104,9 +104,9 @@ def test_a_window_is_the_pack_a_fresh_walk_of_it_would_be(packs):
     for k in p1.arrays:
         npt.assert_array_equal(s1.arrays[k], p1.arrays[k], err_msg=k)
     # the events of window 1 are the walk's within it, timed on the walk's clock, opened by the label at its start
-    from dmipy_sim.coefficient_walk import events_within
+    from dmipy_replay.replay.events import events_within
     ev, lab0 = events_within(w2.comp_events, w2.compartment, 0.01, 0.02)
-    from dmipy_sim.replay.compression import occupancy_events
+    from dmipy_replay.replay.compression import occupancy_events
     start, got = occupancy_events(s1.arrays, s1.meta["compression"]["channels"]["compartment"]["columns"][0])
     npt.assert_array_equal(start, lab0)
     assert got == ev
@@ -220,16 +220,16 @@ def test_the_bloch_route_hands_the_state_across_windows(packs, knobs, engine):
     state it starts the next in."""
     w1, w2, one, two = packs
     seq = _seq()                                                                  # the 180 at 10 ms: the boundary block end
-    a = one.replay_bloch(seq, complex_signal=True, jax=(engine == "jax"), **knobs)
-    b = two.replay_bloch(seq, complex_signal=True, jax=(engine == "jax"), **knobs)
+    a = one.replay_bloch(seq, complex_signal=True, backend=engine, **knobs)
+    b = two.replay_bloch(seq, complex_signal=True, backend=engine, **knobs)
     npt.assert_allclose(b, a, atol=_bound(one, two))
 
 
 def test_a_crushed_train_spans_the_windows(packs):
     w1, w2, one, two = packs
     train = _crushed_train()
-    a = one.replay_bloch(train, tissue=TIS0, complex_signal=True, jax=True)
-    b = two.replay_bloch(train, tissue=TIS0, complex_signal=True, jax=True)
+    a = one.replay_bloch(train, tissue=TIS0, complex_signal=True, backend="jax")
+    b = two.replay_bloch(train, tissue=TIS0, complex_signal=True, backend="jax")
     assert a.shape == (1, 8)
     npt.assert_allclose(b, a, atol=_bound(one, two))
 

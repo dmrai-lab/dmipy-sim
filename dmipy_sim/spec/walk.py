@@ -16,7 +16,7 @@ import numpy as np
 from ..run import Run, current
 import jax.numpy as jnp
 
-from .substrate import SubstrateSpec, SpecError, susceptibility_field_of
+from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility_field_of
 from .build import geometry_from_spec
 
 

@@ -20,13 +20,13 @@ import logging
 
 log = logging.getLogger(__name__)
 
-from ..acquisition.waveforms import band_hz
+from dmipy_replay.acquisition.waveforms import band_hz
 from .accumulate import default_K
 from .physics import (make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
                       seed_walkers, pair_step)
 from ..run import Run
-from ..acquisition.rf import RFSchedule
-from ..acquisition.scanner_sequence import Protocol
+from dmipy_replay.acquisition.rf import RFSchedule
+from dmipy_replay.acquisition.scanner_sequence import Protocol
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -147,7 +147,7 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
     pose (the geometry's placement in the bore) a replay of ``waveform`` reads. The walk depends only on (geometry,
     diffusivity, seed); the waveform and the relaxation are replay settings."""
     from ..replay.bank import build_replay_pack
-    from ..spec.tissue import Tissue
+    from dmipy_replay.spec.tissue import Tissue
 
     G = np.asarray(waveform.G_eff, dtype=np.float64)
     dt = float(waveform.dt)
@@ -1525,8 +1525,9 @@ def simulate_trajectories(
             if reason:
                 raise ValueError(reason)
 
-        from ..replay.compression import cosine_band_scale
-        from ..coefficient_walk import CoefficientWalk, EventList
+        from dmipy_replay.replay.compression import cosine_band_scale
+        from ..coefficient_walk import CoefficientWalk
+        from dmipy_replay.replay.events import EventList
         K, m = int(res.K), int(res.block_order)
         n_win = int(res.n_windows)
         n_bw = n_blocks // n_win                                  # blocks per window

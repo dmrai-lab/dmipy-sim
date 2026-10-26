@@ -6,7 +6,8 @@ law over an explicit wire, so agreement with the scanner model is evidence rathe
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition import coil, maxwell, solid_harmonics as sh
+from dmipy_sim.acquisition import coil
+from dmipy_replay.acquisition import maxwell, solid_harmonics as sh
 
 R = 0.09
 

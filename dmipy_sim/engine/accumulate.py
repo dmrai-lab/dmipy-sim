@@ -37,7 +37,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..constants import GAMMA
+from dmipy_replay.constants import GAMMA
 
 #: blocks per ring: the projection's inner sum and the stride of the level-2 chain
 RING = 16
@@ -518,7 +518,7 @@ def field_mode_form(acc_field, T):
     """A walker's field modes ``(K_c3, n_ch)`` on the orthonormal cosine basis of the window, ``c_k = int e_k b dt``
     with ``e_0 = T^-1/2`` and ``e_k = sqrt(2 / T) cos(pi k t / T)`` (RPK.md 9.5.3), from the accumulated projections
     ``sum cos(pi k t / T) b dt`` (:func:`~dmipy_sim.replay.compression.cosine_mode_scale`)."""
-    from ..replay.compression import cosine_mode_scale
+    from dmipy_replay.replay.compression import cosine_mode_scale
     return jnp.asarray(cosine_mode_scale(acc_field.shape[0] - 1, T), jnp.float32)[:, None] * acc_field
 
 

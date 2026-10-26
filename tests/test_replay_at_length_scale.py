@@ -14,7 +14,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 D0, T, DT, R, KAPPA = 2.0e-9, 40e-3, 5e-4, 4e-6, 2e-5
 

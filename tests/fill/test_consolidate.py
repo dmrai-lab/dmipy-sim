@@ -14,7 +14,7 @@ from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.replay import ReplayPack
 from dmipy_sim.fill.consolidate import consolidate, append, band_groups_of
 from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 
 
@@ -167,7 +167,7 @@ def test_a_band_prefix_view_of_a_curve_pack_is_the_prefix_of_its_ranges(curve_la
     k1 = pack.band_groups[1]
     v = pack.view(K=k1)
     assert v.K == k1 and len(v.meta["compression"]["container"]) == 2
-    from dmipy_sim.replay.compression import read_position_coeffs
+    from dmipy_replay.replay.compression import read_position_coeffs
     np.testing.assert_array_equal(read_position_coeffs(v.arrays)[:, :, :], read_position_coeffs(pack.view().arrays)[:, :k1 + 2, :])
 
 
@@ -195,7 +195,7 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     assert pm["container"] == cont and pm["K"] == 4
     v2 = pack.view(modes=2)
     assert v2.meta["compression"]["channels"]["susc_field_basis"]["container"] == cont[:1]
-    from dmipy_sim.replay.bank import susc_path_coeffs
+    from dmipy_replay.replay.field import susc_path_coeffs
     C_full = susc_path_coeffs(v.arrays, pm)[0]; C_2 = susc_path_coeffs(v2.arrays, v2.meta["compression"]["channels"]["susc_field_basis"])[0]
     np.testing.assert_array_equal(C_2, C_full[:, :, :2])
     C_m = susc_path_coeffs(merged.arrays, merged.meta["compression"]["channels"]["susc_field_basis"])[0]

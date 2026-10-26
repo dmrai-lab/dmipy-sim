@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Prescription
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import _bore, b0_offset_map, background_gradient_map
 from dmipy_sim.spec.seeding import fill_per_voxel

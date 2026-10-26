@@ -24,7 +24,10 @@ dependencies = [
     "jax>=0.6.2",
     "numpy>=2.0",
     "scipy>=1.10",       # replay: DCT/low-rank compression + compiled-scheme forward; susceptibility field-map sampling
-    "safetensors>=0.4",  # replay: .rpk container I/O (dmipy_sim.replay)
+    "safetensors>=0.4",  # replay: .rpk container writes (dmipy_sim.replay.replay.write_rpk)
+    # the reader side -- the acquisition object, the builders, the .rpk reader and every replay route -- lives once,
+    # in the Apache-2.0 dmipy-replay; this package is its producer (docs: dmipy-replay docs/dedup-ledger.md)
+    "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay.git@main",
     "threadpoolctl>=3.1",  # the BLAS thread cap on a build whose multithreaded LAPACK hangs (dmipy_sim._blas, #564)
 ]
 

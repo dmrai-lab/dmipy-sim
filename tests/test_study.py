@@ -9,7 +9,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.study import Acquisition, Protocol, Study, walker_primitives, study_signals
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 D0 = 2e-9
@@ -151,7 +151,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     # reduction must apply exactly as walker_signals does (#484 review item 1: it did not, and every voxel of a
     # PGSTE volume came out 1/eta = 2.000x too high)
     seq3 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[5e8], n_t=merged.n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-    from dmipy_sim.acquisition.epg import pathway_weight
+    from dmipy_replay.acquisition.epg import pathway_weight
     assert pathway_weight(seq3) == pytest.approx(0.5, abs=1e-12) and pathway_weight(seq1) == 1.0
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5)
     study = Study(Protocol([seq1, seq2, seq3]), tissues=[None, t], scanners=[None])

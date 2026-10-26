@@ -2,6 +2,8 @@
 plane waves whose harmonics are the Rayleigh expansion, computed per walker with no quadrature. Certified against
 the direct posed replay (exact), against the quadrature route (to that route's own misfit), and by its band bound."""
 
+import dmipy_replay.replay.replay as _r_replay
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 import pytest
 from scipy.special import spherical_jn
@@ -11,7 +13,7 @@ from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.so3 import Distribution
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 
@@ -62,7 +64,7 @@ def test_the_closed_form_agrees_with_the_quadrature_route_to_its_misfit(pack, se
     pq = pack.pose_response(seq, method="quadrature")
     assert pq.misfit.max() > 0                                          # the quadrature route certifies by sampling
     for dist in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0),
-                 Distribution.pose(so3.rotation_of((0.2, -0.4, 0.89)), pq.lmax, pq.nmax)):
+                 Distribution.pose(_r_so3.rotation_of((0.2, -0.4, 0.89)), pq.lmax, pq.nmax)):
         np.testing.assert_allclose(pc.compose(dist), pq.compose(dist), atol=3 * pq.misfit.max() + 1e-4)
 
 
@@ -117,7 +119,7 @@ def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(myelin_pack):
     # and the n = 0 column composes the same signal as the direct replay averaged over the roll about an axis
     axis = np.array([0.3, 0.5, 0.81]); axis /= np.linalg.norm(axis)
     rolls = np.linspace(0, 2 * np.pi, 24, endpoint=False)
-    direct = np.mean([pk.replay(seq30, orientation=so3.rotation_of(axis, roll=r), complex_signal=True) for r in rolls], axis=0)
+    direct = np.mean([pk.replay(seq30, orientation=_r_so3.rotation_of(axis, roll=r), complex_signal=True) for r in rolls], axis=0)
     composed = pr.compose(Distribution.axis(axis, 8, 0))
     np.testing.assert_allclose(composed, direct, atol=3e-3)                  # order 8 of a kappa ~ 20 response: the ODF band
 
@@ -243,7 +245,7 @@ def test_the_background_turns_with_the_specimen(pack, seq):
     """The magnet's gradient is in the acquisition's frame and turns with it (#585): with the specimen at a pose in
     the bore, the expansion is the direct replay at that pose composed with every rotation."""
     played = seq.with_background_gradient(_g0(0.02))
-    R_s = so3.rotation_of((0.2, -0.4, 0.89), roll=0.7)
+    R_s = _r_so3.rotation_of((0.2, -0.4, 0.89), roll=0.7)
     pr = pack.pose_response(played, method="closed", pose=R_s)
     for R in so3.haar_rotations(6, 8):
         direct = pack.replay(played, orientation=R_s @ R, complex_signal=True)
@@ -280,7 +282,7 @@ def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pa
     by bore.encoding_classes as the brain page composes a class. The encoding left once g0 is taken out is one
     direction up to the Maxwell residual (#561), g0 is the second plane wave, and the expansion equals the direct
     posed replay of the delivered waveform at every rotation within its misfit."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom.bore import encoding_classes
     from dmipy_sim.phantom.grid import Grid
     sw = ScannerLimits.of("swoop")
@@ -356,7 +358,7 @@ def test_the_misfit_bounds_what_the_grouping_and_the_rounding_leave_out(pack, ma
     the group whose body it shares, a b = 0 row's rounding about zero, its |g0|'s difference from its group's -- is in
     its misfit (dmrai-lab/dmipy-sim#617): the direct posed replay is within it at every rotation, on a 3 T machine's
     classes (where the misfit was 727 times short) as on the ideal scanner and the Swoop."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom.bore import encoding_classes
     from dmipy_sim.phantom.grid import Grid
     rng = np.random.default_rng(3)
@@ -391,7 +393,7 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     seq = sequences.pgse(dirs, 2e-3, 5e-3, bvalues=[1e9] * 24, TE=10e-3, slew_rate=np.inf)
     calls = []
-    orig = rr._compile_continuous
+    orig = _r_replay._compile_continuous
     def counted(*a, **k):
         calls.append(1)
         return orig(*a, **k)

@@ -1,6 +1,7 @@
 """A pack's intrinsic frame (RPK.md 4.2, ``walk_params.substrate_frame``) is honoured by every posed replay: a
 walk stored with its bundle along x composes exactly like the same walk stored along z, once the pack says so
 (dmipy-sim#193: the CACTUS packs' bundles run along x while nothing declared it)."""
+import dmipy_replay.replay.so3 as _r_so3
 import copy
 
 import numpy as np
@@ -11,7 +12,8 @@ from dmipy_sim import sequences
 from dmipy_sim.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
 from dmipy_sim.replay import ReplayPack, read_rpk, so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.compression import pack_position_arrays, read_position_coeffs
+from dmipy_sim.replay.compression import pack_position_arrays
+from dmipy_replay.replay.compression import read_position_coeffs
 from dmipy_sim.replay.fod import FOD
 
 
@@ -24,7 +26,7 @@ def packs(tmp_path_factory):
     p = tmp_path_factory.mktemp("pk") / "z.rpk"
     build_replay_pack(walk, id="t/z", license="x", citation="x", K=8, out_path=str(p))
     z = read_rpk(str(p))
-    Q = so3.rotation_of((1.0, 0.0, 0.0))                                  # z -> x
+    Q = _r_so3.rotation_of((1.0, 0.0, 0.0))                                  # z -> x
     C = read_position_coeffs(z.arrays, dtype=np.float64) @ Q.T           # every coefficient vector rotated
     arrays = dict(z.arrays); arrays.update(pack_position_arrays(C, np.float32))
     meta = copy.deepcopy(z.meta)
@@ -46,7 +48,7 @@ def test_a_declared_frame_makes_the_rotated_walk_replay_like_the_original(packs)
     Q = np.asarray(x.meta["walk_params"]["substrate_frame"])
     seq = sequences.pgse(np.eye(3), 2e-3, 5e-3, gradient_strengths=[1.0] * 3, TE=10e-3, slew_rate=1000.0)   # b ~ 1200 s/mm^2 on a 2 ms lobe
     # a rotation of the canonical frame: exact, the roll included
-    for o in (so3.rotation_of((0.3, 0.5, 0.81)), np.eye(3)):
+    for o in (_r_so3.rotation_of((0.3, 0.5, 0.81)), np.eye(3)):
         np.testing.assert_allclose(x.replay(seq, orientation=o), z.replay(seq, orientation=o), rtol=1e-5)
     # (a lab DIRECTION for the axis leaves each pack its own roll about it, and a single cylinder in a square
     # periodic cell is only 4-fold symmetric about its axis, so that route is not an equality to test here)
@@ -106,7 +108,8 @@ def test_an_analytic_geometry_is_walked_in_its_own_frame_and_the_pack_says_so():
 def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
     """The bundle runs along z; a frame that says x is refused with the angle, a frame that says z is written,
     and a sphere walk (no dominant axis) declares nothing to contradict."""
-    from dmipy_sim.replay.bank import frame_from_axis, check_frame_against_walk
+    from dmipy_replay.replay.field import frame_from_axis
+    from dmipy_sim.replay.bank import check_frame_against_walk
     g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))                    # intra-axonal: free along z, restricted across
     walk = d.simulate_trajectories(400, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
     with pytest.raises(ValueError, match="principal displacement axis"):
@@ -121,7 +124,7 @@ def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
 def test_a_user_declared_frame_10deg_off_is_still_refused_after_the_walk():
     """A hand-declared frame carries no ``frame.source`` (#538): it is checked by name, against the walk's own
     principal displacement axis, exactly as #194 requires -- 10 deg off a straight cylinder's axis is refused."""
-    from dmipy_sim.replay.bank import frame_from_axis
+    from dmipy_replay.replay.field import frame_from_axis
     g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))
     assert g.spec.frame.source is None
     walk = d.simulate_trajectories(300, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)

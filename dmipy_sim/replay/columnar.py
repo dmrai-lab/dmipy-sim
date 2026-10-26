@@ -106,7 +106,7 @@ class ColumnarPack:
     def __init__(self, uri, workers=8):
         self.uri = uri; self.src = Source(uri, workers=workers)
         m = json.loads(self.src.text("manifest.json")); self.meta, self.columns = m["meta"], m["columns"]
-        from .replay import _refuse_predating
+        from dmipy_replay.replay.replay import _refuse_predating
         _refuse_predating(self.meta, uri, tensors=list(self.columns))
         self.index = json.loads(self.src.text("index.json"))
         self.n_rows = int(self.index["n_rows"]); self.band_groups = list(self.index["band_groups"]); self.path_groups = list(self.index.get("path_groups", []))
@@ -135,7 +135,7 @@ class ColumnarPack:
         """The layout's susceptibility field, ``"present"`` or ``"absent"``, from its embedded spec's pools with its
         stored field modes as the field channel (:func:`~dmipy_sim.replay.replay.declared_susceptibility_field`);
         a layout without an embedded spec, or one that breaks the equivalence, is refused when it is opened."""
-        from .replay import declared_susceptibility_field
+        from dmipy_replay.replay.replay import declared_susceptibility_field
         return declared_susceptibility_field(self.meta, has_field=bool(self.path_groups))
 
     # ---- the plan: what an acquisition needs, before any byte moves
@@ -146,7 +146,7 @@ class ColumnarPack:
         phase under-attenuates the signal by that much), from the manifest's per-band variance of the worst
         populated voxel. The walk is not read."""
         from .replay import GAMMA
-        from .compression import band_projection
+        from dmipy_replay.replay.compression import band_projection
         K = self.K
         W = band_projection(np.asarray(seq.G_eff, np.float64), float(seq.dt), self.T_window, K)[:, 2:, :]
         var = np.asarray(self.meta["columnar"].get("band_variance_max") or self.meta["columnar"]["band_variance"], np.float64).T   # (K, 3)
@@ -162,8 +162,9 @@ class ColumnarPack:
         """``(M, error)``: the fewest stored field modes for a replay at the scanner's field with the tissue's chi (0
         when :func:`~dmipy_sim.replay.replay.field_term` resolves the pair to no field term): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
         var_{ch,k}``, halved, against ``tol`` x the floor; the channel sum is the worst case over field directions."""
-        from .replay import GAMMA, field_term
-        from .compression import cosine_projection
+        from .replay import GAMMA
+        from dmipy_replay.replay.replay import field_term
+        from dmipy_replay.replay.compression import cosine_projection
         f = field_term(self.susceptibility_field, tissue, scanner)
         if not f.active:
             return 0, 0.0

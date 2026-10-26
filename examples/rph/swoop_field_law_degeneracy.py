@@ -19,7 +19,7 @@ matches, and the size follows by one division. That makes the search a one-dimen
 smooth function rather than a root find on a non-smooth one.
 """
 import numpy as np
-from dmipy_sim.acquisition import solid_harmonics as sh
+from dmipy_replay.acquisition import solid_harmonics as sh
 
 B0, R = 0.064, 0.08
 TARGET = (1.4e-3 / B0) / 1100e-6 * R

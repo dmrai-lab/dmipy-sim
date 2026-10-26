@@ -1,8 +1,9 @@
 """``Phantom.compose``: a phantom is built from volumes keyed by substrate objects, not hand-rolled arrays (RPH.md,
 issues #151, #162, #186)."""
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from dataclasses import replace
 
 import pytest
@@ -84,7 +85,7 @@ def _phantom(pack_path, *, grid=GRID8, fractions=None, orientation=None, remaind
 
 def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3):
     """A PGSE on the pack's save grid, one measurement per (direction, b), read as a bare gradient echo."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -294,7 +295,7 @@ def test_a_layer_is_applied_or_refused_never_dropped(pack_path):
     off, *_ = _phantom(pack_path, layers={"delta_B0_T": np.full((8, 8, 1), 1e-7)})
     S, S0 = _rows(off, off.replay(seq, complex_signal=True)), _rows(base, base.replay(seq, complex_signal=True))
     assert np.abs(np.angle(S / S0)).max() > 1e-3                # a gradient echo carries the off-resonance
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     TE = (pk.n_t - 1) * pk.dt
     np.testing.assert_allclose(np.angle(S / S0), GAMMA * 1e-7 * TE, rtol=1e-6)   # gamma dB0 TE, over the acquisition
     # the same offset given at replay time, and the two adding
@@ -382,7 +383,7 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(p
     from dmipy_sim.replay import read_rpk, so3
     n = 2
     wm, *_ = _subs(pack_path)
-    R0 = so3.rotation_of((0.3, 0.5, 0.81))
+    R0 = _r_so3.rotation_of((0.3, 0.5, 0.81))
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = R0
     dirs = np.zeros((n, n, 1, 3)); dirs[..., :] = R0[:, 2]
     grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
@@ -556,7 +557,7 @@ def test_a_scanner_that_publishes_a_field_brings_it_to_the_replay(pack_path):
     """A field a magnet imposes is a property of the machine, and a replay is already told which machine it
     is on -- so it comes along rather than the magnet being silently treated as ideal, which is what every
     replay did until now and which looks identical."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     ph, *_ = _phantom(pack_path, grid=_swoop_grid())
     swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
     gre, _ = _gre_and_se(pack_path)
@@ -577,7 +578,7 @@ def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(
     ``off_resonance``; the machine's gradient side -- its tensor, background and Maxwell term -- is a b-level
     effect a spin echo does not refocus, reaches the phantom separately (dmipy-sim#377), and is why the
     whole machine is NOT bit-identical to the bare field under the spin echo."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom.bore import b0_offset_map
     ph, *_ = _phantom(pack_path, grid=_swoop_grid())
     swoop = ScannerLimits.of("swoop")
@@ -598,7 +599,7 @@ def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(
 def test_a_stated_field_map_wins_over_the_machines_own(pack_path):
     """A measured field map already contains whatever the magnet does, so adding the catalogue's law to it
     would count the magnet twice. The stated map is used and the law stands down."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     ph, *_ = _phantom(pack_path, grid=_swoop_grid())
     swoop = ScannerLimits.of("swoop")
     gre, _ = _gre_and_se(pack_path)
@@ -657,7 +658,7 @@ def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):
     is deliberate: an offset is arithmetic on a contraction the replay was doing anyway, while a transmit
     scale moves the whole replay onto the vector-Bloch route. Something that changes the cost of a replay by
     orders of magnitude is asked for."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom import b0_offset_map, b1_scale_map
     swoop = ScannerLimits.of("swoop")
     grid = _swoop_grid()
@@ -674,7 +675,7 @@ def test_a_drifting_magnet_is_a_uniform_offset_on_top_of_a_fixed_shape():
     scanner cancels when it re-centres. So a drift adds a constant to every voxel and leaves the shape's
     spread untouched, and a machine with no coefficient refuses the request rather than quietly ignoring it
     -- a superconducting magnet has no room temperature to drift with."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom import b0_offset_map
     swoop, grid = ScannerLimits.of("swoop"), _swoop_grid()
     at = grid.offset_m(grid.every_voxel).reshape(-1, 3)

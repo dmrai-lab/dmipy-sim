@@ -304,7 +304,7 @@ def test_a_pathway_gated_waveform_carries_its_sign_as_its_coherence():
     the transverse time as its echo time and the stored time as its mixing time."""
     from dataclasses import replace
     from dmipy_sim.phantom.substrates import _echo_time
-    from dmipy_sim.replay._replay_kernel import field_gate
+    from dmipy_replay.replay._replay_kernel import field_gate
     from dmipy_sim.replay.pathways import gate_sign, sequence_events
     train = _train(n_echo=2, beta=150.0)
     n_t, dt = train.n_t, float(train.dt)

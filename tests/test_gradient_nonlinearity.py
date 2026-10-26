@@ -12,8 +12,8 @@ import pytest
 from dmipy_sim import sequences
 from dataclasses import replace
 
-from dmipy_sim.acquisition import maxwell, scanner_constants as scc, solid_harmonics
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition import maxwell, scanner_constants as scc, solid_harmonics
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import gradient_tensor_map
 

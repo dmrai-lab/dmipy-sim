@@ -7,6 +7,7 @@ The byte-range selection is exercised against a local HTTP server that honours `
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
 ``url=`` override is for exactly this). The one test that touches the real Hub is marked ``slow`` and skips
 itself without a login."""
+import dmipy_replay.replay.hub as _r_hub
 import contextlib
 import http.server
 import json
@@ -21,7 +22,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
-from dmipy_sim.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
+from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
 
 pytest.importorskip("huggingface_hub")        # the window reads monkeypatch its cache constant; absent, these tests are skipped
@@ -129,7 +130,7 @@ def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pac
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, data = served
     assert pack.n_windows == 3
-    local1 = pub.fetch_windows(URI, range(1), url=url, revision="rev0")
+    local1 = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p1 = read_rpk(local1)
     assert p1.meta["windows_present"] == 1
     assert p1.meta["provenance"]["hub_window_read"]["revision"] == "rev0"
@@ -145,7 +146,7 @@ def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pac
     npt.assert_array_equal(p1.replay(seq, complex_signal=True), pack.replay(seq, complex_signal=True))
 
     # a larger k fetches only the missing windows and rewrites the same local file
-    local2 = pub.fetch_windows(URI, range(2), url=url, revision="rev0")
+    local2 = _r_hub.fetch_windows(URI, range(2), url=url, revision="rev0")
     assert local2 == local1
     p2 = read_rpk(local2)
     assert p2.meta["windows_present"] == 2
@@ -155,7 +156,7 @@ def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pac
         npt.assert_array_equal(p2.arrays[k], pack.arrays[k], err_msg=k)
 
     # a second range(1) call, already satisfied, fetches nothing new
-    local3 = pub.fetch_windows(URI, range(1), url=url, revision="rev0")
+    local3 = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p3 = read_rpk(local3)
     assert p3.meta["windows_present"] == 2                                 # the file already holds more
 
@@ -163,7 +164,7 @@ def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pac
 def test_an_acquisition_beyond_the_loaded_windows_is_refused_by_name(pack, served, tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, _ = served
-    local = pub.fetch_windows(URI, range(1), url=url, revision="rev0")
+    local = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p1 = read_rpk(local)
     assert p1.windows_present == 1 and p1.n_windows == 3
     with pytest.raises(ValueError, match=r"load windows=range\(2\)"):
@@ -171,17 +172,17 @@ def test_an_acquisition_beyond_the_loaded_windows_is_refused_by_name(pack, serve
 
 
 def test_window_prefix_refuses_a_non_prefix_selection():
-    assert pub.window_prefix(range(3)) == 3
-    assert pub.window_prefix([0, 1]) == 2
+    assert _r_hub.window_prefix(range(3)) == 3
+    assert _r_hub.window_prefix([0, 1]) == 2
     for bad in (range(1, 3), [1, 2], [0, 2], [], range(0)):
         with pytest.raises(ValueError, match="prefix"):
-            pub.window_prefix(bad)
+            _r_hub.window_prefix(bad)
 
 
 def test_replay_pack_load_takes_windows_through_a_hub_uri_only(pack, served, tmp_path, monkeypatch):
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, _ = served
-    p1 = read_rpk(pub.fetch_windows(URI, range(1), url=url, revision="rev0"))
+    p1 = read_rpk(_r_hub.fetch_windows(URI, range(1), url=url, revision="rev0"))
     reloaded = ReplayPack.load(URI, windows=range(1), url=url, revision="rev0")
     assert reloaded.windows_present == 1
     npt.assert_array_equal(reloaded.replay(_seq(0.01), complex_signal=True), p1.replay(_seq(0.01), complex_signal=True))

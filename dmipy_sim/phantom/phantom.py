@@ -367,7 +367,7 @@ class Phantom:
         voxel an unbalanced encoding is averaged over is this phantom's."""
         if getattr(seq, "prescription", None) is not None:
             return seq
-        from ..acquisition.prescription import Prescription
+        from dmipy_replay.acquisition.prescription import Prescription
         g = self.grid
         return seq.with_prescription(Prescription(isocenter_m=g.isocenter_m, voxel_size_m=g.voxel_size_m,
                                                   matrix=g.shape, axes=g.axes, origin_m=g.origin_m))
@@ -418,7 +418,7 @@ class Phantom:
         whatever the magnet does. Combining the two would count it twice.
         """
         from .bore import b0_offset_map
-        from ..acquisition.scanners import ScannerLimits
+        from dmipy_replay.acquisition.scanners import ScannerLimits
         if off_resonance is not None or not (isinstance(scanner, ScannerLimits) and scanner.has_field_law):
             return off_resonance
         return b0_offset_map(scanner, self.grid)

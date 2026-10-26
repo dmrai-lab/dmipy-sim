@@ -7,9 +7,9 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.compression import occupancy_at
+from dmipy_replay.replay.compression import occupancy_at
 from dmipy_sim import sequences as _seqmod
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
 
 D0 = 2e-9
@@ -50,11 +50,11 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     ch = full.meta["compression"]["channels"]["compartment"]
     comp = occupancy_at(full.arrays, next(c for c in ch["columns"] if c["name"] == "comp"),
                         np.arange(full.n_t) * full.dt)                   # the pool at every block end (an impermeable pack: static)
-    from dmipy_sim.replay._replay_kernel import bin_gate
+    from dmipy_replay.replay._replay_kernel import bin_gate
     chi = bin_gate(np.ones(wf.n_t), wf.dt, full.n_t, full.dt)[0]     # the acquisition ends at its echo: no relaxation
     logw = dense_relaxation_logweight(comp, [0.08, 0.03], [1.0, 1.2], full.dt, chi, chi)   # counted over the walk beyond it
     W = _W(full, wf)
-    from dmipy_sim.replay.compression import read_position_coeffs
+    from dmipy_replay.replay.compression import read_position_coeffs
     C = read_position_coeffs(full.arrays, dtype=np.float64)
     phi = C.reshape(C.shape[0], -1) @ W
     ref = np.abs((np.exp(logw)[:, None] * np.exp(1j * phi)).sum(0) / C.shape[0])
@@ -82,7 +82,7 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     wf = _wf(full.n_t, full.dt)
     W = _W(full, wf)
     rho2 = 1e-5
-    from dmipy_sim.replay._replay_kernel import bin_gate
+    from dmipy_replay.replay._replay_kernel import bin_gate
     ref = replay_signal(full, W, rho2_over_D=rho2 / D0, gate=np.ones(wf.n_t), dt_gate=wf.dt)   # contact after the echo is not in it
     np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2)), ref, rtol=1e-12)
     np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2, D=D0)), ref, rtol=1e-12)

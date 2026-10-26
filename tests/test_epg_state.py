@@ -7,8 +7,8 @@ against each other where both can run, and then pin the scaling where only one c
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition import epg
-from dmipy_sim.acquisition.epg_state import EPGState, rf_operator, split_by_gate, train_weights
+from dmipy_replay.acquisition import epg
+from dmipy_replay.acquisition.epg_state import EPGState, rf_operator, split_by_gate, train_weights
 
 
 def _cpmg_states(n_echoes, beta, exc_phase=0.0, refocus_phase=90.0):

@@ -12,13 +12,13 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.acquisition.epg import transmit_amplitude
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.epg import transmit_amplitude
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom.bore import encoding_classes
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.time_segments import TimeSegmentLayout, segment_rows, write_time_segment_layout
 from dmipy_sim.spec import walk_spec, StratifiedByVoxel
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 DELTA, BIG_DELTA = 0.2e-3, 0.5e-3
 TISSUE = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3},

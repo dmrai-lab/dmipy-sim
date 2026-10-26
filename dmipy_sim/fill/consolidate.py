@@ -297,7 +297,7 @@ class Consolidator:
 
     def add(self, name, pk):
         from ..replay.bank import _codec_signature, _agree, _spec_identity, _walk_identity, _envelope_identity, field_read_record, _MEASURED_CHANNEL_KEYS
-        from ..replay.compression import read_position_coeffs
+        from dmipy_replay.replay.compression import read_position_coeffs
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
         # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
@@ -341,9 +341,9 @@ class Consolidator:
             m = np.max(per_vox[counts >= 100], axis=0)
             self.acc["band_max"] = m if self.acc["band_max"] is None else np.maximum(self.acc["band_max"], m)
         del C, C2
-        from ..replay.bank import has_susc_path
+        from dmipy_replay.replay.field import has_susc_path
         if has_susc_path(pk.arrays):
-            from ..replay.bank import susc_path_coeffs
+            from dmipy_replay.replay.field import susc_path_coeffs
             Cs, _ = susc_path_coeffs(pk.arrays, meta["compression"]["channels"]["susc_field_basis"])
             s = (np.asarray(Cs, np.float64) ** 2).sum(axis=0)
             self.acc["path_sq"] = s if self.acc["path_sq"] is None else self.acc["path_sq"] + s; self.acc["path_n"] += n
@@ -525,7 +525,7 @@ class Consolidator:
             self.up.put(f, rel)
         index = {"grid": self.ident0["grid"], "n_rows": int(self.n_rows), "band_groups": list(self.band_groups), "path_groups": list(self.path_groups),
                  "rows": [{"ijk": [int(x) for x in np.unravel_index(v, self.grid.shape)], "pool": p, "start": s, "end": e} for v, p, s, e in self.index]}
-        from ..replay.replay import declared_susceptibility_field
+        from dmipy_replay.replay.replay import declared_susceptibility_field
         declared_susceptibility_field(meta, has_field=bool(self.path_groups))   # the layout holds the equivalence
         manifest = {"meta": meta, "columns": columns}
         json.dump(index, open(os.path.join(self.out, "index.json"), "w"))

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..acquisition.prescription import index_directions
+from dmipy_replay.acquisition.prescription import index_directions
 
 __all__ = ["Grid"]
 

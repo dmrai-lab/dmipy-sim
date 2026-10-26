@@ -16,7 +16,7 @@ import dmipy_sim as d
 import dmipy_sim.engine.core as core
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import walk_spec
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from dmipy_sim.engine._fused import simulate_fused
 

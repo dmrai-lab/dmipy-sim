@@ -89,7 +89,7 @@ class Study:
 
     @property
     def needs_field(self):
-        from .replay import scanner_field
+        from dmipy_replay.replay.replay import scanner_field
         def magnetised(t):
             return t is not None and any(v is not None and float(v) != 0.0 for v in (t.chi_iso, t.chi_aniso))
         return any(scanner_field(s).B0 not in (None, 0.0) and magnetised(t) for t, s in (self.resolved(k) for k in range(len(self))))
@@ -106,7 +106,7 @@ class Study:
         return any(t is not None and t.relaxes for t, _ in (self.resolved(k) for k in range(len(self))))
 
     def to_meta(self):
-        from .replay import scanner_field
+        from dmipy_replay.replay.replay import scanner_field
         out = []
         for k in range(len(self)):
             t, s = self.resolved(k)
@@ -213,7 +213,7 @@ class Primitives:
     def field_scalars(self, tissue, scanner):
         """``(B0 chi_iso, B0 chi_aniso)`` for a pair as :func:`~dmipy_sim.replay.replay.field_term` resolves it on the
         pack's declared field, ``(0, 0)`` when that term is zero."""
-        from .replay import field_term
+        from dmipy_replay.replay.replay import field_term
         f = field_term(self.susceptibility_field, tissue, scanner)
         if not f.active:
             return 0.0, 0.0
@@ -242,7 +242,7 @@ class Primitives:
         the same numbers, since ``phi`` came from :func:`~dmipy_sim.replay.replay._band_phase`, ``E`` from
         :func:`~dmipy_sim.replay.replay._signal_factor` and the rest from :meth:`reduction_terms`, which that route
         and the columnar image read too."""
-        from .replay import _signal_factor
+        from dmipy_replay.replay.replay import _signal_factor
         t = self.reduction_terms(tissue, scanner)
         logw = np.zeros(len(self.w))
         if self.exposure_t2 is not None:
@@ -273,21 +273,21 @@ def walker_primitives(pack, acquisition):
     """The :class:`Primitives` of ``pack`` under ``acquisition``: the bands contracted once, the path channel
     contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
     the windows the walk is stored in (RPK.md 4.3)."""
-    from .compression import relaxation_logweight_runs
-    from .replay import _band_phase, _path_field_channels, _gated_contact, _has_aniso
+    from dmipy_replay.replay.compression import relaxation_logweight_runs
+    from dmipy_replay.replay.replay import _band_phase, _path_field_channels, _gated_contact, _has_aniso
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
     n_w, ch = P["n_w"], P["ch"]
     col = n_ids = None
     if pack.has_relaxation:
-        from .compression import is_current_c1, decode_occupancy
+        from dmipy_replay.replay.compression import is_current_c1, decode_occupancy
         if not is_current_c1(ch["compartment"]):
             decode_occupancy(pack.arrays, ch["compartment"])
         col = next(d for d in ch["compartment"]["columns"] if d["name"] == "comp")
         n_ids = pack._n_pool_ids(col)
         # exposure per pool: a unit rate in one pool and none (an infinite time) in the others
         unit = np.where(np.eye(n_ids) > 0, 1.0, np.inf); zero = [np.inf] * n_ids
-    from .compression import has_c2
+    from dmipy_replay.replay.compression import has_c2
     pm = ch.get("susc_field_basis")
     phi = _band_phase(P)                                        # the one band contraction, windows summed
     exposure_t2 = exposure_t1 = contact = contact_t1 = None
@@ -310,11 +310,11 @@ def walker_primitives(pack, acquisition):
             contact_t1 = c1_s if contact_t1 is None else contact_t1 + c1_s
     field_iso = field_aniso = None
     if pm is not None:
-        from ..fields.hollow_cylinder import field_terms
+        from dmipy_replay.replay.field import field_terms
         Psi, names = _path_field_channels(P, acq.waveform)       # the one read of C3, windows summed
         field_iso, aniso = field_terms(Psi, P["b0_dir"])
         field_aniso = aniso if _has_aniso(ch.get("susceptibility_grid"), names) else np.zeros(n_w)
-    from ..acquisition.epg import pathway_weight
+    from dmipy_replay.acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
                       contact=contact, contact_t1=contact_t1, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
                       rho2_over_D_max=pack.rho2_over_D_max, voxel=P["voxel"], by_pool=pack._by_pool,

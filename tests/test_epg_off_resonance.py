@@ -9,7 +9,7 @@ sequence and disagrees for a bipolar one, which is exactly the case a diffusion 
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition.epg_state import EPGState
+from dmipy_replay.acquisition.epg_state import EPGState
 
 DT = 4.0e-3
 DW = 2.0 * np.pi * 13.0

@@ -6,6 +6,8 @@ container; a walker that never changes pool stores one label. Every reader dequa
 coefficient-space replay of #242 and the dense oracles read either container alike.
 """
 from __future__ import annotations
+import dmipy_replay.replay.compression as _r_compression
+import dmipy_replay.replay.field as _r_field
 
 import numpy as np
 import pytest
@@ -14,7 +16,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
 
 D0 = 2e-9
@@ -28,7 +30,7 @@ def test_the_band_container_round_trips_to_nanometres_at_a_third_of_the_bytes():
     a_b = _cx.pack_position_arrays(C, container=_cx.TWO_LEVEL_CONTAINER)
     nb_f, nb_b = (sum(np.asarray(v).nbytes for v in a.values()) for a in (a_f, a_b))
     assert nb_f / nb_b > 3.0 and a_b["pos_x_b0"].dtype == np.int16 and a_b["pos_x_b1"].dtype == np.int8 and a_b["pos_x_ends"].dtype == np.float32
-    Cf, Cb = _cx.read_position_coeffs(a_f), _cx.read_position_coeffs(a_b)
+    Cf, Cb = _r_compression.read_position_coeffs(a_f), _r_compression.read_position_coeffs(a_b)
     np.testing.assert_array_equal(Cb[:, :2], Cf[:, :2])                                           # the endpoints exact
     assert np.abs(Cb[:, 2:] - C[:, 2:]).max() < 1e-9                                               # bands to the quantisation step
     with pytest.raises(ValueError, match="covers bands"):
@@ -42,22 +44,22 @@ def test_the_c2_container_and_the_static_c1_column():
     end = -np.abs(rng.normal(0, 1e-5, n_w)); bands = rng.normal(0, 1, (n_w, K)) * (1e-7 / np.arange(1, K + 1))[None, :]
     a_f, m_f = _cx.encode_boundary_bands(np.zeros(n_w, np.float32), end, bands, T=T, dtype=np.float32)
     a_b, m_b = _cx.encode_boundary_bands(np.zeros(n_w, np.float32), end, bands, T=T, container=((None, 8),))
-    assert "blt_bridge_dst" not in a_b and a_b["blt_b0"].dtype == np.int8 and _cx.has_c2(a_b) and _cx.c2_bands_K(a_b, {}) == 64
+    assert "blt_bridge_dst" not in a_b and a_b["blt_b0"].dtype == np.int8 and _r_compression.has_c2(a_b) and _r_compression.c2_bands_K(a_b, {}) == 64
     n_t = 121; chi = np.ones(n_t); chi[0] = 0.0; chi[80:] = 0.0
-    lw_f = _cx.surface_logweight_bridge(a_f, m_f, 3.0, chi, 1e-4); lw_b = _cx.surface_logweight_bridge(a_b, m_b, 3.0, chi, 1e-4)
+    lw_f = _r_compression.surface_logweight_bridge(a_f, m_f, 3.0, chi, 1e-4); lw_b = _r_compression.surface_logweight_bridge(a_b, m_b, 3.0, chi, 1e-4)
     assert np.abs(lw_b - lw_f).max() < 5e-3 * np.abs(lw_f).max()
-    B = _cx.local_time_at(a_b, m_b, [0.0, T])                                                 # the bridge pinned at both ends
+    B = _r_compression.local_time_at(a_b, m_b, [0.0, T])                                                 # the bridge pinned at both ends
     np.testing.assert_allclose(B[:, 1] - B[:, 0], np.asarray(a_b["blt_endpoint"]), rtol=1e-5, atol=1e-10)
     lab = rng.integers(0, 3, n_w)
     a1, m1 = _cx.encode_static_occupancy(lab)
     assert list(a1) == ["comp_static"] and a1["comp_static"].dtype == np.int8 and m1["columns"][0]["kind"] == "static"
-    np.testing.assert_array_equal(_cx.occupancy_events(a1, m1["columns"][0])[0], lab)             # a static column: one label per walker
+    np.testing.assert_array_equal(_r_compression.occupancy_events(a1, m1["columns"][0])[0], lab)             # a static column: one label per walker
     act = np.ones(n_t); act[-1] = 0.0                                                         # the readout, held over nothing
-    gate = _cx.CumulativeGate(chi, 1e-4); on = _cx.CumulativeGate(act, 1e-4)
-    got = _cx.relaxation_logweight_runs(a1, m1["columns"][0], [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], gate, on, t1=(n_t - 1) * 1e-4)
+    gate = _r_compression.CumulativeGate(chi, 1e-4); on = _r_compression.CumulativeGate(act, 1e-4)
+    got = _r_compression.relaxation_logweight_runs(a1, m1["columns"][0], [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], gate, on, t1=(n_t - 1) * 1e-4)
     dense = dense_relaxation_logweight(lab, [0.08, 0.03, 0.01], [1.0, 1.2, 0.3], 1e-4, chi, act)
     np.testing.assert_allclose(got, dense, rtol=1e-12)
-    from dmipy_sim.coefficient_walk import EventList
+    from dmipy_replay.replay.events import EventList
     ev = EventList([0, 1] + [1] * (n_w - 1), [60 * 1e-4], [2])                                    # walker 0 crosses into pool 2
     a2, m2 = _cx.encode_events_occupancy({"comp": (lab, ev)})
     assert m2["columns"][0]["kind"] == "events" and "comp_events_t" in a2                           # a crossing keeps the events
@@ -75,7 +77,7 @@ def packs(tmp_path_factory):
 
 def test_a_pack_in_the_integer_containers_replays_every_knob_like_the_float_one(packs):
     f, b, tmp = packs
-    assert "pos_x" not in b.arrays and "pos_x_ends" in b.arrays and _cx.has_c2(b.arrays) and "comp_static" in b.arrays
+    assert "pos_x" not in b.arrays and "pos_x_ends" in b.arrays and _r_compression.has_c2(b.arrays) and "comp_static" in b.arrays
     assert b.has_relaxation and b.has_surface and b.n_walkers == f.n_walkers and b.K == f.K
     assert b.meta["compression"]["container"] == [{"bands": [0, 4], "bits": 16}, {"bands": [4, 8], "bits": 8}]
     fb, ff = b.meta["fidelity"], f.meta["fidelity"]          # a container costs the certificate its quantisation only
@@ -114,8 +116,8 @@ def test_a_packed_range_round_trips_the_quantised_values_exactly(bits):
     q = rng.integers(-lim, lim + 1, (n_w, m, 3))
     t = _cx._store_range(q, bits)
     assert t.dtype == np.uint8 and t.shape == (n_w, -(-m * bits // 8), 3)
-    np.testing.assert_array_equal(_cx._load_range(t, bits, m), q)
-    np.testing.assert_array_equal(_cx._load_range(_cx._store_range(q[..., 0], bits), bits, m), q[..., 0])
+    np.testing.assert_array_equal(_r_compression._load_range(t, bits, m), q)
+    np.testing.assert_array_equal(_r_compression._load_range(_cx._store_range(q[..., 0], bits), bits, m), q[..., 0])
     # a row is its values side by side, MSB first, offset-binary
     row = np.unpackbits(_cx._store_range(q[:1, :, 0], bits)[0])[: m * bits].reshape(m, bits)
     np.testing.assert_array_equal(row @ (1 << np.arange(bits - 1, -1, -1)), q[0, :, 0] + 2 ** (bits - 1))
@@ -126,7 +128,7 @@ def test_quantise_bands_reconstructs_the_integers_times_the_scale_at_every_depth
     rng = np.random.default_rng(1); B = rng.normal(size=(100, 20, 3)) / np.arange(1, 21)[None, :, None]
     cont = ((8, bits), (None, 8))
     arrays, meta = _cx.quantise_bands(B, cont, "pos", "pos_band_scale")
-    got = _cx.dequantise_bands(arrays, meta["container"], "pos", "pos_band_scale")
+    got = _r_compression.dequantise_bands(arrays, meta["container"], "pos", "pos_band_scale")
     lim = 2 ** (bits - 1) - 1; scale = np.abs(B).max(axis=0) / np.where(np.arange(20) < 8, lim, 127)[:, None]
     assert np.abs(got - B).max() <= 0.5 * scale.max() * (1 + 1e-6)
     assert got.shape == B.shape
@@ -157,7 +159,7 @@ def test_a_pack_with_a_five_bit_range_reads_back_and_replays(tmp_path):
     assert any(r["bits"] == 5 for r in cont) and any(k.endswith("u5") for k in p.arrays)
     from dmipy_sim.replay.bank import read_rpk
     back = read_rpk(str(tmp_path / "p.rpk"))
-    np.testing.assert_array_equal(_cx.read_position_coeffs(back.arrays), _cx.read_position_coeffs(p.arrays))
+    np.testing.assert_array_equal(_r_compression.read_position_coeffs(back.arrays), _r_compression.read_position_coeffs(p.arrays))
     seq = _seqmod.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, bvalues=[1e9, 1e9], TE=9.5e-3, n_t=4 * p.n_t + 1, slew_rate=np.inf)
     np.testing.assert_allclose(back.replay(seq), f.replay(seq), rtol=5e-3)
     assert p.meta["rpk_schema_version"] == "0.7"
@@ -169,7 +171,7 @@ def test_the_two_level_container_still_reads_as_before():
     assert sorted(k for k in a if k.startswith("pos_x_b")) == ["pos_x_b0", "pos_x_b1"]
     sc = np.asarray(a["pos_band_scale"], np.float64)[0, 0]                        # (K,) the x scales
     by_hand = np.concatenate([a["pos_x_ends"], a["pos_x_b0"] * sc[:16], a["pos_x_b1"] * sc[16:]], axis=1)
-    np.testing.assert_array_equal(_cx.read_position_coeffs(a)[:, :, 0], by_hand)
+    np.testing.assert_array_equal(_r_compression.read_position_coeffs(a)[:, :, 0], by_hand)
 
 
 # ------------------------------------------------------------- C2 on a curve, and the C3 path channel's container
@@ -184,8 +186,8 @@ def test_the_contact_channel_takes_a_curve_and_replays(tmp_path):
     assert cont == c and any(k.startswith("blt_b") and "u" in k for k in p.arrays)
     from dmipy_sim.replay.bank import read_rpk
     back = read_rpk(str(tmp_path / "c.rpk"))
-    np.testing.assert_array_equal(_cx.bridge_bands(back.arrays, cont and p.meta["compression"]["channels"]["boundary_local_time"]),
-                                  _cx.bridge_bands(p.arrays, p.meta["compression"]["channels"]["boundary_local_time"]))
+    np.testing.assert_array_equal(_r_compression.bridge_bands(back.arrays, cont and p.meta["compression"]["channels"]["boundary_local_time"]),
+                                  _r_compression.bridge_bands(p.arrays, p.meta["compression"]["channels"]["boundary_local_time"]))
     seq = _seqmod.pgse([[1, 0, 0]], 2e-3, 6e-3, bvalues=[1e9], TE=9.5e-3, n_t=4 * p.n_t + 1, slew_rate=np.inf)
     kw = dict(tissue=Tissue(rho2=1e-5, D=D0))
     np.testing.assert_allclose(back.replay(seq, **kw), f.replay(seq, **kw), rtol=5e-3)
@@ -193,7 +195,8 @@ def test_the_contact_channel_takes_a_curve_and_replays(tmp_path):
 
 @pytest.mark.parametrize("bits", [3, 5, 7, 11])
 def test_a_path_container_round_trips_the_quantised_values(bits):
-    from dmipy_sim.replay.bank import _quantise_susc_path, susc_path_coeffs
+    from dmipy_sim.replay.bank import _quantise_susc_path
+    from dmipy_replay.replay.field import susc_path_coeffs
     rng = np.random.default_rng(bits); n_w, n_ch, K = 64, 12, 10
     C = rng.normal(size=(n_w, n_ch, K)) / np.arange(1, K + 1)
     meta = dict(channel="susc_path_dct", K=K, n_t=40, n_ch=n_ch, channels=[f"c{i}" for i in range(n_ch)], iso_P_zz="stored")
@@ -278,12 +281,13 @@ def _spec_unpack(row, bits, m):
 
 @pytest.mark.parametrize("bits", list(range(3, 17)))
 def test_a_field_range_stores_the_registrys_bit_layout_at_every_depth(bits):
-    from dmipy_sim.replay.bank import _quantise_susc_path, susc_path_coeffs
+    from dmipy_sim.replay.bank import _quantise_susc_path
+    from dmipy_replay.replay.field import susc_path_coeffs
     rng = np.random.default_rng(bits); n_w, n_ch, K, K0 = 12, 4, 12, 8
     C = rng.normal(size=(n_w, n_ch, K))
     meta = dict(channel="susc_field_basis", K=K, T=4e-3, n_ch=n_ch, channels=[f"c{i}" for i in range(n_ch)], iso_P_zz="stored")
     a, m = _quantise_susc_path(C, dict(meta), [{"modes": [0, K0], "bits": bits}, {"modes": [K0, K], "bits": 3}])
-    name = _cx.range_name("susc_path_dct", 0, bits)
+    name = _r_compression.range_name("susc_path_dct", 0, bits)
     t = np.asarray(a[name])
     scale = np.asarray(a["susc_path_scale"], np.float64)
     q_want = np.rint(C / scale[None]).astype(int)
@@ -302,9 +306,9 @@ def test_a_field_range_stores_the_registrys_bit_layout_at_every_depth(bits):
 def test_the_field_container_is_one_common_step_in_the_contracted_field():
     """Bits follow the contracted amplitude of the modes (one step across them), gain a bit per quartered floor, stay in
     3..16, and the realised phase noise of the stored steps is within the budget the floor allows."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     from dmipy_sim.replay import bank
-    from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+    from dmipy_replay.replay.field import CHANNEL_NAMES
     rng = np.random.default_rng(1); n_w, K, T = 4000, 32, 0.1
     names = list(CHANNEL_NAMES)
     amp = 1e-2 / (1.0 + 0.1 * np.arange(K))                                   # a red spectrum, in field-basis units
@@ -326,13 +330,13 @@ def test_the_field_container_is_one_common_step_in_the_contracted_field():
     # the measured phase error of the stored modes under the gradient echo (all the weight on mode 0) and a spin echo
     fc = bank.DerivedFieldContainer(floor=5e-3, **kw)
     a, m = bank.susc_path_encode_modes(C, names, T=T, container=fc)
-    Cq, _ = bank.susc_path_coeffs(a, m)
+    Cq, _ = _r_field.susc_path_coeffs(a, m)
     ref = np.transpose(C, (0, 2, 1))
     h = T / 200; n_t = 201
     for gate in (np.ones(n_t), bank._cpmg_gate(n_t, 1)):
-        g = _cx.cosine_projection(gate.reshape(1, -1, 1), h, T, K)[0, :, 0]
+        g = _r_compression.cosine_projection(gate.reshape(1, -1, 1), h, T, K)[0, :, 0]
         for dvec in ([0, 0, 1], [1, 0, 0], [1, 1, 1]):
-            phi = lambda X: GAMMA * bank.susc_path_field(X, np.asarray(dvec, float), B0=7.0, chi_iso=1e-7, chi_aniso=1e-8, has_aniso=True) @ g
+            phi = lambda X: GAMMA * _r_field.susc_path_field(X, np.asarray(dvec, float), B0=7.0, chi_iso=1e-7, chi_aniso=1e-8, has_aniso=True) @ g
             assert np.std(phi(Cq) - phi(ref)) <= bank.field_quantisation(a, m, _cx.default_envelope(), T=T, h=h, **kw) * 1.05
 
 
@@ -384,7 +388,7 @@ def test_the_zero_components_are_not_stored_and_the_trace_component_is_never_a_c
     assert set(pm["zero_components"]) == set(zero) and pm["n_ch"] == 12 - len(zero) == len(pm["channels"])
     assert not set(zero) & set(pm["channels"]) and pk.arrays["susc_path_scale"].shape == (pm["n_ch"], pm["K"])
     # the reader returns the full canonical twelve, the omitted components zero
-    Cq, nq = bank.susc_path_coeffs(pk.arrays, pm)
+    Cq, nq = _r_field.susc_path_coeffs(pk.arrays, pm)
     assert nq == names and Cq.shape == (300, 12, pm["K"])
     assert all(np.all(Cq[:, nq.index(n)] == 0.0) for n in zero)
     assert np.abs(Cq - np.transpose(C, (0, 2, 1))).max() < 0.05 * np.abs(C).max()      # the container's own error

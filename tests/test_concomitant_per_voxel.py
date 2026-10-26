@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import delivered_gradient
 

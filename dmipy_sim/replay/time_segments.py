@@ -83,6 +83,7 @@ channels for that direction. Two backends run that arithmetic, ``"jax"`` (the re
 Face's shared GPU pool runs PyTorch only, and drops the device between calls).
 """
 from __future__ import annotations
+import dmipy_replay.replay.compression as _r_compression
 
 import collections
 import functools
@@ -207,7 +208,7 @@ def unpack_words(words, scale, layout):
 # ------------------------------------------------------------------ partitions
 def _sequence(seq):
     seq = seq.waveform if hasattr(seq, "waveform") else seq
-    from ..acquisition.scanner_sequence import ScannerSequence
+    from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
     if not isinstance(seq, ScannerSequence):
         raise TypeError(f"a time-segment layout reads a ScannerSequence; got {type(seq).__name__}")
     return seq
@@ -295,7 +296,7 @@ class Partition:
         """``(n_seg, n_seg)``: ``B_st = gamma^2 int Q_s Q_t dt`` with ``Q_s(t)`` the running integral of segment ``s``'s
         indicator, so that an effective encoding with levels ``l`` on the segments has ``b = l^T B l`` (s/m^2) when it is
         refocused; exact (each ``Q_s`` is piecewise linear)."""
-        from ..constants import GAMMA
+        from dmipy_replay.constants import GAMMA
         S = np.asarray(self.segments, np.float64)
         pts = np.unique(np.concatenate([[0.0], S.ravel()]))
         Q = np.minimum(np.clip(pts[None, :] - S[:, :1], 0.0, None), (S[:, 1] - S[:, 0])[:, None])
@@ -379,8 +380,8 @@ def segment_vectors(pack, segments):
     """``(n_w, n_seg, 3)`` float64: every walker's segment vectors ``gamma int_seg (r(t) - r(0)) dt`` (rad per T/m) from
     the pack's coefficients, each window's bands against :func:`~dmipy_sim.replay.compression.segment_projection`
     (a window that opens after the last segment adds nothing)."""
-    from ..constants import GAMMA
-    from .compression import read_position_coeffs, segment_projection
+    from dmipy_replay.constants import GAMMA
+    from dmipy_replay.replay.compression import read_position_coeffs, segment_projection
     S = np.asarray(segments, np.float64).reshape(-1, 2)
     m = x0 = None
     for win, t0, T_w in pack._windows():
@@ -403,8 +404,8 @@ def quantisation_term(pack, partition, b_max):
     over the refocused levels with ``l^T B l <= b_max`` is ``b_max`` times the largest generalised eigenvalue of ``(N^T
     A N, N^T B N)``. Zero for the float container."""
     from scipy.linalg import eigh
-    from ..constants import GAMMA
-    from .compression import position_container, segment_projection
+    from dmipy_replay.constants import GAMMA
+    from dmipy_replay.replay.compression import position_container, segment_projection
     if position_container(pack.arrays) != "bands":
         return 0.0
     idx, N = partition.refocused_basis()
@@ -434,10 +435,10 @@ def tier_quantisation_terms(pack, gate_seq, env):
     ``B0 chi_max alpha_c gamma g_k`` with ``g_k`` the gate's cosine projection (``alpha`` 2 on ``iso_local``, which the
     layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
     walker holds no step (its scale is a placeholder). Zero for a float container."""
-    from ..constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     from . import compression as cx
-    from .bank import susc_path_coeffs
-    from .replay import surface_logweight
+    from dmipy_replay.replay.field import susc_path_coeffs
+    from dmipy_replay.replay.replay import surface_logweight
     chi = np.asarray(gate_seq.chi_perp if gate_seq.chi_perp is not None else np.ones(gate_seq.n_t), np.float64)
     eg = np.asarray(gate_seq.effective_gate, np.float64)[:-1]               # the field's gate, the readout held over nothing
     ch = (pack.meta.get("compression") or {}).get("channels") or {}
@@ -449,7 +450,7 @@ def tier_quantisation_terms(pack, gate_seq, env):
         if cm and "blt_band_scale" in win.arrays:
             sc = np.asarray(win.arrays["blt_band_scale"], np.float64)
             step2 = (sc.reshape(-1, sc.shape[-1]) ** 2).max(axis=0)
-            live = np.abs(cx.bridge_bands(win.arrays, cm)).max(axis=0)[:step2.shape[0]] > 0
+            live = np.abs(_r_compression.bridge_bands(win.arrays, cm)).max(axis=0)[:step2.shape[0]] > 0
             step2 = np.where(live, step2, 0.0)
             K = step2.shape[0]
             a_, m_ = cx.encode_boundary_bands(np.zeros(K, np.float32), np.zeros(K, np.float32), np.eye(K), T=T_w,
@@ -465,7 +466,7 @@ def tier_quantisation_terms(pack, gate_seq, env):
             stored = list(pm["channels"])
             live = np.stack([amax[full.index(nm), :step2.shape[1]] > 0 for nm in stored])
             step2 = np.where(live, step2, 0.0)
-            g = cx.cosine_projection(eg.reshape(1, -1, 1), float(gate_seq.dt), T_w, step2.shape[1], t0=t0)[0, :, 0]
+            g = _r_compression.cosine_projection(eg.reshape(1, -1, 1), float(gate_seq.dt), T_w, step2.shape[1], t0=t0)[0, :, 0]
             alpha = np.array([2.0 if nm == "iso_local" else (0.0 if nm == "iso_P_zz" else 1.0) for nm in stored])
             v_f += float(np.sum((alpha[:, None] * GAMMA * g[None, :]) ** 2 * step2) / 12.0)
     return env["rho2_over_D_max"] ** 2 * v_c, env["B0_chi_max_T"] ** 2 * v_f
@@ -507,7 +508,7 @@ def _walk_view(walk, weights=None):
         arrays.update({p + k: v for k, v in a.items()})
     if w is not None:
         arrays["spin_weights"] = np.asarray(w, np.float32)
-    meta = dict(id=None, compression=dict(method=cx.POSITION_METHOD, K=int(walk.K), T=T_w, channels=channels),
+    meta = dict(id=None, compression=dict(method=_r_compression.POSITION_METHOD, K=int(walk.K), T=T_w, channels=channels),
                 walk_params=dict(n_walkers=int(walk.n_walkers), T_max=float(walk.T), diffusivity=walk.diffusivity, seed=walk.seed,
                                  windows=dict(n=n, T=T_w, walks=[dict(first=0, last=n - 1, seed=walk.seed)]), block=dict(walk.block)),
                 substrate=walk.spec.to_dict(), fidelity={}, view=dict(of="walk", containers="float"))
@@ -540,7 +541,7 @@ def _envelope(meta, spec, D, g_max):
     if g_max is None:
         g_max = acq.get("G_max")
     if g_max is None and (meta.get("compression") or {}).get("scanner"):
-        from ..acquisition.scanners import ScannerLimits
+        from dmipy_replay.acquisition.scanners import ScannerLimits
         g_max = ScannerLimits.of(meta["compression"]["scanner"]).G_max
     if g_max is None:
         raise ValueError("the pack names no scanner class and its envelope no G_max: give g_max= (T/m), the largest "
@@ -574,9 +575,9 @@ def _floor_target(meta, given):
 def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude):
     """One sequence group's rows and record from ``view`` under the gate ``gate_seq``: the pool, the gated contact and
     field channels (with ``tiers``) and the background vector (with ``background``)."""
-    from .replay import _band_phase, _path_field_channels
+    from dmipy_replay.replay.replay import _band_phase, _path_field_channels
     from .study import Acquisition
-    from ..acquisition.epg import pathway_weight
+    from dmipy_replay.acquisition.epg import pathway_weight
     rows, rec = {}, dict(pathway=float(pathway_weight(gate_seq)), tau_t2=None, tau_t1=None, contact=False, field=None,
                          background=False)
     n = view.n_walkers
@@ -622,7 +623,7 @@ def _background_sequence(seq, amplitude=1.0):
     so that its phases are a walker's **background vector** ``gamma int e(t) r(t) dt`` with ``e`` the sequence's
     :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, zero while
     stored) -- what a constant ``g0`` adds to the phase as ``g0 . n``."""
-    from ..acquisition.waveforms import tile_waveform
+    from dmipy_replay.acquisition.waveforms import tile_waveform
     silent = tile_waveform(_gate_sequence(seq), 3)
     return silent.with_background_gradient(float(amplitude) * _AXES)
 
@@ -748,7 +749,7 @@ def _check_band(view, partition, env):
     """Refuse a partition whose template at the envelope's b_max needs more temporal band than the source stores (the
     replay's own check, :meth:`~dmipy_sim.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
     waveform's, and the bands beyond the pack's would carry phase the vectors do not."""
-    from ..acquisition.waveforms import calc_b
+    from dmipy_replay.acquisition.waveforms import calc_b
     seq = partition.template
     b = np.asarray(calc_b(seq), np.float64)
     if not np.any(b > 0):
@@ -1054,7 +1055,7 @@ def _bytes_per_walker(partitions, groups, tiers):
 def _field_of_tiers(pack_id, tiers, groups):
     """The susceptibility field of a tier layout: its embedded spec's, with the groups' field columns as the stored
     field channel (:func:`~dmipy_sim.replay.replay.declared_susceptibility_field`)."""
-    from .replay import declared_susceptibility_field
+    from dmipy_replay.replay.replay import declared_susceptibility_field
     return declared_susceptibility_field(dict(id=pack_id, substrate=tiers.get("substrate")),
                                          has_field=any(grp.get("field") for grp in groups.values()))
 
@@ -1235,8 +1236,8 @@ class TimeSegmentLayout:
             raise ValueError("this layout holds the bare diffusion phase only (written without tiers=True); a tissue "
                              "or a scanner needs the tiers")
         from .study import Primitives
-        from ..spec.substrate import SubstrateSpec
-        from ..spec.tissue import _by_pool_id
+        from dmipy_replay.spec.substrate import SubstrateSpec
+        from dmipy_replay.spec.tissue import _by_pool_id
         t = self.tiers; g, grp = self._group(partition)
         spec = SubstrateSpec.from_dict(t["substrate"]) if t.get("substrate") else None
 
@@ -1343,7 +1344,7 @@ class TimeSegmentLayout:
         decoded channels through the one contraction, zeros when the group carries no field: on the host into two float32
         arrays chunk by chunk, or, given a torch ``device``, the words uploaded chunk by chunk and decoded and contracted
         there."""
-        from ..fields.hollow_cylinder import field_terms
+        from dmipy_replay.replay.field import field_terms
         grp = self.manifest["groups"][g]
         T = self.TILES; n_pad = -(-self.n_tiles // T) * T
         if device is None:
@@ -1581,7 +1582,7 @@ class TimeSegmentLayout:
         vector on segment ``s``, ``n`` the row's background vector, and each voxel's signal is multiplied by its pathway
         amplitude at its transmit scale over the nominal one
         (:func:`~dmipy_sim.acquisition.epg.transmit_amplitude`)."""
-        from ..acquisition.epg import pathway_weight
+        from dmipy_replay.acquisition.epg import pathway_weight
         if backend not in ("jax", "torch"):
             raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
         name, L = self.fit(sequence, partition)
@@ -1623,7 +1624,7 @@ class TimeSegmentLayout:
                 G0[:len(live)] = delivered.g0
                 bg = (rest[len(tier_names)], b_layout, b_scale, G0)
             if delivered.kappa is not None:
-                from ..acquisition.epg import transmit_amplitude
+                from dmipy_replay.acquisition.epg import transmit_amplitude
                 factor = np.ones(self.n_vox)
                 factor[live] = transmit_amplitude(_sequence(sequence), delivered.kappa) / transmit_amplitude(_sequence(sequence), [1.0])[0]
             levels, sl = Q, slot

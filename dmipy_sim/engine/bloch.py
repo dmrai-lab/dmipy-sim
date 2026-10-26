@@ -35,16 +35,17 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from ..replay.trajectories import _rf_increment
+from dmipy_replay.replay.bloch import _rf_increment
 from ..geometry._boundary import bind_probability
 
-from ..constants import GAMMA
-from ..acquisition.rf import RFSchedule
+from dmipy_replay.constants import GAMMA
+from dmipy_replay.acquisition.rf import RFSchedule
 from .gpu import gpu_available
 from ..run import Run
+from dmipy_replay.replay.bloch import _build_crusher
 
 _log = logging.getLogger("dmipy_sim.engine.bloch")
-from ..acquisition.waveforms import band_hz
+from dmipy_replay.acquisition.waveforms import band_hz
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, pair_step
 
 
@@ -222,38 +223,6 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
     return step_fn
 
 
-def _build_crusher(crusher, dt, n_t):
-    """Per-step crusher phase rate (rad/step) for a per-walker u in [0,1).
-
-    ``crusher`` = ``{'windows_s': [(t0,t1), ...], 'n_cycles': float | [float, ...]}`` or None.  Over a
-    window of ``n_win`` steps the rate is ``2 pi n_cycles / n_win``, so a walker at
-    macroscopic coordinate ``u`` accrues ``2 pi n_cycles u`` across the window and the
-    ensemble (u ~ U[0,1)) dephases over ``n_cycles`` turns -- a DECLARED voxel-scale spoiler, for a winding the
-    waveform does not play in ``G``. A spoiler that is played in ``G`` is not declared here: its winding follows
-    from the waveform and the prescription (``ScannerSequence.voxel_factor``, dmipy-sim#375).
-
-    ``n_cycles`` is stated, one number for every window or one per window, and windows ADD where they overlap:
-    a spoiler and an unbalanced readout wind different amounts over the same interval and cannot share a
-    figure.
-    """
-    rate = np.zeros(n_t, dtype=np.float64)
-    if crusher is None:
-        return rate, False
-    windows = list(crusher.get('windows_s', []))
-    if 'n_cycles' not in crusher:
-        raise ValueError("a declared crusher states its winding: crusher = {'windows_s': [...], 'n_cycles': ...}. "
-                         "There is no default number of turns; a spoiler played in G needs no declaration, since its "
-                         "winding follows from the waveform and the prescription (dmipy-sim#375)")
-    cyc = crusher['n_cycles']
-    cyc = [float(cyc)] * len(windows) if np.ndim(cyc) == 0 else [float(c) for c in cyc]
-    if len(cyc) != len(windows):
-        raise ValueError(f"n_cycles is one number or one per window ({len(windows)}); got {len(cyc)}")
-    for (t0, t1), n_cycles in zip(windows, cyc):
-        i0, i1 = int(round(t0 / dt)), int(round(t1 / dt))
-        i0, i1 = max(0, i0), min(n_t, i1)
-        if i1 > i0:
-            rate[i0:i1] += 2.0 * np.pi * n_cycles / (i1 - i0)
-    return rate, True
 
 
 def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,

@@ -100,7 +100,7 @@ class FieldGridRecord:
 
     def __init__(self, meta):
         self.meta = dict(meta)
-        from .hollow_cylinder import CHANNEL_NAMES, ISO_CHANNEL_NAMES
+        from dmipy_replay.replay.field import CHANNEL_NAMES, ISO_CHANNEL_NAMES
         self.channel_names = CHANNEL_NAMES if self.meta.get("has_aniso") else ISO_CHANNEL_NAMES
         self.origin = np.asarray(self.meta["origin"], float)
         self.periodic = tuple(bool(p) for p in self.meta.get("periodic") or (False, False, False))
@@ -139,7 +139,7 @@ class FieldGrid(NamedTuple):
     def channel_names(self):
         """The channels :meth:`channels` returns, in order: ``iso_local``, the five stored ``iso_P`` (``iso_P_zz`` is
         formed from the trace), and the six ``aniso_G`` when the basis carries them."""
-        from .hollow_cylinder import CHANNEL_NAMES, ISO_CHANNEL_NAMES
+        from dmipy_replay.replay.field import CHANNEL_NAMES, ISO_CHANNEL_NAMES
         return CHANNEL_NAMES if self.basis.get("aniso_G") is not None else ISO_CHANNEL_NAMES
 
     @property
@@ -224,7 +224,7 @@ def grid_channels_at(grids, origin, voxel_size, periodic, r):
 
     def field(self, points, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0):
         """``dB`` (Tesla) at ``points`` for one configuration."""
-        from .hollow_cylinder import contract
+        from dmipy_replay.replay.field import contract
         return contract(self.channels(points), b0_dir, B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
 
 
@@ -520,7 +520,7 @@ def assemble_field(basis, b0_dir, B0=1.0, chi_iso=0.0, chi_aniso=0.0):
 
     Cheap real contraction — no FFT.  Sweep ``b0_dir``/``B0``/``chi_*`` for free.
     """
-    from .hollow_cylinder import q_of_H
+    from dmipy_replay.replay.field import q_of_H
     q = q_of_H(b0_dir)
     dB = np.zeros(basis["shape"], float)
     if chi_iso != 0.0:

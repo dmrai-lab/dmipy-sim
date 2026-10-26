@@ -107,7 +107,7 @@ class TrainResponse:
         none of it, and the train's own pulses then mix what is left. A drifting magnet is exactly this --
         uniform in space, so one propagation serves a whole image.
         """
-        from ..acquisition.epg_state import train_weights
+        from dmipy_replay.acquisition.epg_state import train_weights
         prep, train, on, ro, _edges = sequence_events(self.waveform, b1_scale)
         return train_weights(prep, train, int(self.n_orders), lambda i: on[i] if i < len(on) else False, ro,
                              dw=dw, durations=self.durations)
@@ -229,7 +229,7 @@ def _gates(waveform, b1_reference, n_orders, **strip):
     propagation carries, so it is declared rather than derived from the moment it leaves. ``strip`` sets any
     further field of the copies.
     """
-    from ..acquisition.epg_state import split_by_gate
+    from dmipy_replay.acquisition.epg_state import split_by_gate
     prep, train, on, ro, edges = sequence_events(waveform, b1_reference)
     n_orders = int(n_orders if n_orders is not None else len(train) + 4)
     gates = split_by_gate(prep, n_orders, lambda i: on[i] if i < len(on) else False)

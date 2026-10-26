@@ -9,12 +9,13 @@ columnar image and the pose expansion of the pack agree with that reference to f
 whole-window reads (``prefix`` on a window boundary, ``window(i)``) are the pack of the walk's own window, bit for bit
 on the bands. A consolidation of shards that disagree on the block or the window table is refused by name.
 """
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 from scipy.fft import dst
 
 import dmipy_sim as d
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
@@ -31,7 +32,7 @@ def _reference_coeffs(raw, h, K):
     tau = np.arange(N + 1) / N
     u = x - (x[:, :1] + (x[:, -1:] - x[:, :1]) * tau[None, :, None])
     k = np.arange(1, K + 1)
-    factor = cx.cosine_band_scale(K, T) * 2.0 * np.sin(np.pi * k / (2.0 * N)) / np.sqrt(2.0 / N)     # sqrt(h) sinc(k / 2N)
+    factor = _r_compression.cosine_band_scale(K, T) * 2.0 * np.sin(np.pi * k / (2.0 * N)) / np.sqrt(2.0 / N)     # sqrt(h) sinc(k / 2N)
     beta = factor[None, :, None] * dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
     return np.concatenate([x[:, :1], x[:, -1:] - x[:, :1], beta], axis=1)
 
@@ -42,7 +43,7 @@ def _reference_phases(C, seq, T, R=None):
     G = np.asarray(seq.G_eff, np.float64)
     if R is not None:
         G = G @ np.asarray(R, np.float64)
-    W = cx.band_projection(G, float(seq.dt), T, C.shape[1] - 2)
+    W = _r_compression.band_projection(G, float(seq.dt), T, C.shape[1] - 2)
     return GAMMA * np.einsum("wkc,mkc->wm", C, W)
 
 

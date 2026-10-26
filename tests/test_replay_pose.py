@@ -1,7 +1,8 @@
 """A pack's pose: one rotation exactly, or a distribution of rotations through the SO(3) response (#157)."""
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import pose_with_field_along
 import pytest
 
@@ -52,7 +53,7 @@ def _Acq(G, dt, bvalues=None):
 
 
 def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -134,7 +135,7 @@ def test_the_azimuthal_energy_measures_how_symmetric_a_substrate_is(hollow, elli
     that noise are exactly the ones an axis-only representation would have folded into its answer.
     """
     def roll_variation(pr):
-        Rz = so3.rotation_of((0, 0, 1), roll=np.pi / 2)
+        Rz = _r_so3.rotation_of((0, 0, 1), roll=np.pi / 2)
         return max(float(np.abs(pr.at(R) - pr.at(R @ Rz)).max()) for R in so3.haar_rotations(4, seed=13))
 
     pk, seq = hollow
@@ -165,7 +166,7 @@ def test_an_axis_density_composes_like_averaging_explicit_poses(hollow):
     brute = np.zeros(len(seq.encoding.bvalues), np.complex128)
     for n, wn, fn in zip(dirs, w, rho2):
         for r in rolls:
-            brute += (wn * fn / len(rolls)) * pk.replay(seq, orientation=so3.rotation_of(n, roll=r),
+            brute += (wn * fn / len(rolls)) * pk.replay(seq, orientation=_r_so3.rotation_of(n, roll=r),
                                                         complex_signal=True, **KW)
     np.testing.assert_allclose(S, brute, atol=4.0 / np.sqrt(pk.n_walkers))
     assert abs(S[0] - pk.replay(seq, complex_signal=True, **KW)[0]) < 1e-2      # b = 0: the density integrates to 1
@@ -177,7 +178,7 @@ def test_a_bingham_fan_reduces_to_the_watson_it_contains(ellipsoid):
     for the difference to be visible above its own noise."""
     pk, seq = ellipsoid
     pr = pk.pose_response(seq, **BAND)
-    frame = so3.rotation_of((0.3, 0.5, 0.81))
+    frame = _r_so3.rotation_of((0.3, 0.5, 0.81))
     cone = pr.compose(so3.Distribution.bingham(frame, (6.0, 6.0), lmax=pr.lmax, nmax=pr.nmax))
     watson = pr.compose(so3.Distribution.watson(6.0, mu=(0.3, 0.5, 0.81), lmax=pr.lmax, nmax=pr.nmax))
     np.testing.assert_allclose(cone, watson, atol=1e-9)
@@ -231,8 +232,8 @@ def test_the_susceptibility_field_points_where_the_machine_s_field_points(hollow
     patient. The same fibre then sits at a different angle to B0 and produces a different phase. This fibre
     lies along z, so a machine with B0 along z sees it end-on and one with B0 across it does not, and the two
     must disagree."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
-    from dmipy_sim.replay.replay import scanner_field
+    from dmipy_replay.acquisition.scanners import ScannerLimits
+    from dmipy_replay.replay.replay import scanner_field
     pk, seq = hollow
     swoop, prisma = ScannerLimits.of("swoop"), ScannerLimits.of("prisma")
     assert scanner_field(prisma).axis == (0.0, 0.0, 1.0)          # along the bore
@@ -250,7 +251,7 @@ def test_a_bare_field_strength_still_means_the_conventional_bore(hollow):
     """A number carries no direction, so it keeps the conventional geometry -- B0 along the bore. That is a
     stated default rather than a hidden one, and it must agree with a catalogued cylindrical machine
     exactly, or the fallback and the catalogue would disagree about the same magnet."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     pk, seq = hollow
     t = Tissue(chi_iso=-9.0e-6, chi_aniso=-1.0e-7)
     prisma = ScannerLimits.of("prisma")

@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay.compression import container_eps
 from dmipy_sim.replay.time_segments import (FIELD_BITS_MAX, Partition, _decode, field_code, pack_words, rounding_eps,
                                              unpack_words, word_layout)

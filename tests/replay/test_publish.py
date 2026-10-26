@@ -1,6 +1,7 @@
 """Publishing a pack (dmipy_sim.replay.publish) against the fake hub: the file, its manifest row and the rendered card
 go up in one commit; a second publish replaces the row; a pack without its contract is refused; the sha256 the hub holds
 is checked on publish and on ``ReplayPack.load("hf://...")``; a local load is untouched."""
+import dmipy_replay.replay.hub as _r_hub
 import json
 import os
 import shutil
@@ -229,12 +230,12 @@ def test_load_from_a_hub_without_a_manifest_and_of_a_non_pack(pack, hub, monkeyp
 
 
 def test_parse_uri():
-    assert pub.parse_uri("hf://owner/name/packs/x.rpk") == ("owner/name", "packs/x.rpk")
-    assert pub.parse_uri("hf://owner/name/a/b/c.rpk") == ("owner/name", "a/b/c.rpk")
-    assert pub.is_hub_uri("hf://o/n/x.rpk") and not pub.is_hub_uri("/o/n/x.rpk") and not pub.is_hub_uri(None)
+    assert _r_hub.parse_uri("hf://owner/name/packs/x.rpk") == ("owner/name", "packs/x.rpk")
+    assert _r_hub.parse_uri("hf://owner/name/a/b/c.rpk") == ("owner/name", "a/b/c.rpk")
+    assert _r_hub.is_hub_uri("hf://o/n/x.rpk") and not _r_hub.is_hub_uri("/o/n/x.rpk") and not _r_hub.is_hub_uri(None)
     for bad in ("owner/name/x.rpk", "hf://owner/name", "hf://owner//x.rpk", "hf://owner"):
         with pytest.raises(ValueError):
-            pub.parse_uri(bad)
+            _r_hub.parse_uri(bad)
 
 
 def test_a_local_load_never_touches_the_hub(pack, tmp_path, monkeypatch):

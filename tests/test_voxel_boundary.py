@@ -13,8 +13,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.prescription import Prescription
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.prescription import Prescription
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -159,7 +159,7 @@ def test_the_bloch_route_puts_each_walker_at_its_own_place_in_the_voxel(pack, or
 
 
 def test_a_declared_crusher_states_its_winding():
-    from dmipy_sim.engine.bloch import _build_crusher
+    from dmipy_replay.replay.bloch import _build_crusher
     rate, has = _build_crusher({"windows_s": [(1e-3, 3e-3)], "n_cycles": 4.0}, 1e-4, 100)
     assert has and rate.sum() == pytest.approx(2 * np.pi * 4.0)
     with pytest.raises(ValueError, match="states its winding"):
