@@ -71,7 +71,7 @@ class AdaptivePlan(NamedTuple):
 
 
 def adaptive_plan(geometry, diffusivity, block_h, *, steps_per_round=16, safety_sigma=6.0, n_classes=4, sub_steps=None,
-                  candidate_k_start=64, f_band=None):
+                  candidate_k_start=64, f_band=None, step_refinement=1):
     """The :class:`AdaptivePlan` of a walk of ``geometry`` at ``diffusivity`` accumulated in blocks of ``block_h``: the finest
     sub-step count from the step rule (:func:`~dmipy_sim.engine.physics.tolerance_sub_steps` and the rules beside it;
     ``sub_steps`` overrides it), rounded up to a multiple of ``steps_per_round``; the classes doubling in step time
@@ -79,13 +79,16 @@ def adaptive_plan(geometry, diffusivity, block_h, *, steps_per_round=16, safety_
     rule's band term, which does not grow with the radius."""
     from .physics import resolve_sub_steps, length_scales_of, STEP_TOLERANCE
     from ..math.step_law import band_step
+    if isinstance(step_refinement, bool) or int(step_refinement) != step_refinement or step_refinement < 1:
+        raise ValueError("step_refinement is a positive integer")
+    refinement = int(step_refinement)
     D = float(diffusivity)
     K = int(steps_per_round)
     eps_D = float(STEP_TOLERANCE)
     f_band_hz = float(f_band) if f_band is not None else 0.5 / float(block_h)
-    dt_band = float(band_step(f_band_hz, eps_D))
+    dt_band = float(band_step(f_band_hz, eps_D)) / refinement
     n_min = resolve_sub_steps(geometry, D, block_h, surface=True, override=sub_steps, f_band=f_band)
-    n_min = K * int(math.ceil(n_min / K))                          # the finest class divides the round
+    n_min = refinement * K * int(math.ceil(n_min / K))                          # the finest class divides the round
     n_rounds = n_min // K
     dt_min = block_h / n_min; dt_round = block_h / n_rounds
     R_min = float(length_scales_of(geometry).min_feature)
@@ -117,7 +120,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                    walker_batch_size=100_000, require_gpu=None, candidate_cache=True, candidate_k_start=64,
                                    field_basis=None, field_reuse_intervals=4, field_read_interval=None, K_c3=None,
                                    field_list_k=256, spec=None, spool=None, backend=JAX, f_band=None, K=None, block_order=None,
-                                   window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None):
+                                   window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
+                                   step_refinement=1, calibration_reference=False):
     """A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable (so the occupancy is one static label per walker).
@@ -137,6 +141,11 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
     round gathers, per walker, the segments whose surface lies within the round's deterministic excursion once
     (``candidate_k_start`` entries, widened when a walker has more in reach) and steps against those instead of
     the 27-cell gather at every step.
+
+    step_refinement uniformly shortens all adaptive steps and rounds for refinement comparisons.
+    calibration_reference requires explicit field band/read settings and skips the implicit
+    field pilot solely to collect diagnostic data. Its unresolved record cannot become a
+    FieldCalibration; a reference walk is not production accuracy evidence.
 
     With ``field_basis`` (a :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`) the walk READS the field's
     channels itself at the end of every ``n_read``-th round and of every block at the walker's position, ``n_read``
@@ -194,7 +203,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         n_bw = int(round(float(T_win) / h)); n_blocks = n_win * n_bw; dt_actual = float(T_win) / n_bw
         n_t = n_blocks + 1
         plan = adaptive_plan(geometry, D, dt_actual, steps_per_round=steps_per_round, safety_sigma=safety_sigma,
-                             n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start, f_band=f_band)
+                             n_classes=n_classes, sub_steps=sub_steps, candidate_k_start=candidate_k_start, f_band=f_band,
+                             step_refinement=step_refinement)
         Ks, n_min, n_rounds, dt_min, dt_round, n_classes = plan.steps_per_round, plan.n_min, plan.n_rounds, plan.dt_min, plan.dt_round, plan.n_classes
         R_min, sigma_round, far_at = plan.R_min, plan.sigma_round, plan.far_at
         steps_c = list(plan.steps_c)
@@ -210,6 +220,13 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             raise ValueError("calibration_floor must be finite and positive")
         if field_calibration is not None and not sampling:
             raise ValueError("field calibration requires a field source")
+        if calibration_reference:
+            if not sampling or K_c3 is None or field_read_interval is None:
+                raise ValueError("a calibration reference needs explicit field source, band and read interval")
+            if field_calibration is not None or query_scope is not None:
+                raise ValueError("a diagnostic calibration reference cannot assert scoped production evidence")
+            if not 1 <= int(K_c3) <= n_bw:
+                raise ValueError("the reference field band must fit its sampled window")
         calibration_scope = None
         saved_settings = None
         field_read = None
@@ -651,7 +668,13 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         # quadratic variation (the read's rule), the trapezoid's constant at every coarser read a block allows (what
         # the walk's read is charged at, given or derived), and the block means (the field band's ladder)
         field_band = None
-        if sampling and saved_settings is None:
+        if sampling and calibration_reference:
+            K_f = int(K_c3)
+            field_band = dict(rule="given", K=K_f, calibration_reference=True)
+            field_read.update(calibration_reference=True, calibration_resolved=False, budget_met=False,
+                              pilot_seconds=0.0, pilot_backend=None)
+            _rd[0] = (int(field_read["n_read"]), float(field_read["dt_f"]), (), True)
+        elif sampling and saved_settings is None:
             import time as _time
             checks = read_checks(n_rounds)
             run.phase("field pilot", walkers=n_pilot)
@@ -754,7 +777,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         kernel_steps_ratio=((total_steps / max(n_kernel_steps, 1)) if counted else None), steps_per_round_by_class=steps_c,
                         radius_class_bounds_m=R_bounds.tolist(), far_at_m=far_at, safety_sigma=float(safety_sigma),
                         eps_D=float(plan.eps_D), f_band_hz=float(plan.f_band_hz), dt_band_s=float(plan.dt_band_s),
-                        round_s=float(dt_round), rounds_per_block=int(n_rounds), backend=_backend_name,
+                        round_s=float(dt_round), rounds_per_block=int(n_rounds), step_refinement=int(step_refinement), backend=_backend_name,
                         field_pilot_backend=(None if saved_settings is not None else field_read.get("pilot_backend", JAX) if sampling else None),
                         raw_subset_backend=(None if not n_raw else JAX if sampling else _backend_name))
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")

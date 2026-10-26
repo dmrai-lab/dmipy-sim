@@ -135,3 +135,43 @@ def test_every_class_steps_within_the_band_term():
     st = w.stepping
     assert st["eps_D"] == STEP_TOLERANCE and st["f_band_hz"] == 2e4 and st["dt_band_s"] == pytest.approx(high.dt_band_s)
     assert tuple(st["steps_per_round_by_class"]) == high.steps_c
+
+
+def test_a_refined_plan_shortens_every_step_by_the_refinement():
+    """``step_refinement=r`` multiplies the finest sub-step count by ``r``: the rounds and every class's step shorten
+    by ``r`` together, the band term with them, so a refined walk is the same walk at a uniformly finer step (what a
+    two-walk refinement comparison needs). Anything but a positive integer is refused."""
+    from dmipy_sim.engine.adaptive import adaptive_plan
+    g = _pack(False)
+    for f_band in (100.0, 2e4):
+        base = adaptive_plan(g, D, 2.5e-4, f_band=f_band)
+        fine = adaptive_plan(g, D, 2.5e-4, f_band=f_band, step_refinement=3)
+        assert fine.n_min == 3 * base.n_min and fine.n_rounds == 3 * base.n_rounds
+        assert fine.steps_c == base.steps_c and fine.dt_round == pytest.approx(base.dt_round / 3)
+        assert fine.dt_band_s == pytest.approx(base.dt_band_s / 3)
+        np.testing.assert_allclose(np.array(fine.step_l_c), np.array(base.step_l_c) / np.sqrt(3), rtol=1e-6)
+    for bad in (0, 1.5, True):
+        with pytest.raises(ValueError, match="positive integer"):
+            adaptive_plan(g, D, 2.5e-4, step_refinement=bad)
+
+
+def test_a_calibration_reference_walks_the_given_field_settings_without_a_pilot():
+    """A diagnostic reference walk reads the field at the band and interval it is given, runs no field pilot, and
+    records itself as unresolved and over no budget it could meet; it cannot be asked without both settings, nor
+    alongside a production calibration or scope."""
+    from dmipy_sim.fields.strand_field import StrandFieldBasis
+    cls = [np.array([[x, 0, -30e-6], [x, 0, 30e-6]]) for x in (-6e-6, 0, 6e-6)]
+    g = d.PackedCurvedCylinders(cls, [1.0e-6, 1.5e-6, 2.0e-6], interior=False, box=(np.full(3, -10e-6), np.full(3, 10e-6)))
+    sf = StrandFieldBasis(cls, [0.7e-6, 1.05e-6, 1.4e-6], [1.0e-6, 1.5e-6, 2.0e-6], cutoff_m=60e-6,
+                          domain=(np.full(3, -10e-6), np.full(3, 10e-6)))
+    kw = dict(seed=4, require_gpu=False, walker_batch_size=200, sub_steps=64, steps_per_round=16, field_basis=sf)
+    w = simulate_trajectories_adaptive(200, D, g, 1e-3, 2.5e-4, K_c3=2, field_read_interval=2.5e-4 / 4,
+                                       calibration_reference=True, step_refinement=2, **kw)
+    fr = w.block["field_read"]
+    assert fr["calibration_reference"] and fr["calibration_resolved"] is False and fr["pilot_seconds"] == 0.0
+    assert w.stepping["step_refinement"] == 2 and w.stepping["field_pilot_backend"] is None
+    with pytest.raises(ValueError, match="explicit field source, band and read interval"):
+        simulate_trajectories_adaptive(200, D, g, 1e-3, 2.5e-4, K_c3=2, calibration_reference=True, **kw)
+    with pytest.raises(ValueError, match="cannot assert scoped production evidence"):
+        simulate_trajectories_adaptive(200, D, g, 1e-3, 2.5e-4, K_c3=2, field_read_interval=2.5e-4 / 4,
+                                       calibration_reference=True, query_scope={"q": 1}, **kw)
