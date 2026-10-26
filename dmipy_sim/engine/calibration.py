@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from ..math.accuracy import ErrorBound, assess_accuracy
-from ..math.step_law import assess_step_certificate
+from ..math.step_law import assess_step_certificate, STEP_METRIC
 
 SIGNAL_METRIC = "max_abs_complex_signal_error"
 REQUIRED_TERMS = ("trajectory", "spatial_field", "field_read", "field_band", "representation")
@@ -83,7 +83,7 @@ class FieldCalibration:
         step = data["step"]
         reassessed = assess_step_certificate(step, z=step.get("z", 3.0))
         if (step.get("status") != "passed" or reassessed["status"] != "passed" or
-                step.get("metric") != "relative_diffusion_spectrum_rms" or
+                step.get("metric") != STEP_METRIC or
                 reassessed["confidence"] < accuracy["confidence"]):
             raise ValueError("field calibration needs a resolved, passing step-size assessment at its confidence")
         read, band = data["read"], data["band"]

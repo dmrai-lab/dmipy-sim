@@ -330,6 +330,9 @@ class SteppedPore:
 #: for a quarter of the fine walk's cost, and the coarse step stays in the first-order regime the rule sizes
 #: (``delta_0 <= min_feature / 2``) wherever the fine step is under a quarter of it.
 PILOT_STEP_RATIO = 4
+#: What the step certificate measures: the sup over the band of the walk's relative diffusion-spectrum error,
+#: read per octave of bands (:func:`step_certificate`).
+STEP_METRIC = "relative_diffusion_spectrum_sup"
 
 
 def diffusion_spectrum(C, T, *, f_max=None):
@@ -372,11 +375,18 @@ def step_certificate(C_fine, C_coarse, T, ratio, *, f_band, eps_declared):
     ``position_coeffs`` (:func:`diffusion_spectrum`).
 
     The law is first order in the step, so ``D_coarse(f) - D_fine(f) = (ratio - 1) * err_fine(f)``; each band up to
-    ``f_band`` gives ``err_fine(f) / D_fine(f)`` with its own standard error. A mode's rate error enters the spectrum
-    with one sign below the mode's rate and the other above it, so the band's error is read as the root mean square
-    over the bands, its noise subtracted (``E[rel^2] = err^2 + se^2``); the slowest mode's rate error, which the rule
-    sizes the step for, bounds it from above. ``floor`` is the rms standard error of the bands, what the pilot can
-    resolve, and ``resolves`` whether that is under ``eps_declared``: a pilot that cannot resolve the tolerance
+    ``f_band`` gives ``err_fine(f) / D_fine(f)`` with its own standard error. The quantity certified is the SUPREMUM
+    of ``|err / D|`` over the band, since that is what bounds every waveform the band serves: in the Gaussian-phase
+    approximation ``ln S = -(1/pi) int |F|^2 D``, so ``|d ln S| <= sup |dD / D| * |ln S|`` and a signal error under
+    ``sup * |S ln S| <= sup / e`` whatever the waveform (:data:`~dmipy_sim.engine.physics.STEP_TOLERANCE`). The
+    sup is read per octave of bands (``k`` in ``[2^j, 2^(j+1))``): within an octave the error is smooth, so the
+    octave's root mean square, its noise subtracted (``E[rel^2] = err^2 + se^2``), is its sup (on the stepped
+    matrix method's cylinders and sphere the largest octave's rms equals the band's sup, while the band's rms
+    understates it by up to 1.7x: the error peaks at the slowest wall mode and at the band's top). ``eps_measured``
+    is the largest octave's, ``octaves`` each octave's estimate, standard error and floor, ``eps_rms`` the whole
+    band's rms as a diagnostic. ``floor`` is the worst octave's rms standard error, what the pilot can resolve
+    everywhere in the band, and ``resolves`` whether that is under ``eps_declared``; the lowest octave, one band
+    where a pore's spectrum is smallest, is usually the one that binds. A pilot that cannot resolve the tolerance
     bounds the error only to its floor, the record and the card say so, and the rule the walk was sized by is then
     what holds the tolerance. A walk whose bands stop below ``f_band`` (``K < 2 T f_band``) cannot read the band it
     certifies and is refused, as are two walks of different band counts or windows."""
@@ -399,39 +409,65 @@ def step_certificate(C_fine, C_coarse, T, ratio, *, f_band, eps_declared):
     rel = (Dc - Df) / (r - 1.0) / Df
     se = np.sqrt(sc ** 2 + sf ** 2) / (r - 1.0) / Df
     n = int(Df.size)
-    floor = float(np.sqrt(np.mean(se ** 2)))
-    eps = float(np.sqrt(max(float(np.mean(rel ** 2) - np.mean(se ** 2)), 0.0)))
-    eps_se = float(np.sqrt(np.sum(2.0 * se ** 4 + 4.0 * rel ** 2 * se ** 2)) / n / (2.0 * max(eps, floor)))
-    return dict(eps_measured=eps, eps_se=eps_se, floor=floor, eps_declared=float(eps_declared), ratio=r,
-                f_band_hz=float(f_band), n_bins=n, K=K, T_s=T, n_walkers=int(Cf.shape[0]),
-                resolves=bool(floor < float(eps_declared)), per_bin_max=float(np.abs(rel).max()),
-                rule="eps_measured = the noise-corrected root mean square over the bands k / (2 T) <= f_band of "
-                     "(D_coarse - D_fine) / ((ratio - 1) D_fine), D(f_k) = (pi k)^2 <beta_k^2> / (2 T^2) read off "
-                     "the stored bands, the first-order error of the fine step's diffusion spectrum, which the "
-                     "slowest mode's rate error bounds; the gate holds it to eps_declared within its pass band")
+
+    def rms(rel_, se_):
+        fl = float(np.sqrt(np.mean(se_ ** 2)))
+        e = float(np.sqrt(max(float(np.mean(rel_ ** 2) - np.mean(se_ ** 2)), 0.0)))
+        e_se = float(np.sqrt(np.sum(2.0 * se_ ** 4 + 4.0 * rel_ ** 2 * se_ ** 2)) / rel_.size / (2.0 * max(e, fl)))
+        return e, e_se, fl
+
+    k = np.arange(1, n + 1)
+    octave = np.floor(np.log2(k)).astype(int)
+    octaves = []
+    for j in np.unique(octave):
+        sel = octave == j
+        e, e_se, fl = rms(rel[sel], se[sel])
+        octaves.append(dict(f_lo_hz=float(k[sel][0] / (2.0 * T)), f_hi_hz=float(k[sel][-1] / (2.0 * T)),
+                            n_bins=int(sel.sum()), eps=e, eps_se=e_se, floor=fl))
+    top = max(octaves, key=lambda o: o["eps"])
+    floor = max(o["floor"] for o in octaves)
+    eps_rms = rms(rel, se)[0]
+    return dict(eps_measured=top["eps"], eps_se=top["eps_se"], floor=floor, octaves=octaves, eps_rms=eps_rms,
+                eps_declared=float(eps_declared), ratio=r, f_band_hz=float(f_band), n_bins=n, K=K, T_s=T,
+                n_walkers=int(Cf.shape[0]), resolves=bool(floor < float(eps_declared)),
+                per_bin_max=float(np.abs(rel).max()), metric=STEP_METRIC,
+                rule="eps_measured = the largest over the octaves k in [2^j, 2^(j+1)) of the bands k / (2 T) <= "
+                     "f_band of the noise-corrected root mean square of (D_coarse - D_fine) / ((ratio - 1) D_fine), "
+                     "D(f_k) = (pi k)^2 <beta_k^2> / (2 T^2) read off the stored bands: the sup over the band of the "
+                     "fine step's relative diffusion-spectrum error, which bounds every in-band waveform's signal "
+                     "error by eps * |S ln S|; the gate holds every octave to eps_declared")
 
 
 def assess_step_certificate(certificate, *, z=3.0):
     """The measured step diagnostic, separate from an absolute MR-signal accuracy certificate.
 
-    A pass needs a resolved pilot and an upper error estimate below the declared tolerance. The confidence
-    is a one-sided normal/delta-method approximation, not a deterministic bound or a signal-error conversion.
-    A noisy pilot is unresolved rather than evidence that the theoretical step rule has been measured.
+    A pass needs a resolved pilot (every octave of the band resolved) and an upper error estimate below the
+    declared tolerance in every octave: ``upper`` is the largest octave's ``eps + z * eps_se``. The confidence is a
+    one-sided normal/delta-method approximation per octave, not a deterministic bound or a signal-error
+    conversion. A noisy pilot is unresolved rather than evidence that the theoretical step rule has been measured;
+    a certificate without its octaves (an rms over the band) is refused, since it does not read the sup.
     """
     import math
     z = float(z)
     if not math.isfinite(z) or z <= 0:
         raise ValueError("the step check needs a finite positive confidence multiplier")
+    if certificate.get("metric") != STEP_METRIC or not certificate.get("octaves"):
+        raise ValueError(f"the step check reads the {STEP_METRIC} over the band's octaves; this certificate carries "
+                         f"{certificate.get('metric')!r} without its octaves")
     fields = ("eps_measured", "eps_se", "floor", "eps_declared")
     values = {key:certificate.get(key) for key in fields}
-    if any(value is None or not math.isfinite(float(value)) or float(value) < 0 for value in values.values()):
-        return dict(status="unresolved", upper=None, metric="relative_diffusion_spectrum_rms")
-    measured, se, floor, declared = (float(values[key]) for key in fields)
+    octs = certificate["octaves"]
+    if any(value is None or not math.isfinite(float(value)) or float(value) < 0 for value in values.values()) or any(
+            not all(math.isfinite(float(o[f])) and float(o[f]) >= 0 for f in ("eps", "eps_se", "floor")) for o in octs):
+        return dict(status="unresolved", upper=None, metric=STEP_METRIC)
+    declared = float(values["eps_declared"])
     if declared <= 0:
         raise ValueError("the declared step tolerance must be positive")
-    upper = measured + z * se
-    resolved = bool(certificate.get("resolves", False)) and floor < declared
+    upper = max(float(o["eps"]) + z * float(o["eps_se"]) for o in octs)
+    unresolved = [o for o in octs if float(o["floor"]) >= declared]
+    resolved = bool(certificate.get("resolves", False)) and not unresolved
     status = "unresolved" if not resolved else "passed" if upper <= declared else "over_budget"
     return dict(certificate, status=status, upper=upper, declared=declared, z=z,
+                unresolved_octaves=[(o["f_lo_hz"], o["f_hi_hz"]) for o in unresolved],
                 confidence=0.5 * (1.0 + math.erf(z / math.sqrt(2.0))),
-                metric="relative_diffusion_spectrum_rms", method="one_sided_normal_delta_approximation")
+                metric=STEP_METRIC, method="one_sided_normal_delta_approximation_per_octave")

@@ -3,7 +3,7 @@ import json
 import pytest
 from dmipy_sim.engine.calibration import FieldCalibration, REQUIRED_TERMS, SIGNAL_METRIC
 from dmipy_sim.math.accuracy import ErrorBound, assess_accuracy
-from dmipy_sim.math.step_law import assess_step_certificate
+from dmipy_sim.math.step_law import assess_step_certificate, STEP_METRIC
 
 
 def arguments():
@@ -15,7 +15,9 @@ def arguments():
                               statistical=ErrorBound(.001, SIGNAL_METRIC, 1.0, "bounded signal estimator"),
                               numerical=terms, required=REQUIRED_TERMS)
     step = assess_step_certificate(dict(eps_measured=.0001, eps_se=.00001, floor=.0001,
-                                       eps_declared=.001, resolves=True))
+                                       eps_declared=.001, resolves=True, metric=STEP_METRIC,
+                                       octaves=[dict(f_lo_hz=5., f_hi_hz=1300., n_bins=260, eps=.0001,
+                                                    eps_se=.00001, floor=.0001)]))
     return dict(scope=scope, accuracy=accuracy, step=step,
                 read=dict(dt_f=.0001, n_read=2, constants=[1/12]*12),
                 band=dict(K=16))

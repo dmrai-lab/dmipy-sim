@@ -10,7 +10,7 @@ from dmipy_sim.engine.backends import parity_cases
 from dmipy_sim.fields.strand_field import StrandFieldBasis
 from dmipy_sim.engine.calibration import FieldCalibration, REQUIRED_TERMS, SIGNAL_METRIC
 from dmipy_sim.math.accuracy import ErrorBound, assess_accuracy
-from dmipy_sim.math.step_law import assess_step_certificate
+from dmipy_sim.math.step_law import assess_step_certificate, STEP_METRIC
 
 
 class TrackedBackend(CudaBackend):
@@ -68,7 +68,9 @@ def test_native_pilot_uses_native_reads_and_reuse_skips_all_pilot_work(backend, 
     accuracy = assess_accuracy(target=.1, metric=SIGNAL_METRIC, confidence=.99, statistical=term(),
                                numerical={name:term() for name in REQUIRED_TERMS}, required=REQUIRED_TERMS)
     step = assess_step_certificate(dict(eps_measured=.0001, eps_se=.00001, floor=.0001,
-                                       eps_declared=.001, resolves=True))
+                                       eps_declared=.001, resolves=True, metric=STEP_METRIC,
+                                       octaves=[dict(f_lo_hz=5., f_hi_hz=1300., n_bins=260, eps=.0001,
+                                                    eps_se=.00001, floor=.0001)]))
     calibration = FieldCalibration.from_walk(fresh, accuracy=accuracy, step=step)
     print(f"measured read charge={fresh.block['field_read']['term_pilot']:.6g}")
     with pytest.raises(ValueError, match="refine the walk before production"):
