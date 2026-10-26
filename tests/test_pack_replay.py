@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.replay import ReplayPack, compile_scheme, replay_signal
+from dmipy_sim.replay import ReplayPack
+from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.compression import occupancy_at
 from dmipy_sim import sequences as _seqmod

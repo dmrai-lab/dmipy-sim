@@ -234,8 +234,8 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     traced batch twin equals the looped twin. Needs ``jax_enable_x64`` for the device/host parity check below
     (the ``x64`` fixture scopes it to this test and restores the flag on teardown)."""
     import dmipy_sim as d
-    from dmipy_sim.replay import (compile_scheme, replay_signal, replay_coefficients, replay_signal_jax,
-                                  replay_batch_jax, surface_logweight)
+    from dmipy_replay.replay.replay import compile_scheme, replay_signal, replay_coefficients, surface_logweight
+    from dmipy_sim.replay import replay_signal_jax, replay_batch_jax
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.replay.compression import read_position_coeffs
     g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), surface_relaxivity_t2=0.0)

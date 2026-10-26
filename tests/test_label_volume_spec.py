@@ -28,7 +28,7 @@ def image(tmp_path):
 def test_label_volume_is_a_surface_kind_and_the_schema_knows_it():
     assert "label_volume" in SURFACE_KINDS
     schema = json.loads((__import__("pathlib").Path(
-        __import__("dmipy_sim.spec.substrate", fromlist=["SCHEMA_PATH"]).SCHEMA_PATH)).read_text())
+        __import__("dmipy_replay.spec.substrate", fromlist=["SCHEMA_PATH"]).SCHEMA_PATH)).read_text())
     surf = schema["properties"]["walls"]["items"]["properties"]["surface"]["properties"]
     assert "label_volume" in surf["kind"]["enum"]
     for key in ("voxel_size", "origin", "labels", "crop"):
