@@ -25,7 +25,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
-              window_T=None, raw_subset=0, envelope=None):
+              window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
@@ -56,6 +56,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     pilot unless given (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`: the read series' measured quadratic
     variation; a read is never finer than the walk's step or round), and ``K_c3`` the field channel's band (modes per window), derived on a
     pilot unless given (:func:`~dmipy_sim.replay.bank.derive_field_band`; a fill passes the certifying pack's).
+
+    ``field_calibration`` maps every diffusing seeded pool name to its validated
+    :class:`~dmipy_sim.engine.calibration.FieldCalibration`. Reuse checks physical, numerical,
+    query and backend scope before walking; records never cross pools. ``query_scope`` states
+    the scanner-capability/tissue identity, absolute complex-signal target and confidence.
+    ``calibration_floor`` sets the numerical field budget independently of walker count.
+    These options require adaptive strand fields; see ``docs/field-calibration.md``.
 
     ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
     producer (:func:`dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`): free steps away from every
@@ -105,6 +112,22 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
         if T_max is None:
             raise TypeError("walk_spec needs T_max (seconds)")
         kind = field_source_kind(spec)
+        if any(value is not None for value in (field_calibration, calibration_floor, query_scope)):
+            if not adaptive_steps or kind != "strands":
+                raise SpecError("scoped field calibration requires an adaptive strand-field walk")
+            from collections.abc import Mapping
+            from ..engine.calibration import FieldCalibration
+            if field_calibration is not None:
+                if not isinstance(field_calibration, Mapping):
+                    raise TypeError("walk_spec field_calibration maps pool names to FieldCalibration records")
+                expected = {p.name for p in spec.pools if p.id in spec.seeding.pools and p.D}
+                if set(field_calibration) != expected:
+                    raise ValueError(f"field calibration must cover exactly the diffusing seeded pools: {sorted(expected)}")
+                if not all(isinstance(c, FieldCalibration) for c in field_calibration.values()):
+                    raise TypeError("each pool needs a validated FieldCalibration")
+                bands = {c.record["band"]["K"] for c in field_calibration.values()}
+                if len(bands) != 1:
+                    raise ValueError("pool calibrations need a common field band; regenerate their evidence at that band")
         if kind == "strands" and not adaptive_steps:
             raise SpecError(f"spec {spec.id!r} has a strand field source, which the adaptive producer reads along the walk: "
                             "pass adaptive_steps=True (a fixed-step walk of a strand substrate carries no field)")
@@ -170,7 +193,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
         return _walk_bundle(spec, int(n_walkers), float(T_max), (None if block_h is None else float(block_h)), seed, n_probe, field_res,
                             field_budget=field_budget, scanner=scanner, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
-                            field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw)
+                            field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
+                            field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope)
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -694,6 +718,15 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(w0.diffusivity)
     block = dict(w0.block)
+    # A joined walk is not the first pool's calibration. Preserve each pool's
+    # provenance separately, including its own read and band measurements.
+    block.pop("calibration_scope", None)
+    calibration_pools = {
+        spec.pool(pid).name: dict(calibration_scope=w.block["calibration_scope"],
+                                  field_read=w.block["field_read"], field_band=w.block["field_band"])
+        for pid, w in parts if not isinstance(w, np.ndarray) and "calibration_scope" in w.block}
+    if calibration_pools:
+        block["calibration_pools"] = calibration_pools
     if sampled:
         # the coarsest pool's read; every pool's own record under ``pools``, and the largest trapezoid constant per
         # channel any pool's pilot charged
@@ -731,7 +764,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
 
 def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, field_budget=None, scanner=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False,
-                 field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None):
+                 field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None,
+                 field_calibration=None, calibration_floor=None, query_scope=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -828,7 +862,10 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
             w = simulate_trajectories_adaptive(n, float(pool.D), geo, T_max, block_h, seed=seed + 13 * pid, r0=r0, spec=spec,
                                                field_basis=sf, field_reuse_intervals=int(field_gather_every),
                                                spool=(pool.name if spool else None),
-                                               **({} if sf is None else field_kw), **{k: v for k, v in walk_kw.items() if k != "bounce_budget"})
+                                               **({} if sf is None else dict(field_kw,
+                                                    field_calibration=(None if field_calibration is None else field_calibration[pool.name]),
+                                                    calibration_floor=calibration_floor, query_scope=query_scope)),
+                                               **{k: v for k, v in walk_kw.items() if k != "bounce_budget"})
         else:
             w = simulate_trajectories(n, float(pool.D), geo, T_max=T_max, block_h=block_h, seed=seed + 13 * pid, r0=r0,
                                       field_basis=fg, **({} if fg is None else field_kw), **walk_kw)

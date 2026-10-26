@@ -441,3 +441,17 @@ def test_the_contact_container_is_held_to_the_contacts_own_floor():
     finally:
         bank._contact_floor = real
     assert bits(tight) > bits(p)
+
+
+def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor():
+    """A container's rounding is a random phase of rms eps per walker: its bias eps^2 / 2 is the numerical term (no
+    walker count removes it), its random part adds at most eps / sqrt(n_eff) to the standard error, beside the float
+    walkers' floor, never inside the numerical sum."""
+    import dmipy_sim as d
+    from dmipy_sim.replay.bank import build_replay_pack
+    w = d.simulate_trajectories(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())
+    f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05).meta["fidelity"]
+    eps = f["floor_quantisation"] * np.sqrt(2000.0)
+    assert 0.0 < eps < 0.1
+    assert f["err_quantisation"] == pytest.approx(eps ** 2 / 2, rel=1e-4)
+    assert f["floor_total_max"] == pytest.approx(f["floor_max"] + f["floor_quantisation"], rel=1e-4)

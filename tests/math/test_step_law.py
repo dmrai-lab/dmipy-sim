@@ -84,3 +84,39 @@ def test_the_curved_wall_term_is_first_order_and_the_same_for_every_matched_law(
     assert pair == pytest.approx(c_wall, abs=0.06)
     assert gauss == pytest.approx(pair, abs=0.03)
     assert fixed == pytest.approx(c_fixed, abs=0.1)
+
+
+@pytest.mark.parametrize("shape, diam, geometry, c_wall", [
+    ("cylinder", 10.4e-6, lambda: d.Cylinder(5.2e-6, (0.0, 0.0, 1.0)), sl.CYLINDER_WALL_COEFFICIENT),
+    ("cylinder", 2e-6, lambda: d.Cylinder(1e-6, (0.0, 0.0, 1.0)), sl.CYLINDER_WALL_COEFFICIENT),
+    ("sphere", 5.6e-6, lambda: d.Sphere(2.8e-6), sl.SPHERE_WALL_COEFFICIENT),
+])
+def test_the_rule_holds_the_sup_of_the_spectrum_error_over_the_band_and_the_rms_understates_it(shape, diam, geometry,
+                                                                                            c_wall):
+    """At the pore rule's step for 1e-3 the stepped walk's diffusion spectrum is within 1e-3 of the exact
+    propagator's at EVERY band of a 100 ms window up to 1.3 kHz, which is what bounds any in-band waveform's signal
+    error; the band's rms reads up to 1.7x below that sup, and each octave's rms reads the sup. The spectrum of a
+    stationary walk sampled at ``dt`` is ``sum_j w_j (1 - mu_j^2) / (1 - 2 mu_j cos(w dt) + mu_j^2)`` over the
+    one-step operator's eigenvalues ``mu_j`` with ``w_j`` the squared projections of ``x`` on them."""
+    sp = sl.SteppedPore(shape, diam, D0, geometry(), n_modes=(6, 6))
+    f = np.arange(1, 261) / 0.2
+    i1 = np.argsort(sp.lam)[1]
+    dt = sl.pore_step(sp.lam[i1], D0, 1e-3, c_wall)
+    th = 2 * np.pi * f * dt
+
+    def spectrum(mu, w):
+        mu = mu[:, None]
+        return (w[:, None] * (1 - mu ** 2) / (1 - 2 * mu * np.cos(th)[None, :] + mu ** 2)).sum(0)
+
+    v = sp.B @ sp.p
+    live = v ** 2 > 1e-8 * (v ** 2).sum()
+    exact = spectrum(np.exp(-sp.lam[live] * D0 * dt), v[live] ** 2)
+    T = sp.law_operator(dt, n_rad=60, n_th=16, n_a=32, n_b=64)
+    mu, V = np.linalg.eigh(0.5 * (T + T.T))
+    keep = (mu > 0) & (mu < 1 - 1e-12)
+    rel = spectrum(mu[keep], ((V.T @ v) ** 2)[keep]) / exact - 1
+    sup, rms = np.abs(rel).max(), np.sqrt(np.mean(rel ** 2))
+    octave = np.floor(np.log2(np.arange(1, f.size + 1))).astype(int)
+    oct_max = max(np.sqrt(np.mean(rel[octave == j] ** 2)) for j in np.unique(octave))
+    assert sup < 1e-3
+    assert rms < sup and oct_max == pytest.approx(sup, rel=0.05)
