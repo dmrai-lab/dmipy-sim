@@ -744,7 +744,7 @@ def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=None):
 def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
     """The split-half Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
     (:func:`coded_phases`): the walkers split into two fixed halves, no path decoded. Returns
-    ``floor_max``, ``noise_floor`` and the floor per family."""
+    ``floor_max``, ``noise_floor``, the floor per family and the walkers' effective count ``n_eff = (sum w)^2 / sum w^2``."""
     env = env or default_envelope()
     G, meta = acquisition_battery(int(n_t), float(dt), env)
     phi = coded_phases(C, dt, G, n_t, device=device)
@@ -758,7 +758,8 @@ def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto
     floor = np.abs(Sa - Sb) / 2.0
     fams = sorted({m["fam"] for m in meta})
     per_fam = {f: float(floor[[i for i, m in enumerate(meta) if m["fam"] == f]].max()) for f in fams}
-    return dict(floor_max=float(floor.max()), noise_floor=float(1 / np.sqrt(nw)), per_family=per_fam)
+    return dict(floor_max=float(floor.max()), noise_floor=float(1 / np.sqrt(nw)), per_family=per_fam,
+                n_eff=float(ww.sum() ** 2 / (ww ** 2).sum()))
 
 
 def bridge_basis(times, K, T):

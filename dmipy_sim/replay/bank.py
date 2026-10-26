@@ -1524,9 +1524,13 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     of ``(rho / D)^2 sum_k rel(m, h, omega_k) 2 QV_B / (pi k)^2`` per jump of a gate at the envelope's largest ``rho /
     D`` (an ungated contact is the exact endpoint) (:func:`compression.quadrature_rel`); the QUANTISATION of the
     stored containers, the random phase ``eps^2 = gamma^2 sum_k W_k^2 step_k^2 / 12`` of the positions' realised steps
-    and the field's (``field["quantisation_eps"]``, :func:`field_quantisation`: its own phase, added in variance) at
-    ``KAPPA eps`` floors and its bias ``eps^2 / 2``, in quadrature (:func:`compression.derive_container`'s budget,
-    read back per container; ``err_quantisation_field`` is the field's term alone); and the split-half floor ``floor`` (:func:`compression.measure_floor_coded`). The error per
+    and the field's (``field["quantisation_eps"]``, :func:`field_quantisation`: its own phase, added in variance), split
+    by what walkers do to it: its bias ``eps^2 / 2`` (the attenuation ``<e^{i delta}>``, which no walker count removes)
+    is the numerical term ``err_quantisation`` (``err_quantisation_field`` the field's alone), and its random part,
+    independent per walker, rides with the floor: the standard deviations add, so the quantised pack's standard error
+    is at most the walkers' plus ``eps / sqrt(n_eff)`` (``floor_quantisation``, ``floor_total_max`` the sum; measured on a
+    DiSCo-like K = 260 strands walk: the attenuation within 30 % of ``eps^2 / 2`` including the 3-bit bands' gain); and the
+    split-half floor ``floor`` of the float walkers (:func:`compression.measure_floor_coded`). The error per
     measurement is the sum of the three. ``rounding_rel`` (a float32 accumulation's measured relative rounding of
     its bands, ``block.k0_residual_relative``) adds the ROUNDING term of RPK.md 9.5.5: a relative error ``r`` on
     every band is a phase error correlated with the phase, ``|<e^{i phi (1 + r)}> - <e^{i phi}>| <= r sqrt(<phi^2>)
@@ -1553,8 +1557,10 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
         step2 = np.mean(np.asarray(scales, np.float64) ** 2, axis=0)                           # (3, K) over the walkers
         eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
     eps_f = 0.0 if field is None else float(field.get("quantisation_eps", 0.0))               # the field's, a phase of its own
-    quant_of = lambda e: np.sqrt((_cx.KAPPA * e * float(floor["floor_max"])) ** 2 + (e ** 2 / 2.0) ** 2)
-    quant = quant_of(np.sqrt(eps ** 2 + eps_f ** 2))                                          # independent phases add in variance
+    quant_of = lambda e: e ** 2 / 2.0                                                         # the bias; the random part is the floor's
+    eps_all = np.sqrt(eps ** 2 + eps_f ** 2)                                                  # independent phases add in variance
+    quant = quant_of(eps_all)
+    floor_q = eps_all / np.sqrt(float(floor.get("n_eff") or 1.0 / float(floor["noise_floor"]) ** 2))
     rounding = None if rounding_rel is None else float(rounding_rel) * float(np.sqrt(2.0 * _battery_b_max(env) * float(D)))
     field_err = 0.0 if field is None else float(field["quadrature"]) + float(field["field_read"])     # the field's terms (:func:`_field_terms`)
     err = trunc + quad + quant + quad_surface + (0.0 if rounding is None else rounding) + field_err
@@ -1570,6 +1576,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
                 **({} if field is None else dict(err_quadrature_field=float(field["quadrature"]), err_field_read=float(field["field_read"]),
                                                  err_quantisation_field=float(quant_of(eps_f)))),
                 err_max=float(err.max()), floor_max=float(floor["floor_max"]), noise_floor=float(floor["noise_floor"]),
+                floor_quantisation=float(floor_q.max()), floor_total_max=float(floor["floor_max"]) + float(floor_q.max()),
                 within_2x_floor=bool(err.max() <= 2.0 * float(floor["floor_max"])), per_family=per,
                 quadrature=dict(m=int(m), h=h, f_band_hz=float(K) / (2.0 * T), h_round=(None if h_round is None else float(h_round)),
                                 qv_positions_m2=(None if qv_pos is None else [float(x) for x in qv_pos]),
