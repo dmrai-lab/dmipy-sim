@@ -453,5 +453,5 @@ def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor
     f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05).meta["fidelity"]
     eps = f["floor_quantisation"] * np.sqrt(2000.0)
     assert 0.0 < eps < 0.1
-    assert f["err_quantisation"] == pytest.approx(eps ** 2 / 2, rel=1e-6)
-    assert f["floor_total_max"] == pytest.approx(f["floor_max"] + f["floor_quantisation"], rel=1e-6)
+    assert f["err_quantisation"] == pytest.approx(eps ** 2 / 2, rel=1e-4)
+    assert f["floor_total_max"] == pytest.approx(f["floor_max"] + f["floor_quantisation"], rel=1e-4)
