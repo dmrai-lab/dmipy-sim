@@ -295,9 +295,24 @@ class Consolidator:
         meta = json.loads(json.dumps(meta)); meta["fidelity"] = dict(meta.get("fidelity") or {}, per_voxel=pv); pk.meta = meta
         return meta
 
+    def _columns_of(self, k, x):
+        """The layout's columns of rows ``x`` of tensor ``k``: the float positions as their two ends and their band
+        groups, the float field modes as their mode groups, any other tensor as itself."""
+        if k in ("pos_x", "pos_y", "pos_z"):
+            lo, out = 0, {f"{k}_ends": x[:, :2]}
+            for g, hi in enumerate(self.band_groups):
+                out[f"{k}_b{g}"] = x[:, 2 + lo:2 + hi]; lo = hi
+            return out
+        if k == "susc_path_dct":
+            lo, out = 0, {}
+            for g, hi in enumerate(self.path_groups):
+                out[f"susc_path_m{g}"] = x[:, :, lo:hi]; lo = hi
+            return out
+        return {k: x}
+
     def add(self, name, pk):
         from ..replay.bank import _codec_signature, _agree, _spec_identity, _walk_identity, _envelope_identity, field_read_record, _MEASURED_CHANNEL_KEYS
-        from ..replay.compression import read_position_coeffs
+        from ..replay.compression import SLICE_BYTES, read_position_coeffs, slice_walkers, walker_rows
         from ..phantom.grid import Grid
         meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
         # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
@@ -331,21 +346,35 @@ class Consolidator:
         pool = np.asarray(pk.arrays[POOL_KEY]).astype(np.int64) if POOL_KEY in pk.arrays else np.zeros(n, np.int64)
         vox = np.ravel_multi_index(ijk.T, self.grid.shape)
         order = np.lexsort((pool, vox)); vox, pool = vox[order], pool[order]
-        # the band and mode variances the read predicates use: the walker average, the worst populated voxel
-        C = read_position_coeffs(pk.arrays, dtype=np.float64)[:, 2:, :]
-        C2 = C ** 2; s = C2.sum(axis=0)
+        # the band and mode variances the read predicates use: the walker average, the worst populated voxel, read a
+        # walker range at a time
+        vs = np.flatnonzero(np.r_[True, vox[1:] != vox[:-1]]); counts = np.diff(np.r_[vs, n])
+        cell = np.empty(n, np.int64); cell[order] = np.repeat(np.arange(len(vs)), counts)    # each walker's voxel
+        s, per_vox = None, None
+        step = slice_walkers(pk.arrays)
+        for a in range(0, n, step):
+            C2 = read_position_coeffs(walker_rows(pk.arrays, a, a + step), dtype=np.float64)[:, 2:, :] ** 2
+            s = C2.sum(axis=0) if s is None else s + C2.sum(axis=0)
+            o = np.argsort(cell[a:a + step], kind="stable"); c_ = cell[a:a + step][o]
+            first = np.flatnonzero(np.r_[True, c_[1:] != c_[:-1]])
+            if per_vox is None:
+                per_vox = np.zeros((len(vs),) + C2.shape[1:])
+            per_vox[c_[first]] += np.add.reduceat(C2[o], first, axis=0)
+            del C2
         self.acc["band_sq"] = s if self.acc["band_sq"] is None else self.acc["band_sq"] + s; self.acc["band_n"] += n
-        C2 = C2[order]; vs = np.flatnonzero(np.r_[True, vox[1:] != vox[:-1]]); counts = np.diff(np.r_[vs, n])
-        per_vox = np.add.reduceat(C2, vs, axis=0) / counts[:, None, None]
+        per_vox /= counts[:, None, None]
         if (counts >= 100).any():
             m = np.max(per_vox[counts >= 100], axis=0)
             self.acc["band_max"] = m if self.acc["band_max"] is None else np.maximum(self.acc["band_max"], m)
-        del C, C2
+        del per_vox
         from ..replay.bank import has_susc_path
         if has_susc_path(pk.arrays):
             from ..replay.bank import susc_path_coeffs
-            Cs, _ = susc_path_coeffs(pk.arrays, meta["compression"]["channels"]["susc_field_basis"])
-            s = (np.asarray(Cs, np.float64) ** 2).sum(axis=0)
+            pm = meta["compression"]["channels"]["susc_field_basis"]
+            s = None
+            for a in range(0, n, step):
+                s_ = (np.asarray(susc_path_coeffs(walker_rows(pk.arrays, a, a + step), pm)[0], np.float64) ** 2).sum(axis=0)
+                s = s_ if s is None else s + s_
             self.acc["path_sq"] = s if self.acc["path_sq"] is None else self.acc["path_sq"] + s; self.acc["path_n"] += n
         # the scale tables with their block axis; every row's block
         scale_keys = [k for k in pk.arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]
@@ -355,30 +384,24 @@ class Consolidator:
         for k in scale_keys:
             self.scales.setdefault(k, []).append(table(k))
         self.n_blocks += nb
-        # the per-row columns, appended in the row order
-        cols = {"band_block": blk.astype(np.uint16)}
-        for k, v in pk.arrays.items():
-            v = np.asarray(v)
-            if k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys:
-                continue
-            if v.shape[:1] != (n,):
+        # the per-row columns, appended in the row order a range of rows at a time
+        tensors = {k: v for k, v in pk.arrays.items() if not (k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys)}
+        for k, v in tensors.items():
+            if np.shape(v)[:1] != (n,):
                 raise ValueError(f"{name}: array {k!r} is not walker-leading")
-            if k in ("pos_x", "pos_y", "pos_z"):                # the float coefficients: the two ends, then the groups
-                full = v[order]; cols[f"{k}_ends"] = full[:, :2]; lo = 0
-                for g, hi in enumerate(self.band_groups):
-                    cols[f"{k}_b{g}"] = full[:, 2 + lo:2 + hi]; lo = hi
-            elif k == "susc_path_dct":
-                full = v[order]; lo = 0
-                for g, hi in enumerate(self.path_groups):
-                    cols[f"susc_path_m{g}"] = full[:, :, lo:hi]; lo = hi
-            else:
-                cols[k] = v[order]
-        if self.columns and sorted(cols) != sorted(self.columns):
-            raise ValueError(f"{name}: columns {sorted(cols)} differ from the first shard's {sorted(self.columns)}")
-        for k, v in cols.items():
-            if k not in self.columns:
-                self.columns[k] = Column(k, v.dtype, v.shape[1:], self.out, self.cap, lambda p, rec: self.up.put(p, rec["file"]))
-            self.columns[k].append(v)
+        probe = {c: x for k, v in tensors.items() for c, x in self._columns_of(k, np.asarray(v[:1])).items()}
+        names = sorted(["band_block", *probe])
+        if self.columns and names != sorted(self.columns):
+            raise ValueError(f"{name}: columns {names} differ from the first shard's {sorted(self.columns)}")
+        for c, x in [("band_block", blk[:1].astype(np.uint16)), *probe.items()]:
+            if c not in self.columns:
+                self.columns[c] = Column(c, x.dtype, x.shape[1:], self.out, self.cap, lambda p, rec: self.up.put(p, rec["file"]))
+        self.columns["band_block"].append(blk.astype(np.uint16))
+        for k, v in tensors.items():
+            rows = max(1, int(SLICE_BYTES // max(1, np.asarray(v[:1]).nbytes)))
+            for a in range(0, n, rows):
+                for c, x in self._columns_of(k, np.asarray(v[order[a:a + rows]])).items():
+                    self.columns[c].append(x)
         key = vox * 8 + pool
         starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]]); ends = np.r_[starts[1:], n]
         self.index += [(int(vox[s]), int(pool[s]), self.n_rows + int(s), self.n_rows + int(e)) for s, e in zip(starts, ends)]

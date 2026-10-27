@@ -292,15 +292,30 @@ def _census_rows(ijk_all, inside):
     return ijk, row
 
 
-def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chunk=200_000):
+def _walker_coeffs(pieces, bounds, start, stop):
+    """``(stop - start, K + 2, n_axes)`` float64: the coefficients of walkers ``start:stop`` of a walk held as
+    consecutive ``pieces`` (position tensors; ``bounds`` their cumulative walker counts), decoded from each piece it
+    spans."""
+    out = []
+    for p, lo, hi in zip(pieces, bounds[:-1], bounds[1:]):
+        if lo < stop and hi > start:
+            out.append(_cx.read_position_coeffs(_cx.walker_rows(p, max(start, lo) - lo, min(stop, hi) - lo), dtype=np.float64))
+    return out[0] if len(out) == 1 else np.concatenate(out)
+
+
+def voxel_floor_coded(positions, dt, n_t, grid, comp, env, *, w=None, device="auto", chunk=None):
     """The per-(voxel, pool) split-half floor of a walk meant to be partitioned, from its bridge coefficients over the
     window of ``n_t`` block ends ``dt`` apart (:func:`voxel_fidelity` without the dense oracle: the same binning by start position -- the exact first
     endpoint -- and pool (``comp`` a track, its first sample, or one label per walker), the same fixed split, the
-    phases by :func:`compression.coded_phases`). Returns ``(ijk, pools, n, floor, err)`` with ``err`` all ``nan``:
-    the codec error is the certifying pack's, or the walk-free certificate's."""
-    C = np.asarray(C); n_w = C.shape[0]
+    phases by :func:`compression.coded_phases`). ``positions`` are the walk's position tensors (a pack's arrays), or a
+    list of them for a walk held in consecutive pieces (a merge's shards, in walker order); ``chunk`` walkers are
+    decoded at a time (default :func:`~dmipy_sim.replay.compression.slice_walkers`). Returns ``(ijk, pools, n, floor, err)`` with ``err`` all ``nan``: the codec error is the
+    certifying pack's, or the walk-free certificate's."""
+    pieces = list(positions) if isinstance(positions, (list, tuple)) else [positions]
+    bounds = np.cumsum([0] + [_cx.position_shape(p)[0] for p in pieces]); n_w = int(bounds[-1])
+    chunk = _cx.slice_walkers(pieces[0]) if chunk is None else int(chunk)
     G, _ = _cx.acquisition_battery(int(n_t), float(dt), env); n_m = G.shape[0]
-    ijk_all, inside = grid.bin(np.asarray(C[:, 0, :], np.float64))
+    ijk_all, inside = grid.bin(np.concatenate([_cx.position_starts(p) for p in pieces]))
     pid = None if comp is None else (np.asarray(comp) if np.ndim(comp) == 1 else np.asarray(comp)[:, 0]).astype(np.int64)
     pools = sorted(set(np.unique(pid).tolist())) if pid is not None else [0]
     pid = pid if pid is not None else np.zeros(n_w, np.int64)
@@ -315,7 +330,8 @@ def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chu
         idx = np.arange(i, min(i + chunk, n_w)); idx = idx[row[idx] >= 0]
         if not len(idx):
             continue
-        e = np.exp(1j * _cx.coded_phases(C[idx], dt, G, n_t, device=device)) * ww[idx, None]
+        C = _walker_coeffs(pieces, bounds, i, min(i + chunk, n_w))
+        e = np.exp(1j * _cx.coded_phases(C if len(idx) == len(C) else C[idx - i], dt, G, n_t, device=device)) * ww[idx, None]
         r, c, h = row[idx], col[idx], half[idx]
         np.add.at(S_a, (r[h], c[h]), e[h]); np.add.at(S_b, (r[~h], c[~h]), e[~h])
         np.add.at(W_a, (r[h], c[h]), ww[idx][h]); np.add.at(W_b, (r[~h], c[~h]), ww[idx][~h])
@@ -324,6 +340,13 @@ def voxel_floor_coded(C, dt, n_t, grid, comp, env, *, w=None, device="auto", chu
         floor = 0.5 * np.abs(S_a / W_a[..., None] - S_b / W_b[..., None]).max(-1)
     floor[(W_a == 0) | (W_b == 0)] = np.nan
     return ijk, pools, N, floor, np.full_like(floor, np.nan)
+
+
+def _merged_start_pool(pks):
+    """The pool each walker of shards ``pks`` (in walker order) starts in, ``(n, 1)``; ``None`` without an occupancy
+    channel."""
+    cols = [_start_pool(pk.arrays, pk.meta) for pk in pks]
+    return None if any(c is None for c in cols) else np.concatenate(cols)
 
 
 def _start_pool(arrays, meta):
@@ -361,8 +384,7 @@ def voxel_certificate(pack, grid, *, envelope=None, device="auto"):
     carries."""
     arrays, meta = pack.arrays, pack.meta
     w = None if "spin_weights" not in arrays else np.asarray(arrays["spin_weights"], np.float64)
-    C = _cx.read_position_coeffs(arrays, dtype=np.float64)
-    ijk, pools, n, floor, err = voxel_floor_coded(C, float(pack.dt), int(pack.n_t), grid, _start_pool(arrays, meta),
+    ijk, pools, n, floor, err = voxel_floor_coded(arrays, float(pack.dt), int(pack.n_t), grid, _start_pool(arrays, meta),
                                                   envelope or _cx.default_envelope(), w=w, device=device)
     cert = np.stack([n.astype(np.float64), floor, err], axis=-1)
     return (dict(voxel_ijk=ijk.astype(np.int32), voxel_certificate=cert.astype(np.float32)),
@@ -1116,7 +1138,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     an identity key: the merged pack states the coarsest and the term charged at it (:func:`charge_field_read`).
     Shards that carry no per-voxel certificate (a walker's shards) keep their walkers' ``voxel_ijk`` ``(n, 3)``, by
     which a recertifying merge renormalises their weights to the union. ``packs`` are :class:`ReplayPack` objects
-    or paths."""
+    or paths. The merged walk is never decoded whole: the floors are read a walker range at a time from the shards'
+    own tensors. With ``out_path`` the merged tensors are streamed from the shards' to the file
+    (:func:`write_rpk`) and the pack returned is mapped from it (:func:`read_rpk`); without, they are concatenated in
+    memory."""
     with Run("merge_packs", params=dict(id=id, n_packs=len(packs), overlap=overlap, out_path=out_path)) as run:
         from ..phantom.grid import Grid
         if overlap not in ("refuse", "recertify"):
@@ -1165,10 +1190,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                         raise ValueError(f"the shards differ in the field grid {k!r}")
                 arrays[k] = np.asarray(pks[0].arrays[k])
                 continue
-            parts = [np.asarray(pk.arrays[k]) for pk in pks]
+            parts = [pk.arrays[k] for pk in pks]                              # the shards' pieces, concatenated as written
             base = k.split("/")[-1]
             if base.endswith(("_events_t", "_events_label")):                 # an events stream (RPK.md 9.5.7): the shards'
-                arrays[k] = np.concatenate(parts)                             # records follow each other in walker order
+                arrays[k] = parts                                             # records follow each other in walker order
                 continue
             if base.endswith("_events_offsets"):                              # the offsets re-based onto the merged stream
                 offs, base_off = [parts[0]], int(parts[0][-1])
@@ -1176,9 +1201,9 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     offs.append(np.asarray(a, np.int64)[1:] + base_off); base_off += int(a[-1])
                 arrays[k] = np.concatenate(offs).astype(np.int64)
                 continue
-            if not all(a.shape[0] == m and a.shape[1:] == parts[0].shape[1:] for a, m in zip(parts, n)):
+            if not all(np.ndim(a) >= 1 and np.shape(a)[0] == m and np.shape(a)[1:] == np.shape(parts[0])[1:] for a, m in zip(parts, n)):
                 raise ValueError(f"array {k!r} is not walker-leading in every shard; it cannot be concatenated")
-            arrays[k] = np.concatenate(parts)
+            arrays[k] = parts
         fid = dict(pks[0].meta.get("fidelity") or {})
         for key, agg in (("err_max", max), ("floor_max", max), ("noise_floor", max), ("err_surface", max), ("floor_surface", max)):
             vals = [(pk.meta.get("fidelity") or {}).get(key) for pk in pks]
@@ -1210,16 +1235,15 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                                  "shard, unless the merge recertifies (overlap='recertify')")
             if overlap == "recertify":                                        # the union's floors from the merged coefficients
                 grid = Grid.from_meta(pv0)
-                comp = _start_pool(arrays, pks[0].meta)                           # the pool at the walk's start
-                C = _cx.read_position_coeffs(arrays, dtype=np.float64)
+                comp = _merged_start_pool(pks)                                    # the pool at the walk's start
                 _w = None
                 if "spin_weights" in arrays:                                  # the union's weights, not the shards'
-                    _vox, _in = grid.bin(C[:, 0, :])
+                    _vox, _in = grid.bin(np.concatenate([_cx.position_starts(pk.arrays) for pk in pks]))
                     _key = np.where(_in, np.ravel_multi_index(tuple(np.clip(_vox, 0, np.asarray(grid.shape) - 1).T), tuple(grid.shape)), -1)
                     _pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(len(_key), np.int64)
-                    _w = union_weights(np.asarray(arrays["spin_weights"], np.float64), np.repeat(np.arange(len(pks)), n), _key, _pid)
+                    _w = union_weights(np.concatenate(arrays["spin_weights"]).astype(np.float64), np.repeat(np.arange(len(pks)), n), _key, _pid)
                     arrays["spin_weights"] = _w.astype(np.float32)
-                _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded(C, float(pks[0].dt), int(pks[0].n_t),
+                _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded([pk.arrays for pk in pks], float(pks[0].dt), int(pks[0].n_t),
                                                                      grid, comp, envelope or _cx.default_envelope(), w=_w, device=device)
                 if [int(p_) for p_ in _pools_r] != [int(p_) for p_ in pools]:
                     raise ValueError(f"the merged walkers' pools {list(_pools_r)} differ from the shards' certificate pools {pools}")
@@ -1238,10 +1262,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         elif overlap == "recertify" and "spin_weights" in arrays and "voxel_ijk" in arrays:
             # shards without a certificate (a writer that measures no floor) carry their walkers' own voxels: the union's
             # weights need no grid, a voxel is a row of ``voxel_ijk``
-            comp = _start_pool(arrays, pks[0].meta)
-            _, _key = np.unique(np.asarray(arrays["voxel_ijk"], np.int64), axis=0, return_inverse=True)
+            comp = _merged_start_pool(pks)
+            _, _key = np.unique(np.concatenate(arrays["voxel_ijk"]).astype(np.int64), axis=0, return_inverse=True)
             _pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(len(_key), np.int64)
-            arrays["spin_weights"] = union_weights(np.asarray(arrays["spin_weights"], np.float64), np.repeat(np.arange(len(pks)), n),
+            arrays["spin_weights"] = union_weights(np.concatenate(arrays["spin_weights"]).astype(np.float64), np.repeat(np.arange(len(pks)), n),
                                                    _key.reshape(-1), _pid).astype(np.float32)
         n_all = int(sum(n))
         comp_meta = dict(pks[0].meta["compression"])
@@ -1267,12 +1291,12 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                         dict(id=pk.meta.get("id"), n_walkers=int(m), **({} if r is None else dict(field_read_interval=r["interval"])))
                         for pk, m, r in zip(pks, n, reads)]))
         charge_field_read(meta, reads)                                   # each shard read the field at its own interval; the pack states the coarsest
-        out = ReplayPack(arrays, meta)
-        out.susceptibility_field                                         # the merged pack holds the equivalence
-        if out_path is not None:
-            write_rpk(out_path, arrays, meta)
-            run.artifact(out_path)
-        return out
+        ReplayPack(arrays, meta).susceptibility_field                    # the merged pack holds the equivalence
+        if out_path is None:
+            return ReplayPack({k: np.concatenate(v) if isinstance(v, list) else v for k, v in arrays.items()}, meta)
+        write_rpk(out_path, arrays, meta)
+        run.artifact(out_path)
+        return read_rpk(out_path)
 
 
 WINDOW_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
@@ -1428,14 +1452,15 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
     """
     per_walker, fixed, whole = 0, 0, []
     for k, v in arrays.items():
-        a = np.asarray(v)
-        if a.ndim >= 1 and a.shape[0] == n_walkers:
-            per_walker += int(a.nbytes // max(n_walkers, 1))
+        ps = [np.asarray(x) for x in v] if isinstance(v, list) else [np.asarray(v)]   # a merge's tensor: its shards' pieces
+        nbytes = sum(int(x.nbytes) for x in ps)
+        if all(x.ndim >= 1 for x in ps) and sum(int(x.shape[0]) for x in ps) == n_walkers:
+            per_walker += int(nbytes // max(n_walkers, 1))
         else:
             # Not walker-leading -- e.g. a run-length channel whose runs vary per walker. Row n of such
             # an array is not walker n, so it cannot be prefix-sliced and must be read whole. Counting
             # it as fixed overhead keeps a small tier's quoted size honest instead of understating it.
-            fixed += int(a.nbytes); whole.append(k)
+            fixed += nbytes; whole.append(k)
     tiers = []
     if floor_max > 0:
         for eps in (1e-2, 3e-3, 1e-3):
@@ -2294,7 +2319,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
             raise TypeError("voxel_grid must be a dmipy_sim.phantom.Grid attached to the substrate")
         _w = None if weights is None else np.asarray(weights, np.float64)
-        _ijk, _pools, _n, _floor, _err = voxel_floor_coded(Cq, h, n_t, voxel_grid, comp, env, w=_w, device=device)
+        _ijk, _pools, _n, _floor, _err = voxel_floor_coded(pos_arrays, h, n_t, voxel_grid, comp, env, w=_w, device=device)
         arrays["voxel_ijk"] = _ijk.astype(np.int32)
         arrays["voxel_certificate"] = np.stack([_n.astype(np.float32), _floor.astype(np.float32), _err.astype(np.float32)], axis=-1)
         fid = dict(fid, per_voxel=per_voxel_summary(voxel_grid.to_meta(), _pools, np.stack([_n, _floor, _err], axis=-1)))

@@ -425,7 +425,19 @@ def quantisation_term(pack, partition, b_max):
     return float(b_max) * max(lam, 0.0)
 
 
-def tier_quantisation_terms(pack, gate_seq, env):
+def _walker_max(arrays, f, slice_bytes=None):
+    """The largest value of ``f`` over every walker of ``arrays``: ``f`` maps a walker range's tensors
+    (:func:`~dmipy_sim.replay.compression.walker_rows`) to its elementwise largest value over those walkers, read a
+    range of :func:`~dmipy_sim.replay.compression.slice_walkers` walkers at a time."""
+    from .compression import position_shape, slice_walkers, walker_rows
+    n, step, out = position_shape(arrays)[0], slice_walkers(arrays, slice_bytes), None
+    for a in range(0, n, step):
+        v = f(walker_rows(arrays, a, a + step))
+        out = v if out is None else np.maximum(out, v)
+    return out
+
+
+def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
     """``(contact, field)``: the pack's own quantisation of the gated contact and of the gated field channels at their
     worst over the envelope, rad^2 of phase (the contact's relative weight error counted as a phase, as its width is).
     Each contraction is linear in the stored bands / modes, so a step ``s_k`` (the largest over the scale tables) is a
@@ -433,7 +445,8 @@ def tier_quantisation_terms(pack, gate_seq, env):
     gated bridge's weights (:func:`~dmipy_sim.replay.replay.surface_logweight` of unit bands), each field component's
     ``B0 chi_max alpha_c gamma g_k`` with ``g_k`` the gate's cosine projection (``alpha`` 2 on ``iso_local``, which the
     layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
-    walker holds no step (its scale is a placeholder). Zero for a float container."""
+    walker holds no step (its scale is a placeholder). Zero for a float container. The live bands and modes are read a
+    walker range at a time (``slice_bytes``, :func:`~dmipy_sim.replay.compression.slice_walkers`)."""
     from ..constants import GAMMA
     from . import compression as cx
     from .bank import susc_path_coeffs
@@ -449,7 +462,7 @@ def tier_quantisation_terms(pack, gate_seq, env):
         if cm and "blt_band_scale" in win.arrays:
             sc = np.asarray(win.arrays["blt_band_scale"], np.float64)
             step2 = (sc.reshape(-1, sc.shape[-1]) ** 2).max(axis=0)
-            live = np.abs(cx.bridge_bands(win.arrays, cm)).max(axis=0)[:step2.shape[0]] > 0
+            live = _walker_max(win.arrays, lambda a: np.abs(cx.bridge_bands(a, cm)).max(axis=0), slice_bytes)[:step2.shape[0]] > 0
             step2 = np.where(live, step2, 0.0)
             K = step2.shape[0]
             a_, m_ = cx.encode_boundary_bands(np.zeros(K, np.float32), np.zeros(K, np.float32), np.eye(K), T=T_w,
@@ -460,8 +473,8 @@ def tier_quantisation_terms(pack, gate_seq, env):
         if pm and "susc_path_scale" in win.arrays:
             S = np.asarray(win.arrays["susc_path_scale"], np.float64)
             step2 = (S.reshape((-1,) + S.shape[-2:]) ** 2).max(axis=0)          # (stored components, K)
-            C, full = susc_path_coeffs(win.arrays, pm)
-            amax = np.abs(C).max(axis=0)                                        # (full components, K)
+            full = susc_path_coeffs(cx.walker_rows(win.arrays, 0, 1), pm)[1]
+            amax = _walker_max(win.arrays, lambda a: np.abs(susc_path_coeffs(a, pm)[0]).max(axis=0), slice_bytes)   # (full components, K)
             stored = list(pm["channels"])
             live = np.stack([amax[full.index(nm), :step2.shape[1]] > 0 for nm in stored])
             step2 = np.where(live, step2, 0.0)
@@ -571,9 +584,10 @@ def _floor_target(meta, given):
     raise ValueError("the pack declares no floor target (fidelity.target_floor) and no per-voxel certificate: give floor_target=")
 
 
-def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude):
+def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude, ref=None):
     """One sequence group's rows and record from ``view`` under the gate ``gate_seq``: the pool, the gated contact and
-    field channels (with ``tiers``) and the background vector (with ``background``)."""
+    field channels (with ``tiers``) and the background vector (with ``background``). ``ref`` is the record of the
+    walkers before ``view``'s (a walker range's): their exposure times are the ones every walker's must equal."""
     from .replay import _band_phase, _path_field_channels
     from .study import Acquisition
     from ..acquisition.epg import pathway_weight
@@ -588,9 +602,10 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude):
                 raise ValueError("a walker was in more than one pool before the echo; a layout stores one pool per walker "
                                  "and needs a walk that does not cross")
             for tau, key in ((e2.max(1), "tau_t2"), (e1.max(1), "tau_t1")):
-                if tau.size and not np.allclose(tau, tau[0], atol=1e-9):
+                t0 = tau[0] if ref is None or ref.get(key) is None else ref[key]
+                if tau.size and not np.allclose(tau, t0, atol=1e-9):
                     raise ValueError(f"the {key} exposure differs between walkers of one gate; a non-crossing walk has one")
-                rec[key] = float(tau[0]) if tau.size else 0.0
+                rec[key] = float(t0) if tau.size else 0.0
             rows["pool"] = np.argmax(e2, axis=1).astype(np.uint8)
             rec["pools"] = int(e2.shape[1])
         else:
@@ -615,6 +630,47 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude):
     return rows, rec
 
 
+def _join_group_rec(rec, more):
+    """``rec`` (a group's record over the walker ranges read so far) joined with ``more`` (the next range's): the pool
+    count and the field channels' largest values the larger of the two."""
+    if more.get("pools") is not None:
+        rec["pools"] = max(int(rec["pools"]), int(more["pools"]))
+    if isinstance(more.get("field"), dict):
+        rec["field"]["amax"] = np.maximum(rec["field"]["amax"], more["field"]["amax"]).tolist()
+
+
+class _Spill:
+    """Float32 columns written a walker range at a time to unsorted files in ``out_dir`` (``.<name>.unsorted``), then
+    each gathered into ``<name>.npy`` in a row order a range at a time: no column is held whole in memory."""
+
+    def __init__(self, out_dir):
+        self.dir, self.cols = out_dir, {}
+
+    def add(self, name, a):
+        a = np.ascontiguousarray(a, np.float32)
+        path, shape, rows = self.cols.get(name) or (os.path.join(self.dir, f".{name}.unsorted"), a.shape[1:], 0)
+        with open(path, "ab" if rows else "wb") as f:
+            f.write(a.tobytes())
+        self.cols[name] = (path, shape, rows + int(a.shape[0]))
+
+    def save(self, order):
+        from .compression import SLICE_BYTES
+        for name, (path, shape, rows) in self.cols.items():
+            src = np.memmap(path, np.float32, "r", shape=(rows,) + shape)
+            dst = np.lib.format.open_memmap(os.path.join(self.dir, f"{name}.npy"), "w+", np.float32, (rows,) + shape)
+            step = max(1, SLICE_BYTES // max(1, 4 * int(np.prod(shape, dtype=np.int64))))
+            for i in range(0, rows, step):
+                dst[i:i + step] = src[order[i:i + step]]
+            dst.flush()
+            del src, dst
+
+    def discard(self):
+        for path, _, _ in self.cols.values():
+            if os.path.exists(path):
+                os.remove(path)
+        self.cols = {}
+
+
 def _background_sequence(seq, amplitude=1.0):
     """The magnet's own gradient at ``amplitude`` along x, y and z as a three-row sequence on ``seq``'s grid, RF
     schedule and readout: a constant gradient through the pulses and the dead times
@@ -628,7 +684,7 @@ def _background_sequence(seq, amplitude=1.0):
 
 
 def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_target=None, g_max=None, tiers=False,
-                 background=False, background_amplitude=BACKGROUND_AMPLITUDE, weights=None):
+                 background=False, background_amplitude=BACKGROUND_AMPLITUDE, weights=None, slice_bytes=None):
     """One block's segment rows written to ``out_dir``: per partition (``{name: sequence}`` or :class:`Partition` objects)
     its segment vectors, per sequence group (the partitions sharing a grid, an RF schedule and a readout) with
     ``tiers`` the pool, gated contact and field channels, with ``background`` the background vector, the weights and
@@ -639,8 +695,15 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     ``source`` is the walk (:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`), read in its float coefficients, with
     ``pack`` the pack built from it (its sibling; refused when its walkers' starts are not the walk's), or a quantised
     :class:`~dmipy_sim.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
-    its median per-voxel floor; the envelope the pack's (``g_max`` when it names no scanner class). Returns the record."""
+    its median per-voxel floor; the envelope the pack's (``g_max`` when it names no scanner class). Returns the record.
+
+    The source is read a walker range at a time (:meth:`~dmipy_sim.replay.replay.ReplayPack.walkers`, ranges of
+    :func:`~dmipy_sim.replay.compression.slice_walkers` at ``slice_bytes``), every column spilled to ``out_dir`` in
+    walker order and gathered into (voxel, pool) order by one sort over all rows at the end; a record's largest
+    values are the largest over the ranges. The rows and the record do not depend on the ranges: memory is bounded
+    by one range, not by the walker count."""
     from ..coefficient_walk import CoefficientWalk
+    from .compression import slice_walkers
     from ..phantom.grid import Grid
     from .replay import ReplayPack
     parts = _partitions(partitions)
@@ -678,7 +741,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     if not inside.all():
         raise ValueError(f"{int((~inside).sum())} walkers start outside the grid: a row is placed in its start voxel")
     vox = np.ravel_multi_index(ijk.T, tuple(grid.shape)).astype(np.int64)
-    cols, part_rec, group_of = {}, {}, {}
+    part_rec, group_of = {}, {}
     groups = collections.OrderedDict()
     for name, p in parts.items():
         if p.template is None:
@@ -692,36 +755,59 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
             raise ValueError(f"partition {name!r} has no refocused encoding within the envelope (fewer than two segments "
                              "carry a phase)")
         _check_band(view, p, env)
-        m = segment_vectors(view, p.segments)
         v_src = 0.0 if kind == "walk" else quantisation_term(view, p, env["b_max"])
-        cols[f"p_{name}"] = m
         part_rec[name] = dict(p.to_meta(), group=group_of[name], reach=reach.tolist(), quantisation=float(v_src),
-                              amax=np.abs(m).max(axis=0).tolist(), column=f"p_{name}.npy")
-    group_rec = {}
+                              amax=None, column=f"p_{name}.npy")
+    # the rows a walker range at a time, each column spilled in walker order; the records' largest values over them
+    step = slice_walkers(view.arrays, slice_bytes)
+    cols, amax, group_rec, top = _Spill(out_dir), {}, {}, {}
     pool = np.zeros(n, np.uint8)
-    for key, (g, seq, names) in groups.items():
-        rows, rec = _group_tiers(view, _gate_sequence(seq), tiers=tiers, background=background,
-                                 background_amplitude=background_amplitude)
-        q_c, q_f = (0.0, 0.0) if kind == "walk" or not tiers else tier_quantisation_terms(view, _gate_sequence(seq), env)
-        rec["quantisation"] = dict(contact=float(q_c), field=float(q_f))
-        rec.update(partitions=names, rf=seq.rf.to_dicts(), dt=float(seq.dt), n_t=int(seq.n_t),
-                   readout=[int(i) for i in seq.readout])
-        if "pool" in rows:
-            pool = rows["pool"]
-        if "contact" in rows:
-            cols[f"contact_{g}"] = rows["contact"]; rec["contact_amax"] = float(np.abs(rows["contact"]).max(initial=0.0))
-        if "field" in rows:
-            cols[f"field_{g}"] = rows["field"]
-        if "background" in rows:
-            cols[f"bg_{g}"] = rows["background"]; rec["background_amax"] = np.abs(rows["background"]).max(axis=0).tolist()
-        group_rec[g] = rec
-    order = np.lexsort((pool, vox))
-    np.save(os.path.join(out_dir, "voxel.npy"), vox[order])
-    np.save(os.path.join(out_dir, "w.npy"), np.asarray(view.spin_weights, np.float32)[order])
-    if tiers:
-        np.save(os.path.join(out_dir, "pool.npy"), pool[order])
-    for name, a in cols.items():
-        np.save(os.path.join(out_dir, f"{name}.npy"), np.asarray(a, np.float32)[order])
+    try:
+        for a in range(0, n, step):
+            sl = view.walkers(a, a + step)
+            for name, p in parts.items():
+                m = segment_vectors(sl, p.segments)
+                amax[name] = np.maximum(amax[name], np.abs(m).max(axis=0)) if name in amax else np.abs(m).max(axis=0)
+                cols.add(f"p_{name}", m)
+            for key, (g, seq, names) in groups.items():
+                rows, rec = _group_tiers(sl, _gate_sequence(seq), tiers=tiers, background=background,
+                                         background_amplitude=background_amplitude, ref=group_rec.get(g))
+                if g not in group_rec:
+                    group_rec[g] = rec
+                else:
+                    _join_group_rec(group_rec[g], rec)
+                if "pool" in rows:
+                    pool[a:a + len(rows["pool"])] = rows["pool"]
+                if "contact" in rows:
+                    cols.add(f"contact_{g}", rows["contact"])
+                    top[g, "contact"] = max(top.get((g, "contact"), 0.0), float(np.abs(rows["contact"]).max(initial=0.0)))
+                if "field" in rows:
+                    cols.add(f"field_{g}", rows["field"])
+                if "background" in rows:
+                    cols.add(f"bg_{g}", rows["background"])
+                    b_ = np.abs(rows["background"]).max(axis=0)
+                    top[g, "background"] = np.maximum(top[g, "background"], b_) if (g, "background") in top else b_
+        for name in parts:
+            part_rec[name]["amax"] = amax[name].tolist()
+        for key, (g, seq, names) in groups.items():
+            rec = group_rec[g]
+            q_c, q_f = ((0.0, 0.0) if kind == "walk" or not tiers else
+                        tier_quantisation_terms(view, _gate_sequence(seq), env, slice_bytes=slice_bytes))
+            rec["quantisation"] = dict(contact=float(q_c), field=float(q_f))
+            rec.update(partitions=names, rf=seq.rf.to_dicts(), dt=float(seq.dt), n_t=int(seq.n_t),
+                       readout=[int(i) for i in seq.readout])
+            if (g, "contact") in top:
+                rec["contact_amax"] = top[g, "contact"]
+            if (g, "background") in top:
+                rec["background_amax"] = top[g, "background"].tolist()
+        order = np.lexsort((pool, vox))
+        np.save(os.path.join(out_dir, "voxel.npy"), vox[order])
+        np.save(os.path.join(out_dir, "w.npy"), np.asarray(view.spin_weights, np.float32)[order])
+        if tiers:
+            np.save(os.path.join(out_dir, "pool.npy"), pool[order])
+        cols.save(order)
+    finally:
+        cols.discard()
     fid = meta.get("fidelity") or {}
     certificate = dict(terms=fid.get("terms"), source=kind,
                        pack_quantisation=(None if kind == "walk" else
