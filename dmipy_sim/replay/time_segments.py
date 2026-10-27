@@ -618,7 +618,7 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude, ref
             keep = [i for i, nm in enumerate(names) if nm != "iso_P_zz"]       # the basis's components (RPK.md 5.3)
             Psi = np.asarray(Psi, np.float64)[:, keep]
             rows["field"] = Psi
-            rec["field"] = dict(channels=[names[i] for i in keep], amax=np.abs(Psi).max(axis=0).tolist())
+            rec["field"] = dict(channels=[names[i] for i in keep], amax=None)              # the stored rows' (segment_rows)
         rec["D_walk"] = prim.D_walk
     if background:
         P = view._prepare(_background_sequence(gate_seq), tissue=None, scanner=None, orientation=None, compartment=None)
@@ -647,13 +647,18 @@ def _positions_decoded(pack):
     return ReplayPack(arrays, pack.meta, source=pack.source)
 
 
+def _top(top, key, rows):
+    """``top[key]`` the elementwise largest ``|value|`` of the stored (float32) ``rows`` and of the rows before them:
+    a record's largest value is that of what the columns hold, the same bits whichever walker ranges they came in."""
+    t = np.abs(rows).max(axis=0, initial=0.0)
+    top[key] = np.maximum(top[key], t) if key in top else t
+
+
 def _join_group_rec(rec, more):
     """``rec`` (a group's record over the walker ranges read so far) joined with ``more`` (the next range's): the pool
-    count and the field channels' largest values the larger of the two."""
+    count the larger of the two."""
     if more.get("pools") is not None:
         rec["pools"] = max(int(rec["pools"]), int(more["pools"]))
-    if isinstance(more.get("field"), dict):
-        rec["field"]["amax"] = np.maximum(rec["field"]["amax"], more["field"]["amax"]).tolist()
 
 
 class _Spill:
@@ -664,11 +669,13 @@ class _Spill:
         self.dir, self.cols = out_dir, {}
 
     def add(self, name, a):
+        """Append rows ``a`` to column ``name`` as float32; returns them as stored."""
         a = np.ascontiguousarray(a, np.float32)
         path, shape, rows = self.cols.get(name) or (os.path.join(self.dir, f".{name}.unsorted"), a.shape[1:], 0)
         with open(path, "ab" if rows else "wb") as f:
             f.write(a.tobytes())
         self.cols[name] = (path, shape, rows + int(a.shape[0]))
+        return a
 
     def save(self, order):
         from .compression import SLICE_BYTES
@@ -717,7 +724,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     The source is read a walker range at a time (:meth:`~dmipy_sim.replay.replay.ReplayPack.walkers`, ranges of
     :func:`~dmipy_sim.replay.compression.slice_walkers` at ``slice_bytes``), every column spilled to ``out_dir`` in
     walker order and gathered into (voxel, pool) order by one sort over all rows at the end; a record's largest
-    values are the largest over the ranges. The rows and the record do not depend on the ranges: memory is bounded
+    values are those of the stored float32 rows, the largest over the ranges. The rows and the record do not depend on the ranges: memory is bounded
     by one range, not by the walker count."""
     from ..coefficient_walk import CoefficientWalk
     from .compression import slice_walkers
@@ -777,15 +784,13 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
                               amax=None, column=f"p_{name}.npy")
     # the rows a walker range at a time, each column spilled in walker order; the records' largest values over them
     step = slice_walkers(view.arrays, slice_bytes)
-    cols, amax, group_rec, top = _Spill(out_dir), {}, {}, {}
+    cols, group_rec, top = _Spill(out_dir), {}, {}
     pool = np.zeros(n, np.uint8)
     try:
         for a in range(0, n, step):
             sl = _positions_decoded(view.walkers(a, a + step))
             for name, p in parts.items():
-                m = segment_vectors(sl, p.segments)
-                amax[name] = np.maximum(amax[name], np.abs(m).max(axis=0)) if name in amax else np.abs(m).max(axis=0)
-                cols.add(f"p_{name}", m)
+                _top(top, ("p", name), cols.add(f"p_{name}", segment_vectors(sl, p.segments)))
             for key, (g, seq, names) in groups.items():
                 rows, rec = _group_tiers(sl, _gate_sequence(seq), tiers=tiers, background=background,
                                          background_amplitude=background_amplitude, ref=group_rec.get(g))
@@ -795,17 +800,11 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
                     _join_group_rec(group_rec[g], rec)
                 if "pool" in rows:
                     pool[a:a + len(rows["pool"])] = rows["pool"]
-                if "contact" in rows:
-                    cols.add(f"contact_{g}", rows["contact"])
-                    top[g, "contact"] = max(top.get((g, "contact"), 0.0), float(np.abs(rows["contact"]).max(initial=0.0)))
-                if "field" in rows:
-                    cols.add(f"field_{g}", rows["field"])
-                if "background" in rows:
-                    cols.add(f"bg_{g}", rows["background"])
-                    b_ = np.abs(rows["background"]).max(axis=0)
-                    top[g, "background"] = np.maximum(top[g, "background"], b_) if (g, "background") in top else b_
+                for kind, col in (("contact", "contact"), ("field", "field"), ("background", "bg")):
+                    if kind in rows:
+                        _top(top, (g, kind), cols.add(f"{col}_{g}", rows[kind]))
         for name in parts:
-            part_rec[name]["amax"] = amax[name].tolist()
+            part_rec[name]["amax"] = top["p", name].tolist()
         for key, (g, seq, names) in groups.items():
             rec = group_rec[g]
             q_c, q_f = ((0.0, 0.0) if kind == "walk" or not tiers else
@@ -813,8 +812,10 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
             rec["quantisation"] = dict(contact=float(q_c), field=float(q_f))
             rec.update(partitions=names, rf=seq.rf.to_dicts(), dt=float(seq.dt), n_t=int(seq.n_t),
                        readout=[int(i) for i in seq.readout])
+            if (g, "field") in top:
+                rec["field"]["amax"] = top[g, "field"].tolist()
             if (g, "contact") in top:
-                rec["contact_amax"] = top[g, "contact"]
+                rec["contact_amax"] = float(top[g, "contact"].max(initial=0.0))
             if (g, "background") in top:
                 rec["background_amax"] = top[g, "background"].tolist()
         order = np.lexsort((pool, vox))

@@ -148,8 +148,8 @@ def test_the_rows_do_not_depend_on_the_walker_ranges_they_are_read_in(myelin, so
     """``segment_rows`` read a few walkers at a time (``slice_bytes`` for about 90 of the 1200, so the pools' walkers
     fall in different ranges) writes every file byte for byte as the rows read in one range -- the segment vectors,
     the pool, the gated contact, the field channels, the background, the weights and the voxels, in (voxel, pool)
-    order -- and the same ``rows.json`` but its creation time: the partitions' and groups' largest values, the pool
-    count and the pack's quantisation terms. From the pack (the quantised float32 production container) and from the
+    order -- and the same ``rows.json`` but its creation time: the partitions' and groups' largest values (those of
+    the stored float32 rows), the pool count and the pack's quantisation terms. From the pack (the quantised float32 production container) and from the
     walk (its float coefficients, decoded in float64)."""
     from dmipy_sim.replay.compression import position_shape, slice_walkers
     M = myelin
@@ -172,6 +172,12 @@ def test_the_rows_do_not_depend_on_the_walker_ranges_they_are_read_in(myelin, so
     for r in (a, b):
         r.pop("created")
     assert a == b
+    top = lambda f: np.abs(np.load(tmp_path / "ranges" / f)).max(axis=0).tolist()     # the records are the stored rows'
+    for name, p in a["partitions"].items():
+        assert p["amax"] == top(p["column"])
+    for gname, g in a["groups"].items():
+        assert g["background_amax"] == top(f"bg_{gname}.npy") and g["field"]["amax"] == top(f"field_{gname}.npy")
+        assert g["contact_amax"] == top(f"contact_{gname}.npy")
     g = next(iter(a["groups"].values()))
     assert g["pools"] >= 2 and g["contact"] and g["field"]["channels"] and g["background_amax"]
     if source == "pack":
