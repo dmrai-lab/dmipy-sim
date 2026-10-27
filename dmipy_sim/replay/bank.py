@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 import numpy as np
 
 from ..run import Run, _code
-from ..engine.accumulate import FIELD_RULE_CHI, FIELD_RULE_B0, field_read_term, field_read_B0_chi_max, field_rule_scale
+from ..engine.accumulate import field_read_term, field_read_limit_B0_chi, field_rule_scale
 
 from . import compression as _cx
 from ..acquisition.rf import RFEvent
@@ -215,9 +215,24 @@ def frame_from_bundles(axes, *, primary=0, weights=None, tol=1e-3):
 
 # --------------------------------------------------------------- fidelity helpers
 def _envelope_summary(env):
+    """``replay_envelope.acquisition`` of a pack certified under ``env`` (:func:`compression.certified_envelope`):
+    the largest b, the OGSE periods and the field strengths ``B0_list`` the certificate was read at."""
     return dict(b_max=float(max(env["bvals"])), ogse_periods=list(env.get("ogse_periods", [])),
-                B0_list=list(env.get("B0_list", [])),
+                B0_list=_cx.envelope_B0_list(env, empty=True),
                 note="temporal band set by max OGSE period / min delta")
+
+
+def _envelope_tissue(env, D, *, contact, field):
+    """``replay_envelope.tissue`` of a pack certified under ``env``: the largest ``rho2 / D`` its contact tier serves
+    (``rho2_over_D_max``, over the walk's ``D``) when it stores the contact, and the susceptibility scale
+    ``chi_max`` its field tier is certified at when it stores the field (RPK.md 6.8, 8.7). A replay beyond either is
+    refused."""
+    out = {}
+    if contact:
+        out["rho2_over_D_max"] = _cx.envelope_rho2_max(env) / float(D)
+    if field:
+        out["chi_max"] = _cx.envelope_chi_max(env)
+    return out
 
 
 #: rho2 / D values a window's contact envelope is read on: log-spaced from 1 m^-1 to the battery's largest
@@ -542,7 +557,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     series = np.asarray(series, np.float64)
     n_w, n_t, n_ch = series.shape
     names = list(names)
-    env = env or _cx.default_envelope()
+    env = _cx.certified_envelope(env)
     depth = int(env.get("max_refocus_pulses") or 0)
     min_K = 2 * depth
     rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t] + ([min(min_K, n_t)] if min_K else [])))
@@ -553,9 +568,9 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     coeffs = np.asarray(arrays_top["susc_path_dct"], np.float64) / np.sqrt(float(h))    # the DCT-II of the means: the series' own grid
     has_aniso = any(n.startswith("aniso_G") for n in meta_top["channels"])
     w = np.ones(n_w) if w is None else np.asarray(w, np.float64)
-    chi_i = float(chi) if chi is not None else float(FIELD_RULE_CHI)
+    chi_i = float(chi) if chi is not None else _cx.envelope_chi_max(env)
     ca = 0.1 * chi_i if has_aniso else 0.0
-    B0s = list(env.get("B0_list") or ([float(B0)] if B0 is not None else [3.0, 7.0]))
+    B0s = [float(B0)] if B0 is not None else _cx.envelope_B0_list(env)
     perm = np.random.RandomState(0).permutation(n_w); A, Bh = perm[:n_w // 2], perm[n_w // 2:]
     settings = [(b0, th) for b0 in B0s for th in (env.get("theta_deg") or [0, 90])]
     raw = {}
@@ -1063,7 +1078,7 @@ def charge_field_read(meta, records):
     term charged at it on the merged read series: ``walk_params.qv.field_increments`` the walker-weighted mean of the
     shards', ``fidelity.terms.field_read`` half of ``v_read`` at the coarsest interval
     (:func:`~dmipy_sim.engine.accumulate.field_read_term` at the envelope's ``B0`` and ``chi``, the largest trapezoid
-    constant per channel any shard charged), the envelope's ``B0_chi_max_T`` at it, and ``err_max`` covers the terms.
+    constant per channel any shard charged), the envelope's ``read_limit_B0_chi_T`` at it, and ``err_max`` covers the terms.
     The shards' own intervals are the ``provenance`` record's. ``meta`` is changed in place; its nested dicts are
     replaced, never edited."""
     if all(r is None for r in records):
@@ -1086,7 +1101,7 @@ def charge_field_read(meta, records):
     meta["walk_params"] = wp
     if coarse["envelope"] is not None:
         meta["replay_envelope"] = dict(meta["replay_envelope"], field_read=dict(
-            coarse["envelope"], B0_chi_max_T=_finite_or_none(field_read_B0_chi_max(coarse["interval"], qv, at.get("floor") or 1e-3, consts))))
+            coarse["envelope"], read_limit_B0_chi_T=_finite_or_none(field_read_limit_B0_chi(coarse["interval"], qv, at.get("floor") or 1e-3, consts))))
     comp = dict(meta["compression"]); chans = dict(comp["channels"]); pm = dict(chans["susc_field_basis"])
     for key, val in (("read", coarse["read"]), ("read_interval", coarse["channel_interval"])):
         if val is not None:
@@ -1800,19 +1815,24 @@ def path_field_integral(arrays, meta, waveform, T, *, t0=None, n_w=None):
 
 
 def _field_scale(env, spec=None):
-    """``(chi_iso, chi_aniso)`` the field certificates are measured at: the spec's nominal of its magnetic pools, else the
-    certificate's defaults (:data:`~dmipy_sim.engine.accumulate.FIELD_RULE_CHI`, a tenth of it anisotropic)."""
-    chi_i, chi_a = None, None
+    """``(chi_iso, chi_aniso)`` the field certificates are measured at: the envelope's certified susceptibility scale
+    ``chi_max`` (:func:`compression.certified_envelope` on ``spec``) split between the two as the spec's magnetic
+    pools split their nominal (the largest ``|chi_iso|`` and ``|chi_aniso|``; a tenth of ``chi_iso`` anisotropic where
+    the spec states none), so that ``chi_iso + chi_aniso`` is the one certified ``chi``. A spec whose magnetic pools
+    state no value is measured at ``chi_iso = chi_max`` with a tenth of it anisotropic, a margin above it."""
+    env = _cx.certified_envelope(env, spec)
+    chi = float(env["chi_max"])
+    chi_i, chi_a = 0.0, 0.0
     if spec is not None:
         for p in getattr(spec, "field_source_pools", []):
             s = p.susceptibility
-            if s.chi_iso:
-                chi_i = max(chi_i or 0.0, abs(float(s.chi_iso)))
-            if s.chi_aniso:
-                chi_a = max(chi_a or 0.0, abs(float(s.chi_aniso)))
-    chi_i = float(chi_i) if chi_i else float(FIELD_RULE_CHI)
-    chi_a = float(chi_a) if chi_a else 0.1 * chi_i
-    return chi_i, chi_a
+            chi_i = max(chi_i, abs(float(s.chi_iso or 0.0)))
+            chi_a = max(chi_a, abs(float(s.chi_aniso or 0.0)))
+    if chi_i <= 0.0 and chi_a <= 0.0:
+        return chi, 0.1 * chi
+    chi_a = chi_a if chi_a > 0.0 else 0.1 * chi_i
+    scale = chi / (chi_i + chi_a)
+    return chi_i * scale, chi_a * scale
 
 
 def read_interval_means(reads):
@@ -1857,7 +1877,7 @@ def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h=None, edges=None, 
     perm = np.random.RandomState(0).permutation(n_w); A, B = perm[:n_w // 2], perm[n_w // 2:]
     err = floor = 0.0
     from ..fields.hollow_cylinder import contract
-    for B0 in (env.get("B0_list") or [3.0, 7.0]):
+    for B0 in _cx.envelope_B0_list(env):
         for th in (env.get("theta_deg") or [0, 90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
             f_raw = contract(series_raw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
@@ -1908,7 +1928,7 @@ def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi
     perm = np.random.RandomState(0).permutation(k); A, B = perm[:k // 2], perm[k // 2:]
     err = floor = 0.0
     from ..fields.hollow_cylinder import contract
-    B0s = (env.get("B0_list") or [7.0])[:1]          # one field strength: the tier scales linearly in B0
+    B0s = [_cx.envelope_B0_max(env)]          # one field strength, the certified largest: the tier scales linearly in B0
     for B0 in B0s:
         for th in (env.get("theta_deg") or [90]):
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
@@ -1935,7 +1955,7 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
     the rows; no raw path is read."""
     n = int(np.asarray(endpoint).shape[0])
     w = np.ones(n) if w is None else np.asarray(w, np.float64)
-    rhos = [float(r) for r in (env.get("rho2_list") or [1e-4])]
+    rhos = _cx.envelope_rho2_list(env)
     n_s = int(round(float(T) / float(h))) + 1
     bands = np.asarray(bands, np.float64)
     K_s = _cx.c2_bands_K(arrays, meta)
@@ -1981,7 +2001,7 @@ def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     raw = np.asarray(raw_boundary, np.float64)                                   # (n_raw, n_blocks + 1): block j's contact at sample j
     n_raw, n_s = raw.shape
     w = np.ones(n_raw) if w is None else np.asarray(w, np.float64)
-    rhos = [float(r) for r in (env.get("rho2_list") or [1e-4])]
+    rhos = _cx.envelope_rho2_list(env)
     perm = np.random.RandomState(0).permutation(n_raw); A, B = perm[:n_raw // 2], perm[n_raw // 2:]
     wmean = lambda x, idx: float(np.sum(w[idx] * x[idx]) / np.sum(w[idx]))
     err = floor = 0.0
@@ -1996,10 +2016,11 @@ def _surface_fidelity(raw_boundary, arrays, meta, env, *, h, D, w=None):
     return dict(err=float(err), floor=float(floor), n_walkers=int(n_raw), rho2_list=rhos)
 
 
-def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
+def _field_terms(T, h, m, K_c3, qv_field, env, read):
     """The field channel's bounded terms (RPK.md 9.5.5): ``quadrature.field``, half of ``(gamma B0 chi)^2 sum_k g_k^2
     rel(m, omega_k h) QV_f / T`` over the battery's gates (:func:`_battery_gates`, their cosine projections on the
-    window) at the envelope's largest ``B0`` and the certificate's chi, and ``field_read``, half of ``v_read = (gamma
+    window) at the envelope's one certified ``B0 chi`` (its largest ``B0`` and its ``chi_max``,
+    :func:`compression.envelope_B0_chi_max`), and ``field_read``, half of ``v_read = (gamma
     B0 chi)^2 dt_f^2 (sum_c sqrt(kappa_c QV_c))^2`` (:func:`~dmipy_sim.engine.accumulate.field_read_term`) from ``read`` =
     ``{dt_f, qv_increments, constants, B0, chi}``: the walk's read interval, its read series' quadratic variation per
     channel (the walkers' mean), the trapezoid's constants and the envelope's ``B0`` and the rule's ``chi``
@@ -2010,13 +2031,13 @@ def _field_terms(T, h, m, K_c3, qv_field, env, chi, read):
     g = _cx.cosine_projection(gates[:, :, None], float(h), float(T), int(K_c3))[:, :, 0]     # (n_g, K_c3)
     k = np.arange(int(K_c3))
     rel = _cx.quadrature_rel(m, h, np.pi * k / float(T))
-    B0 = float(max(env.get("B0_list") or [FIELD_RULE_B0]))
+    B0, chi = _cx.envelope_B0_max(env), _cx.envelope_chi_max(env)
     qv = float(np.sum(qv_field))                                                           # over the components: a bound
     v = (GAMMA * B0 * float(chi)) ** 2 * (g ** 2 * rel[None, :]).sum(axis=1) * qv / float(T)
     term = field_read_term(read["dt_f"], read["qv_increments"], read["B0"], read["chi"], read.get("constants"))
     return dict(quadrature=float(0.5 * v.max()), field_read=float(term), B0=B0, chi=float(chi),
                 read=dict(B0=float(read["B0"]), chi=float(read["chi"]), interval_s=float(read["dt_f"]),
-                          B0_chi_max_T=_finite_or_none(field_read_B0_chi_max(read["dt_f"], read["qv_increments"], read.get("floor", 1e-3),
+                          read_limit_B0_chi_T=_finite_or_none(field_read_limit_B0_chi(read["dt_f"], read["qv_increments"], read.get("floor", 1e-3),
                                                                              read.get("constants")))))
 
 
@@ -2047,6 +2068,11 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     contact and field channels: ``"derived"`` (the default) is :data:`compression.BAND_CONTAINER` for the first two and
     :class:`DerivedFieldContainer` for the field, each derived per pack against the pack's floor; ``None`` the float
     container; an explicit ``((upto, bits), ...)`` or :func:`compression.band_curve` list is taken as given.
+
+    ``envelope`` is what the certificate is read over (:func:`compression.certified_envelope`: the default's battery
+    when None, and the default's ``rho2_list`` when it states none): the acquisition battery, and the surface
+    relaxivities ``rho2_list`` (m/s) the contact tier is certified at. A pack with a contact channel states the
+    largest as ``replay_envelope.tissue.rho2_over_D_max`` (over the walk's ``D``), and a replay beyond it is refused.
 
     ``fidelity`` is what the pack certifies (RPK.md 9.4 rule 4): ``"derived"`` (the default), the walk-free
     certificate (:func:`_derived_certificate`: the truncation from the free band variances, the block quadrature
@@ -2175,7 +2201,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     K = int(K)
     if K > cw.K:
         raise ValueError(f"the walk accumulated {cw.K} bands per window; a pack of {K} needs a walk with K >= {K}")
-    env = envelope or _cx.default_envelope()
+    env = _cx.certified_envelope(envelope, spec)
     C = np.asarray(cw.position_coeffs, np.float64)[:, 0, :K + 2, :]
     run.phase("floor")
     floor = _cx.measure_floor_coded(C, h, n_t, env, w=weights, device=device)
@@ -2217,7 +2243,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                                          device=device)
         _pm["band"] = dict(band) if band else dict(rule="given", K=K_f)
         _pm["read"] = {k: v for k, v in (cw.block.get("field_read") or {}).items()}
-        field_terms = _field_terms(T, h, cw.m, K_f, np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0), env, chi_scale[0],
+        field_terms = _field_terms(T, h, cw.m, K_f, np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0), env,
                                    dict(dt_f=float(cw.field_read_interval), B0=B0_r, chi=chi_r, floor=float(fr.get("floor", 1e-3)),
                                         qv_increments=np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0),
                                         constants=fr.get("constants")))
@@ -2225,7 +2251,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     fid = _derived_certificate(scales, T=T, h=h, K=K, m=cw.m, D=D, env=env, floor=floor,
                                qv_pos=(None if cw.qv_positions is None
                                        else np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)),
-                               qv_contact=qv_b, rho_over_D=(None if qv_b is None else max(env.get("rho2_list") or [1e-4]) / D),
+                               qv_contact=qv_b, rho_over_D=(None if qv_b is None else _cx.envelope_rho2_max(env) / D),
                                rounding_rel=(float(cw.block.get("k0_residual_relative") or 0.0)
                                              if cw.block.get("precision", "float32") == "float32" else None),
                                field=field_terms, h_round=cw.block.get("round_s"))
@@ -2306,7 +2332,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
             # held to the contact's own floor (the surface reading's split-half spread) where it is the tighter
             bc = bc.bound(floor=min(floor_t, _contact_floor(np.asarray(cw.boundary_endpoint)[:, 0], np.asarray(cw.boundary_bands)[:, 0, :Kb],
                                                             env, T=T, h=h, D=D, w=weights)),
-                          dt=h, env=env, weight=max(env.get("rho2_list") or [1e-4]) / D)
+                          dt=h, env=env, weight=_cx.envelope_rho2_max(env) / D)
         a_, cm_ = _cx.encode_boundary_bands(np.zeros(cw.n_walkers, np.float32), np.asarray(cw.boundary_endpoint)[:, 0],
                                             np.asarray(cw.boundary_bands)[:, 0, :Kb], T=T, dtype=blt_dtype, container=bc)
         arrays.update(a_); chan_meta["boundary_local_time"] = cm_; channels["rho2"] = True
@@ -2370,12 +2396,15 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     replay_env = dict(gradient=True, bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"],
                       field=channels["susceptibility"], magnetization_transfer=channels["mt"], diffusivity_fixed=True,
                       acquisition=env_acq)
+    replay_env["tissue"] = _envelope_tissue(env, D, contact=channels["rho2"], field=channels["susceptibility"])
+    if not replay_env["tissue"]:
+        del replay_env["tissue"]
     if channels["susceptibility"]:
         fr = cw.block.get("field_read") or {}
         # RPK.md 9.4 rule 5: a read at the step narrows the pack's reach, stated in the envelope, never hidden in fidelity
         rd = field_terms["read"]
         replay_env["field_read"] = dict(interval_s=float(cw.field_read_interval), at_step=bool(fr.get("at_step", False)),
-                                        B0_chi_max_T=rd["B0_chi_max_T"],
+                                        read_limit_B0_chi_T=rd["read_limit_B0_chi_T"],
                                         term_at=dict(B0=rd["B0"], chi=rd["chi"], floor=fr.get("floor")))
     meta = dict(
         rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
@@ -2506,7 +2535,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         raise ValueError(f"the window [{t0:.6g}, {t0 + T_new:.6g}] s is not within the pack's walk of {T:.6g} s")
     n_new = max(int(round(T_new / h)), 2)
     T_new = float(T_new)
-    env = envelope or _cx.default_envelope()
+    env = _cx.certified_envelope(envelope, pack.substrate)
     ch = dict(pack.meta.get("compression", {}).get("channels", {}) or {})
     wp = pack.meta["walk_params"]
     K_new = int(K) if K is not None else max(2, int(np.ceil(pack.K * T_new / T)))
@@ -2545,7 +2574,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     qv = wp.get("qv") or {}
     qv_pos = None if qv.get("positions") is None else np.asarray(qv["positions"], np.float64) * (T_new / T)
     qv_b = None if qv.get("local_time") is None else float(qv["local_time"]) * (T_new / T)
-    rho = max(env.get("rho2_list") or [1e-4]) / D
+    rho = _cx.envelope_rho2_max(env) / D
     arrays = dict(pos_arrays)
     chan_meta = {}
     channels = dict(gradient=True, susceptibility=False, T1T2=False, rho2=False, mt=False)
@@ -2602,7 +2631,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         g_chi = cosine_projection(gates[:, :-1, None], h_new, T_new, Kf_new)[:, :, 0]
         Cq_new, _ = susc_path_coeffs(a_, pm_new)
         e_rep = 0.0
-        for B0 in (env.get("B0_list") or [3.0, 7.0]):
+        for B0 in _cx.envelope_B0_list(env):
             for th in (env.get("theta_deg") or [0, 90]):
                 tt = np.deg2rad(float(th)); d = [np.sin(tt), 0.0, np.cos(tt)]
                 f_par = susc_path_field(np.einsum("gk,wck->wcg", g_par, Cf), d, B0=B0, chi_iso=chi_i, chi_aniso=(ca if gm.get("has_aniso") else 0.0), has_aniso=bool(gm.get("has_aniso")))
@@ -2617,7 +2646,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
                              "of a window is charged on; re-walk it with a conformant producer")
         read = pm.get("read") or {}
         at = ((pack.meta.get("replay_envelope") or {}).get("field_read") or {}).get("term_at") or {}
-        field_terms = _field_terms(T_new, h_new, int(blk["m"]), Kf_new, qv_f if qv_f is not None else np.zeros(1), env, chi_i,
+        field_terms = _field_terms(T_new, h_new, int(blk["m"]), Kf_new, qv_f if qv_f is not None else np.zeros(1), env,
                                    dict(dt_f=float(wp["field_read_interval"]), B0=B0_r, chi=chi_r, floor=float(at.get("floor") or 1e-3),
                                         qv_increments=np.asarray(qv["field_increments"], np.float64) * (T_new / T),
                                         constants=read.get("constants")))
@@ -2663,7 +2692,9 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     if pm is not None:
         env_out["acquisition"]["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
         env_out["acquisition"]["max_refocusing_pulses"] = int(chan_meta["susc_field_basis"]["max_refocus_pulses"])
-    env_out.pop("tissue", None)                                       # the contact envelope is restated on the new window
+    env_out["tissue"] = _envelope_tissue(env, D, contact=channels["rho2"], field=channels["susceptibility"])
+    if not env_out["tissue"]:
+        del env_out["tissue"]
     wp_new = dict(wp, T_max=T_new, windows=dict(n=1, T=T_new, walks=[dict(first=0, last=0, seed=wp.get("seed"))]),
                   block=dict(blk, n_blocks=n_new), qv={k: v for k, v in dict(positions=(None if qv_pos is None else [float(x) for x in qv_pos]),
                                                                               local_time=qv_b, field=(None if pm is None or qv.get("field") is None else [float(x) for x in np.asarray(qv["field"]) * (T_new / T)]),

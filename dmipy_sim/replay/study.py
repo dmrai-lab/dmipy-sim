@@ -144,7 +144,8 @@ class Primitives:
     susceptibility_field: str                                  # the pack's field: "present" or "absent"
     pathway: float = 1.0
     by_pool: object = field(repr=False, default=None)          # the pack's resolver of a per-pool value
-    rho2_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded          # the pack's resolver of a per-pool value
+    rho2_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded
+    field_envelope: Optional[dict] = None                       # the field tier's {B0_max, B0_chi_max} (ReplayPack.field_envelope), None unbounded
     contact_t1: Optional[np.ndarray] = None                    # the SAME channel, gated by chi_parallel = active - chi (dmipy-sim#574)
 
     def __post_init__(self):
@@ -214,7 +215,7 @@ class Primitives:
         """``(B0 chi_iso, B0 chi_aniso)`` for a pair as :func:`~dmipy_sim.replay.replay.field_term` resolves it on the
         pack's declared field, ``(0, 0)`` when that term is zero."""
         from .replay import field_term
-        f = field_term(self.susceptibility_field, tissue, scanner)
+        f = field_term(self.susceptibility_field, tissue, scanner, self.field_envelope)
         if not f.active:
             return 0.0, 0.0
         if self.field_iso is None:
@@ -317,7 +318,7 @@ def walker_primitives(pack, acquisition):
     from ..acquisition.epg import pathway_weight
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
                       contact=contact, contact_t1=contact_t1, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
-                      rho2_over_D_max=pack.rho2_over_D_max, voxel=P["voxel"], by_pool=pack._by_pool,
+                      rho2_over_D_max=pack.rho2_over_D_max, field_envelope=pack.field_envelope, voxel=P["voxel"], by_pool=pack._by_pool,
                       susceptibility_field=pack.susceptibility_field)
 
 

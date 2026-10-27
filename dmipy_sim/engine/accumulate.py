@@ -28,7 +28,8 @@ envelope's ``B0`` and ``chi`` (:func:`field_read_rule`; the criterion of every o
 pools, read every ``n`` steps (:func:`field_read_steps`; never finer than the step, never coarser than the block) and
 at every block end, a block's last interval the shorter one, so that the block's moments are exact at its ends; a
 read the floor would want finer than the step is the step, and the envelope states the ``B0 chi`` product under which
-the term stays below the floor (:func:`field_read_B0_chi_max`, RPK.md 9.4 rule 5).
+the term stays below the floor (:func:`field_read_limit_B0_chi`, RPK.md 9.4 rule 5): the read's own limit, which is not the
+envelope's certified ``B0 chi``.
 """
 import math
 from typing import NamedTuple
@@ -58,9 +59,9 @@ STORAGE_BAND_HZ = 1280.0
 #: ``build_to_floor``'s ``sigma_star``): ``v_read / 2 <= FIELD_READ_FLOOR`` at the envelope's ``B0`` and ``chi``
 FIELD_READ_FLOOR = 1e-3
 
-#: the field strength (T) and susceptibility scale the read rule, the field band and the field's certificate terms are
-#: derived at when the envelope and the spec state none: the certificate's own defaults (``B0_list`` [3, 7]; myelin's
-#: isotropic chi)
+#: the library's default field strength (T), the largest of :func:`~dmipy_sim.replay.compression.default_envelope`'s
+#: ``B0_list``, and susceptibility scale (myelin's isotropic chi) for a substrate whose spec states no magnetic pool:
+#: what :func:`~dmipy_sim.replay.compression.certified_envelope` writes into an envelope that states none
 FIELD_RULE_B0 = 7.0
 FIELD_RULE_CHI = 1.06e-6
 
@@ -70,18 +71,24 @@ PILOT_WALKERS = 1024
 EVENTS_MARGIN = (1.5, 8)      # capacity = ceil(1.5 x the pilot's largest count) + 8
 
 
-def field_rule_scale(spec, env=None):
-    """``(B0, chi)`` the field read's rule, the field band's pilot and the field's certificate terms are derived at:
-    the envelope's largest field strength (:data:`FIELD_RULE_B0` when it states none) and the spec's nominal
-    susceptibility scale of its magnetic pools (``|chi_iso| + |chi_aniso|``, :data:`FIELD_RULE_CHI` when the spec
-    states none)."""
-    B0 = float(max((env or {}).get("B0_list") or [FIELD_RULE_B0]))
+def spec_chi_scale(spec):
+    """The susceptibility scale of a substrate: the largest ``|chi_iso| + |chi_aniso|`` over the spec's magnetic
+    pools, :data:`FIELD_RULE_CHI` when it states none (the default ``chi_max`` an envelope is certified at)."""
     vals = []
     for p in (getattr(spec, "field_source_pools", None) or []) if spec is not None else []:
         s = p.susceptibility
         vals.append(abs(float(s.chi_iso or 0.0)) + abs(float(s.chi_aniso or 0.0)))
-    chi = max(vals) if vals and max(vals) > 0.0 else FIELD_RULE_CHI
-    return B0, float(chi)
+    return float(max(vals)) if vals and max(vals) > 0.0 else float(FIELD_RULE_CHI)
+
+
+def field_rule_scale(spec, env=None):
+    """``(B0, chi)`` the field read's rule, the field band's pilot and the field's certificate terms are derived at:
+    the certified envelope's largest field strength and its ``chi_max``
+    (:func:`~dmipy_sim.replay.compression.certified_envelope` of ``env`` on ``spec``), whose product is the one
+    certified field scale."""
+    from ..replay.compression import certified_envelope, envelope_B0_max
+    e = certified_envelope(env, spec)
+    return envelope_B0_max(e), float(e["chi_max"])
 
 
 def pilot_walkers(n_walkers, n_pilot=None):
@@ -176,7 +183,7 @@ def field_read_rule(qv_increments, B0, chi, floor=FIELD_READ_FLOOR, constants=No
     return math.sqrt(2.0 * float(floor)) / denom
 
 
-def field_read_B0_chi_max(dt_f, qv_increments, floor=FIELD_READ_FLOOR, constants=None):
+def field_read_limit_B0_chi(dt_f, qv_increments, floor=FIELD_READ_FLOOR, constants=None):
     """The product ``B0 chi`` (T) under which the term at ``dt_f`` stays below ``floor``: what a pack whose read is
     the step states in its envelope (RPK.md 9.4 rule 5)."""
     base = (float(dt_f)) ** 2 * _read_weight(qv_increments, constants)
@@ -344,9 +351,9 @@ def calibrate_field_reads(reads, *, labels, pool_names, step_s, rounds_per_block
                                          reference="every-round trapezoids", confidence=confidence, z=z,
                                          comparisons=comparisons, selected_rung=int(selected),
                                          finest_read=(selected == 1)))
-    limit = min(field_read_B0_chi_max(selected*step_s, value, floor, bounds[selected])
+    limit = min(field_read_limit_B0_chi(selected*step_s, value, floor, bounds[selected])
                 for value in qv_at[selected].values())
-    output["B0_chi_max_T_pilot"] = float(limit) if np.isfinite(limit) else None
+    output["read_limit_B0_chi_T_pilot"] = float(limit) if np.isfinite(limit) else None
     output["candidate_terms"] = {str(d):float(terms[d]) if d in terms else None for d in sorted(bounds)}
     for label, indices in pools.items():
         own = output["pools"][pool_names.get(label, str(label))]
@@ -435,7 +442,7 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
         out["measured_constants"] = {str(d): [None if not np.isfinite(x) else float(x) for x in k] for d, k in measured.items()}
     if weight is not None:
         out["term_pilot"] = float(field_read_term(dt_f, weight, B0, chi, constants))
-        out["B0_chi_max_T_pilot"] = finite(field_read_B0_chi_max(dt_f, weight, floor, constants))
+        out["read_limit_B0_chi_T_pilot"] = finite(field_read_limit_B0_chi(dt_f, weight, floor, constants))
     return out
 
 

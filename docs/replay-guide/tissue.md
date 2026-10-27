@@ -12,7 +12,7 @@ print(wm)
 | field | unit | what it switches on | needs |
 |---|---|---|---|
 | `T2`, `T1` | s, per pool | the bulk relaxation tier: a weight per walker from its transverse and longitudinal exposure in each pool | the occupancy channel (C1) |
-| `rho2` | m/s | the surface tier: a weight from the walker's gated wall contact, at the rate `rho2 / D` | the contact channel (C2) |
+| `rho2` | m/s | the surface tier: a weight from the walker's gated wall contact, at the rate `rho2 / D` | the contact channel (C2), and `rho2 / D` within the pack's contact envelope |
 | `D` | m²/s | the diffusivity the pack is READ at: the walk's own when None, else its view at `D / D_walk` with every permeability on the same line ([views](views.md)) | `D >= D_walk` |
 | `chi_iso`, `chi_aniso` | dimensionless | the field tier: a phase from the field source's susceptibility, at the scanner's field | a pack whose field is present (C3) and a [scanner](scanner.md) |
 
@@ -20,6 +20,11 @@ Every field is optional and `None` switches its tier off. Per-pool values are on
 over every pool of the pack's spec, `float("inf")` for a pool that does not decay; a pool left out, an unknown
 name, one number for every pool or a list by pool id are refused rather than filled in. A closed form
 (`FreeWater`) has one unnamed pool and takes one number.
+
+A pack's contact tier is certified over the relaxivities its build envelope states (`rho2_list`, m/s; the library
+default `[1e-5, 3e-5, 1e-4]` when the envelope states none), and the pack states the largest as
+`replay_envelope.tissue.rho2_over_D_max`, over the walk's `D`. A `rho2` beyond it is refused rather than replayed
+outside the certificate.
 
 ## The three ways to a tissue
 

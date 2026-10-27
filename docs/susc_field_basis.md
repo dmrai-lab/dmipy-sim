@@ -73,7 +73,10 @@ at the walker's position); a raster's trilinear read smears the sheath's jump ov
 wall reads as a gradient (its QV and its constants say so). When the floor would ask for less than the
 physics step, **the read is the step** (a read along the chord between two steps carries the same bridge
 deviation), and the pack's envelope states the `B0·χ` product under which the term stays below the floor
-(`B0_chi_max_T`). `CoefficientWalk.block["field_read"]` records the rule, the interval, the reads per block, every
+(`field_read.read_limit_B0_chi_T`): the read's own limit, not the certified field scale. The certificate charges
+the term at the envelope's ONE certified `B0·χ`, its largest `B0_list` entry times its `chi_max` (the substrate's
+magnetic pools' `|chi_iso| + |chi_aniso|` unless the envelope states it), which the pack records in
+`replay_envelope.acquisition.B0_list` and `replay_envelope.tissue.chi_max`. `CoefficientWalk.block["field_read"]` records the rule, the interval, the reads per block, every
 pool's measured `QV` and interval, and the constants; a bundle walked pool by pool reads each pool at its own
 interval and states the coarsest, and the certificate charges the term there on every pool's read series.
 
@@ -312,8 +315,10 @@ the split-half Monte-Carlo floor.
   new positions) need the field basis, which the embedded spec regenerates.
 - K is a **declared capability**, not a universal constant. A pack built for 16-echo trains is not valid
   for a 64-echo train; the envelope says so, and a larger band means a re-walk.
-- A pack's field strength is bounded by its read: where the read is the step, the envelope's `B0_chi_max_T`
-  is the largest `B0·χ` the field-read term holds under.
+- A pack's field strength is bounded by its envelope: a replay at a `B0` above the largest of `B0_list`, or at a
+  `B0·χ` above the certified one, is refused. Where the read is the step, `field_read.read_limit_B0_chi_T` is the
+  largest `B0·χ` the field-read term stays below the read rule's floor under; above it, up to the certified scale,
+  the term is charged in the certificate.
 - Anisotropic (`aniso_G`) channels were not exercised in the measurements above — the packs measured were
   built isotropic (matching their source study). Enabling them raises `n_ch` 6 → 12 and needs the same
   K-sweep before being trusted.

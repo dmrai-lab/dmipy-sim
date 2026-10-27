@@ -1273,12 +1273,89 @@ def surface_logweight_bridge(arrays, meta, rho2_over_D, gate=None, dt_gate=None,
 
 # --------------------------------------------------------- envelope & fidelity
 def default_envelope():
-    """The default certified acquisition envelope for a pack (b in s/m^2)."""
+    """The library's default certified envelope for a pack: the acquisition battery (b in s/m^2), the field
+    strengths ``B0_list`` (T) the field tier is certified at, and ``rho2_list``, the surface relaxivities (m/s) the
+    contact tier is certified at. The susceptibility scale ``chi_max`` is the substrate's
+    (:func:`certified_envelope`)."""
+    from ..engine.accumulate import FIELD_RULE_B0
     return dict(bvals=[0.0, 0.5e9, 1e9, 2e9, 3e9],
                 dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 ogse_periods=[1, 2, 3, 5], shortd_b=1e9,
                 shortd_deltas_frac=[0.2, 0.1, 0.05, 0.025],
-                delta_frac=0.2, Delta_frac=0.5)
+                delta_frac=0.2, Delta_frac=0.5,
+                B0_list=[3.0, float(FIELD_RULE_B0)],
+                rho2_list=[1e-5, 3e-5, 1e-4])
+
+
+def certified_envelope(envelope=None, spec=None):
+    """The envelope a pack is walked, built and certified under: ``envelope`` (:func:`default_envelope` when None)
+    with ``rho2_list`` and ``B0_list`` stated (:func:`default_envelope`'s where it states none) and ``chi_max``, the
+    susceptibility scale ``|chi_iso| + |chi_aniso|`` the field tier is certified at (the substrate ``spec``'s
+    magnetic pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). Every certificate
+    term reads these, and the pack states them (``replay_envelope.acquisition.B0_list``,
+    ``replay_envelope.tissue``). A value that is not finite and of its sign is refused."""
+    from ..engine.accumulate import spec_chi_scale
+    env = dict(default_envelope() if envelope is None else envelope)
+    for key in ("rho2_list", "B0_list"):
+        env.setdefault(key, default_envelope()[key])
+    env.setdefault("chi_max", spec_chi_scale(spec))
+    env["rho2_list"] = envelope_rho2_list(env)
+    env["B0_list"] = envelope_B0_list(env, empty=True)
+    env["chi_max"] = envelope_chi_max(env)
+    return env
+
+
+def _stated(env, key):
+    v = env.get(key) if isinstance(env, dict) else None
+    if v is None:
+        raise ValueError(f"the envelope states no {key}: every certificate term reads the envelope it is built under "
+                         "(compression.certified_envelope)")
+    return v
+
+
+def envelope_rho2_list(env):
+    """The surface relaxivities (m/s) envelope ``env`` certifies the contact tier at: its ``rho2_list`` as floats,
+    finite and non-negative; an envelope stating none is refused by name."""
+    rho = _stated(env, "rho2_list")
+    out = [float(r) for r in rho]
+    if not all(np.isfinite(r) and r >= 0.0 for r in out):
+        raise ValueError(f"the envelope's rho2_list {out} is not finite and non-negative (m/s)")
+    return out
+
+
+def envelope_rho2_max(env):
+    """The largest surface relaxivity (m/s) envelope ``env`` certifies (:func:`envelope_rho2_list`); 0 for an empty
+    list."""
+    return max(envelope_rho2_list(env), default=0.0)
+
+
+def envelope_B0_list(env, *, empty=False):
+    """The field strengths (T) envelope ``env`` certifies the field tier at: its ``B0_list`` as floats, finite and
+    positive; an envelope stating none (or, unless ``empty``, an empty list) is refused by name."""
+    out = [float(b) for b in _stated(env, "B0_list")]
+    if not all(np.isfinite(b) and b > 0.0 for b in out) or not (out or empty):
+        raise ValueError(f"the envelope's B0_list {out} is not a list of finite positive field strengths (T)")
+    return out
+
+
+def envelope_B0_max(env):
+    """The largest field strength (T) envelope ``env`` certifies (:func:`envelope_B0_list`)."""
+    return max(envelope_B0_list(env))
+
+
+def envelope_chi_max(env):
+    """The susceptibility scale ``|chi_iso| + |chi_aniso|`` envelope ``env`` certifies the field tier at: its
+    ``chi_max``, finite and positive; an envelope stating none is refused by name."""
+    chi = float(_stated(env, "chi_max"))
+    if not (np.isfinite(chi) and chi > 0.0):
+        raise ValueError(f"the envelope's chi_max {chi!r} is not a finite positive susceptibility scale")
+    return chi
+
+
+def envelope_B0_chi_max(env):
+    """The ONE certified field scale (T): the envelope's largest ``B0`` times its ``chi_max``. Every field term of a
+    certificate -- the quadrature, the field read, the container, a segment layout's widths -- is read at it."""
+    return envelope_B0_max(env) * envelope_chi_max(env)
 
 
 def _bipolar(t, delta, Delta):

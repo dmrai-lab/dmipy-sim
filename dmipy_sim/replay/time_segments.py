@@ -538,13 +538,13 @@ def walk_identity(walk):
                 starts_sha256=hashlib.sha256(starts.tobytes()).hexdigest())
 
 
-def _envelope(meta, spec, D, g_max):
+def _envelope(meta, g_max):
     """What the widths are derived at, from a pack's header: ``b_max`` (``replay_envelope.acquisition.b_max``), ``G_max``
     (``g_max``, else the envelope's, else the pack's scanner class's), the largest ``rho2 / D`` (the contact tier's
-    envelope, else the certificate's battery top over ``D``) and the largest ``B0 chi`` (the field read's, else the
-    field rule's scale)."""
-    from .compression import default_envelope
-    from ..engine.accumulate import field_rule_scale
+    envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with one
+    that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
+    ``replay_envelope.acquisition.B0_list`` times ``replay_envelope.tissue.chi_max`` (0 for a pack with no field
+    channel, and a pack with one that states either not is refused)."""
     env = meta.get("replay_envelope") or {}
     acq = env.get("acquisition") or {}
     if acq.get("b_max") is None:
@@ -560,14 +560,22 @@ def _envelope(meta, spec, D, g_max):
                          "gradient the layout is certified for")
     rho = (env.get("tissue") or {}).get("rho2_over_D_max")
     if rho is None:
-        if not D:
-            raise ValueError("the pack records no diffusivity: the contact's width is derived at the largest rho2 / D")
-        rho = max(acq.get("rho2_list") or default_envelope().get("rho2_list") or [1e-4]) / float(D)
-    b0chi = (env.get("field_read") or {}).get("B0_chi_max_T")
-    if b0chi is None:
-        B0, chi = field_rule_scale(spec, acq)
-        b0chi = B0 * chi
-    return dict(b_max=float(acq["b_max"]), G_max=float(g_max), rho2_over_D_max=float(rho), B0_chi_max_T=float(b0chi))
+        if ((meta.get("compression") or {}).get("channels") or {}).get("boundary_local_time") is not None:
+            raise ValueError("the pack carries a contact channel and states no contact envelope "
+                             "(replay_envelope.tissue.rho2_over_D_max): the contact's width is derived at the largest "
+                             "rho2 / D its certificate serves")
+        rho = 0.0
+    b0chi = b0max = 0.0
+    if ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") is not None:
+        from .compression import envelope_B0_chi_max, envelope_B0_max
+        tis = env.get("tissue") or {}
+        if tis.get("chi_max") is None:
+            raise ValueError("the pack carries a field channel and states no certified susceptibility scale "
+                             "(replay_envelope.tissue.chi_max): the field's width is derived at the one certified B0 chi")
+        stated = dict(B0_list=acq.get("B0_list"), chi_max=tis["chi_max"])
+        b0chi, b0max = envelope_B0_chi_max(stated), envelope_B0_max(stated)
+    return dict(b_max=float(acq["b_max"]), G_max=float(g_max), rho2_over_D_max=float(rho), B0_chi_max_T=float(b0chi),
+                B0_max_T=float(b0max))
 
 
 def _floor_target(meta, given):
@@ -756,7 +764,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         if g_meta is None:
             raise ValueError("the pack carries no per-voxel grid: give grid=")
         grid = Grid.from_meta(g_meta)
-    env = _envelope(meta, decl.substrate, decl.diffusivity, g_max)
+    env = _envelope(meta, g_max)
     floor = _floor_target(meta, floor_target)
     eps = rounding_eps(floor)
     n = view.n_walkers
@@ -1040,7 +1048,7 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
             raise ValueError("the blocks' rows disagree on the sequence groups: they are not rows of one layout")
     r0 = recs[0]; src = r0["source"]
     # the tiers' widths at the largest rho2 / D and B0 chi any block's source states (each pack's field read is its own)
-    env = dict(src["envelope"], **{k: max(float(r["source"]["envelope"][k]) for r in recs) for k in ("rho2_over_D_max", "B0_chi_max_T")})
+    env = dict(src["envelope"], **{k: max(float(r["source"]["envelope"][k]) for r in recs) for k in ("rho2_over_D_max", "B0_chi_max_T", "B0_max_T")})
     grid = Grid.from_meta(r0["grid"]); n_vox = int(np.prod(grid.shape))
     floor = min(float(r["source"]["floor_target"]) for r in recs)       # the most demanding block's floor holds for all
     eps = rounding_eps(floor)
@@ -1332,7 +1340,8 @@ class TimeSegmentLayout:
         """The reduction terms of a (tissue, scanner) pair on ``partition``'s gate -- exactly
         :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms` on a descriptor of what the layout carries: ``None``
         for the bare image (no tissue, no scanner), else ``(logw_pool (n_pools,), rho2_over_D, a_iso, a_aniso,
-        amplitude)``. A tier the pair needs that the layout lacks is refused by name."""
+        amplitude)``. A tier the pair needs that the layout lacks is refused by name, and a relaxivity beyond the
+        ``rho2 / D`` the contact's widths are derived at (the source's declared envelope) likewise."""
         if tissue is None and scanner is None:
             return None
         if not self.tiers:
@@ -1342,6 +1351,7 @@ class TimeSegmentLayout:
         from ..spec.substrate import SubstrateSpec
         from ..spec.tissue import _by_pool_id
         t = self.tiers; g, grp = self._group(partition)
+        env = self.manifest["source"]["envelope"]
         spec = SubstrateSpec.from_dict(t["substrate"]) if t.get("substrate") else None
 
         def by_pool(values, what):
@@ -1358,7 +1368,9 @@ class TimeSegmentLayout:
                           field_iso=np.zeros(1) if has_field else None, field_aniso=np.zeros(1) if has_field else None,
                           exposure_t2=np.zeros((1, n_pools)) if n_pools else None, exposure_t1=np.zeros((1, n_pools)) if n_pools else None,
                           contact=np.zeros(1) if grp.get("contact") else None, D_walk=t.get("D_walk"), voxel=np.ones(1),
-                          pathway=float(grp["pathway"]), by_pool=by_pool, susceptibility_field=self.susceptibility_field)
+                          pathway=float(grp["pathway"]), by_pool=by_pool, susceptibility_field=self.susceptibility_field,
+                          rho2_over_D_max=env["rho2_over_D_max"],
+                          field_envelope=(dict(B0_max=env["B0_max_T"], B0_chi_max=env["B0_chi_max_T"]) if has_field else None))
         rt = desc.reduction_terms(tissue, scanner)
         logw = -(float(grp["tau_t2"] or 0.0) * np.asarray(rt["invT2"], np.float64) + float(grp["tau_t1"] or 0.0) * np.asarray(rt["invT1"], np.float64))
         return (logw, float(rt["rho2_over_D"]), float(rt["a_iso"]), float(rt["a_aniso"]), float(rt["amplitude"]))

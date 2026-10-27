@@ -34,7 +34,7 @@ DT_SAVE = 1e-4     # s
 SEED = 11
 
 ENV = dict(bvals=[0.0], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9,
-           shortd_deltas_frac=[0.05], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
+           shortd_deltas_frac=[0.05], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5, 3e-4])   # up to the Robin test's rho1
 
 
 @pytest.fixture(scope="module")
@@ -126,11 +126,11 @@ def test_rho1_zero_is_bit_identical_in_the_study_and_pose_routes(sphere_pack):
 # --------------------------------------------------------------------------- acceptance: spin echo independence
 def test_spin_echo_is_independent_of_rho1(sphere_pack):
     """A spin echo never stores magnetisation (chi_perp == active throughout, so chi_parallel == 0
-    everywhere): rho1 has nothing to gate and the signal is unchanged, at any rho1."""
+    everywhere): rho1 has nothing to gate and the signal is unchanged, at any rho1 the pack's envelope serves."""
     pk = sphere_pack
     wf = seq.pgse([[1, 0, 0]], 2e-3, 6e-3, bvalues=[5e8], n_t=pk.n_t, slew_rate=np.inf)
     baseline = pk.replay(wf, tissue=Tissue(rho2=3e-6))
-    for rho1 in (1e-6, 1e-4, 1e-2):
+    for rho1 in (1e-6, 1e-4, 3e-4):
         np.testing.assert_array_equal(baseline, pk.replay(wf, tissue=Tissue(rho2=3e-6, rho1=rho1)),
                                       err_msg=f"a spin echo changed with rho1={rho1:g}")
 
