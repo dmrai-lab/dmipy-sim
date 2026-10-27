@@ -220,6 +220,41 @@ def _layout_bytes(out, manifest, index):
     return cols, index
 
 
+def test_shards_prepared_apart_and_appended_in_order_write_the_streaming_passs_layout(layout, tmp_path):
+    """Each shard prepared on its own (:func:`prepare_block`, the later one first), saved and loaded back, then
+    appended in block order across a checkpoint and a resume, writes the layout ``consolidate`` writes: the same
+    column bytes, index and manifest."""
+    import json
+    from dmipy_sim.fill.consolidate import Consolidator, PreparedBlock, prepare_block
+    from dmipy_sim.replay.replay import read_rpk
+    out, manifest, index, _, _, _, _, tmp = layout
+    names = ["block-0000.p1.rpk", "block-0001.p1.rpk"]
+    for nm in reversed(names):
+        block = prepare_block(nm, read_rpk(str(tmp / "shards" / nm))).save(str(tmp_path / "prepared" / nm))
+        assert block.directory == str(tmp_path / "prepared" / nm) and not os.path.exists(block.directory + ".part")
+    con = Consolidator(str(tmp_path / "out"))
+    con.append(PreparedBlock.load(str(tmp_path / "prepared" / names[0]))); con.checkpoint()
+    con = Consolidator(str(tmp_path / "out")); con.resume()
+    con.append(PreparedBlock.load(str(tmp_path / "prepared" / names[1]))); con.checkpoint()
+    m2, i2 = con.finish("t/columns")
+    assert i2 == index
+    assert _layout_bytes(str(tmp_path / "out"), m2, i2)[0] == _layout_bytes(out, manifest, index)[0]
+    assert json.load(open(tmp_path / "out" / "manifest.json")) == json.load(open(os.path.join(out, "manifest.json")))
+
+
+def test_a_shard_prepared_on_another_grid_is_refused(layout, tmp_path):
+    """A shard whose rows were sorted on a grid other than the layout's does not append."""
+    from dmipy_sim.fill.consolidate import Consolidator, prepare_block
+    from dmipy_sim.replay.replay import read_rpk
+    _, _, _, _, _, grid, _, tmp = layout
+    con = Consolidator(str(tmp_path / "out"))
+    con.append(prepare_block("block-0000.p1.rpk", read_rpk(str(tmp / "shards" / "block-0000.p1.rpk"))))
+    other = dict(grid.to_meta()); other["origin_m"] = [float(x) + 1e-15 for x in other["origin_m"]]
+    block = prepare_block("block-0001.p1.rpk", read_rpk(str(tmp / "shards" / "block-0001.p1.rpk")), layout_grid=other)
+    with pytest.raises(ValueError, match="prepared on the grid"):
+        con.append(block)
+
+
 @pytest.mark.parametrize("split", ["pools", "rounds", "dealt"])
 def test_a_block_given_as_round_shards_consolidates_as_the_block_given_whole(spec_grid, split):
     """A block's round shards (``block-NNNN.<pool>.r<r>.rpk``: one pool's walkers, or one round of a pool's) or dealt
