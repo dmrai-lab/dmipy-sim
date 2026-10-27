@@ -458,7 +458,6 @@ def _backend_check(fam, name, backend):
 
 
 def stage_plan(fam, args):
-    from dmipy_sim.engine.core import walk_cost  # noqa: F401  (the resolution the walk itself takes)
     rows, tot_steps, tot_n = [], 0, 0
     for name, sub in _shard(list(fam.substrates().items()), args.shard):
         counts = fam.counts(name)
