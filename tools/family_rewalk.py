@@ -603,7 +603,7 @@ def stage_plan(fam, args):
             if not hasattr(fam, "pilot"):
                 raise SystemExit(f"{fam.name}: no pilot bound for this family (one pool, no field: the pores)")
             t0 = time.time()
-            pilot = fam.pilot(name, int(args.pilot), pack_seed(sub["id"]) + 1, args.backend)
+            pilot = fam.pilot(name, int(args.pilot), pack_seed(sub["id"]) + 1, args.pilot_backend or args.backend)
             pilot["seconds"] = round(time.time() - t0, 1)
             fam.planned[name] = {p: pilot["n"] for p in fam.shares(name)}
         counts = fam.counts(name)
@@ -772,6 +772,7 @@ def main(argv=None):
     p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "
                                                         "sets the count (pores); 0 the toggle-proof a / f^2")
     p.add_argument("--n-min", type=int, default=4000, help="plan: the fewest walkers a pilot bound sets")
+    p.add_argument("--pilot-backend", default=None, help="plan: the backend the pilot walks on (--backend's by default)")
     p.add_argument("--pilot-axes", choices=("confined", "all"), default="confined",
                    help="plan: the gradient axes the pilot bound covers: the pore's confined axes, or all three")
     p.add_argument("--plan", default=None, help="walk: a plan file whose per-substrate counts are walked")
