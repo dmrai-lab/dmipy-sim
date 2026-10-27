@@ -30,7 +30,7 @@ def test_the_merged_pack_states_the_coarsest_read_and_its_term(shards, order):
     cr = coarse.meta
     assert m.meta["walk_params"]["field_read_interval"] == cr["walk_params"]["field_read_interval"] == pytest.approx(BLOCK)
     env, env_c = m.meta["replay_envelope"]["field_read"], cr["replay_envelope"]["field_read"]
-    assert {k: v for k, v in env.items() if k != "B0_chi_max_T"} == {k: v for k, v in env_c.items() if k != "B0_chi_max_T"}
+    assert {k: v for k, v in env.items() if k != "read_limit_B0_chi_T"} == {k: v for k, v in env_c.items() if k != "read_limit_B0_chi_T"}
     pm, pc = (x.meta["compression"]["channels"]["susc_field_basis"] for x in (m, coarse))
     assert pm["read"] == pc["read"] and pm["read_interval"] == pc["read_interval"]
     terms = m.meta["fidelity"]["terms"]
@@ -41,8 +41,8 @@ def test_the_merged_pack_states_the_coarsest_read_and_its_term(shards, order):
     consts = np.max([pc["read"]["constants"], fine.meta["compression"]["channels"]["susc_field_basis"]["read"]["constants"]], axis=0)
     expect = field_read_term(cr["walk_params"]["field_read_interval"], qv, at["B0"], at["chi"], consts)
     assert terms["field_read"] == pytest.approx(expect) and terms["field_read"] > fine.meta["fidelity"]["terms"]["field_read"]
-    from dmipy_sim.engine.accumulate import field_read_B0_chi_max
-    assert env["B0_chi_max_T"] == pytest.approx(field_read_B0_chi_max(cr["walk_params"]["field_read_interval"], qv, at["floor"], consts))
+    from dmipy_sim.engine.accumulate import field_read_limit_B0_chi
+    assert env["read_limit_B0_chi_T"] == pytest.approx(field_read_limit_B0_chi(cr["walk_params"]["field_read_interval"], qv, at["floor"], consts))
     t = terms
     assert m.meta["fidelity"]["err_max"] >= t["truncation"] + sum(t["quadrature"].values()) + t["field_read"] + t["rounding"] - 1e-15
     own = [s["field_read_interval"] for s in m.meta["provenance"]["shards"]]       # each shard's own read stays on record

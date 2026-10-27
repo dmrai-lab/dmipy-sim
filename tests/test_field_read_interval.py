@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.engine.accumulate import field_read_rule, field_read_term, field_read_B0_chi_max, field_read_steps
+from dmipy_sim.engine.accumulate import field_read_rule, field_read_term, field_read_limit_B0_chi, field_read_steps
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import disco_spec, walk_spec
@@ -104,7 +104,7 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
         qv = pk.meta["walk_params"]["qv"]["field_increments"]                      # the walk's own read series
         np.testing.assert_allclose(qv, np.asarray(w.qv_field_increments, np.float64)[:, 0].mean(0), rtol=1e-6)
         at = env["term_at"]
-        assert env["B0_chi_max_T"] == pytest.approx(field_read_B0_chi_max(w.field_read_interval, qv, at["floor"], fr["constants"]))
+        assert env["read_limit_B0_chi_T"] == pytest.approx(field_read_limit_B0_chi(w.field_read_interval, qv, at["floor"], fr["constants"]))
         term = field_read_term(w.field_read_interval, qv, at["B0"], at["chi"], fr["constants"])
         assert pk.fidelity["terms"]["field_read"] == pytest.approx(term, rel=1e-4) and term > 0
         assert pm["max_refocus_pulses"] == 2 and np.isfinite(pk.fidelity["terms"]["quadrature"]["field"])

@@ -140,7 +140,7 @@ def test_a_layout_of_blocks_reads_the_field_at_the_coarsest(field_blocks, tmp_pa
     meta = man["meta"]
     assert meta["walk_params"]["field_read_interval"] == b1.meta["walk_params"]["field_read_interval"] == pytest.approx(BLOCK)
     env, env1 = meta["replay_envelope"]["field_read"], b1.meta["replay_envelope"]["field_read"]
-    assert {k: v for k, v in env.items() if k != "B0_chi_max_T"} == {k: v for k, v in env1.items() if k != "B0_chi_max_T"}
+    assert {k: v for k, v in env.items() if k != "read_limit_B0_chi_T"} == {k: v for k, v in env1.items() if k != "read_limit_B0_chi_T"}
     # the term at the coarsest interval on the blocks' read series together (walker-weighted)
     from dmipy_sim.engine.accumulate import field_read_term
     n = np.asarray([b.meta["walk_params"]["n_walkers"] for b in (b0, b1)], np.float64)

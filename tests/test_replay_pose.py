@@ -23,7 +23,8 @@ def hollow():
     substrate, where the azimuthal coefficients must come out at the Monte-Carlo floor."""
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
     walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
-    pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=ENV,
+    # certified up to the strongest susceptibility the field-direction tests replay (|chi_iso| + |chi_aniso| = 9.1e-6)
+    pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=dict(ENV, chi_max=9.1e-6),
                            susc_path_K=16)
     assert pk.has_field and "susc_field_basis" in pk.meta["compression"]["channels"]
     return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])

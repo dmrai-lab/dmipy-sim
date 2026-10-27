@@ -339,7 +339,7 @@ class FieldTerm:
         return self.B0 is not None
 
 
-def field_term(declared, tissue, scanner):
+def field_term(declared, tissue, scanner, envelope=None):
     """The susceptibility term a substrate's field, a tissue and a scanner give together: the one place a tissue's
     ``chi_iso`` / ``chi_aniso`` meets a substrate's susceptibility field ``declared`` (``"present"`` / ``"absent"``:
     a pack's from its spec's pools, :func:`declared_susceptibility_field`; an analytic or inert phantom substrate's
@@ -352,7 +352,9 @@ def field_term(declared, tissue, scanner):
       ``chi_iso`` or ``chi_aniso`` is refused by name; any ``B0``, of any strength along any axis, is accepted
       and has no effect.
     * ``"present"``: a non-zero tissue chi needs a field to act in, so one given with ``scanner=None`` is refused.
-      A zero or absent chi at any ``B0`` is a field term of zero.
+      A zero or absent chi at any ``B0`` is a field term of zero. With a field ``envelope`` (``{"B0_max",
+      "B0_chi_max"}``, a pack's :attr:`ReplayPack.field_envelope`), a term at a ``B0`` above ``B0_max`` or a
+      ``|B0| (|chi_iso| + |chi_aniso|)`` above the certified ``B0_chi_max`` is refused, naming both.
 
     Returns a :class:`FieldTerm`, inactive (``B0`` None) whenever the term is zero."""
     from ..spec.substrate import SUSCEPTIBILITY_FIELD
@@ -379,7 +381,18 @@ def field_term(declared, tissue, scanner):
             "chi_iso / chi_aniso for the field-free signal")
     if float(f.B0) == 0.0:
         return FieldTerm(axis=f.axis)
-    return FieldTerm(B0=float(f.B0), axis=f.axis, chi_iso=given.get("chi_iso", 0.0), chi_aniso=given.get("chi_aniso", 0.0))
+    term = FieldTerm(B0=float(f.B0), axis=f.axis, chi_iso=given.get("chi_iso", 0.0), chi_aniso=given.get("chi_aniso", 0.0))
+    if envelope is not None:
+        B0, top = abs(term.B0), float(envelope["B0_max"])
+        if B0 > top * (1.0 + 1e-9):
+            raise ValueError(f"B0 = {B0:.4g} T is beyond the {top:.4g} T this pack's field tier is certified at "
+                             "(replay_envelope.acquisition.B0_list): replay within it")
+        scale, cert = B0 * (abs(term.chi_iso) + abs(term.chi_aniso)), float(envelope["B0_chi_max"])
+        if scale > cert * (1.0 + 1e-9):
+            raise ValueError(f"B0 (|chi_iso| + |chi_aniso|) = {scale:.4g} T is beyond the certified field scale "
+                             f"{cert:.4g} T (the largest B0_list entry times replay_envelope.tissue.chi_max): replay "
+                             "a smaller susceptibility or field")
+    return term
 
 
 def _pose_matrix(pose):
@@ -594,7 +607,6 @@ class ReplayPack:
         import copy
         import hashlib
         from .bank import window_of_pack, combine_window_fidelity, join_windows
-        from .compression import default_envelope
         if self.n_windows != 1:
             raise ValueError(f"this pack already stores its walk in {self.n_windows} windows of "
                              f"{float(self.windows['T']) * 1e3:.3f} ms; rewindow reads a one-window walk")
@@ -607,15 +619,7 @@ class ReplayPack:
         if dropped > float(max_dropped_fraction) * T + 1e-12:
             raise ValueError(f"windows of {T_seg * 1e3:.3f} ms leave {dropped * 1e3:.3f} ms of the {T * 1e3:.3f} ms walk uncovered, "
                              f"more than {max_dropped_fraction:g} of it; give a T_seg that divides it, or a larger max_dropped_fraction")
-        ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
-        pm = ch.get("susc_field_basis")
-        env = dict(envelope) if envelope is not None else default_envelope()
-        if envelope is None:
-            B0s = ((self.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("B0_list")
-            if B0s:
-                env["B0_list"] = list(B0s)
-            if pm is not None and pm.get("max_refocus_pulses"):
-                env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])
+        env = dict(envelope) if envelope is not None else self.stated_envelope()
         K = max(2, int(np.ceil(self.K * T_seg / T)))
         stamp = id or f"{self.meta.get('id')}/seg{T_seg * 1e3:.0f}ms"
         packs, tried = [], []
@@ -671,11 +675,51 @@ class ReplayPack:
         """The largest ``rho2 / D`` the contact tier serves (``replay_envelope.tissue.rho2_over_D_max``, RPK.md 8.7), or
         ``None`` when the pack states no bound. ``replay_envelope.tissue`` knows only this one key; any other
         key there is refused by name, naming what is accepted."""
+        return self._envelope_tissue().get("rho2_over_D_max")
+
+    def _envelope_tissue(self):
+        """``replay_envelope.tissue``: it knows ``rho2_over_D_max`` and ``chi_max``; any other key is refused by name."""
         tissue = (self.meta.get("replay_envelope") or {}).get("tissue") or {}
-        unknown = set(tissue) - {"rho2_over_D_max"}
+        unknown = set(tissue) - {"rho2_over_D_max", "chi_max"}
         if unknown:
-            raise ValueError(f"this pack's replay_envelope.tissue declares {sorted(unknown)}; it takes only rho2_over_D_max")
-        return tissue.get("rho2_over_D_max")
+            raise ValueError(f"this pack's replay_envelope.tissue declares {sorted(unknown)}; it takes only "
+                             "rho2_over_D_max and chi_max")
+        return tissue
+
+    def stated_envelope(self):
+        """The envelope this pack states, as one a re-encoding of it (a window, a prefix) is certified under:
+        :func:`~dmipy_sim.replay.compression.default_envelope`'s battery with the pack's field strengths
+        (``acquisition.B0_list``), scanner class (``acquisition.scanner`` where its bound is the class's), the
+        refocusing depth its field channel serves (``max_refocus_pulses``), its contact envelope as ``rho2_list`` (over
+        the walk's ``D``) and its ``chi_max``."""
+        from .compression import default_envelope
+        env = default_envelope()
+        renv = self.meta.get("replay_envelope") or {}
+        acq = renv.get("acquisition") or {}
+        if acq.get("B0_list"):
+            env["B0_list"] = [float(b) for b in acq["B0_list"]]
+        if acq.get("bound") == "scanner_class":
+            env["scanner"] = acq["scanner"]
+        pm = ((self.meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis")
+        if pm is not None and pm.get("max_refocus_pulses"):
+            env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])
+        if self.rho2_over_D_max is not None and self.diffusivity:
+            env["rho2_list"] = [float(self.rho2_over_D_max) * float(self.diffusivity)]
+        if self._envelope_tissue().get("chi_max") is not None:
+            env["chi_max"] = float(self._envelope_tissue()["chi_max"])
+        return env
+
+    @property
+    def field_envelope(self):
+        """The field tier's envelope, ``{"B0_max", "chi_max", "B0_chi_max"}``: the largest field strength
+        (``replay_envelope.acquisition.B0_list``), the susceptibility scale (``replay_envelope.tissue.chi_max``) and
+        their product, the one certified field scale every field term was read at; ``None`` when the pack stores no
+        field or states neither. A replay beyond it is refused (:func:`field_term`)."""
+        chi = self._envelope_tissue().get("chi_max")
+        B0s = ((self.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("B0_list")
+        if chi is None or not B0s:
+            return None
+        return dict(B0_max=float(max(B0s)), chi_max=float(chi), B0_chi_max=float(max(B0s)) * float(chi))
 
     def _check_rho2(self, rho2_over_D):
         """Refuse a relaxivity beyond the contact tier's envelope (:attr:`rho2_over_D_max`), naming both."""
@@ -692,14 +736,14 @@ class ReplayPack:
         the decoded contact gives a physical attenuation within ``tol`` floors
         (:func:`~dmipy_sim.replay.bank.surface_envelope`), the pack's ``replay_envelope.tissue.rho2_over_D_max`` the
         smallest over the windows, and every window's surface rows (``err_surface``, ``floor_surface``) restated up
-        to that edge rather than at the battery's largest ``rho2``, its maxima re-read and the whole's certificate
-        rebuilt from them. ``reference`` is the one-window pack the windows were encoded from, whose decoded contact
+        to that edge rather than at the stated envelope's top (the ``rho2_over_D_max`` the pack was built under), its
+        maxima re-read and the whole's certificate rebuilt from them. ``reference`` is the one-window pack the windows were encoded from, whose decoded contact
         is then the error's reference; without it the error is the unphysical gain alone. Only metadata changes;
         ``out_path`` writes the pack with its tensors as they are. ``provenance.surface_envelope_restated`` records
         the edges, the battery's top and the reference."""
         import copy
         from .bank import surface_envelope, restate_maxima, combine_window_fidelity
-        from .compression import local_time_at, default_envelope
+        from .compression import local_time_at
         if not self.has_surface:
             raise ValueError("this pack carries no contact channel (C2): there is no surface envelope to state")
         D = self.diffusivity
@@ -707,8 +751,11 @@ class ReplayPack:
             raise ValueError("the pack records no diffusivity, so rho2 / D cannot be stated")
         if reference is not None and reference.n_windows != 1:
             raise ValueError("the reference is the one-window pack the windows were encoded from")
-        rho2_list = default_envelope().get("rho2_list") or [1e-5, 3e-5, 1e-4]
-        hi = max(rho2_list) / float(D)
+        hi = self.rho2_over_D_max
+        if hi is None:
+            raise ValueError("this pack states no contact envelope (replay_envelope.tissue.rho2_over_D_max), the range its "
+                             "certificate was read over: build it under an envelope that states rho2_list")
+        hi = float(hi)
         w = np.asarray(self.spin_weights, np.float64)
         reads = []                                                   # (contact per block, reference sums) per window
         if reference is not None:
@@ -1518,7 +1565,7 @@ class ReplayPack:
                             f"got {type(tissue).__name__}")
         t = tissue if tissue is not None else Tissue()
         T2, T1, rho2, rho1, D = t.T2, t.T1, t.rho2, t.rho1, t.D
-        field = field_term(self.susceptibility_field, tissue, scanner)   # the one rule of tissue chi x pack field x B0
+        field = field_term(self.susceptibility_field, tissue, scanner, self.field_envelope)   # the one rule of tissue chi x pack field x B0
         if field.active and not self.has_field:
             raise ValueError(f"pack {self.meta.get('id')!r} declares its susceptibility field present and this replay "
                              "has a field term, but the pack holds no field channel (C3) here: read it with its field "

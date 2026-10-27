@@ -585,7 +585,7 @@ def _signal_compare(fine, other, seq, kw, env):
     z = (np.abs(S1 - S0) - term) / np.where(se_d > 0, se_d, np.inf)
     return dict(S_fine=S0.tolist(), S=S1.tolist(), diff=(S1 - S0).tolist(), se=se0.tolist(), se_diff=se_d.tolist(), z=z.tolist(),
                 term_charged=term, term_fine=pf.fidelity["terms"]["field_read"], within_term=bool(np.max(z) <= 2.0),
-                env_B0_chi_max_T=po.meta["replay_envelope"]["field_read"].get("B0_chi_max_T"))
+                env_read_limit_B0_chi_T=po.meta["replay_envelope"]["field_read"].get("read_limit_B0_chi_T"))
 
 
 def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0, r_in=2e-6, r_out=3e-6, require_gpu=None,
