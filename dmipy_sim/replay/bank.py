@@ -315,6 +315,7 @@ def voxel_floor_coded(positions, dt, n_t, grid, comp, env, *, w=None, device="au
     bounds = np.cumsum([0] + [_cx.position_shape(p)[0] for p in pieces]); n_w = int(bounds[-1])
     chunk = _cx.slice_walkers(pieces[0]) if chunk is None else int(chunk)
     G, _ = _cx.acquisition_battery(int(n_t), float(dt), env); n_m = G.shape[0]
+    W2 = _cx.coded_projection(dt, G, n_t, _cx.position_shape(pieces[0])[1] - 2)
     ijk_all, inside = grid.bin(np.concatenate([_cx.position_starts(p) for p in pieces]))
     pid = None if comp is None else (np.asarray(comp) if np.ndim(comp) == 1 else np.asarray(comp)[:, 0]).astype(np.int64)
     pools = sorted(set(np.unique(pid).tolist())) if pid is not None else [0]
@@ -331,7 +332,7 @@ def voxel_floor_coded(positions, dt, n_t, grid, comp, env, *, w=None, device="au
         if not len(idx):
             continue
         C = _walker_coeffs(pieces, bounds, i, min(i + chunk, n_w))
-        e = np.exp(1j * _cx.coded_phases(C if len(idx) == len(C) else C[idx - i], dt, G, n_t, device=device)) * ww[idx, None]
+        e = np.exp(1j * _cx.coded_phases(C if len(idx) == len(C) else C[idx - i], dt, G, n_t, device=device, projection=W2)) * ww[idx, None]
         r, c, h = row[idx], col[idx], half[idx]
         np.add.at(S_a, (r[h], c[h]), e[h]); np.add.at(S_b, (r[~h], c[~h]), e[~h])
         np.add.at(W_a, (r[h], c[h]), ww[idx][h]); np.add.at(W_b, (r[~h], c[~h]), ww[idx][~h])

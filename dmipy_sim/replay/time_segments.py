@@ -630,6 +630,23 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude, ref
     return rows, rec
 
 
+def _positions_decoded(pack):
+    """``pack`` (a walker range) with every window's position tensors decoded once into the float64 container
+    (:func:`~dmipy_sim.replay.compression.pack_position_arrays`): the same coefficients to the bit, so that the
+    range's readers -- each partition's vectors, each group's tiers and background -- decode none again."""
+    from .compression import POSITION_AXES, pack_position_arrays, read_position_coeffs
+    from .replay import ReplayPack
+    arrays = dict(pack.arrays)
+    shared = {k: v for k, v in arrays.items() if k == "band_block"}
+    for p in sorted({k[:len(k) - len(k.split("/")[-1])] for k in arrays if k.split("/")[-1].startswith(POSITION_AXES)}):
+        own = [k for k in arrays if k.startswith(p) and "/" not in k[len(p):] and k[len(p):].startswith(("pos_x", "pos_y", "pos_z", "pos_band_scale"))]
+        C = read_position_coeffs(dict(shared, **{k[len(p):]: arrays[k] for k in own}), dtype=np.float64)
+        for k in own:
+            del arrays[k]
+        arrays.update({p + k: v for k, v in pack_position_arrays(C, np.float64).items()})
+    return ReplayPack(arrays, pack.meta, source=pack.source)
+
+
 def _join_group_rec(rec, more):
     """``rec`` (a group's record over the walker ranges read so far) joined with ``more`` (the next range's): the pool
     count and the field channels' largest values the larger of the two."""
@@ -764,7 +781,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     pool = np.zeros(n, np.uint8)
     try:
         for a in range(0, n, step):
-            sl = view.walkers(a, a + step)
+            sl = _positions_decoded(view.walkers(a, a + step))
             for name, p in parts.items():
                 m = segment_vectors(sl, p.segments)
                 amax[name] = np.maximum(amax[name], np.abs(m).max(axis=0)) if name in amax else np.abs(m).max(axis=0)

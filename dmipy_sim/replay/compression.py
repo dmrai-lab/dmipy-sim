@@ -737,26 +737,42 @@ def dct_bands_series(x, K, *, device="auto"):
     return np.asarray(_device_dct_series(int(x.shape[1]), K)(jnp.asarray(x)))
 
 
-def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=None):
+def coded_projection(dt, G, n_t, K):
+    """``((K+2) n_axes, n_meas)``: ``gamma`` times the waveforms' :func:`band_projection`, flattened -- what
+    :func:`coded_phases` contracts the coefficients against."""
+    W = band_projection(np.asarray(G, np.float64), float(dt), (int(n_t) - 1) * float(dt), int(K))
+    return GAMMA * W.reshape(W.shape[0], -1).T
+
+
+def coded_phases(C, dt, G, n_t, *, device="auto", chunk_bytes=None, projection=None):
     """``(N_w, n_meas)`` gradient phase of every walker under the waveforms ``G`` ``(n_meas, n_t, 3)`` (on the pack's
     block grid of ``n_t`` block ends ``dt`` apart) from the bridge coefficients ``C`` ``(N_w, K+2, 3)`` alone:
     ``gamma sum C W`` with ``W`` the waveforms' :func:`band_projection` -- the replay's own reading of a pack, no
-    path decoded (host float64, or the device in float32 at full precision)."""
+    path decoded (host float64, or the device in float32 at full precision). ``projection`` is
+    :func:`coded_projection` of the same arguments when a caller reads its walkers in chunks."""
     C = np.asarray(C); K = int(C.shape[1]) - 2
-    W = band_projection(np.asarray(G, np.float64), float(dt), (int(n_t) - 1) * float(dt), K)
-    W2 = GAMMA * W.reshape(W.shape[0], -1).T                                                         # ((K+2)*3, n_meas)
+    W2 = coded_projection(dt, G, n_t, K) if projection is None else projection                      # ((K+2)*3, n_meas)
     Cf = C.reshape(C.shape[0], -1)
     if resolve_device(device) == "numpy":
         return np.asarray(Cf, np.float64) @ W2
     import jax
     import jax.numpy as jnp
     Wd = jnp.asarray(W2, jnp.float32)
-    f = jax.jit(lambda x: jnp.matmul(x, Wd, precision=jax.lax.Precision.HIGHEST))
+    f = _device_matmul()
     rows = max(1, int(_chunk(chunk_bytes) // max(Cf.shape[1] * 4, 1)))
     out = np.empty((Cf.shape[0], W2.shape[1]), np.float64)
     for i in range(0, Cf.shape[0], rows):
-        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(Cf[i:i + rows], np.float32))), np.float64)
+        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(Cf[i:i + rows], np.float32)), Wd), np.float64)
     return out
+
+
+@functools.lru_cache(maxsize=None)
+def _device_matmul():
+    """The jitted float32 ``x @ W`` at ``Precision.HIGHEST`` (a float32 ``@`` on a CUDA device is TF32 otherwise), the
+    projection an argument: a caller's walker chunks of one shape compile it once."""
+    import jax
+    import jax.numpy as jnp
+    return jax.jit(lambda x, W: jnp.matmul(x, W, precision=jax.lax.Precision.HIGHEST))
 
 
 def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
