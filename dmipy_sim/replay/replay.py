@@ -607,7 +607,6 @@ class ReplayPack:
         import copy
         import hashlib
         from .bank import window_of_pack, combine_window_fidelity, join_windows
-        from .compression import default_envelope
         if self.n_windows != 1:
             raise ValueError(f"this pack already stores its walk in {self.n_windows} windows of "
                              f"{float(self.windows['T']) * 1e3:.3f} ms; rewindow reads a one-window walk")
@@ -620,19 +619,7 @@ class ReplayPack:
         if dropped > float(max_dropped_fraction) * T + 1e-12:
             raise ValueError(f"windows of {T_seg * 1e3:.3f} ms leave {dropped * 1e3:.3f} ms of the {T * 1e3:.3f} ms walk uncovered, "
                              f"more than {max_dropped_fraction:g} of it; give a T_seg that divides it, or a larger max_dropped_fraction")
-        ch = dict(self.meta.get("compression", {}).get("channels", {}) or {})
-        pm = ch.get("susc_field_basis")
-        env = dict(envelope) if envelope is not None else default_envelope()
-        if envelope is None:
-            B0s = ((self.meta.get("replay_envelope") or {}).get("acquisition") or {}).get("B0_list")
-            if B0s:
-                env["B0_list"] = list(B0s)
-            if pm is not None and pm.get("max_refocus_pulses"):
-                env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])
-            if self.rho2_over_D_max is not None and self.diffusivity:
-                env["rho2_list"] = [float(self.rho2_over_D_max) * float(self.diffusivity)]
-            if self.field_envelope is not None:
-                env["chi_max"] = self.field_envelope["chi_max"]
+        env = dict(envelope) if envelope is not None else self.stated_envelope()
         K = max(2, int(np.ceil(self.K * T_seg / T)))
         stamp = id or f"{self.meta.get('id')}/seg{T_seg * 1e3:.0f}ms"
         packs, tried = [], []
@@ -698,6 +685,29 @@ class ReplayPack:
             raise ValueError(f"this pack's replay_envelope.tissue declares {sorted(unknown)}; it takes only "
                              "rho2_over_D_max and chi_max")
         return tissue
+
+    def stated_envelope(self):
+        """The envelope this pack states, as one a re-encoding of it (a window, a prefix) is certified under:
+        :func:`~dmipy_sim.replay.compression.default_envelope`'s battery with the pack's field strengths
+        (``acquisition.B0_list``), scanner class (``acquisition.scanner`` where its bound is the class's), the
+        refocusing depth its field channel serves (``max_refocus_pulses``), its contact envelope as ``rho2_list`` (over
+        the walk's ``D``) and its ``chi_max``."""
+        from .compression import default_envelope
+        env = default_envelope()
+        renv = self.meta.get("replay_envelope") or {}
+        acq = renv.get("acquisition") or {}
+        if acq.get("B0_list"):
+            env["B0_list"] = [float(b) for b in acq["B0_list"]]
+        if acq.get("bound") == "scanner_class":
+            env["scanner"] = acq["scanner"]
+        pm = ((self.meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis")
+        if pm is not None and pm.get("max_refocus_pulses"):
+            env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])
+        if self.rho2_over_D_max is not None and self.diffusivity:
+            env["rho2_list"] = [float(self.rho2_over_D_max) * float(self.diffusivity)]
+        if self._envelope_tissue().get("chi_max") is not None:
+            env["chi_max"] = float(self._envelope_tissue()["chi_max"])
+        return env
 
     @property
     def field_envelope(self):

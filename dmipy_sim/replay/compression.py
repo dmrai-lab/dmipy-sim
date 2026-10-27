@@ -397,8 +397,11 @@ BAND_CONTAINER = DerivedContainer()
 def _phase_weight(K, n_t, dt, env_key):
     """``max over the envelope's measurements of gamma^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands, ``W`` the
     battery's :func:`band_projection` over the window of ``n_t`` blocks of ``dt``: the phase variance per unit
-    quantisation variance of one band, summed over bands, for the worst waveform."""
+    quantisation variance of one band, summed over bands, for the worst waveform. For an envelope certified for a
+    scanner class it is the class's bound over every waveform it plays (:func:`class_phase_weight`)."""
     env = dict(env_key) if env_key else default_envelope()
+    if envelope_G_max(env) is not None:
+        return class_phase_weight(envelope_G_max(env), (int(n_t) - 1) * float(dt))
     G, _ = acquisition_battery(int(n_t), float(dt), env)
     W = band_projection(G, float(dt), (int(n_t) - 1) * float(dt), int(K))[:, 2:, :]
     return float((GAMMA ** 2 * (W ** 2).sum(axis=(1, 2))).max())
@@ -429,12 +432,15 @@ def derive_container(scales, K, floor_target, *, n_t=None, dt=None, env=None, bu
         eps  = min(budget / (sqrt(2) kappa), sqrt(budget floor_target)),      step = sqrt(12) eps / sqrt(S),
         b_k  = ceil(log2(a_k / step)) + 1,    clipped to [b_min, b_max].
 
-    A band below the step keeps ``b_min`` (an empty range is not carried). Equal-bit runs form ranges grown forward
+    A band below the step keeps ``b_min`` (an empty range is not carried), and so does every band of a channel no
+    waveform of the envelope weighs (``S = 0``: a contact certified at no relaxivity). Equal-bit runs form ranges grown forward
     to whole bytes, the last taking the remainder, as :func:`band_curve`."""
     scales = np.asarray(scales, np.float64).ravel()[:int(K)]
     eps = container_eps(floor_target, budget=budget, kappa=kappa)
     S = (float(phase) if phase is not None else float(weight) ** 2 * int(K) if weight is not None
          else _phase_weight(int(K), int(n_t), float(dt), _env_key(env)))
+    if not S > 0.0:                    # no waveform of the envelope reads the channel (an empty rho2_list): any depth
+        return _group_bits(np.full(scales.shape, int(b_min)))
     step = float(np.sqrt(12.0) * eps / np.sqrt(S))
     bits = np.clip(np.ceil(np.log2(np.maximum(scales, 1e-300) / step)) + 1, b_min, b_max).astype(int)
     return _group_bits(bits)
@@ -1289,20 +1295,62 @@ def default_envelope():
 
 def certified_envelope(envelope=None, spec=None):
     """The envelope a pack is walked, built and certified under: ``envelope`` (:func:`default_envelope` when None)
-    with ``rho2_list`` and ``B0_list`` stated (:func:`default_envelope`'s where it states none) and ``chi_max``, the
+    with ``rho2_list`` and ``B0_list`` stated (:func:`default_envelope`'s where it states none; an empty ``B0_list``
+    states none) and ``chi_max``, the
     susceptibility scale ``|chi_iso| + |chi_aniso|`` the field tier is certified at (the substrate ``spec``'s
-    magnetic pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). Every certificate
-    term reads these, and the pack states them (``replay_envelope.acquisition.B0_list``,
-    ``replay_envelope.tissue``). A value that is not finite and of its sign is refused."""
+    magnetic pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). An envelope that
+    states a ``scanner`` class is certified for it on the gradient side: its ``G_max`` (per axis) and ``slew_max`` are
+    the catalogue's (:class:`~dmipy_sim.acquisition.scanners.ScannerLimits`), and the position terms are the class's
+    bounds rather than the b battery's (:func:`class_phase_weight`, :func:`class_b_max`). Every certificate term reads
+    these, and the pack states them (``replay_envelope.acquisition``, ``replay_envelope.tissue``). A value that is not
+    finite and of its sign is refused."""
     from ..engine.accumulate import spec_chi_scale
     env = dict(default_envelope() if envelope is None else envelope)
-    for key in ("rho2_list", "B0_list"):
-        env.setdefault(key, default_envelope()[key])
+    env.setdefault("rho2_list", default_envelope()["rho2_list"])
+    if not env.get("B0_list"):                   # an empty list states no field strength, as an absent one
+        env["B0_list"] = default_envelope()["B0_list"]
     env.setdefault("chi_max", spec_chi_scale(spec))
     env["rho2_list"] = envelope_rho2_list(env)
     env["B0_list"] = envelope_B0_list(env, empty=True)
     env["chi_max"] = envelope_chi_max(env)
+    if env.get("scanner") is not None:
+        from ..acquisition.scanners import ScannerLimits
+        lim = ScannerLimits.of(env["scanner"])
+        env.setdefault("G_max", float(lim.G_max))
+        env.setdefault("slew_max", float(lim.slew_max))
+    elif env.get("G_max") is not None:
+        raise ValueError("an envelope states G_max with no scanner: the gradient side is certified for a scanner class "
+                         "(scanner=, its G_max and slew from the catalogue)")
+    if env.get("G_max") is not None:
+        env["G_max"] = envelope_G_max(env)
     return env
+
+
+def envelope_G_max(env):
+    """The largest gradient per axis (T/m) of the scanner class envelope ``env`` is certified for (its ``scanner``,
+    resolved by :func:`certified_envelope`), or None for an envelope certified over its b battery alone."""
+    g = env.get("G_max") if isinstance(env, dict) else None
+    if g is None:
+        return None
+    g = float(g)
+    if not (np.isfinite(g) and g > 0.0):
+        raise ValueError(f"the envelope's G_max {g!r} is not a finite positive gradient (T/m)")
+    return g
+
+
+def class_phase_weight(G_max, T):
+    """The bound ``3 gamma^2 G_max^2 T`` on ``gamma^2 sum_{k, axis} W_k^2`` of ANY waveform whose every axis stays
+    within ``G_max`` over a window ``T``: ``W_k = int G s_k dt`` on the orthonormal sine basis, so by Bessel's
+    inequality ``sum_k W_k^2 <= int G_axis^2 dt <= G_max^2 T`` per axis, three axes. Attained to the projection's
+    completeness by a bang-bang waveform at ``G_max`` on every axis."""
+    return 3.0 * GAMMA ** 2 * float(G_max) ** 2 * float(T)
+
+
+def class_b_max(G_max, T):
+    """The bound ``gamma^2 G_max^2 T^3 / 4`` on the b-value of any refocused encoding whose every axis stays within
+    ``G_max`` over ``T``: an axis's ``q(t)`` vanishes at both ends and moves at most ``gamma G_max`` per second, so
+    ``|q(t)| <= gamma G_max min(t, T - t)`` and ``int q^2 dt <= gamma^2 G_max^2 T^3 / 12``, three axes."""
+    return GAMMA ** 2 * float(G_max) ** 2 * float(T) ** 3 / 4.0
 
 
 def _stated(env, key):
@@ -1363,31 +1411,41 @@ def _bipolar(t, delta, Delta):
 
 
 def acquisition_battery(n_t, dt, env):
-    """Effective (refocused) waveforms G (M,n_t,3) + per-measurement meta, from an envelope."""
+    """Effective (refocused) waveforms G (M,n_t,3) + per-measurement meta, from an envelope: every shape (PGSE, the
+    OGSE periods, the short-delta pairs) along every direction at every b of the envelope. An envelope certified for a
+    scanner class (:func:`envelope_G_max`) plays each shape only where the class can (a component at most ``G_max``
+    per axis) and adds it at its class amplitude, the strongest the class plays of that shape (``fam`` the same,
+    ``class_amplitude`` True)."""
     t = np.arange(n_t) * dt; T = n_t * dt
     G, meta = [], []
+    G_max = envelope_G_max(env)
 
-    def add(prof, fam, d, b, **extra):
+    def add(prof, fam, d, bs, **extra):
         q = GAMMA * dt * np.cumsum(prof); b_unit = dt * np.sum(q ** 2)
-        amp = 0.0 if b <= 0 else np.sqrt(b / b_unit)
         dv = np.asarray(d, float); dv = dv / np.linalg.norm(dv)
-        G.append(amp * prof[:, None] * dv[None, :])
-        meta.append(dict(fam=fam, b=float(b), Gpeak=abs(amp), **extra))
+        top = None if G_max is None else float(G_max) / float(np.abs(dv).max() * np.abs(prof).max())
+        amps = [0.0 if b <= 0 else float(np.sqrt(b / b_unit)) for b in bs]
+        if top is not None:
+            amps = [a for a in amps if a <= top * (1.0 + 1e-12)]
+        for a in amps:
+            G.append(a * prof[:, None] * dv[None, :])
+            meta.append(dict(fam=fam, b=float(a * a * b_unit), Gpeak=abs(a), **extra))
+        if top is not None:
+            G.append(top * prof[:, None] * dv[None, :])
+            meta.append(dict(fam=fam, b=float(top * top * b_unit), Gpeak=top, class_amplitude=True, **extra))
 
     pgse = _bipolar(t, env["delta_frac"] * T, env["Delta_frac"] * T)
     for d in env["dirs"]:
-        for b in env["bvals"]:
-            add(pgse, "PGSE", d, b, f_hz=1.0 / (2 * env["delta_frac"] * T))
+        add(pgse, "PGSE", d, env["bvals"], f_hz=1.0 / (2 * env["delta_frac"] * T))
     for nper in env["ogse_periods"]:
         prof = np.cos(2 * np.pi * nper * t / T)
         for d in env["dirs"]:
-            for b in env["bvals"]:
-                add(prof, f"OGSE{nper}", d, b, f_hz=nper / T)
+            add(prof, f"OGSE{nper}", d, env["bvals"], f_hz=nper / T)
     for fr in env["shortd_deltas_frac"]:
         delta = fr * T; Delta = min(0.55 * T, T - delta - dt)
         prof = _bipolar(t, delta, Delta)
         for d in env["dirs"]:
-            add(prof, "SHORTD", d, env["shortd_b"], f_hz=1.0 / (2 * delta))
+            add(prof, "SHORTD", d, [env["shortd_b"]], f_hz=1.0 / (2 * delta))
     return np.asarray(G, np.float32), meta
 
 

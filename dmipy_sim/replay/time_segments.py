@@ -30,7 +30,8 @@ contracts the pack's bands: the certificate then carries the pack's band quantis
 b_max`` with ``B_st = gamma^2 int Q_s Q_t dt`` (``Q_s`` the running integral of the segment's indicator) on the
 refocused levels ``sum_s l_s d_s = 0``, so the largest level segment ``s`` carries is ``reach_s = min(G_max, sqrt(b_max
 [N (N^T B N)^-1 N^T]_ss))``, ``N`` a basis of the refocused levels (:meth:`Partition.reach`; a PGSE pair's is
-``sqrt(b_max / b_unit)``). The worst rounding over the envelope is then at most ``sum_s reach_s^2 delta_s^2 / 12``, held
+``sqrt(b_max / b_unit)``; a scanner class's levels are every axis within ``G_max`` on the refocused levels, the reach
+``sqrt(3)`` times the largest per-axis level, :meth:`Partition.class_vertices`). The worst rounding over the envelope is then at most ``sum_s reach_s^2 delta_s^2 / 12``, held
 at the floor's budget ``eps^2`` (:func:`~dmipy_sim.replay.compression.container_eps` at the floor target; from a pack,
 ``eps^2`` less the pack's quantisation term on the partition) with equal contributions, ``delta_s = sqrt(12 eps^2 / n)
 / reach_s`` over the ``n`` segments that carry a phase: the split that minimises the bits (stationary ``sum_s -3 log
@@ -87,6 +88,7 @@ from __future__ import annotations
 import collections
 import functools
 import hashlib
+import itertools
 import json
 import os
 import time
@@ -313,10 +315,40 @@ class Partition:
         _, _, Vt = np.linalg.svd(self.durations[idx][None, :])
         return idx, Vt[1:].T
 
-    def reach(self, G_max, b_max):
-        """``(n_seg,)``: the largest level (T/m) an encoding within the envelope puts on each segment, ``min(G_max,
-        sqrt(b_max [N (N^T B N)^-1 N^T]_ss))`` over the refocused levels (0 on a segment the gate stores)."""
+    def class_vertices(self, G_max):
+        """``(idx, V)``: the segments that carry a phase and the vertices ``V`` ``(n_v, len(idx))`` of the refocused
+        levels a scanner class plays on one axis, ``{|l_s| <= G_max, sum_s l_s d_s = 0}``: a box cut by a plane, whose
+        vertices have every level but one at ``+-G_max``. A convex function of the levels (a phase variance, a b) is
+        largest over them at one of these."""
+        idx = np.flatnonzero(self.carrying)
+        d = self.durations[idx]
+        n = idx.size
+        if n < 2:
+            return idx, np.zeros((0, n))
+        G = float(G_max)
+        out = []
+        for i in range(n):
+            rest = [j for j in range(n) if j != i]
+            for signs in itertools.product((-1.0, 1.0), repeat=n - 1):
+                v = np.zeros(n)
+                v[rest] = G * np.asarray(signs)
+                v[i] = -float(d[rest] @ v[rest]) / float(d[i])
+                if abs(v[i]) <= G * (1.0 + 1e-12):
+                    out.append(v)
+        V = np.unique(np.round(np.asarray(out) / G, 12), axis=0) * G if out else np.zeros((0, n))
+        return idx, V
+
+    def reach(self, G_max, b_max=None):
+        """``(n_seg,)``: the largest level ``|G_s|`` (T/m, the vector's) an encoding within the envelope puts on each
+        segment (0 on a segment the gate stores): over a scanner class's refocused levels (``b_max`` None,
+        :meth:`class_vertices`) ``sqrt(3)`` times the largest per-axis ``|l_s|``, every axis at its own, else
+        ``min(G_max, sqrt(b_max [N (N^T B N)^-1 N^T]_ss))`` over those within ``b_max``."""
         out = np.zeros(len(self.segments))
+        if b_max is None:
+            idx, V = self.class_vertices(G_max)
+            if V.shape[0]:
+                out[idx] = np.sqrt(3.0) * np.abs(V).max(axis=0)
+            return out
         idx, N = self.refocused_basis()
         if N.shape[1] == 0:
             return out
@@ -396,13 +428,32 @@ def segment_vectors(pack, segments):
     return m
 
 
-def quantisation_term(pack, partition, b_max):
-    """The pack's band quantisation contracted through ``partition`` at its worst over the envelope, rad^2: the bands'
-    rounding (a step ``scale_k`` is a variance ``scale_k^2 / 12``, the largest over the scale tables) moves an
-    encoding's phase by ``l^T A l`` with ``A_st = gamma^2 sum_k W_sk W_tk scale_k^2 / 12`` per axis, whose largest value
-    over the refocused levels with ``l^T B l <= b_max`` is ``b_max`` times the largest generalised eigenvalue of ``(N^T
-    A N, N^T B N)``. Zero for the float container."""
+def level_bound(partition, A, env):
+    """The largest ``sum_c l_c^T A_c l_c`` over the encodings within the layout's envelope ``env``, ``A`` ``(n_axes,
+    n, n)`` per axis over the segments that carry a phase (positive semi-definite): over a scanner class's levels
+    (``env["b_max"]`` None) each axis at its own worst vertex (:meth:`Partition.class_vertices`, at most ``G_max`` per
+    axis), else over the refocused levels with ``l^T B l <= b_max``, ``b_max`` times the largest generalised eigenvalue
+    of ``(N^T A_c N, N^T B N)`` over the axes."""
     from scipy.linalg import eigh
+    A = np.asarray(A, np.float64)
+    if env.get("b_max") is None:
+        _, V = partition.class_vertices(env["G_max"])
+        if V.shape[0] == 0:
+            return 0.0
+        return float(sum(max(float(np.einsum("vs,st,vt->v", V, A[c], V).max()), 0.0) for c in range(A.shape[0])))
+    idx, N = partition.refocused_basis()
+    if N.shape[1] == 0:
+        return 0.0
+    M = N.T @ partition.b_matrix()[np.ix_(idx, idx)] @ N
+    lam = max(float(eigh(N.T @ A[c] @ N, M, eigvals_only=True).max()) for c in range(A.shape[0]))
+    return float(env["b_max"]) * max(lam, 0.0)
+
+
+def quantisation_term(pack, partition, env):
+    """The pack's band quantisation contracted through ``partition`` at its worst over the layout's envelope ``env``,
+    rad^2: the bands' rounding (a step ``scale_k`` is a variance ``scale_k^2 / 12``, the largest over the scale tables)
+    moves an encoding's phase by ``l^T A l`` with ``A_st = gamma^2 sum_k W_sk W_tk scale_k^2 / 12`` per axis, at its
+    largest over the envelope's levels (:func:`level_bound`). Zero for the float container."""
     from ..constants import GAMMA
     from .compression import position_container, segment_projection
     if position_container(pack.arrays) != "bands":
@@ -420,9 +471,7 @@ def quantisation_term(pack, partition, b_max):
         W = segment_projection(S, T_w, step2.shape[1], t0=t0)[:, 2:]
         Aw = np.stack([GAMMA ** 2 * (W * step2[c][None, :]) @ W.T / 12.0 for c in range(step2.shape[0])])
         A = Aw if A is None else A + Aw
-    M = N.T @ partition.b_matrix()[np.ix_(idx, idx)] @ N
-    lam = max(float(eigh(N.T @ A[c] @ N, M, eigvals_only=True).max()) for c in range(A.shape[0]))
-    return float(b_max) * max(lam, 0.0)
+    return level_bound(partition, A, env)
 
 
 def _walker_max(arrays, f, slice_bytes=None):
@@ -539,17 +588,23 @@ def walk_identity(walk):
 
 
 def _envelope(meta, g_max):
-    """What the widths are derived at, from a pack's header: ``b_max`` (``replay_envelope.acquisition.b_max``), ``G_max``
-    (``g_max``, else the envelope's, else the pack's scanner class's), the largest ``rho2 / D`` (the contact tier's
+    """What the widths are derived at, from a pack's header: the encodings -- a scanner class's (``acquisition.bound``
+    ``"scanner_class"``: every level at most ``G_max`` per axis, ``b_max`` None) or those within ``b_max``
+    (``replay_envelope.acquisition.b_max``) --, ``G_max`` (``g_max``, at most the class's, else the envelope's, else
+    the pack's scanner class's), the largest ``rho2 / D`` (the contact tier's
     envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with one
     that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
     ``replay_envelope.acquisition.B0_list`` times ``replay_envelope.tissue.chi_max`` (0 for a pack with no field
     channel, and a pack with one that states either not is refused)."""
     env = meta.get("replay_envelope") or {}
     acq = env.get("acquisition") or {}
-    if acq.get("b_max") is None:
-        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max): a segment's width "
-                         "is derived from the largest b the pack is certified for")
+    by_class = acq.get("bound") == "scanner_class"
+    if not by_class and acq.get("b_max") is None:
+        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max or a scanner "
+                         "class): a segment's width is derived from the encodings the pack is certified for")
+    if by_class and g_max is not None and float(g_max) > float(acq["G_max"]) * (1.0 + 1e-12):
+        raise ValueError(f"g_max = {float(g_max):.4g} T/m is beyond the {float(acq['G_max']):.4g} T/m per axis of the "
+                         f"scanner class {acq['scanner']!r} the pack is certified for")
     if g_max is None:
         g_max = acq.get("G_max")
     if g_max is None and (meta.get("compression") or {}).get("scanner"):
@@ -574,8 +629,9 @@ def _envelope(meta, g_max):
                              "(replay_envelope.tissue.chi_max): the field's width is derived at the one certified B0 chi")
         stated = dict(B0_list=acq.get("B0_list"), chi_max=tis["chi_max"])
         b0chi, b0max = envelope_B0_chi_max(stated), envelope_B0_max(stated)
-    return dict(b_max=float(acq["b_max"]), G_max=float(g_max), rho2_over_D_max=float(rho), B0_chi_max_T=float(b0chi),
-                B0_max_T=float(b0max))
+    return dict(b_max=(None if by_class else float(acq["b_max"])), G_max=float(g_max), rho2_over_D_max=float(rho),
+                B0_chi_max_T=float(b0chi), B0_max_T=float(b0max),
+                **(dict(bound="scanner_class", scanner=acq["scanner"]) if by_class else dict(bound="b_max")))
 
 
 def _floor_target(meta, given):
@@ -787,7 +843,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
             raise ValueError(f"partition {name!r} has no refocused encoding within the envelope (fewer than two segments "
                              "carry a phase)")
         _check_band(view, p, env)
-        v_src = 0.0 if kind == "walk" else quantisation_term(view, p, env["b_max"])
+        v_src = 0.0 if kind == "walk" else quantisation_term(view, p, env)
         part_rec[name] = dict(p.to_meta(), group=group_of[name], reach=reach.tolist(), quantisation=float(v_src),
                               amax=None, column=f"p_{name}.npy")
     # the rows a walker range at a time, each column spilled in walker order; the records' largest values over them
@@ -857,13 +913,18 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
 
 
 def _check_band(view, partition, env):
-    """Refuse a partition whose template at the envelope's b_max needs more temporal band than the source stores (the
+    """Refuse a partition whose template at the envelope's b_max (a class's: at ``G_max`` on its peak axis) needs more
+    temporal band than the source stores (the
     replay's own check, :meth:`~dmipy_sim.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
     waveform's, and the bands beyond the pack's would carry phase the vectors do not."""
     from ..acquisition.waveforms import calc_b
     seq = partition.template
     b = np.asarray(calc_b(seq), np.float64)
     if not np.any(b > 0):
+        return
+    if env.get("b_max") is None:                                     # the class's strongest: its peak axis at G_max
+        G = np.asarray(seq.G, np.float64)
+        view._check_band(seq.with_gradient(G * float(env["G_max"]) / np.abs(G).max()))
         return
     view._check_band(seq.with_gradient(np.asarray(seq.G, np.float64) * np.sqrt(env["b_max"] / b.max())))
 
@@ -1037,8 +1098,8 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
         for k in ("kind", "background_amplitude"):
             if json.dumps(r["source"][k], sort_keys=True, default=float) != json.dumps(recs[0]["source"][k], sort_keys=True, default=float):
                 raise ValueError(f"the blocks' rows disagree on the source's {k}: they are not rows of one layout")
-        for k in ("b_max", "G_max"):
-            if float(r["source"]["envelope"][k]) != float(recs[0]["source"]["envelope"][k]):
+        for k in ("b_max", "G_max", "bound"):
+            if r["source"]["envelope"].get(k) != recs[0]["source"]["envelope"].get(k):
                 raise ValueError(f"the blocks' rows disagree on the envelope's {k}: they are not rows of one layout")
         if {n: (p["segments"], p["gate"], p["group"]) for n, p in r["partitions"].items()} != \
                 {n: (p["segments"], p["gate"], p["group"]) for n, p in recs[0]["partitions"].items()}:
@@ -1304,15 +1365,16 @@ class TimeSegmentLayout:
 
     def _certified(self, partition, L):
         """Refuse levels beyond the envelope the partition's widths are derived at: a segment above ``G_max`` or an
-        encoding above ``b_max``."""
+        encoding above ``b_max``; for a scanner class's layout (``b_max`` None) a level above ``G_max`` on any axis."""
         env = self.manifest["source"]["envelope"]
         B = self.partitions[partition].b_matrix()
         b = np.einsum("msc,st,mtc->m", L, B, L)
-        g = np.linalg.norm(L, axis=2).max(initial=0.0)
+        per_axis = env.get("b_max") is None
+        g = (np.abs(L).max(initial=0.0) if per_axis else np.linalg.norm(L, axis=2).max(initial=0.0))
         if g > env["G_max"] * (1 + 1e-6):
-            raise ValueError(f"the sequence plays {g:.4g} T/m on partition {partition!r} and its vectors are derived for at "
-                             f"most G_max = {env['G_max']:.4g} T/m")
-        if b.size and b.max() > env["b_max"] * (1 + 1e-6):
+            raise ValueError(f"the sequence plays {g:.4g} T/m{' on one axis' if per_axis else ''} on partition {partition!r} "
+                             f"and its vectors are derived for at most G_max = {env['G_max']:.4g} T/m")
+        if b.size and env.get("b_max") is not None and b.max() > env["b_max"] * (1 + 1e-6):
             raise ValueError(f"the sequence reaches b = {b.max():.4g} s/m^2 on partition {partition!r} and its vectors are "
                              f"derived for at most b_max = {env['b_max']:.4g} s/m^2 (the source's declared envelope)")
         return b

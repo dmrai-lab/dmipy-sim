@@ -214,12 +214,19 @@ def frame_from_bundles(axes, *, primary=0, weights=None, tol=1e-3):
 
 
 # --------------------------------------------------------------- fidelity helpers
-def _envelope_summary(env):
-    """``replay_envelope.acquisition`` of a pack certified under ``env`` (:func:`compression.certified_envelope`):
-    the largest b, the OGSE periods and the field strengths ``B0_list`` the certificate was read at."""
-    return dict(b_max=float(max(env["bvals"])), ogse_periods=list(env.get("ogse_periods", [])),
-                B0_list=_cx.envelope_B0_list(env, empty=True),
-                note="temporal band set by max OGSE period / min delta")
+def _envelope_summary(env, T):
+    """``replay_envelope.acquisition`` of a pack certified under ``env`` (:func:`compression.certified_envelope`) over
+    a window ``T``: the largest b, the OGSE periods and the field strengths ``B0_list`` the certificate was read at;
+    for a scanner class its name, ``G_max`` (per axis), ``slew_max`` and ``bound: "scanner_class"``, the largest b then
+    the class's bound (:func:`compression.class_b_max`)."""
+    out = dict(b_max=float(max(env["bvals"])), ogse_periods=list(env.get("ogse_periods", [])),
+               B0_list=_cx.envelope_B0_list(env, empty=True),
+               note="temporal band set by max OGSE period / min delta")
+    G_max = _cx.envelope_G_max(env)
+    if G_max is not None:
+        out.update(bound="scanner_class", scanner=env["scanner"], G_max=float(G_max), slew_max=float(env["slew_max"]),
+                   b_max=_cx.class_b_max(G_max, T))
+    return out
 
 
 def _envelope_tissue(env, D, *, contact, field):
@@ -1549,8 +1556,11 @@ def _terms_of(fid):
     return out
 
 
-def _battery_b_max(env):
-    """The largest b (s/m^2) of the envelope's battery (:func:`compression.acquisition_battery`)."""
+def _battery_b_max(env, T=None):
+    """The largest b (s/m^2) the envelope certifies: a scanner class's bound over the window ``T``
+    (:func:`compression.class_b_max`), else its battery's largest (:func:`compression.acquisition_battery`)."""
+    if _cx.envelope_G_max(env) is not None:
+        return _cx.class_b_max(_cx.envelope_G_max(env), T)
     return float(max(list(env.get("bvals") or [0.0]) + [float(env.get("shortd_b") or 0.0)]))
 
 
@@ -1575,7 +1585,16 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     measurement is the sum of the three. ``rounding_rel`` (a float32 accumulation's measured relative rounding of
     its bands, ``block.k0_residual_relative``) adds the ROUNDING term of RPK.md 9.5.5: a relative error ``r`` on
     every band is a phase error correlated with the phase, ``|<e^{i phi (1 + r)}> - <e^{i phi}>| <= r sqrt(<phi^2>)
-    <= r sqrt(2 b_max D)``, with ``b_max`` the battery's largest b and ``D`` the bounds' diffusivity."""
+    <= r sqrt(2 b_max D)``, with ``b_max`` the battery's largest b and ``D`` the bounds' diffusivity.
+
+    An envelope certified for a scanner class (:func:`compression.envelope_G_max`) states the gradient side for every
+    waveform the class plays, ``|G_axis| <= G_max`` over the window: by Bessel's inequality on the orthonormal sine
+    basis ``sum_k W_k^2 <= G_max^2 T`` per axis, so the quadrature is at most ``gamma^2 G_max^2 T max_k(rel_k T / (pi
+    k)^2) sum_c QV_c / 2``, the quantisation's ``eps^2`` at most ``gamma^2 G_max^2 T sum_c max_k step_ck^2 / 12`` and
+    the rounding's b the class's (:func:`compression.class_b_max`). The truncation has no class bound short of the
+    vacuous (``2 D T^2 / (pi K)^2`` times ``3 G_max^2 T``): it is read on the battery's shapes at their class amplitude,
+    the strongest the class plays of each, which the replay's band check (:meth:`ReplayPack._check_band`) holds every
+    actual waveform to."""
     from ..constants import GAMMA
     T, h, K = float(T), float(h), int(K)
     n_t = int(round(T / h)) + 1
@@ -1588,7 +1607,11 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     if h_round is not None:                           # an adaptive walk: a round's interior path is unresolved (order 0 at the round)
         rel = rel + _cx.quadrature_rel(0, float(h_round), np.pi * k / T)
     qv = np.full(3, 2.0 * float(D) * T) if qv_pos is None else np.asarray(qv_pos, np.float64)
-    quad = 0.5 * GAMMA ** 2 * np.einsum("mkc,k,c->m", W ** 2, rel * T / (np.pi * k) ** 2, qv)
+    G_max = _cx.envelope_G_max(env)
+    if G_max is None:
+        quad = 0.5 * GAMMA ** 2 * np.einsum("mkc,k,c->m", W ** 2, rel * T / (np.pi * k) ** 2, qv)
+    else:                       # every waveform of the class: sum_k W_k^2 a_k <= max_k a_k G_max^2 T per axis (Bessel)
+        quad = np.full(len(meta), 0.5 * GAMMA ** 2 * G_max ** 2 * T * float((rel * T / (np.pi * k) ** 2).max()) * float(qv.sum()))
     quad_surface = 0.0
     if qv_contact is not None and rho_over_D is not None:
         quad_surface = 0.5 * float(rho_over_D) ** 2 * float((rel * 2.0 * float(qv_contact) / (np.pi * k) ** 2).sum())
@@ -1596,13 +1619,16 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
         eps = np.zeros_like(trunc)
     else:
         step2 = np.mean(np.asarray(scales, np.float64) ** 2, axis=0)                           # (3, K) over the walkers
-        eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
+        if G_max is None:
+            eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
+        else:                   # every waveform of the class: sum_k W_k^2 step_k^2 <= max_k step_k^2 G_max^2 T per axis
+            eps = np.full(len(meta), np.sqrt(GAMMA ** 2 * G_max ** 2 * T * float(step2.max(axis=1).sum()) / 12.0))
     eps_f = 0.0 if field is None else float(field.get("quantisation_eps", 0.0))               # the field's, a phase of its own
     quant_of = lambda e: e ** 2 / 2.0                                                         # the bias; the random part is the floor's
     eps_all = np.sqrt(eps ** 2 + eps_f ** 2)                                                  # independent phases add in variance
     quant = quant_of(eps_all)
     floor_q = eps_all / np.sqrt(float(floor.get("n_eff") or 1.0 / float(floor["noise_floor"]) ** 2))
-    rounding = None if rounding_rel is None else float(rounding_rel) * float(np.sqrt(2.0 * _battery_b_max(env) * float(D)))
+    rounding = None if rounding_rel is None else float(rounding_rel) * float(np.sqrt(2.0 * _battery_b_max(env, T) * float(D)))
     field_err = 0.0 if field is None else float(field["quadrature"]) + float(field["field_read"])     # the field's terms (:func:`_field_terms`)
     err = trunc + quad + quant + quad_surface + (0.0 if rounding is None else rounding) + field_err
     fams = sorted({x["fam"] for x in meta})
@@ -1624,7 +1650,12 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
                                 qv_contact_m2=(None if qv_contact is None else float(qv_contact)),
                                 surface_rho_over_D=(None if rho_over_D is None else float(rho_over_D)),
                                 rel_at_band_edge=float(_cx.quadrature_rel(m, h, np.pi * K / T))),
-                bounds_diffusivity=float(D))
+                bounds_diffusivity=float(D),
+                **({} if G_max is None else dict(gradient_bound=dict(
+                    kind="scanner_class", scanner=env.get("scanner"), G_max_per_axis=float(G_max), T=T,
+                    terms="quadrature, quantisation and rounding over every waveform within G_max per axis (Bessel's "
+                          "inequality on the sine basis); truncation and floors over the battery's shapes at their "
+                          "class amplitude"))))
 
 
 def _coefficient_weights(cw, weights):
@@ -2388,7 +2419,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         wp_field["field_read_interval"] = float(cw.field_read_interval)
     fid["terms"] = _terms_of(dict(fid, has_contact=cw.boundary_bands is not None, field=field_terms))
     _cover_terms(_measured_truncation(fid) if fid.get("measured_by") == "raw_subset" else fid)
-    env_acq = _envelope_summary(env)
+    env_acq = _envelope_summary(env, T)
     if channels["susceptibility"]:
         fr = cw.block.get("field_read") or {}
         env_acq["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
@@ -2524,7 +2555,9 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     by default, at least 2); ``position_container``, ``blt_container`` and ``field_container`` the window's
     containers (None: the parent's own ranges; ``"derived"``: derived for the window's floor). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
     truncation measured on the battery -- the parent's exact replay of the window (its bands with the waveform at
-    ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``."""
+    ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``. ``envelope`` is
+    what it is certified under, the parent's (:meth:`~dmipy_sim.replay.replay.ReplayPack.stated_envelope`) by
+    default."""
     from ..constants import GAMMA
     from .compression import read_position_coeffs, cosine_projection, band_projection, surface_logweight_bridge
     if pack.n_windows != 1:
@@ -2535,7 +2568,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         raise ValueError(f"the window [{t0:.6g}, {t0 + T_new:.6g}] s is not within the pack's walk of {T:.6g} s")
     n_new = max(int(round(T_new / h)), 2)
     T_new = float(T_new)
-    env = _cx.certified_envelope(envelope, pack.substrate)
+    env = _cx.certified_envelope(pack.stated_envelope() if envelope is None else envelope, pack.substrate)
     ch = dict(pack.meta.get("compression", {}).get("channels", {}) or {})
     wp = pack.meta["walk_params"]
     K_new = int(K) if K is not None else max(2, int(np.ceil(pack.K * T_new / T)))
@@ -2688,7 +2721,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     fid = _round_certificate(fid)
     env_out = dict(pack.meta.get("replay_envelope") or {})
     env_out.update(bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"], field=channels["susceptibility"],
-                   magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition") or _envelope_summary(env)))
+                   magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition") or _envelope_summary(env, T_new)))
     if pm is not None:
         env_out["acquisition"]["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
         env_out["acquisition"]["max_refocusing_pulses"] = int(chan_meta["susc_field_basis"]["max_refocus_pulses"])

@@ -16,7 +16,8 @@ from dmipy_sim.substrate import Substrate
 from tests.replay_frames import field_along
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
+           B0_list=[3.0, 7.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5],
+           chi_max=1.2e-6)   # the dataset's chi the replay below reads (|1.06e-6| + |-0.1e-6|)
 
 
 def test_substrate_pack_realises_the_diameter_law_by_outer_radius():

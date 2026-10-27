@@ -12,6 +12,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
+from dmipy_sim.replay.compression import default_envelope
 from dmipy_sim.replay.time_segments import (FORMAT, Partition, TimeSegmentLayout, _walk_view, read_manifest, rounding_eps,
                                              segment_rows, write_time_segment_layout)
 from dmipy_sim.spec import walk_spec, StratifiedByVoxel
@@ -301,7 +302,10 @@ def blocks(spec_grid):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
         w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        pk = build_replay_pack(w, id=f"t/sb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid)
+        # certified up to ten times the sheath's chi, so that the layout's field words resolve its field at the
+        # fixture's coarse floor (at the sheath's own the field rounds to zero on every row of 24 walkers)
+        pk = build_replay_pack(w, id=f"t/sb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
+                               envelope=dict(default_envelope(), chi_max=2e-6))
         packs.append(pk)
         dirs.append(str(tmp / f"sb_rows{b}"))
         segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3,
