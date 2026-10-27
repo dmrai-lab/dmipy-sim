@@ -175,3 +175,42 @@ def test_a_large_pore_takes_the_whole_toggle_proof_count_and_a_small_one_fewer(f
     free = fr.phase_variance_bound(plane.position_coeffs, T_WIN, G_max=G_MAX)
     normal = fr.phase_variance_bound(plane.position_coeffs, T_WIN, G_max=G_MAX, axes=(0,))
     assert free["var_phi"] > 1.0 > normal["var_phi"]
+
+
+def test_a_pore_at_n_min_is_walked_once_and_a_larger_one_afresh(fr, tmp_path, monkeypatch):
+    """``plan --pilot n_min`` packs a pore whose count is ``n_min`` from its pilot (walked once, at the pack's seed,
+    its receipt saying so); a pore that needs more is walked by ``walk --plan`` at its count from a seed of its own;
+    a walk resumed walks nothing."""
+    import json
+    import dmipy_sim as d
+    from dmipy_sim.replay.reference import pack_seed
+    calls = []
+    real = d.simulate_trajectories
+
+    def counted(n, *a, seed=42, **kw):
+        calls.append((int(n), int(seed)))
+        return real(n, *a, seed=seed, **kw)
+
+    monkeypatch.setattr(d, "simulate_trajectories", counted)
+    common = ["--floor", "0.05", "--T", str(T_WIN), "--diameters", "1", "20", "--backend", "jax", "--out", str(tmp_path)]
+    fr.main(["plan", "pores", "--pilot", "200", "--n-min", "200"] + common)
+    plan = tmp_path / "plan_pores.json"
+    fr.main(["walk", "pores", "--plan", str(plan), "--allow-jax"] + common)
+    rows = {r["name"]: r for r in json.loads(plan.read_text())["rows"]}
+    for name, row in rows.items():
+        rid = row["id"]
+        receipt = json.loads((tmp_path / "receipts" / f"{name}.json").read_text())
+        mine = [c for c in calls if c[1] in (pack_seed(rid), pack_seed(rid + fr.AFTER_PILOT))]
+        if name.endswith("d01.00um"):
+            assert row["pilot"]["pilot_is_pack"] and row["n_walkers"] == 200
+            assert mine == [(200, pack_seed(rid))]                         # walked once: the pilot is the pack
+            assert receipt["walked_as"] == "pilot" and receipt["n_walkers"] == 200
+        else:
+            assert not row["pilot"]["pilot_is_pack"] and row["n_walkers"] == 400
+            assert mine == [(200, pack_seed(rid)), (400, pack_seed(rid + fr.AFTER_PILOT))]
+            assert receipt["walked_as"] == "walk" and receipt["n_walkers"] == 400
+        assert row["pilot"]["certified_axes"] == list(fr.Pores.CONFINED[name.split("-")[0]])
+    n_calls = len(calls)
+    fr.main(["walk", "pores", "--plan", str(plan), "--allow-jax"] + common)
+    fr.main(["plan", "pores", "--pilot", "200", "--n-min", "200"] + common)
+    assert len(calls) == n_calls                                           # resumed: nothing is walked again

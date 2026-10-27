@@ -22,10 +22,15 @@ toggle and every waveform are ``n_p = a_p / f^2``: ``1 / f^2`` walkers in all, s
 (:func:`toggle_proof_counts` states the general, cost-weighted form ``n_p = a_p sum_q a_q sqrt(c_q / c_p) / f^2``).
 
 A pore needs fewer: no waveform of the class dephases a walker confined to a small pore, and a pilot bounds what
-any refocused waveform within the class's ``G_max`` per axis (on the axes the pore confines) and any contact
-toggle up to the envelope's ``rho2`` can make that variance (:func:`phase_variance_bound`,
-:func:`toggle_variance_bound`); ``plan --pilot N`` walks it per pore and sets ``n = max(n_min, V / f^2)``, which
-``walk --plan`` walks.
+any refocused waveform within the class's ``G_max`` per axis on the axes the pore CONFINES (the plane's normal,
+the cylinder's cross-section, all three for the sphere) and any contact toggle up to the envelope's ``rho2`` can
+make that variance (:func:`phase_variance_bound`, :func:`toggle_variance_bound`). That is what a pore's pack
+certifies: its standard error is at most ``f`` for every such waveform and toggle; along a free axis the
+attenuation is free diffusion's, analytic, and not what the count is set for. ``plan --pilot N`` walks the
+pilot per pore at the pack's own seed (``pack_seed(id)``) and sets ``n = max(n_min, V / f^2)``; production walks
+``N = n_min`` (8,000), so a pore whose count is ``n_min`` IS its pilot, packed there and walked once, and a pore
+that needs more is walked afresh by ``walk --plan`` at ``pack_seed(id + "/after-pilot")``: its walkers are then
+independent of the pilot's, whose variance chose their number, and the pilot is not merged into it.
 
 Stages::
 
@@ -328,9 +333,11 @@ class Pores(Family):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.m.D0)
 
     def pilot(self, name, n, seed, backend):
-        """The pore's walker count from a pilot of ``n`` walkers that keeps its block ends: the variance any refocused
-        waveform of the envelope's class and any contact toggle up to its ``rho2`` can give a walker's
-        contribution (:func:`phase_variance_bound`, :func:`toggle_variance_bound`), over the floor squared."""
+        """``(walk, record)``: a pilot of ``n`` walkers that keeps its block ends, and the pore's walker count from it --
+        the variance any refocused waveform of the envelope's class on the pore's confined axes and any contact
+        toggle up to its ``rho2`` can give a walker's contribution (:func:`phase_variance_bound`,
+        :func:`toggle_variance_bound`), over the floor squared. The pilot is walked as a pack is (the window, the
+        band, every tier, the envelope), so a pore whose count is the pilot's packs it."""
         import dmipy_sim as d
         from dmipy_sim.acquisition.scanners import ScannerLimits
         from dmipy_sim.spec import geometry_from_spec
@@ -344,8 +351,14 @@ class Pores(Family):
         V, where = toggle_variance_bound(ph["var_phi"], w.raw_boundary, D=self.m.D0,
                                          rho2_max=max(self.envelope.get("rho2_list") or [0.0]))
         n_pore = pilot_count(V, self.floor, self.args.n_min)
-        return dict(phase=ph, V=V, toggle_at=where, n=n_pore, floor=self.floor, n_min=int(self.args.n_min),
-                    sub_steps=int(w.sub_steps))
+        free = [a for a in (0, 1, 2) if a not in axes]
+        return w, dict(phase=ph, V=V, toggle_at=where, n=n_pore, floor=self.floor, n_min=int(self.args.n_min),
+                       sub_steps=int(w.sub_steps), certified_axes=list(axes), free_axes=free,
+                       certifies=(f"the standard error of any refocused waveform of {self.envelope['scanner']} on the "
+                                  f"pore's confined axes {list(axes)} under any toggle up to rho2 "
+                                  f"{max(self.envelope.get('rho2_list') or [0.0]):g} m/s is at most {self.floor:g}"
+                                  + (f"; along its free axes {free} the attenuation is free diffusion's, analytic, "
+                                     "and not what the count is set for" if free else "")))
 
 
 class Slab(Family):
@@ -609,9 +622,29 @@ def stage_plan(fam, args):
         if int(args.pilot) > 0:
             if not hasattr(fam, "pilot"):
                 raise SystemExit(f"{fam.name}: no pilot bound for this family (one pool, no field: the pores)")
-            t0 = time.time()
-            pilot = fam.pilot(name, int(args.pilot), pack_seed(sub["id"]) + 1, args.pilot_backend or args.backend)
-            pilot["seconds"] = round(time.time() - t0, 1)
+            held = os.path.join(os.path.abspath(args.out), "pilots", f"{name}.json") if args.out else None
+            if held and os.path.exists(held):               # a plan resumed: the pilot is not walked again
+                pilot = json.load(open(held))
+            else:
+                t0 = time.time()
+                walk, pilot = fam.pilot(name, int(args.pilot), pack_seed(sub["id"]), args.pilot_backend or args.backend)
+                pilot["seconds"] = round(time.time() - t0, 1)
+                pilot["pilot_is_pack"] = bool(pilot["n"] <= int(args.pilot))
+                if pilot["pilot_is_pack"]:                 # the count is the pilot's: the pilot is the pack, walked once
+                    pilot["n"] = int(args.pilot)
+                fam.pilots = dict(getattr(fam, "pilots", {}), **{name: pilot})
+                fam.planned[name] = {p: pilot["n"] for p in fam.shares(name)}
+                if pilot["pilot_is_pack"] and args.out:
+                    pack_and_receipt(fam, name, sub, walk, seed=pack_seed(sub["id"]), seed_is="pack_seed(id)",
+                                     t_walk=pilot["seconds"], args=args, out=os.path.abspath(args.out),
+                                     walked_as="pilot")
+                del walk
+                if held:
+                    os.makedirs(os.path.dirname(held), exist_ok=True)
+                    with open(held + ".part", "w") as fh:
+                        json.dump(pilot, fh, indent=1, default=str)
+                    os.replace(held + ".part", held)
+            fam.pilots = dict(getattr(fam, "pilots", {}), **{name: pilot})
             fam.planned[name] = {p: pilot["n"] for p in fam.shares(name)}
         counts = fam.counts(name)
         n = int(sum(counts.values()))
@@ -657,9 +690,69 @@ def load_plan(fam, path):
     fam.pilots = {r["name"]: r.get("pilot") for r in rows}
 
 
-def stage_walk(fam, args):
-    from dmipy_sim.replay.bank import build_replay_pack
+#: The seed of a pore's pack when the pilot set a count above its own: a stream of its own, so that the walkers the
+#: pack averages are independent of the pilot's whose variance chose their number.
+AFTER_PILOT = "/after-pilot"
+
+
+def seed_rule(fam, name, sub):
+    """``(seed, rule)`` a substrate's pack is walked at: ``pack_seed(id)`` (the pilot's own seed, so a pore whose count
+    is the pilot's IS its pilot), or ``pack_seed(id + AFTER_PILOT)`` for a pore whose pilot set a larger count."""
     from dmipy_sim.replay.reference import pack_seed
+    pilot = getattr(fam, "pilots", {}).get(name)
+    if pilot and not pilot.get("pilot_is_pack"):
+        return pack_seed(sub["id"] + AFTER_PILOT), f"pack_seed(id + {AFTER_PILOT!r}): fresh walkers, independent of the pilot"
+    return pack_seed(sub["id"]), "pack_seed(id)"
+
+
+def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, walked_as):
+    """``walk`` packed on the family's envelope into ``out`` with its receipt: what the walk stage and a pilot that
+    IS its pack (``walked_as="pilot"``) both write."""
+    from dmipy_sim.replay.bank import build_replay_pack
+    path = os.path.join(out, sub["path"])
+    receipt_path = os.path.join(out, "receipts", f"{name}.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(receipt_path), exist_ok=True)
+    t1 = time.time()
+    kw = fam.pack_kw(name, walk)
+    prov = dict(kw.pop("provenance", {}) or {})
+    pilot = getattr(fam, "pilots", {}).get(name)
+    rule = ("pilot bound: SE^2 <= V / n for any refocused waveform of the class on the confined axes and any toggle, "
+            "n = max(n_min, V / f^2)" if pilot else
+            "toggle-proof: SE^2 <= sum_p a_p^2 / n_p for any toggle, n_p = a_p / f^2 at equal cost")
+    prov.update(campaign=args.campaign, walked_as=walked_as, seed_rule=seed_is, walker_rule=dict(
+        rule=rule, floor=fam.floor, counts=fam.counts(name), smoke=bool(args.smoke),
+        **({} if not pilot else dict(V=pilot["V"], var_phi=pilot["phase"]["var_phi"],
+                                     certified_axes=pilot["certified_axes"], free_axes=pilot["free_axes"],
+                                     n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
+    pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
+                             envelope=fam.envelope, fidelity="derived", provenance=prov,
+                             out_path=path + ".part", **kw)
+    os.replace(path + ".part", path)
+    t_pack = time.time() - t1
+    fid = pack.meta.get("fidelity") or {}
+    work = dict(getattr(walk, "work", None) or {})
+    receipt = dict(
+        name=name, id=sub["id"], path=sub["path"], sha256=_sha256(path), bytes=os.path.getsize(path),
+        n_walkers=int(pack.n_walkers), counts=fam.counts(name), seed=int(seed), seed_rule=seed_is,
+        walked_as=walked_as, backend=args.pilot_backend if walked_as == "pilot" and args.pilot_backend else args.backend,
+        device=_device(), walk_seconds=round(t_walk, 2), pack_seconds=round(t_pack, 2),
+        sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
+        exhausted_steps=int(work.get("exhausted_steps") or 0), block=dict(walk.block or {}),
+        K=int(fam.K), blt_K=int(fam.blt_K), T=float(fam.T), floor_target=float(fam.floor),
+        err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), terms=fid.get("terms"),
+        envelope=fam.envelope, stated=stated(pack), missing_statements=missing_statements(pack),
+        pilot=pilot, dmipy_sim=_sim_identity(), smoke=bool(args.smoke))
+    with open(receipt_path + ".part", "w") as fh:
+        json.dump(receipt, fh, indent=1, default=str)
+    os.replace(receipt_path + ".part", receipt_path)
+    print(f"{name}: {receipt['n_walkers']} walkers ({walked_as}), walk {t_walk:.1f} s, pack {t_pack:.1f} s, "
+          f"{receipt['bytes'] / 1e6:.2f} MB, err_max {receipt['err_max']}, floor {receipt['floor_max']}, "
+          f"missing {receipt['missing_statements']}", flush=True)
+    return receipt
+
+
+def stage_walk(fam, args):
     if args.plan:
         load_plan(fam, args.plan)
     out = os.path.abspath(args.out)
@@ -671,55 +764,19 @@ def stage_walk(fam, args):
         if os.path.exists(path) and os.path.exists(receipt_path):
             print(f"{name}: pack and receipt present, not walked again", flush=True)
             continue
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        seed = pack_seed(sub["id"])
+        seed, seed_is = seed_rule(fam, name, sub)
         t0 = time.time()
         try:
             walk = fam.walk(name, seed, args.backend)
-            t_walk = time.time() - t0
-            t1 = time.time()
-            kw = fam.pack_kw(name, walk)
-            prov = dict(kw.pop("provenance", {}) or {})
-            pilot = getattr(fam, "pilots", {}).get(name)
-            rule = ("pilot bound: SE^2 <= V / n for any refocused waveform of the class and any toggle, "
-                    "n = max(n_min, V / f^2)" if pilot else
-                    "toggle-proof: SE^2 <= sum_p a_p^2 / n_p for any toggle, n_p = a_p / f^2 at equal cost")
-            prov.update(campaign=args.campaign, walker_rule=dict(
-                rule=rule, floor=fam.floor, counts=fam.counts(name), smoke=bool(args.smoke),
-                **({} if not pilot else dict(V=pilot["V"], var_phi=pilot["phase"]["var_phi"],
-                                             n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
-            pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
-                                     envelope=fam.envelope, fidelity="derived", provenance=prov,
-                                     out_path=path + ".part", **kw)
-            os.replace(path + ".part", path)
-            t_pack = time.time() - t1
+            pack_and_receipt(fam, name, sub, walk, seed=seed, seed_is=seed_is, t_walk=time.time() - t0, args=args,
+                             out=out, walked_as="walk")
         except Exception as e:
             failed.append(name)
             print(f"{name}: FAILED {type(e).__name__}: {e}", flush=True)
             if args.stop_on_error:
                 raise
             continue
-        fid = pack.meta.get("fidelity") or {}
-        work = dict(getattr(walk, "work", None) or {})
-        receipt = dict(
-            name=name, id=sub["id"], path=sub["path"], sha256=_sha256(path), bytes=os.path.getsize(path),
-            n_walkers=int(pack.n_walkers), counts=fam.counts(name), seed=int(seed), backend=args.backend,
-            device=_device(), walk_seconds=round(t_walk, 2), pack_seconds=round(t_pack, 2),
-            sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
-            exhausted_steps=int(work.get("exhausted_steps") or 0), block=dict(walk.block or {}),
-            K=int(fam.K), blt_K=int(fam.blt_K), T=float(fam.T), floor_target=float(fam.floor),
-            err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), terms=fid.get("terms"),
-            envelope=fam.envelope, stated=stated(pack), missing_statements=missing_statements(pack),
-            pilot=getattr(fam, "pilots", {}).get(name),
-            dmipy_sim=_sim_identity(),
-            smoke=bool(args.smoke))
-        with open(receipt_path + ".part", "w") as fh:
-            json.dump(receipt, fh, indent=1, default=str)
-        os.replace(receipt_path + ".part", receipt_path)
         done.append(name)
-        print(f"{name}: {receipt['n_walkers']} walkers, walk {t_walk:.1f} s, pack {t_pack:.1f} s, "
-              f"{receipt['bytes'] / 1e6:.2f} MB, err_max {receipt['err_max']}, floor {receipt['floor_max']}, "
-              f"missing {receipt['missing_statements']}", flush=True)
     print(json.dumps(dict(family=fam.name, walked=len(done), failed=failed)), flush=True)
     if failed:
         raise SystemExit(1)
@@ -777,8 +834,9 @@ def main(argv=None):
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
     p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "
-                                                        "sets the count (pores); 0 the toggle-proof a / f^2")
-    p.add_argument("--n-min", type=int, default=4000, help="plan: the fewest walkers a pilot bound sets")
+                                                        "sets the count (pores; production: n_min); 0 the toggle-proof a / f^2")
+    p.add_argument("--n-min", type=int, default=8000, help="plan: the fewest walkers a pilot bound sets (the "
+                                                            "production pilot walks this many, and a pore at it packs its pilot)")
     p.add_argument("--pilot-backend", default=None, help="plan: the backend the pilot walks on (--backend's by default)")
     p.add_argument("--pilot-axes", choices=("confined", "all"), default="confined",
                    help="plan: the gradient axes the pilot bound covers: the pore's confined axes, or all three")
