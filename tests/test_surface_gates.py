@@ -103,3 +103,22 @@ def test_the_walk_free_contact_term_agrees_with_the_measured_one(packs):
     for f in (f_wf, f_ms):
         assert f["err_surface"] <= 2.0 * f["floor_surface"] and f["err_surface"] < 1e-2 and f["floor_surface"] < 1e-2
     assert abs(f_wf["err_surface"] - f_ms["err_surface"]) <= 0.25 * f_ms["floor_surface"], (f_wf["err_surface"], f_ms["err_surface"])
+
+
+def test_the_walk_free_contact_term_charges_the_bands_the_pack_does_not_store(cylinder_walk):
+    """A pack storing fewer contact bands than the walk accumulated (``blt_temporal_K``) is charged their truncation
+    walk-free: in the float container the stored bridge has no quantisation, its whole error against the dense reading
+    is the bands left out, and the walk-free ``err_surface`` is the measured one to a quarter of the floor."""
+    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=_env([1e-5, 1e-4]), K=32,
+              blt_temporal_K=4, blt_container=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        f_wf = build_replay_pack(cylinder_walk, fidelity="derived", **kw).fidelity
+        f_ms = build_replay_pack(cylinder_walk, fidelity="measured", **kw).fidelity
+    assert f_wf["err_surface_quantisation"] == 0.0 and f_wf["err_surface_truncation"] > 0.0
+    assert f_wf["err_surface"] >= f_wf["err_surface_truncation"]
+    assert abs(f_wf["err_surface"] - f_ms["err_surface"]) <= 0.25 * f_ms["floor_surface"], (f_wf["err_surface"], f_ms["err_surface"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        full = build_replay_pack(cylinder_walk, fidelity="derived", **dict(kw, blt_temporal_K=32)).fidelity
+    assert full["err_surface_truncation"] == 0.0
