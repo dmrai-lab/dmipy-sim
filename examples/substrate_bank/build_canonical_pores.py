@@ -135,8 +135,12 @@ def walk(spec, n, *, T, K, seed, sub_steps=None):
 
 
 # ----------------------------------------------------------------- the envelope and the declared waveforms
-#: What these packs say they are FOR: the PGSE / OGSE / short-delta battery the family's floor was measured over.
-ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9, 2e9, 3e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+#: What these packs say they are FOR: every waveform the Connectome 2.0 class plays (``scanner``: 0.5 T/m and
+#: 600 T/m/s per axis, the certificate's gradient side), the contact tier at a surface relaxivity up to 3 um/s
+#: (``rho2_list``), and the PGSE / OGSE / short-delta shapes the certificate's truncation and floors are read on.
+#: No pool is magnetic, so no field strength is certified.
+ENVELOPE = dict(scanner="connectome_2", rho2_list=[3e-6],
+                bvals=[0.0, 0.5e9, 1e9, 2e9, 3e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 ogse_periods=[1, 2, 3, 5], shortd_b=1e9, shortd_deltas_frac=[0.2, 0.1, 0.05, 0.025],
                 delta_frac=0.2, Delta_frac=0.5)
 

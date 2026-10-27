@@ -1,0 +1,622 @@
+"""The replayable-MC paper's substrate families walked once each, on a stated certificate envelope.
+
+Three families: the canonical pores (planes, cylinders and spheres, 0.1 to 20 um, the ids and seeds of
+``examples/substrate_bank/build_canonical_pores.py``), the closed permeable slab (4 um, a membrane at its middle,
+kappa 10 and 100 um/s, a field layer in one compartment) and the CACTUS bundle (inner and outer meshes of each
+strand, three pools: intra, frozen myelin water, extra). Each pack is walked once at every tier its substrate
+carries and built with :func:`~dmipy_sim.replay.bank.build_replay_pack` on the family's ENVELOPE:
+
+* the gradient side for a scanner class (``scanner``: every waveform within its ``G_max`` per axis),
+* the contact tier at the surface relaxivities ``rho2_list`` (m/s),
+* the field tier at the strengths ``B0_list`` (T) and the susceptibility scale ``chi_max`` (the spec's magnetic
+  pools', or the family's where its field is not a pool's).
+
+The defaults are the DiSCo recipe's (connectome_2, rho2 <= 3 um/s, B0 in 1.5 / 3 / 7 T); ``--envelope`` replaces
+any of them from a JSON file.
+
+The walker count is the toggle-proof rule. Every physics toggle of a replay (relaxation, relaxivity, a field, a
+pool's weight) multiplies a walker's contribution by a factor of modulus at most one, so the standard error of a
+signal in units of the unrelaxed water signal obeys ``SE^2 <= sum_p a_p^2 / n_p`` for pools of water share
+``a_p`` walked by ``n_p`` walkers. At equal cost per walker the cheapest counts that hold ``SE <= f`` for every
+toggle and every waveform are ``n_p = a_p / f^2``: ``1 / f^2`` walkers in all, seeded in proportion to the water
+(:func:`toggle_proof_counts` states the general, cost-weighted form ``n_p = a_p sum_q a_q sqrt(c_q / c_p) / f^2``).
+
+Stages::
+
+    python tools/family_rewalk.py plan pores                          # counts, step resolution, cost, backend
+    python tools/family_rewalk.py walk pores --out DIR --backend cuda # walk + pack every substrate not yet in DIR
+    python tools/family_rewalk.py check DIR                           # every pack: stated envelope, certificate, a replay
+
+``walk`` is resumable: a substrate whose pack and receipt exist in ``DIR`` is not walked again, and
+``--shard i/n`` takes every n-th substrate from the i-th, so n jobs share one family. ``--smoke`` is the same
+pipeline on a few substrates at a few hundred walkers over a short window, for a CPU (``JAX_PLATFORMS=cpu``).
+"""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+#: The certificate envelope every family states: DiSCo's (tessera's recipe ``pack``: rho2_max_m_s, B0_list_T; its
+#: ``walk.scanner``). The battery's shapes are the library default's; ``chi_max`` is the spec's unless a family
+#: states its own.
+ENVELOPE = dict(scanner="connectome_2", rho2_list=[3e-6], B0_list=[1.5, 3.0, 7.0])
+
+#: Bands per 100 ms storage window: the storage band (1280 Hz), DiSCo's.
+K_BANDS = 256
+WINDOW_T = 0.1
+
+
+# ------------------------------------------------------------------ the walker rule
+def toggle_proof_counts(shares, floor, costs=None):
+    """Walkers per pool so that every replay's standard error is at most ``floor`` (units of the unrelaxed water
+    signal) for ANY physics toggle: minimise ``sum_p n_p c_p`` subject to ``sum_p a_p^2 / n_p <= floor^2``, which is
+    ``n_p = a_p sum_q a_q sqrt(c_q / c_p) / floor^2``. ``shares`` maps a pool to its water share ``a_p`` (normalised
+    here); ``costs`` maps a pool to its cost per walker (equal when None, which gives ``n_p = a_p / floor^2``).
+    Returns ``{pool: n_p}`` (ceilings)."""
+    a = {p: float(v) for p, v in shares.items() if float(v) > 0.0}
+    tot = sum(a.values())
+    if not tot > 0.0 or not float(floor) > 0.0:
+        raise ValueError("toggle_proof_counts needs positive water shares and a positive floor")
+    a = {p: v / tot for p, v in a.items()}
+    c = {p: 1.0 for p in a} if costs is None else {p: float(costs[p]) for p in a}
+    if not all(v > 0.0 for v in c.values()):
+        raise ValueError("every pool's cost per walker must be positive")
+    s = sum(a[q] * np.sqrt(c[q]) for q in a)
+    return {p: int(np.ceil(a[p] * s / np.sqrt(c[p]) / float(floor) ** 2)) for p in a}
+
+
+def toggle_proof_bound(shares, counts):
+    """``sqrt(sum_p a_p^2 / n_p)``: the standard error any toggle of a replay is held under at these counts."""
+    tot = sum(float(v) for v in shares.values())
+    return float(np.sqrt(sum((float(shares[p]) / tot) ** 2 / int(counts[p]) for p in counts if int(counts[p]) > 0)))
+
+
+# ------------------------------------------------------------------ the envelope
+def family_envelope(base, overrides=None, **family):
+    """The envelope a family's packs are certified under: the library's default battery, :data:`ENVELOPE` over it,
+    the family's own declaration ``base`` over that (a family builder's ``ENVELOPE``), then ``family`` keys, then
+    ``overrides`` (the ``--envelope`` file)."""
+    from dmipy_sim.replay import compression as cx
+    env = dict(cx.default_envelope())
+    env.update(ENVELOPE)
+    env.update(base or {})
+    env.update(family)
+    env.update(overrides or {})
+    return env
+
+
+def stated(pack):
+    """What a pack STATES of its envelope (``replay_envelope``): the scanner class and its ``G_max``, the contact
+    tier's ``rho2_over_D_max``, the field's ``chi_max`` and ``B0_list``; None for a key it does not state."""
+    env = pack.meta.get("replay_envelope") or {}
+    acq, tis = env.get("acquisition") or {}, env.get("tissue") or {}
+    return dict(scanner=acq.get("scanner"), G_max=acq.get("G_max"), bound=acq.get("bound"), b_max=acq.get("b_max"),
+                B0_list=acq.get("B0_list"), rho2_over_D_max=tis.get("rho2_over_D_max"), chi_max=tis.get("chi_max"),
+                surface_relaxivity=env.get("surface_relaxivity"), field=env.get("field"),
+                bulk_relaxation=env.get("bulk_relaxation"))
+
+
+def missing_statements(pack):
+    """The envelope statements a pack of this campaign must carry and does not: the scanner class always, the
+    relaxivity bound where it stores the contact, the field strengths and chi where it stores the field."""
+    s = stated(pack)
+    out = []
+    if not s["scanner"] or s["G_max"] is None:
+        out.append("acquisition.scanner/G_max")
+    if s["surface_relaxivity"] and s["rho2_over_D_max"] is None:
+        out.append("tissue.rho2_over_D_max")
+    if s["field"] and (not s["B0_list"] or s["chi_max"] is None):
+        out.append("acquisition.B0_list/tissue.chi_max")
+    return out
+
+
+# ------------------------------------------------------------------ the families
+def _pores_module():
+    path = os.path.join(ROOT, "examples", "substrate_bank", "build_canonical_pores.py")
+    import dmipy_sim  # noqa: F401  (bound first: the builder puts its own checkout on sys.path)
+    spec = importlib.util.spec_from_file_location("build_canonical_pores", path)
+    mod = importlib.util.module_from_spec(spec)
+    saved = list(sys.path)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = saved
+    return mod
+
+
+class Family:
+    """One family's recipe: its substrates by name, each with a pack id, a dataset path and the call that walks
+    it; its envelope, walker floor, bands and licences."""
+    name = None
+    floor = 5e-3
+    blt_K = 8
+    license = "CC-BY-4.0"
+    pack_license = None
+    citation = "Fick RHJ (2026), replayable Monte-Carlo packs, SubstrateCommons"
+
+    def __init__(self, args):
+        self.args = args
+        self.T = float(args.T) if args.T else WINDOW_T
+        self.K = int(args.K) if args.K else int(np.ceil(K_BANDS * self.T / WINDOW_T))
+        self.floor = float(args.floor) if args.floor else self.floor
+        self.overrides = json.load(open(args.envelope)) if args.envelope else {}
+
+    def substrates(self):
+        raise NotImplementedError
+
+    def shares(self, name):
+        return {"water": 1.0}
+
+    def counts(self, name):
+        if self.args.smoke:
+            return {p: max(1, int(round(int(self.args.smoke_n) * a))) for p, a in self.shares(name).items()}
+        return toggle_proof_counts(self.shares(name), self.floor)
+
+    def n_walkers(self, name):
+        return int(sum(self.counts(name).values()))
+
+
+class Pores(Family):
+    """The canonical pores: three shapes at every 0.1 um from 0.1 to 20 um, one pool, impermeable, no field;
+    walked by ``simulate_trajectories`` at the pack's own seed (``pack_seed`` of its id)."""
+    name = "pores"
+    blt_K = 8
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.m = _pores_module()
+        dia = tuple(args.diameters) if args.diameters else ((5.0, 20.0) if args.smoke else self.m.DIAMETERS_UM)
+        self.rows = self.m.grid_rows(diameters_um=dia)
+        self.envelope = family_envelope(self.m.ENVELOPE, self.overrides)
+        self.license = self.m.LICENCE
+        self.citation = self.m.CITATION
+
+    def substrates(self):
+        return {n: dict(id=r["id"], path=r["path"], shape=r["shape"], d_um=r["d_um"]) for n, r in sorted(self.rows.items())}
+
+    def geometry(self, name):
+        r = self.rows[name]
+        return self.m.geometry(r["shape"], r["d_um"])
+
+    def cost(self, name, backend):
+        from dmipy_sim.engine.core import walk_cost
+        return walk_cost(self.n_walkers(name), self.m.D0, self.geometry(name), self.T, K=self.K, tiers="all",
+                         backend=backend, window_T=self.T)
+
+    def walk(self, name, seed, backend):
+        import dmipy_sim as d
+        from dmipy_sim.spec import geometry_from_spec
+        r = self.rows[name]
+        spec = self.m.spec_of(r["shape"], r["d_um"])
+        return d.simulate_trajectories(self.n_walkers(name), self.m.D0, geometry_from_spec(spec), T_max=self.T, K=self.K,
+                                       seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
+                                       window_T=self.T, envelope=self.envelope)
+
+    def pack_kw(self, name, walk):
+        return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.m.D0)
+
+
+class Slab(Family):
+    """The closed permeable slab: [0, L] split at L/2 by a membrane of permeability kappa, reflecting ends, every
+    walker starting in compartment A = [0, L/2]. Compartment B's pool is magnetic (``chi_iso`` = -0.1 ppm, which
+    the envelope's ``chi_max`` is read from) and its field basis is the indicator of B, a layer at ``chi B0`` the
+    walkers exchange in and out of, read along the path."""
+    name = "slab"
+    blt_K = 256
+    L = 4.0e-6
+    D0 = 2.0e-9
+    KAPPAS = (1.0e-5, 1.0e-4)
+    CHI = -1.0e-7                      #: compartment B's chi_iso: the off-resonant layer
+    FIELD_NODES = 400
+    FIELD_ROUTE = "grid"               #: the layer's basis is a raster read at the walker's position
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.envelope = family_envelope(None, self.overrides, max_refocus_pulses=8)
+
+    def substrates(self):
+        kap = self.KAPPAS if not self.args.kappas else tuple(self.args.kappas)
+        return {f"slab-L{self.L * 1e6:.1f}um-k{k * 1e6:g}um_s": dict(
+            id=f"permeable-slab/L{self.L * 1e6:.1f}um-kappa{k * 1e6:g}um_s",
+            path=f"packs/L{self.L * 1e6:.1f}um_kappa{k * 1e6:g}um_s.rpk", kappa=float(k)) for k in kap}
+
+    def geometry(self, name):
+        import dmipy_sim as d
+        return d.PermeableSlab1D(self.L, self.substrates()[name]["kappa"])
+
+    def spec(self, name):
+        """The slab's spec with compartment B (pool ``extra``) magnetic and the field tier declared: the field rule
+        (some pool magnetic <=> ``"field"`` in the tiers <=> C3 stored) the pack is held to."""
+        import dataclasses
+        from dmipy_sim.spec.substrate import Susceptibility
+        s = self.geometry(name).spec
+        return s.replace(susceptibility={"extra": Susceptibility(chi_iso=self.CHI)},
+                         validity=dataclasses.replace(s.validity, tiers=list(s.validity.tiers) + ["field"]))
+
+    def field_grid(self):
+        """A geometry-only basis on a 1-D grid: ``iso_local`` 1 in compartment B and 0 in A, no ``iso_P``."""
+        from dmipy_sim.fields.susceptibility_field import FieldGrid
+        nx = self.FIELD_NODES
+        vs = np.array([self.L / nx, 1.0, 1.0])
+        x = (np.arange(nx) + 0.5) * vs[0]
+        iso_local = (x > self.L / 2).astype(np.float32).reshape(nx, 1, 1)
+        basis = dict(iso_local=iso_local, iso_P=np.zeros((6, nx, 1, 1), np.float32), shape=(nx, 1, 1), voxel_size=vs)
+        return FieldGrid(basis, np.array([0.0, -0.5, -0.5]))
+
+    def cost(self, name, backend):
+        from dmipy_sim.engine.core import walk_cost
+        return walk_cost(self.n_walkers(name), self.D0, self.geometry(name), self.T, K=self.K, tiers="all",
+                         backend=backend, window_T=self.T, events_capacity=64)
+
+    def walk(self, name, seed, backend):
+        import dmipy_sim as d
+        return d.simulate_trajectories(self.n_walkers(name), self.D0, self.spec(name), T_max=self.T, K=self.K,
+                                       seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
+                                       window_T=self.T, field_basis=self.field_grid(), envelope=self.envelope)
+
+    def pack_kw(self, name, walk):
+        return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.D0,
+                    provenance=dict(substrate="PermeableSlab1D", L_m=self.L, kappa_m_s=self.substrates()[name]["kappa"],
+                                    D0=self.D0, field="iso_local = 1 in compartment B (x > L/2), 0 in A"))
+
+
+class Cactus(Family):
+    """The CACTUS bundle: every strand an inner and an outer mesh in a periodic cell, three pools (intra, myelin
+    water frozen in its sheath, extra), the myelin sheath's susceptibility field rasterised and read along the
+    path. Walked by ``walk_spec`` pool by pool, seeded in proportion to the water (``thin``), which is the
+    toggle-proof count at equal cost per walker."""
+    name = "cactus"
+    floor = 3e-3
+    blt_K = 256
+    license = "MIT"                                    #: the CACTUS source's
+    pack_license = "CC-BY-NC-SA-4.0 OR LicenseRef-Commercial"
+    citation = "Villarreal-Haro et al. 2023, CACTUS (https://github.com/Juanitovh/CACTUS)"
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.envelope = family_envelope(None, self.overrides, max_refocus_pulses=8)
+        self.run_dir = args.cactus_run or (_smoke_cactus_run(args) if args.smoke else None)
+        if self.run_dir is None:
+            raise SystemExit("cactus: --cactus-run DIR (a CACTUS run directory: optimized_final.txt and "
+                             "meshes/simulations/strand_*_{inner,outer}_erode_*.ply)")
+        self._spec = None
+
+    def spec(self):
+        if self._spec is None:
+            from dmipy_sim.spec import cactus_spec
+            self._spec = cactus_spec(self.run_dir, side_um=(self.args.smoke_side_um if self.args.smoke else None))
+        return self._spec
+
+    def substrates(self):
+        base = os.path.basename(os.path.normpath(self.run_dir)).replace("cactus_", "").replace("_", "")
+        tag = f"{base}-{self.T * 1e3:g}ms"
+        return {f"cactus-{tag}": dict(id=f"cactus/{tag}", path=f"packs/{tag.replace('-', '_')}.rpk")}
+
+    def shares(self, name):
+        """Water share per seeded pool: its volume fraction (a probe of the cell) times its water fraction."""
+        from dmipy_sim.spec.walk import WalkContext
+        spec = self.spec()
+        tests = WalkContext(spec).tests
+        probe = np.random.default_rng(99).uniform(tests.lo, tests.hi, (int(self.args.n_probe), 3))
+        return {tests.pools[pid].name: float(tests.member(pid)(probe).mean()) * float(tests.wf[pid]) for pid in tests.seeded}
+
+    #: How a mesh sheath's field reaches the walk: a raster (``FieldGrid``) read at the walker's position. The CUDA
+    #: backend samples a strand basis only (``CudaBackend.refuses``), so a CUDA walk of this family refuses its field.
+    FIELD_ROUTE = "grid"
+
+    def pool_costs(self, name, backend):
+        """``{pool: WalkCost}`` of each diffusing pool's walk, the geometry ``walk_spec`` walks it in (inside its
+        inner walls or outside its outer ones, the cell's faces as the domain says), without the field read."""
+        from dmipy_sim.engine.core import walk_cost
+        from dmipy_sim.spec.walk import WalkContext
+        spec = self.spec()
+        t = WalkContext(spec).tests
+        counts, feature, out = self.counts(name), float(spec.validity.smallest_feature), {}
+        for pid in t.seeded:
+            pool = t.pools[pid]
+            if not pool.D:
+                continue                                        # a frozen pool takes no step
+            geo = (t.boundary(t.inside_w[pid]).geometry("intra", t.lo, t.hi, t.periodic, t.reflect, feature) if t.inside_w[pid]
+                   else t.boundary(t.outside_w[pid]).geometry("extra", t.lo, t.hi, t.periodic, t.reflect, feature))
+            out[pool.name] = walk_cost(max(1, counts.get(pool.name, 1)), float(pool.D), geo, self.T, K=self.K,
+                                       tiers="all", backend=backend, window_T=self.T)
+        return out
+
+    def cost(self, name, backend):
+        """The pools' walks as one cost (walker-steps summed, the finest step's resolution); the field's read is
+        priced by the walk itself."""
+        costs = self.pool_costs(name, backend)
+        first = min(costs.values(), key=lambda c: c.dt_sim)
+        import dataclasses
+        return dataclasses.replace(first, walker_steps=int(sum(c.walker_steps for c in costs.values())),
+                                   n_walkers=int(sum(c.n_walkers for c in costs.values())))
+
+    def walk(self, name, seed, backend):
+        from dmipy_sim.spec import walk_spec
+        kw = dict(field_res=float(self.args.field_res) * 1e-6) if self.args.field_res else {}
+        return walk_spec(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
+                         K=self.K, window_T=self.T, envelope=self.envelope, backend=backend,
+                         require_gpu=(backend != "jax"), **kw)
+
+    def pack_kw(self, name, walk):
+        return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), pack_license=self.pack_license,
+                    provenance=dict(source=os.path.abspath(self.run_dir)))
+
+
+FAMILIES = {"pores": Pores, "slab": Slab, "cactus": Cactus}
+
+
+def _smoke_cactus_run(args):
+    """A CACTUS-shaped run directory of two capped myelinated tubes along z overrunning a small periodic cell:
+    the same producer (``cactus_spec``), walk and pack as the real bundle, at a CPU's size."""
+    import trimesh
+    out = os.path.join(os.path.abspath(args.out or "."), "_smoke_cactus_run")
+    sim = os.path.join(out, "meshes", "simulations")
+    if os.path.isdir(sim) and len(os.listdir(sim)) == 4:
+        return out
+    os.makedirs(sim, exist_ok=True)
+    side = float(args.smoke_side_um)
+    for i, (cx, cy) in enumerate(((-0.25 * side, -0.2 * side), (0.25 * side, 0.2 * side))):
+        for kind, r in (("inner", 1.0), ("outer", 1.4)):
+            m = trimesh.creation.cylinder(radius=r, height=1.6 * side, sections=48)
+            m.apply_translation([cx, cy, 0.0])
+            m.export(os.path.join(sim, f"strand_{i:05d}_{kind}_erode_0.ply"))
+    return out
+
+
+# ------------------------------------------------------------------ the stages
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _commit(path):
+    try:
+        return subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True,
+                              timeout=10).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _sim_identity():
+    """Where the ``dmipy_sim`` that walked is imported from and its checkout's commit (an installed copy shadowing
+    the intended checkout is the trap this records), and the CUDA backend's when it is installed."""
+    import dmipy_sim
+    sim = os.path.dirname(os.path.abspath(dmipy_sim.__file__))
+    out = dict(path=sim, commit=_commit(sim))
+    try:
+        import dmipy_sim_cuda
+        cu = os.path.dirname(os.path.abspath(dmipy_sim_cuda.__file__))
+        out["cuda"] = dict(path=cu, commit=_commit(cu))
+    except ImportError:
+        out["cuda"] = None
+    return out
+
+
+def _device():
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+        return out or "cpu"
+    except Exception:
+        return "cpu"
+
+
+def _shard(names, shard):
+    if not shard:
+        return names
+    i, n = (int(x) for x in shard.split("/"))
+    return names[i::n]
+
+
+def _plan_backend(backend):
+    """The backend a plan asks: the installed one of that name, else for ``"cuda"`` the dmipy-sim-cuda checkout's
+    :class:`CudaBackend` on the path (its refusals need no built library), so a CPU host states what the card
+    would refuse."""
+    from dmipy_sim.engine.backends import resolve
+    try:
+        resolve(backend)
+        return backend
+    except ValueError:
+        if backend != "cuda":
+            raise
+        from dmipy_sim_cuda.backend import CudaBackend
+        return CudaBackend()
+
+
+def _backend_check(fam, name, backend):
+    """``(accepted, cost or reason)`` for walking ``name`` on ``backend``: the walk's own resolution
+    (:func:`~dmipy_sim.engine.core.walk_cost`), refused where the walk refuses."""
+    backend = _plan_backend(backend)
+    try:
+        c = fam.cost(name, backend)
+        return True, c
+    except ValueError as e:
+        return False, str(e)
+
+
+def stage_plan(fam, args):
+    from dmipy_sim.engine.core import walk_cost  # noqa: F401  (the resolution the walk itself takes)
+    rows, tot_steps, tot_n = [], 0, 0
+    for name, sub in _shard(list(fam.substrates().items()), args.shard):
+        counts = fam.counts(name)
+        n = int(sum(counts.values()))
+        ok, c = _backend_check(fam, name, args.backend)
+        refusal = None if ok else c
+        if not ok and args.backend != "jax":         # the resolution is the walk's whatever executes it
+            ok_j, c = _backend_check(fam, name, "jax")
+            c = c if ok_j else None
+        field_refusal = None
+        if getattr(fam, "FIELD_ROUTE", None) == "grid" and args.backend == "cuda":
+            field_refusal = "the field is read from a FieldGrid, and the CUDA backend samples a StrandFieldBasis only"
+        row = dict(name=name, id=sub["id"], n_walkers=n, counts=counts,
+                   se_bound=toggle_proof_bound(fam.shares(name), counts), backend=args.backend,
+                   accepted=bool(ok) and field_refusal is None, refusal=refusal, field_refusal=field_refusal)
+        if c is not None and not isinstance(c, str):
+            row.update(sub_steps=int(c.sub_steps), dt_sim_s=float(c.dt_sim), n_blocks=int(c.n_blocks),
+                       walker_steps=int(c.walker_steps), bytes_per_walker=int(c.bytes_per_walker),
+                       binding_rule=str(c.binding_rule))
+            tot_steps += int(c.walker_steps)
+        tot_n += n
+        rows.append(row)
+        print(json.dumps({k: v for k, v in row.items() if k != "counts"}), flush=True)
+    rate = float(args.rate)
+    summary = dict(family=fam.name, n_substrates=len(rows), n_walkers=tot_n, walker_steps=tot_steps,
+                   gpu_hours_at_rate=tot_steps / rate / 3600.0, rate_walker_steps_per_s=rate,
+                   floor=fam.floor, T=fam.T, K=fam.K, blt_K=fam.blt_K, envelope=fam.envelope,
+                   refused=[r["name"] for r in rows if not r["accepted"]])
+    print(json.dumps(summary, default=str), flush=True)
+    if args.out:
+        os.makedirs(args.out, exist_ok=True)
+        with open(os.path.join(args.out, f"plan_{fam.name}.json"), "w") as fh:
+            json.dump(dict(summary=summary, rows=rows), fh, indent=1, default=str)
+    return summary
+
+
+def stage_walk(fam, args):
+    from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.reference import pack_seed
+    out = os.path.abspath(args.out)
+    os.makedirs(os.path.join(out, "receipts"), exist_ok=True)
+    done, failed = [], []
+    for name, sub in _shard(list(fam.substrates().items()), args.shard):
+        path = os.path.join(out, sub["path"])
+        receipt_path = os.path.join(out, "receipts", f"{name}.json")
+        if os.path.exists(path) and os.path.exists(receipt_path):
+            print(f"{name}: pack and receipt present, not walked again", flush=True)
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        seed = pack_seed(sub["id"])
+        t0 = time.time()
+        try:
+            walk = fam.walk(name, seed, args.backend)
+            t_walk = time.time() - t0
+            t1 = time.time()
+            kw = fam.pack_kw(name, walk)
+            prov = dict(kw.pop("provenance", {}) or {})
+            prov.update(campaign=args.campaign, walker_rule=dict(
+                rule="toggle-proof: SE^2 <= sum_p a_p^2 / n_p for any toggle, n_p = a_p / f^2 at equal cost",
+                floor=fam.floor, counts=fam.counts(name), smoke=bool(args.smoke)))
+            pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
+                                     envelope=fam.envelope, fidelity="derived", provenance=prov,
+                                     out_path=path + ".part", **kw)
+            os.replace(path + ".part", path)
+            t_pack = time.time() - t1
+        except Exception as e:
+            failed.append(name)
+            print(f"{name}: FAILED {type(e).__name__}: {e}", flush=True)
+            if args.stop_on_error:
+                raise
+            continue
+        fid = pack.meta.get("fidelity") or {}
+        work = dict(getattr(walk, "work", None) or {})
+        receipt = dict(
+            name=name, id=sub["id"], path=sub["path"], sha256=_sha256(path), bytes=os.path.getsize(path),
+            n_walkers=int(pack.n_walkers), counts=fam.counts(name), seed=int(seed), backend=args.backend,
+            device=_device(), walk_seconds=round(t_walk, 2), pack_seconds=round(t_pack, 2),
+            sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
+            exhausted_steps=int(work.get("exhausted_steps") or 0), block=dict(walk.block or {}),
+            K=int(fam.K), blt_K=int(fam.blt_K), T=float(fam.T), floor_target=float(fam.floor),
+            err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), terms=fid.get("terms"),
+            envelope=fam.envelope, stated=stated(pack), missing_statements=missing_statements(pack),
+            dmipy_sim=_sim_identity(),
+            smoke=bool(args.smoke))
+        with open(receipt_path + ".part", "w") as fh:
+            json.dump(receipt, fh, indent=1, default=str)
+        os.replace(receipt_path + ".part", receipt_path)
+        done.append(name)
+        print(f"{name}: {receipt['n_walkers']} walkers, walk {t_walk:.1f} s, pack {t_pack:.1f} s, "
+              f"{receipt['bytes'] / 1e6:.2f} MB, err_max {receipt['err_max']}, floor {receipt['floor_max']}, "
+              f"missing {receipt['missing_statements']}", flush=True)
+    print(json.dumps(dict(family=fam.name, walked=len(done), failed=failed)), flush=True)
+    if failed:
+        raise SystemExit(1)
+
+
+def stage_check(args):
+    """Every pack under ``DIR``: it loads, states the campaign's envelope (refused when ``--require-stated``), its
+    certificate against its floor, and the replay of a PGSE at b = 1000 s/mm^2 across x is a signal in (0, 1]."""
+    from dmipy_sim import pgse
+    from dmipy_sim.replay.replay import ReplayPack
+    rows, bad = [], []
+    for dirpath, _, files in os.walk(os.path.abspath(args.out)):
+        for f in sorted(files):
+            if not f.endswith(".rpk"):
+                continue
+            path = os.path.join(dirpath, f)
+            pk = ReplayPack.load(path)
+            T = (int(pk.n_t) - 1) * float(pk.dt)
+            delta, Delta = 0.1 * T, 0.5 * T
+            seq = pgse([[1.0, 0.0, 0.0]], delta, Delta, bvalues=[1e9], n_t=400)
+            S = float(np.abs(np.asarray(pk.replay(seq))).ravel()[0])
+            fid = pk.meta.get("fidelity") or {}
+            miss = missing_statements(pk)
+            row = dict(pack=os.path.relpath(path, args.out), n_walkers=int(pk.n_walkers), S_pgse_b1000=S,
+                       err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), missing_statements=miss,
+                       stated=stated(pk))
+            rows.append(row)
+            print(json.dumps(row, default=str), flush=True)
+            if not (0.0 < S <= 1.0 + 1e-6) or (args.require_stated and miss):
+                bad.append(row["pack"])
+    print(json.dumps(dict(checked=len(rows), bad=bad)), flush=True)
+    if bad or not rows:
+        raise SystemExit(1)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("stage", choices=("plan", "walk", "check"))
+    p.add_argument("family", nargs="?", choices=tuple(FAMILIES))
+    p.add_argument("--out", default=None, help="the family's output directory (packs/, receipts/)")
+    p.add_argument("--backend", default="jax", help="'cuda' for production, 'jax' for a CPU smoke")
+    p.add_argument("--envelope", default=None, help="a JSON file of envelope keys over the family's (scanner, "
+                                                    "rho2_list, B0_list, chi_max, ...)")
+    p.add_argument("--floor", type=float, default=None, help="the toggle-proof standard-error floor f")
+    p.add_argument("--T", type=float, default=None, help="the walk's window (s); 0.1 by default")
+    p.add_argument("--K", type=int, default=None, help="bands per window; 256 per 100 ms by default")
+    p.add_argument("--shard", default=None, help="i/n: every n-th substrate from the i-th")
+    p.add_argument("--campaign", default="replayable-mc-rewalk-2026-10")
+    p.add_argument("--diameters", type=float, nargs="+", default=None, help="pores: a sub-grid (um)")
+    p.add_argument("--kappas", type=float, nargs="+", default=None, help="slab: permeabilities (m/s)")
+    p.add_argument("--cactus-run", default=None, help="cactus: the CACTUS run directory")
+    p.add_argument("--field-res", type=float, default=None, help="cactus: the field raster's node spacing (um)")
+    p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
+    p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
+    p.add_argument("--smoke", action="store_true", help="a few substrates, a few hundred walkers: the CPU check")
+    p.add_argument("--smoke-n", type=int, default=300)
+    p.add_argument("--smoke-side-um", type=float, default=6.0)
+    p.add_argument("--require-stated", action="store_true", help="check: refuse a pack that does not state the envelope")
+    p.add_argument("--stop-on-error", action="store_true")
+    a = p.parse_args(argv)
+    import logging
+    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
+    if a.stage == "check":
+        if not a.out:
+            p.error("check needs --out")
+        return stage_check(a)
+    if a.family is None:
+        p.error(f"{a.stage} needs a family")
+    fam = FAMILIES[a.family](a)
+    if a.stage == "plan":
+        return stage_plan(fam, a)
+    if not a.out:
+        p.error("walk needs --out")
+    if not a.smoke and a.backend == "jax":
+        p.error("a production walk runs on --backend cuda; --smoke for the CPU check")
+    return stage_walk(fam, a)
+
+
+if __name__ == "__main__":
+    main()
