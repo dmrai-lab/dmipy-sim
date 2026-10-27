@@ -39,6 +39,12 @@ Stages::
     python tools/family_rewalk.py walk pores --out DIR --backend cuda # walk + pack every substrate not yet in DIR
     python tools/family_rewalk.py check DIR                           # every pack: stated envelope, certificate, a replay
 
+``walk --keep-walk DIR`` also saves each substrate's float ``CoefficientWalk`` to ``DIR/<pack id>.safetensors``
+(``--keep-walk-ids`` restricts it to the substrates named there), its path and sha256 in the pack's receipt;
+``walk --raw-subset N`` keeps the block ends, contact and field reads of ``N`` walkers and builds the pack
+``fidelity="measured"`` (its certificate replayed on that subset against the pack's own coefficients). The CACTUS
+bundle's walk drops the subset in its join, so that family refuses the option.
+
 ``walk`` is resumable: a substrate whose pack and receipt exist in ``DIR`` is not walked again, and
 ``--shard i/n`` takes every n-th substrate from the i-th, so n jobs share one family. ``--smoke`` is the same
 pipeline on a few substrates at a few hundred walkers over a short window, for a CPU (``JAX_PLATFORMS=cpu``).
@@ -264,9 +270,16 @@ class Family:
     license = "CC-BY-4.0"
     pack_license = None
     citation = "Fick RHJ (2026), replayable Monte-Carlo packs, SubstrateCommons"
+    #: Whether the family walks pool by pool through ``_walk_bundle``, whose join drops the walk's raw subset.
+    bundle = False
 
     def __init__(self, args):
         self.args = args
+        self.raw_subset = int(getattr(args, "raw_subset", 0) or 0)
+        if self.raw_subset > 0 and self.bundle:
+            raise SystemExit(f"--raw-subset {self.raw_subset}: the {self.name} family is a multi-pool bundle walk, and "
+                             "the bundle's join drops the raw subset, so a pack has nothing to be measured on; walk "
+                             "it without --raw-subset (a derived certificate)")
         self.T = float(args.T) if args.T else WINDOW_T
         self.K = int(args.K) if args.K else int(np.ceil(K_BANDS * self.T / WINDOW_T))
         self.floor = float(args.floor) if args.floor else self.floor
@@ -327,7 +340,7 @@ class Pores(Family):
         spec = self.m.spec_of(r["shape"], r["d_um"])
         return d.simulate_trajectories(self.n_walkers(name), self.m.D0, geometry_from_spec(spec), T_max=self.T, K=self.K,
                                        seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
-                                       window_T=self.T, envelope=self.envelope)
+                                       window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope)
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.m.D0)
@@ -427,7 +440,8 @@ class Slab(Family):
         import dmipy_sim as d
         return d.simulate_trajectories(self.n_walkers(name), self.D0, self.spec(name), T_max=self.T, K=self.K,
                                        seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
-                                       window_T=self.T, field_basis=self.field_grid(), envelope=self.envelope)
+                                       window_T=self.T, raw_subset=self.raw_subset, field_basis=self.field_grid(),
+                                       envelope=self.envelope)
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.D0,
@@ -445,6 +459,7 @@ class Cactus(Family):
     blt_K = 256
     license = "MIT"                                    #: the CACTUS source's
     pack_license = "CC-BY-NC-SA-4.0 OR LicenseRef-Commercial"
+    bundle = True
     citation = "Villarreal-Haro et al. 2023, CACTUS (https://github.com/Juanitovh/CACTUS)"
 
     def __init__(self, args):
@@ -705,6 +720,30 @@ def seed_rule(fam, name, sub):
     return pack_seed(sub["id"]), "pack_seed(id)"
 
 
+def keep_ids(spec):
+    """The substrate ids ``--keep-walk-ids`` names: the lines or commas of a file, or the comma-separated list itself
+    (``None`` when unset: every substrate keeps its walk)."""
+    if not spec:
+        return None
+    text = open(spec).read() if os.path.isfile(spec) else spec
+    return {x.strip() for x in text.replace(",", "\n").splitlines() if x.strip()}
+
+
+def keep_walk(name, sub, walk, args):
+    """``{path, sha256, bytes}`` of ``walk`` saved to ``<--keep-walk>/<pack id>.safetensors``, or ``None`` where the
+    option is off or ``--keep-walk-ids`` leaves this substrate out (named by its pack id or its name)."""
+    if not args.keep_walk:
+        return None
+    ids = keep_ids(args.keep_walk_ids)
+    if ids is not None and sub["id"] not in ids and name not in ids:
+        return None
+    path = os.path.join(os.path.abspath(args.keep_walk), sub["id"] + ".safetensors")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    walk.save(path + ".part")
+    os.replace(path + ".part", path)
+    return dict(path=path, sha256=_sha256(path), bytes=os.path.getsize(path))
+
+
 def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, walked_as):
     """``walk`` packed on the family's envelope into ``out`` with its receipt: what the walk stage and a pilot that
     IS its pack (``walked_as="pilot"``) both write."""
@@ -713,6 +752,8 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
     receipt_path = os.path.join(out, "receipts", f"{name}.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     os.makedirs(os.path.dirname(receipt_path), exist_ok=True)
+    kept = keep_walk(name, sub, walk, args)
+    fidelity = "measured" if fam.raw_subset > 0 else "derived"
     t1 = time.time()
     kw = fam.pack_kw(name, walk)
     prov = dict(kw.pop("provenance", {}) or {})
@@ -726,7 +767,7 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
                                      certified_axes=pilot["certified_axes"], free_axes=pilot["free_axes"],
                                      n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
     pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
-                             envelope=fam.envelope, fidelity="derived", provenance=prov,
+                             envelope=fam.envelope, fidelity=fidelity, provenance=prov,
                              out_path=path + ".part", **kw)
     os.replace(path + ".part", path)
     t_pack = time.time() - t1
@@ -740,6 +781,9 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
         sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
         exhausted_steps=int(work.get("exhausted_steps") or 0), block=dict(walk.block or {}),
         K=int(fam.K), blt_K=int(fam.blt_K), T=float(fam.T), floor_target=float(fam.floor),
+        raw_subset=int(fam.raw_subset), fidelity=fidelity, measured_by=fid.get("measured_by"),
+        measured_on=fid.get("measured_on"),
+        kept_walk=kept,
         err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), terms=fid.get("terms"),
         envelope=fam.envelope, stated=stated(pack), missing_statements=missing_statements(pack),
         pilot=pilot, dmipy_sim=_sim_identity(), smoke=bool(args.smoke))
@@ -846,8 +890,19 @@ def main(argv=None):
     p.add_argument("--smoke-side-um", type=float, default=6.0)
     p.add_argument("--require-stated", action="store_true", help="check: refuse a pack that does not state the envelope")
     p.add_argument("--allow-jax", action="store_true", help="walk: a production walk on the JAX kernels")
+    p.add_argument("--keep-walk", default=None, help="walk: a directory the float coefficient walk of each substrate is "
+                                                      "saved to, as <pack id>.safetensors (path and sha256 in the receipt)")
+    p.add_argument("--keep-walk-ids", default=None, help="walk: a file (lines or commas) or a comma-separated list of "
+                                                          "the pack ids (or names) that keep their walk; all by default")
+    p.add_argument("--raw-subset", type=int, default=0, help="walk: walkers whose block ends, contact and field reads "
+                                                              "are kept; above 0 the pack is built fidelity='measured' "
+                                                              "(not for the cactus bundle)")
     p.add_argument("--stop-on-error", action="store_true")
     a = p.parse_args(argv)
+    if a.keep_walk_ids and not a.keep_walk:
+        p.error("--keep-walk-ids needs --keep-walk")
+    if a.raw_subset < 0:
+        p.error("--raw-subset is a count of walkers, at least 0")
     import logging
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
     if a.stage == "check":

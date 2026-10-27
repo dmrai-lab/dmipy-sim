@@ -214,3 +214,89 @@ def test_a_pore_at_n_min_is_walked_once_and_a_larger_one_afresh(fr, tmp_path, mo
     fr.main(["walk", "pores", "--plan", str(plan), "--allow-jax"] + common)
     fr.main(["plan", "pores", "--pilot", "200", "--n-min", "200"] + common)
     assert len(calls) == n_calls                                           # resumed: nothing is walked again
+
+
+# ------------------------------------------------------------------ --keep-walk and --raw-subset
+SMOKE = ["--smoke", "--smoke-n", "120", "--floor", "0.05", "--T", str(T_WIN), "--diameters", "1", "20", "--backend", "jax",
+         "--shard", "0/3"]                                  # two pores: a cylinder and a plane
+
+
+def _receipts(out):
+    import json
+    return {p.stem: json.loads(p.read_text()) for p in sorted((out / "receipts").glob("*.json"))}
+
+
+def test_defaults_keep_no_walk_and_certify_derived(fr, tmp_path):
+    fr.main(["walk", "pores", "--out", str(tmp_path)] + SMOKE)
+    receipts = _receipts(tmp_path)
+    assert len(receipts) == 2
+    for r in receipts.values():
+        assert r["kept_walk"] is None and r["raw_subset"] == 0
+        assert r["fidelity"] == "derived" and r["measured_by"] == "walk_free_terms" and r["measured_on"] is None
+    assert not list(tmp_path.rglob("*.safetensors"))                    # a walk is kept only on request
+
+
+def test_keep_walk_saves_the_walked_float_walk_beside_the_receipt(fr, tmp_path):
+    from dmipy_sim.coefficient_walk import CoefficientWalk
+    keep = tmp_path / "walks"
+    fr.main(["walk", "pores", "--out", str(tmp_path / "fam"), "--keep-walk", str(keep)] + SMOKE)
+    receipts = _receipts(tmp_path / "fam")
+    assert len(receipts) == 2
+    fam = fr.Pores(fr.argparse.Namespace(**dict(T=T_WIN, K=None, floor=0.05, envelope=None, smoke=True, diameters=[1.0, 20.0],
+                                                raw_subset=0, smoke_n=120)))
+    for name, r in receipts.items():
+        kept = r["kept_walk"]
+        path = keep / (r["id"] + ".safetensors")
+        assert kept["path"] == str(path) and path.exists()
+        assert kept["sha256"] == fr._sha256(path) and kept["bytes"] == path.stat().st_size
+        w = CoefficientWalk.load(path)
+        again = fam.walk(name, r["seed"], "jax")                     # the same walk at the receipt's seed
+        assert w.n_walkers == again.n_walkers == r["n_walkers"]
+        assert np.array_equal(np.asarray(w.position_coeffs), np.asarray(again.position_coeffs))
+        assert np.array_equal(np.asarray(w.take(np.arange(10)).position_coeffs), np.asarray(again.position_coeffs)[:10])
+        assert not list(keep.rglob("*.part"))
+
+
+def test_keep_walk_ids_restrict_which_substrates_keep_their_walk(fr, tmp_path):
+    first = fr.Pores(fr.argparse.Namespace(**dict(T=T_WIN, K=None, floor=0.05, envelope=None, smoke=True,
+                                                  diameters=[1.0, 20.0], raw_subset=0))).substrates()
+    names = sorted(first)[0::3]
+    ids = tmp_path / "ids.txt"
+    ids.write_text(first[names[0]]["id"] + "\n")
+    fr.main(["walk", "pores", "--out", str(tmp_path / "a"), "--keep-walk", str(tmp_path / "wa"),
+             "--keep-walk-ids", str(ids)] + SMOKE)
+    ra = _receipts(tmp_path / "a")
+    assert ra[names[0]]["kept_walk"] is not None and ra[names[1]]["kept_walk"] is None
+    assert [p.name for p in (tmp_path / "wa").rglob("*.safetensors")] == [Path(first[names[0]]["id"]).name + ".safetensors"]
+    fr.main(["walk", "pores", "--out", str(tmp_path / "b"), "--keep-walk", str(tmp_path / "wb"),
+             "--keep-walk-ids", names[1]] + SMOKE)                     # a comma list of names, not a file
+    rb = _receipts(tmp_path / "b")
+    assert rb[names[0]]["kept_walk"] is None and rb[names[1]]["kept_walk"] is not None
+
+
+def test_keep_walk_ids_without_keep_walk_is_refused(fr, tmp_path):
+    with pytest.raises(SystemExit):
+        fr.main(["walk", "pores", "--out", str(tmp_path), "--keep-walk-ids", "x"] + SMOKE)
+
+
+def test_a_pilot_that_is_its_pack_keeps_its_walk_too(fr, tmp_path):
+    keep = tmp_path / "walks"
+    fr.main(["plan", "pores", "--pilot", "120", "--n-min", "120", "--out", str(tmp_path / "fam"),
+             "--keep-walk", str(keep), "--floor", "0.05", "--T", str(T_WIN), "--diameters", "1", "20", "--backend", "jax", "--shard", "0/3"])
+    packed = {n: r for n, r in _receipts(tmp_path / "fam").items() if r["walked_as"] == "pilot"}
+    assert packed
+    for r in packed.values():
+        assert (keep / (r["id"] + ".safetensors")).exists() and r["kept_walk"]["sha256"] == fr._sha256(r["kept_walk"]["path"])
+
+
+def test_raw_subset_builds_a_pack_certified_on_that_subset(fr, tmp_path):
+    fr.main(["walk", "pores", "--out", str(tmp_path), "--raw-subset", "40"] + SMOKE)
+    for r in _receipts(tmp_path).values():
+        assert r["raw_subset"] == 40 and r["fidelity"] == "measured" and r["measured_by"] == "raw_subset" and r["measured_on"] == 40
+        assert r["err_max"] is not None
+
+
+def test_raw_subset_is_refused_for_the_bundle_family_by_name(fr, tmp_path):
+    with pytest.raises(SystemExit) as e:
+        fr.main(["walk", "cactus", "--out", str(tmp_path), "--raw-subset", "10", "--smoke", "--backend", "jax"])
+    assert "cactus" in str(e.value) and "bundle" in str(e.value) and "raw subset" in str(e.value)
