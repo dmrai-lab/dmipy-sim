@@ -94,7 +94,7 @@ def toggle_proof_bound(shares, counts):
 PILOT_MARGIN_SE = 3.0
 #: The surface relaxivities (fractions of the envelope's largest) and the readout times (every block end) the
 #: toggles' weights are read at.
-RHO_FRACTIONS = (0.0, 0.125, 0.25, 0.5, 1.0)
+RHO_FRACTIONS = tuple(np.linspace(0.0, 1.0, 17))
 
 
 def _top_eigenvalue(Y):
