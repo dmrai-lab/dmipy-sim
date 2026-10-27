@@ -76,7 +76,9 @@ class WalkRequest(NamedTuple):
     raw_subset: int = 0       #: the first that-many walkers of the batch whose block ends come back as saves
                               #: (:attr:`CoefficientBatch.saves`): the only positions a backend returns
     stepping: object = None   #: an adaptive walk's :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`; None for the fused walk
-    field: object = None      #: a :class:`FieldSampling` when the walk samples a strand field; None otherwise
+    field: object = None      #: a :class:`FieldSampling` when the adaptive walk samples a strand field, the
+                              #: :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` itself when the fixed-step walk
+                              #: reads a raster (``K_c3`` modes every ``field_read_interval``); None otherwise
 
     @property
     def T(self):

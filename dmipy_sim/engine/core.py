@@ -531,9 +531,14 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
                                  or (geometry._is_myelinated or geometry._is_packed_myelinated) and (
                                      bool(np.any(np.asarray(geometry._kappa_inner_jax) > 0)) or bool(np.any(np.asarray(geometry._kappa_outer_jax) > 0))))
     binding_mt = bool(record) and kappa_MT > 0.0
+    # a raster (FieldGrid) is the request's own field, which a backend reads or refuses; any other basis is read by the
+    # JAX kernels alone
+    from ..fields.susceptibility_field import FieldGrid
+    raster = isinstance(field_basis, FieldGrid)
     jax_only = [what for what, on in (
         ("the myelinated substrates", geometry._is_packed_myelinated or geometry._is_myelinated),
-        ("MT binding", kappa_MT > 0.0), ("in-walk field sampling", field_basis is not None),
+        ("MT binding", kappa_MT > 0.0),
+        (f"in-walk field sampling of a {type(field_basis).__name__}", field_basis is not None and not raster),
         ("several storage windows (a backend accumulates one window per walk)", n_windows > 1),
         ("the compartment guard", bool(enforce_compartment))) if on]
     # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the crossing rule's bound
@@ -545,7 +550,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         geometry=geometry, block_h=float(dt_actual), n_blocks=int(n_blocks), sub_steps=int(n_sub), dt_sim=float(dt_sim),
         K=int(K), m=int(block_order), K_c3=(0 if K_c3 is None else int(K_c3)),
         field_read_interval=(0.0 if field_read is None else float(field_read["dt_f"])),
-        events=int(events), raw_subset=int(raw_subset),
+        events=int(events), raw_subset=int(raw_subset), field=(field_basis if raster else None),
         diffusivity=float(diffusivity), record=bool(record),
         kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
         count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed))
@@ -1671,7 +1676,8 @@ def simulate_trajectories(
             sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
             n_b = int(r0_all[sel].shape[0])
             req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0),
-                                       events=(int(cap) if cap else res.request.events))
+                                       events=(int(cap) if cap else res.request.events),
+                                       field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
             keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
             batch = _backend.walk_batch(req, r0_b, keys_b)
@@ -1688,6 +1694,13 @@ def simulate_trajectories(
                                  f"the batch of {n_b} walkers at K = {K} has {(n_b, K + 2, 3)}")
             _backend_block.update(precision=str(batch.precision), ring=batch.ring, accumulation=batch.accumulation,
                                   resid_known=batch.k0_residual is not None)
+            if req.K_c3 and (batch.field_bands is None or np.asarray(batch.field_bands).shape != (n_b, _n_ch, int(req.K_c3))):
+                raise ValueError(f"backend {_backend_name!r} returned field modes of shape "
+                                 f"{None if batch.field_bands is None else np.asarray(batch.field_bands).shape} for a walk that reads "
+                                 f"the {_n_ch} channels of its FieldGrid at K_c3 = {req.K_c3}: {(n_b, _n_ch, int(req.K_c3))}")
+            if req.K_c3 and not (batch.dt_f is not None and abs(float(batch.dt_f) - float(req.field_read_interval)) <= 1e-9 * float(req.field_read_interval)):
+                raise ValueError(f"backend {_backend_name!r} read the field every {batch.dt_f!r} s; the walk reads it every "
+                                 f"{req.field_read_interval!r} s")
             z1 = np.zeros((n_b, 1), np.float32)
             got = {"C": C[:, None].astype(np.float32),
                    "resid": (np.zeros((n_b, 3), np.float32) if batch.k0_residual is None else np.asarray(batch.k0_residual, np.float32)),
@@ -1756,7 +1769,9 @@ def simulate_trajectories(
             checks = read_checks(sub_steps)
             run.phase("field pilot", walkers=n_pilot)
             _t0 = _time.time()
-            got, _, _, _ = _walk_batch(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
+            # walked by the JAX kernels whatever the backend: the pilot reads every step with the trapezoid's checks and
+            # keeps the block means, which a backend's coefficient form does not return
+            got, _, _, _ = _call(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
             B0, chi = field_rule_scale(geometry.spec, envelope)
             qd = np.asarray(got["qv_d"], np.float64)                                   # (n_pilot, n_win, n_ch)
             chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, 2, n_checks, n_ch)
