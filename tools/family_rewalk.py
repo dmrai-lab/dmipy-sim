@@ -21,9 +21,16 @@ signal in units of the unrelaxed water signal obeys ``SE^2 <= sum_p a_p^2 / n_p`
 toggle and every waveform are ``n_p = a_p / f^2``: ``1 / f^2`` walkers in all, seeded in proportion to the water
 (:func:`toggle_proof_counts` states the general, cost-weighted form ``n_p = a_p sum_q a_q sqrt(c_q / c_p) / f^2``).
 
+A pore needs fewer: no waveform of the class dephases a walker confined to a small pore, and a pilot bounds what
+any refocused waveform within the class's ``G_max`` per axis (on the axes the pore confines) and any contact
+toggle up to the envelope's ``rho2`` can make that variance (:func:`phase_variance_bound`,
+:func:`toggle_variance_bound`); ``plan --pilot N`` walks it per pore and sets ``n = max(n_min, V / f^2)``, which
+``walk --plan`` walks.
+
 Stages::
 
     python tools/family_rewalk.py plan pores                          # counts, step resolution, cost, backend
+    python tools/family_rewalk.py plan pores --pilot 4000 --out DIR   # the counts from a pilot bound per pore
     python tools/family_rewalk.py walk pores --out DIR --backend cuda # walk + pack every substrate not yet in DIR
     python tools/family_rewalk.py check DIR                           # every pack: stated envelope, certificate, a replay
 
