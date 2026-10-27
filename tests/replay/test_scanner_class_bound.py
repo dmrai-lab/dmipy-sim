@@ -158,3 +158,38 @@ def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():
             continue
         assert float(np.einsum("cs,cst,ct->", l, A, l)) <= top * (1 + 1e-9)
     assert top == pytest.approx(sum(float(np.einsum("vs,st,vt->v", V, A[c], V).max()) for c in range(3)))
+
+
+@pytest.fixture(scope="module")
+def disco_timing_layout(tmp_path_factory):
+    """A pack certified for connectome_2 over a window that holds DiSCo's b = 3091 s/mm^2 shell (ActiveAx delta 7.6 ms,
+    Delta 45.9 ms, TE 53.5 ms), its segment layout of that shell's partition, and the shell's sequence."""
+    from dmipy_sim.phantom import Grid
+    tmp = tmp_path_factory.mktemp("class_layout")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        w = d.simulate_trajectories(300, 2e-9, d.Cylinder(radius=4e-6, orientation=[0, 0, 1]), 0.06, 5e-4, seed=4,
+                                    require_gpu=False, K=64, window_T=0.06)
+        pk = build_replay_pack(w, id="t/class-layout", license="x", citation="x", K=64,
+                               envelope=dict(cx.default_envelope(), scanner="connectome_2"))
+    seq = d.pgse([[1, 0, 0]], 7.6e-3, 45.9e-3, bvalues=[3.091e9], TE=0.0535, n_t=1071, slew_rate=np.inf)
+    grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(0.0,) * 3, attach="substrate")    # one voxel about the axis
+    ts.segment_rows(pk, {"b3091": seq}, str(tmp / "rows"), grid=grid, floor_target=0.05)
+    ts.write_time_segment_layout([str(tmp / "rows")], str(tmp / "layout"))
+    return ts.TimeSegmentLayout(str(tmp / "layout")), seq
+
+
+def test_a_layout_of_a_class_reads_any_level_the_class_plays_and_refuses_one_beyond_it(disco_timing_layout):
+    """No b refuses a read of a class's layout: DiSCo's b = 3091 s/mm^2 shell (131 mT/m on x) and the class's largest
+    level on every axis at once (b far above any battery's) are served, a level above G_max on one axis is refused."""
+    lay, seq = disco_timing_layout
+    env = lay.manifest["source"]["envelope"]
+    assert env["bound"] == "scanner_class" and env["b_max"] is None and env["G_max"] == 0.5
+    S, _ = lay.image(seq)
+    assert np.isfinite(np.asarray(S)).any()
+    G = np.asarray(seq.G, np.float64)
+    top = G / np.abs(G).max() * 0.5
+    top = np.concatenate([top[..., :1]] * 3, axis=-1)                    # 0.5 T/m on x, y and z: |G| = 0.87 T/m
+    lay.image(seq.with_gradient(top))
+    with pytest.raises(ValueError, match="on one axis"):
+        lay.image(seq.with_gradient(top * 1.01))
