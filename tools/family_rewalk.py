@@ -206,7 +206,7 @@ class Pores(Family):
 
 
 class Slab(Family):
-    """The closed permeable slab: [0, L] split at L/2 by a membrane of permeability kappa, reflecting ends, every
+    """The closed permeable slab: [0, L] split at L/2 by a membrane of permeability kappa, reflecting x faces, every
     walker starting in compartment A = [0, L/2]. Compartment B's pool is magnetic (``chi_iso`` = -0.1 ppm, which
     the envelope's ``chi_max`` is read from) and its field basis is the indicator of B, a layer at ``chi B0`` the
     walkers exchange in and out of, read along the path."""
@@ -230,8 +230,18 @@ class Slab(Family):
             path=f"packs/L{self.L * 1e6:.1f}um_kappa{k * 1e6:g}um_s.rpk", kappa=float(k)) for k in kap}
 
     def geometry(self, name):
-        import dmipy_sim as d
-        return d.PermeableSlab1D(self.L, self.substrates()[name]["kappa"])
+        """The slab as a two-voxel label volume (``--slab-geometry label``, the default: A the first voxel, B the
+        second, the x faces reflecting, y and z periodic, every face between them the membrane; an engine class the
+        CUDA backend walks) or as ``PermeableSlab1D`` (``analytic``). Both are the same closed slab under the same
+        Powles rule, ``p = min(1, 2 kappa d_perp / D)`` per encounter, and resolve the same step."""
+        kappa = self.substrates()[name]["kappa"]
+        if self.args.slab_geometry == "analytic":
+            import dmipy_sim as d
+            return d.PermeableSlab1D(self.L, kappa)
+        from dmipy_sim.geometry.label_volume import LabelVolume
+        return LabelVolume(np.array([1, 0], np.uint8).reshape(2, 1, 1), (self.L / 2, self.L, self.L),
+                           periodic=(False, True, True), pools={0: "extra", 1: "intra"}, pool="intra",
+                           permeability=kappa)
 
     def spec(self, name):
         """The slab's spec with compartment B (pool ``extra``) magnetic and the field tier declared: the field rule
@@ -265,7 +275,7 @@ class Slab(Family):
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.D0,
-                    provenance=dict(substrate="PermeableSlab1D", L_m=self.L, kappa_m_s=self.substrates()[name]["kappa"],
+                    provenance=dict(substrate=type(self.geometry(name)).__name__, L_m=self.L, kappa_m_s=self.substrates()[name]["kappa"],
                                     D0=self.D0, field="iso_local = 1 in compartment B (x > L/2), 0 in A"))
 
 
@@ -559,7 +569,7 @@ def stage_check(args):
             pk = ReplayPack.load(path)
             T = (int(pk.n_t) - 1) * float(pk.dt)
             delta, Delta = 0.1 * T, 0.5 * T
-            seq = pgse([[1.0, 0.0, 0.0]], delta, Delta, bvalues=[1e9], n_t=400)
+            seq = pgse([[1.0, 0.0, 0.0]], delta, Delta, bvalues=[1e9], n_t=400, slew_rate=np.inf)
             S = float(np.abs(np.asarray(pk.replay(seq))).ravel()[0])
             fid = pk.meta.get("fidelity") or {}
             miss = missing_statements(pk)
@@ -590,6 +600,8 @@ def main(argv=None):
     p.add_argument("--campaign", default="replayable-mc-rewalk-2026-10")
     p.add_argument("--diameters", type=float, nargs="+", default=None, help="pores: a sub-grid (um)")
     p.add_argument("--kappas", type=float, nargs="+", default=None, help="slab: permeabilities (m/s)")
+    p.add_argument("--slab-geometry", choices=("label", "analytic"), default="label",
+                   help="slab: a two-voxel LabelVolume (CUDA-walked) or PermeableSlab1D (JAX only)")
     p.add_argument("--cactus-run", default=None, help="cactus: the CACTUS run directory")
     p.add_argument("--field-res", type=float, default=None, help="cactus: the field raster's node spacing (um)")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
@@ -598,6 +610,7 @@ def main(argv=None):
     p.add_argument("--smoke-n", type=int, default=300)
     p.add_argument("--smoke-side-um", type=float, default=6.0)
     p.add_argument("--require-stated", action="store_true", help="check: refuse a pack that does not state the envelope")
+    p.add_argument("--allow-jax", action="store_true", help="walk: a production walk on the JAX kernels")
     p.add_argument("--stop-on-error", action="store_true")
     a = p.parse_args(argv)
     import logging
@@ -613,8 +626,9 @@ def main(argv=None):
         return stage_plan(fam, a)
     if not a.out:
         p.error("walk needs --out")
-    if not a.smoke and a.backend == "jax":
-        p.error("a production walk runs on --backend cuda; --smoke for the CPU check")
+    if not a.smoke and a.backend == "jax" and not a.allow_jax:
+        p.error("a production walk runs on --backend cuda; --smoke for the CPU check, --allow-jax for a family the "
+                "CUDA backend refuses and the campaign walks on the JAX kernels (its receipts say so)")
     return stage_walk(fam, a)
 
 
