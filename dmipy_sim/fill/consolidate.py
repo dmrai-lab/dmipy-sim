@@ -359,20 +359,29 @@ class PreparedBlock:
         return cls(**record, tensors=None, order=None, directory=path)
 
 
+def shard_identity(pk, grid=None):
+    """What every shard of one layout shares: its walk (block and window table), codec, substrate, envelope, the
+    grid it is certified on (its own per-voxel certificate's, else the recipe's ``grid``; None when neither) and the
+    names of its tensors."""
+    from ..replay.bank import _codec_signature, _spec_identity, _walk_identity, _envelope_identity
+    meta = pk.meta
+    return dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
+                substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
+                grid=(meta["fidelity"].get("per_voxel") or {}).get("grid") or (None if grid is None else grid.to_meta()),
+                names=sorted(k for k in pk.arrays if k not in ("band_block", "voxel_ijk", "voxel_certificate")))
+
+
 def prepare_block(name, pk, grid=None, layout_grid=None):
     """Shard ``pk`` (named ``name``) prepared for :meth:`Consolidator.append`: certified on the recipe's ``grid`` when
     it carries no per-voxel certificate (:func:`certify_voxels`), its walkers binned by start on ``layout_grid`` (a
     grid's meta: the layout's; None: the shard's own) and ordered by (voxel, pool), its band and mode variances summed
     over the walkers and maximised over its populated voxels, a walker range at a time. Everything here is the
     shard's own: shards prepare independently and in any order, and append in the layout's."""
-    from ..replay.bank import _codec_signature, _spec_identity, _walk_identity, _envelope_identity, field_read_record, _MEASURED_CHANNEL_KEYS
+    from ..replay.bank import field_read_record, _MEASURED_CHANNEL_KEYS
     from ..replay.compression import SLICE_BYTES, read_position_coeffs, slice_walkers, walker_rows
     from ..phantom.grid import Grid
     meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
-    ident = dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
-                 substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
-                 grid=(meta["fidelity"].get("per_voxel") or {}).get("grid") or (None if grid is None else grid.to_meta()),
-                 names=sorted(k for k in pk.arrays if k not in ("band_block", "voxel_ijk", "voxel_certificate")))
+    ident = shard_identity(pk, grid)
     if ident["grid"] is None:
         raise _no_grid(name)
     meta = certify_voxels(name, pk, grid)
@@ -467,27 +476,34 @@ class Consolidator:
     # ---- a shard
     def add(self, name, pk):
         """Shard ``pk`` appended: prepared on the layout's grid (:func:`prepare_block`) and appended (:meth:`append`)."""
+        self._refuse_other(name, shard_identity(pk, self.recipe_grid))
         self.append(prepare_block(name, pk, self.recipe_grid, None if self.ident0 is None else self.ident0["grid"]))
+
+    def _refuse_other(self, name, ident):
+        """Refused when shard ``name``'s :func:`shard_identity` differs from the layout's first, naming the key."""
+        from ..replay.bank import _agree
+        if self.meta0 is None:
+            return
+        for k, v in ident.items():
+            if not _agree(v, self.ident0[k]):
+                where = k
+                if isinstance(v, dict) and isinstance(self.ident0[k], dict):      # name the key that differs
+                    diff = sorted(set(v) ^ set(self.ident0[k]) | {j for j in set(v) & set(self.ident0[k])
+                                                                   if not _agree(v[j], self.ident0[k][j])})
+                    where = ", ".join(f"{k}.{j}" for j in diff) or k
+                raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
+                                 "layout are one walk's, on one block and one window table")
 
     def append(self, block):
         """A :class:`PreparedBlock` appended after the rows so far: refused unless it is the same walk, codec,
         substrate, envelope, grid and tensors as the first; its band and mode sums added, its scale tables and band
         blocks after the earlier ones, its columns and (voxel, pool) row ranges after the earlier rows."""
-        from ..replay.bank import _agree
         from ..phantom.grid import Grid
         name, ident, n = block.name, block.ident, block.n
         # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
         # shard's own, else the recipe's)
         if self.meta0 is not None:
-            for k, v in ident.items():
-                if not _agree(v, self.ident0[k]):
-                    where = k
-                    if isinstance(v, dict) and isinstance(self.ident0[k], dict):      # name the key that differs
-                        diff = sorted(set(v) ^ set(self.ident0[k]) | {j for j in set(v) & set(self.ident0[k])
-                                                                       if not _agree(v[j], self.ident0[k][j])})
-                        where = ", ".join(f"{k}.{j}" for j in diff) or k
-                    raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
-                                     "layout are one walk's, on one block and one window table")
+            self._refuse_other(name, ident)
             if _canonical(block.layout_grid) != _canonical(self.ident0["grid"]):
                 raise ValueError(f"shard {name} was prepared on the grid {block.layout_grid!r}, the layout's is {self.ident0['grid']!r}")
             if (tuple(block.band_groups), tuple(block.path_groups)) != (tuple(self.band_groups), tuple(self.path_groups)):
