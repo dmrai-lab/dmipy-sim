@@ -309,8 +309,8 @@ def voxel_floor_coded(positions, dt, n_t, grid, comp, env, *, w=None, device="au
     endpoint -- and pool (``comp`` a track, its first sample, or one label per walker), the same fixed split, the
     phases by :func:`compression.coded_phases`). ``positions`` are the walk's position tensors (a pack's arrays), or a
     list of them for a walk held in consecutive pieces (a merge's shards, in walker order); ``chunk`` walkers are
-    decoded at a time (default :func:`~dmipy_sim.replay.compression.slice_walkers`). Returns ``(ijk, pools, n, floor, err)`` with ``err`` all ``nan``: the codec error is the
-    certifying pack's, or the walk-free certificate's."""
+    decoded at a time (default :func:`~dmipy_sim.replay.compression.slice_walkers`). Returns ``(ijk, pools, n, floor,
+    err)`` with ``err`` all ``nan``: the codec error is the certifying pack's, or the walk-free certificate's."""
     pieces = list(positions) if isinstance(positions, (list, tuple)) else [positions]
     bounds = np.cumsum([0] + [_cx.position_shape(p)[0] for p in pieces]); n_w = int(bounds[-1])
     chunk = _cx.slice_walkers(pieces[0]) if chunk is None else int(chunk)
