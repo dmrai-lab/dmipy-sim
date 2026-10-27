@@ -80,6 +80,116 @@ def toggle_proof_bound(shares, counts):
     return float(np.sqrt(sum((float(shares[p]) / tot) ** 2 / int(counts[p]) for p in counts if int(counts[p]) > 0)))
 
 
+# ------------------------------------------------------------------ the pilot's variance bound
+#: The pilot's statistical margin on a sampled second moment: the estimate's relative standard error is
+#: sqrt(2 / (n - 1)) for a Gaussian quantity, and the bound takes three of them above the largest of the whole
+#: pilot's and its two halves' estimates.
+PILOT_MARGIN_SE = 3.0
+#: The surface relaxivities (fractions of the envelope's largest) and the readout times (every block end) the
+#: toggles' weights are read at.
+RHO_FRACTIONS = (0.0, 0.125, 0.25, 0.5, 1.0)
+
+
+def _top_eigenvalue(Y):
+    """The largest eigenvalue of ``Y^T Y / (m - 1)`` for ``Y`` (m, p), through the smaller Gram side."""
+    m = Y.shape[0]
+    A = (Y @ Y.T) if m < Y.shape[1] else (Y.T @ Y)
+    return float(np.linalg.eigvalsh(A / max(m - 1, 1))[-1])
+
+
+def projected_gram(T, K):
+    """``A_jl = <P g_j, P g_l>`` for the basis a pack's path is stored on beyond its start, ``g = [t / T, s_1 .. s_K]``
+    (``s_k = sqrt(2 / T) sin(pi k t / T)``), ``P`` the removal of the time mean over ``[0, T]``: what a refocused
+    waveform (``int G dt = 0``) reads of a path. Closed form."""
+    T, k = float(T), np.arange(1, int(K) + 1)
+    m = np.sqrt(2.0 / T) * (1.0 - (-1.0) ** k) / (np.pi * k)            # (1 / T) int s_k
+    A = np.empty((int(K) + 1, int(K) + 1))
+    A[0, 0] = T / 12.0                                                    # t / T: T / 3 less T (1 / 2)^2
+    lin = np.sqrt(2.0 / T) * T * (-1.0) ** (k + 1) / (np.pi * k) - 0.5 * T * m
+    A[0, 1:] = A[1:, 0] = lin
+    A[1:, 1:] = np.eye(int(K)) - T * np.outer(m, m)
+    return A
+
+
+def phase_variance_bound(position_coeffs, T, *, G_max, axes=(0, 1, 2), margin_se=PILOT_MARGIN_SE):
+    """The largest variance over walkers of the phase a pack SERVES, over every refocused waveform of a scanner
+    class on the ``axes`` it is certified for: ``sup Var(phi)``, ``phi = gamma sum_j C_j W_j`` the replay's own phase
+    (``C = [x(0), x(T) - x(0), beta_1..beta_K]`` per axis, ``W`` the waveform's :func:`compression.band_projection`),
+    ``|G_axis| <= G_max`` on [0, T], ``int G dt = 0`` and ``G`` zero on every other axis (a pore's free axes are not
+    confined, and a waveform along one dephases any count of walkers).
+
+    A refocused waveform has ``W_0 = 0`` and reads the stored path through ``P g_j`` (:func:`projected_gram`), so
+    ``Var(phi) = gamma^2 alpha^T A S A alpha`` with ``G = sum alpha_j P g_j`` its component in their span, ``S`` the
+    covariance over walkers of ``C_1..`` and ``||G||^2 >= alpha^T A alpha``; every axis has ``int G_axis^2 <= G_max^2 T``
+    (Bessel's inequality), so
+
+        Var(phi) <= gamma^2 G_max^2 T  min( n_axes lambda_max(A^1/2 S_joint A^1/2), (sum_axis sqrt(lambda_axis))^2 ).
+
+    Exact for the served estimator: the bands beyond ``K`` are not in it (their error is the certificate's
+    truncation). ``S`` is the pilot's, centred over the walkers, each eigenvalue the largest of the whole pilot's and
+    its two halves' times ``1 + margin_se sqrt(2 / (n / 2 - 1))``. Returns a dict with the bound ``var_phi`` and its
+    parts."""
+    from dmipy_sim.constants import GAMMA
+    C = np.asarray(position_coeffs, np.float64)
+    if C.ndim == 4:
+        if C.shape[1] != 1:
+            raise ValueError("the pilot bound reads one storage window; this walk has "
+                             f"{C.shape[1]}")
+        C = C[:, 0]
+    C = C[:, 1:, :][:, :, list(axes)]                                     # beyond the start, on the certified axes
+    n, nb, n_ax = C.shape
+    ev, U = np.linalg.eigh(projected_gram(T, nb - 1))
+    R = (U * np.sqrt(np.clip(ev, 0.0, None))) @ U.T                      # A^1/2
+    Y = np.einsum("jl,wla->wja", R, C - C.mean(axis=0, keepdims=True))  # A^1/2 (C - mean): Var(phi) = gamma^2 |.|^2
+    perm = np.random.RandomState(0).permutation(n)
+    parts = (slice(None), perm[:n // 2], perm[n // 2:])
+    grow = 1.0 + float(margin_se) * np.sqrt(2.0 / max(n // 2 - 1, 1))
+    lam_axis = [max(_top_eigenvalue(Y[idx, :, a]) for idx in parts) * grow for a in range(n_ax)]
+    lam_joint = max(_top_eigenvalue(Y[idx].reshape(len(Y[idx]), nb * n_ax)) for idx in parts) * grow
+    scale = GAMMA ** 2 * float(G_max) ** 2 * float(T)
+    joint = scale * n_ax * lam_joint
+    per_axis = scale * float(sum(np.sqrt(l) for l in lam_axis)) ** 2
+    return dict(var_phi=float(min(joint, per_axis)), var_phi_joint=float(joint), var_phi_per_axis=float(per_axis),
+                axes=[int(a) for a in axes], lambda_axis_m2s=[float(l) for l in lam_axis],
+                lambda_joint_m2s=float(lam_joint), margin=float(grow), n_pilot=int(n), K=int(nb - 1),
+                G_max=float(G_max), T=float(T))
+
+
+def toggle_variance_bound(var_phi, raw_boundary=None, *, D, rho2_max, rho_fractions=RHO_FRACTIONS):
+    """The largest ``Var(w e^{i phi})`` over the toggles the envelope allows, in units of the unrelaxed signal.
+
+    ``w`` is the walker's weight, ``exp((rho2 / D) L(t))`` with ``L`` its cumulative contact (``raw_boundary``, the
+    pilot's per-block contact; the relaxivities ``rho_fractions x rho2_max``, every block end ``t``); a pool's bulk
+    relaxation multiplies every walker of a one-pool substrate alike, which scales the variance down, so the bound
+    is read at none. For any constant ``c``, ``Var(Z) <= E|Z - c|^2``; with ``c = E[w] e^{i mu}``, ``mu = E phi``,
+
+        Var(w e^{i phi}) <= ( sd(w) + E[w] sqrt(E|e^{i phi} - e^{i mu}|^2) )^2 <= ( sd(w) + E[w] sqrt(min(Var phi, 4)) )^2
+
+    (Minkowski; ``|e^{ia} - e^{ib}| <= |a - b|``, so the CENTRED second moment of the phase is the one that enters),
+    and ``Var(Z) <= E[w^2] <= 1`` besides. Without a contact channel ``w = 1`` and the bound is
+    ``min(1, Var(phi))``. Returns ``(V, where)``: the bound and the ``(rho2, t index)`` it was largest at."""
+    sd_e = float(np.sqrt(min(float(var_phi), 4.0)))
+    if raw_boundary is None or not float(rho2_max) > 0.0:
+        return float(min(1.0, sd_e ** 2)), dict(rho2=0.0, t_index=None)
+    B = np.asarray(raw_boundary, np.float64)
+    L = np.concatenate([np.zeros((B.shape[0], 1)), np.cumsum(B[:, 1:], axis=1)], axis=1)   # the contact at each block end
+    best, where = 0.0, dict(rho2=0.0, t_index=None)
+    for fr in rho_fractions:
+        rho = float(fr) * float(rho2_max)
+        W = np.exp((rho / float(D)) * L)
+        m, sd, Ew2 = W.mean(axis=0), W.std(axis=0, ddof=1), (W ** 2).mean(axis=0)
+        V = np.minimum(Ew2, (sd + m * sd_e) ** 2)
+        j = int(np.argmax(V))
+        if V[j] > best:
+            best, where = float(V[j]), dict(rho2=rho, t_index=j)
+    return float(min(best, 1.0)), where
+
+
+def pilot_count(V, floor, n_min):
+    """The pore's walkers: ``max(n_min, ceil(V / f^2))``, ``f`` the floor as a standard error."""
+    return int(max(int(n_min), int(np.ceil(float(V) / float(floor) ** 2))))
+
+
 # ------------------------------------------------------------------ the envelope
 def family_envelope(base, overrides=None, **family):
     """The envelope a family's packs are certified under: the library's default battery, :data:`ENVELOPE` over it,
@@ -157,6 +267,9 @@ class Family:
         return {"water": 1.0}
 
     def counts(self, name):
+        planned = getattr(self, "planned", {}).get(name)
+        if planned is not None:                          # a pilot's bound (plan --pilot), read back by walk --plan
+            return dict(planned)
         if self.args.smoke:
             return {p: max(1, int(round(int(self.args.smoke_n) * a))) for p, a in self.shares(name).items()}
         return toggle_proof_counts(self.shares(name), self.floor)
@@ -170,6 +283,9 @@ class Pores(Family):
     walked by ``simulate_trajectories`` at the pack's own seed (``pack_seed`` of its id)."""
     name = "pores"
     blt_K = 8
+    #: The axes each shape confines, in its own frame (the cylinder along z, the plates' normal along x): the
+    #: family's packs are certified for waveforms on these (``build_canonical_pores``'s envelope caveat).
+    CONFINED = {"sphere": (0, 1, 2), "cylinder": (0, 1), "plane": (0,)}
 
     def __init__(self, args):
         super().__init__(args)
@@ -203,6 +319,26 @@ class Pores(Family):
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.m.D0)
+
+    def pilot(self, name, n, seed, backend):
+        """The pore's walker count from a pilot of ``n`` walkers that keeps its block ends: the variance any refocused
+        waveform of the envelope's class and any contact toggle up to its ``rho2`` can give a walker's
+        contribution (:func:`phase_variance_bound`, :func:`toggle_variance_bound`), over the floor squared."""
+        import dmipy_sim as d
+        from dmipy_sim.acquisition.scanners import ScannerLimits
+        from dmipy_sim.spec import geometry_from_spec
+        r = self.rows[name]
+        w = d.simulate_trajectories(int(n), self.m.D0, geometry_from_spec(self.m.spec_of(r["shape"], r["d_um"])),
+                                    T_max=self.T, K=self.K, seed=int(seed), tiers="all", require_gpu=(backend != "jax"),
+                                    backend=backend, window_T=self.T, raw_subset=int(n), envelope=self.envelope)
+        G_max = float(self.envelope.get("G_max") or ScannerLimits.of(self.envelope["scanner"]).G_max)
+        axes = self.CONFINED[r["shape"]] if self.args.pilot_axes == "confined" else (0, 1, 2)
+        ph = phase_variance_bound(w.position_coeffs, self.T, G_max=G_max, axes=axes)
+        V, where = toggle_variance_bound(ph["var_phi"], w.raw_boundary, D=self.m.D0,
+                                         rho2_max=max(self.envelope.get("rho2_list") or [0.0]))
+        n_pore = pilot_count(V, self.floor, self.args.n_min)
+        return dict(phase=ph, V=V, toggle_at=where, n=n_pore, floor=self.floor, n_min=int(self.args.n_min),
+                    sub_steps=int(w.sub_steps))
 
 
 class Slab(Family):
@@ -458,8 +594,18 @@ def _backend_check(fam, name, backend):
 
 
 def stage_plan(fam, args):
+    from dmipy_sim.replay.reference import pack_seed
     rows, tot_steps, tot_n = [], 0, 0
+    fam.planned = {}
     for name, sub in _shard(list(fam.substrates().items()), args.shard):
+        pilot = None
+        if int(args.pilot) > 0:
+            if not hasattr(fam, "pilot"):
+                raise SystemExit(f"{fam.name}: no pilot bound for this family (one pool, no field: the pores)")
+            t0 = time.time()
+            pilot = fam.pilot(name, int(args.pilot), pack_seed(sub["id"]) + 1, args.backend)
+            pilot["seconds"] = round(time.time() - t0, 1)
+            fam.planned[name] = {p: pilot["n"] for p in fam.shares(name)}
         counts = fam.counts(name)
         n = int(sum(counts.values()))
         ok, c = _backend_check(fam, name, args.backend)
@@ -472,7 +618,8 @@ def stage_plan(fam, args):
             field_refusal = "the field is read from a FieldGrid, and the CUDA backend samples a StrandFieldBasis only"
         row = dict(name=name, id=sub["id"], n_walkers=n, counts=counts,
                    se_bound=toggle_proof_bound(fam.shares(name), counts), backend=args.backend,
-                   accepted=bool(ok) and field_refusal is None, refusal=refusal, field_refusal=field_refusal)
+                   accepted=bool(ok) and field_refusal is None, refusal=refusal, field_refusal=field_refusal,
+                   pilot=pilot)
         if c is not None and not isinstance(c, str):
             row.update(sub_steps=int(c.sub_steps), dt_sim_s=float(c.dt_sim), n_blocks=int(c.n_blocks),
                        walker_steps=int(c.walker_steps), bytes_per_walker=int(c.bytes_per_walker),
@@ -480,11 +627,13 @@ def stage_plan(fam, args):
             tot_steps += int(c.walker_steps)
         tot_n += n
         rows.append(row)
-        print(json.dumps({k: v for k, v in row.items() if k != "counts"}), flush=True)
+        print(json.dumps({k: v for k, v in row.items() if k != "counts"}, default=str), flush=True)
     rate = float(args.rate)
     summary = dict(family=fam.name, n_substrates=len(rows), n_walkers=tot_n, walker_steps=tot_steps,
                    gpu_hours_at_rate=tot_steps / rate / 3600.0, rate_walker_steps_per_s=rate,
                    floor=fam.floor, T=fam.T, K=fam.K, blt_K=fam.blt_K, envelope=fam.envelope,
+                   walker_rule=("pilot bound: n = max(n_min, V / f^2)" if int(args.pilot) > 0
+                                else "toggle-proof: n_p = a_p / f^2"), pilot_n=int(args.pilot), n_min=int(args.n_min),
                    refused=[r["name"] for r in rows if not r["accepted"]])
     print(json.dumps(summary, default=str), flush=True)
     if args.out:
@@ -494,9 +643,18 @@ def stage_plan(fam, args):
     return summary
 
 
+def load_plan(fam, path):
+    """A plan's per-substrate counts and pilot bounds onto ``fam``: what ``walk --plan`` walks."""
+    rows = json.load(open(path))["rows"]
+    fam.planned = {r["name"]: r["counts"] for r in rows}
+    fam.pilots = {r["name"]: r.get("pilot") for r in rows}
+
+
 def stage_walk(fam, args):
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_sim.replay.reference import pack_seed
+    if args.plan:
+        load_plan(fam, args.plan)
     out = os.path.abspath(args.out)
     os.makedirs(os.path.join(out, "receipts"), exist_ok=True)
     done, failed = [], []
@@ -515,9 +673,14 @@ def stage_walk(fam, args):
             t1 = time.time()
             kw = fam.pack_kw(name, walk)
             prov = dict(kw.pop("provenance", {}) or {})
+            pilot = getattr(fam, "pilots", {}).get(name)
+            rule = ("pilot bound: SE^2 <= V / n for any refocused waveform of the class and any toggle, "
+                    "n = max(n_min, V / f^2)" if pilot else
+                    "toggle-proof: SE^2 <= sum_p a_p^2 / n_p for any toggle, n_p = a_p / f^2 at equal cost")
             prov.update(campaign=args.campaign, walker_rule=dict(
-                rule="toggle-proof: SE^2 <= sum_p a_p^2 / n_p for any toggle, n_p = a_p / f^2 at equal cost",
-                floor=fam.floor, counts=fam.counts(name), smoke=bool(args.smoke)))
+                rule=rule, floor=fam.floor, counts=fam.counts(name), smoke=bool(args.smoke),
+                **({} if not pilot else dict(V=pilot["V"], var_phi=pilot["phase"]["var_phi"],
+                                             n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
             pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
                                      envelope=fam.envelope, fidelity="derived", provenance=prov,
                                      out_path=path + ".part", **kw)
@@ -540,6 +703,7 @@ def stage_walk(fam, args):
             K=int(fam.K), blt_K=int(fam.blt_K), T=float(fam.T), floor_target=float(fam.floor),
             err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), terms=fid.get("terms"),
             envelope=fam.envelope, stated=stated(pack), missing_statements=missing_statements(pack),
+            pilot=getattr(fam, "pilots", {}).get(name),
             dmipy_sim=_sim_identity(),
             smoke=bool(args.smoke))
         with open(receipt_path + ".part", "w") as fh:
@@ -605,6 +769,12 @@ def main(argv=None):
     p.add_argument("--field-res", type=float, default=None, help="cactus: the field raster's node spacing (um)")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
+    p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "
+                                                        "sets the count (pores); 0 the toggle-proof a / f^2")
+    p.add_argument("--n-min", type=int, default=4000, help="plan: the fewest walkers a pilot bound sets")
+    p.add_argument("--pilot-axes", choices=("confined", "all"), default="confined",
+                   help="plan: the gradient axes the pilot bound covers: the pore's confined axes, or all three")
+    p.add_argument("--plan", default=None, help="walk: a plan file whose per-substrate counts are walked")
     p.add_argument("--smoke", action="store_true", help="a few substrates, a few hundred walkers: the CPU check")
     p.add_argument("--smoke-n", type=int, default=300)
     p.add_argument("--smoke-side-um", type=float, default=6.0)

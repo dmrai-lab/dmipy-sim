@@ -54,3 +54,124 @@ def test_a_family_declaration_is_stated_over_the_campaign_envelope(fr):
     assert env["rho2_list"] == [1e-5] and env["bvals"] == [0.0, 1e9]
     assert env["B0_list"] == [3.0] and env["max_refocus_pulses"] == 8
     assert "ogse_periods" in env                             # the library's battery shapes underneath
+
+
+# ------------------------------------------------------------------ the pilot's variance bound
+G_MAX = 0.5                       # T/m per axis: the Connectome 2.0 class
+D0 = 2e-9
+T_WIN = 0.01
+
+
+def _pilot(diameter_m, n=800, seed=3):
+    """A sphere's pilot: the pore confined on every axis, so every feasible waveform is in the bound's scope."""
+    import dmipy_sim as d
+    w = d.simulate_trajectories(n, D0, d.Sphere(radius=0.5 * diameter_m), T_max=T_WIN, K=26, seed=seed, tiers="all",
+                                require_gpu=False, window_T=T_WIN, raw_subset=n)
+    return w, float(w.block["h"])
+
+
+N_WF = 2000                       # samples of a test waveform over the window (sample-and-hold)
+
+
+def _refocused(G):
+    """``G`` (n_wf, 3) with zero mean per axis (``int G dt = 0`` for the sample-and-hold), scaled back within
+    ``G_MAX``."""
+    G = G - G.mean(axis=0)
+    top = np.abs(G).max()
+    return G * (G_MAX / top) if top > G_MAX else G
+
+
+def _waveforms(rng, adversary):
+    """Feasible refocused waveforms: random slew-limited, PGSE along x and the diagonal, cosine OGSE, and the sign
+    pattern of the bound's own maximiser (the adversary)."""
+    t = (np.arange(N_WF) + 0.5) * T_WIN / N_WF
+    out = []
+    for _ in range(20):
+        steps = rng.uniform(-1, 1, (N_WF, 3)) * (0.05 * G_MAX)
+        out.append(_refocused(np.clip(np.cumsum(steps, axis=0), -G_MAX, G_MAX)))
+    for axes in ([1, 0, 0], [1, 1, 1]):
+        for d_frac in (0.1, 0.3, 0.45):
+            lobe = ((t >= 0.02 * T_WIN) & (t < (0.02 + d_frac) * T_WIN)).astype(float)
+            lobe2 = ((t >= 0.52 * T_WIN) & (t < (0.52 + d_frac) * T_WIN)).astype(float)
+            out.append(_refocused(G_MAX * (lobe - lobe2)[:, None] * np.asarray(axes, float)[None, :]))
+    for periods in (1, 2, 4, 8, 16):
+        out.append(_refocused(G_MAX * np.cos(2 * np.pi * periods * t / T_WIN)[:, None] * np.ones(3)[None, :]))
+    out.append(_refocused(G_MAX * np.sign(adversary)))
+    return out
+
+
+def _adversary(fr, C, K):
+    """The bound's maximiser as a function of time, ``sum_j alpha_j P g_j`` with ``alpha = A^-1/2 u``, ``u`` the top
+    eigenvector of ``A^1/2 S A^1/2`` over the three axes."""
+    A = fr.projected_gram(T_WIN, K)
+    ev, U = np.linalg.eigh(A)
+    R, Ri = (U * np.sqrt(ev)) @ U.T, (U / np.sqrt(ev)) @ U.T
+    Y = np.einsum("jl,wla->wja", R, C[:, 1:, :] - C[:, 1:, :].mean(0))
+    n = Y.shape[0]
+    u = np.linalg.eigh(Y.reshape(n, -1).T @ Y.reshape(n, -1))[1][:, -1].reshape(K + 1, 3)
+    alpha = Ri @ u
+    t = (np.arange(N_WF) + 0.5) * T_WIN / N_WF
+    k = np.arange(1, K + 1)
+    g = np.concatenate([(t / T_WIN)[None, :], np.sqrt(2 / T_WIN) * np.sin(np.pi * np.outer(k, t) / T_WIN)])
+    g = g - g.mean(axis=1, keepdims=True)
+    return np.einsum("ja,jt->ta", alpha, g)
+
+
+def _var(Z):
+    Z = np.asarray(Z)
+    return float(np.mean(np.abs(Z - Z.mean()) ** 2) * len(Z) / (len(Z) - 1))
+
+
+def test_the_projected_gram_is_the_quadrature_of_its_functions(fr):
+    K, n = 12, 200_000
+    t = (np.arange(n) + 0.5) * T_WIN / n
+    k = np.arange(1, K + 1)
+    g = np.concatenate([(t / T_WIN)[None, :], np.sqrt(2 / T_WIN) * np.sin(np.pi * np.outer(k, t) / T_WIN)])
+    g = g - g.mean(axis=1, keepdims=True)
+    assert np.allclose(fr.projected_gram(T_WIN, K), g @ g.T * (T_WIN / n), atol=1e-9 * T_WIN)
+
+
+def test_no_feasible_waveform_or_toggle_exceeds_the_pilot_bound(fr):
+    from dmipy_sim.constants import GAMMA
+    from dmipy_sim.replay.compression import band_projection
+    walk, _ = _pilot(2e-6)
+    C = np.asarray(walk.position_coeffs, np.float64)[:, 0]
+    K = C.shape[1] - 2
+    ph = fr.phase_variance_bound(walk.position_coeffs, T_WIN, G_max=G_MAX)
+    V0, _ = fr.toggle_variance_bound(ph["var_phi"], None, D=D0, rho2_max=0.0)
+    V3, _ = fr.toggle_variance_bound(ph["var_phi"], walk.raw_boundary, D=D0, rho2_max=3e-6)
+    assert 0.0 < ph["var_phi"] < 1.0 and V0 <= V3 <= 1.0
+    L_end = np.asarray(walk.raw_boundary, np.float64)[:, 1:].sum(1)
+    worst = 0.0
+    for G in _waveforms(np.random.default_rng(0), _adversary(fr, C, K)):
+        assert np.abs(G).max() <= G_MAX * (1 + 1e-12)
+        W = band_projection(G[None], T_WIN / N_WF, T_WIN, K)[0]                 # (K + 2, 3): the replay's weights
+        assert np.abs(W[0]).max() < 1e-12 * G_MAX * T_WIN
+        phi = GAMMA * np.einsum("wja,ja->w", C, W)                            # the phase the pack serves
+        e = np.exp(1j * phi)
+        assert _var(e) <= V0 + 1e-12
+        worst = max(worst, float(np.var(phi, ddof=1)))
+        for rho in (1e-6, 3e-6):
+            assert _var(np.exp((rho / D0) * L_end) * e) <= V3 + 1e-12
+    assert worst <= ph["var_phi"]
+    assert worst >= 0.2 * ph["var_phi"]                    # the adversary reaches the bound's order: it is not slack
+
+
+def test_a_large_pore_takes_the_whole_toggle_proof_count_and_a_small_one_fewer(fr):
+    """A pore wider than the class's dephasing length needs the whole a / f^2; a smaller one, fewer; a free axis is
+    never confined, so a plane's bound over all three axes is 1 whatever its width."""
+    walk, _ = _pilot(20e-6, n=400)
+    ph = fr.phase_variance_bound(walk.position_coeffs, T_WIN, G_max=G_MAX)
+    V, _ = fr.toggle_variance_bound(ph["var_phi"], walk.raw_boundary, D=D0, rho2_max=3e-6)
+    assert V == pytest.approx(1.0)
+    assert fr.pilot_count(V, 5e-3, 4000) == 40000
+    small, _ = _pilot(1e-6, n=400)
+    ph2 = fr.phase_variance_bound(small.position_coeffs, T_WIN, G_max=G_MAX)
+    V2, _ = fr.toggle_variance_bound(ph2["var_phi"], small.raw_boundary, D=D0, rho2_max=3e-6)
+    assert V2 < 0.1 and fr.pilot_count(V2, 5e-3, 4000) < 40000
+    import dmipy_sim as d
+    plane = d.simulate_trajectories(200, D0, d.Box1D(length=1e-6), T_max=T_WIN, K=26, seed=5, tiers="all",
+                                    require_gpu=False, window_T=T_WIN, raw_subset=200)
+    free = fr.phase_variance_bound(plane.position_coeffs, T_WIN, G_max=G_MAX)
+    normal = fr.phase_variance_bound(plane.position_coeffs, T_WIN, G_max=G_MAX, axes=(0,))
+    assert free["var_phi"] > 1.0 > normal["var_phi"]
