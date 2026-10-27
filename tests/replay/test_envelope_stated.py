@@ -16,7 +16,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.accumulate import field_read_term, spec_chi_scale
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay import time_segments
-from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.bank import build_replay_pack, _round_sig
 from dmipy_sim.replay.compression import certified_envelope, default_envelope
 from dmipy_sim.spec import disco_spec, walk_spec
 from dmipy_sim.spec.tissue import Tissue
@@ -62,13 +62,28 @@ def _seq(pk):
     return d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
 
 
+def _surface_quadrature(pk, rho2):
+    """The local time's quadrature term at ``rho2``, computed from the pack's recorded block and quadratic variation
+    as ``bank._derived_certificate`` states it: half of ``(rho2 / D)^2 sum_k rel_k 2 QV_B / (pi k)^2``, rounded as the
+    certificate is written."""
+    from dmipy_sim.replay import compression as cx
+    q, T, K = pk.fidelity["quadrature"], float(pk.T_window), int(pk.K)
+    k = np.arange(1, K + 1)
+    rel = cx.quadrature_rel(int(q["m"]), float(q["h"]), np.pi * k / T)
+    if q["h_round"] is not None:
+        rel = rel + cx.quadrature_rel(0, float(q["h_round"]), np.pi * k / T)
+    r = float(rho2) / float(pk.diffusivity)
+    return _round_sig(0.5 * r ** 2 * float((rel * 2.0 * float(q["qv_contact_m2"]) / (np.pi * k) ** 2).sum()), 6)
+
+
 def test_the_contact_certificate_is_read_at_the_stated_relaxivity(walk, disco_like):
-    """The surface quadrature term is ``(rho2 / D)^2`` times the walk's: it scales with the stated ``rho2`` squared,
-    and the pack states the range it was certified over."""
+    """The surface quadrature term is the one at the STATED rho2 (computed again from the pack's own record), and
+    the pack states the range it was certified over."""
     D = disco_like.diffusivity
     wider = _pack(walk, rho2_list=[1e-5], B0_list=[1.5, 3.0, 7.0])
-    q3, q10 = (pk.fidelity["err_quadrature_surface"] for pk in (disco_like, wider))
-    assert q3 > 0 and q10 / q3 == pytest.approx((1e-5 / 3e-6) ** 2, rel=1e-6)
+    for pk, rho2 in ((disco_like, 3e-6), (wider, 1e-5)):
+        assert pk.fidelity["quadrature"]["surface_rho_over_D"] == _round_sig(rho2 / D, 6)         # written as the certificate is
+        assert pk.fidelity["err_quadrature_surface"] == _surface_quadrature(pk, rho2) > 0
     assert disco_like.rho2_over_D_max == pytest.approx(3e-6 / D) and wider.rho2_over_D_max == pytest.approx(1e-5 / D)
     assert disco_like.fidelity["surface_rho2_list"] == [3e-6]
 
@@ -107,11 +122,13 @@ def test_every_field_term_is_read_at_the_one_certified_scale(walk, spec, disco_l
     qv = disco_like.meta["walk_params"]["qv"]["field_increments"]
     consts = disco_like.meta["compression"]["channels"]["susc_field_basis"]["read"]["constants"]
     assert disco_like.fidelity["terms"]["field_read"] == pytest.approx(
-        field_read_term(disco_like.meta["walk_params"]["field_read_interval"], qv, 7.0, chi, consts), rel=1e-4)
+        field_read_term(disco_like.meta["walk_params"]["field_read_interval"], qv, 7.0, chi, consts), rel=1e-12)
     low = _pack(walk, rho2_list=[3e-6], B0_list=[3.0])
     t7, t3 = disco_like.fidelity["terms"], low.fidelity["terms"]
-    assert t7["field_read"] / t3["field_read"] == pytest.approx((7.0 / 3.0) ** 2, rel=1e-4)
-    assert t7["quadrature"]["field"] / t3["quadrature"]["field"] == pytest.approx((7.0 / 3.0) ** 2, rel=1e-4)
+    # both terms are (gamma B0 chi)^2 times the walk's own quantities, exactly (fidelity.terms carries them unrounded):
+    # the ratio is (7 / 3)^2 to float64's rounding
+    assert t7["field_read"] / t3["field_read"] == pytest.approx((7.0 / 3.0) ** 2, rel=1e-12)
+    assert t7["quadrature"]["field"] / t3["quadrature"]["field"] == pytest.approx((7.0 / 3.0) ** 2, rel=1e-12)
     seg = time_segments._envelope(disco_like.meta, 0.08)
     assert seg["B0_chi_max_T"] == pytest.approx(7.0 * chi) and seg["B0_max_T"] == 7.0
     assert seg["rho2_over_D_max"] == pytest.approx(disco_like.rho2_over_D_max)
