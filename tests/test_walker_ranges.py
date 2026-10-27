@@ -93,7 +93,7 @@ def test_a_pack_is_mapped_copy_on_write_and_replaced_not_rewritten(tmp_path):
     write_rpk(path, {"a": [a[:1], a[1:]], "b": b, "s": np.float64(2.5)}, meta)
     with safe_open(path, framework="numpy") as f:                      # a safetensors file any reader opens
         np.testing.assert_array_equal(f.get_tensor("a"), a); np.testing.assert_array_equal(f.get_tensor("b"), b)
-        assert float(f.get_tensor("s")) == 2.5
+        assert f.get_tensor("s").tolist() == [2.5]                     # a 0-d array is stored as one element
     import json, struct
     with safe_open(path, framework="numpy") as f:
         assert json.loads(f.metadata()["rpk"]) == meta
@@ -151,3 +151,29 @@ def test_a_merge_streamed_to_its_file_is_the_merge_in_memory(spec_grid, monkeypa
         assert pv_d[k] == pytest.approx(pv_m[k], rel=1e-12) if isinstance(pv_m[k], float) else pv_d[k] == pv_m[k], k
     strip = lambda m: dict(m, fidelity={k: v for k, v in m["fidelity"].items() if k != "per_voxel"})
     assert strip(disk.meta) == strip(mem.meta)
+
+
+def test_a_pack_file_is_the_reference_writers_byte_for_byte(tmp_path):
+    """``write_rpk`` writes the bytes ``safetensors.numpy.save_file`` writes for the same contiguous arrays and the
+    ``"rpk"`` metadata -- every dtype a pack stores, ties in dtype ordered by name, an empty tensor, a 0-d one (one
+    element, as ``np.ascontiguousarray`` makes it), a big-endian one, a non-ASCII metadata value -- and a tensor given
+    as pieces is the file of their concatenation."""
+    import json
+    from safetensors.numpy import save_file
+    rng = np.random.default_rng(0)
+    arrays = {"pos_x_b0u8": rng.integers(-100, 100, (100, 37), dtype=np.int8), "x_ends": rng.normal(size=(100, 2)),
+              "w": rng.random(100).astype(np.float32), "a": np.zeros(3, np.float32), "empty": np.zeros((0, 5), np.float32),
+              "scalar": np.array(3.5), "flags": rng.random(17) > 0.5, "ids": np.arange(10, dtype=np.int64),
+              "be": np.arange(6, dtype=">f4").reshape(2, 3), "u16": np.arange(9, dtype=np.uint16),
+              "i16": np.arange(4, dtype=np.int16), "u8": np.arange(5, dtype=np.uint8), "h": np.ones(2, np.float16),
+              "u32": np.arange(3, dtype=np.uint32), "i32": np.arange(3, dtype=np.int32), "u64": np.arange(2, dtype=np.uint64),
+              "strided": np.arange(24, dtype=np.float64).reshape(4, 6)[:, ::2]}
+    meta = {"id": "t/ref", "nested": {"a": [1, 2.5, None]}, "name": "Façade"}
+    ref = str(tmp_path / "ref.rpk")
+    save_file({k: np.ascontiguousarray(v) for k, v in arrays.items()}, ref, metadata={"rpk": json.dumps(meta)})
+    write_rpk(str(tmp_path / "ours.rpk"), arrays, meta)
+    assert (tmp_path / "ours.rpk").read_bytes() == (tmp_path / "ref.rpk").read_bytes()
+    pieces = dict(arrays, x_ends=[arrays["x_ends"][:30], arrays["x_ends"][30:31], arrays["x_ends"][31:]],
+                  ids=[arrays["ids"][:0], arrays["ids"]])
+    write_rpk(str(tmp_path / "pieces.rpk"), pieces, meta)
+    assert (tmp_path / "pieces.rpk").read_bytes() == (tmp_path / "ref.rpk").read_bytes()

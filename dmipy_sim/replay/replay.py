@@ -52,43 +52,48 @@ __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose
 ST_DTYPES = {"bool": "BOOL", "uint8": "U8", "int8": "I8", "uint16": "U16", "int16": "I16", "float16": "F16", "uint32": "U32",
              "int32": "I32", "float32": "F32", "uint64": "U64", "int64": "I64", "float64": "F64"}
 _NP_DTYPES = {v: np.dtype(k) for k, v in ST_DTYPES.items()}
+#: the order safetensors lays tensors out in, by dtype (then by name): the reference writer's (``safetensors.serialize``)
+_ST_ORDER = ("U64", "I64", "F64", "F32", "U32", "I32", "F16", "U16", "I16", "I8", "U8", "BOOL")
 _WRITE_BYTES = 1 << 26                  #: the largest piece of a tensor written at once (bytes)
 
 
 def write_rpk(path, arrays, metadata):
     """Write a replay pack: ``arrays`` (name -> ndarray, or a list of ndarrays stored as their concatenation along the
     first axis, as a merge stores its shards' tensors) as safetensors tensors, ``metadata`` (a dict) serialised to JSON
-    under the ``"rpk"`` header key. The tensors are streamed in pieces of at most :data:`_WRITE_BYTES` into a sibling
-    file that replaces ``path`` once complete: a pack mapped from ``path`` (:func:`read_rpk`) keeps reading the file
-    it was mapped from."""
+    under the ``"rpk"`` header key. The file is byte for byte what ``safetensors.numpy.save_file`` writes for the
+    contiguous arrays (a 0-d array stored as one element, as ``np.ascontiguousarray`` makes it): the header's
+    ``__metadata__`` first and the tensors in their data order -- by dtype as :data:`_ST_ORDER`, then by name --
+    compact, padded with spaces to eight bytes, the data little-endian. The tensors are streamed in pieces of at
+    most :data:`_WRITE_BYTES` into a sibling file that replaces ``path`` once complete: a pack mapped from ``path``
+    (:func:`read_rpk`) keeps reading the file it was mapped from."""
     import os
     import struct
-    parts = {k: [np.asarray(x) for x in v] if isinstance(v, (list, tuple)) else [np.asarray(v)] for k, v in arrays.items()}
-    head, order, off = {}, [], 0
+    parts = {k: [np.ascontiguousarray(x) for x in (v if isinstance(v, (list, tuple)) else [v])] for k, v in arrays.items()}
+    head = {}
     for k, ps in parts.items():
         dt = ps[0].dtype
-        if any(x.dtype != dt or x.shape[1:] != ps[0].shape[1:] for x in ps):
+        if any(x.dtype.name != dt.name or x.shape[1:] != ps[0].shape[1:] for x in ps):
             raise ValueError(f"the pieces of tensor {k!r} differ in dtype or row shape")
         if dt.name not in ST_DTYPES:
             raise TypeError(f"tensor {k!r} is {dt}, which a pack does not store")
-        shape = list(ps[0].shape) if len(ps) == 1 else [sum(int(x.shape[0]) for x in ps)] + list(ps[0].shape[1:])
-        order.append((-dt.itemsize, k))
-        head[k] = dict(dtype=ST_DTYPES[dt.name], shape=[int(x) for x in shape])
-    for _, k in sorted(order):                                  # widest dtype first: every tensor stays aligned
+        head[k] = dict(dtype=ST_DTYPES[dt.name], shape=[sum(int(x.shape[0]) for x in ps)] + [int(d) for d in ps[0].shape[1:]])
+    order = sorted(head, key=lambda k: (_ST_ORDER.index(head[k]["dtype"]), k))
+    off = 0
+    for k in order:
         nb = sum(int(x.nbytes) for x in parts[k])
         head[k]["data_offsets"] = [off, off + nb]; off += nb
-    h = json.dumps(dict(__metadata__={"rpk": json.dumps(dict(metadata))}, **head), separators=(",", ":")).encode()
+    h = json.dumps(dict(__metadata__={"rpk": json.dumps(dict(metadata))}, **{k: head[k] for k in order}),
+                   separators=(",", ":"), ensure_ascii=False).encode()
     h += b" " * (-len(h) % 8)
     tmp = f"{path}.{os.getpid()}.part"
     try:
         with open(tmp, "wb") as f:
             f.write(struct.pack("<Q", len(h))); f.write(h)
-            for _, k in sorted(order):
+            for k in order:
                 for x in parts[k]:
-                    x = np.asarray(x, x.dtype.newbyteorder("<"))
-                    step = max(1, _WRITE_BYTES // max(1, x.nbytes // max(1, len(x)))) if x.ndim else 1
-                    for piece in ([x] if x.ndim == 0 else (x[i:i + step] for i in range(0, len(x), step))):
-                        f.write(np.ascontiguousarray(piece).tobytes())
+                    step = max(1, _WRITE_BYTES // max(1, x.nbytes // max(1, len(x))))
+                    for i in range(0, len(x), step):
+                        f.write(np.ascontiguousarray(x[i:i + step], x.dtype.newbyteorder("<")).tobytes())
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
