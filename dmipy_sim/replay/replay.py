@@ -48,26 +48,72 @@ __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose
            "surface_logweight"]
 
 # ------------------------------- .rpk container I/O -------------------------------
+#: the safetensors dtype names of the numpy dtypes a pack's tensors are in
+ST_DTYPES = {"bool": "BOOL", "uint8": "U8", "int8": "I8", "uint16": "U16", "int16": "I16", "float16": "F16", "uint32": "U32",
+             "int32": "I32", "float32": "F32", "uint64": "U64", "int64": "I64", "float64": "F64"}
+_NP_DTYPES = {v: np.dtype(k) for k, v in ST_DTYPES.items()}
+#: the order safetensors lays tensors out in, by dtype (then by name): the reference writer's (``safetensors.serialize``)
+_ST_ORDER = ("U64", "I64", "F64", "F32", "U32", "I32", "F16", "U16", "I16", "I8", "U8", "BOOL")
+_WRITE_BYTES = 1 << 26                  #: the largest piece of a tensor written at once (bytes)
+
+
 def write_rpk(path, arrays, metadata):
-    """Write a replay pack: ``arrays`` (name -> ndarray) as safetensors tensors, ``metadata`` (a dict)
-    serialised to JSON under the ``"rpk"`` header key."""
-    from safetensors.numpy import save_file
-    meta = dict(metadata)
-    tens = {k: np.ascontiguousarray(v) for k, v in arrays.items()}
-    save_file(tens, str(path), metadata={"rpk": json.dumps(meta)})
+    """Write a replay pack: ``arrays`` (name -> ndarray, or a list of ndarrays stored as their concatenation along the
+    first axis, as a merge stores its shards' tensors) as safetensors tensors, ``metadata`` (a dict) serialised to JSON
+    under the ``"rpk"`` header key. The file is byte for byte what ``safetensors.numpy.save_file`` writes for the
+    contiguous arrays (a 0-d array stored as one element, as ``np.ascontiguousarray`` makes it): the header's
+    ``__metadata__`` first and the tensors in their data order -- by dtype as :data:`_ST_ORDER`, then by name --
+    compact, padded with spaces to eight bytes, the data little-endian. The tensors are streamed in pieces of at
+    most :data:`_WRITE_BYTES` into a sibling file that replaces ``path`` once complete: a pack mapped from ``path``
+    (:func:`read_rpk`) keeps reading the file it was mapped from."""
+    import os
+    import struct
+    parts = {k: [np.ascontiguousarray(x) for x in (v if isinstance(v, (list, tuple)) else [v])] for k, v in arrays.items()}
+    head = {}
+    for k, ps in parts.items():
+        dt = ps[0].dtype
+        if any(x.dtype.name != dt.name or x.shape[1:] != ps[0].shape[1:] for x in ps):
+            raise ValueError(f"the pieces of tensor {k!r} differ in dtype or row shape")
+        if dt.name not in ST_DTYPES:
+            raise TypeError(f"tensor {k!r} is {dt}, which a pack does not store")
+        head[k] = dict(dtype=ST_DTYPES[dt.name], shape=[sum(int(x.shape[0]) for x in ps)] + [int(d) for d in ps[0].shape[1:]])
+    order = sorted(head, key=lambda k: (_ST_ORDER.index(head[k]["dtype"]), k))
+    off = 0
+    for k in order:
+        nb = sum(int(x.nbytes) for x in parts[k])
+        head[k]["data_offsets"] = [off, off + nb]; off += nb
+    h = json.dumps(dict(__metadata__={"rpk": json.dumps(dict(metadata))}, **{k: head[k] for k in order}),
+                   separators=(",", ":"), ensure_ascii=False).encode()
+    h += b" " * (-len(h) % 8)
+    tmp = f"{path}.{os.getpid()}.part"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(struct.pack("<Q", len(h))); f.write(h)
+            for k in order:
+                for x in parts[k]:
+                    step = max(1, _WRITE_BYTES // max(1, x.nbytes // max(1, len(x))))
+                    for i in range(0, len(x), step):
+                        f.write(np.ascontiguousarray(x[i:i + step], x.dtype.newbyteorder("<")).tobytes())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def read_rpk(path):
-    """Read a replay pack into a :class:`ReplayPack` (arrays + metadata). A pack that embeds no substrate spec, or
-    whose spec's pools, tiers and stored field channel disagree (:func:`declared_susceptibility_field`), is
-    refused."""
-    from safetensors import safe_open
-    arrays = {}
-    with safe_open(str(path), framework="numpy") as f:
-        hdr = f.metadata() or {}
-        meta = json.loads(hdr.get("rpk") or hdr.get("json") or "{}")
-        for k in f.keys():
-            arrays[k] = f.get_tensor(k)
+    """Read a replay pack into a :class:`ReplayPack` (arrays + metadata). The tensors are mapped from the file
+    copy-on-write, not read: a tensor's pages are read as they are touched, and a reader that writes into one changes
+    its own copy, never the file. A pack that embeds no substrate spec, or whose spec's pools, tiers and stored field
+    channel disagree (:func:`declared_susceptibility_field`), is refused."""
+    import struct
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        hdr = json.loads(f.read(n))
+    md = hdr.pop("__metadata__", None) or {}
+    meta = json.loads(md.get("rpk") or md.get("json") or "{}")
+    mm = np.memmap(path, np.uint8, mode="c")
+    arrays = {k: mm[8 + n + d["data_offsets"][0]:8 + n + d["data_offsets"][1]].view(_NP_DTYPES[d["dtype"]]).reshape(d["shape"])
+              for k, d in hdr.items()}
     _refuse_predating(meta, path, tensors=arrays)
     pack = ReplayPack(arrays, meta, source=str(path))
     pack.susceptibility_field
@@ -2933,8 +2979,9 @@ class ReplayPack:
         array must never be handed to a band-basis contraction.  Raises on a pre-layout pack
         rather than guessing: see compression.read_position_coeffs.
 
-        Stacked from the per-axis tensors once; a pack's arrays do not change after loading, and
-        ``K``, ``n_walkers`` and ``n_coeffs`` all read this block.
+        Decoded from the per-axis tensors once for the whole pack (a pack's arrays do not change after loading);
+        a reader bounded in memory decodes walker ranges instead (:meth:`walkers`). ``K``, ``n_walkers`` and
+        ``n_coeffs`` read the stored shapes, not this block.
         """
         from .compression import read_position_coeffs, require_position_method
         require_position_method(self.method)
@@ -2946,17 +2993,17 @@ class ReplayPack:
 
         The position codec keeps ``r(0)`` as an exact entry rather than a reconstructed band, so this is the
         stored value to float32 (of order 0.1 nm on a millimetre coordinate), identical at every ``K``, and it
-        costs one slice of the coefficient block -- no path is decoded. It is what partitions a walk into voxels
-        (RPH.md: ``voxel = floor((r0 - origin) / voxel_size)``), which is why it must not depend on the band.
+        costs the first column of the endpoint tensors -- no band is decoded. It is what partitions a walk into
+        voxels (RPH.md: ``voxel = floor((r0 - origin) / voxel_size)``), which is why it must not depend on the band.
         """
-        from .compression import read_position_coeffs, require_position_method
+        from .compression import position_starts, require_position_method
         require_position_method(self.method)
-        return np.ascontiguousarray(read_position_coeffs(self.arrays, dtype=np.float64)[:, 0, :])
+        return np.ascontiguousarray(position_starts(self.arrays))
 
     @property
     def spin_weights(self):
         w = self.arrays.get("spin_weights")
-        return np.ones(self.position_coeffs.shape[0]) if w is None else w
+        return np.ones(self.n_walkers) if w is None else w
 
     @property
     def boundary_local_time(self):
@@ -2991,7 +3038,7 @@ class ReplayPack:
         Declared and stored are cross-checked so they cannot drift apart.
         """
         k = int(self.meta.get("compression", {}).get("K", -1))
-        stored = int(self.position_coeffs.shape[1])
+        stored = self.n_coeffs
         if k < 0:
             raise ValueError("pack declares no compression.K; refusing to infer it from the "
                              "array width, which counts the two endpoints as well")
@@ -3002,12 +3049,24 @@ class ReplayPack:
 
     @property
     def n_coeffs(self):
-        """Stored coefficients per axis, ``K + 2``."""
-        return int(self.position_coeffs.shape[1])
+        """Stored coefficients per axis, ``K + 2``, from the stored shapes."""
+        from .compression import position_shape
+        return position_shape(self.arrays)[1]
 
     @property
     def n_walkers(self):
-        return int(self.position_coeffs.shape[0])
+        """The walkers the pack holds, from the stored shapes."""
+        from .compression import position_shape
+        return position_shape(self.arrays)[0]
+
+    def walkers(self, start, stop):
+        """Walkers ``start:stop`` as a pack of their own (:func:`~dmipy_sim.replay.compression.walker_rows`): the same
+        metadata, ``walk_params.n_walkers`` theirs, every walker-leading tensor a view of this pack's rows and the
+        tables whole. A per-walker quantity read from it is that of the same walkers read from the whole pack."""
+        from .compression import position_shape, walker_rows
+        arrays = walker_rows(self.arrays, start, stop)
+        wp = dict(self.meta.get("walk_params") or {}, n_walkers=position_shape(arrays)[0])
+        return ReplayPack(arrays, dict(self.meta, walk_params=wp), source=self.source)
 
     @property
     def block(self):

@@ -143,6 +143,47 @@ def test_a_sequence_that_does_not_fit_is_refused_by_name():
         p.levels(se.with_gradient(G))
 
 
+@pytest.mark.parametrize("source", ["pack", "walk"])
+def test_the_rows_do_not_depend_on_the_walker_ranges_they_are_read_in(myelin, source, tmp_path):
+    """``segment_rows`` read a few walkers at a time (``slice_bytes`` for about 90 of the 1200, so the pools' walkers
+    fall in different ranges) writes every file byte for byte as the rows read in one range -- the segment vectors,
+    the pool, the gated contact, the field channels, the background, the weights and the voxels, in (voxel, pool)
+    order -- and the same ``rows.json`` but its creation time: the partitions' and groups' largest values (those of
+    the stored float32 rows), the pool count and the pack's quantisation terms. From the pack (the quantised float32 production container) and from the
+    walk (its float coefficients, decoded in float64)."""
+    from dmipy_sim.replay.compression import position_shape, slice_walkers
+    M = myelin
+    src, kw = (M["pack"], {}) if source == "pack" else (M["walk"], dict(pack=M["pack"]))
+    one = 1 << 40                                                       # every walker in one range
+    view = M["pack"] if source == "pack" else _walk_view(M["walk"])
+    few = 90 * (one // slice_walkers(view.arrays, one))                 # the bytes of 90 walkers' coefficients
+    assert slice_walkers(view.arrays, few) == 90 and position_shape(view.arrays)[0] == 1200
+    recs = {}
+    for name, sb in (("whole", one), ("ranges", few)):
+        recs[name] = segment_rows(src, M["parts"], str(tmp_path / name), grid=M["grid"], g_max=G_MAX, tiers=True,
+                                  background=True, slice_bytes=sb, **kw)
+    files = sorted(os.listdir(tmp_path / "whole"))
+    assert files == sorted(os.listdir(tmp_path / "ranges")) and "pool.npy" in files and any(f.startswith("bg_") for f in files)
+    assert not [f for f in files if f.startswith(".")]                  # the spilled columns are gone
+    for f in files:
+        if f != "rows.json":
+            assert (tmp_path / "whole" / f).read_bytes() == (tmp_path / "ranges" / f).read_bytes(), f
+    a, b = (json.loads((tmp_path / n / "rows.json").read_text()) for n in ("whole", "ranges"))
+    for r in (a, b):
+        r.pop("created")
+    assert a == b
+    top = lambda f: np.abs(np.load(tmp_path / "ranges" / f)).max(axis=0).tolist()     # the records are the stored rows'
+    for name, p in a["partitions"].items():
+        assert p["amax"] == top(p["column"])
+    for gname, g in a["groups"].items():
+        assert g["background_amax"] == top(f"bg_{gname}.npy") and g["field"]["amax"] == top(f"field_{gname}.npy")
+        assert g["contact_amax"] == top(f"contact_{gname}.npy")
+    g = next(iter(a["groups"].values()))
+    assert g["pools"] >= 2 and g["contact"] and g["field"]["channels"] and g["background_amax"]
+    if source == "pack":
+        assert any(p["quantisation"] > 0 for p in a["partitions"].values()) and g["quantisation"]["contact"] > 0
+
+
 def test_the_images_equal_the_sibling_packs_replay(myelin):
     """The acceptance of #770 on a walk with contact and field: a PGSE, a PGSTE (the stimulated echo's group) and a DDE,
     bare and with T2 / T1 / rho2 / the field at 7 T, from the layout written from the walk's float coefficients and from

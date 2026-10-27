@@ -252,3 +252,32 @@ def test_a_block_given_as_round_shards_consolidates_as_the_block_given_whole(spe
     for k in cols_r:
         assert cols_r[k] == cols_w[k], k
     assert m_r["meta"]["fidelity"] == m_w["meta"]["fidelity"]
+
+
+def test_a_block_consolidates_alike_whatever_walker_ranges_it_is_read_in(spec_grid, monkeypatch):
+    """A block's pack read a few walkers at a time (``compression.SLICE_BYTES`` for five walkers' coefficients, so the
+    band statistics and the row gathers run over many ranges) consolidates to the same column bytes, index and meta as
+    read in one range; the band and mode variance tables agree to the rounding of sums over other ranges."""
+    import dmipy_sim.replay.compression as cx
+    spec, grid, tmp = spec_grid
+    spec = spec_without_source(spec)
+    tmp = tmp / "ranges"
+    _shard_pools(spec, grid, tmp, "block-0000.intra.r0", 0, 6, 41, pools=("intra",), out_dir=str(tmp / "rounds"))
+    _shard_pools(spec, grid, tmp, "block-0000.extra.r0", 0, 9, 42, pools=("extra",), out_dir=str(tmp / "rounds"))
+    out = {}
+    for name, sb in (("one", 1 << 40), ("few", 8 * 3 * 5 * 5)):
+        monkeypatch.setattr(cx, "SLICE_BYTES", sb)
+        m, i = consolidate(str(tmp / "rounds"), str(tmp / f"out-{name}"), blocks=[0], id="t/columns")
+        out[name] = (m, i, _layout_bytes(str(tmp / f"out-{name}"), m, i)[0])
+    (m1, i1, c1), (m2, i2, c2) = out["one"], out["few"]
+    assert i1 == i2 and i1["n_rows"] > 0 and c1.keys() == c2.keys()
+    for k in c1:
+        assert c1[k] == c2[k], k
+    tables = ("band_variance", "band_variance_max", "path_mode_variance")
+    strip = lambda m: dict(m, columnar={k: v for k, v in m["columnar"].items() if k not in tables})
+    assert strip(m1["meta"]) == strip(m2["meta"])
+    for k in tables:
+        a, b = m1["meta"]["columnar"].get(k), m2["meta"]["columnar"].get(k)
+        assert (a is None) == (b is None)
+        if a is not None:
+            np.testing.assert_allclose(np.asarray(b, float), np.asarray(a, float), rtol=1e-12, err_msg=k)

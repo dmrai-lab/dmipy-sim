@@ -91,15 +91,16 @@ def test_voxel_floor_coded_device_matches_numpy_and_uses_the_vectorised_census()
     """``voxel_floor_coded`` (the per-voxel certificate of a fill block, dmipy-sim#685) gives the same occupied
     voxels and walker counts on either device, and floors that agree to the coded phases' own float32 rounding."""
     from dmipy_sim.replay.bank import voxel_floor_coded
-    from dmipy_sim.replay.compression import default_envelope
+    from dmipy_sim.replay.compression import default_envelope, pack_position_arrays
     from dmipy_sim.phantom import Grid
     n_w, n_t, K = 400, 65, 8
     C = _coefficients(n_w, K, 13)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
     comp = np.zeros((n_w, n_t), np.int8)
     env = default_envelope()
-    ijk_np, pools_np, n_np, floor_np, _ = voxel_floor_coded(C, 2e-5, n_t, grid, comp, env, device="numpy")
-    ijk_jx, pools_jx, n_jx, floor_jx, _ = voxel_floor_coded(C, 2e-5, n_t, grid, comp, env, device="jax")
+    P = pack_position_arrays(C, np.float64)
+    ijk_np, pools_np, n_np, floor_np, _ = voxel_floor_coded(P, 2e-5, n_t, grid, comp, env, device="numpy")
+    ijk_jx, pools_jx, n_jx, floor_jx, _ = voxel_floor_coded(P, 2e-5, n_t, grid, comp, env, device="jax")
     np.testing.assert_array_equal(ijk_np, ijk_jx)
     assert pools_np == pools_jx
     np.testing.assert_array_equal(n_np, n_jx)
