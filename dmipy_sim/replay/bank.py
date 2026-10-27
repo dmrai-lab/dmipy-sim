@@ -1901,28 +1901,39 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
     D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the transverse on-time gates ``gates``
     (``(n_s,)`` arrays on the block grid; default :func:`_surface_gates`, the battery's), read from the STORED bridge
     (:func:`~dmipy_sim.replay.compression.surface_logweight_bridge` on the pack's own arrays) against the same reading
-    of the walk's float bands (the container's quantisation of the surface rows), plus the local time's quadrature
+    of the walk's float ``bands``, every band the walk accumulated: the container's quantisation of the surface rows
+    (the stored bands against the walk's float bands of the stored count) and the truncation of the bands the pack
+    does not store (those against all of ``bands``; zero when it stores them all), plus the local time's quadrature
     term ``quadrature`` (``err_quadrature_surface`` of :func:`_derived_certificate`); the floor the coded split-half
-    spread of the stored reading. ``(err, floor, quantisation, quadrature, rho2_list)``, the largest over the rows;
-    no raw path is read."""
+    spread of the stored reading. ``(err, floor, quantisation, truncation, quadrature, rho2_list)``, the largest over
+    the rows; no raw path is read."""
     n = int(np.asarray(endpoint).shape[0])
     w = np.ones(n) if w is None else np.asarray(w, np.float64)
     rhos = [float(r) for r in (env.get("rho2_list") or [1e-4])]
     n_s = int(round(float(T) / float(h))) + 1
-    exact, meta_x = _cx.encode_boundary_bands(np.zeros(n, np.float32), np.asarray(endpoint, np.float32), np.asarray(bands, np.float64),
-                                              T=float(T), dtype=np.float64, container=None)
+    bands = np.asarray(bands, np.float64)
+    K_s = _cx.c2_bands_K(arrays, meta)
+    if K_s > bands.shape[1]:
+        raise ValueError(f"the pack stores {K_s} contact bands; the walk's float bands given are {bands.shape[1]}")
+    float_of = lambda b: _cx.encode_boundary_bands(np.zeros(n, np.float32), np.asarray(endpoint, np.float32), b,
+                                                   T=float(T), dtype=np.float64, container=None)
+    exact, meta_x = float_of(bands[:, :K_s])
+    full = float_of(bands) if K_s < bands.shape[1] else None
     perm = np.random.RandomState(0).permutation(n); A, B = perm[:n // 2], perm[n // 2:]
     wmean = lambda x, idx: float(np.sum(w[idx] * x[idx]) / np.sum(w[idx]))
-    quant = floor = 0.0
+    quant = trunc = floor = 0.0
     for rho in rhos:
         r = rho / float(D)
         for gate in [None] + (_surface_gates(n_s) if gates is None else list(gates)):
             s_dec = np.exp(np.asarray(_cx.surface_logweight_bridge(arrays, meta, r, gate, h), np.float64))
             s_x = np.exp(np.asarray(_cx.surface_logweight_bridge(exact, meta_x, r, gate, h), np.float64))
             quant = max(quant, abs(wmean(s_dec, slice(None)) - wmean(s_x, slice(None))))
+            if full is not None:
+                s_f = np.exp(np.asarray(_cx.surface_logweight_bridge(full[0], full[1], r, gate, h), np.float64))
+                trunc = max(trunc, abs(wmean(s_x, slice(None)) - wmean(s_f, slice(None))))
             floor = max(floor, abs(wmean(s_dec, A) - wmean(s_dec, B)))
-    return dict(err=float(quant + float(quadrature)), floor=float(floor), quantisation=float(quant), quadrature=float(quadrature),
-                n_walkers=n, rho2_list=rhos)
+    return dict(err=float(quant + trunc + float(quadrature)), floor=float(floor), quantisation=float(quant),
+                truncation=float(trunc), quadrature=float(quadrature), n_walkers=n, rho2_list=rhos)
 
 
 def _contact_floor(endpoint, bands, env, *, T, h, D, w=None):
@@ -2274,14 +2285,16 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                                             np.asarray(cw.boundary_bands)[:, 0, :Kb], T=T, dtype=blt_dtype, container=bc)
         arrays.update(a_); chan_meta["boundary_local_time"] = cm_; channels["rho2"] = True
         # the contact tier's own certificate (``err_surface`` / ``floor_surface``, what a family's contact tier reads):
-        # walk-free from the stored bridge -- the container's quantisation of the surface rows beside the local time's
-        # quadrature term, and the coded split-half floor of the surface rows; a measured certificate replaces it
-        # with the raw subset's reading
+        # walk-free from the stored bridge against every band the walk accumulated -- the container's quantisation of
+        # the surface rows and the truncation of the bands beyond the stored Kb beside the local time's quadrature
+        # term, and the coded split-half floor of the surface rows; a measured certificate replaces it with the raw
+        # subset's reading
         run.phase("certificate contact")
-        _sf = _surface_terms_walk_free(np.asarray(cw.boundary_endpoint)[:, 0], np.asarray(cw.boundary_bands)[:, 0, :Kb], arrays, cm_,
+        _sf = _surface_terms_walk_free(np.asarray(cw.boundary_endpoint)[:, 0], np.asarray(cw.boundary_bands)[:, 0], arrays, cm_,
                                        env, T=T, h=h, D=D, w=weights, quadrature=float(fid.get("err_quadrature_surface", 0.0)))
         fid.update(err_surface=_sf["err"], floor_surface=_sf["floor"], surface_certified="walk_free", surface_rho2_list=_sf["rho2_list"],
-                   err_surface_quantisation=_sf["quantisation"], err_surface_quadrature=_sf["quadrature"])
+                   err_surface_quantisation=_sf["quantisation"], err_surface_truncation=_sf["truncation"],
+                   err_surface_quadrature=_sf["quadrature"])
         if fidelity == "measured" and cw.raw_boundary is not None:
             wr = None if weights is None else np.asarray(weights, np.float64)[:cw.raw_boundary.shape[0]]
             _sf = _surface_fidelity(cw.raw_boundary, arrays, cm_, env, h=h, D=D, w=wr)
