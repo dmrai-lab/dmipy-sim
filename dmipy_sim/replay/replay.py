@@ -1814,7 +1814,12 @@ class ReplayPack:
             Kp, eK, src_K, how_K = K_st, 0.0, "all stored bands: a full read of them", ("explicit" if K is not None else "full")
         else:
             var, src_K = band_variance(self.meta, K_st, self.T_window, self.diffusivity)
-            tail = band_tail(G_eff, dt_wf, wins, var).max(axis=0)
+            from .compression import band_phase_variances
+            beyond = 0.0                               # the bands never stored, at the free bridge's variance (closed form)
+            for T_w, t0_w in wins:
+                pb, total = band_phase_variances(np.asarray(G_eff, np.float64), float(dt_wf), float(T_w), K_st, float(self.diffusivity), t0=t0_w)
+                beyond = beyond + 0.5 * np.clip(total - pb.sum(axis=1), 0.0, None)
+            tail = (band_tail(G_eff, dt_wf, wins, var) + np.asarray(beyond).reshape(-1, 1)).max(axis=0)
             if K is None:
                 Kp, eK = fewest(tail, range(K_st + 1), limit); how_K = "planned"
             else:
