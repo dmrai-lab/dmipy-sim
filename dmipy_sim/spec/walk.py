@@ -258,7 +258,10 @@ def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None,
     naming the shell, never coarsened. The raster is checked before it is returned: the shell fraction it holds
     against the fraction of ``n_check`` uniform points the spec's exact membership tests put in the shell, recorded
     in the grid's ``certificate`` and refused past one percent of the shell (a raster that has lost its sheath's
-    volume has lost its field). ``context`` is a :class:`WalkContext` of the spec whose tests are reused."""
+    volume has lost its field). The raster spans the domain box exactly (its nodes the box's side over a whole
+    number of spacings) and its field is the box's periodic convolution, so an axis the domain declares periodic is
+    one period of the field and the grid states it ``periodic``: a walker that has left the cell reads its image's
+    field, never the grid's clamped edge. ``context`` is a :class:`WalkContext` of the spec whose tests are reused."""
     from ..fields.susceptibility_field import (FieldGrid, FIELD_NODES_ACROSS, field_node_budget, field_resolution,
                                                mesh_field_basis, predicate_field_basis)
     if field_source_kind(spec) is None:
@@ -314,7 +317,12 @@ def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None,
     if abs(frac_raster - frac) > max(0.01 * frac, 4.0 * se):
         raise SpecError(f"the field raster at {spacing} holds {frac_raster:.4f} of the domain as shell where the spec's "
                         f"membership puts {frac:.4f} +- {se:.4f}: the grid does not resolve the shell")
-    return FieldGrid(basis, np.asarray(origin, float), cert)
+    side = np.asarray(basis["shape"], float) * np.asarray(basis["voxel_size"], float)
+    if not np.allclose(np.asarray(origin, float), lo, rtol=0.0, atol=1e-9 * float(np.max(hi - lo))) or \
+            not np.allclose(side, hi - lo, rtol=1e-9, atol=0.0):
+        raise SpecError(f"the field raster spans {np.asarray(origin).tolist()} + {side.tolist()}, not the domain box "
+                        f"{lo.tolist()} .. {hi.tolist()}: its periodic axes would not be one period")
+    return FieldGrid(basis, np.asarray(origin, float), cert, periodic=tuple(bool(p) for p in g.periodic))
 
 
 def _needs_bundle_walk(spec):
