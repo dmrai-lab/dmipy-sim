@@ -392,8 +392,9 @@ meshes:
   (`edge_backscatter`, `edge_margin` 1e-4 barycentric, #430): a hit within the margin of a facet seam is sent back
   along its own direction, since a specular bounce off one facet at a rim keeps the outward component, lands the
   walker on the neighbouring facet's plane, and that wall then reads as a non-hit; the impact table leaked 96 of
-  55,848 rows that way and 0 with it, and `reject_escape` cannot catch those (its classifier signs by the nearest
-  centroid, which at a seam is the facet whose plane still says inside).
+  55,848 rows that way and 0 with it. `reject_escape`'s classifier reads the side of the CLOSEST triangle
+  (exact point-triangle distance over the 27-cell gather, `_classify_arr`), never of the nearest centroid, which on
+  a bundle of near-touching surfaces belongs to the neighbouring surface (dmipy-sim#711).
 - **No mesh files in the repo** — tests generate meshes on the fly (icosphere / open
   tube); large research PLYs are a manual stress test only.
 

@@ -240,7 +240,10 @@ def chain_frame(centers, r_in, cell_id):
 def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_open_surface="drop", id=None):
     """The spec of a CACTUS run directory (``optimized_final.txt`` + ``meshes/simulations/strand_*_erode_*.ply``).
 
-    The periodic cell comes from the header (or ``side_um``); every strand with both surfaces is two
+    The voxel comes from the header (or ``side_um``) and its faces reflect: CACTUS grows finite strands whose
+    caps overrun the voxel and keeps them apart only in the voxel's own frame, so the bundle is not one period of
+    anything (its periodic images interpenetrate other strands by up to 1.7 um on ``cactus_bundle_00000``,
+    dmipy-sim#711). Every strand with both surfaces is two
     walls (inner: intra | myelin, outer: myelin | extra); the pools are the catalogued white matter;
     open (non-watertight) surfaces are dropped, warned about or refused per ``on_open_surface``, and
     every such decision is recorded in ``provenance.transformations``.
@@ -263,10 +266,10 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
     hdr = os.path.join(run_dir, "optimized_final.txt")
     if side_um is None:
         if not os.path.isfile(hdr):
-            raise SpecError("no optimized_final.txt header and no side_um: the periodic cell is unknown")
+            raise SpecError("no optimized_final.txt header and no side_um: the voxel is unknown")
         with open(hdr) as fh:
             side_um = float(fh.readline().strip())
-        transformations.append("periodic cell side read from optimized_final.txt")
+        transformations.append("voxel side read from optimized_final.txt")
     frame, bundles = Frame([0.0, 0.0, 1.0]), None
     if os.path.isfile(hdr):                                         # the strands themselves declare the frame
         from ..io.strands import read_strands
@@ -299,19 +302,20 @@ def cactus_spec(run_dir, *, scale=_UM, side_um=None, field_T=3.0, rho2=None, on_
     vmin = np.min([m[0].min(0) for m in meshes], axis=0)
     if vmin.min() < -1e-9:                                       # centred cell
         lo, hi = [-L / 2] * 3, [L / 2] * 3
-        transformations.append("periodic cell centred on the origin (surfaces have negative coordinates)")
+        transformations.append("voxel centred on the origin (surfaces have negative coordinates)")
     spec = SubstrateSpec(
         id or f"cactus/{os.path.basename(os.path.normpath(run_dir))}",
-        Domain(lo, hi, ["periodic", "periodic", "periodic"]), pools, walls, Seeding([0, 1, 2], "uniform_by_volume", "thin"),
+        Domain(lo, hi, ["reflect", "reflect", "reflect"]), pools, walls, Seeding([0, 1, 2], "uniform_by_volume", "thin"),
         Validity(smallest, ["gradient", "relaxation", "surface", "field"], mesh_edge_feature_ratio=edge_med / smallest,
                  thinnest_shell=thinnest),
         frame=frame, nominal_field_T=float(field_T),
-        description=f"CACTUS bundle: {len(pairs)} strands, each an inner (axon) and outer (myelin) surface, in a periodic cell",
+        description=f"CACTUS bundle: {len(pairs)} strands, each an inner (axon) and outer (myelin) surface, in a voxel with reflecting faces",
         realisation={"n_objects": len(pairs), "cell_side": L, **({} if bundles is None else {"bundles": bundles}),
                      "g_ratio": {str(k): _g_ratio(by_path[v[0]], by_path[v[1]]) for k, v in pairs.items()}},   # JSON keys
         provenance={"source": "CACTUS", "run_dir": str(run_dir), "scale": scale,
                     "files": [{"path": p, "sha256": _sha(p)} for p in files],
-                    "transformations": transformations + ["inside inner = intra (1), inner..outer = myelin (2), outside outer = extra (0)",
+                    "transformations": transformations + ["voxel faces reflect: the strands are finite and not periodic",
+                                                          "inside inner = intra (1), inner..outer = myelin (2), outside outer = extra (0)",
                                                           "nominal pool values from the catalogued white matter"],
                     "created": date.today().isoformat(), "software": {"name": "dmipy-sim", "version": _version()}})
     return spec.validate()

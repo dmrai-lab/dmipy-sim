@@ -45,7 +45,7 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, s
 def test_cactus_run_directory_becomes_a_spec_that_says_everything(tmp_path):
     run = _cactus_run_dir(tmp_path, n_strands=3, side=30.0, g=0.7)
     spec = cactus_spec(run)
-    assert spec.domain.boundary == ["periodic"] * 3 and spec.domain.box_max[0] - spec.domain.box_min[0] == pytest.approx(30e-6)
+    assert spec.domain.boundary == ["reflect"] * 3 and spec.domain.box_max[0] - spec.domain.box_min[0] == pytest.approx(30e-6)
     assert [p.name for p in spec.pools] == ["extra", "intra", "myelin"] and spec.field_source_pools[0].name == "myelin"
     assert len(spec.walls) == 6 and {(w.inside_pool, w.outside_pool) for w in spec.walls} == {(1, 2), (2, 0)}
     assert all(w.surface.kind == "mesh" and w.surface.scale == 1e-6 and len(w.surface.sha256) == 64 for w in spec.walls)

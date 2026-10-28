@@ -481,9 +481,9 @@ class Slab(Family):
 
 
 class Cactus(Family):
-    """The CACTUS bundle: every strand an inner and an outer mesh in a periodic cell, three pools (intra, myelin
-    water frozen in its sheath, extra), the myelin sheath's susceptibility field rasterised and read along the
-    path. Walked by ``walk_spec`` pool by pool, seeded in proportion to the water (``thin``), which is the
+    """The CACTUS bundle: every strand an inner and an outer mesh in a voxel with reflecting faces, three pools
+    (intra, myelin water frozen in its sheath, extra), the myelin sheath's susceptibility field rasterised and read
+    along the path. Walked by ``walk_spec`` pool by pool, seeded in proportion to the water (``thin``), which is the
     toggle-proof count at equal cost per walker."""
     name = "cactus"
     floor = 3e-3
@@ -584,6 +584,8 @@ class Cactus(Family):
     def walk(self, name, seed, backend):
         from dmipy_sim.spec import walk_spec
         kw = dict(field_res=self.field_res_m()) if self.args.field_res else {}
+        if getattr(self.args, "bounce_budget", None):
+            kw["bounce_budget"] = int(self.args.bounce_budget)
         cache = getattr(self.args, "field_cache", None)
         if cache:
             self._cache_before[name] = bool((self.field_cache_record(name) or {}).get("exists"))
@@ -630,7 +632,7 @@ def _cactus_reference(path, mesh_dir, out):
 
 
 def _smoke_cactus_run(args):
-    """A CACTUS-shaped run directory of two capped myelinated tubes along z overrunning a small periodic cell:
+    """A CACTUS-shaped run directory of two capped myelinated tubes along z overrunning a small voxel:
     the same producer (``cactus_spec``), walk and pack as the real bundle, at a CPU's size."""
     import trimesh
     out = os.path.join(os.path.abspath(args.out or "."), "_smoke_cactus_run")
@@ -999,6 +1001,9 @@ def main(argv=None):
     p.add_argument("--device-memory-gib", type=float, default=None,
                    help="plan: the memory (GiB) JAX may use on the device the walk runs on, when the planning host is "
                         "not that device; the raster's device bytes are refused above it")
+    p.add_argument("--bounce-budget", type=int, default=None,
+                   help="cactus: the walk's bounce budget in place of the mesh's derived one (walk_spec(bounce_budget=)); "
+                        "the walk records it and its exhausted steps, which build_replay_pack refuses")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
     p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "
