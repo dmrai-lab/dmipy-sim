@@ -440,7 +440,7 @@ class Slab(Family):
         return d.simulate_trajectories(self.n_walkers(name), self.D0, self.spec(name), T_max=self.T, K=self.K,
                                        seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
                                        window_T=self.T, raw_subset=self.raw_subset, field_basis=self.field_grid(),
-                                       envelope=self.envelope)
+                                       field_target_floor=0.5 * self.floor, envelope=self.envelope)
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.D0,
@@ -521,7 +521,7 @@ class Cactus(Family):
         kw = dict(field_res=float(self.args.field_res) * 1e-6) if self.args.field_res else {}
         return walk_spec(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
                          K=self.K, window_T=self.T, envelope=self.envelope, backend=backend,
-                         require_gpu=(backend != "jax"), **kw)
+                         require_gpu=(backend != "jax"), field_target_floor=0.5 * self.floor, **kw)
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), pack_license=self.pack_license,
