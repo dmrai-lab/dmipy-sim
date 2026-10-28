@@ -683,12 +683,30 @@ def _frozen_channels(field, p0):
     return np.asarray(field.channels_at_device()(p0))
 
 
-def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
-    """The pools' coefficient walks of a bundle as one :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` in a
-    random walker order (any prefix a fair subsample): ``parts`` is ``(pool id, walk or seats)`` per pool, a frozen
-    pool (``D = 0``) its seats ``(n, 3)``, held there over every window (its displacement and bands zero, no
-    contact, the field at its seat: the ``k = 0`` mode alone, ``sqrt(T) b(seat)``); the compartment is the pool id
-    per walker (static: a bundle's walls are impermeable)."""
+def _raw_allocation(counts, n_raw):
+    """The raw subset ``n_raw`` split over the pools in proportion to their walker counts ``{pool id: n}`` (largest
+    remainder, ties to the lower id): ``{pool id: raw walkers}``, summing to ``min(n_raw, sum(counts))``, none above
+    its pool's count."""
+    total = sum(counts.values())
+    n_raw = min(max(int(n_raw), 0), total)
+    exact = {pid: n_raw * n / total for pid, n in counts.items()} if total else {}
+    got = {pid: int(np.floor(x)) for pid, x in exact.items()}
+    for pid in sorted(exact, key=lambda i: (-(exact[i] - got[i]), i))[:n_raw - sum(got.values())]:
+        got[pid] += 1
+    return got
+
+
+def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_counts=None):
+    """The pools' coefficient walks of a bundle as one :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`:
+    ``parts`` is ``(pool id, walk or seats)`` per pool, a frozen pool (``D = 0``) its seats ``(n, 3)``, held there
+    over every window (its displacement and bands zero, no contact, the field at its seat: the ``k = 0`` mode alone,
+    ``sqrt(T) b(seat)``); the compartment is the pool id per walker (static: a bundle's walls are impermeable).
+
+    The walker order is a uniform shuffle with the raw walkers first, so any prefix is a fair subsample and the first
+    ``n_raw`` walkers are the walk's raw subset, as on a single-pool walk. ``raw_counts`` is ``{pool id: raw walkers}``
+    (:func:`_raw_allocation`): a pool's raw walkers are its first ``raw_counts[pid]`` walkers, its walk's own raw
+    subset, or for a frozen pool its seats held at every block end (the seat as position, contact 0, the field read
+    at the seat); the raw compartment is the pool id. A pool walk that lacks a raw array it was asked for is refused."""
     import dataclasses
     from ..coefficient_walk import merge_work
     walks = [w for _, w in parts if not isinstance(w, np.ndarray)]
@@ -710,7 +728,16 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
         # records the coarsest read, and its certificate charges the term at it on every pool's read series
         w_read = max(walks, key=lambda w: float(w.field_read_interval))
     pc, be, bb, ids, wts, fc, qf, qd, qp, qb = [], [], [], [], [], [], [], [], [], []
+    raw_counts = {pid: int((raw_counts or {}).get(pid, 0)) for pid, _ in parts}
+    n_raw = sum(raw_counts.values())
+    nb1 = int(w0.n_blocks) + 1                                         # the block ends of a raw walker
+    rp, rb, rc, rf = [], [], [], []
+    if n_raw and sampled:
+        t_read = np.asarray(w_read.field_read_instants, np.float64)
+    offset, raw_global = 0, []
     for pid, w in parts:
+        n_r = raw_counts[pid]
+        name = spec.pool(pid).name
         if isinstance(w, np.ndarray):                                  # a frozen shell: held at its seat
             n = len(w)
             c = np.zeros((n, n_win, Kc, 3), np.float32); c[:, :, 0, :] = w[:, None, :]
@@ -723,8 +750,31 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
                 modes[:, :, 0, :] = (np.sqrt(T_w) * _frozen_channels(field, w))[:, None, :]
                 fc.append(modes); qf.append(np.zeros((n, n_win, n_ch), np.float32))
                 qd.append(np.zeros((n, n_win, n_ch), np.float32))            # a frozen walker reads one value
+            if n_r:
+                rp.append(np.broadcast_to(w[:n_r, None, :], (n_r, nb1, 3)).astype(np.float32))
+                if surface:
+                    rb.append(np.zeros((n_r, nb1), np.float32))
+                if sampled:
+                    rf.append(np.broadcast_to(_frozen_channels(field, w[:n_r])[:, None, :], (n_r, len(t_read), n_ch)).astype(np.float32))
         else:
             n = w.n_walkers
+            if n_r:
+                missing = [k for k, need in (("raw_positions", True), ("raw_boundary", surface), ("raw_field", sampled))
+                           if need and getattr(w, k) is None]
+                if missing or np.asarray(w.raw_positions).shape[0] != n_r:
+                    raise SpecError(f"pool {name!r}: its walk was asked for {n_r} raw walkers and holds "
+                                    f"{missing or 'raw_positions of ' + str(np.asarray(w.raw_positions).shape[0])}; a bundle's raw "
+                                    f"subset is the pools' own")
+                rp.append(np.asarray(w.raw_positions, np.float32))
+                if surface:
+                    rb.append(np.asarray(w.raw_boundary, np.float32))
+                if sampled:
+                    own = np.asarray(w.field_read_instants, np.float64)
+                    if own.shape != t_read.shape or not np.allclose(own, t_read, rtol=1e-9, atol=0.0):
+                        gap = f"{np.abs(own - t_read).max():.3g} s apart at most" if own.shape == t_read.shape else f"{len(own)} reads against {len(t_read)}"
+                        raise SpecError(f"pool {name!r} reads the field at instants other than the bundle's ({gap}); the pools' raw "
+                                        f"field reads cannot be joined on one series")
+                    rf.append(np.asarray(w.raw_field, np.float32))
             pc.append(np.asarray(w.position_coeffs, np.float32)); qp.append(np.asarray(w.qv_positions, np.float32))
             if surface:
                 be.append(np.asarray(w.boundary_endpoint)); bb.append(np.asarray(w.boundary_bands)); qb.append(np.asarray(w.qv_boundary))
@@ -733,9 +783,17 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
                 qd.append(np.asarray(w.qv_field_increments, np.float32))
         ids.append(np.full(n, pid, np.int8))
         wts.append(np.asarray(weights_of[pid], float))
-    n_tot = sum(len(i) for i in ids)
-    order = np.random.default_rng(int(seed) + 991).permutation(n_tot)          # any prefix is a fair subsample
+        rc.append(np.full((n_r, nb1), pid, np.int8))
+        raw_global.append(offset + np.arange(n_r))
+        offset += n
+    n_tot = offset
+    perm = np.random.default_rng(int(seed) + 991).permutation(n_tot)           # any prefix is a fair subsample
+    raw_global = np.concatenate(raw_global)
+    is_raw = np.zeros(n_tot, bool); is_raw[raw_global] = True
+    order = np.concatenate([perm[is_raw[perm]], perm[~is_raw[perm]]])          # the raw walkers lead, each group shuffled
     cat = lambda xs: np.concatenate(xs, axis=0)[order]
+    slot = np.full(n_tot, -1, np.int64); slot[raw_global] = np.arange(n_raw)    # a raw walker's row in the pools' concatenated raw arrays
+    cat_raw = lambda xs: np.concatenate(xs, axis=0)[slot[order[:n_raw]]] if n_raw else None
     wts = cat(wts)
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(w0.diffusivity)
@@ -777,7 +835,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
         field_basis=(field if sampled else None), field_coeffs=(cat(fc) if sampled else None), qv_field=(cat(qf) if sampled else None),
         qv_field_increments=(cat(qd) if sampled else None),
         field_read_interval=(w_read.field_read_interval if sampled else w0.field_read_interval),
-        raw_positions=None, raw_boundary=None, raw_compartment=None, raw_bound=None, raw_field=None, qv_positions=cat(qp),
+        raw_positions=cat_raw(rp), raw_boundary=(cat_raw(rb) if surface else None), raw_compartment=cat_raw(rc), raw_bound=None,
+        raw_field=(cat_raw(rf) if sampled else None), qv_positions=cat(qp),
         qv_boundary=(cat(qb) if surface else None), seed=int(seed), diffusivity=D_ref, geometry=None, spec=spec,
         weights=(None if np.allclose(wts, 1.0) else wts), block=block, work=merge_work(works), scanner=str(scanner),
         stepping=(dict(rule="adaptive", pools=stepping) if stepping else None),
@@ -858,6 +917,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                             "the fixed-step walk reads at every step (adaptive_steps=False)")
         fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
     works = []
+    raw_counts = _raw_allocation({pid: len(seeds_of[pid]) for pid in seeded}, walk_kw.get("raw_subset", 0))
     field_kw = dict(K_c3=K_c3, field_read_interval=field_read_interval)
     fixed_kw = dict(field_kw, field_target_floor=field_target_floor)       # the fixed-step walk's pilot also takes the band's budget
     for pid in seeded:
@@ -865,6 +925,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         shell = bool(inside_w[pid]) and bool(outside_w[pid])
         r0 = seeds_of[pid]
         n = len(r0)
+        walk_kw = dict(walk_kw, raw_subset=raw_counts[pid])               # this pool's share of the bundle's raw subset
         if pool.D in (None, 0.0):
             if not shell:
                 raise SpecError(f"pool {pool.name!r} needs D to be walked")
@@ -903,6 +964,6 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     if walked is None:
         raise SpecError("no seeded pool diffuses; nothing to walk")
     current().phase("finalize")
-    walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, scanner)
+    walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, scanner, raw_counts)
     object.__setattr__(walk, "run", current())
     return walk

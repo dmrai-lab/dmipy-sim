@@ -42,8 +42,8 @@ Stages::
 ``walk --keep-walk DIR`` also saves each substrate's float ``CoefficientWalk`` to ``DIR/<pack id>.safetensors``
 (``--keep-walk-ids`` restricts it to the substrates named there), its path and sha256 in the pack's receipt;
 ``walk --raw-subset N`` keeps the block ends, contact and field reads of ``N`` walkers and builds the pack
-``fidelity="measured"`` (its certificate replayed on that subset against the pack's own coefficients). The CACTUS
-bundle's walk drops the subset in its join, so that family refuses the option.
+``fidelity="measured"`` (its certificate replayed on that subset against the pack's own coefficients). On the CACTUS
+bundle the subset is drawn from the pools in proportion to their walkers.
 
 ``walk`` is resumable: a substrate whose pack and receipt exist in ``DIR`` is not walked again, and
 ``--shard i/n`` takes every n-th substrate from the i-th, so n jobs share one family. ``--smoke`` is the same
@@ -270,16 +270,10 @@ class Family:
     license = "CC-BY-4.0"
     pack_license = None
     citation = "Fick RHJ (2026), replayable Monte-Carlo packs, SubstrateCommons"
-    #: Whether the family walks pool by pool through ``_walk_bundle``, whose join drops the walk's raw subset.
-    bundle = False
 
     def __init__(self, args):
         self.args = args
         self.raw_subset = int(getattr(args, "raw_subset", 0) or 0)
-        if self.raw_subset > 0 and self.bundle:
-            raise SystemExit(f"--raw-subset {self.raw_subset}: the {self.name} family is a multi-pool bundle walk, and "
-                             "the bundle's join drops the raw subset, so a pack has nothing to be measured on; walk "
-                             "it without --raw-subset (a derived certificate)")
         self.T = float(args.T) if args.T else WINDOW_T
         self.K = int(args.K) if args.K else int(np.ceil(K_BANDS * self.T / WINDOW_T))
         self.floor = float(args.floor) if args.floor else self.floor
@@ -458,7 +452,6 @@ class Cactus(Family):
     blt_K = 256
     license = "MIT"                                    #: the CACTUS source's
     pack_license = "CC-BY-NC-SA-4.0 OR LicenseRef-Commercial"
-    bundle = True
     citation = "Villarreal-Haro et al. 2023, CACTUS (https://github.com/Juanitovh/CACTUS)"
 
     def __init__(self, args):
@@ -535,8 +528,8 @@ class Cactus(Family):
         from dmipy_sim.spec import walk_spec
         kw = dict(field_res=float(self.args.field_res) * 1e-6) if self.args.field_res else {}
         return walk_spec(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
-                         K=self.K, window_T=self.T, envelope=self.envelope, backend=backend,
-                         require_gpu=(backend != "jax"), field_target_floor=0.5 * self.floor, **kw)
+                         K=self.K, window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope,
+                         backend=backend, require_gpu=(backend != "jax"), field_target_floor=0.5 * self.floor, **kw)
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), pack_license=self.pack_license,
@@ -937,8 +930,7 @@ def main(argv=None):
     p.add_argument("--keep-walk-ids", default=None, help="walk: a file (lines or commas) or a comma-separated list of "
                                                           "the pack ids (or names) that keep their walk; all by default")
     p.add_argument("--raw-subset", type=int, default=0, help="walk: walkers whose block ends, contact and field reads "
-                                                              "are kept; above 0 the pack is built fidelity='measured' "
-                                                              "(not for the cactus bundle)")
+                                                              "are kept; above 0 the pack is built fidelity='measured'")
     p.add_argument("--stop-on-error", action="store_true")
     a = p.parse_args(argv)
     if a.keep_walk_ids and not a.keep_walk:

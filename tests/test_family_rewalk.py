@@ -296,7 +296,9 @@ def test_raw_subset_builds_a_pack_certified_on_that_subset(fr, tmp_path):
         assert r["err_max"] is not None
 
 
-def test_raw_subset_is_refused_for_the_bundle_family_by_name(fr, tmp_path):
-    with pytest.raises(SystemExit) as e:
-        fr.main(["walk", "cactus", "--out", str(tmp_path), "--raw-subset", "10", "--smoke", "--backend", "jax"])
-    assert "cactus" in str(e.value) and "bundle" in str(e.value) and "raw subset" in str(e.value)
+def test_raw_subset_builds_the_bundle_family_certified_on_that_subset(fr, tmp_path):
+    fr.main(["walk", "cactus", "--out", str(tmp_path), "--raw-subset", "10", "--smoke", "--smoke-n", "90", "--T", "0.004", "--backend", "jax"])
+    receipts = _receipts(tmp_path)
+    assert receipts
+    for r in receipts.values():
+        assert r["raw_subset"] == 10 and r["fidelity"] == "measured" and r["measured_by"] == "raw_subset" and r["measured_on"] == 10
