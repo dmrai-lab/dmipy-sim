@@ -349,6 +349,31 @@ def test_the_blocks_consolidate_into_one_layout(blocks):
         lay.image(d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, bvalues=[1e9], n_t=2 * n_t - 1, slew_rate=np.inf), tissue=t, scanner=3.0)
 
 
+def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):
+    """A first block of extra water alone and a second with the intra pool too: the layout's pool count is the
+    largest any block's rows address, so each pool's T2 weights its own rows in the image."""
+    spec, grid, _ = spec_grid
+    packs, dirs = [], []
+    for b, pools in ((0, ("extra",)), (1, ("extra", "intra"))):
+        want = np.zeros(grid.shape, np.int64); want[b] = 24 // len(pools)            # as many walkers in each block
+        per = {p: (want if p in pools else np.zeros(grid.shape, np.int64)) for p in ("extra", "intra")}
+        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, adaptive_steps=True, K=3,
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=per))
+        pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid)
+        packs.append(pk); dirs.append(str(tmp_path / f"pl_rows{b}"))
+        segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3, tiers=True)
+    m = write_time_segment_layout(dirs, str(tmp_path / "pl_layout"))
+    assert m["tiers"]["pools"] == 2
+    lay, merged = TimeSegmentLayout(str(tmp_path / "pl_layout")), merge_packs(packs, id="t/pl-merged")
+    seq = _strand_protocol(packs[0].n_t)
+    t = Tissue(T2={"intra": 0.0005, "extra": 0.08, "myelin": 0.01})
+    S, floor = lay.image(seq, tissue=t)
+    ref = _per_voxel(merged, grid, seq, tissue=t)
+    got = S.reshape(ref.shape); live = np.isfinite(got[:, 0])
+    sig2 = m["partitions"]["se"]["rounding"]["variance"]
+    assert np.abs(got[live] - ref[live]).max() < _term(sig2, float(np.nanmax(floor)))
+
+
 def test_blocks_that_disagree_are_refused(blocks, spec_grid):
     """Rows of two layouts (another partition) are not consolidated together."""
     lay, merged, grid, n_t, m, tmp = blocks
