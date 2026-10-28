@@ -139,14 +139,39 @@ class ColumnarPack:
         return declared_susceptibility_field(self.meta, has_field=bool(self.path_groups))
 
     # ---- the plan: what an acquisition needs, before any byte moves
+    @property
+    def truncation_budget(self):
+        """What a waveform may cost this layout in band truncation (:func:`~dmipy_sim.replay.replay.truncation_budget`):
+        its ``fidelity.target_floor`` less its other certified terms; a layout that states no cap is held to its median
+        per-voxel floor."""
+        from .replay import truncation_budget
+        return truncation_budget(self.meta, floor=self.floor, floor_source="fidelity.per_voxel.floor_median")
+
     def bands_for(self, seq, tol=0.25):
         """``(K', error)``: the fewest stored band groups whose truncation costs less than ``tol`` x the pack's median
-        floor on every measurement, by the rule of :mod:`~dmipy_sim.replay.planning` (:func:`~dmipy_sim.replay.planning.band_tail`
-        and :func:`~dmipy_sim.replay.planning.fewest`) on the manifest's per-band variance of the worst populated voxel.
-        The walk is not read."""
+        floor on every measurement, and that truncation's bound, by the rule of :mod:`~dmipy_sim.replay.planning`
+        (:func:`~dmipy_sim.replay.planning.band_tail` and :func:`~dmipy_sim.replay.planning.fewest`): the stored bands
+        between ``K'`` and ``K`` at the manifest's per-band variance of the worst populated voxel, and the bands beyond
+        ``K`` (never stored) at the free bridge's variance at the walk's diffusivity, in closed form to infinity
+        (:func:`~dmipy_sim.replay.compression.band_phase_variances`), which bounds every restricted walk's. A waveform
+        whose cost at the full ``K`` exceeds :attr:`truncation_budget` is refused by name; the walk is not read."""
         from .planning import band_tail, fewest
+        from .compression import band_phase_variances
+        K = self.K
+        G = np.asarray(seq.G_eff, np.float64)
+        D = self.meta["walk_params"].get("diffusivity")
+        if D is None:
+            raise ValueError("the layout records no diffusivity, so the truncation beyond its stored bands cannot be bounded")
+        pb, total = band_phase_variances(G, float(seq.dt), self.T_window, K, float(D))
+        beyond = 0.5 * np.clip(total - pb.sum(axis=1), 0.0, None)                  # the bands never stored, per measurement
+        budget = self.truncation_budget
+        if beyond.max() > budget["budget"]:
+            raise ValueError(f"the waveform's gradient reaches beyond this layout's temporal band: the {K} stored bands "
+                             f"({K / (2.0 * self.T_window):.4g} Hz) leave up to {beyond.max():.2e} of the signal in phase the layout "
+                             f"does not carry, against the {budget['budget']:.2e} it may cost (its cap {budget['cap']:.2e} from "
+                             f"{budget['cap_source']} less {budget['other_terms']:.2e} of other certified terms)")
         var = np.asarray(self.meta["columnar"].get("band_variance_max") or self.meta["columnar"]["band_variance"], np.float64).T   # (K, 3)
-        tail = band_tail(seq.G_eff, seq.dt, [(self.T_window, None)], var).max(axis=0)
+        tail = (band_tail(G, seq.dt, [(self.T_window, None)], var) + beyond[:, None]).max(axis=0)
         return fewest(tail, self.band_groups, tol * self.floor)
 
     def modes_for(self, seq, scanner, tissue, tol=0.25):

@@ -64,14 +64,18 @@ ramps.
 ```python
 print(pack.temporal_bandwidth_hz)                             # the highest frequency the bands resolve
 hz, bands, err = pack.waveform_band(seq)                      # the band this sequence needs on this pack
-print(bands <= pack.K, err <= pack.meta["fidelity"]["floor_max"])
+print(bands <= pack.K, err <= pack.truncation_budget["budget"])
 ```
 
 A replay of a sequence beyond the pack's band is refused, naming both frequencies: the bands the pack does not
 store would carry phase the walkers never see, and the signal would come back smooth and wrong. The judgement is
-walk-free: the free path's band variances at the walk's diffusivity, the tail every restricted walk shares at
-short times, give the phase the dropped bands would carry, and a sequence is within the band when that phase
-moves the signal by no more than the pack's own Monte-Carlo floor.
+walk-free: the free path's band variances at the walk's diffusivity, to infinity (the tail no restricted walk
+exceeds: measured on the 2, 5 and 10 um cylinder masters, every band above k = 100 carries 0.43 to 0.97 of the free
+variance), give the phase the dropped bands would carry, and half of that phase variance bounds what dropping them
+costs the signal. A sequence is within the band when that cost is no more than the pack's truncation budget
+(`pack.truncation_budget`): the numerical cap the pack states (`fidelity.target_floor`) less its other certified
+terms, so a sequence the pack replays costs it at most its cap in total, per waveform. A pack that states no cap is
+held to its Monte-Carlo floor, and the refusal names which.
 
 ```python
 fast = sequences.ogse([[1, 0, 0]], 1500.0, 2e-3, shape="cosine", Delta=3e-3, bvalues=[1e9], TE=10e-3, slew_rate=np.inf)

@@ -1648,9 +1648,12 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     basis ``sum_k W_k^2 <= G_max^2 T`` per axis, so the quadrature is at most ``gamma^2 G_max^2 T max_k(rel_k T / (pi
     k)^2) sum_c QV_c / 2``, the quantisation's ``eps^2`` at most ``gamma^2 G_max^2 T sum_c max_k step_ck^2 / 12`` and
     the rounding's b the class's (:func:`compression.class_b_max`). The truncation has no class bound short of the
-    vacuous (``2 D T^2 / (pi K)^2`` times ``3 G_max^2 T``): it is read on the battery's shapes at their class amplitude,
-    the strongest the class plays of each, which the replay's band check (:meth:`ReplayPack._check_band`) holds every
-    actual waveform to."""
+    vacuous (``2 D T^2 / (pi K)^2`` times ``3 G_max^2 T``): ``err_truncation`` is read on the battery's shapes at their
+    class amplitude, a reading and not the class's supremum (the class's worst waveform on free water leaves 20 times
+    the battery's at K = 256 on Connectome 2.0). The truncation guarantee is per waveform: the replay's band check
+    (:meth:`ReplayPack._check_band`) refuses every actual waveform whose truncation, bounded by half the free bridge's
+    phase variance beyond ``K``, exceeds the pack's ``fidelity.target_floor`` less the other rows of this certificate
+    (:func:`~dmipy_sim.replay.replay.truncation_budget`)."""
     from ..constants import GAMMA
     T, h, K = float(T), float(h), int(K)
     n_t = int(round(T / h)) + 1

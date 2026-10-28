@@ -674,10 +674,10 @@
    },
    "band": {
     "certified_band_hz": {
-     "value": 520.0,
+     "value": 522.0,
      "unit": "Hz",
      "field_T": 3.0,
-     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (200 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the worst deliverable waveform's truncation on free diffusion, the whole bridge's phase variance beyond the band to infinity; the 10 um cylinder master's measured worst waveform needs the same band to within 2 %) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (200 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; the storage rule is a design rule and the certificate is per waveform: a replay's band check (ReplayPack._check_band) holds every actual waveform to the pack's own stated numerical cap, whatever band the pack was stored at",
      "source_key": "fick2026_replayable_mc",
      "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
      "confidence": "cited"
@@ -769,10 +769,10 @@
    },
    "band": {
     "certified_band_hz": {
-     "value": 311.0,
+     "value": 310.0,
      "unit": "Hz",
      "field_T": 3.0,
-     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the diffusion-derated slew (62.5 T/m/s), the regime a diffusion sequence is bound by. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the worst deliverable waveform's truncation on free diffusion, the whole bridge's phase variance beyond the band to infinity; the 10 um cylinder master's measured worst waveform needs the same band to within 2 %) at epsilon = 5e-3 over a 100 ms gradient-on window, at the diffusion-derated slew (62.5 T/m/s), the regime a diffusion sequence is bound by. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; the storage rule is a design rule and the certificate is per waveform: a replay's band check (ReplayPack._check_band) holds every actual waveform to the pack's own stated numerical cap, whatever band the pack was stored at",
      "source_key": "fick2026_replayable_mc",
      "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
      "confidence": "cited"
@@ -844,10 +844,10 @@
    },
    "band": {
     "certified_band_hz": {
-     "value": 928.0,
+     "value": 960.0,
      "unit": "Hz",
      "field_T": 3.0,
-     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (600 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the worst deliverable waveform's truncation on free diffusion, the whole bridge's phase variance beyond the band to infinity; the 10 um cylinder master's measured worst waveform needs the same band to within 2 %) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (600 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; the storage rule is a design rule and the certificate is per waveform: a replay's band check (ReplayPack._check_band) holds every actual waveform to the pack's own stated numerical cap, whatever band the pack was stored at",
      "source_key": "fick2026_replayable_mc",
      "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
      "confidence": "cited"
@@ -1468,10 +1468,10 @@
    },
    "band": {
     "certified_band_hz": {
-     "value": 784.0,
+     "value": 877.0,
      "unit": "Hz",
      "field_T": 3.0,
-     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (500 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the worst deliverable waveform's truncation on free diffusion, the whole bridge's phase variance beyond the band to infinity; the 10 um cylinder master's measured worst waveform needs the same band to within 2 %) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (500 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; the storage rule is a design rule and the certificate is per waveform: a replay's band check (ReplayPack._check_band) holds every actual waveform to the pack's own stated numerical cap, whatever band the pack was stored at",
      "source_key": "fick2026_replayable_mc",
      "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
      "confidence": "cited"
@@ -1533,10 +1533,10 @@
    },
    "band": {
     "certified_band_hz": {
-     "value": 2100.0,
+     "value": 3012.0,
      "unit": "Hz",
      "field_T": null,
-     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (6840 T/m/s); the paper prints 2.1 kHz. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the worst deliverable waveform's truncation on free diffusion, the whole bridge's phase variance beyond the band to infinity; the 10 um cylinder master's measured worst waveform needs the same band to within 2 %) at epsilon = 5e-3 over a 100 ms gradient-on window, at the hardware slew (6840 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; the storage rule is a design rule and the certificate is per waveform: a replay's band check (ReplayPack._check_band) holds every actual waveform to the pack's own stated numerical cap, whatever band the pack was stored at",
      "source_key": "fick2026_replayable_mc",
      "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
      "confidence": "cited"
@@ -1706,10 +1706,10 @@
    },
    "band": {
     "certified_band_hz": {
-     "value": 2300.0,
+     "value": 4095.0,
      "unit": "Hz",
      "field_T": null,
-     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the truncation theorem on free diffusion, which bounds every restricted walk) at epsilon = 5e-3 over a 100 ms gradient-on window, at the derived slew (15,000 T/m/s); the paper prints 2.3 kHz. A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; a consumer's waveform_band check reads the pack's own band",
+     "context": "the highest frequency any waveform this class can deliver needs of a replay pack: the closed-form certificate (the worst deliverable waveform's truncation on free diffusion, the whole bridge's phase variance beyond the band to infinity; the 10 um cylinder master's measured worst waveform needs the same band to within 2 %) at epsilon = 5e-3 over a 100 ms gradient-on window, at the derived slew (15,000 T/m/s). A pack built for the class is stored at this band times the storage margin (dmipy_sim.replay.bank.storage_band_hz), K = ceil(2 f T) bands per window; the storage rule is a design rule and the certificate is per waveform: a replay's band check (ReplayPack._check_band) holds every actual waveform to the pack's own stated numerical cap, whatever band the pack was stored at",
      "source_key": "fick2026_replayable_mc",
      "location": "Results, 'A pack is a band, and the band is set by the scanner'; figures/fig_band_data.npz",
      "confidence": "cited"

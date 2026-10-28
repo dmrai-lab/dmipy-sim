@@ -1814,7 +1814,12 @@ class ReplayPack:
             Kp, eK, src_K, how_K = K_st, 0.0, "all stored bands: a full read of them", ("explicit" if K is not None else "full")
         else:
             var, src_K = band_variance(self.meta, K_st, self.T_window, self.diffusivity)
-            tail = band_tail(G_eff, dt_wf, wins, var).max(axis=0)
+            from .compression import band_phase_variances
+            beyond = 0.0                               # the bands never stored, at the free bridge's variance (closed form)
+            for T_w, t0_w in wins:
+                pb, total = band_phase_variances(np.asarray(G_eff, np.float64), float(dt_wf), float(T_w), K_st, float(self.diffusivity), t0=t0_w)
+                beyond = beyond + 0.5 * np.clip(total - pb.sum(axis=1), 0.0, None)
+            tail = (band_tail(G_eff, dt_wf, wins, var) + np.asarray(beyond).reshape(-1, 1)).max(axis=0)
             if K is None:
                 Kp, eK = fewest(tail, range(K_st + 1), limit); how_K = "planned"
             else:
@@ -2035,25 +2040,45 @@ class ReplayPack:
         checked against and what a prefix and a rewindowed pack keep."""
         return float(self.K) / (2.0 * float(self.windows["T"]))
 
+    @property
+    def truncation_budget(self):
+        """What a waveform may cost this pack in band truncation (:func:`truncation_budget`): ``dict(cap, cap_source,
+        other_terms, budget)``. The cap is the pack's ``fidelity.target_floor``; a pack that states none is held to its
+        Monte-Carlo floor, ``fidelity.floor_max`` or ``1 / sqrt(n_walkers)`` where the certificate states none."""
+        fid = self.meta.get("fidelity") or {}
+        if fid.get("floor_max"):
+            floor, src = float(fid["floor_max"]), "fidelity.floor_max"
+        else:
+            floor, src = 1.0 / np.sqrt(float(self.n_walkers)), "1/sqrt(n_walkers)"
+        return truncation_budget(self.meta, floor=floor, floor_source=src)
+
     def waveform_band(self, waveform, *, tol=None):
         """The temporal band ``waveform`` needs on this pack, as ``(hz, bands, err)``: the fewest sine bands whose
-        dropped phase moves the signal by no more than ``tol`` on every measurement, stated as the frequency
+        dropped phase costs the signal no more than ``tol`` on every measurement, stated as the frequency
         ``bands / (2 T)`` beside the pack's :attr:`temporal_bandwidth_hz` (#277).
 
         The gradient phase of a walker is the waveform's projection on the bridge basis contracted with the
         walker's bands (:func:`~dmipy_sim.replay.compression.band_projection`); the bands beyond the pack's
-        ``K`` are not stored, so the phase they would carry is lost silently. For a free path the bridge bands
-        are independent with the bridge covariance's eigenvalues ``2 D T^2 / (pi k)^2``
-        (:func:`~dmipy_sim.replay.compression.band_variances`), the tail every restricted walk shares at short times,
-        so the dropped phase variance per measurement is ``gamma^2 sum_{k > K} sum_d W_{m,k,d}^2 var_k`` at the walk's
-        diffusivity (the whole bridge's closed form less the retained bands, :func:`~dmipy_sim.replay.compression.
-        band_phase_variances`), and a dropped independent phase under-attenuates the magnitude by half of it. ``tol`` defaults to the pack's certified Monte-Carlo
-        floor, the unit of every other error the certificate states; a pack whose certificate states no floor
-        (walkers that never moved) is held to the largest floor its ``n_walkers`` could have, ``1 / sqrt(n)``.
-        The band is judged over the stretch the waveform spans (:meth:`_span`): the windows its duration reaches
-        on a pack stored in windows (RPK.md 4.3), the window on a one-window pack, so a short acquisition on a long
-        walk costs the projection of its own duration, not the walk's. The bands are sought up to
-        :data:`CONTINUOUS_BAND_CAP` times the pack's; a waveform beyond that returns ``inf``.
+        ``K`` are not stored, so the phase they would carry is lost silently. The cost of dropping bands ``j+1...`` is
+        bounded by half the phase variance they carry: a dropped phase ``phi`` with a symmetric law moves the signal
+        by ``|S_j| (1 - <e^{i phi}>) <= phi variance / 2`` for ``|S_j| <= 1``, so ``err[j] = max over measurements of
+        gamma^2 sum_{k > j} sum_d W_{m,k,d}^2 var_k / 2`` is the estimate, an upper bound for any substrate (the
+        retained signal is at most 1) and no sharper. ``var_k`` is the free bridge's band variance at the pack's
+        diffusivity, ``2 D T^2 / (pi k)^2`` (:func:`~dmipy_sim.replay.compression.band_variances`), and the sum over
+        ``k > j`` is the whole bridge's closed form less the retained bands
+        (:func:`~dmipy_sim.replay.compression.band_phase_variances`), so it runs to infinity, not to a grid. Free
+        diffusion's bands bound every restricted walk's from above: measured on the 20,000-walker cylinder masters
+        (2, 5 and 10 um diameter, 100 ms) the variance of every band above k = 100 is 0.43 to 0.97 of the free value
+        (and 1.00 on free water), and the tail's correlation with the retained phase is at most 0.04.
+
+        ``tol`` defaults to the pack's truncation budget (:func:`truncation_budget`): its stated numerical cap
+        (``fidelity.target_floor``) less its other certified terms, so a waveform within the band costs the pack no more
+        than its cap in total; a pack that states no cap is held to its Monte-Carlo floor (``fidelity.floor_max``,
+        ``1 / sqrt(n_walkers)`` where the certificate states none). The band is judged over the stretch the waveform
+        spans (:meth:`_span`): the windows its duration reaches on a pack stored in windows (RPK.md 4.3), the window on
+        a one-window pack, so a short acquisition on a long walk costs the projection of its own duration, not the
+        walk's. The bands are sought up to :data:`CONTINUOUS_BAND_CAP` times the pack's; a waveform beyond that returns
+        ``inf``.
         """
         from .compression import band_phase_variances
         waveform = waveform.waveform if hasattr(waveform, "waveform") else waveform
@@ -2062,8 +2087,7 @@ class ReplayPack:
         if D is None:
             raise ValueError("the pack records no diffusivity, so the band a waveform needs cannot be judged")
         if tol is None:
-            from .planning import floor_of
-            tol = floor_of(self.meta, self.n_walkers)
+            tol = self.truncation_budget["budget"]
         G = np.asarray(waveform.G_eff, np.float64)
         K_have = self.K * windows
         K_try = max(64, 2 * K_have)
@@ -2103,13 +2127,15 @@ class ReplayPack:
         T, windows = self._span(_duration(waveform))
         if bands <= self.K * windows:
             return
+        b = self.truncation_budget
         need = (f"more than {CONTINUOUS_BAND_CAP * self.K * windows / (2.0 * T):.4g} Hz over the {T * 1e3:.4g} ms it spans"
                 if not np.isfinite(hz) else f"{hz:.4g} Hz ({bands} bands over the {T * 1e3:.4g} ms it spans)")
         raise ValueError(f"the waveform's gradient reaches beyond this pack's temporal band: it needs {need} and the "
                          f"pack resolves {self.temporal_bandwidth_hz:.4g} Hz (K = {self.K} bands over {float(self.windows['T']) * 1e3:.4g} ms), "
-                         f"which would drop {err:.2e} of the signal into phase the pack does not carry. Build a pack at "
-                         f"this band or above (build_replay_pack(temporal_bandwidth_hz=...)), or replay a waveform "
-                         f"within this one")
+                         f"which would drop up to {err:.2e} of the signal into phase the pack does not carry, against the "
+                         f"{b['budget']:.2e} it may cost (its cap {b['cap']:.2e} from {b['cap_source']} less {b['other_terms']:.2e} "
+                         f"of other certified terms). Build a pack at this band or above "
+                         f"(build_replay_pack(temporal_bandwidth_hz=...)), or replay a waveform within this one")
 
     def prefix(self, TE, *, K=None, out_path=None, tol=2.0, id=None, provenance=None):
         """This walk cut at the shorter echo time ``TE`` (s) and re-projected on the prefix's own basis, at the same
@@ -3500,6 +3526,31 @@ def compile_scheme(G, dt, K, gyromagnetic_ratio=GAMMA, *, T=None, method=None):
     T = (G.shape[1] - 1) * float(dt) if T is None else float(T)
     W = band_projection(G, dt, T, int(K))
     return (gyromagnetic_ratio * W).reshape(W.shape[0], (int(K) + 2) * W.shape[2]).T
+
+
+#: The certified terms of a pack's numerical error other than its band truncation: the certificate's ``err_*`` rows
+#: (position and local-time quadrature, quantisation, rounding, the field's quadrature, read and quantisation, the
+#: surface tier's, a re-projection's). The truncation is the waveform's own and is judged against what these leave.
+NUMERICAL_TERMS = ("err_quadrature", "err_quantisation", "err_quadrature_surface", "err_rounding", "err_quadrature_field",
+                   "err_field_read", "err_quantisation_field", "err_surface", "err_reprojection")
+
+
+def truncation_budget(meta, *, floor, floor_source):
+    """The truncation error a waveform may cost this pack, as ``dict(cap, cap_source, other_terms, budget)``.
+
+    A pack that states its numerical cap (``fidelity.target_floor``, the error budget it was built to) is held to it:
+    ``budget = cap - other_terms``, with ``other_terms`` the sum of its certified non-truncation rows
+    (:data:`NUMERICAL_TERMS`) or ``err_max - err_truncation`` where that is larger, so a waveform the check admits
+    costs the pack at most its cap in total. A pack that states none is held to ``floor`` (named by ``floor_source``),
+    the Monte-Carlo noise it is read through; its ``other_terms`` are then 0 and ``budget = floor``."""
+    fid = meta.get("fidelity") or {}
+    if fid.get("target_floor") is None:
+        return dict(cap=float(floor), cap_source=str(floor_source), other_terms=0.0, budget=float(floor))
+    cap = float(fid["target_floor"])
+    named = sum(float(fid[k]) for k in NUMERICAL_TERMS if fid.get(k) is not None)
+    left_over = (float(fid["err_max"]) - float(fid.get("err_truncation") or 0.0)) if fid.get("err_max") is not None else 0.0
+    other = max(named, left_over)
+    return dict(cap=cap, cap_source="fidelity.target_floor", other_terms=other, budget=max(cap - other, 0.0))
 
 
 CONTINUOUS_BAND_CAP = 64
