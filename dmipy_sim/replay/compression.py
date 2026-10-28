@@ -603,25 +603,36 @@ def _store_range(q, bits):
     return np.stack([pack_bits(u[..., a], bits) for a in range(q.shape[2])], axis=2)
 
 
-def _load_range(t, bits, m):
-    """The integer band values ``(N, m[, n_axes])`` of a stored tensor: :func:`_store_range` inverted."""
+def _unpack_from(t, bits, start, m):
+    """The ``m`` unsigned integers of ``bits`` each that follow value ``start`` in every row of the bit-packed ``t``
+    ``(N, nbytes)``, ``(N, m)`` ``uint32``. Eight values fill ``bits`` bytes exactly, so the read begins at the byte of the
+    group that holds ``start``, and the ``start`` values before it are never unpacked."""
+    s8 = start - start % 8
+    first = (s8 // 8) * bits
+    got = unpack_bits(np.asarray(t)[:, first:first + -(-(start - s8 + m) // 8) * bits], bits, start - s8 + m)
+    return got[:, start - s8:]
+
+
+def _load_range(t, bits, m, start=0):
+    """The integer band values ``(N, m[, n_axes])`` of a stored tensor (values ``start .. start + m - 1`` of its range):
+    :func:`_store_range` inverted."""
     t = np.asarray(t)
     if bits in NATIVE_BITS:
-        return t
+        return t[:, start:start + m] if (start or m != t.shape[1]) else t
     off = 1 << (bits - 1)
     if t.ndim == 2:
-        return unpack_bits(t, bits, m).astype(np.int32) - off
-    return np.stack([unpack_bits(t[..., a], bits, m).astype(np.int32) - off for a in range(t.shape[2])], axis=2)
+        return _unpack_from(t, bits, start, m).astype(np.int32) - off
+    return np.stack([_unpack_from(t[..., a], bits, start, m).astype(np.int32) - off for a in range(t.shape[2])], axis=2)
 
 
-def _range_values(t, bits, m):
-    """The integer band values of a stored range ``t`` as float64 ``(N, m)`` (exact: every integer of at most 16 bits is
-    a float64), from the native ``int8`` / ``int16`` tensor or the bit-packed ``uint8`` rows -- :func:`_load_range` with
-    the one conversion to float64 and the offset taken in place."""
+def _range_values(t, bits, m, start=0):
+    """The integer band values of a stored range ``t`` (values ``start .. start + m - 1``) as float64 ``(N, m)`` (exact:
+    every integer of at most 16 bits is a float64), from the native ``int8`` / ``int16`` tensor or the bit-packed ``uint8``
+    rows -- :func:`_load_range` with the one conversion to float64 and the offset taken in place."""
     t = np.asarray(t)
     if bits in NATIVE_BITS:
-        return t.astype(np.float64)
-    q = unpack_bits(t, bits, m).astype(np.float64)
+        return t[:, start:start + m].astype(np.float64)
+    q = _unpack_from(t, bits, start, m).astype(np.float64)
     q -= 1 << (bits - 1)
     return q
 
@@ -1156,7 +1167,18 @@ def _decoded_once(arrays, kind, selection, prefixes, decode):
     return cache.get(kind, selection, tensors, decode)
 
 
-def read_position_coeffs(arrays, axes=None, dtype=np.float64, *, cached=True):
+def _decoded_prefix(arrays, kind, selection, prefixes, n, decode, *, axis, offset=0):
+    """The first ``offset + n`` entries along ``axis`` of a decode through the decoded cache of ``arrays``
+    (:meth:`~dmipy_sim.replay.decoded.DecodedCache.get_prefix`), keyed as :func:`_decoded_once` is; the arrays of a plain
+    ``dict`` decode the prefix on every call."""
+    cache = getattr(arrays, "decoded", None)
+    if cache is None:
+        return decode(0, n)
+    tensors = {k: v for k, v in arrays.items() if k == "band_block" or k.startswith(prefixes)}
+    return cache.get_prefix(kind, selection, tensors, n, decode, axis=axis, offset=offset)
+
+
+def read_position_coeffs(arrays, axes=None, dtype=np.float64, *, cached=True, bands=None):
     """Coefficients as (n_w, K, n_axes) from either layout.
 
     ``axes`` selects spatial components by index (default all present). Reading a subset is the point of
@@ -1164,18 +1186,37 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64, *, cached=True):
     dequantised in float64 against its walkers' scales and rounded once to ``dtype`` in place, one axis and range
     at a time: the temporaries are one range of one axis, never the walkers' whole scale table.
 
+    ``bands`` reads the two endpoints and the lowest ``bands`` bands only, ``(n_w, bands + 2, n_axes)``: bit for bit
+    the leading entries of the full decode, and only those bands are dequantised. Of a pack's ``arrays``
+    a prefix is a view of the full decode when that is held, else of the longest prefix held for the selection, extended by
+    the bands beyond it when it is shorter (:meth:`~dmipy_sim.replay.decoded.DecodedCache.get_prefix`).
+
     Of a pack's ``arrays`` (:class:`~dmipy_sim.replay.decoded.PackArrays`) the result is decoded once per
     ``(axes, dtype)`` and the same read-only array returned by every later call, within the pack's decode budget
     (:class:`~dmipy_sim.replay.decoded.DecodedCache`); ``cached=False`` decodes afresh into a writable array. A plain
     ``dict`` decodes on every call.
     """
-    if not cached:
-        return _read_position_coeffs(arrays, axes, dtype)
+    n_bands = position_shape(arrays)[1] - 2
+    if bands is not None and not 0 <= int(bands) <= n_bands:
+        raise ValueError(f"bands = {bands} is outside the {n_bands} bands the pack stores")
+    if bands is not None and int(bands) == n_bands:
+        bands = None
     sel = (None if axes is None else tuple(int(i) for i in axes), np.dtype(dtype).str)
-    return _decoded_once(arrays, "position_coeffs", sel, "pos_", lambda: _read_position_coeffs(arrays, axes, dtype))
+    if not cached:
+        return _read_position_coeffs(arrays, axes, dtype, 0, n_bands if bands is None else int(bands))
+    if bands is None:
+        return _decoded_once(arrays, "position_coeffs", sel, "pos_", lambda: _read_position_coeffs(arrays, axes, dtype))
+    cache = getattr(arrays, "decoded", None)
+    if cache is not None:
+        full = cache.peek("position_coeffs", sel, {k: v for k, v in arrays.items() if k == "band_block" or k.startswith("pos_")})
+        if full is not None:
+            return full[:, :2 + int(bands)]
+    return _decoded_prefix(arrays, "position_prefix", sel, "pos_", int(bands),
+                           lambda lo, hi: _read_position_coeffs(arrays, axes, dtype, lo, hi), axis=1, offset=2)
 
 
-def _read_position_coeffs(arrays, axes, dtype):
+def _read_position_coeffs(arrays, axes, dtype, lo=0, hi=None):
+    """The decode of bands ``lo .. hi - 1`` (all of them by default), with the two endpoints in front when ``lo`` is 0."""
     kind, suffix, present = _position_tensors(arrays)
     want = list(present if axes is None else axes)
     missing = [i for i in want if i not in present]
@@ -1183,9 +1224,13 @@ def _read_position_coeffs(arrays, axes, dtype):
         raise KeyError(f"pack does not carry position axes {missing} "
                        f"(has {[POSITION_AXES[i] for i in present]}); it was written with a reduced "
                        f"axis set and cannot serve this encoding")
-    if kind == "float":
-        return np.stack([np.asarray(arrays[POSITION_AXES[i]], dtype) for i in want], axis=2)
     n_w, n_c, _ = position_shape(arrays)
+    K_b = n_c - 2
+    hi = K_b if hi is None else int(hi)
+    lo = int(lo)
+    if kind == "float":
+        cols = slice(0, 2 + hi) if lo == 0 else slice(2 + lo, 2 + hi)
+        return np.stack([np.asarray(arrays[POSITION_AXES[i]][:, cols], dtype) for i in want], axis=2)
     table = np.asarray(arrays["pos_band_scale"], np.float64)                       # (n_blocks, n_axes, K)
     if "band_block" in arrays:
         blk = np.asarray(arrays["band_block"], np.int64)
@@ -1194,18 +1239,21 @@ def _read_position_coeffs(arrays, axes, dtype):
     else:
         blk = None
     ranges = position_ranges(arrays, POSITION_AXES[present[0]])
-    K_b = n_c - 2
-    out = np.empty((n_w, n_c, len(want)), dtype)
+    lead = 2 if lo == 0 else 0
+    out = np.empty((n_w, lead + hi - lo, len(want)), dtype)
     for j, i in enumerate(want):
-        out[:, :2, j] = np.asarray(arrays[f"{POSITION_AXES[i]}_ends"], np.float64)
+        if lo == 0:
+            out[:, :2, j] = np.asarray(arrays[f"{POSITION_AXES[i]}_ends"], np.float64)
         k0 = 0
         for r, bits in ranges:
             t = arrays[range_name(POSITION_AXES[i], r, bits)]
             m = int(t.shape[1]) if bits in NATIVE_BITS else min(int(t.shape[1]) * 8 // bits, K_b - k0)
-            s = table[:, i, k0:k0 + m]
-            q = _range_values(t, bits, m)
-            q *= (s[0] if blk is None else s[blk])
-            out[:, 2 + k0:2 + k0 + m, j] = q
+            a0, a1 = max(k0, lo), min(k0 + m, hi)
+            if a1 > a0:
+                s = table[:, i, a0:a1]
+                q = _range_values(t, bits, a1 - a0, a0 - k0)
+                q *= (s[0] if blk is None else s[blk])
+                out[:, lead + a0 - lo:lead + a1 - lo, j] = q
             k0 += m
     return out
 

@@ -24,6 +24,8 @@ from typing import Optional
 
 import numpy as np
 
+from .planning import PLAN_TOL, planned
+
 
 @dataclass(frozen=True)
 class Acquisition:
@@ -131,7 +133,8 @@ class Primitives:
     pack's susceptibility field (``"present"`` or ``"absent"``, from its spec's pools; required: it decides what a tissue's chi may do, through
     :func:`~dmipy_sim.replay.replay.field_term`). A tissue and a
     scanner turn these into the per-walker weights and phases of :meth:`signals`, whose ensemble mean is
-    :meth:`signal`."""
+    :meth:`signal`. ``plan`` is the :class:`~dmipy_sim.replay.planning.ReadPlan` the bands and modes were read under;
+    the signal of every pair carries it."""
     w: np.ndarray
     phi: np.ndarray
     field_iso: Optional[np.ndarray]
@@ -147,6 +150,7 @@ class Primitives:
     rho2_over_D_max: Optional[float] = None                     # the contact tier's envelope (RPK.md 8.7), None unbounded
     field_envelope: Optional[dict] = None                       # the field tier's {B0_max, B0_chi_max} (ReplayPack.field_envelope), None unbounded
     contact_t1: Optional[np.ndarray] = None                    # the SAME channel, gated by chi_parallel = active - chi (dmipy-sim#574)
+    plan: object = None                                        # the ReadPlan of the bands and modes contracted (None: unplanned)
 
     def __post_init__(self):
         if self.voxel is None:
@@ -267,17 +271,21 @@ class Primitives:
         MC/DC parity fixture, against a codec error of 1.1e-4; dmipy-sim#484)."""
         w, ew, E = self.signals(tissue, scanner)
         S = (ew[:, None] * E).sum(0) / w.sum()
-        return S if complex_signal else np.abs(S)
+        return planned(S if complex_signal else np.abs(S), self.plan)
 
 
-def walker_primitives(pack, acquisition):
+def walker_primitives(pack, acquisition, *, tol=PLAN_TOL, K=None, modes=None):
     """The :class:`Primitives` of ``pack`` under ``acquisition``: the bands contracted once, the path channel
     contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
-    the windows the walk is stored in (RPK.md 4.3)."""
+    the windows the walk is stored in (RPK.md 4.3). The bands and modes read are the plan's (``tol=``, ``K=``, ``modes=`` as in
+    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay`); the tissue and the scanner are not known here, and the field modes are planned at the pack's certified
+    field scale (``field_envelope``: the largest ``B0`` and ``chi``) for every replay depth, so they are the modes
+    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` reads; every mode when the pack states no envelope."""
     from .compression import relaxation_logweight_runs
     from .replay import _band_phase, _path_field_channels, _gated_contact, _has_aniso
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
-    P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None)
+    P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None,
+                      read=dict(tol=tol, K=K, modes=modes), any_field=True)
     n_w, ch = P["n_w"], P["ch"]
     col = n_ids = None
     if pack.has_relaxation:
@@ -310,7 +318,9 @@ def walker_primitives(pack, acquisition):
                                              parallel=True), np.float64)
             contact_t1 = c1_s if contact_t1 is None else contact_t1 + c1_s
     field_iso = field_aniso = None
-    if pm is not None:
+    if pm is not None and P["M_use"] == 0:                      # a plan that reads no mode: the field scalars exist and are zero
+        field_iso, field_aniso = np.zeros(n_w), np.zeros(n_w)
+    elif pm is not None:
         from ..fields.hollow_cylinder import field_terms
         Psi, names = _path_field_channels(P, acq.waveform)       # the one read of C3, windows summed
         field_iso, aniso = field_terms(Psi, P["b0_dir"])
@@ -319,7 +329,7 @@ def walker_primitives(pack, acquisition):
     return Primitives(w=P["w"], phi=phi, field_iso=field_iso, field_aniso=field_aniso, exposure_t2=exposure_t2, exposure_t1=exposure_t1,
                       contact=contact, contact_t1=contact_t1, D_walk=pack.diffusivity, pathway=pathway_weight(acq.waveform),
                       rho2_over_D_max=pack.rho2_over_D_max, field_envelope=pack.field_envelope, voxel=P["voxel"], by_pool=pack._by_pool,
-                      susceptibility_field=pack.susceptibility_field)
+                      susceptibility_field=pack.susceptibility_field, plan=P["plan"])
 
 
 def study_signals(pack, study):

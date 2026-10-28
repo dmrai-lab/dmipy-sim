@@ -38,8 +38,8 @@ def _hand_gate(seq):
 def _field_phase(pk, seq):
     """The field's phase per walker under ``seq`` with the field along ``(0.6, 0, 0.8)`` of the specimen."""
     seq_lab, R = field_along(seq, (0.6, 0.0, 0.8))
-    _, _, phi = pk.walker_phases(seq_lab, orientation=R, scanner=B0, tissue=TISSUE)
-    _, _, phi0 = pk.walker_phases(seq_lab, orientation=R)
+    _, _, phi = pk.walker_phases(seq_lab, orientation=R, scanner=B0, tissue=TISSUE, tol=None)
+    _, _, phi0 = pk.walker_phases(seq_lab, orientation=R, tol=None)
     return (phi - phi0)[:, 0]
 
 
@@ -95,4 +95,4 @@ def test_the_closed_form_and_the_walkers_agree_on_a_stimulated_echo_with_the_fie
     kw = dict(scanner=B0, tissue=TISSUE)
     pc = pk.pose_response(seq_y, method="closed", pose=R_y, **kw)
     for R in so3.haar_rotations(4, 5):
-        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, tol=None, **kw), atol=2e-6)

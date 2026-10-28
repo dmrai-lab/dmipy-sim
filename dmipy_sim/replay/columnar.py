@@ -141,46 +141,30 @@ class ColumnarPack:
     # ---- the plan: what an acquisition needs, before any byte moves
     def bands_for(self, seq, tol=0.25):
         """``(K', error)``: the fewest stored band groups whose truncation costs less than ``tol`` x the pack's median
-        floor on every measurement -- the phase variance the dropped bands carry under the waveform's projection
-        on the bands, ``gamma^2 sum_{k>K'} sum_d var_{k,d} W_{m,k,d}^2``, halved (a dropped independent
-        phase under-attenuates the signal by that much), from the manifest's per-band variance of the worst
-        populated voxel. The walk is not read."""
-        from .replay import GAMMA
-        from .compression import band_projection
-        K = self.K
-        W = band_projection(np.asarray(seq.G_eff, np.float64), float(seq.dt), self.T_window, K)[:, 2:, :]
+        floor on every measurement, by the rule of :mod:`~dmipy_sim.replay.planning` (:func:`~dmipy_sim.replay.planning.band_tail`
+        and :func:`~dmipy_sim.replay.planning.fewest`) on the manifest's per-band variance of the worst populated voxel.
+        The walk is not read."""
+        from .planning import band_tail, fewest
         var = np.asarray(self.meta["columnar"].get("band_variance_max") or self.meta["columnar"]["band_variance"], np.float64).T   # (K, 3)
-        per_band = GAMMA ** 2 * (W ** 2 * var[None]).sum(axis=2)
-        tail = np.cumsum(per_band[:, ::-1], axis=1)[:, ::-1]
-        for Kp in self.band_groups:
-            err = 0.5 * (tail[:, Kp] if Kp < K else np.zeros(per_band.shape[0]))
-            if err.max() <= tol * self.floor:
-                return int(Kp), float(err.max())
-        return K, 0.0
+        tail = band_tail(seq.G_eff, seq.dt, [(self.T_window, None)], var).max(axis=0)
+        return fewest(tail, self.band_groups, tol * self.floor)
 
     def modes_for(self, seq, scanner, tissue, tol=0.25):
         """``(M, error)``: the fewest stored field modes for a replay at the scanner's field with the tissue's chi (0
-        when :func:`~dmipy_sim.replay.replay.field_term` resolves the pair to no field term): the dropped modes' phase variance ``(gamma dt_f B0 chi)^2 sum_{k>M} gate_hat_k^2 sum_ch
-        var_{ch,k}``, halved, against ``tol`` x the floor; the channel sum is the worst case over field directions."""
-        from .replay import GAMMA, field_term
-        from .compression import cosine_projection
+        when :func:`~dmipy_sim.replay.replay.field_term` resolves the pair to no field term), by the rule of
+        :mod:`~dmipy_sim.replay.planning` (:func:`~dmipy_sim.replay.planning.mode_tail`) on the manifest's per-mode variance."""
+        from .replay import field_term
+        from .planning import mode_tail, fewest
         f = field_term(self.susceptibility_field, tissue, scanner)
         if not f.active:
             return 0, 0.0
         if not self.path_groups:
             raise ValueError("this pair has a field term and the layout stores no field modes (C3 path channel)")
-        B0, chi, chi_a = f.B0, f.chi_iso, f.chi_aniso
         pm = self.meta["compression"]["channels"]["susc_field_basis"]
         gate = seq.effective_gate if seq.gate is None else seq.gate
-        g = cosine_projection(np.asarray(gate, np.float64).reshape(1, -1, 1), float(seq.dt), float(pm["T"]), self.path_groups[-1])[0, :, 0]
         var = np.asarray(self.meta["columnar"]["path_mode_variance"], np.float64).sum(axis=0)
-        per_mode = (GAMMA * B0 * (abs(chi) + abs(chi_a))) ** 2 * g ** 2 * var[:len(g)]
-        tail = np.cumsum(per_mode[::-1])[::-1]
-        for M in self.path_groups:
-            err = 0.5 * (tail[M] if M < len(per_mode) else 0.0)
-            if err <= tol * self.floor:
-                return int(M), float(err)
-        return int(self.path_groups[-1]), 0.0
+        tail = mode_tail(gate, seq.dt, [(float(pm["T"]), None)], self.path_groups[-1], var, f.B0, abs(f.chi_iso) + abs(f.chi_aniso))
+        return fewest(tail, self.path_groups, tol * self.floor)
 
     def plan(self, seq, *, tissue=None, scanner=None, tol=0.25, voxels=None):
         """What a replay of ``seq`` reads: bands, field modes, tiers, rows and bytes -- before any byte moves."""
@@ -398,7 +382,7 @@ class ColumnarPack:
                 seg2 = np.full(n_pad, 2 * n_seg, np.int32); seg2[:n] = 2 * seg + half
                 w_all = None
                 for a, sl in zip(study.protocol, study.protocol.slices):
-                    prim = pk.walker_primitives(a); w_all = prim.w
+                    prim = pk.walker_primitives(a, tol=None); w_all = prim.w
                     pad = lambda x, shape: (np.zeros((n_pad,) + shape) if x is None else np.concatenate([np.asarray(x, np.float64), np.zeros((n_pad - n,) + shape)]))
                     n_pools = prim.n_pools or 1
                     phi = pad(prim.phi, (prim.phi.shape[1],)); fi = pad(prim.field_iso, ()); fa = pad(prim.field_aniso, ())
@@ -463,7 +447,7 @@ class ColumnarPack:
                 for si, (t_, B_) in enumerate(settings):
                     sums = []
                     for s in seqs:                                                # each sequence's own relaxation and contact weights
-                        w, ew, p = pk.walker_phases(s, tissue=t_, scanner=B_)
+                        w, ew, p = pk.walker_phases(s, tissue=t_, scanner=B_, tol=None)
                         phi = np.zeros((n_pad, p.shape[1])); phi[:n] = p; ew_p = np.zeros(n_pad); ew_p[:n] = ew
                         sums.append(np.asarray(voxel_sums(jnp.asarray(phi), jnp.asarray(ew_p), jnp.asarray(seg_p), s_pad))[:n_seg])
                     np.add.at(num[si], v[starts], np.concatenate(sums, axis=1))

@@ -41,6 +41,14 @@ def counted(monkeypatch):
             return decode()
         return get(self, kind, selection, tensors, counted_decode)
     monkeypatch.setattr(DecodedCache, "get", counting)
+    get_prefix = DecodedCache.get_prefix
+
+    def counting_prefix(self, kind, selection, tensors, count, decode, **kw):
+        def counted_decode(lo, hi):
+            n[kind] += 1
+            return decode(lo, hi)
+        return get_prefix(self, kind, selection, tensors, count, counted_decode, **kw)
+    monkeypatch.setattr(DecodedCache, "get_prefix", counting_prefix)
     return n
 
 
@@ -54,7 +62,7 @@ def test_n_calls_decode_each_tensor_once(pack, counted):
     seqs = _seqs(pk)
     for _ in range(4):
         for s in seqs:
-            pk.walker_signals(s, tissue=TIS)
+            pk.walker_signals(s, tissue=TIS, tol=None)                  # every band: the full decode, held (a plan's prefix: test_plan_before_read)
     assert counted["position_coeffs"] == pk.n_windows           # one decode per window, not per call
     assert counted["bridge_bands"] == pk.n_windows
     assert counted["occupancy_runs"] == pk.n_windows
@@ -228,8 +236,8 @@ def test_a_sequence_without_gradient_reads_no_position(pack, counted):
         phi = phi + C @ np.zeros((C.shape[1], fid.G_eff.shape[0]))
     np.testing.assert_array_equal(np.exp(1j * phi), E)
     counted.clear()
-    pk.walker_signals(_seqs(pk, 1)[0], tissue=TIS)                                       # a gradient reads the bands as before
-    assert counted["position_coeffs"] == pk.n_windows
+    pk.walker_signals(_seqs(pk, 1)[0], tissue=TIS)                                       # a gradient reads its bands as before
+    assert counted["position_coeffs"] + counted["position_prefix"] == pk.n_windows
 
 
 def test_unpack_bits_inverts_pack_bits_at_every_depth_and_width():

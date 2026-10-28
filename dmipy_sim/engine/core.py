@@ -184,7 +184,7 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
 def _replay_signal(pack, waveform, tissue, pose):
     """The real part of the ensemble signal of ``waveform`` on ``pack`` as the walk's mean ``Re<exp(i phi)>``,
     ``float32`` of shape ``(n_measurements,)``."""
-    S = pack.replay(waveform, tissue=tissue, orientation=pose, complex_signal=True)
+    S = pack.replay(waveform, tissue=tissue, orientation=pose, complex_signal=True, tol=None)
     return np.real(np.asarray(S)).astype(np.float32)
 
 

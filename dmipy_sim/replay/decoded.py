@@ -7,6 +7,11 @@ reader contracts the dequantised floats. :class:`PackArrays` is the ``dict`` of 
 :func:`~dmipy_sim.replay.compression.bridge_bands`, :func:`~dmipy_sim.replay.compression.occupancy_events`) decode a
 tensor selection once and return the same read-only array to every later call that reads it.
 
+A **prefix** read (:meth:`DecodedCache.get_prefix`) is the first ``n`` bands or modes of a tensor selection. The cache
+holds, per selection, the longest prefix decoded so far: a later read of at most that length is a view of it, a longer one
+decodes only the bands beyond it and replaces the entry by the join. A prefix of a selection whose full decode is held is a
+view of that decode (:meth:`DecodedCache.peek`). Every prefix is bit for bit the leading entries of the full decode.
+
 The cache holds performance copies of values the stored tensors determine; it holds nothing a certificate reads and a
 reader that bypasses it computes the same numbers.
 """
@@ -37,6 +42,7 @@ class DecodedCache:
     def __init__(self, budget=DECODE_BUDGET_BYTES):
         self.budget = int(budget)
         self._entries = {}
+        self._prefixes = {}
         self._bytes = 0
         self._lock = threading.Lock()
 
@@ -46,13 +52,52 @@ class DecodedCache:
         return self._bytes
 
     def __len__(self):
-        return len(self._entries)
+        return len(self._entries) + len(self._prefixes)
 
     def clear(self):
         """Release every decoded array."""
         with self._lock:
             self._entries.clear()
+            self._prefixes.clear()
             self._bytes = 0
+
+    @staticmethod
+    def _key(kind, selection, tensors):
+        return (kind, selection, tuple((k, id(v)) for k, v in sorted(tensors.items())))
+
+    def peek(self, kind, selection, tensors):
+        """The held decode of ``tensors`` for ``selection`` under ``kind``, or ``None`` when it is not held. Decodes nothing."""
+        with self._lock:
+            hit = self._entries.get(self._key(kind, selection, tensors))
+        return None if hit is None else hit[0]
+
+    def get_prefix(self, kind, selection, tensors, n, decode, *, axis, offset=0):
+        """The first ``offset + n`` entries along ``axis`` of the decode of ``tensors`` for ``selection`` under ``kind``:
+        ``offset`` leading entries that are not bands (a position's two endpoints) and the ``n`` lowest bands or modes.
+
+        ``decode(lo, hi)`` returns the array of bands ``lo .. hi - 1`` (with the ``offset`` leading entries when ``lo`` is 0).
+        The entry held is the longest prefix decoded so far, so a read of at most that many is a read-only view of it and a
+        longer read decodes bands ``held .. n - 1`` only and holds the join in its place, within the budget (a join that does
+        not fit is returned and not held, and the shorter entry stays)."""
+        key = self._key(kind, selection, tensors)
+        with self._lock:
+            hit = self._prefixes.get(key)
+        if hit is not None and hit[1] >= n:
+            return _leading(hit[0], axis, offset + n)
+        lo = 0 if hit is None else hit[1]                     # a held prefix of no bands (only the endpoints) is replaced
+        piece = decode(lo, n)
+        stored = [t for t in tensors.values() if isinstance(t, np.ndarray)]
+        if hit is None and any(np.may_share_memory(piece, t) for t in stored):
+            return piece                       # a view of a stored tensor decodes nothing: neither held nor frozen
+        value = piece if lo == 0 else np.concatenate([hit[0], piece], axis=axis)
+        value.flags.writeable = False
+        with self._lock:
+            old = self._prefixes.get(key)
+            freed = 0 if old is None else old[0].nbytes
+            if (old is None or old[1] < n) and self._bytes - freed + value.nbytes <= self.budget:
+                self._prefixes[key] = (value, int(n), tuple(tensors.values()))
+                self._bytes += value.nbytes - freed
+        return value
 
     def get(self, kind, selection, tensors, decode):
         """The decode of ``tensors`` (a ``{name: stored tensor}`` mapping) for ``selection`` under ``kind``: the held
@@ -73,6 +118,11 @@ class DecodedCache:
                 self._entries[key] = (value, n, tuple(tensors.values()))
                 self._bytes += n
         return value
+
+
+def _leading(a, axis, count):
+    """``a`` cut to its first ``count`` entries along ``axis``: a view."""
+    return a[(slice(None),) * axis + (slice(0, int(count)),)]
 
 
 def _arrays_of(value):

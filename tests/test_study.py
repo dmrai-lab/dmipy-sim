@@ -161,7 +161,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     for k in range(2):
         tk, sk = study.resolved(k)
         for s, sl in zip((seq1, seq2, seq3), study.protocol.slices):
-            w, ew, E = merged.walker_signals(s, tissue=tk, scanner=sk)
+            w, ew, E = merged.walker_signals(s, tissue=tk, scanner=sk, tol=None)
             keys, inv = np.unique(v, return_inverse=True); num = np.zeros((len(keys), E.shape[1]), complex); den = np.zeros(len(keys))
             np.add.at(num, inv, ew[:, None] * E); np.add.at(den, inv, w)
             np.testing.assert_allclose(S[k].reshape(-1, 4)[keys][:, sl], np.abs(num / den[:, None]), rtol=1e-9, atol=1e-12)

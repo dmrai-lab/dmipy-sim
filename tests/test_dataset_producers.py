@@ -380,7 +380,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     b_, names_ = susc_path_decode(pkf2.arrays, pm2, n_t=pkf2.n_t); assert b_.shape[1] == 12 and names_[3] == "iso_P_xy"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)   # K = 3 over 0.8 ms: the field alone
     seq_gx, R = field_along(seq_g, (1, 0, 0))
-    assert pkf2.replay(seq_gx, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))[0] != pkf2.replay(seq_g)[0]
+    assert pkf2.replay(seq_gx, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6), tol=None)[0] != pkf2.replay(seq_g, tol=None)[0]   # the tier is live: every mode read
     ids = np.asarray(w.compartment); r0 = np.asarray(w.position_coeffs)[:, 0, 0]; wt = np.asarray(w.weights)
     ijk, inside = grid.bin(r0); assert inside.all()
     flat = np.ravel_multi_index(tuple(ijk.T), grid.shape)

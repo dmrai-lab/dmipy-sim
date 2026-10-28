@@ -53,6 +53,7 @@ where its nominal value lives, and which channel of the pack it needs.
 | `chi_iso`, `chi_aniso` | tissue | a phase per walker, linear in the scanner's field | no field | `pack.nominal` | a pack whose field is present (C3) and a scanner; refused on a pack whose field is absent |
 | field strength | scanner | the same phase, linear in `B0` | no field | `pack.nominal_field_T` | path (C3); on a pack whose field is absent, accepted and inert |
 | `compartment` | replay call | restricts the ensemble mean to one pool | every pool | — | C1 |
+| `tol`, `K`, `modes` | replay call | how many position bands and field modes are decoded: the fewest whose dropped tail costs `tol` x the pack's floor, or the counts stated; the plan is on the result | `tol = 0.25` | — | — |
 
 Three rules follow from the table and hold everywhere:
 

@@ -101,7 +101,7 @@ def test_a_pack_replays_the_in_plane_gradient_of_the_continuous_path(cwalk):
     pk = _float_pack(cwalk, id="test/pm-continuous", envelope=ENV, license="x", citation="x")
     assert pk.n_t == n_t and pk.dt == pytest.approx(cwalk.h)
     G = np.zeros((1, n_t, 3)); G[0, 2:12, 0] = 0.4; G[0, 22:32, 0] = -0.4
-    S_pack = pk.replay(ScannerSequence(G=G, dt=cwalk.h))[0]
+    S_pack = pk.replay(ScannerSequence(G=G, dt=cwalk.h), tol=None)[0]
     S_direct = replay(cwalk.raw_positions, cwalk.h, G, cwalk.h)[0]
     S_folded = replay(_fold(cwalk.raw_positions), cwalk.h, G, cwalk.h)[0]
     assert abs(S_pack - S_direct) < 5e-4          # the bands' series against the path through the saves (3.4e-4 measured)
@@ -139,7 +139,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, cwalk):
     assert gm["periodic"] == [True, True, True] and grid_periodic_of(gm) == (True, True, True)
     G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)
     G_lab, R = field_along(G0, (1, 0, 0))
-    S = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6))[0]
+    S = pk.replay(G_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=1e-6), tol=None)[0]
     assert S < 0.99                                                             # the field dephases
 
 

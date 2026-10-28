@@ -38,7 +38,7 @@ def layout(spec_grid):
 
 
 def _per_voxel(pack, seq, grid, **kw):
-    w, ew, E = pack.walker_signals(seq, **kw)
+    w, ew, E = pack.walker_signals(seq, tol=None, **kw)
     ijk, _ = grid.bin(pack.r0); v = np.ravel_multi_index(ijk.T, grid.shape); keys, inv = np.unique(v, return_inverse=True)
     num = np.zeros((len(keys), E.shape[1]), complex); den = np.zeros(len(keys))
     np.add.at(num, inv, ew[:, None] * E); np.add.at(den, inv, w)
@@ -56,8 +56,8 @@ def test_the_layout_holds_the_merged_pack_bit_for_bit(layout):
     assert manifest["meta"]["fidelity"]["per_voxel"]["n_voxels"] == merged.meta["fidelity"]["per_voxel"]["n_voxels"] == 8
     full = pack.view(contact=True)                                         # every row, every band, every tier: the merged pack
     seq = _seq(merged.n_t)
-    np.testing.assert_allclose(full.replay(seq), merged.replay(seq), rtol=1e-9)
-    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho2=1e-5)), merged.replay(seq, tissue=Tissue(rho2=1e-5)), rtol=1e-9)   # the surface term at the walked D
+    np.testing.assert_allclose(full.replay(seq, tol=None), merged.replay(seq, tol=None), rtol=1e-9)
+    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho2=1e-5), tol=None), merged.replay(seq, tissue=Tissue(rho2=1e-5), tol=None), rtol=1e-9)   # the surface term at the walked D
     keys_m, S_m = _per_voxel(merged, seq, grid); keys_c, S_c = _per_voxel(full, seq, grid)
     np.testing.assert_array_equal(keys_m, keys_c); np.testing.assert_allclose(S_c, S_m, rtol=1e-9)
 
@@ -115,7 +115,7 @@ def test_a_later_pass_appends_with_the_union_weights(spec_grid):
     assert len(two) == 4 * 2                                                # every (voxel, pool) of the block's four voxels has both ranges
     full = pack.view(contact=True)
     np.testing.assert_allclose(np.sort(np.asarray(full.spin_weights)), np.sort(np.asarray(m.spin_weights)), rtol=1e-6)
-    np.testing.assert_allclose(full.replay(seq), m.replay(seq), rtol=1e-6)
+    np.testing.assert_allclose(full.replay(seq, tol=None), m.replay(seq, tol=None), rtol=1e-6)
     S, floor, plan = pack.image(seq, tol=1e-9, chunk_rows=7)
     keys, S_m = _per_voxel(m, seq, grid)
     np.testing.assert_allclose(S.reshape(-1, 2)[keys], S_m, rtol=1e-6)
@@ -157,8 +157,8 @@ def test_a_curve_pack_keeps_its_ranges_as_column_groups_and_replays_as_the_merge
     assert {f"pos_x_b{i}" + ("" if r["bits"] in (8, 16) else f"u{r['bits']}") for i, r in enumerate(cont)} <= names
     full = pack.view(contact=True)
     seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
-    np.testing.assert_allclose(full.replay(seq), merged.replay(seq), rtol=1e-9)
-    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho2=1e-5)), merged.replay(seq, tissue=Tissue(rho2=1e-5)), rtol=1e-9)
+    np.testing.assert_allclose(full.replay(seq, tol=None), merged.replay(seq, tol=None), rtol=1e-9)
+    np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho2=1e-5), tol=None), merged.replay(seq, tissue=Tissue(rho2=1e-5), tol=None), rtol=1e-9)
 
 
 def test_a_band_prefix_view_of_a_curve_pack_is_the_prefix_of_its_ranges(curve_layout):

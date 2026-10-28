@@ -113,8 +113,8 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
     seq_x, R = field_along(seq, (1, 0, 0))
-    w_, ew, E = pk.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))
-    w0, ew0, E0 = pk.walker_signals(seq)
+    w_, ew, E = pk.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6), tol=None)
+    w0, ew0, E0 = pk.walker_signals(seq, tol=None)
     phase = np.angle(E[:, 0] / E0[:, 0])                             # the field's phase per walker
     from dmipy_sim.replay.bank import path_field_integral
     from dmipy_sim.fields.hollow_cylinder import contract
