@@ -65,10 +65,10 @@ _SYM6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 # of the boundary voxels brings that to ~0.1 %, and four is where it settles.
 FIELD_NODES_ACROSS = 2.0
 FIELD_MASK_SUPERSAMPLE = 4
-# The peak host bytes a basis build takes per node, MEASURED (a meshed hollow cylinder at 4.1e6 and 1.7e7 nodes: the
-# slope of the process's peak RSS is 655 B/node, the 13 float64 channels, the k-space solve's complex temporaries and
-# the membership tests of the supersampled edge in chunks of _EDGE_CHUNK_POINTS), rounded up.
-FIELD_BYTES_PER_NODE = 700
+# The peak host bytes a basis build takes per node, MEASURED (a meshed hollow cylinder at 4.1e6 and 8.0e6 nodes: the
+# slope of the process's peak RSS is 464 B/node -- the 13 float64 channels, one channel's k-space work at a time
+# (field_basis_channels) and the membership tests of the supersampled edge in chunks of _EDGE_CHUNK_POINTS), rounded up.
+FIELD_BYTES_PER_NODE = 500
 _EDGE_CHUNK_POINTS = 20_000_000                 # sub-samples per membership call on the boundary voxels (~0.5 GB)
 
 
