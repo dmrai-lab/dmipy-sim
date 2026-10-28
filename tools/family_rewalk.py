@@ -45,6 +45,13 @@ Stages::
 ``fidelity="measured"`` (its certificate replayed on that subset against the pack's own coefficients). On the CACTUS
 bundle the subset is drawn from the pools in proportion to their walkers.
 
+The CACTUS bundle's field raster (612^3 nodes x 12 channels at 0.049 um over a 30 um cell) is refused by ``plan`` when
+the host cannot build it or the device cannot hold it (``--device-memory-gib`` states the target device's memory when
+the planning host is not that device), without building it. ``--field-cache DIR`` keeps the raster as
+``DIR/<key>.safetensors`` (the key: sha256 of the spec, the node spacing and the raster's format): ``walk`` loads it
+when it is there and writes it when it builds it, and the pack's receipt records ``field_cache`` (dir, key, path, the
+sha256 of the raster's channels, whether it was a hit).
+
 ``walk`` is resumable: a substrate whose pack and receipt exist in ``DIR`` is not walked again, and
 ``--shard i/n`` takes every n-th substrate from the i-th, so n jobs share one family. ``--smoke`` is the same
 pipeline on a few substrates at a few hundred walkers over a short window, for a CPU (``JAX_PLATFORMS=cpu``).
@@ -296,6 +303,37 @@ class Family:
     def n_walkers(self, name):
         return int(sum(self.counts(name).values()))
 
+    def field_raster(self, name):
+        """The plan of the field raster this substrate's walk builds (:func:`dmipy_sim.spec.field_raster_plan`), or
+        ``None`` for a family whose walk builds none."""
+        return None
+
+    def field_check(self, name):
+        """``None`` where the walk builds no raster; else the raster's record (nodes, channels, host and device bytes, the
+        device limit and its source, the cache) after the walk's own refusals (:func:`dmipy_sim.spec.check_field_raster`:
+        the host budget, the device memory) -- raised as a ``SpecError`` naming the substrate -- evaluated without
+        building the raster."""
+        plan = self.field_raster(name)
+        if plan is None:
+            return None
+        from dmipy_sim.fields.susceptibility_field import field_device_limit
+        from dmipy_sim.spec import check_field_raster
+        gib = getattr(self.args, "device_memory_gib", None)
+        limit = (int(float(gib) * 2 ** 30), "--device-memory-gib") if gib else field_device_limit()
+        check_field_raster(self.spec(), plan, device_limit=limit)
+        rec = dict(shape=list(plan.shape), nodes=plan.n_nodes, channels=plan.channels, res_m=plan.res,
+                   host_build_bytes=plan.host_bytes, device_bytes=plan.device_bytes,
+                   device_limit_bytes=limit[0], device_limit_source=limit[1], device_checked=limit[0] is not None)
+        cache = self.field_cache_record(name)
+        if cache is not None:
+            rec["cache"] = cache
+        return rec
+
+    def field_cache_record(self, name):
+        """``{dir, key, path, exists, content_sha256, bytes}`` of this substrate's raster in ``--field-cache``, or
+        ``None`` where there is no raster or no cache."""
+        return None
+
 
 class Pores(Family):
     """The canonical pores: three shapes at every 0.1 um from 0.1 to 20 um, one pool, impermeable, no field;
@@ -465,6 +503,28 @@ class Cactus(Family):
         if self.reference is not None:
             self.run_dir = self.reference["run_dir"]
         self._spec = None
+        self._ctx = None
+        self._cache_before = {}
+
+    def context(self):
+        """The spec's :class:`~dmipy_sim.spec.WalkContext`, built once (its pool tests load the meshes)."""
+        if self._ctx is None:
+            from dmipy_sim.spec.walk import WalkContext
+            self._ctx = WalkContext(self.spec())
+        return self._ctx
+
+    def field_res_m(self):
+        return float(self.args.field_res) * 1e-6 if self.args.field_res else None
+
+    def field_raster(self, name):
+        from dmipy_sim.spec import field_raster_plan
+        return field_raster_plan(self.spec(), field_res=self.field_res_m(), context=self.context())
+
+    def field_cache_record(self, name):
+        if not getattr(self.args, "field_cache", None):
+            return None
+        from dmipy_sim.fields.raster_cache import field_raster_cache_record
+        return field_raster_cache_record(self.spec(), self.field_raster(name).res, self.args.field_cache)
 
     def spec(self):
         if self._spec is None:
@@ -491,9 +551,7 @@ class Cactus(Family):
 
     def shares(self, name):
         """Water share per seeded pool: its volume fraction (a probe of the cell) times its water fraction."""
-        from dmipy_sim.spec.walk import WalkContext
-        spec = self.spec()
-        tests = WalkContext(spec).tests
+        tests = self.context().tests
         probe = np.random.default_rng(99).uniform(tests.lo, tests.hi, (int(self.args.n_probe), 3))
         return {tests.pools[pid].name: float(tests.member(pid)(probe).mean()) * float(tests.wf[pid]) for pid in tests.seeded}
 
@@ -501,9 +559,8 @@ class Cactus(Family):
         """``{pool: WalkCost}`` of each diffusing pool's walk, the geometry ``walk_spec`` walks it in (inside its
         inner walls or outside its outer ones, the cell's faces as the domain says), without the field read."""
         from dmipy_sim.engine.core import walk_cost
-        from dmipy_sim.spec.walk import WalkContext
         spec = self.spec()
-        t = WalkContext(spec).tests
+        t = self.context().tests
         counts, feature, out = self.counts(name), float(spec.validity.smallest_feature), {}
         for pid in t.seeded:
             pool = t.pools[pid]
@@ -526,7 +583,11 @@ class Cactus(Family):
 
     def walk(self, name, seed, backend):
         from dmipy_sim.spec import walk_spec
-        kw = dict(field_res=float(self.args.field_res) * 1e-6) if self.args.field_res else {}
+        kw = dict(field_res=self.field_res_m()) if self.args.field_res else {}
+        cache = getattr(self.args, "field_cache", None)
+        if cache:
+            self._cache_before[name] = bool((self.field_cache_record(name) or {}).get("exists"))
+            kw["field_cache"] = cache
         return walk_spec(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
                          K=self.K, window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope,
                          backend=backend, require_gpu=(backend != "jax"), field_target_floor=0.5 * self.floor, **kw)
@@ -662,6 +723,7 @@ def _backend_check(fam, name, backend):
 
 def stage_plan(fam, args):
     from dmipy_sim.replay.reference import pack_seed
+    from dmipy_sim.spec import SpecError
     rows, tot_steps, tot_n = [], 0, 0
     fam.planned = {}
     for name, sub in _shard(list(fam.substrates().items()), args.shard):
@@ -697,13 +759,22 @@ def stage_plan(fam, args):
         n = int(sum(counts.values()))
         ok, c = _backend_check(fam, name, args.backend)
         refusal = None if ok else c
+        field = None
+        try:
+            field = fam.field_check(name)
+        except SpecError as e:                       # a raster the host or the device cannot hold: refused here, before any walk
+            ok, refusal = False, str(e)
         if not ok and args.backend != "jax":         # the resolution is the walk's whatever executes it
             ok_j, c = _backend_check(fam, name, "jax")
             c = c if ok_j else None
         row = dict(name=name, id=sub["id"], n_walkers=n, counts=counts,
                    se_bound=toggle_proof_bound(fam.shares(name), counts), backend=args.backend,
                    accepted=bool(ok), refusal=refusal,
-                   pilot=pilot)
+                   pilot=pilot, field_raster=field)
+        if field is not None and not field["device_checked"]:
+            print(f"{name}: the device memory limit is unknown on this host (cpu): the raster's device bytes "
+                  f"({field['device_bytes'] / 2 ** 30:.2f} GiB) are not checked; state the target's with --device-memory-gib",
+                  flush=True)
         if c is not None and not isinstance(c, str):
             row.update(sub_steps=int(c.sub_steps), dt_sim_s=float(c.dt_sim), n_blocks=int(c.n_blocks),
                        walker_steps=int(c.walker_steps), bytes_per_walker=int(c.bytes_per_walker),
@@ -773,6 +844,16 @@ def keep_walk(name, sub, walk, args):
     return dict(path=path, sha256=_sha256(path), bytes=os.path.getsize(path))
 
 
+def _field_cache_receipt(fam, name):
+    """``{dir, key, path, content_sha256 (of the raster's channels), bytes, hit}`` of the raster cache the walk read or
+    wrote, ``None`` where the walk used none."""
+    rec = fam.field_cache_record(name)
+    if rec is None:
+        return None
+    hit = getattr(fam, "_cache_before", {}).get(name)
+    return dict(rec, hit=hit)
+
+
 def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, walked_as):
     """``walk`` packed on the family's envelope into ``out`` with its receipt, its codec built for the numerical cap
     ``sigma_star`` = half the walker floor: what the walk stage and a pilot that
@@ -814,6 +895,7 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
         raw_subset=int(fam.raw_subset), fidelity=fidelity, measured_by=fid.get("measured_by"),
         measured_on=fid.get("measured_on"),
         kept_walk=kept,
+        field_cache=_field_cache_receipt(fam, name),
         err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), terms=fid.get("terms"),
         envelope=fam.envelope, stated=stated(pack), missing_statements=missing_statements(pack),
         pilot=pilot, dmipy_sim=_sim_identity(), smoke=bool(args.smoke))
@@ -910,6 +992,13 @@ def main(argv=None):
     p.add_argument("--cactus-reference", default=None, help="cactus: a spec (JSON) whose walls, cell side and frame the "
                                                             "walk keeps, its surfaces found under --cactus-run by sha256")
     p.add_argument("--field-res", type=float, default=None, help="cactus: the field raster's node spacing (um)")
+    p.add_argument("--field-cache", default=None, help="cactus: a directory of field rasters, <key>.safetensors (key = "
+                                                        "sha256 of the spec, the node spacing and the raster's format): "
+                                                        "the walk loads its raster there when present, else builds and "
+                                                        "writes it; the receipt records path, key and sha256")
+    p.add_argument("--device-memory-gib", type=float, default=None,
+                   help="plan: the memory (GiB) JAX may use on the device the walk runs on, when the planning host is "
+                        "not that device; the raster's device bytes are refused above it")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
     p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "

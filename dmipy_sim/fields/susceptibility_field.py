@@ -65,10 +65,10 @@ _SYM6 = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
 # of the boundary voxels brings that to ~0.1 %, and four is where it settles.
 FIELD_NODES_ACROSS = 2.0
 FIELD_MASK_SUPERSAMPLE = 4
-# The peak host bytes a basis build takes per node, MEASURED (a meshed hollow cylinder at 4.1e6 and 1.7e7 nodes: the
-# slope of the process's peak RSS is 655 B/node, the 13 float64 channels, the k-space solve's complex temporaries and
-# the membership tests of the supersampled edge in chunks of _EDGE_CHUNK_POINTS), rounded up.
-FIELD_BYTES_PER_NODE = 700
+# The peak host bytes a basis build takes per node, MEASURED (a meshed hollow cylinder at 4.1e6 and 8.0e6 nodes: the
+# slope of the process's peak RSS is 464 B/node -- the 13 float64 channels, one channel's k-space work at a time
+# (field_basis_channels) and the membership tests of the supersampled edge in chunks of _EDGE_CHUNK_POINTS), rounded up.
+FIELD_BYTES_PER_NODE = 500
 _EDGE_CHUNK_POINTS = 20_000_000                 # sub-samples per membership call on the boundary voxels (~0.5 GB)
 
 
@@ -91,6 +91,46 @@ def field_node_budget(ceiling=None):
         raise RuntimeError("no memory ceiling is readable on this host: pass field_budget= (nodes) explicitly")
     return float(0.5 * float(ceiling) / FIELD_BYTES_PER_NODE)
 
+
+
+def field_raster_shape(box_min, box_max, res):
+    """The nodes per axis ``(3,)`` of the raster :func:`predicate_field_basis` builds over the box ``box_min .. box_max``
+    at node spacing ``res`` (metres): the box's side over ``res``, rounded, at least one."""
+    side = np.asarray(box_max, float) - np.asarray(box_min, float)
+    return np.maximum(1, np.round(side / float(res)).astype(int))
+
+
+#: The device copies of a raster a walk's program holds: the raster is a program argument and XLA's allocation for the
+#: argument-and-result buffers of the compiled walk is twice its bytes (measured on the CUDA walk of a 612^3 x 12
+#: float32 raster, 11 002 604 544 B: 22 005 209 088 B of "input/output arguments").
+FIELD_DEVICE_COPIES = 2
+#: The channels the walk reads on the device: ``iso_local``, five ``iso_P`` (``iso_P_zz`` is formed from the trace) and
+#: six ``aniso_G`` -- the six of an isotropic-only source.
+FIELD_DEVICE_CHANNELS = 12
+
+
+def field_device_bytes(n_nodes, n_channels=FIELD_DEVICE_CHANNELS):
+    """The device bytes the walk of a raster of ``n_nodes`` nodes needs for it: :data:`FIELD_DEVICE_COPIES` copies of
+    ``n_channels`` float32 channels (:meth:`FieldGrid.device_arrays`)."""
+    return int(FIELD_DEVICE_COPIES) * 4 * int(n_channels) * int(n_nodes)
+
+
+def field_device_limit():
+    """``(bytes, source)``: the memory JAX may use on the device the walk runs on -- ``bytes_limit`` of the first
+    device's allocator (the card's share after ``XLA_PYTHON_CLIENT_MEM_FRACTION`` / ``XLA_PYTHON_CLIENT_PREALLOCATE``)
+    -- and where it was read from; ``(None, "cpu")`` on a CPU device, where the raster lives in host memory and the host
+    budget (:func:`field_node_budget`) governs. An accelerator that reports no limit is an error, not an unlimited
+    device."""
+    import jax
+    dev = jax.devices()[0]
+    if dev.platform == "cpu":
+        return None, "cpu"
+    stats = dev.memory_stats() or {}
+    lim = stats.get("bytes_limit")
+    if not lim:
+        raise RuntimeError(f"the {dev.platform} device {dev} reports no bytes_limit in memory_stats(); pass the device "
+                           "memory limit (bytes) explicitly")
+    return int(lim), f"jax.devices()[0].memory_stats()['bytes_limit'] of {dev}"
 
 
 class FieldGridRecord:
@@ -425,6 +465,89 @@ def dipole_field(chi6, voxel_size, b0_dir, B0=1.0):
     return dB
 
 
+def _khat_axes(shape, voxel_size):
+    """``(khat, dc)`` of :func:`_khat` with ``khat`` a list of three arrays: the unit wave-vector components, zero at
+    k = 0, each computed by broadcasting the three one-dimensional wave-number axes (the same elementwise arithmetic
+    as :func:`_khat`, so the same values to the bit, without its three full-size ``k`` grids)."""
+    vs = _as_voxel_size(voxel_size, len(shape))
+    ks = [2.0 * np.pi * np.fft.fftfreq(n, d=d) for n, d in zip(shape, vs)]
+    nd = len(shape)
+    kb = [k.reshape([-1 if a == i else 1 for a in range(nd)]) for i, k in enumerate(ks)]
+    k2 = 0
+    for k in kb:
+        k2 = k2 + k ** 2
+    k2 = np.broadcast_to(k2, shape)
+    dc = k2 == 0.0
+    inv = np.where(dc, 0.0, 1.0 / np.sqrt(np.where(dc, 1.0, k2)))
+    return [k * inv for k in kb], dc
+
+
+def _kspace_window(shape, kspace_lowpass):
+    """The raised-cosine k-space window of :func:`field_basis` (1.0 when ``kspace_lowpass`` is ``None``)."""
+    if kspace_lowpass is None:
+        return 1.0
+    nd = len(shape)
+    axf = [(np.fft.fftfreq(n) * 2.0).reshape([-1 if a == i else 1 for a in range(nd)]) for i, n in enumerate(shape)]
+    r2 = 0
+    for g in axf:
+        r2 = r2 + g ** 2
+    r = np.sqrt(np.broadcast_to(r2, shape) / nd)
+    W = np.ones_like(r); f = float(kspace_lowpass)
+    ramp = (r > f) & (r < 1.0)
+    W[ramp] = 0.5 * (1.0 + np.cos(np.pi * (r[ramp] - f) / (1.0 - f)))
+    W[r >= 1.0] = 0.0
+    return W
+
+
+def field_basis_channels(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_lowpass=None):
+    """The channels of :func:`field_basis`, one at a time: a generator of ``(group, index, array)`` --
+    ``("iso_local", None, a)``, then ``("iso_P", c, a)`` for ``c`` in 0..5 and, with ``include_aniso``,
+    ``("aniso_G", c, a)`` for ``c`` in 0..5 -- each ``a`` a float64 array of the mask's shape.
+
+    The k-space work of a channel (its forward and inverse FFT and the complex temporaries between) is released
+    before the next is made, so the peak above the finished channels is one channel's: the mask, the three wave-vector
+    components, the window, and ``mk`` (the mask's transform; released after the isotropic channels) or the six
+    transforms of the anisotropic tensor (released with the last channel). Every channel is the value :func:`field_basis`
+    has always returned, to the bit."""
+    m = np.asarray(myelin_mask, float)
+    shape = m.shape
+    khat, dc = _khat_axes(shape, voxel_size)
+
+    # Optional k-space low-pass (raised-cosine roll-off from `kspace_lowpass`·Nyquist to Nyquist).
+    # The dipole kernel k̂ᵢk̂ⱼ does not decay with |k|, so grid-scale source roughness (a hard/thin
+    # mask, a gradient-derived director) rings at the grid Nyquist — content the grid cannot
+    # faithfully represent anyway. Damping it removes that ringing (standard in QSM forward models).
+    W = _kspace_window(shape, kspace_lowpass)
+
+    # isotropic local term (1/3) m(r), zero-meaned (DC removed for consistency).
+    yield "iso_local", None, (m - m.mean()) / 3.0
+
+    # iso_P_ij = IFFT[ mk * khat_i khat_j ]  (khat=0 at DC -> already zero-mean).
+    mk = np.fft.fftn(m)
+    for c, (i, j) in enumerate(_SYM6):
+        yield "iso_P", c, np.real(np.fft.ifftn(mk * khat[i] * khat[j] * W))
+    del mk
+
+    if include_aniso:
+        n = _unit(np.asarray(radial_dir, float), axis=-1)
+        # anisotropic tensor field T_cd(r) = m (n_c n_d - delta_cd/3), FFT -> Tk.
+        Tk = {}
+        for (i, j) in _SYM6:
+            Td = m * (n[..., i] * n[..., j] - (1.0 / 3.0 if i == j else 0.0))
+            Tk[(i, j)] = np.fft.fftn(Td)
+            Tk[(j, i)] = Tk[(i, j)]
+        del n, Td
+        # K_ij(k) = (1/3) Tk_ij - sum_c khat_i khat_c Tk_cj ; symmetrise in (i,j).
+        for c, (i, j) in enumerate(_SYM6):
+            Kij = (1.0 / 3.0) * Tk[(i, j)]
+            Kji = (1.0 / 3.0) * Tk[(j, i)]
+            sec_ij = sum(khat[i] * khat[cc] * Tk[(cc, j)] for cc in range(3))
+            sec_ji = sum(khat[j] * khat[cc] * Tk[(cc, i)] for cc in range(3))
+            Ksym = 0.5 * ((Kij - sec_ij) + (Kji - sec_ji))
+            Ksym[dc] = 0.0
+            yield "aniso_G", c, np.real(np.fft.ifftn(Ksym * W))
+
+
 def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_lowpass=None):
     """Geometry-only field-basis grids for cheap ``(H, B0, chi_I, chi_A)`` replay.
 
@@ -439,6 +562,7 @@ def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_
     only on the geometry (mask + director), so a single set serves any main-field
     direction, strength and susceptibility — the 3-D analogue of the analytic
     ``Phi_C/Phi_S/Phi_0`` phasor maps.  All grids are zero-mean (Lorentz reference).
+    The channels are made one at a time (:func:`field_basis_channels`).
 
     Parameters
     ----------
@@ -458,54 +582,18 @@ def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_
         ``iso_local`` (Nx,Ny,Nz), ``iso_P`` (6,Nx,Ny,Nz),
         ``aniso_G`` (6,Nx,Ny,Nz) or None, plus ``shape`` and ``voxel_size``.
     """
-    m = np.asarray(myelin_mask, float)
-    shape = m.shape
-    khat, dc = _khat(shape, voxel_size)
-
-    # Optional k-space low-pass (raised-cosine roll-off from `kspace_lowpass`·Nyquist to Nyquist).
-    # The dipole kernel k̂ᵢk̂ⱼ does not decay with |k|, so grid-scale source roughness (a hard/thin
-    # mask, a gradient-derived director) rings at the grid Nyquist — content the grid cannot
-    # faithfully represent anyway. Damping it removes that ringing (standard in QSM forward models).
-    W = 1.0
-    if kspace_lowpass is not None:
-        axf = [np.fft.fftfreq(n) * 2.0 for n in shape]          # -1..1 in Nyquist units
-        r = np.sqrt(sum(g ** 2 for g in np.meshgrid(*axf, indexing="ij")) / len(shape))
-        W = np.ones_like(r); f = float(kspace_lowpass)
-        ramp = (r > f) & (r < 1.0)
-        W[ramp] = 0.5 * (1.0 + np.cos(np.pi * (r[ramp] - f) / (1.0 - f)))
-        W[r >= 1.0] = 0.0
-
-    mk = np.fft.fftn(m)
-
-    # isotropic local term (1/3) m(r), zero-meaned (DC removed for consistency).
-    iso_local = (m - m.mean()) / 3.0
-
-    # iso_P_ij = IFFT[ mk * khat_i khat_j ]  (khat=0 at DC -> already zero-mean).
+    shape = np.shape(myelin_mask)
     iso_P = np.empty((6,) + shape, float)
-    for c, (i, j) in enumerate(_SYM6):
-        iso_P[c] = np.real(np.fft.ifftn(mk * khat[i] * khat[j] * W))
-
-    aniso_G = None
-    if include_aniso:
-        n = _unit(np.asarray(radial_dir, float), axis=-1)
-        # anisotropic tensor field T_cd(r) = m (n_c n_d - delta_cd/3), FFT -> Tk.
-        Tk = {}
-        for (i, j) in _SYM6:
-            Td = m * (n[..., i] * n[..., j] - (1.0 / 3.0 if i == j else 0.0))
-            Tk[(i, j)] = np.fft.fftn(Td)
-            Tk[(j, i)] = Tk[(i, j)]
-        # K_ij(k) = (1/3) Tk_ij - sum_c khat_i khat_c Tk_cj ; symmetrise in (i,j).
-        aniso_G = np.empty((6,) + shape, complex)
-        for c, (i, j) in enumerate(_SYM6):
-            Kij = (1.0 / 3.0) * Tk[(i, j)]
-            Kji = (1.0 / 3.0) * Tk[(j, i)]
-            sec_ij = sum(khat[i] * khat[cc] * Tk[(cc, j)] for cc in range(3))
-            sec_ji = sum(khat[j] * khat[cc] * Tk[(cc, i)] for cc in range(3))
-            Ksym = 0.5 * ((Kij - sec_ij) + (Kji - sec_ji))
-            Ksym[dc] = 0.0
-            aniso_G[c] = Ksym
-        aniso_G = np.stack([np.real(np.fft.ifftn(aniso_G[c] * W)) for c in range(6)], axis=0)
-
+    aniso_G = np.empty((6,) + shape, float) if include_aniso else None
+    iso_local = None
+    for group, c, a in field_basis_channels(myelin_mask, radial_dir, voxel_size, include_aniso=include_aniso,
+                                            kspace_lowpass=kspace_lowpass):
+        if group == "iso_local":
+            iso_local = a
+        elif group == "iso_P":
+            iso_P[c] = a
+        else:
+            aniso_G[c] = a
     return {
         "iso_local": iso_local,
         "iso_P": iso_P,
@@ -779,33 +867,102 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
     return out
 
 
-def _forked_map(fn, items, workers):
-    """``[fn(item) for item in items]`` over ``workers`` forked processes: the parent's arrays are shared
-    copy-on-write, so a query over a grid of 1e8 points is spread over the host without a copy per worker.
-    ``fn`` may be a closure; it is never pickled (a fork carries it). Falls back to the caller's process when the
-    platform cannot fork."""
+_WORKER = {}                                     #: the state of a spawned worker (set by its initializer)
+
+
+class _SharedArrays:
+    """Arrays in shared memory, for the spawned workers of a pool: ``specs`` (``name -> (segment, shape, dtype)``) is
+    what a worker attaches by (:func:`_attach`); :meth:`close` releases the segments."""
+
+    def __init__(self, arrays):
+        from multiprocessing import shared_memory
+        self._shms, self.specs = [], {}
+        try:
+            for k, a in arrays.items():
+                a = np.ascontiguousarray(a)
+                shm = shared_memory.SharedMemory(create=True, size=max(int(a.nbytes), 1))
+                self._shms.append(shm)
+                np.ndarray(a.shape, a.dtype, buffer=shm.buf)[...] = a
+                self.specs[k] = (shm.name, a.shape, a.dtype.str)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        for shm in self._shms:
+            try:
+                shm.close(); shm.unlink()
+            except FileNotFoundError:
+                pass
+        self._shms = []
+
+
+def _attach(spec):
+    """The array of a :class:`_SharedArrays` spec, in a worker (its segment kept alive in ``_WORKER``)."""
+    from multiprocessing import shared_memory
+    name, shape, dtype = spec
+    shm = shared_memory.SharedMemory(name=name)          # the creating process owns the segment (and its tracker entry)
+    _WORKER.setdefault("segments", []).append(shm)
+    return np.ndarray(shape, np.dtype(dtype), buffer=shm.buf)
+
+
+def _spawn_pool(workers, initializer, initargs):
+    """A pool of ``workers`` processes started by ``spawn``: fresh interpreters, so a process that has initialised JAX (a
+    multithreaded runtime) is never forked."""
     import multiprocessing as mp
-    items = list(items)
-    if workers <= 1 or len(items) <= 1:
-        return [fn(it) for it in items]
-    try:
-        ctx = mp.get_context("fork")
-    except ValueError:
-        return [fn(it) for it in items]
-    global _FORKED_FN
-    _FORKED_FN = fn
-    try:
-        with ctx.Pool(min(int(workers), len(items))) as pool:
-            return pool.map(_forked_call_item, items, chunksize=1)
-    finally:
-        _FORKED_FN = None
+    return mp.get_context("spawn").Pool(int(workers), initializer=initializer, initargs=initargs)
 
 
-_FORKED_FN = None
+def _body_contains(V, F, lo, hi, pts):
+    """The indices of ``pts`` inside the closed surface ``(V, F)`` whose bounding box is ``lo .. hi``: those in the box,
+    by ray parity across the surface's smallest extent, the bins of the parity index sized to its faces (256 bins
+    over 7 000 faces spent 90 % of the call in empty bins)."""
+    sel = np.flatnonzero(np.all((pts >= lo) & (pts <= hi), axis=1))
+    if sel.size == 0:
+        return sel
+    a = int(np.argmin(hi - lo))                                  # the ray axis: across a tube, never along it
+    perm = [j for j in range(3) if j != a] + [a]
+    n_bins = int(np.clip(np.sqrt(len(F) / 2.0), 8, 256))
+    return sel[mesh_contains_fast(V[:, perm], F, pts[sel][:, perm], n_bins=n_bins)]
 
 
-def _forked_call_item(item):
-    return _FORKED_FN(item)
+def _contains_init(bodies, bounds, pts_spec):
+    _WORKER.update(bodies=bodies, bounds=bounds, pts=_attach(pts_spec))
+
+
+def _contains_task(i):
+    (V, F), (lo, hi) = _WORKER["bodies"][i], _WORKER["bounds"][i]
+    return _body_contains(V, F, lo, hi, _WORKER["pts"])
+
+
+def _closest_on(tri, nrm, unit, tree, k, pts):
+    """``(d, n)`` per point of ``pts``: the distance to the closest point on the ``k`` faces nearest by centroid (in
+    ``tree``) and the outward normal of the face that carries it; ``tri`` and ``pts`` are in units of ``unit``."""
+    from trimesh.triangles import closest_point
+    k = min(k, len(tri))
+    p = pts / unit
+    _, idx = tree.query(p, k=k, workers=1)
+    idx = np.asarray(idx).reshape(len(p), k)
+    c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
+    d = np.linalg.norm(c - p[:, None, :], axis=2)
+    j = d.argmin(1); rows = np.arange(len(p))
+    return d[rows, j] * unit, nrm[idx[rows, j]]
+
+
+def _distance_init(specs, unit, k):
+    from scipy.spatial import cKDTree
+    arrays = {name: _attach(spec) for name, spec in specs.items()}
+    _WORKER.update(tri=arrays["tri"], nrm=arrays["nrm"], unit=unit, k=k, tree=cKDTree(arrays["cent"]))
+
+
+def _distance_task(pts):
+    return _closest_on(_WORKER["tri"], _WORKER["nrm"], _WORKER["unit"], _WORKER["tree"], _WORKER["k"], pts)
+
+
+def _close_distance_pools(pools):
+    for pool, shared in pools.values():
+        pool.terminate(); pool.join(); shared.close()
+    pools.clear()
 
 
 class MeshBodies:
@@ -835,22 +992,17 @@ class MeshBodies:
         self.F = np.concatenate([F + o for (_, F), o in zip(self.bodies, offs[:-1])])
         self.bounds = [(V.min(0), V.max(0)) for V, _ in self.bodies]
         self.k = int(k)
-        # the processes a large query is spread over (forked, the arrays shared): a share of the host, never all of it
+        # the processes a large query is spread over (spawned, the arrays in shared memory): a share of the host, never all of it
         self.workers = int(workers) if workers is not None else max(1, min(16, (os.cpu_count() or 4) // 4))
         self._near = {}
+        self._dpools = {}                                            # resolve_m -> (spawned pool, its shared arrays)
+        import weakref
+        weakref.finalize(self, _close_distance_pools, self._dpools)
 
     def _contains_body(self, i, pts):
-        """The indices of ``pts`` inside body ``i``: those in its bounding box, by ray parity across its smallest
-        extent, the bins of the parity index sized to the body's faces (256 bins over 7 000 faces spent 90 % of the
-        call in empty bins)."""
+        """The indices of ``pts`` inside body ``i`` (:func:`_body_contains`)."""
         (V, F), (lo, hi) = self.bodies[i], self.bounds[i]
-        sel = np.flatnonzero(np.all((pts >= lo) & (pts <= hi), axis=1))
-        if sel.size == 0:
-            return sel
-        a = int(np.argmin(hi - lo))                                  # the ray axis: across a tube, never along it
-        perm = [j for j in range(3) if j != a] + [a]
-        n_bins = int(np.clip(np.sqrt(len(F) / 2.0), 8, 256))
-        return sel[mesh_contains_fast(V[:, perm], F, pts[sel][:, perm], n_bins=n_bins)]
+        return _body_contains(V, F, lo, hi, pts)
 
     @classmethod
     def of(cls, surfaces):
@@ -865,7 +1017,14 @@ class MeshBodies:
         pts = np.asarray(pts, float).reshape(-1, 3)
         out = np.zeros(len(pts), bool)
         if self.workers > 1 and len(self.bodies) > 1 and len(pts) >= 1_000_000:
-            for idx in _forked_map(lambda i: self._contains_body(i, pts), range(len(self.bodies)), self.workers):
+            shared = _SharedArrays({"pts": pts})
+            try:
+                with _spawn_pool(min(self.workers, len(self.bodies)), _contains_init,
+                                 (self.bodies, self.bounds, shared.specs["pts"])) as pool:
+                    parts = pool.map(_contains_task, range(len(self.bodies)), chunksize=1)
+            finally:
+                shared.close()
+            for idx in parts:
                 out[idx] = True
         else:
             for i in range(len(self.bodies)):
@@ -887,20 +1046,32 @@ class MeshBodies:
             ln = np.linalg.norm(n, axis=1); good = ln > 0
             tri = tri[good]; n = n[good] / ln[good][:, None]
             unit = float(np.median(np.linalg.norm(tri[:, 0] - tri[:, 1], axis=1)))    # trimesh's triangle geometry
-            self._near[key] = (tri / unit, n, unit, cKDTree(tri.mean(1) / unit))       # carries absolute tolerances
+            cent = tri.mean(1) / unit
+            self._near[key] = (tri / unit, n, unit, cKDTree(cent), cent)              # carries absolute tolerances
         return self._near[key]
 
     def _distance_chunk(self, pts, resolve_m):
-        from trimesh.triangles import closest_point
-        tri, nrm, unit, tree = self._nearest(resolve_m)
-        k = min(self.k, len(tri))
-        p = pts / unit
-        _, idx = tree.query(p, k=k, workers=1)
-        idx = np.asarray(idx).reshape(len(p), k)
-        c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
-        d = np.linalg.norm(c - p[:, None, :], axis=2)
-        j = d.argmin(1); rows = np.arange(len(p))
-        return d[rows, j] * unit, nrm[idx[rows, j]]
+        tri, nrm, unit, tree, _ = self._nearest(resolve_m)
+        return _closest_on(tri, nrm, unit, tree, self.k, pts)
+
+    def _distance_pool(self, resolve_m):
+        """The spawned pool that answers :meth:`signed_distance` for ``resolve_m``: its workers hold the faces and the
+        k-d tree (built once in each), kept until :meth:`close`."""
+        key = None if resolve_m is None else float(resolve_m)
+        if key not in self._dpools:
+            tri, nrm, unit, _, cent = self._nearest(resolve_m)
+            shared = _SharedArrays({"tri": tri, "nrm": nrm, "cent": cent})
+            try:
+                pool = _spawn_pool(self.workers, _distance_init, (shared.specs, unit, self.k))
+            except BaseException:
+                shared.close()
+                raise
+            self._dpools[key] = (pool, shared)
+        return self._dpools[key][0]
+
+    def close(self):
+        """Release the worker processes and shared memory of :meth:`signed_distance` (they are made again on the next call)."""
+        _close_distance_pools(self._dpools)
 
     def signed_distance(self, pts, *, resolve_m=None, inside=None, chunk=200_000):
         """``(s, n)`` at ``pts`` ``(m, 3)``: the distance to the closest point on the boundary, positive inside, and
@@ -908,10 +1079,10 @@ class MeshBodies:
         first (the scale of the distances asked, a voxel), ``None`` for the faces as they are; ``inside`` the
         points' membership when the caller has it, else :meth:`contains` decides the sign."""
         pts = np.asarray(pts, float).reshape(-1, 3)
-        self._nearest(resolve_m)                                     # built once, before any fork shares it
+        self._nearest(resolve_m)                                     # built once, before the workers are
         chunks = [pts[i:i + chunk] for i in range(0, len(pts), chunk)]
         if self.workers > 1 and len(chunks) > 1:
-            parts = _forked_map(lambda c: self._distance_chunk(c, resolve_m), chunks, self.workers)
+            parts = self._distance_pool(resolve_m).map(_distance_task, chunks, chunksize=1)
         else:
             parts = [self._distance_chunk(c, resolve_m) for c in chunks]
         dist = np.concatenate([d for d, _ in parts]) if parts else np.zeros(0)
@@ -938,10 +1109,15 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res, include_aniso=True,
         director = None
     elif director is None:
         director = (bi if bi is not None else bo).directors
-    return predicate_field_basis(bi.contains if bi is not None else None, bo.contains,
-                                 box_min, box_max, res=res, include_aniso=include_aniso,
-                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director,
-                                 signed_distance=(bi.signed_distance if bi is not None else None, bo.signed_distance))
+    try:
+        return predicate_field_basis(bi.contains if bi is not None else None, bo.contains,
+                                     box_min, box_max, res=res, include_aniso=include_aniso,
+                                     mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director,
+                                     signed_distance=(bi.signed_distance if bi is not None else None, bo.signed_distance))
+    finally:
+        for b in (bi, bo):
+            if b is not None:
+                b.close()                                          # the workers of the signed distances
 
 
 def mesh_directors(V, F, pts, *, chunk=2_000_000):
@@ -995,11 +1171,12 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, 
 
     box_min = np.asarray(box_min, float); box_max = np.asarray(box_max, float)
     side = box_max - box_min
-    N = np.maximum(1, np.round(side / res).astype(int))
+    N = field_raster_shape(box_min, box_max, res)
     vs = side / N
     axes = [box_min[a] + (np.arange(N[a]) + 0.5) * vs[a] for a in range(3)]
     XX, YY, ZZ = np.meshgrid(*axes, indexing="ij")
     pts = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
+    del XX, YY, ZZ
 
     in_in = (inside_inner(pts) if inside_inner is not None else np.zeros(len(pts), bool)).reshape(N)   # SDF/director
     in_out = np.asarray(inside_outer(pts), bool).reshape(N)
@@ -1045,6 +1222,7 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, 
         sdf = (ndimage.distance_transform_edt(~ref, sampling=tuple(vs))
                - ndimage.distance_transform_edt(ref, sampling=tuple(vs)))
         radial_dir = radial_from_sdf(sdf, vs)
+    del pts, binary, in_in, in_out
     basis = field_basis(myelin_mask, radial_dir, vs, include_aniso=include_aniso,
                         kspace_lowpass=kspace_lowpass)
     basis["shell_fraction"] = float(myelin_mask.mean())
