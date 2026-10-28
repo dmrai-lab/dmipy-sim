@@ -239,12 +239,17 @@ def band_projection(G, dt_wf, T, K, *, t0=None):
     return out
 
 
-def segment_projection(segments, T, K, *, t0=None):
+def segment_projection(segments, T, K, *, t0=None, shapes=None):
     """THE projection of time segments on a pack's bands, ``(n_seg, K + 2)``: per segment ``[a, b]`` (s, on the walk's
     clock) its indicator's ``M0``, ``M1`` and ``W_k`` over the window ``[t0, t0 + T]`` (the segment clipped to it), in
     the closed form :func:`band_projection` sums piece by piece (:func:`_piece_weights`) -- what that projection gives a
     waveform equal to 1 on the segment and 0 elsewhere, wherever the segment's edges fall. A walk stored as ``C =
-    [x(0), x(T) - x(0), beta_1..beta_K]`` has ``int_a^b x dt = sum C W`` per axis."""
+    [x(0), x(T) - x(0), beta_1..beta_K]`` has ``int_a^b x dt = sum C W`` per axis.
+
+    ``shapes`` (one entry per segment: ``None`` for the indicator, else a 1-D array of ``n`` values) weights the
+    segment by a temporal shape ``psi`` held on ``n`` equal cells of ``[a, b]`` (the sample-and-hold waveform
+    :func:`band_projection` reads): the row is ``sum_j psi_j`` times the cell ``j``'s indicator row, so the projection
+    of ``psi 1_[a,b]`` is exact for any ``psi`` that is piecewise constant on the cells, with no quadrature error."""
     T = float(T)
     start = 0.0 if t0 is None else float(t0)
     S = np.asarray(segments, np.float64).reshape(-1, 2)
@@ -255,6 +260,16 @@ def segment_projection(segments, T, K, *, t0=None):
     out[:, 1] = (b * b - a * a) / (2.0 * T)
     if int(K):
         out[:, 2:] = _piece_weights(a, b, T, np.arange(1, int(K) + 1))
+    if shapes is not None:
+        if len(shapes) != S.shape[0]:
+            raise ValueError(f"shapes is one entry per segment ({S.shape[0]}); got {len(shapes)}")
+        for s, v in enumerate(shapes):
+            if v is None:
+                continue
+            v = np.asarray(v, np.float64).ravel()
+            edges = S[s, 0] + (S[s, 1] - S[s, 0]) * np.arange(v.size + 1) / v.size
+            edges[-1] = S[s, 1]
+            out[s] = v @ segment_projection(np.stack([edges[:-1], edges[1:]], axis=1), T, K, t0=t0)
     return out
 
 

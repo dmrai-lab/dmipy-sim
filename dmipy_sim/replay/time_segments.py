@@ -2,19 +2,32 @@
 every acquisition piecewise constant on a stored partition -- at any amplitude, in any direction on each segment -- is
 a few products per walker on the device (dmipy-sim#505, #770: a whole grid replayed while a user waits).
 
-**A partition, not a shape.** A layout stores PARTITIONS (:class:`Partition`): consecutive time segments ``[a_s,
-b_s]`` of the walk's clock -- a PGSE timing class's two lobes, a stimulated echo's lobe, mixing time and lobe, a double
-diffusion encoding's four lobes -- each with the sign of its class's effective gate on it (the coherence sign times
-the transverse gate of the RF schedule: +1, -1, or 0 while the magnetisation is stored). Per walker and segment it holds
-the **segment vector** ``m_s = gamma int_{a_s}^{b_s} (r(t) - r(0)) dt`` (rad per T/m): the bands contracted against
-the segment's indicator in closed form (:func:`~dmipy_sim.replay.compression.segment_projection`, the projection
-:func:`~dmipy_sim.replay.compression.band_projection` sums piece by piece). An acquisition whose effective gradient is
-the vector ``G_s`` (T/m) on segment ``s`` and zero outside the segments has the phase ``sum_s G_s . m_s`` per walker:
-the band contraction of a replay, the start dropping out because a refocused encoding has no net area. PGSE, PGSTE,
-DDE and an unequal pair of one timing class are each a linear combination of the stored vectors formed in the image
-kernel; no vector per acquisition is stored. A sequence that is not piecewise constant on a stored partition, plays a
-gradient outside its segments or on a segment its gate stores, or leaves a net moment, is refused by name
-(:meth:`Partition.levels`).
+**Terms, not a shape.** A layout stores PARTITIONS (:class:`Partition`): TERMS, each an interval ``[a_s, b_s]`` of the
+walk's clock and a temporal shape ``psi_s`` on it (:class:`Shape`, a stated record normalised to ``max |psi| = 1``), with
+the sign of its class's effective gate on the interval (the coherence sign times the transverse gate of the RF schedule:
++1, -1, or 0 while the magnetisation is stored). A constant segment is the term ``psi = 1`` -- a PGSE timing class's two
+lobes, a stimulated echo's lobe, mixing time and lobe, a double diffusion encoding's four lobes; a trapezoid with its
+ramps, a cosine OGSE block or a designed waveform is a sampled shape; a tensor encoding is several shapes on ONE
+interval. Per walker and term it holds the **term vector** ``m_s = gamma int psi_s(t) 1_[a_s, b_s](t) (r(t) - r(0))
+dt`` (rad per T/m): the bands contracted against ``psi_s 1_[a_s, b_s]``
+(:func:`~dmipy_sim.replay.compression.segment_projection`, exact for a shape held on equal cells: the closed form
+:func:`~dmipy_sim.replay.compression.band_projection` sums piece by piece, so no quadrature stands between the stored
+shape and the stored vector). An acquisition whose effective gradient is ``sum_s psi_s(t) a_s`` with the vector ``a_s``
+(T/m, the term's **level**) has the phase ``sum_s a_s . m_s`` per walker: the band contraction of a replay, the start
+dropping out because a refocused encoding has no net area ``sum_s a_s int psi_s``. PGSE, PGSTE, DDE, an unequal pair of
+one timing class, a trapezoid at any amplitude and direction, a cosine OGSE, a tensor encoding at any rotation and
+weighting (three vectors, nine numbers, per walker) are each a linear combination of the stored vectors formed in the
+image kernel; no vector per acquisition is stored. The gate (the refocusing schedule and the coherence sign), not the
+shape, fixes the relaxation, contact and field tiers, so partitions of one gate share their tier columns.
+
+**The fit.** :meth:`Partition.levels` finds the levels of a sequence, and a sequence fits only when its effective
+gradient IS ``sum_s psi_s(t) a_s`` on its grid to the float32 rounding of its samples: a shape's vector serves that shape
+alone, so a different waveform is refused, never served with an error no certificate states. Disjoint constant segments
+take the gradient's value on each; shaped or overlapping terms take the least squares fit of the gradient on the terms'
+shapes, and its residual is held to the same tolerance, :data:`_RTOL` of the peak (the one statement of what "constant
+on a segment" and "equal to its shapes" mean). A sequence that plays a gradient outside the terms or on a term its gate
+stores, is off the shapes (the partition, the row, the term the residual lies in and the residual's relative norm are
+named), or leaves a net moment, is refused by name (:meth:`Partition.levels`).
 
 **Two sources, two certificates.** :func:`segment_rows` takes the walk's FLOAT coefficients (a
 :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, read through the float containers, no quantiser) beside the pack
@@ -25,10 +38,12 @@ band quantisation. Given a quantised :class:`~dmipy_sim.replay.replay.ReplayPack
 contracts the pack's bands: the certificate then carries the pack's band quantisation contracted through the partition
 (:func:`quantisation_term`), and the vectors are held to what the floor's budget leaves of it, so their words are wider.
 
-**Widths derived per segment.** A rounding ``delta_s`` per component of ``m_s`` is a phase error of variance at most
-``|G_s|^2 delta_s^2 / 12``. The envelope bounds the levels: ``|G_s| <= G_max`` and the encoding's b-value ``l^T B l <=
-b_max`` with ``B_st = gamma^2 int Q_s Q_t dt`` (``Q_s`` the running integral of the segment's indicator) on the
-refocused levels ``sum_s l_s d_s = 0``, so the largest level segment ``s`` carries is ``reach_s = min(G_max, sqrt(b_max
+**Widths derived per term.** A rounding ``delta_s`` per component of ``m_s`` is a phase error of variance at most
+``|a_s|^2 delta_s^2 / 12``. The envelope bounds the levels: ``|a_s| <= G_max`` (a shape has ``max |psi| = 1``) and the
+encoding's b-value ``l^T B l <= b_max`` with ``B_st = gamma^2 int Q_s Q_t dt`` (``Q_s`` the running integral of
+the term's shape) on the refocused levels ``sum_s l_s A_s = 0`` (``A_s = int psi_s dt``, the term's duration for a
+segment; terms of zero area, a whole number of periods, leave no moment and constrain nothing; ``int |psi_s|`` bounds a
+vector's magnitude and scales the net moment tolerance), so the largest level segment ``s`` carries is ``reach_s = min(G_max, sqrt(b_max
 [N (N^T B N)^-1 N^T]_ss))``, ``N`` a basis of the refocused levels (:meth:`Partition.reach`; a PGSE pair's is
 ``sqrt(b_max / b_unit)``; a scanner class's levels are every axis within ``G_max`` on the refocused levels, the reach
 ``sqrt(3)`` times the largest per-axis level, :meth:`Partition.class_vertices`). The worst rounding over the envelope is then at most ``sum_s reach_s^2 delta_s^2 / 12``, held
@@ -40,8 +55,9 @@ d_s)^2`` would equalise the segments' relative precision instead. A segment the 
 bits. Each component takes ``ceil(log2(a / delta_s + 1)) + 1`` bits against its largest ``|m|`` over the walkers
 (:func:`field_code`), a two's-complement bit field; a walker's fields of one partition are placed first-fit into as few
 32-bit words as hold them, no field across a word (:func:`word_layout`): a short partition shares one word, a long
-one takes two. The manifest records per segment ``{"q_max", "floor_target", "step", "bits", "offsets", "word",
-"scale"}`` (``q_max`` the reach, ``word`` each component's word).
+one takes two. The manifest records per term ``{"t", "gate", "shape", "q_max", "floor_target", "step", "bits", "offsets",
+"word", "scale"}`` (``shape`` the term's :meth:`Shape.to_meta` record, required: a term with none is refused by name;
+``q_max`` the reach, ``word`` each component's word).
 
 **The tiers by the same rule.** Per sequence group (the partitions that share a grid, an RF schedule and a readout: the
 gate the tiers are read under) the layout holds each walker's pool (``uint8``), its gated contact and its gated field
@@ -107,7 +123,7 @@ FIELD_BITS_MAX = 24                                                   # a field'
 #: T/m: the largest background gradient a layout's background vectors are certified for by default -- several times
 #: the strongest catalogued magnet's own gradient over its anchored volume (the Swoop's 1.4 mT/m at 8 cm)
 BACKGROUND_AMPLITUDE = 5e-3
-_RTOL = 1e-5                                                          # a sequence's gradient is float32
+_RTOL = 1e-5                                                          # a sequence's gradient is float32: the tolerance of every fit, of the peak
 _AXES = np.eye(3)
 
 
@@ -245,34 +261,219 @@ def _gate_sequence(seq):
 
 
 @dataclass(frozen=True)
+class Shape:
+    """The temporal shape ``psi(t)`` of a term, a stated record and nothing else. ``kind`` is ``"constant"`` (``psi`` is
+    1 on the term: a segment) or ``"sampled"`` (``psi`` is held on ``len(values)`` equal cells of the term, as a
+    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` holds its samples: a trapezoid with its ramps, a
+    cosine, a designed waveform). A shape is normalised, ``max |psi| = 1``, so that the amplitude (the term's level,
+    T/m) bounds the gradient and the stored vector's scale means what a segment's does; ``values`` are the normalised
+    cell values. The projection of ``psi`` on the bands is exact for either kind
+    (:func:`~dmipy_sim.replay.compression.segment_projection`): no quadrature stands between the stored shape and the
+    stored vector. Shapes read and write the manifest as :meth:`to_meta` / :meth:`from_meta`."""
+    kind: str
+    values: tuple = ()
+
+    @classmethod
+    def constant(cls):
+        """``psi = 1``."""
+        return cls("constant", ())
+
+    @classmethod
+    def sampled(cls, values):
+        """``psi`` held on ``len(values)`` equal cells, ``values`` divided by their largest magnitude."""
+        v = np.asarray(values, np.float64).ravel()
+        if v.size == 0 or not np.all(np.isfinite(v)) or not np.any(v != 0.0):
+            raise ValueError("a sampled shape holds finite values, not all zero")
+        return cls("sampled", tuple((v / np.abs(v).max()).tolist()))
+
+    @classmethod
+    def of_samples(cls, values):
+        """The shape of the waveform samples ``values`` (one per cell): :meth:`constant` when they are one value to
+        :data:`_RTOL`, else :meth:`sampled`."""
+        v = np.asarray(values, np.float64).ravel()
+        if v.size and np.abs(v / (v[np.abs(v).argmax()] or 1.0) - 1.0).max() <= _RTOL:
+            return cls.constant()
+        return cls.sampled(v)
+
+    @property
+    def is_constant(self):
+        return self.kind == "constant"
+
+    @property
+    def cells(self):
+        return 1 if self.is_constant else len(self.values)
+
+    def projection_values(self):
+        """The cell values :func:`~dmipy_sim.replay.compression.segment_projection` weights by (``None``: the indicator)."""
+        return None if self.is_constant else np.asarray(self.values, np.float64)
+
+    def weight(self, tau):
+        """``int |psi| dt`` over a term of duration ``tau``: what bounds a vector's magnitude (``tau`` for a constant)."""
+        return float(tau) if self.is_constant else float(tau) * float(np.abs(self.values).mean())
+
+    def area(self, tau):
+        """``int psi dt`` over a term of duration ``tau``: the moment the term's level leaves (``tau`` for a constant).
+        A sum within the rounding of its own ``int |psi|`` (``cells`` additions at the float64 unit roundoff) is zero."""
+        if self.is_constant:
+            return float(tau)
+        v = np.asarray(self.values, np.float64)
+        area, w = float(tau) * float(v.mean()), float(tau) * float(np.abs(v).mean())
+        return 0.0 if abs(area) <= v.size * np.finfo(np.float64).eps * w else area
+
+    def edges(self, a, b):
+        """The cell edges of the term ``[a, b]``, ``(cells + 1,)`` seconds."""
+        if self.is_constant:
+            return np.array([a, b], np.float64)
+        e = a + (b - a) * np.arange(self.cells + 1) / self.cells
+        e[-1] = b
+        return e
+
+    def running(self, t, a, b):
+        """``int_a^t psi dt`` at the times ``t`` for the term ``[a, b]`` (0 before it, its area after): piecewise linear
+        between the cell edges."""
+        t = np.asarray(t, np.float64)
+        if self.is_constant:
+            return np.minimum(np.clip(t - a, 0.0, None), b - a)
+        e = self.edges(a, b)
+        return np.interp(t, e, np.concatenate([[0.0], np.cumsum(np.asarray(self.values) * np.diff(e))]))
+
+    def on_grid(self, a, b, dt, n_t, where):
+        """``(i0, i1, psi)`` of the term ``[a, b]`` on a sequence's grid: its sample range and ``psi`` held on each
+        sample; a term or cell edge off the grid, or a cell of a fraction of a sample, is refused naming ``where``."""
+        i0, i1 = a / dt, b / dt
+        if abs(i0 - round(i0)) > 1e-6 or abs(i1 - round(i1)) > 1e-6 or round(i1) > n_t:
+            raise ValueError(f"{where} [{a:.6g}, {b:.6g}] s is not on the sequence's grid (dt = {dt:.6g} s, {n_t} samples)")
+        i0, i1 = int(round(i0)), int(round(i1))
+        if self.is_constant:
+            return i0, i1, np.ones(i1 - i0)
+        per, rem = divmod(i1 - i0, self.cells)
+        if rem or per < 1:
+            raise ValueError(f"the {self.cells} cells of {where} [{a:.6g}, {b:.6g}] s are not on the sequence's grid "
+                             f"(dt = {dt:.6g} s, {i1 - i0} samples): a cell is a whole number of samples")
+        return i0, i1, np.repeat(np.asarray(self.values, np.float64), per)
+
+    def to_meta(self):
+        return dict(kind="constant") if self.is_constant else dict(kind="sampled", normalisation="max|psi| = 1",
+                                                                    cells=self.cells, values=list(self.values))
+
+    @classmethod
+    def from_meta(cls, rec, where):
+        """The shape of the manifest record ``rec`` of ``where`` (a term); a record that is missing, names no known kind,
+        lacks a field its kind needs or is not normalised is refused naming the field."""
+        if not isinstance(rec, dict) or "kind" not in rec:
+            raise ValueError(f"{where} has no shape record ('shape': {{'kind': 'constant'}} or {{'kind': 'sampled', "
+                             "'cells': n, 'values': [...]}): every term records its shape explicitly")
+        if rec["kind"] == "constant":
+            return cls.constant()
+        if rec["kind"] != "sampled":
+            raise ValueError(f"{where} has the shape kind {rec['kind']!r}; a shape is 'constant' or 'sampled'")
+        for k in ("cells", "values"):
+            if k not in rec:
+                raise ValueError(f"the sampled shape of {where} has no {k!r} field")
+        v = np.asarray(rec["values"], np.float64)
+        if int(rec["cells"]) != v.size or v.size == 0 or abs(float(np.abs(v).max()) - 1.0) > 1e-12:
+            raise ValueError(f"the sampled shape of {where} is not {int(rec['cells'])} normalised cell values "
+                             "(max |psi| = 1)")
+        return cls("sampled", tuple(v.tolist()))
+
+
+def _term_shapes(rec, name):
+    """The shape records of a partition's ``rec`` (rows or manifest), one per term; a record that states none is
+    refused naming the field."""
+    if rec.get("shapes") is None:
+        raise ValueError(f"partition {name!r} has no 'shapes' record: every term records its shape explicitly "
+                         "(a constant segment records {'kind': 'constant'})")
+    return rec["shapes"]
+
+
+@dataclass(frozen=True)
 class Partition:
-    """Consecutive time segments of the walk's clock, ``segments = ((a, b), ...)`` seconds in time order and disjoint,
-    with ``gate`` the sign of the effective gate on each (+1, -1, or 0 while the magnetisation is stored, where the
-    segment carries no phase); ``template`` the sequence the gate was read from (its grid, RF schedule and readout are
-    the tiers' gate). :meth:`of` reads one from a sequence."""
+    """Terms of the walk's clock, ``segments = ((a, b), ...)`` seconds in order of their start, each with a
+    :class:`Shape` ``shapes[s]`` (``psi_s`` on ``[a_s, b_s]``; a constant segment is ``psi = 1``) and ``gate`` the sign
+    of the effective gate on it (+1, -1, or 0 while the magnetisation is stored, where the term carries no phase);
+    ``template`` the sequence the gate was read from (its grid, RF schedule and readout are the tiers' gate). Terms
+    may overlap in time (a tensor encoding is three shapes on one interval); a partition of disjoint constant
+    segments is the common case. :meth:`of` reads one from a sequence's lobes, :meth:`from_sequence` shapes from a
+    sequence's waveforms."""
     name: str
     segments: tuple
     gate: tuple
+    shapes: tuple
     template: object = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self):
+        if not (len(self.segments) == len(self.gate) == len(self.shapes)) or not all(isinstance(s, Shape) for s in self.shapes):
+            raise ValueError(f"partition {self.name!r} is one Shape and one gate per segment")
 
     @classmethod
     def of(cls, name, sequence, segments=None):
         """The partition of ``sequence``: its lobes (the maximal runs of one non-zero effective gradient), or the stated
-        ``segments`` (``[(a, b), ...]`` s), each with the effective gate's sign on it; a segment the gate changes sign
-        inside (a refocusing pulse) is refused by name."""
+        ``segments`` (``[(a, b), ...]`` s, in time order and disjoint), each a constant term with the effective gate's
+        sign on it; a segment the gate changes sign inside (a refocusing pulse) is refused by name."""
         seq = _sequence(sequence)
         if segments is None:
             segments = _lobes(np.asarray(seq.G_eff, np.float64), seq.dt)
+        return cls._make(name, seq, segments, None, disjoint=True)
+
+    @classmethod
+    def from_sequence(cls, name, sequence, *, terms=None, rows=0):
+        """The partition of ``sequence`` whose terms take the shapes of its waveforms: term ``s`` is the interval
+        ``terms[s]`` (``(a, b)`` s on the sequence's grid; by default the maximal runs of row ``rows[0]``'s non-zero
+        effective gradient within one effective-gate sign) and its shape the normalised waveform of row ``rows[s]``
+        (``rows`` an int for every term) along its own direction on the interval, one value per sample --
+        :meth:`Shape.of_samples`, so a plateau is a constant term. Terms may repeat an interval with different rows
+        (a tensor encoding's three shapes), and their shapes must be linearly independent on the grid. A row that is
+        not along one direction on its term is refused by name. The level of the term in a fitted sequence
+        (:meth:`levels`) is the amplitude and direction that waveform is played at."""
+        seq = _sequence(sequence)
+        G = np.asarray(seq.G_eff, np.float64); dt = float(seq.dt)
+        rws = [int(rows)] * (len(terms) if terms is not None else 1) if np.ndim(rows) == 0 else [int(r) for r in rows]
+        if any(not 0 <= r < G.shape[0] for r in rws):
+            raise ValueError(f"rows {rws} are not measurements of the sequence ({G.shape[0]} rows)")
+        if terms is None:
+            e = np.asarray(seq.effective_gate, np.float64)
+            tol = _RTOL * (float(np.abs(G[rws[0]]).max()) or 1.0)
+            on = np.abs(G[rws[0]]).max(axis=1) > tol
+            terms, i = [], 0
+            while i < G.shape[1]:
+                if not on[i]:
+                    i += 1; continue
+                j = i + 1
+                while j < G.shape[1] and on[j] and e[j] == e[i]:
+                    j += 1
+                terms.append((i * dt, j * dt)); i = j
+            rws = rws[:1] * len(terms)
+        terms = [(float(a), float(b)) for a, b in terms]
+        if len(rws) != len(terms):
+            raise ValueError(f"rows is one measurement per term: {len(rws)} rows for {len(terms)} terms")
+        shapes = []
+        for s, ((a, b), r) in enumerate(zip(terms, rws)):
+            i0, i1, _ = Shape.constant().on_grid(a, b, dt, G.shape[1], f"term {s} of partition {name!r}")
+            v = G[r, i0:i1, :]
+            peak = float(np.abs(v).max())
+            if peak == 0.0:
+                raise ValueError(f"row {r} plays no gradient on term {s} [{a:.6g}, {b:.6g}] s of partition {name!r}")
+            g_hat = v[np.linalg.norm(v, axis=1).argmax()]; g_hat = g_hat / np.linalg.norm(g_hat)
+            psi = v @ g_hat
+            if np.abs(v - psi[:, None] * g_hat[None, :]).max() > _RTOL * peak:
+                raise ValueError(f"row {r} is not along one direction on term {s} [{a:.6g}, {b:.6g}] s of partition "
+                                 f"{name!r}: a term's shape is a scalar waveform (give each axis its own term)")
+            shapes.append(Shape.of_samples(psi))
+        return cls._make(name, seq, terms, shapes, disjoint=False)
+
+    @classmethod
+    def _make(cls, name, seq, segments, shapes, *, disjoint):
         segs = tuple((float(a), float(b)) for a, b in segments)
         if not segs:
             raise ValueError(f"partition {name!r} has no segment: give segments= or a sequence with a gradient")
+        shapes = tuple(Shape.constant() for _ in segs) if shapes is None else tuple(shapes)
         for s, (a, b) in enumerate(segs):
             if not 0.0 <= a < b:
                 raise ValueError(f"segment {s} of partition {name!r} is [{a:.6g}, {b:.6g}] s: a segment is 0 <= a < b")
-            if s and a < segs[s - 1][1] - 1e-12:
-                raise ValueError(f"the segments of partition {name!r} are in time order and disjoint")
-        if segs[-1][1] > seq.n_t * seq.dt * (1.0 + 1e-9):
-            raise ValueError(f"partition {name!r} ends at {segs[-1][1]:.6g} s, beyond its sequence's grid")
+            if s and a < segs[s - 1][(1 if disjoint else 0)] - 1e-12:
+                raise ValueError(f"the segments of partition {name!r} are in time order" + (" and disjoint" if disjoint else ""))
+        if max(b for _, b in segs) > seq.n_t * seq.dt * (1.0 + 1e-9):
+            raise ValueError(f"partition {name!r} ends at {max(b for _, b in segs):.6g} s, beyond its sequence's grid")
         e = np.asarray(seq.effective_gate, np.float64)
         gate = []
         for s, (a, b) in enumerate(segs):
@@ -282,61 +483,112 @@ class Partition:
                 raise ValueError(f"the effective gate changes sign inside segment {s} [{a:.6g}, {b:.6g}] s of partition "
                                  f"{name!r} (a pulse acts there): split the segment at the pulse")
             gate.append(int(np.rint(vals[0])))
-        return cls(str(name), segs, tuple(gate), seq)
+        out = cls(str(name), segs, tuple(gate), shapes, seq)
+        if not disjoint:
+            out.design(seq.dt, seq.n_t)
+        return out
+
+    @property
+    def is_constant(self):
+        return all(sh.is_constant for sh in self.shapes)
+
+    @property
+    def is_indicator(self):
+        """Whether every term is a constant segment disjoint from the others: the sequences of one level per segment."""
+        return self.is_constant and all(self.segments[s][0] >= self.segments[s - 1][1] - 1e-12 for s in range(1, len(self.segments)))
 
     @property
     def durations(self):
         return np.array([b - a for a, b in self.segments], np.float64)
 
     @property
+    def areas(self):
+        """``(n_term,)``: ``int psi_s dt``, the moment a unit level on term ``s`` leaves (its duration for a segment)."""
+        return np.array([sh.area(b - a) for sh, (a, b) in zip(self.shapes, self.segments)], np.float64)
+
+    @property
+    def weights(self):
+        """``(n_term,)``: ``int |psi_s| dt``, what bounds the magnitude of a unit level's moment (its duration for a
+        segment)."""
+        return np.array([sh.weight(b - a) for sh, (a, b) in zip(self.shapes, self.segments)], np.float64)
+
+    @property
     def carrying(self):
         """Per segment whether its gate lets a phase accrue there (``gate != 0``)."""
         return np.array([g != 0 for g in self.gate], bool)
 
+    def projection_shapes(self, idx=None):
+        """The ``shapes`` argument of :func:`~dmipy_sim.replay.compression.segment_projection` for the terms ``idx``
+        (all when None); ``None`` when every one is a segment."""
+        sel = range(len(self.shapes)) if idx is None else idx
+        vals = [self.shapes[s].projection_values() for s in sel]
+        return None if all(v is None for v in vals) else vals
+
+    def design(self, dt, n_t):
+        """``(n_t, n_term)``: ``psi_s`` held on each sample of the grid (0 outside term ``s``), and ``covered`` ``(n_t,)``
+        the samples inside some term; a term off the grid is refused by name, and terms whose shapes are linearly
+        dependent on the grid (their levels would not be determined) likewise."""
+        D = np.zeros((int(n_t), len(self.segments))); covered = np.zeros(int(n_t), bool)
+        for s, ((a, b), sh) in enumerate(zip(self.segments, self.shapes)):
+            i0, i1, psi = sh.on_grid(a, b, float(dt), int(n_t), f"term {s} of partition {self.name!r}")
+            D[i0:i1, s] = psi; covered[i0:i1] = True
+        if not self.is_indicator:
+            sv = np.linalg.svd(D, compute_uv=False)
+            if sv.size and sv[-1] <= sv[0] * max(D.shape) * np.finfo(np.float64).eps:
+                raise ValueError(f"the shapes of partition {self.name!r} are linearly dependent on the sequence's grid: "
+                                 "the levels of its terms are not determined by a gradient")
+        return D, covered
+
     def b_matrix(self):
-        """``(n_seg, n_seg)``: ``B_st = gamma^2 int Q_s Q_t dt`` with ``Q_s(t)`` the running integral of segment ``s``'s
-        indicator, so that an effective encoding with levels ``l`` on the segments has ``b = l^T B l`` (s/m^2) when it is
-        refocused; exact (each ``Q_s`` is piecewise linear)."""
+        """``(n_seg, n_seg)``: ``B_st = gamma^2 int Q_s Q_t dt`` with ``Q_s(t) = int_a^t psi_s`` the running integral of
+        term ``s``, so that an effective encoding with levels ``l`` on the terms has ``b = l^T B l`` (s/m^2) when it is
+        refocused; exact (each ``Q_s`` is piecewise linear between the cell edges)."""
         from ..constants import GAMMA
         S = np.asarray(self.segments, np.float64)
-        pts = np.unique(np.concatenate([[0.0], S.ravel()]))
-        Q = np.minimum(np.clip(pts[None, :] - S[:, :1], 0.0, None), (S[:, 1] - S[:, 0])[:, None])
+        pts = np.unique(np.concatenate([[0.0]] + [sh.edges(a, b) for sh, (a, b) in zip(self.shapes, self.segments)]))
+        Q = np.stack([sh.running(pts, a, b) for sh, (a, b) in zip(self.shapes, self.segments)])
         L = np.diff(pts); qa, qb = Q[:, :-1], Q[:, 1:]
         B = (L[None, None, :] * (2.0 * qa[:, None] * qa[None] + qa[:, None] * qb[None] + qb[:, None] * qa[None]
                                  + 2.0 * qb[:, None] * qb[None]) / 6.0).sum(-1)
         return GAMMA ** 2 * B
 
     def refocused_basis(self):
-        """``(idx, N)``: the segments that carry a phase and an orthonormal basis ``N`` ``(len(idx), len(idx) - 1)`` of
-        the levels on them that leave no net moment (``sum_s l_s d_s = 0``)."""
+        """``(idx, N)``: the terms that carry a phase and an orthonormal basis ``N`` ``(len(idx), len(idx) - 1)`` of
+        the levels on them that leave no net moment (``sum_s l_s A_s = 0``, ``A_s`` the term's :attr:`areas`); terms of
+        zero area (a whole number of periods of a cosine) each leave none and ``N`` is the identity."""
         idx = np.flatnonzero(self.carrying)
+        a = self.areas[idx]
+        if idx.size and not np.any(a):
+            return idx, np.eye(idx.size)
         if idx.size < 2:
             return idx, np.zeros((idx.size, 0))
-        _, _, Vt = np.linalg.svd(self.durations[idx][None, :])
+        _, _, Vt = np.linalg.svd(a[None, :])
         return idx, Vt[1:].T
 
     def class_vertices(self, G_max):
-        """``(idx, V)``: the segments that carry a phase and the vertices ``V`` ``(n_v, len(idx))`` of the refocused
-        levels a scanner class plays on one axis, ``{|l_s| <= G_max, sum_s l_s d_s = 0}``: a box cut by a plane, whose
-        vertices have every level but one at ``+-G_max``. A convex function of the levels (a phase variance, a b) is
-        largest over them at one of these."""
+        """``(idx, V)``: the terms that carry a phase and the vertices ``V`` ``(n_v, len(idx))`` of the refocused
+        levels a scanner class plays on one axis, ``{|l_s| <= G_max, sum_s l_s A_s = 0}`` (``A_s`` the :attr:`areas`):
+        a box cut by a plane, whose vertices have every level but one at ``+-G_max`` (the box's own, when every area
+        is zero). A convex function of the levels (a phase variance, a b) is largest over them at one of these."""
         idx = np.flatnonzero(self.carrying)
-        d = self.durations[idx]
+        d = self.areas[idx]
         n = idx.size
-        if n < 2:
-            return idx, np.zeros((0, n))
         G = float(G_max)
         out = []
-        for i in range(n):
-            rest = [j for j in range(n) if j != i]
-            for signs in itertools.product((-1.0, 1.0), repeat=n - 1):
-                v = np.zeros(n)
-                v[rest] = G * np.asarray(signs)
-                v[i] = -float(d[rest] @ v[rest]) / float(d[i])
-                if abs(v[i]) <= G * (1.0 + 1e-12):
-                    out.append(v)
-        V = np.unique(np.round(np.asarray(out) / G, 12), axis=0) * G if out else np.zeros((0, n))
-        return idx, V
+        if n and not np.any(d):
+            out = [G * np.asarray(signs) for signs in itertools.product((-1.0, 1.0), repeat=n)]
+        elif n >= 2:
+            for i in np.flatnonzero(d):
+                rest = [j for j in range(n) if j != i]
+                for signs in itertools.product((-1.0, 1.0), repeat=n - 1):
+                    v = np.zeros(n)
+                    v[rest] = G * np.asarray(signs)
+                    v[i] = -float(d[rest] @ v[rest]) / float(d[i])
+                    if abs(v[i]) <= G * (1.0 + 1e-12):
+                        out.append(v)
+        if not out:
+            return idx, np.zeros((0, n))
+        return idx, np.unique(np.round(np.asarray(out) / G, 12), axis=0) * G
 
     def reach(self, G_max, b_max=None):
         """``(n_seg,)``: the largest level ``|G_s|`` (T/m, the vector's) an encoding within the envelope puts on each
@@ -358,41 +610,62 @@ class Partition:
         return out
 
     def levels(self, sequence):
-        """``(n_meas, n_seg, 3)``: each row's effective gradient on each segment (T/m), refused by name when the
-        sequence is not constant on a segment, has a segment edge off its grid, plays a gradient outside the segments
-        or on a segment its gate stores, or leaves a net moment (a segment vector is relative to the walker's start,
-        which only a refocused encoding does not see)."""
+        """``(n_meas, n_seg, 3)``: each row's effective gradient on each term (T/m), the vectors ``a_s`` with
+        ``G(t) = sum_s psi_s(t) a_s`` to :data:`_RTOL` of the peak.
+
+        Disjoint constant segments take the gradient's value on them, which must be constant on a segment. Otherwise (a
+        shape, or terms that overlap) the levels are the least squares fit of ``G(t)`` on the terms' shapes on the
+        sequence's grid, and the residual is held to the same tolerance. A sequence refused by name: off the terms'
+        grid, a gradient outside every term, off the shapes (the row, the term the residual is largest in and its
+        relative norm named), on a term its gate stores, or leaving a net moment."""
         seq = _sequence(sequence)
         G = np.asarray(seq.G_eff, np.float64); dt = float(seq.dt)
         n_meas, n_t, _ = G.shape
         peak = float(np.abs(G).max()) or 1.0; tol = _RTOL * peak
-        covered = np.zeros(n_t, bool); L = np.zeros((n_meas, len(self.segments), 3))
-        for s, (a, b) in enumerate(self.segments):
-            i0, i1 = a / dt, b / dt
-            if abs(i0 - round(i0)) > 1e-6 or abs(i1 - round(i1)) > 1e-6 or round(i1) > n_t:
-                raise ValueError(f"segment {s} [{a:.6g}, {b:.6g}] s of partition {self.name!r} is not on the sequence's "
-                                 f"grid (dt = {dt:.6g} s, {n_t} samples)")
-            i0, i1 = int(round(i0)), int(round(i1))
-            lev = G[:, i0, :]
-            if np.abs(G[:, i0:i1, :] - lev[:, None, :]).max() > tol:
-                raise ValueError(f"the sequence's effective gradient is not constant on segment {s} [{a:.6g}, {b:.6g}] s "
-                                 f"of partition {self.name!r}: it does not fit the partition")
-            L[:, s] = lev; covered[i0:i1] = True
+        design, covered = self.design(dt, n_t)
         if np.abs(G[:, ~covered, :]).max(initial=0.0) > tol:
             raise ValueError(f"the sequence plays a gradient outside the segments of partition {self.name!r}: it does not "
                              "fit the partition")
+        if self.is_indicator:
+            L = np.zeros((n_meas, len(self.segments), 3))
+            for s, (a, b) in enumerate(self.segments):
+                i0, i1, _ = self.shapes[s].on_grid(a, b, dt, n_t, f"segment {s} of partition {self.name!r}")
+                lev = G[:, i0, :]
+                if np.abs(G[:, i0:i1, :] - lev[:, None, :]).max() > tol:
+                    raise ValueError(f"the sequence's effective gradient is not constant on segment {s} [{a:.6g}, {b:.6g}] s "
+                                     f"of partition {self.name!r}: it does not fit the partition")
+                L[:, s] = lev
+        else:
+            X = np.moveaxis(G, 1, 0).reshape(n_t, -1)
+            sol = np.linalg.lstsq(design, X, rcond=None)[0]
+            L = np.moveaxis(sol.reshape(len(self.segments), n_meas, 3), 0, 1)
+            R = np.moveaxis((X - design @ sol).reshape(n_t, n_meas, 3), 0, 1)
+            if np.abs(R).max(initial=0.0) > tol:
+                self._refuse_residual(R, G, design)
         if np.abs(L[:, ~self.carrying]).max(initial=0.0) > tol:
             raise ValueError(f"the sequence plays an effective gradient on a segment of partition {self.name!r} its gate "
                              "stores: the partition holds no vector there")
-        net = np.einsum("msc,s->mc", L, self.durations)
-        if np.abs(net).max(initial=0.0) > _RTOL * peak * float(self.durations.sum()):
+        net = np.einsum("msc,s->mc", L, self.areas)
+        if np.abs(net).max(initial=0.0) > _RTOL * peak * float(self.weights.sum()):
             raise ValueError(f"the sequence leaves a net moment at the readout on partition {self.name!r} (an unbalanced "
                              "encoding): a segment vector is the path relative to the walker's start, which only a "
                              "refocused encoding does not see")
         return L
 
+    def _refuse_residual(self, R, G, design):
+        """Refuse a least squares fit whose residual ``R`` ``(n_meas, n_t, 3)`` of ``G`` is beyond the tolerance, naming
+        the row with the largest residual, the term it lies in and its relative norm."""
+        m = int(np.abs(R).max(axis=(1, 2)).argmax())
+        energy = ((R[m] ** 2).sum(1)[:, None] * (design != 0)).sum(0)
+        term = int(energy.argmax())
+        rel = float(np.sqrt((R[m] ** 2).sum() / max((G[m] ** 2).sum(), 1e-300)))
+        a, b = self.segments[term]
+        raise ValueError(f"the sequence's effective gradient does not fit the shapes of partition {self.name!r}: row {m} "
+                         f"leaves a residual of relative norm {rel:.3g} (largest on term {term} [{a:.6g}, {b:.6g}] s), "
+                         f"above the {_RTOL:.0e} of the peak a sequence is held to")
+
     def to_meta(self):
-        return dict(segments=[list(s) for s in self.segments], gate=list(self.gate))
+        return dict(segments=[list(s) for s in self.segments], gate=list(self.gate), shapes=[sh.to_meta() for sh in self.shapes])
 
 
 def _partitions(partitions):
@@ -407,13 +680,14 @@ def _partitions(partitions):
 
 
 # ------------------------------------------------------------------ the source
-def segment_vectors(pack, segments):
-    """``(n_w, n_seg, 3)`` float64: every walker's segment vectors ``gamma int_seg (r(t) - r(0)) dt`` (rad per T/m) from
-    the pack's coefficients, each window's bands against :func:`~dmipy_sim.replay.compression.segment_projection`
-    (a window that opens after the last segment adds nothing)."""
+def segment_vectors(pack, partition):
+    """``(n_w, n_term, 3)`` float64: every walker's term vectors ``gamma int psi_s(t) (r(t) - r(0)) dt`` (rad per T/m;
+    ``psi_s = 1`` on a segment) of ``partition`` from the pack's coefficients, each window's bands against
+    :func:`~dmipy_sim.replay.compression.segment_projection` (a window that opens after the last term adds nothing)."""
     from ..constants import GAMMA
     from .compression import read_position_coeffs, segment_projection
-    S = np.asarray(segments, np.float64).reshape(-1, 2)
+    S = np.asarray(partition.segments, np.float64).reshape(-1, 2)
+    shapes = partition.projection_shapes()
     m = x0 = None
     for win, t0, T_w in pack._windows():
         if m is not None and t0 >= S[:, 1].max():
@@ -422,7 +696,7 @@ def segment_vectors(pack, segments):
         if x0 is None:
             x0 = C[:, 0, :].copy()
         C[:, 0, :] -= x0
-        W = segment_projection(S, T_w, C.shape[1] - 2, t0=t0)
+        W = segment_projection(S, T_w, C.shape[1] - 2, t0=t0, shapes=shapes)
         part = GAMMA * np.einsum("wjc,sj->wsc", C, W)
         m = part if m is None else m + part
     return m
@@ -462,13 +736,14 @@ def quantisation_term(pack, partition, env):
     if N.shape[1] == 0:
         return 0.0
     S = np.asarray(partition.segments, np.float64)[idx]
+    shapes = partition.projection_shapes(idx)
     A = None
     for win, t0, T_w in pack._windows():
         if A is not None and t0 >= S[:, 1].max():
             break
         sc = np.asarray(win.arrays["pos_band_scale"], np.float64)
         step2 = (sc.reshape(-1, sc.shape[-2], sc.shape[-1]) ** 2).max(axis=0)          # (n_axes, K)
-        W = segment_projection(S, T_w, step2.shape[1], t0=t0)[:, 2:]
+        W = segment_projection(S, T_w, step2.shape[1], t0=t0, shapes=shapes)[:, 2:]
         Aw = np.stack([GAMMA ** 2 * (W * step2[c][None, :]) @ W.T / 12.0 for c in range(step2.shape[0])])
         A = Aw if A is None else A + Aw
     return level_bound(partition, A, env)
@@ -854,7 +1129,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         for a in range(0, n, step):
             sl = _positions_decoded(view.walkers(a, a + step))
             for name, p in parts.items():
-                _top(top, ("p", name), cols.add(f"p_{name}", segment_vectors(sl, p.segments)))
+                _top(top, ("p", name), cols.add(f"p_{name}", segment_vectors(sl, p)))
             for key, (g, seq, names) in groups.items():
                 rows, rec = _group_tiers(sl, _gate_sequence(seq), tiers=tiers, background=background,
                                          background_amplitude=background_amplitude, ref=group_rec.get(g))
@@ -965,9 +1240,9 @@ def _partition_codes(recs, floor, eps):
         layout, n_words = word_layout(bits.ravel())
         realised = float(np.sum(reach ** 2 * np.where(live, scale.max(axis=1), 0.0) ** 2) / 12.0)
         segs = []
-        for s, (t, e) in enumerate(zip(p0["segments"], p0["gate"])):
+        for s, (t, e, sh) in enumerate(zip(p0["segments"], p0["gate"], _term_shapes(p0, name))):
             pl = layout[3 * s:3 * s + 3]
-            segs.append(dict(t=list(t), gate=int(e), q_max=float(reach[s]), floor_target=float(floor), step=float(step[s]),
+            segs.append(dict(t=list(t), gate=int(e), shape=sh, q_max=float(reach[s]), floor_target=float(floor), step=float(step[s]),
                              bits=[int(b) for b in bits[s]], offsets=[int(o) for _, o, _ in pl], word=[int(w) for w, _, _ in pl],
                              scale=[float(x) for x in scale[s]]))
         out[name] = dict(group=p0["group"], segments=segs, n_words=int(n_words), column=f"p_{name}.npy",
@@ -1094,6 +1369,9 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
     recs = [read_rows(b) for b in blocks]
     for key, what in (("grid", "the grid"), ("background", "the background")):
         _same(recs, key, what)
+    for r in recs:
+        for p_name, p in r["partitions"].items():
+            _term_shapes(p, p_name)
     for r in recs[1:]:
         for k in ("kind", "background_amplitude"):
             if json.dumps(r["source"][k], sort_keys=True, default=float) != json.dumps(recs[0]["source"][k], sort_keys=True, default=float):
@@ -1101,8 +1379,8 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
         for k in ("b_max", "G_max", "bound"):
             if r["source"]["envelope"].get(k) != recs[0]["source"]["envelope"].get(k):
                 raise ValueError(f"the blocks' rows disagree on the envelope's {k}: they are not rows of one layout")
-        if {n: (p["segments"], p["gate"], p["group"]) for n, p in r["partitions"].items()} != \
-                {n: (p["segments"], p["gate"], p["group"]) for n, p in recs[0]["partitions"].items()}:
+        if {n: (p["segments"], p["gate"], _term_shapes(p, n), p["group"]) for n, p in r["partitions"].items()} != \
+                {n: (p["segments"], p["gate"], _term_shapes(p, n), p["group"]) for n, p in recs[0]["partitions"].items()}:
             raise ValueError("the blocks' rows disagree on the partitions: they are not rows of one layout")
         if {g: (x["rf"], x["dt"], x["n_t"], x["readout"], x["contact"], bool(x["field"])) for g, x in r["groups"].items()} != \
                 {g: (x["rf"], x["dt"], x["n_t"], x["readout"], x["contact"], bool(x["field"])) for g, x in recs[0]["groups"].items()}:
@@ -1254,8 +1532,9 @@ def _code():
 # ------------------------------------------------------------------ the layout
 class TimeSegmentLayout:
     """The time-segment layout at ``path``, tiles memory-mapped from disk: ``manifest``, ``grid``, ``partitions`` (the
-    stored :class:`Partition` objects by name), and :meth:`image` -- a whole grid under any sequence piecewise constant on a
-    stored partition, on the device. Open a Hub layout with :meth:`open`."""
+    stored :class:`Partition` objects by name), and :meth:`image` -- a whole grid under any sequence whose effective gradient
+    is a sum of the shapes of a stored partition's terms (piecewise constant on its segments, a trapezoid, a cosine, a
+    tensor encoding), on the device. Open a Hub layout with :meth:`open`."""
 
     TILES = 4096                                                        # tiles per device chunk (2^19 rows)
     MEAS = 64                                                           # measurements padded to a multiple
@@ -1272,7 +1551,9 @@ class TimeSegmentLayout:
         self.grid = Grid.from_meta(self.manifest["grid"])
         self.n_rows = int(self.manifest["n_rows"]); self.n_tiles = int(self.manifest["n_tiles"]); self.tile = int(self.manifest["tile"])
         self.n_vox = int(np.prod(self.grid.shape))
-        self.partitions = {n: Partition(n, tuple(tuple(s["t"]) for s in p["segments"]), tuple(int(s["gate"]) for s in p["segments"]))
+        self.partitions = {n: Partition(n, tuple(tuple(s["t"]) for s in p["segments"]), tuple(int(s["gate"]) for s in p["segments"]),
+                                        tuple(Shape.from_meta(s.get("shape"), f"term {i} of partition {n!r} in the manifest")
+                                              for i, s in enumerate(p["segments"])))
                            for n, p in self.manifest["partitions"].items()}
         self.tiers = self.manifest.get("tiers")
         self.susceptibility_field = (None if not self.tiers else
@@ -1729,6 +2010,9 @@ class TimeSegmentLayout:
         if tuple(grid.shape) != tuple(self.grid.shape):
             raise ValueError(f"the grid placed in the bore is the layout's own ({tuple(self.grid.shape)}), got {tuple(grid.shape)}")
         name, L = self.fit(sequence, partition)
+        if not self.partitions[name].is_constant:
+            raise ValueError(f"partition {name!r} has shaped terms: a machine's delivered gradient (its Maxwell term is "
+                             "quadratic in the waveform) is one vector per constant segment, not per shape")
         e = np.asarray(self.partitions[name].gate, np.float64)
         plateau = L * np.where(e == 0.0, 0.0, e)[None, :, None]          # the commanded (physical) gradient: e = +-1
         live = self.live_voxels
@@ -1746,7 +2030,7 @@ class TimeSegmentLayout:
     def image(self, sequence, *, partition=None, backend="jax", device=None, resident=True, tissue=None, scanner=None,
               b0_direction=(0.0, 0.0, 1.0), delivered=None):
         """``(S, floor)`` of the grid under ``sequence`` (a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`
-        whose rows are piecewise constant on a stored partition; ``partition`` names one, else the first it fits): ``S``
+        whose rows are sums of the shapes of a stored partition's terms; ``partition`` names one, else the first it fits): ``S``
         ``grid.shape + (n_meas,)``, the weighted ensemble magnitude per voxel (NaN where the layout has no rows),
         ``floor`` ``grid.shape`` its split-half floor ``max_m |S_a - S_b| / 2``. A row beyond the envelope the widths are
         derived at (``G_max``, ``b_max``) is refused by name. ``backend`` runs the arithmetic on JAX (its default
