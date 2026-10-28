@@ -14,7 +14,7 @@ from ..math.step_law import LONGEST_STEP, SPHERE_K1, SPHERE_WALL_COEFFICIENT, CY
 #: 0.65 to 0.83 over ``delta_0 / a`` 0.1 to 0.5, the cylinder's 0.41 to 0.51).
 from ._boundary import (bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
-                        transmit_probability, off_wall, step_off_wall)
+                        transmit_probability, off_wall, step_off_wall, nudge_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 
 
@@ -36,7 +36,8 @@ def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
         n_out  = raw / jnp.maximum(jnp.linalg.norm(raw), jnp.float32(1e-30))
         r_hit  = R * n_out                                                # snapped: |r_hit| = R exactly
         rem    = remaining - t_safe
-        d_perp = jnp.where(any_hit, rem * jnp.sqrt(disc_s) / R, jnp.float32(0.0))
+        cos_a  = jnp.sqrt(disc_s) / R
+        d_perp = jnp.where(any_hit, rem * cos_a, jnp.float32(0.0))
         first    = any_hit & (~decided)
         transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
         d_refl = specular(dd, n_out)
@@ -47,7 +48,8 @@ def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
         r_new  = jnp.where(reflecting, r_off, rr + remaining * dd)
         d_new  = jnp.where(reflecting, d_refl, dd)
         rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)), jnp.float32(0.0))
-        dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+        # the wall's push: the ideal reflection's 2 d_perp and the displacement the nudge adds (_boundary.nudge_push)
+        dlw = jnp.where(reflecting, -rho_over_D * (jnp.float32(2.0) * d_perp + nudge_push(NUDGE, cos_a, rem)), jnp.float32(0.0))
         return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
     return rule
 
@@ -393,7 +395,8 @@ class Ellipsoid(Geometry):
             n_raw  = r_hit * inv_semi_sq
             n_out  = n_raw / jnp.maximum(jnp.linalg.norm(n_raw), jnp.float32(1e-30))
             rem    = remaining - t_safe
-            d_perp = jnp.where(any_hit, rem * jnp.abs(jnp.dot(dd, n_out)), jnp.float32(0.0))
+            cos_a  = jnp.abs(jnp.dot(dd, n_out))
+            d_perp = jnp.where(any_hit, rem * cos_a, jnp.float32(0.0))
             first    = any_hit & (~decided)
             transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
             d_refl = specular(dd, n_out)
@@ -405,7 +408,7 @@ class Ellipsoid(Geometry):
             d_new  = jnp.where(reflecting, d_refl, dd)
             rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
                                jnp.float32(0.0))
-            dlw = jnp.where(reflecting, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+            dlw = jnp.where(reflecting, -rho_over_D * (jnp.float32(2.0) * d_perp + nudge_push(NUDGE, cos_a, rem)), jnp.float32(0.0))
             return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
 
         b = self.bounce_loop(rule, r, d_hat, step_l)
@@ -650,7 +653,7 @@ class PermeableShell(Geometry):
                                     active=~transmit)
 
         dlog_w = jnp.where(hit_in & any_hit & (~transmit),
-                           -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+                           -rho_over_D * (jnp.float32(2.0) * d_perp + nudge_push(NUDGE, cos_a, remaining)), jnp.float32(0.0))
         zero_b = jnp.zeros((), bool)
         # one event per step: the wall met is the one hit, reflected or crossed
         return WallHit(r_out, dlog_w, transmit, zero_b, any_hit.astype(jnp.int32) if self.count_walls else None, zero_b)
