@@ -236,12 +236,12 @@ def test_the_field_and_the_relaxation_channels_follow_the_rescale(sheathed):
     chi = Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
     t2 = Tissue(T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01})
     both = Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6, T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01})
-    bare = pk_2d.replay(seq, complex_signal=True)
+    bare = pk_2d.replay(seq, complex_signal=True, tol=None)         # every stored band and mode: the tier is read whatever its size
     # the tier is live: a spin echo refocuses the static part of the field, so what survives of it is the
     # diffusion through it, small at this TE; the relaxation moves the signal by percent
     for tissue, kw, live in ((chi, dict(scanner=3.0), 1e-7), (t2, {}, 1e-3), (both, dict(scanner=7.0), 1e-3)):
-        own = pk_2d.replay(seq, tissue=tissue, complex_signal=True, **kw)
-        view = pk_d.replay(seq, tissue=tissue.replace(D=2 * D0), complex_signal=True, **kw)
+        own = pk_2d.replay(seq, tissue=tissue, complex_signal=True, tol=None, **kw)
+        view = pk_d.replay(seq, tissue=tissue.replace(D=2 * D0), complex_signal=True, tol=None, **kw)
         np.testing.assert_allclose(view, own, rtol=RTOL, err_msg=repr(tissue))
         assert np.abs(view - bare).max() > live * np.abs(bare).max(), repr(tissue)
     # and through the pose expansion, which reads the field's grid on its own

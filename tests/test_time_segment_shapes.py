@@ -94,7 +94,7 @@ def small(tmp_path_factory):
 
 def _per_voxel(src, grid, seq):
     """``(n_vox, n_meas)``: the per-voxel ensemble magnitude of ``src``'s replay (walker by walker, start voxels)."""
-    w, ew, E = src.walker_signals(seq)
+    w, ew, E = src.walker_signals(seq, tol=None)
     ijk, _ = grid.bin(src.r0); v = np.ravel_multi_index(ijk.T, grid.shape)
     num = np.stack([np.bincount(v, (ew * E[:, k]).real, minlength=grid.n_voxels)
                     + 1j * np.bincount(v, (ew * E[:, k]).imag, minlength=grid.n_voxels) for k in range(E.shape[1])], 1)
