@@ -93,6 +93,46 @@ def field_node_budget(ceiling=None):
 
 
 
+def field_raster_shape(box_min, box_max, res):
+    """The nodes per axis ``(3,)`` of the raster :func:`predicate_field_basis` builds over the box ``box_min .. box_max``
+    at node spacing ``res`` (metres): the box's side over ``res``, rounded, at least one."""
+    side = np.asarray(box_max, float) - np.asarray(box_min, float)
+    return np.maximum(1, np.round(side / float(res)).astype(int))
+
+
+#: The device copies of a raster a walk's program holds: the raster is a program argument and XLA's allocation for the
+#: argument-and-result buffers of the compiled walk is twice its bytes (measured on the CUDA walk of a 612^3 x 12
+#: float32 raster, 11 002 604 544 B: 22 005 209 088 B of "input/output arguments").
+FIELD_DEVICE_COPIES = 2
+#: The channels the walk reads on the device: ``iso_local``, five ``iso_P`` (``iso_P_zz`` is formed from the trace) and
+#: six ``aniso_G`` -- the six of an isotropic-only source.
+FIELD_DEVICE_CHANNELS = 12
+
+
+def field_device_bytes(n_nodes, n_channels=FIELD_DEVICE_CHANNELS):
+    """The device bytes the walk of a raster of ``n_nodes`` nodes needs for it: :data:`FIELD_DEVICE_COPIES` copies of
+    ``n_channels`` float32 channels (:meth:`FieldGrid.device_arrays`)."""
+    return int(FIELD_DEVICE_COPIES) * 4 * int(n_channels) * int(n_nodes)
+
+
+def field_device_limit():
+    """``(bytes, source)``: the memory JAX may use on the device the walk runs on -- ``bytes_limit`` of the first
+    device's allocator (the card's share after ``XLA_PYTHON_CLIENT_MEM_FRACTION`` / ``XLA_PYTHON_CLIENT_PREALLOCATE``)
+    -- and where it was read from; ``(None, "cpu")`` on a CPU device, where the raster lives in host memory and the host
+    budget (:func:`field_node_budget`) governs. An accelerator that reports no limit is an error, not an unlimited
+    device."""
+    import jax
+    dev = jax.devices()[0]
+    if dev.platform == "cpu":
+        return None, "cpu"
+    stats = dev.memory_stats() or {}
+    lim = stats.get("bytes_limit")
+    if not lim:
+        raise RuntimeError(f"the {dev.platform} device {dev} reports no bytes_limit in memory_stats(); pass the device "
+                           "memory limit (bytes) explicitly")
+    return int(lim), f"jax.devices()[0].memory_stats()['bytes_limit'] of {dev}"
+
+
 class FieldGridRecord:
     """The record of a :class:`FieldGrid` a walk read along its path (a walk file, a loaded walk): the grid's
     placement, shape and raster certificate and its channel names -- no values, so it evaluates nothing. What a
@@ -425,6 +465,89 @@ def dipole_field(chi6, voxel_size, b0_dir, B0=1.0):
     return dB
 
 
+def _khat_axes(shape, voxel_size):
+    """``(khat, dc)`` of :func:`_khat` with ``khat`` a list of three arrays: the unit wave-vector components, zero at
+    k = 0, each computed by broadcasting the three one-dimensional wave-number axes (the same elementwise arithmetic
+    as :func:`_khat`, so the same values to the bit, without its three full-size ``k`` grids)."""
+    vs = _as_voxel_size(voxel_size, len(shape))
+    ks = [2.0 * np.pi * np.fft.fftfreq(n, d=d) for n, d in zip(shape, vs)]
+    nd = len(shape)
+    kb = [k.reshape([-1 if a == i else 1 for a in range(nd)]) for i, k in enumerate(ks)]
+    k2 = 0
+    for k in kb:
+        k2 = k2 + k ** 2
+    k2 = np.broadcast_to(k2, shape)
+    dc = k2 == 0.0
+    inv = np.where(dc, 0.0, 1.0 / np.sqrt(np.where(dc, 1.0, k2)))
+    return [k * inv for k in kb], dc
+
+
+def _kspace_window(shape, kspace_lowpass):
+    """The raised-cosine k-space window of :func:`field_basis` (1.0 when ``kspace_lowpass`` is ``None``)."""
+    if kspace_lowpass is None:
+        return 1.0
+    nd = len(shape)
+    axf = [(np.fft.fftfreq(n) * 2.0).reshape([-1 if a == i else 1 for a in range(nd)]) for i, n in enumerate(shape)]
+    r2 = 0
+    for g in axf:
+        r2 = r2 + g ** 2
+    r = np.sqrt(np.broadcast_to(r2, shape) / nd)
+    W = np.ones_like(r); f = float(kspace_lowpass)
+    ramp = (r > f) & (r < 1.0)
+    W[ramp] = 0.5 * (1.0 + np.cos(np.pi * (r[ramp] - f) / (1.0 - f)))
+    W[r >= 1.0] = 0.0
+    return W
+
+
+def field_basis_channels(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_lowpass=None):
+    """The channels of :func:`field_basis`, one at a time: a generator of ``(group, index, array)`` --
+    ``("iso_local", None, a)``, then ``("iso_P", c, a)`` for ``c`` in 0..5 and, with ``include_aniso``,
+    ``("aniso_G", c, a)`` for ``c`` in 0..5 -- each ``a`` a float64 array of the mask's shape.
+
+    The k-space work of a channel (its forward and inverse FFT and the complex temporaries between) is released
+    before the next is made, so the peak above the finished channels is one channel's: the mask, the three wave-vector
+    components, the window, and ``mk`` (the mask's transform; released after the isotropic channels) or the six
+    transforms of the anisotropic tensor (released with the last channel). Every channel is the value :func:`field_basis`
+    has always returned, to the bit."""
+    m = np.asarray(myelin_mask, float)
+    shape = m.shape
+    khat, dc = _khat_axes(shape, voxel_size)
+
+    # Optional k-space low-pass (raised-cosine roll-off from `kspace_lowpass`·Nyquist to Nyquist).
+    # The dipole kernel k̂ᵢk̂ⱼ does not decay with |k|, so grid-scale source roughness (a hard/thin
+    # mask, a gradient-derived director) rings at the grid Nyquist — content the grid cannot
+    # faithfully represent anyway. Damping it removes that ringing (standard in QSM forward models).
+    W = _kspace_window(shape, kspace_lowpass)
+
+    # isotropic local term (1/3) m(r), zero-meaned (DC removed for consistency).
+    yield "iso_local", None, (m - m.mean()) / 3.0
+
+    # iso_P_ij = IFFT[ mk * khat_i khat_j ]  (khat=0 at DC -> already zero-mean).
+    mk = np.fft.fftn(m)
+    for c, (i, j) in enumerate(_SYM6):
+        yield "iso_P", c, np.real(np.fft.ifftn(mk * khat[i] * khat[j] * W))
+    del mk
+
+    if include_aniso:
+        n = _unit(np.asarray(radial_dir, float), axis=-1)
+        # anisotropic tensor field T_cd(r) = m (n_c n_d - delta_cd/3), FFT -> Tk.
+        Tk = {}
+        for (i, j) in _SYM6:
+            Td = m * (n[..., i] * n[..., j] - (1.0 / 3.0 if i == j else 0.0))
+            Tk[(i, j)] = np.fft.fftn(Td)
+            Tk[(j, i)] = Tk[(i, j)]
+        del n, Td
+        # K_ij(k) = (1/3) Tk_ij - sum_c khat_i khat_c Tk_cj ; symmetrise in (i,j).
+        for c, (i, j) in enumerate(_SYM6):
+            Kij = (1.0 / 3.0) * Tk[(i, j)]
+            Kji = (1.0 / 3.0) * Tk[(j, i)]
+            sec_ij = sum(khat[i] * khat[cc] * Tk[(cc, j)] for cc in range(3))
+            sec_ji = sum(khat[j] * khat[cc] * Tk[(cc, i)] for cc in range(3))
+            Ksym = 0.5 * ((Kij - sec_ij) + (Kji - sec_ji))
+            Ksym[dc] = 0.0
+            yield "aniso_G", c, np.real(np.fft.ifftn(Ksym * W))
+
+
 def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_lowpass=None):
     """Geometry-only field-basis grids for cheap ``(H, B0, chi_I, chi_A)`` replay.
 
@@ -439,6 +562,7 @@ def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_
     only on the geometry (mask + director), so a single set serves any main-field
     direction, strength and susceptibility — the 3-D analogue of the analytic
     ``Phi_C/Phi_S/Phi_0`` phasor maps.  All grids are zero-mean (Lorentz reference).
+    The channels are made one at a time (:func:`field_basis_channels`).
 
     Parameters
     ----------
@@ -458,54 +582,18 @@ def field_basis(myelin_mask, radial_dir, voxel_size, include_aniso=True, kspace_
         ``iso_local`` (Nx,Ny,Nz), ``iso_P`` (6,Nx,Ny,Nz),
         ``aniso_G`` (6,Nx,Ny,Nz) or None, plus ``shape`` and ``voxel_size``.
     """
-    m = np.asarray(myelin_mask, float)
-    shape = m.shape
-    khat, dc = _khat(shape, voxel_size)
-
-    # Optional k-space low-pass (raised-cosine roll-off from `kspace_lowpass`·Nyquist to Nyquist).
-    # The dipole kernel k̂ᵢk̂ⱼ does not decay with |k|, so grid-scale source roughness (a hard/thin
-    # mask, a gradient-derived director) rings at the grid Nyquist — content the grid cannot
-    # faithfully represent anyway. Damping it removes that ringing (standard in QSM forward models).
-    W = 1.0
-    if kspace_lowpass is not None:
-        axf = [np.fft.fftfreq(n) * 2.0 for n in shape]          # -1..1 in Nyquist units
-        r = np.sqrt(sum(g ** 2 for g in np.meshgrid(*axf, indexing="ij")) / len(shape))
-        W = np.ones_like(r); f = float(kspace_lowpass)
-        ramp = (r > f) & (r < 1.0)
-        W[ramp] = 0.5 * (1.0 + np.cos(np.pi * (r[ramp] - f) / (1.0 - f)))
-        W[r >= 1.0] = 0.0
-
-    mk = np.fft.fftn(m)
-
-    # isotropic local term (1/3) m(r), zero-meaned (DC removed for consistency).
-    iso_local = (m - m.mean()) / 3.0
-
-    # iso_P_ij = IFFT[ mk * khat_i khat_j ]  (khat=0 at DC -> already zero-mean).
+    shape = np.shape(myelin_mask)
     iso_P = np.empty((6,) + shape, float)
-    for c, (i, j) in enumerate(_SYM6):
-        iso_P[c] = np.real(np.fft.ifftn(mk * khat[i] * khat[j] * W))
-
-    aniso_G = None
-    if include_aniso:
-        n = _unit(np.asarray(radial_dir, float), axis=-1)
-        # anisotropic tensor field T_cd(r) = m (n_c n_d - delta_cd/3), FFT -> Tk.
-        Tk = {}
-        for (i, j) in _SYM6:
-            Td = m * (n[..., i] * n[..., j] - (1.0 / 3.0 if i == j else 0.0))
-            Tk[(i, j)] = np.fft.fftn(Td)
-            Tk[(j, i)] = Tk[(i, j)]
-        # K_ij(k) = (1/3) Tk_ij - sum_c khat_i khat_c Tk_cj ; symmetrise in (i,j).
-        aniso_G = np.empty((6,) + shape, complex)
-        for c, (i, j) in enumerate(_SYM6):
-            Kij = (1.0 / 3.0) * Tk[(i, j)]
-            Kji = (1.0 / 3.0) * Tk[(j, i)]
-            sec_ij = sum(khat[i] * khat[cc] * Tk[(cc, j)] for cc in range(3))
-            sec_ji = sum(khat[j] * khat[cc] * Tk[(cc, i)] for cc in range(3))
-            Ksym = 0.5 * ((Kij - sec_ij) + (Kji - sec_ji))
-            Ksym[dc] = 0.0
-            aniso_G[c] = Ksym
-        aniso_G = np.stack([np.real(np.fft.ifftn(aniso_G[c] * W)) for c in range(6)], axis=0)
-
+    aniso_G = np.empty((6,) + shape, float) if include_aniso else None
+    iso_local = None
+    for group, c, a in field_basis_channels(myelin_mask, radial_dir, voxel_size, include_aniso=include_aniso,
+                                            kspace_lowpass=kspace_lowpass):
+        if group == "iso_local":
+            iso_local = a
+        elif group == "iso_P":
+            iso_P[c] = a
+        else:
+            aniso_G[c] = a
     return {
         "iso_local": iso_local,
         "iso_P": iso_P,
@@ -995,11 +1083,12 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, 
 
     box_min = np.asarray(box_min, float); box_max = np.asarray(box_max, float)
     side = box_max - box_min
-    N = np.maximum(1, np.round(side / res).astype(int))
+    N = field_raster_shape(box_min, box_max, res)
     vs = side / N
     axes = [box_min[a] + (np.arange(N[a]) + 0.5) * vs[a] for a in range(3)]
     XX, YY, ZZ = np.meshgrid(*axes, indexing="ij")
     pts = np.stack([XX.ravel(), YY.ravel(), ZZ.ravel()], axis=1)
+    del XX, YY, ZZ
 
     in_in = (inside_inner(pts) if inside_inner is not None else np.zeros(len(pts), bool)).reshape(N)   # SDF/director
     in_out = np.asarray(inside_outer(pts), bool).reshape(N)
@@ -1045,6 +1134,7 @@ def predicate_field_basis(inside_inner, inside_outer, box_min, box_max, *, res, 
         sdf = (ndimage.distance_transform_edt(~ref, sampling=tuple(vs))
                - ndimage.distance_transform_edt(ref, sampling=tuple(vs)))
         radial_dir = radial_from_sdf(sdf, vs)
+    del pts, binary, in_in, in_out
     basis = field_basis(myelin_mask, radial_dir, vs, include_aniso=include_aniso,
                         kspace_lowpass=kspace_lowpass)
     basis["shell_fraction"] = float(myelin_mask.mean())
