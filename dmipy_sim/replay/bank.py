@@ -554,7 +554,8 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     budget independently of walker count. No fallback above budget is admitted.
     The finite gate battery remains diagnostic; callers must validate their query domain.
     floor_scale is retained for legacy split-half diagnostics and cannot be combined
-    with target_floor.
+    with target_floor. The record states the budget (``target_floor``; None when the band is held to the
+    split-half floor).
     """
     from scipy.fft import idct
     if target_floor is not None:
@@ -631,7 +632,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                   container=[dict(r) for r in cont[K]],
                   floor_is=("the explicit numerical field error budget" if target_floor is not None else
                             "the pilot's split-half floor scaled to the production walk's count (x floor_scale)"),
-                  floor_scale=float(floor_scale), B0_list=[float(b) for b in B0s], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
+                  floor_scale=float(floor_scale), target_floor=(None if target_floor is None else float(target_floor)), B0_list=[float(b) for b in B0s], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
     return int(K), record
 
 
