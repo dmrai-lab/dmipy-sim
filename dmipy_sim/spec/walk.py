@@ -25,7 +25,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
-              window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None):
+              window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
+              field_target_floor=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
@@ -56,6 +57,11 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     pilot unless given (:func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`: the read series' measured quadratic
     variation; a read is never finer than the walk's step or round), and ``K_c3`` the field channel's band (modes per window), derived on a
     pilot unless given (:func:`~dmipy_sim.replay.bank.derive_field_band`; a fill passes the certifying pack's).
+
+    ``field_target_floor`` is the numerical error budget the derived field band of a gridded field is held to (the
+    ``sigma_star`` of the pack the walk is built into; :func:`~dmipy_sim.engine.core.simulate_trajectories`): it
+    goes with a gridded field source whose band is derived (``K_c3`` None), and is the budget of the fixed-step
+    walk's pilot as ``calibration_floor`` is of the adaptive strand walk's.
 
     ``field_calibration`` maps every diffusing seeded pool name to its validated
     :class:`~dmipy_sim.engine.calibration.FieldCalibration`. Reuse checks physical, numerical,
@@ -128,6 +134,12 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                 bands = {c.record["band"]["K"] for c in field_calibration.values()}
                 if len(bands) != 1:
                     raise ValueError("pool calibrations need a common field band; regenerate their evidence at that band")
+        if field_target_floor is not None:
+            if kind != "grid" or adaptive_steps:
+                raise SpecError("field_target_floor is the numerical budget of a gridded field's band in the fixed-step walk "
+                                "(the adaptive strand walk takes calibration_floor)")
+            if K_c3 is not None:
+                raise SpecError("field_target_floor is the budget of a field band the walk derives; K_c3 was given")
         if kind == "strands" and not adaptive_steps:
             raise SpecError(f"spec {spec.id!r} has a strand field source, which the adaptive producer reads along the walk: "
                             "pass adaptive_steps=True (a fixed-step walk of a strand substrate carries no field)")
@@ -186,7 +198,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
             w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
-                                      field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval)),
+                                      field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
+                                                                                   field_target_floor=field_target_floor)),
                                       **walk_kw)
             import dataclasses
             return dataclasses.replace(w, geometry=g, spec=spec, scanner=str(scanner))
@@ -194,7 +207,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                             field_budget=field_budget, scanner=scanner, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
                             field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
-                            field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope)
+                            field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
+                            field_target_floor=field_target_floor)
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -773,7 +787,7 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner):
 def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, field_budget=None, scanner=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False,
                  field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None,
-                 field_calibration=None, calibration_floor=None, query_scope=None):
+                 field_calibration=None, calibration_floor=None, query_scope=None, field_target_floor=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -845,6 +859,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
     works = []
     field_kw = dict(K_c3=K_c3, field_read_interval=field_read_interval)
+    fixed_kw = dict(field_kw, field_target_floor=field_target_floor)       # the fixed-step walk's pilot also takes the band's budget
     for pid in seeded:
         pool = pools[pid]
         shell = bool(inside_w[pid]) and bool(outside_w[pid])
@@ -876,11 +891,12 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                                                **{k: v for k, v in walk_kw.items() if k != "bounce_budget"})
         else:
             w = simulate_trajectories(n, float(pool.D), geo, T_max=T_max, block_h=block_h, seed=seed + 13 * pid, r0=r0,
-                                      field_basis=fg, **({} if fg is None else field_kw), **walk_kw)
+                                      field_basis=fg, **({} if fg is None else fixed_kw), **walk_kw)
         if w.field_coeffs is not None and field_kw.get("K_c3") is None:
             # the first walked pool's pilot sets the band for the pools after it (one channel, one band); every pool's
             # own pilot sets its read
             field_kw = dict(field_kw, K_c3=int(w.K_c3))
+            fixed_kw = dict(field_kw, field_target_floor=None)
         walked = w
         works.append(w.work)
         parts.append((pid, w))

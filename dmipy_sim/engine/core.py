@@ -963,6 +963,7 @@ def simulate_trajectories(
     bounce_budget: int = None,
     f_band: float = None,
     backend="jax",
+    field_target_floor: float = None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1058,6 +1059,13 @@ def simulate_trajectories(
         :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers that keeps its block means
         (:func:`~dmipy_sim.replay.bank.derive_field_band`: the first band whose codec error on the certificate's
         battery is within its floor); a fill inherits the certifying pack's.
+    field_target_floor : float, optional
+        The numerical error budget the derived field band is held to (the ``sigma_star`` of the pack the walk is
+        built into, :func:`~dmipy_sim.replay.bank.build_replay_pack`): the band is the first whose codec error is
+        within this budget whatever the walker count, and a budget no band reaches is refused
+        (:func:`~dmipy_sim.replay.bank.derive_field_band`). None holds the band to the pilot's split-half floor
+        scaled to the walk's walker count. It goes with a derived band: ``field_basis=`` given and ``K_c3`` None.
+        ``CoefficientWalk.block["field_band"]["target_floor"]`` records it.
     field_read_interval : float, optional
         The interval (s) between the walk's reads of the field. None derives it from a pilot of
         :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers that reads every step
@@ -1124,6 +1132,12 @@ def simulate_trajectories(
         # ── In-walk field read: the basis read at the kernel's position (a grid, or the closed form), its arrays passed
         # to the walk as arguments
         _sampling = field_basis is not None
+        if field_target_floor is not None:
+            if not _sampling or K_c3 is not None:
+                raise ValueError("field_target_floor is the numerical budget of a field band the walk derives: it goes with field_basis= "
+                                 "and without K_c3 (a given band is held to nothing)")
+            if not np.isfinite(field_target_floor) or field_target_floor <= 0:
+                raise ValueError(f"field_target_floor is a positive error budget, got {field_target_floor!r}")
         if _sampling:
             if not hasattr(field_basis, "device_read"):
                 raise TypeError(f"field_basis must be read on the device in the walk (a FieldGrid or a HollowCylinderField, "
@@ -1791,7 +1805,8 @@ def simulate_trajectories(
                 K_c3_, field_band = derive_field_band_per_pool(
                     np.asarray(got["fs"], np.float32)[:, 1:], {name_of.get(int(l), str(int(l))): np.flatnonzero(labels == l) for l in np.unique(labels)},
                     list(field_basis.channel_names), float(dt_actual), envelope, K_max=K, B0=B0, chi=chi,
-                    floor_scale=float(np.sqrt(n_pilot / float(n_walkers))))
+                    **(dict(floor_scale=float(np.sqrt(n_pilot / float(n_walkers)))) if field_target_floor is None
+                       else dict(target_floor=float(field_target_floor))))
                 field_band = dict(field_band, pilot_walkers=n_pilot, production_walkers=int(n_walkers))
         if _sampling:
             K_c3_ = int(K_c3_)
