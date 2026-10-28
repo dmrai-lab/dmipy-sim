@@ -10,6 +10,7 @@ measured volume, weights by water fraction or thinning) and the pools are joined
 basis of a field-source pool is computed on the domain grid (or the strands' closed form) and READ by the walk.
 """
 import logging
+from typing import NamedTuple
 
 import numpy as np
 
@@ -26,7 +27,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
-              field_target_floor=None):
+              field_target_floor=None, field_cache=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
@@ -99,7 +100,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     across it, measured; ``field_res`` in metres overrides it, and a spec that records no shell needs it) within
     ``field_budget`` nodes (default the host's, :func:`~dmipy_sim.fields.susceptibility_field.field_node_budget`:
     half the memory ceiling at the build's measured bytes per node); a basis beyond the budget is refused, never
-    coarsened; the grid is read inside the step (:func:`~dmipy_sim.engine.core.simulate_trajectories` with
+    coarsened (as is a raster beyond the memory JAX may use on the device it is walked on,
+    :func:`check_field_raster`); ``field_cache`` is a directory the raster is loaded from and written to
+    (:func:`~dmipy_sim.fields.raster_cache.cached_field_grid`); the grid is read inside the step (:func:`~dmipy_sim.engine.core.simulate_trajectories` with
     ``field_basis=``). A frozen pool (``D = 0``) holds its seat: its field modes are the channels there (the ``k =
     0`` mode alone).
 
@@ -193,7 +196,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                 raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
             fb = None
             if kind == "grid":
-                fb = _single_geometry_field_grid(spec, g, field_res, field_budget)
+                fb = _single_geometry_field_grid(spec, g, field_res, field_budget, field_cache)
             if adaptive_steps:
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
@@ -208,7 +211,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
                             field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
                             field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
-                            field_target_floor=field_target_floor)
+                            field_target_floor=field_target_floor, field_cache=field_cache)
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -249,7 +252,7 @@ def field_source_kind(spec):
           "or describe the magnetic pool with surfaces a field route computes")
 
 
-def _single_geometry_field_grid(spec, g, field_res, field_budget):
+def _single_geometry_field_grid(spec, g, field_res, field_budget, field_cache=None):
     """The :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` a single-geometry walk of ``spec`` samples: the
     analytic raster of a myelinated cylinder or packed cell (:func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`;
     the cell's grid periodic), else the spec's own raster (:func:`field_grid_of_spec`)."""
@@ -257,27 +260,35 @@ def _single_geometry_field_grid(spec, g, field_res, field_budget):
     from ..fields.susceptibility_field import field_grid_of
     if isinstance(g, (MyelinatedCylinder, PackedMyelinatedCylinders)):
         return field_grid_of(g, res=field_res)
-    return field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget)
+    return field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, cache_dir=field_cache)
 
 
-def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None, n_check=400_000, seed=0):
-    """The rasterised field basis of ``spec``'s field source, a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`:
-    the one raster a walk reads (:func:`walk_spec`; a mesh/sphere-union/myelinated-cylinder source, or the grid
-    cross-check of a strand source). The shell pool's occupancy comes from the
-    spec's own membership tests on the domain grid, the directors from its inner surface, at the node spacing the
-    thinnest shell sets (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of
-    ``spec.validity.thinnest_shell``; ``field_res`` in metres overrides it, and a spec that records no shell needs
-    it) within ``field_budget`` nodes (default the host's,
-    :func:`~dmipy_sim.fields.susceptibility_field.field_node_budget`); a basis beyond the budget is refused
-    naming the shell, never coarsened. The raster is checked before it is returned: the shell fraction it holds
-    against the fraction of ``n_check`` uniform points the spec's exact membership tests put in the shell, recorded
-    in the grid's ``certificate`` and refused past one percent of the shell (a raster that has lost its sheath's
-    volume has lost its field). The raster spans the domain box exactly (its nodes the box's side over a whole
-    number of spacings) and its field is the box's periodic convolution, so an axis the domain declares periodic is
-    one period of the field and the grid states it ``periodic``: a walker that has left the cell reads its image's
-    field, never the grid's clamped edge. ``context`` is a :class:`WalkContext` of the spec whose tests are reused."""
-    from ..fields.susceptibility_field import (FieldGrid, FIELD_NODES_ACROSS, field_node_budget, field_resolution,
-                                               mesh_field_basis, predicate_field_basis)
+class FieldRasterPlan(NamedTuple):
+    """What the field raster of a spec is, before it is built: the box ``lo .. hi`` it spans (metres), its node spacing
+    ``res`` and the text that says where that came from, its nodes per axis ``shape`` and total ``n_nodes``, the
+    ``channels`` it stores on the device, the bytes the build takes on the host and the bytes the walk takes on the
+    device."""
+    lo: np.ndarray
+    hi: np.ndarray
+    res: float
+    spacing: str
+    shape: tuple
+    n_nodes: int
+    channels: int
+    host_bytes: int
+    device_bytes: int
+    strands: bool
+
+
+def field_raster_plan(spec, *, field_res=None, context=None):
+    """The :class:`FieldRasterPlan` of ``spec``'s field raster: the box, the node spacing (``field_res`` in metres, else
+    :func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of ``spec.validity.thinnest_shell``), the nodes
+    and the bytes -- from the spec's membership tests alone, no raster built. The host bytes are the build's
+    (:data:`~dmipy_sim.fields.susceptibility_field.FIELD_BYTES_PER_NODE` per node), the device bytes the walk's
+    (:func:`~dmipy_sim.fields.susceptibility_field.field_device_bytes`). Refused for a spec with no field or whose
+    magnetic pool is not bounded by surfaces the spec rasterises."""
+    from ..fields.susceptibility_field import (FIELD_BYTES_PER_NODE, FIELD_DEVICE_CHANNELS, FIELD_NODES_ACROSS,
+                                               field_device_bytes, field_raster_shape, field_resolution)
     if field_source_kind(spec) is None:
         raise SpecError(f"spec {spec.id!r} has no magnetic pool (no pool carries a susceptibility block); there is no "
                         "field to rasterise")
@@ -303,17 +314,85 @@ def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None,
         spacing = f"{field_res * 1e6:.3f} um, {FIELD_NODES_ACROSS:g} nodes across its thinnest shell of {shell * 1e6:.3f} um"
     else:
         spacing = f"the given field_res of {field_res * 1e6:.3f} um"
+    shape = tuple(int(n) for n in field_raster_shape(lo, hi, field_res))
+    n_nodes = int(np.prod(shape, dtype=np.int64))
+    return FieldRasterPlan(lo=np.asarray(lo, float), hi=np.asarray(hi, float), res=float(field_res), spacing=spacing,
+                           shape=shape, n_nodes=n_nodes, channels=FIELD_DEVICE_CHANNELS,
+                           host_bytes=n_nodes * FIELD_BYTES_PER_NODE, device_bytes=field_device_bytes(n_nodes),
+                           strands=bool(strands))
+
+
+def check_field_raster(spec, plan, *, field_budget=None, device_limit=None):
+    """Refuse, by name and before any allocation, a raster the machine cannot hold: the host build against
+    ``field_budget`` nodes (default the host's, :func:`~dmipy_sim.fields.susceptibility_field.field_node_budget`) and
+    the walk's device bytes against ``device_limit`` -- bytes, or a ``(bytes, source)`` pair; ``None`` reads the device
+    JAX will run on (:func:`~dmipy_sim.fields.susceptibility_field.field_device_limit`; on a CPU device no device limit
+    applies, the host budget being the memory). The raster is never coarsened to fit."""
+    from ..fields.susceptibility_field import field_device_limit, field_node_budget
     budget = float(field_budget) if field_budget is not None else field_node_budget()
-    n_vox = int(np.prod(np.ceil((hi - lo) / float(field_res))))
-    if n_vox > budget:
-        raise SpecError(f"the field basis of this substrate would be {n_vox:.2e} nodes at {spacing} over its "
-                        f"{np.round((hi - lo) * 1e6, 1).tolist()} um domain, beyond the voxel budget of {budget:.1e} nodes "
+    box = np.round((plan.hi - plan.lo) * 1e6, 1).tolist()
+    what = (f"the field raster of spec {spec.id!r}: {plan.n_nodes:.2e} nodes ({'x'.join(str(n) for n in plan.shape)}) x "
+            f"{plan.channels} channels at {plan.spacing} over its {box} um domain")
+    if plan.n_nodes > budget:
+        raise SpecError(f"{what} takes {plan.host_bytes / 2 ** 30:.2f} GiB to build on the host, beyond the voxel budget "
+                        f"of {budget:.1e} nodes "
                         + ("(field_budget=)" if field_budget is not None else
                            "(half this host's memory ceiling at the build's measured bytes per node)")
                         + ". Raise field_budget= on a host with the memory"
                         + (", or walk a strand source at all: its default is the per-segment closed form, which "
-                           "needs no grid" if strands else "")
+                           "needs no grid" if plan.strands else "")
                         + "; a coarser field_res= is a choice to under-resolve the sheath, never the default")
+    if isinstance(device_limit, tuple):
+        limit, where = device_limit
+    elif device_limit is not None:
+        limit, where = int(device_limit), "device_limit="
+    else:
+        limit, where = field_device_limit()
+    if limit is not None and plan.device_bytes > limit:
+        raise SpecError(f"{what} takes {plan.device_bytes / 2 ** 30:.2f} GiB on the device in the walk "
+                        f"({plan.channels} float32 channels, two copies in the compiled walk), beyond the "
+                        f"{limit / 2 ** 30:.2f} GiB JAX may use there ({where}). Walk on a device with the memory or "
+                        "raise XLA_PYTHON_CLIENT_MEM_FRACTION; a coarser field_res= is a choice to under-resolve the "
+                        "sheath, never the default")
+
+
+def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None, n_check=400_000, seed=0,
+                       device_limit=None, cache_dir=None):
+    """The rasterised field basis of ``spec``'s field source, a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`:
+    the one raster a walk reads (:func:`walk_spec`; a mesh/sphere-union/myelinated-cylinder source, or the grid
+    cross-check of a strand source). The shell pool's occupancy comes from the
+    spec's own membership tests on the domain grid, the directors from its inner surface, at the node spacing the
+    thinnest shell sets (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of
+    ``spec.validity.thinnest_shell``; ``field_res`` in metres overrides it, and a spec that records no shell needs
+    it). A raster the machine cannot hold is refused before anything is allocated (:func:`check_field_raster`: the
+    host's ``field_budget`` nodes for the build, the ``device_limit`` bytes of the device for the walk), naming the
+    substrate, the nodes and channels, the bytes and the limit with where it was read; it is never coarsened. The raster is checked before it is returned: the shell fraction it holds
+    against the fraction of ``n_check`` uniform points the spec's exact membership tests put in the shell, recorded
+    in the grid's ``certificate`` and refused past one percent of the shell (a raster that has lost its sheath's
+    volume has lost its field). The raster spans the domain box exactly (its nodes the box's side over a whole
+    number of spacings) and its field is the box's periodic convolution, so an axis the domain declares periodic is
+    one period of the field and the grid states it ``periodic``: a walker that has left the cell reads its image's
+    field, never the grid's clamped edge. ``context`` is a :class:`WalkContext` of the spec whose tests are reused.
+    ``cache_dir`` names a raster cache (:func:`~dmipy_sim.fields.susceptibility_field.FieldGrid.cached`): the raster is
+    loaded from ``<cache_dir>/<key>.safetensors`` when it is there and written there when it is built."""
+    plan = field_raster_plan(spec, field_res=field_res, context=context)
+    check_field_raster(spec, plan, field_budget=field_budget, device_limit=device_limit)
+    g = context.tests if context is not None else _PoolTests(spec)
+    if cache_dir is None:
+        return _rasterise(spec, plan, g, n_check, seed)
+    from ..fields.raster_cache import cached_field_grid
+    return cached_field_grid(spec, plan, cache_dir, lambda: _rasterise(spec, plan, g, n_check, seed))
+
+
+def _rasterise(spec, plan, g, n_check, seed):
+    """The :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` of ``plan`` built from the membership tests ``g``
+    of ``spec`` (:func:`field_grid_of_spec` without its refusals and cache)."""
+    from ..fields.susceptibility_field import FieldGrid, mesh_field_basis, predicate_field_basis
+    spacing, field_res, lo, hi = plan.spacing, plan.res, plan.lo, plan.hi
+    shell = spec.validity.thinnest_shell
+    src = spec.field_source_pools[0].id
+    outer_b = g.boundary(g.inside_w[src]) if g.inside_w[src] else None
+    inner_b = g.boundary(g.outside_w[src]) if g.outside_w[src] else None
     if inner_b is not None and inner_b.kind == "mesh" and outer_b.kind == "mesh":
         basis, origin, _ = mesh_field_basis(inner_b.bodies, outer_b.bodies, lo, hi, res=field_res, include_aniso=True)
     else:
@@ -846,7 +925,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_c
 def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, field_budget=None, scanner=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False,
                  field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None,
-                 field_calibration=None, calibration_floor=None, query_scope=None, field_target_floor=None):
+                 field_calibration=None, calibration_floor=None, query_scope=None, field_target_floor=None,
+                 field_cache=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -915,7 +995,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         if adaptive_steps:
             raise SpecError("adaptive_steps reads a strand field in the walk; this spec's field source is gridded, which "
                             "the fixed-step walk reads at every step (adaptive_steps=False)")
-        fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx)
+        fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx, cache_dir=field_cache)
     works = []
     raw_counts = _raw_allocation({pid: len(seeds_of[pid]) for pid in seeded}, walk_kw.get("raw_subset", 0))
     field_kw = dict(K_c3=K_c3, field_read_interval=field_read_interval)

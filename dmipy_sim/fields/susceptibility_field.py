@@ -867,33 +867,102 @@ def mesh_contains(V, F, pts, *, method="grid", prefilter=False, chunk=2_000_000)
     return out
 
 
-def _forked_map(fn, items, workers):
-    """``[fn(item) for item in items]`` over ``workers`` forked processes: the parent's arrays are shared
-    copy-on-write, so a query over a grid of 1e8 points is spread over the host without a copy per worker.
-    ``fn`` may be a closure; it is never pickled (a fork carries it). Falls back to the caller's process when the
-    platform cannot fork."""
+_WORKER = {}                                     #: the state of a spawned worker (set by its initializer)
+
+
+class _SharedArrays:
+    """Arrays in shared memory, for the spawned workers of a pool: ``specs`` (``name -> (segment, shape, dtype)``) is
+    what a worker attaches by (:func:`_attach`); :meth:`close` releases the segments."""
+
+    def __init__(self, arrays):
+        from multiprocessing import shared_memory
+        self._shms, self.specs = [], {}
+        try:
+            for k, a in arrays.items():
+                a = np.ascontiguousarray(a)
+                shm = shared_memory.SharedMemory(create=True, size=max(int(a.nbytes), 1))
+                self._shms.append(shm)
+                np.ndarray(a.shape, a.dtype, buffer=shm.buf)[...] = a
+                self.specs[k] = (shm.name, a.shape, a.dtype.str)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        for shm in self._shms:
+            try:
+                shm.close(); shm.unlink()
+            except FileNotFoundError:
+                pass
+        self._shms = []
+
+
+def _attach(spec):
+    """The array of a :class:`_SharedArrays` spec, in a worker (its segment kept alive in ``_WORKER``)."""
+    from multiprocessing import shared_memory
+    name, shape, dtype = spec
+    shm = shared_memory.SharedMemory(name=name)          # the creating process owns the segment (and its tracker entry)
+    _WORKER.setdefault("segments", []).append(shm)
+    return np.ndarray(shape, np.dtype(dtype), buffer=shm.buf)
+
+
+def _spawn_pool(workers, initializer, initargs):
+    """A pool of ``workers`` processes started by ``spawn``: fresh interpreters, so a process that has initialised JAX (a
+    multithreaded runtime) is never forked."""
     import multiprocessing as mp
-    items = list(items)
-    if workers <= 1 or len(items) <= 1:
-        return [fn(it) for it in items]
-    try:
-        ctx = mp.get_context("fork")
-    except ValueError:
-        return [fn(it) for it in items]
-    global _FORKED_FN
-    _FORKED_FN = fn
-    try:
-        with ctx.Pool(min(int(workers), len(items))) as pool:
-            return pool.map(_forked_call_item, items, chunksize=1)
-    finally:
-        _FORKED_FN = None
+    return mp.get_context("spawn").Pool(int(workers), initializer=initializer, initargs=initargs)
 
 
-_FORKED_FN = None
+def _body_contains(V, F, lo, hi, pts):
+    """The indices of ``pts`` inside the closed surface ``(V, F)`` whose bounding box is ``lo .. hi``: those in the box,
+    by ray parity across the surface's smallest extent, the bins of the parity index sized to its faces (256 bins
+    over 7 000 faces spent 90 % of the call in empty bins)."""
+    sel = np.flatnonzero(np.all((pts >= lo) & (pts <= hi), axis=1))
+    if sel.size == 0:
+        return sel
+    a = int(np.argmin(hi - lo))                                  # the ray axis: across a tube, never along it
+    perm = [j for j in range(3) if j != a] + [a]
+    n_bins = int(np.clip(np.sqrt(len(F) / 2.0), 8, 256))
+    return sel[mesh_contains_fast(V[:, perm], F, pts[sel][:, perm], n_bins=n_bins)]
 
 
-def _forked_call_item(item):
-    return _FORKED_FN(item)
+def _contains_init(bodies, bounds, pts_spec):
+    _WORKER.update(bodies=bodies, bounds=bounds, pts=_attach(pts_spec))
+
+
+def _contains_task(i):
+    (V, F), (lo, hi) = _WORKER["bodies"][i], _WORKER["bounds"][i]
+    return _body_contains(V, F, lo, hi, _WORKER["pts"])
+
+
+def _closest_on(tri, nrm, unit, tree, k, pts):
+    """``(d, n)`` per point of ``pts``: the distance to the closest point on the ``k`` faces nearest by centroid (in
+    ``tree``) and the outward normal of the face that carries it; ``tri`` and ``pts`` are in units of ``unit``."""
+    from trimesh.triangles import closest_point
+    k = min(k, len(tri))
+    p = pts / unit
+    _, idx = tree.query(p, k=k, workers=1)
+    idx = np.asarray(idx).reshape(len(p), k)
+    c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
+    d = np.linalg.norm(c - p[:, None, :], axis=2)
+    j = d.argmin(1); rows = np.arange(len(p))
+    return d[rows, j] * unit, nrm[idx[rows, j]]
+
+
+def _distance_init(specs, unit, k):
+    from scipy.spatial import cKDTree
+    arrays = {name: _attach(spec) for name, spec in specs.items()}
+    _WORKER.update(tri=arrays["tri"], nrm=arrays["nrm"], unit=unit, k=k, tree=cKDTree(arrays["cent"]))
+
+
+def _distance_task(pts):
+    return _closest_on(_WORKER["tri"], _WORKER["nrm"], _WORKER["unit"], _WORKER["tree"], _WORKER["k"], pts)
+
+
+def _close_distance_pools(pools):
+    for pool, shared in pools.values():
+        pool.terminate(); pool.join(); shared.close()
+    pools.clear()
 
 
 class MeshBodies:
@@ -923,22 +992,17 @@ class MeshBodies:
         self.F = np.concatenate([F + o for (_, F), o in zip(self.bodies, offs[:-1])])
         self.bounds = [(V.min(0), V.max(0)) for V, _ in self.bodies]
         self.k = int(k)
-        # the processes a large query is spread over (forked, the arrays shared): a share of the host, never all of it
+        # the processes a large query is spread over (spawned, the arrays in shared memory): a share of the host, never all of it
         self.workers = int(workers) if workers is not None else max(1, min(16, (os.cpu_count() or 4) // 4))
         self._near = {}
+        self._dpools = {}                                            # resolve_m -> (spawned pool, its shared arrays)
+        import weakref
+        weakref.finalize(self, _close_distance_pools, self._dpools)
 
     def _contains_body(self, i, pts):
-        """The indices of ``pts`` inside body ``i``: those in its bounding box, by ray parity across its smallest
-        extent, the bins of the parity index sized to the body's faces (256 bins over 7 000 faces spent 90 % of the
-        call in empty bins)."""
+        """The indices of ``pts`` inside body ``i`` (:func:`_body_contains`)."""
         (V, F), (lo, hi) = self.bodies[i], self.bounds[i]
-        sel = np.flatnonzero(np.all((pts >= lo) & (pts <= hi), axis=1))
-        if sel.size == 0:
-            return sel
-        a = int(np.argmin(hi - lo))                                  # the ray axis: across a tube, never along it
-        perm = [j for j in range(3) if j != a] + [a]
-        n_bins = int(np.clip(np.sqrt(len(F) / 2.0), 8, 256))
-        return sel[mesh_contains_fast(V[:, perm], F, pts[sel][:, perm], n_bins=n_bins)]
+        return _body_contains(V, F, lo, hi, pts)
 
     @classmethod
     def of(cls, surfaces):
@@ -953,7 +1017,14 @@ class MeshBodies:
         pts = np.asarray(pts, float).reshape(-1, 3)
         out = np.zeros(len(pts), bool)
         if self.workers > 1 and len(self.bodies) > 1 and len(pts) >= 1_000_000:
-            for idx in _forked_map(lambda i: self._contains_body(i, pts), range(len(self.bodies)), self.workers):
+            shared = _SharedArrays({"pts": pts})
+            try:
+                with _spawn_pool(min(self.workers, len(self.bodies)), _contains_init,
+                                 (self.bodies, self.bounds, shared.specs["pts"])) as pool:
+                    parts = pool.map(_contains_task, range(len(self.bodies)), chunksize=1)
+            finally:
+                shared.close()
+            for idx in parts:
                 out[idx] = True
         else:
             for i in range(len(self.bodies)):
@@ -975,20 +1046,32 @@ class MeshBodies:
             ln = np.linalg.norm(n, axis=1); good = ln > 0
             tri = tri[good]; n = n[good] / ln[good][:, None]
             unit = float(np.median(np.linalg.norm(tri[:, 0] - tri[:, 1], axis=1)))    # trimesh's triangle geometry
-            self._near[key] = (tri / unit, n, unit, cKDTree(tri.mean(1) / unit))       # carries absolute tolerances
+            cent = tri.mean(1) / unit
+            self._near[key] = (tri / unit, n, unit, cKDTree(cent), cent)              # carries absolute tolerances
         return self._near[key]
 
     def _distance_chunk(self, pts, resolve_m):
-        from trimesh.triangles import closest_point
-        tri, nrm, unit, tree = self._nearest(resolve_m)
-        k = min(self.k, len(tri))
-        p = pts / unit
-        _, idx = tree.query(p, k=k, workers=1)
-        idx = np.asarray(idx).reshape(len(p), k)
-        c = closest_point(tri[idx.ravel()], np.repeat(p, k, axis=0)).reshape(len(p), k, 3)
-        d = np.linalg.norm(c - p[:, None, :], axis=2)
-        j = d.argmin(1); rows = np.arange(len(p))
-        return d[rows, j] * unit, nrm[idx[rows, j]]
+        tri, nrm, unit, tree, _ = self._nearest(resolve_m)
+        return _closest_on(tri, nrm, unit, tree, self.k, pts)
+
+    def _distance_pool(self, resolve_m):
+        """The spawned pool that answers :meth:`signed_distance` for ``resolve_m``: its workers hold the faces and the
+        k-d tree (built once in each), kept until :meth:`close`."""
+        key = None if resolve_m is None else float(resolve_m)
+        if key not in self._dpools:
+            tri, nrm, unit, _, cent = self._nearest(resolve_m)
+            shared = _SharedArrays({"tri": tri, "nrm": nrm, "cent": cent})
+            try:
+                pool = _spawn_pool(self.workers, _distance_init, (shared.specs, unit, self.k))
+            except BaseException:
+                shared.close()
+                raise
+            self._dpools[key] = (pool, shared)
+        return self._dpools[key][0]
+
+    def close(self):
+        """Release the worker processes and shared memory of :meth:`signed_distance` (they are made again on the next call)."""
+        _close_distance_pools(self._dpools)
 
     def signed_distance(self, pts, *, resolve_m=None, inside=None, chunk=200_000):
         """``(s, n)`` at ``pts`` ``(m, 3)``: the distance to the closest point on the boundary, positive inside, and
@@ -996,10 +1079,10 @@ class MeshBodies:
         first (the scale of the distances asked, a voxel), ``None`` for the faces as they are; ``inside`` the
         points' membership when the caller has it, else :meth:`contains` decides the sign."""
         pts = np.asarray(pts, float).reshape(-1, 3)
-        self._nearest(resolve_m)                                     # built once, before any fork shares it
+        self._nearest(resolve_m)                                     # built once, before the workers are
         chunks = [pts[i:i + chunk] for i in range(0, len(pts), chunk)]
         if self.workers > 1 and len(chunks) > 1:
-            parts = _forked_map(lambda c: self._distance_chunk(c, resolve_m), chunks, self.workers)
+            parts = self._distance_pool(resolve_m).map(_distance_task, chunks, chunksize=1)
         else:
             parts = [self._distance_chunk(c, resolve_m) for c in chunks]
         dist = np.concatenate([d for d, _ in parts]) if parts else np.zeros(0)
@@ -1026,10 +1109,15 @@ def mesh_field_basis(inner, outer, box_min, box_max, *, res, include_aniso=True,
         director = None
     elif director is None:
         director = (bi if bi is not None else bo).directors
-    return predicate_field_basis(bi.contains if bi is not None else None, bo.contains,
-                                 box_min, box_max, res=res, include_aniso=include_aniso,
-                                 mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director,
-                                 signed_distance=(bi.signed_distance if bi is not None else None, bo.signed_distance))
+    try:
+        return predicate_field_basis(bi.contains if bi is not None else None, bo.contains,
+                                     box_min, box_max, res=res, include_aniso=include_aniso,
+                                     mask_supersample=mask_supersample, kspace_lowpass=kspace_lowpass, director=director,
+                                     signed_distance=(bi.signed_distance if bi is not None else None, bo.signed_distance))
+    finally:
+        for b in (bi, bo):
+            if b is not None:
+                b.close()                                          # the workers of the signed distances
 
 
 def mesh_directors(V, F, pts, *, chunk=2_000_000):
