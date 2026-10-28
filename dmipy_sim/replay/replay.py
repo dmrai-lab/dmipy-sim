@@ -38,6 +38,7 @@ from functools import cached_property
 
 import numpy as np
 from .compression import c2_bands_K as _cx_bands_K
+from .decoded import PackArrays
 
 from ..constants import GAMMA
 from ..run import Run, current
@@ -417,9 +418,45 @@ class ReplayPack:
         return open_columnar(uri, workers=workers)
 
     def __init__(self, arrays, meta, source=None):
-        self.arrays = dict(arrays)
+        self.arrays = arrays
         self.meta = dict(meta)
         self.source = source
+
+    @property
+    def arrays(self):
+        """The pack's tensors by name, a :class:`~dmipy_sim.replay.decoded.PackArrays`: assigning a mapping gives the
+        pack its tensors with an empty decoded cache."""
+        return self._arrays
+
+    @arrays.setter
+    def arrays(self, arrays):
+        self._arrays = PackArrays(arrays)
+
+    # ---- the decoded form of the stored tensors (decoded.py)
+    @property
+    def decoded_bytes(self):
+        """Bytes of decoded coefficient arrays this pack holds (:meth:`release_decoded`)."""
+        return self.arrays.decoded.nbytes
+
+    @property
+    def decode_budget(self):
+        """Bytes of decoded arrays this pack may hold, settable: :data:`~dmipy_sim.replay.decoded.DECODE_BUDGET_BYTES`
+        (1 GiB) unless set. The readers (:func:`~dmipy_sim.replay.compression.read_position_coeffs`,
+        :func:`~dmipy_sim.replay.bank.susc_path_coeffs`, :func:`~dmipy_sim.replay.compression.bridge_bands`,
+        :func:`~dmipy_sim.replay.compression.occupancy_events`) decode each selection of the pack's stored tensors once
+        and every later call of :meth:`replay`, :meth:`walker_signals`, :meth:`walker_phases` and the rest reads the
+        held read-only array; an array that does not fit beside what is held is decoded on every call, as
+        without the cache. The windows of a pack share its budget, and a view, prefix or any other pack built from this
+        one holds its own."""
+        return self.arrays.decoded.budget
+
+    @decode_budget.setter
+    def decode_budget(self, nbytes):
+        self.arrays.decoded.budget = int(nbytes)
+
+    def release_decoded(self):
+        """Drop every decoded array this pack (and its windows) holds; the next read decodes again."""
+        self.arrays.decoded.clear()
 
     @classmethod
     def load(cls, path, *, windows=None, **kw):
@@ -516,7 +553,9 @@ class ReplayPack:
         per = fid.pop("windows", None)
         meta["fidelity"] = dict(per[i]) if per else fid
         meta.setdefault("provenance", {})["window"] = dict(index=i, of=n, parent_id=self.meta.get("id"))
-        return ReplayPack(self._window_arrays(i), meta, source=self.source)
+        out = ReplayPack(self._window_arrays(i), meta, source=self.source)
+        out.arrays.decoded = self.arrays.decoded                  # one budget, and a window decoded once, for all of them
+        return out
 
     def _windows(self):
         """``[(pack, t0, T), ...]``: the windows of the walk this pack actually holds, each as a pack, the instant it
@@ -2172,7 +2211,7 @@ class ReplayPack:
         for seg, t0, T_s in P0["windows"]:                                     # the windows' vectors sum (RPK.md 4.3)
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
             if kind == "torch":
-                C = torch.as_tensor(C, device=t_dev)
+                C = torch.as_tensor(np.require(C, requirements="W"), device=t_dev)
             # every group's profile and every background's gate projected on its own grid, as one axis: axis b of the
             # vectors reads its own coefficients against it, m_w[b] = gamma int s(t) r_w(t)_b dt
             W1 = np.zeros((seg.K + 2, n_grp + n_gates))
@@ -2788,7 +2827,7 @@ class ReplayPack:
             C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)[live]
             if kind == "torch":
                 import torch
-                C = torch.as_tensor(C, device=t_dev)
+                C = torch.as_tensor(np.require(C, requirements="W"), device=t_dev)
             for c in todo:
                 q = per[c]; rows = q["residual"]; ref = q["ref"][rows]
                 G_s = np.asarray(q["G_wf"], np.float64)                                          # the waveform's own grid
@@ -3032,7 +3071,7 @@ class ReplayPack:
         """
         from .compression import read_position_coeffs, require_position_method
         require_position_method(self.method)
-        return read_position_coeffs(self.arrays, dtype=np.float32)
+        return read_position_coeffs(self.arrays, dtype=np.float32, cached=False)
 
     @property
     def r0(self):
@@ -3467,10 +3506,14 @@ def _band_phase(P, W=None):
     :meth:`ReplayPack.replay`, :meth:`ReplayPack.walker_signals` and :meth:`ReplayPack.walker_phases` -- and
     :func:`~dmipy_sim.replay.study.walker_primitives` read it, so the per-walker depth and the ensemble depth are
     the same number by construction rather than by agreement (dmipy-sim#484). ``W`` replaces the projection with a
-    caller's own per-position weights (:meth:`ReplayPack._check_weights`, single-window only).
+    caller's own per-position weights (:meth:`ReplayPack._check_weights`, single-window only). An acquisition whose
+    effective gradient is zero throughout (a free-induction decay, a gradient-free echo) has the phase zero and reads no
+    coefficient.
     """
     from .compression import read_position_coeffs, band_projection
     n_w = P["n_w"]
+    if W is None and not np.any(P["G_eff_wf"]):
+        return np.zeros((n_w, P["G_eff_wf"].shape[0]))            # no gradient: every walker's phase is zero, no band is read
     phi = None
     for seg, t0, T_s in P["windows"]:
         if W is not None:
