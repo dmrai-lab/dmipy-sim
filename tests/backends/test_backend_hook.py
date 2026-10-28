@@ -10,13 +10,14 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine import backends
 from dmipy_sim.engine.core import simulate_trajectories
+from dmipy_sim.fields.susceptibility_field import FieldGrid
 
 D = 2e-9
 R = 2e-6
 
 
 def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=None, comp=None, events=None,
-                      qv=None, k0_residual=None, field_increments=True):
+                      qv=None, k0_residual=None, field_increments=True, field_modes=True):
     """A :class:`~dmipy_sim.engine.backends.CoefficientBatch` of walkers that never move (their start exact, every band
     0 unless ``bands`` / ``blt_bands`` give them), with the block ends of the request's ``raw_subset`` as saves."""
     r0 = np.asarray(r0, np.float32)
@@ -41,13 +42,14 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         events = None
     field_bands = field_qv = field_qv_increments = None
     if request.field is not None:                                     # the field: every mode 0, the start's bare channels at every block end
-        n_ch = len(request.field.basis.channel_names)
+        grid = request.field if isinstance(request.field, FieldGrid) else request.field.basis
+        n_ch = len(grid.channel_names)
         field_qv = np.zeros((n, n_ch))
         field_qv_increments = np.zeros((n, n_ch)) if field_increments else None
-        if request.K_c3:
+        if request.K_c3 and field_modes:
             field_bands = np.zeros((n, n_ch, int(request.K_c3)))
         if saves is not None:
-            fs = np.repeat(np.asarray(request.field.basis.channels(r0), np.float32)[:, None, :], int(request.n_blocks) + 1, axis=1)
+            fs = np.repeat(np.asarray(grid.channels(r0), np.float32)[:, None, :], int(request.n_blocks) + 1, axis=1)
             saves = saves._replace(field_samples=fs)
     return backends.CoefficientBatch(
         C, np.zeros(n) if rec else None, np.zeros(n) if rec else None,
@@ -231,6 +233,29 @@ def test_the_jax_only_paths_are_refused_for_another_backend():
     with pytest.raises(ValueError, match="backend 'still' refuses this walk of Sphere: no spheres here"):
         _walk(d.Sphere(R), backend=still)
     assert not still.requests
+
+
+def _layer_grid():
+    """A 1-D layer (iso_local 1 for x > 0) on a 40-node raster across the sphere: the slab's kind of field."""
+    nx = 40; vs = np.array([2 * R / nx, 1.0, 1.0]); x = -R + (np.arange(nx) + 0.5) * vs[0]
+    return FieldGrid(dict(iso_local=(x > 0).astype(np.float32).reshape(nx, 1, 1), iso_P=np.zeros((6, nx, 1, 1), np.float32),
+                          shape=(nx, 1, 1), voxel_size=vs), np.array([-R, -0.5, -0.5]))
+
+
+def test_a_raster_field_is_the_backends_request_and_its_modes_are_checked():
+    """A FieldGrid read along the fixed-step walk is handed to the backend as the request's own field, every batch at
+    the walk's read interval and band (the field's pilot walked by the JAX kernels: the read rule's checks and the band's
+    block means are theirs); a backend that returns no modes for it, or modes at another read, is refused by name."""
+    fg = _layer_grid()
+    still = _Still()
+    kw = dict(field_basis=fg, K_c3=3, field_read_interval=4e-5)
+    w = _walk(d.Sphere(R), backend=still, **kw)
+    assert w.field_coeffs.shape[-2:] == (3, 6)
+    reqs = [r for r in still.requests if r.K_c3]
+    assert reqs and all(r.field is fg and r.K_c3 == 3 for r in reqs)
+    assert all(r.field_read_interval == pytest.approx(w.field_read_interval, rel=1e-12) for r in reqs)
+    with pytest.raises(ValueError, match="returned field modes of shape None"):
+        _walk(d.Sphere(R), backend=_Still(field_modes=False), **kw)
 
 
 def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
