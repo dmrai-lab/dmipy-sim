@@ -737,7 +737,8 @@ def keep_walk(name, sub, walk, args):
 
 
 def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, walked_as):
-    """``walk`` packed on the family's envelope into ``out`` with its receipt: what the walk stage and a pilot that
+    """``walk`` packed on the family's envelope into ``out`` with its receipt, its codec built for the numerical cap
+    ``sigma_star`` = half the walker floor: what the walk stage and a pilot that
     IS its pack (``walked_as="pilot"``) both write."""
     from dmipy_sim.replay.bank import build_replay_pack
     path = os.path.join(out, sub["path"])
@@ -760,7 +761,7 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
                                      n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
     pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
                              envelope=fam.envelope, fidelity=fidelity, provenance=prov,
-                             out_path=path + ".part", **kw)
+                             sigma_star=0.5 * fam.floor, out_path=path + ".part", **kw)
     os.replace(path + ".part", path)
     t_pack = time.time() - t1
     fid = pack.meta.get("fidelity") or {}
@@ -837,11 +838,14 @@ def stage_check(args):
             fid = pk.meta.get("fidelity") or {}
             miss = missing_statements(pk)
             row = dict(pack=os.path.relpath(path, args.out), n_walkers=int(pk.n_walkers), S_pgse_b1000=S,
-                       err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), missing_statements=miss,
+                       err_max=fid.get("err_max"), floor_max=fid.get("floor_max"), err_cap=fid.get("target_floor"),
+                       missing_statements=miss,
                        stated=stated(pk))
             rows.append(row)
             print(json.dumps(row, default=str), flush=True)
-            if not (0.0 < S <= 1.0 + 1e-6) or (args.require_stated and miss):
+            cap = fid.get("target_floor")       # the numerical cap the codec was built for: half the walker floor
+            if not (0.0 < S <= 1.0 + 1e-6) or (args.require_stated and miss) or \
+                    (args.require_stated and (cap is None or fid.get("err_max") is None or float(fid["err_max"]) > float(cap))):
                 bad.append(row["pack"])
     print(json.dumps(dict(checked=len(rows), bad=bad)), flush=True)
     if bad or not rows:
@@ -880,7 +884,7 @@ def main(argv=None):
     p.add_argument("--smoke", action="store_true", help="a few substrates, a few hundred walkers: the CPU check")
     p.add_argument("--smoke-n", type=int, default=300)
     p.add_argument("--smoke-side-um", type=float, default=6.0)
-    p.add_argument("--require-stated", action="store_true", help="check: refuse a pack that does not state the envelope")
+    p.add_argument("--require-stated", action="store_true", help="check: refuse a pack that does not state the envelope or whose err_max exceeds its numerical cap (half the walker floor)")
     p.add_argument("--allow-jax", action="store_true", help="walk: a production walk on the JAX kernels")
     p.add_argument("--keep-walk", default=None, help="walk: a directory the float coefficient walk of each substrate is "
                                                       "saved to, as <pack id>.safetensors (path and sha256 in the receipt)")
