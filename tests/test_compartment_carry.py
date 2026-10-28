@@ -74,22 +74,24 @@ def test_initial_labels_are_exact_not_defaulted():
 
 @pytest.mark.parametrize("subdivisions", [0, 2])
 def test_a_walker_the_gather_cannot_see_keeps_its_label(subdivisions):
-    """The carry rule itself, on constructed positions, at two refinements of the same tube: where the 27-cell
-    gather is empty the label is whatever it was (1 stays 1, 0 stays 0), where it is populated the label is the
-    classifier's. On the refined tube most deep interior points have an empty gather and the raw classifier
-    calls them exterior -- the defect's signature -- and the carried label does not move."""
-    from dmipy_sim.geometry.mesh import _gather_is_populated, _classify_arr
+    """The carry rule itself, on constructed positions, at two refinements of the same tube: where the gather
+    does not decide (no triangle in it, or its closest one beyond the radius it certifies) the label is whatever
+    it was (1 stays 1, 0 stays 0), where it decides the label is the classifier's. On the refined tube most deep
+    interior points have an empty gather and the raw classifier calls them exterior -- the defect's signature --
+    and the carried label does not move."""
+    from dmipy_sim.geometry.mesh import _gather_is_populated, _classify_arr, _label_arr
     mesh, tri = _thick_tube(subdivisions=subdivisions)
     pts = _interior_grid(height_um=16.0)                                                    # inside the tube, clear of its wall
     assert contains(tri, pts / UM).all()
     P = jax.numpy.asarray(pts, jax.numpy.float32)
     seen = np.asarray(jax.vmap(lambda r: _gather_is_populated(mesh._A, r))(P))
+    decided = np.asarray(jax.vmap(lambda r: _label_arr(mesh._A, r)[1])(P))
     raw = np.asarray(jax.vmap(lambda r: _classify_arr(mesh._A, r))(P))
     keep1 = np.asarray(jax.vmap(lambda r: mesh.classify_position_carry(r, jax.numpy.int32(1)))(P))
     keep0 = np.asarray(jax.vmap(lambda r: mesh.classify_position_carry(r, jax.numpy.int32(0)))(P))
-    assert (keep1[~seen] == 1).all() and (keep0[~seen] == 0).all()             # nothing in reach: carried
-    assert (keep1[seen] == raw[seen]).all() and (keep0[seen] == raw[seen]).all()  # a wall in reach: classified
-    assert (raw[seen] == 1).all()                                               # and classified right
+    assert (keep1[~decided] == 1).all() and (keep0[~decided] == 0).all()       # nothing decided in reach: carried
+    assert (keep1[decided] == raw[decided]).all() and (keep0[decided] == raw[decided]).all()  # decided: classified
+    assert decided.any() and (raw[decided] == 1).all()                          # and classified right
     if subdivisions == 2:
         assert (~seen).mean() > 0.3 and (raw[~seen] == 0).all()                 # the raw label reads exterior deep inside
     assert (keep1 == 1).all()                                                   # an interior walker stays interior

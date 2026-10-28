@@ -611,6 +611,28 @@ def _gather_is_populated(A, r):
     return _gather_arr(A, _wrap_arr(A, r))[1].any()
 
 
+def _label_arr(A, r):
+    """``(label, decides)``: :func:`_classify_arr`'s label and whether the gather DECIDES it -- whether it holds a
+    triangle at all and its closest one lies within the radius the gather certifies, the distance from ``r`` to
+    the edge of its 3x3x3 block of cells (a triangle nearer than that is in the gather; a farther one need not be
+    the closest of the mesh, and its side need not be ``r``'s). Measured on the CACTUS bundle: walkers 20-550 nm
+    from every surface were refused step after step on labels read off such a triangle. A walker that crossed a
+    wall is within one step of it, and a step is shorter than a cell (the collision-lookup rule), so an escape is
+    always decided."""
+    r_w = _wrap_arr(A, r)
+    ci, valid = _gather_arr(A, r_w)
+    d2, c = _closest_on_triangles(A.TRIS[ci], r_w)
+    d2 = jnp.where(valid, d2, jnp.inf)
+    idx = jnp.argmin(d2)
+    side = jnp.dot(r_w - c[idx], A.NRM[ci][idx])
+    base = jnp.clip(jnp.floor((r_w - A.GMIN) / A.CS).astype(jnp.int32), 0, A.dims_arr - 1)
+    lo = jnp.where(base >= 1, r_w - (A.GMIN + (base - 1) * A.CS), jnp.inf)
+    hi = jnp.where(base + 2 <= A.dims_arr - 1, A.GMIN + (base + 2) * A.CS - r_w, jnp.inf)
+    r_cert = jnp.minimum(lo.min(), hi.min())
+    label = jnp.where((side < 0) & valid.any(), jnp.int32(1), jnp.int32(0))
+    return label, valid.any() & (d2[idx] < r_cert * r_cert)
+
+
 def _closest_on_triangles(T, p):
     """``(d2, c)``: the squared distance from ``p`` (3,) to each triangle of ``T`` (n, 3, 3) and the closest point
     ``c`` (n, 3) on it -- the projection onto the plane where it falls inside the triangle, else the nearest point
@@ -678,6 +700,7 @@ def _classify_arr(A, r):
 # jax.clear_caches() stays safe: it drops compiled code, not the wrapper (see gpu.py).
 _classify_batch = jax.jit(jax.vmap(_classify_arr, in_axes=(None, 0)))
 _populated_batch = jax.jit(jax.vmap(_gather_is_populated, in_axes=(None, 0)))
+_label_batch = jax.jit(jax.vmap(_label_arr, in_axes=(None, 0)))
 
 
 
@@ -1103,6 +1126,14 @@ class Mesh(Geometry):
         # displaced by something float32 can represent at these coordinates, or it stays on the surface and
         # the next collision is discarded as ts <= _EPS.
         self._MIN_NUDGE = jnp.float32(8.0 * float(self._EPS))
+        # The TIE BAND of a facet plane: a perpendicular distance below what the float32 side test resolves at these
+        # coordinates (a few ulps of the box; `_EPS` is ~3 ulps of its half-side). A path that ENDS within it is on
+        # the plane, so the collision search takes it as a hit (reflected, nudged off) instead of leaving the walker
+        # there: measured on the CACTUS bundle (dmipy-sim#630), free flights that ended at |side| < 3e-13 m froze
+        # 0.2 % of the extra-axonal walkers for the rest of the walk, every later step refused (an inward ray meets
+        # the plane at t <= 0, an outward one at a tiny t > 0 from behind and is nudged inward). Four `_EPS`, a
+        # quarter of the nudge: a walker the nudge left off a facet is never in it.
+        self._TIE = jnp.float32(4.0 * float(self._EPS))
         # Opt-in near-surface confinement guard, OFF by default: it cuts crossings on a CACTUS bundle at no
         # cost in boundary local time but does not reach zero, so it is an improvement to enable, not a
         # guarantee to rely on. See dmipy-sim#61.
@@ -1215,13 +1246,14 @@ class Mesh(Geometry):
         binding are built from -- the mesh sphere reached only 67% of the analytic local time and an
         equilibrium bound fraction of 0.2296 against 0.3333.
 
-        Gating on `_gather_is_populated` is not merely conservative, it is the physical statement: a walker
-        with no triangle anywhere in its gather has no wall within reach, so it cannot have crossed one.
-        Genuine escapes stay caught, because a walker that just passed through a wall is by construction
-        within one step of it and so still has a populated gather.
+        Gating on the gather's decision (`_label_arr`: a triangle in reach and the closest one within the radius
+        the gather certifies) is not merely conservative, it is the physical statement: a walker with no wall
+        within that radius has none within a step, so it cannot have crossed one. Genuine escapes stay caught,
+        because a walker that just passed through a wall is by construction within one step of it.
         """
-        decidable = _gather_is_populated(self._A, r) & _gather_is_populated(self._A, r_out)
-        return decidable & (self.classify_position(r) != self.classify_position(r_out))
+        lab_in, dec_in = _label_arr(self._A, r)
+        lab_out, dec_out = _label_arr(self._A, r_out)
+        return dec_in & dec_out & (lab_in != lab_out)
 
     def _smooth_normal(self, vnf, nrmf, u, v, idx, d_hat):
         bu, bv = u[idx], v[idx]
@@ -1307,11 +1339,16 @@ class Mesh(Geometry):
         def rule(r0, dh, rem, state, i):
             decided, last = state
             ts, u, v = self._mt(r0, dh, tri, valid)
-            vm = (ts > self._hit_floor(i > 0)) & (ts < rem)
+            # the path's end within the tie band of a facet's plane is ON it: a hit, so the walker is reflected and
+            # nudged off rather than left on a plane whose side float32 cannot tell (a correction, #630)
+            # a walker whose path is spent (rem <= 0 after a hit at its end) meets nothing more, as the CUDA loop
+            # stops there
+            reach = ((ts < rem) | ((ts - rem) * jnp.abs(nrmf @ dh) < self._TIE)) & (rem > 0)
+            vm = (ts > self._hit_floor(i > 0)) & reach
             if self.rest_facet_exclusion:
                 # ignore ONLY the facet just bounced off, and only at grazing range
                 same = jnp.arange(ts.shape[0]) == last
-                vm = (ts > 0.0) & (ts < rem) & jnp.logical_not(same & (ts < self._REST_THR))
+                vm = (ts > 0.0) & reach & jnp.logical_not(same & (ts < self._REST_THR))
             ts = jnp.where(vm, ts, jnp.inf)
             # int32 explicitly: argmin returns int64 once anything enables x64 (bloch MT does
             # and never restores it), and the scan carry is pinned int32.
@@ -1338,7 +1375,7 @@ class Mesh(Geometry):
                 use_box = jnp.zeros((), bool)
 
             cos_a = -jnp.dot(dh, n)
-            d_perp = (rem - d) * cos_a
+            d_perp = jnp.maximum(rem - d, 0.0) * cos_a           # a tie-band hit lies up to the band beyond the path
             first_hit = hit & (~decided) & jnp.logical_not(use_box)
             p_t = transmit_probability(jnp.float32(kappa_over_D) * kappa_mult, d_perp)
             transmit = first_hit & (u_rand < p_t)
@@ -1357,7 +1394,7 @@ class Mesh(Geometry):
             else:
                 nudge = self._NUDGE
 
-            r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, nudge), r0 + rem * dh)
+            r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, nudge), r0 + jnp.maximum(rem, 0.0) * dh)
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
             # the wall's push: the ideal reflection's 2 d_perp and the displacement the nudge adds along the facet normal
@@ -1512,15 +1549,15 @@ class Mesh(Geometry):
         Compartment is a state that changes at crossings, not a property to be re-measured every step, so
         carrying it is both cheaper and more correct. Only the initial labels need an exact test.
         """
-        return jnp.where(_gather_is_populated(self._A, r),
-                         _classify_arr(self._A, r), comp_prev).astype(jnp.int32)
+        lab, decides = _label_arr(self._A, r)
+        return jnp.where(decides, lab, comp_prev).astype(jnp.int32)
 
     def classify_positions_exact(self, pts):
         """Initial labels, resolving undecidable points with exact parity (setup-time, host-side)."""
         pts = np.asarray(pts, float)
         jpts = jnp.asarray(pts, jnp.float32)
-        lab = np.array(_classify_batch(self._A, jpts))
-        undecided = ~np.asarray(_populated_batch(self._A, jpts))
+        lab, decides = (np.array(a) for a in _label_batch(self._A, jpts))
+        undecided = ~decides
         if undecided.any():
             from ..fields.susceptibility_field import mesh_contains
             inside = mesh_contains(np.asarray(self.vertices, float),
