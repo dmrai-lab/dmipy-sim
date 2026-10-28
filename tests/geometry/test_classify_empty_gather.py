@@ -193,19 +193,21 @@ def test_reject_escape_still_catches_a_wall_crossing():
     """The net must survive the fix: an interior->exterior step across the wall is still an escape.
 
     Gating on decidability necessarily narrows the guard, so this pins the half that has to keep working.
-    A walker that has just tunnelled is within one step of the wall it passed through, so its gather is
-    populated and the label comparison is still meaningful.
+    A walker that has just tunnelled is within one step of the wall it passed through, and a step is shorter
+    than a lookup cell, so the closest triangle of both ends lies within the radius the gather certifies and
+    the label comparison is decided. The pairs straddle the wall by 0.4 cell on each side: one legal step.
     """
     V, F, tri = _thick_finely_meshed_tube()
     mesh, lo, hi = _mesh_for(V, F)
+    half = 0.4 * float(mesh.cell_size)
 
     # radial pairs straddling the wall, well inside the tube's height so the caps are not involved
     rng = np.random.default_rng(2)
     th = rng.uniform(0, 2 * np.pi, 200)
     z = rng.uniform(-5.0, 5.0, 200)
     radial = np.stack([np.cos(th), np.sin(th), np.zeros_like(th)], axis=1)
-    inside = radial * 2.7 + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
-    outside = radial * 3.3 + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
+    inside = radial * (3.0 - half) + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
+    outside = radial * (3.0 + half) + np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
     assert contains(tri, inside).all() and not contains(tri, outside).any(), "pairs must straddle the wall"
 
     esc = np.asarray(jax.jit(jax.vmap(mesh._escaped))(
