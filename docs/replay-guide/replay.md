@@ -33,6 +33,26 @@ same setting for S/S0.
 A tissue that states `D` or `kappa` replays the pack's view at that diffusivity, on every route; another size is
 `pack.at_length_scale(s)`. What each view keeps, moves and refuses is on [the views page](views.md).
 
+## `plan`: what a replay reads
+
+A pack stores `K` position bands per walker and a replay needs the few its waveform projects on. `plan` states how
+many before any is decoded, and `replay` decodes that prefix and no more.
+
+```python
+plan = pack.plan(seq, tissue=wm)                                   # bands, modes, their error, where the variances came from
+S = pack.replay(seq, tissue=wm)
+print(plan.K, plan.K_stored, plan.band_error <= plan.limit, S.plan == plan)   # S carries the plan it was read under
+print(np.allclose(S, pack.replay(seq, tissue=wm, tol=None), atol=plan.error))  # every stored band: within the planned error
+```
+
+The plan is the fewest bands, and the fewest field modes, whose dropped tail costs at most `tol` (0.25) times the pack's
+Monte-Carlo floor, by the rule the columnar layout plans with. The band variances are the header's measured record, else
+the free bridge's at the pack's diffusivity; the mode variances are the header's record, else measured on a pilot of the
+walkers; the plan names the source. `K=` and `modes=` state the counts (their error is stated the same way) and `tol=None`
+reads every band and mode. The signal is an `ndarray` whose `.plan` is the plan of the call, and the prefix it reads is bit
+for bit the full decode cut at the same `K`. On a pack on the Hub, `ReplayPack.open("hf://owner/name/path.rpk")` plans from
+the file's header and fetches by HTTP range only the tensors of the plan.
+
 ## `walker_signals`: before the mean
 
 ```python
