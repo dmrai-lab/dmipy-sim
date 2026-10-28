@@ -13,7 +13,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.compression import default_envelope
-from dmipy_sim.replay.time_segments import (FORMAT, Partition, TimeSegmentLayout, _walk_view, read_manifest, rounding_eps,
+from dmipy_sim.replay.time_segments import (FORMAT, Partition, Shape, TimeSegmentLayout, _walk_view, read_manifest, rounding_eps,
                                              segment_rows, write_time_segment_layout)
 from dmipy_sim.spec import walk_spec, StratifiedByVoxel
 from dmipy_sim.spec.tissue import Tissue
@@ -138,7 +138,7 @@ def test_a_sequence_that_does_not_fit_is_refused_by_name():
     coarse = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=61, slew_rate=np.inf)
     with pytest.raises(ValueError, match="grid"):
         parts["dde"].levels(coarse)
-    p = Partition("stored", ((0.0, 1e-3), (1e-3, 2e-3), (2e-3, 3e-3)), (1, 0, -1))
+    p = Partition("stored", ((0.0, 1e-3), (1e-3, 2e-3), (2e-3, 3e-3)), (1, 0, -1), (Shape.constant(),) * 3)
     G = np.zeros((1, N_T, 3), np.float32); G[0, 0:10, 0] = 0.1; G[0, 10:20, 0] = 0.1; G[0, 20:30, 0] = 0.2
     with pytest.raises(ValueError, match="stores"):
         p.levels(se.with_gradient(G))
