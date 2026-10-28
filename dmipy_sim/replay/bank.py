@@ -921,7 +921,17 @@ def susc_path_coeffs(arrays, meta):
 
     The ONE place that undoes the storage container. ``susc_path_dct`` may be an integer array whose
     scale lives in ``susc_path_scale`` (see :func:`susc_path_encode`), so reading it raw yields
-    integers ~1e3 off with no error -- every consumer goes through here."""
+    integers ~1e3 off with no error -- every consumer goes through here.
+
+    Of a pack's ``arrays`` (:class:`~dmipy_sim.replay.decoded.PackArrays`) the result is decoded once per descriptor
+    and returned read-only, with a fresh ``names`` list (:func:`~dmipy_sim.replay.compression.read_position_coeffs`)."""
+    import json
+    C, names = _cx._decoded_once(arrays, "susc_path_coeffs", json.dumps(meta, sort_keys=True, default=str), ("susc_path",),
+                                 lambda: _susc_path_coeffs(arrays, meta))
+    return C, list(names)
+
+
+def _susc_path_coeffs(arrays, meta):
     if meta.get("container") is not None:
         parts = []
         for i, r in enumerate(meta["container"]):

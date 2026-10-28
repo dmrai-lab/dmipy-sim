@@ -692,7 +692,7 @@ def segment_vectors(pack, partition):
     for win, t0, T_w in pack._windows():
         if m is not None and t0 >= S[:, 1].max():
             break
-        C = read_position_coeffs(win.arrays, dtype=np.float64)
+        C = read_position_coeffs(win.arrays, dtype=np.float64, cached=False)   # the layout subtracts the start in place: a decode of its own
         if x0 is None:
             x0 = C[:, 0, :].copy()
         C[:, 0, :] -= x0

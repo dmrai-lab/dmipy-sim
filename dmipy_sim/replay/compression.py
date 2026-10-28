@@ -562,13 +562,31 @@ def pack_bits(u, bits):
 
 def unpack_bits(packed, bits, m):
     """The ``m`` unsigned integers of ``bits`` each per row of ``packed`` ``(N, nbytes)``: the inverse of
-    :func:`pack_bits`, ``(N, m)`` ``uint32``."""
+    :func:`pack_bits`, ``(N, m)`` ``uint32``. Eight values of ``bits`` bits fill exactly ``bits`` bytes, so value ``j`` of
+    every group of eight sits at the same bytes and bit offset: it is read from at most four byte columns of the
+    ``(N, groups, bits)`` view with a shift and a mask, one strided pass per ``j`` and no bit is expanded to a byte."""
+    if not 1 <= bits <= 25:
+        raise ValueError(f"unpack_bits reads depths of 1 to 25 bits; got {bits}")
     packed = np.asarray(packed)
-    w = (1 << np.arange(bits - 1, -1, -1)).astype(np.uint32)
+    n_g = -(-m // 8)
+    mask = np.uint32((1 << bits) - 1)
     out = np.empty((packed.shape[0], m), np.uint32)
     for i in range(0, packed.shape[0], _PACK_ROWS):
-        b = np.unpackbits(packed[i:i + _PACK_ROWS], axis=1, count=m * bits).reshape(-1, m, bits)
-        out[i:i + _PACK_ROWS] = (b.astype(np.uint32) * w).sum(axis=2, dtype=np.uint32)
+        rows = packed[i:i + _PACK_ROWS]
+        pad = np.zeros((rows.shape[0], n_g * bits), np.uint8)
+        pad[:, :min(rows.shape[1], pad.shape[1])] = rows[:, :pad.shape[1]]
+        g = pad.reshape(rows.shape[0], n_g, bits)
+        for j in range(min(8, m)):
+            c0, off = (j * bits) >> 3, (j * bits) & 7
+            n_b = (off + bits + 7) >> 3
+            acc = g[:, :, c0].astype(np.uint32)
+            for k in range(1, n_b):
+                acc <<= 8
+                acc |= g[:, :, c0 + k]
+            acc >>= np.uint32(8 * n_b - off - bits)
+            acc &= mask
+            cols = out[i:i + _PACK_ROWS, j::8]
+            cols[...] = acc[:, :cols.shape[1]]
     return out
 
 
@@ -594,6 +612,18 @@ def _load_range(t, bits, m):
     if t.ndim == 2:
         return unpack_bits(t, bits, m).astype(np.int32) - off
     return np.stack([unpack_bits(t[..., a], bits, m).astype(np.int32) - off for a in range(t.shape[2])], axis=2)
+
+
+def _range_values(t, bits, m):
+    """The integer band values of a stored range ``t`` as float64 ``(N, m)`` (exact: every integer of at most 16 bits is
+    a float64), from the native ``int8`` / ``int16`` tensor or the bit-packed ``uint8`` rows -- :func:`_load_range` with
+    the one conversion to float64 and the offset taken in place."""
+    t = np.asarray(t)
+    if bits in NATIVE_BITS:
+        return t.astype(np.float64)
+    q = unpack_bits(t, bits, m).astype(np.float64)
+    q -= 1 << (bits - 1)
+    return q
 
 
 def quantise_bands(B, container, key, scale_key):
@@ -898,7 +928,9 @@ def bridge_bands(arrays, meta, key="blt", scale_key="blt_band_scale", dtype=np.f
         return np.asarray(arrays["blt_bridge_dst"], dtype)
     if meta.get("container") is None:
         raise KeyError("this pack's C2 channel is in the integer container but its metadata carries no 'container'")
-    return dequantise_bands(arrays, meta["container"], key, scale_key, dtype)
+    sel = (key, scale_key, np.dtype(dtype).str, repr(meta["container"]))
+    return _decoded_once(arrays, "bridge_bands", sel, (key, scale_key),
+                         lambda: dequantise_bands(arrays, meta["container"], key, scale_key, dtype))
 
 
 # C1 is a set of named OCCUPANCY COLUMNS, not a single label track. At every instant a walker has an
@@ -964,7 +996,14 @@ def encode_events_occupancy(columns, *, t0=0.0):
 def occupancy_events(arrays, column):
     """A column's stored events as ``(start (N_w,), EventList)``: the label every walker holds at its first event
     (the window's start) and its changes after it (:class:`~dmipy_sim.coefficient_walk.EventList`); a static column
-    as ``(labels, None)``."""
+    as ``(labels, None)``. Of a pack's ``arrays`` (:class:`~dmipy_sim.replay.decoded.PackArrays`) the arrays are decoded
+    once per column and returned read-only (:func:`read_position_coeffs`)."""
+    name = column["name"]
+    return _decoded_once(arrays, "occupancy_events", (name, column["kind"]), (f"{name}_",),
+                         lambda: _occupancy_events(arrays, column))
+
+
+def _occupancy_events(arrays, column):
     from ..coefficient_walk import EventList
     name = column["name"]
     if column["kind"] == "static":
@@ -1105,14 +1144,38 @@ def position_starts(arrays):
     return np.stack([np.asarray(np.asarray(arrays[f"{POSITION_AXES[i]}{suffix}"])[:, 0], np.float64) for i in present], axis=1)
 
 
-def read_position_coeffs(arrays, axes=None, dtype=np.float64):
+def _decoded_once(arrays, kind, selection, prefixes, decode):
+    """``decode()`` through the decoded cache of ``arrays`` (:class:`~dmipy_sim.replay.decoded.PackArrays`) when it has
+    one: keyed on ``kind``, ``selection`` and the stored tensors whose names start with ``prefixes`` (and the pack's
+    ``band_block``), so the same stored tensors decode once per selection. The arrays of a plain ``dict`` decode on every
+    call."""
+    cache = getattr(arrays, "decoded", None)
+    if cache is None:
+        return decode()
+    tensors = {k: v for k, v in arrays.items() if k == "band_block" or k.startswith(prefixes)}
+    return cache.get(kind, selection, tensors, decode)
+
+
+def read_position_coeffs(arrays, axes=None, dtype=np.float64, *, cached=True):
     """Coefficients as (n_w, K, n_axes) from either layout.
 
     ``axes`` selects spatial components by index (default all present). Reading a subset is the point of
     the layout: pass e.g. ``axes=(0,)`` for a slab or ``(0, 1)`` for a cylinder's transverse plane. A band range is
     dequantised in float64 against its walkers' scales and rounded once to ``dtype`` in place, one axis and range
     at a time: the temporaries are one range of one axis, never the walkers' whole scale table.
+
+    Of a pack's ``arrays`` (:class:`~dmipy_sim.replay.decoded.PackArrays`) the result is decoded once per
+    ``(axes, dtype)`` and the same read-only array returned by every later call, within the pack's decode budget
+    (:class:`~dmipy_sim.replay.decoded.DecodedCache`); ``cached=False`` decodes afresh into a writable array. A plain
+    ``dict`` decodes on every call.
     """
+    if not cached:
+        return _read_position_coeffs(arrays, axes, dtype)
+    sel = (None if axes is None else tuple(int(i) for i in axes), np.dtype(dtype).str)
+    return _decoded_once(arrays, "position_coeffs", sel, "pos_", lambda: _read_position_coeffs(arrays, axes, dtype))
+
+
+def _read_position_coeffs(arrays, axes, dtype):
     kind, suffix, present = _position_tensors(arrays)
     want = list(present if axes is None else axes)
     missing = [i for i in want if i not in present]
@@ -1140,7 +1203,9 @@ def read_position_coeffs(arrays, axes=None, dtype=np.float64):
             t = arrays[range_name(POSITION_AXES[i], r, bits)]
             m = int(t.shape[1]) if bits in NATIVE_BITS else min(int(t.shape[1]) * 8 // bits, K_b - k0)
             s = table[:, i, k0:k0 + m]
-            out[:, 2 + k0:2 + k0 + m, j] = np.asarray(_load_range(t, bits, m), np.float64) * (s[0] if blk is None else s[blk])
+            q = _range_values(t, bits, m)
+            q *= (s[0] if blk is None else s[blk])
+            out[:, 2 + k0:2 + k0 + m, j] = q
             k0 += m
     return out
 
@@ -1237,6 +1302,21 @@ class CumulativeGate:
         return float(self.C[-1])
 
 
+def _occupancy_runs(arrays, column):
+    """A column's stored form as the runs :func:`relaxation_logweight_runs` weighs: a static column's labels ``(N_w,)``
+    int64; an events column's ``(offsets, t, label, walker)`` -- the entries of every walker (the label held from each
+    instant), ``walker`` the index of the walker each belongs to. Decoded once per column of a pack's ``arrays``
+    (:func:`read_position_coeffs`) and returned read-only."""
+    def decode():
+        name = column["name"]
+        if column["kind"] == "static":
+            return np.array(arrays[f"{name}_static"], np.int64)
+        off_ = np.array(arrays[f"{name}_events_offsets"], np.int64)
+        return (off_, np.array(arrays[f"{name}_events_t"], np.float64), np.array(arrays[f"{name}_events_label"], np.int64),
+                np.repeat(np.arange(off_.shape[0] - 1), np.diff(off_)))
+    return _decoded_once(arrays, "occupancy_runs", (column["name"], column["kind"]), (f"{column['name']}_",), decode)
+
+
 def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, chi, active, *, t0=0.0, t1):
     """The per-walker relaxation log-weight over the window ``[t0, t1]`` from a C1 column's stored form, exact in time
     (RPK.md 9.5.7): a static column is one run per walker, an events column a run per entry from its instant to the
@@ -1249,16 +1329,13 @@ def relaxation_logweight_runs(arrays, column, T2_per_comp, T1_per_comp, chi, act
     invT2, invT1 = _rates(T2_per_comp), _rates(T1_per_comp)
     lon = lambda t: active(t) - chi(t)
     if column["kind"] == "static":
-        lab = np.asarray(arrays[f"{name}_static"]).astype(np.int64)
+        lab = _occupancy_runs(arrays, column)
         on = float(chi(t1) - chi(t0)); off = float(lon(t1) - lon(t0))
         return -(invT2[lab] * on + invT1[lab] * off)
     if column["kind"] != "events":
         raise ValueError(f"C1 column {name!r} is stored as {column['kind']!r}, which this build does not read")
-    off_ = np.asarray(arrays[f"{name}_events_offsets"], np.int64)
-    t = np.asarray(arrays[f"{name}_events_t"], np.float64)
-    lab = np.asarray(arrays[f"{name}_events_label"]).astype(np.int64)
+    off_, t, lab, w = _occupancy_runs(arrays, column)
     n_w = off_.shape[0] - 1
-    w = np.repeat(np.arange(n_w), np.diff(off_))
     t_a = np.maximum(t, float(t0))
     t_b = np.empty_like(t); t_b[:-1] = t[1:]; t_b[-1] = t1
     t_b[off_[1:] - 1] = float(t1)

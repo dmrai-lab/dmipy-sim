@@ -221,7 +221,7 @@ def test_a_constant_partition_is_bit_identical_whichever_way_it_is_built(small):
     same = Partition.from_sequence(BOX, _templates()[BOX])
     assert same == p and same.to_meta() == p.to_meta() and all(s.is_constant for s in same.shapes)
     v = M["view"]
-    C = cx.read_position_coeffs(v.arrays, dtype=np.float64)
+    C = cx.read_position_coeffs(v.arrays, dtype=np.float64, cached=False)   # modified in place below: a decode of its own
     x0 = C[:, 0, :].copy(); C[:, 0, :] -= x0
     old = GAMMA * np.einsum("wjc,sj->wsc", C, cx.segment_projection(np.asarray(p.segments), M["walk"].T_window, C.shape[1] - 2))
     new = segment_vectors(v, p)
