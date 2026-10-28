@@ -218,8 +218,9 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
     import dmipy_sim.spec.walk as spec_walk
     from dmipy_sim.engine.accumulate import read_intervals
     pools = []
-    join = spec_walk._join_pool_walks
-    monkeypatch.setattr(spec_walk, "_join_pool_walks", lambda parts, *a, **k: (pools.extend(w for _, w in parts if not isinstance(w, np.ndarray)), join(parts, *a, **k))[1])
+    # the pools read at their own instants (the join refuses their raw reads on one series), so the walks are read before it
+    monkeypatch.setattr(spec_walk, "_join_pool_walks",
+                        lambda parts, *a, **k: (pools.extend(w for _, w in parts if not isinstance(w, np.ndarray)), parts[0][1])[1])
     walk_spec(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
               raw_subset=12, field_read_interval=interval)
     assert len(pools) == 2
@@ -234,6 +235,15 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
         mode0 = np.asarray(w.field_coeffs, np.float64)[:raw.shape[0], 0, 0] * np.sqrt(w.T)
         np.testing.assert_allclose(mode0, window, rtol=0, atol=2e-5 * np.abs(window).max())
     assert uneven == (interval < BLOCK)
+
+
+def test_a_bundle_whose_pools_read_at_other_instants_refuses_a_joined_raw_field(spec):
+    """The pools of a bundle read the field at their own instants; the joined walk has one series of them, so a raw
+    subset over pools that disagree is refused by pool name."""
+    from dmipy_sim.spec import SpecError
+    with pytest.raises(SpecError, match=r"pool '(extra|intra)' reads the field at instants other than the bundle's"):
+        walk_spec(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+                  field_cutoff_max_m=25e-6, raw_subset=12, field_read_interval=0.75 * BLOCK)
 
 
 def test_the_cost_counts_the_reads_of_a_block_with_its_shorter_last_interval():

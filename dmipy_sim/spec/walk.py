@@ -771,8 +771,9 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_c
                 if sampled:
                     own = np.asarray(w.field_read_instants, np.float64)
                     if own.shape != t_read.shape or not np.allclose(own, t_read, rtol=1e-9, atol=0.0):
-                        raise SpecError(f"pool {name!r} reads the field at instants other than the bundle's ({len(own)} reads against "
-                                        f"{len(t_read)}); the pools' raw field reads cannot be joined on one series")
+                        gap = f"{np.abs(own - t_read).max():.3g} s apart at most" if own.shape == t_read.shape else f"{len(own)} reads against {len(t_read)}"
+                        raise SpecError(f"pool {name!r} reads the field at instants other than the bundle's ({gap}); the pools' raw "
+                                        f"field reads cannot be joined on one series")
                     rf.append(np.asarray(w.raw_field, np.float32))
             pc.append(np.asarray(w.position_coeffs, np.float32)); qp.append(np.asarray(w.qv_positions, np.float32))
             if surface:
