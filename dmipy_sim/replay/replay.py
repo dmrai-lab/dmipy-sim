@@ -39,7 +39,7 @@ from functools import cached_property
 import numpy as np
 from .compression import c2_bands_K as _cx_bands_K
 from .decoded import PackArrays
-from .planning import PLAN_TOL, ReadPlan, Planned, planned
+from .planning import PLAN_TOL, ReadPlan, planned
 
 from ..constants import GAMMA
 from ..run import Run, current

@@ -186,9 +186,11 @@ class RemotePack:
         reads. The ranges are fetched here, once; the pack holds the bands of the ranges that cover the plan, which is its
         ``K`` rounded up to a range's end."""
         names, K_read, M_read = self._select(plan, contact, field)
+        for (k, m, c, f), pack in self._views.items():          # a view that already holds what the plan needs is the view
+            if k >= K_read and m >= M_read and c >= bool(contact) and f >= bool(field):
+                return pack
         key = (K_read, M_read, bool(contact), bool(field))
-        if key in self._views:
-            return self._views[key]
+        self._views.clear()                                      # a wider view supersedes the narrower ones (and their decoded bands)
         self._fetch(names)
         arrays = {n: self._held[n] for n in names}
         meta = json.loads(json.dumps(self.meta))
