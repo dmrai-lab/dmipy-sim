@@ -302,3 +302,21 @@ def test_raw_subset_builds_the_bundle_family_certified_on_that_subset(fr, tmp_pa
     assert receipts
     for r in receipts.values():
         assert r["raw_subset"] == 10 and r["fidelity"] == "measured" and r["measured_by"] == "raw_subset" and r["measured_on"] == 10
+
+
+def test_the_slab_field_is_the_lorentz_corrected_field_of_its_magnetised_layer(fr):
+    """The slab's basis read by the replay contraction (``iso_P_zz`` formed from the trace identity) is the field of
+    an infinite layer of normal x: ``chi B0 / 3`` in B against A with B0 in its plane, ``-2 chi B0 / 3`` along the
+    normal, uniform within each compartment."""
+    from dmipy_sim.fields.hollow_cylinder import contract
+    slab = object.__new__(fr.Slab)
+    grid = slab.field_grid()
+    assert grid.trace_residual < 1e-12
+    x = (np.arange(slab.FIELD_NODES) + 0.5) * slab.L / slab.FIELD_NODES
+    in_B = x > slab.L / 2
+    ch = grid.grids()[:, :, 0, 0]
+    for b0_dir, contrast in (([0, 0, 1], 1 / 3), ([0, 1, 0], 1 / 3), ([1, 0, 0], -2 / 3)):
+        dB = contract(ch, b0_dir, B0=3.0, chi_iso=slab.CHI, axis=0)
+        np.testing.assert_allclose(dB[in_B], dB[in_B][0], atol=1e-20)
+        np.testing.assert_allclose(dB[~in_B], dB[~in_B][0], atol=1e-20)
+        np.testing.assert_allclose(dB[in_B][0] - dB[~in_B][0], contrast * slab.CHI * 3.0, rtol=1e-12)
