@@ -468,12 +468,27 @@ class Cactus(Family):
         if self.run_dir is None:
             raise SystemExit("cactus: --cactus-run DIR (a CACTUS run directory: optimized_final.txt and "
                              "meshes/simulations/strand_*_{inner,outer}_erode_*.ply)")
+        self.reference = _cactus_reference(args.cactus_reference, self.run_dir, args.out) if args.cactus_reference else None
+        if self.reference is not None:
+            self.run_dir = self.reference["run_dir"]
         self._spec = None
 
     def spec(self):
         if self._spec is None:
             from dmipy_sim.spec import cactus_spec
-            self._spec = cactus_spec(self.run_dir, side_um=(self.args.smoke_side_um if self.args.smoke else None))
+            ref = self.reference
+            side = ref["side_um"] if ref else (self.args.smoke_side_um if self.args.smoke else None)
+            spec = cactus_spec(self.run_dir, side_um=side)
+            if ref:
+                import dataclasses
+                from dmipy_sim.spec import Frame
+                prov = dict(spec.provenance)
+                prov["reference_spec"] = ref["record"]
+                prov["transformations"] = list(prov["transformations"]) + [
+                    f"cell side, substrate frame and strand set from the reference spec {ref['record']['id']} "
+                    f"(sha256 {ref['record']['sha256'][:12]}), every surface matched to it by sha256"]
+                spec = dataclasses.replace(spec, frame=Frame(**ref["frame"]), provenance=prov).validate()
+            self._spec = spec
         return self._spec
 
     def substrates(self):
@@ -529,6 +544,35 @@ class Cactus(Family):
 
 
 FAMILIES = {"pores": Pores, "slab": Slab, "cactus": Cactus}
+
+
+def _cactus_reference(path, mesh_dir, out):
+    """The substrate a reference spec (a CACTUS spec as JSON, e.g. the one an earlier pack embeds) walked, rebuilt
+    from the surfaces under ``mesh_dir/meshes/simulations``: the walls it lists, each found by file name and
+    refused unless its sha256 is the one the reference records, linked into a run directory named as the
+    reference's; with the reference's cell side and frame, which the run directory's missing strand list would
+    otherwise leave unknown."""
+    raw = open(path, "rb").read()
+    ref = json.loads(raw)
+    src = os.path.join(mesh_dir, "meshes", "simulations")
+    name = os.path.basename(os.path.normpath(ref["provenance"]["run_dir"]))
+    run = os.path.join(os.path.abspath(out or "."), "_cactus_reference", name)
+    sim = os.path.join(run, "meshes", "simulations")
+    os.makedirs(sim, exist_ok=True)
+    for w in ref["walls"]:
+        f, want = os.path.basename(w["surface"]["file"]), w["surface"]["sha256"]
+        p = os.path.join(src, f)
+        if not os.path.isfile(p):
+            raise SystemExit(f"cactus: the reference's surface {f} is not under {src}")
+        got = hashlib.sha256(open(p, "rb").read()).hexdigest()
+        if got != want:
+            raise SystemExit(f"cactus: {f} is not the reference's surface (sha256 {got[:12]}, the reference records {want[:12]})")
+        link = os.path.join(sim, f)
+        if not os.path.lexists(link):
+            os.symlink(os.path.abspath(p), link)
+    return dict(run_dir=run, side_um=float(ref["realisation"]["cell_side"]) / float(ref["provenance"]["scale"]),
+                frame=dict(axis=ref["frame"]["axis"], in_plane=ref["frame"]["in_plane"]),
+                record=dict(id=ref["id"], sha256=hashlib.sha256(raw).hexdigest(), n_walls=len(ref["walls"])))
 
 
 def _smoke_cactus_run(args):
@@ -870,6 +914,8 @@ def main(argv=None):
     p.add_argument("--slab-geometry", choices=("label", "analytic"), default="label",
                    help="slab: a two-voxel LabelVolume (CUDA-walked) or PermeableSlab1D (JAX only)")
     p.add_argument("--cactus-run", default=None, help="cactus: the CACTUS run directory")
+    p.add_argument("--cactus-reference", default=None, help="cactus: a spec (JSON) whose walls, cell side and frame the "
+                                                            "walk keeps, its surfaces found under --cactus-run by sha256")
     p.add_argument("--field-res", type=float, default=None, help="cactus: the field raster's node spacing (um)")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
