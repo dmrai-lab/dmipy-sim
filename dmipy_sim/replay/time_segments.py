@@ -1196,7 +1196,8 @@ def write_time_segment_layout(blocks, out_dir, *, progress=None):
         arr.flush()
     tiers = None
     if r0["tiers"]:
-        tiers = dict(r0["tiers"], pool_column="pool.npy")
+        pools = [int(r["tiers"]["pools"]) for r in recs if r["tiers"].get("pools") is not None]   # the pool ids each block's rows address
+        tiers = dict(r0["tiers"], relaxation=bool(pools), pools=max(pools) if pools else None, pool_column="pool.npy")
     manifest = dict(
         format=FORMAT, n_rows=int(counts.sum()), n_tiles=n_tiles, tile=TILE, n_voxels=n_vox, grid=r0["grid"],
         source=dict(kind=src["kind"], walk=src["walk"], pack=src["pack"], floor_target=floor, eps=eps, envelope=env,
