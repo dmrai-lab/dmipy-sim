@@ -581,6 +581,7 @@ class _MeshArrays(NamedTuple):
     the grid array (CELL) alone can be gigabytes, which as a captured constant blows up the executable and
     exhausts memory on load; as an argument it is just data living in device memory.
     """
+    TRIS: jnp.ndarray
     NRM: jnp.ndarray
     CENT: jnp.ndarray
     CELL: jnp.ndarray
@@ -610,12 +611,41 @@ def _gather_is_populated(A, r):
     return _gather_arr(A, _wrap_arr(A, r))[1].any()
 
 
+def _closest_on_triangles(T, p):
+    """``(d2, c)``: the squared distance from ``p`` (3,) to each triangle of ``T`` (n, 3, 3) and the closest point
+    ``c`` (n, 3) on it -- the projection onto the plane where it falls inside the triangle, else the nearest point
+    of its three edges."""
+    A, B, C = T[:, 0], T[:, 1], T[:, 2]
+    n = jnp.cross(B - A, C - A)
+    nn = jnp.maximum((n * n).sum(1), jnp.float32(1e-38))
+    q = p[None] - ((p[None] - A) * n).sum(1, keepdims=True) / nn[:, None] * n          # onto the plane
+    inside = ((jnp.cross(B - A, q - A) * n).sum(1) >= 0) & ((jnp.cross(C - B, q - B) * n).sum(1) >= 0) & \
+             ((jnp.cross(A - C, q - C) * n).sum(1) >= 0) & ((n * n).sum(1) > 0)      # a degenerate face has no plane
+
+    def on_edge(P0, P1):
+        e = P1 - P0
+        t = jnp.clip(((p[None] - P0) * e).sum(1) / jnp.maximum((e * e).sum(1), jnp.float32(1e-38)), 0.0, 1.0)
+        c = P0 + t[:, None] * e
+        return ((p[None] - c) ** 2).sum(1), c
+
+    (dab, cab), (dbc, cbc), (dca, cca) = on_edge(A, B), on_edge(B, C), on_edge(C, A)
+    ce = jnp.where((dab <= dbc)[:, None], cab, cbc); de = jnp.minimum(dab, dbc)
+    ce = jnp.where((dca < de)[:, None], cca, ce); de = jnp.minimum(de, dca)
+    c = jnp.where(inside[:, None], q, ce)
+    return jnp.where(inside, ((p[None] - q) ** 2).sum(1), de), c
+
+
 def _classify_arr(A, r):
     """Interior (1) / exterior (0) from the array bundle.
 
     Single source of truth for both ``Mesh.classify_position`` and the ``init_positions`` seeding jit.
-    Sidedness comes from the nearest surface triangle in the local 27-cell gather. A point with **no**
-    triangle anywhere in that gather cannot be enclosed by a wall, so it is exterior. Without that guard
+    Sidedness comes from the CLOSEST surface triangle in the local 27-cell gather -- closest by the exact
+    point-triangle distance -- read off its normal at the closest point: ``(r - c) . n < 0`` is interior. The
+    closest point of a closed surface sees the surface's own side; the nearest triangle CENTROID does not: on a
+    bundle whose surfaces lie closer to each other than a triangle's circumradius it belongs to the
+    neighbouring surface for 0.2 % of the points with a wall in reach (0.3 % of the extra-axonal space called
+    interior on the 344-strand CACTUS bundle, dmipy-sim#711), where the closest triangle errs on none.
+    A point with **no** triangle anywhere in that gather cannot be enclosed by a wall, so it is exterior. Without that guard
     the ``argmin`` over an all-``inf`` distance array silently falls back to a far-away triangle whose
     outward normal gives a *random* sign, and empty space near a thin feature is misclassified as interior
     -- which poisons ``init_positions``, seeding "intra" walkers into open space where they diffuse freely.
@@ -624,7 +654,7 @@ def _classify_arr(A, r):
     gather neighbourhood. But the cell size scales with the TRIANGLE size, not the object size, so a
     finely-meshed thick fibre breaks it: measured on a 366-strand axon bundle (median edge 0.371 um -> cell
     0.124 um -> gather reach ~0.19 um, lumen radii ~1-2 um), 19.6% of genuinely interior points are
-    reported EXTERIOR, and 99.4% of those have an empty gather. Deep interior reads as outside.
+    reported EXTERIOR, and 99.4% of those have an empty gather.
 
     Use :func:`_gather_is_populated` to tell "outside" from "cannot tell", and resolve the latter with an
     exact test (:func:`dmipy_sim.fields.susceptibility_field.mesh_contains`). :meth:`Mesh.init_positions` does
@@ -632,10 +662,9 @@ def _classify_arr(A, r):
     """
     r_w = _wrap_arr(A, r)
     ci, valid = _gather_arr(A, r_w)
-    cent = A.CENT[ci]; nrm = A.NRM[ci]
-    dist = jnp.where(valid, jnp.linalg.norm(r_w[None] - cent, axis=1), jnp.inf)
-    idx = jnp.argmin(dist)
-    side = jnp.dot(r_w - cent[idx], nrm[idx])
+    d2, c = _closest_on_triangles(A.TRIS[ci], r_w)
+    idx = jnp.argmin(jnp.where(valid, d2, jnp.inf))
+    side = jnp.dot(r_w - c[idx], A.NRM[ci][idx])
     inside = (side < 0) & valid.any()          # no nearby wall => not enclosed => exterior
     return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
@@ -1094,7 +1123,7 @@ class Mesh(Geometry):
             max_bounces = max(10, int(np.ceil(0.9 * float(self.cell_size) / chord_floor)) + 2)
         self._bounce_budget = int(max_bounces)
         self._OFF = jnp.asarray(NEIGHBOUR_OFFSETS)
-        self._A = _MeshArrays(NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
+        self._A = _MeshArrays(TRIS=self._TRIS, NRM=self._NRM, CENT=self._CENT, CELL=self._CELL,
                               dims_arr=self._dims_arr, GMIN=self._GMIN, CS=self._CS,
                               VMIN=self._VMIN, L=self._L, PER=self._PER, OFF=self._OFF)
 
