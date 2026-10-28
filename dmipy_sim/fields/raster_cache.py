@@ -22,12 +22,24 @@ _META_KEY = "field_raster"
 _GROUPS = ("iso_local", "iso_P", "aniso_G")
 
 
+def _spec_identity(spec):
+    """The spec's dict without what the raster does not depend on: the provenance, and the path of every surface file
+    the spec cites by sha256 (the content names it; the path is where this machine keeps it)."""
+    d = spec.to_dict()
+    d.pop("provenance", None)
+    for w in d.get("walls", []):
+        surf = w.get("surface") or {}
+        if surf.get("file") is not None and surf.get("sha256"):
+            surf.pop("file")
+    return d
+
+
 def field_raster_key(spec, res, *, n_check=400_000, seed=0):
     """The key (a sha256 hex string) of the raster of ``spec`` at node spacing ``res`` (metres), its certificate
-    sampled with ``n_check`` points of ``seed``: the canonical JSON of the spec, ``res``, those, the build's
+    sampled with ``n_check`` points of ``seed``: the canonical JSON of the spec (:func:`_spec_identity`), ``res``, those, the build's
     constants and :data:`FIELD_RASTER_FORMAT`."""
     from .susceptibility_field import FIELD_MASK_SUPERSAMPLE
-    doc = dict(spec=spec.to_dict(), field_res=float(res), n_check=int(n_check), seed=int(seed),
+    doc = dict(spec=_spec_identity(spec), field_res=float(res), n_check=int(n_check), seed=int(seed),
                mask_supersample=int(FIELD_MASK_SUPERSAMPLE), format=FIELD_RASTER_FORMAT)
     return hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
 
