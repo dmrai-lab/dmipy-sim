@@ -259,10 +259,17 @@ class Grid:
 
     def bin(self, positions_m):
         """The voxel each position falls in, ``(N, 3)`` int, and whether it is inside the grid, ``(N,)`` bool:
-        ``floor((r - corner) / step)``, the derived partition of RPH.md."""
+        ``floor((r - corner) / step)``, the derived partition of RPH.md. A position stored in float32 on the grid's
+        outer face rounds to within one float32 spacing of it on either side; a coordinate at most that far
+        beyond an outer face is in the edge voxel."""
         P = np.asarray(positions_m, np.float64).reshape(-1, 3)
-        ijk = np.floor((P - np.asarray(self.corner_m)) / np.asarray(self.step_m)).astype(np.int64)
-        inside = np.all((ijk >= 0) & (ijk < np.asarray(self.shape)), axis=1)
+        lo, step, shape = np.asarray(self.corner_m, np.float64), np.asarray(self.step_m, np.float64), np.asarray(self.shape)
+        u = (P - lo) / step                                            # voxel units from the outer corner
+        f32 = lambda x: np.spacing(np.abs(x).astype(np.float32)).astype(np.float64) / np.abs(step)
+        ijk = np.floor(u).astype(np.int64)
+        ijk = np.where((ijk == shape) & (u - shape <= f32(lo + shape * step)), shape - 1, ijk)
+        ijk = np.where((ijk == -1) & (-u <= f32(lo)), 0, ijk)
+        inside = np.all((ijk >= 0) & (ijk < shape), axis=1)
         return ijk, inside
 
     def check_volume(self, a, name):
