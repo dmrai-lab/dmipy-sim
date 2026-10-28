@@ -157,3 +157,15 @@ def test_centred_at_puts_the_grid_centre_at_the_offset_from_isocentre_in_the_sca
     truth = _truth_m(A, ijk)
     centre_truth = 0.5 * (_truth_m(A, np.zeros((1, 3), int))[0] + _truth_m(A, (np.array(shape) - 1)[None])[0])
     np.testing.assert_allclose(into(placed.positions_m(ijk)), truth - centre_truth + offset, atol=1e-12)
+
+
+def test_a_float32_position_on_an_outer_face_is_in_the_edge_voxel():
+    """A start stored in float32 on the grid's outer face (DiSCo's 1 mm face: float32(1e-3) = 1e-3 + 4.7e-11) is
+    binned into the edge voxel; a position a voxel-size fraction beyond the face is outside."""
+    from dmipy_sim.phantom.grid import Grid
+    g = Grid(shape=(40, 40, 40), voxel_size_m=(2.5e-5,) * 3, origin_m=(1.25e-5,) * 3, isocenter_m=(5e-4,) * 3)
+    face = float(np.float32(1e-3))
+    ijk, inside = g.bin(np.array([[6.6e-4, face, 5.2e-4], [6.6e-4, 1e-3 + 1e-9, 5.2e-4], [float(np.float32(0.0)) - 1e-45, 5e-4, 5e-4],
+                                  [6.5e-4, 5e-4, 5e-4]]))
+    assert inside.tolist() == [True, False, True, True]
+    assert ijk[0].tolist() == [26, 39, 20] and ijk[2][0] == 0
