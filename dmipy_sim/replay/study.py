@@ -278,16 +278,14 @@ def walker_primitives(pack, acquisition, *, tol=PLAN_TOL, K=None, modes=None):
     """The :class:`Primitives` of ``pack`` under ``acquisition``: the bands contracted once, the path channel
     contracted once under the pose's field direction, the exposures and the contact read once -- each a sum over
     the windows the walk is stored in (RPK.md 4.3). The bands and modes read are the plan's (``tol=``, ``K=``, ``modes=`` as in
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay`); the tissue and the scanner are not known here, so a pack's field
-    modes are planned at its certified field scale (``field_envelope``: the largest ``B0`` and ``chi``), every mode when it
-    states none."""
+    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay`); the tissue and the scanner are not known here, and the field modes are planned at the pack's certified
+    field scale (``field_envelope``: the largest ``B0`` and ``chi``) for every replay depth, so they are the modes
+    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` reads; every mode when the pack states no envelope."""
     from .compression import relaxation_logweight_runs
     from .replay import _band_phase, _path_field_channels, _gated_contact, _has_aniso
     acq = acquisition if isinstance(acquisition, Acquisition) else Acquisition(acquisition)
-    env = pack.field_envelope
-    scale = False if env is None else (env["B0_max"], env["chi_max"])
     P = pack._prepare(acq.waveform, tissue=None, scanner=None, orientation=acq.orientation, compartment=None,
-                      read=dict(tol=tol, K=K, modes=modes), field_scale=scale)
+                      read=dict(tol=tol, K=K, modes=modes), any_field=True)
     n_w, ch = P["n_w"], P["ch"]
     col = n_ids = None
     if pack.has_relaxation:
@@ -320,7 +318,9 @@ def walker_primitives(pack, acquisition, *, tol=PLAN_TOL, K=None, modes=None):
                                              parallel=True), np.float64)
             contact_t1 = c1_s if contact_t1 is None else contact_t1 + c1_s
     field_iso = field_aniso = None
-    if pm is not None and P["M_use"] != 0:
+    if pm is not None and P["M_use"] == 0:                      # a plan that reads no mode: the field scalars exist and are zero
+        field_iso, field_aniso = np.zeros(n_w), np.zeros(n_w)
+    elif pm is not None:
         from ..fields.hollow_cylinder import field_terms
         Psi, names = _path_field_channels(P, acq.waveform)       # the one read of C3, windows summed
         field_iso, aniso = field_terms(Psi, P["b0_dir"])

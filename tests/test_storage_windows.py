@@ -245,7 +245,7 @@ def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
     b = two.replay_bloch(short, tissue=TIS0, complex_signal=True)
     c = two.window(0).replay_bloch(short, tissue=TIS0, complex_signal=True)
     npt.assert_allclose(b, a, atol=_bound(one, two)); npt.assert_allclose(c, b, atol=1e-8)
-    npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS0), rtol=2e-3)
+    npt.assert_allclose(np.abs(a), one.replay(short, tissue=TIS0, tol=None), rtol=2e-3)      # the Bloch route reads every band
 
 
 def test_a_walk_continues_from_its_end_and_appends_as_windows():

@@ -1342,7 +1342,7 @@ class ReplayPack:
         scanner)`` is :meth:`walker_signals` for every pair without touching the bands again (dmipy-sim#297). The bands and
         modes read are the plan's (``tol=``, ``K=``, ``modes=`` as in :meth:`replay`), recorded as ``Primitives.plan``. The
         plan weighs the acquisition's gradient and gate; the tissue and the scanner are not yet known, so a field is
-        planned at the pack's certified envelope (its largest ``B0`` and ``chi``) -- the mode count is then a bound for every pair."""
+        planned at the pack's certified envelope (its largest ``B0`` and ``chi``) -- the mode count :meth:`replay` reads as well, and a bound for every pair."""
         from .study import walker_primitives
         return walker_primitives(self, acquisition, tol=tol, K=K, modes=modes)
 
@@ -1593,7 +1593,7 @@ class ReplayPack:
                                chi_aniso=P["chi_aniso"], has_aniso=_has_aniso(gm, pm.get("channels")))
 
     def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True,
-                 pathway=True, read=None, field_scale=None):
+                 pathway=True, read=None, any_field=False):
         """Everything a replay resolves before it reads the bands: the waveform (its physical and its effective gradient,
         rotated into the substrate frame when a pose is given), the tissue's values (none for ``None``), the susceptibility
         term :func:`field_term` resolves from the pack's declared field, the tissue's chi and the scanner's B0 (``B0``
@@ -1603,8 +1603,8 @@ class ReplayPack:
 ``read`` (``dict(tol=, K=, modes=)``, as :meth:`replay` takes them) plans the read (:meth:`plan`): ``plan``
         is then the :class:`~dmipy_sim.replay.planning.ReadPlan` and ``K_use`` / ``M_use`` the bands and modes the
         contraction decodes; without it ``plan`` is ``None`` and the contraction reads every stored band and mode.
-        ``field_scale`` ``(B0, chi)`` plans the modes at that field scale when no scanner or tissue is given
-        (:meth:`walker_primitives`).
+        ``any_field`` plans the modes for a field term to come (the primitives of an acquisition, whose tissue and
+        scanner are applied later).
 
         ``pathway`` asks for the amplitude of the coherence pathway the sequence's readout IS
         (:func:`~dmipy_sim.acquisition.epg.pathway_weight`): 1 for a refocused echo, and a stimulated echo's
@@ -1712,7 +1712,7 @@ class ReplayPack:
         plan = K_use = M_use = None
         if read is not None:
             gate = waveform.effective_gate if waveform.gate is None else waveform.gate
-            plan = self._read_plan(G_eff, dt_wf, gate, windows, field, field_scale=field_scale, **read)
+            plan = self._read_plan(G_eff, dt_wf, gate, windows, field, any_field=any_field, **read)
             K_use, M_use = plan.K, plan.modes
         from ..acquisition.epg import pathway_weight
         # the voxel's factor for an unbalanced encoding (dmipy-sim#375), or the refusal without a voxel size;
@@ -1740,7 +1740,9 @@ class ReplayPack:
         (:meth:`~dmipy_sim.replay.columnar.ColumnarPack.plan`), in :mod:`~dmipy_sim.replay.planning`. The band variances are
         the header's measured record where it holds one, else the free bridge's at the pack's diffusivity -- no band is
         decoded to plan; the mode variances are the header's record, else measured on a pilot of the pack's walkers and
-        held in the pack's decoded cache. A pack with neither is refused by name. The bands are planned for the
+        held in the pack's decoded cache. The modes are weighed at the pack's certified field scale (``field_envelope``: the largest
+        ``B0`` and ``chi``) when it states one, else at the term's own, so the replay, its per-walker depth and the primitives
+        read the same modes. A pack with neither is refused by name. The bands are planned for the
         acquisition as the pose turns it (``orientation=``, one pose); a field is planned only when ``tissue`` and
         ``scanner`` resolve to a field term. ``K=`` / ``modes=`` state the counts instead (the plan then carries their
         error); ``tol=None`` is the full read, every stored band and mode, an error of zero against the stored pack.
@@ -1785,11 +1787,16 @@ class ReplayPack:
                         modes=int(M), modes_stored=int(M_st), mode_error=float(eM), mode_variance=src_M, modes_chosen=how_M,
                         tol=float(tol), floor=float(floor), bytes_read=int(read), bytes_stored=int(stored))
 
-    def _read_plan(self, G_eff, dt_wf, gate, windows, field, *, tol, K, modes, field_scale=None):
+    def _read_plan(self, G_eff, dt_wf, gate, windows, field, *, tol, K, modes, any_field=False):
         """The :class:`~dmipy_sim.replay.planning.ReadPlan` for the effective gradient ``G_eff`` (in the pack's frame) and
         ``gate`` on their grid ``dt_wf``, over ``windows`` (``[(pack, t0, T), ...]``) and the resolved ``field`` term
-        (:meth:`plan`). ``field_scale`` ``(B0, chi)`` stands in for an unresolved field term (the primitives of an
-        acquisition, whose tissue and scanner come later), ``False`` for a field whose scale is not stated (every mode)."""
+        (:meth:`plan`). ``any_field`` plans the modes for a field term that is not resolved yet (the primitives of an
+        acquisition, whose tissue and scanner come later).
+
+        The modes are planned at the pack's certified field scale (``field_envelope``: the largest ``B0`` and ``chi``) when it
+        states one, so the count depends on the acquisition's gate and the pack alone: a replay, its per-walker depth and the
+        primitives read the same modes, and the error stated bounds every field term the envelope allows. A pack that states
+        no envelope is planned at the term's own scale; for primitives, which have none, every mode is read."""
         from .planning import band_tail, mode_tail, band_variance, fewest, floor_of
         K_st = self.K
         pm = ((self.meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis")
@@ -1813,7 +1820,15 @@ class ReplayPack:
             else:
                 Kp, eK, how_K = int(K), float(tail[int(K)]), "explicit"
         # ---- the modes
-        scale = (field.B0, abs(field.chi_iso) + abs(field.chi_aniso)) if field.active else field_scale
+        env = self.field_envelope
+        if not (field.active or any_field):
+            scale = None
+        elif env is not None:
+            scale = (env["B0_max"], env["chi_max"])
+        elif field.active:
+            scale = (field.B0, abs(field.chi_iso) + abs(field.chi_aniso))
+        else:
+            scale = False
         if M_st == 0:
             if field.active:
                 raise ValueError(f"pack {self.meta.get('id')!r} declares its susceptibility field present and this replay has a "

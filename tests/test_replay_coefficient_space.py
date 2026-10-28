@@ -92,7 +92,7 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     b0_dir = (0.6, 0.0, 0.8)
     seq_lab, R = field_along(seq, b0_dir)
-    w, ew, E = pk.walker_signals(seq_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
+    w, ew, E = pk.walker_signals(seq_lab, orientation=R, scanner=3.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8), tol=None)
     # the oracle
     ch = pk.meta["compression"]["channels"]; gm = ch["susceptibility_grid"]
     Cf, _ = susc_path_coeffs(pk.arrays, ch["susc_field_basis"])                            # (n_w, 13, K_f) the stored modes

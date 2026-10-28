@@ -40,8 +40,8 @@ def _W(pack, wf):
 def test_gradient_replay_is_the_mode_space_contraction(packs):
     full, plain = packs
     wf = _wf(plain.n_t, plain.dt)
-    np.testing.assert_allclose(plain.replay(wf), replay_signal(plain, _W(plain, wf)), rtol=1e-12)
-    np.testing.assert_allclose(full.replay(wf), replay_signal(full, _W(full, wf)), rtol=1e-12)
+    np.testing.assert_allclose(plain.replay(wf, tol=None), replay_signal(plain, _W(plain, wf)), rtol=1e-12)     # every stored band: the reference's
+    np.testing.assert_allclose(full.replay(wf, tol=None), replay_signal(full, _W(full, wf)), rtol=1e-12)
 
 
 def test_relaxation_applies_the_packs_per_pool_rates(packs):
@@ -58,7 +58,7 @@ def test_relaxation_applies_the_packs_per_pool_rates(packs):
     C = read_position_coeffs(full.arrays, dtype=np.float64)
     phi = C.reshape(C.shape[0], -1) @ W
     ref = np.abs((np.exp(logw)[:, None] * np.exp(1j * phi)).sum(0) / C.shape[0])
-    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(T2=T2, T1=T1)), ref, rtol=1e-12)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(T2=T2, T1=T1), tol=None), ref, rtol=1e-12)
     assert full.replay(wf, tissue=Tissue(T2=T2, T1=T1))[0] < full.replay(wf)[0]         # T2 costs signal, also at b = 0
     with pytest.raises(ValueError, match="no compartment channel"):
         plain.replay(wf, tissue=Tissue(T2=T2))
@@ -84,8 +84,8 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
     rho2 = 1e-5
     from dmipy_sim.replay._replay_kernel import bin_gate
     ref = replay_signal(full, W, rho2_over_D=rho2 / D0, gate=np.ones(wf.n_t), dt_gate=wf.dt)   # contact after the echo is not in it
-    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2)), ref, rtol=1e-12)
-    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2, D=D0)), ref, rtol=1e-12)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2), tol=None), ref, rtol=1e-12)
+    np.testing.assert_allclose(full.replay(wf, tissue=Tissue(rho2=rho2, D=D0), tol=None), ref, rtol=1e-12)
     with pytest.raises(ValueError, match="no C2"):
         plain.replay(wf, tissue=Tissue(rho2=rho2))
     np.testing.assert_array_equal(full.replay(wf, scanner=3.0), full.replay(wf))      # its spec declares no field source
@@ -94,7 +94,7 @@ def test_surface_relaxivity_uses_the_recorded_diffusivity(packs):
 def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
     full, _ = packs
     wf_fine = _wf(4 * full.n_t, full.dt / 4)                            # the same pulses, four times the samples
-    fine = full.replay(wf_fine)
+    fine = full.replay(wf_fine, tol=None)
     np.testing.assert_allclose(fine, replay_signal(full, _W(full, wf_fine)), rtol=1e-12)   # resampled onto the pack grid
     same = full.replay(_wf(full.n_t, full.dt))
     np.testing.assert_allclose(fine, same, rtol=0.1)                    # two discretisations of one waveform
