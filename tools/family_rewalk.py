@@ -386,7 +386,6 @@ class Slab(Family):
     KAPPAS = (1.0e-5, 1.0e-4)
     CHI = -1.0e-7                      #: compartment B's chi_iso: the off-resonant layer
     FIELD_NODES = 400
-    FIELD_ROUTE = "grid"               #: the layer's basis is a raster read at the walker's position
 
     def __init__(self, args):
         super().__init__(args)
@@ -489,10 +488,6 @@ class Cactus(Family):
         tests = WalkContext(spec).tests
         probe = np.random.default_rng(99).uniform(tests.lo, tests.hi, (int(self.args.n_probe), 3))
         return {tests.pools[pid].name: float(tests.member(pid)(probe).mean()) * float(tests.wf[pid]) for pid in tests.seeded}
-
-    #: How a mesh sheath's field reaches the walk: a raster (``FieldGrid``) read at the walker's position. The CUDA
-    #: backend samples a strand basis only (``CudaBackend.refuses``), so a CUDA walk of this family refuses its field.
-    FIELD_ROUTE = "grid"
 
     def pool_costs(self, name, backend):
         """``{pool: WalkCost}`` of each diffusing pool's walk, the geometry ``walk_spec`` walks it in (inside its
@@ -668,12 +663,9 @@ def stage_plan(fam, args):
         if not ok and args.backend != "jax":         # the resolution is the walk's whatever executes it
             ok_j, c = _backend_check(fam, name, "jax")
             c = c if ok_j else None
-        field_refusal = None
-        if getattr(fam, "FIELD_ROUTE", None) == "grid" and args.backend == "cuda":
-            field_refusal = "the field is read from a FieldGrid, and the CUDA backend samples a StrandFieldBasis only"
         row = dict(name=name, id=sub["id"], n_walkers=n, counts=counts,
                    se_bound=toggle_proof_bound(fam.shares(name), counts), backend=args.backend,
-                   accepted=bool(ok) and field_refusal is None, refusal=refusal, field_refusal=field_refusal,
+                   accepted=bool(ok), refusal=refusal,
                    pilot=pilot)
         if c is not None and not isinstance(c, str):
             row.update(sub_steps=int(c.sub_steps), dt_sim_s=float(c.dt_sim), n_blocks=int(c.n_blocks),
