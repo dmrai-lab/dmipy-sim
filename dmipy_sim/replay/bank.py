@@ -433,7 +433,7 @@ def voxel_floor(pack, grid, waveform, *, shells=None, **replay_knobs):
         raise ValueError("the per-pool floor needs the pack's compartment channel")
     col = next(c for c in ch["compartment"]["columns"] if c["name"] == "comp")
     ids = occupancy_events(pack.arrays, col)[0]                                  # the pool at the walk's start
-    w, ew, E = pack.walker_signals(waveform, **replay_knobs)
+    w, ew, E = pack.walker_signals(waveform, tol=None, **replay_knobs)
     n_w, n_m = E.shape
     ijk, inside = grid.bin(pack.r0)
     flat = np.where(inside, np.ravel_multi_index(tuple(np.clip(ijk, 0, np.asarray(grid.shape) - 1).T), grid.shape), -1)
@@ -912,7 +912,7 @@ def has_susc_path(arrays):
     return any(k.startswith("susc_path_dct") for k in arrays)
 
 
-def susc_path_coeffs(arrays, meta):
+def susc_path_coeffs(arrays, meta, modes=None):
     """Dequantised C3 coefficients in the canonical channel order -- ``(n_w, n_ch_full, K)``, twelve channels
     (``iso_local``, five ``iso_P``, six ``aniso_G``) or the six isotropic ones: a component the pack leaves out
     (``zero_components``, an absent ``aniso_G`` block) is zero. ``iso_P_zz`` is not a channel here: the contraction
@@ -923,33 +923,78 @@ def susc_path_coeffs(arrays, meta):
     scale lives in ``susc_path_scale`` (see :func:`susc_path_encode`), so reading it raw yields
     integers ~1e3 off with no error -- every consumer goes through here.
 
+    ``modes`` reads the lowest ``modes`` field modes only, ``(n_w, n_ch_full, modes)``: bit for bit the leading modes of
+    the full decode, and only those modes are dequantised (a prefix is held and extended as
+    :func:`~dmipy_sim.replay.compression.read_position_coeffs`' bands are).
+
     Of a pack's ``arrays`` (:class:`~dmipy_sim.replay.decoded.PackArrays`) the result is decoded once per descriptor
     and returned read-only, with a fresh ``names`` list (:func:`~dmipy_sim.replay.compression.read_position_coeffs`)."""
     import json
-    C, names = _cx._decoded_once(arrays, "susc_path_coeffs", json.dumps(meta, sort_keys=True, default=str), ("susc_path",),
-                                 lambda: _susc_path_coeffs(arrays, meta))
-    return C, list(names)
+    K_f = path_mode_count(arrays, meta)
+    if modes is not None and not 1 <= int(modes) <= K_f:
+        raise ValueError(f"modes = {modes} is outside 1 .. {K_f}, the field modes the pack stores (no modes is no read)")
+    desc = json.dumps(meta, sort_keys=True, default=str)
+    if modes is None or int(modes) == K_f:
+        C, names = _cx._decoded_once(arrays, "susc_path_coeffs", desc, ("susc_path",),
+                                     lambda: _susc_path_coeffs(arrays, meta))
+        return C, list(names)
+    cache = getattr(arrays, "decoded", None)
+    if cache is not None:
+        full = cache.peek("susc_path_coeffs", desc, {k: v for k, v in arrays.items() if k.startswith("susc_path")})
+        if full is not None:
+            return full[0][:, :, :int(modes)], list(full[1])
+    C = _cx._decoded_prefix(arrays, "susc_path_prefix", desc, ("susc_path",), int(modes),
+                            lambda lo, hi: _susc_path_coeffs(arrays, meta, lo, hi)[0], axis=2)
+    return C, list(_susc_path_expanded_names(meta))
 
 
-def _susc_path_coeffs(arrays, meta):
+def path_mode_count(arrays, meta):
+    """The field modes the path channel stores per walker and channel: its container's last mode, else the tensor's."""
+    if meta.get("container") is not None:
+        return int(meta["container"][-1]["modes"][1])
+    return int(np.shape(arrays["susc_path_dct"])[2])
+
+
+def _susc_path_names(meta):
+    names = list(meta["channels"])
+    _refuse_trace_component(names)
+    return names
+
+
+def _susc_path_expanded_names(meta):
+    """The channel names of the decoded array: the canonical twelve or six when the pack stores a subset of them."""
+    names = _susc_path_names(meta)
+    if names and all(n in _PATH_CHANNELS for n in names):
+        return list(_PATH_CHANNELS if any(n.startswith("aniso_G") for n in names) else _ISO_PATH_CHANNELS)
+    return names
+
+
+def _susc_path_coeffs(arrays, meta, lo=0, hi=None):
+    """The decode of modes ``lo .. hi - 1`` (all of them by default) and the channel names."""
+    K_f = path_mode_count(arrays, meta)
+    hi = K_f if hi is None else int(hi)
+    lo = int(lo)
     if meta.get("container") is not None:
         parts = []
         for i, r in enumerate(meta["container"]):
+            k0, k1 = int(r["modes"][0]), int(r["modes"][1])
+            a0, a1 = max(k0, lo), min(k1, hi)
+            if a1 <= a0:
+                continue
             t = np.swapaxes(np.asarray(arrays[_cx.range_name("susc_path_dct", i, r["bits"])]), 1, 2)
-            parts.append(np.swapaxes(np.asarray(_cx._load_range(t, int(r["bits"]), int(r["modes"][1] - r["modes"][0])), np.float64), 1, 2))
+            parts.append(np.swapaxes(np.asarray(_cx._load_range(t, int(r["bits"]), a1 - a0, a0 - k0), np.float64), 1, 2))
         C = np.concatenate(parts, axis=2)
     else:
-        C = np.asarray(arrays["susc_path_dct"], np.float64)
+        C = np.asarray(arrays["susc_path_dct"], np.float64)[:, :, lo:hi]
     if "susc_path_scale" in arrays:
-        S = np.asarray(arrays["susc_path_scale"], np.float64)
+        S = np.asarray(arrays["susc_path_scale"], np.float64)[..., lo:hi]
         if S.ndim == 3:                                            # a merged pack: one scale table per shard, walkers by block
             blk = np.asarray(arrays["band_block"], np.int64)
             for b in np.unique(blk):
                 C[blk == b] *= S[b][None]
         else:
             C = C * S[None]
-    names = list(meta["channels"])
-    _refuse_trace_component(names)
+    names = _susc_path_names(meta)
     if names and all(n in _PATH_CHANNELS for n in names):
         full = list(_PATH_CHANNELS if any(n.startswith("aniso_G") for n in names) else _ISO_PATH_CHANNELS)
         if names != full:
@@ -1839,13 +1884,14 @@ def susc_path_decode(arrays, meta, *, n_t, n_w=None, n_cut=None, start=0, edges=
     return C @ D, names
 
 
-def path_field_integral(arrays, meta, waveform, T, *, t0=None, n_w=None):
+def path_field_integral(arrays, meta, waveform, T, *, t0=None, n_w=None, modes=None):
     """The gated path integral of every field channel per walker, ``(Psi (n_w, n_ch), names)``: ``Psi = gamma int
     gate(t) b(t) dt = gamma sum_k g_k c_k`` with ``g_k`` the gate's cosine projection on the window ``[t0, t0 + T]``
     (:func:`~dmipy_sim.replay.compression.cosine_projection`; Parseval, RPK.md 9.5.4) and ``c_k`` the stored modes.
-    The names are in the canonical order, what :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` reads."""
+    The names are in the canonical order, what :func:`~dmipy_sim.fields.hollow_cylinder.field_terms` reads. ``modes``
+    sums the lowest ``modes`` field modes only (the plan's, :meth:`~dmipy_sim.replay.replay.ReplayPack.plan`)."""
     from ..constants import GAMMA
-    Cs, names = susc_path_coeffs(arrays, meta)
+    Cs, names = susc_path_coeffs(arrays, meta, modes)
     if tuple(names) not in (tuple(_PATH_CHANNELS), tuple(_ISO_PATH_CHANNELS)):
         raise ValueError(f"the path channels are stored as {names}, not in the canonical order {tuple(_PATH_CHANNELS)}")
     if n_w is not None:

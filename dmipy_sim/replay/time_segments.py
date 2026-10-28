@@ -934,7 +934,7 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude, ref
                          background=False)
     n = view.n_walkers
     if tiers:
-        prim = view.walker_primitives(Acquisition(gate_seq))
+        prim = view.walker_primitives(Acquisition(gate_seq), tol=None)
         if prim.exposure_t2 is not None:
             e2 = np.asarray(prim.exposure_t2); e1 = np.asarray(prim.exposure_t1)
             if not np.allclose(e2.max(1), e2.sum(1)):
