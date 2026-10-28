@@ -83,7 +83,8 @@ def test_the_contact_certificate_is_read_at_the_stated_relaxivity(walk, disco_li
     wider = _pack(walk, rho2_list=[1e-5], B0_list=[1.5, 3.0, 7.0])
     for pk, rho2 in ((disco_like, 3e-6), (wider, 1e-5)):
         assert pk.fidelity["quadrature"]["surface_rho_over_D"] == _round_sig(rho2 / D, 6)         # written as the certificate is
-        assert pk.fidelity["err_quadrature_surface"] == _surface_quadrature(pk, rho2) > 0
+        assert pk.fidelity["err_quadrature_surface"] > 0
+        assert pk.fidelity["err_quadrature_surface"] == pytest.approx(_surface_quadrature(pk, rho2), rel=2e-6)   # to its sixth digit
     assert disco_like.rho2_over_D_max == pytest.approx(3e-6 / D) and wider.rho2_over_D_max == pytest.approx(1e-5 / D)
     assert disco_like.fidelity["surface_rho2_list"] == [3e-6]
 
