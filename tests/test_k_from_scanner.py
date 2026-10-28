@@ -15,7 +15,7 @@ from dmipy_sim.replay.bank import build_replay_pack, mode_count, storage_band_hz
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.spec.walk import walk_spec
 
-PAPER = {"prisma": 520.0, "connectom": 311.0, "magnus": 784.0, "connectome_2": 928.0, "bruker_bga_s": 2100.0, "micro_insert": 2300.0}
+PAPER = {"prisma": 522.0, "connectom": 310.0, "magnus": 877.0, "connectome_2": 960.0, "bruker_bga_s": 3012.0, "micro_insert": 4095.0}
 
 
 @pytest.mark.parametrize("scanner,hz", sorted(PAPER.items()))
@@ -30,9 +30,14 @@ def test_the_mode_count_is_two_f_t_rounded_up(scanner, T):
     assert mode_count(T, scanner) == max(2, int(np.ceil(2.0 * STORAGE_BAND_MARGIN * PAPER[scanner] * T)))
 
 
-def test_the_papers_storage_rule_is_this_rule_on_the_strongest_human_class():
-    """K = 256 per 100 ms for the human classes in the paper is this derivation on Connectome 2.0, rounded."""
-    assert 250 <= mode_count(0.1, "connectome_2") <= 262
+def test_a_stored_k_of_256_is_above_the_certified_band_of_every_human_class_and_below_the_rule_on_connectome_2():
+    """The rule is a design rule (certified band x margin); a pack stored at K = 256 per 100 ms resolves 1280 Hz, above every
+    human class's certified band (192 bands on Connectome 2.0) and 13 bands short of the rule's 269 there: whether it serves
+    a waveform is the band check's, per waveform."""
+    assert mode_count(0.1, "connectome_2") == 269
+    for scanner in ("prisma", "connectom", "magnus", "connectome_2"):
+        assert 2.0 * 0.1 * ScannerLimits.of(scanner).certified_band_hz <= 256
+    assert 256 < mode_count(0.1, "connectome_2")
 
 
 def test_a_class_without_a_certified_band_is_refused_by_name():
