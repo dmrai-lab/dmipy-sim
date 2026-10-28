@@ -42,16 +42,13 @@ def _labels(scale=1e-6, n=40_000, seed=0):
     pj = np.asarray(P * scale, np.float32)
     lab = np.asarray(_classify_batch(mesh._A, pj)).astype(bool)
     pop = np.asarray(_populated_batch(mesh._A, pj))
-    # the nearest-centroid rule over the same gather, for the self-guard
+    # the nearest-centroid rule (over every triangle of the soup, a superset of any gather), for the self-guard
     tri = np.asarray(soup.triangles, float)
     cent, nrm = tri.mean(1), np.asarray(soup.face_normals, float)
-    reach = 1.5 * float(mesh.cell_size) / scale
-    near = []
-    for p in P[pop]:
-        k = np.flatnonzero(np.all(np.abs(cent - p) < 3 * reach, axis=1))
-        j = k[np.argmin(((cent[k] - p) ** 2).sum(1))]
-        near.append(np.dot(p - cent[j], nrm[j]) < 0)
-    return truth, lab, pop, np.asarray(near, bool)
+    Q = P[pop]
+    j = np.argmin(((Q[:, None, :] - cent[None]) ** 2).sum(2), axis=1)
+    near = ((Q - cent[j]) * nrm[j]).sum(1) < 0
+    return truth, lab, pop, near
 
 
 def test_the_closest_triangle_classifies_every_point_with_a_wall_in_reach():
