@@ -24,6 +24,6 @@ def test_a_field_channel_without_its_record_replays_as_with_it(field_pack):
     assert "aniso_G_xx" in pk.meta["compression"]["channels"]["susc_field_basis"]["channels"]
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 1e-4, 4e-4, bvalues=[5e8, 5e8], TE=8e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     bare = _without_record(pk)
-    np.testing.assert_array_equal(bare.replay(seq, scanner=3.0, tissue=TISSUE), pk.replay(seq, scanner=3.0, tissue=TISSUE))
+    np.testing.assert_array_equal(bare.replay(seq, scanner=3.0, tissue=TISSUE, tol=None), pk.replay(seq, scanner=3.0, tissue=TISSUE, tol=None))
     iso = Tissue(chi_iso=-1e-7, chi_aniso=0.0)
-    assert not np.array_equal(bare.replay(seq, scanner=3.0, tissue=TISSUE), bare.replay(seq, scanner=3.0, tissue=iso))
+    assert not np.array_equal(bare.replay(seq, scanner=3.0, tissue=TISSUE, tol=None), bare.replay(seq, scanner=3.0, tissue=iso, tol=None))

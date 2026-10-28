@@ -40,7 +40,7 @@ def test_a_batch_of_different_gates_is_each_member_alone(field_pack, method):
         np.testing.assert_array_equal(pr.misfit, alone.misfit)
         if method == "closed":
             for R in so3.haar_rotations(4, 5):
-                np.testing.assert_allclose(pr.at(R), pk.replay(wf, orientation=R, complex_signal=True, **KW), atol=2e-6)
+                np.testing.assert_allclose(pr.at(R), pk.replay(wf, orientation=R, complex_signal=True, **KW, tol=None), atol=2e-6)
 
 
 def test_one_gate_is_one_pass_and_one_field_factor(field_pack, monkeypatch):

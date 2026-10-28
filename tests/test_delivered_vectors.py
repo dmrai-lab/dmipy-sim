@@ -99,7 +99,7 @@ def _direct(merged, grid, placed, sc, seq, ijk):
         kappa = sc.b1_scale((placed.positions_m(ijk) - np.asarray(placed.isocenter_m)))
     out = np.zeros((len(ijk), seq.n_meas))
     for k in range(len(ijk)):
-        w, ew, E = merged.walker_signals(played[cls[k]], tissue=TISSUE, scanner=sc)
+        w, ew, E = merged.walker_signals(played[cls[k]], tissue=TISSUE, scanner=sc, tol=None)      # the layout is certified against the whole pack
         sel = v == flat[k]
         out[k] = np.abs((ew[sel, None] * E[sel]).sum(0) / w[sel].sum())
         if kappa is not None:

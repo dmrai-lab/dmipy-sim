@@ -54,7 +54,7 @@ def test_the_expansion_is_the_direct_posed_replay_at_every_rotation(pack, seq):
     pr = pack.pose_response(seq, method="closed")
     assert pr.n_samples == 0 and pr.misfit.max() < 1e-7                # nothing sampled; the tail is the bound
     for R in so3.haar_rotations(16, 3):
-        np.testing.assert_allclose(pr.at(R), pack.replay(seq, orientation=R, complex_signal=True), atol=1e-8)
+        np.testing.assert_allclose(pr.at(R), pack.replay(seq, orientation=R, complex_signal=True, tol=None), atol=1e-8)
 
 
 def test_the_closed_form_agrees_with_the_quadrature_route_to_its_misfit(pack, seq):
@@ -117,7 +117,7 @@ def test_the_closed_form_composes_the_direct_replay_on_a_real_pack(myelin_pack):
     # and the n = 0 column composes the same signal as the direct replay averaged over the roll about an axis
     axis = np.array([0.3, 0.5, 0.81]); axis /= np.linalg.norm(axis)
     rolls = np.linspace(0, 2 * np.pi, 24, endpoint=False)
-    direct = np.mean([pk.replay(seq30, orientation=so3.rotation_of(axis, roll=r), complex_signal=True) for r in rolls], axis=0)
+    direct = np.mean([pk.replay(seq30, orientation=so3.rotation_of(axis, roll=r), complex_signal=True, tol=None) for r in rolls], axis=0)
     composed = pr.compose(Distribution.axis(axis, 8, 0))
     np.testing.assert_allclose(composed, direct, atol=3e-3)                  # order 8 of a kappa ~ 20 response: the ODF band
 
@@ -154,7 +154,7 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     # the two routes form the same phases in float32 on different paths: a rounding of a few ulps of the largest phase
     f32 = 4 * float(np.finfo(np.float32).eps) * max(1.0, float(pc.phase_amplitude))
     for R in so3.haar_rotations(6, 2):
-        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw), atol=max(2e-6, f32))
+        np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw, tol=None), atol=max(2e-6, f32))
     pq = pk.pose_response(seq_y, method="quadrature", pose=R_y, **kw)
     for d in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
         np.testing.assert_allclose(pc.compose(d), pq.compose(d), atol=3 * pq.misfit.max())
@@ -163,7 +163,7 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     pp = pk.pose_response(seq_x, method="closed", keep=(8, 0), pose=R_x, **kw)
     for R in so3.haar_rotations(2, 9):
         full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
-        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw), atol=max(2e-6, f32))
+        np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw, tol=None), atol=max(2e-6, f32))
     assert np.isfinite(pp.coeffs).all()
 
 
@@ -180,7 +180,7 @@ def test_a_machines_nearly_single_direction_waveform_takes_the_closed_form_withi
     pr = pack.pose_response(played, method="closed")
     assert pr.route == "closed" and 0 < pr.misfit.max() < 0.1 / np.sqrt(pack.n_walkers)
     for R in so3.haar_rotations(12, 5):
-        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
+        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True, tol=None))
         assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)
     strong = base.with_concomitant(np.array([0.03, 0.05, 0.06]), 0.02)       # a 20 mT magnet: the residual is large
     assert pack.pose_response(strong).route != "closed"
@@ -196,7 +196,7 @@ def test_the_residual_bound_is_the_ensembles(pack):
     pr = pack.pose_response(played)
     assert pr.route == "closed" and 1e-3 < pr.misfit.max() < 0.1 / np.sqrt(pack.n_walkers)
     for R in so3.haar_rotations(12, 5):
-        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True))
+        err = np.abs(pr.at(R) - pack.replay(played, orientation=R, complex_signal=True, tol=None))
         assert np.all(err <= pr.misfit + 1e-8), (err, pr.misfit)
 def _g0(strength):
     u = np.array([0.3, -0.5, 0.81])
@@ -221,9 +221,9 @@ def test_a_magnets_own_gradient_is_a_second_plane_wave_in_closed_form(pack, kind
     assert pr.misfit.max() < 1e-7
     moved = 0.0
     for R in so3.haar_rotations(12, 5):
-        direct = pack.replay(played, orientation=R, complex_signal=True)
+        direct = pack.replay(played, orientation=R, complex_signal=True, tol=None)
         assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8), (np.abs(pr.at(R) - direct), pr.misfit)
-        moved = max(moved, np.abs(direct - pack.replay(base, orientation=R, complex_signal=True)).max())
+        moved = max(moved, np.abs(direct - pack.replay(base, orientation=R, complex_signal=True, tol=None)).max())
     assert moved > 1e-2                                                      # and the background is not a perturbation here
 
 
@@ -246,7 +246,7 @@ def test_the_background_turns_with_the_specimen(pack, seq):
     R_s = so3.rotation_of((0.2, -0.4, 0.89), roll=0.7)
     pr = pack.pose_response(played, method="closed", pose=R_s)
     for R in so3.haar_rotations(6, 8):
-        direct = pack.replay(played, orientation=R_s @ R, complex_signal=True)
+        direct = pack.replay(played, orientation=R_s @ R, complex_signal=True, tol=None)
         assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8)
 
 
@@ -261,7 +261,7 @@ def test_the_background_and_the_field_compose_in_closed_form(myelin_pack):
     pc = pk.pose_response(played, method="closed", pose=R_y, **kw)
     assert pc.route == "closed" and pc.field_lmax >= 2 and pc.background_lmax >= 2
     for R in so3.haar_rotations(12, 2):
-        np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw), atol=2e-6)
+        np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw, tol=None), atol=2e-6)
 
 
 @pytest.fixture(scope="module")
@@ -299,7 +299,7 @@ def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pa
     assert pr.route == "closed" and pr.background_lmax >= 1
     assert pr.misfit.max() < 0.1 / np.sqrt(long_pack.n_walkers)
     for R in so3.haar_rotations(12, 11):
-        err = np.abs(pr.at(R) - long_pack.replay(p, orientation=R, complex_signal=True))
+        err = np.abs(pr.at(R) - long_pack.replay(p, orientation=R, complex_signal=True, tol=None))
         assert np.all(err <= pr.misfit + 2e-8), (err, pr.misfit)
 
 
@@ -347,7 +347,7 @@ def test_a_shell_of_delivered_amplitudes_is_one_body_in_powers_of_its_amplitude(
         np.testing.assert_allclose(series.coeffs, each.coeffs, atol=2e-9)
     full = pack.pose_response(played, method="closed")
     for R in so3.haar_rotations(4, 13):
-        assert np.all(np.abs(full.at(R) - pack.replay(played, orientation=R, complex_signal=True)) <= full.misfit + 2e-8)
+        assert np.all(np.abs(full.at(R) - pack.replay(played, orientation=R, complex_signal=True, tol=None)) <= full.misfit + 2e-8)
 
 
 @pytest.mark.parametrize("machine", [None, "siemens_magnetom_prisma_3T", "hyperfine_swoop_64mT"])
@@ -372,7 +372,7 @@ def test_the_misfit_bounds_what_the_grouping_and_the_rounding_leave_out(pack, ma
     for one in played:
         pr = pack.pose_response(one, method="closed")
         for R in so3.haar_rotations(6, 5):
-            err = np.abs(pr.at(R) - pack.replay(one, orientation=R, complex_signal=True))
+            err = np.abs(pr.at(R) - pack.replay(one, orientation=R, complex_signal=True, tol=None))
             assert np.all(err <= pr.misfit + 1e-12), (err - pr.misfit).max()
 
 

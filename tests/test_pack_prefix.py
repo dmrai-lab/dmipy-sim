@@ -113,8 +113,8 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     se = sequences.pgse([[0, 0, 1]], 0.15 * TE, 0.5 * TE, gradient_strengths=[0.01], TE=TE, n_t=4000)
     gre = sequences.gre(TE, n_t=4000)
     for seq in (se, gre):
-        S_p = parent.replay(seq, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)
-        S_h = half.replay(seq, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)
+        S_p = parent.replay(seq, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True, tol=None)
+        S_h = half.replay(seq, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True, tol=None)
         np.testing.assert_allclose(S_h, S_p, atol=3 * half.meta["fidelity"]["err_max"] + 5e-4)
     # the gradient echo by hand on the parent: the block means over the first n_t' blocks only, +1 throughout
     b, _ = susc_path_decode(parent.arrays, parent.meta["compression"]["channels"]["susc_field_basis"], n_t=parent.n_t)
@@ -122,7 +122,7 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     n_cut = half.n_t
     phi = GAMMA * parent.dt * dB[:, 1:n_cut].sum(1)
     S_hand = np.exp(1j * phi).mean()
-    S_p = parent.replay(gre, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)[0]
+    S_p = parent.replay(gre, scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True, tol=None)[0]
     assert abs(S_p - S_hand) < 5e-3
     phi_full = GAMMA * parent.dt * dB[:, 1:].sum(1)                                # what a gate over the whole walk would integrate
     assert abs(S_p - np.exp(1j * phi_full).mean()) > 5e-2 or abs(S_hand - np.exp(1j * phi_full).mean()) < 5e-3

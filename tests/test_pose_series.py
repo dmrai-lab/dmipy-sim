@@ -125,7 +125,7 @@ def test_the_misfit_bounds_the_direct_posed_replay(walk_pack, field_pack, field)
     for k in (0, len(played) - 1):
         for Q in so3.haar_rotations(4, seed=k):
             # the lab acquisition replayed with the specimen at its pose and the substrate at Q within it
-            direct = pack.replay(played[k], orientation=(R @ Q) if field else Q, complex_signal=True,
+            direct = pack.replay(played[k], orientation=(R @ Q) if field else Q, complex_signal=True, tol=None,
                                  **({} if not field else dict(scanner=0.064, tissue=TISSUE)))
             err = np.abs(got[k].at(Q) - direct)
             assert np.all(err <= got[k].misfit + 2e-8), (err, got[k].misfit)
@@ -257,5 +257,5 @@ def test_the_brain_packs(machine, kind, tissue):
     assert max(r.misfit.max() for r in got) < 0.1 * series.floor
     full = pack.pose_series(played, backend="torch", **kw).responses(select=[len(played) - 1])[0]
     for Q in so3.haar_rotations(3, seed=1):
-        direct = pack.replay(played[-1], orientation=Q, complex_signal=True, **kw)
+        direct = pack.replay(played[-1], orientation=Q, complex_signal=True, **kw, tol=None)
         assert np.all(np.abs(full.at(Q) - direct) <= full.misfit + TORCH_ROUNDING)
