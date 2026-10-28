@@ -247,9 +247,218 @@ class Shards:
         raise IOError(f"cannot fetch {name}")
 
 
+def _no_grid(name):
+    return ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel) and no voxel grid is given: the grid is "
+                      "the recipe's (consolidate(grid=...), --manifest), or the shards are packed with voxel_grid=")
+
+
+def certify_voxels(name, pk, grid):
+    """``pk.meta`` of a shard on the recipe's ``grid``: a shard with a per-voxel certificate must be on that grid; one
+    without is certified here (:func:`~dmipy_sim.replay.bank.voxel_certificate`), and the voxel its walker states (a
+    writer's walker-leading ``voxel_ijk``) is checked against the binning of its start."""
+    from ..replay.bank import _agree, voxel_certificate
+    from ..phantom.grid import Grid
+    meta = pk.meta; pv = (meta.get("fidelity") or {}).get("per_voxel")
+    if pv is not None:
+        if grid is not None and not _agree(Grid.from_meta(pv["grid"]).to_meta(), grid.to_meta()):
+            raise ValueError(f"shard {name}: its per-voxel grid {pv['grid']!r} is not the recipe's {grid.to_meta()!r}")
+        return meta
+    if grid is None:
+        raise _no_grid(name)
+    stated = pk.arrays.get("voxel_ijk")
+    arrays, pv = voxel_certificate(pk, grid)
+    if stated is not None and np.asarray(stated).shape == (int(meta["walk_params"]["n_walkers"]), 3):
+        ijk, _ = grid.bin(pk.r0)
+        elsewhere = int((np.asarray(stated, np.int64) != ijk).any(axis=1).sum())
+        if elsewhere:                  # a seed on a voxel face, binned into the neighbour once its start is stored
+            log.warning("%s: %d of %d walkers start in another voxel than the one they were seeded for", name, elsewhere, len(ijk))
+        pv["binned_off_stratum"] = elsewhere
+    pk.arrays = {**pk.arrays, **arrays}
+    meta = json.loads(json.dumps(meta)); meta["fidelity"] = dict(meta.get("fidelity") or {}, per_voxel=pv); pk.meta = meta
+    return meta
+
+
+def columns_of(k, x, band_groups, path_groups):
+    """The layout's columns of rows ``x`` of tensor ``k``: the float positions as their two ends and their
+    ``band_groups``, the float field modes as their ``path_groups``, any other tensor as itself."""
+    if k in ("pos_x", "pos_y", "pos_z"):
+        lo, out = 0, {f"{k}_ends": x[:, :2]}
+        for g, hi in enumerate(band_groups):
+            out[f"{k}_b{g}"] = x[:, 2 + lo:2 + hi]; lo = hi
+        return out
+    if k == "susc_path_dct":
+        lo, out = 0, {}
+        for g, hi in enumerate(path_groups):
+            out[f"susc_path_m{g}"] = x[:, :, lo:hi]; lo = hi
+        return out
+    return {k: x}
+
+
+def _canonical(x):
+    return json.dumps(x, sort_keys=True)
+
+
+class PreparedBlock:
+    """One shard's share of the layout, all :meth:`Consolidator.append` needs and nothing the layout accumulates: the
+    shard's identity and certified meta, the grid its rows are sorted on, its band and mode sums, its scale tables
+    and band blocks, its (voxel, pool) row ranges, its certificate rows and its columns in (voxel, pool) order. Made
+    by :func:`prepare_block` from a pack, whose columns are gathered from the pack as :meth:`chunks` reads them, or by
+    :meth:`load` from what :meth:`save` wrote, whose columns are read from the saved files a range of rows at a time:
+    the two append to the same bytes."""
+
+    RECORD = "block.pkl"
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+    def chunks(self):
+        """The shard's columns in row order, ``(column, rows)``, a range of rows at a time: the ranges a pass over the
+        pack's tensors reads (:data:`~dmipy_sim.replay.compression.SLICE_BYTES` of each tensor's rows)."""
+        if self.directory is None:
+            for k, rows, _ in self.groups:
+                v = self.tensors[k]
+                for a in range(0, self.n, rows):
+                    yield from columns_of(k, np.asarray(v[self.order[a:a + rows]]), self.band_groups, self.path_groups).items()
+            return
+        mm = {c: np.load(os.path.join(self.directory, "columns", f"{c}.npy"), mmap_mode="r") for c, _, _ in self.columns}
+        for _, rows, cols in self.groups:
+            for a in range(0, self.n, rows):
+                for c in cols:
+                    yield c, mm[c][a:a + rows]
+
+    def save(self, path):
+        """The block written under ``path`` (its record and one ``.npy`` file per column), atomically: the directory
+        appears complete or not at all. Returns the saved block, read back with :meth:`load`."""
+        import pickle
+        import shutil
+        part = path + ".part"
+        shutil.rmtree(part, ignore_errors=True); os.makedirs(os.path.join(part, "columns"))
+        fh, dts = {}, {c: np.dtype(dt) for c, dt, _ in self.columns}
+        for c, dt, shape in self.columns:
+            fh[c] = open(os.path.join(part, "columns", f"{c}.npy"), "wb")
+            np.lib.format.write_array_header_1_0(fh[c], {"descr": np.lib.format.dtype_to_descr(dts[c]), "fortran_order": False,
+                                                         "shape": (self.n, *shape)})
+        for c, x in self.chunks():
+            fh[c].write(np.ascontiguousarray(x, dtype=dts[c]).tobytes())
+        for f in fh.values():
+            f.flush(); os.fsync(f.fileno()); f.close()
+        record = {k: v for k, v in self.__dict__.items() if k not in ("tensors", "order", "directory")}
+        with open(os.path.join(part, self.RECORD), "wb") as f:
+            pickle.dump(record, f, protocol=pickle.HIGHEST_PROTOCOL); f.flush(); os.fsync(f.fileno())
+        if os.path.exists(path):
+            shutil.rmtree(path)
+        os.replace(part, path)
+        return PreparedBlock.load(path)
+
+    @classmethod
+    def load(cls, path):
+        """The block :meth:`save` wrote under ``path``."""
+        import pickle
+        with open(os.path.join(path, cls.RECORD), "rb") as f:
+            record = pickle.load(f)
+        return cls(**record, tensors=None, order=None, directory=path)
+
+
+def shard_identity(pk, grid=None):
+    """What every shard of one layout shares: its walk (block and window table), codec, substrate, envelope, the
+    grid it is certified on (its own per-voxel certificate's, else the recipe's ``grid``; None when neither) and the
+    names of its tensors."""
+    from ..replay.bank import _codec_signature, _spec_identity, _walk_identity, _envelope_identity
+    meta = pk.meta
+    return dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
+                substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
+                grid=(meta["fidelity"].get("per_voxel") or {}).get("grid") or (None if grid is None else grid.to_meta()),
+                names=sorted(k for k in pk.arrays if k not in ("band_block", "voxel_ijk", "voxel_certificate")))
+
+
+def prepare_block(name, pk, grid=None, layout_grid=None):
+    """Shard ``pk`` (named ``name``) prepared for :meth:`Consolidator.append`: certified on the recipe's ``grid`` when
+    it carries no per-voxel certificate (:func:`certify_voxels`), its walkers binned by start on ``layout_grid`` (a
+    grid's meta: the layout's; None: the shard's own) and ordered by (voxel, pool), its band and mode variances summed
+    over the walkers and maximised over its populated voxels, a walker range at a time. Everything here is the
+    shard's own: shards prepare independently and in any order, and append in the layout's."""
+    from ..replay.bank import field_read_record, _MEASURED_CHANNEL_KEYS
+    from ..replay.compression import SLICE_BYTES, read_position_coeffs, slice_walkers, walker_rows
+    from ..phantom.grid import Grid
+    meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
+    ident = shard_identity(pk, grid)
+    if ident["grid"] is None:
+        raise _no_grid(name)
+    meta = certify_voxels(name, pk, grid)
+    layout_grid = ident["grid"] if layout_grid is None else layout_grid
+    band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
+    pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
+    path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
+    bins = Grid.from_meta(layout_grid)
+    ijk, inside = bins.bin(pk.r0)
+    if not inside.all():
+        raise ValueError(f"{name}: {int((~inside).sum())} walkers start outside the certificate grid")
+    pool = np.asarray(pk.arrays[POOL_KEY]).astype(np.int64) if POOL_KEY in pk.arrays else np.zeros(n, np.int64)
+    vox = np.ravel_multi_index(ijk.T, bins.shape)
+    order = np.lexsort((pool, vox)); vox, pool = vox[order], pool[order]
+    # the band and mode variances the read predicates use: the walker sum, the worst populated voxel, read a walker
+    # range at a time
+    vs = np.flatnonzero(np.r_[True, vox[1:] != vox[:-1]]); counts = np.diff(np.r_[vs, n])
+    cell = np.empty(n, np.int64); cell[order] = np.repeat(np.arange(len(vs)), counts)    # each walker's voxel
+    band_sq, per_vox = None, None
+    step = slice_walkers(pk.arrays)
+    for a in range(0, n, step):
+        C2 = read_position_coeffs(walker_rows(pk.arrays, a, a + step), dtype=np.float64)[:, 2:, :] ** 2
+        band_sq = C2.sum(axis=0) if band_sq is None else band_sq + C2.sum(axis=0)
+        o = np.argsort(cell[a:a + step], kind="stable"); c_ = cell[a:a + step][o]
+        first = np.flatnonzero(np.r_[True, c_[1:] != c_[:-1]])
+        if per_vox is None:
+            per_vox = np.zeros((len(vs),) + C2.shape[1:])
+        per_vox[c_[first]] += np.add.reduceat(C2[o], first, axis=0)
+        del C2
+    del cell
+    per_vox /= counts[:, None, None]
+    band_max = np.max(per_vox[counts >= 100], axis=0) if (counts >= 100).any() else None
+    del per_vox
+    from ..replay.bank import has_susc_path
+    path_sq = None
+    if has_susc_path(pk.arrays):
+        from ..replay.bank import susc_path_coeffs
+        for a in range(0, n, step):
+            s_ = (np.asarray(susc_path_coeffs(walker_rows(pk.arrays, a, a + step), pm)[0], np.float64) ** 2).sum(axis=0)
+            path_sq = s_ if path_sq is None else path_sq + s_
+    # the scale tables with their block axis; every row's block within the shard
+    scale_keys = [k for k in pk.arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]
+    table = lambda k: (np.asarray(pk.arrays[k])[None] if (k.split("/")[-1] == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
+    scales = {k: table(k) for k in scale_keys}
+    nb = int(scales[scale_keys[0]].shape[0]) if scale_keys else 0
+    blk = (np.asarray(pk.arrays["band_block"], np.int64) if "band_block" in pk.arrays else np.zeros(n, np.int64))[order]
+    # the per-row columns, gathered in the row order a range of rows at a time
+    tensors = {k: v for k, v in pk.arrays.items() if not (k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys)}
+    for k, v in tensors.items():
+        if np.shape(v)[:1] != (n,):
+            raise ValueError(f"{name}: array {k!r} is not walker-leading")
+    groups, columns = [], []
+    for k, v in tensors.items():
+        probe = columns_of(k, np.asarray(v[:1]), band_groups, path_groups)
+        groups.append((k, max(1, int(SLICE_BYTES // max(1, np.asarray(v[:1]).nbytes))), list(probe)))
+        columns += [(c, x.dtype.str, tuple(x.shape[1:])) for c, x in probe.items()]
+    key = vox * 8 + pool
+    starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]]); ends = np.r_[starts[1:], n]
+    ranges = [(int(vox[s]), int(pool[s]), int(s), int(e)) for s, e in zip(starts, ends)]
+    seed = meta["walk_params"]["seed"]; read = field_read_record(meta)
+    return PreparedBlock(
+        name=name, n=n, ident=ident, meta=meta, layout_grid=layout_grid, band_groups=band_groups, path_groups=path_groups,
+        band_sq=band_sq, band_max=band_max, path_sq=path_sq, scales=scales, n_blocks=nb, band_block=blk, ranges=ranges,
+        cert=(np.asarray(pk.arrays["voxel_ijk"], np.int64), np.asarray(pk.arrays["voxel_certificate"], np.float64),
+              [int(p) for p in meta["fidelity"]["per_voxel"]["pools"]]),
+        fid=dict(meta.get("fidelity") or {}),
+        chan={c: {k: m.get(k) for k in _MEASURED_CHANNEL_KEYS} for c, m in (meta["compression"].get("channels") or {}).items() if isinstance(m, dict)},
+        seed=[int(x) for x in seed] if isinstance(seed, (list, tuple)) else int(seed), read=read,
+        prov=dict(id=meta.get("id"), n_walkers=n, shard=name, rounds=(meta.get("provenance") or {}).get("shards"),
+                  **({} if read is None else dict(field_read_interval=read["interval"]))),
+        groups=groups, columns=columns, tensors=tensors, order=order, directory=None)
+
+
 class Consolidator:
-    """The streaming pass: ``add(name, pack)`` per shard in block order, ``checkpoint`` after each, ``finish(id)``
-    at the end (the tables, the index, the manifest); ``resume`` picks a checkpoint up."""
+    """The streaming pass: ``add(name, pack)`` per shard in block order -- or each shard prepared apart
+    (:func:`prepare_block`, in any order and any process) and ``append``-ed in block order -- ``checkpoint`` after
+    each, ``finish(id)`` at the end (the tables, the index, the manifest); ``resume`` picks a checkpoint up."""
 
     def __init__(self, out_dir, cap_bytes=1e9, uploader=None, scratch=None, grid=None):
         self.out, self.cap = out_dir, cap_bytes
@@ -265,156 +474,73 @@ class Consolidator:
         self.repaired = None
 
     # ---- a shard
-    @staticmethod
-    def no_grid(name):
-        return ValueError(f"shard {name} carries no per-voxel certificate (fidelity.per_voxel) and no voxel grid is given: the grid is "
-                          "the recipe's (consolidate(grid=...), --manifest), or the shards are packed with voxel_grid=")
-
-    def certify_voxels(self, name, pk):
-        """``pk.meta`` of a shard on the recipe's grid: a shard with a per-voxel certificate must be on that grid; one
-        without is certified here (:func:`~dmipy_sim.replay.bank.voxel_certificate`), and the voxel its walker
-        states (a writer's walker-leading ``voxel_ijk``) is checked against the binning of its start."""
-        from ..replay.bank import _agree, voxel_certificate
-        from ..phantom.grid import Grid
-        meta = pk.meta; pv = (meta.get("fidelity") or {}).get("per_voxel")
-        if pv is not None:
-            if self.recipe_grid is not None and not _agree(Grid.from_meta(pv["grid"]).to_meta(), self.recipe_grid.to_meta()):
-                raise ValueError(f"shard {name}: its per-voxel grid {pv['grid']!r} is not the recipe's {self.recipe_grid.to_meta()!r}")
-            return meta
-        if self.recipe_grid is None:
-            raise self.no_grid(name)
-        stated = pk.arrays.get("voxel_ijk")
-        arrays, pv = voxel_certificate(pk, self.recipe_grid)
-        if stated is not None and np.asarray(stated).shape == (int(meta["walk_params"]["n_walkers"]), 3):
-            ijk, _ = self.recipe_grid.bin(pk.r0)
-            elsewhere = int((np.asarray(stated, np.int64) != ijk).any(axis=1).sum())
-            if elsewhere:                  # a seed on a voxel face, binned into the neighbour once its start is stored
-                log.warning("%s: %d of %d walkers start in another voxel than the one they were seeded for", name, elsewhere, len(ijk))
-            pv["binned_off_stratum"] = elsewhere
-        pk.arrays = {**pk.arrays, **arrays}
-        meta = json.loads(json.dumps(meta)); meta["fidelity"] = dict(meta.get("fidelity") or {}, per_voxel=pv); pk.meta = meta
-        return meta
-
-    def _columns_of(self, k, x):
-        """The layout's columns of rows ``x`` of tensor ``k``: the float positions as their two ends and their band
-        groups, the float field modes as their mode groups, any other tensor as itself."""
-        if k in ("pos_x", "pos_y", "pos_z"):
-            lo, out = 0, {f"{k}_ends": x[:, :2]}
-            for g, hi in enumerate(self.band_groups):
-                out[f"{k}_b{g}"] = x[:, 2 + lo:2 + hi]; lo = hi
-            return out
-        if k == "susc_path_dct":
-            lo, out = 0, {}
-            for g, hi in enumerate(self.path_groups):
-                out[f"susc_path_m{g}"] = x[:, :, lo:hi]; lo = hi
-            return out
-        return {k: x}
-
     def add(self, name, pk):
-        from ..replay.bank import _codec_signature, _agree, _spec_identity, _walk_identity, _envelope_identity, field_read_record, _MEASURED_CHANNEL_KEYS
-        from ..replay.compression import SLICE_BYTES, read_position_coeffs, slice_walkers, walker_rows
+        """Shard ``pk`` appended: prepared on the layout's grid (:func:`prepare_block`) and appended (:meth:`append`)."""
+        self._refuse_other(name, shard_identity(pk, self.recipe_grid))
+        self.append(prepare_block(name, pk, self.recipe_grid, None if self.ident0 is None else self.ident0["grid"]))
+
+    def _refuse_other(self, name, ident):
+        """Refused when shard ``name``'s :func:`shard_identity` differs from the layout's first, naming the key."""
+        from ..replay.bank import _agree
+        if self.meta0 is None:
+            return
+        for k, v in ident.items():
+            if not _agree(v, self.ident0[k]):
+                where = k
+                if isinstance(v, dict) and isinstance(self.ident0[k], dict):      # name the key that differs
+                    diff = sorted(set(v) ^ set(self.ident0[k]) | {j for j in set(v) & set(self.ident0[k])
+                                                                   if not _agree(v[j], self.ident0[k][j])})
+                    where = ", ".join(f"{k}.{j}" for j in diff) or k
+                raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
+                                 "layout are one walk's, on one block and one window table")
+
+    def append(self, block):
+        """A :class:`PreparedBlock` appended after the rows so far: refused unless it is the same walk, codec,
+        substrate, envelope, grid and tensors as the first; its band and mode sums added, its scale tables and band
+        blocks after the earlier ones, its columns and (voxel, pool) row ranges after the earlier rows."""
         from ..phantom.grid import Grid
-        meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
+        name, ident, n = block.name, block.ident, block.n
         # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
         # shard's own, else the recipe's)
-        ident = dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
-                     substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
-                     grid=(meta["fidelity"].get("per_voxel") or {}).get("grid") or (None if self.recipe_grid is None else self.recipe_grid.to_meta()),
-                     names=sorted(k for k in pk.arrays if k not in ("band_block", "voxel_ijk", "voxel_certificate")))
         if self.meta0 is not None:
-            for k, v in ident.items():
-                if not _agree(v, self.ident0[k]):
-                    where = k
-                    if isinstance(v, dict) and isinstance(self.ident0[k], dict):      # name the key that differs
-                        diff = sorted(set(v) ^ set(self.ident0[k]) | {j for j in set(v) & set(self.ident0[k])
-                                                                       if not _agree(v[j], self.ident0[k][j])})
-                        where = ", ".join(f"{k}.{j}" for j in diff) or k
-                    raise ValueError(f"shard {name} differs in {where}: {self.ident0[k]!r} vs {v!r}; the shards of one "
-                                     "layout are one walk's, on one block and one window table")
-        if ident["grid"] is None:
-            raise self.no_grid(name)
-        meta = self.certify_voxels(name, pk)
-        if self.meta0 is None:
-            self.meta0, self.ident0 = json.loads(json.dumps(meta)), ident
+            self._refuse_other(name, ident)
+            if _canonical(block.layout_grid) != _canonical(self.ident0["grid"]):
+                raise ValueError(f"shard {name} was prepared on the grid {block.layout_grid!r}, the layout's is {self.ident0['grid']!r}")
+            if (tuple(block.band_groups), tuple(block.path_groups)) != (tuple(self.band_groups), tuple(self.path_groups)):
+                raise ValueError(f"shard {name}: band groups {block.band_groups} and path groups {block.path_groups} differ from "
+                                 f"the layout's {self.band_groups} and {self.path_groups}")
+        else:
+            self.meta0, self.ident0 = json.loads(json.dumps(block.meta)), ident
             self.grid = Grid.from_meta(ident["grid"])
-            self.band_groups = band_groups_of(int(meta["compression"]["K"]), meta["compression"].get("container") or [])
-            pm = (meta["compression"].get("channels") or {}).get("susc_field_basis")
-            self.path_groups = path_groups_of(int(pm["K"]), pm.get("container")) if pm else ()
-        ijk, inside = self.grid.bin(pk.r0)
-        if not inside.all():
-            raise ValueError(f"{name}: {int((~inside).sum())} walkers start outside the certificate grid")
-        pool = np.asarray(pk.arrays[POOL_KEY]).astype(np.int64) if POOL_KEY in pk.arrays else np.zeros(n, np.int64)
-        vox = np.ravel_multi_index(ijk.T, self.grid.shape)
-        order = np.lexsort((pool, vox)); vox, pool = vox[order], pool[order]
-        # the band and mode variances the read predicates use: the walker average, the worst populated voxel, read a
-        # walker range at a time
-        vs = np.flatnonzero(np.r_[True, vox[1:] != vox[:-1]]); counts = np.diff(np.r_[vs, n])
-        cell = np.empty(n, np.int64); cell[order] = np.repeat(np.arange(len(vs)), counts)    # each walker's voxel
-        s, per_vox = None, None
-        step = slice_walkers(pk.arrays)
-        for a in range(0, n, step):
-            C2 = read_position_coeffs(walker_rows(pk.arrays, a, a + step), dtype=np.float64)[:, 2:, :] ** 2
-            s = C2.sum(axis=0) if s is None else s + C2.sum(axis=0)
-            o = np.argsort(cell[a:a + step], kind="stable"); c_ = cell[a:a + step][o]
-            first = np.flatnonzero(np.r_[True, c_[1:] != c_[:-1]])
-            if per_vox is None:
-                per_vox = np.zeros((len(vs),) + C2.shape[1:])
-            per_vox[c_[first]] += np.add.reduceat(C2[o], first, axis=0)
-            del C2
-        self.acc["band_sq"] = s if self.acc["band_sq"] is None else self.acc["band_sq"] + s; self.acc["band_n"] += n
-        per_vox /= counts[:, None, None]
-        if (counts >= 100).any():
-            m = np.max(per_vox[counts >= 100], axis=0)
-            self.acc["band_max"] = m if self.acc["band_max"] is None else np.maximum(self.acc["band_max"], m)
-        del per_vox
-        from ..replay.bank import has_susc_path
-        if has_susc_path(pk.arrays):
-            from ..replay.bank import susc_path_coeffs
-            pm = meta["compression"]["channels"]["susc_field_basis"]
-            s = None
-            for a in range(0, n, step):
-                s_ = (np.asarray(susc_path_coeffs(walker_rows(pk.arrays, a, a + step), pm)[0], np.float64) ** 2).sum(axis=0)
-                s = s_ if s is None else s + s_
-            self.acc["path_sq"] = s if self.acc["path_sq"] is None else self.acc["path_sq"] + s; self.acc["path_n"] += n
-        # the scale tables with their block axis; every row's block
-        scale_keys = [k for k in pk.arrays if k.endswith("_band_scale") or k.split("/")[-1] == "susc_path_scale"]
-        table = lambda k: (np.asarray(pk.arrays[k])[None] if (k.split("/")[-1] == "susc_path_scale" and np.asarray(pk.arrays[k]).ndim == 2) else np.asarray(pk.arrays[k]))
-        nb = int(table(scale_keys[0]).shape[0]) if scale_keys else 0
-        blk = (np.asarray(pk.arrays["band_block"], np.int64) if "band_block" in pk.arrays else np.zeros(n, np.int64))[order] + self.n_blocks
-        for k in scale_keys:
-            self.scales.setdefault(k, []).append(table(k))
-        self.n_blocks += nb
-        # the per-row columns, appended in the row order a range of rows at a time
-        tensors = {k: v for k, v in pk.arrays.items() if not (k in ("voxel_ijk", "voxel_certificate", "band_block") or k in scale_keys)}
-        for k, v in tensors.items():
-            if np.shape(v)[:1] != (n,):
-                raise ValueError(f"{name}: array {k!r} is not walker-leading")
-        probe = {c: x for k, v in tensors.items() for c, x in self._columns_of(k, np.asarray(v[:1])).items()}
-        names = sorted(["band_block", *probe])
+            self.band_groups, self.path_groups = tuple(block.band_groups), tuple(block.path_groups)
+        self.acc["band_sq"] = block.band_sq if self.acc["band_sq"] is None else self.acc["band_sq"] + block.band_sq
+        self.acc["band_n"] += n
+        if block.band_max is not None:
+            self.acc["band_max"] = block.band_max if self.acc["band_max"] is None else np.maximum(self.acc["band_max"], block.band_max)
+        if block.path_sq is not None:
+            self.acc["path_sq"] = block.path_sq if self.acc["path_sq"] is None else self.acc["path_sq"] + block.path_sq
+            self.acc["path_n"] += n
+        for k, t in block.scales.items():
+            self.scales.setdefault(k, []).append(t)
+        blk = block.band_block + self.n_blocks
+        self.n_blocks += block.n_blocks
+        names = sorted(["band_block", *(c for c, _, _ in block.columns)])
         if self.columns and names != sorted(self.columns):
             raise ValueError(f"{name}: columns {names} differ from the first shard's {sorted(self.columns)}")
-        for c, x in [("band_block", blk[:1].astype(np.uint16)), *probe.items()]:
+        for c, dt, shape in [("band_block", np.dtype(np.uint16).str, ()), *block.columns]:
             if c not in self.columns:
-                self.columns[c] = Column(c, x.dtype, x.shape[1:], self.out, self.cap, lambda p, rec: self.up.put(p, rec["file"]))
+                self.columns[c] = Column(c, np.dtype(dt), shape, self.out, self.cap, lambda p, rec: self.up.put(p, rec["file"]))
         self.columns["band_block"].append(blk.astype(np.uint16))
-        for k, v in tensors.items():
-            rows = max(1, int(SLICE_BYTES // max(1, np.asarray(v[:1]).nbytes)))
-            for a in range(0, n, rows):
-                for c, x in self._columns_of(k, np.asarray(v[order[a:a + rows]])).items():
-                    self.columns[c].append(x)
-        key = vox * 8 + pool
-        starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]]); ends = np.r_[starts[1:], n]
-        self.index += [(int(vox[s]), int(pool[s]), self.n_rows + int(s), self.n_rows + int(e)) for s, e in zip(starts, ends)]
+        for c, x in block.chunks():
+            self.columns[c].append(x)
+        self.index += [(v, p, self.n_rows + s, self.n_rows + e) for v, p, s, e in block.ranges]
         self.n_rows += n
-        self.certs.append((np.asarray(pk.arrays["voxel_ijk"], np.int64), np.asarray(pk.arrays["voxel_certificate"], np.float64),
-                           [int(p) for p in meta["fidelity"]["per_voxel"]["pools"]]))
-        self.fid.append(dict(meta.get("fidelity") or {}))
-        self.chan.append({c: {k: m.get(k) for k in _MEASURED_CHANNEL_KEYS} for c, m in (meta["compression"].get("channels") or {}).items() if isinstance(m, dict)})
-        seed = meta["walk_params"]["seed"]
-        self.seeds.append([int(x) for x in seed] if isinstance(seed, (list, tuple)) else int(seed))
-        read = field_read_record(meta); self.reads.append(read)
-        self.prov.append(dict(id=meta.get("id"), n_walkers=n, shard=name, rounds=(meta.get("provenance") or {}).get("shards"),
-                              **({} if read is None else dict(field_read_interval=read["interval"]))))
+        self.certs.append(block.cert)
+        self.fid.append(block.fid)
+        self.chan.append(block.chan)
+        self.seeds.append(block.seed)
+        self.reads.append(block.read)
+        self.prov.append(block.prov)
         self.done.append(name)
 
     # ---- checkpoint and resume
