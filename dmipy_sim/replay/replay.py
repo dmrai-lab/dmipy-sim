@@ -1336,7 +1336,7 @@ class ReplayPack:
         if P["B0"] is None:                                                          # a field term of zero (field_term)
             return phi
         ch, b0_dir, B0, chi_aniso = P["ch"], P["b0_dir"], P["B0"], P["chi_aniso"]
-        gm = ch["susceptibility_grid"]
+        gm = ch.get("susceptibility_grid")
         chi_i = float(P["chi_iso"])
         if ch.get("susc_field_basis") is None:
             raise ValueError("this replay has a field term and the pack carries no field channel (C3)")
@@ -1516,13 +1516,13 @@ class ReplayPack:
         from .bank import susc_path_decode, susc_path_field
         if P["B0"] is None:
             return np.zeros((P["n_w"], int(n_s)))                                     # a field term of zero (field_term)
-        gm = P["ch"]["susceptibility_grid"]
+        gm = P["ch"].get("susceptibility_grid")
         pm = P["ch"].get("susc_field_basis")
         if pm is None:
             raise ValueError("this replay has a field term and the pack carries no field channel (C3)")
         b, _ = susc_path_decode(self.arrays, pm, n_t=int(n_s), n_w=P["n_w"])
         return susc_path_field(b, P["b0_dir"], B0=float(P["B0"]), chi_iso=float(P["chi_iso"]),
-                               chi_aniso=P["chi_aniso"], has_aniso=bool(gm.get("has_aniso")))
+                               chi_aniso=P["chi_aniso"], has_aniso=_has_aniso(gm, pm.get("channels")))
 
     def _prepare(self, waveform, *, tissue, scanner, orientation, compartment, relaxation=True, surface=True,
                  pathway=True):
@@ -3512,9 +3512,10 @@ def _path_field_channels(P, waveform):
 
 
 def _has_aniso(grid_meta, names):
-    """Whether the pack's field channels carry the anisotropic basis: the grid meta says so AND the channel names
-    hold it."""
-    return bool((grid_meta or {}).get("has_aniso")) and names is not None and "aniso_G_xx" in names
+    """Whether the pack's field channels carry the anisotropic basis: the channel names hold it, and the field
+    record, where the pack carries one, says so too."""
+    held = names is not None and "aniso_G_xx" in names
+    return held and (grid_meta is None or bool(grid_meta.get("has_aniso")))
 
 
 def _signal_factor(phi, voxel):
