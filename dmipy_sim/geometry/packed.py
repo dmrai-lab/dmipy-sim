@@ -10,7 +10,7 @@ import numpy as np
 
 from ..math.step_law import LONGEST_STEP
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
-                        BounceLoop, WallHit, bounce_budget)
+                        BounceLoop, WallHit, bounce_budget, nudge_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
@@ -100,8 +100,8 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             raw = q[kh] + t_safe * d
             n_out = raw / jnp.maximum(jnp.linalg.norm(raw), _TINY)
             rem_a = rem - t_safe
-            d_perp = jnp.where(any_hit, rem_a * jnp.sqrt(jnp.maximum(disc[kh], f32(0.0))) / R_hit,
-                               f32(0.0))
+            cos_a = jnp.sqrt(jnp.maximum(disc[kh], f32(0.0))) / R_hit
+            d_perp = jnp.where(any_hit, rem_a * cos_a, f32(0.0))
             stay_in = in_own & (kh == kc)
             transmit = any_hit & (us[i] < transmit_probability(kappa_over_D, d_perp))
             d_refl = specular(d, n_out)
@@ -112,7 +112,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             p_new = jnp.where(reflecting, pp + (q_off - q[kh]), pp + rem * d)
             d_new = jnp.where(reflecting, d_refl, d)
             rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
-            dlw = jnp.stack([jnp.where(reflecting, -f32(2.0) * rho_over_D * d_perp, f32(0.0)),
+            dlw = jnp.stack([jnp.where(reflecting, -rho_over_D * (f32(2.0) * d_perp + nudge_push(nudge, cos_a, rem_a)), f32(0.0)),
                              transmit.astype(f32)])
             return p_new, d_new, rem_new, state, dlw, transmit, reflecting
 

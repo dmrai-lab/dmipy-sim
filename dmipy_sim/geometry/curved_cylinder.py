@@ -104,7 +104,7 @@ def _interior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
     rem = specular((1.0 - tau) * step, n)
     r_start = off_wall(exit_, n, True, NUDGE)
     r_end = r_start + rem
-    d_perp = jnp.abs(((1.0 - tau) * step) @ n)
+    d_perp = jnp.abs(((1.0 - tau) * step) @ n) + jnp.float32(0.5) * NUDGE     # the contact and, as half a push, the nudge
     return r_start, rem, r_end, jnp.where(leaves, d_perp, jnp.float32(0.0)), leaves
 
 
@@ -163,7 +163,8 @@ def _exterior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
     r_start = off_wall(entry, nhat, False, NUDGE)
     rem_ref = rem_ax + specular(rem_p, nhat)
     hit = inside.any()
-    return r_start, rem_ref, r_start + rem_ref, jnp.where(hit, jnp.abs(rem_p @ nhat), jnp.float32(0.0)), hit
+    # the contact and, as half a push, the nudge (the path is not shortened by it)
+    return r_start, rem_ref, r_start + rem_ref, jnp.where(hit, jnp.abs(rem_p @ nhat) + jnp.float32(0.5) * NUDGE, jnp.float32(0.0)), hit
 
 
 def _reflect_exterior(r, step, A, AB, AB2, rr, valid, NUDGE):
@@ -322,15 +323,17 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         dt = d
         dt = jnp.where(d >= hi, 2.0 * hi - d - NUDGE, dt)  # mirror at the band's outer wall
         dt = jnp.where(d <= lo, 2.0 * lo - d + NUDGE, dt)  # mirror at the band's inner wall
-        d_perp = jnp.maximum(jnp.where(jnp.isfinite(hi), d - hi, jnp.float32(-1.0)), jnp.float32(0.0)) \
-            + jnp.where(lo > 0, jnp.maximum(lo - d, jnp.float32(0.0)), jnp.float32(0.0))       # the overshoot past either edge
+        over_hi = jnp.maximum(jnp.where(jnp.isfinite(hi), d - hi, jnp.float32(-1.0)), jnp.float32(0.0))
+        over_lo = jnp.where(lo > 0, jnp.maximum(lo - d, jnp.float32(0.0)), jnp.float32(0.0))
+        # the overshoot past either edge, and for each edge met the nudge the mirror sets the walker off by (half a push)
+        d_perp = over_hi + over_lo + jnp.float32(0.5) * NUDGE * ((over_hi > 0).astype(jnp.float32) + (over_lo > 0).astype(jnp.float32))
         # Equality counts as the wrong side for BOTH neighbours (see _boundary): a walker
         # landing exactly on r_in or r_out belongs to neither band, and the strict `>` / `<`
         # used here previously left that tie unresolved -- the same defect that let walkers
         # change compartment without moving in the analytic geometries (#86). A mirror alone
         # also has no guarantee, so clamp the result into [lo, hi] explicitly.
         dt_c = jnp.clip(dt, lo + NUDGE, jnp.where(jnp.isfinite(hi), hi - NUDGE, dt))
-        return Q + dt_c * n, d_perp, (d_perp > 0).astype(jnp.int32), dt_c != dt
+        return Q + dt_c * n, d_perp, ((over_hi + over_lo) > 0).astype(jnp.int32), dt_c != dt
 
     def init_positions(self, n_walkers, key, pool=None):
         """Walkers seeded uniformly in the shell ``pool`` (default: the geometry's ``pool``) along the strand."""

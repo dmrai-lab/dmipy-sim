@@ -191,6 +191,20 @@ def off_wall(r_hit, n_out, stay_inside, nudge):
     return r_hit + jnp.where(stay_inside, -nudge, nudge) * n_out
 
 
+def nudge_push(nudge, cos_a, rem_a):
+    """The displacement a nudge adds to a reflection, along the wall's normal, away from the wall.
+
+    A reflecting wall sets the walker ``nudge`` off the wall and takes ``nudge`` off the rest of the step: ``rem_a``,
+    what is left after the hit, becomes ``rem_a - min(nudge, rem_a)``. The walker ends ``nudge - cos_a min(nudge,
+    rem_a)`` further from the wall than the ideal specular reflection leaves it (``cos_a = |d . n|``, the same before
+    and after a specular reflection). That displacement is the wall's push as much as the ideal reflection's
+    ``2 d_perp`` is, and the boundary local time is the sum of the pushes: a nudge that is not counted is a deficit of
+    about ``nudge / step`` in the local time of every curved wall. A rule that does not shorten the step passes
+    ``rem_a = 0`` and its push is the nudge itself.
+    """
+    return nudge - cos_a * jnp.minimum(nudge, jnp.maximum(rem_a, jnp.float32(0.0)))
+
+
 def step_off_wall(r_hit, n_out, stay_inside, d_refl, remaining, nudge):
     """``off_wall`` then travel the remaining path along ``d_refl``.
 

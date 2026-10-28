@@ -45,7 +45,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
-from ._boundary import BounceLoop, wall_hit, specular, transmit_probability, off_wall
+from ._boundary import BounceLoop, wall_hit, specular, transmit_probability, off_wall, nudge_push
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -1331,10 +1331,12 @@ class Mesh(Geometry):
             r_new = jnp.where(do_reflect, off_wall(r_hit, nf, False, nudge), r0 + rem * dh)
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
-            dperp_refl = jnp.where(do_reflect & jnp.logical_not(use_box), rho_mult * d_perp,
+            # the wall's push: the ideal reflection's 2 d_perp and the displacement the nudge adds along the facet normal
+            push = 2.0 * d_perp + nudge_push(nudge, jnp.maximum(jnp.dot(d_ref, nf), 0.0), rem - d)
+            dperp_refl = jnp.where(do_reflect & jnp.logical_not(use_box), rho_mult * push,
                                    jnp.float32(0.0))
             return (r_new, d_new, rem_new, (decided | first_hit, idx),
-                    -2.0 * jnp.float32(rho_over_D) * dperp_refl, transmit, do_reflect)
+                    -jnp.float32(rho_over_D) * dperp_refl, transmit, do_reflect)
 
         b = self.bounce_loop(rule, r_w, d_hat, step_l, state_init=(jnp.zeros((), bool), jnp.int32(-1)))
         dlogw, crossed_f = b.dlog_w, b.crossed

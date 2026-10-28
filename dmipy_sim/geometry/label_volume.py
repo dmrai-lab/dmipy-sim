@@ -33,7 +33,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import BounceLoop, WallHit, representable_nudge, transmit_probability
+from ._boundary import BounceLoop, WallHit, representable_nudge, transmit_probability, nudge_push
 from .base import Geometry, LengthScales, permeability_of
 
 #: The reflection rule of this family: ``step_l <= min(voxel_size) / SPECULAR_STEP_FRACTION``, one
@@ -414,7 +414,8 @@ class LabelVolume(Geometry):
             sgn_new = jnp.where(reflect, sgn_r, sgn)
             tn_new = jnp.where(reflect, tn_r, tn_adv)
             td_new = jnp.where(reflect, td_r, t_delta)
-            dlog_inc = -jnp.where(reflect & real_wall, 2.0 * rho_over_D * d_perp, jnp.float32(0.0))
+            dlog_inc = -jnp.where(reflect & real_wall,
+                                  rho_over_D * (2.0 * d_perp + nudge_push(nudge, jnp.abs(u[ax]), rem - t)), jnp.float32(0.0))
 
             # arrival wins over everything: the plane is beyond the end of the step
             p_end = p + rem * u

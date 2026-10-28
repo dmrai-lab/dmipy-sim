@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
-                        BounceLoop)
+                        BounceLoop, nudge_push)
 
 from .base import Geometry, LengthScales, acquisition_rotation
 from ..compartments import Compartments, Pool
@@ -134,8 +134,8 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             raw = q[kh] + t_safe * d
             n_out = raw / jnp.maximum(jnp.linalg.norm(raw), _TINY)
             rem_a = rem - t_safe
-            d_perp = jnp.where(any_hit, rem_a * jnp.sqrt(jnp.maximum(disc_h, f32(0.0)))
-                               / jnp.maximum(R_hit, _TINY), f32(0.0))
+            cos_a = jnp.sqrt(jnp.maximum(disc_h, f32(0.0))) / jnp.maximum(R_hit, _TINY)
+            d_perp = jnp.where(any_hit, rem_a * cos_a, f32(0.0))
             stay_in = jnp.where(hit_in, in_lum, own[kh])
             kap = jnp.where(hit_in, ki_c[kh], ko_c[kh])
             D_leave = jnp.where(pool_c == 1, Di_c[kc], jnp.where(pool_c == 2, Dm_c[kc], De_c[kh]))
@@ -152,7 +152,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             sel = jnp.stack([reflecting & hit_in & (pool_c == 1), reflecting & hit_in & (pool_c == 2),
                              reflecting & (~hit_in) & (pool_c == 2),
                              reflecting & (~hit_in) & (pool_c == 0)]).astype(f32)
-            chan = (f32(-2.0) * d_perp) * sel
+            chan = -(f32(2.0) * d_perp + nudge_push(nudge, cos_a, rem_a)) * sel      # the wall's push: the reflection's and the nudge's
             dlog_rho = jnp.sum(chan * w_c[kh])
             code = jnp.where(transmit, jnp.where(hit_in, jnp.where(in_lum, f32(1.0), f32(2.0)),
                                                  jnp.where(pool_c == 2, f32(3.0), f32(4.0))), f32(0.0))
