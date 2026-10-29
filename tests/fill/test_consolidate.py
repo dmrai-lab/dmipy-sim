@@ -200,6 +200,17 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     np.testing.assert_array_equal(C_2, C_full[:, :, :2])
     C_m = susc_path_coeffs(merged.arrays, merged.meta["compression"]["channels"]["susc_field_basis"])[0]
     assert sorted(np.round(np.abs(C_m).sum(axis=(1, 2)), 12)) == sorted(np.round(np.abs(C_full).sum(axis=(1, 2)), 12))
+    # a field replay plans its modes on the storage window (walk_params.windows.T); the field channel's record need
+    # not repeat it (the CUDA walker's packs do not), so the plan reads the window, not the channel
+    import json
+    with open(os.path.join(out, "manifest.json")) as f:
+        man = json.load(f)
+    man["meta"]["compression"]["channels"]["susc_field_basis"].pop("T", None)
+    with open(os.path.join(out, "manifest.json"), "w") as f:
+        json.dump(man, f)
+    pack = ReplayPack.open(out); seq = _seq(merged.n_t)
+    plan = pack.plan(seq, tissue=Tissue(chi_iso=-1e-7), scanner=3.0)
+    assert plan["modes"] in pack.path_groups and pack.plan(seq)["modes"] == 0
 
 
 def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):

@@ -185,10 +185,9 @@ class ColumnarPack:
             return 0, 0.0
         if not self.path_groups:
             raise ValueError("this pair has a field term and the layout stores no field modes (C3 path channel)")
-        pm = self.meta["compression"]["channels"]["susc_field_basis"]
         gate = seq.effective_gate if seq.gate is None else seq.gate
         var = np.asarray(self.meta["columnar"]["path_mode_variance"], np.float64).sum(axis=0)
-        tail = mode_tail(gate, seq.dt, [(float(pm["T"]), None)], self.path_groups[-1], var, f.B0, abs(f.chi_iso) + abs(f.chi_aniso))
+        tail = mode_tail(gate, seq.dt, [(self.T_window, None)], self.path_groups[-1], var, f.B0, abs(f.chi_iso) + abs(f.chi_aniso))
         return fewest(tail, self.path_groups, tol * self.floor)
 
     def plan(self, seq, *, tissue=None, scanner=None, tol=0.25, voxels=None):
