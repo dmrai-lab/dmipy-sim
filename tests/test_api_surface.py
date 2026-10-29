@@ -26,6 +26,8 @@ from dmipy_sim.geometry import Geometry, LengthScales
 from dmipy_sim.geometry._boundary import WallHit
 
 _SRC = Path(dmipy_sim.__file__).parent
+import dmipy_replay  # noqa: E402
+_REPLAY_SRC = Path(dmipy_replay.__file__).parent      # the reader dmipy-sim imports: the same rules hold over its code
 
 # Every module path of the package; downstream (dmipy-fit / dmipy-design) imports a subset of these.
 _DOWNSTREAM_MODULES = [
@@ -330,7 +332,7 @@ def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
 
 # §1.1 -- a class whose instances carry G on a dt grid, or a B1 envelope on one
 _ACQUISITION_CONTAINERS = {
-    "dmipy_sim.acquisition.scanner_sequence.ScannerSequence",     # the one: physical G, the schedule, readout, timing, encoding
+    "dmipy_replay.acquisition.scanner_sequence.ScannerSequence",  # the one: physical G, the schedule, readout, timing, encoding
 }
 
 # §1.1 -- the RF dialect: one. Every builder's events are RFEvent; a dict is read only by from_dict
@@ -345,8 +347,8 @@ _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
 _RF_SIDE_CHANNELS = set()      # #173 piece 6: every consumer reads the object's rf / readout / refocus time
 
 # §1.3 -- the scanner catalogues: ONE source (the cited JSON) and the views derived from it at import
-_SCANNER_SOURCE = {"dmipy_sim.acquisition.scanner_constants.SCANNER_CONSTANTS"}
-_SCANNER_VIEWS = {"dmipy_sim.acquisition.scanners.SCANNERS", "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS"}
+_SCANNER_SOURCE = {"dmipy_replay.acquisition.scanner_constants.SCANNER_CONSTANTS"}
+_SCANNER_VIEWS = {"dmipy_replay.acquisition.scanners.SCANNERS", "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS"}
 
 
 def _class_attribute_names(cls_node):
@@ -371,9 +373,11 @@ def _class_attribute_names(cls_node):
 
 
 def _package_modules():
-    for py in sorted(_SRC.rglob("*.py")):
-        rel = py.relative_to(_SRC.parent).with_suffix("")
-        yield py, ".".join(rel.parts)
+    """Every module of dmipy-sim and of the dmipy-replay it imports, ``(path, dotted name)``."""
+    for src in (_SRC, _REPLAY_SRC):
+        for py in sorted(src.rglob("*.py")):
+            rel = py.relative_to(src.parent).with_suffix("")
+            yield py, ".".join(rel.parts)
 
 
 def test_no_new_acquisition_container():
@@ -445,9 +449,9 @@ def test_nothing_re_derives_from_a_list_of_events():
     """The coherence mask, the spin-echo sign, the refocus and mixing times are RFSchedule's; the free
     functions that each re-derived one of them from a bare list of events are gone, and so is the
     normaliser every reader once called."""
-    import dmipy_sim.acquisition.waveforms as W
+    import dmipy_replay.acquisition.waveforms as W
     import dmipy_sim.sequences.pulseq as Q
-    import dmipy_sim.acquisition.rf as RF
+    import dmipy_replay.acquisition.rf as RF
     for mod, name in ((W, "rf_schedule_coherence"), (W, "effective_gradient_sign"), (Q, "_ste_from_rf_schedule"),
                       (Q, "_longitudinal_mask"), (RF, "as_rf_events")):
         assert not hasattr(mod, name), f"{mod.__name__}.{name} is back; it is RFSchedule's"
