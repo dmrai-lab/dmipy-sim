@@ -600,9 +600,13 @@ class Cactus(Family):
         if cache:
             self._cache_before[name] = bool((self.field_cache_record(name) or {}).get("exists"))
             kw["field_cache"] = cache
+        if getattr(self.args, "field_band", None):             # a stated band: the pack's certificate measures it against the cap
+            kw["K_c3"] = int(self.args.field_band)
+        else:                                                    # a band the pilot derives at half the floor
+            kw["field_target_floor"] = 0.5 * self.floor
         return walk_spec(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
                          K=self.K, window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope,
-                         backend=backend, require_gpu=(backend != "jax"), field_target_floor=0.5 * self.floor, **kw)
+                         backend=backend, require_gpu=(backend != "jax"), **kw)
 
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), pack_license=self.pack_license,
@@ -1018,6 +1022,10 @@ def main(argv=None):
                    help="cactus: exclude the walkers that change pool in the impermeable walk, at most MAX_FRACTION of a "
                         "pool (0.01 when the flag is given bare), recorded in the walk and the pack's certificate "
                         "(walk_spec(drop_pool_changes=)); off by default: a walker that changes pool refuses the walk")
+    p.add_argument("--field-band", type=int, default=None, metavar="K",
+                   help="cactus: the field channel's band, K cosine modes per window (walk_spec(K_c3=)), in place of the "
+                        "band a pilot derives at half the floor; the walk records it as stated and the pack's certificate "
+                        "holds the measured field error to the cap (check --require-stated)")
     p.add_argument("--field-pilot", default=None, choices=("jax",),
                    help="cactus: walk the field pilot by the JAX kernels (walk_spec(field_pilot='jax')); by default it "
                         "walks on --backend")
