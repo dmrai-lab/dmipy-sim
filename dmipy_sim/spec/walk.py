@@ -27,7 +27,8 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
-              field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None):
+              field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
+              field_pilot=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
@@ -113,6 +114,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     rule (:data:`DROP_POOL_CHANGE_RULE`), the bound, the count and fraction, per pool -- which the pack's certificate
     carries (``fidelity["dropped_pool_change"]``). A pool past the bound, or a raw walker among the excluded, is refused.
 
+    ``field_pilot`` is the engine a fixed-step walk's field pilot walks on (:func:`~dmipy_sim.engine.core.simulate_trajectories`
+    ``field_pilot``: None the walk's backend, ``"jax"`` the JAX kernels); the adaptive walk has its own and refuses it.
+
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
@@ -187,6 +191,11 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
             K = mode_count(window_count(T_max, window_T)[1], scanner)
         walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=envelope, bounce_budget=bounce_budget,
                        backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=class_band(scanner))
+        if field_pilot is not None:
+            if adaptive_steps:
+                raise SpecError("field_pilot is the engine the fixed-step walk's field pilot walks on; the adaptive walk "
+                                "calibrates its field reads on its own backend")
+            walk_kw["field_pilot"] = field_pilot
         if not _needs_bundle_walk(spec):
             if drop_pool_changes is not None:
                 raise SpecError("drop_pool_changes excludes the walkers of a multi-surface bundle walk; this spec walks one "
