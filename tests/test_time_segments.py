@@ -410,9 +410,9 @@ def test_the_torch_backend_is_the_jax_image(blocks):
         lay.image(seq, backend="numpy")
 
 
-def test_the_field_direction_is_a_knob_and_its_cache_is_bounded(blocks):
-    """The field direction changes the field phase; the per-direction terms are a bounded LRU (dmipy-sim#517) on the
-    host and the device; a direction asked again after eviction is rebuilt to the same image."""
+def test_the_field_direction_is_a_knob_contracted_in_the_kernel(blocks):
+    """The field direction changes the field phase; it enters the kernel as twelve contraction weights, so a layout
+    holds no per-direction state and a direction asked again is the same image to the bit."""
     lay, merged, grid, n_t, m, tmp = blocks
     seq = _strand_protocol(n_t, 2)
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
@@ -422,14 +422,132 @@ def test_the_field_direction_is_a_knob_and_its_cache_is_bounded(blocks):
     with pytest.raises(ValueError, match="unit"):
         lay.image(seq, tissue=t, scanner=3.0, b0_direction=(0, 0, 2))
     rng = np.random.default_rng(4)
-    dirs = rng.normal(size=(lay.FIELD_DIRECTION_CACHE + 3, 3)); dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+    dirs = rng.normal(size=(7, 3)); dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+    n_dev = len(lay._device)
     for u in dirs:
         lay.image(seq, tissue=t, scanner=3.0, b0_direction=tuple(u))
-        assert len(lay._field_direction_lru) <= lay.FIELD_DIRECTION_CACHE
-        assert len([k for k in lay._host if k.startswith("field_iso_")]) <= lay.FIELD_DIRECTION_CACHE
+    assert len(lay._device) == n_dev and not lay._host
     S_again, _ = lay.image(seq, tissue=t, scanner=3.0, b0_direction=tuple(dirs[0]))
     S_fresh, _ = TimeSegmentLayout(lay.path).image(seq, tissue=t, scanner=3.0, b0_direction=tuple(dirs[0]))
-    np.testing.assert_allclose(S_again, S_fresh, atol=1e-7, equal_nan=True)
+    np.testing.assert_array_equal(S_again, S_fresh)
+
+
+def _backends():
+    out = ["jax"]
+    try:
+        import torch  # noqa: F401
+        out.append("torch")
+    except ImportError:
+        pass
+    return out
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backend):
+    """The kernel's decode of the packed words (a shift up and an arithmetic shift down, times the float32 scale) is
+    the float32 decode of :func:`unpack_words` bit for bit, for a partition's words, the contact and the background;
+    the field channels the kernel contracts are decoded in float64 (exact: a code of at most 24 bits times a float32
+    scale) and summed in channel order with the direction's weights, bit for bit the host's same products in the same
+    order."""
+    from dmipy_sim.fields.hollow_cylinder import iso_weights, q_of_H
+    from dmipy_sim.replay.time_segments import (_decode, _device_field_spec, _field_terms_of_words, _layout_of, _x64,
+                                                 unpack_words)
+    lay, merged, grid, n_t, m, tmp = blocks
+    g = m["partitions"]["se"]["group"]
+    cols = TimeSegmentLayout.columns(m)
+    tw = np.asarray(lay._column(f"t_{g}"))
+    coded = [(np.asarray(lay._column("p_se")), _layout_of(m["partitions"]["se"])), (tw, _layout_of(m["groups"][g]["tier_words"]))]
+    if f"bg_{g}" in cols:
+        coded.append((np.asarray(lay._column(f"bg_{g}")), _layout_of(m["groups"][g]["background"])))
+    if backend == "torch":
+        import torch
+        dev = lambda a: torch.as_tensor(a.view(np.int32))
+        host = lambda a: a.numpy()
+    else:
+        import jax.numpy as jnp
+        dev = lambda a: jnp.asarray(a.view(np.int32))
+        host = np.asarray
+    for col, (layout, scale) in coded:
+        sc = scale if backend == "jax" else __import__("torch").as_tensor(scale)
+        ref = unpack_words(col, scale, layout)
+        for f, v in enumerate(_decode(dev(col), sc, layout)):
+            if v is not None:
+                assert host(v).dtype == np.float32
+                np.testing.assert_array_equal(host(v), ref[..., f])
+    u = np.array([0.6, -0.3, 0.74]); u /= np.linalg.norm(u)
+    spec = lay._field_spec(g, u, 1.0, 1.0)
+    assert spec is not None and len(spec[0]) == len(m["groups"][g]["field"]["stored"])
+    with _x64(backend):
+        iso, aniso = _field_terms_of_words(dev(tw), _device_field_spec(spec, backend, "cpu"), backend == "torch")
+        iso = host(iso)
+        aniso = None if aniso is None else host(aniso)
+    layout, scale, names = lay._tier_code(g)
+    ch = m["groups"][g]["field"]["channels"]
+    wts = dict(zip(ch[:6], iso_weights(u))); wts.update(zip(ch[6:12], q_of_H(u)))
+    t32 = tw.view(np.int32)
+    ref = {}
+    for nm in [c for c in ch if c in names]:
+        w_, off, b = layout[names.index(nm)]
+        k = (t32[..., w_] << (32 - off - b)) >> (32 - b)
+        term = k.astype(np.float64) * np.float64(scale[names.index(nm)]) * wts[nm]
+        key = "iso" if nm in ch[:6] else "aniso"
+        ref[key] = term if key not in ref else ref[key] + term
+    assert iso.dtype == np.float64
+    np.testing.assert_array_equal(iso, ref["iso"])
+    if "aniso" in ref:
+        np.testing.assert_array_equal(aniso, ref["aniso"])
+
+
+@pytest.mark.parametrize("backend", _backends())
+def test_a_streamed_image_is_the_resident_image_to_the_bit(blocks, backend):
+    """``resident=False`` reads and uploads each chunk of every column on its own and keeps nothing; its image is the
+    resident one to the bit -- bare, with every tier at an oblique field, and with a machine's delivery and its own
+    gradient -- and so are the tier maps."""
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    lay, merged, grid, n_t, m, tmp = blocks
+    seq = _strand_protocol(n_t, 3)
+    t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
+    u = (0.6, 0.0, 0.8)
+    fresh = TimeSegmentLayout(lay.path)
+    fresh.TILES = 1                                                   # many chunks, the last one padded
+    kw = dict(backend=backend, device="cpu") if backend == "torch" else dict(backend=backend)
+    for extra in ({}, dict(tissue=t, scanner=7.0, b0_direction=u)):
+        S_r, f_r = fresh.image(seq, resident=True, **kw, **extra)
+        S_s, f_s = fresh.image(seq, resident=False, **kw, **extra)
+        np.testing.assert_array_equal(S_r, S_s); np.testing.assert_array_equal(f_r, f_s)
+    swoop = ScannerLimits.of("hyperfine_swoop_64mT")
+    dl = fresh.delivery(seq, swoop, grid.centred_at((0.05, 0.0, 0.0)))
+    S_r, _ = fresh.image(seq, resident=True, delivered=dl, **kw)
+    S_s, _ = fresh.image(seq, resident=False, delivered=dl, **kw)
+    np.testing.assert_array_equal(S_r, S_s)
+    n_dev = len(fresh._device)
+    fresh.image(seq, resident=False, tissue=t, scanner=3.0, **kw)
+    assert len(fresh._device) == n_dev
+    a = fresh.tier_maps("se", t, 7.0, b0_direction=u, resident=True, **kw)
+    b = fresh.tier_maps("se", t, 7.0, b0_direction=u, resident=False, **kw)
+    for k in ("contact", "contact_weight", "phase", "phase_std"):
+        np.testing.assert_array_equal(a[k], b[k])
+
+
+def test_the_field_phase_at_an_oblique_field_is_the_packs(myelin):
+    """With the field along an oblique axis and an anisotropic susceptibility alone, an isotropic one alone and both,
+    the layout's image is the pack's replay within the same distance as without any field (the rounding's): the
+    stored channels meet the direction's twelve weights in the basis's own order (RPK.md 5.3, ``iso_P_zz`` folded into
+    the isotropic weights, never formed)."""
+    from dataclasses import replace
+    from dmipy_sim.acquisition.scanners import ScannerLimits
+    M = myelin
+    u = np.array([1.0, 0.3, 0.5]); u /= np.linalg.norm(u)
+    sc = replace(ScannerLimits.of("siemens_magnetom_terra_7T"), b0_axis=tuple(u))
+    seq = _acquisitions()["pgse"]
+
+    def gap(t):
+        ref = _per_voxel(M["pack"], M["grid"], seq, tissue=t, scanner=sc)
+        S, _ = M["lw"].image(seq, tissue=t, scanner=float(sc.field_T), b0_direction=tuple(u))
+        return float(np.abs(S.reshape(ref.shape) - ref).max())
+    base = gap(replace(TISSUE, chi_iso=0.0, chi_aniso=0.0))
+    for t in (replace(TISSUE, chi_iso=0.0, chi_aniso=-2e-7), replace(TISSUE, chi_iso=-2e-7, chi_aniso=0.0), replace(TISSUE, chi_iso=-2e-7, chi_aniso=-2e-7)):
+        assert gap(t) < base * 1.05 + 1e-5, (t.chi_iso, t.chi_aniso)
 
 
 def test_the_tier_maps_and_the_files(blocks):
