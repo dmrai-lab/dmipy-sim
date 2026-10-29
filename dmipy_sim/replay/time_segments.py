@@ -2222,8 +2222,8 @@ def _compiled(n_halves, layout, per_tile, tiers, contact, f_static, bg_layout):
                     if tiers else None)
             bg = (bg_layout, b_scale, G0) if bg_layout is not None else None
             ph, wf = _row_terms(ph, w, pool, tw, nb, slot, tier, bg, False)
-            E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
-            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_halves)
+            E = jnp.exp(1j * ph) * wf[:, :, None]
+            return acc + jax.ops.segment_sum(E.sum(1).astype(jnp.complex128), tiles, num_segments=n_halves)
         _KERNELS[key] = kernel
     return _KERNELS[key]
 
