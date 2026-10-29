@@ -592,6 +592,8 @@ class Cactus(Family):
             kw["bounce_budget"] = int(self.args.bounce_budget)
         if getattr(self.args, "drop_pool_changes", None) is not None:
             kw["drop_pool_changes"] = float(self.args.drop_pool_changes)
+        if getattr(self.args, "keep_walk", None):              # each walked pool kept the moment it is walked, and resumed
+            kw["pool_checkpoint"] = os.path.join(os.path.abspath(self.args.keep_walk), self.substrates()[name]["id"] + ".pools")
         cache = getattr(self.args, "field_cache", None)
         if cache:
             self._cache_before[name] = bool((self.field_cache_record(name) or {}).get("exists"))

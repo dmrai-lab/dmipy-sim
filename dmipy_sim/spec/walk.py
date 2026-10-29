@@ -27,7 +27,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
-              field_target_floor=None, field_cache=None, drop_pool_changes=None):
+              field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
@@ -222,7 +222,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                             field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
                             field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
                             field_target_floor=field_target_floor, field_cache=field_cache,
-                            drop_pool_changes=drop_pool_changes)
+                            drop_pool_changes=drop_pool_changes, pool_checkpoint=pool_checkpoint)
 
 
 #: The rule a walk states when it excludes the walkers that changed pool (``walk_spec(drop_pool_changes=)``).
@@ -919,7 +919,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_c
         if consts:
             block["field_read"]["constants"] = [float(x) for x in np.max(np.asarray(consts, np.float64), axis=0)]
     for key in ("k0_residual_m", "k0_residual_relative"):
-        block[key] = float(max(w.block.get(key, 0.0) for w in walks))
+        vals = [w.block.get(key) for w in walks if w.block.get(key) is not None]      # an engine that measures none states None
+        block[key] = float(max(vals)) if vals else None
     name_of = {p.id: p.name for p in spec.pools}
     block["quadratic_variation"] = {name_of[pid]: w.block.get("quadratic_variation") for pid, w in parts
                                     if not isinstance(w, np.ndarray)}
@@ -938,11 +939,50 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_c
         illegal_crossings=int(sum(w.illegal_crossings for w in walks)))
 
 
+class _PoolCheckpoint:
+    """One walked pool of a bundle walk kept on disk the moment it is walked: ``<dir>/pool-<name>.safetensors`` (the
+    pool's :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, after its pool-change exclusion) and
+    ``pool-<name>.json`` (its weights, its exclusion record and the key it was walked under: the sha256 of the spec
+    without its provenance or local paths (the raster cache's identity), the pool's seed, walker count, duration and exclusion bound). A later run of the same walk reads the pool back instead
+    of walking it; a file whose key differs is refused by name, never reused."""
+
+    def __init__(self, directory, name, spec, seed, n, T_max, drop_bound):
+        import hashlib, json, os
+        self.dir, self.name = str(directory), str(name)
+        self.path = os.path.join(self.dir, f"pool-{self.name}.safetensors")
+        self.side = os.path.join(self.dir, f"pool-{self.name}.json")
+        from ..fields.raster_cache import _spec_identity              # the spec without its provenance or local paths
+        spec_sha = hashlib.sha256(json.dumps(_spec_identity(spec), sort_keys=True, default=str).encode()).hexdigest()
+        self.key = dict(spec_sha256=spec_sha, seed=int(seed), n_walkers=int(n), T_max=float(T_max),
+                        drop_pool_changes=(None if drop_bound is None else float(drop_bound)))
+
+    def load(self):
+        """``(walk, weights, exclusion record)`` of the kept pool, ``None`` when none is kept."""
+        import json, os
+        from ..coefficient_walk import CoefficientWalk
+        if not (os.path.exists(self.path) and os.path.exists(self.side)):
+            return None
+        side = json.load(open(self.side))
+        if side.get("key") != self.key:
+            raise SpecError(f"pool {self.name!r}: the checkpoint {self.path} was walked under {side.get('key')}, not this "
+                            f"walk's {self.key}; move it aside to walk the pool again")
+        return CoefficientWalk.load(self.path), np.asarray(side["weights"], np.float64), side.get("dropped")
+
+    def save(self, walk, weights, dropped):
+        import json, os
+        os.makedirs(self.dir, exist_ok=True)
+        walk.save(self.path + ".part")
+        os.replace(self.path + ".part", self.path)
+        with open(self.side + ".part", "w") as fh:
+            json.dump(dict(key=self.key, weights=np.asarray(weights, np.float64).tolist(), dropped=dropped), fh, default=float)
+        os.replace(self.side + ".part", self.side)
+
+
 def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, field_budget=None, scanner=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False,
                  field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None,
                  field_calibration=None, calibration_floor=None, query_scope=None, field_target_floor=None,
-                 field_cache=None, drop_pool_changes=None):
+                 field_cache=None, drop_pool_changes=None, pool_checkpoint=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -1038,6 +1078,21 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         if shell:
             raise SpecError(f"pool {pool.name!r} diffuses between two surfaces; a diffusing shell pool is not "
                             f"implemented (set D = 0 for a stuck pool)")
+        ck = None if pool_checkpoint is None else _PoolCheckpoint(pool_checkpoint, pool.name, spec, seed + 13 * pid, n, T_max,
+                                                                   drop_pool_changes)
+        held = None if ck is None else ck.load()
+        if held is not None:                                       # this pool was walked by an earlier run of the same walk
+            w, weights_of[pid], kept_drop = held
+            if drop_pool_changes is not None:
+                dropped[pool.name] = kept_drop
+            current().phase(f"walk {pool.name}", n_walkers=int(n), resumed=ck.path)
+            if w.field_coeffs is not None and field_kw.get("K_c3") is None:
+                field_kw = dict(field_kw, K_c3=int(w.K_c3))
+                fixed_kw = dict(field_kw, field_target_floor=None)
+            walked = w
+            works.append(w.work)
+            parts.append((pid, w))
+            continue
         geo = (boundary(inside_w[pid]).geometry("intra", lo, hi, periodic, reflect, feature) if inside_w[pid]
                else boundary(outside_w[pid]).geometry("extra", lo, hi, periodic, reflect, feature))
         log.info("walk_spec: walking pool %s, %d walkers%s", pool.name, n, " (adaptive steps)" if adaptive_steps else "")
@@ -1061,6 +1116,8 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         if drop_pool_changes is not None:
             w, weights_of[pid], dropped[pool.name] = _drop_pool_changes(w, weights_of[pid], raw_counts[pid], pool.name,
                                                                         float(drop_pool_changes))
+        if ck is not None:
+            ck.save(w, weights_of[pid], dropped.get(pool.name))
         if w.field_coeffs is not None and field_kw.get("K_c3") is None:
             # the first walked pool's pilot sets the band for the pools after it (one channel, one band); every pool's
             # own pilot sets its read
