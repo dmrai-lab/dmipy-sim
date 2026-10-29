@@ -117,7 +117,8 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     ``n_t``, no ``dt_save``, no ``field_sample_every``."""
     assert backends.WalkRequest._fields == ("geometry", "block_h", "n_blocks", "sub_steps", "dt_sim", "diffusivity", "record",
                                             "kappa_over_D", "count_walls", "bounce_budget", "seed", "K", "m", "K_c3",
-                                            "field_read_interval", "events", "raw_subset", "stepping", "field")
+                                            "field_read_interval", "events", "raw_subset", "stepping", "field",
+                                            "drop_pool_changes")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests

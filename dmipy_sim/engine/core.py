@@ -964,6 +964,7 @@ def simulate_trajectories(
     f_band: float = None,
     backend="jax",
     field_target_floor: float = None,
+    drop_pool_changes: bool = False,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1066,6 +1067,12 @@ def simulate_trajectories(
         (:func:`~dmipy_sim.replay.bank.derive_field_band`). None holds the band to the pilot's split-half floor
         scaled to the walk's walker count. It goes with a derived band: ``field_basis=`` given and ``K_c3`` None.
         ``CoefficientWalk.block["field_band"]["target_floor"]`` records it.
+    drop_pool_changes : bool
+        Ask the backend for the walkers of this IMPERMEABLE walk whose label changed (a walker that crossed a wall no
+        crossing was granted at) instead of refusing the walk: they come back as ``CoefficientWalk.pool_changed`` and
+        every other walker's coefficients are the walk's. The caller decides what to do with them
+        (:func:`~dmipy_sim.spec.walk_spec` excludes them and records it). A permeable walk records its crossings as
+        events and is refused this; the JAX kernels refuse it (they carry the label).
     field_read_interval : float, optional
         The interval (s) between the walk's reads of the field. None derives it from a pilot of
         :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS` walkers that reads every step
@@ -1108,6 +1115,9 @@ def simulate_trajectories(
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
+    if drop_pool_changes and _backend is None:
+        raise ValueError("drop_pool_changes asks a backend for the walkers of an impermeable walk that changed pool; the "
+                         "JAX kernels carry each walker's label and report deviations (work['label_deviations']) instead")
     with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget):
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
@@ -1121,6 +1131,9 @@ def simulate_trajectories(
                             field_basis=field_basis, K=K, block_order=block_order, window_T=window_T, K_c3=K_c3,
                             field_read_interval=field_read_interval, events_capacity=events_capacity, raw_subset=raw_subset,
                             envelope=envelope)
+        if drop_pool_changes and (res.crossing or res.binding_mt):
+            raise ValueError("drop_pool_changes is for an impermeable walk; this walk's walkers may change pool, and every "
+                             "change is an event of its occupancy (RPK.md 9.5.7)")
         record, n_blocks, dt_actual, sub_steps, dt_sim, step_rule = res.record, res.n_blocks, res.block_h, res.sub_steps, res.dt_sim, res.step_rule
         R_geom = res.length_scales.min_feature
         step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
@@ -1689,7 +1702,7 @@ def simulate_trajectories(
             from .backends import CoefficientBatch
             sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
             n_b = int(r0_all[sel].shape[0])
-            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0),
+            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0), drop_pool_changes=bool(drop_pool_changes),
                                        events=(int(cap) if cap else res.request.events),
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
@@ -1748,6 +1761,11 @@ def simulate_trajectories(
                 got["ev_" + key] = (counts, np.asarray(t, np.float64), np.asarray(lab, np.int8))
                 got["ev_max_" + key] = int(counts.max()) if counts.size else 0
             work_b = tuple(None if w is None else np.asarray(w) for w in batch.work)
+            if drop_pool_changes:
+                if batch.pool_changed is None or np.asarray(batch.pool_changed).shape != (n_b,):
+                    raise ValueError(f"backend {_backend_name!r} returned no per-walker pool-change mask for a walk that asked "
+                                     f"for one (drop_pool_changes)")
+                got["pc"] = np.asarray(batch.pool_changed, bool)
             return got, int(np.asarray(batch.illegal, np.int64).sum()), work_b, 0
 
         _walk_batch = _call if _backend is None else _backend_call
@@ -1820,6 +1838,7 @@ def simulate_trajectories(
         rows = {k: _Rows(n_walkers) for k in names}
         raw_rows = {k: _Rows(n_raw) for k in ("pos", "dlog", "occ", "bound", "fs")} if n_raw else None
         ev_parts = dict(c=[], b=[])
+        pc_parts = []                                                     # the walkers that changed pool (drop_pool_changes)
         ev_overflow = dict(c=0, b=0)
 
         def _run(a, b, raw):
@@ -1833,6 +1852,8 @@ def simulate_trajectories(
                 log.info(f"  OOM: halving the batch to {mid - a}")
                 lo, hi = _run(a, mid, raw), _run(mid, b, raw)
                 got = {k: np.concatenate([lo[0][k], hi[0][k]], axis=0) for k in names}
+                if "pc" in lo[0]:
+                    got["pc"] = np.concatenate([lo[0]["pc"], hi[0]["pc"]])
                 for key in ("ev_c", "ev_b"):
                     got[key] = tuple(np.concatenate([x, y], axis=0) for x, y in zip(lo[0][key], hi[0][key]))
                     got["ev_max_" + key[-1]] = max(lo[0]["ev_max_" + key[-1]], hi[0]["ev_max_" + key[-1]])
@@ -1844,6 +1865,8 @@ def simulate_trajectories(
                      ([(max(start, n_raw), end, False)] if end > n_raw else [])
             for a, b, raw in pieces:
                 got, bad, work_f, n_dev = _run(a, b, raw)
+                if drop_pool_changes:
+                    pc_parts.append(got["pc"])
                 _illegal_crossings[0] += bad
                 _work_acc(work_f)
                 dev[0] += n_dev
@@ -1934,6 +1957,7 @@ def simulate_trajectories(
             qv_positions=qv_p.astype(np.float32),
             qv_boundary=(rows["qv_blt"].array().astype(np.float32) if records_surface else None),
             illegal_crossings=illegal, seed=int(seed), diffusivity=(None if diffusivity is None else float(diffusivity)),
+            pool_changed=(np.concatenate(pc_parts) if drop_pool_changes else None),
             geometry=geometry, work=work)
         object.__setattr__(cw, "run", run)
         return cw

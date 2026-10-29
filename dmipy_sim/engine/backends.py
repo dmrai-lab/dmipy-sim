@@ -79,6 +79,8 @@ class WalkRequest(NamedTuple):
     field: object = None      #: a :class:`FieldSampling` when the adaptive walk samples a strand field, the
                               #: :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` itself when the fixed-step walk
                               #: reads a raster (``K_c3`` modes every ``field_read_interval``); None otherwise
+    drop_pool_changes: bool = False   #: an impermeable walk returns its walkers that changed pool as
+                                      #: :attr:`CoefficientBatch.pool_changed` instead of being refused
 
     @property
     def T(self):
@@ -168,6 +170,8 @@ class CoefficientBatch(NamedTuple):
                                       #: on the k = 0 mode, when the backend reports it; None otherwise
     ring: object = None               #: blocks per projection window, when the backend projects in windows
     accumulation: object = None       #: how the backend summed the blocks (the header's ``block.accumulation``)
+    pool_changed: object = None       #: (n,) bool the walkers of an impermeable walk whose label changed, when the request
+                                      #: asked for them (``drop_pool_changes``); None otherwise
 
 
 class Backend:

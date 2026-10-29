@@ -590,6 +590,8 @@ class Cactus(Family):
         kw = dict(field_res=self.field_res_m()) if self.args.field_res else {}
         if getattr(self.args, "bounce_budget", None):
             kw["bounce_budget"] = int(self.args.bounce_budget)
+        if getattr(self.args, "drop_pool_changes", None) is not None:
+            kw["drop_pool_changes"] = float(self.args.drop_pool_changes)
         cache = getattr(self.args, "field_cache", None)
         if cache:
             self._cache_before[name] = bool((self.field_cache_record(name) or {}).get("exists"))
@@ -1008,6 +1010,10 @@ def main(argv=None):
     p.add_argument("--bounce-budget", type=int, default=None,
                    help="cactus: the walk's bounce budget in place of the mesh's derived one (walk_spec(bounce_budget=)); "
                         "the walk records it and its exhausted steps, which build_replay_pack refuses")
+    p.add_argument("--drop-pool-changes", type=float, nargs="?", const=0.01, default=None, metavar="MAX_FRACTION",
+                   help="cactus: exclude the walkers that change pool in the impermeable walk, at most MAX_FRACTION of a "
+                        "pool (0.01 when the flag is given bare), recorded in the walk and the pack's certificate "
+                        "(walk_spec(drop_pool_changes=)); off by default: a walker that changes pool refuses the walk")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
     p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "

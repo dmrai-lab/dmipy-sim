@@ -27,7 +27,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
-              field_target_floor=None, field_cache=None):
+              field_target_floor=None, field_cache=None, drop_pool_changes=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
@@ -106,6 +106,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     ``field_basis=``). A frozen pool (``D = 0``) holds its seat: its field modes are the channels there (the ``k =
     0`` mode alone).
 
+    ``drop_pool_changes`` (a fraction, or None: the refusal) is the largest fraction of a diffusing pool's walkers a
+    multi-surface bundle walk may EXCLUDE when they change pool in an impermeable walk, the backend returning them
+    (:func:`~dmipy_sim.engine.core.simulate_trajectories` ``drop_pool_changes``): they are taken out of the walk, the
+    pool's remaining weights renormalised to its total, and the walk's ``work["dropped_pool_change"]`` records the
+    rule (:data:`DROP_POOL_CHANGE_RULE`), the bound, the count and fraction, per pool -- which the pack's certificate
+    carries (``fidelity["dropped_pool_change"]``). A pool past the bound, or a raw walker among the excluded, is refused.
+
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
@@ -181,6 +188,9 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
         walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=envelope, bounce_budget=bounce_budget,
                        backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=class_band(scanner))
         if not _needs_bundle_walk(spec):
+            if drop_pool_changes is not None:
+                raise SpecError("drop_pool_changes excludes the walkers of a multi-surface bundle walk; this spec walks one "
+                                "geometry, which refuses a walker that changes pool")
             g = geometry_from_spec(spec)
             gap = g.trajectory_walk_gap()
             if gap is not None:
@@ -211,7 +221,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
                             field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
                             field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
-                            field_target_floor=field_target_floor, field_cache=field_cache)
+                            field_target_floor=field_target_floor, field_cache=field_cache,
+                            drop_pool_changes=drop_pool_changes)
+
+
+#: The rule a walk states when it excludes the walkers that changed pool (``walk_spec(drop_pool_changes=)``).
+DROP_POOL_CHANGE_RULE = ("walkers whose label changed in an impermeable walk are excluded; the substrate's geometry is "
+                         "contradictory where they crossed")
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -926,7 +942,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False,
                  field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None,
                  field_calibration=None, calibration_floor=None, query_scope=None, field_target_floor=None,
-                 field_cache=None):
+                 field_cache=None, drop_pool_changes=None):
     """Walk a multi-surface spec pool by pool: every seeded pool is defined by the walls it is inside and the walls it
     is outside; a pool with D > 0 walks the interior of its inside-walls (intra, glia) or the exterior of its
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
@@ -997,6 +1013,14 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                             "the fixed-step walk reads at every step (adaptive_steps=False)")
         fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx, cache_dir=field_cache)
     works = []
+    dropped = {}                                            # pool name -> its exclusion record (drop_pool_changes)
+    if drop_pool_changes is not None:
+        if not 0.0 <= float(drop_pool_changes) < 1.0:
+            raise SpecError(f"drop_pool_changes is the largest fraction of a pool's walkers the walk may exclude, in [0, 1); "
+                            f"got {drop_pool_changes!r}")
+        if adaptive_steps:
+            raise SpecError("drop_pool_changes is a request of the fixed-step walk's backend; the adaptive walk refuses a "
+                            "walker that changes pool")
     raw_counts = _raw_allocation({pid: len(seeds_of[pid]) for pid in seeded}, walk_kw.get("raw_subset", 0))
     field_kw = dict(K_c3=K_c3, field_read_interval=field_read_interval)
     fixed_kw = dict(field_kw, field_target_floor=field_target_floor)       # the fixed-step walk's pilot also takes the band's budget
@@ -1032,7 +1056,11 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                                                **{k: v for k, v in walk_kw.items() if k != "bounce_budget"})
         else:
             w = simulate_trajectories(n, float(pool.D), geo, T_max=T_max, block_h=block_h, seed=seed + 13 * pid, r0=r0,
-                                      field_basis=fg, **({} if fg is None else fixed_kw), **walk_kw)
+                                      field_basis=fg, **({} if fg is None else fixed_kw), **walk_kw,
+                                      **({} if drop_pool_changes is None else dict(drop_pool_changes=True)))
+        if drop_pool_changes is not None:
+            w, weights_of[pid], dropped[pool.name] = _drop_pool_changes(w, weights_of[pid], raw_counts[pid], pool.name,
+                                                                        float(drop_pool_changes))
         if w.field_coeffs is not None and field_kw.get("K_c3") is None:
             # the first walked pool's pilot sets the band for the pools after it (one channel, one band); every pool's
             # own pilot sets its read
@@ -1045,5 +1073,36 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         raise SpecError("no seeded pool diffuses; nothing to walk")
     current().phase("finalize")
     walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, scanner, raw_counts)
+    if drop_pool_changes is not None:
+        n_drop = sum(r["n_dropped"] for r in dropped.values()); n_all = sum(r["n_walked"] for r in dropped.values())
+        record = dict(rule=DROP_POOL_CHANGE_RULE, max_fraction=float(drop_pool_changes), n_dropped_pool_change=int(n_drop),
+                      fraction=(n_drop / n_all if n_all else 0.0), pools=dropped)
+        import dataclasses
+        walk = dataclasses.replace(walk, work=dict(walk.work or {}, dropped_pool_change=record))
+        log.info("walk_spec: %d of %d diffusing walkers changed pool and are excluded (%s)", n_drop, n_all, dropped)
     object.__setattr__(walk, "run", current())
     return walk
+
+
+def _drop_pool_changes(w, weights, n_raw, name, max_fraction):
+    """``(walk, weights, record)``: the pool walk ``w`` without its walkers whose label changed
+    (``w.pool_changed``), the pool's walker weights for the rest renormalised to the pool's total (the pool keeps
+    its share of the water), and the exclusion's record. Refused when the excluded fraction exceeds
+    ``max_fraction`` or an excluded walker is one of the pool's ``n_raw`` raw walkers (the raw subset is the walk's
+    oracle and is kept whole)."""
+    if w.pool_changed is None:
+        raise SpecError(f"pool {name!r}: the walk returned no pool-change mask for a walk asked to exclude its pool changes")
+    mask = np.asarray(w.pool_changed, bool)
+    n, n_drop = int(mask.size), int(mask.sum())
+    frac = n_drop / n if n else 0.0
+    if frac > max_fraction:
+        raise SpecError(f"pool {name!r}: {n_drop} of {n} walkers ({frac:.3%}) changed pool in an impermeable walk, more "
+                        f"than the {max_fraction:.3%} the walk may exclude (drop_pool_changes)")
+    if n_raw and mask[:n_raw].any():
+        raise SpecError(f"pool {name!r}: {int(mask[:n_raw].sum())} of its {n_raw} raw walkers changed pool; the raw subset "
+                        f"is kept whole, so the walk is refused rather than the subset cut")
+    keep = np.flatnonzero(~mask)
+    weights = np.asarray(weights, float)
+    kept = weights[keep]
+    kept = kept * (weights.sum() / kept.sum()) if n_drop else kept
+    return w.take(keep), kept, dict(n_walked=n, n_dropped=n_drop, fraction=frac)
