@@ -1538,11 +1538,6 @@ class TimeSegmentLayout:
 
     TILES = 4096                                                        # tiles per device chunk (2^19 rows)
     MEAS = 64                                                           # measurements padded to a multiple
-    #: distinct (sequence group, B0 direction) field-term pairs held at once, host and every backend's device copies
-    #: together (dmipy-sim#517): a page with free B0 angles asks for more directions than fit in memory, so this is a
-    #: small LRU -- a pair beyond the bound evicts the least recently used one (:meth:`_touch_field_direction`)
-    FIELD_DIRECTION_CACHE = 4
-    FIELD_CHUNK_TILES = 65_536                   # tiles per contraction chunk
 
     def __init__(self, path):
         from ..phantom.grid import Grid
@@ -1560,7 +1555,6 @@ class TimeSegmentLayout:
                                      _field_of_tiers((self.manifest["source"].get("pack") or {}).get("id"), self.tiers,
                                                      self.manifest["groups"]))
         self._m = {}; self._device = {}; self._host = {}
-        self._field_direction_lru = collections.OrderedDict()     # (group, direction key) -> None, MRU last
 
     @staticmethod
     def open(uri, *, partitions=None, revision=None, workers=8):
@@ -1743,104 +1737,38 @@ class TimeSegmentLayout:
         """The flat indices of the voxels the layout has rows in, in order: the voxels a delivery is computed at."""
         return np.flatnonzero(self.weights.sum(1) > 0)
 
-    # ---- the field direction's terms
-    @staticmethod
-    def _direction_key(b0_direction):
-        """The one spelling of a field direction in the field-term columns' names (``field_iso_<g>@<key>``)."""
+    # ---- the field direction's contraction
+    def _field_spec(self, g, b0_direction, a_iso, a_aniso):
+        """What the kernel needs to form group ``g``'s field phase from its tier words for ``b0_direction`` (a unit vector
+        in the substrate frame), or ``None`` when the group stores no field or the pair's field scales are both zero:
+        ``(layout, scale, coef, n_iso)``, the stored channels of the basis's twelve (RPK.md 5.3: ``iso_local``,
+        ``iso_P`` xx, yy, xy, xz, yz, ``aniso_G`` (6)) in that order, their places in the words, their scales and their
+        contraction weights in float64 -- :func:`~dmipy_sim.fields.hollow_cylinder.iso_weights` on the six isotropic
+        channels (``iso_P_zz`` folded in by the trace identity, never formed), :func:`~dmipy_sim.fields.hollow_cylinder.q_of_H`
+        on the six anisotropic ones -- and how many of them are isotropic. A channel that rounds to zero on every row
+        (not stored) contributes nothing."""
+        from ..fields.hollow_cylinder import iso_weights, q_of_H
         b0 = np.asarray(b0_direction, np.float64)
         if b0.shape != (3,) or abs(np.linalg.norm(b0) - 1.0) > 1e-6:
             raise ValueError("b0_direction is a unit vector")
-        return ",".join(f"{x:.6f}" for x in b0)
-
-    _b0_key = _direction_key((0.0, 0.0, 1.0))      # the frame's z, the pose the tiers were gated under
-
-    def _set_b0_direction(self, b0_direction):
-        self._b0_key = self._direction_key(b0_direction)
-
-    @staticmethod
-    def _field_direction_of(name):
-        """``(g, d)`` of a field-term column name (``field_iso_<g>@<d>`` / ``field_aniso_<g>@<d>``), else ``None``."""
-        if not name.startswith(("field_iso_", "field_aniso_")):
+        f = self.manifest["groups"][g].get("field")
+        if not f or not f.get("stored") or (float(a_iso) == 0.0 and float(a_aniso) == 0.0):
             return None
-        g, d = name.split("_", 2)[2].split("@")
-        return g, d
-
-    def _touch_field_direction(self, g, d):
-        """Mark ``(g, d)``'s field terms as just used in the bounded field-direction cache (dmipy-sim#517): past
-        :attr:`FIELD_DIRECTION_CACHE` distinct pairs the host and every backend's device copies of the least recently
-        used pair are dropped."""
-        key = (g, d)
-        if key in self._field_direction_lru:
-            self._field_direction_lru.move_to_end(key)
-        else:
-            self._field_direction_lru[key] = None
-        while len(self._field_direction_lru) > self.FIELD_DIRECTION_CACHE:
-            og, od = next(iter(self._field_direction_lru))
-            del self._field_direction_lru[(og, od)]
-            for name in (f"field_iso_{og}@{od}", f"field_aniso_{og}@{od}"):
-                self._host.pop(name, None)
-                for dk in [k for k in self._device if k[1] == name]:
-                    del self._device[dk]
-
-    def _channels_of(self, g, words, xp):
-        """The channels the contraction reads (``iso_local, iso_P (6)[, aniso_G (6)]``) of group ``g`` from int32 tier
-        ``words`` on ``xp`` (numpy or torch), float64: the stored components decoded, a component not stored zero, and
-        ``iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy`` formed from them (RPK.md 5.3)."""
-        f = self.manifest["groups"][g]["field"]
         layout, scale, names = self._tier_code(g)
-        vals = dict(zip(names, _decode(words, scale, layout)))
-        zero = words[..., 0] * 0
-        comp = {nm: (vals.get(nm) if vals.get(nm) is not None else zero) for nm in f["channels"]}
-        comp["iso_P_zz"] = 3.0 * comp["iso_local"] - comp["iso_P_xx"] - comp["iso_P_yy"]
-        order = f["channels"][:3] + ["iso_P_zz"] + f["channels"][3:]
-        if xp == "torch":
-            import torch
-            return torch.stack([comp[nm].to(torch.float64) for nm in order], dim=-1)
-        return np.stack([np.asarray(comp[nm], np.float64) for nm in order], axis=-1)
-
-    def _field_terms(self, g, b0_direction, device=None):
-        """``(iso, aniso)`` per row of group ``g`` for ``b0_direction`` (a unit vector in the substrate frame), from the
-        decoded channels through the one contraction, zeros when the group carries no field: on the host into two float32
-        arrays chunk by chunk, or, given a torch ``device``, the words uploaded chunk by chunk and decoded and contracted
-        there."""
-        from ..fields.hollow_cylinder import field_terms
-        grp = self.manifest["groups"][g]
-        T = self.TILES; n_pad = -(-self.n_tiles // T) * T
-        if device is None:
-            iso = np.zeros((n_pad, self.tile), np.float32); aniso = np.zeros((n_pad, self.tile), np.float32)
-        else:
-            import torch
-            iso = torch.zeros((n_pad, self.tile), dtype=torch.float32, device=device)
-            aniso = torch.zeros((n_pad, self.tile), dtype=torch.float32, device=device)
-        if grp.get("field") and grp["field"]["stored"]:
-            words = self._column(f"t_{g}")
-            b0 = np.asarray(b0_direction, np.float64)
-            has_aniso = "aniso_G_xx" in grp["field"]["channels"]
-            for s in range(0, self.n_tiles, self.FIELD_CHUNK_TILES):
-                e = min(s + self.FIELD_CHUNK_TILES, self.n_tiles)
-                w32 = np.asarray(words[s:e]).view(np.int32)
-                if device is None:
-                    a, b = field_terms(self._channels_of(g, w32, "numpy"), b0)
-                    iso[s:e] = a
-                    if has_aniso and b is not None:
-                        aniso[s:e] = b
-                else:
-                    import torch
-                    a, b = field_terms(self._channels_of(g, torch.as_tensor(w32, device=device), "torch"), b0)
-                    iso[s:e] = a.to(torch.float32)
-                    if has_aniso and b is not None:
-                        aniso[s:e] = b.to(torch.float32)
-        return iso, aniso
+        weight = dict(zip(f["channels"][:6], iso_weights(b0)))
+        weight.update(zip(f["channels"][6:12], q_of_H(b0)))
+        iso = [nm for nm in f["channels"][:6] if nm in names]
+        aniso = [nm for nm in f["channels"][6:12] if nm in names]
+        order = iso + aniso
+        return (tuple(layout[names.index(nm)] for nm in order),
+                np.asarray([scale[names.index(nm)] for nm in order], np.float64),
+                np.asarray([weight[nm] for nm in order], np.float64), len(iso))
 
     def tier_names(self, partition):
-        """The device-side tier columns of ``partition``'s group: the pool, the group's tier words, its field terms for
-        the current field direction."""
+        """The tier columns of ``partition``'s group the kernel reads: the pool and the group's tier words (the contact
+        and the field channels, decoded in the kernel)."""
         g, _ = self._group(partition)
-        d = self._b0_key
-        return ("pool", f"t_{g}", f"field_iso_{g}@{d}", f"field_aniso_{g}@{d}")
-
-    def _is_tier_column(self, name):
-        return name == "pool" or name.startswith(("t_", "field_iso_", "field_aniso_", "bg_"))
+        return ("pool", f"t_{g}")
 
     def release(self, keep=()):
         """Drop the device copies of every partition's words but ``keep``'s (the shared columns stay), on every backend."""
@@ -1863,69 +1791,79 @@ class TimeSegmentLayout:
             if name not in self._host:
                 self._host[name] = self._padded(name)
 
-    def _padded(self, name):
-        """The column ``name`` on the host, padded to whole chunks of ``TILES`` (padding rows weigh nothing and scatter
-        into the dump slot), words as their int32 view; the preloaded copy when there is one. A field-direction column
-        touches the bounded field-direction cache."""
-        fd = self._field_direction_of(name)
+    @functools.cached_property
+    def _compact(self):
+        """``(n_vox + 1,)`` int32: each voxel's index into :attr:`live_voxels` (the dump slot ``len(live)`` for a voxel
+        without rows): a tile's slot in a delivery."""
+        live = self.live_voxels
+        compact = np.full(self.n_vox + 1, len(live), np.int32); compact[live] = np.arange(len(live), dtype=np.int32)
+        return compact
+
+    @property
+    def n_pad(self):
+        """The tiles padded to whole chunks of :attr:`TILES`."""
+        return -(-self.n_tiles // self.TILES) * self.TILES
+
+    def _host_chunk(self, name, s, e):
+        """Tiles ``s:e`` of the column ``name`` on the host, padded past the layout's last tile (padding rows weigh
+        nothing and scatter into the dump slot), words as their int32 view: a slice of the preloaded padded copy when
+        there is one, else read from the memory-mapped column. ``slot`` is each tile's index into a delivery's live
+        voxels."""
         if name in self._host:
-            if fd is not None:
-                self._touch_field_direction(*fd)
-            return self._host[name]
-        T = self.TILES; n_pad = -(-self.n_tiles // T) * T
-        if fd is not None:
-            g, d = fd
-            iso, aniso = self._field_terms(g, [float(x) for x in d.split(",")])
-            self._host[f"field_iso_{g}@{d}"], self._host[f"field_aniso_{g}@{d}"] = iso, aniso
-            self._touch_field_direction(g, d)
-            return self._host[name]
-        if name == "slot":                                       # each tile's index into a delivery's live voxels
-            live = self.live_voxels
-            compact = np.full(self.n_vox + 1, len(live), np.int32); compact[live] = np.arange(len(live), dtype=np.int32)
-            a = np.full(n_pad, len(live), np.int32); a[:self.n_tiles] = compact[np.asarray(self._column("tiles")) // 2]
+            return self._host[name][s:e]
+        n, real = e - s, max(0, min(e, self.n_tiles) - s)
+        if name == "slot":
+            a = np.full(n, len(self.live_voxels), np.int32); a[:real] = self._compact[np.asarray(self._column("tiles")[s:s + real]) // 2]
         elif name == "tiles":
-            a = np.full(n_pad, 2 * self.n_vox, np.int32); a[:self.n_tiles] = self._column("tiles")
+            a = np.full(n, 2 * self.n_vox, np.int32); a[:real] = self._column("tiles")[s:s + real]
         elif name in ("w", "pool"):
-            a = np.zeros((n_pad, self.tile), np.uint8 if name == "pool" else np.float32); a[:self.n_tiles] = self._column(name)
+            a = np.zeros((n, self.tile), np.uint8 if name == "pool" else np.float32); a[:real] = self._column(name)[s:s + real]
         elif name not in self.columns(self.manifest):           # a word array with no words (every field zero): one zero word
-            a = np.zeros((n_pad, self.tile, 1), np.int32)
+            a = np.zeros((n, self.tile, 1), np.int32)
         else:
             words = self._column(name)
-            a = np.zeros((n_pad,) + tuple(words.shape[1:]), np.uint32); a[:self.n_tiles] = words
+            a = np.zeros((n,) + tuple(words.shape[1:]), np.uint32); a[:real] = words[s:s + real]
             a = a.view(np.int32)
         return a
 
-    def _resident(self, backend, device, resident, names):
-        """The columns ``names`` on the backend's device, kept across calls when ``resident``, else built afresh. Field
-        terms for a direction the host has not contracted are contracted on the device (torch)."""
+    def _padded(self, name):
+        """The column ``name`` on the host, padded to whole chunks of :attr:`TILES` (:meth:`_host_chunk`)."""
+        return self._host[name] if name in self._host else self._host_chunk(name, 0, self.n_pad)
+
+    @staticmethod
+    def _put(backend, device):
+        """The upload of a host column to the backend's device (torch indices as int64)."""
         if backend == "jax":
             import jax.numpy as jnp
-            put = lambda a, name: jnp.asarray(a)
-        else:
-            import torch
-            put = lambda a, name: torch.as_tensor(a.astype(np.int64) if name in ("tiles", "slot") else a, device=device)
-        out = []; made = {}
+            return lambda a, name: jnp.asarray(a)
+        import torch
+        return lambda a, name: torch.as_tensor(a.astype(np.int64) if name in ("tiles", "slot") else a, device=device)
+
+    def _resident(self, backend, device, names):
+        """The columns ``names`` whole on the backend's device, kept across calls."""
+        put = self._put(backend, device)
+        out = []
         for name in names:
             key = (backend, name, str(device))
-            fd = self._field_direction_of(name)
             if key not in self._device:
-                if backend == "torch" and fd is not None and name not in self._host:
-                    if name not in made:
-                        g, d = fd
-                        iso, aniso = self._field_terms(g, [float(x) for x in d.split(",")], device=device)
-                        made.update({f"field_iso_{g}@{d}": iso, f"field_aniso_{g}@{d}": aniso})
-                    arr = made[name]
-                else:
-                    arr = put(self._padded(name), name)
-                if not resident:
-                    if fd is not None:
-                        self._touch_field_direction(*fd)
-                    out.append(arr); continue
-                self._device[key] = arr
-            if fd is not None:
-                self._touch_field_direction(*fd)
+                self._device[key] = put(self._padded(name), name)
             out.append(self._device[key])
         return tuple(out)
+
+    def _chunks(self, backend, device, resident, names):
+        """The columns ``names`` chunk by chunk of :attr:`TILES` tiles, a tuple of device arrays per chunk: slices of
+        the device-resident columns (``resident``, :meth:`_resident`), or each chunk's tiles read from the layout (or
+        the preloaded host copy), padded and uploaded on its own, so that one chunk of every column is on the device
+        at a time and the words are decoded in the kernel step that reads them."""
+        T = self.TILES
+        if resident:
+            cols = self._resident(backend, device, names)
+            for s in range(0, self.n_pad, T):
+                yield tuple(c[s:s + T] for c in cols)
+            return
+        put = self._put(backend, device)
+        for s in range(0, self.n_pad, T):
+            yield tuple(put(self._host_chunk(name, s, s + T), name) for name in names)
 
     def background_group(self, partition):
         """The sequence group whose background words ``partition`` reads, refused for a layout without them."""
@@ -1942,20 +1880,20 @@ class TimeSegmentLayout:
         pool, ``{name: grid}``), ``contact`` (the gated contact term; None without the contact tier),
         ``contact_weight`` (``exp(rho2_over_D contact)`` at the pair's rho2; None without a tissue), ``phase`` and
         ``phase_std`` (the mean and the spread of the field's phase offset at the pair's field and ``b0_direction``;
-        None without a scanner)."""
+        None without a scanner). The tier words are decoded chunk by chunk on the device, as in :meth:`image`
+        (``resident`` as there)."""
         if backend not in ("jax", "torch"):
             raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
         if not self.tiers:
             raise ValueError("this layout holds the bare diffusion phase only (written without tiers=True)")
         tm = self.terms(partition, tissue, scanner)
-        self._set_b0_direction(b0_direction)
         g, grp = self._group(partition)
         pools = [(q["name"], int(q["id"])) for q in self.tiers["substrate"]["pools"]]
         if backend == "torch" and device is None:
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        w, tiles, pool, tw, fiso, faniso = self._resident(backend, device, resident, ("w", "tiles") + self.tier_names(partition))
         rho_D, a_iso, a_aniso = (0.0, 0.0, 0.0) if tm is None else (float(tm[1]), float(tm[2]), float(tm[3]))
+        fspec = self._field_spec(g, b0_direction, a_iso, a_aniso) if tm is not None else None
         code = self._tier_code(g)
         names = [("pool", name, pid) for name, pid in pools]
         if grp.get("contact"):
@@ -1964,28 +1902,35 @@ class TimeSegmentLayout:
                 names.append(("contact_weight",))
         if grp.get("field") and tm is not None:
             names += [("phase",), ("phase_sq",)]
+        on_torch = backend == "torch"
 
-        def rows(sl, xp):
+        def rows(w, pool, tw, xp):
             out = []
-            c = 0.0 * w[sl]
+            c = 0.0 * w
             if code is not None and "contact" in code[2]:
                 layout, scale, fnames = code
-                sc = xp.asarray(scale) if backend == "jax" else xp.as_tensor(scale, device=tw.device)
-                c = _decode(tw[sl], sc, layout)[fnames.index("contact")]
+                sc = xp.asarray(scale) if not on_torch else xp.as_tensor(scale, device=tw.device)
+                c = _decode(tw, sc, layout)[fnames.index("contact")]
+            ph = 0.0 * w
+            if fspec is not None:
+                ph = _field_offset(tw, fspec, a_iso, a_aniso, w, on_torch)
             for q in names:
                 if q[0] == "pool":
-                    out.append((pool[sl] == q[2]).to(w.dtype) if backend == "torch" else (pool[sl] == q[2]).astype(w.dtype))
+                    out.append((pool == q[2]).to(w.dtype) if on_torch else (pool == q[2]).astype(w.dtype))
                 elif q[0] == "contact":
                     out.append(c)
                 elif q[0] == "contact_weight":
                     out.append(xp.exp(rho_D * c))
                 else:
-                    ph = a_iso * fiso[sl] + a_aniso * faniso[sl]
                     out.append(ph if q[0] == "phase" else ph * ph)
             return out
 
         n_halves = 2 * self.n_vox + 1
-        acc = (_voxel_sums_torch if backend == "torch" else _voxel_sums_jax)(rows, len(names), w, tiles, n_halves, self.TILES)
+        chunks = self._chunks(backend, device, resident, ("w", "tiles") + self.tier_names(partition))
+        with _x64(backend):
+            if fspec is not None:
+                fspec = _device_field_spec(fspec, backend, device)
+            acc = (_voxel_sums_torch if on_torch else _voxel_sums_jax)(rows, len(names), chunks, n_halves)
         num = acc[:, :2 * self.n_vox].reshape(len(names), self.n_vox, 2).sum(2)
         den = self.weights.sum(1)
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -2034,8 +1979,11 @@ class TimeSegmentLayout:
         ``grid.shape + (n_meas,)``, the weighted ensemble magnitude per voxel (NaN where the layout has no rows),
         ``floor`` ``grid.shape`` its split-half floor ``max_m |S_a - S_b| / 2``. A row beyond the envelope the widths are
         derived at (``G_max``, ``b_max``) is refused by name. ``backend`` runs the arithmetic on JAX (its default
-        device) or torch (``device``, CUDA when torch sees one, else its CPU); ``resident=False`` uploads the columns for
-        this call only. ``tissue`` and ``scanner`` turn the stored tiers into the weights and the field phase of
+        device) or torch (``device``, CUDA when torch sees one, else its CPU). The packed words -- the partition's, the
+        tiers', the background's -- reach the device as they are stored and are decoded in the kernel step that reads
+        them, a chunk of :attr:`TILES` tiles at a time; ``resident`` keeps every column the image reads whole on the
+        device across calls, ``resident=False`` reads and uploads each chunk on its own (one chunk of each column on the
+        device at a time, nothing kept), to the same bits. ``tissue`` and ``scanner`` turn the stored tiers into the weights and the field phase of
         :meth:`terms` (the sequence must play the partition's group's gate); both None is the bare image, scaled by the
         sequence's pathway amplitude. ``b0_direction`` is the field's direction in the substrate frame.
 
@@ -2052,7 +2000,6 @@ class TimeSegmentLayout:
         tm = self.terms(name, tissue, scanner)
         if tm is not None:
             self._check_gate(name, sequence)
-        self._set_b0_direction(b0_direction)
         scale, layout, _ = self._code(name)
         n_seg = len(self.partitions[name].segments)
         M = L.shape[0]; M_pad = -(-M // self.MEAS) * self.MEAS
@@ -2062,46 +2009,41 @@ class TimeSegmentLayout:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         g, grp = self._group(name)
         tier_names = self.tier_names(name) if tm is not None else ()
-        contact = None
-        t_code = self._tier_code(g)
-        if tm is not None and t_code is not None and "contact" in t_code[2]:
-            t_layout, t_scale, t_names = t_code
-            i = t_names.index("contact")
-            contact = ((t_layout[i],), t_scale[i:i + 1])
+        tier = None
+        if tm is not None:
+            contact = None
+            t_code = self._tier_code(g)
+            if t_code is not None and "contact" in t_code[2]:
+                t_layout, t_scale, t_names = t_code
+                i = t_names.index("contact")
+                contact = ((t_layout[i],), t_scale[i:i + 1])
+            fspec = self._field_spec(g, b0_direction, tm[2], tm[3])
+            tier = (contact, fspec, np.asarray(tm[0], np.float32), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]))
+        else:
+            self._field_spec(g, b0_direction, 0.0, 0.0)             # the direction checked whatever the tiers
         factor = None; bg = None
+        names = (f"p_{name}", "w", "tiles")
         if delivered is not None:
             live = self._check_delivered(delivered, name, L)
-            names = ("w", "tiles", "slot") + tuple(tier_names)
+            names += ("slot",)
+            Q = np.zeros((len(live) + 1, M_pad, n_seg, 3), np.float32); Q[:len(live), :M] = delivered.q
             if delivered.g0 is not None:
                 gb = self.background_group(name)
-                names += (f"bg_{gb}",)
                 b_layout, b_scale = _layout_of(self.manifest["groups"][gb]["background"])
-            cols = self._resident(backend, device, resident, (f"p_{name}",) + names)
-            words, w, tiles, slot = cols[:4]
-            rest = cols[4:]
-            tier_cols = rest[:len(tier_names)]
-            Q = np.zeros((len(live) + 1, M_pad, n_seg, 3), np.float32); Q[:len(live), :M] = delivered.q
-            G0 = np.zeros((len(live) + 1, 3), np.float32)
-            if delivered.g0 is not None:
-                G0[:len(live)] = delivered.g0
-                bg = (rest[len(tier_names)], b_layout, b_scale, G0)
+                G0 = np.zeros((len(live) + 1, 3), np.float32); G0[:len(live)] = delivered.g0
+                bg = (b_layout, b_scale, G0)
             if delivered.kappa is not None:
                 from ..acquisition.epg import transmit_amplitude
                 factor = np.ones(self.n_vox)
                 factor[live] = transmit_amplitude(_sequence(sequence), delivered.kappa) / transmit_amplitude(_sequence(sequence), [1.0])[0]
-            levels, sl = Q, slot
+            levels = Q
         else:
-            cols = self._resident(backend, device, resident, (f"p_{name}", "w", "tiles") + tuple(tier_names))
-            words, w, tiles = cols[:3]
-            tier_cols = cols[3:]
             levels = np.zeros((M_pad, n_seg, 3), np.float32); levels[:M] = L
-            sl = None
-        tier = None
-        if tm is not None:
-            pool, tw, fiso, faniso = tier_cols
-            tier = (pool, tw, fiso, faniso, contact, np.asarray(tm[0], np.float32), float(tm[1]), float(tm[2]), float(tm[3]), float(tm[4]))
-        run = _sums_jax if backend == "jax" else _sums_torch
-        acc = run(words, scale, layout, w, tiles, levels, sl, tier, bg, n_halves, self.TILES)
+        names += tuple(tier_names) + ((f"bg_{gb}",) if bg is not None else ())
+        chunks = self._chunks(backend, device, resident, names)
+        with _x64(backend):
+            acc = (_sums_jax if backend == "jax" else _sums_torch)(chunks, scale, layout, levels, delivered is not None, tier, bg,
+                                                                   n_halves, backend, device)
         num = acc[:2 * self.n_vox, :M].reshape(self.n_vox, 2, M)
         den = self.weights
         S = np.full((self.n_vox, M), np.nan); floor = np.full(self.n_vox, np.nan)
@@ -2147,6 +2089,70 @@ class Delivered:
 
 
 # ------------------------------------------------------------------ the kernels
+class _x64:
+    """JAX's 64-bit types for the duration of a JAX image (the field channels in float64, the tile sums and the
+    accumulator in complex128), the flag restored after; nothing for torch."""
+
+    def __init__(self, backend):
+        self.on = backend == "jax"
+
+    def __enter__(self):
+        if self.on:
+            import jax
+            self.was = bool(jax.config.read("jax_enable_x64"))
+            jax.config.update("jax_enable_x64", True)
+        return self
+
+    def __exit__(self, *exc):
+        if self.on:
+            import jax
+            jax.config.update("jax_enable_x64", self.was)
+
+
+def _device_field_spec(fspec, backend, device):
+    """:meth:`TimeSegmentLayout._field_spec` with its scales and weights on the backend's device (float64)."""
+    layout, scale, coef, n_iso = fspec
+    if backend == "torch":
+        import torch
+        return layout, torch.as_tensor(scale, device=device), torch.as_tensor(coef, device=device), n_iso
+    import jax.numpy as jnp
+    return layout, jnp.asarray(scale, jnp.float64), jnp.asarray(coef, jnp.float64), n_iso
+
+
+def _field_terms_of_words(tw, fspec, on_torch):
+    """``(iso, aniso)`` float64 of every row from its int32 tier words ``tw`` ``(chunk, tile, n_words)``: each stored
+    channel's integer shifted out of its word, made float64 and times its scale (exact: a code of at most 24 bits
+    times a float32 scale), then weighted by the direction's contraction coefficients and summed in channel order, the
+    products written out (a float32 matmul on CUDA is TF32); ``None`` for a term with no stored channel."""
+    layout, scale, coef, n_iso = fspec
+    iso = aniso = None
+    for j, (w, off, b) in enumerate(layout):
+        x = tw[..., w]
+        k = (x << (WORD_BITS - off - b)) >> (WORD_BITS - b)
+        if on_torch:
+            import torch
+            c = k.to(torch.float64) * scale[j]
+        else:
+            import jax.numpy as jnp
+            c = k.astype(jnp.float64) * scale[j]
+        t = c * coef[j]
+        if j < n_iso:
+            iso = t if iso is None else iso + t
+        else:
+            aniso = t if aniso is None else aniso + t
+    return iso, aniso
+
+
+def _field_offset(tw, fspec, a_iso, a_aniso, w, on_torch):
+    """The field's phase offset of every row, float32: ``a_iso iso + a_aniso aniso`` with the terms of
+    :func:`_field_terms_of_words` rounded to float32 first."""
+    iso, aniso = _field_terms_of_words(tw, fspec, on_torch)
+    f32 = w.dtype
+    fi = iso.to(f32) if on_torch and iso is not None else (iso.astype(f32) if iso is not None else 0.0 * w)
+    fa = aniso.to(f32) if on_torch and aniso is not None else (aniso.astype(f32) if aniso is not None else 0.0 * w)
+    return a_iso * fi + a_aniso * fa
+
+
 def _phase(comps, levels, per_tile):
     """``sum_{s,c} m_sc L_sc`` ``(chunk, tile, M_pad)`` from the decoded components ``comps`` (segment-major, ``None``
     for a 0-bit field) and the levels: ``(M_pad, n_seg, 3)``, or with ``per_tile`` ``(chunk, M_pad, n_seg, 3)`` (a
@@ -2161,15 +2167,16 @@ def _phase(comps, levels, per_tile):
     return ph
 
 
-def _row_terms(ph, w, tier, bg, slot, on_torch):
-    """The phase and the weight of each row with the background (``g0_v . n``, the voxel's ``g0`` by ``slot``) and the
-    tiers (the weight ``w amp exp(logw_pool[pool] + rho_D c)``, the field offset ``a_iso iso + a_aniso aniso``) folded
-    in, on JAX or (``on_torch``) torch."""
+def _row_terms(ph, w, pool, tw, nb, slot, tier, bg, on_torch):
+    """The phase and the weight of each row with the background (``g0_v . n``, the voxel's ``g0`` by ``slot``, ``n``
+    decoded from the background words ``nb``) and the tiers (the weight ``w amp exp(logw_pool[pool] + rho_D c)`` with
+    the contact ``c`` decoded from the tier words ``tw``, the field offset :func:`_field_offset` from the same words)
+    folded in, on JAX or (``on_torch``) torch."""
     if bg is not None:
-        nb_words, b_layout, b_scale, G0 = bg
+        b_layout, b_scale, G0 = bg
         g0 = G0[slot]
         off = None
-        for c, v in enumerate(_decode(nb_words, b_scale, b_layout)):
+        for c, v in enumerate(_decode(nb, b_scale, b_layout)):
             if v is not None:
                 t = v * g0[:, None, c]
                 off = t if off is None else off + t
@@ -2177,8 +2184,9 @@ def _row_terms(ph, w, tier, bg, slot, on_torch):
             ph = ph + off[:, :, None]
     if tier is None:
         return ph, w
-    pool, tw, fiso, faniso, contact, logw_pool, rho_D, a_iso, a_aniso, amp = tier
-    ph = ph + (a_iso * fiso + a_aniso * faniso)[:, :, None]
+    contact, fspec, logw_pool, rho_D, a_iso, a_aniso, amp = tier
+    if fspec is not None:
+        ph = ph + _field_offset(tw, fspec, a_iso, a_aniso, w, on_torch)[:, :, None]
     if on_torch:
         import torch
         lw, exp = logw_pool[pool.long()], torch.exp
@@ -2193,59 +2201,70 @@ def _row_terms(ph, w, tier, bg, slot, on_torch):
 _KERNELS = {}
 
 
-def _compiled(n_halves, layout, per_tile, tiers, contact, bg_layout):
+def _compiled(n_halves, layout, per_tile, tiers, contact, f_static, bg_layout):
     """The JAX chunk kernel: the words decoded, the phase, the tiers and the background folded in, ``w exp(i ph)`` in
     complex64 summed over each tile's rows (a fused reduction), the tile sums scattered into their voxel halves in
-    complex128. One per (voxel halves, field layout, delivery, tiers, contact, background layout)."""
+    complex128. One per (voxel halves, field layout, delivery, tiers, contact, field channels, background layout)."""
     import jax
     import jax.numpy as jnp
-    key = (n_halves, layout, per_tile, tiers, contact, bg_layout)
+    key = (n_halves, layout, per_tile, tiers, contact, f_static, bg_layout)
     if key not in _KERNELS:
         @jax.jit
-        def kernel(words, scale, w, tiles, levels, slot, pool, tw, fiso, faniso, c_scale, logw_pool, rho_D, a_iso, a_aniso, amp,
-                   nb, b_scale, G0, acc):
+        def kernel(words, scale, w, tiles, levels, slot, pool, tw, c_scale, f_scale, f_coef, logw_pool, rho_D, a_iso, a_aniso,
+                   amp, nb, b_scale, G0, acc):
             comps = _decode(words, scale, layout)
             lev = levels[slot] if per_tile else levels
             ph = _phase(comps, lev, per_tile)
             if ph is None:
                 ph = jnp.zeros(words.shape[:2] + (levels.shape[-3],), jnp.float32)
-            tier = ((pool, tw, fiso, faniso, (contact, c_scale) if contact is not None else None, logw_pool, rho_D, a_iso, a_aniso, amp)
+            fspec = None if f_static is None else (f_static[0], f_scale, f_coef, f_static[1])
+            tier = (((contact, c_scale) if contact is not None else None, fspec, logw_pool, rho_D, a_iso, a_aniso, amp)
                     if tiers else None)
-            bg = (nb, bg_layout, b_scale, G0) if bg_layout is not None else None
-            ph, wf = _row_terms(ph, w, tier, bg, slot, False)
-            E = (jnp.exp(1j * ph) * wf[:, :, None]).astype(jnp.complex128)
-            return acc + jax.ops.segment_sum(E.sum(1), tiles, num_segments=n_halves)
+            bg = (bg_layout, b_scale, G0) if bg_layout is not None else None
+            ph, wf = _row_terms(ph, w, pool, tw, nb, slot, tier, bg, False)
+            E = jnp.exp(1j * ph) * wf[:, :, None]
+            return acc + jax.ops.segment_sum(E.sum(1).astype(jnp.complex128), tiles, num_segments=n_halves)
         _KERNELS[key] = kernel
     return _KERNELS[key]
 
 
-def _sums_jax(words, scale, layout, w, tiles, levels, slot, tier, bg, n_halves, chunk):
-    """The per-voxel-half sums ``(n_halves, M_pad)`` complex128 on JAX: the compiled chunk kernel over the tiles."""
+def _sums_jax(chunks, scale, layout, levels, per_tile, tier, bg, n_halves, backend=None, device=None):
+    """The per-voxel-half sums ``(n_halves, M_pad)`` complex128 on JAX: the compiled kernel over the ``chunks``
+    (:meth:`TimeSegmentLayout._chunks`: the partition's words, the weights, the tiles, then the slot with a delivery, the
+    pool and the tier words with the tiers, the background words with a background)."""
     import jax.numpy as jnp
-    per_tile = slot is not None
-    contact = None if tier is None or tier[4] is None else tier[4][0]
-    bg_layout = None if bg is None else bg[1]
-    kernel = _compiled(n_halves, layout, per_tile, tier is not None, contact, bg_layout)
+    contact = None if tier is None or tier[0] is None else tier[0][0]
+    fspec = None if tier is None else tier[1]
+    f_static = None if fspec is None else (fspec[0], fspec[3])
+    bg_layout = None if bg is None else bg[0]
+    kernel = _compiled(n_halves, layout, per_tile, tier is not None, contact, f_static, bg_layout)
     M = levels.shape[-3]
     acc = jnp.zeros((n_halves, M), jnp.complex128)
-    z = jnp.zeros(1, jnp.float32); zi = jnp.zeros((1, 1, 1), jnp.int32)
+    z = jnp.zeros(1, jnp.float32); zi = jnp.zeros((1, 1, 1), jnp.int32); z64 = jnp.zeros(1, jnp.float64)
     lev, sc = jnp.asarray(levels), jnp.asarray(scale)
     if tier is not None:
-        pool, tw, fiso, faniso, ct, lw, rho_D, a_iso, a_aniso, amp = tier
+        ct, _, lw, rho_D, a_iso, a_aniso, amp = tier
         c_scale = jnp.asarray(ct[1]) if ct is not None else z
-        tconst = (jnp.asarray(lw), jnp.float32(rho_D), jnp.float32(a_iso), jnp.float32(a_aniso), jnp.float32(amp))
+        f_scale, f_coef = (z64, z64) if fspec is None else (jnp.asarray(fspec[1], jnp.float64), jnp.asarray(fspec[2], jnp.float64))
+        tconst = (c_scale, f_scale, f_coef, jnp.asarray(lw), jnp.float32(rho_D), jnp.float32(a_iso), jnp.float32(a_aniso), jnp.float32(amp))
     if bg is not None:
-        nb, _, b_scale, G0 = bg
+        _, b_scale, G0 = bg
         bconst = (jnp.asarray(b_scale), jnp.asarray(G0))
-    for i in range(0, words.shape[0], chunk):
-        s = slice(i, i + chunk)
-        targs = (pool[s], tw[s], fiso[s], faniso[s], c_scale) + tconst if tier is not None else (z, zi, z, z, z, z, z, z, z, z)
-        bargs = (nb[s],) + bconst if bg is not None else (zi, z, z)
-        acc = kernel(words[s], sc, w[s], tiles[s], lev, slot[s] if per_tile else z, *targs, *bargs, acc)
+    for cols in chunks:
+        words, w, tiles = cols[:3]; k = 3
+        slot = cols[k] if per_tile else z
+        k += 1 if per_tile else 0
+        if tier is not None:
+            pool, tw = cols[k:k + 2]; k += 2
+            targs = (pool, tw) + tconst
+        else:
+            targs = (z, zi, z, z64, z64, z, z, z, z, z)
+        bargs = (cols[k],) + bconst if bg is not None else (zi, z, z)
+        acc = kernel(words, sc, w, tiles, lev, slot, *targs, *bargs, acc)
     return np.asarray(acc)
 
 
-def _tile_sums_torch(words, scale, layout, w, levels, slot, tier, bg, per_tile):
+def _tile_sums_torch(words, scale, layout, w, levels, slot, pool, tw, nb, tier, bg, per_tile):
     """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the decoded words, the phase with the tiers and
     the background, ``w exp(i ph)`` in complex64, the reduce over each tile's rows."""
     import torch
@@ -2254,7 +2273,7 @@ def _tile_sums_torch(words, scale, layout, w, levels, slot, tier, bg, per_tile):
     ph = _phase(comps, lev, per_tile)
     if ph is None:
         ph = torch.zeros(words.shape[:2] + (levels.shape[-3],), dtype=torch.float32, device=words.device)
-    ph, wf = _row_terms(ph, w, tier, bg, slot.long() if per_tile else None, True)
+    ph, wf = _row_terms(ph, w, pool, tw, nb, slot.long() if per_tile else None, tier, bg, True)
     return torch.polar(wf[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
 
 
@@ -2273,57 +2292,64 @@ def _torch_kernel():
     return _TORCH_KERNEL["fn"]
 
 
-def _sums_torch(words, scale, layout, w, tiles, levels, slot, tier, bg, n_halves, chunk):
+def _sums_torch(chunks, scale, layout, levels, per_tile, tier, bg, n_halves, backend=None, device=None):
     """The same sums on torch: the tile sums of every chunk (:func:`_tile_sums_torch`, compiled when possible)
     ``index_add_``-ed into a complex128 accumulator (deterministic under ``torch.use_deterministic_algorithms(True)``)."""
     import torch
-    dev = words.device
-    per_tile = slot is not None
+    dev = torch.device(device)
     lev = torch.as_tensor(levels, device=dev); sc = torch.as_tensor(scale, device=dev)
+    t = None
     if tier is not None:
-        pool, tw, fiso, faniso, ct, lw, rho_D, a_iso, a_aniso, amp = tier
+        ct, fspec, lw, rho_D, a_iso, a_aniso, amp = tier
         ct = None if ct is None else (ct[0], torch.as_tensor(ct[1], device=dev))
-        lw = torch.as_tensor(lw, device=dev)
+        fspec = None if fspec is None else _device_field_spec(fspec, "torch", dev)
+        t = (ct, fspec, torch.as_tensor(lw, device=dev), rho_D, a_iso, a_aniso, amp)
+    b = None
     if bg is not None:
-        nb, b_layout, b_scale, G0 = bg
-        b_scale = torch.as_tensor(b_scale, device=dev); G0 = torch.as_tensor(G0, device=dev)
+        b_layout, b_scale, G0 = bg
+        b = (b_layout, torch.as_tensor(b_scale, device=dev), torch.as_tensor(G0, device=dev))
     acc = torch.zeros((n_halves, levels.shape[-3]), dtype=torch.complex128, device=dev)
     fn = _torch_kernel()
     with torch.no_grad():
-        for i in range(0, words.shape[0], chunk):
-            s = slice(i, i + chunk)
-            t = None if tier is None else (pool[s], tw[s], fiso[s], faniso[s], ct, lw, rho_D, a_iso, a_aniso, amp)
-            b = None if bg is None else (nb[s], b_layout, b_scale, G0)
-            args = (words[s], sc, layout, w[s], lev, slot[s] if per_tile else None, t, b, per_tile)
+        for cols in chunks:
+            words, w, tiles = cols[:3]; k = 3
+            slot = cols[k] if per_tile else None
+            k += 1 if per_tile else 0
+            pool = tw = nb = None
+            if tier is not None:
+                pool, tw = cols[k:k + 2]; k += 2
+            if bg is not None:
+                nb = cols[k]
+            args = (words, sc, layout, w, lev, slot, pool, tw, nb, t, b, per_tile)
             try:
                 ts = fn(*args)
             except Exception:                                  # the compiled path failed at run time: eager, once for all
                 _TORCH_KERNEL["fn"] = fn = _tile_sums_torch
                 ts = fn(*args)
-            acc.index_add_(0, tiles[s], ts)
+            acc.index_add_(0, tiles, ts)
     return acc.cpu().numpy()
 
 
-def _voxel_sums_torch(rows, n_q, w, tiles, n_halves, chunk):
+def _voxel_sums_torch(rows, n_q, chunks, n_halves):
     """The weighted per-voxel-half sums ``(n_q, n_halves)`` float64 on torch of the ``n_q`` per-row quantities
-    ``rows(sl, torch)`` gives for a chunk of tiles."""
+    ``rows(w, pool, tw, torch)`` gives for each chunk ``(w, tiles, pool, tw)`` of ``chunks``."""
     import torch
-    acc = torch.zeros((n_q, n_halves), dtype=torch.float64, device=w.device)
+    acc = None
     with torch.no_grad():
-        for i in range(0, w.shape[0], chunk):
-            sl = slice(i, i + chunk)
-            ts = torch.stack([(q * w[sl]).sum(1) for q in rows(sl, torch)]).to(torch.float64)
-            acc.index_add_(1, tiles[sl], ts)
+        for w, tiles, pool, tw in chunks:
+            if acc is None:
+                acc = torch.zeros((n_q, n_halves), dtype=torch.float64, device=w.device)
+            ts = torch.stack([(q * w).sum(1) for q in rows(w, pool, tw, torch)]).to(torch.float64)
+            acc.index_add_(1, tiles, ts)
     return acc.cpu().numpy()
 
 
-def _voxel_sums_jax(rows, n_q, w, tiles, n_halves, chunk):
+def _voxel_sums_jax(rows, n_q, chunks, n_halves):
     """:func:`_voxel_sums_torch` on JAX (``segment_sum`` into the voxel halves)."""
     import jax
     import jax.numpy as jnp
     acc = jnp.zeros((n_halves, n_q), jnp.float64)
-    for i in range(0, w.shape[0], chunk):
-        sl = slice(i, i + chunk)
-        ts = jnp.stack([(q * w[sl]).sum(1) for q in rows(sl, jnp)], axis=1).astype(jnp.float64)
-        acc = acc + jax.ops.segment_sum(ts, tiles[sl], num_segments=n_halves)
+    for w, tiles, pool, tw in chunks:
+        ts = jnp.stack([(q * w).sum(1) for q in rows(w, pool, tw, jnp)], axis=1).astype(jnp.float64)
+        acc = acc + jax.ops.segment_sum(ts, tiles, num_segments=n_halves)
     return np.asarray(acc).T
