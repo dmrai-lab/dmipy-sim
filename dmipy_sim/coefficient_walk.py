@@ -216,6 +216,8 @@ class CoefficientWalk:
     qv_positions: Optional[np.ndarray] = None
     qv_boundary: Optional[np.ndarray] = None
     illegal_crossings: int = 0
+    pool_changed: Optional[np.ndarray] = None   #: (n,) bool the walkers whose label changed in an impermeable walk walked
+                                                #: with ``drop_pool_changes``; None when the walk was not asked for them
     seed: Optional[int] = None
     diffusivity: Optional[float] = None
     geometry: object = field(default=None, compare=False, repr=False)
@@ -312,7 +314,7 @@ class CoefficientWalk:
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
-                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights")
+                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed")
 
     def take(self, idx):
         """The walk of the walkers ``idx`` (an index array), in that order; the raw subset is kept only when ``idx``

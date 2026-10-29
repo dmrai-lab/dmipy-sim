@@ -2245,6 +2245,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
             arrays, meta = join_windows(packs, fidelity=fid, walks=[dict(first=0, last=n - 1, seed=seed)],
                                         walkers_shuffled=True)
             pack = ReplayPack(arrays, meta, source=out_path)
+        dropped = (_work or {}).get("dropped_pool_change")
+        if dropped is not None:                       # the walkers the walk excluded, stated in the certificate
+            pack.meta["fidelity"]["dropped_pool_change"] = dropped
         if out_path is not None:
             run.phase("write")
             write_rpk(out_path, {k: v for k, v in pack.arrays.items() if v is not None}, pack.meta)
