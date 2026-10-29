@@ -409,8 +409,9 @@ class Pores(Family):
 class Slab(Family):
     """The closed permeable slab: [0, L] split at L/2 by a membrane of permeability kappa, reflecting x faces, every
     walker starting in compartment A = [0, L/2]. Compartment B's pool is magnetic (``chi_iso`` = -0.1 ppm, which
-    the envelope's ``chi_max`` is read from) and its field basis is the indicator of B, a layer at ``chi B0`` the
-    walkers exchange in and out of, read along the path."""
+    the envelope's ``chi_max`` is read from) and its field is the Lorentz-corrected dipole field of B, an infinite
+    magnetised layer of normal x the walkers exchange in and out of, read along the path: ``chi B0 / 3`` in B against
+    A with B0 in the layer's plane (the default pose, B0 along z), ``-2 chi B0 / 3`` with B0 along the normal."""
     name = "slab"
     blt_K = 256
     L = 4.0e-6
@@ -453,14 +454,17 @@ class Slab(Family):
                          validity=dataclasses.replace(s.validity, tiers=list(s.validity.tiers) + ["field"]))
 
     def field_grid(self):
-        """A geometry-only basis on a 1-D grid: ``iso_local`` 1 in compartment B and 0 in A, no ``iso_P``."""
-        from dmipy_sim.fields.susceptibility_field import FieldGrid
+        """The isotropic field basis (:func:`~dmipy_sim.fields.susceptibility_field.field_basis`) of compartment B's
+        indicator on a 1-D grid along x: the layer's wave vectors all lie along its normal, so ``iso_local`` is
+        ``(1_B - 1/2) / 3``, ``iso_P_xx`` is ``1_B - 1/2`` and every other ``iso_P`` is 0. The basis satisfies the trace
+        identity the reader forms ``iso_P_zz`` from (RPK.md 5.3). A planar layer's field is local, so the transform's
+        periodic images in x are the closed slab's field."""
+        from dmipy_sim.fields.susceptibility_field import FieldGrid, field_basis
         nx = self.FIELD_NODES
         vs = np.array([self.L / nx, 1.0, 1.0])
         x = (np.arange(nx) + 0.5) * vs[0]
-        iso_local = (x > self.L / 2).astype(np.float32).reshape(nx, 1, 1)
-        basis = dict(iso_local=iso_local, iso_P=np.zeros((6, nx, 1, 1), np.float32), shape=(nx, 1, 1), voxel_size=vs)
-        return FieldGrid(basis, np.array([0.0, -0.5, -0.5]))
+        in_B = (x > self.L / 2).astype(np.float64).reshape(nx, 1, 1)
+        return FieldGrid(field_basis(in_B, None, vs, include_aniso=False), np.array([0.0, -0.5, -0.5]))
 
     def cost(self, name, backend):
         from dmipy_sim.engine.core import walk_cost
@@ -477,7 +481,7 @@ class Slab(Family):
     def pack_kw(self, name, walk):
         return dict(K=self.K, blt_temporal_K=min(self.blt_K, self.K), diffusivity=self.D0,
                     provenance=dict(substrate=type(self.geometry(name)).__name__, L_m=self.L, kappa_m_s=self.substrates()[name]["kappa"],
-                                    D0=self.D0, field="iso_local = 1 in compartment B (x > L/2), 0 in A"))
+                                    D0=self.D0, field="the isotropic dipole basis of compartment B (x > L/2), a layer of normal x"))
 
 
 class Cactus(Family):
