@@ -34,6 +34,7 @@ dependencies = [
 bank = [
     "safetensors>=0.4",
     "huggingface_hub>=0.20",
+    "requests>=2.28",    # replay.remote.RemotePack: a pack read by HTTP Range requests
 ]
 # GPU support: installs jax-cuda12-plugin and all nvidia-*-cu12 wheels.
 # After installing, the venv's activate script must export LD_LIBRARY_PATH
@@ -62,6 +63,7 @@ dev = [
     "nibabel>=5.0",
     "tifffile>=2023.1",
     "h5py>=3.8",
+    "requests>=2.28",    # replay.remote.RemotePack, tested against a local HTTP server (tests/replay/test_plan_before_read.py)
 ]
 
 # ORACLE-ONLY, and deliberately NOT in `dev`. Nothing in dmipy_sim imports dipy -- the normative

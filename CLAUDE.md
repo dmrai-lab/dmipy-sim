@@ -347,8 +347,12 @@ meshes:
 - **3-D periodicity** (`periodic=True`, `voxel_min/max`) via ghost-triangle
   replication; geometry queries use the wrapped position, the returned position stays
   continuous so the gradient phase is correct. Box faces are wrap planes, not walls.
-- **Smooth vertex-normal reflection** (`O(h²/R²)` faceting) and **leak-proof
-  permeation** (one Powles decision at the first hit, then a multi-bounce reflection).
+- **Facet-normal reflection, and the contact its push** (`reflect_mode="geometric"`): the walker is reflected off
+  the facet it hits and its boundary local time is that reflection's push along the same normal, so the mean local
+  time is the walked mesh's own `D t S/V` (`tests/geometry/test_mesh_contact.py`; a contact read off the
+  vertex-interpolated normal fell short by its tilt's mean cosine, 1 % on CACTUS). **Leak-proof permeation** (one
+  Powles decision at the first hit, then a multi-bounce reflection). A path ending within the float32 tie band of a
+  facet plane is a hit AT ITS END, never at the ray's far intersection with the plane.
 - **`orientation=`/`R=`** place the mesh in the bore (B0 = +z) as an *acquisition
   rotation* — the walk stays in the mesh frame.
 - **Compartment (intra/extra) wall properties.** The membrane can relax and permit
