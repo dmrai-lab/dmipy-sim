@@ -339,7 +339,7 @@ class Substrate:
                                          kappa_inner=self.kappa, rho_inner=self.rho2, rho_outer=self.rho2,
                                          compartments=self.compartments)
         spec = spec_of(geom, id=id or f"substrate/canonical-{int(n_fibres)}-{seed}")
-        from ..spec.substrate import Susceptibility
+        from dmipy_replay.spec.substrate import Susceptibility
         from .biophysical_constants import canonical_white_matter
         wm = canonical_white_matter(field_T=self.field_T)
         chi = Susceptibility(float(wm["chi_iso_myelin"]), float(wm["delta_chi_a"]), "radial")     # the catalogue's nominal chi

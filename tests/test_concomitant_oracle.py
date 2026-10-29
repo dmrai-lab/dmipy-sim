@@ -29,7 +29,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.acquisition import coil
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -274,7 +274,7 @@ def test_the_one_maxwell_formula_is_the_gradient_of_its_own_field_and_what_the_s
     """``concomitant_terms`` is the Maxwell term in one place: its extra gradient is the spatial gradient of its own
     field value (``gc = grad B_c``, differenced numerically at an oblique position in the frame's field direction),
     and ``with_concomitant`` books exactly that gradient into the imposed part along a constant command."""
-    from dmipy_sim.acquisition.scanner_sequence import concomitant_terms
+    from dmipy_replay.acquisition.scanner_sequence import concomitant_terms
     R = FRAMES[frame]
     n = R @ np.array([0.0, 0.0, 1.0])
     G_vec = R @ np.array([0.018, -0.007, 0.012])

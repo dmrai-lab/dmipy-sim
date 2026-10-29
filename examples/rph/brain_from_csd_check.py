@@ -15,7 +15,7 @@ import sys
 
 import numpy as np
 
-from dmipy_sim.acquisition.waveforms import rotate_waveform
+from dmipy_replay.acquisition.waveforms import rotate_waveform
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from brain_from_csd import acquisition  # noqa: E402

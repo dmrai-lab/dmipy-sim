@@ -28,13 +28,8 @@ from __future__ import annotations
 
 import numpy as np
 import jax.numpy as jnp
+from dmipy_replay.replay.field import CHANNEL_NAMES
 
-#: the 12 channels, in the order the pack's path channel stores them (RPK.md 5.3): ``iso_P_zz`` is never carried, a
-#: reader forms it as ``3 iso_local - iso_P_xx - iso_P_yy`` (the dipole kernel is traceless)
-CHANNEL_NAMES = ("iso_local",) + tuple(f"iso_P_{c}" for c in ("xx", "yy", "xy", "xz", "yz")) \
-    + tuple(f"aniso_G_{c}" for c in ("xx", "yy", "zz", "xy", "xz", "yz"))
-#: the isotropic channels, the whole set of a source without an anisotropic part
-ISO_CHANNEL_NAMES = CHANNEL_NAMES[:6]
 
 
 def _sym6(M):
@@ -122,56 +117,14 @@ def segment_basis(rho_vec, u, z1, z2, a, b):
                     -(Lxy / 6.0 - (wx * uy + wy * ux) / 4.0), -(Lxz / 6.0 - (wx * uz + wz * ux) / 4.0), -(Lyz / 6.0 - (wy * uz + wz * uy) / 4.0)], axis=-1)
     MP = jnp.stack([Lxx, Lyy, Lxy, Lxz, Lyz], axis=-1)                         # A L, its zz being - (xx + yy): traceless
     return jnp.concatenate([jnp.zeros(rho.shape + (1,), dt), MP, MA], axis=-1)
-def q_of_H(b0_dir):
-    """``Q(H) = (Hx^2, Hy^2, Hz^2, 2 Hx Hy, 2 Hx Hz, 2 Hy Hz)``: the contraction weights of the six symmetric
-    components, so that ``Q . sym6(M) = H . M . H``."""
-    h = np.asarray(b0_dir, float).ravel(); h = h / np.linalg.norm(h)
-    return np.array([h[0] ** 2, h[1] ** 2, h[2] ** 2, 2 * h[0] * h[1], 2 * h[0] * h[2], 2 * h[1] * h[2]])
 
 
-def iso_P6(channels):
-    """``(..., 6)`` ``iso_P`` in the (xx, yy, zz, xy, xz, yz) order from the channels ``(..., 6 | 12)``, ``iso_P_zz`` formed
-    as ``3 iso_local - iso_P_xx - iso_P_yy``."""
-    c = np.asarray(channels)
-    return np.concatenate([c[..., 1:3], (3.0 * c[..., 0] - c[..., 1] - c[..., 2])[..., None], c[..., 3:6]], axis=-1)
 
 
-def iso_weights(b0_dir):
-    """``(6,)``: the weights of ``(iso_local, iso_P_xx, iso_P_yy, iso_P_xy, iso_P_xz, iso_P_yz)`` in the isotropic
-    term ``iso_local - Q . iso_P`` once ``iso_P_zz = 3 iso_local - iso_P_xx - iso_P_yy`` is formed."""
-    q = q_of_H(b0_dir)
-    return np.array([1.0 - 3.0 * q[2], -(q[0] - q[2]), -(q[1] - q[2]), -q[3], -q[4], -q[5]])
 
 
-def field_terms(channels, b0_dir, axis=-1):
-    """The two susceptibility terms of the channels along ``axis`` (``iso_local, iso_P (5), aniso_G (6)`` in that
-    order, 6 or 12 of them: ``iso_P_zz`` is formed from the trace identity) for a field direction: ``(iso, aniso)``
-    with ``iso = iso_local - Q . iso_P`` and ``aniso = Q . aniso_G`` (``None`` when the channels carry no
-    anisotropic basis). ``dB = B0 (chi_iso iso + chi_aniso aniso)``: the one contraction of every route, grid, path
-    and pack. A torch tensor is contracted on its own device in float64 (a float32 matmul on CUDA is TF32) and stays
-    there; anything else on the host."""
-    q, w = q_of_H(b0_dir), iso_weights(b0_dir)
-    if type(channels).__module__.split(".")[0] == "torch":
-        import torch
-        c = torch.movedim(channels, axis, -1).to(torch.float64); qt = torch.as_tensor(q, device=c.device); wt = torch.as_tensor(w, device=c.device)
-        return c[..., :6] @ wt, (c[..., 6:12] @ qt if c.shape[-1] >= 12 else None)
-    c = np.moveaxis(np.asarray(channels, float), axis, -1)
-    iso = c[..., :6] @ w
-    aniso = c[..., 6:12] @ q if c.shape[-1] >= 12 else None
-    return iso, aniso
 
 
-def contract(channels, b0_dir, *, B0, chi_iso=0.0, chi_aniso=0.0, axis=-1):
-    """``dB`` (Tesla) at each point from its channels for one configuration (:func:`field_terms`)."""
-    iso, aniso = field_terms(channels, b0_dir, axis=axis)
-    dB = np.zeros(iso.shape, float)
-    if chi_iso:
-        dB = dB + float(chi_iso) * iso
-    if chi_aniso:
-        if aniso is None:
-            raise ValueError("these channels carry no anisotropic basis (6 of 12); chi_aniso must be 0")
-        dB = dB + float(chi_aniso) * aniso
-    return dB * float(B0)
 
 
 def annulus_mean_log(a, b):

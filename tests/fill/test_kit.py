@@ -11,7 +11,7 @@ import pytest
 from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
 from dmipy_sim.engine.backends import Backend, write_request_directory
 from dmipy_sim.fill import Recipe
-from dmipy_sim.replay.bank import storage_band_hz
+from dmipy_replay.replay.storage import storage_band_hz
 from dmipy_sim.fill.kit import _block_record, _pool_geometry, _sha256, assemble_request
 
 

@@ -4,8 +4,8 @@ attenuation is ``exp(-D int |q - q(T)|^2 dt)``, which is the textbook ``int |q|^
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition.waveforms import b_from_gradient, btensor_from_gradient
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.waveforms import b_from_gradient, btensor_from_gradient
+from dmipy_replay.constants import GAMMA
 from dmipy_sim import sequences
 
 

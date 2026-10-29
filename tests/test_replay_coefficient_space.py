@@ -8,6 +8,7 @@ touches a decoded track or trajectory on a pack that carries the path channel.
 """
 from __future__ import annotations
 
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 
@@ -16,9 +17,9 @@ from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import compression as _cx
-from dmipy_sim.replay._replay_kernel import bin_gate
-from dmipy_sim.acquisition.epg import pathway_weight
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.replay._replay_kernel import bin_gate
+from dmipy_replay.acquisition.epg import pathway_weight
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 from tests.conftest import dense_relaxation_logweight
 
@@ -40,11 +41,11 @@ def _dense_logweights(pk, seq, T2, T1, rho2):
     n_t, dt = pk.n_t, pk.dt
     G = np.asarray(seq.G); chi_wf = np.ones(G.shape[1]) if seq.chi_perp is None else np.asarray(seq.chi_perp).reshape(-1)
     active = bin_gate(np.ones(chi_wf.shape[0]), seq.dt, n_t, dt)[0]; chi = bin_gate(chi_wf, seq.dt, n_t, dt)[0]
-    comp = _cx.occupancy_at(pk.arrays, next(c for c in ch["compartment"]["columns"] if c["name"] == "comp"),
+    comp = _r_compression.occupancy_at(pk.arrays, next(c for c in ch["compartment"]["columns"] if c["name"] == "comp"),
                             np.arange(n_t) * dt)                                    # the pool at every block end
     lw = dense_relaxation_logweight(comp, T2, T1, dt, chi, active)
     meta = dict(ch["boundary_local_time"])
-    bands = _cx.bridge_bands(pk.arrays, meta)
+    bands = _r_compression.bridge_bands(pk.arrays, meta)
     t = np.minimum(np.arange(chi_wf.shape[0]) * float(seq.dt), pk.T_window)
     B = _series(pk, t, bands, np.asarray(pk.arrays["blt_start"], np.float64), np.asarray(pk.arrays["blt_endpoint"], np.float64))
     return lw + (rho2 / D0) * (np.diff(B, axis=1) * chi_wf[None, :-1]).sum(1)
@@ -86,7 +87,7 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     """The path route: the per-channel path integrals are the cosine modes contracted with the gate's cosine
     projection; the dense route (the 13 channels' mode series evaluated finely, the held gate integrated against
     it) is the oracle."""
-    from dmipy_sim.replay.bank import susc_path_coeffs, susc_path_field
+    from dmipy_replay.replay.field import susc_path_coeffs, susc_path_field
     from dmipy_sim.replay.replay import GAMMA
     pk = field_pack
     seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
@@ -105,7 +106,7 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     dB = susc_path_field(b, np.asarray(b0_dir) / np.linalg.norm(b0_dir), B0=3.0, chi_iso=-1e-7, chi_aniso=-5e-8, has_aniso=bool(gm.get("has_aniso")))
     phi_x = GAMMA * (float(seq.dt) / sub) * (dB * gate_f[None, :]).sum(1)
     # the gradient's phase: the held waveform against the stored path (the chord plus the bands' series), finely
-    C = _cx.read_position_coeffs(pk.arrays, dtype=np.float64)
+    C = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64)
     G = np.asarray(seq.G_eff, np.float64)
     t = tf
     k = np.arange(1, C.shape[1] - 1)

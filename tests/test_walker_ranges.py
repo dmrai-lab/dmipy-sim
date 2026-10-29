@@ -3,6 +3,7 @@ walkers in either precision, a pack's shape and starts are read without decoding
 copy-on-write and replaced rather than rewritten, and a merge streamed to its file is the merge held in memory."""
 from __future__ import annotations
 
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 
@@ -43,22 +44,22 @@ def test_walker_ranges_decode_to_the_whole_packs_rows(dtype):
     exactly the whole pack's rows of those walkers; its shape and starts are the stored ones; its events stream is
     those walkers' events with the offsets rebased; the scale tables stay whole."""
     arrays = _merged_arrays()
-    whole = cx.read_position_coeffs(arrays, dtype=dtype)
-    assert whole.dtype == dtype and cx.position_shape(arrays) == whole.shape == (63, 14, 3)
-    np.testing.assert_array_equal(cx.position_starts(arrays), cx.read_position_coeffs(arrays, dtype=np.float64)[:, 0, :])
+    whole = _r_compression.read_position_coeffs(arrays, dtype=dtype)
+    assert whole.dtype == dtype and _r_compression.position_shape(arrays) == whole.shape == (63, 14, 3)
+    np.testing.assert_array_equal(_r_compression.position_starts(arrays), _r_compression.read_position_coeffs(arrays, dtype=np.float64)[:, 0, :])
     col = {"name": "comp", "kind": "events"}
-    start_w, ev_w = cx.occupancy_events(arrays, col)
+    start_w, ev_w = _r_compression.occupancy_events(arrays, col)
     for step in (1, 5, 37, 40, 63, 100):
-        parts = [cx.walker_rows(arrays, a, a + step) for a in range(0, 63, step)]
-        np.testing.assert_array_equal(np.concatenate([cx.read_position_coeffs(p, dtype=dtype) for p in parts]), whole)
+        parts = [_r_compression.walker_rows(arrays, a, a + step) for a in range(0, 63, step)]
+        np.testing.assert_array_equal(np.concatenate([_r_compression.read_position_coeffs(p, dtype=dtype) for p in parts]), whole)
         assert all(p["pos_band_scale"] is arrays["pos_band_scale"] for p in parts)
-        evs = [cx.occupancy_events(p, col) for p in parts]
+        evs = [_r_compression.occupancy_events(p, col) for p in parts]
         np.testing.assert_array_equal(np.concatenate([s for s, _ in evs]), start_w)
         np.testing.assert_array_equal(np.concatenate([e.t for _, e in evs]), ev_w.t)
         np.testing.assert_array_equal(np.concatenate([np.diff(e.offsets) for _, e in evs]), np.diff(ev_w.offsets))
         np.testing.assert_array_equal(np.concatenate([p["comp_static"] for p in parts]), arrays["comp_static"])
     with pytest.raises(ValueError, match="neither walker-leading"):
-        cx.walker_rows(dict(arrays, stray=np.zeros(5)), 0, 3)
+        _r_compression.walker_rows(dict(arrays, stray=np.zeros(5)), 0, 3)
 
 
 def test_a_packs_shape_and_starts_are_read_without_decoding(monkeypatch, tmp_path):
@@ -69,7 +70,7 @@ def test_a_packs_shape_and_starts_are_read_without_decoding(monkeypatch, tmp_pat
     w = d.simulate_trajectories(40, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 2e-3, seed=3, K=8, require_gpu=False)
     pk = build_replay_pack(w, id="t/shape", license="x", citation="x", K=8, out_path=str(tmp_path / "p.rpk"))
     pk = read_rpk(str(tmp_path / "p.rpk"))
-    r0 = cx.read_position_coeffs(pk.arrays)[:, 0, :]
+    r0 = _r_compression.read_position_coeffs(pk.arrays)[:, 0, :]
 
     def refuse(*a, **k):
         raise AssertionError("a shape was read by decoding the bands")

@@ -22,7 +22,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import simulate_trajectories, simulate_mt_trajectories, SusceptibilitySources, mt
-from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax, finite_180_longitudinal_dwell
+from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax
+from dmipy_replay.replay.bloch import finite_180_longitudinal_dwell
 
 
 # ── (a) vector-Bloch replay vs the forward engine: emergent SE refocusing ────────

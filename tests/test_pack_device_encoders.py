@@ -47,7 +47,7 @@ def test_the_device_field_series_encoder_matches_the_numpy_route():
     matmul reused across every walker chunk) and its quantisation (:func:`~dmipy_sim.replay.bank._quantise_susc_path`)
     on the device give the numpy route's dequantised coefficients to the container's own rounding."""
     from dmipy_sim.replay.bank import susc_path_encode_series
-    from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+    from dmipy_replay.replay.field import CHANNEL_NAMES
     rng = np.random.default_rng(11)
     n_w, n_t = 517, 65
     S = rng.normal(0, 1e-7, (n_w, n_t, 12)).astype(np.float32)

@@ -174,7 +174,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         from .accumulate import (block_length, default_K, window_count, BLOCK_ORDER, PRECISION, PILOT_WALKERS,
                                  coefficient_form, field_mode_form, field_rule_scale, read_checks, pilot_walkers, FIELD_READ_FLOOR,
                                  calibrate_field_reads)
-        from ..replay.compression import block_table, cosine_band_scale
+        from ..replay.compression import block_table
+        from dmipy_replay.replay.compression import cosine_band_scale
         from ..coefficient_walk import CoefficientWalk
         if not hasattr(geometry, "wall_scales"):
             raise TypeError(f"{type(geometry).__name__} offers no wall_scales; adaptive stepping needs the distance to the "

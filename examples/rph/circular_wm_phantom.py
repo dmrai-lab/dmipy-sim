@@ -13,12 +13,13 @@ Run it to build the ``.rph``, replay two sweeps and write the animation used in 
 The sweeps are cached next to the phantom, so a rerun redraws the picture without recomputing them; delete
 ``circular_wm_sweeps.npz`` to force the replays.
 """
+import dmipy_replay.replay.so3 as _r_so3
 import sys
 import numpy as np
 
 from dmipy_sim import sequences
 from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
-from dmipy_sim.acquisition.waveforms import rotate_waveform
+from dmipy_replay.acquisition.waveforms import rotate_waveform
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.spec import Tissue
 
@@ -124,7 +125,7 @@ def sweeps(ph, pack_path, n_frames=36):
     def posed(seq, d):
         """The field along ``d`` of the phantom's frame: the specimen posed with R (R^T z = d) under the acquisition
         turned into the lab (G R^T), which the pose turns back into ``seq`` in the phantom's frame."""
-        R = np.asarray(so3.rotation_of(d), float).T
+        R = np.asarray(_r_so3.rotation_of(d), float).T
         return rotate_waveform(seq, R), R
     seq_n, R_n = posed(pgse(pack, dirs), (0.0, 1.0, 0.0))
     S_g = ph.sparse(ph.replay(seq_n, pose=R_n, scanner=B0_T))[1]              # B0 north, g turning
@@ -136,7 +137,7 @@ def sweeps(ph, pack_path, n_frames=36):
 # ------------------------------------------------------------------ the picture
 def _pools(pack):
     """The pool each walker started in: what colours the substrate picture."""
-    from dmipy_sim.replay.compression import decode_occupancy
+    from dmipy_replay.replay.compression import decode_occupancy
     ch = pack.meta["compression"]["channels"]
     return np.asarray(decode_occupancy(pack.arrays, ch["compartment"])["comp"])[:, 0]
 

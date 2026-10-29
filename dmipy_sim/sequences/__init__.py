@@ -10,9 +10,23 @@ gradient, the RF schedule, the readout, the per-measurement encoding an analytic
 dmipy-fit's AcquisitionScheme consumes one (fit eats sim's real builders) and adds the analytical shell / SH /
 rotational-harmonics layer.
 """
-from .builders import (pgse, pgste, gre, cpmg, splice, ogse, ste, pte, from_waveform, from_btensor_waveform,
-                       from_pgste_waveform, instantaneous, to_gradient_array)
-from .pulseq import from_pulseq, to_pulseq, make_system, PULSEQ_SYSTEMS
+from dmipy_replay.sequences.builders import (
+    pgse,
+    pgste,
+    gre,
+    cpmg,
+    splice,
+    ogse,
+    ste,
+    pte,
+    from_waveform,
+    from_btensor_waveform,
+    from_pgste_waveform,
+    instantaneous,
+    to_gradient_array,
+)
+from dmipy_replay.sequences.pulseq import from_pulseq
+from .pulseq import to_pulseq, make_system, PULSEQ_SYSTEMS
 
 __all__ = [
     'pgse', 'pgste', 'gre', 'cpmg', 'splice', 'ogse', 'ste', 'pte',

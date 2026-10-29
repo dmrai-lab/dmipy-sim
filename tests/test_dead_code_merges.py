@@ -3,6 +3,7 @@
 Each merge here replaced a copy with the original; the tests pin that the survivor gives the
 copy's answer, and that the retired research knobs cannot be set by accident any more.
 """
+import dmipy_replay.replay.bloch as _r_bloch
 import warnings
 
 import numpy as np
@@ -13,7 +14,7 @@ import dmipy_sim as d
 
 def test_one_axis_to_z_rotation():
     """The one rotation between an axis and +z is ``so3.rotation_of``; its transpose takes the axis to +z."""
-    from dmipy_sim.replay.so3 import rotation_of
+    from dmipy_replay.replay.so3 import rotation_of
     rng = np.random.default_rng(0)
     for axis in list(rng.normal(size=(20, 3))) + [np.array([0, 0, 1.0]), np.array([0, 0, -1.0]),
                                                   np.array([1e-9, 0, 1.0])]:
@@ -38,7 +39,7 @@ def test_one_ensemble_signal():
 def test_one_rf_increment():
     from dmipy_sim.viz import pedagogy
     from dmipy_sim.replay import trajectories
-    assert pedagogy._rf_increment is trajectories._rf_increment
+    assert pedagogy._rf_increment is _r_bloch._rf_increment
 
 
 def test_retired_knobs_are_gone():

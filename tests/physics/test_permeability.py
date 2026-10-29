@@ -73,7 +73,7 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
 from dmipy_sim.sequences import pgse
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.engine._fused import simulate_fused
 
 

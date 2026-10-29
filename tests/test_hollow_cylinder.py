@@ -7,7 +7,8 @@ import jax.numpy as jnp
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.fields.hollow_cylinder import hollow_cylinder_basis, contract, CHANNEL_NAMES, q_of_H
+from dmipy_sim.fields.hollow_cylinder import hollow_cylinder_basis
+from dmipy_replay.replay.field import contract, CHANNEL_NAMES, q_of_H
 from dmipy_sim.fields.susceptibility_field import field_grid_of, assemble_field
 from dmipy_sim.fields.susceptibility import MyelinSusceptibility
 

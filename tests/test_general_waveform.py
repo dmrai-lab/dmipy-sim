@@ -14,9 +14,9 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, FreeDiffusion, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import calc_b
+from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_sim.sequences import pgse, ogse
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_WALKERS, SEED
 
 
@@ -88,7 +88,7 @@ def test_arbitrary_waveform_zero_net_gradient_gives_free():
 
 def test_calc_b_pgse_analytical():
     """calc_b should match the analytical PGSE b-value: (gamma*G*delta)^2*(Delta-delta/3)."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     delta = 10e-3
     DELTA = 40e-3
     G_mag = 0.05  # T/m

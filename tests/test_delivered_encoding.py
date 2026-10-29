@@ -7,11 +7,11 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import (background_gradient_map, delivered_gradient, delivered_weights,
                                     gradient_tensor_map)
-from dmipy_sim.replay.replay import compile_scheme
+from dmipy_replay.replay.replay import compile_scheme
 
 SH = (3, 3, 3)
 K, N_T = 16, 48
@@ -340,8 +340,8 @@ def test_a_turned_acquisition_turns_what_the_machine_delivered():
     phantom's pose pass): what a machine delivered is in that frame too and turns with G -- the magnet's own
     gradient, the imposed gradient (so the coils' gradient G - imposed is the turned coils' gradient, and a
     finite pulse still sees none), where the Maxwell term was read, and the nonlinearity tensor (R L R^T)."""
-    from dmipy_sim.acquisition.timing import SequenceTiming
-    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    from dmipy_replay.acquisition.timing import SequenceTiming
+    from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.phantom.bore import encoding_classes
     sw = ScannerLimits.of("swoop")
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 12e-3, 26e-3, gradient_strengths=[0.02, 0.02], TE=60e-3,

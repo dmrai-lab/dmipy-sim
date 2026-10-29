@@ -7,7 +7,7 @@ import pytest
 
 from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, Phantom, Watson
 from dmipy_sim.replay import read_rpk
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 from tests.test_rph_constructor import _acq, _annulus, _pack, _tangential, GRID8
 

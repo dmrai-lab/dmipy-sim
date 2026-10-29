@@ -17,7 +17,7 @@ import numpy as np
 from ..run import Run, current
 import jax.numpy as jnp
 
-from .substrate import SubstrateSpec, SpecError, susceptibility_field_of
+from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility_field_of
 from .build import geometry_from_spec
 
 
@@ -187,7 +187,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                 f"it; a number here reaches the walk's resolution and nothing else.")
         if K is None:                                        # the class's band per storage window (#643)
             from ..engine.accumulate import window_count
-            from ..replay.bank import mode_count
+            from dmipy_replay.replay.storage import mode_count
             K = mode_count(window_count(T_max, window_T)[1], scanner)
         walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=envelope, bounce_budget=bounce_budget,
                        backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=class_band(scanner))

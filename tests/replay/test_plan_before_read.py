@@ -5,6 +5,7 @@ The planner is :mod:`dmipy_sim.replay.planning`, the rule the columnar layout's 
 against the columnar planner on a shared case; the prefix replay against the full decode cut at the plan; the error bound on
 several waveforms (the real canonical-pores pack, when it is on this machine, adds OGSE 400 Hz); the decoded cache's prefix
 entries; the field modes; and ``hf://`` range reads against a local HTTP server that honours ``Range``."""
+import dmipy_replay.replay.compression as _r_compression
 import contextlib
 import http.server
 import os
@@ -16,13 +17,14 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.columnar import ColumnarPack
-from dmipy_sim.replay.planning import PLAN_TOL, Planned, ReadPlan, band_tail, fewest, floor_of
-from dmipy_sim.replay.replay import ReplayPack, _signal_factor
-from dmipy_sim.sequences.builders import gre, ogse, pgse
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.replay.planning import PLAN_TOL, Planned, ReadPlan, band_tail, fewest, floor_of
+from dmipy_sim.replay.replay import ReplayPack
+from dmipy_replay.replay.replay import _signal_factor
+from dmipy_replay.sequences.builders import gre, ogse, pgse
+from dmipy_replay.spec.tissue import Tissue
 
 T_MAX, DT, N_W, K_BANDS = 0.02, 5e-4, 4000, 40
 N_T = int(round(T_MAX / DT)) + 1
@@ -62,8 +64,8 @@ def _cut_phase(pk, seq, K):
     """The phase of a full decode cut at ``K`` bands, contracted by hand: the reference a prefix replay must equal bit for bit."""
     P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     (seg, t0, T_s), = P["windows"]
-    C = cx.read_position_coeffs(seg.arrays, dtype=np.float64, cached=False)[:, :K + 2]
-    Wp = cx.band_projection(P["G_eff_wf"], P["dt_wf"], T_s, K, t0=t0)
+    C = _r_compression.read_position_coeffs(seg.arrays, dtype=np.float64, cached=False)[:, :K + 2]
+    Wp = _r_compression.band_projection(P["G_eff_wf"], P["dt_wf"], T_s, K, t0=t0)
     return C.reshape(P["n_w"], -1) @ (GAMMA * Wp).reshape(Wp.shape[0], -1).T
 
 
@@ -80,7 +82,7 @@ def test_a_plan_states_its_counts_error_source_and_bytes(pack):
     assert plan.error == plan.band_error + plan.mode_error
     assert str(plan).startswith(f"K = {plan.K}/{pack.K} bands")
     # it is the fewest: one band fewer exceeds the limit
-    var = np.repeat(cx.band_variances(pack.K, pack.T_window, pack.diffusivity)[:, None], 3, axis=1)
+    var = np.repeat(_r_compression.band_variances(pack.K, pack.T_window, pack.diffusivity)[:, None], 3, axis=1)
     tail = band_tail(np.asarray(seq.G_eff), seq.dt, [(pack.T_window, 0.0)], var).max(axis=0)
     assert tail[plan.K] <= plan.limit < tail[plan.K - 1]
 
@@ -94,7 +96,7 @@ def test_a_tighter_tolerance_plans_more_bands(pack):
 
 def test_the_plan_is_the_columnar_planners_on_a_shared_case(pack):
     """One header record, two layouts: the pack's plan and the columnar layout's ``bands_for`` are one rule."""
-    var = np.repeat(cx.band_variances(pack.K, pack.T_window, pack.diffusivity)[:, None], 3, axis=1) * (1.0 + np.arange(3))[None]
+    var = np.repeat(_r_compression.band_variances(pack.K, pack.T_window, pack.diffusivity)[:, None], 3, axis=1) * (1.0 + np.arange(3))[None]
     meta = dict(pack.meta, columnar=dict(band_variance=var.T.tolist()))
     stamped = ReplayPack(pack.arrays, meta)
     col = ColumnarPack.__new__(ColumnarPack)
@@ -141,7 +143,7 @@ def test_a_prefix_replay_is_bitwise_the_full_decode_cut_at_the_plan(pack):
         npt.assert_array_equal(np.asarray(phi), _cut_phase(pk, seq, plan.K))
         # the same cut from a pack whose full decode is already held: a view of it, the same bits
         warm = _fresh(pack)
-        cx.read_position_coeffs(warm.arrays, dtype=np.float64)
+        _r_compression.read_position_coeffs(warm.arrays, dtype=np.float64)
         npt.assert_array_equal(np.asarray(warm.walker_phases(seq)[2]), np.asarray(phi))
         S = pk.replay(seq, complex_signal=True)
         assert S.plan == plan
@@ -159,8 +161,8 @@ def test_tol_none_is_the_full_decode_of_the_pack(pack):
     seq = _battery()["ogse200"]
     P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     (seg, t0, T_s), = P["windows"]
-    C = cx.read_position_coeffs(seg.arrays, dtype=np.float64, cached=False)
-    Wp = cx.band_projection(P["G_eff_wf"], P["dt_wf"], T_s, pk.K, t0=t0)
+    C = _r_compression.read_position_coeffs(seg.arrays, dtype=np.float64, cached=False)
+    Wp = _r_compression.band_projection(P["G_eff_wf"], P["dt_wf"], T_s, pk.K, t0=t0)
     want = C.reshape(P["n_w"], -1) @ (GAMMA * Wp).reshape(Wp.shape[0], -1).T
     got = pk.walker_phases(seq, tol=None)[2]
     npt.assert_array_equal(np.asarray(got), want)
@@ -208,27 +210,27 @@ def test_a_zero_gradient_row_decodes_no_position(pack):
 # ------------------------------------------------------------------ the decoded cache
 def test_prefixes_are_extended_not_decoded_again(pack, monkeypatch):
     calls = []
-    real = cx._read_position_coeffs
+    real = _r_compression._read_position_coeffs
     monkeypatch.setattr(cx, "_read_position_coeffs", lambda a, ax, dt, lo=0, hi=None: (calls.append((lo, hi)), real(a, ax, dt, lo, hi))[1])
     pk = _fresh(pack)
-    a = cx.read_position_coeffs(pk.arrays, dtype=np.float64, bands=10)
-    b = cx.read_position_coeffs(pk.arrays, dtype=np.float64, bands=25)          # only bands 10 .. 24 are decoded
-    c = cx.read_position_coeffs(pk.arrays, dtype=np.float64, bands=17)         # a view of the held prefix
+    a = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64, bands=10)
+    b = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64, bands=25)          # only bands 10 .. 24 are decoded
+    c = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64, bands=17)         # a view of the held prefix
     assert calls == [(0, 10), (10, 25)]
     npt.assert_array_equal(b[:, :12], a)
     assert c.base is not None and not c.flags.writeable and c.shape[1] == 19
     assert pk.decoded_bytes == b.nbytes                                        # the longer prefix replaced the shorter
-    full = cx.read_position_coeffs(pk.arrays, dtype=np.float64)
+    full = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64)
     npt.assert_array_equal(full[:, :27], b)
     n_calls = len(calls)
-    d_ = cx.read_position_coeffs(pk.arrays, dtype=np.float64, bands=30)        # the full decode is held: a view of it
+    d_ = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64, bands=30)        # the full decode is held: a view of it
     assert len(calls) == n_calls and d_.base is full
     # every count is the leading entries of the full decode, whatever range it ends in
-    ref = cx.read_position_coeffs(_fresh(pack).arrays, dtype=np.float64, cached=False)
+    ref = _r_compression.read_position_coeffs(_fresh(pack).arrays, dtype=np.float64, cached=False)
     for K in (0, 1, 7, 8, 9, 15, 16, 17, 39, 40):
-        npt.assert_array_equal(cx.read_position_coeffs(_fresh(pack).arrays, dtype=np.float64, bands=K), ref[:, :K + 2], err_msg=str(K))
+        npt.assert_array_equal(_r_compression.read_position_coeffs(_fresh(pack).arrays, dtype=np.float64, bands=K), ref[:, :K + 2], err_msg=str(K))
     with pytest.raises(ValueError, match="outside the 40 bands"):
-        cx.read_position_coeffs(pk.arrays, bands=41)
+        _r_compression.read_position_coeffs(pk.arrays, bands=41)
 
 
 def test_a_plan_reads_a_replay_with_a_zero_budget_the_same(pack):
@@ -240,7 +242,7 @@ def test_a_plan_reads_a_replay_with_a_zero_budget_the_same(pack):
 
 
 def test_a_protocol_carries_one_plan_per_sequence(pack):
-    from dmipy_sim.acquisition.scanner_sequence import Protocol
+    from dmipy_replay.acquisition.scanner_sequence import Protocol
     rows = list(_battery().values())[:2]
     prot = Protocol(tuple(rows))
     S = _fresh(pack).replay(prot)
@@ -255,8 +257,8 @@ def test_field_modes_are_planned_and_a_prefix_is_bitwise_the_truncated_read(fiel
     plan = pk.plan(seq, tissue=tissue, scanner=3.0)
     assert plan.modes_stored == 4 and 0 <= plan.modes <= 4
     assert plan.mode_variance.startswith("measured on all 90 walkers")
-    from dmipy_sim.replay.bank import susc_path_coeffs
-    from dmipy_sim.replay.replay import _path_field_channels
+    from dmipy_replay.replay.field import susc_path_coeffs
+    from dmipy_replay.replay.replay import _path_field_channels
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     C_all, _ = susc_path_coeffs(_fresh(field_pack).arrays, pm)
     gate = np.asarray(seq.effective_gate, np.float64).reshape(-1)[:-1]
@@ -268,7 +270,7 @@ def test_field_modes_are_planned_and_a_prefix_is_bitwise_the_truncated_read(fiel
                          read=dict(tol=PLAN_TOL, K=pk.K, modes=M))
         assert P["plan"].modes == M and P["plan"].modes_chosen == "explicit"
         Psi, _ = _path_field_channels(P, seq)
-        g = cx.cosine_projection(gate.reshape(1, -1, 1), float(seq.dt), float(pm["T"]), M)[0, :, 0]
+        g = _r_compression.cosine_projection(gate.reshape(1, -1, 1), float(seq.dt), float(pm["T"]), M)[0, :, 0]
         npt.assert_array_equal(Psi, GAMMA * np.einsum("k,wck->wc", g, C_all[:, :, :M]))
         got = _fresh(field_pack).walker_phases(seq, tissue=tissue, scanner=3.0, K=pk.K, modes=M)[2]
         assert got.plan.modes == M

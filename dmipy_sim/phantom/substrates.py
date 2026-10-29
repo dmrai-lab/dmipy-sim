@@ -83,8 +83,8 @@ class PackSubstrate(_Declared):
 
     def __init__(self, pack, *, m0, name=None, tissue=None, windows=None):
         from ..replay.replay import ReplayPack
-        from ..replay.publish import is_hub_uri, window_prefix
-        from ..spec.tissue import Tissue
+        from dmipy_replay.replay.hub import is_hub_uri, window_prefix
+        from dmipy_replay.spec.tissue import Tissue
         if isinstance(pack, (str, Path)):
             self.uri, self._pack = str(pack), None
         elif isinstance(pack, ReplayPack):
@@ -117,7 +117,7 @@ class PackSubstrate(_Declared):
         pack's spec on first use. An unknown key in the deferred entry is refused by name
         (:meth:`~dmipy_sim.spec.Tissue.from_meta`)."""
         if self._tissue is None and self._tissue_meta is not None:
-            from ..spec.tissue import Tissue
+            from dmipy_replay.spec.tissue import Tissue
             self._tissue = Tissue.from_meta(self._tissue_meta, spec=self.pack.substrate)
             self._tissue_meta = None
         return self._tissue
@@ -129,7 +129,7 @@ class PackSubstrate(_Declared):
         (:meth:`~dmipy_sim.replay.replay.ReplayPack.load`)."""
         if self._pack is None:
             from ..replay.replay import ReplayPack, read_rpk
-            from ..replay.publish import is_hub_uri
+            from dmipy_replay.replay.hub import is_hub_uri
             if is_hub_uri(self.uri):                                       # a published pack, fetched and checked by its URI
                 self._pack = (ReplayPack.load(self.uri, windows=range(self._windows))
                              if self._windows is not None else ReplayPack.load(self.uri))
@@ -158,7 +158,7 @@ class PackSubstrate(_Declared):
     @classmethod
     def from_meta(cls, meta, *, pack):
         """An unknown key in the ``tissue`` entry is refused by name (:meth:`~dmipy_sim.spec.Tissue.from_meta`)."""
-        from ..spec.tissue import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         entry = meta.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
         windows = meta.get("windows")
@@ -192,13 +192,13 @@ class FreeWater(_Declared):
     oriented = False
 
     def __init__(self, *, m0, tissue, name="csf/free-water"):
-        from ..spec.tissue import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         super().__init__(name, m0)
         if not isinstance(tissue, Tissue):
             raise TypeError(f"tissue is a Tissue with D, the diffusion coefficient; got {type(tissue).__name__}")
         if tissue.D is None or float(tissue.D) <= 0:
             raise ValueError(f"free water needs a positive diffusion coefficient: Tissue(D=...) in m^2/s, got {tissue.D!r}")
-        from ..replay.replay import field_term
+        from dmipy_replay.replay.replay import field_term
         field_term(FIELD_BY_KIND[self.kind], tissue, None)            # free water is not magnetic: a chi is refused
         for k in ("T2", "T1"):
             v = getattr(tissue, k)
@@ -231,7 +231,7 @@ class FreeWater(_Declared):
 
     @classmethod
     def from_meta(cls, meta):
-        from ..spec.tissue import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         return cls(m0=meta["m0"], name=meta["id"],
                    tissue=Tissue(D=meta["params"]["diffusivity"], T2=meta.get("T2_s"), T1=meta.get("T1_s")))
 
@@ -268,8 +268,8 @@ def substrate_from_meta(meta, *, pack=None):
     pack (an in-memory pack, a path, or None to leave the recorded ``uri`` to resolve on first use)."""
     kind = meta.get("kind")
     if kind in FIELD_BY_KIND and meta.get("tissue") is not None:      # a closed kind's tissue: nothing magnetic in it
-        from ..replay.replay import field_term
-        from ..spec.tissue import Tissue
+        from dmipy_replay.replay.replay import field_term
+        from dmipy_replay.spec.tissue import Tissue
         t = meta["tissue"]
         field_term(FIELD_BY_KIND[kind], Tissue(**{k: t[k] for k in ("chi_iso", "chi_aniso") if t.get(k) is not None}), None)
     if kind == "pack":

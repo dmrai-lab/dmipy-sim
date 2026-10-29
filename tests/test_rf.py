@@ -2,9 +2,9 @@
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition.rf import B1Pulse, bloch_simulate, slice_profile
-from dmipy_sim.constants import GAMMA
-from dmipy_sim.acquisition import scanner_constants as scc
+from dmipy_replay.acquisition.rf import B1Pulse, bloch_simulate, slice_profile
+from dmipy_replay.constants import GAMMA
+from dmipy_replay.acquisition import scanner_constants as scc
 
 
 # ── basic quantities ──────────────────────────────────────────────────────────

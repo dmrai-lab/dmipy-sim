@@ -14,9 +14,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim
-from dmipy_sim.acquisition import scanner_constants as scc
-from dmipy_sim.acquisition.scanners import GAMMA_BAR, ScannerLimits, SCANNERS, scanner_limits
-from dmipy_sim.constants import DEFAULT_SLEW_RATE
+from dmipy_replay.acquisition import scanner_constants as scc
+from dmipy_replay.acquisition.scanners import GAMMA_BAR, ScannerLimits, SCANNERS, scanner_limits
+from dmipy_replay.constants import DEFAULT_SLEW_RATE
 from dmipy_sim.sequences.pulseq import PULSEQ_SYSTEMS
 
 
@@ -292,7 +292,7 @@ def test_a_published_homogeneity_is_a_magnitude_and_not_a_law():
     assert ScannerLimits.of("prisma").b0_harmonic_Z2 is None       # magnitude known, shape not
 
     # the two DSV rows, which is what makes "not a bowl" a measurement rather than an opinion
-    from dmipy_sim.acquisition import solid_harmonics as sh
+    from dmipy_replay.acquisition import solid_harmonics as sh
     rng = np.random.default_rng(0)
     u = rng.normal(size=(200000, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
     pk = lambda R: np.ptp(sh.evaluate({"Z2": 1.0}, u * R))
@@ -512,7 +512,7 @@ def test_a_coil_along_the_field_is_refused_because_it_would_not_excite():
 
 
 def _axis_check():
-    from dmipy_sim.acquisition.scanners import _axis
+    from dmipy_replay.acquisition.scanners import _axis
     return _axis("Q", "b0_axis", "made-up")
 
 
@@ -842,7 +842,7 @@ def test_the_terra_publishes_its_homogeneity_in_both_metrics_and_still_no_law():
     """The 7 T datasheet gives the magnet's guaranteed VRMS and peak-to-peak per DSV: the same VRMS series as the
     Prisma's, a vendor-stated ratio between the two metrics, and a magnitude over a sphere that is not a shape."""
     import json
-    from dmipy_sim.acquisition import scanner_constants as scc
+    from dmipy_replay.acquisition import scanner_constants as scc
     cat = json.load(open(scc.__file__.replace(".py", ".json")))
     t = cat["scanners"]["siemens_magnetom_terra_7T"]["homogeneity"]
     assert t["b0_homogeneity_vrms"]["value"] == 0.02 and t["b0_homogeneity"]["value"] == 0.15
@@ -859,7 +859,7 @@ def test_the_class_nonlinearity_is_an_isotropic_scaling_that_says_it_is_inferred
     systems, the magnitude measured on one whole-body 3 T coil, carried over as an isotropic scaling of b and
     refused beyond the anchor; the leaves say 'inferred' and their context says why."""
     import json
-    from dmipy_sim.acquisition import scanner_constants as scc
+    from dmipy_replay.acquisition import scanner_constants as scc
     from dmipy_sim.phantom import Grid
     from dmipy_sim.phantom.bore import gradient_tensor_map
     cat = json.load(open(scc.__file__.replace(".py", ".json")))
@@ -890,7 +890,7 @@ def test_the_transmit_ranges_are_class_numbers_with_open_maps_behind_them():
     assert prisma.b1_brain_range == (0.7, 1.2) and terra.b1_brain_range == (0.4, 1.5)
     assert ScannerLimits.of("swoop").b1_brain_range is None                    # the Swoop has a LAW instead
     import json
-    from dmipy_sim.acquisition import scanner_constants as scc
+    from dmipy_replay.acquisition import scanner_constants as scc
     cat = json.load(open(scc.__file__.replace(".py", ".json")))
     for key in ("siemens_magnetom_prisma_3T", "siemens_magnetom_terra_7T"):
         rf = cat["scanners"][key]["rf"]

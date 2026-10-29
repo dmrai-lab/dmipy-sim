@@ -31,6 +31,7 @@ has no other backend never sees the option do anything, and a name that is not i
 """
 from __future__ import annotations
 
+import dmipy_replay.replay.compression as _r_compression
 import math
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -341,10 +342,10 @@ def coefficient_signal(walk, G, dt_wf):
     their own grid ``dt_wf``, read from the bands alone (the replay's own reading of a pack of the walk,
     :func:`~dmipy_sim.replay.compression.band_projection`): ``(signal (n_meas,), standard error (n_meas,))`` of the
     walkers' ``cos(gamma sum C W)`` at float32 coefficients, what the pack stores."""
-    from ..constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     from ..replay import compression as _cx
     C = np.asarray(walk.position_coeffs, np.float32).astype(np.float64)[:, 0]              # (n, K + 2, 3)
-    W = _cx.band_projection(np.asarray(G, np.float64), float(dt_wf), float(walk.T_window), int(C.shape[1]) - 2)
+    W = _r_compression.band_projection(np.asarray(G, np.float64), float(dt_wf), float(walk.T_window), int(C.shape[1]) - 2)
     phi = GAMMA * np.einsum("wkc,mkc->wm", C, W)
     return _mean_se(np.cos(phi))
 

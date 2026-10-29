@@ -18,7 +18,7 @@ from dmipy_sim import (FreeDiffusion,
                        SusceptibilitySources, MyelinSusceptibility, GridSusceptibility,
                        dipole_field, myelin_susceptibility_tensor, radial_from_sdf,
                        sample_grid, mesh_shapes as ms)
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 
 D = 2e-9
 

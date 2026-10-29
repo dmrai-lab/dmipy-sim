@@ -115,7 +115,7 @@ def test_a_pack_without_a_cap_is_held_to_its_monte_carlo_floor_by_name():
 def test_the_estimate_is_the_free_tail_beyond_k_to_infinity_not_to_a_grid():
     """err at K is half the bridge's closed-form phase variance less the retained bands' (an upper bound for any
     restricted walk), whatever the number of bands sought."""
-    from dmipy_sim.replay.compression import band_phase_variances
+    from dmipy_replay.replay.compression import band_phase_variances
     pk = _static_pack(K=20)
     wf = _ogse(750.0, 4e-3)
     per_band, total = band_phase_variances(np.asarray(wf.G_eff, np.float64), float(wf.dt), pk.T_window, pk.K, pk.diffusivity)
@@ -125,7 +125,7 @@ def test_the_estimate_is_the_free_tail_beyond_k_to_infinity_not_to_a_grid():
 def _layout(K, *, cap, floor=0.02, other=None):
     """A columnar layout's header: ``K`` bands of a free walk at ``D0`` over 20 ms, every stored band at the free variance."""
     from dmipy_sim.replay.columnar import ColumnarPack
-    from dmipy_sim.replay.compression import band_variances
+    from dmipy_replay.replay.compression import band_variances
     T = (N_T - 1) * DT
     lay = ColumnarPack.__new__(ColumnarPack)
     var = band_variances(K, T, D0)[:, None] * np.ones((1, 3))

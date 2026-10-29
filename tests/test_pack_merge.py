@@ -6,6 +6,7 @@ The merged pack replays exactly as the shards combined by their walker weights.
 """
 from __future__ import annotations
 
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 
@@ -14,7 +15,7 @@ from dmipy_sim.io.strands import write_tck
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
 from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 
 
@@ -80,8 +81,8 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
         packs.append(build_replay_pack(w, id=f"t/pass-{p_}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / f"pass-{p_}.rpk")))
     m = merge_packs(packs, id="t/union", out_path=str(tmp / "union.rpk"), overlap="recertify")
     from dmipy_sim.replay import compression as _cx
-    start = _cx.read_position_coeffs(m.arrays, dtype=np.float64)[:, 0, :]                          # the walkers' start positions
-    vox = grid.bin(start)[0]; pool = np.asarray(_cx.decode_occupancy(m.arrays, m.meta["compression"]["channels"]["compartment"])["comp"][0])   # the label at the start
+    start = _r_compression.read_position_coeffs(m.arrays, dtype=np.float64)[:, 0, :]                          # the walkers' start positions
+    vox = grid.bin(start)[0]; pool = np.asarray(_r_compression.decode_occupancy(m.arrays, m.meta["compression"]["channels"]["compartment"])["comp"][0])   # the label at the start
     cells = [tuple(v) + (int(p_),) for v, p_ in zip(vox.tolist(), pool)]
     shard = np.repeat([0, 1], [pk.n_walkers for pk in packs])
     wm = np.asarray(m.spin_weights, np.float64); ws = np.concatenate([np.asarray(pk.spin_weights, np.float64) for pk in packs])

@@ -16,12 +16,12 @@ import pytest
 pytest.importorskip("pypulseq")
 import pypulseq as pp
 
-from dmipy_sim.acquisition.waveforms import calc_b
+from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_sim.sequences import ogse, pgse
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.sequences import (
     from_pulseq, to_pulseq, make_system, PULSEQ_SYSTEMS)
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 import jax.numpy as jnp
 
 BVEC = np.array([[1., 0., 0.]], dtype=np.float32)
@@ -42,7 +42,7 @@ def test_scanner_catalogue_opts():
 def test_roundtrip_slew_limited_preserves_bvalue():
     """A realizable (slew-limited) gradient built to a budget -- every pulse in its own window -- survives
     ScannerSequence -> .seq -> ScannerSequence with the diffusion b-value preserved to <0.1% and the grid intact."""
-    from dmipy_sim.acquisition.timing import SequenceTiming
+    from dmipy_replay.acquisition.timing import SequenceTiming
     wf = ogse(BVEC, 1 / (2 * 0.01), 0.01, gradient_strengths=0.05, shape="trapezoid", Delta=0.04, n_t=400, slew_rate=200.0,
               timing=SequenceTiming(t_excite=1e-3, t_refocus=2e-3, t_readout_pre_echo=1e-3))
     with tempfile.TemporaryDirectory() as d:
@@ -120,7 +120,7 @@ def test_pulseq_timing_extracts_spin_echo_budget():
     """pulseq_timing reads the 90/180/ADC schedule from a .seq → the diffusion
     spin-echo timing budget (RF durations, TE, readout-pre-echo) that feeds
     dmipy_design.SequenceTiming."""
-    from dmipy_sim.sequences.pulseq import pulseq_timing
+    from dmipy_replay.sequences.pulseq import pulseq_timing
     sysm = pp.Opts(max_grad=80, grad_unit='mT/m', max_slew=200, slew_unit='T/m/s',
                    rf_dead_time=1e-4, rf_ringdown_time=3e-5, adc_dead_time=1e-5,
                    grad_raster_time=1e-5)
@@ -185,7 +185,7 @@ def test_mixing_time_is_derived_from_the_pulses_not_from_a_stored_value():
     while the rule that produced it is wrong, so the rule is exercised on its own. Covers both the labelled
     form and the bare flip-angle pattern a foreign file would present.
     """
-    from dmipy_sim.acquisition.rf import RFSchedule
+    from dmipy_replay.acquisition.rf import RFSchedule
 
     labelled = [RFEvent(0.0, 90, 'Mz→Mxy'),
                 RFEvent(5e-3, 90, 'store'),
@@ -214,7 +214,7 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     asserted here rather than assumed.
     """
     from dmipy_sim.sequences import pgse, ogse
-    from dmipy_sim.acquisition.timing import SequenceTiming
+    from dmipy_replay.acquisition.timing import SequenceTiming
 
     free = pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=0.04, n_t=400,
                 timing=SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=2e-3))
@@ -286,7 +286,7 @@ def test_a_coarse_grid_plays_as_ramps_on_a_real_scanner_or_is_refused():
     """On a real system the grid must sit on the scanner's raster; each step is then a linear ramp between the
     samples (the b the scanner encodes differs from the step function the walk integrates by O(dt / lobe)),
     and a grid off the raster is refused naming the ones that fit."""
-    from dmipy_sim.acquisition.timing import SequenceTiming
+    from dmipy_replay.acquisition.timing import SequenceTiming
     tm = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=2e-3)
     on = pgse(BVEC, 8e-3, 30e-3, gradient_strengths=0.04, TE=0.08, n_t=81, timing=tm)         # dt = 1 ms = 100 rasters
     seq = to_pulseq(on, system=make_system("siemens_prisma"))

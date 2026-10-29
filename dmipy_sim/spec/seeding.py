@@ -12,7 +12,7 @@ from typing import Optional
 
 import numpy as np
 
-from ..phantom.grid import Grid
+from dmipy_replay.phantom.grid import Grid
 
 
 @dataclass(frozen=True)

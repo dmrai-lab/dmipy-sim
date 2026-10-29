@@ -64,7 +64,7 @@ def log(*a):
 
 # ----------------------------------------------------------------------------------------------- the rows
 def rows():
-    from dmipy_sim.sequences.builders import ogse, pgse
+    from dmipy_replay.sequences.builders import ogse, pgse
     axis = [[1.0, 0.0, 0.0]]
     out = [("PGSE 10/40 b3000", pgse(axis, 0.010, 0.040, bvalues=[3.0e9], TE=T_SEQ, n_t=N_T, slew_rate=SLEW))]
     f = 50.0

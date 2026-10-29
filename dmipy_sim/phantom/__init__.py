@@ -10,7 +10,7 @@
   :meth:`~Phantom.write` / :meth:`~Phantom.read` the ``.rph`` file.
 """
 from .bore import b0_offset_map, b1_scale_map
-from .grid import Grid
+from dmipy_replay.phantom.grid import Grid
 from .substrates import AnalyticSubstrate, FreeWater, Inert, PackSubstrate
 from .orientation import ODF, Fan, Frames, Peaks, Watson, SH_BASES
 from .phantom import Phantom

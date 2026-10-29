@@ -15,7 +15,7 @@ import dmipy_sim.engine.core as core
 import dmipy_sim.spec.walk as walk_mod
 from dmipy_sim.geometry.base import Geometry, LengthScales
 from dmipy_sim.spec import walk_spec
-from dmipy_sim.spec.substrate import SpecError
+from dmipy_replay.spec.substrate import SpecError
 
 D = 2e-9
 

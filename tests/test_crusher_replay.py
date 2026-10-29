@@ -13,9 +13,9 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences
-from dmipy_sim.acquisition import epg
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition import epg
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.replay.bank import build_replay_pack
 
 DT, N_T = 5e-5, 401
@@ -65,9 +65,9 @@ def test_a_crushed_train_reproduces_the_pathway_enumeration(pack, beta):
     propagation through the actual pulses on a Monte-Carlo walk. With the spoiler in place they agree, and
     with the crusher coordinate stratified over the ensemble they agree to rounding at b = 0: a whole number
     of turns cancels every crushed pathway exactly, whatever the seed deals the coordinates (dmipy-sim#393)."""
-    S = np.abs(np.asarray(pack.replay_bloch(_train(beta), jax=False))).reshape(-1)[:6]     # float64 throughout
+    S = np.abs(np.asarray(pack.replay_bloch(_train(beta), backend="numpy"))).reshape(-1)[:6]     # float64 throughout
     assert np.max(np.abs(S - _epg_echoes(beta))) < 1e-9
-    S7 = np.abs(np.asarray(pack.replay_bloch(_train(beta), crusher_seed=7, jax=False))).reshape(-1)[:6]
+    S7 = np.abs(np.asarray(pack.replay_bloch(_train(beta), crusher_seed=7, backend="numpy"))).reshape(-1)[:6]
     assert np.max(np.abs(S7 - _epg_echoes(beta))) < 1e-9
     Sj = np.abs(np.asarray(pack.replay_bloch(_train(beta)))).reshape(-1)[:6]                # the default route
     assert np.max(np.abs(Sj - _epg_echoes(beta))) < 1e-3

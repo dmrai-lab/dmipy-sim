@@ -12,7 +12,7 @@ import warnings
 
 import numpy as np
 
-from ..constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG, LONGEST_STEP
 
 

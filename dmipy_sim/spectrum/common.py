@@ -184,7 +184,7 @@ def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_m
     :mod:`dmipy_sim.fill.recipe.Recipe` reader of its own -- extending ``Recipe`` to the new kinds is a
     follow-up, not this generator's job, which is to write the data in the shape the recipe is DEFINED to
     have). No field basis: these classes carry no susceptibility source (dmipy-sim#697's PR2 scope)."""
-    from ..replay.bank import mode_count
+    from dmipy_replay.replay.storage import mode_count
     man = dict(
         id=id_, license=license_, citation=citation,
         code=dict(repo="dmrai-lab/dmipy-sim", commit=git_commit()),

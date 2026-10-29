@@ -25,9 +25,16 @@ from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
-from .acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol, Prescription
-from .sequences.builders import pgse, pgste, ogse, cpmg, splice, gre, ste, pte
-from .acquisition.waveforms import (set_b, calc_b, calc_btensor, btensor_invariants, rotate_waveform, tile_waveform)
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol, Prescription
+from dmipy_replay.sequences.builders import pgse, pgste, ogse, cpmg, splice, gre, ste, pte
+from dmipy_replay.acquisition.waveforms import (
+    set_b,
+    calc_b,
+    calc_btensor,
+    btensor_invariants,
+    rotate_waveform,
+    tile_waveform,
+)
 from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
                          Ellipsoid,
                          PackedCylinders, pack_cylinders,
@@ -42,18 +49,19 @@ from .geometry.mesh import Mesh, load_ply
 from .fields.susceptibility import SusceptibilitySources, MyelinSusceptibility, GridSusceptibility
 from .fields.susceptibility_field import dipole_field, myelin_susceptibility_tensor, radial_from_sdf, sample_grid
 from .geometry import mesh_shapes
-from .constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
 from .replay.fod import FOD
 from .replay.so3 import Distribution
 from .engine import mt
-from .acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
-from .acquisition.timing import SequenceTiming
-from .acquisition.scanners import ScannerLimits, SCANNERS
-from .replay.replay import (ReplayPack, read_rpk, write_rpk, compile_scheme, replay_signal,
-                     replay_signal_jax, surface_logweight)
+from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
+from dmipy_replay.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.scanners import ScannerLimits, SCANNERS
+from .replay.replay import ReplayPack, read_rpk, write_rpk, replay_signal_jax
+from dmipy_replay.replay.replay import compile_scheme, replay_signal, surface_logweight
 from .replay import bank
-from .replay.bank import build_replay_pack, build_to_floor, frame_from_axis, frame_from_bundles
+from .replay.bank import build_replay_pack, build_to_floor, frame_from_bundles
+from dmipy_replay.replay.field import frame_from_axis
 from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeWater, Inert, Peaks, ODF, Watson, Frames, Fan
 
 __all__ = [

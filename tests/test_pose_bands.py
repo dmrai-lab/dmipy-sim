@@ -11,11 +11,12 @@ is the plane-wave sum ``mean_w exp(i q . R r_w)`` in closed form -- so the refer
 amplitude is exactly ``|q| max|r|`` and can be dialled to whatever sharpness a test needs, and there is no
 Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_pose.py``.
 """
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 from dmipy_sim import Encoding, ScannerSequence
 import pytest
 
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.replay import so3
@@ -75,7 +76,7 @@ def analytic_over(q, density, n_theta=24, n_phi=48, n_roll=12):
     """The same, averaged over a density on directions with the azimuth uniform."""
     dirs, w = so3.sphere_quadrature(n_theta, n_phi)
     rolls = np.arange(n_roll) * (2 * np.pi / n_roll)
-    vals = np.array([[analytic(q, so3.rotation_of(n, roll=r)) for r in rolls] for n in dirs]).mean(axis=1)
+    vals = np.array([[analytic(q, _r_so3.rotation_of(n, roll=r)) for r in rolls] for n in dirs]).mean(axis=1)
     rho = density(dirs)
     return complex((w * rho * vals).sum() / (w * rho).sum())
 

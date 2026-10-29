@@ -6,8 +6,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.scanners import ScannerLimits
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.scanners import ScannerLimits
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay.bank import build_replay_pack
 

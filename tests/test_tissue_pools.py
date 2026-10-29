@@ -15,8 +15,8 @@ from dmipy_sim import sequences
 from dmipy_sim.phantom import PackSubstrate
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.phantom import _check_tissue_entry
-from dmipy_sim.spec.substrate import SubstrateSpec
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.substrate import SubstrateSpec
+from dmipy_replay.spec.tissue import Tissue
 
 INF = float("inf")
 

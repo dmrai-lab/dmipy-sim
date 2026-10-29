@@ -15,7 +15,7 @@ from dmipy_sim.geometry import mesh_shapes
 from dmipy_sim.spec import spec_of, geometry_from_spec, walk_spec, SubstrateSpec, SpecError
 from dmipy_sim.spec.build import resolve_surface_file, mesh_surface_file
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 D = 2e-9

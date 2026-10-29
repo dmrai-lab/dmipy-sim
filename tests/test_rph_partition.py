@@ -1,9 +1,10 @@
 """``Phantom.partition``: one walk cut into voxels by where each walker started (RPH.md partition addressing,
 dmipy-sim#76, #186). Membership is derived from the stored ``r0``, fractions are emergent from the weights, the
 grid is free, and the anatomy rotates as a block."""
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 import pytest
 
 import dmipy_sim as d
@@ -39,7 +40,7 @@ def pack_paths(walk, tmp_path_factory):
 
 def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3, rf=None):
     """A PGSE on the pack's block grid, as a bare gradient echo (rf None) or with a physical spin-echo schedule."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -161,7 +162,7 @@ def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_member
     from dmipy_sim.replay import so3
     pk = read_rpk(pack_paths[8])
     grid = _grid(pk, attach="substrate")
-    R = so3.rotation_of((0.3, 0.5, 0.81))
+    R = _r_so3.rotation_of((0.3, 0.5, 0.81))
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)
     posed = ph.with_pose(Pose(R))
     np.testing.assert_array_equal(posed.voxel_index, ph.voxel_index)
@@ -176,7 +177,7 @@ def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_member
 def test_a_pose_on_a_bore_attached_grid_rebins_the_walkers(pack_paths):
     from dmipy_sim.replay import so3
     pk = read_rpk(pack_paths[8])
-    R = so3.rotation_of((0.0, 1.0, 0.0))                                # tip the cylinder axis into the plane
+    R = _r_so3.rotation_of((0.0, 1.0, 0.0))                                # tip the cylinder axis into the plane
     lab = Grid.covering(pk.r0 @ R.T, voxel_size_m=(2.5e-6, 2.5e-6, 2.5e-6), attach="lab", margin_voxels=1)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), lab, outside=Inert()).with_pose(Pose(R))
     ijk, inside = ph.membership(ph.packs[0])
@@ -213,7 +214,7 @@ def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
 
 
 def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     pk = read_rpk(pack_paths[8])
     grid = _grid(pk)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)

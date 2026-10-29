@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim
-from dmipy_sim.acquisition.rf import B1Pulse, RFEvent, RFSchedule
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule
+from dmipy_replay.constants import GAMMA
 
 IDEAL = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(0.02, 180, 'refocus')))
 FINITE = RFSchedule((RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(0.02, 180.0, duration_s=2e-3, offset_hz=40.0)))
@@ -96,7 +96,7 @@ def test_both_rasterisers_read_the_one_object():
     """The engine's and the replay's rasterisers read the same RFEvent: a hard pulse is one rotation at its
     instant in both, a finite pulse the same sub-rotations in both."""
     from dmipy_sim.engine.bloch import _build_rf_schedule
-    from dmipy_sim.replay.trajectories import _bloch_timeline
+    from dmipy_replay.replay.bloch import _bloch_timeline
     dt, n_t = 1e-4, 300
     dflip, axis, carrier = _build_rf_schedule(FINITE, dt, n_t)
     assert dflip.sum() == pytest.approx(np.deg2rad(270.0)) and np.count_nonzero(dflip) == 1 + 20

@@ -6,6 +6,8 @@ tiers, round-trips through .rpk, is consumable by the lean replay-signal forward
 floor-target policy converges. See the end-to-end walk->pack->replay validation in test_replay_parity for the
 physics parity.
 """
+import dmipy_replay.replay.compression as _r_compression
+import dmipy_replay.replay.field as _r_field
 import dataclasses
 import json
 import os
@@ -18,9 +20,9 @@ import pytest
 from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
                        compile_scheme, replay_signal)
 from dmipy_sim.replay import bank, compression as cx_
-from dmipy_sim.constants import GAMMA
-from dmipy_sim.spec.tissue import Tissue
-from dmipy_sim.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Susceptibility, Validity
+from dmipy_replay.constants import GAMMA
+from dmipy_replay.spec.tissue import Tissue
+from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Susceptibility, Validity
 from tests.replay_frames import field_along
 
 N_W, N_T, DT, D0, L = 600, 41, 5e-4, 2e-9, 6e-6
@@ -42,7 +44,7 @@ def _slab_walk(n_w=N_W, seed=0, *, T=T_WALK, block_h=DT, K=None, magnetic=False,
     the raw subset is every walker (the dense oracle of a measured certificate). The spec is :func:`_slab_spec`
     (two named pools, so a test can relabel walkers into pool 1)."""
     import dmipy_sim as d
-    from dmipy_sim.spec.substrate import SubstrateSpec
+    from dmipy_replay.spec.substrate import SubstrateSpec
     w = d.simulate_trajectories(int(n_w), D0, d.Box1D(L), T, block_h, seed=int(seed), require_gpu=False, K=K,
                                 raw_subset=(int(n_w) if raw else 0), field_basis=field_basis, window_T=T, **kw)
     return dataclasses.replace(w, spec=SubstrateSpec.from_dict(_slab_spec(magnetic=magnetic or field_basis is not None)))
@@ -73,10 +75,10 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
     # a pack carries its positions as one tensor per spatial axis (pos_x/pos_y/pos_z), so
     # an axis subset is a contiguous read that composes with the walker-prefix read; `.position_coeffs`
     # assembles them for consumers that want all three.
-    from dmipy_sim.replay.compression import POSITION_AXES, has_axis_layout
+    from dmipy_replay.replay.compression import POSITION_AXES, has_axis_layout
     assert has_axis_layout(pack.arrays) and (all(k in pack.arrays for k in POSITION_AXES) or "pos_x_ends" in pack.arrays)   # float or integer container
     assert np.asarray(pack.position_coeffs).shape[2] == 3
-    from dmipy_sim.replay.compression import has_c1, has_c2
+    from dmipy_replay.replay.compression import has_c1, has_c2
     assert has_c1(pack.arrays)                                  # compartment tier
     assert "comp_static" in pack.arrays                         # impermeable: one label per walker
     assert has_c2(pack.arrays)                                  # surface tier
@@ -178,13 +180,13 @@ def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capa
     # stored under its range's tensor, the field's quantisation carried in the pack's quantisation term
     cont = pm["container"]
     assert cont[0]["modes"][0] == 0 and cont[-1]["modes"][1] == K and all(3 <= r["bits"] <= 16 for r in cont)
-    assert all(cx_.range_name("susc_path_dct", i, r["bits"]) in pk.arrays for i, r in enumerate(cont)) and "susc_path_dct" not in pk.arrays
+    assert all(_r_compression.range_name("susc_path_dct", i, r["bits"]) in pk.arrays for i, r in enumerate(cont)) and "susc_path_dct" not in pk.arrays
     assert 0.0 < pk.fidelity["err_quantisation_field"] <= pk.fidelity["err_quantisation"]
     assert pk.arrays["susc_path_scale"].shape == (pm["n_ch"], K)
     assert pk.meta["walk_params"]["field_read_interval"] == pytest.approx(w.field_read_interval)
     assert "field" in pk.meta["walk_params"]["qv"] and "field" in pk.fidelity["terms"]["quadrature"] and "field_read" in pk.fidelity["terms"]
     # decode returns the 6 channels in canonical order, on a reader's sampling of the window
-    b, names = bank.susc_path_decode(pk.arrays, pm, n_t=N_T)
+    b, names = _r_field.susc_path_decode(pk.arrays, pm, n_t=N_T)
     assert names[:4] == ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_xy"] and b.shape == (300, 6, N_T)
     f = pk.fidelity
     assert f["susc_path_pulses_certified"] == K // 2
@@ -225,7 +227,7 @@ def test_a_broken_trace_identity_is_a_recorded_diagnostic_and_zz_is_still_formed
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     assert "iso_P_zz" not in pm["channels"] and pm["n_ch"] == 6 and "iso_P_zz" not in pm
     assert pm["trace_residual"] > 1e-3 and pm["trace_residual"] == pytest.approx(FieldGrid(fb, origin).trace_residual)
-    b, names = bank.susc_path_decode(pk.arrays, pm, n_t=N_T)
+    b, names = _r_field.susc_path_decode(pk.arrays, pm, n_t=N_T)
     assert b.shape[1] == 6 and "iso_P_zz" not in names
 
 
@@ -302,15 +304,15 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
     assert a8["susc_path_dct"].nbytes <= a16["susc_path_dct"].nbytes    # same or less space
 
     def err(arr, pm, n_pulses):                     # worst signal error over a direction sweep
-        C = bank.susc_path_coeffs(arr, pm)[0]
-        g = cx.cosine_projection(bank._cpmg_gate(N_T, n_pulses).reshape(1, -1, 1), DT, T, pm["K"])[0, :, 0]
-        gr = cx.cosine_projection(bank._cpmg_gate(N_T, n_pulses).reshape(1, -1, 1), DT, T, K)[0, :, 0]
+        C = _r_field.susc_path_coeffs(arr, pm)[0]
+        g = _r_compression.cosine_projection(bank._cpmg_gate(N_T, n_pulses).reshape(1, -1, 1), DT, T, pm["K"])[0, :, 0]
+        gr = _r_compression.cosine_projection(bank._cpmg_gate(N_T, n_pulses).reshape(1, -1, 1), DT, T, K)[0, :, 0]
         out = 0.0
         for d in ([0, 0, 1], [1, 0, 0], [0.3, 0.5, 0.8]):
             d = np.asarray(d, float) / np.linalg.norm(d)
             kw = dict(B0=7.0, chi_iso=1.06e-6)
-            p_a = GAMMA * bank.susc_path_field(C, d, **kw) @ g
-            p_r = GAMMA * bank.susc_path_field(ref, d, **kw) @ gr
+            p_a = GAMMA * _r_field.susc_path_field(C, d, **kw) @ g
+            p_r = GAMMA * _r_field.susc_path_field(ref, d, **kw) @ gr
             out = max(out, abs(abs(np.exp(1j * p_a).mean()) - abs(np.exp(1j * p_r).mean())))
         return out
 

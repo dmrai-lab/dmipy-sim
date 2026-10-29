@@ -1,5 +1,6 @@
 """Reading MRtrix images: any storage layout comes back in canonical axis order with the NIfTI-style affine, and
 the pieces a brain phantom needs from one -- an oblique grid, a rotated FOD -- hold (dmipy-sim#193)."""
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 import pytest
 
@@ -37,7 +38,7 @@ def _write_mif(path, data, transform, vox, layout, datatype="Float32LE", scaling
     path.write_bytes(b + payload)
 
 
-_R = so3.rotation_of((0.0082, 0.0371, 0.9993)) @ so3.rotation_of((0.0, 0.0, 1.0), roll=0.024)     # a few degrees oblique, exact
+_R = _r_so3.rotation_of((0.0082, 0.0371, 0.9993)) @ _r_so3.rotation_of((0.0, 0.0, 1.0), roll=0.024)     # a few degrees oblique, exact
 TRANSFORM = np.column_stack([_R, [-120.84, -99.16, -33.46]])
 
 
@@ -82,7 +83,7 @@ def test_an_oblique_affine_gives_the_image_grid_and_the_rotation():
 
 
 def test_rotate_sh_moves_the_features_with_the_rotation():
-    R = so3.rotation_of((0.3, 0.5, 0.81)) @ so3.rotation_of((0.0, 1.0, 0.0))
+    R = _r_so3.rotation_of((0.3, 0.5, 0.81)) @ _r_so3.rotation_of((0.0, 1.0, 0.0))
     mu = np.array([0.2, -0.4, 0.89]); mu /= np.linalg.norm(mu)
     c = FOD.watson(8.0, mu=mu, lmax=8).coeffs
     np.testing.assert_allclose(so3.rotate_sh(c, R), FOD.watson(8.0, mu=R @ mu, lmax=8).coeffs, atol=1e-12)

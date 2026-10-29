@@ -132,8 +132,8 @@ def test_the_projected_gram_is_the_quadrature_of_its_functions(fr):
 
 
 def test_no_feasible_waveform_or_toggle_exceeds_the_pilot_bound(fr):
-    from dmipy_sim.constants import GAMMA
-    from dmipy_sim.replay.compression import band_projection
+    from dmipy_replay.constants import GAMMA
+    from dmipy_replay.replay.compression import band_projection
     walk, _ = _pilot(2e-6)
     C = np.asarray(walk.position_coeffs, np.float64)[:, 0]
     K = C.shape[1] - 2
@@ -308,7 +308,7 @@ def test_the_slab_field_is_the_lorentz_corrected_field_of_its_magnetised_layer(f
     """The slab's basis read by the replay contraction (``iso_P_zz`` formed from the trace identity) is the field of
     an infinite layer of normal x: ``chi B0 / 3`` in B against A with B0 in its plane, ``-2 chi B0 / 3`` along the
     normal, uniform within each compartment."""
-    from dmipy_sim.fields.hollow_cylinder import contract
+    from dmipy_replay.replay.field import contract
     slab = object.__new__(fr.Slab)
     grid = slab.field_grid()
     assert grid.trace_residual < 1e-12

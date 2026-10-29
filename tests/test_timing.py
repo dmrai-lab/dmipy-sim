@@ -13,8 +13,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences as S
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
-from dmipy_sim.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.timing import SequenceTiming
 
 
 def test_windows_are_derived_and_asymmetric():
@@ -143,7 +143,8 @@ pypulseq = pytest.importorskip("pypulseq")
 
 
 def test_a_seq_file_carries_the_budget_both_ways(tmp_path):
-    from dmipy_sim.sequences.pulseq import to_pulseq, from_pulseq
+    from dmipy_sim.sequences.pulseq import to_pulseq
+    from dmipy_replay.sequences.pulseq import from_pulseq
     st = SequenceTiming(t_excite=3e-3, t_refocus=6e-3, t_readout_pre_echo=14e-3)
     seq = S.pgse([[1.0, 0.0, 0.0]], 8e-3, 24e-3, bvalues=[1e9], n_t=1200, slew_rate=200.0, timing=st)
     p = tmp_path / "budget.seq"

@@ -25,7 +25,7 @@ import os
 
 import numpy as np
 
-from .substrate import SpecError
+from dmipy_replay.spec.substrate import SpecError
 
 #: Pixels across the longest edge of a section. The picture is a provenance thumbnail, not a figure.
 PREVIEW_PIXELS = 360

@@ -23,15 +23,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 
-from ..constants import GAMMA
+from dmipy_replay.constants import GAMMA
 
 _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
 _COMP_NAME = {0: 'extra-axonal', 1: 'intra-axonal', 2: 'myelin'}
 
 
-from ..replay.trajectories import _rf_increment  # the one Rodrigues RF rotation
+from dmipy_replay.replay.bloch import _rf_increment  # the one Rodrigues RF rotation
 
 
 # ── viz-scoped walk recorder (positions + compartment id over time) ──────────

@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..acquisition.waveforms import band_hz
+from dmipy_replay.acquisition.waveforms import band_hz
 from ..run import Run, current
 from .core import cached_batch
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn, seed_walkers)

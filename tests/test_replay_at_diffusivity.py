@@ -13,7 +13,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 D0, T, DT = 2.0e-9, 40e-3, 5e-4
 #: the view against the walk at 2 D: their bands agree to the float32 they are stored in

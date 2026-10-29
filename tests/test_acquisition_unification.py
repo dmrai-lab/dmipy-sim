@@ -7,7 +7,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences as S
-from dmipy_sim.acquisition.waveforms import b_from_gradient, btensor_from_gradient
+from dmipy_replay.acquisition.waveforms import b_from_gradient, btensor_from_gradient
 
 D = 2e-9
 B = np.array([0.5e9, 1.0e9, 2.0e9])

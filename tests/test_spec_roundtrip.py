@@ -104,7 +104,7 @@ def test_scaled_is_the_same_shape_at_another_size():
     """Every length x s, each stated D x s^2, every wall rate x s (dmipy-sim#542); a file-backed surface is read at
     s times its units; an instance array of unknown unit is refused."""
     import dataclasses
-    from dmipy_sim.spec.substrate import Directional, Sided, Surface, Wall
+    from dmipy_replay.spec.substrate import Directional, Sided, Surface, Wall
     spec = spec_of(_packed_myelin())
     s = 2.0
     out = spec.scaled(s)

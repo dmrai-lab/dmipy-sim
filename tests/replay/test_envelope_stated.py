@@ -19,7 +19,7 @@ from dmipy_sim.replay import time_segments
 from dmipy_sim.replay.bank import build_replay_pack, _round_sig
 from dmipy_sim.replay.compression import certified_envelope, default_envelope
 from dmipy_sim.spec import disco_spec, walk_spec
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 BLOCK = 1e-4
 BATTERY = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.1],

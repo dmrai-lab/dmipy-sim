@@ -30,7 +30,7 @@ import jax
 import jax.numpy as jnp
 
 from .susceptibility_field import _as_voxel_size, dipole_field, myelin_susceptibility_tensor
-from ..replay.so3 import rotation_of
+from dmipy_replay.replay.so3 import rotation_of
 
 
 # Symmetric 3x3 tensor stored as 6 components in this fixed order.
@@ -156,7 +156,8 @@ class MyelinSusceptibility:
 
     def delta_bz_fn(self):
         """JAX callable ``delta_bz(r) -> dBz`` (T) for a position r (3,)."""
-        from .hollow_cylinder import hollow_cylinder_basis, q_of_H
+        from .hollow_cylinder import hollow_cylinder_basis
+        from dmipy_replay.replay.field import q_of_H
         c = jnp.asarray(self.centers, jnp.float32)                   # (N, 2)
         a = jnp.asarray(self.inner_radii, jnp.float32)
         b = jnp.asarray(self.outer_radii, jnp.float32)

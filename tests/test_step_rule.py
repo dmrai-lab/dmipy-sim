@@ -6,7 +6,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.physics import tolerance_sub_steps, resolve_sub_steps, STEP_TOLERANCE
 from dmipy_sim.math import step_law as sl
-from dmipy_sim.acquisition.waveforms import band_hz
+from dmipy_replay.acquisition.waveforms import band_hz
 
 D0 = 2e-9
 

@@ -15,7 +15,7 @@ from dmipy_sim_cuda.cli import write_request  # noqa: E402
 from dmipy_sim.engine.adaptive import adaptive_plan, field_read_of, _spec_holder  # noqa: E402
 from dmipy_sim.engine.backends import FieldSampling, WalkRequest, format_request_value, write_request_directory  # noqa: E402
 from dmipy_sim.fill import Recipe  # noqa: E402
-from dmipy_sim.replay.bank import storage_band_hz  # noqa: E402
+from dmipy_replay.replay.storage import storage_band_hz  # noqa: E402
 from dmipy_sim.fill.kit import _block_record, _pool_geometry, _sha256, assemble_request  # noqa: E402
 
 

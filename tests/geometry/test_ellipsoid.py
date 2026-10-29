@@ -14,7 +14,7 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
 from dmipy_sim.sequences import pgse
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_WALKERS, SEED
 
 

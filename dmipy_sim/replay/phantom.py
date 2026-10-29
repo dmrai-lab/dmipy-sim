@@ -21,8 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ..phantom.grid import Grid
-from ..constants import GAMMA, GAMMA_BAR
+from dmipy_replay.phantom.grid import Grid
+from dmipy_replay.constants import GAMMA, GAMMA_BAR
 from ..phantom.substrates import substrate_from_meta, _echo_time
 from .so3 import n_sh_coeffs, lmax_of
 from ..run import Run, current
@@ -395,7 +395,7 @@ class ReplayPhantom:
         """The order-0 concomitant phase of every voxel, ``(n_voxels, n_meas)`` at one readout (the last, or
         ``echo``), for a catalogued machine with a field strength; ``None`` otherwise
         (:func:`~dmipy_sim.phantom.bore.concomitant_phase_map`, dmipy-sim#394)."""
-        from ..acquisition.scanners import ScannerLimits
+        from dmipy_replay.acquisition.scanners import ScannerLimits
         from ..phantom.bore import concomitant_phase_map
         if not isinstance(scanner, ScannerLimits):
             return None
@@ -408,7 +408,7 @@ class ReplayPhantom:
         """The acquisition as the machine plays it per voxel, binned (:func:`~dmipy_sim.phantom.bore.encoding_classes`),
         or ``None`` for a scanner that brings no gradient-side term -- a bare field strength, or a machine with
         no catalogued shape, tensor or field."""
-        from ..acquisition.scanners import ScannerLimits
+        from dmipy_replay.acquisition.scanners import ScannerLimits
         from ..phantom.bore import encoding_classes
         out = None
         if isinstance(scanner, ScannerLimits):
@@ -640,7 +640,7 @@ class ReplayPhantom:
         """A pack substrate's tissue from its file entry: the per-pool values, a list by pool id in the file,
         resolved by name through the pack's embedded spec (RPH.md 3.2); ``None`` for none. An unknown key in
         the entry is refused by name."""
-        from ..spec.tissue import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         entry = sub.get("tissue")
         per_pool = bool(entry) and any(entry.get(k) is not None for k in ("T2", "T1"))
         return (Tissue.from_meta(entry, spec=pack.substrate) if per_pool
@@ -652,7 +652,7 @@ class ReplayPhantom:
         form has no field by its kind (:data:`~dmipy_sim.phantom.substrates.FIELD_BY_KIND`), so a form whose tissue
         carries a non-zero chi is refused (:func:`~dmipy_sim.replay.replay.field_term`)."""
         from ..phantom.substrates import FIELD_BY_KIND
-        from .replay import field_term
+        from dmipy_replay.replay.replay import field_term
         form = forms[i] if (forms and i in forms) else substrate_from_meta(sub)
         field_term(FIELD_BY_KIND[sub["kind"]], getattr(form, "tissue", None), None)
         return form
@@ -664,7 +664,7 @@ class ReplayPhantom:
         T2 were infinite; composed beside a substrate that does relax, it returns a tissue contrast that looks
         right and is not (the brain example's grey matter at its proton density against a white matter at 0.06).
         A phantom in which no substrate relaxes is a consistent diffusion phantom and is not refused."""
-        from ..spec.tissue import Tissue
+        from dmipy_replay.spec.tissue import Tissue
         relaxes, missing = [], []
         for i, sub in enumerate(self.substrates):
             if sub["kind"] == "inert":
@@ -689,9 +689,9 @@ class ReplayPhantom:
         the acquisition as played in each class. Plus the per-voxel ``m0``. ``specimen`` is the specimen's
         rotation in the bore: a pack's expansion runs in that frame, and an analytic form sees the acquisition
         turned into it."""
-        from ..spec.tissue import Tissue
-        from ..acquisition.waveforms import rotate_waveform
-        from .replay import _pose_matrix
+        from dmipy_replay.spec.tissue import Tissue
+        from dmipy_replay.acquisition.waveforms import rotate_waveform
+        from dmipy_replay.replay.replay import _pose_matrix
         pose, analytic = {}, {}
         loaded = self._loaded_packs(packs)
         self._check_relaxation(waveforms[0], loaded, forms)
@@ -785,8 +785,8 @@ class ReplayPhantom:
             self._check_relaxation(waveform, loaded, forms)
             m0 = self._m0(proton_density)
             from .so3 import rotations_from_quaternions
-            from .replay import _pose_matrix
-            from ..spec.tissue import Tissue
+            from dmipy_replay.replay.replay import _pose_matrix
+            from dmipy_replay.spec.tissue import Tissue
             R_s = _pose_matrix(pose)
             sid, frac = self.substrate_id, self.geometric_fraction
             live = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
@@ -869,8 +869,8 @@ class ReplayPhantom:
         distribution does not state.
         """
         from .pathways import train_response, closed_form_train
-        from .replay import _pose_matrix
-        from ..spec.tissue import Tissue
+        from dmipy_replay.replay.replay import _pose_matrix
+        from dmipy_replay.spec.tissue import Tissue
 
         if self.mode not in ("odf_sh", "peaks", "frames", "bingham"):
             raise ValueError(f"unknown orientation mode {self.mode!r}")

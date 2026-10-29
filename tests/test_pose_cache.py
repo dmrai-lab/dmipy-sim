@@ -12,7 +12,7 @@ from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.replay import PoseResponse
 from dmipy_sim.replay.so3 import spherical_jn_all as _spherical_jn_all
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 
 @pytest.fixture(scope="module")
