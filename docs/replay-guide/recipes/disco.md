@@ -9,7 +9,7 @@ downloaded whole; the pack is opened by reference and read by range.
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim import sequences
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_sim.spec import Tissue
 
 pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")       # 150 M walkers, 31,802 voxels; zero bytes so far
 seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.0102, 0.0167, bvalues=[1e9, 1e9], TE=0.0535)

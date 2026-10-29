@@ -95,7 +95,7 @@ def test_a_namespaced_model_is_read_by_its_package_or_refused_naming_it(tmp_path
     (pkg / "__init__.py").write_text("")
     (pkg / "phantom.py").write_text(textwrap.dedent('''
         import numpy as np
-        from dmipy_sim.spec.tissue import Tissue
+        from dmipy_sim.spec import Tissue
         class Stick:
             kind = "analytic"; model = "stickpkg:Stick"; oriented = True
             def __init__(self, *, m0, tissue, name):

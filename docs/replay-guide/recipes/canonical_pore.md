@@ -9,7 +9,7 @@ import numpy as np
 import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_sim.spec import Tissue
 
 D0, R, T = 2e-9, 2e-6, 0.02
 walk = d.simulate_trajectories(2000, D0, d.Cylinder(R, (0, 0, 1)), T, 5e-4, seed=0, require_gpu=False)   # block_h = 0.5 ms

@@ -18,7 +18,7 @@ from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.fill.consolidate import consolidate
 from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_sim.spec import Tissue
 
 tmp = tempfile.mkdtemp(); os.makedirs(f"{tmp}/shards")
 cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]   # three strands
