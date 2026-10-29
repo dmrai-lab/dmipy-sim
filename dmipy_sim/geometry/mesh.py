@@ -920,12 +920,14 @@ class Mesh(Geometry):
         #   'geometric' -- mirror about the FACET normal. The facet is the wall the walker cannot pass, so this
         #                  is the confinement truth and needs no _GRAZE rescue. Cost: faceted rather than
         #                  smooth curvature, i.e. slightly wrong tortuosity on a coarse mesh.
-        # The relaxation weight keeps using the SMOOTH normal either way -- it is the best local estimate of
-        # surface orientation, and it is what the surface channel (C2 relaxivity, C4 MT) is built from. So
-        # confinement and physics are taken from the object each describes correctly.
-        # DEFAULT 'geometric'. Measured on CACTUS (3000 walkers, 3 seeds): crossings 63.0 +- 2.9 -> 7.0 +- 0.8
-        # and boundary local time 0.9668 -> 0.9880 of analytic (S/V)D -- better confinement AND better surface
-        # physics. Validated to cost nothing in curvature: flawless sphere local time 1.0011x vs 1.0006x
+        # The contact (the boundary local time of the surface channels, C2 relaxivity and C4 MT, and the crossing
+        # probability) is the push of the reflection, read off the same normal the walker is reflected about: under
+        # 'geometric' the facet's, so the local time is the walked polyhedron's own, E l(t) = D t S/V of the mesh. The
+        # vertex-interpolated normal is tilted from the facet by the surface's curvature over a facet (area-weighted
+        # mean cosine 0.990 on the CACTUS inner surfaces), and a contact read off it falls short of the push by that
+        # factor.
+        # DEFAULT 'geometric'. Measured on CACTUS (3000 walkers, 3 seeds): crossings 63.0 +- 2.9 -> 7.0 +- 0.8.
+        # Validated to cost nothing in curvature: flawless sphere local time 1.0011x vs 1.0006x
         # (fine mesh) and 1.0432x vs 1.0430x (coarse), long-time lattice ADC 0.7815 +- 0.0085 vs
         # 0.7807 +- 0.0041 (fine) and 0.8080 +- 0.0077 vs 0.8112 +- 0.0121 (coarse).
         self.reflect_mode = "geometric"
@@ -1353,6 +1355,9 @@ class Mesh(Geometry):
             # int32 explicitly: argmin returns int64 once anything enables x64 (bloch MT does
             # and never restores it), and the scan carry is pinned int32.
             idx = jnp.argmin(ts).astype(jnp.int32); d = ts[idx]; hit = d < jnp.inf
+            # a tie-band hit is taken at the path's end, which lies within the band of the plane: the ray meets the
+            # plane up to band / |n . dh| beyond it, microns along a grazing ray, a place the walker never reached
+            d = jnp.where(hit, jnp.minimum(d, jnp.maximum(rem, 0.0)), d)
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
 
             # side of the collision: dh . (outward face normal) > 0 -> leaving a cell
@@ -1374,7 +1379,9 @@ class Mesh(Geometry):
             else:
                 use_box = jnp.zeros((), bool)
 
-            cos_a = -jnp.dot(dh, n)
+            # the contact is the push of the reflection, along the normal the walker is reflected about (the facet's
+            # under 'geometric'): the local time is then the walked surface's own, E l(t) = D t S/V of the mesh
+            cos_a = -jnp.dot(dh, nf if self.reflect_mode == "geometric" else n)
             d_perp = jnp.maximum(rem - d, 0.0) * cos_a           # a tie-band hit lies up to the band beyond the path
             first_hit = hit & (~decided) & jnp.logical_not(use_box)
             p_t = transmit_probability(jnp.float32(kappa_over_D) * kappa_mult, d_perp)
