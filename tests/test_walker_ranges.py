@@ -112,14 +112,10 @@ def test_a_pack_is_mapped_copy_on_write_and_replaced_not_rewritten(tmp_path):
 
 def _read_plain(path):
     """``(arrays, meta)`` of an ``.rpk`` file as :func:`read_rpk` maps them, without the pack's spec checks."""
-    import json, struct
-    from dmipy_sim.replay.replay import _NP_DTYPES
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]; hdr = json.loads(f.read(n))
-    meta = json.loads(hdr.pop("__metadata__")["rpk"])
-    mm = np.memmap(path, np.uint8, mode="c")
-    return {k: mm[8 + n + d["data_offsets"][0]:8 + n + d["data_offsets"][1]].view(_NP_DTYPES[d["dtype"]]).reshape(d["shape"])
-            for k, d in hdr.items()}, meta
+    import json
+    from dmipy_replay.replay.container import read_safetensors
+    arrays, hdr = read_safetensors(path)
+    return arrays, json.loads(hdr["rpk"])
 
 
 def test_a_merge_streamed_to_its_file_is_the_merge_in_memory(spec_grid, monkeypatch):

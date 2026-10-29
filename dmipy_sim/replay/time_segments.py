@@ -2,6 +2,11 @@
 every acquisition piecewise constant on a stored partition -- at any amplitude, in any direction on each segment -- is
 a few products per walker on the device (dmipy-sim#505, #770: a whole grid replayed while a user waits).
 
+The layout's reader -- the format, :class:`Shape`, :class:`Partition` and its fit, the words, the tiers and the image
+on numpy -- is :mod:`dmipy_replay.replay.time_segments`; this module writes the layout (:func:`segment_rows`,
+:func:`write_time_segment_layout`) and its :class:`TimeSegmentLayout` adds the JAX (the default) and torch backends of
+the image and a machine's delivered gradient (:meth:`TimeSegmentLayout.delivery`).
+
 **Terms, not a shape.** A layout stores PARTITIONS (:class:`Partition`): TERMS, each an interval ``[a_s, b_s]`` of the
 walk's clock and a temporal shape ``psi_s`` on it (:class:`Shape`, a stated record normalised to ``max |psi| = 1``), with
 the sign of its class's effective gate on the interval (the coherence sign times the transverse gate of the RF schedule:

@@ -29,7 +29,7 @@ _SRC = Path(dmipy_sim.__file__).parent
 
 # Every module path of the package; downstream (dmipy-fit / dmipy-design) imports a subset of these.
 _DOWNSTREAM_MODULES = [
-    "dmipy_sim.replay.replay", "dmipy_replay.constants", "dmipy_sim.acquisition.waveforms",
+    "dmipy_sim.replay.replay", "dmipy_replay.constants", "dmipy_replay.acquisition.waveforms",
     "dmipy_sim.replay.so3", "dmipy_sim.replay.fod", "dmipy_sim.replay.compression", "dmipy_replay.acquisition.rf",
     "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
@@ -45,7 +45,7 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.spec.producers", "dmipy_sim.io.caterpillar", "dmipy_sim.io.strands", "dmipy_sim.geometry.sphere_union",
     "dmipy_sim.io.label_volume", "dmipy_sim.geometry.label_volume",
     # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
-    "dmipy_sim.acquisition.noise", "dmipy_replay.acquisition.scanners", "dmipy_sim.acquisition.scanner_constants",
+    "dmipy_sim.acquisition.noise", "dmipy_replay.acquisition.scanners", "dmipy_replay.acquisition.scanner_constants",
     "dmipy_replay.acquisition.timing",
     "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy",
 ]
