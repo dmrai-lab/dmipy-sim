@@ -245,12 +245,18 @@ def _layer_grid():
 
 def test_a_raster_field_is_the_backends_request_and_its_modes_are_checked():
     """A FieldGrid read along the fixed-step walk is handed to the backend as the request's own field, every batch at
-    the walk's read interval and band (the field's pilot walked by the JAX kernels: the read rule's checks and the band's
-    block means are theirs); a backend that returns no modes for it, or modes at another read, is refused by name."""
+    the walk's read interval and band (the field's pilot walked by the JAX kernels, ``field_pilot="jax"``: the read rule's
+    checks and the band's block means are theirs); a backend that returns no modes for it, or modes at another read, is
+    refused by name, as is a pilot on a backend that cannot read the field at given positions."""
     fg = _layer_grid()
     still = _Still()
-    kw = dict(field_basis=fg, K_c3=3, field_read_interval=4e-5)
+    kw = dict(field_basis=fg, K_c3=3, field_read_interval=4e-5, field_pilot="jax")
     w = _walk(d.Sphere(R), backend=still, **kw)
+    assert w.block["field_read"]["pilot_backend"] == "jax"
+    with pytest.raises(ValueError, match="does not read a field at given positions"):
+        _walk(d.Sphere(R), backend=_Still(), **dict(kw, field_pilot=None))
+    with pytest.raises(ValueError, match="field_pilot is the engine"):
+        _walk(d.Sphere(R), backend=_Still(), **dict(kw, field_pilot="cuda"))
     assert w.field_coeffs.shape[-2:] == (3, 6)
     reqs = [r for r in still.requests if r.K_c3]
     assert reqs and all(r.field is fg and r.K_c3 == 3 for r in reqs)

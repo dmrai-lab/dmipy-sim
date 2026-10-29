@@ -594,6 +594,8 @@ class Cactus(Family):
             kw["drop_pool_changes"] = float(self.args.drop_pool_changes)
         if getattr(self.args, "keep_walk", None):              # each walked pool kept the moment it is walked, and resumed
             kw["pool_checkpoint"] = os.path.join(os.path.abspath(self.args.keep_walk), self.substrates()[name]["id"] + ".pools")
+        if getattr(self.args, "field_pilot", None):
+            kw["field_pilot"] = str(self.args.field_pilot)
         cache = getattr(self.args, "field_cache", None)
         if cache:
             self._cache_before[name] = bool((self.field_cache_record(name) or {}).get("exists"))
@@ -1016,6 +1018,9 @@ def main(argv=None):
                    help="cactus: exclude the walkers that change pool in the impermeable walk, at most MAX_FRACTION of a "
                         "pool (0.01 when the flag is given bare), recorded in the walk and the pack's certificate "
                         "(walk_spec(drop_pool_changes=)); off by default: a walker that changes pool refuses the walk")
+    p.add_argument("--field-pilot", default=None, choices=("jax",),
+                   help="cactus: walk the field pilot by the JAX kernels (walk_spec(field_pilot='jax')); by default it "
+                        "walks on --backend")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")
     p.add_argument("--pilot", type=int, default=0, help="plan: walkers of a per-substrate pilot whose variance bound "

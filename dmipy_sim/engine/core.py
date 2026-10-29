@@ -935,6 +935,60 @@ def _compact_events(n, steps, labels, dt_sim):
     return keep, np.asarray(steps[mask], np.float64) * float(dt_sim), np.asarray(labels[mask], np.int8)
 
 
+def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_per_window, checks, progress=None):
+    """A field pilot walked on ``backend``: the walkers ``r0`` / ``keys`` walked as ``request`` walks them but one
+    physics step a block (``n_blocks sub_steps`` blocks of ``dt_sim``: the same steps, keys and walls, no field
+    accumulated, ``K = 1`` at ``m = 0``), every walker in the raw subset, so that its saves are the positions after every step -- the
+    positions the backend's walk reads the field at; the field read there by the backend's own read
+    (``backend.sample_raster``); per walker the statistics the JAX pilot accumulates, of its definition
+    (:func:`~.accumulate.field_read_statistics` over ``request.sub_steps`` steps a block and ``blocks_per_window``
+    blocks a window, the trapezoid's ``checks``): ``fs`` ``(n, n_blocks + 1, n_ch)`` the start's read and the block
+    means, ``qv_d`` ``(n, n_win, n_ch)`` the read series' quadratic variation, ``chk`` ``(n, n_win, 2, n_checks, n_ch)``
+    the checks. Walked in batches of at most :data:`~.accumulate.PILOT_READ_BYTES` of positions and reads; an
+    impermeable recorded walk is asked for its pool changes (``drop_pool_changes``), which the pilot keeps."""
+    import time as _time
+    from .accumulate import field_read_statistics, PILOT_READ_BYTES
+    name = str(getattr(backend, "name", backend))
+    sample = getattr(backend, "sample_raster", None)
+    if not callable(sample):
+        raise ValueError(f"backend {name!r} does not read a field at given positions (sample_raster): the field pilot "
+                         f"walks on the walk's backend; field_pilot='jax' walks it by the JAX kernels")
+    sub_steps, n_ch = int(request.sub_steps), len(field_basis.channel_names)
+    n_steps = int(request.n_blocks) * sub_steps
+    record = bool(request.record)
+    impermeable = not float(request.kappa_over_D) > 0.0
+    size = max(1, int(PILOT_READ_BYTES) // ((n_steps + 1) * (3 + 2 * int(record) + n_ch) * 4))   # float32 positions, saves, reads
+    r0 = np.ascontiguousarray(r0, np.float32); keys = np.ascontiguousarray(keys, np.uint32)
+    n = int(r0.shape[0]); parts = []
+    for a in range(0, n, size):
+        if progress is not None:
+            progress(a, n)
+        n_b = min(size, n - a)
+        req = request._replace(block_h=float(request.dt_sim), n_blocks=n_steps, sub_steps=1, K=1, m=0, K_c3=0, field=None,
+                               field_read_interval=0.0, raw_subset=n_b, drop_pool_changes=bool(impermeable and record))
+        t0 = _time.perf_counter()
+        batch = backend.walk_batch(req, r0[a:a + n_b], keys[a:a + n_b])
+        t1 = _time.perf_counter()
+        sv = getattr(batch, "saves", None)
+        pos = None if sv is None else np.asarray(sv.positions, np.float32)
+        if pos is None or pos.shape != (n_b, n_steps + 1, 3):
+            raise ValueError(f"backend {name!r} returned raw-subset positions of shape {None if pos is None else pos.shape} "
+                             f"for the field pilot's {n_b} walkers over {n_steps} steps: {(n_b, n_steps + 1, 3)}")
+        del sv, batch
+        reads = np.asarray(sample(field_basis, pos.reshape(-1, 3)), np.float32).reshape(n_b, n_steps + 1, n_ch)
+        del pos
+        t2 = _time.perf_counter()
+        st = field_read_statistics(reads, step_s=float(request.dt_sim), rounds_per_block=sub_steps,
+                                   blocks_per_window=int(blocks_per_window), checks=checks)
+        log.info("field pilot on %s: %d walkers x %d steps walked in %.1f s, read in %.1f s, statistics in %.1f s",
+                 name, n_b, n_steps, t1 - t0, t2 - t1, _time.perf_counter() - t2)
+        parts.append(dict(fs=np.concatenate([reads[:, :1], st["means"]], axis=1), qv_d=st["qv_increments"], chk=st["checks"]))
+        del reads, st
+    if progress is not None:
+        progress(n, n)
+    return {k: np.concatenate([p[k] for p in parts], axis=0) for k in parts[0]}
+
+
 def simulate_trajectories(
     n_walkers: int,
     diffusivity: float,
@@ -965,6 +1019,7 @@ def simulate_trajectories(
     backend="jax",
     field_target_floor: float = None,
     drop_pool_changes: bool = False,
+    field_pilot: str = None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1082,6 +1137,15 @@ def simulate_trajectories(
         the walk reads every ``n`` steps within it and at every block end, the step itself when the rule asks for less
         (``CoefficientWalk.block["field_read"]`` records the rule, the pools and the constants, and the pack's
         certificate charges the term from the walk's own quadratic variation).
+    field_pilot : str, optional
+        The engine the field's pilot walks on: None the walk's own backend, ``"jax"`` the JAX kernels whatever the
+        backend. Either measures the same quantities of the same definition (per walker the block means of the field
+        channels, the read series' quadratic variation per window and the trapezoid's checks,
+        :func:`~dmipy_sim.engine.accumulate.field_read_statistics`): the JAX kernels accumulate them in the walk; a
+        backend walks the pilot's walkers one step a block, returns their positions at every step as the raw subset
+        and reads its own field there (``backend.sample_raster``, the read its walk takes), the statistics computed on
+        the host. A backend that cannot read the field at given positions is refused by name.
+        ``CoefficientWalk.block["field_read"]["pilot_backend"]`` records which engine walked it.
     events_capacity : int, optional
         The events buffer per walker and column, in place of the pilot's.
     envelope : dict, optional
@@ -1115,6 +1179,10 @@ def simulate_trajectories(
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
+    if field_pilot is not None and field_pilot not in (JAX, _backend_name):
+        raise ValueError(f"field_pilot is the engine the field's pilot walks on: None (the walk's backend, {_backend_name!r}) "
+                         f"or 'jax'; got {field_pilot!r}")
+    _pilot_name = _backend_name if field_pilot is None else str(field_pilot)
     if drop_pool_changes and _backend is None:
         raise ValueError("drop_pool_changes asks a backend for the walkers of an impermeable walk that changed pool; the "
                          "JAX kernels carry each walker's label and report deviations (work['label_deviations']) instead")
@@ -1770,6 +1838,21 @@ def simulate_trajectories(
 
         _walk_batch = _call if _backend is None else _backend_call
 
+        def _backend_field_pilot(idx, checks, cap):
+            """The field pilot on the backend (:func:`field_pilot_on_backend`) of the walkers ``idx``, with the
+            pilot's start labels as the JAX pilot takes them."""
+            idx = np.asarray(idx)
+            req = res.request._replace(events=(int(cap) if cap else res.request.events))
+            got = field_pilot_on_backend(_backend, req, np.asarray(r0_all[idx], np.float32), np.asarray(walker_keys_all[idx], np.uint32),
+                                         field_basis, blocks_per_window=int(n_bw), checks=checks, progress=run.progress)
+            if kind_name == "relax":
+                lab = np.minimum(np.asarray(geometry.classify_positions_exact(r0_all[idx]), np.int64), 1).astype(np.int8)
+            elif kind_name == "pm":
+                lab = np.asarray(_compress_comp_pm(comp0_all[idx])).astype(np.int8)
+            else:
+                lab = np.zeros((idx.shape[0],), np.int8)
+            return dict(got, lab=lab)
+
         # ── The pilots: the events buffer's capacity (the largest count a pilot walker reached, with a margin) and
         # the field's band (the ladder on the pilot's block means), each a walk of PILOT_WALKERS walkers spread over the walk (accumulate.pilot_walkers)
         # thrown away afterwards; the production program is compiled once they are known.
@@ -1801,9 +1884,10 @@ def simulate_trajectories(
             checks = read_checks(sub_steps)
             run.phase("field pilot", walkers=n_pilot)
             _t0 = _time.time()
-            # walked by the JAX kernels whatever the backend: the pilot reads every step with the trapezoid's checks and
-            # keeps the block means, which a backend's coefficient form does not return
-            got, _, _, _ = _call(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
+            if _pilot_name == JAX:      # the JAX kernels accumulate the block means, the read series' variation and the checks
+                got, _, _, _ = _call(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
+            else:                       # the backend's positions at every step, its own read there, the statistics on the host
+                got = _backend_field_pilot(pidx, checks, cap)
             B0, chi = field_rule_scale(geometry.spec, envelope)
             qd = np.asarray(got["qv_d"], np.float64)                                   # (n_pilot, n_win, n_ch)
             chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, 2, n_checks, n_ch)
@@ -1816,7 +1900,7 @@ def simulate_trajectories(
                                              err_sq=(chk[:, :, 0] ** 2).mean(axis=(0, 1)) if checks else None,
                                              qv_checks=chk[:, :, 1].mean(axis=(0, 1)) if checks else None, qv_all=qd.mean(axis=(0, 1)),
                                              channels=list(field_basis.channel_names))
-            field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0))
+            field_read.update(pilot_walkers=int(n_pilot), pilot_seconds=float(_time.time() - _t0), pilot_backend=_pilot_name)
             res = res._replace(field_read=field_read)
             if K_c3_ is None:
                 from ..replay.bank import derive_field_band_per_pool
