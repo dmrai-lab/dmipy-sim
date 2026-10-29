@@ -31,7 +31,10 @@ def test_the_spec_raster_of_a_periodic_cell_reads_the_same_field_one_period_away
     import jax.numpy as jnp
     from dmipy_sim.spec.producers import cactus_spec
     from dmipy_sim.spec.walk import field_grid_of_spec
-    spec = cactus_spec(_smoke_cactus(str(tmp_path)), side_um=6.0)
+    import dataclasses
+    from dmipy_sim.spec.substrate import Domain
+    spec = cactus_spec(_smoke_cactus(str(tmp_path)), side_um=6.0)         # a CACTUS voxel reflects; this cell is periodic
+    spec = dataclasses.replace(spec, domain=Domain(spec.domain.box_min, spec.domain.box_max, ["periodic"] * 3))
     fg = field_grid_of_spec(spec)
     lo, hi = np.asarray(spec.domain.box_min, float), np.asarray(spec.domain.box_max, float)
     assert fg.periodic == (True, True, True)

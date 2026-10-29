@@ -104,7 +104,9 @@ def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
     certificate (the battery replayed on the block ends against the bands) within the floor."""
     if name == "mesh":
         pytest.importorskip("trimesh")
-    row = _tool().exactness([name], n=200, T=0.008, block_h=2e-4, K=16, sub_steps=3)[name]
+    # the mesh walks at its resolved count: three steps per block outrun its collision cell, and a step longer than the
+    # cell passes walls its gather does not hold
+    row = _tool().exactness([name], n=200, T=0.008, block_h=2e-4, K=16, sub_steps=None if name == "mesh" else 3)[name]
     assert row["start_m"] == 0.0 and row["displacement_rel"] <= 1e-6
     assert row["bands_vs_block_ends_rel"] <= 2e-6, row
     assert row.get("contact_bands_vs_block_ends_rel", 0.0) <= 5e-6 and row.get("contact_endpoint_rel", 0.0) <= 2e-6, row
