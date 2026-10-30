@@ -7,6 +7,7 @@ walk of the substrate at ``s`` times the size at ``s^2 D``. The checks are exact
 walk of the scaled substrate from the same seed -- every float32 step and wall halved exactly at ``s = 1/2`` --
 replays as the view does.
 """
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 
@@ -14,7 +15,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 D0, T, DT, R, KAPPA = 2.0e-9, 40e-3, 5e-4, 4e-6, 2e-5
 
@@ -129,9 +130,9 @@ def test_nothing_is_decoded_on_the_way(packs, monkeypatch):
 
     def boom(*a, **k):
         raise AssertionError("a track was decoded")
-    monkeypatch.setattr(compression, "local_time_at", boom)
-    monkeypatch.setattr(compression, "positions_at", boom)
-    monkeypatch.setattr(compression, "decode_occupancy", boom)
+    monkeypatch.setattr(_r_compression, "local_time_at", boom)
+    monkeypatch.setattr(_r_compression, "positions_at", boom)
+    monkeypatch.setattr(_r_compression, "decode_occupancy", boom)
     monkeypatch.setattr(rp.ReplayPack, "positions", boom)
     view = pk.at_length_scale(0.5)
     view.replay(seq, tissue=Tissue(rho2=2e-5))

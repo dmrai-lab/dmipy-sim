@@ -36,11 +36,11 @@ import warnings
 
 import numpy as np
 
-from ..constants import GAMMA, GAMMA_BAR
-from ..acquisition.scanners import ScannerLimits
-from ..acquisition.rf import RFEvent, RFSchedule
-from ..acquisition.timing import SequenceTiming
-from ..acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.constants import GAMMA, GAMMA_BAR
+from dmipy_replay.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 
 
 
@@ -98,56 +98,10 @@ def _encode_rf_events(rf_events):
     return json.dumps(RFSchedule(rf_events).to_dicts(), separators=(',', ':'))
 
 
-def _decode_rf_events(s):
-    if not s:
-        return None
-    try:
-        return RFSchedule.from_dicts(json.loads(s)) or None
-    except (ValueError, TypeError):
-        return None
 
 
-def _event_times(arr):
-    """Extract event times (s) from a pypulseq waveforms_and_times field.
-
-    Excitation/refocusing come as (3, n) [row 0 = time, rows 1-2 = freq/phase
-    offset]; ADC comes as (n, 2) [col 0 = time]; tolerate 1-D too.
-    """
-    if arr is None:
-        return np.array([])
-    a = np.asarray(arr, dtype=float)
-    if a.size == 0:
-        return np.array([])
-    if a.ndim == 2:
-        return a[0] if a.shape[0] == 3 else a[:, 0]
-    return a.ravel()
 
 
-def _gradient_live_spans(seq, raster):
-    """Per channel, the [start, end] spans (s, from the file's t = 0) where a block plays a gradient event: a
-    trapezoid's exact extent, an arbitrary gradient's extent widened by half a raster on each side (its samples
-    sit at raster centres). Anything outside is zero by Pulseq's definition."""
-    spans = ([], [], [])
-    t = 0.0
-    for i in range(1, len(seq.block_events) + 1):
-        blk = seq.get_block(i)
-        dur = float(seq.block_durations[i])
-        for ci, ch in enumerate(('gx', 'gy', 'gz')):
-            g = getattr(blk, ch, None)
-            if g is None:
-                continue
-            start = t + float(getattr(g, 'delay', 0.0) or 0.0)
-            if getattr(g, 'type', '') == 'trap':
-                length = float(g.rise_time) + float(g.flat_time) + float(g.fall_time)
-                spans[ci].append((start, start + length))
-            else:
-                length = float(getattr(g, 'shape_dur', 0.0) or 0.0)
-                if not length:
-                    tt_g = getattr(g, 'tt', None)
-                    length = float(np.asarray(tt_g)[-1] + 0.5 * raster) if tt_g is not None else len(np.asarray(g.waveform)) * raster
-                spans[ci].append((start - 0.5 * raster, start + length + 0.5 * raster))
-        t += dur
-    return spans
 
 
 # -- export: ScannerSequence -> .seq -------------------------------------------------
@@ -316,238 +270,9 @@ def _write_defs(seq, waveform, dt, n_t, echo_idx=None):
 
 
 
-def _rf_from_pulseq(seq):
-    """RF schedule from Pulseq's own event classification: ``[{t_s, flip_deg, label}, ...]``.
-
-    ``Sequence.waveforms_and_times()`` already separates excitation from refocusing events and reports
-    their times, so the classification that matters for the effective gradient comes from the library
-    rather than from re-deriving flip angles out of the pulse shapes here. Labels follow the pattern: the
-    first excitation tips down, a later pair stores and recalls, and refocusing events invert -- which is
-    what lets a file written by any tool be read.
-    """
-    wav = seq.waveforms_and_times()
-    t_exc = _event_times(wav[1]) if len(wav) > 1 else np.array([])
-    t_ref = _event_times(wav[2]) if len(wav) > 2 else np.array([])
-    times = sorted([(float(t), 90.0) for t in np.atleast_1d(t_exc)] +
-                   [(float(t), 180.0) for t in np.atleast_1d(t_ref)])
-    ev, n90 = [], 0
-    for t, flip in times:
-        if flip == 180.0:
-            ev.append(RFEvent(t, 180.0, 'refocus'))
-        else:
-            ev.append(RFEvent(t, 90.0, ('Mz\u2192Mxy', 'store', 'recall')[min(n90, 2)]))
-            n90 += 1
-    return RFSchedule(ev) or None
 
 
-# -- import: .seq -> ScannerSequence -------------------------------------------------
-def from_pulseq(src, *, dt=None, readout_s=None):
-    """Read a Pulseq ``.seq`` (path or ``pypulseq.Sequence``) and rasterise it to
-    a Monte-Carlo-simulable :class:`dmipy_sim.acquisition.scanner_sequence.ScannerSequence` (single
-    measurement, shape (1, n_t, 3) in T/m).
-
-    Gradients are rasterised exactly (piecewise-linear interpolation onto the
-    uniform grid).  The RF schedule and echo index come from dmipy ``[DEFINITIONS]``
-    when present (our own files), otherwise from Pulseq's native excitation/
-    refocusing event times (external files); a 90/180 flip is assumed for
-    excitation/refocusing when only times are available.
-    
-    ``readout_s`` declares the span ``(t0, t1)`` in seconds, from the excitation, over which the file's gradient
-    is its READOUT's -- played to read the echo, not to encode -- so a budget read from the file's blocks does
-    not refuse it (dmipy-sim#374). It is stated by the caller, who knows the sequence, and never inferred from
-    the ADC. A file this package wrote carries its own window and needs none.
-    """
-    pp = _require_pypulseq()
-    
-    import jax.numpy as jnp
-
-    if isinstance(src, pp.Sequence):
-        seq = src
-    else:
-        seq = pp.Sequence()
-        seq.read(str(src))
-
-    defs = getattr(seq, 'definitions', {}) or {}
-    gamma_hz = float(getattr(getattr(seq, 'system', None), 'gamma', GAMMA_BAR) or GAMMA_BAR)
-
-    wav = seq.waveforms_and_times()
-    gw = wav[0]                       # list of 3 channels, each (2, N): [t_s; amp Hz/m]
-    # out[1]/out[2] are (3, n_event): row 0 = times, rows 1-2 = freq/phase offsets.
-    t_exc = _event_times(wav[1]) if len(wav) > 1 else np.array([])
-    t_ref = _event_times(wav[2]) if len(wav) > 2 else np.array([])
-    t_adc = wav[3] if len(wav) >= 4 else None            # out[3] = ADC sample times; out[4] their freq/phase
-
-    dt = float(dt if dt is not None else defs.get('dmipy_dt', seq.grad_raster_time))
-
-    # Anchor t=0 of the ScannerSequence at the excitation (our convention: rf/echo times are relative to
-    # excitation). A file without one (an effective-form gradient train, spins taken as transverse from its
-    # start) is anchored at its own t=0: a delay before the first gradient is time in which relaxation, exchange
-    # and the field act, so it is kept, not cut.
-    t0 = float(t_exc[0]) if t_exc.size else 0.0
-
-    T = float(seq.duration()[0])
-    n_t = (int(defs['dmipy_n_t']) if 'dmipy_n_t' in defs
-           else max(2, int(round((T - t0) / dt)) + 1))
-    t_grid = np.arange(n_t) * dt
-
-    G = np.zeros((n_t, 3), dtype=np.float32)
-    raster = float(getattr(seq, 'grad_raster_time', dt) or dt)
-    live = _gradient_live_spans(seq, raster)
-    for ci in range(min(3, len(gw))):
-        arr = np.asarray(gw[ci], dtype=float)
-        if arr.ndim == 2 and arr.shape[1] >= 2:
-            tt, aa = arr[0], arr[1]
-            # waveforms_and_times() lists samples only WITHIN gradient events: a trapezoid as its four corners, an
-            # arbitrary gradient as its raster samples. Between events the gradient is zero by definition, but
-            # interpolating the bare list draws a straight line across every gap -- filling a diffusion gap, or a
-            # stimulated echo's whole storage period, with gradient that is not there. The gaps are known from the
-            # blocks (an event's span is live, the rest is not), never from the sample spacing: a trapezoid's flat
-            # top is two corners 10 ms apart, and reading that spacing as a gap deletes the lobe (dmipy-sim#230).
-            # An arbitrary event's span is widened by half a raster on each side so its first and last samples,
-            # which sit at raster centres, are not cut off, which would shave area off the end of every segment.
-            tq = t_grid + t0
-            vals = np.interp(tq, tt, aa, left=0.0, right=0.0)
-            mask = np.zeros(tq.shape, bool)
-            for a0, b0 in live[ci]:
-                mask |= (tq >= a0) & (tq <= b0)
-            G[:, ci] = np.where(mask, vals, 0.0) / gamma_hz
-
-    # RF schedule, read from the blocks themselves so a file that describes its RF is understood whoever
-    # wrote it. The stored dmipy_rf_events is a fallback for older files that carry only the excitation.
-    blk_events = _rf_from_pulseq(seq)
-    meta_events = _decode_rf_events(defs.get('dmipy_rf_events'))
-    if blk_events:
-        blk_events = blk_events.shifted(-t0)
-    # Which convention is this file written in? A sequence whose blocks carry the WHOLE schedule states its
-    # RF natively, so its gradient is physical, as stored. One that describes more pulses in metadata than it
-    # plays as blocks is the older form, whose gradient is effective and is un-folded below. The file says
-    # which it is; no flag is needed.
-    native = bool(blk_events) and not (meta_events and len(meta_events) > len(blk_events))
-    rf_events = blk_events if native else (meta_events or blk_events)
-    if native and meta_events and len(meta_events) == len(blk_events):
-        rf_events = meta_events                    # our own file: the blocks are its raster, the metadata its exact times
-    if rf_events is None:
-        rf_events = RFSchedule([RFEvent(float(t) - t0, 90.0, 'excitation') for t in t_exc] +
-                               [RFEvent(float(t) - t0, 180.0, 'refocusing') for t in t_ref]) or None
-
-    # A ScannerSequence stores the PHYSICAL gradient. A .seq written natively carries it (the pulses are blocks), and
-    # so does one this version writes with the pulses as metadata (it says so: dmipy_gradient = 'physical').
-    # The older metadata form wrote the EFFECTIVE gradient; un-fold it through the same schedule so the object
-    # holds what the scanner plays and G_eff derives the rest.
-    if not native and defs.get('dmipy_gradient') != 'physical':
-        G = G * RFSchedule(rf_events).sign(t_grid)[:, None]
-
-    if 'dmipy_echo_idx' in defs:
-        echo_idx = int(defs['dmipy_echo_idx'])
-    else:
-        # a foreign file reads at its ADC's CENTRE: a readout gradient is balanced about the echo there, and its
-        # last sample sits at the edge of k-space, which is the imaging kernel and not the echo (dmipy-sim#375)
-        ta = _event_times(t_adc)
-        echo_idx = (int(round((0.5 * (float(ta[0]) + float(ta[-1])) - t0) / dt)) if ta.size else n_t - 1)
-    echo_idx = int(np.clip(echo_idx, 0, n_t - 1))
-
-    # TM / stimulated-echo state / chi_perp are the ScannerSequence's own derivations from the schedule: the
-    # pulses ARE the definition, so a file that describes its RF describes its mixing time, and there is no
-    # second copy to fall out of sync with the first.
-
-    # the budget: read from the blocks where the file plays a plain spin echo (a 90, one 180, a readout) --
-    # pulseq_timing assumes exactly that -- else from what this version wrote, else none
-    sched = RFSchedule(rf_events)
-    timing = None
-    if defs.get('dmipy_timing'):
-        timing = SequenceTiming.from_dict(json.loads(defs['dmipy_timing']))
-    prescription = None
-    if defs.get('dmipy_prescription'):
-        from ..acquisition.prescription import Prescription
-        prescription = Prescription.from_dict(json.loads(defs['dmipy_prescription']))
-    elif (native and not meta_events and len(sched) == 2 and sched.refocus_time is not None
-          and sched.mixing_time == (None, False) and _has_adc(seq)):
-        timing = SequenceTiming.from_pulseq(seq)   # a foreign spin echo: its budget is what its blocks say
-
-    readout_window = None
-    if defs.get('dmipy_readout_window'):
-        readout_window = tuple(json.loads(defs['dmipy_readout_window']))
-    elif readout_s is not None:
-        readout_window = (float(readout_s[0]), float(readout_s[1]))
-
-    return ScannerSequence(G=G[None], dt=dt, rf=rf_events, readout=(echo_idx,), timing=timing, family="pulseq",
-                           prescription=prescription, readout_window=readout_window)
 
 
-def _has_adc(seq):
-    return any(getattr(seq.get_block(i), 'adc', None) is not None for i in range(1, len(seq.block_events) + 1))
 
 
-def pulseq_timing(src):
-    """Extract a diffusion spin-echo timing budget from a Pulseq ``.seq``.
-
-    Reads the real event schedule so the diffusion-encoding windows (and any
-    pre-/post-180 asymmetry) can be *derived* from the sequence rather than
-    guessed.  Assumes a spin echo: the first RF block is the 90 excitation, the
-    second is the 180 refocusing, and there is one ADC (readout) block.
-
-    Parameters
-    ----------
-    src : str | Path | pypulseq.Sequence
-
-    Returns
-    -------
-    dict with keys (all seconds):
-        ``t_excite``           90 RF duration (encoding starts after it),
-        ``t_refocus``          180 RF duration (gradient off across it),
-        ``TE``                 echo time = 2·(t_180_centre − t_90_centre),
-        ``t_readout_pre_echo`` readout-start → echo (post-180 encoding must end
-                               by ``TE − t_readout_pre_echo``),
-        ``readout_duration``   ADC window length.
-
-    :meth:`dmipy_sim.acquisition.timing.SequenceTiming.from_pulseq` wraps them as the budget a
-    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` carries and a designer reads.
-    """
-    pp = _require_pypulseq()
-    if isinstance(src, pp.Sequence):
-        seq = src
-    else:
-        seq = pp.Sequence()
-        seq.read(str(src))
-
-    def _rf_duration(rf):
-        d = float(getattr(rf, 'shape_dur', 0.0) or 0.0)
-        if d <= 0.0 and getattr(rf, 't', None) is not None and len(rf.t):
-            d = float(rf.t[-1])
-        return d
-
-    rf_blocks = []          # (centre_time_s, duration_s)
-    adc_block = None        # (start_time_s, duration_s)
-    t = 0.0
-    n_blocks = len(seq.block_events)
-    for i in range(1, n_blocks + 1):
-        blk = seq.get_block(i)
-        dur = float(seq.block_durations[i])
-        rf = getattr(blk, 'rf', None)
-        if rf is not None:
-            rdur = _rf_duration(rf)
-            rf_blocks.append((t + float(getattr(rf, 'delay', 0.0)) + rdur / 2.0, rdur))
-        adc = getattr(blk, 'adc', None)
-        if adc is not None and adc_block is None:
-            a_dur = float(adc.num_samples) * float(adc.dwell)
-            adc_block = (t + float(getattr(adc, 'delay', 0.0)), a_dur)
-        t += dur
-
-    if len(rf_blocks) < 2:
-        raise ValueError(
-            f"pulseq_timing expects >=2 RF blocks (90 excitation + 180 refocus); "
-            f"found {len(rf_blocks)}.")
-    if adc_block is None:
-        raise ValueError("pulseq_timing found no ADC (readout) block.")
-
-    (t90c, t90d), (t180c, t180d) = rf_blocks[0], rf_blocks[1]
-    TE = 2.0 * (t180c - t90c)
-    echo_time = t90c + TE                       # == 2·t180c − t90c
-    adc_start, readout_duration = adc_block
-    return {
-        't_excite': t90d,
-        't_refocus': t180d,
-        'TE': TE,
-        't_readout_pre_echo': echo_time - adc_start,
-        'readout_duration': readout_duration,
-    }

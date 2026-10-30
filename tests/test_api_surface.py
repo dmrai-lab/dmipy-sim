@@ -9,6 +9,8 @@ carry what the scanner does, the RF dialects they speak, the consumers that take
 the gradient, the scanner catalogues -- each a declared set, so the spread that #173 collapses into
 one ``ScannerSequence`` can only shrink.
 """
+import dmipy_replay.replay.field as _r_field
+import dmipy_replay.replay.time_segments as _r_time_segments
 import importlib
 import re
 from pathlib import Path
@@ -16,7 +18,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
-from dmipy_sim.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.timing import SequenceTiming
 import pytest
 
 import dmipy_sim
@@ -24,11 +26,13 @@ from dmipy_sim.geometry import Geometry, LengthScales
 from dmipy_sim.geometry._boundary import WallHit
 
 _SRC = Path(dmipy_sim.__file__).parent
+import dmipy_replay  # noqa: E402
+_REPLAY_SRC = Path(dmipy_replay.__file__).parent      # the reader dmipy-sim imports: the same rules hold over its code
 
 # Every module path of the package; downstream (dmipy-fit / dmipy-design) imports a subset of these.
 _DOWNSTREAM_MODULES = [
-    "dmipy_sim.replay.replay", "dmipy_sim.constants", "dmipy_sim.acquisition.waveforms",
-    "dmipy_sim.replay.so3", "dmipy_sim.replay.fod", "dmipy_sim.replay.compression", "dmipy_sim.acquisition.rf",
+    "dmipy_sim.replay.replay", "dmipy_replay.constants", "dmipy_replay.acquisition.waveforms",
+    "dmipy_sim.replay.so3", "dmipy_sim.replay.fod", "dmipy_sim.replay.compression", "dmipy_replay.acquisition.rf",
     "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_cylinder",
@@ -39,12 +43,12 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.engine.pulse_sequence", "dmipy_sim.engine.mt", "dmipy_sim.engine.mt_walk",
     "dmipy_sim.engine.gpu", "dmipy_sim.engine._gpu_config",
     # the replay package; dmipy_sim.replay is the package and keeps replay.py's surface
-    "dmipy_sim.replay._replay_kernel", "dmipy_sim.spec", "dmipy_sim.spec.build", "dmipy_sim.spec.walk",
+    "dmipy_replay.replay._replay_kernel", "dmipy_sim.spec", "dmipy_sim.spec.build", "dmipy_sim.spec.walk",
     "dmipy_sim.spec.producers", "dmipy_sim.io.caterpillar", "dmipy_sim.io.strands", "dmipy_sim.geometry.sphere_union",
     "dmipy_sim.io.label_volume", "dmipy_sim.geometry.label_volume",
     # acquisition / fields / viz; dmipy_sim.viz is the package re-exporting viz.py
-    "dmipy_sim.acquisition.noise", "dmipy_sim.acquisition.scanners", "dmipy_sim.acquisition.scanner_constants",
-    "dmipy_sim.acquisition.timing",
+    "dmipy_sim.acquisition.noise", "dmipy_replay.acquisition.scanners", "dmipy_replay.acquisition.scanner_constants",
+    "dmipy_replay.acquisition.timing",
     "dmipy_sim.viz", "dmipy_sim.viz.viz", "dmipy_sim.viz.pedagogy",
 ]
 
@@ -328,11 +332,11 @@ def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
 
 # §1.1 -- a class whose instances carry G on a dt grid, or a B1 envelope on one
 _ACQUISITION_CONTAINERS = {
-    "dmipy_sim.acquisition.scanner_sequence.ScannerSequence",     # the one: physical G, the schedule, readout, timing, encoding
+    "dmipy_replay.acquisition.scanner_sequence.ScannerSequence",  # the one: physical G, the schedule, readout, timing, encoding
 }
 
 # §1.1 -- the RF dialect: one. Every builder's events are RFEvent; a dict is read only by from_dict
-_RF_DICT_READ_BOUNDARY = {"dmipy_sim.acquisition.rf"}
+_RF_DICT_READ_BOUNDARY = {"dmipy_replay.acquisition.rf"}
 
 # §1.1 / #171 -- Sequence constructors that declare no RF schedule at all
 _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
@@ -343,8 +347,8 @@ _SEQUENCE_CONSTRUCTORS_WITHOUT_RF = {
 _RF_SIDE_CHANNELS = set()      # #173 piece 6: every consumer reads the object's rf / readout / refocus time
 
 # §1.3 -- the scanner catalogues: ONE source (the cited JSON) and the views derived from it at import
-_SCANNER_SOURCE = {"dmipy_sim.acquisition.scanner_constants.SCANNER_CONSTANTS"}
-_SCANNER_VIEWS = {"dmipy_sim.acquisition.scanners.SCANNERS", "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS"}
+_SCANNER_SOURCE = {"dmipy_replay.acquisition.scanner_constants.SCANNER_CONSTANTS"}
+_SCANNER_VIEWS = {"dmipy_replay.acquisition.scanners.SCANNERS", "dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS"}
 
 
 def _class_attribute_names(cls_node):
@@ -369,9 +373,11 @@ def _class_attribute_names(cls_node):
 
 
 def _package_modules():
-    for py in sorted(_SRC.rglob("*.py")):
-        rel = py.relative_to(_SRC.parent).with_suffix("")
-        yield py, ".".join(rel.parts)
+    """Every module of dmipy-sim and of the dmipy-replay it imports, ``(path, dotted name)``."""
+    for src in (_SRC, _REPLAY_SRC):
+        for py in sorted(src.rglob("*.py")):
+            rel = py.relative_to(src.parent).with_suffix("")
+            yield py, ".".join(rel.parts)
 
 
 def test_no_new_acquisition_container():
@@ -425,7 +431,7 @@ def _every_builder():
 def test_every_builder_emits_rf_events_of_the_one_dialect():
     """Every builder's ``rf`` is an ``RFSchedule`` of ``RFEvent`` -- one dialect, whatever the family; the
     Sequence constructors that declare no schedule at all are the declared ones (#171) and no others."""
-    from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
+    from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
     without = set()
     for name, obj in _every_builder().items():
         rf = getattr(obj, "rf", None)
@@ -443,9 +449,9 @@ def test_nothing_re_derives_from_a_list_of_events():
     """The coherence mask, the spin-echo sign, the refocus and mixing times are RFSchedule's; the free
     functions that each re-derived one of them from a bare list of events are gone, and so is the
     normaliser every reader once called."""
-    import dmipy_sim.acquisition.waveforms as W
+    import dmipy_replay.acquisition.waveforms as W
     import dmipy_sim.sequences.pulseq as Q
-    import dmipy_sim.acquisition.rf as RF
+    import dmipy_replay.acquisition.rf as RF
     for mod, name in ((W, "rf_schedule_coherence"), (W, "effective_gradient_sign"), (Q, "_ste_from_rf_schedule"),
                       (Q, "_longitudinal_mask"), (RF, "as_rf_events")):
         assert not hasattr(mod, name), f"{mod.__name__}.{name} is back; it is RFSchedule's"
@@ -614,7 +620,7 @@ def test_one_basis_and_no_header_with_a_save_grid():
     a basis is refused by name on load."""
     import ast
     from dmipy_sim.replay import compression as cx
-    from dmipy_sim.replay.replay import _refuse_predating
+    from dmipy_replay.replay.replay import _refuse_predating
     for gone in ("BASES", "basis_of", "require_basis", "bridge_projection", "rank_of", "is_lossless_at",
                  "encode_boundary_local_time", "decode_boundary_local_time", "surface_logweight_continuous",
                  "saves_basis", "decode_saves", "decode_bridge_dst", "decode_boundary_bridge", "_dst1_to_continuous",
@@ -752,7 +758,7 @@ def test_the_read_term_folds_the_channels_as_the_square_of_their_summed_roots():
     """The channels are linear functionals of one path: ``v_read = (gamma B0 chi dt_f)^2 (sum_c sqrt(kappa_c QV_c))^2``,
     ``kappa_c = 1/12`` unless a larger one is given; the rule and the envelope's ``B0 chi`` hold the same term at the
     floor (RPK.md 9.5.5: the term, ``v_read / 2``, never ``v_read`` against the floor's square)."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     from dmipy_sim.engine.accumulate import field_read_term, field_read_rule, field_read_limit_B0_chi
     qv, dt, B0, chi = np.array([4.0, 1.0, 0.0]), 2e-6, 7.0, 1e-6
     v = (GAMMA * B0 * chi * dt) ** 2 * (2.0 + 1.0) ** 2 / 12.0
@@ -768,7 +774,7 @@ def test_the_read_term_folds_the_channels_as_the_square_of_their_summed_roots():
 def test_a_field_pack_without_the_read_series_qv_is_refused():
     """A pack whose field channel carries no ``walk_params.qv.field_increments`` was charged by another rule; it is
     refused by name, never re-charged."""
-    from dmipy_sim.replay.replay import _refuse_predating
+    from dmipy_replay.replay.replay import _refuse_predating
     meta = dict(walk_params=dict(block=dict(h=1e-4), qv=dict(positions=[1.0, 1.0, 1.0], field=[0.0])),
                 compression=dict(channels=dict(susc_field_basis=dict(K=4))))
     with pytest.raises(ValueError, match=r"This pack carries `no walk_params.qv.field_increments`.*re-walk"):
@@ -867,10 +873,10 @@ def test_the_time_segment_layout_is_partitions_in_words(tmp_path):
     src = inspect.getsource(ts.write_time_segment_layout)
     maps = re.findall(r"\bmm\(([^,]+),\s*np\.(\w+)", src)
     assert maps and all(dtype == "uint32" or (name, dtype) in (('"w.npy"', "float32"), ('"pool.npy"', "uint8")) for name, dtype in maps), maps
-    assert ts.FORMAT == "time_segments/2"
+    assert _r_time_segments.FORMAT == "time_segments/2"
     (tmp_path / "manifest.json").write_text(json.dumps({"format": "time_segments/1"}))
     with pytest.raises(ValueError, match="time_segments/1"):
-        ts.read_manifest(str(tmp_path))
+        _r_time_segments.read_manifest(str(tmp_path))
 
 
 # ── the field carries twelve components: iso_P_zz is the reader's (RPK.md 5.3) ───────────────────────────────────
@@ -881,16 +887,16 @@ def test_the_field_carries_twelve_components_and_iso_P_zz_is_never_one():
     import inspect
     from dmipy_sim.fields import hollow_cylinder as hc
     from dmipy_sim.replay import bank
-    from dmipy_sim.replay.replay import _refuse_predating
-    assert len(hc.CHANNEL_NAMES) == 12 and "iso_P_zz" not in hc.CHANNEL_NAMES and hc.ISO_CHANNEL_NAMES == hc.CHANNEL_NAMES[:6]
+    from dmipy_replay.replay.replay import _refuse_predating
+    assert len(_r_field.CHANNEL_NAMES) == 12 and "iso_P_zz" not in _r_field.CHANNEL_NAMES and _r_field.ISO_CHANNEL_NAMES == _r_field.CHANNEL_NAMES[:6]
     cyl = hc.HollowCylinderField(np.zeros((1, 2)), [1e-6], [2e-6])
     assert cyl.channels(np.array([[3e-6, 0.0, 0.0], [0.0, 1.5e-6, 0.0]])).shape == (2, 12)
     # the contraction forms the thirteenth: the field of a tensor with a trace is the 13-channel contraction
     rng = np.random.default_rng(0); c = rng.normal(size=(5, 12)); H = [0.3, -0.5, 0.8]
-    P = hc.iso_P6(c); q = hc.q_of_H(H)
+    P = _r_field.iso_P6(c); q = _r_field.q_of_H(H)
     np.testing.assert_allclose(P[:, 2], 3 * c[:, 0] - c[:, 1] - c[:, 2])
-    np.testing.assert_allclose(hc.field_terms(c, H)[0], c[:, 0] - P @ q, atol=1e-12)
-    np.testing.assert_allclose(hc.field_terms(c, H)[1], c[:, 6:12] @ q) and hc.field_terms(c[:, :6], H)[1] is None
+    np.testing.assert_allclose(_r_field.field_terms(c, H)[0], c[:, 0] - P @ q, atol=1e-12)
+    np.testing.assert_allclose(_r_field.field_terms(c, H)[1], c[:, 6:12] @ q) and _r_field.field_terms(c[:, :6], H)[1] is None
     # refusals by name
     with pytest.raises(ValueError, match="iso_P_zz"):
         bank.susc_path_encode_modes(np.zeros((4, 3, 13)), ["iso_local", "iso_P_xx", "iso_P_yy", "iso_P_zz", "iso_P_xy", "iso_P_xz", "iso_P_yz",

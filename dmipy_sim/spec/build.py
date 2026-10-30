@@ -15,8 +15,20 @@ import numpy as np
 from ..compartments import POOL_IDS
 
 from ..geometry.packing import periodic_min_gap
-from .substrate import (SubstrateSpec, Domain, Frame, Pool, Susceptibility, Surface, Wall, Directional, Sided,
-                        Seeding, Validity, SpecError)
+from dmipy_replay.spec.substrate import (
+    SubstrateSpec,
+    Domain,
+    Frame,
+    Pool,
+    Susceptibility,
+    Surface,
+    Wall,
+    Directional,
+    Sided,
+    Seeding,
+    Validity,
+    SpecError,
+)
 
 MARGIN = 4.0          # open-domain box half-width, in units of the largest radius, beyond the object
 
@@ -542,7 +554,7 @@ def as_geometry(substrate):
     if isinstance(substrate, dict) and "walls" in substrate and "pools" in substrate:
         return geometry_from_spec(substrate)
     if isinstance(substrate, (str, os.PathLike)):
-        from .substrate import load_spec
+        from dmipy_replay.spec.substrate import load_spec
         return geometry_from_spec(load_spec(substrate))
     # the door: a driver walks what a spec can describe. The geometry's spec is computed once and kept on it.
     if getattr(substrate, "_spec_source", None) is None:

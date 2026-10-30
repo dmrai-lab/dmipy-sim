@@ -5,14 +5,14 @@ stimulated echo, the gradient echo, a precomputed PGSTE, and Protocol for a mult
 from dataclasses import replace
 
 import numpy as np
-from dmipy_sim.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.timing import SequenceTiming
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences as S
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
-from dmipy_sim.acquisition.scanner_sequence import Encoding, Protocol, ScannerSequence
-from dmipy_sim.acquisition.waveforms import b_from_gradient
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.scanner_sequence import Encoding, Protocol, ScannerSequence
+from dmipy_replay.acquisition.waveforms import b_from_gradient
 
 B = [1e9, 2e9]
 D2 = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])

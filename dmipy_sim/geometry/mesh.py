@@ -1022,7 +1022,7 @@ class Mesh(Geometry):
         if R is not None:
             Rm = np.asarray(R, np.float64).reshape(3, 3)
         elif orientation is not None:
-            from ..replay.so3 import rotation_of                          # R z = orientation; the azimuth is the convention's
+            from dmipy_replay.replay.so3 import rotation_of  # R z = orientation; the azimuth is the convention's
             Rm = rotation_of(orientation)
         else:
             Rm = None

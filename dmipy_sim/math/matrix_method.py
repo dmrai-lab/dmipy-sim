@@ -33,7 +33,7 @@ import numpy as np
 from scipy import linalg, special
 from scipy.optimize import brentq
 
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 
 #: Quadrature nodes across the unit pore's radius/thickness and around its angle.
 RADIAL_NODES = 4000

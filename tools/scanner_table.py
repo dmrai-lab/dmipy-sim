@@ -8,7 +8,7 @@ each number cites and its confidence. A paper types nothing by hand: the table i
 """
 import argparse
 
-from dmipy_sim.acquisition import scanner_constants as scc
+from dmipy_replay.acquisition import scanner_constants as scc
 
 
 def rows():

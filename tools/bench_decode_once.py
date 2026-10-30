@@ -6,9 +6,9 @@ import time
 
 import numpy as np
 
-from dmipy_sim.replay.decoded import DecodedCache
+from dmipy_replay.replay.decoded import DecodedCache
 from dmipy_sim.replay.replay import read_rpk
-from dmipy_sim.sequences.builders import pgse
+from dmipy_replay.sequences.builders import pgse
 from dmipy_sim.spec import Tissue
 
 

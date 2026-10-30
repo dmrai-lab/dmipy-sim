@@ -1505,7 +1505,7 @@ class ReferenceFamily:
         read (capped at the walk's own top band ``K / (2 T)``), against the tolerance the walk was sized for (its
         ``work["step_rule"]``). A pilot that cannot step coarser within its block, or whose standard error exceeds the
         tolerance, is refused by name: a certificate is a measurement."""
-        from ..acquisition.waveforms import band_hz
+        from dmipy_replay.acquisition.waveforms import band_hz
         from ..math.step_law import PILOT_STEP_RATIO, step_certificate
         rule = (walk.work or {}).get("step_rule") or {}
         if not rule or rule.get("eps_D") is None:

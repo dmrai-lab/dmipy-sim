@@ -7,7 +7,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of, assemble_field, sample_grid
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 D0 = 2e-9

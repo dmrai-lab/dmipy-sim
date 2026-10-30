@@ -1,5 +1,6 @@
 """A closed form with an axis composes like a pack (RPH.md 3.1 / 6): expanded over SO(3) from its response at a pose
 and contracted with the voxel's orientation distribution; a namespaced model is read by its package or refused."""
+import dmipy_replay.replay.so3 as _r_so3
 import os
 import sys
 import textwrap
@@ -7,7 +8,7 @@ import warnings
 
 import numpy as np
 
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 import pytest
 
 from dmipy_sim import sequences
@@ -54,7 +55,7 @@ def test_a_peak_evaluates_the_form_at_that_pose_exactly():
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Peaks(np.broadcast_to(axis, (1, 1, 1, 1, 3)).copy()))
     S = ph.replay(seq, complex_signal=True)[0, 0, 0]
-    np.testing.assert_allclose(S, stick.response(seq, pose=so3.rotation_of(axis)), atol=5e-4)   # the band the form needed
+    np.testing.assert_allclose(S, stick.response(seq, pose=_r_so3.rotation_of(axis)), atol=5e-4)   # the band the form needed
     R = analytic_pose_response(stick, seq, (None, 0))
     assert R.route == "analytic" and R.floor == 0.0 and R.misfit.max() < 1e-5 and R.nmax == 0
 
@@ -94,7 +95,7 @@ def test_a_namespaced_model_is_read_by_its_package_or_refused_naming_it(tmp_path
     (pkg / "__init__.py").write_text("")
     (pkg / "phantom.py").write_text(textwrap.dedent('''
         import numpy as np
-        from dmipy_sim.spec.tissue import Tissue
+        from dmipy_sim.spec import Tissue
         class Stick:
             kind = "analytic"; model = "stickpkg:Stick"; oriented = True
             def __init__(self, *, m0, tissue, name):

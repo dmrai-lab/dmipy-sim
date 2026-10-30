@@ -4,6 +4,7 @@ overlap, a tensor encoding is three shapes on one interval). The vector of a ter
 (exact), a sequence fits when its effective gradient is sum_s psi_s(t) a_s with a residual inside the layout's
 rounding, and the image of every such sequence is the sibling pack's replay within the layout's rounding term."""
 from __future__ import annotations
+import dmipy_replay.replay.compression as _r_compression
 import json
 import os
 import shutil
@@ -12,12 +13,20 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.acquisition.waveforms import calc_b
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.waveforms import calc_b
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.time_segments import (Partition, Shape, TimeSegmentLayout, _RTOL, _walk_view, level_bound,
-                                             rounding_eps, segment_rows, segment_vectors, write_time_segment_layout)
+from dmipy_replay.replay.time_segments import Partition, Shape, _RTOL
+from dmipy_sim.replay.time_segments import (
+    TimeSegmentLayout,
+    _walk_view,
+    level_bound,
+    rounding_eps,
+    segment_rows,
+    segment_vectors,
+    write_time_segment_layout,
+)
 
 D0 = 2e-9
 G_MAX = 1.0                                                          # T/m: the envelope's gradient (the walk names no class)
@@ -77,7 +86,7 @@ def _tensor(template, R, weights):
 def small(tmp_path_factory):
     """A cylinder walk (600 walkers, 50 ms), its pack on a 2 x 2 voxel grid, the segment rows of the four partitions from
     the walk and the layout."""
-    from dmipy_sim.phantom.grid import Grid
+    from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("shapes")
     w = d.simulate_trajectories(600, D0, d.Cylinder(radius=4e-6, orientation=(0, 0, 1)), TE, seed=3, window_T=TE, require_gpu=False)
     r0 = np.asarray(w.position_coeffs)[:, 0, 0, :]
@@ -128,13 +137,13 @@ def test_a_shaped_projection_is_the_bands_of_the_sample_and_hold_waveform():
     dt, n_t, K, T = 1e-4, 300, 24, 0.03
     psi = rng.normal(size=120); psi /= np.abs(psi).max()
     wf = np.zeros((1, n_t, 1)); wf[0, 40:160, 0] = psi
-    ref = cx.band_projection(wf, dt, T, K)[0, :, 0]
-    got = cx.segment_projection([(40 * dt, 160 * dt)], T, K, shapes=[psi])[0]
+    ref = _r_compression.band_projection(wf, dt, T, K)[0, :, 0]
+    got = _r_compression.segment_projection([(40 * dt, 160 * dt)], T, K, shapes=[psi])[0]
     np.testing.assert_allclose(got, ref, rtol=0, atol=1e-13 * np.abs(ref).max())
-    ind = cx.segment_projection([(40 * dt, 160 * dt), (0.0, 1e-3)], T, K)
-    assert np.array_equal(ind, cx.segment_projection([(40 * dt, 160 * dt), (0.0, 1e-3)], T, K, shapes=[None, None]))
-    part = cx.segment_projection([(40 * dt, 160 * dt)], 0.01, K, t0=0.005, shapes=[psi])[0]       # a window clips the term
-    np.testing.assert_allclose(part, cx.band_projection(wf, dt, 0.01, K, t0=0.005)[0, :, 0], rtol=0, atol=1e-13)
+    ind = _r_compression.segment_projection([(40 * dt, 160 * dt), (0.0, 1e-3)], T, K)
+    assert np.array_equal(ind, _r_compression.segment_projection([(40 * dt, 160 * dt), (0.0, 1e-3)], T, K, shapes=[None, None]))
+    part = _r_compression.segment_projection([(40 * dt, 160 * dt)], 0.01, K, t0=0.005, shapes=[psi])[0]       # a window clips the term
+    np.testing.assert_allclose(part, _r_compression.band_projection(wf, dt, 0.01, K, t0=0.005)[0, :, 0], rtol=0, atol=1e-13)
 
 
 def test_a_shape_is_a_stated_normalised_record_and_a_term_has_one():
@@ -221,9 +230,9 @@ def test_a_constant_partition_is_bit_identical_whichever_way_it_is_built(small):
     same = Partition.from_sequence(BOX, _templates()[BOX])
     assert same == p and same.to_meta() == p.to_meta() and all(s.is_constant for s in same.shapes)
     v = M["view"]
-    C = cx.read_position_coeffs(v.arrays, dtype=np.float64, cached=False)   # modified in place below: a decode of its own
+    C = _r_compression.read_position_coeffs(v.arrays, dtype=np.float64, cached=False)   # modified in place below: a decode of its own
     x0 = C[:, 0, :].copy(); C[:, 0, :] -= x0
-    old = GAMMA * np.einsum("wjc,sj->wsc", C, cx.segment_projection(np.asarray(p.segments), M["walk"].T_window, C.shape[1] - 2))
+    old = GAMMA * np.einsum("wjc,sj->wsc", C, _r_compression.segment_projection(np.asarray(p.segments), M["walk"].T_window, C.shape[1] - 2))
     new = segment_vectors(v, p)
     assert np.array_equal(old, new)
     rows = str(M["tmp"] / "rows_from_sequence")

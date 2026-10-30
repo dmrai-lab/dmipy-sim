@@ -16,7 +16,7 @@ from dmipy_sim.engine.accumulate import field_read_rule, field_read_term, field_
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import disco_spec, walk_spec
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 BLOCK = 1e-4                       # the walk's block: two rounds of the extra pool, four of the intra pool
@@ -116,8 +116,8 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
     w_, ew, E = pk.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6), tol=None)
     w0, ew0, E0 = pk.walker_signals(seq, tol=None)
     phase = np.angle(E[:, 0] / E0[:, 0])                             # the field's phase per walker
-    from dmipy_sim.replay.bank import path_field_integral
-    from dmipy_sim.fields.hollow_cylinder import contract
+    from dmipy_replay.replay.field import path_field_integral
+    from dmipy_replay.replay.field import contract
     Psi, _ = path_field_integral(pk.arrays, pm, seq, pk.T_window, n_w=pk.n_walkers)
     expect = contract(Psi, (1, 0, 0), B0=7.0, chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
     np.testing.assert_allclose(np.angle(np.exp(1j * (phase - expect))), 0.0, atol=1e-6)
@@ -133,7 +133,7 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
 def test_the_read_interval_needs_the_adaptive_producer(spec):
     """A strand field is read by the adaptive producer only: a fixed-step walk of a strand substrate is refused, with
     or without an interval."""
-    from dmipy_sim.spec.substrate import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     for kw in ({}, dict(field_read_interval=BLOCK)):
         with pytest.raises(SpecError, match="adaptive"):
             walk_spec(spec, 30, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, **kw)
@@ -143,7 +143,8 @@ def test_shards_with_the_path_channel_merge(spec, tmp_path):
     """Each pack quantises its path channel with its own scale table; a merge stacks the tables with a block axis
     and the decoder applies each walker's own, so the merged coefficients are the shards' and the field replay is
     the weight-averaged replay of the shards."""
-    from dmipy_sim.replay.bank import merge_packs, susc_path_coeffs
+    from dmipy_sim.replay.bank import merge_packs
+    from dmipy_replay.replay.field import susc_path_coeffs
     pks = [_float_pack(_walk(spec, BLOCK, seed=s_), id=f"t/shard-{s_}", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
                        field_container=((None, 8),), out_path=str(tmp_path / f"s{s_}.rpk"))
            for s_ in (3, 4)]

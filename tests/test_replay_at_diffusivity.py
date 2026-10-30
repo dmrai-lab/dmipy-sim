@@ -6,6 +6,7 @@ shorter), and every channel follows in its own space. A walk at ``2 D`` from the
 same walk to the bit, its ends identical and its bands those of the walk at ``D`` over ``sqrt(2)`` to the float32 they
 are stored in, so the view of the pack walked at ``D`` must replay as the pack walked at ``2 D`` does to that rounding.
 """
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 
@@ -13,7 +14,7 @@ import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 D0, T, DT = 2.0e-9, 40e-3, 5e-4
 #: the view against the walk at 2 D: their bands agree to the float32 they are stored in
@@ -146,9 +147,9 @@ def test_nothing_is_decoded_on_the_way(free, monkeypatch):
 
     def boom(*a, **k):
         raise AssertionError("a track was decoded")
-    monkeypatch.setattr(compression, "local_time_at", boom)
-    monkeypatch.setattr(compression, "positions_at", boom)
-    monkeypatch.setattr(compression, "decode_occupancy", boom)
+    monkeypatch.setattr(_r_compression, "local_time_at", boom)
+    monkeypatch.setattr(_r_compression, "positions_at", boom)
+    monkeypatch.setattr(_r_compression, "decode_occupancy", boom)
     monkeypatch.setattr(rp.ReplayPack, "positions", boom)
     pk_d.replay(seq, tissue=Tissue(D=2 * D0))
     pk_d.walker_signals(seq, tissue=Tissue(D=2 * D0))

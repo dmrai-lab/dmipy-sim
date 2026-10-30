@@ -328,7 +328,7 @@ def _window_maps(pack, P, n_t_wf, dt_wf):
     """``(n_c, n_t_wf)``: the linear map from a waveform's samples (one axis) to the pack's coefficient space, every
     window the acquisition reaches side by side -- ``gamma`` times the bands' projection of each held sample
     (:func:`~dmipy_sim.replay.compression.band_projection_matrix`), the map every closed-form route reads."""
-    from .compression import band_projection_matrix
+    from dmipy_replay.replay.compression import band_projection_matrix
     from .replay import GAMMA
     return np.concatenate([GAMMA * band_projection_matrix(n_t_wf, dt_wf, T_s, pack.K, t0=t0)
                            for _seg, t0, T_s in P["windows"]], 0)
@@ -336,7 +336,7 @@ def _window_maps(pack, P, n_t_wf, dt_wf):
 
 def _timing_key(wf):
     """What every class of a series shares: the waveform grid, the effective gate, the coherence gate, the pathway."""
-    from ..acquisition.epg import pathway_weight
+    from dmipy_replay.acquisition.epg import pathway_weight
     chi = wf.chi_perp
     return (float(wf.dt), int(np.asarray(wf.G).shape[1]), np.asarray(wf.effective_gate, np.float64).tobytes(),
             None if chi is None else np.asarray(chi, np.float64).tobytes(), float(pathway_weight(wf)))
@@ -494,9 +494,10 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
     """:meth:`~dmipy_sim.replay.replay.ReplayPack.pose_series` (the module docstring is the derivation)."""
     import time
     from . import so3
-    from .compression import read_position_coeffs
+    from dmipy_replay.replay.compression import read_position_coeffs
     from .pose_device import bessel_tails, route, field_bodies, field_bodies_torch
-    from .replay import (_pose_matrix, _factor_channels, _factor_of, _coupling_tables, PoseResponse, TORCH_GROUPS)
+    from dmipy_replay.replay.replay import _pose_matrix
+    from .replay import _factor_channels, _factor_of, _coupling_tables, PoseResponse, TORCH_GROUPS
     from ..run import Run, current
     if backend not in ("jax", "torch"):
         raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
@@ -518,7 +519,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
     with Run("pose_series", params=dict(id=pack.id, n_meas=int(first.n_meas), keep=None if keep is None else list(keep))):
         run = current()
         _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
-        from ..acquisition.waveforms import rotate_waveform
+        from dmipy_replay.acquisition.waveforms import rotate_waveform
         wf0 = rotate_waveform(first, R_s.T) if R_s is not None else first
         P0 = pack._prepare(wf0, tissue=tissue, scanner=scanner, orientation=None, compartment=compartment)
         if R_s is not None:

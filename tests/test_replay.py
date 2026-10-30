@@ -3,13 +3,14 @@
 attenuates. Uses a synthetic pack (no simulator walk needed), so it is self-contained."""
 import numpy as np
 import numpy.testing as npt
-from dmipy_sim.replay.compression import read_position_coeffs, pack_position_arrays
+from dmipy_replay.replay.compression import read_position_coeffs
+from dmipy_sim.replay.compression import pack_position_arrays
 import pytest
 
 from scipy.fft import dct, idct
-from dmipy_sim.replay.replay import (read_rpk, write_rpk, compile_scheme, replay_signal,
-                              replay_signal_jax, ReplayPack)
-from dmipy_sim.constants import GAMMA
+from dmipy_sim.replay.replay import read_rpk, write_rpk, replay_signal_jax, ReplayPack
+from dmipy_replay.replay.replay import compile_scheme, replay_signal
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.spec import spec_of
 
@@ -68,7 +69,7 @@ def test_rpk_roundtrip(tmp_path):
     pk = read_rpk(p)
     assert pk.n_t == N_T and pk.K == K and pk.n_walkers == N_W
     npt.assert_allclose(pk.dt, DT)
-    from dmipy_sim.replay.compression import read_position_coeffs
+    from dmipy_replay.replay.compression import read_position_coeffs
     npt.assert_allclose(np.asarray(pk.position_coeffs), read_position_coeffs(arrays, dtype=np.float32))
 
 
@@ -97,8 +98,9 @@ def test_surface_knob_uses_the_real_c2_channel_and_refuses_without_one():
     skipping -- a caller asking for surface relaxivity must never get an unattenuated signal back
     with no error.
     """
-    from dmipy_sim.replay.compression import encode_boundary_bands, local_time_at
-    from dmipy_sim.replay.replay import surface_logweight as replay_slw
+    from dmipy_sim.replay.compression import encode_boundary_bands
+    from dmipy_replay.replay.compression import local_time_at
+    from dmipy_replay.replay.replay import surface_logweight as replay_slw
     arrays, meta, _ = _synth_pack()
     n_w = arrays["pos_x"].shape[0]
     rng = np.random.default_rng(1)

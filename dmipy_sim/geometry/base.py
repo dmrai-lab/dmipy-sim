@@ -428,7 +428,7 @@ def acquisition_rotation(orientation):
     """The ``_orient_R`` (substrate frame -> lab, 3x3 float32) of a substrate whose axis lies along the lab
     direction ``orientation``: ``R @ [0, 0, 1] = orientation``. ``None`` when that is +z already, so the engine
     skips the rotation. The walk runs in the substrate frame; this is applied to the ACQUISITION."""
-    from ..replay.so3 import rotation_of
+    from dmipy_replay.replay.so3 import rotation_of
     a = np.asarray(orientation, np.float64).reshape(3)
     R = rotation_of(a / np.linalg.norm(a))
     return None if np.allclose(R, np.eye(3)) else np.ascontiguousarray(R, np.float32)

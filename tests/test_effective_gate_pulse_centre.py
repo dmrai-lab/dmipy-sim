@@ -11,9 +11,9 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
-from dmipy_sim.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.timing import SequenceTiming
 
 G0 = 1e-3                                                             # a magnet's own gradient, T/m
 

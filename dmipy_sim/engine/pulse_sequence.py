@@ -12,10 +12,10 @@ from dataclasses import replace
 
 import numpy as np
 
-from ..acquisition.rf import RFEvent, RFSchedule
-from ..acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .bloch import _simulate_bloch
-from ..constants import GAMMA
+from dmipy_replay.constants import GAMMA
 
 __all__ = ["bare_gradient_echo", "bare_spin_echo", "fexi", "saturation_pulse", "prepend_mt_prep",
            "emergent_z_spectrum"]

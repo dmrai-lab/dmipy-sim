@@ -17,9 +17,9 @@ synthetic machine's more-than-``10**4`` classes keeps the process' resident memo
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
-from dmipy_sim.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom.grid import Grid
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.scanners import ScannerLimits
+from dmipy_replay.phantom.grid import Grid
 from dmipy_sim.phantom.bore import (_b0_axis, _bore, _model, background_gradient_map, encoding_classes,
                                     gradient_tensor_map)
 from dmipy_sim.replay.phantom import quantise

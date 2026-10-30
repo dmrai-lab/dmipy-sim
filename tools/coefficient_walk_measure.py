@@ -32,6 +32,8 @@ CPU by default (``JAX_PLATFORMS=cpu`` is set unless the environment says otherwi
 """
 from __future__ import annotations
 
+import dmipy_replay.replay.compression as _r_compression
+import dmipy_replay.replay.so3 as _r_so3
 import argparse
 from dmipy_sim.engine.bloch import _simulate_bloch
 import json
@@ -80,7 +82,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
     import dmipy_sim as d
     from scipy.fft import dst
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.replay.compression import read_position_coeffs
+    from dmipy_replay.replay.compression import read_position_coeffs
     seq = d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 5e-3, bvalues=[2e9, 2e9], TE=0.009, slew_rate=np.inf)
     out = {}
     import dataclasses
@@ -119,7 +121,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
                        contact_bands_vs_block_ends_rel=rel(exact_c, np.asarray(cw.boundary_bands)[:, 0]),
                        contact_err=float(acc.fidelity.get("err_surface", 0.0)), contact_floor=float(acc.fidelity.get("floor_surface", 0.0)))
         if cw.raw_compartment is not None:
-            from dmipy_sim.coefficient_walk import events_at_instants
+            from dmipy_replay.replay.events import events_at_instants
             lab = events_at_instants(cw.comp_events, cw.compartment, np.arange(N + 1) * cw.h)
             row["occupancy_equal"] = bool(np.array_equal(lab, np.asarray(cw.raw_compartment)))
         out[name] = row
@@ -138,14 +140,14 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
     measurements, and the relative error of the top quarter of the modes against the table on the axis where it is
     largest (what must NOT be the criterion on a restricted walk)."""
     import dmipy_sim as d
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     from dmipy_sim.replay import compression as cx
     h_max = max(h for _, h in cases)
     n_t = int(round(T / h_max)) + 1
     G, meta = cx.acquisition_battery(n_t, h_max, env or cx.default_envelope())
-    W = cx.band_projection(G, h_max, T, K)                                           # (n_meas, K+2, 3)
+    W = _r_compression.band_projection(G, h_max, T, K)                                           # (n_meas, K+2, 3)
     b = np.array([x["b"] for x in meta])
-    var = cx.band_variances(K, T, D)
+    var = _r_compression.band_variances(K, T, D)
     om = np.pi * np.arange(1, K + 1) / T
     per_band = GAMMA ** 2 * (W[:, 2:, :] ** 2).sum(axis=2) * var[None, :]
 
@@ -275,7 +277,7 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
     accumulated - fused (two walks)."""
     import dmipy_sim as d
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.spec.tissue import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         g = d.Sphere(radius=R)
@@ -290,7 +292,7 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
         S_acc = np.abs((ew[:, None] * E).sum(0) / w.sum())
         se = np.std(np.real((ew[:, None] / w.mean()) * E * np.conj(E.mean(0) / np.abs(E.mean(0)))), axis=0) / np.sqrt(E.shape[0])
         # the dense oracle: the raw block ends' contact gated at the acquisition's end, the raw path's phase
-        from dmipy_sim.replay import _replay_kernel as rk
+        from dmipy_replay.replay import _replay_kernel as rk
         ell = np.asarray(cw.raw_boundary, np.float64)
         n_s = int(round(TE / cw.h)) + 1
         lw = (rho / D) * ell[:, 1:n_s].sum(1)
@@ -316,7 +318,7 @@ def _pose_with_field_along(d_sub):
     """The rotation ``R`` (substrate -> lab) whose pose puts the bore's field along ``d_sub`` in the substrate frame."""
     from dmipy_sim.replay import so3
     d_sub = np.asarray(d_sub, np.float64); d_sub = d_sub / np.linalg.norm(d_sub)
-    return np.asarray(so3.rotation_of(d_sub), np.float64).T
+    return np.asarray(_r_so3.rotation_of(d_sub), np.float64).T
 
 
 def _ensemble(pk, seq, **kw):
@@ -381,14 +383,14 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
 
     Every row carries both signals, their difference and the replay's standard error."""
     import dmipy_sim as d
-    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo, bare_spin_echo
     from dmipy_sim.fields.susceptibility import MyelinSusceptibility
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     from dmipy_sim.math.matrix_method import MatrixPore
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.spec.tissue import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     import time
     n_raw = n if n_raw is None else min(int(n_raw), n)
     g = _myelin(D, r_in, r_out)
@@ -462,7 +464,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     for name, seq in seqs3:
         seq_lab = rotate_waveform(seq, R)
         S, se = _ensemble(pk, seq_lab, **kw3)
-        S_b = np.abs(pk.replay_bloch(seq_lab, complex_signal=True, jax=True, **kw3)).reshape(-1)
+        S_b = np.abs(pk.replay_bloch(seq_lab, complex_signal=True, backend="jax", **kw3)).reshape(-1)
         c3[name] = dict(TE=TE3, replay_scalar=S.tolist(), replay_bloch=S_b.tolist(), diff=(S - S_b).tolist(), se=se.tolist())
     out["C3_myelinated_scalar_vs_bloch_route"] = dict(B0=B0, chi_aniso=dchi_a, theta_deg=theta_deg, rows=c3)
     L = 6.0 * r_out
@@ -481,7 +483,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     # the forward engine on the SAME grid the walk read (the 13 channels contracted at this (B0, chi, H)), so the two
     # engines read one field and the comparison is the accumulation and the replay alone; the closed form's periodic
     # images (n_images=6) beside it are the independent physics
-    from dmipy_sim.fields.hollow_cylinder import contract
+    from dmipy_replay.replay.field import contract
     from dmipy_sim.fields.susceptibility import GridSusceptibility
     prov_grid = prov                                                     # the closed form: the walk read the provider's field
     if field == "raster":
@@ -491,7 +493,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     for name, seq in seqs3:
         seq_lab = rotate_waveform(seq, R)
         S, se = _ensemble(pk2, seq_lab, **kw3)
-        S_b = np.abs(pk2.replay_bloch(seq_lab, complex_signal=True, jax=True, **kw3)).reshape(-1)
+        S_b = np.abs(pk2.replay_bloch(seq_lab, complex_signal=True, backend="jax", **kw3)).reshape(-1)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             S_f = np.abs(np.asarray(_simulate_bloch(n, D, seq, cellp, seed=seed + 200, susceptibility=prov, require_gpu=require_gpu))).reshape(-1)
@@ -523,9 +525,9 @@ def _read_compare(fine, other, *, B0, chi, names, pools=None):
     standard error of the difference (the walkers' own spread of it: its first-order, zero-mean part), ``z`` the
     excess of the difference over the term in those errors (within the term when ``z <= 2``).
     ``pools`` is ``{name: (label, dt_f)}`` (a bundle's pools read at their own intervals)."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     from dmipy_sim.engine.accumulate import read_constants
-    from dmipy_sim.replay.compression import cosine_projection
+    from dmipy_replay.replay.compression import cosine_projection
     if not np.array_equal(np.asarray(other.position_coeffs), np.asarray(fine.position_coeffs)):
         raise AssertionError("the read moved the walk")
     T = float(fine.T_window)
@@ -598,11 +600,11 @@ def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0,
     ``theta_deg`` to the axis); the seconds of each walk."""
     import time
     import dmipy_sim as d
-    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     from dmipy_sim.replay import compression as cx
-    from dmipy_sim.spec.tissue import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     g = _myelin(D, r_in, r_out)
     fg = _myelin_field(g, field)
     env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)])
@@ -657,10 +659,10 @@ def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0
     and at the signal (a gradient echo at ``0.8 T``, ``B0``, the rule's ``chi``, the field across the strands)."""
     import tempfile
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
-    from dmipy_sim.acquisition.waveforms import rotate_waveform
+    from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.spec import walk_spec
-    from dmipy_sim.spec.tissue import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     import time
     spec = _strands_spec(tempfile.mkdtemp())
     env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)])
@@ -718,8 +720,8 @@ def permeable(*, n=4000, D=2e-9, T=0.025, seed=2, kappa=2e-5, T2=(0.03, 0.08), r
     standard error."""
     import dmipy_sim as d
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.spec.tissue import Tissue
-    from dmipy_sim.coefficient_walk import events_at_instants
+    from dmipy_replay.spec.tissue import Tissue
+    from dmipy_replay.replay.events import events_at_instants
     T2i, T2e = T2
     out = dict(kappa=kappa, T2=dict(intra=T2i, extra=T2e), cases={})
     tissue = Tissue(T2={"extra": T2e, "intra": T2i})
@@ -757,7 +759,7 @@ def mt(*, n=4000, D=2e-9, T=0.05, R=3e-6, seed=3, kappa_MT=2e-5, dwell=2e-3, req
     return_bound_frac=True)``, another walk of the same count under a bare gradient echo), and both against the
     two-pool equilibrium ``f_b`` of ``engine.mt``; the largest difference against the binomial standard error."""
     import dmipy_sim as d
-    from dmipy_sim.coefficient_walk import events_at_instants
+    from dmipy_replay.replay.events import events_at_instants
     from dmipy_sim.engine import mt as mtmod
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
     g = d.Sphere(R)

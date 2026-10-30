@@ -12,14 +12,14 @@ from scipy.special import spherical_jn
 
 import dmipy_sim as d
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.scanners import ScannerLimits
-from dmipy_sim.acquisition.waveforms import rotate_waveform
+from dmipy_replay.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.waveforms import rotate_waveform
 from dmipy_sim.phantom.bore import encoding_classes
-from dmipy_sim.phantom.grid import Grid
+from dmipy_replay.phantom.grid import Grid
 from dmipy_sim.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.pose_series import _cheb_matrix, _cheb_points, _cheb_T, _series_bound
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import pose_with_field_along
 
 MACHINES = (None, "hyperfine_swoop_64mT", "siemens_magnetom_prisma_3T", "siemens_magnetom_terra_7T")

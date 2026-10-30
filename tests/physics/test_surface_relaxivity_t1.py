@@ -24,7 +24,7 @@ from scipy.optimize import brentq
 import dmipy_sim as d
 from dmipy_sim import sequences as seq
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 D0 = 2e-9          # m^2/s
 R = 8e-6           # m

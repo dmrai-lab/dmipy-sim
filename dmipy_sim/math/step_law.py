@@ -35,7 +35,7 @@ from functools import lru_cache
 import numpy as np
 from scipy import special
 
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from .matrix_method import _cyl_neumann_roots, _sph_neumann_roots
 
 __all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",

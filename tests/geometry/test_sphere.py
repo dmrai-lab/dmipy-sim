@@ -16,8 +16,8 @@ import numpy.testing as npt
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Sphere, set_b
-from dmipy_sim.acquisition.waveforms import calc_b
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.waveforms import calc_b
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_WALKERS, SEED, load_fixture
 
 

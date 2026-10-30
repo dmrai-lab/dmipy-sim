@@ -14,7 +14,7 @@ from dmipy_sim.io.strands import read_strands, write_strands, read_tck, write_tc
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import (caterpillar_spec, strands_spec, disco_spec, walk_spec, field_grid_of_spec,
                             geometry_from_spec, load_spec, SpecError, Seeding)
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
 
@@ -76,7 +76,7 @@ def test_caterpillar_spec_declares_the_frame_the_axons_run_along(caterpillar_csv
     t = read_caterpillar(caterpillar_csv)
     ax = t["cell_type"] == "axon"
     tilt = np.array([np.sin(np.radians(12.0)), 0.0, np.cos(np.radians(12.0))])
-    from dmipy_sim.replay.so3 import rotation_of
+    from dmipy_replay.replay.so3 import rotation_of
     z = np.array([0.0, 0.0, 1.0])
     R = rotation_of(tilt)                                                 # R z = tilt
     csv = str(tmp_path / "tilted.csv")
@@ -376,7 +376,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     pm2 = pkf2.meta["compression"]["channels"]["susc_field_basis"]
     assert pkf2.has_field and pm2["sampling"] == "accumulated_in_walk"
     assert pm2["n_ch"] == 12 and "iso_P_zz" not in pm2["channels"]        # twelve carried; the trace is the reader's
-    from dmipy_sim.replay.bank import susc_path_decode
+    from dmipy_replay.replay.field import susc_path_decode
     b_, names_ = susc_path_decode(pkf2.arrays, pm2, n_t=pkf2.n_t); assert b_.shape[1] == 12 and names_[3] == "iso_P_xy"
     seq_g = d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=0.2e-3, Delta=0.3e-3, n_t=pkf2.n_t, slew_rate=np.inf)   # K = 3 over 0.8 ms: the field alone
     seq_gx, R = field_along(seq_g, (1, 0, 0))

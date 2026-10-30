@@ -225,7 +225,7 @@ def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, 
     None (no field). Recorded directly on ``substrate`` (not just in the ``.npy``'s own ``.json`` sidecar a
     reader has to open separately, or in the entry's ``spectrum.json`` index) so a quick read of the manifest
     alone says what resolution this edge's field was built at -- the coordinator's own ask on #697/#699."""
-    from ..replay.bank import mode_count
+    from dmipy_replay.replay.storage import mode_count
     commit = _git_commit()
     far_grid_meta = (None if far_grid_info is None else
                     dict(path=far_grid_rel, n_nodes=int(far_grid_info[0]), spacing_m=float(far_grid_info[1]),

@@ -12,8 +12,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.prescription import Prescription
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.prescription import Prescription
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.phantom.bore import encoding_classes
 from dmipy_sim.replay import read_rpk

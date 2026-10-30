@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom import Grid
 from dmipy_sim.phantom.bore import background_gradient_map, delivered_gradient
 
@@ -115,7 +115,7 @@ def test_the_background_s_own_b_survives_the_spin_echo_that_refocuses_its_moment
     tempting to stop there and say only the cross term survives. Stejskal and Tanner 1965 say otherwise in
     one line -- with the pulsed gradient off, "only the term in g0^2 remains" -- and that term is
     ``gamma^2 g0^2 (2/3) tau^3``. So even the b = 0 image of this magnet is diffusion-weighted."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     g0 = 1.4e-3
     for TE in (0.084, 0.150):
         seq = sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=TE, n_t=1200)
@@ -130,7 +130,7 @@ def test_the_background_s_own_b_survives_the_spin_echo_that_refocuses_its_moment
 
 
 def test_the_background_s_own_b_grows_as_the_cube_of_the_echo_time():
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     g0 = 1.4e-3
     b = {TE: float(sequences.pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=[0.0], TE=TE, n_t=1500)
                    .with_background_gradient([g0, 0, 0]).b()[0]) for TE in (0.084, 0.168)}
@@ -142,7 +142,7 @@ def test_a_train_is_not_one_long_spin_echo_and_the_difference_is_orders_of_magni
     `gamma^2 g0^2 esp^3 / 12` each -- rather than over the whole readout. Computing it as a single spin echo
     of the same duration overestimates by ``(T / esp)^2``, which for the Swoop's seventy-echo train is about
     five thousand. This is the trap the correction exists to mark."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     g0, esp = 1.4e-3, 10e-3
     for n in (4, 16):
         seq = sequences.cpmg(n, esp, gradient_strengths=[0.0], n_t_per_echo=60)

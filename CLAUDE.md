@@ -150,6 +150,17 @@ acquisition; assert to `max(0.02, 1/√N)`.
 
 ## Module map (`dmipy_sim/`)
 
+**The reader side is [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay)** (numpy only, a dependency; its
+`docs/dedup-ledger.md` lists every definition): `constants`, `acquisition/` (`scanner_sequence`, `rf`, `timing`,
+`waveforms`, `scanners`, `scanner_constants` + `.json`, `epg`, `maxwell`, ...), `sequences/` (`builders`,
+`assemble`; the Pulseq READER), `spec/substrate` and `spec/tissue`, `phantom/grid`, `replay/_replay_kernel`,
+`replay/decoded`, `replay/planning`, and the readers of `replay/compression`, `replay/replay` (`ReplayPack`'s read,
+plan and replay routes), `replay/columnar`, `replay/remote`, `replay/time_segments` (`Shape`, `Partition`, the words,
+the numpy image) and `study.Primitives` live there at the same paths under `dmipy_replay`. dmipy-sim imports them
+(`from dmipy_replay.acquisition.rf import RFEvent`); its `ReplayPack`, `ColumnarPack`, `RemotePack` and
+`TimeSegmentLayout` subclass the reader's and add the producer's routes and the JAX / torch backends. A rule in the
+rows below about a moved file holds for its dmipy-replay copy; a change to one is made there.
+
 Layered packages (#88): `geometry/` (substrates), `engine/` (`core`, `physics`, `bloch`, `pulse_sequence`, `mt`, `mt_walk`,
 `gpu`, `_gpu_config`), `replay/` (`trajectories`, `compression`, `replay`, `bank`, `phantom`, `so3`, `fod`,
 `_replay_kernel`), `acquisition/` (`waveforms`, `rf`, `noise`), `fields/`

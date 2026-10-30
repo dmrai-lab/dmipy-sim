@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import inspect
 
-from dmipy_sim.sequences import assemble
+from dmipy_replay.sequences import assemble
 
 # The protocol an assembler must implement; ``n_t_of`` and ``windows`` are the multi-echo extras.
 ASSEMBLER_PROTOCOL = ("te_min", "layout")

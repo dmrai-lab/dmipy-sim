@@ -12,7 +12,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import sequences
 from dmipy_sim.replay import ReplayPack, read_rpk
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env
 from tests.test_storage_windows import DT, N_T, T, _kw, _walk, _float_pack
 
@@ -85,7 +85,7 @@ def test_the_window_ends_are_the_parents_bridge(packs):
     """Every window's endpoints are the parent's stored bridge read at its ends, to float32 (the window map is
     closed-form; the parent's block ends are the raw subset's positions only to the parent's truncation)."""
     parent, seg, _ = packs
-    from dmipy_sim.replay.compression import positions_at
+    from dmipy_replay.replay.compression import positions_at
     X = positions_at(parent.arrays, dict(T=parent.T_window), np.arange(5) * T / 4)        # the bridge at the window ends
     for i in range(4):
         Ci = seg.window(i).position_coeffs
@@ -275,7 +275,7 @@ def test_the_band_is_judged_over_the_windows_an_acquisition_spans(packs):
     one-window PGSE is judged exactly as on the first window alone (the same projection, the same bands and the
     same dropped phase), a two-window PGSE as on the first two, and the bands allowed grow with the windows
     (``K`` per window) while the frequency they resolve does not."""
-    from dmipy_sim.replay.replay import _duration
+    from dmipy_replay.replay.replay import _duration
     parent, seg, _ = packs
     wf = _waveforms()
     assert seg._span(_duration(wf["pgse_1"])) == (pytest.approx(seg.T_window), 1)

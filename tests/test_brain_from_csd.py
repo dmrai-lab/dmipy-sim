@@ -103,7 +103,7 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
     What this measures is what that record buys, by defeating it with an identity rotation. The Swoop's law
     is what makes it visible: its R/L asymmetry is an ODD term in x, so getting the frame wrong shifts the
     field the wrong way on one side of the bore. An isotropic law would have hidden almost all of it."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom import b0_offset_map
 
     ph, fod, R = example.build(str(CROP), wm_pack)
@@ -148,7 +148,7 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
 def test_a_field_law_is_none_where_the_machine_publishes_none(example, wm_pack):
     """Every machine but a permanent-magnet one, and `off_resonance=None` is exactly what a replay already
     means by no field offset -- so a brain at 3 T composes as it always did."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     from dmipy_sim.phantom import b0_offset_map
     ph, fod, R = example.build(str(CROP), wm_pack)
     assert b0_offset_map(ScannerLimits.of("prisma"), ph.grid, to_scanner=R) is None
@@ -170,7 +170,7 @@ def test_the_magnet_s_adc_bias_clears_the_pack_s_floor_where_the_magnet_encodes(
     figure is unchanged by the correction (15.4 % against 15.3 %); the MEDIAN halves, because the old law was
     wrong mostly in the middle."""
     import importlib.util
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     spec = importlib.util.spec_from_file_location("bias", ROOT / "examples" / "rph" / "swoop_brain_bias.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 
@@ -199,7 +199,7 @@ def test_a_shimmed_superconducting_magnet_has_no_shape_to_render_and_that_is_the
     its shape, and the catalogue carries none -- so the bias map is `None` rather than small. That is an
     answer about the machines, not a missing feature."""
     import importlib.util
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     spec = importlib.util.spec_from_file_location("bias", ROOT / "examples" / "rph" / "swoop_brain_bias.py")
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     grid, R = mod.brain_grid(shape=(8, 8, 6), voxel_m=10e-3)
@@ -215,7 +215,7 @@ def test_the_catalogued_machine_reaches_the_brain_s_signal(example, wm_pack):
     by percent. Now the machine's tensor, background and Maxwell term reach every voxel, through the grid's own
     obliquity, once per distinct delivered gradient."""
     from dmipy_sim import sequences
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     ph, fod, R = example.build(str(CROP), wm_pack)
     dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]], float)
     seq = sequences.pgse(dirs.tolist(), 0.006, 0.015, bvalues=[1e9] * 6, TE=0.030, n_t=61)   # on the grid's own voxels

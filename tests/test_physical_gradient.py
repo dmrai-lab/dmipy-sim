@@ -13,9 +13,9 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences as S
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
-from dmipy_sim.acquisition.timing import SequenceTiming
-from dmipy_sim.acquisition.waveforms import b_from_gradient
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.waveforms import b_from_gradient
 
 bv = np.array([[1.0, 0.0, 0.0], [0.0, 0.6, 0.8]]); B = np.array([1e9, 2e9]); D2 = bv
 TM = SequenceTiming(t_excite=2e-3, t_refocus=4e-3, t_readout_pre_echo=3e-3)

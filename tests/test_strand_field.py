@@ -5,7 +5,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.fields.strand_field import StrandFieldBasis
-from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+from dmipy_replay.replay.field import CHANNEL_NAMES
 from dmipy_sim.fields.susceptibility_field import predicate_field_basis
 
 

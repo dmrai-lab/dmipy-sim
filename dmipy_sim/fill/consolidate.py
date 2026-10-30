@@ -257,7 +257,7 @@ def certify_voxels(name, pk, grid):
     without is certified here (:func:`~dmipy_sim.replay.bank.voxel_certificate`), and the voxel its walker states (a
     writer's walker-leading ``voxel_ijk``) is checked against the binning of its start."""
     from ..replay.bank import _agree, voxel_certificate
-    from ..phantom.grid import Grid
+    from dmipy_replay.phantom.grid import Grid
     meta = pk.meta; pv = (meta.get("fidelity") or {}).get("per_voxel")
     if pv is not None:
         if grid is not None and not _agree(Grid.from_meta(pv["grid"]).to_meta(), grid.to_meta()):
@@ -378,8 +378,9 @@ def prepare_block(name, pk, grid=None, layout_grid=None):
     over the walkers and maximised over its populated voxels, a walker range at a time. Everything here is the
     shard's own: shards prepare independently and in any order, and append in the layout's."""
     from ..replay.bank import field_read_record, _MEASURED_CHANNEL_KEYS
-    from ..replay.compression import SLICE_BYTES, read_position_coeffs, slice_walkers, walker_rows
-    from ..phantom.grid import Grid
+    from ..replay.compression import SLICE_BYTES, slice_walkers
+    from dmipy_replay.replay.compression import read_position_coeffs, walker_rows
+    from dmipy_replay.phantom.grid import Grid
     meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
     ident = shard_identity(pk, grid)
     if ident["grid"] is None:
@@ -415,10 +416,10 @@ def prepare_block(name, pk, grid=None, layout_grid=None):
     per_vox /= counts[:, None, None]
     band_max = np.max(per_vox[counts >= 100], axis=0) if (counts >= 100).any() else None
     del per_vox
-    from ..replay.bank import has_susc_path
+    from dmipy_replay.replay.field import has_susc_path
     path_sq = None
     if has_susc_path(pk.arrays):
-        from ..replay.bank import susc_path_coeffs
+        from dmipy_replay.replay.field import susc_path_coeffs
         for a in range(0, n, step):
             s_ = (np.asarray(susc_path_coeffs(walker_rows(pk.arrays, a, a + step), pm)[0], np.float64) ** 2).sum(axis=0)
             path_sq = s_ if path_sq is None else path_sq + s_
@@ -498,7 +499,7 @@ class Consolidator:
         """A :class:`PreparedBlock` appended after the rows so far: refused unless it is the same walk, codec,
         substrate, envelope, grid and tensors as the first; its band and mode sums added, its scale tables and band
         blocks after the earlier ones, its columns and (voxel, pool) row ranges after the earlier rows."""
-        from ..phantom.grid import Grid
+        from dmipy_replay.phantom.grid import Grid
         name, ident, n = block.name, block.ident, block.n
         # the walk first (its block and window table name the refusal), then the codec, the substrate, the grid (the
         # shard's own, else the recipe's)
@@ -561,7 +562,7 @@ class Consolidator:
         json.dump(st, open(tmp, "w")); os.replace(tmp, os.path.join(self.out, "state.json"))
 
     def resume(self):
-        from ..phantom.grid import Grid
+        from dmipy_replay.phantom.grid import Grid
         st = json.load(open(os.path.join(self.out, "state.json"))); z = np.load(os.path.join(self.out, "state.npz"))
         self.done, self.n_rows, self.n_blocks = st["done"], st["n_rows"], st["n_blocks"]
         self.index = [tuple(r) for r in st["index"]]; self.seeds, self.prov, self.fid, self.chan, self.reads = st["seeds"], st["prov"], st["fid"], st["chan"], st["reads"]
@@ -674,7 +675,7 @@ class Consolidator:
             self.up.put(f, rel)
         index = {"grid": self.ident0["grid"], "n_rows": int(self.n_rows), "band_groups": list(self.band_groups), "path_groups": list(self.path_groups),
                  "rows": [{"ijk": [int(x) for x in np.unravel_index(v, self.grid.shape)], "pool": p, "start": s, "end": e} for v, p, s, e in self.index]}
-        from ..replay.replay import declared_susceptibility_field
+        from dmipy_replay.replay.replay import declared_susceptibility_field
         declared_susceptibility_field(meta, has_field=bool(self.path_groups))   # the layout holds the equivalence
         manifest = {"meta": meta, "columns": columns}
         json.dump(index, open(os.path.join(self.out, "index.json"), "w"))

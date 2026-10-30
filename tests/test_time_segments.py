@@ -13,10 +13,16 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.compression import default_envelope
-from dmipy_sim.replay.time_segments import (FORMAT, Partition, Shape, TimeSegmentLayout, _walk_view, read_manifest, rounding_eps,
-                                             segment_rows, write_time_segment_layout)
+from dmipy_replay.replay.time_segments import FORMAT, Partition, Shape, read_manifest
+from dmipy_sim.replay.time_segments import (
+    TimeSegmentLayout,
+    _walk_view,
+    rounding_eps,
+    segment_rows,
+    write_time_segment_layout,
+)
 from dmipy_sim.spec import walk_spec, StratifiedByVoxel
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 UM = 1e-6
 D0 = 2e-9
@@ -55,7 +61,7 @@ def myelin(tmp_path_factory):
     pack at a declared floor target on a 2 x 2 voxel grid; the segment rows from the walk and from the pack and their
     layouts."""
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
-    from dmipy_sim.phantom.grid import Grid
+    from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("segments")
     g = d.MyelinatedCylinder(2.0 * UM, 2.8 * UM, (0, 0, 1), D0, D0)
     w = d.simulate_trajectories(1200, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
@@ -104,7 +110,7 @@ def test_a_partition_is_read_from_its_sequence():
     """A PGSE is two lobes under the gate's +1 and -1, a stimulated echo's mixing time is a segment its gate stores, a
     DDE's two bipolar pairs are four lobes; ``b_matrix`` is the b-value of refocused levels (the builder's own b to its
     rectangular rule), and a PGSE's reach is ``min(G_max, sqrt(b_max / b_unit))``; a segment across a pulse is refused."""
-    from dmipy_sim.acquisition.waveforms import calc_b
+    from dmipy_replay.acquisition.waveforms import calc_b
     parts = _partitions()
     se, ste, dde, mixing = _sequences()
     assert parts["pgse"].gate == (1, -1) and parts["pgste"].gate == (1, 0, -1) and parts["dde"].gate == (1, 1, -1, -1)
@@ -152,7 +158,8 @@ def test_the_rows_do_not_depend_on_the_walker_ranges_they_are_read_in(myelin, so
     order -- and the same ``rows.json`` but its creation time: the partitions' and groups' largest values (those of
     the stored float32 rows), the pool count and the pack's quantisation terms. From the pack (the quantised float32 production container) and from the
     walk (its float coefficients, decoded in float64)."""
-    from dmipy_sim.replay.compression import position_shape, slice_walkers
+    from dmipy_replay.replay.compression import position_shape
+    from dmipy_sim.replay.compression import slice_walkers
     M = myelin
     src, kw = (M["pack"], {}) if source == "pack" else (M["walk"], dict(pack=M["pack"]))
     one = 1 << 40                                                       # every walker in one range
@@ -407,7 +414,7 @@ def test_the_torch_backend_is_the_jax_image(blocks):
     lay.image(seq, backend="torch", device="cpu", resident=False)
     assert set(lay._device) == before
     with pytest.raises(ValueError, match="backend"):
-        lay.image(seq, backend="numpy")
+        lay.image(seq, backend="no-such-backend")
 
 
 def test_the_field_direction_is_a_knob_contracted_in_the_kernel(blocks):
@@ -449,9 +456,9 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
     the field channels the kernel contracts are decoded in float64 (exact: a code of at most 24 bits times a float32
     scale) and summed in channel order with the direction's weights, bit for bit the host's same products in the same
     order."""
-    from dmipy_sim.fields.hollow_cylinder import iso_weights, q_of_H
-    from dmipy_sim.replay.time_segments import (_decode, _device_field_spec, _field_terms_of_words, _layout_of, _x64,
-                                                 unpack_words)
+    from dmipy_replay.replay.field import iso_weights, q_of_H
+    from dmipy_replay.replay.time_segments import _decode, _field_terms_of_words, _layout_of, unpack_words
+    from dmipy_sim.replay.time_segments import _device_field_spec, _x64
     lay, merged, grid, n_t, m, tmp = blocks
     g = m["partitions"]["se"]["group"]
     cols = TimeSegmentLayout.columns(m)
@@ -503,7 +510,7 @@ def test_a_streamed_image_is_the_resident_image_to_the_bit(blocks, backend):
     """``resident=False`` reads and uploads each chunk of every column on its own and keeps nothing; its image is the
     resident one to the bit -- bare, with every tier at an oblique field, and with a machine's delivery and its own
     gradient -- and so are the tier maps."""
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     lay, merged, grid, n_t, m, tmp = blocks
     seq = _strand_protocol(n_t, 3)
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
@@ -535,7 +542,7 @@ def test_the_field_phase_at_an_oblique_field_is_the_packs(myelin):
     stored channels meet the direction's twelve weights in the basis's own order (RPK.md 5.3, ``iso_P_zz`` folded into
     the isotropic weights, never formed)."""
     from dataclasses import replace
-    from dmipy_sim.acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     M = myelin
     u = np.array([1.0, 0.3, 0.5]); u /= np.linalg.norm(u)
     sc = replace(ScannerLimits.of("siemens_magnetom_terra_7T"), b0_axis=tuple(u))
@@ -586,8 +593,8 @@ def test_from_a_pack_the_tiers_carry_the_packs_own_quantisation(myelin):
     the pack's own term is refused by name."""
     from dmipy_sim.replay.time_segments import tier_quantisation_terms, _gate_sequence
     from dmipy_sim.replay.study import Acquisition
-    from dmipy_sim.replay.replay import _path_field_channels
-    from dmipy_sim.fields.hollow_cylinder import field_terms
+    from dmipy_replay.replay.replay import _path_field_channels
+    from dmipy_replay.replay.field import field_terms
     M = myelin
     cw, cp = M["mw"]["certificate"], M["mp"]["certificate"]
     for g in M["mp"]["groups"]:

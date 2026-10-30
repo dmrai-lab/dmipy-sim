@@ -12,6 +12,7 @@ floor.
 """
 from __future__ import annotations
 
+import dmipy_replay.replay.compression as _r_compression
 import argparse
 import json
 import sys
@@ -51,7 +52,7 @@ def container_error(ref, pk, env):
     from dmipy_sim.replay import compression as cx
     h, n_t = float(ref.dt), int(ref.n_t)
     G, _ = cx.acquisition_battery(n_t, h, env)
-    S = [np.exp(1j * cx.coded_phases(cx.read_position_coeffs(p.arrays), h, G, n_t, device="numpy")).mean(axis=0)
+    S = [np.exp(1j * cx.coded_phases(_r_compression.read_position_coeffs(p.arrays), h, G, n_t, device="numpy")).mean(axis=0)
          for p in (ref, pk)]
     return float(np.abs(S[0] - S[1]).max())
 

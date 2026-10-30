@@ -154,7 +154,7 @@ def phase_variance_bound(position_coeffs, T, *, G_max, axes=(0, 1, 2), margin_se
     truncation). ``S`` is the pilot's, centred over the walkers, each eigenvalue the largest of the whole pilot's and
     its two halves' times ``1 + margin_se sqrt(2 / (n / 2 - 1))``. Returns a dict with the bound ``var_phi`` and its
     parts."""
-    from dmipy_sim.constants import GAMMA
+    from dmipy_replay.constants import GAMMA
     C = np.asarray(position_coeffs, np.float64)
     if C.ndim == 4:
         if C.shape[1] != 1:
@@ -384,7 +384,7 @@ class Pores(Family):
         :func:`toggle_variance_bound`), over the floor squared. The pilot is walked as a pack is (the window, the
         band, every tier, the envelope), so a pore whose count is the pilot's packs it."""
         import dmipy_sim as d
-        from dmipy_sim.acquisition.scanners import ScannerLimits
+        from dmipy_replay.acquisition.scanners import ScannerLimits
         from dmipy_sim.spec import geometry_from_spec
         r = self.rows[name]
         w = d.simulate_trajectories(int(n), self.m.D0, geometry_from_spec(self.m.spec_of(r["shape"], r["d_um"])),
@@ -448,7 +448,7 @@ class Slab(Family):
         """The slab's spec with compartment B (pool ``extra``) magnetic and the field tier declared: the field rule
         (some pool magnetic <=> ``"field"`` in the tiers <=> C3 stored) the pack is held to."""
         import dataclasses
-        from dmipy_sim.spec.substrate import Susceptibility
+        from dmipy_replay.spec.substrate import Susceptibility
         s = self.geometry(name).spec
         return s.replace(susceptibility={"extra": Susceptibility(chi_iso=self.CHI)},
                          validity=dataclasses.replace(s.validity, tiers=list(s.validity.tiers) + ["field"]))

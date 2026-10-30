@@ -4,7 +4,7 @@ A `Tissue` is what the water is made of: the numbers a replay applies to the pac
 substrate and not a pack; the pack is the structure, the tissue is the material on it.
 
 ```python
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_sim.spec import Tissue
 wm = Tissue(T2={"intra": 0.05, "extra": 0.055}, T1={"intra": 1.2, "extra": 1.0}, rho2=1.16e-6, chi_iso=-1e-7, chi_aniso=-1e-7)
 print(wm)
 ```

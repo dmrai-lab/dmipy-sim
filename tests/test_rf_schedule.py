@@ -9,8 +9,8 @@ from dmipy_sim import RFEvent
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.acquisition.scanner_sequence import ScannerSequence
-from dmipy_sim.acquisition.rf import RFSchedule
+from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
+from dmipy_replay.acquisition.rf import RFSchedule
 from dmipy_sim import sequences as _seqmod
 
 

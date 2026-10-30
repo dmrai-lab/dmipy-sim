@@ -1,4 +1,5 @@
 """The SO(3) representation of a pose response: the basis, and the distributions composed against it (#157)."""
+import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 import pytest
 
@@ -88,7 +89,7 @@ def test_a_distribution_over_directions_has_no_azimuthal_coefficients():
     rho = fod.evaluate(dirs)
     assert rho.min() > 0                                             # no clipping, so the two sides agree exactly
     rolls = np.arange(16) * (2 * np.pi / 16)
-    R = np.stack([so3.rotation_of(d, roll=r) for d in dirs for r in rolls])
+    R = np.stack([_r_so3.rotation_of(d, roll=r) for d in dirs for r in rolls])
     E = so3.evaluate(c, lmax_r, R, nmax).reshape(len(dirs), len(rolls))
     direct = float((w * rho * E.mean(axis=1)).sum() / (w * rho).sum())   # roll-averaged, ODF-weighted
     np.testing.assert_allclose(f_r @ c, direct, rtol=1e-6, atol=1e-9)
@@ -98,7 +99,7 @@ def test_watson_and_an_isotropic_bingham_are_the_same_distribution():
     """A Bingham with equal dispersions is a Watson: the anisotropic form must contain the isotropic one, or
     the two dispersion parameters do not mean what they claim."""
     lmax, nmax = 6, 2
-    frame = so3.rotation_of((0.0, 0.0, 1.0))
+    frame = _r_so3.rotation_of((0.0, 0.0, 1.0))
     w8 = so3.watson_coeffs(8.0, mu=(0.0, 0.0, 1.0), lmax=lmax, nmax=nmax)
     b8 = so3.bingham_coeffs(frame, (8.0, 8.0), lmax=lmax, nmax=nmax)   # equal concentrations: the same cone
     np.testing.assert_allclose(b8, w8, atol=1e-8)

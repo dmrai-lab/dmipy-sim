@@ -26,7 +26,7 @@ import os
 import time
 
 import numpy as np
-from ..spec.substrate import susceptibility_field_of
+from dmipy_replay.spec.substrate import susceptibility_field_of
 
 FULL = {"pass": None, "scale": 1.0}   # the whole block in one shard: a plan without passes, and every certifying walk
 log = logging.getLogger("dmipy_sim.fill")

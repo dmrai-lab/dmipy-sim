@@ -331,20 +331,27 @@ meet in that substrate, not validated on an average case.
 
 ## Layout
 
+The reader side -- the acquisition object and its builders, the Pulseq and b-table readers, the replay contraction,
+the plan before a read, the Hub client, the columnar and time-segment layouts' readers -- is
+[dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) (numpy only, Apache-2.0), a dependency: dmipy-sim imports
+it and re-exports its public names (`dmipy_sim.pgse is dmipy_replay.pgse`). dmipy-sim is the producer and the device
+side: the walk, the packs and layouts it writes, the JAX and torch backends of the same arithmetic, the pose
+expansion and the phantoms.
+
 ```
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
   engine/       core (simulate, simulate_trajectories), accumulate, physics, pulse_sequence, mt, mt_walk, gpu;
                 _fused and bloch: the single-pass oracles the replay is held to
-  replay/       trajectories, compression, replay (ReplayPack), columnar (ReplayPack.open: a pack by reference),
-                study (Acquisition, Protocol, Study), phantom, bank (build_replay_pack), fod, so3
+  replay/       replay (ReplayPack: dmipy-replay's with the producer's routes), bank (build_replay_pack), compression
+                (the codec), trajectories, columnar / remote / time_segments (dmipy-replay's readers with the JAX
+                backends; time_segments also writes the layout), study (Acquisition, Protocol, Study), phantom, fod, so3
   fill/         a distributed fill of one recipe into shards (hub, claims, pipeline), consolidate (shards -> columns)
-  acquisition/  scanner_sequence (ScannerSequence, Protocol, Encoding), rf (RFEvent, RFSchedule), timing (SequenceTiming),
-                scanners (ScannerLimits), waveforms (the integrals), noise
-  sequences/    builders (pgse, pgste, ogse, cpmg, gre, ste, pte, from_waveform, ...), assemble (the mechanics), pulseq
+  acquisition/  noise, coil (ScannerSequence, RFSchedule, ScannerLimits and the integrals are dmipy-replay's)
+  sequences/    pulseq (export; the reader is dmipy-replay's)
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)
   substrate/    Substrate (calibrated white matter), biophysical constants
-  compartments.py  coefficient_walk.py  constants.py   viz/  io/  math/
+  compartments.py  coefficient_walk.py   viz/  io/  math/
 ```
 
 `CLAUDE.md` is the operational guide for agents and contributors: the geometry contract, the step
@@ -370,7 +377,7 @@ rules, the replay invariant, and how to add physics. `docs/replay-guide/` is the
 ## Install
 
 ```bash
-pip install -e ".[dev]" && pip install "jax[cpu]>=0.6.2"     # CPU, any platform
+pip install -e ".[dev]" && pip install "jax[cpu]>=0.6.2"     # CPU, any platform (installs dmipy-replay)
 pip install -e ".[cuda12,dev]"                                # NVIDIA GPU, CUDA 12
 ```
 

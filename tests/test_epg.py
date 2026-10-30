@@ -7,7 +7,7 @@ CPMG geometry are all fixed by the flip angles and phases. These tests hold the 
 import numpy as np
 import pytest
 
-from dmipy_sim.acquisition import epg
+from dmipy_replay.acquisition import epg
 
 
 def _echo(paths, k):

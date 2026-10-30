@@ -17,7 +17,7 @@ pytest.importorskip("pypulseq")
 import pypulseq as pp
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.timing import SequenceTiming
+from dmipy_replay.acquisition.timing import SequenceTiming
 from dmipy_sim.sequences import from_pulseq, make_system, to_pulseq
 
 

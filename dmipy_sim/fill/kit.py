@@ -57,7 +57,7 @@ def _block_record(rc):
     (``T = n_blocks h``), the band ``K`` per window (the manifest's ``pack.K``, else the scanner class's,
     :func:`~dmipy_sim.replay.bank.mode_count`) and the block table's order ``m``."""
     from ..engine.accumulate import window_count, block_length
-    from ..replay.bank import mode_count
+    from dmipy_replay.replay.storage import mode_count
     W = rc.man["walk"]
     n_win, T_win = window_count(float(W["T_max_s"]))
     h = rc.block_h()
@@ -255,7 +255,7 @@ def write_kit(rc, out_dir):
     and the sha256 of every file. Needs ``adaptive_steps`` (the only engine a kit covers) and, when the variant
     has a field, a far grid in the manifest (the per-start cutoff doubling without one needs an actual walk,
     which a kit is built without)."""
-    from ..spec.substrate import susceptibility_field_of
+    from dmipy_replay.spec.substrate import susceptibility_field_of
     from ..spec.walk import field_source_kind
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     man = rc.man; spec = rc.spec(); ctx = rc.context(); g = ctx.tests
@@ -330,7 +330,7 @@ def write_block_kit(rc, row, out_dir):
     certificate) is built exactly as :func:`write_kit` builds it -- only the cell-window cropping and the
     plan/grid re-basing are the block kit's own. The ``assemble_request`` layout is IDENTICAL to the whole
     kit's: a node reads either the same way (``tests/fill/test_block_kit.py``)."""
-    from ..spec.substrate import susceptibility_field_of
+    from dmipy_replay.spec.substrate import susceptibility_field_of
     from ..spec.walk import field_source_kind
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     man = rc.man; spec = rc.spec(); ctx = rc.context(); g = ctx.tests

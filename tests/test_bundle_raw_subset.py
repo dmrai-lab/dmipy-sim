@@ -2,6 +2,7 @@
 the joined order carry raw block ends, drawn from the pools in proportion to their walkers, and every raw array is the
 walk's own for those walkers -- the diffusing pools' from their walks, a frozen pool's its seats held at every block
 end. A pool walk that lacks a raw array it was asked for is refused by name."""
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 from scipy.fft import dst
@@ -44,7 +45,7 @@ def _reference_coeffs(raw, h, K):
     tau = np.arange(n + 1) / n
     u = x - (x[:, :1] + (x[:, -1:] - x[:, :1]) * tau[None, :, None])
     k = np.arange(1, K + 1)
-    factor = cx.cosine_band_scale(K, n * h) * 2.0 * np.sin(np.pi * k / (2.0 * n)) / np.sqrt(2.0 / n)
+    factor = _r_compression.cosine_band_scale(K, n * h) * 2.0 * np.sin(np.pi * k / (2.0 * n)) / np.sqrt(2.0 / n)
     beta = factor[None, :, None] * dst(u[:, 1:-1], type=1, norm="ortho", axis=1)[:, :K]
     return np.concatenate([x[:, :1], x[:, -1:] - x[:, :1], beta], axis=1)
 

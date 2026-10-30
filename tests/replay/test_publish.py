@@ -1,6 +1,7 @@
 """Publishing a pack (dmipy_sim.replay.publish) against the fake hub: the file, its manifest row and the rendered card
 go up in one commit; a second publish replaces the row; a pack without its contract is refused; the sha256 the hub holds
 is checked on publish and on ``ReplayPack.load("hf://...")``; a local load is untouched."""
+import dmipy_replay.replay.hub as _r_hub
 import json
 import os
 import shutil
@@ -38,38 +39,25 @@ def _manifest(hub):
     return json.load(open(os.path.join(hub.root, "manifest.json")))
 
 
-def _hub_module(monkeypatch):
-    """The ``huggingface_hub`` module, or a stub of the two names the load path reads (``hf_hub_download`` and the
-    not-found errors) when the optional dependency is not installed, so the path is tested without it."""
-    import sys
-    import types
-    try:
-        import huggingface_hub
-    except ImportError:
-        huggingface_hub = types.ModuleType("huggingface_hub"); errors = types.ModuleType("huggingface_hub.errors")
-        for name in ("EntryNotFoundError", "RepositoryNotFoundError", "RevisionNotFoundError", "HfHubHTTPError"):
-            setattr(errors, name, type(name, (Exception,), {}))
-        huggingface_hub.errors = errors; huggingface_hub.hf_hub_download = None
-        monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
-        monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
-    return huggingface_hub
-
-
 def _serve_from(hub, monkeypatch):
-    """``hf_hub_download`` reading the fake hub's directory, so ``ReplayPack.load("hf://...")`` runs without the network."""
-    huggingface_hub = _hub_module(monkeypatch)
-    import huggingface_hub.errors
-    EntryNotFoundError = huggingface_hub.errors.EntryNotFoundError
+    """dmipy-replay's Hub client reading the fake hub's directory at the revision ``rev0``, into a cache of its own, so
+    ``ReplayPack.load("hf://...")`` runs without the network; returns the cache directory."""
+    import urllib.error
+    from dmipy_replay.replay import hub as rhub
+    cache = os.path.join(hub.root, "..", "replay-cache")
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", cache)
+    monkeypatch.setattr(rhub, "revision_of", lambda repo, revision="main": "rev0")
 
-    def fake_download(repo_id, filename, *, repo_type=None, **kw):
-        assert repo_id == REPO and repo_type == "dataset"
-        src = os.path.join(hub.root, filename)
+    def fake_download(url, dest):
+        repo, rel = url.split("/datasets/", 1)[1].split("/resolve/rev0/", 1)
+        assert repo == REPO
+        src = os.path.join(hub.root, urllib.parse.unquote(rel))
         if not os.path.isfile(src):
-            raise EntryNotFoundError(f"{filename} is not in {repo_id}")
-        dst = os.path.join(hub.root, "..", "cache", filename); os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copyfile(src, dst)
-        return dst
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+            raise urllib.error.HTTPError(url, 404, f"{rel} is not in {repo}", None, None)
+        shutil.copyfile(src, dest)
+    import urllib.parse
+    monkeypatch.setattr(rhub, "_download", fake_download)
+    return cache
 
 
 def test_publish_puts_the_file_the_manifest_row_and_the_card_up_in_one_commit(pack, hub):
@@ -210,11 +198,12 @@ def test_publish_verifies_what_the_hub_holds(pack, tmp_path):
 
 def test_load_from_the_hub_checks_the_manifest_sha256(pack, hub, monkeypatch):
     uri = pub.publish(pack, REPO, hub=hub)
-    _serve_from(hub, monkeypatch)
+    cache = _serve_from(hub, monkeypatch)
     same = ReplayPack.load(uri)
     assert same.n_walkers == pack.n_walkers and same.id == "test/cyl" and same.digest == pack.digest
     stored = os.path.join(hub.root, "packs/test-cyl.rpk")
     b = bytearray(open(stored, "rb").read()); b[-1] ^= 0xFF; open(stored, "wb").write(b)
+    shutil.rmtree(cache)                                          # a cache holds a commit's files: the read is afresh
     with pytest.raises(ValueError, match="sha256"):
         ReplayPack.load(uri)
 
@@ -224,21 +213,23 @@ def test_load_from_a_hub_without_a_manifest_and_of_a_non_pack(pack, hub, monkeyp
     os.remove(os.path.join(hub.root, "manifest.json"))
     _serve_from(hub, monkeypatch)
     assert ReplayPack.load(f"hf://{REPO}/packs/test-cyl.rpk").n_walkers == 200
-    with pytest.raises(ValueError, match="takes a pack"):
+    with pytest.raises(ValueError, match="a pack is a .rpk file"):
         ReplayPack.load(f"hf://{REPO}/README.md")
 
 
 def test_parse_uri():
-    assert pub.parse_uri("hf://owner/name/packs/x.rpk") == ("owner/name", "packs/x.rpk")
-    assert pub.parse_uri("hf://owner/name/a/b/c.rpk") == ("owner/name", "a/b/c.rpk")
-    assert pub.is_hub_uri("hf://o/n/x.rpk") and not pub.is_hub_uri("/o/n/x.rpk") and not pub.is_hub_uri(None)
+    assert _r_hub.parse_uri("hf://owner/name/packs/x.rpk") == ("owner/name", "packs/x.rpk")
+    assert _r_hub.parse_uri("hf://owner/name/a/b/c.rpk") == ("owner/name", "a/b/c.rpk")
+    assert _r_hub.is_hub_uri("hf://o/n/x.rpk") and not _r_hub.is_hub_uri("/o/n/x.rpk") and not _r_hub.is_hub_uri(None)
     for bad in ("owner/name/x.rpk", "hf://owner/name", "hf://owner//x.rpk", "hf://owner"):
         with pytest.raises(ValueError):
-            pub.parse_uri(bad)
+            _r_hub.parse_uri(bad)
 
 
 def test_a_local_load_never_touches_the_hub(pack, tmp_path, monkeypatch):
-    monkeypatch.setattr(_hub_module(monkeypatch), "hf_hub_download", lambda *a, **k: pytest.fail("the hub was asked for a local file"))
+    from dmipy_replay.replay import hub as rhub
+    for name in ("_download", "_get"):
+        monkeypatch.setattr(rhub, name, lambda *a, **k: pytest.fail("the hub was asked for a local file"))
     p = tmp_path / "cyl.rpk"
     pack.save(str(p))
     assert ReplayPack.load(str(p)).digest == pack.digest and ReplayPack.load(p).source == str(p)

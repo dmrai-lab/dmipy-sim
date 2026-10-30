@@ -8,11 +8,11 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.scanners import ScannerLimits
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom.bore import encoding_classes
-from dmipy_sim.phantom.grid import Grid
+from dmipy_replay.phantom.grid import Grid
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 torch = pytest.importorskip("torch")

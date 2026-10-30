@@ -26,7 +26,7 @@ __all__ = ["b0_offset_map", "b1_scale_map", "background_gradient_map", "gradient
 def _model(scanner):
     """The machine as the model these maps read parameters from; a bare field strength is refused, because
     a strength has no shape, no coils and no coil profile to render."""
-    from ..acquisition.scanners import ScannerLimits
+    from dmipy_replay.acquisition.scanners import ScannerLimits
     if not isinstance(scanner, ScannerLimits):
         raise TypeError(f"a bore map reads a ScannerLimits (ScannerLimits.of('swoop')); got {type(scanner).__name__}")
     return scanner
@@ -401,7 +401,7 @@ def delivered_weights(scanner, grid, sequence, *, K, T, voxels=None, to_scanner=
     None of that is an approximation: it is the same sum in a different order, which is why the reference
     route exists to check it rather than to be replaced by it.
     """
-    from ..replay.replay import compile_scheme
+    from dmipy_replay.replay.replay import compile_scheme
 
     scanner = _model(scanner)
     idx = grid.every_voxel if voxels is None else voxels
@@ -491,7 +491,7 @@ def delivered_vectors(scanner, grid, plateaus, gate, *, voxels=None, to_scanner=
         q = np.einsum("vij,msj->vmsi", Lf(pos), G)
     B0 = scanner.field_T
     if concomitant and B0:
-        from ..acquisition.scanner_sequence import concomitant_terms
+        from dmipy_replay.acquisition.scanner_sequence import concomitant_terms
         gc, _Bc = concomitant_terms(q, d[:, None, None, :], float(B0), _b0_axis(scanner, R))
         q = q + gc
     q = q * e[None, None, :, None]

@@ -298,6 +298,6 @@ def field_pack(tmp_path_factory):
 @pytest.fixture(scope="module")
 def spec_grid(tmp_path_factory):
     """The three-strand spec on a 2 x 2 x 2 grid of 10 um voxels: ``(spec, grid, tmp)``."""
-    from dmipy_sim.phantom.grid import Grid
+    from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("strands")
     return _three_strands(tmp), Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3), tmp

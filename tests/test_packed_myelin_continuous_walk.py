@@ -12,7 +12,7 @@ from dmipy_sim import ScannerSequence
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack, grid_periodic_of
 from dmipy_sim.replay.trajectories import replay
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
 from tests.test_grid_field_in_walk import _modes_of

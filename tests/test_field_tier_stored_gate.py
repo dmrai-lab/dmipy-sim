@@ -11,10 +11,10 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import so3
-from dmipy_sim.replay._replay_kernel import field_gate, gate_weights
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.replay._replay_kernel import field_gate, gate_weights
+from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 TISSUE = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
@@ -48,7 +48,7 @@ def test_a_stimulated_echo_accrues_no_field_phase_while_its_magnetisation_is_sto
     only, with the recall's sign: a gate that integrated the mixing time too misses it by the field's whole TM
     integral. The oracle is the gate written out from the pulses and the field function ``b(t) = sum_k c_k e_k(t)``
     of the stored modes, integrated by the midpoint rule on a grid 50 times finer than the gate's."""
-    from dmipy_sim.replay.bank import susc_path_coeffs, susc_path_field
+    from dmipy_replay.replay.field import susc_path_coeffs, susc_path_field
     pk = field_pack
     ste = _ste(pk)
     assert ste.stimulated_echo and ste.TM == pytest.approx(5.6e-4)

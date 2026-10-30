@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.acquisition.rf import RFEvent, RFSchedule
+from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_sim.replay.phantom import ReplayPhantom
 
 

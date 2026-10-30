@@ -7,13 +7,15 @@ direction, timing or b; and a refocused axis has ``|q(t)| <= gamma G_max min(t, 
 / 4`` (``compression.class_b_max``). A pack certified for a class reads its position terms against these, and a segment
 layout its widths against the class's levels.
 """
+import dmipy_replay.replay.compression as _r_compression
+import dmipy_replay.replay.time_segments as _r_time_segments
 import warnings
 
 import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay import time_segments as ts
 from dmipy_sim.replay.bank import build_replay_pack
@@ -69,13 +71,13 @@ def test_no_waveform_of_the_class_exceeds_the_bessel_bound_and_bang_bang_attains
     worst = 0.0
     for G in _feasible(rng):
         assert np.abs(G).max() <= G_MAX * (1 + 1e-12)
-        W = cx.band_projection(G[None, :-1], DT, T, K)[0, 2:, :]
+        W = _r_compression.band_projection(G[None, :-1], DT, T, K)[0, 2:, :]
         S = float(GAMMA ** 2 * (W ** 2).sum())
         assert S <= bound * (1 + 1e-9), S / bound
         worst = max(worst, S)
     # bang-bang on every axis at G_max, the extremal waveform: Bessel's inequality is an equality in the limit of all bands
     bb = G_MAX * np.sign(np.sin(2 * np.pi * 3 * np.arange(N_T)[:, None] * DT / T + np.array([[0.3, 1.1, 2.0]])))
-    W = cx.band_projection(bb[None, :-1], DT, T, K)[0, 2:, :]
+    W = _r_compression.band_projection(bb[None, :-1], DT, T, K)[0, 2:, :]
     assert float(GAMMA ** 2 * (W ** 2).sum()) >= 0.95 * bound
     assert worst >= 0.5 * bound                                         # the slew-limited ones come within 2x of it
 
@@ -140,7 +142,7 @@ def test_a_pack_certified_for_a_class_reads_its_position_terms_against_it(walk):
 
 def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():
     seq = d.pgse([[1, 0, 0]], 4e-3, 12e-3, bvalues=[1e9], TE=0.03, n_t=301, slew_rate=np.inf)
-    p = ts.Partition.of("pgse", seq)
+    p = _r_time_segments.Partition.of("pgse", seq)
     idx, V = p.class_vertices(G_MAX)
     d_ = p.durations[idx]
     assert np.allclose(V @ d_, 0.0) and np.abs(V).max() == pytest.approx(G_MAX)

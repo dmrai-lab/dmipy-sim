@@ -19,15 +19,15 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import Encoding, ScannerSequence
-from dmipy_sim.acquisition.scanners import ScannerLimits
-from dmipy_sim.constants import GAMMA
+from dmipy_replay.acquisition.scanners import ScannerLimits
+from dmipy_replay.constants import GAMMA
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
-from dmipy_sim.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of
+from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
 
 D0 = 2.0e-9
@@ -278,7 +278,7 @@ def _moments_dir(tmp, spec, stored):
     """A tier time-segment layout's manifest under ``spec``, its one group storing field columns or not."""
     import json
     from dmipy_sim.phantom import Grid
-    from dmipy_sim.replay.time_segments import FORMAT, TILE
+    from dmipy_replay.replay.time_segments import FORMAT, TILE
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "manifest.json").write_text(json.dumps(dict(
         format=FORMAT, n_rows=0, n_tiles=0, tile=TILE, columns=dict(w="w.npy", tiles="tiles.npy"), partitions={},
@@ -352,8 +352,17 @@ def test_a_closed_or_inert_substrate_has_no_field_by_its_kind():
 def _shell_union_spec(magnetic):
     """Two unions of spheres, the outer at 1.5 x the inner's radii, the shell between them a dry pool: magnetic or
     not."""
-    from dmipy_sim.spec.substrate import (Directional, Domain, Pool, Seeding, Sided, Surface, Susceptibility,
-                                          Validity, Wall)
+    from dmipy_replay.spec.substrate import (
+        Directional,
+        Domain,
+        Pool,
+        Seeding,
+        Sided,
+        Surface,
+        Susceptibility,
+        Validity,
+        Wall,
+    )
     c = [[-1.5e-6, 0.0, 0.0], [1.5e-6, 0.0, 0.0]]
     walls = [Wall("inner", Surface("sphere_union", instances={"centers": c, "radii": [0.8e-6, 0.8e-6]}), 1, 2,
                   Directional(), Sided()),

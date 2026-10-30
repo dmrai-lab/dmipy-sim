@@ -225,7 +225,8 @@ def test_the_closed_form_hollow_cylinder_is_read_in_the_walk():
     ``MyelinSusceptibility`` field on every channel): read at the walker's own position, the lumen's field is uniform
     -- its read series does not vary, so the lumen asks for no read -- and the walk, its pack and its file carry it."""
     import jax
-    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField, contract
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+    from dmipy_replay.replay.field import contract
     from dmipy_sim.fields.susceptibility import MyelinSusceptibility
     g = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
     f = HollowCylinderField.of(g)

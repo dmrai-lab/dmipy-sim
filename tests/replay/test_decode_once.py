@@ -1,6 +1,8 @@
 """A pack decodes each stored tensor selection once (dmipy-sim#812): the position bands, the contact bands, the field
 modes and the occupancy events are dequantised on the first read and every later replay, on any route, reads the held
 read-only array -- bit for bit what a decode per call gives. The decoders are counted, never timed."""
+import dmipy_replay.replay.compression as _r_compression
+import dmipy_replay.replay.field as _r_field
 import collections
 
 import numpy as np
@@ -9,9 +11,9 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank, compression as cx
-from dmipy_sim.replay.decoded import DecodedCache, PackArrays
+from dmipy_replay.replay.decoded import DecodedCache, PackArrays
 from dmipy_sim.replay.replay import ReplayPack
-from dmipy_sim.spec.tissue import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho2=1e-5)
 
@@ -86,57 +88,57 @@ def test_the_reader_returns_what_the_plain_dict_decodes(pack):
     plain = dict(pack.arrays)                             # no cache: every call decodes
     for dtype in (np.float64, np.float32):
         for axes in (None, (0,), (0, 2)):
-            got = cx.read_position_coeffs(pack.arrays, axes=axes, dtype=dtype)
-            want = cx.read_position_coeffs(plain, axes=axes, dtype=dtype)
+            got = _r_compression.read_position_coeffs(pack.arrays, axes=axes, dtype=dtype)
+            want = _r_compression.read_position_coeffs(plain, axes=axes, dtype=dtype)
             assert got.dtype == want.dtype
             np.testing.assert_array_equal(got, want)
 
 
 def test_the_key_is_the_selection_and_the_dtype(pack, counted):
     pk = _fresh(pack)
-    a = cx.read_position_coeffs(pk.arrays)
-    assert cx.read_position_coeffs(pk.arrays) is a
-    assert cx.read_position_coeffs(pk.arrays, axes=[0, 1, 2]) is not a        # another selection: its own entry
-    assert cx.read_position_coeffs(pk.arrays, dtype=np.float32).dtype == np.float32
-    assert cx.read_position_coeffs(pk.arrays, axes=(0,)).shape[2] == 1
+    a = _r_compression.read_position_coeffs(pk.arrays)
+    assert _r_compression.read_position_coeffs(pk.arrays) is a
+    assert _r_compression.read_position_coeffs(pk.arrays, axes=[0, 1, 2]) is not a        # another selection: its own entry
+    assert _r_compression.read_position_coeffs(pk.arrays, dtype=np.float32).dtype == np.float32
+    assert _r_compression.read_position_coeffs(pk.arrays, axes=(0,)).shape[2] == 1
     assert counted["position_coeffs"] == 4
-    cx.read_position_coeffs(pk.arrays, axes=(0,)); cx.read_position_coeffs(pk.arrays, dtype=np.float32)
+    _r_compression.read_position_coeffs(pk.arrays, axes=(0,)); _r_compression.read_position_coeffs(pk.arrays, dtype=np.float32)
     assert counted["position_coeffs"] == 4
 
 
 def test_held_arrays_are_read_only_and_a_pack_cannot_corrupt_the_next_read(pack):
     pk = _fresh(pack)
-    a = cx.read_position_coeffs(pk.arrays)
+    a = _r_compression.read_position_coeffs(pk.arrays)
     with pytest.raises(ValueError, match="read-only"):
         a[0, 0, 0] = 1.0
-    assert cx.read_position_coeffs(pk.arrays, cached=False).flags.writeable      # the uncached read is the caller's own
+    assert _r_compression.read_position_coeffs(pk.arrays, cached=False).flags.writeable      # the uncached read is the caller's own
 
 
 def test_a_replaced_tensor_is_read_afresh(pack):
     pk = _fresh(pack)
-    before = cx.read_position_coeffs(pk.arrays).copy()
+    before = _r_compression.read_position_coeffs(pk.arrays).copy()
     ends = np.array(pk.arrays["pos_x_ends"]); ends[:, 1] += 1.0
     pk.arrays["pos_x_ends"] = ends                                                 # a different object under the same name
-    after = cx.read_position_coeffs(pk.arrays)
-    np.testing.assert_array_equal(after, cx.read_position_coeffs(dict(pk.arrays), cached=False))
+    after = _r_compression.read_position_coeffs(pk.arrays)
+    np.testing.assert_array_equal(after, _r_compression.read_position_coeffs(dict(pk.arrays), cached=False))
     assert not np.array_equal(after[:, 1, 0], before[:, 1, 0])
     np.testing.assert_array_equal(after[:, 2:, :], before[:, 2:, :])
 
 
 def test_a_budget_that_does_not_fit_decodes_per_call(pack, counted):
     pk = _fresh(pack)
-    one = cx.read_position_coeffs(pk.arrays).nbytes
+    one = _r_compression.read_position_coeffs(pk.arrays).nbytes
     pk.release_decoded(); counted["position_coeffs"] = 0
     pk.decode_budget = one - 1
     for _ in range(3):
-        cx.read_position_coeffs(pk.arrays)
+        _r_compression.read_position_coeffs(pk.arrays)
     assert counted["position_coeffs"] == 3 and pk.decoded_bytes == 0
     pk.decode_budget = one
     for _ in range(3):
-        cx.read_position_coeffs(pk.arrays)
+        _r_compression.read_position_coeffs(pk.arrays)
     assert counted["position_coeffs"] == 4 and pk.decoded_bytes == one
-    cx.read_position_coeffs(pk.arrays, dtype=np.float32)                            # beside the first it does not fit
-    cx.read_position_coeffs(pk.arrays, dtype=np.float32)
+    _r_compression.read_position_coeffs(pk.arrays, dtype=np.float32)                            # beside the first it does not fit
+    _r_compression.read_position_coeffs(pk.arrays, dtype=np.float32)
     assert counted["position_coeffs"] == 6 and pk.decoded_bytes == one
 
 
@@ -157,22 +159,22 @@ def test_the_windows_of_a_pack_share_its_cache(pack, counted):
     assert pk.n_windows == 2
     w0, w1 = pk.window(0), pk.window(1)
     assert w0.arrays.decoded is pk.arrays.decoded is w1.arrays.decoded
-    a0, a1 = cx.read_position_coeffs(w0.arrays), cx.read_position_coeffs(w1.arrays)
+    a0, a1 = _r_compression.read_position_coeffs(w0.arrays), _r_compression.read_position_coeffs(w1.arrays)
     assert not np.array_equal(a0, a1) and counted["position_coeffs"] == 2                  # one entry per window, not one per pack
-    assert cx.read_position_coeffs(pk.window(1).arrays) is a1
+    assert _r_compression.read_position_coeffs(pk.window(1).arrays) is a1
     assert pk.decoded_bytes == a0.nbytes + a1.nbytes
 
 
 def test_a_derived_pack_holds_its_own_decode(pack):
     """A walker range, a prefix and a copy of the arrays are other tensors: none reads the parent's held array."""
     pk = _fresh(pack)
-    whole = cx.read_position_coeffs(pk.window(0).arrays)
+    whole = _r_compression.read_position_coeffs(pk.window(0).arrays)
     sub = pk.walkers(10, 25)
     assert sub.arrays.decoded is not pk.arrays.decoded
-    np.testing.assert_array_equal(cx.read_position_coeffs(sub.arrays), cx.read_position_coeffs(pk.arrays)[10:25] if pk.n_windows == 1
-                                  else cx.read_position_coeffs(pk.window(0).arrays)[10:25])
-    assert cx.read_position_coeffs(sub.arrays).shape[0] == 15 and whole.shape[0] == 300
-    assert sub.decoded_bytes == cx.read_position_coeffs(sub.arrays).nbytes
+    np.testing.assert_array_equal(_r_compression.read_position_coeffs(sub.arrays), _r_compression.read_position_coeffs(pk.arrays)[10:25] if pk.n_windows == 1
+                                  else _r_compression.read_position_coeffs(pk.window(0).arrays)[10:25])
+    assert _r_compression.read_position_coeffs(sub.arrays).shape[0] == 15 and whole.shape[0] == 300
+    assert sub.decoded_bytes == _r_compression.read_position_coeffs(sub.arrays).nbytes
     assert dict(pk.arrays).__class__ is dict                                        # a copy carries no cache
 
 
@@ -180,7 +182,7 @@ def test_arrays_pickle_and_copy_without_the_cache(pack):
     import copy
     import pickle
     pk = _fresh(pack)
-    cx.read_position_coeffs(pk.window(0).arrays)
+    _r_compression.read_position_coeffs(pk.window(0).arrays)
     for clone in (copy.deepcopy(pk.arrays), pickle.loads(pickle.dumps(pk.arrays))):
         assert isinstance(clone, PackArrays) and clone.decoded.nbytes == 0 and clone.decoded is not pk.arrays.decoded
         np.testing.assert_array_equal(clone["pos_x_ends"], pk.arrays["pos_x_ends"])
@@ -193,16 +195,16 @@ def test_the_assigned_arrays_of_a_pack_are_a_pack_arrays(pack):
 
 
 def test_the_field_modes_decode_once(counted):
-    from dmipy_sim.fields.hollow_cylinder import CHANNEL_NAMES
+    from dmipy_replay.replay.field import CHANNEL_NAMES
     rng = np.random.default_rng(8)
     C = rng.normal(size=(200, 9, 7))
     arrays, pm = bank.susc_path_encode_modes(C, list(CHANNEL_NAMES[:7]), T=0.02, container=((None, 8),))
     held = PackArrays(arrays)
-    first, names = bank.susc_path_coeffs(held, pm)
+    first, names = _r_field.susc_path_coeffs(held, pm)
     for _ in range(3):
-        again, names2 = bank.susc_path_coeffs(held, pm)
+        again, names2 = _r_field.susc_path_coeffs(held, pm)
     assert counted["susc_path_coeffs"] == 1 and again is first and names2 == names and names2 is not names
-    plain, _ = bank.susc_path_coeffs(dict(arrays), pm)
+    plain, _ = _r_field.susc_path_coeffs(dict(arrays), pm)
     np.testing.assert_array_equal(first, plain)
     assert not first.flags.writeable
 
@@ -232,7 +234,7 @@ def test_a_sequence_without_gradient_reads_no_position(pack, counted):
     assert counted["position_coeffs"] == 0
     phi = 0.0                                              # the contraction the skipped route stands for: bands against zero weights
     for win, _t0, _T in _fresh(pack)._windows():
-        C = cx.read_position_coeffs(win.arrays).reshape(pk.n_walkers, -1)
+        C = _r_compression.read_position_coeffs(win.arrays).reshape(pk.n_walkers, -1)
         phi = phi + C @ np.zeros((C.shape[1], fid.G_eff.shape[0]))
     np.testing.assert_array_equal(np.exp(1j * phi), E)
     counted.clear()
@@ -246,21 +248,21 @@ def test_unpack_bits_inverts_pack_bits_at_every_depth_and_width():
         for m in (1, 3, 7, 8, 9, 16, 21, 100):
             u = rng.integers(0, 1 << bits, size=(37, m))
             u[0], u[-1] = 0, (1 << bits) - 1
-            np.testing.assert_array_equal(cx.unpack_bits(cx.pack_bits(u, bits), bits, m), u)
+            np.testing.assert_array_equal(_r_compression.unpack_bits(cx.pack_bits(u, bits), bits, m), u)
 
 
 def test_the_position_decode_is_the_integer_values_times_their_scales(pack):
     """The dequantisation read back by hand from the stored tensors: ``q * scale`` in float64, rounded once to ``dtype``."""
     a = pack.window(1).arrays
-    kind, suffix, present = cx._position_tensors(a)
+    kind, suffix, present = _r_compression._position_tensors(a)
     table = np.asarray(a["pos_band_scale"], np.float64)
     for dtype in (np.float64, np.float32):
-        got = cx.read_position_coeffs(dict(a), dtype=dtype)
-        for j, ax in enumerate(cx.POSITION_AXES):
+        got = _r_compression.read_position_coeffs(dict(a), dtype=dtype)
+        for j, ax in enumerate(_r_compression.POSITION_AXES):
             parts, k0 = [], 0
-            for r, bits in cx.position_ranges(a, ax):
-                t = a[cx.range_name(ax, r, bits)]
-                m = int(t.shape[1]) if bits in cx.NATIVE_BITS else min(int(t.shape[1]) * 8 // bits, got.shape[1] - 2 - k0)
-                parts.append(np.asarray(cx._load_range(t, bits, m), np.float64) * table[0, j, k0:k0 + m])
+            for r, bits in _r_compression.position_ranges(a, ax):
+                t = a[_r_compression.range_name(ax, r, bits)]
+                m = int(t.shape[1]) if bits in _r_compression.NATIVE_BITS else min(int(t.shape[1]) * 8 // bits, got.shape[1] - 2 - k0)
+                parts.append(np.asarray(_r_compression._load_range(t, bits, m), np.float64) * table[0, j, k0:k0 + m])
                 k0 += m
             np.testing.assert_array_equal(got[:, 2:, j], np.concatenate(parts, axis=1).astype(dtype))

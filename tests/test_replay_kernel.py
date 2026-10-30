@@ -9,6 +9,7 @@ amplitude) to the float32 their coefficients are stored in. The
 field gate has one implementation, the kernel's, which every field route reads, and the MT
 trajectory producer at zero binding is the plain producer to the bit.
 """
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 from dmipy_sim import RFEvent
 import pytest
@@ -16,9 +17,10 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.replay import trajectories as T
 from dmipy_sim.replay import compression as cx
-from dmipy_sim.replay._replay_kernel import effective_gradient, waveform_moments, gradient_phase, field_gate
-from dmipy_sim.constants import GAMMA
-from dmipy_sim.replay.replay import compile_scheme, replay_signal, replay_signal_jax
+from dmipy_replay.replay._replay_kernel import effective_gradient, waveform_moments, gradient_phase, field_gate
+from dmipy_replay.constants import GAMMA
+from dmipy_replay.replay.replay import compile_scheme, replay_signal
+from dmipy_sim.replay.replay import replay_signal_jax
 
 N_T, DT = 200, 1e-4
 T_TOTAL = (N_T - 1) * DT
@@ -79,7 +81,7 @@ def _stored_path(traj, K, dt):
     """``(arrays, meta)`` of the pack a walk kept at its saves would hold: ``[x(0), x(T) - x(0), beta_1..K]`` per axis
     at float32, the window ``T = N dt``."""
     C = np.concatenate([traj[:, :1], (traj[:, -1] - traj[:, 0])[:, None], _order0_bands(traj, K, dt)], axis=1)
-    return cx.pack_position_arrays(C), dict(method=cx.POSITION_METHOD, K=K, T=(traj.shape[1] - 1) * dt)
+    return cx.pack_position_arrays(C), dict(method=_r_compression.POSITION_METHOD, K=K, T=(traj.shape[1] - 1) * dt)
 
 
 def _phase_scale():
@@ -102,7 +104,7 @@ def test_every_route_returns_the_closed_form_phase(case):
     arrays, meta = _stored_path(traj, N_T - 2, DT)
     routes["mode space"] = cx.mode_space_phi(arrays, meta, G, DT)[:, 0]
     W = compile_scheme(G, DT, meta["K"])
-    C = cx.read_position_coeffs(arrays, dtype=np.float64)
+    C = _r_compression.read_position_coeffs(arrays, dtype=np.float64)
     routes["compiled scheme"] = (C.reshape(C.shape[0], -1) @ W)[:, 0]
     # a pack stores its coefficients in float32, so the two pack routes carry that storage precision
     tol_pack = 1e-6 * max(_phase_scale(), np.abs(phi_exact).max())
@@ -163,10 +165,10 @@ def test_compiled_scheme_and_mode_space_read_one_projection():
     G = np.concatenate([_bipolar(axis=0), _bipolar(axis=2)], axis=0)
     K = 12
     W = compile_scheme(G, DT, K)
-    B = cx.band_projection(G, DT, T_TOTAL, K)
+    B = _r_compression.band_projection(G, DT, T_TOTAL, K)
     np.testing.assert_allclose(W, (GAMMA * B).reshape(2, -1).T, rtol=0, atol=0)
     arrays, meta = _stored_path(_synthetic_trajectories()[2][1], K, DT)
-    C = cx.read_position_coeffs(arrays, dtype=np.float64)
+    C = _r_compression.read_position_coeffs(arrays, dtype=np.float64)
     np.testing.assert_allclose(cx.mode_space_phi(arrays, meta, G, DT), C.reshape(C.shape[0], -1) @ W,
                                rtol=1e-12)
 
@@ -174,7 +176,7 @@ def test_compiled_scheme_and_mode_space_read_one_projection():
 def test_replay_signal_jax_takes_the_host_surface_logweight():
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
-    from dmipy_sim.replay.replay import surface_logweight
+    from dmipy_replay.replay.replay import surface_logweight
     traj = _synthetic_trajectories()[2][1]
     arrays, meta = _stored_path(traj, 16, DT)
     n_w = traj.shape[0]
@@ -185,7 +187,7 @@ def test_replay_signal_jax_takes_the_host_surface_logweight():
     W = compile_scheme(_bipolar(), DT, 16)
     slw = surface_logweight(arrays, 5e3, cm)
     E_np = replay_signal(arrays, W, rho2_over_D=5e3)
-    E_jx = np.abs(np.asarray(replay_signal_jax(cx.read_position_coeffs(arrays, dtype=np.float32),
+    E_jx = np.abs(np.asarray(replay_signal_jax(_r_compression.read_position_coeffs(arrays, dtype=np.float32),
                                                arrays["spin_weights"], W, surface_logw=slw)))
     np.testing.assert_allclose(E_jx, E_np, rtol=1e-5)
     assert E_np[0] < replay_signal(arrays, W)[0]                      # the knob bites
@@ -232,10 +234,10 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     traced batch twin equals the looped twin. Needs ``jax_enable_x64`` for the device/host parity check below
     (the ``x64`` fixture scopes it to this test and restores the flag on teardown)."""
     import dmipy_sim as d
-    from dmipy_sim.replay import (compile_scheme, replay_signal, replay_coefficients, replay_signal_jax,
-                                  replay_batch_jax, surface_logweight)
+    from dmipy_replay.replay.replay import compile_scheme, replay_signal, replay_coefficients, surface_logweight
+    from dmipy_sim.replay import replay_signal_jax, replay_batch_jax
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.replay.compression import read_position_coeffs
+    from dmipy_replay.replay.compression import read_position_coeffs
     g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), surface_relaxivity_t2=0.0)
     walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 4e-4, seed=3, require_gpu=False)
     pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4)
