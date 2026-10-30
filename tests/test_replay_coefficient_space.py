@@ -122,7 +122,7 @@ def test_no_route_decodes_a_track_or_a_trajectory(field_pack, monkeypatch):
     """With the path channel present, T2, rho2 and the field replay without reading any stored function at instants."""
     pk = field_pack
     for name in ("decode_occupancy", "local_time_at", "positions_at"):
-        monkeypatch.setattr(_cx, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"{name} was called")))
+        monkeypatch.setattr(_r_compression, name, lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"{name} was called")))
     monkeypatch.setattr(ReplayPack, "positions", lambda self: (_ for _ in ()).throw(AssertionError("positions() was decoded")))
     seq = _seqmod.pgse([[1, 0, 0]], 1e-4, 3e-4, bvalues=[5e8], TE=6e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     pk.walker_signals(seq, tissue=Tissue(T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01}, T1={"extra": 1.0, "intra": 1.2, "myelin": 0.3}))

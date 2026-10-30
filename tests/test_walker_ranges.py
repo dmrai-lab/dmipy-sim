@@ -4,6 +4,7 @@ copy-on-write and replaced rather than rewritten, and a merge streamed to its fi
 from __future__ import annotations
 
 import dmipy_replay.replay.compression as _r_compression
+import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 
@@ -74,7 +75,7 @@ def test_a_packs_shape_and_starts_are_read_without_decoding(monkeypatch, tmp_pat
 
     def refuse(*a, **k):
         raise AssertionError("a shape was read by decoding the bands")
-    monkeypatch.setattr(cx, "read_position_coeffs", refuse)
+    monkeypatch.setattr(_r_compression, "read_position_coeffs", refuse)
     assert (pk.n_walkers, pk.n_coeffs, pk.K) == (40, 10, 8)
     np.testing.assert_array_equal(pk.r0, r0)
     assert len(pk.spin_weights) == 40

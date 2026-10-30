@@ -103,9 +103,9 @@ def test_from_pulseq_native_file():
     G = np.asarray(wf.G)
     assert G.shape[0] == 1 and G.shape[2] == 3
     assert abs(float(np.abs(G).max()) - g_T) < 1e-3          # peak gradient recovered (T/m)
-    flips = sorted(e.flip_deg for e in wf.rf)
-    assert flips == [90.0, 180.0]                            # clean schedule, no duplicates
-    t180 = [e.t_s for e in wf.rf if e.flip_deg == 180.0][0]
+    flips = sorted(e.flip_deg for e in wf.rf)                # gamma int |B1| dt of the played pulses (RFEvent)
+    assert flips == pytest.approx([90.0, 180.0], abs=1e-9)   # clean schedule, no duplicates
+    t180 = [e.t_s for e in wf.rf if e.label == "refocus"][0]
     assert t180 > 0                                          # refocusing after excitation
     assert 0 <= int(wf.echo_idx) <= G.shape[1] - 1
 
