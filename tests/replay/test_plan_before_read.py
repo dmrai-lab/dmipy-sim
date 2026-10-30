@@ -211,7 +211,7 @@ def test_a_zero_gradient_row_decodes_no_position(pack):
 def test_prefixes_are_extended_not_decoded_again(pack, monkeypatch):
     calls = []
     real = _r_compression._read_position_coeffs
-    monkeypatch.setattr(cx, "_read_position_coeffs", lambda a, ax, dt, lo=0, hi=None: (calls.append((lo, hi)), real(a, ax, dt, lo, hi))[1])
+    monkeypatch.setattr(_r_compression, "_read_position_coeffs", lambda a, ax, dt, lo=0, hi=None: (calls.append((lo, hi)), real(a, ax, dt, lo, hi))[1])
     pk = _fresh(pack)
     a = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64, bands=10)
     b = _r_compression.read_position_coeffs(pk.arrays, dtype=np.float64, bands=25)          # only bands 10 .. 24 are decoded
