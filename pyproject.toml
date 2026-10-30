@@ -23,7 +23,7 @@ requires-python = ">=3.10"
 dependencies = [
     "jax>=0.6.2",
     "numpy>=2.0",
-    "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@4faa84beaf7cf2192655c46bfa06e157021c484f",  # the reader: acquisitions, the replay, the Hub client
+    "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@25a78f9f17578214aa289fe24a2be4f99c1b46be",  # the reader: acquisitions, the replay, the Hub client
     "scipy>=1.10",       # replay: DCT/low-rank compression + compiled-scheme forward; susceptibility field-map sampling
     "safetensors>=0.4",  # replay: .rpk container I/O (dmipy_sim.replay)
     "threadpoolctl>=3.1",  # the BLAS thread cap on a build whose multithreaded LAPACK hangs (dmipy_sim._blas, #564)
