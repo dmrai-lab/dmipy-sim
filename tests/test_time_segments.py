@@ -414,7 +414,7 @@ def test_the_torch_backend_is_the_jax_image(blocks):
     lay.image(seq, backend="torch", device="cpu", resident=False)
     assert set(lay._device) == before
     with pytest.raises(ValueError, match="backend"):
-        lay.image(seq, backend="numpy")
+        lay.image(seq, backend="no-such-backend")
 
 
 def test_the_field_direction_is_a_knob_contracted_in_the_kernel(blocks):
