@@ -1,14 +1,15 @@
-"""The thread cap on the LAPACK calls a known BLAS build hangs on (dmipy_sim._blas, dmrai-lab/dmipy-sim#564):
-applied only on that build, inert everywhere else, and the expansion's numbers the same either way."""
-import contextlib
+"""The CPU thread cap (dmipy_sim._blas, dmrai-lab/dmipy-sim#700) and its floor on the one BLAS build that hangs
+(#564): the cap is applied at import and readable through threadpoolctl, an explicit setting wins over the
+environment variable and the default, a bad value is refused by name, and the hanging build never runs above its
+floor whatever was asked."""
+import os
+import subprocess
+import sys
 
-import numpy as np
 import pytest
+import threadpoolctl
 
-import dmipy_sim as d
-from dmipy_sim import _blas, sequences
-from dmipy_sim.replay import read_rpk
-from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim import _blas
 
 
 def _pool(**kw):
@@ -17,47 +18,73 @@ def _pool(**kw):
     return p
 
 
+def _blas_threads():
+    return {int(p["num_threads"]) for p in threadpoolctl.threadpool_info() if p["user_api"] == "blas"}
+
+
+def _python(code, **env):
+    e = {k: v for k, v in os.environ.items() if k != _blas.ENV_VAR}
+    e.update(JAX_PLATFORMS="cpu", **env)
+    r = subprocess.run([sys.executable, "-c", code], env=e, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+_PROBE = ("import dmipy_sim, threadpoolctl\n"
+          "print(sorted({p['num_threads'] for p in threadpoolctl.threadpool_info() if p['user_api']=='blas'}))")
+
+
+def test_import_applies_the_environment_cap():
+    assert _python(_PROBE, **{_blas.ENV_VAR: "2"}) == "[2]"
+
+
+def test_unset_environment_gives_the_stated_default():
+    out = eval(_python(_PROBE))
+    assert max(out) <= _blas.DEFAULT_CPU_THREADS
+
+
+def test_an_explicit_setting_wins_over_the_environment():
+    code = ("import dmipy_sim, threadpoolctl\n"
+            "assert dmipy_sim.cap_cpu_threads(1) == 1\n"
+            "print({p['num_threads'] for p in threadpoolctl.threadpool_info() if p['user_api']=='blas'})")
+    assert _python(code, **{_blas.ENV_VAR: "3"}) == "{1}"
+
+
+def test_the_cap_is_applied_and_readable_in_process():
+    try:
+        assert _blas.cap_cpu_threads(1) == 1
+        assert _blas_threads() == {1}
+    finally:
+        _blas.cap_cpu_threads(_blas.cpu_threads())
+
+
+@pytest.mark.parametrize("bad", [0, -1, 2.5, "3", True])
+def test_a_bad_argument_is_refused_by_name(bad):
+    with pytest.raises(ValueError, match="n="):
+        _blas.cpu_threads(bad)
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "3.5", "abc", " ", "1e3"])
+def test_a_bad_environment_value_is_refused_by_name(monkeypatch, bad):
+    monkeypatch.setenv(_blas.ENV_VAR, bad)
+    with pytest.raises(ValueError, match=_blas.ENV_VAR):
+        _blas.cpu_threads()
+
+
 @pytest.mark.parametrize("pool", [_pool(version="0.3.27"), _pool(architecture="Haswell"), _pool(internal_api="mkl"),
                                   _pool(num_threads=8), _pool(user_api="openmp")])
-def test_an_unaffected_build_is_left_alone(monkeypatch, pool):
-    import threadpoolctl
-
-    def no_limits(*a, **k):
-        raise AssertionError("the guard capped an unaffected build")
-
+def test_an_unaffected_build_gets_exactly_what_was_asked(monkeypatch, pool):
+    calls = []
     monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [pool])
-    monkeypatch.setattr(threadpoolctl, "threadpool_limits", no_limits)
-    assert isinstance(_blas.lapack_threads(), contextlib.nullcontext)
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k))
+    _blas._cap_blas(72)
+    assert calls == [dict(limits=72, user_api="blas")]
 
 
-def test_the_hanging_build_is_capped(monkeypatch):
-    import threadpoolctl
+@pytest.mark.parametrize("asked,held", [(72, _blas.SAFE_THREADS), (3, 3)])
+def test_the_hanging_build_never_exceeds_its_floor(monkeypatch, asked, held):
     calls = []
     monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [_pool()])
-    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k) or contextlib.nullcontext())
-    with _blas.lapack_threads():
-        pass
-    assert calls == [dict(limits=_blas.SAFE_THREADS, user_api="blas")]
-
-
-@pytest.fixture(scope="module")
-def pack(tmp_path_factory):
-    g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
-    p = tmp_path_factory.mktemp("pk") / "c.rpk"
-    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
-    return read_rpk(str(p))
-
-
-def test_the_residual_bound_is_the_same_numbers_guarded_or_not(pack, monkeypatch):
-    """The residual's SVD in the closed form's bound, with the guard forced on (the real thread cap applied) and
-    off: the same expansion and the same misfit, to the bit."""
-    played = sequences.pgse([[1, 0, 0], [0.0, 0.6, 0.8]], 2e-3, 5e-3, gradient_strengths=[0.3, 0.3], TE=10e-3,
-                            slew_rate=200.0).with_concomitant(np.array([0.03, 0.05, 0.06]), 0.5)
-    monkeypatch.setattr(_blas, "_affected", lambda: [])
-    off = pack.pose_response(played)
-    monkeypatch.setattr(_blas, "_affected", lambda: [_pool()])
-    on = pack.pose_response(played)
-    assert off.route == "closed" and off.misfit.max() > 1e-3                 # the bound is in play
-    np.testing.assert_array_equal(on.coeffs, off.coeffs)
-    np.testing.assert_array_equal(on.misfit, off.misfit)
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k))
+    _blas._cap_blas(asked)
+    assert calls == [dict(limits=held, user_api="blas")]

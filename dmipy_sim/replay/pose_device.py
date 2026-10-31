@@ -431,6 +431,8 @@ def route(device):
     torch on CUDA when it is available, else on its CPU, and ``"torch:<device>"`` names the torch device."""
     if isinstance(device, str) and (device == "torch" or device.startswith("torch:")):
         import torch
+        from .._blas import cap_cpu_threads
+        cap_cpu_threads()
         name = device[6:] or ("cuda" if torch.cuda.is_available() else "cpu")
         return "torch", torch.device(name)
     return resolve_device(device), None

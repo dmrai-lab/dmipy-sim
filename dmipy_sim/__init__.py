@@ -13,6 +13,10 @@ pulse-sequence and substrate interface with ``dmipy-fit``.
 from .engine._gpu_config import apply_gpu_mem_cap as _apply_gpu_mem_cap, configure  # noqa: E402
 _apply_gpu_mem_cap()
 
+# Own the CPU thread count (DMIPY_SIM_CPU_THREADS) BEFORE any submodule imports JAX: see dmipy_sim._blas.
+from ._blas import cap_cpu_threads  # noqa: E402
+cap_cpu_threads()
+
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories, walk_cost, certify_bounce_budget
 from .spec.walk import walk_spec
 from .engine.mt_walk import simulate_mt_trajectories

@@ -1475,7 +1475,6 @@ class ReplayPack(_ReplayPack):
         :meth:`_pose_coeffs_closed_many`: on torch the walkers' contractions run on its device (the SVD of the
         residuals, a few thousand by the waveform's samples, on the host)."""
         from dmipy_replay.replay.compression import read_position_coeffs
-        from .._blas import lapack_threads
         from .pose_device import route
         todo = [c for c, q in enumerate(per) if q is not None and q["residual"].size]
         if not todo:
@@ -1499,8 +1498,7 @@ class ReplayPack(_ReplayPack):
                     d_beta = (q["beta"][rows] - q["beta"][ref]) / np.where(q["beta"][rows] > 0, q["beta"][rows], 1.0)
                     res = res + (d_beta[:, None] * q["g0"][rows])[:, None, :] * np.asarray(q["gate"], np.float64)[None, :, None]
                 X = res.transpose(0, 2, 1).reshape(-1, res.shape[1])                              # (n_r * 3, n_wf)
-                with lapack_threads():                                                            # #564: this shape hangs a known build
-                    U, S, Vt = np.linalg.svd(X, full_matrices=False)
+                U, S, Vt = np.linalg.svd(X, full_matrices=False)
                 k = int(np.sum(S > 1e-12 * S[0])) if S.size and S[0] > 0 else 0
                 if k == 0:
                     continue
