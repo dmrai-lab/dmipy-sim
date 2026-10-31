@@ -12,7 +12,7 @@ from dmipy_sim.io.strands import write_tck
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.replay import ReplayPack
-from dmipy_sim.fill.consolidate import consolidate, append, band_groups_of
+from dmipy_sim.replay.consolidate import consolidate, append, band_groups_of
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
@@ -237,7 +237,7 @@ def test_shards_prepared_apart_and_appended_in_order_write_the_streaming_passs_l
     appended in block order across a checkpoint and a resume, writes the layout ``consolidate`` writes: the same
     column bytes, index and manifest."""
     import json
-    from dmipy_sim.fill.consolidate import Consolidator, PreparedBlock, prepare_block
+    from dmipy_sim.replay.consolidate import Consolidator, PreparedBlock, prepare_block
     from dmipy_sim.replay.replay import read_rpk
     out, manifest, index, _, _, _, _, tmp = layout
     names = ["block-0000.p1.rpk", "block-0001.p1.rpk"]
@@ -256,7 +256,7 @@ def test_shards_prepared_apart_and_appended_in_order_write_the_streaming_passs_l
 
 def test_a_shard_prepared_on_another_grid_is_refused(layout, tmp_path):
     """A shard whose rows were sorted on a grid other than the layout's does not append."""
-    from dmipy_sim.fill.consolidate import Consolidator, prepare_block
+    from dmipy_sim.replay.consolidate import Consolidator, prepare_block
     from dmipy_sim.replay.replay import read_rpk
     _, _, _, _, _, grid, _, tmp = layout
     con = Consolidator(str(tmp_path / "out"))

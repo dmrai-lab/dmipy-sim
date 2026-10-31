@@ -1,4 +1,4 @@
-"""The shards of a fill consolidated into the columnar layout of :mod:`dmipy_sim.replay.columnar` (dmipy-sim#290), in
+"""The shards of one dataset consolidated into the columnar layout of :mod:`dmipy_sim.replay.columnar` (dmipy-sim#290), in
 one streaming pass: every shard is fetched, split into its columns and appended to the open part of each column,
 then deleted; a part that reaches ``cap_bytes`` is closed and uploaded while the pass goes on, so the machine that
 consolidates never holds more than the open parts. Rows are ordered by (block, voxel, pool), so the row index is
@@ -16,9 +16,9 @@ which measures no floor) is certified here on the recipe's grid (``--manifest``,
 layout read the field at the intervals of their own rounds; the layout records the coarsest and its term
 (:func:`~dmipy_sim.replay.bank.charge_field_read`).
 
-    python -m dmipy_sim.fill.consolidate --repo OWNER/NAME --shards blocks/disco --out DIR --upload disco
-    python -m dmipy_sim.fill.consolidate --shards DIR_OF_SHARDS --manifest manifest.json --out DIR --blocks 0-3 --id NAME
-    python -m dmipy_sim.fill.consolidate --repo OWNER/NAME --out DIR --upload disco --append DIR_OF_SHARDS --pass 3
+    python -m dmipy_sim.replay.consolidate --repo OWNER/NAME --shards blocks/disco --out DIR --upload disco
+    python -m dmipy_sim.replay.consolidate --shards DIR_OF_SHARDS --manifest manifest.json --out DIR --blocks 0-3 --id NAME
+    python -m dmipy_sim.replay.consolidate --repo OWNER/NAME --out DIR --upload disco --append DIR_OF_SHARDS --pass 3
     consolidate(shards, out_dir, blocks=..., grid=...)          # from Python, a directory of shards, nothing uploaded
 
 The layout: ``manifest.json`` (the merged meta as :func:`~dmipy_sim.replay.bank.merge_packs` writes it, plus
@@ -45,7 +45,27 @@ PATH_GROUPS = (8, 16, 32)                                  # cumulative mode cou
 POOL_KEY = "comp_static"
 HEADER_PAD = 256
 ST_DTYPE = {"float16": "F16", "float32": "F32", "float64": "F64", "int8": "I8", "int16": "I16", "int32": "I32", "int64": "I64", "uint8": "U8", "uint16": "U16", "bool": "BOOL"}
-log = logging.getLogger("dmipy_sim.fill")
+log = logging.getLogger("dmipy_sim.replay.consolidate")
+
+
+def shard_name(block, P):
+    """``block-NNNN`` for the whole block, ``block-NNNN.pK`` for pass K of it (``P`` carries ``pass``, None for the whole block)."""
+    return f"block-{block:04d}" + (f".p{P['pass']}" if P.get("pass") is not None else "")
+
+
+def parse_shard(f):
+    """``(block, pass)`` of a shard or claim path (``.../block-0012.p1.rpk``, ``.../block-0012.host.json``);
+    ``pass`` None for the whole block."""
+    rest = f.split("block-")[1]; block = int(rest[:4]); tag = rest[4:].split(".")
+    p = tag[1] if len(tag) > 1 else ""
+    return block, (int(p[1:]) if p.startswith("p") and p[1:].isdigit() else None)
+
+
+def manifest_grid(man):
+    """The voxel grid a manifest states (``grid``: ``shape``, ``voxel_size_m``, ``origin_m``), attached to the substrate."""
+    from ..phantom import Grid
+    G = man["grid"]
+    return Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
 
 
 def band_groups_of(K, container):
@@ -256,7 +276,7 @@ def certify_voxels(name, pk, grid):
     """``pk.meta`` of a shard on the recipe's ``grid``: a shard with a per-voxel certificate must be on that grid; one
     without is certified here (:func:`~dmipy_sim.replay.bank.voxel_certificate`), and the voxel its walker states (a
     writer's walker-leading ``voxel_ijk``) is checked against the binning of its start."""
-    from ..replay.bank import _agree, voxel_certificate
+    from .bank import _agree, voxel_certificate
     from dmipy_replay.phantom.grid import Grid
     meta = pk.meta; pv = (meta.get("fidelity") or {}).get("per_voxel")
     if pv is not None:
@@ -363,7 +383,7 @@ def shard_identity(pk, grid=None):
     """What every shard of one layout shares: its walk (block and window table), codec, substrate, envelope, the
     grid it is certified on (its own per-voxel certificate's, else the recipe's ``grid``; None when neither) and the
     names of its tensors."""
-    from ..replay.bank import _codec_signature, _spec_identity, _walk_identity, _envelope_identity
+    from .bank import _codec_signature, _spec_identity, _walk_identity, _envelope_identity
     meta = pk.meta
     return dict(walk_params=_walk_identity(meta["walk_params"]), compression=_codec_signature(meta["compression"]),
                 substrate=_spec_identity(meta.get("substrate")), replay_envelope=_envelope_identity(meta.get("replay_envelope")),
@@ -377,8 +397,8 @@ def prepare_block(name, pk, grid=None, layout_grid=None):
     grid's meta: the layout's; None: the shard's own) and ordered by (voxel, pool), its band and mode variances summed
     over the walkers and maximised over its populated voxels, a walker range at a time. Everything here is the
     shard's own: shards prepare independently and in any order, and append in the layout's."""
-    from ..replay.bank import field_read_record, _MEASURED_CHANNEL_KEYS
-    from ..replay.compression import SLICE_BYTES, slice_walkers
+    from .bank import field_read_record, _MEASURED_CHANNEL_KEYS
+    from .compression import SLICE_BYTES, slice_walkers
     from dmipy_replay.replay.compression import read_position_coeffs, walker_rows
     from dmipy_replay.phantom.grid import Grid
     meta = pk.meta; n = int(meta["walk_params"]["n_walkers"])
@@ -482,7 +502,7 @@ class Consolidator:
 
     def _refuse_other(self, name, ident):
         """Refused when shard ``name``'s :func:`shard_identity` differs from the layout's first, naming the key."""
-        from ..replay.bank import _agree
+        from .bank import _agree
         if self.meta0 is None:
             return
         for k, v in ident.items():
@@ -590,7 +610,7 @@ class Consolidator:
     # ---- the end
     def finish(self, id):
         from safetensors.numpy import save_file
-        from ..replay.bank import charge_field_read, per_voxel_summary
+        from .bank import charge_field_read, per_voxel_summary
         for c in self.columns.values():
             c.close_part()
         tables = {k: np.concatenate(v) for k, v in self.scales.items()}
@@ -603,7 +623,7 @@ class Consolidator:
             return out
         ijk = np.concatenate([c[0] for c in self.certs]); cert = np.concatenate([aligned(c[1], c[2]) for c in self.certs])
         keys_all = np.ravel_multi_index(tuple(ijk.T), tuple(self.grid.shape))
-        from ..replay.bank import held_voxels
+        from .bank import held_voxels
         held = held_voxels(cert)
         rep = self.repaired
         if rep:                                                # a repaired voxel's row is the repair's
@@ -651,7 +671,7 @@ class Consolidator:
                     if all(v is not None for v in vals):
                         m[k] = float(max(vals))
         if comp_meta.get("walker_preserving"):
-            from ..replay.bank import _precision_tiers
+            from .bank import _precision_tiers
             shapes = {k: np.broadcast_to(np.zeros((), c_.dtype), (self.n_rows, *c_.row_shape)) for k, c_ in self.columns.items()}
             shapes.update(tables)
             comp_meta["precision_tiers"] = _precision_tiers(shapes, self.n_rows, float(fid.get("floor_max") or 0.0), False)
@@ -696,7 +716,6 @@ def _shard_names(b, shards, pass_):
     (``block-NNNN[.pK].s<idx>.<pool>.r<r>.rpk``); a shard without a summary (a walk that failed) contributes
     nothing. Empty when the block has none."""
     import re
-    from .claims import shard_name
     for P in ({"pass": pass_}, {}):
         one = shard_name(b, P) + ".rpk"
         if one in shards:
@@ -723,7 +742,6 @@ def _shard_names(b, shards, pass_):
 def _block_name(b, names, pass_):
     """The name a block's rows are recorded under: its single shard's, else the block's own (the pass file's when
     the round shards are the pass's)."""
-    from .claims import shard_name
     if len(names) == 1:
         return names[0]
     return shard_name(b, {"pass": pass_} if f".p{pass_}." in names[0] else {}) + ".rpk"
@@ -735,7 +753,7 @@ def _fetch_block(b, names, sh, scratch, pass_, read_rpk):
     paths = [sh.fetch(n, scratch) for n in names]
     if len(paths) == 1:
         return read_rpk(paths[0]), paths
-    from ..replay.bank import merge_packs
+    from .bank import merge_packs
     return merge_packs(paths, id=_block_name(b, names, pass_), overlap="recertify"), paths
 
 
@@ -743,9 +761,9 @@ def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None,
     """The shards of ``blocks`` (their indices; ``block-NNNN.p<pass>.rpk`` where it exists, else the whole block,
     else the block's round shards merged into the block's pack) from ``shards`` (a directory, or a prefix of
     ``repo``) into the layout under ``out_dir``, published under ``upload`` on ``repo`` when given. ``grid`` is the
-    recipe's voxel grid (:func:`~dmipy_sim.fill.recipe.manifest_grid`): the per-voxel certificate of every shard that
+    recipe's voxel grid (:func:`manifest_grid`): the per-voxel certificate of every shard that
     carries none is measured on it. Returns ``(manifest, index)``."""
-    from ..replay.replay import read_rpk
+    from .replay import read_rpk
     sh = Shards(shards, repo); up = Uploader(repo, upload)
     con = Consolidator(out_dir, cap_bytes, up, grid=grid)
     if resume:
@@ -776,13 +794,12 @@ def append(shards_dir, out_dir, *, id, pass_, repo=None, upload=None, cap_bytes=
     ``block-NNNN.p<pass>.<pool>.r<r>.rpk``, merged) appended to the layout under
     ``out_dir`` (its checkpoint resumed): the union weights on both sides, the old rows patched in their weights
     part, the repaired pools' certificate rows the union's. Returns ``(manifest, index)``."""
-    from ..replay.replay import read_rpk
+    from .replay import read_rpk
     up = Uploader(repo, upload); con = Consolidator(out_dir, cap_bytes, up); con.resume()
     n_before = len(con.done); boundary = con.n_rows
     old_ranges = {}
     for v, p, s, e in con.index:
         old_ranges.setdefault((v, p), []).append((s, e))
-    from .claims import parse_shard
     sh = Shards(shards_dir)
     blocks = sorted({b for b, p in map(parse_shard, sh.names) if p == pass_})
     union = {}; repaired = set()
@@ -896,7 +913,6 @@ def main():
         append(a.append, a.out, id=a.id, pass_=a.pass_, repo=a.repo, upload=a.upload, cap_bytes=a.part_bytes); return
     grid = None
     if a.manifest or a.repo:
-        from .recipe import manifest_grid
         path = a.manifest
         if path is None:
             from huggingface_hub import hf_hub_download

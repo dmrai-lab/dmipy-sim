@@ -16,7 +16,7 @@ from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.fill.consolidate import consolidate
+from dmipy_sim.replay.consolidate import consolidate
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_sim.spec import Tissue

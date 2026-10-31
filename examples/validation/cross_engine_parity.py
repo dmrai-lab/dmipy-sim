@@ -194,7 +194,7 @@ def disimpy_spec(data):
     the pickle it came from is cited by sha256 in the provenance."""
     import dataclasses
     from dmipy_sim.spec import spec_of
-    from dmipy_sim.fill.hub import sha256_of
+    from dmipy_sim.replay.hub import sha256_of
     pkl = os.path.join(data, "disimpy", "tests", "cylinder_mesh_closed.pkl")
     g = _disimpy_mesh_object(data)
     spec = spec_of(g, id="disimpy/cylinder_mesh_closed", provenance={

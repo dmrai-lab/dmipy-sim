@@ -1,7 +1,7 @@
 """The columnar layout of a replay pack (dmipy-sim#290), the reader being :class:`dmipy_replay.replay.columnar.ColumnarPack`:
 :class:`ColumnarPack` is that reader with this package's :class:`~dmipy_sim.replay.replay.ReplayPack` as its views, the JAX
 voxel sums as an image backend (the default here), and the image of a :class:`~dmipy_sim.replay.study.Study`
-(:meth:`ColumnarPack.image_study`). The layout is written by :mod:`dmipy_sim.fill.consolidate`.
+(:meth:`ColumnarPack.image_study`). The layout is written by :mod:`dmipy_sim.replay.consolidate`.
 
     pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")
     plan = pack.plan(seq, tissue=..., scanner=...)                          # bands, modes, tiers, bytes: before any transfer

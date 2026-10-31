@@ -1373,10 +1373,10 @@ def _write_run_sidecar(out_path, run, walk):
     of a bank's packs -- the small or fast ones, this module's own tests among them -- would have no such
     directory to hold a sidecar. A file written next to the pack it describes exists exactly when the pack does.
 
-    Names the pack's own sha256 (:func:`dmipy_sim.fill.hub.sha256_of`, what a consumer pins --
+    Names the pack's own sha256 (:func:`dmipy_sim.replay.hub.sha256_of`, what a consumer pins --
     :func:`dmipy_sim.replay.publish.manifest_row`), so the sidecar for a pack found by its hash is the one its
     bytes point to. Returns the sidecar's path."""
-    from ..fill.hub import sha256_of
+    from .hub import sha256_of
     w = getattr(walk, "run", None)
     sha = sha256_of(out_path)
     sidecar = dict(pack_sha256=sha, pack=run.summary,

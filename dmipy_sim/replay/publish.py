@@ -4,8 +4,8 @@ commit, and verifies what the hub holds; :func:`fetch` brings ``hf://owner/name/
 and checks it against that manifest.
 
 The hub is whatever the caller names: ``repo`` is ``owner/name`` and the commits go through a
-:class:`~dmipy_sim.fill.hub.Hub`-like object (``commit``, ``exists``, ``get_live``), the real one by default,
-a :class:`~dmipy_sim.fill.hub.FakeHub` in the tests. The pack's own header is the record: a pack carries its
+:class:`~dmipy_sim.replay.hub.Hub`-like object (``commit``, ``exists``, ``get_live``), the real one by default,
+a :class:`~dmipy_sim.replay.hub.FakeHub` in the tests. The pack's own header is the record: a pack carries its
 ``id``, ``license``, ``citation`` and ``fidelity`` and one without any of them is refused, since those are the
 contract a consumer reads. The manifest (``{"schema": "substratecommons/1", "substrate": ..., "packs": [row, ...]}``)
 holds one row per published file, keyed on the path, and the card is rendered from the manifest alone, never
@@ -25,7 +25,7 @@ import tempfile
 
 import numpy as np
 
-from ..fill.hub import is_not_found, sha256_of
+from .hub import is_not_found, sha256_of
 
 SCHEMA = "substratecommons/1"
 log = logging.getLogger("dmipy_sim.replay")
@@ -315,7 +315,7 @@ def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_
     ``pack_or_path`` is a ``.rpk`` file or a :class:`~dmipy_sim.replay.ReplayPack` (written to a temporary
     file first: the bytes uploaded are the bytes hashed). ``path`` defaults to ``packs/<id>.rpk`` with the id's
     slashes replaced. The file, the manifest row (replacing the row at the same path) and the regenerated card go
-    up in ONE commit through ``hub`` (default :class:`~dmipy_sim.fill.hub.Hub`); afterwards the sha256 the hub
+    up in ONE commit through ``hub`` (default :class:`~dmipy_sim.replay.hub.Hub`); afterwards the sha256 the hub
     holds is read back and must equal the manifest's.
 
     ``published_commit`` names the manifest row's own commit (dmipy-sim#499): the commit of the code THIS call is
@@ -341,7 +341,7 @@ def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_
 def _publish_file(local, meta, repo, *, path, hub, message, published_commit=None):
     _check_contract(meta)
     if hub is None:
-        from ..fill.hub import Hub
+        from .hub import Hub
         hub = Hub(repo)
     path = path or f"packs/{str(meta['id']).replace('/', '-')}.rpk"
     if published_commit is None:
@@ -352,7 +352,7 @@ def _publish_file(local, meta, repo, *, path, hub, message, published_commit=Non
             published_commit = None
     sha, nbytes = sha256_of(local), os.path.getsize(local)
     row = manifest_row(meta, path, sha, nbytes, local=local, published_commit=published_commit)
-    from ..fill.hub import StaleParent
+    from .hub import StaleParent
     for attempt in range(MANIFEST_TRIES):
         # the manifest is read at the head and the commit declares that head as its parent: two publishers of one
         # dataset (a build and a sync loop) each read, add a row and write, and without the parent the later

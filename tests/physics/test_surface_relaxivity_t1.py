@@ -186,7 +186,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
-    from dmipy_sim.fill.consolidate import consolidate
+    from dmipy_sim.replay.consolidate import consolidate
     from dmipy_sim.spec import disco_spec, StratifiedByVoxel
     from dmipy_sim import walk
     from dmipy_sim.replay.study import Protocol, Study
