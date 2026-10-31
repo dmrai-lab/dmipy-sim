@@ -29,7 +29,7 @@ a = ap.parse_args()
 hdr = np.fromfile(f"{a.prefix}_0.bhdr", dtype=np.float32)
 n, n_saves = int(hdr[1]), int(hdr[2])
 positions = np.fromfile(f"{a.prefix}_0.traj", dtype=np.float32).reshape(n, n_saves, 3) * np.float32(1e-3)   # mm -> m
-walk = walk_from_positions(positions, dt_save=a.T / (n_saves - 1), K=a.K, pool=a.pool, spec=load_spec(a.spec), D=a.D,
+walk = walk_from_positions(positions, sample_interval=a.T / (n_saves - 1), K=a.K, pool=a.pool, spec=load_spec(a.spec), D=a.D,
                            producer=dict(engine="MC/DC", version=a.version, trajectory_file=f"{a.prefix}_0.traj"), seed=a.seed)
 pack = build_replay_pack(walk, id=f"foreign/mcdc/{a.prefix.rsplit('/', 1)[-1]}", license=a.license, citation=a.citation,
                          out_path=a.out)

@@ -27,7 +27,7 @@ def _free(n, N, h, seed):
 
 
 def _walk(x, h, K, **kw):
-    return walk_from_positions(x, dt_save=h, K=K, pool="intra", spec=_spec(), D=D0, producer=PRODUCER, **kw)
+    return walk_from_positions(x, sample_interval=h, K=K, pool="intra", spec=_spec(), D=D0, producer=PRODUCER, **kw)
 
 
 def test_the_bands_are_the_exact_projection_of_the_piecewise_linear_path():
@@ -80,13 +80,13 @@ def test_a_cylinder_walk_re_encoded_from_its_saves_replays_within_its_certificat
         nat = d.simulate_trajectories(400, D0, g, 0.01, K=24, block_h=1e-4, seed=3, require_gpu=False, sub_steps=4, raw_subset=400)
     x = nat.raw_positions[:, ::2].astype(np.float64)                                   # saves every 0.2 ms
     h = 2e-4
-    fw = walk_from_positions(x, dt_save=h, K=20, pool="intra", spec=nat.spec, D=D0, producer=PRODUCER)
+    fw = walk_from_positions(x, sample_interval=h, K=20, pool="intra", spec=nat.spec, D=D0, producer=PRODUCER)
     env = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
                shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
     pf = build_replay_pack(fw, id="t/foreign", license="x", citation="x", envelope=env)
     pn = build_replay_pack(nat, id="t/native", license="x", citation="x", envelope=env, K=20)
     fid = pf.fidelity
-    assert fid["source"]["engine"] == "synthetic" and fid["source"]["limited_by"] == "save grid" and fid["source"]["dt_save"] == h
+    assert fid["source"]["engine"] == "synthetic" and fid["source"]["limited_by"] == "save grid" and fid["source"]["sample_interval"] == h
     assert fid["terms"]["quadrature"]["positions"] == pytest.approx(fid["err_quadrature"], rel=1e-5) and fid["err_quadrature"] > 0
     assert pf.meta["walk_params"]["producer"]["version"] == "0" and pf.meta["compression"]["channels"].get("boundary_local_time") is None
     assert "compartment" in pf.meta["compression"]["channels"]
@@ -112,13 +112,13 @@ def test_refusals_by_name(good):
         _walk(good, h, 30)
     _walk(good, h, 29)
     with pytest.raises(ValueError, match="producer names the engine"):
-        walk_from_positions(good, dt_save=h, K=8, pool="intra", spec=_spec(), D=D0, producer=None)
+        walk_from_positions(good, sample_interval=h, K=8, pool="intra", spec=_spec(), D=D0, producer=None)
     with pytest.raises(ValueError, match="producer names the engine"):
-        walk_from_positions(good, dt_save=h, K=8, pool="intra", spec=_spec(), D=D0, producer=dict(engine="x"))
+        walk_from_positions(good, sample_interval=h, K=8, pool="intra", spec=_spec(), D=D0, producer=dict(engine="x"))
     with pytest.raises(ValueError, match="not a pool of the substrate"):
-        walk_from_positions(good, dt_save=h, K=8, pool="myelin", spec=_spec(), D=D0, producer=PRODUCER)
+        walk_from_positions(good, sample_interval=h, K=8, pool="myelin", spec=_spec(), D=D0, producer=PRODUCER)
     with pytest.raises(TypeError, match="SubstrateSpec"):
-        walk_from_positions(good, dt_save=h, K=8, pool="intra", spec=_spec().to_dict(), D=D0, producer=PRODUCER)
+        walk_from_positions(good, sample_interval=h, K=8, pool="intra", spec=_spec().to_dict(), D=D0, producer=PRODUCER)
     wrapped = good.copy(); wrapped[:, 15:] += 5e-5                                      # a periodic wrap: a jump of 50 um
     with pytest.raises(ValueError, match="wrapped at a periodic boundary"):
         _walk(wrapped, h, 8)

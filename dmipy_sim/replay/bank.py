@@ -2305,7 +2305,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         qv["field_increments"] = [float(x) for x in np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0)]
         wp_field["field_read_interval"] = float(cw.field_read_interval)
     if source is not None:                       # what the band is limited by: another engine's save grid
-        fid["source"] = dict(kind=source["kind"], engine=source["engine"], version=source["version"], dt_save=source["dt_save"],
+        fid["source"] = dict(kind=source["kind"], engine=source["engine"], version=source["version"], sample_interval=source["sample_interval"],
                              K_max=source["K_max"], limited_by="save grid",
                              interpolation_variance_bound_m2=source["interpolation_variance_bound_value_m2"],
                              err_interpolation=float(fid["err_quadrature"]))

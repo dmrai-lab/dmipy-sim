@@ -28,7 +28,7 @@ ap.add_argument("--license", default="CC-BY-4.0"); ap.add_argument("--citation",
 a = ap.parse_args()
 
 positions = np.fromfile(a.file, dtype=np.float32).reshape(-1, a.n_saves, 3)
-walk = walk_from_positions(positions, dt_save=a.T / (a.n_saves - 1), K=a.K, pool=a.pool, spec=load_spec(a.spec), D=a.D,
+walk = walk_from_positions(positions, sample_interval=a.T / (a.n_saves - 1), K=a.K, pool=a.pool, spec=load_spec(a.spec), D=a.D,
                            producer=dict(engine="MCMRSimulator.jl", version=a.version, export_file=a.file.rsplit("/", 1)[-1]),
                            seed=a.seed)
 pack = build_replay_pack(walk, id=f"foreign/mcmrsimulator/{a.file.rsplit('/', 1)[-1].rsplit('.', 1)[0]}", license=a.license,

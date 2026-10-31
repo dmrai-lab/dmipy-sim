@@ -2,12 +2,12 @@
 of a replay pack, and nothing else.
 
 :func:`walk_from_positions` takes the positions ``(n_walkers, n_saves, 3)`` (metres, unwrapped) another engine
-recorded at ``t = j dt_save`` and returns the :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` of ONE window of
-``T = (n_saves - 1) dt_save``, which :func:`~dmipy_sim.replay.bank.build_replay_pack` packs like any producer's walk.
+recorded at ``t = j sample_interval`` and returns the :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` of ONE window of
+``T = (n_saves - 1) sample_interval``, which :func:`~dmipy_sim.replay.bank.build_replay_pack` packs like any producer's walk.
 No file is read here: a file format is the caller's (``examples/foreign/`` has one script per engine).
 
 **The bands.** The window's start and displacement are the first and last save. The bridge ``y_i = x_i - x_0 - (i / N)
-(x_N - x_0)`` (``N = n_saves - 1`` intervals of ``h = dt_save``) is zero at both ends; ``beta_k`` is the projection of
+(x_N - x_0)`` (``N = n_saves - 1`` intervals of ``h = sample_interval``) is zero at both ends; ``beta_k`` is the projection of
 its piecewise-linear interpolant ``L`` on ``s_k = sqrt(2 / T) sin(pi k t / T)``. The quadrature is EXACT for ``L``: the
 integral of a hat function ``h_i`` against ``sin(omega t)`` is ``h sinc^2(omega h / 2 pi) sin(omega t_i)``, so
 
@@ -35,7 +35,7 @@ the quotient falling monotonically from ``1/3`` at ``x -> 0`` to ``0.24`` at ``x
 DST-I diagonalises the discrete bridge), so over a gradient waveform with sine weights ``W_kc`` the replayed phase
 carries the variance ``gamma^2 sum_{k,c} W_kc^2 Var(e_k)`` and the signal at most half of it:
 ``err_quadrature <= gamma^2 sum_{k,c} W_kc^2 D h^2 / 12``. That is the pack's
-quadrature term, from ``D`` and ``dt_save`` alone (:func:`~dmipy_sim.replay.bank._derived_certificate`, ``band_var``),
+quadrature term, from ``D`` and ``sample_interval`` alone (:func:`~dmipy_sim.replay.bank._derived_certificate`, ``band_var``),
 and the truncation beyond ``K`` is charged as for every pack. The bound is derived for a free Brownian path; a
 restricted walk's bridge is no rougher (the same statement the block quadrature makes), and it is stated at the
 walker's ``D`` as given. A foreign engine's own step error (an engine stepping coarser than its saves) is not in it.
@@ -61,16 +61,16 @@ def band_limit(n_saves):
     return int(n_saves) - 2
 
 
-def interpolation_variance(D, dt_save, K, N):
+def interpolation_variance(D, sample_interval, K, N):
     """Var of the interpolation error ``e_k`` of the bands ``k = 1..K`` of a free Brownian path at diffusivity ``D``
-    through saves ``dt_save`` apart over ``N`` intervals, per axis (m^2): ``(D h^2 / 2) (x^2 - sin^2 x) / x^4`` with ``x = pi k / 2N``."""
+    through saves ``sample_interval`` apart over ``N`` intervals, per axis (m^2): ``(D h^2 / 2) (x^2 - sin^2 x) / x^4`` with ``x = pi k / 2N``."""
     x = np.pi * np.arange(1, int(K) + 1) / (2.0 * int(N))
-    return 0.5 * float(D) * float(dt_save) ** 2 * (x ** 2 - np.sin(x) ** 2) / x ** 4
+    return 0.5 * float(D) * float(sample_interval) ** 2 * (x ** 2 - np.sin(x) ** 2) / x ** 4
 
 
-def interpolation_variance_bound(D, dt_save):
-    """The bound on every band's interpolation variance, per axis (m^2): ``D dt_save^2 / 6``."""
-    return float(D) * float(dt_save) ** 2 / 6.0
+def interpolation_variance_bound(D, sample_interval):
+    """The bound on every band's interpolation variance, per axis (m^2): ``D sample_interval^2 / 6``."""
+    return float(D) * float(sample_interval) ** 2 / 6.0
 
 
 def _bands(y, N, K, h):
@@ -82,15 +82,15 @@ def _bands(y, N, K, h):
     return d * scale[None, :, None]
 
 
-def walk_from_positions(positions, *, dt_save, K, pool, spec, D, producer, times=None, seed=None):
+def walk_from_positions(positions, *, sample_interval, K, pool, spec, D, producer, times=None, seed=None):
     """The coefficient walk of positions another engine sampled on a uniform save grid.
 
     Parameters
     ----------
     positions : (n_walkers, n_saves, 3) array
-        Metres, unwrapped (continuous through any periodic boundary), save ``j`` at ``t = j dt_save``: the grid
+        Metres, unwrapped (continuous through any periodic boundary), save ``j`` at ``t = j sample_interval``: the grid
         starts at ``t = 0`` and is uniform. A float32 export is accepted; its resolution is recorded.
-    dt_save : float
+    sample_interval : float
         The save interval (s).
     K : int
         Bands per axis. Required: at most :func:`band_limit` (``n_saves - 2``), else refused by name.
@@ -105,14 +105,14 @@ def walk_from_positions(positions, *, dt_save, K, pool, spec, D, producer, times
         The producing engine: at least ``engine`` and ``version`` (strings); any further JSON-serialisable keys (the
         engine's seed, step, configuration) are kept. Required.
     times : (n_saves,) array, optional
-        The engine's recorded save times; checked against ``j dt_save``, and refused when they differ.
+        The engine's recorded save times; checked against ``j sample_interval``, and refused when they differ.
     seed : int, optional
         The engine's seed, recorded as the walk's.
 
     Returns
     -------
     :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`
-        One window, position channel and the static pool label only; ``m = 0``, ``h = dt_save``.
+        One window, position channel and the static pool label only; ``m = 0``, ``h = sample_interval``.
     """
     from dmipy_replay.spec.substrate import SubstrateSpec
     pos = np.asarray(positions)
@@ -121,14 +121,14 @@ def walk_from_positions(positions, *, dt_save, K, pool, spec, D, producer, times
     n, n_saves = int(pos.shape[0]), int(pos.shape[1])
     if n < 1 or n_saves < 4:
         raise ValueError(f"a walk of saves needs at least one walker and 4 saves (K >= 1 resolves n_saves - 2); got {n} x {n_saves}")
-    dt_save = float(dt_save)
-    if not (np.isfinite(dt_save) and dt_save > 0.0):
-        raise ValueError(f"dt_save is the save interval in seconds, > 0; got {dt_save!r}")
+    sample_interval = float(sample_interval)
+    if not (np.isfinite(sample_interval) and sample_interval > 0.0):
+        raise ValueError(f"sample_interval is the save interval in seconds, > 0; got {sample_interval!r}")
     if times is not None:
         t = np.asarray(times, np.float64)
-        want = dt_save * np.arange(n_saves)
-        if t.shape != want.shape or np.abs(t - want).max() > 1e-6 * dt_save:
-            raise ValueError(f"the saves are not on the uniform grid t = j * dt_save from t = 0 (dt_save = {dt_save:.6g} s): "
+        want = sample_interval * np.arange(n_saves)
+        if t.shape != want.shape or np.abs(t - want).max() > 1e-6 * sample_interval:
+            raise ValueError(f"the saves are not on the uniform grid t = j * sample_interval from t = 0 (sample_interval = {sample_interval:.6g} s): "
                              f"the recorded times differ from it by up to {np.abs(t - want).max() if t.shape == want.shape else float('nan'):.3g} s "
                              "(or are not n_saves long); resample the walk onto a uniform grid at the engine, not here")
     if not np.isfinite(pos).all():
@@ -155,13 +155,13 @@ def walk_from_positions(positions, *, dt_save, K, pool, spec, D, producer, times
         raise ValueError(f"K = {K} is above the band limit of this walk: {n_saves} saves are {N} intervals, whose bridge has "
                          f"{N - 1} interior samples, so the saves resolve at most K = {K_max} bands (s_{N} vanishes at every save); "
                          f"ask for K <= {K_max} or save more often")
-    h = dt_save
+    h = sample_interval
     T = N * h
     step_max = float(np.abs(np.diff(pos.astype(np.float64), axis=1)).max())
     if step_max > 20.0 * np.sqrt(2.0 * D * h):
         raise ValueError(f"a step of {step_max:.3g} m between two saves is {step_max / np.sqrt(2.0 * D * h):.1f} sigma of free diffusion at "
-                         f"D = {D:.3g} m^2/s and dt_save = {h:.3g} s: the positions are wrapped at a periodic boundary or D/dt_save are wrong; "
-                         "pass them unwrapped, with the D and dt_save of the walk")
+                         f"D = {D:.3g} m^2/s and sample_interval = {h:.3g} s: the positions are wrapped at a periodic boundary or D/sample_interval are wrong; "
+                         "pass them unwrapped, with the D and sample_interval of the walk")
     coeffs = np.empty((n, 1, K + 2, 3), np.float32)
     qv = np.empty((n, 1, 3), np.float32)
     chunk = max(1, int(_CHUNK_VALUES // (3 * n_saves)))
@@ -177,9 +177,9 @@ def walk_from_positions(positions, *, dt_save, K, pool, spec, D, producer, times
         qv[a:a + chunk, 0] = (np.diff(x, axis=1) ** 2).sum(axis=1)
     qv_mean = qv[:, 0].astype(np.float64).mean(axis=0)
     res = float(np.spacing(np.float32(np.abs(pos).max()))) if pos.dtype == np.float32 else float(np.spacing(np.abs(pos).max()))
-    source = dict(kind="foreign_save_grid", **producer, dt_save=h, n_saves=n_saves, K_max=K_max, K=K,
+    source = dict(kind="foreign_save_grid", **producer, sample_interval=h, n_saves=n_saves, K_max=K_max, K=K,
                   interpolant="piecewise_linear", band_quadrature="exact for the piecewise-linear interpolant: sqrt(dt) sinc^2(k/2N) DST-I",
-                  interpolation_variance_bound_m2="D dt_save^2 / 6 per band and axis",
+                  interpolation_variance_bound_m2="D sample_interval^2 / 6 per band and axis",
                   interpolation_variance_bound_value_m2=interpolation_variance_bound(D, h),
                   position_dtype=str(pos.dtype), position_resolution_m=res, channels=["positions", "compartment"],
                   channels_absent=["boundary_local_time", "susceptibility_field", "pool_changes"])
