@@ -59,7 +59,7 @@ def pm():
         _cell(),
         L,
         N_max=4,
-        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
     )
 
 
@@ -94,7 +94,7 @@ def test_a_packed_myelinated_walk_with_binding_records_the_continuous_path():
         _cell(),
         L,
         N_max=4,
-        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
     )
     w = _walk_geometry(300, D0, pm, 8e-3, 2e-4, seed=1, require_gpu=False, kappa_MT=5e-5, dwell_time=1e-3,
                                 equilibrate_binding="off", raw_subset=300)
@@ -129,7 +129,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, cwalk):
     pack's field tier replays them; a single cylinder's grid is a box and declares no period."""
     fg = field_grid_of(pm, res=0.2e-6, include_aniso=False)
     assert fg.periodic == (True, True, True)
-    assert field_grid_of(d.MyelinatedCylinder(1e-6, 1.4e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0))), res=0.2e-6).periodic == (False,) * 3
+    assert field_grid_of(d.MyelinatedCylinder(1e-6, 1.4e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0))), res=0.2e-6).periodic == (False,) * 3
     p = _fold(cwalk.raw_positions[:, -1, :]).astype(float)
     base = fg.channels(p)
     for shift in ([L, 0, 0], [0, -L, 0], [-2 * L, 3 * L, 7e-6]):

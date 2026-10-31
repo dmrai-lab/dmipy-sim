@@ -158,7 +158,7 @@ def test_a_run_the_producer_cannot_walk_is_the_oracles():
     centers = np.array([[0.0, 0.0], [12e-6, 0.0], [-12e-6, 0.0]])
     geom = d.PackedMyelinatedCylinders(
         inner_radii=inner, g_ratios=g_ratios, centers=centers,
-        cell_size=40e-6, N_max=3)
+        cell_size=40e-6, N_max=3, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     assert "PackedMyelinatedCylinders" in _replay_gap(geom, None)
     np.testing.assert_array_equal(simulate(500, None, _WF, geom, seed=SEED, require_gpu=False),
                                   simulate_fused(500, None, _WF, geom, seed=SEED, require_gpu=False))

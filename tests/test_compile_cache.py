@@ -76,7 +76,7 @@ def test_every_engine_path_caches():
     )
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     for g, diff in ((m, D), (mc, None), (pm, None)):
         simulate_fused(500, diff, _wf(5e8), g, seed=0, require_gpu=False)
         simulate_fused(500, diff, _wf(1e9), g, seed=3, require_gpu=False)

@@ -30,7 +30,7 @@ def _lumen_field_errors(res, a=0.40e-6, b=0.52e-6):
     direction = (1.0, 0.0, 0.0)
     expect = 0.5 * dchi * np.log(b / a)
     lo, hi = np.array([-4e-6, -4e-6, -1e-6]), np.array([4e-6, 4e-6, 1e-6])
-    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9))), res=res, box=(lo, hi))
+    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0))), res=res, box=(lo, hi))
     shape = tuple(fg.basis["shape"]); vs = np.asarray(fg.basis["voxel_size"], float)
     ax = [np.asarray(fg.origin)[k] + (np.arange(shape[k]) + 0.5) * vs[k] for k in range(2)]
     X, Y = np.meshgrid(ax[0], ax[1], indexing="ij")
@@ -58,7 +58,7 @@ def test_two_nodes_across_the_thinnest_sheath_resolve_it_and_one_does_not():
 def test_analytic_sheaths_record_their_shell_and_the_grid_follows_it():
     """Every analytic myelinated geometry writes its sheath into the spec; its own field grid takes the spacing
     from it when none is given."""
-    g = d.MyelinatedCylinder(1.0e-6, 1.15e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9)))
+    g = d.MyelinatedCylinder(1.0e-6, 1.15e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0)))
     assert g.spec.validity.thinnest_shell == pytest.approx(0.15e-6)
     fg = field_grid_of(g)
     assert np.asarray(fg.basis["voxel_size"])[0] == pytest.approx(0.075e-6, rel=0.05)
@@ -68,7 +68,7 @@ def test_analytic_sheaths_record_their_shell_and_the_grid_follows_it():
         [[-3e-6, 0.0], [3e-6, 0.0]],
         12e-6,
         N_max=2,
-        compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9)),
+        compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0)),
     )
     assert pk.spec.validity.thinnest_shell == pytest.approx(min(1.0e-6 / 0.7 - 1.0e-6, 2.0e-6 / 0.9 - 2.0e-6), rel=1e-6)
 

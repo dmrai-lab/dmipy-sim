@@ -61,7 +61,7 @@ def test_myelinated_cylinder_seeds_are_strictly_on_their_pools_side(monkeypatch)
 
 def test_packed_myelinated_seeds_are_strictly_on_their_pools_side(monkeypatch):
     R_in, L = 1e-6, 20e-6
-    g = PackedMyelinatedCylinders([R_in], 0.7, np.zeros((1, 2)), L, N_max=2)
+    g = PackedMyelinatedCylinders([R_in], 0.7, np.zeros((1, 2)), L, N_max=2, compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.0), extra=Pool(D=2e-9)))
     R_in, R_out = float(g._inner_radii_np[0]), float(g._outer_radii_np[0])
     monkeypatch.setattr(myelin.np.random, "default_rng", lambda seed: _PlantedRng(_rows(R_in, R_out)))
     pos = np.asarray(g.init_positions(600, jax.random.PRNGKey(0)))

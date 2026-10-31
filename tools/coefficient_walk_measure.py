@@ -73,7 +73,7 @@ def _geometries():
         2e-6,
         3e-6,
         (0, 0, 1),
-        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9)),
+        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0)),
     )
     return out
 
@@ -345,7 +345,7 @@ def _ensemble(pk, seq, **kw):
 
 def _myelin(D, r_in, r_out):
     import dmipy_sim as d
-    return d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D)))              # D_myelin = 0: the sheath's water stuck
+    return d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D), myelin=d.Pool(D=0.0)))              # D_myelin = 0: the sheath's water stuck
 
 
 def _myelin_field(g, field):

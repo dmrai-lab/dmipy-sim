@@ -149,16 +149,16 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
                    cell_size=40e-6, N_max=3, D_intra=2e-9, D_myelin=0.1e-9, D_extra=2e-9)
     D, N, T, dt, seed = 2e-9, 400, 8e-3, 0.4e-3, 1
 
-    base = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
+    base = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,
                                  seed=seed, require_gpu=False)
-    off = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
+    off = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,
                                 seed=seed, require_gpu=False,
                                 kappa_MT=0.0)
     assert not base.has_binding and not off.has_binding and base.bound_start is None and off.bound_start is None
     assert np.array_equal(base.position_coeffs, off.position_coeffs)          # positions bit-identical
     assert np.array_equal(base.boundary_bands, off.boundary_bands)            # dlog bit-identical
 
-    on = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
+    on = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,
                                seed=seed, require_gpu=False,
                                kappa_MT=5e-5, dwell_time=3e-3, raw_subset=N)
     assert on.has_binding

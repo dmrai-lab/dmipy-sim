@@ -33,7 +33,7 @@ def _mesh_rho():
 def _packed_myelin():
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 4, 0.7, 0.5, seed=0)
     L = float(np.sqrt(np.pi * 4 * (1e-6 / 0.7) ** 2 / 0.5))
-    return d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, c, L, N_max=8, rho_inner=1e-6)
+    return d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, c, L, N_max=8, rho_inner=1e-6, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
 
 
 # ── the composition rule ──────────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ def test_packed_myelin_kernel_takes_the_dispatched_count():
     g = _packed_myelin()
     D_ref = float(max(np.max(np.asarray(g._D_intra_jax)), np.max(np.asarray(g._D_extra_jax))))
     assert make_packed_myelin_step_fn(g, DT).n_sub == resolve_sub_steps(g, D_ref, DT, surface=True)
-    g0 = d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, g._centers_np[:4], g._L_float, N_max=8)
+    g0 = d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, g._centers_np[:4], g._L_float, N_max=8, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     assert make_packed_myelin_step_fn(g0, DT).n_sub == resolve_sub_steps(g0, D_ref, DT) > 1
 
 
@@ -135,7 +135,7 @@ def test_a_degenerate_feature_is_refused_with_the_reason_and_the_remedy():
     inner = np.array([0.011e-6, 0.3e-6, 0.3e-6])
     L = float(np.sqrt(np.pi * np.sum((inner / 0.7) ** 2) / 0.55))
     _, _, c = d.pack_myelinated_cylinders(inner, 0.7, None, cell_size=L, seed=0)
-    g = d.PackedMyelinatedCylinders(inner, 0.7, c, L, N_max=4)
+    g = d.PackedMyelinatedCylinders(inner, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     with pytest.raises(ValueError, match="11.0 nm.*sub_steps="):
         resolve_sub_steps(g, D, 4e-4, surface=True)
     with pytest.raises(ValueError, match="sub-steps"):

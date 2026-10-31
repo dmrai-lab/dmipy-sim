@@ -347,7 +347,7 @@ class TestD_ExchangeRate:
             orientation=[0, 0, 1],
             kappa_inner=1e-3,
             kappa_outer=1e-3,
-            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0), extra=Pool(D=2e-9, water_fraction=1.0)),
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
 
         wf = _make_pgse_waveform(delta=5e-3, Delta=15e-3, n_t=2000)
@@ -409,7 +409,7 @@ class TestE_T2MultiTE:
                 orientation=[0, 0, 1],
                 kappa_inner=None, kappa_outer=None,
                 compartments=Compartments(intra=Pool(D=2e-9, T2=T2_intra, water_fraction=wf_weights[0]),
-                                          myelin=Pool(T2=T2_myelin, water_fraction=wf_weights[1]),
+                                          myelin=Pool(T2=T2_myelin, water_fraction=wf_weights[1], D=0.0),
                                           extra=Pool(D=2e-9, T2=T2_extra, water_fraction=wf_weights[2])),
             )
 
@@ -443,7 +443,7 @@ class TestE_T2MultiTE:
                 inner_radius=R_in, outer_radius=R_out,
                 orientation=[0, 0, 1],
                 kappa_inner=None, kappa_outer=None,
-                compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(T2=T2_myelin, water_fraction=1.0),
+                compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(T2=T2_myelin, water_fraction=1.0, D=0.0),
                                           extra=Pool(D=2e-9, water_fraction=0.0)),
             )
 
@@ -492,7 +492,7 @@ class TestF_WaterFractionApproachAvsB:
             orientation=[0, 0, 1],
             kappa_inner=None,
             kappa_outer=None,
-            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=0.15), extra=Pool(D=2e-9, water_fraction=1.0)),
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=0.15, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
 
         # Approach B: uniform init
@@ -502,7 +502,7 @@ class TestF_WaterFractionApproachAvsB:
             orientation=[0, 0, 1],
             kappa_inner=None,
             kappa_outer=None,
-            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0), extra=Pool(D=2e-9, water_fraction=1.0)),
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
 
         wf = _make_pgse_waveform(delta=5e-3, Delta=15e-3, n_t=2000)
@@ -557,7 +557,7 @@ class TestG_BoundaryReflection:
             orientation=[0, 0, 1],
             kappa_inner=None,
             kappa_outer=None,
-            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(water_fraction=1.0), extra=Pool(D=2e-9, water_fraction=0.0)),
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         # Long TE to give walkers time to potentially leak
@@ -603,7 +603,7 @@ class TestG_BoundaryReflection:
             inner_radius=3e-6, outer_radius=5e-6,
             orientation=[0, 0, 1],
             kappa_inner=None, kappa_outer=None,
-            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(T2=T2_myelin, water_fraction=1.0),
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(T2=T2_myelin, water_fraction=1.0, D=0.0),
                                       extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
@@ -636,7 +636,7 @@ class TestH_SignalMonotonicityBounds:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
         b_values = np.array([0.0, 0.2e9, 0.5e9, 1.0e9, 2.0e9, 3.0e9])
@@ -676,7 +676,7 @@ class TestH_SignalMonotonicityBounds:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
         for grad_dir, label in [([1, 0, 0], "x"), ([0, 1, 0], "y"), ([0, 0, 1], "z")]:
@@ -708,7 +708,7 @@ class TestBasicSmoke:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
         wf = _make_pgse_waveform(delta=5e-3, Delta=15e-3, n_t=2000)
@@ -731,7 +731,7 @@ class TestBasicSmoke:
                 inner_radius=5e-6,
                 outer_radius=3e-6,
                 orientation=[0, 0, 1],
-                compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9)),
+                compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
             )
             assert False, "Should have raised ValueError"
         except ValueError:

@@ -29,7 +29,7 @@ def hollow():
         [[0.0, 0.0]],
         30e-6,
         N_max=2,
-        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
     )
     walk = _walk_geometry(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
     # certified up to the strongest susceptibility the field-direction tests replay (|chi_iso| + |chi_aniso| = 9.1e-6)

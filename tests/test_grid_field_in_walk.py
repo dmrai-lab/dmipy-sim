@@ -45,7 +45,7 @@ def _packed():
         np.asarray(c),
         10 * UM,
         N_max=4,
-        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
     )
 
 
@@ -191,7 +191,7 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
         1.0 * UM,
         1.5 * UM,
         (0, 0, 1),
-        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
     )
     w = walk(geom.spec, 600, 5e-3, seed=2, require_gpu=False)
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs is not None
@@ -241,7 +241,7 @@ def test_the_closed_form_hollow_cylinder_is_read_in_the_walk():
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_replay.replay.field import contract
     from dmipy_sim.fields.susceptibility import MyelinSusceptibility
-    g = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
+    g = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
     f = HollowCylinderField.of(g)
     P = np.random.default_rng(0).uniform(-4 * UM, 4 * UM, (40, 3))
     ms = MyelinSusceptibility(centers=[[0, 0]], inner_radii=[1 * UM], outer_radii=[1.5 * UM], L=1.0, delta_chi_a=-1e-7, B0=7.0,

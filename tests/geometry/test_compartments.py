@@ -82,7 +82,7 @@ def test_mesh_takes_compartments_and_refuses_dicts_of_pools():
         with pytest.raises(TypeError, match="takes a Compartments or None, got dict"):
             d.Mesh(V, F, feature_radius=1e-6, compartments=spelling)
     with pytest.raises(ValueError, match="no myelin pool"):
-        d.Mesh(V, F, compartments=Compartments(myelin=Pool(T2=0.01)))
+        d.Mesh(V, F, compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, T2=0.01), extra=Pool(D=D)))
     with pytest.raises(TypeError):                                     # the pools have one spelling
         d.Mesh(V, F, intra={"T2": 0.02})
     with pytest.raises(TypeError):
@@ -93,7 +93,7 @@ def test_mesh_takes_compartments_and_refuses_dicts_of_pools():
 
 def test_myelinated_cylinder_takes_compartments_and_no_other_spelling_of_a_pool():
     kw = dict(orientation=(0, 0, 1))
-    comps = Compartments(intra=Pool(D=D, T2=0.05), myelin=Pool(T2=0.01), extra=Pool(D=D, T2=0.08))
+    comps = Compartments(intra=Pool(D=D, T2=0.05), myelin=Pool(D=0.0, T2=0.01), extra=Pool(D=D, T2=0.08))
     g = d.MyelinatedCylinder(2e-6, 3e-6, compartments=comps, **kw)
     assert (g.T2_extra, g.T2_intra, g.T2_myelin) == (0.08, 0.05, 0.01) and g.compartments == comps
     assert (g.D_intra, g.D_myelin, g.D_extra) == (D, 0.0, D)
@@ -105,12 +105,20 @@ def test_myelinated_cylinder_takes_compartments_and_no_other_spelling_of_a_pool(
             d.MyelinatedCylinder(2e-6, 3e-6, compartments=comps, **kw, **spelling)
         with pytest.raises(TypeError, match=next(iter(spelling))):
             d.PackedMyelinatedCylinders([1e-6], 0.7, np.zeros((1, 2)), 1e-5, N_max=2, compartments=comps, **spelling)
-    with pytest.raises(ValueError, match="diffusivity of its intra pool"):     # D is the Pool's: required, not defaulted
-        d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(extra=Pool(D=D)), **kw)
-    with pytest.raises(ValueError, match="diffusivity of its extra pool"):
-        d.MyelinatedCylinder(2e-6, 3e-6, **kw)
+    cyl_kw = [(d.MyelinatedCylinder, (2e-6, 3e-6)),
+              (d.PackedMyelinatedCylinders, ([1e-6], 0.7, np.zeros((1, 2)), 1e-5))]
+    for cls, args in cyl_kw:                                           # D is the Pool's, on every pool: no default
+        kk = kw if cls is d.MyelinatedCylinder else dict(N_max=2)
+        with pytest.raises(ValueError, match="diffusivity of its intra pool"):
+            cls(*args, compartments=Compartments(extra=Pool(D=D), myelin=Pool(D=0.0)), **kk)
+        with pytest.raises(ValueError, match="diffusivity of its extra pool"):
+            cls(*args, **kk)
+        with pytest.raises(ValueError, match="diffusivity of its myelin pool.*frozen myelin pool states D=0.0"):
+            cls(*args, compartments=Compartments(intra=Pool(D=D), extra=Pool(D=D)), **kk)
+    d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(          # a myelin pool holding no water needs no D
+        intra=Pool(D=D, water_fraction=1.0), myelin=Pool(water_fraction=0.0), extra=Pool(D=D, water_fraction=1.0)), **kw)
     with pytest.raises(ValueError, match="all three pools or none"):
-        d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(intra=Pool(D=D, water_fraction=1.0), extra=Pool(D=D)), **kw)
+        d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(intra=Pool(D=D, water_fraction=1.0), myelin=Pool(D=0.0), extra=Pool(D=D)), **kw)
     with pytest.raises(TypeError):                                     # a pool's T2 has one spelling
         d.MyelinatedCylinder(2e-6, 3e-6, T2_intra=0.05, compartments=comps, **kw)
     # the Substrate's pools drive a geometry directly
@@ -125,15 +133,15 @@ def test_myelinated_cylinder_takes_compartments_and_no_other_spelling_of_a_pool(
 def test_packed_myelinated_cylinders_take_compartments_and_keep_per_axon_arrays():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    comps = Compartments(intra=Pool(T2=0.05), myelin=Pool(T2=0.01), extra=Pool(T2=0.08))
+    comps = Compartments(intra=Pool(D=D, T2=0.05), myelin=Pool(D=0.0, T2=0.01), extra=Pool(D=D, T2=0.08))
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=comps)
     with pytest.raises(ValueError, match="per cylinder"):            # a pool-wide T2 is a pool property
         d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=0.05, T2_myelin=0.01, T2_extra=0.08)
     with pytest.raises(ValueError, match="both"):
         d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05, 0.06, 0.07],
-                                    compartments=Compartments(intra=Pool(T2=0.05)))
+                                    compartments=Compartments(intra=Pool(D=D, T2=0.05), myelin=Pool(D=0.0), extra=Pool(D=D)))
     arr = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05, 0.06, 0.07],
-                                      compartments=Compartments(myelin=Pool(T2=0.01)))
+                                      compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, T2=0.01), extra=Pool(D=D)))
     assert np.asarray(arr._T2_intra_jax)[:3].tolist() == pytest.approx([0.05, 0.06, 0.07])
     with pytest.raises(ValueError, match="both"):
         d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, T2_intra=[0.05] * 3, compartments=comps)

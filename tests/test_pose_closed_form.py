@@ -36,7 +36,7 @@ def myelin_pack():
         np.asarray(c),
         L,
         N_max=4,
-        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9)),
+        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0)),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

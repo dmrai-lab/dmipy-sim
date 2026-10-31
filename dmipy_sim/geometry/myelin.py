@@ -206,17 +206,21 @@ def _pool_t2(compartments):
     return comps, {n: (comps[n].T2 if n in comps else None) for n in ("extra", "intra", "myelin")}
 
 
-def _pool_D(comps, who, *, required, default):
-    """``{pool: D}`` of the three pools from ``comps``: the pool's ``Pool(D=)`` (m^2/s), else ``default[pool]``; a pool in
-    ``required`` with neither is refused, naming the spelling."""
+def _pool_D(comps, who):
+    """``{pool: D}`` (m^2/s) of the three pools from ``comps``. No pool has a default: every pool that holds walkers
+    states ``Pool(D=)`` (a frozen myelin pool states ``D=0.0``); a missing one is a ValueError naming the pool. Only a
+    myelin pool that states ``water_fraction=0`` holds none and may omit it."""
     out = {}
     for n in ("extra", "intra", "myelin"):
-        v = comps[n].D if n in comps else None
+        pool = comps[n] if n in comps else None
+        v = pool.D if pool is not None else None
         if v is None:
-            if n in required:
+            if n == "myelin" and pool is not None and pool.water_fraction == 0.0:
+                v = 0.0
+            else:
                 raise ValueError(f"{who} needs the diffusivity of its {n} pool: "
-                                 f"compartments=Compartments({n}=Pool(D=...), ...)")
-            v = default[n]
+                                 f"compartments=Compartments({n}=Pool(D=...), ...)"
+                                 + ("; a frozen myelin pool states D=0.0" if n == "myelin" else ""))
         out[n] = float(v)
     return out
 
@@ -254,8 +258,8 @@ class MyelinatedCylinder(Geometry):
         Permeability at outer boundary (m/s). Default None (impermeable).
     compartments : Compartments
         The per-pool physics, ``Compartments(intra=Pool(D=..., T2=..., water_fraction=...), myelin=Pool(...),
-        extra=Pool(...))``. ``D`` (m^2/s, isotropic) is required on ``intra`` and ``extra``; a myelin ``D`` defaults
-        to 0 (a stuck pool). ``T2`` (s) is optional. ``water_fraction`` is the relative water content (proton density)
+        extra=Pool(...))``. ``D`` (m^2/s, isotropic) is required on every pool that holds walkers; a frozen myelin
+        pool states ``D=0.0``. ``T2`` (s) is optional. ``water_fraction`` is the relative water content (proton density)
         per pool: set on all three pools or none; none uses the biophysical table, myelin =
         ``myelin_water_proton_density`` (~0.40, the water per unit myelin VOLUME), intra and extra = 1.0. Do NOT pass
         the MWF signal value (~0.15) -- that is a measured signal fraction, not a per-volume weight.
@@ -275,7 +279,7 @@ class MyelinatedCylinder(Geometry):
             raise ValueError("outer_radius must be > inner_radius")
         self.compartments, t2 = _pool_t2(compartments)
         T2_extra, T2_intra, T2_myelin = t2["extra"], t2["intra"], t2["myelin"]
-        D = _pool_D(self.compartments, "MyelinatedCylinder", required=("intra", "extra"), default={"myelin": 0.0})
+        D = _pool_D(self.compartments, "MyelinatedCylinder")
         D_intra, D_extra, D_myelin = D["intra"], D["extra"], D["myelin"]
         wf_pools = [self.compartments[n].water_fraction if n in self.compartments else None
                     for n in ("intra", "myelin", "extra")]
@@ -559,8 +563,8 @@ class PackedMyelinatedCylinders(Geometry):
         frame; a pose is given at replay.
         Default [0, 0, 1].
     compartments : Compartments, optional
-        The per-pool physics shared by all cylinders: ``D`` (m^2/s, isotropic; default 2e-9 on ``intra`` and
-        ``extra``, 0 on ``myelin``, a stuck pool) and ``T2`` (s), ``Compartments(intra=Pool(D=..., T2=...), ...)``.
+        The per-pool physics shared by all cylinders: ``D`` (m^2/s, isotropic; required on every pool that holds
+        walkers, a frozen myelin pool states ``D=0.0``) and ``T2`` (s), ``Compartments(intra=Pool(D=..., T2=...), ...)``.
     T2_intra, T2_myelin, T2_extra : array-like (N_actual,) or None
         Per-cylinder T2 relaxation times in seconds, a per-object property. A pool-wide T2 is a pool
         property and is given through ``compartments=``; a scalar here is refused. None = no T2.
@@ -614,8 +618,7 @@ class PackedMyelinatedCylinders(Geometry):
                 raise ValueError(f"T2 of {name} given both through compartments= and T2_{name}=")
         T2_extra, T2_intra, T2_myelin = [t2[n] if a is None else a
                                          for n, a in (("extra", T2_extra), ("intra", T2_intra), ("myelin", T2_myelin))]
-        D = _pool_D(self.compartments, "PackedMyelinatedCylinders", required=(),
-                    default={"intra": 2e-9, "myelin": 0.0, "extra": 2e-9})
+        D = _pool_D(self.compartments, "PackedMyelinatedCylinders")
         D_intra, D_myelin, D_extra = D["intra"], D["myelin"], D["extra"]
         inner_radii = np.asarray(inner_radii, dtype=np.float64).ravel()
         N_actual = len(inner_radii)

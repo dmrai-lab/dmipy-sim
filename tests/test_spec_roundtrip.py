@@ -15,7 +15,7 @@ def _packed_myelin():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=1e-6, rho_outer=1e-6, kappa_inner=1e-5,
-                                       compartments=d.Compartments(extra=d.Pool(T2=0.08), intra=d.Pool(T2=0.05), myelin=d.Pool(T2=0.01)))
+                                       compartments=d.Compartments(extra=d.Pool(T2=0.08, D=2e-9), intra=d.Pool(T2=0.05, D=2e-9), myelin=d.Pool(T2=0.01, D=0.0)))
 
 
 def _packed_cyl():
@@ -40,7 +40,7 @@ GEOMETRIES = {
     "packed_cyl": _packed_cyl,
     "packed_sph": _packed_sph,
     "myelinated": lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), kappa_inner=1e-5,
-                                               compartments=d.Compartments(intra=d.Pool(D=D, T2=0.05), myelin=d.Pool(T2=0.01), extra=d.Pool(D=D, T2=0.08))),
+                                               compartments=d.Compartments(intra=d.Pool(D=D, T2=0.05), myelin=d.Pool(T2=0.01, D=0.0), extra=d.Pool(D=D, T2=0.08))),
     "packed_myelin": _packed_myelin,
     "curved": lambda: d.CurvedCylinder(CL, 1e-6),
     "multishell": lambda: d.CurvedMyelinatedCylinder(CL, 1e-6, 1.5e-6, pool="myelin"),
@@ -96,7 +96,7 @@ def test_the_published_examples_build_geometries(tmp_path):
 def test_per_instance_wall_properties_are_refused_honestly():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    g2 = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=[1e-6, 2e-6, 3e-6])
+    g2 = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=[1e-6, 2e-6, 3e-6], compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     with pytest.raises(SpecError, match="varies per axon"):
         g2.spec
 

@@ -98,7 +98,7 @@ class TestCompartmentOriginImmutability:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
         comp_orig, comp_seq = _run_full(mc, n_walkers=500, diffusivity=None)
         # comp_orig has all three compartments; first step should preserve them
@@ -147,7 +147,7 @@ class TestFinalMatchesFull:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
         self._check_match(mc, diffusivity=None)
 
@@ -176,7 +176,7 @@ class TestVolumefractionConsistency:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=1e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0), extra=Pool(D=2e-9, water_fraction=1.0)),
+            compartments=Compartments(intra=Pool(D=1e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
         comp_orig, _ = _run_final(mc, n_walkers=100_000, diffusivity=None)
         for comp_id, label in [(1, 'intra'), (2, 'myelin'), (0, 'extra')]:   # pool ids
@@ -314,7 +314,7 @@ class TestMyelinatedCylinderFull:
             orientation=[0, 0, 1],
             kappa_inner=1e-5,
             kappa_outer=1e-5,
-            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
         n_walkers = 200
         wf = _make_waveform()
@@ -337,7 +337,7 @@ class TestMyelinatedCylinderFull:
             orientation=[0, 0, 1],
             kappa_inner=1e-4,
             kappa_outer=1e-4,
-            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
         n_walkers = 2000
         wf = _make_waveform()

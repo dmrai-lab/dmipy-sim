@@ -64,6 +64,6 @@ def test_walk_refuses_an_unwalkable_geometry_before_calling_the_primitive(monkey
     monkeypatch.setattr(core, "_walk_geometry", _boom)
     monkeypatch.setattr(walk_mod, "geometry_from_spec", lambda spec: _Unwalkable())
 
-    g = d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D)))   # any single-geometry spec will do
+    g = d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D), myelin=d.Pool(D=0.0)))   # any single-geometry spec will do
     with pytest.raises(SpecError, match="test stub"):
         walk(g.spec, 8, T_max=1e-3)

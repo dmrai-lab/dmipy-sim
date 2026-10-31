@@ -19,7 +19,7 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, s
 def test_hollow_cylinder_grid_reproduces_the_analytic_field_structure():
     """An isotropic hollow cylinder has exactly zero field in the lumen and a dipolar field outside;
     the anisotropic one a uniform lumen field of half delta_chi_a B0 sin^2(theta) ln(1/g)."""
-    g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
+    g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
     fg = field_grid_of(g, res=0.1e-6)
     assert isinstance(fg, FieldGrid) and fg.basis["shape"][2] == 4 and fg.basis["aniso_G"] is not None
     B0 = 3.0
@@ -43,7 +43,7 @@ def test_hollow_cylinder_grid_reproduces_the_analytic_field_structure():
 def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
     fg = field_grid_of(pm, res=0.1e-6, include_aniso=False)
     assert fg.basis["iso_local"].shape[:2] == tuple(np.round(np.array([L, L]) / 0.1e-6).astype(int))
     with pytest.raises(ValueError, match="periodic cell"):

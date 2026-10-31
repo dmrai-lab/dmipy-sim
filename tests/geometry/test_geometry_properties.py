@@ -168,7 +168,7 @@ class TestMyelinatedCylinder:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)),
+            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
     def test_volume_intra(self, mc):

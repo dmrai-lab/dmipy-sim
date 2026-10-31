@@ -27,7 +27,7 @@ EXTRA, INTRA, MYELIN = 0, 1, 2
 
 def _g():
     return d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1),
-                                compartments=d.Compartments(intra=d.Pool(D=D, T2=0.05), myelin=d.Pool(T2=0.01),
+                                compartments=d.Compartments(intra=d.Pool(D=D, T2=0.05), myelin=d.Pool(T2=0.01, D=0.0),
                                                             extra=d.Pool(D=D, T2=0.08)))
 
 
@@ -111,7 +111,7 @@ def test_kappa_mt_still_walks_on_the_packed_class():
     kappa_MT > 0 and records the bound-fraction channel."""
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D)))
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D), myelin=d.Pool(D=0.0)))
     w = _walk_geometry(300, D, pm, T_max=8e-3, block_h=2e-4, seed=1, require_gpu=False,
                                 kappa_MT=5e-5, dwell_time=1e-3, equilibrate_binding="off")
     assert w.has_binding

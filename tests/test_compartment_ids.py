@@ -79,13 +79,13 @@ def test_the_remaining_geometries_follow_the_same_convention():
 def test_myelin_kernels_report_pool_ids():
     import jax
     import jax.numpy as jnp
-    mc = d.MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9)))
+    mc = d.MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0)))
     assert [int(mc.classify_position(jnp.asarray([x, 0, 0], jnp.float32))) for x in (0.0, 4e-6, 6e-6)] \
         == [INTRA, MYELIN, EXTRA]
     assert [int(v) for v in mc.pool_of(jnp.arange(3))] == [EXTRA, INTRA, MYELIN]   # carries pool ids
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     enc = jnp.asarray([0, 1, 3, 5, 8])
     assert [int(v) for v in pm.pool_of(enc)] == [EXTRA, INTRA, INTRA, MYELIN, MYELIN]
     # the seeded pool and the classified pool agree exactly wherever a seed is clear of a wall; at a wall the
@@ -103,7 +103,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
     """The same PackedMyelinatedCylinders labels its walkers the same way on both entry points."""
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, final = simulate_fused(300, None, wf, pm, seed=0, return_compartments="final",
                                   require_gpu=False)
