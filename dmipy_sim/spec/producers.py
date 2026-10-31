@@ -429,8 +429,9 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     ``pools`` maps each label value to a pool name, in pool-id order, and defaults to the micro-CT
     convention ``{0: "free", 1: "grain"}`` (void 0, solid 1). ``walk`` names the pool the walkers
     occupy (the first by default), the only pool that holds water: a solid is a pool with
-    ``water_fraction`` 0. ``rho2`` is the transverse surface relaxivity (m/s) of every wall, per side;
-    ``D`` and ``T2`` are the walking pool's bulk values, ``T2_pools`` a T2 per pool name where they
+    ``water_fraction`` 0. ``rho2`` is the transverse surface relaxivity (m/s) of every wall and both its sides
+    (a label volume walks one value); a wall's ``inside_pool`` is the higher pool id of the two it
+    separates, so 'inside' is the side of the higher id. ``D`` and ``T2`` are the walking pool's bulk values, ``T2_pools`` a T2 per pool name where they
     differ. ``crop`` is the ``(i0, j0, k0, i1, j1, k1)`` sub-volume that IS the substrate; ``periodic``
     says which axes repeat (a rock crop does not: its faces reflect). ``voxel_size`` (metres) supplies
     a spacing the container does not carry, and contradicts a header that does. ``frame`` is the
