@@ -708,7 +708,7 @@ def _geometry_from_spec(spec):
                     if w.permeability.in_to_out != w.permeability.out_to_in else w.permeability.in_to_out)
         m = Mesh.from_ply(mesh_surface_file(s), scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
                           voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
-                          permeability=perm, compartments=(Compartments(comps) if comps else None),
+                          permeability=perm, compartments=(Compartments(**comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
                           box_reflect=("reflect" in dom.boundary), seeding=spec.seeding)
         # the file the spec cites, as the spec cites it (a relative, portable citation, same as label_volume's
