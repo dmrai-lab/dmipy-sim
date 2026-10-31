@@ -308,10 +308,12 @@ def _walker_coeffs(pieces, bounds, start, stop):
 
 
 def voxel_floor_coded(positions, dt, n_t, grid, comp, env, *, w=None, device="auto", chunk=None):
-    """The per-(voxel, pool) split-half floor of a walk meant to be partitioned, from its bridge coefficients over the
+    """The per-(voxel, pool) Monte-Carlo floor of a walk meant to be partitioned, from its bridge coefficients over the
     window of ``n_t`` block ends ``dt`` apart (:func:`voxel_fidelity` without the dense oracle: the same binning by start position -- the exact first
-    endpoint -- and pool (``comp`` a track, its first sample, or one label per walker), the same fixed split, the
-    phases by :func:`compression.coded_phases`). ``positions`` are the walk's position tensors (a pack's arrays), or a
+    endpoint -- and pool (``comp`` a track, its first sample, or one label per walker), the phases by
+    :func:`compression.coded_phases`, computed once). Each cell's floor is the battery maximum of the standard error of the cell's weighted mean signal
+    (:func:`compression.measure_floor_coded`'s estimator over the cell's walkers; ``nan`` for a cell of fewer than two
+    walkers). ``positions`` are the walk's position tensors (a pack's arrays), or a
     list of them for a walk held in consecutive pieces (a merge's shards, in walker order); ``chunk`` walkers are
     decoded at a time (default :func:`~dmipy_sim.replay.compression.slice_walkers`). Returns ``(ijk, pools, n, floor,
     err)`` with ``err`` all ``nan``: the codec error is the certifying pack's, or the walk-free certificate's."""
@@ -327,23 +329,23 @@ def voxel_floor_coded(positions, dt, n_t, grid, comp, env, *, w=None, device="au
     ijk, row = _census_rows(ijk_all, inside)
     col = np.searchsorted(pools, pid)
     ww = np.ones(n_w) if w is None else np.asarray(w, np.float64)
-    half = (np.random.default_rng(0).permutation(n_w) % 2).astype(bool)
     n_v, n_p = ijk.shape[0], len(pools)
-    S_a = np.zeros((n_v, n_p, n_m), complex); S_b = np.zeros_like(S_a)
-    W_a = np.zeros((n_v, n_p)); W_b = np.zeros((n_v, n_p)); N = np.zeros((n_v, n_p), np.int64)
+    A = np.zeros((n_v, n_p, n_m), complex); B = np.zeros_like(A)          # sum w s, sum w^2 s
+    W = np.zeros((n_v, n_p)); Q = np.zeros((n_v, n_p)); N = np.zeros((n_v, n_p), np.int64)
     for i in range(0, n_w, chunk):
         idx = np.arange(i, min(i + chunk, n_w)); idx = idx[row[idx] >= 0]
         if not len(idx):
             continue
         C = _walker_coeffs(pieces, bounds, i, min(i + chunk, n_w))
-        e = np.exp(1j * _cx.coded_phases(C if len(idx) == len(C) else C[idx - i], dt, G, n_t, device=device, projection=W2)) * ww[idx, None]
-        r, c, h = row[idx], col[idx], half[idx]
-        np.add.at(S_a, (r[h], c[h]), e[h]); np.add.at(S_b, (r[~h], c[~h]), e[~h])
-        np.add.at(W_a, (r[h], c[h]), ww[idx][h]); np.add.at(W_b, (r[~h], c[~h]), ww[idx][~h])
-        np.add.at(N, (r, c), 1)
+        e = np.exp(1j * _cx.coded_phases(C if len(idx) == len(C) else C[idx - i], dt, G, n_t, device=device, projection=W2))
+        r, c, wi = row[idx], col[idx], ww[idx]
+        np.add.at(A, (r, c), e * wi[:, None]); np.add.at(B, (r, c), e * (wi ** 2)[:, None])
+        np.add.at(W, (r, c), wi); np.add.at(Q, (r, c), wi ** 2); np.add.at(N, (r, c), 1)
     with np.errstate(invalid="ignore", divide="ignore"):
-        floor = 0.5 * np.abs(S_a / W_a[..., None] - S_b / W_b[..., None]).max(-1)
-    floor[(W_a == 0) | (W_b == 0)] = np.nan
+        S = A / W[..., None]                                       # sum_w w^2 |s - S|^2, |s| = 1
+        var = Q[..., None] * (1.0 + np.abs(S) ** 2) - 2.0 * np.real(np.conj(S) * B)
+        floor = (np.sqrt(np.clip(var, 0.0, None)) / W[..., None]).max(-1)
+    floor[N < 2] = np.nan
     return ijk, pools, N, floor, np.full_like(floor, np.nan)
 
 
@@ -1296,7 +1298,7 @@ def combine_window_fidelity(fids):
     an appended continuation carries."""
     fids = [dict(f) for f in fids]
     out = dict(metric=fids[0].get("metric"), combined="bound_over_windows", windows=fids, certified="measured")
-    keys = sorted({k for f in fids for k in f if k.startswith(("err_", "floor_"))})
+    keys = sorted({k for f in fids for k in f if k.startswith(("err_", "floor_")) and k != "floor_estimator"})
     for k in keys:
         vals = [f.get(k) for f in fids]
         if any(v is None for v in vals):
@@ -1309,6 +1311,10 @@ def combine_window_fidelity(fids):
                              for fam in fams}
     if "noise_floor" in fids[0]:
         out["noise_floor"] = float(max(f.get("noise_floor", 0.0) for f in fids))
+    if all("floor_estimator" in f for f in fids):
+        if len({f["floor_estimator"] for f in fids}) != 1:
+            raise ValueError("the windows' floors are different estimators: " + ", ".join(sorted({f["floor_estimator"] for f in fids})))
+        out["floor_estimator"] = fids[0]["floor_estimator"]
     if all(isinstance(f.get("terms"), dict) for f in fids):                # the bounded terms add like the errors
         t0 = fids[0]["terms"]
         out["terms"] = dict(t0, truncation=float(sum(f["terms"]["truncation"] for f in fids)),
@@ -1503,7 +1509,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     independent per walker, rides with the floor: the standard deviations add, so the quantised pack's standard error
     is at most the walkers' plus ``eps / sqrt(n_eff)`` (``floor_quantisation``, ``floor_total_max`` the sum; measured on a
     DiSCo-like K = 260 strands walk: the attenuation within 30 % of ``eps^2 / 2`` including the 3-bit bands' gain); and the
-    split-half floor ``floor`` of the float walkers (:func:`compression.measure_floor_coded`). The error per
+    standard-error floor ``floor`` of the float walkers (:func:`compression.measure_floor_coded`). The error per
     measurement is the sum of the three. ``rounding_rel`` (a float32 accumulation's measured relative rounding of
     its bands, ``block.k0_residual_relative``) adds the ROUNDING term of RPK.md 9.5.5: a relative error ``r`` on
     every band is a phase error correlated with the phase, ``|<e^{i phi (1 + r)}> - <e^{i phi}>| <= r sqrt(<phi^2>)
@@ -1568,6 +1574,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
                 **({} if field is None else dict(err_quadrature_field=float(field["quadrature"]), err_field_read=float(field["field_read"]),
                                                  err_quantisation_field=float(quant_of(eps_f)))),
                 err_max=float(err.max()), floor_max=float(floor["floor_max"]), noise_floor=float(floor["noise_floor"]),
+                floor_estimator=str(floor["floor_estimator"]),
                 floor_quantisation=float(floor_q.max()), floor_total_max=float(floor["floor_max"]) + float(floor_q.max()),
                 within_2x_floor=bool(err.max() <= 2.0 * float(floor["floor_max"])), per_family=per,
                 quadrature=dict(m=int(m), h=h, f_band_hz=float(K) / (2.0 * T), h_round=(None if h_round is None else float(h_round)),
@@ -1948,7 +1955,7 @@ def _field_terms(T, h, m, K_c3, qv_field, env, read):
 
 # ------------------------------------------------------------------------------------------ the pack from the walk
 def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=None, K=None, temporal_bandwidth_hz=None,
-                      scanner=None, sigma_star=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
+                      scanner=None, sigma_star=None, planned_floor=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
                       susc_path_K=None, field_container="derived", voxel_grid=None, position_container="derived", blt_container="derived",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False, fidelity=None, device="auto",
                       window_T=None, pack_license=None, pack_license_url=None):
@@ -1979,6 +1986,13 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     relaxivities ``rho2_list`` (m/s) the contact tier is certified at. A pack with a contact channel states the
     largest as ``replay_envelope.tissue.rho2_over_D_max`` (over the walk's ``D``), and a replay beyond it is refused.
 
+    ``sigma_star`` is the numerical cap the codec is derived at and ``planned_floor`` the Monte-Carlo floor the walker
+    count was planned for; given together, the certificate states each against its own quantity (``target_floor`` =
+    ``sigma_star`` against ``err_max``, ``planned_floor`` against ``floor_max``, ``meets_numerical_cap``,
+    ``meets_planned_floor``) and ``meets_target`` is true when both hold. ``floor_max`` is a standard error
+    (the battery maximum, over measurements, of the standard error of the weighted mean signal;
+    ``floor_estimator`` names it), the same quantity as ``planned_floor``.
+
     ``fidelity`` is what the pack certifies (RPK.md 9.4 rule 4): ``"derived"`` (the default), the walk-free
     certificate (:func:`_derived_certificate`: the truncation from the free band variances, the block quadrature
     ``rel(m, h) x QV`` per channel, the field read's term, the container's quantisation, the float32 rounding, the
@@ -1991,6 +2005,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     ``out_path`` if given.
     """
     from ..coefficient_walk import CoefficientWalk
+    if (sigma_star is None) != (planned_floor is None):
+        raise ValueError("sigma_star (the numerical cap the codec is built for) and planned_floor (the Monte-Carlo floor "
+                         "the walker count was planned for) are two inputs, stated together or not at all")
     _work = getattr(walk, "work", None)
     if _work and _work.get("exhausted_steps"):
         raise ValueError(
@@ -2019,7 +2036,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                          f"window_T >= {T_win:.6g}")
     weights = _coefficient_weights(cw, weights)
     kw = dict(license=license, citation=citation, weights=weights, envelope=envelope, scanner=scanner,
-              sigma_star=sigma_star, provenance=provenance, blt_dtype=blt_dtype, position_container=position_container,
+              sigma_star=sigma_star, planned_floor=planned_floor, provenance=provenance, blt_dtype=blt_dtype, position_container=position_container,
               blt_container=blt_container, diffusivity=diffusivity, substrate_frame=substrate_frame, verbose=verbose,
               fidelity=fidelity, device=device, pack_license=pack_license, pack_license_url=pack_license_url)
     n = int(cw.n_windows)
@@ -2053,8 +2070,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                 packs.append(pk)
             fid = _round_certificate(combine_window_fidelity([pk.meta["fidelity"] for pk in packs]))
             if sigma_star is not None:
-                fid.update(target_floor=float(sigma_star),
-                           meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
+                fid.update(_target_statements(fid, sigma_star, planned_floor))
             seed = seed_value(cw.seed)
             arrays, meta = join_windows(packs, fidelity=fid, walks=[dict(first=0, last=n - 1, seed=seed)],
                                         walkers_shuffled=True)
@@ -2073,8 +2089,18 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
         return pack
 
 
+def _target_statements(fid, sigma_star, planned_floor):
+    """The certificate's statement of its two budgets, each against its own quantity: ``target_floor`` the numerical
+    cap ``sigma_star`` the codec is derived at, met when ``err_max`` sits at or below it; ``planned_floor`` the Monte-Carlo
+    floor the walker count was planned for, met when ``floor_max`` sits at or below it; ``meets_target`` both."""
+    cap, planned = float(sigma_star), float(planned_floor)
+    err_ok, floor_ok = bool(fid["err_max"] <= cap), bool(fid["floor_max"] <= planned)
+    return dict(target_floor=cap, planned_floor=planned, meets_numerical_cap=err_ok, meets_planned_floor=floor_ok,
+                meets_target=err_ok and floor_ok)
+
+
 def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K, temporal_bandwidth_hz, scanner,
-                              sigma_star, provenance, blt_temporal_K, blt_dtype, susc_path_K, field_container, voxel_grid,
+                              sigma_star, planned_floor, provenance, blt_temporal_K, blt_dtype, susc_path_K, field_container, voxel_grid,
                               position_container, blt_container, diffusivity, substrate_frame, verbose, fidelity, device,
                               pack_license, pack_license_url, run):
     """One window of :func:`build_replay_pack` as a pack of its own (``cw`` a one-window walk; its block record names
@@ -2272,10 +2298,9 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         arrays["voxel_certificate"] = np.stack([_n.astype(np.float32), _floor.astype(np.float32), _err.astype(np.float32)], axis=-1)
         fid = dict(fid, per_voxel=per_voxel_summary(voxel_grid.to_meta(), _pools, np.stack([_n, _floor, _err], axis=-1)))
         if sigma_star is not None and np.isfinite(_floor).any():
-            fid["per_voxel"]["meets_target"] = bool(np.nanmax(_floor) <= sigma_star)
+            fid["per_voxel"]["meets_target"] = bool(np.nanmax(_floor) <= float(planned_floor))
     if sigma_star is not None:
-        fid.update(target_floor=float(sigma_star),
-                   meets_target=bool(fid["err_max"] <= sigma_star and fid["floor_max"] <= sigma_star))
+        fid.update(_target_statements(fid, sigma_star, planned_floor))
     comp_meta = dict(method=_r_compression.POSITION_METHOD, K=K, walker_preserving=True, container=pos_meta.get("container"),
                      temporal_bandwidth_hz=float(K) / (2.0 * T))
     if band_class is not None:
@@ -2334,7 +2359,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
 def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=8000, safety=1.4, max_n=400000, verbose=True, **bp):
     """Adaptive floor-targeting generation policy (the bank default).
 
-    Size the walker count so the split-half Monte-Carlo floor <= ``sigma_star``, then build the pack at the band
+    Size the walker count so the standard-error Monte-Carlo floor <= ``sigma_star``, then build the pack at the band
     ``bp`` states (``scanner=``, ``K=`` or ``temporal_bandwidth_hz=``; #643: the band is never searched) and record
     whether its codec error meets ``sigma_star`` too (``fidelity.meets_target``) -- converging to a defined
     precision instead of a wasteful ultra-high N. ``make_model(n_walkers)`` MUST return a fresh
@@ -2366,7 +2391,7 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
     if verbose:
         log.info(f"[floor-target] N={n_star}: achieved floor={f:.4g} "
               f"({'<=' if f <= sigma_star else '>'} sigma*)")
-    return build_replay_pack(model, id=id, envelope=env, sigma_star=sigma_star, verbose=verbose, **bp)
+    return build_replay_pack(model, id=id, envelope=env, sigma_star=sigma_star, planned_floor=sigma_star, verbose=verbose, **bp)
 
 
 # ------------------------------------------------------------------------------------ a window of a pack, re-projected

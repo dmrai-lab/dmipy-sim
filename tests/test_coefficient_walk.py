@@ -113,7 +113,12 @@ def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
     assert row["bands_vs_block_ends_rel"] <= 2e-6, row
     assert row.get("contact_bands_vs_block_ends_rel", 0.0) <= 5e-6 and row.get("contact_endpoint_rel", 0.0) <= 2e-6, row
     assert row.get("occupancy_equal", True), row
-    assert row["replay_err"] <= 2.0 * row["replay_floor"], row                   # the measured certificate on the block ends
+    # the measured certificate on the block ends, against the floor (a standard error, per measurement): the largest of M
+    # complex deviations of that scale is a Rayleigh maximum, sqrt(ln M) standard errors for M independent measurements
+    # (M the battery's size, the bound for its correlated ones), the error held to twice that
+    from dmipy_sim.replay import compression as cx
+    M = cx.acquisition_battery(row["n_blocks"] + 1, 2e-4, cx.default_envelope())[0].shape[0]
+    assert row["replay_err"] <= 2.0 * np.sqrt(np.log(M)) * row["replay_floor"], row
 
 
 # ----------------------------------------------------------------------------------------------- the quadrature

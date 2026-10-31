@@ -28,7 +28,7 @@ def pack_paths(walk, tmp_path_factory):
     out = {}
     for K in (2, 8):
         p = root / f"k{K}.rpk"
-        build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, out_path=str(p))
+        build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, sigma_star=5e-2, planned_floor=5e-2, out_path=str(p))
         out[K] = str(p)
     comp = np.asarray(walk.compartment)                                     # one label per walker
     for name, sel in (("intra", comp == 0), ("extra", comp != 0)):

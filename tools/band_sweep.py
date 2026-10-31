@@ -169,7 +169,7 @@ def main(argv=None):
     print("\nBytes per walker of the pack ordered at sigma_star = 5e-3 (the default container is derived for that floor):")
     print("| container | pos B/walker | total B/walker | cert err_max | cert floor_max |"); print("|---|---|---|---|---|")
     for label, cont in (("two-level 16/8", cx.TWO_LEVEL_CONTAINER), ("derived (default)", "derived")):
-        pk, pos_b, tot_b, _ = build(label, cont, cont, sigma_star=5e-3)
+        pk, pos_b, tot_b, _ = build(label, cont, cont, sigma_star=5e-3, planned_floor=5e-3)
         print(f"| {label} | {pos_b:.0f} | {tot_b:.0f} | {pk.meta['fidelity']['err_max']:.2e} | {pk.meta['fidelity']['floor_max']:.2e} |")
     out = dict(n=a.n, K=K, block=dict(ref.block), exact=exact, results=results)
     print("\nC2 (contact channel, K=%d, same b1 curve): the pack's own surface certificate" % a.blt_K)

@@ -42,7 +42,7 @@ def test_the_band_meets_the_budget_whatever_the_walker_count(default_walk, cappe
     assert capped_walk.K_c3 == band["K"] > default_walk.K_c3
     assert band["target_floor"] == BUDGET and band["floor"] == BUDGET and "explicit" in band["floor_is"]
     assert band["within_floor"] and band["err"] <= BUDGET
-    fid = _pack_fidelity(capped_walk, sigma_star=BUDGET)
+    fid = _pack_fidelity(capped_walk, sigma_star=BUDGET, planned_floor=BUDGET)
     assert fid["err_susc_path"] <= BUDGET and fid["floor_susc_path"] == BUDGET
 
 

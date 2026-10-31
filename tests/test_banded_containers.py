@@ -261,8 +261,8 @@ def test_the_derived_container_is_one_common_step_and_gains_a_bit_per_quartered_
 
 def test_the_default_pack_is_derived_for_its_floor(tmp_path):
     walk = _walk_geometry(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=400)
-    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, fidelity="measured")
-    q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3)
+    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, planned_floor=5e-3, fidelity="measured")
+    q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3, planned_floor=1e-3)
     assert p.meta["compression"]["container"] != _cx.band_curve(16, 10)
     assert sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in q.meta["compression"]["container"]) > \
         sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in p.meta["compression"]["container"])      # a lower floor: more bits
@@ -431,7 +431,7 @@ def test_the_contact_container_is_held_to_the_contacts_own_floor():
     back walk-free, well inside that floor."""
     from dmipy_sim.replay import bank
     walk = _walk_geometry(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2)
+    p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2, planned_floor=5e-2)
     f = p.meta["fidelity"]
     assert f["floor_surface"] > 0 and f["err_surface_quantisation"] <= 0.5 * f["floor_surface"] and f["err_surface"] <= f["floor_surface"]
     c2 = np.asarray(walk.boundary_endpoint)[:, 0]; bands = np.asarray(walk.boundary_bands)[:, 0, :16]
@@ -442,7 +442,7 @@ def test_the_contact_container_is_held_to_the_contacts_own_floor():
     real = bank._contact_floor
     bank._contact_floor = lambda *a, **k: 1e-6
     try:
-        tight = build_replay_pack(walk, id="t/c2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2)
+        tight = build_replay_pack(walk, id="t/c2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2, planned_floor=5e-2)
     finally:
         bank._contact_floor = real
     assert bits(tight) > bits(p)
@@ -456,7 +456,7 @@ def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     w = _walk_geometry(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())
-    f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05).meta["fidelity"]
+    f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05, planned_floor=0.05).meta["fidelity"]
     eps = f["floor_quantisation"] * np.sqrt(2000.0)
     assert 0.0 < eps < 0.1
     assert f["err_quantisation"] == pytest.approx(eps ** 2 / 2, rel=1e-4)
