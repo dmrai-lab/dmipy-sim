@@ -485,3 +485,44 @@ def test_a_pack_with_the_old_in_file_run_record_still_loads(tmp_path):
     reloaded = read_rpk(out)
     assert reloaded.meta["provenance"]["run"]["pack"]["id"] == "20250101T000000-build_replay_pack-1"
     assert reloaded.fidelity["err_max"] == pk.fidelity["err_max"]        # the rest of the pack is untouched
+
+
+# ------------------------------------------------------------------ the certificate's two budgets and its split-floor
+def test_the_certificate_states_the_numerical_cap_and_the_planned_floor_each_against_its_own_quantity():
+    w = _slab_walk(n_w=400, seed=1, raw=False)
+    kw = dict(id="test/budgets", envelope=_lean_env(), K=16, license="CC-BY-4.0", citation="test")
+    f = build_replay_pack(w, sigma_star=0.05, planned_floor=1.0, **kw).fidelity
+    assert f["target_floor"] == 0.05 and f["planned_floor"] == 1.0
+    assert f["meets_numerical_cap"] == (f["err_max"] <= 0.05) and f["meets_planned_floor"] == (f["floor_max"] <= 1.0)
+    assert f["meets_numerical_cap"] and f["meets_planned_floor"] and f["meets_target"]
+    # the planned floor is a quantity of its own: a planned floor below the measured one fails it, the cap still holds
+    g = build_replay_pack(w, sigma_star=0.05, planned_floor=f["floor_max"] / 2, **kw).fidelity
+    assert g["meets_numerical_cap"] and not g["meets_planned_floor"] and not g["meets_target"]
+    # a floor-sized cap (the old reading of sigma_star for both) would have failed a pack whose codec holds its cap
+    h = build_replay_pack(w, sigma_star=f["err_max"] * 2, planned_floor=1.0, **kw).fidelity
+    assert h["meets_target"]
+
+
+def test_the_two_budgets_are_stated_together_or_not_at_all():
+    w = _slab_walk(n_w=100, seed=1, raw=False)
+    for kw in (dict(sigma_star=0.05), dict(planned_floor=0.05)):
+        with pytest.raises(ValueError, match="planned_floor"):
+            build_replay_pack(w, id="test/b", envelope=_lean_env(), K=16, license="x", citation="x", **kw)
+
+
+def test_the_reported_floor_is_the_median_over_splits_and_stable_across_split_seeds():
+    from dmipy_sim.replay import compression as cx
+    rng = np.random.default_rng(0)
+    C = rng.normal(size=(600, 18, 3)) * 1e-6
+    C[:, 0, :] = 0.0
+    env = cx.default_envelope()
+    one = np.array([cx.measure_floor_coded(C, 1e-4, 33, env, n_splits=1, split_seed=s)["floor_max"] for s in range(20)])
+    med = [cx.measure_floor_coded(C, 1e-4, 33, env, split_seed=s) for s in range(20)]
+    m = np.array([x["floor_max"] for x in med])
+    assert all(x["n_splits"] == cx.FLOOR_SPLITS == 9 for x in med)
+    cv = lambda x: x.std() / x.mean()
+    assert cv(m) < 0.07 and cv(m) < 0.5 * cv(one)       # the median of 9 splits moves by a few per cent; one split by ~15 %
+    assert med[0]["floor_max_single"] == pytest.approx(cx.measure_floor_coded(C, 1e-4, 33, env, n_splits=1)["floor_max"])
+    env = _lean_env()
+    pk = build_replay_pack(_slab_walk(n_w=400, seed=1, raw=False), id="test/nsplit", envelope=env, K=16, license="x", citation="x")
+    assert pk.fidelity["n_floor_splits"] == cx.FLOOR_SPLITS and "single_split_floor_max" in pk.fidelity
