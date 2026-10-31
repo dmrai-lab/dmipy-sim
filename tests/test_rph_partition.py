@@ -73,10 +73,10 @@ def test_membership_is_derived_from_r0_and_independent_of_K(pack_paths):
     a = Phantom.partition(PackSubstrate(p2, m0=1.0), grid)
     b = Phantom.partition(PackSubstrate(p6, m0=1.0), grid)
     assert isinstance(a, PartitionPhantom) and a.mode == "rigid"
-    ijk_a, in_a = a.membership(a.packs[0]); ijk_b, in_b = b.membership(b.packs[0])
+    ijk_a, in_a = a.membership(a.packs[0].name); ijk_b, in_b = b.membership(b.packs[0].name)
     np.testing.assert_array_equal(ijk_a, ijk_b); assert in_a.all() and in_b.all()      # the bit, at any K
     np.testing.assert_array_equal(ijk_a, np.floor((p2.r0 - np.asarray(grid.corner_m)) / np.asarray(grid.voxel_size_m)).astype(int))
-    counts = a.walkers_per_voxel(a.packs[0])
+    counts = a.walkers_per_voxel(a.packs[0].name)
     assert counts.sum() == 2000 and a.n_voxels == int((counts > 0).sum())
     np.testing.assert_array_equal(a.voxel_index, np.argwhere(counts > 0))
 
@@ -88,10 +88,10 @@ def test_a_voxel_without_walkers_is_absent_or_is_the_outside_substrate(pack_path
     assert bare.n_voxels < big.n_voxels                                              # the margin is not in the phantom
     assert np.isnan(bare.replay(_acq(pk, [[1, 0, 0]], [1e9]))[0, 0, 0, 0])
     with pytest.raises(ValueError, match="outside="):                                # a declared slot alone cannot fill a voxel
-        Phantom.partition(PackSubstrate(pk, m0=0.7), big, declared={Inert(name="myelin"): np.full(big.shape, 0.3)}).fraction(0)
+        Phantom.partition(PackSubstrate(pk, m0=0.7), big, declared={Inert(name="myelin"): np.full(big.shape, 0.3)}).fraction("myelin")
     csf = FreeWater(m0=1.0, tissue=Tissue(D=3e-9))
     ph = Phantom.partition(PackSubstrate(pk, m0=0.7), big, outside=csf)
-    f_csf, f_pk = ph.fraction(csf), ph.fraction(ph.packs[0])
+    f_csf, f_pk = ph.fraction(csf.name), ph.fraction(ph.packs[0].name)
     assert ph.n_voxels == big.n_voxels and f_csf[0, 0, 0] == 1.0 and f_pk[0, 0, 0] == 0.0
     np.testing.assert_allclose(f_csf + f_pk, 1.0)
     seq = _acq(pk, [[1, 0, 0]], [1e9])
@@ -106,7 +106,7 @@ def test_fractions_are_emergent_from_the_weights_and_declared_only_where_nothing
     grid = _grid(intra)
     wm_in, wm_ex = PackSubstrate(intra, m0=1.0, name="intra"), PackSubstrate(extra, m0=1.0, name="extra")
     ph = Phantom.partition([wm_in, wm_ex], grid)
-    f_in, f_ex = ph.fraction(wm_in), ph.fraction(wm_ex)
+    f_in, f_ex = ph.fraction(wm_in.name), ph.fraction(wm_ex.name)
     np.testing.assert_allclose(_rows(ph, f_in + f_ex), 1.0)
     # weighted counts ARE the fractions: the intra weight is the intra mask, so its fraction is the intra count share
     ijk, _ = grid.bin(intra.r0)
@@ -116,8 +116,8 @@ def test_fractions_are_emergent_from_the_weights_and_declared_only_where_nothing
     # a declared walker-less slot takes its share first
     myelin = Inert(name="myelin")
     dec = Phantom.partition([wm_in, wm_ex], grid, declared={myelin: np.full(grid.shape, 0.3)})
-    np.testing.assert_allclose(_rows(dec, dec.fraction(myelin)), 0.3)
-    np.testing.assert_allclose(_rows(dec, dec.fraction(wm_in)), 0.7 * _rows(ph, f_in), atol=1e-12)
+    np.testing.assert_allclose(_rows(dec, dec.fraction(myelin.name)), 0.3)
+    np.testing.assert_allclose(_rows(dec, dec.fraction(wm_in.name)), 0.7 * _rows(ph, f_in), atol=1e-12)
     with pytest.raises(ValueError, match="emergent"):
         Phantom.partition(wm_in, grid, declared={wm_ex: np.full(grid.shape, 0.3)})
 
@@ -135,7 +135,7 @@ def test_regrid_is_an_exact_rebin(pack_paths):
     np.testing.assert_allclose(np.nan_to_num(Sc), np.nan_to_num(Sd), atol=1e-15)     # built by regrid == built directly
     # and each coarse voxel is the weight-merged sum of its fine voxels
     Sf = ph.replay(seq, complex_signal=True)
-    Wf = ph.walkers_per_voxel(ph.packs[0])
+    Wf = ph.walkers_per_voxel(ph.packs[0].name)
     for V in coarse.voxel_index[:4]:
         i, j = 2 * V[0], 2 * V[1]
         block = Sf[i:i + 2, j:j + 2, V[2]]; w = Wf[i:i + 2, j:j + 2, V[2]]
@@ -167,7 +167,7 @@ def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_member
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)
     posed = ph.with_pose(Pose(R))
     np.testing.assert_array_equal(posed.voxel_index, ph.voxel_index)
-    np.testing.assert_array_equal(posed.membership(posed.packs[0])[0], ph.membership(ph.packs[0])[0])
+    np.testing.assert_array_equal(posed.membership(posed.packs[0].name)[0], ph.membership(ph.packs[0].name)[0])
     seq = _acq(pk, [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [1e9, 1e9, 1e9])
     rotated = seq.with_gradient(np.asarray(seq.G) @ R)                # g . (R r) = (R^T g) . r
     np.testing.assert_allclose(np.nan_to_num(posed.replay(seq, complex_signal=True)),
@@ -181,12 +181,12 @@ def test_a_pose_on_a_bore_attached_grid_rebins_the_walkers(pack_paths):
     R = _r_so3.rotation_of((0.0, 1.0, 0.0))                                # tip the cylinder axis into the plane
     lab = Grid.covering(pk.r0 @ R.T, voxel_size_m=(2.5e-6, 2.5e-6, 2.5e-6), attach="lab", margin_voxels=1)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), lab, outside=Inert()).with_pose(Pose(R))
-    ijk, inside = ph.membership(ph.packs[0])
+    ijk, inside = ph.membership(ph.packs[0].name)
     ref, ref_in = lab.bin(pk.r0 @ R.T)
     np.testing.assert_array_equal(ijk, ref); assert inside.all()
     same_grid_unposed = Phantom.partition(PackSubstrate(pk, m0=1.0), lab, outside=Inert())
-    assert not np.array_equal(ph.walkers_per_voxel(ph.packs[0]), same_grid_unposed.walkers_per_voxel(same_grid_unposed.packs[0]))
-    np.testing.assert_allclose(_rows(ph, ph.fraction(ph.packs[0]) + ph.fraction(ph.outside)), 1.0)
+    assert not np.array_equal(ph.walkers_per_voxel(ph.packs[0].name), same_grid_unposed.walkers_per_voxel(same_grid_unposed.packs[0].name))
+    np.testing.assert_allclose(_rows(ph, ph.fraction(ph.packs[0].name) + ph.fraction(ph.outside.name)), 1.0)
 
 
 # ------------------------------------------------------------------ maps per walker
@@ -247,5 +247,15 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
     assert isinstance(back, PartitionPhantom) and back.grid == grid and back.outside.name == "csf/free-water"
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     np.testing.assert_allclose(np.nan_to_num(back.replay(seq)), np.nan_to_num(ph.replay(seq)), rtol=1e-6)
-    np.testing.assert_allclose(back.fraction("myelin"), ph.fraction(myelin))
+    np.testing.assert_allclose(back.fraction("myelin"), ph.fraction(myelin.name))
     assert back.substrates[0].tissue.to_meta() == {"T2": {"extra": 0.06, "intra": 0.06}} and back.substrates[0].to_meta()["tissue"] == {"T2": [0.06, 0.06]}
+
+
+def test_pose_is_a_Pose_and_a_bare_matrix_is_refused_by_name():
+    """Every ``pose=`` takes a ``Pose`` (or ``None``): the matrix is spelled ``Pose(R)``."""
+    from dmipy_sim.phantom.partition import pose_rotation
+    R = np.eye(3)
+    assert pose_rotation(None) is None and np.array_equal(pose_rotation(Pose(R)), R)
+    for bad in (R, R.tolist(), 3.0):
+        with pytest.raises(TypeError, match=r"Pose\(R\)"):
+            pose_rotation(bad)

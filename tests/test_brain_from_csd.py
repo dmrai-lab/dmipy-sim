@@ -9,6 +9,7 @@ import pytest
 
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_sim.replay.so3 import real_sh, rotate_sh
+from dmipy_sim import Pose
 
 ROOT = Path(__file__).resolve().parents[1]
 CROP = ROOT / "tests" / "data" / "batman_crop"
@@ -40,24 +41,24 @@ def test_the_crop_becomes_a_phantom_on_the_image_grid(example, wm_pack):
     assert ph.grid.shape == (10, 10, 3) and ph.n_voxels == 300                  # every crop voxel is in the brain
     np.testing.assert_allclose(ph.grid.voxel_size_m, [2.5e-3] * 3, rtol=1e-6)
     assert 2.0 < np.degrees(np.arccos((np.trace(R) - 1) / 2)) < 3.5             # the tutorial's tilt, as measured
-    f = sum(ph.fraction(s) for s in ph.substrates)
+    f = sum(ph.fraction(s.name) for s in ph.substrates)
     np.testing.assert_allclose(f, 1.0, atol=1e-4)                               # a voxel is always full
     wm = ph.substrates[0]
-    assert wm.name == "wm" and ph.fraction(wm).max() > 0.5                       # the crop holds real white matter
+    assert wm.name == "wm" and ph.fraction(wm.name).max() > 0.5                       # the crop holds real white matter
 
 
 def test_the_signal_minimum_lies_along_the_fod_peak(example, wm_pack):
     ph, fod, R = example.build(str(CROP), wm_pack)
     seq, g = example.acquisition(str(CROP), ph.grid, TE=0.030, delta=0.006, Delta=0.015)
     assert seq.prescription is not None and seq.prescription.axes == ph.grid.axes
-    S = ph.replay(seq, pose=R)
+    S = ph.replay(seq, pose=Pose(R))
     assert S.shape == (10, 10, 3, 113) and np.isfinite(S).all()
     b = g[:, 3]; ok = np.isclose(b, 3000)
     dirs = g[ok, :3] / np.linalg.norm(g[ok, :3], axis=1, keepdims=True) @ R     # into the image frame
     c = rotate_sh(fod.data, R.T)
     sphere = np.random.default_rng(0).normal(size=(4000, 3)); sphere /= np.linalg.norm(sphere, axis=1, keepdims=True)
     Y = real_sh(8, sphere)
-    f_wm = ph.fraction(ph.substrates[0])
+    f_wm = ph.fraction(ph.substrates[0].name)
     errs = []
     for i, j, k in np.argwhere((fod.data[..., 0] > 0.15) & (f_wm > 0.5)):
         peak = sphere[np.argmax(Y @ c[i, j, k])]
@@ -85,8 +86,8 @@ def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pac
     from dmipy_sim.replay import read_rpk
     ph, fod, R = example.build(str(CROP), wm_pack)
     seq, g = example.acquisition(str(CROP), ph.grid, TE=0.030, delta=0.006, Delta=0.015)
-    S = ph.replay(seq, pose=R)
-    f_wm = ph.fraction(ph.substrates[0])
+    S = ph.replay(seq, pose=Pose(R))
+    f_wm = ph.fraction(ph.substrates[0].name)
     voxels = np.argwhere((fod.data[..., 0] > 0.15) & (f_wm > 0.5))
     c_out = check.fit_fods(read_rpk(wm_pack), seq, S, voxels)
     c_in = rotate_sh(fod.data, R.T)[tuple(voxels.T)]
@@ -221,8 +222,8 @@ def test_the_catalogued_machine_reaches_the_brain_s_signal(example, wm_pack):
     dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]], float)
     seq = sequences.pgse(dirs.tolist(), 0.006, 0.015, bvalues=[1e9] * 6, TE=0.030, n_t=61)   # on the grid's own voxels
     rep = {}
-    S_sw = ph.replay(seq, pose=R, scanner=ScannerLimits.of("swoop"), encoding_tolerance=0.05, report=rep)
-    S_b0 = ph.replay(seq, pose=R, scanner=0.064)
+    S_sw = ph.replay(seq, pose=Pose(R), scanner=ScannerLimits.of("swoop"), encoding_tolerance=0.05, report=rep)
+    S_b0 = ph.replay(seq, pose=Pose(R), scanner=0.064)
     m = np.isfinite(S_sw)
     moved = np.abs(S_sw - S_b0)[m].max() / np.abs(S_b0)[m].max()
     assert 1 < rep["n_encoding_classes"] < ph.n_voxels

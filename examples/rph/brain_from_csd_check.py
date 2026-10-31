@@ -69,7 +69,7 @@ def main(argv=None):
     seq = rotate_waveform(seq, R.T)                                   # the acquisition in the image frame, as the phantom replayed it (pose=R)
     S = nib.load(os.path.join(a.out, "synthetic_dwi.nii.gz")).get_fdata()
     ph = read_rph(os.path.join(a.out, "batman_brain.rph"))
-    f_wm = ph.to_volume(ph.fraction(0), fill=0.0)
+    f_wm = ph.to_volume(ph.fraction(ph.substrates[0].name), fill=0.0)
     voxels = np.argwhere((fod.data[..., 0] > a.afd) & (f_wm > 0.5) & (S[..., 0] > 0))
     c_out = fit_fods(PackSubstrate(a.wm_pack, m0=1.0).pack, seq, S, voxels)
     c_in = rotate_sh(fod.data, R.T)[tuple(voxels.T)]

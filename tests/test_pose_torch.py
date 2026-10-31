@@ -15,6 +15,7 @@ from dmipy_replay.phantom.grid import Grid
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
+from dmipy_sim import Pose
 
 torch = pytest.importorskip("torch")
 
@@ -88,7 +89,7 @@ def test_the_torch_expansion_is_the_numpy_one_with_the_field_on(field_pack, mach
     to the magnet's own gradient; equal coefficients to float32 rounding and an equal misfit."""
     B0 = 3.0 if machine is None else float(ScannerLimits.of(machine).field_T)
     played, R = field_along(_played(machine, kind, 8e-4, 0.3), (0.6, 0.0, 0.8))
-    kw = dict(scanner=B0, tissue=TISSUE, pose=R, method="closed")
+    kw = dict(scanner=B0, tissue=TISSUE, pose=Pose(R), method="closed")
     for keep in (None, (6, 0)):
         ref = field_pack.pose_response(played, keep=keep, **kw)
         got = field_pack.pose_response(played, keep=keep, backend="torch", device=device, **kw)
@@ -119,7 +120,7 @@ def test_a_mixed_batch_on_torch_takes_one_field_factor_per_gate(field_pack):
     coefficients to float32 rounding and the misfit equal."""
     se, R = field_along(_played(None, "spin echo", 8e-4, 0.3), (0.6, 0.0, 0.8))
     ste, _ = field_along(_played(None, "stimulated echo", 6e-4, 0.3), (0.6, 0.0, 0.8))
-    kw = dict(scanner=3.0, tissue=TISSUE, pose=R, method="closed")
+    kw = dict(scanner=3.0, tissue=TISSUE, pose=Pose(R), method="closed")
     both = field_pack.pose_responses([se, ste], backend="torch", device="cpu", **kw)
     for one, got in zip((se, ste), both):
         _same(field_pack.pose_response(one, **kw), got, atol=1e-5)

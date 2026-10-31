@@ -46,7 +46,7 @@ from dmipy_replay.replay.planning import PLAN_TOL, ReadPlan, planned
 from dmipy_replay.constants import GAMMA
 from ..run import Run, current
 from dmipy_replay.acquisition.scanner_sequence import Protocol, ScannerSequence
-from dmipy_replay.replay.replay import _compile_continuous, _path_field_channels, _pose_matrix, _refuse_predating
+from dmipy_replay.replay.replay import _compile_continuous, _path_field_channels, _refuse_predating
 
 __all__ = ["ReplayPack", "PoseResponse", "read_rpk", "write_rpk", "analytic_pose_response", "replay_signal_jax", "replay_batch_jax",]
 
@@ -532,8 +532,8 @@ class ReplayPack(_ReplayPack):
         take rather than falling back. :attr:`PoseResponse.route` says which was used.
 
         ``tissue`` and ``scanner`` are :meth:`replay`'s. The substrate's pose is not a knob here, since every pose
-        of it is what is being expanded; ``pose`` is the SPECIMEN's rigid rotation in the bore (a 3x3 rotation, or
-        a phantom's :class:`~dmipy_sim.phantom.partition.Pose`): the acquisition and the field turn into that
+        of it is what is being expanded; ``pose`` is the SPECIMEN's rigid rotation in the bore (a
+        :class:`~dmipy_sim.phantom.partition.Pose`; a bare matrix is ``Pose(R)``): the acquisition and the field turn into that
         frame and the expansion runs there.
 
         ``cache`` -- a directory (or ``True`` for ``$DMIPY_SIM_CACHE``, else ``~/.cache/dmipy_sim/pose``): the
@@ -564,7 +564,8 @@ class ReplayPack(_ReplayPack):
             return view.pose_responses(waveforms, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
                                        method=method, keep=keep, cache=cache, backend=backend, device=device)
         waveforms = list(waveforms)
-        R_s = _pose_matrix(pose)
+        from ..phantom.partition import pose_rotation
+        R_s = pose_rotation(pose)
         if R_s is not None:                                       # the acquisition in the specimen frame: what the
             from dmipy_replay.acquisition.waveforms import rotate_waveform  # expansion reads, in P and from the waveform itself
             waveforms = [rotate_waveform(wf, R_s.T) for wf in waveforms]

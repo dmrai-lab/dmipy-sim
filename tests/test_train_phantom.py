@@ -48,8 +48,8 @@ def test_a_train_replays_over_an_odf_phantom_which_the_bloch_route_refuses(brain
     ph, pack, _grid = brain
     assert ph.mode == "odf_sh"
     with pytest.raises(ValueError, match="frames-mode"):
-        ph.file.replay_bloch(_train(), packs={0: pack})
-    S = ph.replay_train(_train(), packs={0: pack})
+        ph.file.replay_bloch(_train(), packs={"wm": pack})
+    S = ph.replay_train(_train(), packs={"wm": pack})
     assert S.shape[:3] == SH and np.all(np.isfinite(S))
     assert np.nanmean(np.abs(S)) > 0
 
@@ -58,13 +58,13 @@ def test_the_flip_angle_changes_the_signal_as_the_pathways_say(brain):
     """A reduced flip is not a scale factor: the pathways part and the echoes stop being equal. A route that
     merely attenuated would pass a weaker test than this one."""
     ph, pack, _g = brain
-    perfect = np.abs(ph.replay_train(_train(beta=180.0), packs={0: pack}))
-    reduced = np.abs(ph.replay_train(_train(beta=120.0), packs={0: pack}))
+    perfect = np.abs(ph.replay_train(_train(beta=180.0), packs={"wm": pack}))
+    reduced = np.abs(ph.replay_train(_train(beta=120.0), packs={"wm": pack}))
     assert np.nanmean(reduced) < np.nanmean(perfect)
 
     # and echo to echo, a perfect train is flat where a reduced one is not (no relaxation, no train gradient)
-    flat = [np.nanmean(np.abs(ph.replay_train(_train(beta=180.0), echo=e, packs={0: pack}))) for e in range(3)]
-    bent = [np.nanmean(np.abs(ph.replay_train(_train(beta=120.0), echo=e, packs={0: pack}))) for e in range(3)]
+    flat = [np.nanmean(np.abs(ph.replay_train(_train(beta=180.0), echo=e, packs={"wm": pack}))) for e in range(3)]
+    bent = [np.nanmean(np.abs(ph.replay_train(_train(beta=120.0), echo=e, packs={"wm": pack}))) for e in range(3)]
     assert np.ptp(flat) < 1e-6 * np.mean(flat)
     assert np.ptp(bent) > 1e-2 * np.mean(bent)
 
@@ -76,8 +76,8 @@ def test_a_transmit_map_costs_a_reweighting_not_a_reexpansion(brain):
     ph, pack, grid = brain
     smooth = np.linspace(0.8, 1.0, ph.n_voxels).reshape(SH)
     fine, coarse = {}, {}
-    S_fine = ph.replay_train(_train(), transmit=smooth, transmit_tolerance=1e-2, packs={0: pack}, report=fine)
-    S_coarse = ph.replay_train(_train(), transmit=smooth, transmit_tolerance=1e-1, packs={0: pack}, report=coarse)
+    S_fine = ph.replay_train(_train(), transmit=smooth, transmit_tolerance=1e-2, packs={"wm": pack}, report=fine)
+    S_coarse = ph.replay_train(_train(), transmit=smooth, transmit_tolerance=1e-1, packs={"wm": pack}, report=coarse)
     assert fine["n_scales"] > coarse["n_scales"]                 # binning is what bounds the count
     assert coarse["n_gates"] == fine["n_gates"]                  # and it does not touch the expansions
     rel = np.nanmax(np.abs(np.abs(S_fine) - np.abs(S_coarse))) / np.nanmax(np.abs(S_fine))
@@ -90,7 +90,7 @@ def test_the_gate_count_is_set_by_the_preparation_not_the_train(brain):
     counts = []
     for n_echo in (2, 4, 8):
         rep = {}
-        ph.replay_train(_train(n_echo=n_echo), packs={0: pack}, report=rep)
+        ph.replay_train(_train(n_echo=n_echo), packs={"wm": pack}, report=rep)
         counts.append(rep["n_gates"])
     assert len(set(counts)) == 1, f"gate count moved with the train: {counts}"
 
@@ -101,8 +101,8 @@ def test_the_accelerated_route_agrees_with_the_plain_one(brain):
     jax = pytest.importorskip("jax")
     ph, pack, _g = brain
     smooth = np.linspace(0.85, 1.0, ph.n_voxels).reshape(SH)
-    a = ph.replay_train(_train(), transmit=smooth, packs={0: pack}, jax=False)
-    b = ph.replay_train(_train(), transmit=smooth, packs={0: pack}, jax=True)
+    a = ph.replay_train(_train(), transmit=smooth, packs={"wm": pack}, jax=False)
+    b = ph.replay_train(_train(), transmit=smooth, packs={"wm": pack}, jax=True)
     rel = np.nanmax(np.abs(np.abs(a) - np.abs(b))) / max(np.nanmax(np.abs(a)), 1e-30)
     assert rel < 1e-5, f"the two routes differ by {rel:.2e}"
 
@@ -197,7 +197,7 @@ def test_a_closed_form_under_a_train_is_the_pack_route_at_b_zero(brain):
                                  TE_prep=80e-3, beta_deg=beta, n_t_per_echo=40)
         for echo in (0, 1, 2):
             got = np.nanmean(ph.replay_train(train, echo=echo, transmit=kappa, complex_signal=True)[..., 0])
-            want = np.nanmean(ph_pack.replay_train(train, echo=echo, transmit=kappa, packs={0: pack}, complex_signal=True)[..., 0]) / 0.7
+            want = np.nanmean(ph_pack.replay_train(train, echo=echo, transmit=kappa, packs={"wm": pack}, complex_signal=True)[..., 0]) / 0.7
             assert abs(got - want) < 1e-6, (beta, kappa, echo, got, want)
             if beta < 180.0 and echo > 0:
                 assert abs(got) < 1.0 - 1e-3
@@ -216,7 +216,7 @@ def test_a_closed_form_takes_each_pathway_at_its_own_b_and_the_pack_agrees(brain
     for beta in (180.0, 120.0):
         train = _train(beta=beta)
         S_form = np.abs(np.nanmean(ph_form.replay_train(train, echo=1)[..., 0]))
-        S_pack = np.abs(np.nanmean(ph_pack.replay_train(train, echo=1, packs={0: pack})[..., 0]))
+        S_pack = np.abs(np.nanmean(ph_pack.replay_train(train, echo=1, packs={"wm": pack})[..., 0]))
         assert 0 < S_form < 0.7                                                # attenuated below m0
         if beta == 180.0:                                                      # one pathway: the preparation's own b
             assert abs(S_form - 0.7 * np.exp(-float(train.b()[0]) * D)) < 1e-6 * S_form
@@ -245,8 +245,8 @@ def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
     only_csf = Phantom.compose(grid, fractions={csf: f_csf}, orientation={}, remainder=Inert(name="bg"))
     train = _train(beta=150.0)
     rep = {}
-    S = both.replay_train(train, packs={0: pack}, complex_signal=True, report=rep)
-    S1 = only_wm.replay_train(train, packs={0: pack}, complex_signal=True)
+    S = both.replay_train(train, packs={"wm": pack}, complex_signal=True, report=rep)
+    S1 = only_wm.replay_train(train, packs={"wm": pack}, complex_signal=True)
     S2 = only_csf.replay_train(train, complex_signal=True)
     assert rep["n_closed_forms"] == 1 and rep["n_gates"] >= 1
     np.testing.assert_allclose(S, S1 + S2, rtol=1e-6, atol=1e-9)
@@ -294,8 +294,8 @@ def test_a_b_zero_train_composes_packs_of_different_bands(brain):
     wm = PackSubstrate(pack, m0=0.7, name="wm"); wm2 = PackSubstrate(pack, m0=0.7, name="wm2")
     two = Phantom.compose(grid, fractions={wm: np.full(SH, 0.5, np.float32), wm2: np.full(SH, 0.5, np.float32)},
                           orientation={wm: ODF(c, basis="mrtrix3"), wm2: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
-    S2 = two.replay_train(train, echo=1, packs={0: pack, 1: pack}, complex_signal=True)
-    S1 = ph.replay_train(train, echo=1, packs={0: pack}, complex_signal=True)
+    S2 = two.replay_train(train, echo=1, packs={"wm": pack, "wm2": pack}, complex_signal=True)
+    S1 = ph.replay_train(train, echo=1, packs={"wm": pack}, complex_signal=True)
     np.testing.assert_allclose(S2, S1, rtol=1e-9, atol=1e-12)
 
 
@@ -366,11 +366,11 @@ def test_a_spin_echo_under_a_field_refocuses_on_the_train_route_as_on_the_phase_
     ph0 = Phantom.compose(grid, fractions={wm0: np.ones(SH, np.float32)}, orientation={wm0: ODF(c, basis="mrtrix3")}, remainder=Inert(name="bg"))
     se = sequences.pgse([[0.0, 0.0, 1.0]], 1e-3, 3e-3, bvalues=[0.0], TE=6e-3, n_t=60)
     for phx, B0 in ((ph0, None), (ph, 7.0)):                 # in magnitude: the pathway carries the pulses' phase, the phase sum does not
-        S_sum = np.abs(phx.replay(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
-        S_train = np.abs(phx.replay_train(se, scanner=B0, packs={0: pack}, complex_signal=True)[..., 0])
+        S_sum = np.abs(phx.replay(se, scanner=B0, packs={"wm": pack}, complex_signal=True)[..., 0])
+        S_train = np.abs(phx.replay_train(se, scanner=B0, packs={"wm": pack}, complex_signal=True)[..., 0])
         np.testing.assert_allclose(S_train, S_sum, rtol=1e-6, atol=1e-9)
     # and the field does something at 7 T on a gradient echo, so the agreement is not trivial
     gre = sequences.gre(6e-3, n_t=60)
-    S_none = ph0.replay(gre, scanner=None, packs={0: pack})[..., 0]
-    S_7 = ph.replay(gre, scanner=7.0, packs={0: pack})[..., 0]
+    S_none = ph0.replay(gre, scanner=None, packs={"wm": pack})[..., 0]
+    S_7 = ph.replay(gre, scanner=7.0, packs={"wm": pack})[..., 0]
     assert np.nanmax(np.abs(S_7 / S_none - 1.0)) > 1e-3

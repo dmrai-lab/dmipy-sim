@@ -27,6 +27,7 @@ from dmipy_sim.io.mrtrix import read_mif
 from dmipy_sim.phantom import FreeWater, Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay.so3 import rotate_sh
 from dmipy_sim.spec import Tissue
+from dmipy_sim import Pose
 
 # 5TT columns (MRtrix): cortical GM, sub-cortical GM, WM, CSF, pathological tissue
 GM_COLS, WM_COL, CSF_COL, PATH_COL = (0, 1), 2, 3, 4
@@ -129,7 +130,7 @@ def main(argv=None):
     ph, fod, R = build(a.batman, a.wm_pack, a.gm_pack, a.slab)
     seq, g = acquisition(a.batman, ph.grid, TE=a.TE, delta=a.delta, Delta=a.Delta)
     t0 = time.time()
-    S = ph.replay(seq, pose=R)                                                             # the image frame in the bore
+    S = ph.replay(seq, pose=Pose(R))                                                             # the image frame in the bore
     print(f"  replayed {seq.n_meas} measurements in {time.time() - t0:.0f} s", flush=True)
     S = np.nan_to_num(S).astype(np.float32)
     if a.snr:                                                                              # SNR of the brain's mean b = 0
