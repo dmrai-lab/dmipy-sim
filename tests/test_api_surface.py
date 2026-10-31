@@ -820,6 +820,17 @@ def test_walk_is_the_one_public_producer_and_the_engine_primitive_is_not_exporte
     assert importlib.import_module("dmipy_sim.spec.walk").walk is dmipy_sim.walk
 
 
+def test_a_package_carries_no_private_name_of_its_module():
+    """``dmipy_sim.replay`` and ``dmipy_sim.viz`` re-export their module's PUBLIC names; a private name is reached at
+    its module (``dmipy_sim.replay.replay._x``), never through the package. A name a caller needs is public."""
+    import dmipy_sim.replay as replay_pkg
+    import dmipy_sim.viz as viz_pkg
+    for pkg in (replay_pkg, viz_pkg):
+        private = sorted(k for k in vars(pkg) if k.startswith("_") and not k.startswith("__"))
+        assert not private, f"{pkg.__name__} carries private names {private}"
+    assert callable(viz_pkg.split_cells) and not hasattr(viz_pkg, "_split_cells")
+
+
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
     one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack side
