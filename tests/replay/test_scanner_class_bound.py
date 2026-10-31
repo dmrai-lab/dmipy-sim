@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay import time_segments as ts
@@ -116,7 +117,7 @@ def test_the_envelope_of_a_class_states_it_and_its_phase_weight_is_the_class_bou
 def walk():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return d.simulate_trajectories(600, 2e-9, d.Cylinder(radius=4e-6, orientation=[0, 0, 1]), 0.02, 2.5e-4, seed=2,
+        return _walk_geometry(600, 2e-9, d.Cylinder(radius=4e-6, orientation=[0, 0, 1]), 0.02, 2.5e-4, seed=2,
                                        require_gpu=False, K=32, window_T=0.02)
 
 
@@ -170,7 +171,7 @@ def disco_timing_layout(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("class_layout")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w = d.simulate_trajectories(300, 2e-9, d.Cylinder(radius=4e-6, orientation=[0, 0, 1]), 0.06, 5e-4, seed=4,
+        w = _walk_geometry(300, 2e-9, d.Cylinder(radius=4e-6, orientation=[0, 0, 1]), 0.06, 5e-4, seed=4,
                                     require_gpu=False, K=64, window_T=0.06)
         pk = build_replay_pack(w, id="t/class-layout", license="x", citation="x", K=64,
                                envelope=dict(cx.default_envelope(), scanner="connectome_2"))

@@ -1,7 +1,7 @@
 """Replay-pack assembler — walk once, compress, self-certify, freeze into a ``.rpk``.
 
 :func:`build_replay_pack` turns a **master walk** (from
-:func:`dmipy_sim.engine.core.simulate_trajectories`) into a compressed,
+:func:`dmipy_sim.engine.core._walk_geometry`) into a compressed,
 self-describing replay pack: the position ensemble is compressed by a :mod:`dmipy_sim.replay.compression`
 codec (``bridge_dst``), the tier channels the certified envelope needs are carried
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,
@@ -1269,7 +1269,7 @@ WINDOW_T = 0.1          #: the storage rule's window (s): a pack stores its walk
 
 
 def _walk_scanner(walk):
-    """The scanner class a walk's band was derived for (``CoefficientWalk.scanner``, set by ``walk_spec``), or None."""
+    """The scanner class a walk's band was derived for (``CoefficientWalk.scanner``, set by ``walk``), or None."""
     return getattr(walk, "scanner", None) if not isinstance(walk, dict) else walk.get("scanner")
 
 
@@ -1970,7 +1970,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     its full text lives; absent, the pack is distributed under ``license``.
 
     **The band is the scanner class's** (#643): ``K = ceil(2 f T)`` per window with ``f`` = :func:`storage_band_hz`
-    of ``scanner`` (the class the walk was walked for, ``CoefficientWalk.scanner``, which :func:`~dmipy_sim.spec.walk.walk_spec`
+    of ``scanner`` (the class the walk was walked for, ``CoefficientWalk.scanner``, which :func:`~dmipy_sim.walk`
     sets) times :data:`STORAGE_BAND_MARGIN`, never more than the walk's own ``K``; ``K`` or ``temporal_bandwidth_hz``
     state the band directly, and a walk with no class and no stated band is packed at its own ``K`` (what it was
     walked at). Nothing is searched on the walk: the certificate measures whether the band holds, it does not
@@ -2015,7 +2015,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
             f"part of their paths went untested, so the walk is not the record of the physics it claims. Walk it again "
             f"with a larger bounce_budget= (certify_bounce_budget sizes one from a pilot) and build the pack from that.")
     if not isinstance(walk, CoefficientWalk):
-        raise TypeError(f"build_replay_pack takes the CoefficientWalk a producer returns (simulate_trajectories, walk_spec, "
+        raise TypeError(f"build_replay_pack takes the CoefficientWalk a producer returns (_walk_geometry, walk, "
                         f"simulate_trajectories_adaptive, simulate_mt_trajectories); got {type(walk).__name__}. A pack is "
                         "the bands a walk accumulated; it is never built from samples on a grid")
     cw = walk
@@ -2026,7 +2026,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                          f"(fidelity='measured'); got fidelity={fidelity!r}")
     if fidelity == "measured" and cw.raw_positions is None:
         raise ValueError("fidelity='measured' replays the battery on raw positions, and this coefficient walk kept none: "
-                         "walk it with simulate_trajectories(raw_subset=n), or build with fidelity='derived'")
+                         "walk it with _walk_geometry(raw_subset=n), or build with fidelity='derived'")
     if cw.spec is None:
         raise ValueError("a pack embeds the substrate spec its walk was driven by, and this walk carries none")
     T_win = float(cw.T_window)

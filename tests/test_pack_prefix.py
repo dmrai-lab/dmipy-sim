@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
@@ -13,7 +14,7 @@ from dmipy_replay.spec.tissue import Tissue
 @pytest.fixture(scope="module")
 def parent(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(600, 2e-9, g, 20e-3, 2.5e-4, seed=7, require_gpu=False)      # 81 saves, 20 ms
+    walk = _walk_geometry(600, 2e-9, g, 20e-3, 2.5e-4, seed=7, require_gpu=False)      # 81 saves, 20 ms
     p = tmp_path_factory.mktemp("pk") / "parent.rpk"
     _float_pack(walk, id="test/parent", license="x", citation="x", K=16, out_path=str(p))
     return read_rpk(str(p))
@@ -23,7 +24,7 @@ def test_the_band_is_a_frequency(parent, tmp_path):
     assert parent.temporal_bandwidth_hz == pytest.approx(parent.K / (2 * 20e-3))
     assert parent.meta["compression"]["temporal_bandwidth_hz"] == pytest.approx(parent.temporal_bandwidth_hz)
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(100, 2e-9, g, 10e-3, 2.5e-4, seed=1, require_gpu=False)
+    walk = _walk_geometry(100, 2e-9, g, 10e-3, 2.5e-4, seed=1, require_gpu=False)
     pk = _float_pack(walk, id="t", license="x", citation="x", temporal_bandwidth_hz=400.0)
     assert pk.K == 8 and pk.temporal_bandwidth_hz == pytest.approx(400.0)                         # K = 2 T f
 
@@ -134,7 +135,7 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
     (found by the paper's Swoop train on the 1 s grey-matter pack)."""
     g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
     T, n_t = 0.3, 1302                                                  # dt = 0.3 / 1301: 0.1 s is not a whole number of saves
-    walk = d.simulate_trajectories(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False, K=16, window_T=T)
+    walk = _walk_geometry(200, 2e-9, g, T, T / (n_t - 1), seed=3, require_gpu=False, K=16, window_T=T)
     p = tmp_path / "parent.rpk"
     _float_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), window_T=T)
     parent = read_rpk(str(p))
@@ -162,7 +163,7 @@ def test_a_prefix_inside_a_later_window_is_refused_by_name(tmp_path):
     one window of the parent only (the windows are separate functions), so it is refused naming the windows; a
     prefix on whole windows is a range."""
     g = d.Cylinder(radius=3e-6, orientation=(0.0, 0.0, 1.0))
-    walk = d.simulate_trajectories(300, 2e-9, g, 0.3, 0.1 / 200, seed=9, require_gpu=False, K=16)
+    walk = _walk_geometry(300, 2e-9, g, 0.3, 0.1 / 200, seed=9, require_gpu=False, K=16)
     p = tmp_path / "parent.rpk"
     _float_pack(walk, id="t/windows", license="x", citation="x", K=16, out_path=str(p))
     parent = read_rpk(str(p))

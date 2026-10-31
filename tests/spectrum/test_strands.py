@@ -51,11 +51,12 @@ def test_25um_index_hashes_verify(entry_25um):
 def test_25um_is_walkable_by_walk_spec(entry_25um):
     """The generated 25 um geometry itself (not the pilot) is a walkable dmipy_sim spec on the JAX engine, CPU:
     dmipy-sim#697's own test requirement."""
-    from dmipy_sim.spec import disco_spec, walk_spec
+    from dmipy_sim.spec import disco_spec
+    from dmipy_sim import walk
     out = entry_25um["out_dir"]
     spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=25e-6, field=False)
-    w = walk_spec(spec, 40, 2e-4, 2e-5, seed=0, require_gpu=False, n_probe=5_000)
+    w = walk(spec, 40, 2e-4, 2e-5, seed=0, require_gpu=False, n_probe=5_000)
     assert w.n_walkers == 40
     assert np.isfinite(w.position_coeffs).all()
 

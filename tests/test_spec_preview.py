@@ -12,6 +12,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import spec as S
 from dmipy_sim.spec import SpecError
+from dmipy_sim import Compartments, Pool
 
 
 def _fracs(record, plane):
@@ -78,8 +79,12 @@ def test_pool_of_is_the_base_class_map_and_needs_no_probe():
     assert list(np.asarray(packed.pool_of(np.array([0, 1, 2])))) == [0, 1, 1]
     plain = d.Sphere(radius=5e-6)
     assert list(np.asarray(plain.pool_of(np.array([0, 1])))) == [0, 1]
-    myel = MyelinatedCylinder(inner_radius=4e-6, outer_radius=5e-6, orientation=(0, 0, 1), D_intra=2e-9,
-                              D_extra=2e-9)
+    myel = MyelinatedCylinder(
+        inner_radius=4e-6,
+        outer_radius=5e-6,
+        orientation=(0, 0, 1),
+        compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
+    )
     assert list(np.asarray(myel.pool_of(np.array([0, 1, 2])))) == [0, 1, 2]
 
 

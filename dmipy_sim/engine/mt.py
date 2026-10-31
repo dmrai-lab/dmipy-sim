@@ -126,7 +126,7 @@ def dwell_time_from_fraction(f_bound, k_f):
 
 # ── bound-pool equilibration for the MT walk generator ──────────────────────────
 # Shared by ``mt_walk.simulate_mt_trajectories`` (and the packed-myelin MT walk in
-# ``core.simulate_trajectories``).  The saved walk carries no RF/gradient (those are
+# ``core._walk_geometry``).  The saved walk carries no RF/gradient (those are
 # replay knobs), so equilibration is purely of the bound-pool OCCUPANCY (and the
 # equilibrated spatial state): an all-free start under-fills the macromolecular pool
 # and biases the transfer whenever ``1/k_f`` is not ``<<`` the walk duration. The three
@@ -146,38 +146,35 @@ def surface_to_volume(geometry):
     return None
 
 
-def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, T2_bound=None):
-    """Map ``equilibrate_binding`` -> 'off' | 'burnin' | 'fast' for every MT driver.
+EQUILIBRATE_MODES = ("burnin", "fast", "off")
 
-    'auto' (the default when MT is on) -> 'burnin' (safe, geometry-agnostic). 'fast' seeds the
-    equilibrium occupancy mid-air, so it needs a known S/V, else it warns and falls back to
-    'burnin'. A driver with a readout passes ``G``, ``T2`` and ``T2_bound``: mid-air bound
-    positions are position-invariant only when no gradient is on (``G == 0``) or the bound pool
-    is MR-dark (``T2_bound << T2``), so 'fast' is demoted to 'burnin' otherwise. A driver that
-    only records positions (the MT trajectory producer) has no readout and passes none.
+
+def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, T2_bound=None):
+    """Check ``equilibrate_binding`` -> 'burnin' | 'fast' | 'off' for every MT driver.
+
+    Exactly ``'burnin'`` (the default when MT is on: safe, geometry-agnostic), ``'fast'`` or ``'off'``; every other
+    value (``'auto'``, ``True``, ``False``, ``None``) is a ValueError naming the three. 'fast' seeds the equilibrium
+    occupancy mid-air, so it needs a known S/V and is a ValueError without one. A driver with a readout passes
+    ``G``, ``T2`` and ``T2_bound``: mid-air bound positions are position-invariant only when no gradient is on
+    (``G == 0``) or the bound pool is MR-dark (``T2_bound << T2``), and 'fast' is a ValueError otherwise. A driver
+    that only records positions (the MT trajectory producer) has no readout and passes none.
     """
-    import warnings
     eb = equilibrate_binding
-    if eb in (None, False, "off"):
-        return "off"
-    if eb in ("auto", True, "burnin"):
-        return "burnin"
+    if not isinstance(eb, str) or eb not in EQUILIBRATE_MODES:
+        raise ValueError(f"equilibrate_binding must be exactly 'burnin' | 'fast' | 'off', got {eb!r}; "
+                         f"'burnin' is the default, 'off' is spelled 'off' (not False or None), and 'auto' is 'burnin'")
     if eb == "fast":
         if surface_to_volume(geometry) is None:
-            warnings.warn("equilibrate_binding='fast' needs a known surface-to-volume "
-                          "(analytic Sphere/Cylinder); falling back to 'burnin'.", stacklevel=3)
-            return "burnin"
+            raise ValueError("equilibrate_binding='fast' needs a known surface-to-volume (an analytic Sphere or "
+                             "Cylinder); this geometry has none: use 'burnin'")
         if G is not None:
             no_gradient = not bool(np.any(np.asarray(G)))
             dark = (T2 is None) or (T2_bound is not None and float(T2_bound) <= 0.02 * float(T2))
             if not (no_gradient or dark):
-                warnings.warn("equilibrate_binding='fast' is unsafe: a gradient is present and "
-                              "the bound pool is not MR-dark (T2_bound not << T2), so the mid-air "
-                              "bound positions would bias the signal; falling back to 'burnin'.",
-                              stacklevel=3)
-                return "burnin"
-        return "fast"
-    raise ValueError(f"equilibrate_binding must be 'auto'|'burnin'|'fast'|'off', got {eb!r}")
+                raise ValueError("equilibrate_binding='fast' is unsafe here: a gradient is present and the bound pool "
+                                 "is not MR-dark (T2_bound not << T2), so the mid-air bound positions would bias the "
+                                 "signal: use 'burnin'")
+    return eb
 
 
 def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, tol=0.01, max_chunks=40):

@@ -5,12 +5,13 @@ import tracemalloc
 import numpy as np
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 
 UM = 1e-6
 
 
 def _walk(**kw):
-    return d.simulate_trajectories(3000, 2e-9, d.Sphere(3 * UM), T_max=4e-3, block_h=2e-5, seed=0, tiers="all",
+    return _walk_geometry(3000, 2e-9, d.Sphere(3 * UM), T_max=4e-3, block_h=2e-5, seed=0, tiers="all",
                                    require_gpu=False, raw_subset=3000, **kw)
 
 

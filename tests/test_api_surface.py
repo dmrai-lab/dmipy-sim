@@ -24,6 +24,7 @@ import pytest
 import dmipy_sim
 from dmipy_sim.geometry import Geometry, LengthScales
 from dmipy_sim.geometry._boundary import WallHit
+from dmipy_sim import Compartments, Pool
 
 _SRC = Path(dmipy_sim.__file__).parent
 import dmipy_replay  # noqa: E402
@@ -99,8 +100,8 @@ def _all_geometries():
         "PermeableShell": PermeableShell(r_inner=3e-6, r_outer=5e-6, permeability=1e-5),
         "PackedCylinders": PackedCylinders([R] * 4, c2, L2),
         "PackedSpheres": PackedSpheres([R] * 4, c3, L3),
-        "MyelinatedCylinder": MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), 2e-9, 2e-9),
-        "PackedMyelinatedCylinders": PackedMyelinatedCylinders([R] * 4, 0.7, c4, L4, N_max=8),
+        "MyelinatedCylinder": MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0))),
+        "PackedMyelinatedCylinders": PackedMyelinatedCylinders([R] * 4, 0.7, c4, L4, N_max=8, compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.0), extra=Pool(D=2e-9))),
         "CurvedCylinder": CurvedCylinder(cl, radius=2e-6),
         "CurvedMyelinatedCylinder": CurvedMyelinatedCylinder(cl, r_in=2e-6, r_out=3e-6),
         "PackedCurvedCylinders": PackedCurvedCylinders([cl], [2e-6]),
@@ -237,7 +238,7 @@ _ALLOWED_PROBES = {
     "permeability", "surface_substep_frac", "reflection_step_fraction",
     # optional methods: not every geometry records a boundary local time / binding / membrane
     "reflect_with_log_weight", "reflect_with_binding", "permeate",
-    # core.simulate_trajectories compartment-id derivation (issue #94, A7)
+    # core._walk_geometry compartment-id derivation (issue #94, A7)
     "_R",
     # BoxedMesh wraps a Mesh and reads its box mode
     "box_reflect",
@@ -318,8 +319,16 @@ def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
         def reflect(self, r, step): return r + step
         length_scales = LengthScales()
 
-    with pytest.raises(SpecError, match="spec spelling"):
+    with pytest.raises(TypeError, match="neither a SubstrateSpec nor a Geometry"):
         as_geometry(Quack())
+
+    class Unspelled(Geometry):                       # a Geometry spec_of does not know
+        def init_positions(self, n, key): return jnp.zeros((n, 3), jnp.float32)
+        def reflect(self, r, step): return r + step
+        length_scales = LengthScales()
+
+    with pytest.raises(SpecError, match="spec spelling"):
+        as_geometry(Unspelled())
     g = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
     assert as_geometry(g) is g and g._spec_source is not None and g._spec_source == g.spec
 
@@ -585,8 +594,8 @@ def test_the_walk_keeps_its_bands_and_has_no_second_spelling():
     opt-in positions; there is no switch to a walk of saves (``accumulate=``, ``compress=``, ``storage_dtype=``) on
     the producer or its cost, and none is spelled anywhere in the package."""
     import inspect
-    from dmipy_sim.engine.core import simulate_trajectories, walk_cost
-    params = inspect.signature(simulate_trajectories).parameters
+    from dmipy_sim.engine.core import _walk_geometry, walk_cost
+    params = inspect.signature(_walk_geometry).parameters
     assert {"K", "block_order", "window_T", "raw_subset"} <= set(params)
     assert not {"compress", "accumulate", "storage_dtype"} & set(params)
     for gone in ("compress", "accumulate"):
@@ -655,8 +664,7 @@ def test_one_basis_and_no_header_with_a_save_grid():
 #: in the package: a walk has a block (``block_h``), a pack a ``walk_params.block``, and the saves route's encoders,
 #: its RLE occupancy and its dense fidelity oracle are deleted rather than kept beside the band route.
 _SAVE_GRID_NAMES = (r"dt_save", r"field_sample_every", r"save_interval", r"fill_field", r"defer_field", r"FIELD_DT_CAP",
-                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*", r"PersistentWalk",
-                    r"persistent_walk", r"saves_basis", r"decode_saves", r"decode_bridge_dst", r"decode_boundary_bridge",
+                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*", r"saves_basis", r"decode_saves", r"decode_bridge_dst", r"decode_boundary_bridge",
                     r"_decoded_channels", r"_window_n_t", r"_dst1_to_continuous", r"pathway_sign_se", r"unwrap_periodic",
                     r"replay_jax", r"pre_pulse_gradient_phase")
 
@@ -788,37 +796,73 @@ def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     import inspect
     from dmipy_sim import CoefficientWalk
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
-    from dmipy_sim.engine.core import simulate_trajectories, walk_cost
+    from dmipy_sim.engine.core import _walk_geometry, walk_cost
     from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
-    from dmipy_sim.spec import walk_spec
-    for fn, at in ((simulate_trajectories, 4), (simulate_mt_trajectories, 4), (simulate_trajectories_adaptive, 4), (walk_spec, 3)):
+    from dmipy_sim import walk
+    for fn, at in ((_walk_geometry, 4), (simulate_mt_trajectories, 4), (simulate_trajectories_adaptive, 4), (walk, 3)):
         names = list(inspect.signature(fn).parameters)
         assert names[at] == "block_h", (fn.__qualname__, names[:6])
         assert not {"n_t", "dt_save", "field_sample_every", "fill_field", "defer_field"} & set(names), fn.__qualname__
     assert not {"n_t", "dt_save"} & set(inspect.signature(walk_cost).parameters)
     fields = set(CoefficientWalk.__dataclass_fields__)
     assert not {"n_t", "dt", "dt_save", "positions", "boundary_local_time", "bound_frac", "field_samples", "field_sample_every"} & fields
-    assert not hasattr(CoefficientWalk, "saves") and not (_SRC / "persistent_walk.py").exists()
+    assert not hasattr(CoefficientWalk, "saves")
     cyl = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
-    for walk in (simulate_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
-                 simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
-        assert isinstance(walk, CoefficientWalk) and walk.h == pytest.approx(5e-4)
+    for cw in (_walk_geometry(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
+               simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
+        assert isinstance(cw, CoefficientWalk) and cw.h == pytest.approx(5e-4)
 
 
 # ── the public surface is the replay surface; the fused engine is an internal oracle (#740) ──────────────────────
+def test_walk_is_the_one_public_producer_and_the_engine_primitive_is_not_exported():
+    """``walk(spec, ...)`` is the one public producer of a walk; the engine primitive (one resolved geometry, no spec
+    conversion) lives in ``engine.core`` under a private name and is exported nowhere, and neither is the retired
+    spelling of the producer."""
+    from dmipy_sim.engine import core
+    assert "walk" in dmipy_sim.__all__ and callable(dmipy_sim.walk)
+    for name in ("_walk_geometry", "simulate_trajectories", "walk_spec"):
+        assert name not in dmipy_sim.__all__ and not hasattr(dmipy_sim, name), name
+    assert callable(core._walk_geometry) and not hasattr(core, "simulate_trajectories")
+    import dmipy_sim.spec as spec_pkg
+    assert not hasattr(spec_pkg, "walk_spec") and "walk_spec" not in spec_pkg.__all__
+    assert importlib.import_module("dmipy_sim.spec.walk").walk is dmipy_sim.walk
+
+
+def test_a_package_carries_no_private_name_of_its_module():
+    """``dmipy_sim.replay`` and ``dmipy_sim.viz`` re-export their module's PUBLIC names; a private name is reached at
+    its module (``dmipy_sim.replay.replay._x``), never through the package. A name a caller needs is public."""
+    import dmipy_sim.replay as replay_pkg
+    import dmipy_sim.viz as viz_pkg
+    for pkg in (replay_pkg, viz_pkg):
+        private = sorted(k for k in vars(pkg) if k.startswith("_") and not k.startswith("__"))
+        assert not private, f"{pkg.__name__} carries private names {private}"
+    assert callable(viz_pkg.split_cells) and not hasattr(viz_pkg, "_split_cells")
+
+
+def test_one_spelling_of_the_columnar_open_and_the_bounce_budget():
+    """A pack is opened by ``ReplayPack.open(uri)``; the bounce budget is ``geometry._boundary.bounce_budget``. The
+    module-level opener and the packed alias are removed."""
+    from dmipy_sim.geometry import _boundary, packed
+    from dmipy_sim.replay import columnar
+    from dmipy_sim.replay.replay import ReplayPack
+    assert not hasattr(columnar, "open_columnar") and "open_columnar" not in columnar.__all__
+    assert not hasattr(packed, "packed_bounce_budget") and callable(_boundary.bounce_budget)
+    assert callable(ReplayPack.open)
+
+
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
-    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk_spec``, the pack side
+    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack side
     (``build_replay_pack``, ``read_rpk``, ``ReplayPack``) and the phantom and scanner objects. No walk of saves, no
     positions-replay helper and no forward integrator is exported: the fused scalar engine and the forward vector-Bloch
     engine are the oracles the replay is held to, underscored and imported by the admissions that hold it."""
     import inspect
     from dmipy_sim.engine import bloch, core
-    for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "simulate_mt_trajectories",
-                 "walk_cost", "walk_spec", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
+    for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_mt_trajectories",
+                 "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
                  "Phantom", "ScannerSequence", "ScannerLimits"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
-    gone = ("PersistentWalk", "simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
+    gone = ("simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
             "replay_bloch_jax", "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se")
     for name in gone:
         assert name not in dmipy_sim.__all__ and not hasattr(dmipy_sim, name), name

@@ -1,6 +1,6 @@
 """The trajectory producer with adaptive stepping: every walker steps at the rate its own situation needs.
 
-The fused producer (:func:`dmipy_sim.engine.core.simulate_trajectories`) steps every walker at one ``dt_sim``,
+The fused producer (:func:`dmipy_sim.engine.core._walk_geometry`) steps every walker at one ``dt_sim``,
 resolved from the substrate's smallest feature (the step rule of its smallest tube), so a walker in the extra-
 axonal space of a strand substrate pays for the thinnest strand it will never touch. Here a block is
 walked in ROUNDS, and at each round every walker is placed by the geometry's ``wall_scales``: its distance to
@@ -160,7 +160,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
     walkers can travel in between (six sigma of that excursion), and the reads evaluate the channels against that
     list, masked by the true distance when evaluated, so reuse costs no strand within the cutoff; the domain mean
     is subtracted. ``raw_subset=n`` keeps the first ``n`` walkers' block ends (positions, the block's contact) and
-    their field reads at the walk's read instants. ``spec`` is the situation the walk records (the bundle spec ``walk_spec`` drives it by);
+    their field reads at the walk's read instants. ``spec`` is the situation the walk records (the bundle spec ``walk`` drives it by);
     without one the geometry writes its own, which for 12,196 cited centerlines is 100 MB of Python lists.
     ``spool`` names the walk's batches in the run's record (``"<spool>-batch-NNNN"``): every finished batch's
     accumulators are written there at once (:meth:`dmipy_sim.run.Run.spool`), and a run resumed in that record reads

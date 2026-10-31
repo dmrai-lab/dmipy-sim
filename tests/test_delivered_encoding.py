@@ -180,6 +180,7 @@ def test_the_nonlinearity_is_the_coils_gradient_and_not_the_magnets(setup):
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_sim.replay import read_rpk
     out = tmp_path_factory.mktemp("pk") / "w.rpk"
@@ -187,7 +188,7 @@ def pack(tmp_path_factory):
     # effect of a few per cent, so a per-direction bias has an SNR under one and its SIGN is not determined.
     # The assertions below still passed at 400 -- they compare two weight sets on the SAME walkers, which
     # cancels most of the floor -- but any NUMBER read off such a fixture is a draw, not a measurement.
-    walk = d.simulate_trajectories(40_000, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
+    walk = _walk_geometry(40_000, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
     build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out))
     return read_rpk(str(out))
 

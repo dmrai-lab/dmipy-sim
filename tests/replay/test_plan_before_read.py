@@ -16,6 +16,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
@@ -34,7 +35,7 @@ PORES = os.path.expanduser("~/dmrai-ws/release-work/pores-v2/packs/cylinder/d05.
 @pytest.fixture(scope="module")
 def pack():
     """A cylinder of 3 um radius walked for 20 ms: 4000 walkers, 40 quantised bands, the contact bands."""
-    w = d.simulate_trajectories(N_W, 2e-9, d.Cylinder(3e-6, (0.0, 0.0, 1.0)), T_MAX, DT, seed=1, require_gpu=False,
+    w = _walk_geometry(N_W, 2e-9, d.Cylinder(3e-6, (0.0, 0.0, 1.0)), T_MAX, DT, seed=1, require_gpu=False,
                                 K=K_BANDS, window_T=T_MAX)
     return build_replay_pack(w, id="test/plan-before-read", license="x", citation="x")
 

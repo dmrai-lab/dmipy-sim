@@ -15,7 +15,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.fields.susceptibility_field import (FIELD_BYTES_PER_NODE, FIELD_NODES_ACROSS, assemble_field,
                                                    field_grid_of, field_node_budget, field_resolution)
-from dmipy_sim.spec import SpecError, field_grid_of_spec, walk_spec, winther_spec
+from dmipy_sim.spec import SpecError, field_grid_of_spec, winther_spec
+from dmipy_sim import walk
 from dmipy_sim.spec.producers import shell_thickness
 
 trimesh = pytest.importorskip("trimesh")
@@ -29,7 +30,7 @@ def _lumen_field_errors(res, a=0.40e-6, b=0.52e-6):
     direction = (1.0, 0.0, 0.0)
     expect = 0.5 * dchi * np.log(b / a)
     lo, hi = np.array([-4e-6, -4e-6, -1e-6]), np.array([4e-6, 4e-6, 1e-6])
-    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), 1.7e-9, 1.7e-9), res=res, box=(lo, hi))
+    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0))), res=res, box=(lo, hi))
     shape = tuple(fg.basis["shape"]); vs = np.asarray(fg.basis["voxel_size"], float)
     ax = [np.asarray(fg.origin)[k] + (np.arange(shape[k]) + 0.5) * vs[k] for k in range(2)]
     X, Y = np.meshgrid(ax[0], ax[1], indexing="ij")
@@ -57,12 +58,18 @@ def test_two_nodes_across_the_thinnest_sheath_resolve_it_and_one_does_not():
 def test_analytic_sheaths_record_their_shell_and_the_grid_follows_it():
     """Every analytic myelinated geometry writes its sheath into the spec; its own field grid takes the spacing
     from it when none is given."""
-    g = d.MyelinatedCylinder(1.0e-6, 1.15e-6, (0, 0, 1), 1.7e-9, 1.7e-9)
+    g = d.MyelinatedCylinder(1.0e-6, 1.15e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0)))
     assert g.spec.validity.thinnest_shell == pytest.approx(0.15e-6)
     fg = field_grid_of(g)
     assert np.asarray(fg.basis["voxel_size"])[0] == pytest.approx(0.075e-6, rel=0.05)
-    pk = d.PackedMyelinatedCylinders([1.0e-6, 2.0e-6], [0.7, 0.9], [[-3e-6, 0.0], [3e-6, 0.0]], 12e-6, N_max=2,
-                                     D_intra=1.7e-9, D_extra=1.7e-9)
+    pk = d.PackedMyelinatedCylinders(
+        [1.0e-6, 2.0e-6],
+        [0.7, 0.9],
+        [[-3e-6, 0.0], [3e-6, 0.0]],
+        12e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0)),
+    )
     assert pk.spec.validity.thinnest_shell == pytest.approx(min(1.0e-6 / 0.7 - 1.0e-6, 2.0e-6 / 0.9 - 2.0e-6), rel=1e-6)
 
 
@@ -91,7 +98,7 @@ def test_a_mesh_pair_measures_its_shell(tmp_path):
 def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     inner, outer = _thin_axon(tmp_path)
     spec = winther_spec(inner, outer, scale=1e-6, pad=0.5e-6)
-    w = walk_spec(spec, 120, 8e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3, K_c3=4)
+    w = walk(spec, 120, 8e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3, K_c3=4)
     vs = np.asarray(w.field_basis.basis["voxel_size"], float)
     np.testing.assert_allclose(vs, field_resolution(spec.validity.thinnest_shell), rtol=0.02)   # a whole count of nodes
     cert = w.field_basis.certificate                                                          # the raster checked
@@ -104,11 +111,11 @@ def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     pk = build_replay_pack(w, id="t/raster", license="x", citation="x", K=3, susc_path_K=4)
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["raster"]["res_m"] == cert["res_m"]
     with pytest.raises(SpecError, match="thinnest shell of 0.1"):
-        walk_spec(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_budget=100)
+        walk(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_budget=100)
     bare = dataclasses.replace(spec, validity=dataclasses.replace(spec.validity, thinnest_shell=None))
     with pytest.raises(SpecError, match="field_res="):
-        walk_spec(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False)
-    coarse = walk_spec(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_res=0.5e-6)
+        walk(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False)
+    coarse = walk(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_res=0.5e-6)
     assert np.asarray(coarse.field_basis.basis["voxel_size"], float).max() > 0.4e-6         # an override is obeyed
 
 

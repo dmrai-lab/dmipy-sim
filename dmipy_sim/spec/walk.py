@@ -1,7 +1,7 @@
-"""``walk_spec``: the producer that reads a spec and nothing else.
+"""``walk``: the producer that reads a spec and nothing else.
 
 A spec with a single geometry (any analytic family, one mesh surface) is walked by
-``simulate_trajectories`` on ``geometry_from_spec``. A multi-surface mesh spec -- a bundle of fibres,
+``_walk_geometry`` on ``geometry_from_spec``. A multi-surface mesh spec -- a bundle of fibres,
 each an inner and an outer closed surface -- is walked pool by pool: the intra pool inside the inner
 surfaces, the extra pool outside the outer ones with the domain's faces as walls, a stuck myelin
 pool (``D = 0``) frozen where it was seeded; seeding follows the spec's rule (uniform density by
@@ -21,7 +21,19 @@ from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility
 from .build import geometry_from_spec
 
 
-def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom", diffusivity=None,
+def _spec_of_door(substrate):
+    """The :class:`SubstrateSpec` the producer walks: a spec as is, a Geometry reduced to its spec at the door. A spec dict,
+    a ``str`` / path and an object that merely carries a ``.spec`` are refused by name."""
+    from .build import as_geometry, refuse_spec_spelling
+    refuse_spec_spelling(substrate, "walk")
+    if isinstance(substrate, SubstrateSpec):
+        return substrate
+    if substrate is None:
+        raise TypeError("walk takes a SubstrateSpec or a Geometry, got None")
+    return as_geometry(substrate).spec
+
+
+def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom", diffusivity=None,
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
@@ -34,7 +46,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
     certified band times the margin (:func:`~dmipy_sim.replay.bank.mode_count`) unless given, the step law resolving
     the same band; its block is the band's own (``block_order``, ``block_h`` as in
-    :func:`~dmipy_sim.engine.core.simulate_trajectories`), with adaptive steps too
+    :func:`~dmipy_sim.engine.core._walk_geometry`), with adaptive steps too
     (:func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`: a block a whole number of rounds).
 
     ``context`` is a :class:`WalkContext` of the spec (its pool tests, boundaries, walking geometries and the
@@ -61,7 +73,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     pilot unless given (:func:`~dmipy_sim.replay.bank.derive_field_band`; a fill passes the certifying pack's).
 
     ``field_target_floor`` is the numerical error budget the derived field band of a gridded field is held to (the
-    ``sigma_star`` of the pack the walk is built into; :func:`~dmipy_sim.engine.core.simulate_trajectories`): it
+    ``sigma_star`` of the pack the walk is built into; :func:`~dmipy_sim.engine.core._walk_geometry`): it
     goes with a gridded field source whose band is derived (``K_c3`` None), and is the budget of the fixed-step
     walk's pilot as ``calibration_floor`` is of the adaptive strand walk's.
 
@@ -103,18 +115,18 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     half the memory ceiling at the build's measured bytes per node); a basis beyond the budget is refused, never
     coarsened (as is a raster beyond the memory JAX may use on the device it is walked on,
     :func:`check_field_raster`); ``field_cache`` is a directory the raster is loaded from and written to
-    (:func:`~dmipy_sim.fields.raster_cache.cached_field_grid`); the grid is read inside the step (:func:`~dmipy_sim.engine.core.simulate_trajectories` with
+    (:func:`~dmipy_sim.fields.raster_cache.cached_field_grid`); the grid is read inside the step (:func:`~dmipy_sim.engine.core._walk_geometry` with
     ``field_basis=``). A frozen pool (``D = 0``) holds its seat: its field modes are the channels there (the ``k =
     0`` mode alone).
 
     ``drop_pool_changes`` (a fraction, or None: the refusal) is the largest fraction of a diffusing pool's walkers a
     multi-surface bundle walk may EXCLUDE when they change pool in an impermeable walk, the backend returning them
-    (:func:`~dmipy_sim.engine.core.simulate_trajectories` ``drop_pool_changes``): they are taken out of the walk, the
+    (:func:`~dmipy_sim.engine.core._walk_geometry` ``drop_pool_changes``): they are taken out of the walk, the
     pool's remaining weights renormalised to its total, and the walk's ``work["dropped_pool_change"]`` records the
     rule (:data:`DROP_POOL_CHANGE_RULE`), the bound, the count and fraction, per pool -- which the pack's certificate
     carries (``fidelity["dropped_pool_change"]``). A pool past the bound, or a raw walker among the excluded, is refused.
 
-    ``field_pilot`` is the engine a fixed-step walk's field pilot walks on (:func:`~dmipy_sim.engine.core.simulate_trajectories`
+    ``field_pilot`` is the engine a fixed-step walk's field pilot walks on (:func:`~dmipy_sim.engine.core._walk_geometry`
     ``field_pilot``: None the walk's backend, ``"jax"`` the JAX kernels); the adaptive walk has its own and refuses it.
 
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
@@ -122,15 +134,15 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
     in progress, not the walk.
     """
-    with Run("walk_spec", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
+    with Run("walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
                                       adaptive_steps=adaptive_steps, seed=seed), run_dir=run_dir) as run:
         import logging
-        from ..engine.core import simulate_trajectories
+        from ..engine.core import _walk_geometry
         from ..replay.bank import class_band
-        spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
+        spec = _spec_of_door(spec)
         spec.validate()
         if T_max is None:
-            raise TypeError("walk_spec needs T_max (seconds)")
+            raise TypeError("walk needs T_max (seconds)")
         kind = field_source_kind(spec)
         if any(value is not None for value in (field_calibration, calibration_floor, query_scope)):
             if not adaptive_steps or kind != "strands":
@@ -139,7 +151,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
             from ..engine.calibration import FieldCalibration
             if field_calibration is not None:
                 if not isinstance(field_calibration, Mapping):
-                    raise TypeError("walk_spec field_calibration maps pool names to FieldCalibration records")
+                    raise TypeError("walk field_calibration maps pool names to FieldCalibration records")
                 expected = {p.name for p in spec.pools if p.id in spec.seeding.pools and p.D}
                 if set(field_calibration) != expected:
                     raise ValueError(f"field calibration must cover exactly the diffusing seeded pools: {sorted(expected)}")
@@ -174,13 +186,13 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
             n_walkers = (int(seeding.n_walkers) if isinstance(seeding, DrawnSeeds)
                          else int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools)))
         elif n_walkers is None:
-            raise TypeError("walk_spec needs n_walkers, or a seeding= that sets the count per voxel")
+            raise TypeError("walk needs n_walkers, or a seeding= that sets the count per voxel")
         if diffusivity is not None and _needs_bundle_walk(spec):
             # one number has nothing to mean for a walk that steps each pool at that pool's own D
             stepped = [spec.pool(i).name for i in spec.seeding.pools if spec.pool(i).D]     # a D = 0 pool is frozen
             stepped = stepped or [spec.pool(i).name for i in spec.seeding.pools]
             raise SpecError(
-                f"walk_spec: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
+                f"walk: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
                 f"at its own D (" + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). Set the D of the pools "
                 f"in the spec -- the producer's own argument, or SubstrateSpec.replace, e.g. "
                 f"spec.replace(D={{{', '.join(f'{n!r}: {diffusivity!r}' for n in stepped)}}}) -- rather than beside "
@@ -203,7 +215,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
             g = geometry_from_spec(spec)
             gap = g.trajectory_walk_gap()
             if gap is not None:
-                raise SpecError(f"walk_spec cannot walk spec {getattr(spec, 'id', None)!r}: its "
+                raise SpecError(f"walk cannot walk spec {getattr(spec, 'id', None)!r}: its "
                                 f"geometry ({type(g).__name__}) has no persistent walk -- {gap}")
             D = diffusivity
             if D is None:                                   # the walk's reference diffusivity: the intra pool's when
@@ -219,7 +231,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
             if adaptive_steps:
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
-            w = simulate_trajectories(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
+            w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
                                       field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
                                                                                    field_target_floor=field_target_floor)),
                                       **walk_kw)
@@ -234,7 +246,7 @@ def walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connec
                             drop_pool_changes=drop_pool_changes, pool_checkpoint=pool_checkpoint)
 
 
-#: The rule a walk states when it excludes the walkers that changed pool (``walk_spec(drop_pool_changes=)``).
+#: The rule a walk states when it excludes the walkers that changed pool (``walk(drop_pool_changes=)``).
 DROP_POOL_CHANGE_RULE = ("walkers whose label changed in an impermeable walk are excluded; the substrate's geometry is "
                          "contradictory where they crossed")
 
@@ -384,7 +396,7 @@ def check_field_raster(spec, plan, *, field_budget=None, device_limit=None):
 def field_grid_of_spec(spec, *, field_res=None, field_budget=None, context=None, n_check=400_000, seed=0,
                        device_limit=None, cache_dir=None):
     """The rasterised field basis of ``spec``'s field source, a :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`:
-    the one raster a walk reads (:func:`walk_spec`; a mesh/sphere-union/myelinated-cylinder source, or the grid
+    the one raster a walk reads (:func:`walk`; a mesh/sphere-union/myelinated-cylinder source, or the grid
     cross-check of a strand source). The shell pool's occupancy comes from the
     spec's own membership tests on the domain grid, the directors from its inner surface, at the node spacing the
     thinnest shell sets (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution` of
@@ -566,14 +578,14 @@ def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, segments_
     log = logging.getLogger("dmipy_sim")
     while True:
         err = sf.cutoff_error(sample)
-        log.info("walk_spec: strand field cutoff %.0f um -> %.0f um changes the channels by iso %.4f, aniso %.4f (tol %.3f)",
+        log.info("walk: strand field cutoff %.0f um -> %.0f um changes the channels by iso %.4f, aniso %.4f (tol %.3f)",
                  sf.cutoff_m * 1e6, 2 * sf.cutoff_m * 1e6, err["iso"], err["aniso"], tol)
         converged = max(err.values()) <= tol
         if converged or 2.0 * sf.cutoff_m > cutoff_max or 2.0 * sf.cutoff_m >= extent:   # the bound, or the whole domain
             break
         sf = sf.with_cutoff(2.0 * sf.cutoff_m)
     if not converged:
-        log.warning("walk_spec: the strand field's cutoff stopped at %.0f um (bound %.0f um) with the next doubling still "
+        log.warning("walk: the strand field's cutoff stopped at %.0f um (bound %.0f um) with the next doubling still "
                     "changing the channels by iso %.3f, aniso %.3f: the pack records it (converged: False)",
                     sf.cutoff_m * 1e6, cutoff_max * 1e6, err["iso"], err["aniso"])
     return sf.with_cutoff(sf.cutoff_m, certificate=dict(cutoff_error=err, tol=float(tol), n_sample=int(len(sample)),
@@ -637,7 +649,7 @@ class WalkContext:
     each pool's walking geometry once it is built (its segment tables on the device, its kernels compiled), and
     the strand-field basis with its far grid (the grid on the device once). Keyed by what determines it -- the
     spec's dict and the far grid's sha256 -- so a producer keeps one across blocks and builds another only when
-    the key changes; :func:`walk_spec` and :func:`draw_seeds` refuse a context of another key."""
+    the key changes; :func:`walk` and :func:`draw_seeds` refuse a context of another key."""
 
     def __init__(self, spec, *, field_far=None):
         from ..fields.strand_field import FarGrid
@@ -731,7 +743,7 @@ def _explicit_seeds(spec, pid, n, member=None):
 
 def draw_seeds(spec, seeding, seed, *, context=None, backend="jax"):
     """The stratified seeds of ``spec`` drawn on the CPU: every seeded pool's start positions and weights on
-    ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk_spec` takes in place
+    ``seeding``'s grid, as a :class:`~dmipy_sim.spec.seeding.DrawnSeeds` that :func:`walk` takes in place
     of the :class:`~dmipy_sim.spec.seeding.StratifiedByVoxel` they were drawn from, with the same result to the
     bit; ``context`` is a :class:`WalkContext` of the spec whose pool tests the draw uses. A pool the seeding
     wants nowhere is drawn empty, and the walk leaves it out (a round of a pass may hold none of a sparse pool);
@@ -759,7 +771,7 @@ def draw_seeds(spec, seeding, seed, *, context=None, backend="jax"):
         for pid in g.seeded:
             name = g.pools[pid].name; s = int(seed) + 13 * pid
             want = seeding.count_for(name)
-            log.info("walk_spec: seeding pool %s per voxel (%d wanted)", name, int(want.sum()))
+            log.info("walk: seeding pool %s per voxel (%d wanted)", name, int(want.sum()))
             run.phase(f"seeding {name}", wanted=int(want.sum()))
             if g.by_volume(pid):                           # inside swept polylines: drawn per voxel from the segments
                 A_, B_, r_ = g.boundary(g.inside_w[pid]).segments()   # that meet it, the census their clipped volume
@@ -771,7 +783,7 @@ def draw_seeds(spec, seeding, seed, *, context=None, backend="jax"):
             P, v = P[inb], v[inb]
             if len(P) == 0 and int(want.sum()) > 0:
                 raise SpecError(f"pool {name!r}: no seed landed in it")
-            log.info("walk_spec: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
+            log.info("walk: %d seeds in %d voxels from %d draws", len(P), int(np.bincount(v, minlength=grid.n_voxels).astype(bool).sum()), n_drawn)
             n_have = np.bincount(v, minlength=grid.n_voxels)
             positions[name] = P
             weights[name] = f[v] * g.wf[pid] / np.maximum(n_have[v], 1)  # f_pool,v x water fraction / n_pool,v: volume-correct per voxel
@@ -997,7 +1009,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     outside-walls (extra); a shell pool at D = 0 (myelin) is frozen where it was seeded; the field basis is
     rasterised from the same membership tests (or the strands' closed form), and READ by every pool's walk at one
     band and interval (the first walked pool's pilot sets them for the rest)."""
-    from ..engine.core import simulate_trajectories
+    from ..engine.core import _walk_geometry
     walk_kw = dict(walk_kw or {})
     log = logging.getLogger("dmipy_sim")
     current().phase("context", reused=(context is not None))
@@ -1042,7 +1054,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         if len(seeds_of[pid]) == 0:
             if seeding is None:
                 raise SpecError(f"pool {pools[pid].name!r}: no seed landed in it")
-            log.info("walk_spec: pool %s has no seed in this walk; not walked", pools[pid].name)
+            log.info("walk: pool %s has no seed in this walk; not walked", pools[pid].name)
     seeded = tuple(pid for pid in seeded if len(seeds_of[pid]))  # a seeding may hold none of a pool: a round of a pass
     if not seeded:
         raise SpecError("the seeding holds no seed of any pool; nothing to walk")
@@ -1105,7 +1117,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
             continue
         geo = (boundary(inside_w[pid]).geometry("intra", lo, hi, periodic, reflect, feature) if inside_w[pid]
                else boundary(outside_w[pid]).geometry("extra", lo, hi, periodic, reflect, feature))
-        log.info("walk_spec: walking pool %s, %d walkers%s", pool.name, n, " (adaptive steps)" if adaptive_steps else "")
+        log.info("walk: walking pool %s, %d walkers%s", pool.name, n, " (adaptive steps)" if adaptive_steps else "")
         current().phase(f"walk {pool.name}", n_walkers=int(n), adaptive_steps=bool(adaptive_steps))
         if adaptive_steps:
             if not hasattr(geo, "wall_scales"):
@@ -1120,7 +1132,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                                                     calibration_floor=calibration_floor, query_scope=query_scope)),
                                                **{k: v for k, v in walk_kw.items() if k != "bounce_budget"})
         else:
-            w = simulate_trajectories(n, float(pool.D), geo, T_max=T_max, block_h=block_h, seed=seed + 13 * pid, r0=r0,
+            w = _walk_geometry(n, float(pool.D), geo, T_max=T_max, block_h=block_h, seed=seed + 13 * pid, r0=r0,
                                       field_basis=fg, **({} if fg is None else fixed_kw), **walk_kw,
                                       **({} if drop_pool_changes is None else dict(drop_pool_changes=True)))
         if drop_pool_changes is not None:
@@ -1146,7 +1158,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
                       fraction=(n_drop / n_all if n_all else 0.0), pools=dropped)
         import dataclasses
         walk = dataclasses.replace(walk, work=dict(walk.work or {}, dropped_pool_change=record))
-        log.info("walk_spec: %d of %d diffusing walkers changed pool and are excluded (%s)", n_drop, n_all, dropped)
+        log.info("walk: %d of %d diffusing walkers changed pool and are excluded (%s)", n_drop, n_all, dropped)
     object.__setattr__(walk, "run", current())
     return walk
 

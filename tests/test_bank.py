@@ -44,8 +44,9 @@ def _slab_walk(n_w=N_W, seed=0, *, T=T_WALK, block_h=DT, K=None, magnetic=False,
     the raw subset is every walker (the dense oracle of a measured certificate). The spec is :func:`_slab_spec`
     (two named pools, so a test can relabel walkers into pool 1)."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_replay.spec.substrate import SubstrateSpec
-    w = d.simulate_trajectories(int(n_w), D0, d.Box1D(L), T, block_h, seed=int(seed), require_gpu=False, K=K,
+    w = _walk_geometry(int(n_w), D0, d.Box1D(L), T, block_h, seed=int(seed), require_gpu=False, K=K,
                                 raw_subset=(int(n_w) if raw else 0), field_basis=field_basis, window_T=T, **kw)
     return dataclasses.replace(w, spec=SubstrateSpec.from_dict(_slab_spec(magnetic=magnetic or field_basis is not None)))
 
@@ -327,7 +328,8 @@ def test_susc_path_bit_depth_is_the_cheap_axis_not_K():
 # ------------------------------------------------------------------ the builder takes a CoefficientWalk
 def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
     import dmipy_sim as d
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, K=16)
+    from dmipy_sim.engine.core import _walk_geometry
+    walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, K=16)
     pk = build_replay_pack(walk, id="test/walk", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
     env = pk.meta["replay_envelope"]
     assert env["gradient"] and env["bulk_relaxation"] and env["surface_relaxivity"] and not env["field"]
@@ -336,7 +338,7 @@ def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
     assert pk.n_walkers == 300 and pk.n_t == walk.n_blocks + 1 and pk.K == 8 < walk.K
     assert pk.fidelity["certified"] == "measured" and pk.fidelity["measured_by"] == "walk_free_terms"
     # positions only: gradient tier alone, nothing silently assembled
-    plain = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, tiers=(), K=16)
+    plain = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, tiers=(), K=16)
     pk0 = build_replay_pack(plain, id="test/plain", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
     e0 = pk0.meta["replay_envelope"]
     assert e0["gradient"] and not (e0["bulk_relaxation"] or e0["surface_relaxivity"] or e0["field"])

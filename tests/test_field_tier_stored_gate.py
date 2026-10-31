@@ -16,6 +16,7 @@ from dmipy_sim.replay import so3
 from dmipy_replay.replay._replay_kernel import field_gate, gate_weights
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
+from dmipy_sim import Pose
 
 TISSUE = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
 B0 = 3.0
@@ -93,6 +94,6 @@ def test_the_closed_form_and_the_walkers_agree_on_a_stimulated_echo_with_the_fie
     pk = field_pack
     seq_y, R_y = field_along(_ste(pk), (0.0, 1.0, 0.0))
     kw = dict(scanner=B0, tissue=TISSUE)
-    pc = pk.pose_response(seq_y, method="closed", pose=R_y, **kw)
+    pc = pk.pose_response(seq_y, method="closed", pose=Pose(R_y), **kw)
     for R in so3.haar_rotations(4, 5):
         np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, tol=None, **kw), atol=2e-6)

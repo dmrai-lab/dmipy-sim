@@ -35,7 +35,7 @@ def test_nonfinite_or_incomplete_reference_series_is_refused():
 
 
 def _jax_pilot(path, read, sub_steps, n_bw, n_win, checks, dt):
-    """The JAX pilot's accumulation (moment_scan and ring_scan as simulate_trajectories' pilot runs them: a read at every
+    """The JAX pilot's accumulation (moment_scan and ring_scan as _walk_geometry' pilot runs them: a read at every
     step, the trapezoid's checks, each block's mean emitted) of the walker that steps along ``path`` ``(n_steps + 1, 3)``:
     ``(block means (n_blocks, n_ch), qv_d (n_win, n_ch), chk (n_win, 2, n_checks, n_ch))``."""
     import jax
@@ -69,7 +69,7 @@ def test_the_host_statistics_are_the_jax_pilots_accumulation():
     in float32 equal field_read_statistics of the same reads (float64 sums of the float32 reads) to the float32
     summation bound, |error| <= (L + 4) u sum |terms| (u = 2^-24; L the float32 additions of the pilot's chain: the
     block's steps, the ring's blocks, the window's rings; 4 the rounding of each term), per entry. A backend's pilot
-    hands the host the reads and the host computes these (simulate_trajectories(field_pilot=)): the definitions are
+    hands the host the reads and the host computes these (_walk_geometry(field_pilot=)): the definitions are
     the JAX pilot's."""
     import jax.numpy as jnp
     from dmipy_sim.engine.accumulate import read_checks, RING

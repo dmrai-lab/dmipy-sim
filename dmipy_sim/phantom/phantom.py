@@ -258,23 +258,29 @@ class Phantom:
         """The macroscopic layers this phantom declares (RPH.md 5.1)."""
         return self.file.scalar_names
 
-    def index_of(self, substrate):
-        if isinstance(substrate, (int, np.integer)):
-            return int(substrate)
-        if isinstance(substrate, str):
-            names = [s.name for s in self.substrates]
-            if substrate not in names:
-                raise ValueError(f"no substrate named {substrate!r}; the phantom cites {names}")
-            return names.index(substrate)
+    def index_of(self, name):
+        """The slot of the substrate named ``name`` (its ``.name``). The name is the one address: an integer or the
+        substrate object is refused, and a name two substrates share is refused as ambiguous."""
+        if not isinstance(name, str):
+            raise TypeError(f"a substrate is addressed by its name, got {type(name).__name__} {name!r}; "
+                            f"the phantom cites {[s.name for s in self.substrates]}")
+        names = [s.name for s in self.substrates]
+        if name not in names:
+            raise ValueError(f"no substrate named {name!r}; the phantom cites {names}")
+        if names.count(name) > 1:
+            raise ValueError(f"{name!r} names {names.count(name)} substrates of this phantom; give them distinct names")
+        return names.index(name)
+
+    def _slot_of(self, substrate):
+        """The slot of this very substrate object (serialisation)."""
         for i, s in enumerate(self.substrates):
             if s is substrate:
                 return i
         raise ValueError(f"{substrate!r} is not one of this phantom's substrates: {self.substrates}")
 
-    def fraction(self, substrate):
-        """The volume fraction of one substrate over the grid: a dense volume, 0 where the phantom has no voxel."""
-        i = self.index_of(substrate)
-        return self.to_volume(self.file.fraction(i), fill=0.0)
+    def fraction(self, name):
+        """The volume fraction of the substrate named ``name`` over the grid: a dense volume, 0 where the phantom has no voxel."""
+        return self.to_volume(self.file.fraction(self.substrates[self.index_of(name)].name), fill=0.0)
 
     def to_volume(self, values, fill=np.nan):
         """Scatter per-voxel values onto the dense grid, ``grid.shape + values.shape[1:]``."""
@@ -295,11 +301,11 @@ class Phantom:
     # ---- replay ---------------------------------------------------------------------------------------------
     def _packs(self, packs):
         out = {}
-        for i, s in enumerate(self.substrates):
+        for s in self.substrates:
             if s.kind == "pack":
-                out[i] = s.pack
+                out[s.name] = s.pack
         for key, pk in (packs or {}).items():
-            out[self.index_of(key)] = pk
+            out[self.substrates[self.index_of(key)].name] = pk
         return out
 
     def replay(self, seq, *, scanner=None, pose=None, packs=None, complex_signal=False,
@@ -313,7 +319,7 @@ class Phantom:
         :class:`~dmipy_sim.spec.Tissue` (``PackSubstrate(..., tissue=)``, ``FreeWater(tissue=)``; a pack substrate
         with none is the bare diffusion signal). Two things are image-wide: ``scanner``, the static field (a
         :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field), and ``pose``, the
-        specimen's rigid rotation in the bore (a 3x3 rotation or a :class:`~dmipy_sim.phantom.partition.Pose`).
+        specimen's rigid rotation in the bore (a :class:`~dmipy_sim.phantom.partition.Pose`; a bare matrix is ``Pose(R)``).
 
         **Maps at replay time**, each a scalar, a volume of the grid's shape, or a callable of scanner
         coordinates ``f(xyz_m (N, 3)) -> (N,)`` evaluated at the voxel centres:

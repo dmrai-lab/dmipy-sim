@@ -65,7 +65,8 @@ T_WIN = 0.01
 def _pilot(diameter_m, n=800, seed=3):
     """A sphere's pilot: the pore confined on every axis, so every feasible waveform is in the bound's scope."""
     import dmipy_sim as d
-    w = d.simulate_trajectories(n, D0, d.Sphere(radius=0.5 * diameter_m), T_max=T_WIN, K=26, seed=seed, tiers="all",
+    from dmipy_sim.engine.core import _walk_geometry
+    w = _walk_geometry(n, D0, d.Sphere(radius=0.5 * diameter_m), T_max=T_WIN, K=26, seed=seed, tiers="all",
                                 require_gpu=False, window_T=T_WIN, raw_subset=n)
     return w, float(w.block["h"])
 
@@ -170,7 +171,8 @@ def test_a_large_pore_takes_the_whole_toggle_proof_count_and_a_small_one_fewer(f
     V2, _ = fr.toggle_variance_bound(ph2["var_phi"], small.raw_boundary, D=D0, rho2_max=3e-6)
     assert V2 < 0.1 and fr.pilot_count(V2, 5e-3, 4000) < 40000
     import dmipy_sim as d
-    plane = d.simulate_trajectories(200, D0, d.Box1D(length=1e-6), T_max=T_WIN, K=26, seed=5, tiers="all",
+    from dmipy_sim.engine.core import _walk_geometry
+    plane = _walk_geometry(200, D0, d.Box1D(length=1e-6), T_max=T_WIN, K=26, seed=5, tiers="all",
                                     require_gpu=False, window_T=T_WIN, raw_subset=200)
     free = fr.phase_variance_bound(plane.position_coeffs, T_WIN, G_max=G_MAX)
     normal = fr.phase_variance_bound(plane.position_coeffs, T_WIN, G_max=G_MAX, axes=(0,))
@@ -183,15 +185,16 @@ def test_a_pore_at_n_min_is_walked_once_and_a_larger_one_afresh(fr, tmp_path, mo
     a walk resumed walks nothing."""
     import json
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.reference import pack_seed
     calls = []
-    real = d.simulate_trajectories
+    real = _walk_geometry
 
     def counted(n, *a, seed=42, **kw):
         calls.append((int(n), int(seed)))
         return real(n, *a, seed=seed, **kw)
 
-    monkeypatch.setattr(d, "simulate_trajectories", counted)
+    monkeypatch.setattr(d, "_walk_geometry", counted)
     common = ["--floor", "0.05", "--T", str(T_WIN), "--diameters", "1", "20", "--backend", "jax", "--out", str(tmp_path)]
     fr.main(["plan", "pores", "--pilot", "200", "--n-min", "200"] + common)
     plan = tmp_path / "plan_pores.json"

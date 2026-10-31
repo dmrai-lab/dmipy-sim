@@ -31,14 +31,21 @@ def _packed_myelin():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=1e-6, rho_outer=1e-6,
-                                       kappa_inner=1e-5, kappa_outer=2e-5)
+                                       kappa_inner=1e-5, kappa_outer=2e-5, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
 
 
 FAMILIES = {
     "sphere": lambda: d.Sphere(3e-6, surface_relaxivity_t2=1e-6, permeability=2e-5),
     "cylinder": lambda: d.Cylinder(3e-6, (0, 0, 1), surface_relaxivity_t2=1e-6, permeability=2e-5),
     "ellipsoid": lambda: d.Ellipsoid((2e-6, 3e-6, 4e-6), surface_relaxivity_t2=1e-6),
-    "myelinated": lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D, D, kappa_inner=1e-5, kappa_outer=2e-5),
+    "myelinated": lambda: d.MyelinatedCylinder(
+        2e-6,
+        3e-6,
+        (0, 0, 1),
+        kappa_inner=1e-5,
+        kappa_outer=2e-5,
+        compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D), myelin=d.Pool(D=0.0)),
+    ),
     "packed_cylinders": _packed_cyl,
     "packed_spheres": _packed_sph,
     "packed_myelinated": _packed_myelin,
@@ -103,7 +110,7 @@ def test_spec_of_geometry_from_spec_is_a_fixed_point(name):
 
 
 def test_540_a_nominal_t2_on_one_pool_does_not_make_an_isolated_myelinated_spec_unacceptable():
-    g = d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1), 2e-9, 2e-9)
+    g = d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0)))
     spec = g.spec
     spec = spec.replace(T2={"intra": 0.05})
     g2 = geometry_from_spec(spec)                     # must not raise

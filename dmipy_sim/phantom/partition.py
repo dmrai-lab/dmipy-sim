@@ -44,6 +44,17 @@ class Pose:
         return cls(None if m is None else m.get("rotation"))
 
 
+def pose_rotation(pose):
+    """The 3x3 rotation of a ``pose=`` argument: a :class:`Pose` (``None`` is no pose and stays ``None``). A bare matrix,
+    or any other object, is refused by name: a pose is spelled ``Pose(R)``."""
+    if pose is None:
+        return None
+    if not isinstance(pose, Pose):
+        raise TypeError(f"pose= takes a dmipy_sim.Pose (or None), got {type(pose).__name__}; "
+                        f"a rotation matrix R is spelled Pose(R)")
+    return pose.rotation
+
+
 class PartitionPhantom(Phantom):
     """One walk, cut into voxels (RPH.md partition addressing). Built by :meth:`Phantom.partition`.
 
@@ -77,6 +88,7 @@ class PartitionPhantom(Phantom):
                 raise ValueError("outside is what a voxel WITHOUT walkers is made of: Inert() or FreeWater(...)")
             subs.append(outside)
         Phantom.__init__(self, None, subs)
+        pose_rotation(pose)                         # a Pose or None; a bare matrix is refused by name
         self.pose = Pose() if pose is None else pose
         self._grid = grid
         if grid is not None:
@@ -115,11 +127,11 @@ class PartitionPhantom(Phantom):
     def grid_attach(self):
         return "lab" if self._grid is None else self._grid.attach
 
-    def membership(self, substrate, grid=None):
-        """``(voxel_ijk (n_w, 3), inside (n_w,))`` of one pack's walkers on ``grid`` (default: the phantom's).
+    def membership(self, name, grid=None):
+        """``(voxel_ijk (n_w, 3), inside (n_w,))`` of the walkers of the pack named ``name`` on ``grid`` (default: the phantom's).
         Derived, never stored (RPH.md): the bore's grid bins the posed starts, the tissue's grid the stored ones."""
         g = self._need_grid() if grid is None else grid
-        s = self.substrates[self.index_of(substrate)]
+        s = self.substrates[self.index_of(name)]
         if not isinstance(s, PackSubstrate):
             raise ValueError(f"{s!r} has no walkers to bin")
         return g.bin(self._r0_lab(s.pack))
@@ -195,22 +207,22 @@ class PartitionPhantom(Phantom):
     def voxel_index(self):
         return self._voxels(self._need_grid())[0]
 
-    def fraction(self, substrate):
-        """The volume fraction of one substrate over the grid: emergent from the walkers' weights for a pack,
+    def fraction(self, name):
+        """The volume fraction of the substrate named ``name`` over the grid: emergent from the walkers' weights for a pack,
         declared for the others. A dense volume, 0 where the phantom has no voxel."""
         g = self._need_grid()
         vi, _, _, frac = self._weights(g)
-        name = self.substrates[self.index_of(substrate)].name
+        name = self.substrates[self.index_of(name)].name
         out = np.zeros(g.shape)
         out[tuple(vi.T)] = frac.get(name, np.zeros(vi.shape[0]))
         return out
 
-    def walkers_per_voxel(self, substrate):
+    def walkers_per_voxel(self, name):
         """How many of a pack's walkers back each voxel (unweighted): the per-voxel Monte-Carlo floor a reader
         should know about. A dense volume."""
         g = self._need_grid()
         vi, walker_row = self._voxels(g)
-        name = self.substrates[self.index_of(substrate)].name
+        name = self.substrates[self.index_of(name)].name
         cnt = np.zeros(vi.shape[0])
         row = walker_row[name]
         np.add.at(cnt, row[row >= 0], 1.0)
@@ -242,8 +254,9 @@ class PartitionPhantom(Phantom):
         """The specimen turned in the bore. With ``grid.attach == "substrate"`` only the physics changes (the
         acquisition is rotated into the tissue) and every walker keeps its voxel; with ``"lab"`` the posed starts
         are rebinned on the bore's grid and the fractions re-emerge."""
-        if not isinstance(pose, Pose):
-            pose = Pose(pose)
+        pose_rotation(pose)
+        if pose is None:
+            raise TypeError("with_pose takes a dmipy_sim.Pose")
         return PartitionPhantom(self.packs, self._grid, declared=self.declared, outside=self.outside, pose=pose)
 
     # ---- replay ---------------------------------------------------------------------------------------------
@@ -364,8 +377,8 @@ class PartitionPhantom(Phantom):
         for s, vol in self.declared.items():
             idx = np.argwhere(np.asarray(vol) > 0)
             # argwhere returns a Fortran-ordered view; safetensors writes the buffer as it lies
-            tensors[f"declared{self.index_of(s)}/voxel_index"] = np.ascontiguousarray(idx.astype(np.int32))
-            tensors[f"declared{self.index_of(s)}/fraction"] = np.ascontiguousarray(np.asarray(vol, np.float32)[tuple(idx.T)])
+            tensors[f"declared{self._slot_of(s)}/voxel_index"] = np.ascontiguousarray(idx.astype(np.int32))
+            tensors[f"declared{self._slot_of(s)}/fraction"] = np.ascontiguousarray(np.asarray(vol, np.float32)[tuple(idx.T)])
         from ..replay.phantom import embed_pack
         for i, pk in embed_packs.items():
             embed_pack(subs, tensors, i, pk)

@@ -169,7 +169,7 @@ class StrandFieldRecord:
 
     def channels(self, points, *, chunk=None):
         raise ValueError("a StrandFieldRecord is the record of a basis a walk sampled: it evaluates nothing; rebuild the "
-                         "basis from the spec (walk_spec builds it) to sample the field at new points")
+                         "basis from the spec (walk builds it) to sample the field at new points")
 
 
 class StrandFieldBasis:

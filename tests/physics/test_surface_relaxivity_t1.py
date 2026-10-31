@@ -22,6 +22,7 @@ import pytest
 from scipy.optimize import brentq
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences as seq
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
@@ -39,7 +40,7 @@ ENV = dict(bvals=[0.0], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9,
 
 @pytest.fixture(scope="module")
 def sphere_pack():
-    walk = d.simulate_trajectories(N_WALKERS, D0, d.Sphere(R), T_MAX, DT_SAVE, seed=SEED, require_gpu=False, K=128)
+    walk = _walk_geometry(N_WALKERS, D0, d.Sphere(R), T_MAX, DT_SAVE, seed=SEED, require_gpu=False, K=128)
     return build_replay_pack(walk, id="test/sphere-rho1", K=128, envelope=ENV, license="x", citation="x")
 
 
@@ -186,7 +187,8 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
     from dmipy_sim.fill.consolidate import consolidate
-    from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
+    from dmipy_sim.spec import disco_spec, StratifiedByVoxel
+    from dmipy_sim import walk
     from dmipy_sim.replay.study import Protocol, Study
 
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
@@ -199,7 +201,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=23 + b, require_gpu=False, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=23 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))

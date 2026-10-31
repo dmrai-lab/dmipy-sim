@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.acquisition import coil
 from dmipy_replay.constants import GAMMA
@@ -178,7 +179,7 @@ def pack(tmp_path_factory):
     oracle's per-save sum are the same quadrature and only the physics can differ."""
     seq = _acquisition()
     n_t, dt = int(seq.n_t), float(seq.dt)
-    walk = d.simulate_trajectories(1500, 2.0e-9, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=3, require_gpu=False)
+    walk = _walk_geometry(1500, 2.0e-9, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=3, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
     build_replay_pack(walk, id="test/free", license="x", citation="x", K=40, out_path=str(out))
     return read_rpk(str(out))

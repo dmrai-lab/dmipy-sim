@@ -37,6 +37,7 @@ tessellation (its bias falls ~``O(h^2)``), so accurate permeability needs a fair
 fine mesh (edge length ``<~ 0.04`` of the local feature radius).
 """
 
+from collections.abc import Mapping
 import itertools
 from collections import deque
 import warnings
@@ -735,16 +736,12 @@ class Mesh(Geometry):
         (a step may not outrun the 27-cell gather).  Defaults to half the smallest box side, which is
         the pore of a closed cell and far too large for a bundle in a big box: **pass
         the real cell radius for packed substrates**, otherwise the step is too coarse.
-    surface_relaxivity_t2 : float, optional
-        Surface relaxivity ρ₂ (m/s), symmetric (same on both sides of the wall).
-        Applies a Brownstein–Tarr weight at the wall. A side-dependent ρ is given per pool
-        through ``compartments=``.
-    permeability : float or dict, optional
+    permeability : float or mapping, optional
         Membrane permeability κ (m/s).  A float is symmetric (same both directions,
-        the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
+        the default). A mapping ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
         makes it direction-dependent — note asymmetric κ is a *pump* (net flux, not
         passive equilibrium). None → impermeable.
-    compartments : Compartments or {"intra": Pool | dict, "extra": Pool | dict}, optional
+    compartments : Compartments, optional
         Per-compartment properties of the ``intra`` (inside a cell, id 1) and ``extra`` (id 0)
         pools, e.g. ``Compartments(intra=Pool(T2=0.05, D=1.7e-9), extra=Pool(T2=0.08, D=1.7e-9))``.
         ``surface_relaxivity_t2`` is a wall effect seen from that pool's side: a spin hitting the
@@ -796,7 +793,7 @@ class Mesh(Geometry):
     radius_is_mesh_feature = True
 
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
-                 voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
+                 voxel_max=None, feature_radius=None,
                  permeability=None, compartments=None, orientation=None,
                  R=None, cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
                  box_reflect=True, adaptive_nudge=False, seeding=None):
@@ -955,10 +952,8 @@ class Mesh(Geometry):
         self.compartments = comps
         intra = comps["intra"] if "intra" in comps else Pool()
         extra = comps["extra"] if "extra" in comps else Pool()
-        rho_i = intra.surface_relaxivity_t2 if intra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
-        rho_e = extra.surface_relaxivity_t2 if extra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
-        rho_i = float(rho_i) if rho_i is not None else 0.0
-        rho_e = float(rho_e) if rho_e is not None else 0.0
+        rho_i = float(intra.surface_relaxivity_t2) if intra.surface_relaxivity_t2 is not None else 0.0
+        rho_e = float(extra.surface_relaxivity_t2) if extra.surface_relaxivity_t2 is not None else 0.0
         rho_nom = max(rho_i, rho_e)
         self.surface_relaxivity_t2 = rho_nom if rho_nom > 0 else None   # nominal (engine reads this)
         self._rho_mult_intra = jnp.float32(rho_i / rho_nom if rho_nom > 0 else 1.0)
@@ -966,9 +961,15 @@ class Mesh(Geometry):
 
         # permeability: scalar κ (symmetric, default) OR
         # dict(intra_to_extra=…, extra_to_intra=…) for a direction-dependent (rectifying) wall.
-        if isinstance(permeability, dict):
-            k_out = float(permeability.get("intra_to_extra", 0.0))   # leaving a cell
-            k_in = float(permeability.get("extra_to_intra", 0.0))    # entering a cell
+        if isinstance(permeability, Mapping):
+            keys = ("intra_to_extra", "extra_to_intra")
+            if set(permeability) != set(keys):
+                missing = [k for k in keys if k not in permeability]
+                unknown = sorted(set(permeability) - set(keys))
+                raise ValueError(f"Mesh(permeability=) is a scalar (symmetric) or a mapping with exactly the keys "
+                                 f"{keys}; missing {missing}, unknown {unknown}")
+            k_out = float(permeability["intra_to_extra"])   # leaving a cell
+            k_in = float(permeability["extra_to_intra"])    # entering a cell
         elif permeability is not None:
             k_out = k_in = float(permeability)
         else:

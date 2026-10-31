@@ -9,12 +9,14 @@ import pytest
 from scipy.special import spherical_jn
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.so3 import Distribution
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
+from dmipy_sim import Pose
 
 
 @pytest.fixture(scope="module")
@@ -28,10 +30,17 @@ def myelin_pack():
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     L = 10e-6
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, np.asarray(c), L, N_max=4, D_intra=2e-9, D_extra=2e-9)
+    pm = d.PackedMyelinatedCylinders(
+        [1e-6] * 3,
+        0.7,
+        np.asarray(c),
+        L,
+        N_max=4,
+        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0)),
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w = d.simulate_trajectories(1500, 2e-9, pm, 30e-3, 5e-4, seed=3, require_gpu=False, field_basis=field_grid_of(pm, res=0.4e-6),
+        w = _walk_geometry(1500, 2e-9, pm, 30e-3, 5e-4, seed=3, require_gpu=False, field_basis=field_grid_of(pm, res=0.4e-6),
                                     sub_steps=25)
     return build_replay_pack(w, id="t/myelin-cell", license="x", citation="x")
 
@@ -39,7 +48,7 @@ def myelin_pack():
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
+    walk = _walk_geometry(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
     build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
     return read_rpk(str(p))
@@ -151,20 +160,20 @@ def test_the_field_is_composed_in_closed_form_and_agrees_with_every_other_route(
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     seq_y, R_y = field_along(seq, (0.0, 1.0, 0.0))                   # the field along y of the specimen: a pose
-    pc = pk.pose_response(seq_y, method="closed", pose=R_y, **kw)
+    pc = pk.pose_response(seq_y, method="closed", pose=Pose(R_y), **kw)
     assert pc.n_samples == 0 and pc.field_lmax >= 2
     # the two routes form the same phases in float32 on different paths: a rounding of a few ulps of the largest phase
     f32 = 4 * float(np.finfo(np.float32).eps) * max(1.0, float(pc.phase_amplitude))
     for R in so3.haar_rotations(6, 2):
         np.testing.assert_allclose(pc.at(R), pk.replay(seq_y, orientation=R_y @ R, complex_signal=True, **kw, tol=None), atol=max(2e-6, f32))
-    pq = pk.pose_response(seq_y, method="quadrature", pose=R_y, **kw)
+    pq = pk.pose_response(seq_y, method="quadrature", pose=Pose(R_y), **kw)
     for d in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
         np.testing.assert_allclose(pc.compose(d), pq.compose(d), atol=3 * pq.misfit.max())
     # the parallel geometry the quadrature route had to handle specially (#155) is nothing special here
     seq_x, R_x = field_along(seq, (1.0, 0.0, 0.0))
-    pp = pk.pose_response(seq_x, method="closed", keep=(8, 0), pose=R_x, **kw)
+    pp = pk.pose_response(seq_x, method="closed", keep=(8, 0), pose=Pose(R_x), **kw)
     for R in so3.haar_rotations(2, 9):
-        full = pk.pose_response(seq_x, method="closed", pose=R_x, **kw)
+        full = pk.pose_response(seq_x, method="closed", pose=Pose(R_x), **kw)
         np.testing.assert_allclose(full.at(R), pk.replay(seq_x, orientation=R_x @ R, complex_signal=True, **kw, tol=None), atol=max(2e-6, f32))
     assert np.isfinite(pp.coeffs).all()
 
@@ -246,7 +255,7 @@ def test_the_background_turns_with_the_specimen(pack, seq):
     the bore, the expansion is the direct replay at that pose composed with every rotation."""
     played = seq.with_background_gradient(_g0(0.02))
     R_s = _r_so3.rotation_of((0.2, -0.4, 0.89), roll=0.7)
-    pr = pack.pose_response(played, method="closed", pose=R_s)
+    pr = pack.pose_response(played, method="closed", pose=Pose(R_s))
     for R in so3.haar_rotations(6, 8):
         direct = pack.replay(played, orientation=R_s @ R, complex_signal=True, tol=None)
         assert np.all(np.abs(pr.at(R) - direct) <= pr.misfit + 2e-8)
@@ -260,7 +269,7 @@ def test_the_background_and_the_field_compose_in_closed_form(myelin_pack):
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
-    pc = pk.pose_response(played, method="closed", pose=R_y, **kw)
+    pc = pk.pose_response(played, method="closed", pose=Pose(R_y), **kw)
     assert pc.route == "closed" and pc.field_lmax >= 2 and pc.background_lmax >= 2
     for R in so3.haar_rotations(12, 2):
         np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw, tol=None), atol=2e-6)
@@ -269,7 +278,7 @@ def test_the_background_and_the_field_compose_in_closed_form(myelin_pack):
 @pytest.fixture(scope="module")
 def long_pack(tmp_path_factory):
     g = d.PackedCylinders([3e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(1000, 2e-9, g, 60e-3, 5e-4, seed=3, require_gpu=False)
+    walk = _walk_geometry(1000, 2e-9, g, 60e-3, 5e-4, seed=3, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "swoop.rpk"
     build_replay_pack(walk, id="t/swoop", license="x", citation="x", K=24, out_path=str(p))
     return read_rpk(str(p))
@@ -316,8 +325,8 @@ def test_an_odf_composition_forms_only_the_pairs_its_band_couples(pack, myelin_p
     seq = sequences.pgse([[1, 0, 0], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 2, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
-    full = myelin_pack.pose_response(played, method="closed", pose=R_y, **kw)
-    odf = myelin_pack.pose_response(played, method="closed", pose=R_y, keep=(8, 0), **kw)
+    full = myelin_pack.pose_response(played, method="closed", pose=Pose(R_y), **kw)
+    odf = myelin_pack.pose_response(played, method="closed", pose=Pose(R_y), keep=(8, 0), **kw)
     np.testing.assert_allclose(odf.coeffs, full.retained(8, 0), atol=1e-12)
 
 

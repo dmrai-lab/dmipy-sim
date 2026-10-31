@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.study import Acquisition, Protocol, Study, walker_primitives, study_signals
@@ -22,7 +23,7 @@ def high_b_pack():
     """A 2000-walker cylinder walk packed at K = 64, whose band carries the ActiveAx scheme's b = 13,190 s/mm^2:
     there the phases are 5.9 rad mean and 26 rad at most, the scale at which #484 found the replay's depths
     compared apart."""
-    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False, K=64)
+    walk = _walk_geometry(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False, K=64)
     return build_replay_pack(walk, id="test/high-b", K=64, license="x", citation="x")
 
 
@@ -132,7 +133,8 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
     from dmipy_sim.fill.consolidate import consolidate
-    from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
+    from dmipy_sim.spec import disco_spec, StratifiedByVoxel
+    from dmipy_sim import walk
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
     write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
@@ -140,7 +142,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     os.makedirs(str(tmp_path / "shards")); packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=7 + b, require_gpu=False, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=7 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")

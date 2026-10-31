@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import ReplayPack
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
@@ -21,9 +22,9 @@ T2 = {"extra": 0.08, "intra": 0.03}; T1 = {"extra": 1.0, "intra": 1.2}    # by p
 
 @pytest.fixture(scope="module")
 def packs():
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     full = build_replay_pack(walk, id="test/full", K=8, envelope=ENV, license="x", citation="x")
-    plain_walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0,
+    plain_walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0,
                                          require_gpu=False, tiers=())
     plain = build_replay_pack(plain_walk, id="test/plain", K=8, envelope=ENV, license="x", citation="x")
     return full, plain
@@ -123,10 +124,11 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
     read from one slice of the coefficient block, and matches the first sample of the decoded path to float32
     rounding -- the property a voxel partition of a walk rests on (dmipy-sim#76, #186)."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay import read_rpk
     from dmipy_sim.replay.bank import build_replay_pack
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, seed=3, require_gpu=False)
+    walk = _walk_geometry(200, 2e-9, g, 2e-3, 5e-4, seed=3, require_gpu=False)
     r0 = {}
     for K in (2, 4):
         out = tmp_path / f"k{K}.rpk"
@@ -169,7 +171,7 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     # an FID has no longitudinal period: T1 acts over none of it, and none of the walk beyond its echo
     np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2={"extra": np.inf, "intra": np.inf}, T1={"extra": TE, "intra": TE}))), 1.0, rtol=1e-9)
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=300)
+    walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=300)
     pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
     rho2 = 1e-5
     cum = np.cumsum(np.asarray(walk.raw_boundary, np.float64), axis=1)   # per-block log-weight at rho2 / D = 1

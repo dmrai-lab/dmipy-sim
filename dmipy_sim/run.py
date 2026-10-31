@@ -1,12 +1,12 @@
 """The record of a run: what every long producer leaves behind while it runs and when it stops.
 
-A producer (``simulate``, the trajectory walks, ``walk_spec``, ``build_replay_pack``, ``merge_packs``,
+A producer (``simulate``, the trajectory walks, ``walk``, ``build_replay_pack``, ``merge_packs``,
 ``StrandFieldBasis.build_far_grid``, ``ReplayPack.pose_responses``, ``ReplayPhantom.replay`` / ``replay_train`` /
 ``replay_bloch``) opens a :class:`Run`; a caller never does. The run keeps its events in memory from the first moment and PERSISTS itself
 -- a directory under ``$DMIPY_SIM_RUN_DIR`` (default ``~/.cache/dmipy-sim/runs``), or ``run_dir=`` at once -- the
 first time it outlives the sampling interval, so a half-second call in a test suite touches no disk and a walk of
 minutes has a record that covers it from its start. A producer opened inside another joins the outer run (a
-``join`` row; its events go to the outer's current phase): ``walk_spec`` -> the walk -> the pack is one record.
+``join`` row; its events go to the outer's current phase): ``walk`` -> the walk -> the pack is one record.
 
 The directory holds ``manifest.json`` (written first: producer, parameters, code, hardware class (CPU
 architecture, GPU model and count -- never a hostname, platform string or path), devices, the memory

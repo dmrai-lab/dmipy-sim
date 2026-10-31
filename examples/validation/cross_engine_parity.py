@@ -122,12 +122,13 @@ def mcdc_walk(data, amp, wL, n, *, K=K_PARITY, batch=25_000, require_gpu=None, s
     """One walk of an MC/DC axon, seeded MC/DC's way (their list, read cyclically): ``K`` bands over their TE in
     the band's own blocks; ``raw_subset`` keeps that many walkers' block ends beside the bands."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.io import mcdc
     from dmipy_sim.spec import geometry_from_spec
     p = mcdc_paths(data, amp, wL)
     geom = geometry_from_spec(mcdc_spec(data, amp, wL))
     r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), n)
-    return d.simulate_trajectories(int(n), MCDC_D, geom, T_max=MCDC_TE, K=int(K), seed=SEED, tiers="all", r0=r0,
+    return _walk_geometry(int(n), MCDC_D, geom, T_max=MCDC_TE, K=int(K), seed=SEED, tiers="all", r0=r0,
                                    walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps,
                                    window_T=MCDC_TE, raw_subset=int(raw_subset))
 
@@ -230,7 +231,8 @@ def disimpy_walk(data, n, *, K=K_PARITY, batch=50_000, require_gpu=None, sub_ste
     """One walk of the Disimpy cylinder, ``K`` bands over the fixture's TE. ``sub_steps`` pins the sub-step count
     for the ladder."""
     import dmipy_sim as d
-    return d.simulate_trajectories(int(n), DISIMPY_D, disimpy_geometry(data), T_max=DISIMPY_TE, K=int(K), seed=SEED,
+    from dmipy_sim.engine.core import _walk_geometry
+    return _walk_geometry(int(n), DISIMPY_D, disimpy_geometry(data), T_max=DISIMPY_TE, K=int(K), seed=SEED,
                                    tiers="all", walker_batch_size=batch, require_gpu=require_gpu, sub_steps=sub_steps,
                                    window_T=DISIMPY_TE)
 
@@ -243,8 +245,9 @@ def disimpy_analytic_walk(n, *, K=K_PARITY, require_gpu=None, sub_steps=None):
     representation.
     """
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim import Cylinder
-    return d.simulate_trajectories(int(n), DISIMPY_D, Cylinder(radius=DISIMPY_RADIUS, orientation=(0, 0, 1)),
+    return _walk_geometry(int(n), DISIMPY_D, Cylinder(radius=DISIMPY_RADIUS, orientation=(0, 0, 1)),
                                    T_max=DISIMPY_TE, K=int(K), seed=SEED, tiers="all", require_gpu=require_gpu,
                                    sub_steps=sub_steps, window_T=DISIMPY_TE)
 

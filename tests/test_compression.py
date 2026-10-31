@@ -90,9 +90,10 @@ def test_contact_bands_replay_surface_signal_below_mc_floor():
     """A real surface-relaxivity walk: the contact bands accumulated in the walk at K=8 reproduce the surface
     survival E(TE) at EVERY echo-time truncation to below the Monte-Carlo floor (1/sqrt(N)) -- the property that
     lets the replay store K bands instead of the raw contact."""
-    from dmipy_sim import simulate_trajectories, Box1D
+    from dmipy_sim import Box1D
+    from dmipy_sim.engine.core import _walk_geometry
     D, rho2, N, R = 2e-9, 1e-6, 8000, 2e-6
-    w = simulate_trajectories(N, D, Box1D(length=R), T_max=0.6, block_h=3e-3, window_T=0.6, K=8, seed=7, require_gpu=False, raw_subset=N)
+    w = _walk_geometry(N, D, Box1D(length=R), T_max=0.6, block_h=3e-3, window_T=0.6, K=8, seed=7, require_gpu=False, raw_subset=N)
     dlog = np.asarray(w.raw_boundary).astype(np.float64)
     n_t = dlog.shape[1]; ts = np.arange(n_t) * 0.6 / (n_t - 1)
     E_raw = np.exp((rho2 / D) * np.cumsum(dlog, axis=1)).mean(0)

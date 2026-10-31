@@ -183,7 +183,7 @@ def prepend_mt_prep(seq, sat, *, spoiler_s=0.5e-3, n_cycles=32.0):
 # ── turnkey emergent Z-spectrum sweep ─────────────────────────────────────────────
 def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, t_sat, dt,
                         T2, kappa_MT, dwell_time, T1=1.0, T2_bound=1e-5, T1_bound=1.0,
-                        equilibrate_binding="auto", seed=0):
+                        equilibrate_binding="burnin", seed=0):
     """Emergent CW-saturation Z-spectrum from the forward vector-Bloch engine.
 
     For each off-resonance ``offset`` (Hz), apply a continuous-wave saturation pulse of

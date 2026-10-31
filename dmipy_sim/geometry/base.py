@@ -131,7 +131,7 @@ class Geometry(ABC):
     bounce_loop = None
 
     #: A per-walk override of the loop's derived budget (an int), or None for the derivation. Set by
-    #: ``simulate_trajectories(bounce_budget=)`` for the duration of that walk and restored after it; the walk's
+    #: ``_walk_geometry(bounce_budget=)`` for the duration of that walk and restored after it; the walk's
     #: ``work["exhausted_steps"]`` is the certificate that the budget was enough (zero: the trajectories of any
     #: larger budget, by the loop's own rule), and a pack refuses a walk that exhausted it.
     bounce_budget = None
@@ -153,7 +153,7 @@ class Geometry(ABC):
     replay_parity = False
 
     #: `classify_position` returns an OBJECT id (0 = extra, 1..N = the object the walker is
-    #: in) rather than a pool id. `core.simulate_trajectories` collapses it to two pools.
+    #: in) rather than a pool id. `core._walk_geometry` collapses it to two pools.
     classify_returns_object_id = False
 
     #: `length_scales.min_feature` is a meshing parameter, not a pore (mirrors the field on
@@ -161,11 +161,11 @@ class Geometry(ABC):
     radius_is_mesh_feature = False
 
     def trajectory_walk_gap(self):
-        """``None`` if `engine.core.simulate_trajectories` can produce a persistent walk of this
+        """``None`` if `engine.core._walk_geometry` can produce a persistent walk of this
         geometry, else the reason it refuses (naming what the walk would need).
 
-        Every entry point that calls `simulate_trajectories` -- directly, or through
-        `spec.walk.walk_spec` -- checks this before any device work, so a spec whose geometry has
+        Every entry point that calls `_walk_geometry` -- directly, or through
+        `dmipy_sim.walk` -- checks this before any device work, so a spec whose geometry has
         no persistent walk is refused by name instead of discovered by a probe walk. The default
         (``None``) covers every geometry stepped by `reflect`/`interact`; a geometry with no such
         single-surface walk overrides this.

@@ -19,7 +19,7 @@ from dmipy_replay.phantom.grid import Grid
 class DrawnSeeds:
     """The seeds of a :class:`StratifiedByVoxel` already drawn (:func:`~dmipy_sim.spec.walk.draw_seeds`): per seeded
     pool name its start positions ``(n, 3)`` in substrate coordinates and its walker weights ``(n,)``, the grid
-    they were stratified on, the seed they were drawn from and the seeding they realise. :func:`walk_spec` takes
+    they were stratified on, the seed they were drawn from and the seeding they realise. :func:`walk` takes
     one in place of the ``StratifiedByVoxel`` with the same result to the bit."""
     positions: dict
     weights: dict

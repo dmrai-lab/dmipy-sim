@@ -11,6 +11,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity
@@ -39,7 +40,7 @@ def _magnetic(spec):
 def _walk(window_T, K, *, n_w=N_W, seed=0, T_max=T):
     """The cell walked with C1 (events), C2 and C3 (the slab grid read in the walk, 16 modes), every walker's
     block ends kept, in windows of ``window_T`` at ``K`` bands each."""
-    w = d.simulate_trajectories(n_w, 2e-9, _geometry(), T_max, DT, seed=seed, require_gpu=False, K=K, window_T=window_T,
+    w = _walk_geometry(n_w, 2e-9, _geometry(), T_max, DT, seed=seed, require_gpu=False, K=K, window_T=window_T,
                                 field_basis=_slab_grid(), K_c3=16, raw_subset=n_w)
     return dataclasses.replace(w, spec=_magnetic(w.spec))
 
@@ -174,7 +175,7 @@ def test_the_producer_refuses_a_walk_that_is_not_whole_windows():
     with pytest.raises(ValueError, match="whole number"):
         window_count(0.015, 0.01)
     with pytest.raises(ValueError, match="whole number"):
-        d.simulate_trajectories(8, 2e-9, _geometry(), 0.015, DT, seed=0, require_gpu=False, K=8, window_T=0.01)
+        _walk_geometry(8, 2e-9, _geometry(), 0.015, DT, seed=0, require_gpu=False, K=8, window_T=0.01)
 
 
 def test_the_bound_over_windows():
@@ -256,8 +257,8 @@ def test_a_walk_continues_from_its_end_and_appends_as_windows():
     g = d.Cylinder(2e-6, (0, 0, 1))
     kw = dict(license="x", citation="x", blt_temporal_K=16, window_T=0.01)
     walk = dict(seed=0, require_gpu=False, K=16, window_T=0.01)
-    two = _float_pack(d.simulate_trajectories(2000, 2e-9, g, 0.02, 5e-4, **walk), id="t/two", **kw)
-    one = _float_pack(d.simulate_trajectories(2000, 2e-9, g, 0.01, 5e-4, **walk), id="t/one", **kw)
+    two = _float_pack(_walk_geometry(2000, 2e-9, g, 0.02, 5e-4, **walk), id="t/two", **kw)
+    one = _float_pack(_walk_geometry(2000, 2e-9, g, 0.01, 5e-4, **walk), id="t/one", **kw)
     r_end, pool = end_state(one)
     assert pool is not None and np.all(pool == 1)                                   # every walker in the lumen
     cont = continue_walk(one, 0.01, seed=7, require_gpu=False)

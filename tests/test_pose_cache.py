@@ -6,6 +6,7 @@ import pytest
 from scipy.special import spherical_jn
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.phantom import Grid, PackSubstrate, Phantom, Watson
 from dmipy_sim.replay import read_rpk
@@ -18,7 +19,7 @@ from dmipy_replay.spec.tissue import Tissue
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(300, 2e-9, g, 10e-3, 5e-4, seed=5, require_gpu=False)
+    walk = _walk_geometry(300, 2e-9, g, 10e-3, 5e-4, seed=5, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
     build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
     return read_rpk(str(p))
