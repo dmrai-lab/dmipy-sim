@@ -107,3 +107,19 @@ def test_voxel_floor_coded_device_matches_numpy_and_uses_the_vectorised_census()
     ok = np.isfinite(floor_np)
     assert ok.any()
     assert np.abs(floor_np[ok] - floor_jx[ok]).max() < 1e-4 * max(1.0, float(np.nanmax(floor_np)))
+
+
+def test_the_voxel_floor_of_one_cell_is_the_walks_standard_error():
+    """A grid whose one voxel holds every walker: the cell's floor is the walk's ``measure_floor_coded`` (the standard
+    error, weighted)."""
+    from dmipy_sim.replay.bank import voxel_floor_coded
+    from dmipy_sim.replay.compression import default_envelope, pack_position_arrays, measure_floor_coded
+    from dmipy_sim.phantom import Grid
+    n_w, n_t, K = 400, 65, 8
+    C = _coefficients(n_w, K, 13)
+    grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(-1e-5,) * 3)
+    w = np.random.default_rng(1).uniform(0.5, 1.5, n_w)
+    env = default_envelope()
+    _, _, n, floor, _ = voxel_floor_coded(pack_position_arrays(C, np.float64), 2e-5, n_t, grid, np.zeros(n_w, np.int8), env, w=w, device="numpy")
+    assert n.sum() == n_w and floor.shape == (1, 1)
+    assert abs(floor[0, 0] - measure_floor_coded(C, 2e-5, n_t, env, w=w, device="numpy")["floor_max"]) < 1e-6

@@ -1396,7 +1396,7 @@ class ReferenceFamily:
             pk = build_replay_pack(walk, id=f"pilot/{self.name}", license="pilot", citation="pilot", K=int(d.K),
                                    envelope=d.envelope, position_container="derived", blt_container="derived",
                                    verbose=False)
-            floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded split-half floor on the envelope
+            floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded standard-error floor on the envelope
             with tempfile.TemporaryDirectory(prefix="dmipy-pilot-") as tmp:
                 f = os.path.join(tmp, "pilot.rpk")
                 pk.save(f)

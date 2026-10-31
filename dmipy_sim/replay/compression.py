@@ -173,7 +173,7 @@ BUDGET = 0.1
 """The share of the ordered floor the container may spend: the certificate's error against the float pack of the same
 walk is derived to sit at ``BUDGET`` x floor."""
 KAPPA = 1.0
-"""Calibration (radians^-1): the random-phase error of the mean signal, in units of the walkers' split-half floor, per
+"""Calibration (radians^-1): the random-phase error of the mean signal, in units of the walkers' standard-error floor, per
 radian of rms quantisation phase noise (:func:`derive_container`)."""
 
 
@@ -235,7 +235,7 @@ def derive_container(scales, K, floor_target, *, n_t=None, dt=None, env=None, bu
     ``eps^2 = S step^2 / 12`` for one step common to the bands, ``S`` the phase variance per unit step variance of
     the envelope's worst waveform (:func:`_phase_weight`; a contact channel: ``weight^2 K``; a channel that states its
     own, such as the field's ``gamma^2 T``: ``phase``). It costs the mean signal
-    two ways: a random term, ``kappa * eps`` times the walkers' split-half floor, which does not depend on the number
+    two ways: a random term, ``kappa * eps`` times the walkers' standard-error floor, which does not depend on the number
     of walkers, and a bias ``eps^2 / 2``, which does not fall with them while the floor does. Holding both under
     ``budget`` x ``floor_target`` (each at its share, so that the two sum in quadrature to at most ``budget``)::
 
@@ -517,51 +517,31 @@ def _device_matmul():
     return jax.jit(lambda x, W: jnp.matmul(x, W, precision=jax.lax.Precision.HIGHEST))
 
 
-#: The number of independent random split-halves a floor is the median over. One split's battery maximum is a noisy
-#: order statistic (it swings by about 50 % between splits); the median over nine moves by a few per cent.
-FLOOR_SPLITS = 9
+#: The name the certificate gives the estimator of its Monte-Carlo floor (``fidelity.floor_estimator``).
+FLOOR_ESTIMATOR = "standard_error"
 
 
-def split_halves(n, n_splits, seed=0):
-    """``n_splits`` independent random split-halves of ``n`` walkers as an ``(n_splits, n)`` boolean array (True = the
-    first half); split ``k`` is a permutation drawn from the stream ``(seed, k)``."""
-    n_splits = int(n_splits)
-    if n_splits < 1:
-        raise ValueError(f"a floor needs at least one split-half, got n_splits={n_splits}")
-    half = np.zeros((n_splits, int(n)), bool)
-    for k in range(n_splits):
-        half[k, np.random.default_rng([int(seed), k]).permutation(int(n))[: int(n) // 2]] = True
-    return half
-
-
-def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto", n_splits=FLOOR_SPLITS, split_seed=0):
-    """The split-half Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
-    (:func:`coded_phases`, computed once, no path decoded): the walkers split into two halves ``n_splits`` independent
-    ways (:func:`split_halves`, from ``split_seed``), each split's floor the battery maximum of ``|S_a - S_b| / 2``,
-    and the reported floor the MEDIAN over the splits. Returns ``floor_max`` and ``per_family`` (medians),
-    ``floor_max_single`` (the first split's value alone), ``n_splits``, ``noise_floor`` and the walkers' effective
-    count ``n_eff = (sum w)^2 / sum w^2``."""
+def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
+    """The Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
+    (:func:`coded_phases`, computed once, no path decoded): per measurement the standard error of the weighted mean
+    signal, ``SE_m = sqrt(sum_w w^2 |s_wm - S_m|^2) / sum_w w`` with ``s_wm = exp(logw + i phi_wm)`` the walker's
+    complex term, ``S_m`` the mean (:func:`_mean_signal`) and the deviation taken as a complex modulus. It is
+    deterministic. Returns ``floor_max`` (the battery maximum of ``SE_m``), ``per_family`` (the same per family),
+    ``floor_estimator``, ``noise_floor`` ``1 / sqrt(N_w)`` and the walkers' effective count
+    ``n_eff = (sum w)^2 / sum w^2``."""
     env = env or default_envelope()
     G, meta = acquisition_battery(int(n_t), float(dt), env)
     phi = coded_phases(C, dt, G, n_t, device=device)
     nw = phi.shape[0]
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
-    e = np.exp(lw[:, None] + 1j * phi) * ww[:, None]
-    half = split_halves(nw, n_splits, split_seed)
+    s = np.exp(lw[:, None] + 1j * phi)
+    S = (s * ww[:, None]).sum(0) / ww.sum()
+    se = np.sqrt(((np.abs(s - S) ** 2) * (ww ** 2)[:, None]).sum(0)) / ww.sum()
     fams = sorted({m["fam"] for m in meta})
-    cols = {f: np.array([i for i, m in enumerate(meta) if m["fam"] == f]) for f in fams}
-    fl_max = np.empty(int(n_splits)); fl_fam = {f: np.empty(int(n_splits)) for f in fams}
-    for k in range(int(n_splits)):
-        ma, mb = half[k], ~half[k]
-        Sa = e[ma].sum(0) / ww[ma].sum(); Sb = e[mb].sum(0) / ww[mb].sum()
-        floor = np.abs(Sa - Sb) / 2.0
-        fl_max[k] = floor.max()
-        for f in fams:
-            fl_fam[f][k] = floor[cols[f]].max()
-    return dict(floor_max=float(np.median(fl_max)), floor_max_single=float(fl_max[0]), n_splits=int(n_splits),
-                noise_floor=float(1 / np.sqrt(nw)), per_family={f: float(np.median(fl_fam[f])) for f in fams},
-                n_eff=float(ww.sum() ** 2 / (ww ** 2).sum()))
+    per_fam = {f: float(se[[i for i, m in enumerate(meta) if m["fam"] == f]].max()) for f in fams}
+    return dict(floor_max=float(se.max()), floor_estimator=FLOOR_ESTIMATOR, noise_floor=float(1 / np.sqrt(nw)),
+                per_family=per_fam, n_eff=float(ww.sum() ** 2 / (ww ** 2).sum()))
 
 
 # ------------------------------------------- per-walker physics-channel codecs

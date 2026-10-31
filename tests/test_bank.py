@@ -510,19 +510,26 @@ def test_the_two_budgets_are_stated_together_or_not_at_all():
             build_replay_pack(w, id="test/b", envelope=_lean_env(), K=16, license="x", citation="x", **kw)
 
 
-def test_the_reported_floor_is_the_median_over_splits_and_stable_across_split_seeds():
+def test_the_floor_is_the_standard_error_of_the_weighted_mean_signal_and_deterministic():
     from dmipy_sim.replay import compression as cx
     rng = np.random.default_rng(0)
-    C = rng.normal(size=(600, 18, 3)) * 1e-6
+    C = rng.normal(size=(300, 18, 3)) * 1e-6
     C[:, 0, :] = 0.0
-    env = cx.default_envelope()
-    one = np.array([cx.measure_floor_coded(C, 1e-4, 33, env, n_splits=1, split_seed=s)["floor_max"] for s in range(20)])
-    med = [cx.measure_floor_coded(C, 1e-4, 33, env, split_seed=s) for s in range(20)]
-    m = np.array([x["floor_max"] for x in med])
-    assert all(x["n_splits"] == cx.FLOOR_SPLITS == 9 for x in med)
-    cv = lambda x: x.std() / x.mean()
-    assert cv(m) < 0.07 and cv(m) < 0.5 * cv(one)       # the median of 9 splits moves by a few per cent; one split by ~15 %
-    assert med[0]["floor_max_single"] == pytest.approx(cx.measure_floor_coded(C, 1e-4, 33, env, n_splits=1)["floor_max"])
-    env = _lean_env()
-    pk = build_replay_pack(_slab_walk(n_w=400, seed=1, raw=False), id="test/nsplit", envelope=env, K=16, license="x", citation="x")
-    assert pk.fidelity["n_floor_splits"] == cx.FLOOR_SPLITS and "single_split_floor_max" in pk.fidelity
+    env, w = cx.default_envelope(), rng.uniform(0.5, 1.5, 300)
+    f = cx.measure_floor_coded(C, 1e-4, 33, env, w=w)
+    G, meta = cx.acquisition_battery(33, 1e-4, env)
+    s = np.exp(1j * cx.coded_phases(C, 1e-4, G, 33))
+    S = (w[:, None] * s).sum(0) / w.sum()
+    se = np.sqrt((w[:, None] ** 2 * np.abs(s - S) ** 2).sum(0)) / w.sum()
+    assert f["floor_max"] == pytest.approx(se.max(), rel=1e-9) and f["floor_estimator"] == "standard_error"
+    assert f["per_family"].keys() == {m["fam"] for m in meta} and max(f["per_family"].values()) == pytest.approx(f["floor_max"])
+    assert cx.measure_floor_coded(C, 1e-4, 33, env, w=w)["floor_max"] == f["floor_max"]
+
+
+def test_a_pack_at_the_planned_walker_count_meets_its_planned_floor():
+    """``SE <= 1 / sqrt(N)`` for unit-modulus terms: at ``N = 1 / f^2`` walkers the standard error is within ``f`` by construction."""
+    n = 400
+    f = 1.0 / np.sqrt(n)
+    fid = build_replay_pack(_slab_walk(n_w=n, seed=1, raw=False), id="test/planned", envelope=_lean_env(), K=16, license="x",
+                            citation="x", sigma_star=0.5 * f, planned_floor=f).fidelity
+    assert fid["floor_estimator"] == "standard_error" and fid["floor_max"] <= f and fid["meets_planned_floor"]
