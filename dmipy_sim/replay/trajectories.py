@@ -1,6 +1,6 @@
 """ScannerSequence application to walker paths kept at their block ends: the dense replay, the oracle of a pack's.
 
-The replay invariant (see ``core.simulate_trajectories``): walker positions ``r(t)`` and boundary events depend ONLY
+The replay invariant (see ``core._walk_geometry``): walker positions ``r(t)`` and boundary events depend ONLY
 on ``(geometry, diffusivity, seed)`` -- never on ``G(t)``, T2, T1 or rho. Those gate ``log_w``/phase only, so one walk
 serves every acquisition and relaxation hypothesis. A pack replays the walk from its bands
 (:class:`~dmipy_sim.replay.replay.ReplayPack`); the ``replay*`` functions below replay a walk kept at its block ends
@@ -274,7 +274,7 @@ def replay(
         if dlog_boundary_unit is None:
             raise ValueError(
                 "dlog_boundary_unit must be provided when surface_relaxivity is not None.  "
-                "Re-run simulate_trajectories with tiers=\"all\".")
+                "Re-run _walk_geometry with tiers=\"all\".")
         dlog_bnd = np.asarray(dlog_boundary_unit, dtype=np.float64)  # (n_walkers, n_h)
         log_w_surf = (surface_relaxivity / D) * (chi_r @ dlog_bnd.T) # (n_meas, n_walkers)
         log_w_per_walker = log_w_per_walker + log_w_surf

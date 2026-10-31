@@ -28,8 +28,12 @@ def _seq(grad):
 @pytest.mark.parametrize("make", [
     lambda o: d.Cylinder(R, o),
     lambda o: d.PackedCylinders([R], [[0.0, 0.0]], 4.0e-6, orientation=o),
-    lambda o: d.MyelinatedCylinder(inner_radius=R, outer_radius=R / 0.7, orientation=o, D_intra=D0, D_extra=D0,
-                                   water_fractions=(1.0, 0.0, 0.0)),
+    lambda o: d.MyelinatedCylinder(
+        inner_radius=R,
+        outer_radius=R / 0.7,
+        orientation=o,
+        compartments=d.Compartments(intra=d.Pool(D=D0, water_fraction=1.0), myelin=d.Pool(water_fraction=0.0), extra=d.Pool(D=D0, water_fraction=0.0)),
+    ),
 ], ids=["cylinder", "packed", "myelinated"])
 def test_the_walk_is_in_the_substrate_frame_whatever_the_pose(make):
     g = make(AXIS); z = make((0.0, 0.0, 1.0))
@@ -42,8 +46,12 @@ def test_the_walk_is_in_the_substrate_frame_whatever_the_pose(make):
 
 @pytest.mark.parametrize("make, D", [
     (lambda o: d.Cylinder(R, o), D0),
-    (lambda o: d.MyelinatedCylinder(inner_radius=R, outer_radius=R / 0.7, orientation=o, D_intra=D0, D_extra=D0,
-                                    water_fractions=(1.0, 0.0, 0.0)), None),
+    (lambda o: d.MyelinatedCylinder(
+        inner_radius=R,
+        outer_radius=R / 0.7,
+        orientation=o,
+        compartments=d.Compartments(intra=d.Pool(D=D0, water_fraction=1.0), myelin=d.Pool(water_fraction=0.0), extra=d.Pool(D=D0, water_fraction=0.0)),
+    ), None),
 ], ids=["cylinder", "myelinated"])
 def test_a_posed_substrate_is_the_upright_one_under_the_rotated_acquisition(make, D):
     """Same seed, same walk: the posed geometry with a lab gradient g gives what the upright one gives with the

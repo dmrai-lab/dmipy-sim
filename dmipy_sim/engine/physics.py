@@ -213,7 +213,7 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
     * the band, the largest step at which the pair's bulk error on the mode a band of ``f_band`` reads stays within
       ``eps_D`` (:func:`~dmipy_sim.math.step_law.band_step`); ``f_band`` is the Nyquist frequency of the step ``dt``,
       ``1 / (2 dt)``, when a driver states none (the fused drivers state the waveform's band, the band accumulation
-      ``K / (2 T)``, ``walk_spec`` the scanner class's);
+      ``K / (2 T)``, ``walk`` the scanner class's);
     * the first-order regime, ``delta_0 <= min_feature / 2`` (the longest step 0.82 of it), where the law is measured;
       a geometry that declares its own ceiling (``reflection_step_fraction``: the curved tubes' two-bounce wall) keeps it.
 
@@ -377,7 +377,7 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     """Fine sub-steps per waveform step (a walk's block) for a walk on ``geometry``.
 
     Every driver -- the fused scan (:func:`make_step_fn`, :func:`make_packed_myelin_step_fn`),
-    the trajectory producer (:func:`~dmipy_sim.engine.core.simulate_trajectories`), the vector-Bloch
+    the trajectory producer (:func:`~dmipy_sim.engine.core._walk_geometry`), the vector-Bloch
     engine and the MT walker -- takes its count from here, so one substrate is walked at one
     resolution whichever way it is driven. The count is the maximum over the criteria that apply
     (:func:`sub_step_rules`):
@@ -641,7 +641,7 @@ def make_myelin_traj_step_fn(geometry, dt: float):
     (:func:`make_myelin_substep`).
 
     Carry ``(r, r_unwrapped, key, dlog_accum, comp_id, work)`` -- the same shape the packed trajectory
-    step carries, so :func:`~dmipy_sim.engine.core.simulate_trajectories` records both through one
+    step carries, so :func:`~dmipy_sim.engine.core._walk_geometry` records both through one
     recording branch; ``work`` is the carried ``(hits, crossings, exhausted)`` or None. There is no periodic cell to unwrap: ``r`` already is the continuous
     position, so ``r_unwrapped`` repeats it rather than tracking a minimum-image wrap.
     ``dlog_accum`` accumulates the unit boundary local time (``rho/D = 1``), as the packed step

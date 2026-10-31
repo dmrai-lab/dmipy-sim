@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import ScannerSequence
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack, grid_periodic_of
@@ -52,12 +53,19 @@ def _jumps(pos):
 
 @pytest.fixture(scope="module")
 def pm():
-    return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, _cell(), L, N_max=4, D_intra=D0, D_extra=D0)
+    return d.PackedMyelinatedCylinders(
+        [1e-6] * 3,
+        0.7,
+        _cell(),
+        L,
+        N_max=4,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
+    )
 
 
 @pytest.fixture(scope="module")
 def cwalk(pm):
-    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS)
+    w = _walk_geometry(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS)
     # this fixture is about the continuous path, not the susceptibility tier: the geometry's spec declares one
     # (dmipy-sim#539 -- a walk without field_basis/field_coeffs of a source-declaring spec is refused a pack)
     return dataclasses.replace(w, spec=spec_without_source(w.spec))
@@ -80,8 +88,15 @@ def test_a_packed_myelinated_walk_records_the_continuous_path(cwalk):
 
 
 def test_a_packed_myelinated_walk_with_binding_records_the_continuous_path():
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, _cell(), L, N_max=4, D_intra=D0, D_extra=D0)
-    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=1, require_gpu=False, kappa_MT=5e-5, dwell_time=1e-3,
+    pm = d.PackedMyelinatedCylinders(
+        [1e-6] * 3,
+        0.7,
+        _cell(),
+        L,
+        N_max=4,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
+    )
+    w = _walk_geometry(300, D0, pm, 8e-3, 2e-4, seed=1, require_gpu=False, kappa_MT=5e-5, dwell_time=1e-3,
                                 equilibrate_binding="off", raw_subset=300)
     assert w.has_binding
     _assert_continuous(w.raw_positions)
@@ -89,7 +104,7 @@ def test_a_packed_myelinated_walk_with_binding_records_the_continuous_path():
 
 def test_a_packed_cylinders_walk_records_the_continuous_path():
     pc = d.PackedCylinders(np.array([1e-6] * 3), _cell(), L)
-    w = d.simulate_trajectories(300, D0, pc, 8e-3, 2e-4, seed=0, require_gpu=False, tiers="all", raw_subset=300)
+    w = _walk_geometry(300, D0, pc, 8e-3, 2e-4, seed=0, require_gpu=False, tiers="all", raw_subset=300)
     _assert_continuous(w.raw_positions)
 
 
@@ -114,7 +129,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, cwalk):
     pack's field tier replays them; a single cylinder's grid is a box and declares no period."""
     fg = field_grid_of(pm, res=0.2e-6, include_aniso=False)
     assert fg.periodic == (True, True, True)
-    assert field_grid_of(d.MyelinatedCylinder(1e-6, 1.4e-6, (0, 0, 1), D0, D0), res=0.2e-6).periodic == (False,) * 3
+    assert field_grid_of(d.MyelinatedCylinder(1e-6, 1.4e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0))), res=0.2e-6).periodic == (False,) * 3
     p = _fold(cwalk.raw_positions[:, -1, :]).astype(float)
     base = fg.channels(p)
     for shift in ([L, 0, 0], [0, -L, 0], [-2 * L, 3 * L, 7e-6]):
@@ -124,7 +139,7 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, cwalk):
 
     # the walk reads the grid at every step (one step per block: the reads are the block ends of its raw subset); its
     # modes are the trapezoid projection of the reads at the FOLDED positions, which are the images' reads
-    w = d.simulate_trajectories(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS,
+    w = _walk_geometry(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS,
                                 sub_steps=1, field_basis=fg)
     pos = np.asarray(w.raw_positions, np.float64)
     assert _jumps(pos) == 0 and _jumps(_fold(pos)) > 50                         # the walkers do leave the cell

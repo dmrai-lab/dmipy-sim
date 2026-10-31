@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
@@ -88,7 +89,7 @@ def small(tmp_path_factory):
     the walk and the layout."""
     from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("shapes")
-    w = d.simulate_trajectories(600, D0, d.Cylinder(radius=4e-6, orientation=(0, 0, 1)), TE, seed=3, window_T=TE, require_gpu=False)
+    w = _walk_geometry(600, D0, d.Cylinder(radius=4e-6, orientation=(0, 0, 1)), TE, seed=3, window_T=TE, require_gpu=False)
     r0 = np.asarray(w.position_coeffs)[:, 0, 0, :]
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])

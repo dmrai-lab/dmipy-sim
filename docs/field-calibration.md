@@ -18,7 +18,7 @@ Time segments are separate derived outputs for selected timing/RF configurations
 
 Pass query_scope with identity, metric="max_abs_complex_signal_error", target and confidence, and calibration_floor to simulate_trajectories_adaptive. After the reference/refinement work, construct FieldCalibration.from_walk(walk, accuracy=..., step=...). Accuracy comes from assess_accuracy; step comes from assess_step_certificate of the existing step-size diagnostic. Save/load the record as JSON and supply it through field_calibration on subsequent walks with the same query scope and numerical floor.
 
-walk_spec accepts a mapping from every diffusing seeded pool name to its own FieldCalibration. Extract records from its joined walk using FieldCalibration.from_walk(..., pool="extra") and the corresponding per-pool evidence. All pools need a common field band. Incompatible bands are refused, requiring regeneration of the evidence at a common band. A pool's record cannot silently stand in for the joined substrate.
+walk accepts a mapping from every diffusing seeded pool name to its own FieldCalibration. Extract records from its joined walk using FieldCalibration.from_walk(..., pool="extra") and the corresponding per-pool evidence. All pools need a common field band. Incompatible bands are refused, requiring regeneration of the evidence at a common band. A pool's record cannot silently stand in for the joined substrate.
 
 A supplied record is a snapshot, with a checksum and revalidated evidence. It refuses missing numerical terms, unresolved steps, scope changes and explicit read/band conflicts. The checksum detects accidental changes; it is not an authenticity signature. Evidence producers remain responsible for valid bounds and their scope.
 

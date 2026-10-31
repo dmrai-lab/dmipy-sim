@@ -1,7 +1,7 @@
 """Replay parity: walk-once + replay operators reproduce the fused ``simulate_fused()``.
 
 Phase-1 replay foundation.  For each geometry we walk the spins ONCE with
-``simulate_trajectories()`` and then apply
+``_walk_geometry()`` and then apply
 ``replay`` (pure-gradient and with relaxation) post-hoc,
 asserting the result equals the fused forward engine (``engine._fused.simulate_fused``) — the
 validation oracle — for
@@ -26,7 +26,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim.replay.trajectories import replay
 
@@ -103,7 +103,7 @@ def _replay_case(request):
     G = np.asarray(wf.G_eff, np.float32)       # the effective gradient the kernel integrates
     chi = np.ones(n_t)
 
-    out = simulate_trajectories(n, D, geom, T_max, dt, seed=SEED, require_gpu=False, raw_subset=n)
+    out = _walk_geometry(n, D, geom, T_max, dt, seed=SEED, require_gpu=False, raw_subset=n)
     traj, dt_traj, sub_steps, dt_sim = out.raw_positions, out.h, out.sub_steps, out.dt_sim
     dlog, comp = out.raw_boundary, out.raw_compartment
     if name != "free":
@@ -183,7 +183,7 @@ def test_a_positions_only_walk_carries_no_channels():
     """A positions-only walk (tiers=()) carries no channels."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
-    out = simulate_trajectories(2_000, D, d.Sphere(radius=R),
+    out = _walk_geometry(2_000, D, d.Sphere(radius=R),
                                 dt * (n_t - 1), dt, seed=SEED, require_gpu=False, tiers=(), raw_subset=2_000)
     assert not (out.has_surface or out.has_compartments or out.has_binding)
     assert out.compartment is None and out.boundary_bands is None and out.bound_start is None
@@ -197,7 +197,7 @@ def test_the_default_walk_carries_the_surface_and_compartment_channels():
     """The default walk records the boundary local time and the compartment channel."""
     wf = _WF_STD
     dt = float(wf.dt); n_t = wf.G.shape[1]
-    out = simulate_trajectories(2_000, D, d.Cylinder(radius=R, orientation=[0, 0, 1]),
+    out = _walk_geometry(2_000, D, d.Cylinder(radius=R, orientation=[0, 0, 1]),
                                 dt * (n_t - 1), dt, seed=SEED, require_gpu=False, raw_subset=2_000)
     assert out.has_surface and out.has_compartments and not out.has_binding
     assert out.compartment.shape == (2_000,) and not out.crossing           # an impermeable wall: one static label

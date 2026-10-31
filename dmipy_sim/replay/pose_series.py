@@ -496,7 +496,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
     from . import so3
     from dmipy_replay.replay.compression import read_position_coeffs
     from .pose_device import bessel_tails, route, field_bodies, field_bodies_torch
-    from dmipy_replay.replay.replay import _pose_matrix
+    from ..phantom.partition import pose_rotation
     from .replay import _factor_channels, _factor_of, _coupling_tables, PoseResponse, TORCH_GROUPS
     from ..run import Run, current
     if backend not in ("jax", "torch"):
@@ -515,7 +515,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
     except StopIteration:
         raise ValueError("a pose series needs at least one acquisition") from None
     first = first.waveform if hasattr(first, "waveform") else first
-    R_s = _pose_matrix(pose)
+    R_s = pose_rotation(pose)
     with Run("pose_series", params=dict(id=pack.id, n_meas=int(first.n_meas), keep=None if keep is None else list(keep))):
         run = current()
         _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)

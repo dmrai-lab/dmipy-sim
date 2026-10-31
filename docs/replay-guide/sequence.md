@@ -21,10 +21,11 @@ export, a vendor trace, a waveform from `dmipy-design` -- not for one you are ab
 ```python
 import numpy as np
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 
-walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
+walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
 pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
 
 seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.001, 0.003, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)

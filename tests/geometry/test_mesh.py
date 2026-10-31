@@ -17,6 +17,7 @@ import pytest
 from dmipy_sim import simulate, Sphere, Mesh, load_ply, set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.engine._fused import simulate_fused
+from dmipy_sim import Compartments, Pool
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -121,13 +122,14 @@ def test_compartment_property_parsing():
     """intra/extra + directional-κ parsing (fast; no Monte-Carlo). Symmetric inputs
     reduce to unit multipliers; asymmetric inputs set nominal=max and ratio mults."""
     V, F = _icosphere(2)
-    # scalar ρ == symmetric intra=extra dict (nominal + unit multipliers)
-    m_scalar = Mesh(V, F, surface_relaxivity_t2=5e-6)
-    m_sym = Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": 5e-6}, "extra": {"surface_relaxivity_t2": 5e-6}})
-    assert m_scalar.surface_relaxivity_t2 == m_sym.surface_relaxivity_t2 == 5e-6
-    assert float(m_scalar._rho_mult_intra) == 1.0 and float(m_scalar._rho_mult_extra) == 1.0
+    # ρ is the pool's, the wall as seen from that side; the same ρ on both sides: nominal + unit multipliers
+    m_sym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=5e-6)))
+    assert m_sym.surface_relaxivity_t2 == 5e-6
+    assert float(m_sym._rho_mult_intra) == 1.0 and float(m_sym._rho_mult_extra) == 1.0
+    with pytest.raises(TypeError, match="surface_relaxivity_t2"):      # the wall's ρ has one spelling: the pool's
+        Mesh(V, F, surface_relaxivity_t2=5e-6)
     # asymmetric ρ: nominal = max, multipliers = per-side ratios
-    m_asym = Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": 5e-6}, "extra": {"surface_relaxivity_t2": 1e-6}})
+    m_asym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=1e-6)))
     assert m_asym.surface_relaxivity_t2 == 5e-6
     npt.assert_allclose([float(m_asym._rho_mult_intra), float(m_asym._rho_mult_extra)], [1.0, 0.2], atol=1e-6)
     # κ: scalar symmetric; dict direction-dependent
@@ -137,26 +139,38 @@ def test_compartment_property_parsing():
     npt.assert_allclose([float(mk._kappa_mult_out), float(mk._kappa_mult_in)], [1.0, 0.25], atol=1e-6)
 
 
+def test_directional_permeability_names_exactly_both_directions():
+    V, F = _icosphere(2)
+    for bad, match in (({"intra_to_extra": 1e-5}, "missing \\['extra_to_intra'\\]"),
+                       ({"extra_to_intra": 1e-5}, "missing \\['intra_to_extra'\\]"),
+                       ({"intra_to_extra": 1e-5, "extra_to_intra": 1e-5, "out": 1.0}, "unknown \\['out'\\]"),
+                       ({"in": 1e-5, "out": 1e-5}, "missing")):
+        with pytest.raises(ValueError, match=match):
+            Mesh(V, F, permeability=bad)
+
+
 def test_compartment_unsupported_key_raises():
     V, F = _icosphere(2)
-    with pytest.raises(KeyError, match="kurtosis"):
-        Mesh(V, F, compartments={"intra": {"kurtosis": 1.0}})         # not a Pool property
+    with pytest.raises(TypeError, match="kurtosis"):
+        Pool(kurtosis=1.0)                                                      # not a Pool property
+    with pytest.raises(TypeError, match="takes a Compartments or None, got dict"):
+        Mesh(V, F, compartments={"intra": {"D": 1e-9}})                         # a dict of properties is not a spelling
 
 
 def test_compartment_bulk_parsing():
     """Per-compartment bulk D/T2 parsing (fast; no Monte-Carlo)."""
     V, F = _icosphere(2)
-    m = Mesh(V, F, compartments={"intra": {"D": 1e-9, "T2": 0.02}, "extra": {"D": 2e-9, "T2": 0.08}})
+    m = Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9, T2=0.02), extra=Pool(D=2e-9, T2=0.08)))
     assert m._has_bulk_comp
     npt.assert_allclose(np.asarray(m._D_comp_jax), [2e-9, 1e-9], rtol=1e-6)          # by pool id: extra, intra
     npt.assert_allclose(np.asarray(m._inv_T2_comp_jax), [1 / 0.08, 1 / 0.02], rtol=1e-6)
     assert m._D_comp_max == 2e-9
     assert Mesh(V, F)._has_bulk_comp is False        # ordinary mesh: scalar path
     with pytest.raises(ValueError):                  # one-sided D not allowed
-        Mesh(V, F, compartments={"intra": {"D": 1e-9}})
+        Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9)))
     with pytest.raises(NotImplementedError):         # unequal D across a permeable wall
-        Mesh(V, F, compartments={"intra": {"D": 1e-9}, "extra": {"D": 2e-9}}, permeability=2e-5)
-    Mesh(V, F, compartments={"intra": {"D": 1e-9}, "extra": {"D": 1e-9}}, permeability=2e-5)   # equal D: OK
+        Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)), permeability=2e-5)
+    Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=1e-9)), permeability=2e-5)   # equal D: OK
 
 
 def test_return_positions_full():
@@ -227,7 +241,7 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
 
         walk_paths (an MC walk, run purely to have something to plot)   12.2 s
         the matplotlib calls                                            ~20   s
-        seed_in_cell + _split_cells -- the parts that touch geometry     0.44 s
+        seed_in_cell + split_cells -- the parts that touch geometry     0.44 s
 
     Matplotlib is not physics and rasterising it asserts nothing about the simulator. What
     IS worth protecting is that these helpers still reach into the geometry modules: they
@@ -240,11 +254,11 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
     physics (#91).
     """
     from dmipy_sim import seed_in_cell
-    from dmipy_sim.viz.viz import _split_cells
+    from dmipy_sim.viz.viz import split_cells
 
     V, F = _icosphere(2)
     g = Mesh(V, F)
-    cell = _split_cells(g)[0]                        # geometry split
+    cell = split_cells(g)[0]                        # geometry split
     pts = np.asarray(seed_in_cell(cell, 8, seed=0))   # the deferred import lives in here
     assert pts.shape == (8, 3)
     # and the points it returns must actually be inside the cell it was given

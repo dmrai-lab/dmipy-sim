@@ -51,6 +51,11 @@ def test_a_run_the_producer_cannot_walk_is_the_oracles_even_with_parity():
     """No diffusivity: the producer sizes its step from D, the oracle reads it from the geometry."""
     s = d.Sphere(3e-6)
     assert core._replay_gap(s, None) is not None and core._replay_gap(s, D) is None
-    mc = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D, D, water_fractions=(1.0, 0.0, 0.0))
+    mc = d.MyelinatedCylinder(
+        2e-6,
+        3e-6,
+        (0, 0, 1),
+        compartments=d.Compartments(intra=d.Pool(D=D, water_fraction=1.0), myelin=d.Pool(water_fraction=0.0), extra=d.Pool(D=D, water_fraction=0.0)),
+    )
     d.simulate(200, None, WF, mc, seed=0, require_gpu=False)
     assert "coefficient walk" not in _programs_used(mc) and _programs_used(mc)

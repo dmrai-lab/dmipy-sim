@@ -62,14 +62,15 @@ def strand_walk(n, T_s, seed=3):
     the walk, on the CPU: the walk the path channel (C3) is certified on."""
     import tempfile
     from dmipy_sim.io.strands import concat_centerlines, write_tck
-    from dmipy_sim.spec import disco_spec, walk_spec
+    from dmipy_sim.spec import disco_spec
+    from dmipy_sim import walk
     tmp = Path(tempfile.mkdtemp())
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
     write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6)
     np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
-    return walk_spec(spec, n, T_max=T_s, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True,
+    return walk(spec, n, T_max=T_s, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True,
                      field_cutoff_max_m=25e-6)
 
 
@@ -122,6 +123,7 @@ def main(argv=None):
         return
 
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.math.step_law import SteppedPore
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import build_replay_pack
@@ -129,7 +131,7 @@ def main(argv=None):
 
     log(f"walk: {a.n} walkers, {DIAM * 1e6:.0f} um cylinder, D {D0}, T {T}, K {K} in the band's own blocks")
     geom = d.Cylinder(DIAM / 2, (0.0, 0.0, 1.0))
-    walk = d.simulate_trajectories(a.n, D0, geom, T, K=K, seed=a.seed, require_gpu=False, tiers="all", window_T=T)
+    walk = _walk_geometry(a.n, D0, geom, T, K=K, seed=a.seed, require_gpu=False, tiers="all", window_T=T)
     rows = gl.rows()
     exact = {k: SteppedPore("cylinder", DIAM, D0, geom, n_modes=(8, 8)).continuous(gl.g_axis(s), gl.DT)
              for k, s in rows.items()}

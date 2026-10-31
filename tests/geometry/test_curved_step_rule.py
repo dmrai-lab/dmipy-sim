@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.curved_cylinder import STEP_FRACTION
 
 R = 0.7182e-6                                   # DiSCo's thinnest strand
@@ -25,7 +26,7 @@ D0 = 0.6e-9
 
 
 def _walk(g, r0, n_sub, T=2e-3, block_h=2e-4):
-    return d.simulate_trajectories(len(r0), D0, g, T, block_h, seed=1, r0=r0, sub_steps=n_sub, raw_subset=len(r0))
+    return _walk_geometry(len(r0), D0, g, T, block_h, seed=1, r0=r0, sub_steps=n_sub, raw_subset=len(r0))
 
 
 def _n_sub(frac, block_h=2e-4):

@@ -14,7 +14,8 @@ import dmipy_sim as d
 from dmipy_sim.io.strands import write_tck
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
-from dmipy_sim.spec import disco_spec, walk_spec, StratifiedByVoxel
+from dmipy_sim.spec import disco_spec, StratifiedByVoxel
+from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 
@@ -26,7 +27,7 @@ def shards(spec_grid):
     packs = []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12                    # the block: one x-slab of the grid
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=7 + b, require_gpu=False, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=7 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/shard-{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp / f"shard-{b}.rpk")))
@@ -75,7 +76,7 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     packs, walks = [], []
     for p_, per in ((1, 4), (2, 12)):
         want = np.zeros(grid.shape, np.int64); want[0] = per
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=100 * p_, require_gpu=False, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=100 * p_, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         walks.append(w)
         packs.append(build_replay_pack(w, id=f"t/pass-{p_}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / f"pass-{p_}.rpk")))

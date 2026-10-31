@@ -68,7 +68,8 @@ def test_a_packs_shape_and_starts_are_read_without_decoding(monkeypatch, tmp_pat
     with the band decoder disabled they still answer, and a walker range of the pack is a pack of those walkers."""
     from dmipy_sim.replay.bank import build_replay_pack
     import dmipy_sim as d
-    w = d.simulate_trajectories(40, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 2e-3, seed=3, K=8, require_gpu=False)
+    from dmipy_sim.engine.core import _walk_geometry
+    w = _walk_geometry(40, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 2e-3, seed=3, K=8, require_gpu=False)
     pk = build_replay_pack(w, id="t/shape", license="x", citation="x", K=8, out_path=str(tmp_path / "p.rpk"))
     pk = read_rpk(str(tmp_path / "p.rpk"))
     r0 = _r_compression.read_position_coeffs(pk.arrays)[:, 0, :]
@@ -125,14 +126,15 @@ def test_a_merge_streamed_to_its_file_is_the_merge_in_memory(spec_grid, monkeypa
     from the coefficients -- when the floors are read a few walkers at a time too: the float32 certificate rows the
     same, the float64 summary to the rounding of a sum over other walker chunks."""
     from dmipy_sim.replay.bank import build_replay_pack, merge_packs
-    from dmipy_sim.spec import walk_spec, StratifiedByVoxel
+    from dmipy_sim.spec import StratifiedByVoxel
+    from dmipy_sim import walk
     from tests.conftest import spec_without_source
     spec, grid, tmp = spec_grid
     spec = spec_without_source(spec)
     packs = []
     for p_, per in ((1, 4), (2, 9)):
         want = np.zeros(grid.shape, np.int64); want[0] = per
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=300 + p_, require_gpu=False, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=300 + p_, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/stream-{p_}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp / f"stream-{p_}.rpk")))

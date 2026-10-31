@@ -16,14 +16,15 @@ later page starts from it the same way.
 ```python
 import numpy as np
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
 
-walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
+walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
 pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")
 print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
 
-The walk keeps the bands, not the path: `simulate_trajectories` accumulates them while it runs,
+The walk keeps the bands, not the path: `_walk_geometry` accumulates them while it runs,
 block by block (`block_h`, the fifth argument; by default the band's own block `h = 0.8 T / (pi K)`, `omega_K h = 0.8`
 at the top band, `pack.block["h"]`), and returns a `CoefficientWalk` whose memory
 does not grow with the block count. The bands are the projections of each walker's bridge on `sqrt(2 / T) sin(pi k t /
@@ -37,11 +38,11 @@ picture of the paths.
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
 replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's `K` is the storage band by
-default (256 bands per 100 ms); `walk_spec` walks the scanner class's certified band times the storage margin, and
+default (256 bands per 100 ms); `walk` walks the scanner class's certified band times the storage margin, and
 `build_replay_pack(walk, scanner="prisma")` or `K=` stores a smaller band of a walk. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix (`pack.prefix(TE)`, below).
 
-A walk is accumulated in **storage windows** of one duration, 100 ms by default (`simulate_trajectories(window_T=)`),
+A walk is accumulated in **storage windows** of one duration, 100 ms by default (`_walk_geometry(window_T=)`),
 consecutive windows sharing their boundary instant: a walk within one window is one, a longer walk a whole number of
 them, each with its own bands at the same `K`, stored and certified on its own. Window 0's tensors sit under the channel names and window
 `i` under `s{i}/`, so `pack.window(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without

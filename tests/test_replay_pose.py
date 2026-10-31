@@ -7,6 +7,7 @@ from tests.replay_frames import pose_with_field_along
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import Encoding, ScannerSequence
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.replay import so3
@@ -22,8 +23,15 @@ ENV = dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_
 def hollow():
     """One hollow cylinder along z, alone in a wide periodic cell, with its field basis: an axially symmetric
     substrate, where the azimuthal coefficients must come out at the Monte-Carlo floor."""
-    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    walk = d.simulate_trajectories(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
+    g = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
+    )
+    walk = _walk_geometry(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
     # certified up to the strongest susceptibility the field-direction tests replay (|chi_iso| + |chi_aniso| = 9.1e-6)
     pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=dict(ENV, chi_max=9.1e-6),
                            susc_path_K=16)
@@ -36,7 +44,7 @@ def ellipsoid():
     """A pore with three different semi-axes: manifestly not axially symmetric, so its response depends on the
     substrate's own azimuth -- the case an axis-only representation cannot hold at all."""
     g = d.Ellipsoid(semiaxes=(1.0e-6, 3.5e-6, 8.0e-6))
-    walk = d.simulate_trajectories(4000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(4000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/ellipsoid", license="x", citation="x", K=8,
                            envelope=dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8))
     # a closed pore bounds the displacement, so a high b here is a sharp *angular* response at a modest phase

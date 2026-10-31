@@ -93,12 +93,12 @@ def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
 def test_the_observables_are_converged_at_the_collision_criterion():
     """Refining 4x beyond the collision criterion must not move the walk's observables.
 
-    `simulate_trajectories` takes no sub_steps argument, so the step is varied through the attribute the rule
+    `_walk_geometry` takes no sub_steps argument, so the step is varied through the attribute the rule
     actually reads. For a MESH that is now `cell_size`, not `radius` -- this change is what moved it. Setting
     `radius` here would silently leave every run at the same step and compare a configuration against
     itself, which is how this test first passed while asserting nothing.
     """
-    from dmipy_sim.engine.core import simulate_trajectories
+    from dmipy_sim.engine.core import _walk_geometry
     mesh = _mesh_sphere()
     block_h, T_max, n = 2e-5, 5e-3, 3000
     n_coll = collision_sub_steps(mesh, D, block_h)
@@ -110,7 +110,7 @@ def test_the_observables_are_converged_at_the_collision_criterion():
         # n = ceil((L/(0.9*cell))^2), L = sqrt(6 D dt) -> invert for a target n
         L = float(np.sqrt(6.0 * D * block_h))
         mesh.cell_size = float(L / (0.9 * np.sqrt(target)))
-        o = simulate_trajectories(n, D, mesh, T_max=T_max, block_h=block_h, seed=3, require_gpu=False,
+        o = _walk_geometry(n, D, mesh, T_max=T_max, block_h=block_h, seed=3, require_gpu=False,
                                 raw_subset=n)
         steps[mult] = int(o.sub_steps)
         tr = np.asarray(o.raw_positions, np.float64)

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
@@ -30,7 +31,7 @@ def _same_walk(a, b):
 
 
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, K=12, **kw):
-    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
+    walk = _walk_geometry(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
     out = tmp / f"{name}.rpk"
     _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=K, out_path=str(out), **kw)
     return read_rpk(str(out))
@@ -206,13 +207,27 @@ def sheathed(tmp_path_factory):
     pools, walls with contact, and the susceptibility path channel -- every tier a pack can carry."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     tmp = tmp_path_factory.mktemp("sheath")
-    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    g2 = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=2 * D0, D_extra=2 * D0)
+    g = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
+    )
+    g2 = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=2 * D0), extra=d.Pool(D=2 * D0), myelin=d.Pool(D=0.0)),
+    )
     out = []
     for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
         # the field read once per block in both: the same path read at the same instants of its own clock (a read
         # each pilot derives depends on the pilot's QV against the absolute floor, not on the clock's scale)
-        walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
+        walk = _walk_geometry(1500, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
                                        field_basis=field_grid_of(geom, res=0.2e-6), field_read_interval=dt)
         path = tmp / f"{name}.rpk"
         _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,

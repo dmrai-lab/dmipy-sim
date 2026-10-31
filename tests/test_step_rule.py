@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.physics import tolerance_sub_steps, resolve_sub_steps, STEP_TOLERANCE
 from dmipy_sim.math import step_law as sl
 from dmipy_replay.acquisition.waveforms import band_hz
@@ -86,12 +87,12 @@ def test_the_drivers_resolve_the_band_they_serve():
     seq = d.pgse([[1, 0, 0]], 0.01, 0.04, bvalues=[1e9], n_t=200)
     fb = band_hz(seq.G_eff, seq.dt)
     assert make_step_fn(g, D0, seq.dt, f_band=fb)[0].n_sub == resolve_sub_steps(g, D0, seq.dt, f_band=fb)
-    w = d.simulate_trajectories(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False)
+    w = _walk_geometry(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False)
     rule = w.work["step_rule"]
     assert rule["eps_D"] == STEP_TOLERANCE and rule["f_band_hz"] == pytest.approx(w.K / (2 * w.T)) and rule["override"] is None
     assert rule["sub_steps"] == w.sub_steps == max(rule["rules"].values()) and rule["dt_p"] == pytest.approx(w.dt_sim)
     assert set(rule["rules"]) >= {"step law", "collision lookup", "crossing", "surface local time"}
-    w2 = d.simulate_trajectories(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False, f_band=100.0)
+    w2 = _walk_geometry(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False, f_band=100.0)
     assert w2.sub_steps <= w.sub_steps and w2.work["step_rule"]["f_band_hz"] == 100.0
     from dmipy_sim.coefficient_walk import merge_work
     assert merge_work([w.work, w.work])["step_rule"] == rule                   # a bundle's pools at one rule: the rule

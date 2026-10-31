@@ -222,7 +222,7 @@ class FieldGrid(NamedTuple):
 
     def channels_at_device(self):
         """The jitted ``(n, 3) -> (n, 6 | 12)`` read of :func:`grid_channels_at` on the device, float32: the read a
-        walk takes at every sub-step (:func:`dmipy_sim.engine.core.simulate_trajectories` with ``field_basis=``)."""
+        walk takes at every sub-step (:func:`dmipy_sim.engine.core._walk_geometry` with ``field_basis=``)."""
         import jax
         arrays, periodic = self.device_arrays(), tuple(bool(p) for p in self.periodic)
         f = jax.jit(jax.vmap(lambda r, a: grid_channels_at(*a, periodic, r), in_axes=(0, None)))

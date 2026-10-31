@@ -16,12 +16,13 @@ from dmipy_sim.replay.so3 import n_sh_coeffs
 
 def _pack(tmp_path, n_walkers=400):
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     # pool="extra": the fixture is the extra-axonal water around one cylinder, which is the substrate the
     # thresholds below were calibrated on (a packed cell seeds BOTH pools by default since #301, and a few
     # per cent of restricted walkers move the pose response of a 400-walker pack).
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
-    walk = d.simulate_trajectories(n_walkers, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(n_walkers, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path / "tiny.rpk"
     build_replay_pack(walk, id="test/tiny", license="x", citation="x", K=8, out_path=str(out))
     return str(out)
@@ -152,8 +153,8 @@ def test_volumes_become_a_sparse_phantom_with_full_voxels(pack_path):
     f_wm, f_csf = _annulus()
     assert ph.n_voxels == int(((f_wm + f_csf) > 0).sum())                     # sparse: only occupied voxels
     np.testing.assert_allclose(f.geometric_fraction.sum(axis=1), 1.0, atol=1e-4)
-    np.testing.assert_allclose(ph.fraction(wm) + ph.fraction(csf) + ph.fraction(bg), (f_wm + f_csf > 0) * 1.0, atol=1e-4)
-    assert ph.index_of(wm) == 0 and ph.substrates[2].kind == "inert"
+    np.testing.assert_allclose(ph.fraction(wm.name) + ph.fraction(csf.name) + ph.fraction(bg.name), (f_wm + f_csf > 0) * 1.0, atol=1e-4)
+    assert ph.index_of(wm.name) == 0 and ph.substrates[2].kind == "inert"
     assert ((f.geometric_fraction[:, 0] > 0) & (f.geometric_fraction[:, 0] < 0.999)).any()   # partial volume
     assert f.substrates[0]["tissue"] == {"T2": [0.06, 0.06]}           # what this substrate replays at
     assert f.substrates[0]["uri"] == pack_path and not f.is_embedded(0)
@@ -263,7 +264,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     assert vol.shape == (8, 8, 1, 3) and np.isnan(vol).any()
     vi, S = ph.sparse(vol)
     assert vi.shape[0] == ph.n_voxels and S.shape == (ph.n_voxels, 3)
-    f_wm, f_csf = ph.sparse(ph.fraction(wm))[1], ph.sparse(ph.fraction(csf))[1]
+    f_wm, f_csf = ph.sparse(ph.fraction(wm.name))[1], ph.sparse(ph.fraction(csf.name))[1]
     # b = 0: the m0-weighted volume of each substrate times its own b = 0 response -- at the T2 the phantom
     # declares for that substrate (RPH.md 3.2), not its nominal value; free water's own decay; nothing from inert
     from dmipy_sim.phantom.substrates import _echo_time
@@ -471,7 +472,7 @@ def test_an_analytic_slot_ignores_the_orientation_it_is_given(pack_path):
     for axis in ((0.0, 0.0, 1.0), (0.3, 0.5, 0.81)):
         mu = np.zeros((8, 8, 1, 3)); mu[..., :] = axis
         ph, wm, csf, _ = _phantom(pack_path, orientation=Watson(mu=mu, kappa=2.0))
-        f_csf = _rows(ph, ph.fraction(csf))
+        f_csf = _rows(ph, ph.fraction(csf.name))
         out.append(_rows(ph, ph.replay(seq))[f_csf > 0.999])
     assert out[0].size and np.abs(out[0] - out[1]).max() < 1e-12
     wm, csf, bg = _subs(pack_path)

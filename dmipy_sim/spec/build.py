@@ -542,20 +542,31 @@ def polyline_arrays(surface):
     return [np.asarray(s.centerline, float)], np.asarray([s.radius], float)
 
 
-def as_geometry(substrate):
-    """The geometry a driver walks, from any spelling of a substrate: a ``Geometry`` (returned as is), a
-    :class:`SubstrateSpec`, a spec dict, or the path of a ``.sub.json``. ``None`` and duck-typed objects pass
-    through untouched."""
+def refuse_spec_spelling(substrate, door):
+    """Refuse, by name, the spellings a substrate door does not take: a spec dict (``SubstrateSpec.from_dict(d)`` builds
+    the spec) and a ``str`` / path (``load_spec(path)`` reads it). A door takes a :class:`SubstrateSpec` or a Geometry."""
     import os
+    if isinstance(substrate, dict):
+        raise TypeError(f"{door} takes a SubstrateSpec or a Geometry, not a spec dict; build the spec with "
+                        f"SubstrateSpec.from_dict(d)")
+    if isinstance(substrate, (str, os.PathLike)):
+        raise TypeError(f"{door} takes a SubstrateSpec or a Geometry, not a {type(substrate).__name__} (a spec file's path); "
+                        f"read the spec with load_spec(path)")
+
+
+def as_geometry(substrate):
+    """The geometry a driver walks: a ``Geometry`` (returned as is, its spec the one it is reduced to at the door) or a
+    :class:`SubstrateSpec` (built). ``None`` passes through. A spec dict, a ``str`` / path and an object that merely
+    carries a ``.spec`` are refused by name."""
+    from ..geometry.base import Geometry
     if substrate is None:
         return None
+    refuse_spec_spelling(substrate, "as_geometry")
     if isinstance(substrate, SubstrateSpec):
         return geometry_from_spec(substrate)
-    if isinstance(substrate, dict) and "walls" in substrate and "pools" in substrate:
-        return geometry_from_spec(substrate)
-    if isinstance(substrate, (str, os.PathLike)):
-        from dmipy_replay.spec.substrate import load_spec
-        return geometry_from_spec(load_spec(substrate))
+    if not isinstance(substrate, Geometry):
+        raise TypeError(f"{type(substrate).__name__} is neither a SubstrateSpec nor a Geometry; a driver takes one of those "
+                        f"(an object that carries a .spec is not a substrate)")
     # the door: a driver walks what a spec can describe. The geometry's spec is computed once and kept on it.
     if getattr(substrate, "_spec_source", None) is None:
         try:
@@ -573,8 +584,11 @@ def as_geometry(substrate):
 
 def geometry_from_spec(spec):
     """The geometry a :class:`SubstrateSpec` describes (inverse of :func:`spec_of`); it keeps the spec it was built
-    from as its ``.spec``, nominal values and provenance included."""
-    spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
+    from as its ``.spec``, nominal values and provenance included. A Geometry is returned as :func:`as_geometry` returns
+    it; a spec dict and a path are refused by name."""
+    refuse_spec_spelling(spec, "geometry_from_spec")
+    if not isinstance(spec, SubstrateSpec):
+        return as_geometry(spec)
     g = _geometry_from_spec(spec)
     g._spec_source = spec
     return g
@@ -586,7 +600,6 @@ def _geometry_from_spec(spec):
                             PackedCurvedCylinders, SphereUnion, LabelVolume)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     from ..compartments import Compartments, Pool as CPool
-    spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
     spec.validate()
     walls = list(spec.walls)
     dom = spec.domain
@@ -636,7 +649,7 @@ def _geometry_from_spec(spec):
         if w.mt_reactivity.inside > 0 or w.mt_reactivity.outside > 0:
             raise SpecError(f"wall {w.name!r} has mt_reactivity (inside={w.mt_reactivity.inside}, "
                             f"outside={w.mt_reactivity.outside}) but geometry_from_spec does not walk MT: the "
-                            f"spec carries no dwell time and walk_spec never passes MT to a driver")
+                            f"spec carries no dwell time and walk never passes MT to a driver")
 
     if not walls:
         if dom.boundary == ["open"] * 3:
@@ -676,7 +689,7 @@ def _geometry_from_spec(spec):
                                                     and any(k == "swept_polyline" for k in kinds)):
         if len(walls) != 1 or len(spec.seeding.pools) != 1:
             raise SpecError("a multi-surface (or multi-pool) sphere-union / strand spec is walked pool by pool by "
-                            "spec.walk_spec; it has no single Geometry")
+                            "dmipy_sim.walk; it has no single Geometry")
         w = walls[0]; s = w.surface
         seeded = spec.seeding.pools[0]
         pool = "intra" if seeded == w.inside_pool else "extra"
@@ -690,7 +703,7 @@ def _geometry_from_spec(spec):
                                surface_relaxivity_t2=rho2(w), box=box)
     if any(k == "mesh" for k in kinds):
         if len(walls) != 1:
-            raise SpecError("a multi-surface mesh spec is walked pool by pool by spec.walk_spec; it has no "
+            raise SpecError("a multi-surface mesh spec is walked pool by pool by dmipy_sim.walk; it has no "
                             "single Geometry")
         from ..geometry.mesh import Mesh
         from ..compartments import Compartments, Pool as CPool
@@ -708,7 +721,7 @@ def _geometry_from_spec(spec):
                     if w.permeability.in_to_out != w.permeability.out_to_in else w.permeability.in_to_out)
         m = Mesh.from_ply(mesh_surface_file(s), scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
                           voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
-                          permeability=perm, compartments=(Compartments(comps) if comps else None),
+                          permeability=perm, compartments=(Compartments(**comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
                           box_reflect=("reflect" in dom.boundary), seeding=spec.seeding)
         # the file the spec cites, as the spec cites it (a relative, portable citation, same as label_volume's
@@ -787,10 +800,10 @@ def _geometry_from_spec(spec):
                 by_id = {p.id: p for p in spec.pools}
                 intra_p, myelin_p, extra_p = by_id[intra_id], by_id[myelin_id], by_id[extra_id]
                 # the pack reads pool NAMES and water_fraction off `.compartments` -- built always, straight
-                # from the spec's three pools; T2/T1 are replay knobs (SUBSTRATE.md 4.6, #540) and never go in.
-                comps = Compartments(extra=CPool(water_fraction=extra_p.water_fraction),
-                                     intra=CPool(water_fraction=intra_p.water_fraction),
-                                     myelin=CPool(water_fraction=myelin_p.water_fraction))
+                # from the spec's three pools (D and water fraction); T2/T1 are replay knobs (SUBSTRATE.md 4.6, #540) and never go in.
+                comps = Compartments(extra=CPool(D=extra_p.D or 0.0, water_fraction=extra_p.water_fraction),
+                                     intra=CPool(D=intra_p.D or 0.0, water_fraction=intra_p.water_fraction),
+                                     myelin=CPool(D=myelin_p.D or 0.0, water_fraction=myelin_p.water_fraction))
                 if inner.surface.kind == "swept_polyline":
                     if (inner.permeability.in_to_out > 0 or inner.permeability.out_to_in > 0
                             or outer.permeability.in_to_out > 0 or outer.permeability.out_to_in > 0):
@@ -801,7 +814,6 @@ def _geometry_from_spec(spec):
                     return CurvedMyelinatedCylinder(np.asarray(inner.surface.centerline), inner.surface.radius,
                                                     outer.surface.radius, pool=seeded_role,
                                                     surface_relaxivity_t2=rho2(inner))
-                D = {"intra": intra_p.D or 0.0, "myelin": myelin_p.D or 0.0, "extra": extra_p.D or 0.0}
                 if inner.surface.instances:
                     centers = np.asarray(inner.surface.instances["centers"], float)[:, :2]
                     ri = np.asarray(inner.surface.instances["radii"], float)
@@ -810,7 +822,6 @@ def _geometry_from_spec(spec):
                     return PackedMyelinatedCylinders(ri, ri / ro, centers, L,
                                                      N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
                                                      orientation=tuple(inner.surface.axis or (0, 0, 1)),
-                                                     D_intra=D["intra"], D_myelin=D["myelin"], D_extra=D["extra"],
                                                      kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma"),
                                                      kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath"),
                                                      rho_inner=inner.surface_relaxivity.inside,
@@ -820,7 +831,6 @@ def _geometry_from_spec(spec):
                 refuse_pose(outer.surface, "MyelinatedCylinder", length=True)
                 return MyelinatedCylinder(inner.surface.radius, outer.surface.radius,
                                           tuple(inner.surface.axis or (0, 0, 1)),
-                                          D["intra"], D["extra"], D_myelin=D["myelin"],
                                           kappa_inner=kappa(inner, "MyelinatedCylinder axolemma"),
                                           kappa_outer=kappa(outer, "MyelinatedCylinder sheath"),
                                           compartments=comps)

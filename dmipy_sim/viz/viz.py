@@ -495,7 +495,7 @@ def plot_cell_surface(mesh, index=0, units=1e6, unit_label='µm', ax=None, save=
     return ax
 
 
-def _split_cells(mesh):
+def split_cells(mesh):
     """Connected components of the mesh, largest first (needs trimesh)."""
     try:
         import trimesh
@@ -623,7 +623,7 @@ def plot_mesh_3d(mesh, cells=(0,), paths=None, wrap=True, alpha=0.13,
     Returns the matplotlib Axes.
     """
     _require_mpl()
-    comps = _split_cells(mesh)
+    comps = split_cells(mesh)
     if ax is None:
         fig = plt.figure(figsize=(7, 7))
         ax = fig.add_subplot(111, projection='3d')

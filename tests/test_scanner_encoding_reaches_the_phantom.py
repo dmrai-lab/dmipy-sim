@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.acquisition.scanners import ScannerLimits
@@ -33,7 +34,7 @@ def _seq():
 def pack_path(tmp_path_factory):
     seq = _seq()
     n_t, dt = int(seq.n_t), float(seq.dt)
-    walk = d.simulate_trajectories(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
+    walk = _walk_geometry(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
     build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
     return str(out)
@@ -66,8 +67,8 @@ def exact(phantom):
     seq = _seq()
     sw = ScannerLimits.of("swoop")
     rep = {}
-    S_sw = ph.replay(seq, scanner=sw, packs={0: pack}, encoding_tolerance=None, report=rep)
-    S_b0 = ph.replay(seq, scanner=0.064, packs={0: pack})
+    S_sw = ph.replay(seq, scanner=sw, packs={"free": pack}, encoding_tolerance=None, report=rep)
+    S_b0 = ph.replay(seq, scanner=0.064, packs={"free": pack})
     cls, played = encoding_classes(sw, ph.grid, seq, ph.voxel_index, tolerance=None)
     return dict(S_sw=S_sw, S_b0=S_b0, cls=cls, played=played, n=rep["n_encoding_classes"])
 
@@ -105,7 +106,7 @@ def test_binning_costs_what_the_tolerance_allows_and_no_more(phantom, exact):
     counts = {}
     for tol in (1e-3, 0.2):
         rep = {}
-        binned = ph.replay(seq, scanner=sw, packs={0: pack}, encoding_tolerance=tol, report=rep)
+        binned = ph.replay(seq, scanner=sw, packs={"free": pack}, encoding_tolerance=tol, report=rep)
         counts[tol] = rep["n_encoding_classes"]
         rel = np.nanmax(np.abs(binned - exact["S_sw"]) / np.abs(exact["S_sw"]))
         assert rel < 4 * tol * 1e9 * D0, f"tolerance {tol} moved the signal by {rel:.2e}"     # b D = 2 here
@@ -123,9 +124,9 @@ def test_a_three_tesla_magnet_costs_a_handful_of_classes(phantom):
     bare field."""
     ph, pack = phantom
     seq = _seq()
-    S0 = ph.replay(seq, scanner=3.0, packs={0: pack})
+    S0 = ph.replay(seq, scanner=3.0, packs={"free": pack})
     rep = {}
-    S = ph.replay(seq, scanner=ScannerLimits.of("prisma"), packs={0: pack}, encoding_tolerance=1e-2, report=rep)
+    S = ph.replay(seq, scanner=ScannerLimits.of("prisma"), packs={"free": pack}, encoding_tolerance=1e-2, report=rep)
     prisma = ScannerLimits.of("prisma")
     assert prisma.has_gradient_nonlinearity and not prisma.has_field_law
     r2 = 2 * VOX ** 2                                                     # the corner voxels, transverse to B0
@@ -136,7 +137,7 @@ def test_a_three_tesla_magnet_costs_a_handful_of_classes(phantom):
     rep = {}
     premier = ScannerLimits.of("premier")
     assert not premier.has_gradient_nonlinearity and not premier.has_field_law
-    Sg = ph.replay(seq, scanner=premier, packs={0: pack}, encoding_tolerance=1e-2, report=rep)
+    Sg = ph.replay(seq, scanner=premier, packs={"free": pack}, encoding_tolerance=1e-2, report=rep)
     assert rep["n_encoding_classes"] == 1
     assert np.nanmax(np.abs(Sg - S0) / np.abs(S0)) < 1e-2
 
@@ -153,8 +154,8 @@ def test_the_bloch_route_carries_the_same_classes(pack_path):
     seq = _seq()
     sw = ScannerLimits.of("swoop")
     rep = {}
-    _, S_b = ph.file.replay_bloch(seq, scanner=sw, packs={0: pack}, encoding_tolerance=None, report=rep)
-    _, S_p = ph.file.replay(seq, scanner=sw, packs={0: pack}, encoding_tolerance=None)
+    _, S_b = ph.file.replay_bloch(seq, scanner=sw, packs={"free": pack}, encoding_tolerance=None, report=rep)
+    _, S_p = ph.file.replay(seq, scanner=sw, packs={"free": pack}, encoding_tolerance=None)
     assert rep["n_encoding_classes"] == ph.n_voxels
     assert np.abs(np.abs(S_b) - np.abs(S_p)).max() < 3.0 / np.sqrt(pack.n_walkers)
 
@@ -164,8 +165,8 @@ def test_a_train_replay_says_what_it_does_not_carry(phantom):
     train = sequences.splice([[1.0, 0.0, 0.0]], 3e-3, 7e-3, 2, 5e-3, bvalues=[3e8], TE_prep=16e-3,
                              beta_deg=150.0, n_t_per_echo=20)
     with pytest.raises(ValueError, match="every voxel"):
-        ph.replay_train(train, scanner=ScannerLimits.of("swoop"), packs={0: pack})
-    ph.replay_train(train, scanner=0.064, packs={0: pack})               # the field alone is carried
+        ph.replay_train(train, scanner=ScannerLimits.of("swoop"), packs={"free": pack})
+    ph.replay_train(train, scanner=0.064, packs={"free": pack})               # the field alone is carried
 
 
 def test_an_unbalanced_encoding_takes_its_voxel_from_the_grid(phantom):
@@ -178,11 +179,11 @@ def test_an_unbalanced_encoding_takes_its_voxel_from_the_grid(phantom):
     G[:, seq.echo_idx - n:seq.echo_idx, 2] += 0.02                      # a spoiler, played in G
     spoiled = seq.with_gradient(G)
     assert spoiled.unbalanced and spoiled.prescription is None
-    S = ph.replay(spoiled, scanner=0.064, packs={0: pack})
+    S = ph.replay(spoiled, scanner=0.064, packs={"free": pack})
     stated = spoiled.with_prescription(Prescription(voxel_size_m=(VOX,) * 3, matrix=SH))
-    np.testing.assert_array_equal(S, ph.replay(stated, scanner=0.064, packs={0: pack}))
+    np.testing.assert_array_equal(S, ph.replay(stated, scanner=0.064, packs={"free": pack}))
     tiny = spoiled.with_prescription(Prescription(voxel_size_m=(1e-9,) * 3, matrix=SH))
-    assert np.nanmax(np.abs(S)) < 0.3 * np.nanmin(np.abs(ph.replay(tiny, scanner=0.064, packs={0: pack})))
+    assert np.nanmax(np.abs(S)) < 0.3 * np.nanmin(np.abs(ph.replay(tiny, scanner=0.064, packs={"free": pack})))
 
 
 def test_a_closed_form_decays_at_the_b_the_machine_delivers_too(phantom, exact):

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
@@ -21,7 +22,7 @@ D0, T, DT, R, KAPPA = 2.0e-9, 40e-3, 5e-4, 4e-6, 2e-5
 
 
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, sub_steps=None):
-    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=12, sub_steps=sub_steps)
+    walk = _walk_geometry(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=12, sub_steps=sub_steps)
     out = tmp / f"{name}.rpk"
     _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out))
     return read_rpk(str(out))

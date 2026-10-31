@@ -2,7 +2,7 @@
 
 A Monte Carlo walk's natural output is neither an acquisition-specific signal nor a trajectory history but an
 acquisition-independent set of sufficient projections, accumulated while the physics is simulated. The engine
-encodes as it goes: ``simulate_trajectories`` returns the :class:`CoefficientWalk` (per walker the exact endpoints and
+encodes as it goes: ``walk(spec, ...)`` returns the :class:`CoefficientWalk` (per walker the exact endpoints and
 the sine-band projections of its path, its contact, its pool events, its field modes), ``build_replay_pack`` makes it
 a ``.rpk`` pack, and ``ReplayPack.replay`` contracts a pack with any waveform. ``simulate`` is the walk and the
 contraction in one call. Surface relaxivity and membrane permeability are baked into the walk. Shares one
@@ -17,8 +17,8 @@ _apply_gpu_mem_cap()
 from ._blas import cap_cpu_threads  # noqa: E402
 cap_cpu_threads()
 
-from .engine.core import simulate, simulate_mixture, simulate_cpmg, simulate_trajectories, walk_cost, certify_bounce_budget
-from .spec.walk import walk_spec
+from .engine.core import simulate, simulate_mixture, simulate_cpmg, walk_cost, certify_bounce_budget
+from .spec.walk import walk
 from .engine.mt_walk import simulate_mt_trajectories
 from .coefficient_walk import CoefficientWalk
 from .compartments import Compartments, Pool, pool_id
@@ -70,7 +70,7 @@ from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeW
 
 __all__ = [
     # the walk and its contraction: the producers return a CoefficientWalk
-    "simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "walk_cost", "walk_spec",
+    "simulate", "simulate_mixture", "simulate_cpmg", "walk_cost", "walk",
     "certify_bounce_budget", "simulate_mt_trajectories", "CoefficientWalk",
     # replay pack assembler (producer side of the substrate bank)
     "build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles",

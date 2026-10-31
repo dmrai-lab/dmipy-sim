@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition import epg
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
@@ -24,7 +25,7 @@ DT, N_T = 5e-5, 401
 @pytest.fixture(scope="module")
 def pack():
     """Free water on a fine save grid: nothing here is about the substrate."""
-    walk = d.simulate_trajectories(2000, 2e-9, d.FreeDiffusion(), 0.02, DT, seed=0, require_gpu=False)
+    walk = _walk_geometry(2000, 2e-9, d.FreeDiffusion(), 0.02, DT, seed=0, require_gpu=False)
     return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8)
 
 

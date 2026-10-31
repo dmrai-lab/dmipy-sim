@@ -49,14 +49,14 @@ intra/extra split matches the ~0.6 volume fraction.
 import jax
 from dmipy_sim import (Mesh, plot_mesh_3d, seed_in_cell, walk_paths,
                        plot_mesh_section, plot_trajectories, save_rotation)
-from dmipy_sim.viz import _split_cells
+from dmipy_sim.viz import split_cells
 
 # load your mesh, scaling normalised coords -> metres, as a 3D-periodic pack
 mesh = Mesh.from_ply("substrate.ply", scale=1e-5, periodic=True,
                      voxel_min=[-10e-6]*3, voxel_max=[10e-6]*3, feature_radius=1.68e-6)
 
 # true-3D: paths confined inside one interior cell
-cell = _split_cells(mesh)[1]
+cell = split_cells(mesh)[1]
 seeds = seed_in_cell(cell, 16)
 paths = walk_paths(mesh, 16, 500, diffusivity=2e-9, dt=2e-4, r0=seeds)
 ax = plot_mesh_3d(mesh, cells=(1,), paths=paths)

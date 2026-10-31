@@ -5,7 +5,7 @@ import numpy as np
 
 import dmipy_sim as d
 from dmipy_sim.engine import backends
-from dmipy_sim.engine.core import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 
 D = 2e-9
 
@@ -63,7 +63,7 @@ def test_the_jax_rounds_pass_the_void_invariant():
     case = _void_case()
     g = case()
     r0 = case.starts(case.n_walkers, case.seed)
-    w = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.block_h, seed=case.seed, tiers="all",
+    w = _walk_geometry(case.n_walkers, D, g, case.T_max, case.block_h, seed=case.seed, tiers="all",
                               walker_batch_size=case.n_walkers, r0=r0, require_gpu=False, raw_subset=case.n_walkers)
     checks = backends.void_invariant(g, w)
     assert checks["contained"]["ok"] and checks["contained"]["n_inside"] == 0
@@ -85,7 +85,7 @@ def test_a_walk_that_leaks_one_walker_into_the_tube_is_refused_by_the_invariant(
     case = _void_case()
     g = case()
     r0 = case.starts(case.n_walkers, case.seed)
-    cw = simulate_trajectories(case.n_walkers, D, g, case.T_max, case.block_h, seed=case.seed, tiers="all",
+    cw = _walk_geometry(case.n_walkers, D, g, case.T_max, case.block_h, seed=case.seed, tiers="all",
                                walker_batch_size=case.n_walkers, r0=r0, require_gpu=False, raw_subset=case.n_walkers)
     true_w = cw
     pos = np.array(true_w.raw_positions, copy=True)

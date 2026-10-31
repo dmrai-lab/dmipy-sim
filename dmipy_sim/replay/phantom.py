@@ -299,10 +299,14 @@ class ReplayPhantom:
     def fraction(self, substrate):
         """Per-voxel total volume fraction of one substrate, ``(n_voxels,)``. Slots are packed, so a column of
         :attr:`geometric_fraction` is not a fixed substrate; this sums the slots that cite it."""
-        i = substrate if isinstance(substrate, (int, np.integer)) else self.index_of(substrate)
+        i = self.index_of(substrate)
         return (self.geometric_fraction * (self.substrate_id == i)).sum(axis=1)
 
     def index_of(self, substrate_id):
+        """The slot of the substrate whose id (its name) is ``substrate_id``; an integer is refused."""
+        if not isinstance(substrate_id, str):
+            raise TypeError(f"a substrate is addressed by its name, got {type(substrate_id).__name__} {substrate_id!r}; "
+                            f"the phantom cites {[s.get('id') for s in self.substrates]}")
         for i, s in enumerate(self.substrates):
             if s.get("id") == substrate_id:
                 return i
@@ -429,7 +433,7 @@ class ReplayPhantom:
         shared by every voxel and every pose that cites it.
 
         The acquisition's gradient and the field are in the scanner frame of the grid; the substrates rotate
-        under it, and ``pose`` (a 3x3 rotation or a :class:`~dmipy_sim.phantom.partition.Pose`) is the specimen's
+        under it, and ``pose`` (a :class:`~dmipy_sim.phantom.partition.Pose`) is the specimen's
         rigid rotation in the bore. Each substrate replays at its own declared ``tissue`` (RPH.md 3.2; a pack
         substrate with none is the bare diffusion signal) and at the one ``scanner`` field (a
         :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field). ``packs``
@@ -617,7 +621,7 @@ class ReplayPhantom:
         from .replay import ReplayPack, read_rpk
         given = {}
         for key, pk in (packs or {}).items():
-            given[key if isinstance(key, (int, np.integer)) else self.index_of(key)] = pk
+            given[self.index_of(key)] = pk
         out = {}
         for i, sub in enumerate(self.substrates):
             if sub["kind"] != "pack":
@@ -691,11 +695,11 @@ class ReplayPhantom:
         turned into it."""
         from dmipy_replay.spec.tissue import Tissue
         from dmipy_replay.acquisition.waveforms import rotate_waveform
-        from dmipy_replay.replay.replay import _pose_matrix
+        from ..phantom.partition import pose_rotation
         pose, analytic = {}, {}
         loaded = self._loaded_packs(packs)
         self._check_relaxation(waveforms[0], loaded, forms)
-        R_s = _pose_matrix(specimen)
+        R_s = pose_rotation(specimen)
         run, rows = current(), []
         turned = None                                                           # G @ R_s, the acquisition in the specimen frame: what a closed form reads
         for i, sub in enumerate(self.substrates):
@@ -715,7 +719,7 @@ class ReplayPhantom:
                 continue
             # every class of this pack in one pass over its walkers (#449)
             resps = loaded[i].pose_responses(waveforms, tissue=self._tissue(sub, loaded[i]),
-                                             scanner=scanner, pose=R_s, keep=keep, cache=cache)
+                                             scanner=scanner, pose=specimen, keep=keep, cache=cache)
             secs = time.time() - t_i
             for c, resp in enumerate(resps):
                 pose[(i, c)] = resp
@@ -785,9 +789,9 @@ class ReplayPhantom:
             self._check_relaxation(waveform, loaded, forms)
             m0 = self._m0(proton_density)
             from .so3 import rotations_from_quaternions
-            from dmipy_replay.replay.replay import _pose_matrix
+            from ..phantom.partition import pose_rotation
             from dmipy_replay.spec.tissue import Tissue
-            R_s = _pose_matrix(pose)
+            R_s = pose_rotation(pose)
             sid, frac = self.substrate_id, self.geometric_fraction
             live = [(v, p) for v in range(self.n_voxels) for p in range(sid.shape[1])
                     if sid[v, p] >= 0 and frac[v, p] > 0.0 and self.substrates[int(sid[v, p])]["kind"] != "inert"]
@@ -869,7 +873,7 @@ class ReplayPhantom:
         distribution does not state.
         """
         from .pathways import train_response, closed_form_train
-        from dmipy_replay.replay.replay import _pose_matrix
+        from ..phantom.partition import pose_rotation
         from dmipy_replay.spec.tissue import Tissue
 
         if self.mode not in ("odf_sh", "peaks", "frames", "bingham"):
@@ -880,7 +884,7 @@ class ReplayPhantom:
                 "this scanner delivers a different gradient at every voxel (a nonlinearity tensor, a field shape or "
                 "the coils' Maxwell term; dmipy-sim#377). Carrying that here means one gate set per encoding class, "
                 "which is not done; replay at the field alone (scanner=<tesla>), or use replay / replay_bloch")
-        R_s = _pose_matrix(pose)
+        R_s = pose_rotation(pose)
         with Run("phantom.replay_train", params=dict(n_voxels=int(self.n_voxels), n_meas=int(waveform.n_meas), echo=echo,
                                                scanner=(scanner if scanner is None or isinstance(scanner, (int, float)) else type(scanner).__name__))) as run:
             loaded = self._loaded_packs(packs)
@@ -907,7 +911,7 @@ class ReplayPhantom:
                     continue
                 if sub["kind"] == "pack":
                     trains[i] = train_response(loaded[i], waveform, keep=keep,
-                                               tissue=self._tissue(sub, loaded[i]), scanner=scanner, pose=R_s)
+                                               tissue=self._tissue(sub, loaded[i]), scanner=scanner, pose=pose)
                 else:
                     forms_[i] = closed_form_train(self._form(i, sub, forms), waveform)
                 run.progress(i + 1, len(self.substrates), unit="substrates")

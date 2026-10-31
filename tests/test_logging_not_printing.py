@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 
 PKG = pathlib.Path(d.__file__).parent
 ENGINE_MODULES = ["engine/core.py", "engine/mt_walk.py", "engine/physics.py", "engine/bloch.py", "engine/mt.py",
@@ -55,6 +56,6 @@ def test_gpu_and_environment_warnings_are_runtime_warnings():
 def test_progress_goes_to_the_logger(caplog):
     wf = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=30, slew_rate=np.inf), 5e8)
     with caplog.at_level(logging.INFO, logger="dmipy_sim"):
-        d.simulate_trajectories(64, 2e-9, d.Sphere(3e-6), 1e-3, 5e-4, seed=0, require_gpu=False)
+        _walk_geometry(64, 2e-9, d.Sphere(3e-6), 1e-3, 5e-4, seed=0, require_gpu=False)
     assert any("sub_steps=" in r.getMessage() for r in caplog.records)
     assert all(r.name.startswith("dmipy_sim") for r in caplog.records)

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
 from dmipy_sim.replay import ReplayPack, read_rpk, so3
@@ -22,7 +23,7 @@ def packs(tmp_path_factory):
     """The same cylinder walk twice: as stored (axis z, no frame), and rotated so its axis is x with the frame
     declared -- plus the rotated walk WITHOUT a frame, the lie the test catches."""
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(600, 2e-9, g, 10e-3, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(600, 2e-9, g, 10e-3, 5e-4, seed=0, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "z.rpk"
     build_replay_pack(walk, id="t/z", license="x", citation="x", K=8, out_path=str(p))
     z = read_rpk(str(p))
@@ -97,7 +98,7 @@ def test_an_analytic_geometry_is_walked_in_its_own_frame_and_the_pack_says_so():
     provenance, and a pack built from its walk declares the identity frame -- the pose is a replay knob."""
     g = d.Cylinder(radius=2e-6, orientation=(1, 0, 0))
     assert np.allclose(g.spec.frame.axis, [0, 0, 1]) and any("pose" in t for t in g.spec.provenance["transformations"])
-    walk = d.simulate_trajectories(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False, raw_subset=200)
+    walk = _walk_geometry(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False, raw_subset=200)
     P = np.asarray(walk.raw_positions)
     assert (np.hypot(P[..., 0], P[..., 1]) < 2e-6).all()                               # confined in x-y, free along z
     pk = build_replay_pack(walk, id="t/x", license="x", citation="x", K=4)
@@ -111,7 +112,7 @@ def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
     from dmipy_replay.replay.field import frame_from_axis
     from dmipy_sim.replay.bank import check_frame_against_walk
     g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))                    # intra-axonal: free along z, restricted across
-    walk = d.simulate_trajectories(400, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
+    walk = _walk_geometry(400, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
     with pytest.raises(ValueError, match="principal displacement axis"):
         build_replay_pack(walk, id="t/wrong", license="x", citation="x", K=4, substrate_frame=frame_from_axis((1, 0, 0)))
     pk = build_replay_pack(walk, id="t/right", license="x", citation="x", K=4, substrate_frame=np.eye(3))
@@ -127,7 +128,7 @@ def test_a_user_declared_frame_10deg_off_is_still_refused_after_the_walk():
     from dmipy_replay.replay.field import frame_from_axis
     g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))
     assert g.spec.frame.source is None
-    walk = d.simulate_trajectories(300, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
+    walk = _walk_geometry(300, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
     theta = np.radians(10.0)
     tilted = frame_from_axis([np.sin(theta), 0.0, np.cos(theta)])
     with pytest.raises(ValueError, match="the walk's principal displacement axis"):
@@ -147,7 +148,7 @@ def test_a_curved_tubes_structural_frame_builds_despite_the_walks_own_drifting_a
     line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
     g = d.CurvedCylinder(line, 2e-6)
     assert g.spec.frame.source == "structural" and np.allclose(g.spec.frame.axis, [0, 0, 1], atol=1e-6)
-    walk = d.simulate_trajectories(300, 2e-9, g, 5e-3, 5e-4, seed=2, require_gpu=False, raw_subset=300)
+    walk = _walk_geometry(300, 2e-9, g, 5e-3, 5e-4, seed=2, require_gpu=False, raw_subset=300)
     walk_angle = check_frame_against_walk(np.asarray(walk.raw_positions), np.eye(3))
     assert walk_angle > 5.0                            # the walk-based check would have refused this walk
     pk = build_replay_pack(walk, id="t/curved-structural", license="x", citation="x", K=4)
@@ -164,7 +165,7 @@ def test_a_hand_edited_structural_frame_is_refused_before_the_walk():
     line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
     g = d.CurvedCylinder(line, 2e-6)
     bad_spec = dataclasses.replace(g.spec, frame=Frame([1.0, 0.0, 0.0], source="structural"))
-    walk = d.simulate_trajectories(5, 2e-9, g, 1e-4, 1e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(5, 2e-9, g, 1e-4, 1e-4, seed=0, require_gpu=False)
     walk = dataclasses.replace(walk, spec=bad_spec)
     with pytest.raises(ValueError, match="length-weighted tangent axis"):
         build_replay_pack(walk, id="t/bad-structural", license="x", citation="x", K=4)

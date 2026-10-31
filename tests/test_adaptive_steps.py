@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
 
 D = 2e-9
@@ -17,7 +18,7 @@ def _pack(interior):
 
 def test_the_finest_class_alone_is_the_fused_walk():
     g = _pack(False)
-    fixed = d.simulate_trajectories(300, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, sub_steps=64, raw_subset=300, K=8)
+    fixed = _walk_geometry(300, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, sub_steps=64, raw_subset=300, K=8)
     adaptive = simulate_trajectories_adaptive(300, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, sub_steps=64,
                                               steps_per_round=64, n_classes=1, safety_sigma=1e9, walker_batch_size=300,
                                               raw_subset=300, K=8)
@@ -41,7 +42,7 @@ def test_the_guarantees_and_the_statistics(interior):
     g = _pack(interior)
     n = 6000
     a = simulate_trajectories_adaptive(n, D, g, 2e-3, 2.5e-4, seed=1, require_gpu=False, walker_batch_size=n, raw_subset=n)
-    f = d.simulate_trajectories(n, D, g, 2e-3, 2.5e-4, seed=2, require_gpu=False, raw_subset=n)
+    f = _walk_geometry(n, D, g, 2e-3, 2.5e-4, seed=2, require_gpu=False, raw_subset=n)
     P = a.raw_positions.reshape(-1, 3)
     if interior:
         assert g.inside_any(P).all()                                   # never left its tube

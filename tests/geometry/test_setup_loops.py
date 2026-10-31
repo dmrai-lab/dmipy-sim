@@ -100,7 +100,7 @@ def test_min_gap_equals_the_pairwise_loop():
     assert periodic_min_gap(np.zeros((1, 2)), [1e-6], 5e-6) == pytest.approx(3e-6)   # one object: its image
     Lm = float(np.sqrt(np.pi * 12 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, cm = d.pack_myelinated_cylinders([1e-6] * 12, 0.7, None, cell_size=Lm, seed=2)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 12, 0.7, cm, Lm, N_max=16)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 12, 0.7, cm, Lm, N_max=16, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     assert pm.min_gap == pytest.approx(_gap_reference(cm, np.full(12, 1e-6 / 0.7), Lm), rel=1e-12)
 
 

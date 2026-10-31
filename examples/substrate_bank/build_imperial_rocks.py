@@ -154,8 +154,9 @@ def walk(spec, n, *, T, K, seed, sub_steps=None):
     100 ms storage window over ``T`` in the band's own blocks; ``sub_steps`` is the step pilot's coarse count, None
     the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.spec import geometry_from_spec
-    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
+    return _walk_geometry(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
                                    tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
 
 

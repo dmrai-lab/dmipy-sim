@@ -8,7 +8,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine import backends
-from dmipy_sim.engine.core import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.physics import seed_walkers
 from dmipy_sim.fields.susceptibility_field import FieldGrid
 
@@ -35,7 +35,7 @@ class _JaxProbe(backends.Backend):
         assert request.field is None and request.K_c3 == 0
         _, _, k = seed_walkers(request.geometry, n, int(request.seed), r0)
         assert np.array_equal(np.asarray(k, np.uint32), keys), "the stand-in reproduces the JAX keys of a whole-walk pilot only"
-        w = simulate_trajectories(n, float(request.diffusivity), request.geometry, float(request.T), float(request.block_h),
+        w = _walk_geometry(n, float(request.diffusivity), request.geometry, float(request.T), float(request.block_h),
                                   seed=int(request.seed), sub_steps=1, r0=r0, raw_subset=n, K=int(request.K), window_T=float(request.T),
                                   tiers=("all" if request.record else ()), walker_batch_size=n, require_gpu=False)
         return b._replace(saves=b.saves._replace(positions=np.asarray(w.raw_positions, np.float32)))
@@ -63,7 +63,7 @@ def test_the_backends_pilot_is_the_jax_pilot():
     g = d.Sphere(R)
     fg = _grid()
     kw = dict(field_basis=fg, walker_batch_size=200)
-    run = lambda **k: simulate_trajectories(200, D, g, 4e-3, 0.5e-3, seed=7, tiers="all", require_gpu=False, **kw, **k)
+    run = lambda **k: _walk_geometry(200, D, g, 4e-3, 0.5e-3, seed=7, tiers="all", require_gpu=False, **kw, **k)
     be = _JaxProbe()
     a = run(backend=be, field_pilot="jax")
     assert not be.probes

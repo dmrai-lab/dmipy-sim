@@ -12,6 +12,7 @@ import pytest
 
 from dmipy_sim.geometry import myelin
 from dmipy_sim.geometry.myelin import MyelinatedCylinder, PackedMyelinatedCylinders
+from dmipy_sim import Compartments, Pool
 
 _REAL_DEFAULT_RNG = np.random.default_rng
 _OFF = 1e-12
@@ -52,7 +53,7 @@ def _check_strict(xy, pool, R_in, R_out):
 def test_myelinated_cylinder_seeds_are_strictly_on_their_pools_side(monkeypatch):
     R_in, R_out = 1e-6, 1.43e-6
     monkeypatch.setattr(myelin.np.random, "default_rng", lambda seed: _PlantedRng(_rows(R_in, R_out)))
-    g = MyelinatedCylinder(R_in, R_out, (0, 0, 1), D_intra=2e-9, D_extra=2e-9, D_myelin=0.0)
+    g = MyelinatedCylinder(R_in, R_out, (0, 0, 1), compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.0), extra=Pool(D=2e-9)))
     pos = np.asarray(g.init_positions(400, jax.random.PRNGKey(0)))
     pool = np.asarray(g._init_compartments)
     _check_strict(pos[:, :2], pool, R_in, R_out)
@@ -60,7 +61,7 @@ def test_myelinated_cylinder_seeds_are_strictly_on_their_pools_side(monkeypatch)
 
 def test_packed_myelinated_seeds_are_strictly_on_their_pools_side(monkeypatch):
     R_in, L = 1e-6, 20e-6
-    g = PackedMyelinatedCylinders([R_in], 0.7, np.zeros((1, 2)), L, N_max=2)
+    g = PackedMyelinatedCylinders([R_in], 0.7, np.zeros((1, 2)), L, N_max=2, compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.0), extra=Pool(D=2e-9)))
     R_in, R_out = float(g._inner_radii_np[0]), float(g._outer_radii_np[0])
     monkeypatch.setattr(myelin.np.random, "default_rng", lambda seed: _PlantedRng(_rows(R_in, R_out)))
     pos = np.asarray(g.init_positions(600, jax.random.PRNGKey(0)))

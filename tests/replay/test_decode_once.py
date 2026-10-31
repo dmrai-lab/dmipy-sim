@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank, compression as cx
 from dmipy_replay.replay.decoded import DecodedCache, PackArrays
@@ -21,7 +22,7 @@ TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho2=1e-5)
 @pytest.fixture(scope="module")
 def pack():
     """Two storage windows of a permeable cell: quantised bit-packed bands, the contact bridge, the occupancy events."""
-    w = d.simulate_trajectories(300, 2e-9, d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, permeability=2e-5), 4e-3, 1e-4,
+    w = _walk_geometry(300, 2e-9, d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, permeability=2e-5), 4e-3, 1e-4,
                                 seed=1, require_gpu=False, K=8, window_T=2e-3)
     return build_replay_pack(w, id="t/decode-once", license="x", citation="x")
 

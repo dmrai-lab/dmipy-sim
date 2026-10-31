@@ -8,7 +8,7 @@ import pytest
 
 from dmipy_sim.engine.accumulate import field_read_term
 from dmipy_sim.replay.bank import merge_packs
-from dmipy_sim.spec import walk_spec
+from dmipy_sim import walk
 from tests.test_field_read_interval import BLOCK, FINE, _float_pack, _walk, spec  # noqa: F401  (the fixture)
 
 
@@ -61,7 +61,7 @@ def test_the_shards_are_not_changed_by_the_merge(shards):
 
 def test_a_different_block_is_still_refused(spec, shards):
     """Only the read is a pool's own: shards walked on another block are not one walk."""
-    other = walk_spec(spec, 60, 8e-4, 2 * BLOCK, seed=5, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+    other = walk(spec, 60, 8e-4, 2 * BLOCK, seed=5, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
                       field_cutoff_max_m=25e-6, field_read_interval=2 * BLOCK)
     pk = _float_pack(other, id="t/other", license="x", citation="x", K=4, susc_path_K=4, device="numpy")
     with pytest.raises(ValueError, match="the shards differ in walk_params"):

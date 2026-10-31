@@ -230,7 +230,7 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                    return_mz=False, surface_relaxivity=0.0,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
-                   equilibrate_binding="auto", susceptibility=None, require_gpu=None):
+                   equilibrate_binding="burnin", susceptibility=None, require_gpu=None):
     """Forward vector-Bloch signal of a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`:
     its PHYSICAL gradient ``G``, its RF schedule ``rf`` (each pulse a Rodrigues rotation about its B1 axis;
     ``duration_s = 0`` an instantaneous hard pulse, ``offset_hz`` an off-resonance carrier), its emergent
@@ -248,15 +248,15 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
         Global spin off-resonance (Hz) applied every step (a voxel B0 offset).
     return_mz : bool
         Also return the final walker-mean ``Mz`` (n_meas,).
-    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+    equilibrate_binding : {'burnin', 'fast', 'off'}
         (MT only, ``kappa_MT > 0``.)  How to reach the thermal-equilibrium bound-pool
         occupancy ``k_f/(k_f+k_r)`` BEFORE the sequence -- the macromolecular pool exists
         before the pulse, so an all-free start under-fills it and biases the transfer
-        whenever ``1/k_f`` is not ``<<`` the sequence duration.  ``'burnin'`` (the ``'auto'``
+        whenever ``1/k_f`` is not ``<<`` the sequence duration.  ``'burnin'`` (the
         default when MT is on) runs an adaptive RF-off burn-in until the occupancy plateaus
         (geometry-agnostic).  ``'fast'`` seeds the equilibrium occupancy directly (mid-air,
         no walk) -- allowed only when it is provably position-invariant (no gradient, or an
-        MR-dark bound pool) with a known S/V, else it warns and falls back to ``'burnin'``.
+        MR-dark bound pool) with a known S/V, else it is a ValueError that says why.
         ``'off'`` starts every walker in the free pool: the initial condition of an oracle that
         excites the free pool alone, or of a sequence whose own burn-in block equilibrates it.
     sub_steps : int, optional
@@ -280,7 +280,7 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
     """
     with Run("simulate_bloch", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)) as run:
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         if require_gpu and not gpu_available():
             raise RuntimeError("_simulate_bloch(require_gpu=True) but no CUDA device is "
                                "visible to JAX.")
@@ -536,7 +536,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
                        T2, T1, M0, off_resonance_hz, seed, r0, return_mz,
                        surface_relaxivity, kappa_MT, dwell_time, T2_bound,
                        T1_bound, off_resonance_bound, sub_steps, return_bound_frac,
-                       equilibrate_binding="auto", susceptibility=None):
+                       equilibrate_binding="burnin", susceptibility=None):
     """MT forward path (see ``_simulate_bloch``).  Returns ``signals`` then, in order,
     ``mz`` (if ``return_mz``) and the walker-mean ``bound_frac`` time series (n_t,)
     (if ``return_bound_frac``)."""

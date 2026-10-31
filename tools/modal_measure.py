@@ -33,11 +33,12 @@ import os, sys, time, json, warnings
 warnings.simplefilter("ignore")
 import jax, numpy as np
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 n, T, K = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
 g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1))
 ts = []
 for i in range(3):
-    t0 = time.time(); w = d.simulate_trajectories(n, 2e-9, g, T, seed=1, K=K, tiers=(), window_T=T, require_gpu=True); ts.append(time.time() - t0)
+    t0 = time.time(); w = _walk_geometry(n, 2e-9, g, T, seed=1, K=K, tiers=(), window_T=T, require_gpu=True); ts.append(time.time() - t0)
 print(json.dumps(dict(device=str(jax.devices()[0]), seconds=min(ts[1:]), compile_s=ts[0] - min(ts[1:]), n=n, T=T, K=K,
                       sub_steps=int(w.sub_steps), h=float(w.h), tree=os.environ.get("PYTHONPATH"))))
 """

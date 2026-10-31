@@ -9,8 +9,9 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine import backends
-from dmipy_sim.engine.core import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.fields.susceptibility_field import FieldGrid
+from dmipy_sim import Compartments, Pool
 
 D = 2e-9
 R = 2e-6
@@ -95,7 +96,7 @@ class _Saves(backends.Backend):
 
 def _walk(g, **kw):
     kw.setdefault("walker_batch_size", 64)
-    return simulate_trajectories(64, D, g, 2e-3, 0.5e-3, seed=11, tiers="all", require_gpu=False, **kw)
+    return _walk_geometry(64, D, g, 2e-3, 0.5e-3, seed=11, tiers="all", require_gpu=False, **kw)
 
 
 def test_jax_is_the_default_and_the_same_walk_by_name():
@@ -222,14 +223,18 @@ def test_a_batch_of_another_resolution_or_shape_is_refused():
 
 def test_the_jax_only_paths_are_refused_for_another_backend():
     from dmipy_sim.geometry.myelin import MyelinatedCylinder
-    g = MyelinatedCylinder(inner_radius=R, outer_radius=1.4 * R, orientation=[0, 0, 1], D_intra=D, D_extra=D,
-                           D_myelin=0.1e-9, water_fractions=(1.0, 0.0, 0.0))
+    g = MyelinatedCylinder(
+        inner_radius=R,
+        outer_radius=1.4 * R,
+        orientation=[0, 0, 1],
+        compartments=Compartments(intra=Pool(D=D, water_fraction=1.0), myelin=Pool(D=0.1e-9, water_fraction=0.0), extra=Pool(D=D, water_fraction=0.0)),
+    )
     with pytest.raises(ValueError, match="the myelinated substrates.*which only the jax kernels implement"):
         _walk(g, backend=_Still())
     with pytest.raises(ValueError, match="the compartment guard"):
         _walk(d.Sphere(R), backend=_Still(), enforce_compartment=True)
     with pytest.raises(ValueError, match="several storage windows"):
-        simulate_trajectories(16, D, d.Sphere(R), 0.2, 2e-3, seed=1, require_gpu=False, K=4, sub_steps=2, backend=_Still())
+        _walk_geometry(16, D, d.Sphere(R), 0.2, 2e-3, seed=1, require_gpu=False, K=4, sub_steps=2, backend=_Still())
     still = _Still(refuse="no spheres here")
     with pytest.raises(ValueError, match="backend 'still' refuses this walk of Sphere: no spheres here"):
         _walk(d.Sphere(R), backend=still)
@@ -266,15 +271,16 @@ def test_a_raster_field_is_the_backends_request_and_its_modes_are_checked():
 
 
 def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
-    from dmipy_sim.spec import walk_spec, SpecError
+    from dmipy_sim.spec import SpecError
+    from dmipy_sim import walk
     g = d.Sphere(R)
     still = _Still()
-    w = walk_spec(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=still)
+    w = walk(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=still)
     assert w.work["backend"] == "still" and still.requests
     # the adaptive producer takes the backend too (#651): the sphere is refused for not being a bundle, by the spec,
     # not for the backend
     with pytest.raises(SpecError, match="adaptive stepping is for a bundle"):
-        walk_spec(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still(),
+        walk(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still(),
                   adaptive_steps=True)
 
 
@@ -352,7 +358,7 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():
     """`core` may read `name`, call `refuses` and `walk_batch`, and nothing else of a backend."""
-    src = inspect.getsource(simulate_trajectories)
+    src = inspect.getsource(_walk_geometry)
     used = set(re.findall(r"_backend\.([A-Za-z_]+)", src))
     assert used <= {"name", "refuses", "walk_batch"}, used
 

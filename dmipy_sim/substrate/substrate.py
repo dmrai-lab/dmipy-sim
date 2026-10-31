@@ -335,7 +335,6 @@ class Substrate:
                              f"attempts each ({e}); lower the fraction or the count") from e
         n_max = int(2 ** np.ceil(np.log2(max(int(n_fibres), 2))))
         geom = PackedMyelinatedCylinders(inner, self.g_ratio, centres, L, N_max=n_max, orientation=orientation,
-                                         D_intra=self.D_intra, D_myelin=self.D_myelin, D_extra=self.D_extra,
                                          kappa_inner=self.kappa, rho_inner=self.rho2, rho_outer=self.rho2,
                                          compartments=self.compartments)
         spec = spec_of(geom, id=id or f"substrate/canonical-{int(n_fibres)}-{seed}")

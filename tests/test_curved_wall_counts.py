@@ -4,6 +4,7 @@ loop); counting changes no position. And the strands are parity cases a backend 
 import numpy as np
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine import backends
 
 D = 2e-9
@@ -14,7 +15,7 @@ def _pack(interior):
 
 
 def _walk(g, **kw):
-    return d.simulate_trajectories(400, D, g, 1e-3, 2.5e-4, seed=5, require_gpu=False, tiers="all",
+    return _walk_geometry(400, D, g, 1e-3, 2.5e-4, seed=5, require_gpu=False, tiers="all",
                                    walker_batch_size=400, raw_subset=400, **kw)
 
 

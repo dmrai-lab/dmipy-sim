@@ -11,6 +11,7 @@ import pytest
 from scipy.special import spherical_jn
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.acquisition.waveforms import rotate_waveform
@@ -21,6 +22,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.pose_series import _cheb_matrix, _cheb_points, _cheb_T, _series_bound
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import pose_with_field_along
+from dmipy_sim import Pose
 
 MACHINES = (None, "hyperfine_swoop_64mT", "siemens_magnetom_prisma_3T", "siemens_magnetom_terra_7T")
 TISSUE = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
@@ -29,7 +31,7 @@ TISSUE = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
 @pytest.fixture(scope="module")
 def walk_pack():
     """A 400-walker cylinder walk of 12 ms at K = 12: the field-off pack."""
-    walk = d.simulate_trajectories(400, 2e-9, d.PackedCylinders([2e-6], [[0.0, 0.0]], 8e-6), 12e-3, 5e-4, seed=4,
+    walk = _walk_geometry(400, 2e-9, d.PackedCylinders([2e-6], [[0.0, 0.0]], 8e-6), 12e-3, 5e-4, seed=4,
                                    require_gpu=False)
     return build_replay_pack(walk, id="test/series", license="x", citation="x", K=12)
 
@@ -101,7 +103,7 @@ def test_every_class_is_its_closed_form_within_the_misfit_with_the_field_on(fiel
     B0 = 3.0 if machine is None else float(ScannerLimits.of(machine).field_T)
     R = pose_with_field_along((0.6, 0.0, 0.8))
     played = _classes(machine, kind, 8e-4, 0.3, R)
-    kw = dict(scanner=B0, tissue=TISSUE, pose=R)
+    kw = dict(scanner=B0, tissue=TISSUE, pose=Pose(R))
     for keep in (None, (6, 0)):
         series = field_pack.pose_series(played, keep=keep, **kw)
         assert series.field_lmax >= 1
@@ -116,7 +118,7 @@ def test_the_misfit_bounds_the_direct_posed_replay(walk_pack, field_pack, field)
     machine = "hyperfine_swoop_64mT"
     if field:
         pack, R = field_pack, pose_with_field_along((0.6, 0.0, 0.8))
-        played, kw = _classes(machine, "spin echo", 8e-4, 0.3, R), dict(scanner=0.064, tissue=TISSUE, pose=R)
+        played, kw = _classes(machine, "spin echo", 8e-4, 0.3, R), dict(scanner=0.064, tissue=TISSUE, pose=Pose(R))
     else:
         pack, played, kw = walk_pack, _classes(machine, "spin echo", 10e-3, 0.08), {}
     series = pack.pose_series(played, **kw)

@@ -35,7 +35,7 @@ flowchart LR
         G3["analytic geometries: Cylinder, Sphere, Mesh, ..."]
     end
     SPEC["SubstrateSpec (.sub.json)<br/>domain · pools · walls and their physics<br/>seeding · request vs realisation · nominal values"]
-    ENGINE["dmipy-sim engine<br/>walk_spec / simulate<br/>sub-steps from the spec's smallest feature<br/>the scanner class gives the band, the band gives the block<br/>accumulated in the walk"]
+    ENGINE["dmipy-sim engine<br/>walk / simulate<br/>sub-steps from the spec's smallest feature<br/>the scanner class gives the band, the band gives the block<br/>accumulated in the walk"]
     RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
     subgraph knobs["replay knobs"]
         direction TB
@@ -68,7 +68,8 @@ spec.save("cylinder.sub.json")                                    #   one lumen 
 E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=spec, seed=0)
 ```
 
-Every driver takes the substrate as a **spec** (`SubstrateSpec`, its dict, or a `.sub.json` path) or as the
+Every driver takes the substrate as a **spec** (`SubstrateSpec`; a spec dict is `SubstrateSpec.from_dict(d)` and a
+`.sub.json` is `load_spec(path)` first) or as the
 geometry object that is one spelling of it; `geometry.spec` writes out what a constructor leaves implicit, and a
 substrate with no spec spelling is refused.
 
@@ -80,7 +81,7 @@ without a raw path; it is what the substrate bank distributes and what dmipy-fit
 
 ```python
 from dmipy_sim.substrate import Substrate
-from dmipy_sim.spec import walk_spec
+from dmipy_sim import walk
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim import sequences
@@ -92,11 +93,11 @@ spec = sub.request(n_fibres=300, seed=0)         # refuses an infeasible packing
 spec.save("wm.sub.json")
 
 # 1. walk once, from the spec and nothing else -- positions, occupancy and boundary local time are recorded
-walk = walk_spec(spec, 200_000, T_max=0.05, seed=0)            # the band is the scanner class's (scanner="connectom" by default)
+w = walk(spec, 200_000, T_max=0.05, seed=0)            # the band is the scanner class's (scanner="connectom" by default)
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one
 #    T2, rho2 or chi value lives in the pack; those are what a replay applies
-pack = build_replay_pack(walk, id="wm/canonical", license="CC-BY-4.0", citation="...")
+pack = build_replay_pack(w, id="wm/canonical", license="CC-BY-4.0", citation="...")
 pack.save("wm.rpk")
 
 # 3. anywhere, later: load it and fire a pulse at it
@@ -272,8 +273,8 @@ everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 m
 Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inner, outer)`,
 `spec.caterpillar_spec(csv)`, `spec.label_volume_spec(image)` (a segmented micro-CT / EM / mask volume in NRRD,
 MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(tracks, diameters)` (the MRtrix track file and the strand-diameter list) read the files and write down
-domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
-The scanner class gives the band, the band gives the block: `walk_spec` accumulates the class's certified band
+domain, pools, walls and seeding; `walk(spec, ...)` walks them pool by pool and the pack embeds the spec.
+The scanner class gives the band, the band gives the block: `walk` accumulates the class's certified band
 (`scanner="prisma" | "magnus" | "connectom" | ...`), `K` sine bands per 100 ms storage window, in blocks of
 `h = 0.8 T / (pi K)`, while the walk runs -- the positions, the wall contact and the field as band projections of
 their running integrals, the occupancy as events exact in time -- so the walk's memory and the pack's size are set
@@ -341,7 +342,7 @@ expansion and the phantoms.
 ```
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
-  engine/       core (simulate, simulate_trajectories), accumulate, physics, pulse_sequence, mt, mt_walk, gpu;
+  engine/       core (simulate, _walk_geometry), accumulate, physics, pulse_sequence, mt, mt_walk, gpu;
                 _fused and bloch: the single-pass oracles the replay is held to
   replay/       replay (ReplayPack: dmipy-replay's with the producer's routes), bank (build_replay_pack), compression
                 (the codec), trajectories, columnar / remote / time_segments (dmipy-replay's readers with the JAX

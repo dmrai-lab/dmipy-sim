@@ -7,6 +7,7 @@ from dmipy_sim import ScannerSequence
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.compartments import Compartments, Pool
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack
@@ -42,7 +43,7 @@ def test_substrate_pack_realises_the_diameter_law_by_outer_radius():
 def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     sub = Substrate.canonical(field_T=3.0)
     g = sub.pack(n_axons=4, seed=0)
-    walk = d.simulate_trajectories(120, sub.D_intra, g, 2e-3, 5e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g), K=8)
+    walk = _walk_geometry(120, sub.D_intra, g, 2e-3, 5e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g), K=8)
     assert walk.geometry is g and walk.diffusivity == sub.D_intra
     pk = build_replay_pack(walk, id="t/sub", license="x", citation="x", K=8, envelope=ENV)
     assert pk.has_relaxation and pk.has_surface and pk.has_field
@@ -70,6 +71,6 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     pk2 = build_replay_pack(walk_nf, id="t/own", license="x", citation="x", K=8, envelope=ENV)
     assert pk2.has_relaxation and not pk2.has_field
     # a bare cylinder: occupancy and local time are recorded (T2 / rho2 come at replay), no field source
-    plain = d.simulate_trajectories(60, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False, K=8)
+    plain = _walk_geometry(60, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False, K=8)
     pk3 = build_replay_pack(plain, id="t/plain", license="x", citation="x", K=8, envelope=ENV)
     assert pk3.has_surface and pk3.has_relaxation and not pk3.has_field

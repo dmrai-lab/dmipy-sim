@@ -15,6 +15,7 @@ import pytest
 from scipy.fft import dst
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay import compression as cx
@@ -70,11 +71,11 @@ def walked(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("oracle"); (tmp / "shards").mkdir()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        starts = np.asarray(d.simulate_trajectories(600, 2e-9, g, 2 * H, H, seed=30, require_gpu=False, K=1).position_coeffs[:, 0, 0])
+        starts = np.asarray(_walk_geometry(600, 2e-9, g, 2 * H, H, seed=30, require_gpu=False, K=1).position_coeffs[:, 0, 0])
         walks, packs = [], []
         for block, sel in ((0, starts[:, 0] < 0), (1, starts[:, 0] >= 0)):
             r0 = np.ascontiguousarray(starts[sel], np.float32)
-            w = d.simulate_trajectories(len(r0), 2e-9, g, T_MAX, H, seed=31 + block, r0=r0, require_gpu=False, K=K, block_order=0,
+            w = _walk_geometry(len(r0), 2e-9, g, T_MAX, H, seed=31 + block, r0=r0, require_gpu=False, K=K, block_order=0,
                                         raw_subset=len(r0))
             assert w.m == 0 and w.raw_positions.shape == (w.n_walkers, w.n_blocks + 1, 3)
             walks.append(w)
@@ -144,7 +145,7 @@ def test_the_pose_expansion_is_the_walks_own_posed_signal(walked):
 @pytest.fixture(scope="module")
 def two_windows():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
-    w = d.simulate_trajectories(300, 2e-9, g, 4e-3, 1e-4, seed=9, require_gpu=False, K=12, window_T=2e-3, sub_steps=2)
+    w = _walk_geometry(300, 2e-9, g, 4e-3, 1e-4, seed=9, require_gpu=False, K=12, window_T=2e-3, sub_steps=2)
     kw = dict(license="x", citation="x", K=12, position_container=None, blt_container=None)
     return w, build_replay_pack(w, id="t/two", **kw), kw
 
@@ -173,7 +174,7 @@ def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
     kw = dict(license="x", citation="x", K=4, voxel_grid=grid)
 
     def shard(name, **walk):
-        w = d.simulate_trajectories(60, 2e-9, g, 2e-3, **walk, seed=len(name), require_gpu=False, K=4, sub_steps=2)
+        w = _walk_geometry(60, 2e-9, g, 2e-3, **walk, seed=len(name), require_gpu=False, K=4, sub_steps=2)
         (tmp_path / name).mkdir(exist_ok=True)
         return w
     for case, other, key in (("block", dict(block_h=2e-4), "walk_params.block"),

@@ -1,6 +1,6 @@
 """One compiled program per geometry and configuration, not one per call.
 
-`simulate` (fused engine) and `simulate_trajectories` (the replay producer) keep their jitted
+`simulate` (fused engine) and `_walk_geometry` (the replay producer) keep their jitted
 batch functions on the geometry object (`geometry._batch_cache`), keyed on its scalar state and
 the configuration the closure bakes in. The waveform samples, positions, keys and labels are
 arguments, so a sweep over b, seed or direction runs the same executable; a knob changed on the
@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine import core
 from dmipy_sim.engine._fused import simulate_fused
 
@@ -67,10 +68,15 @@ def test_every_engine_path_caches():
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=1e-6)
-    mc = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D, D, water_fractions=(1.0, 0.0, 0.0))
+    mc = d.MyelinatedCylinder(
+        2e-6,
+        3e-6,
+        (0, 0, 1),
+        compartments=d.Compartments(intra=d.Pool(D=D, water_fraction=1.0), myelin=d.Pool(water_fraction=0.0), extra=d.Pool(D=D, water_fraction=0.0)),
+    )
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)
+    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     for g, diff in ((m, D), (mc, None), (pm, None)):
         simulate_fused(500, diff, _wf(5e8), g, seed=0, require_gpu=False)
         simulate_fused(500, diff, _wf(1e9), g, seed=3, require_gpu=False)
@@ -100,8 +106,8 @@ def test_the_cache_dies_with_the_geometry():
 def test_the_replay_producer_caches_too():
     g = d.Sphere(3e-6, surface_relaxivity_t2=1e-6)
     for seed in (0, 1):
-        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False, tiers=())
-        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed,
+        _walk_geometry(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False, tiers=())
+        _walk_geometry(400, D, g, 2e-3, 5e-4, seed=seed,
                                 require_gpu=False)
     keys = [(k[0][0], k[0][1]) for k in _entries(g)]
     assert set(keys) == {("coefficient walk", "gen"), ("coefficient walk", "relax")}, keys

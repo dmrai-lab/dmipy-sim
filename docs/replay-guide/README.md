@@ -29,7 +29,7 @@ recipes: [a canonical pore](recipes/canonical_pore.md), [DiSCo from the hub](rec
 It is organised by OBJECT, which makes it a reference you can read in order rather than a cookbook. Three
 things it does not cover, so you know to look elsewhere:
 
-* **producing** a pack. The pack page builds one as a prop; the real path is a spec, `walk_spec`, and
+* **producing** a pack. The pack page builds one as a prop; the real path is a spec, `walk`, and
   `build_replay_pack`, and its cost model is the fill (`dmipy_sim/fill/`).
 * **extending** anything -- a sequence family, a scanner, a channel. Those are the engine's own contracts;
   the geometry one is written out in `CLAUDE.md` and the others are not yet (dmipy-sim#315).

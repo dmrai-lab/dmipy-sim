@@ -1,4 +1,4 @@
-"""The strand field along the walk is read every ``field_read_interval`` seconds: ``walk_spec(field_read_interval=)``
+"""The strand field along the walk is read every ``field_read_interval`` seconds: ``walk(field_read_interval=)``
 gives the interval the adaptive producer reads the field at (snapped to a whole number of the pool's rounds per
 block, never finer than a round), or each pool's pilot derives it; the walk and the pack record it, and the replay
 gates the stored modes on it.
@@ -12,10 +12,12 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.accumulate import field_read_rule, field_read_term, field_read_limit_B0_chi, field_read_steps
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import disco_spec, walk_spec
+from dmipy_sim.spec import disco_spec
+from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
@@ -33,7 +35,7 @@ def spec(tmp_path_factory):
 
 
 def _walk(spec, interval=None, seed=3):
-    return walk_spec(spec, 60, 8e-4, BLOCK, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+    return walk(spec, 60, 8e-4, BLOCK, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
                      field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)))
 
 
@@ -136,7 +138,7 @@ def test_the_read_interval_needs_the_adaptive_producer(spec):
     from dmipy_replay.spec.substrate import SpecError
     for kw in ({}, dict(field_read_interval=BLOCK)):
         with pytest.raises(SpecError, match="adaptive"):
-            walk_spec(spec, 30, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, **kw)
+            walk(spec, 30, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, **kw)
 
 
 def test_shards_with_the_path_channel_merge(spec, tmp_path):
@@ -171,8 +173,8 @@ def _tiny_walk(n_read, n_blocks, grid):
     from tests.test_bank import D0, L
     T = n_blocks * STEPS * STEP
     kw = dict(require_gpu=False, field_basis=grid, K=4, K_c3=1, raw_subset=10, seed=1, window_T=T)
-    w = d.simulate_trajectories(10, D0, d.Box1D(L), T, STEPS * STEP, sub_steps=STEPS, field_read_interval=(n_read + 1e-3) * STEP, **kw)
-    per_step = d.simulate_trajectories(10, D0, d.Box1D(L), T, STEP, sub_steps=1, **kw)
+    w = _walk_geometry(10, D0, d.Box1D(L), T, STEPS * STEP, sub_steps=STEPS, field_read_interval=(n_read + 1e-3) * STEP, **kw)
+    per_step = _walk_geometry(10, D0, d.Box1D(L), T, STEP, sub_steps=1, **kw)
     return w, per_step
 
 
@@ -222,7 +224,7 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
     # the pools read at their own instants (the join refuses their raw reads on one series), so the walks are read before it
     monkeypatch.setattr(spec_walk, "_join_pool_walks",
                         lambda parts, *a, **k: (pools.extend(w for _, w in parts if not isinstance(w, np.ndarray)), parts[0][1])[1])
-    walk_spec(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
+    walk(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
               raw_subset=12, field_read_interval=interval)
     assert len(pools) == 2
     uneven = 0
@@ -243,7 +245,7 @@ def test_a_bundle_whose_pools_read_at_other_instants_refuses_a_joined_raw_field(
     subset over pools that disagree is refused by pool name."""
     from dmipy_sim.spec import SpecError
     with pytest.raises(SpecError, match=r"pool '(extra|intra)' reads the field at instants other than the bundle's"):
-        walk_spec(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+        walk(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
                   field_cutoff_max_m=25e-6, raw_subset=12, field_read_interval=0.75 * BLOCK)
 
 

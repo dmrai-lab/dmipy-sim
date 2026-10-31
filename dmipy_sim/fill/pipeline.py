@@ -150,14 +150,14 @@ def walk_round(o, rc, row, name, r, k, P, seeds):
     with the manifest's walk, spooled into its run record. Returns ``(walk, record)``; :meth:`Fill.post_round`
     hands the walk straight to the pack (a thread, off the device's path), writing it to disk only with
     ``--keep``."""
-    from ..spec import walk_spec
+    from .. import walk
     W = rc.man["walk"]; spec = rc.spec()
     log.info("%s round %d/%d: voxels %s, plan %d walkers, scale %.4f -> %s", name, r + 1, k, row["voxels"], seeds["tot"], seeds["scale"], seeds["n_plan"])
     run_dir, out = round_paths(o.workdir, name, r, k)
     t0 = time.time()
     P = rc.man["pack"]
     field = susceptibility_field_of(spec) == "present"
-    w = walk_spec(spec, T_max=W["T_max_s"], block_h=rc.block_h(), seeding=seeds["drawn"], seed=seeds["seed"],
+    w = walk(spec, T_max=W["T_max_s"], block_h=rc.block_h(), seeding=seeds["drawn"], seed=seeds["seed"],
                   require_gpu=o.require_gpu, walker_batch_size=batch_size(o, rc), adaptive_steps=W["adaptive_steps"], scanner=W["scanner"],
                   K=P.get("K"), **(dict(K_c3=P.get("K_path"), field_read_interval=rc.field_read_interval()) if field else {}),
                   context=rc.context(), field_gather_every=int(W.get("field_gather_every", 4)), run_dir=run_dir,

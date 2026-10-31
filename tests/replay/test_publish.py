@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.fill import FakeHub, sha256_of
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
@@ -21,7 +22,7 @@ REPO = "owner/packs"
 
 
 def _pack(id="test/cyl", **kw):
-    walk = d.simulate_trajectories(200, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 4e-3, 5e-4, seed=0, require_gpu=False, K=4)
+    walk = _walk_geometry(200, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 4e-3, 5e-4, seed=0, require_gpu=False, K=4)
     return build_replay_pack(walk, id=id, K=4, envelope=ENV, **{"license": "CC-BY-4.0", "citation": "a test pack", **kw})
 
 

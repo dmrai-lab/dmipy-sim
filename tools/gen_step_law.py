@@ -222,6 +222,7 @@ def packing_certificate(cfg):
     step of a geometry that declares no pore, and the measurement says whether the convex (intra) and the concave
     (extra) side stay within what the envelope promises."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.engine.accumulate import block_length
     from dmipy_sim.engine.physics import tolerance_sub_steps, regime_sub_steps
     from dmipy_sim.math.step_law import step_certificate, PILOT_STEP_RATIO
@@ -238,8 +239,8 @@ def packing_certificate(cfg):
         n = cfg["pack_walkers"]
         t0 = time.time()
         kw = dict(K=K, require_gpu=False, window_T=T, tiers=())
-        fine = d.simulate_trajectories(n, D0, g, T, seed=21, sub_steps=n_fine, **kw)
-        coarse = d.simulate_trajectories(n, D0, g, T, seed=22, sub_steps=n_coarse, **kw)
+        fine = _walk_geometry(n, D0, g, T, seed=21, sub_steps=n_fine, **kw)
+        coarse = _walk_geometry(n, D0, g, T, seed=22, sub_steps=n_coarse, **kw)
         cert = step_certificate(fine.position_coeffs, coarse.position_coeffs, T, n_fine / n_coarse, f_band=f_band,
                                 eps_declared=eps)
         out[pool] = dict(n_walkers=n, n_rule=n_rule, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps, h_s=h, K=K,
@@ -307,6 +308,7 @@ def sec_fused(cfg, fig_dir):
 # ----------------------------------------------------------------------------------------------- the certificate
 def sec_certificate(cfg, fig_dir):
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     import matplotlib.pyplot as plt
     from dmipy_sim.engine.accumulate import block_length
     from dmipy_sim.engine.physics import tolerance_sub_steps, regime_sub_steps
@@ -325,8 +327,8 @@ def sec_certificate(cfg, fig_dir):
         eps = EPS * n_rule / n_fine
         t0 = time.time()
         kw = dict(K=K, require_gpu=False, window_T=T, tiers=())
-        fine = d.simulate_trajectories(n, D0, g, T, seed=1, sub_steps=n_fine, **kw)
-        coarse = d.simulate_trajectories(n, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
+        fine = _walk_geometry(n, D0, g, T, seed=1, sub_steps=n_fine, **kw)
+        coarse = _walk_geometry(n, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
         cert = step_certificate(fine.position_coeffs, coarse.position_coeffs, T, n_fine / n_coarse, f_band=f_band,
                                 eps_declared=eps)
         rec = dict(n_walkers=n, ratio=ratio, n_fine=n_fine, n_coarse=n_coarse, eps_declared=eps, seconds=time.time() - t0,
@@ -374,6 +376,7 @@ def cost_substrates(cfg):
 
 def sec_cost(cfg, fig_dir):
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.engine.accumulate import block_length
     from dmipy_sim.engine.physics import sub_step_rules, collision_sub_steps, length_scales_of
     from dmipy_sim.math.step_law import LONGEST_STEP
@@ -397,9 +400,9 @@ def sec_cost(cfg, fig_dir):
             rec["lookup_longest_atom"] = int(collision_sub_steps(g, D0, h))
             assert rec["lookup_longest_atom"] == rules["collision lookup"]
         try:
-            d.simulate_trajectories(min(2000, cfg["cost_n"]), D0, g, T, K=K, seed=5, require_gpu=False, sub_steps=n)
+            _walk_geometry(min(2000, cfg["cost_n"]), D0, g, T, K=K, seed=5, require_gpu=False, sub_steps=n)
             t0 = time.time()
-            d.simulate_trajectories(cfg["cost_n"], D0, g, T, K=K, seed=5, require_gpu=False, sub_steps=n)
+            _walk_geometry(cfg["cost_n"], D0, g, T, K=K, seed=5, require_gpu=False, sub_steps=n)
             sec = time.time() - t0
         except ValueError as e:                      # a surface the bare producer cannot seed (an open CACTUS box)
             rec["not_walked"] = str(e).splitlines()[0][:160]

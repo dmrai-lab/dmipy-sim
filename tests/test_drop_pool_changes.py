@@ -1,4 +1,4 @@
-"""Excluding the walkers that changed pool in an impermeable bundle walk (``walk_spec(drop_pool_changes=)``): the walk
+"""Excluding the walkers that changed pool in an impermeable bundle walk (``walk(drop_pool_changes=)``): the walk
 without them, the pool's weights renormalised to its total, the refusals (past the bound, a raw walker among them),
 and the record the pack's certificate carries. The mask is the backend's (`CoefficientWalk.pool_changed`); here it is
 set on a small JAX walk, which is what a backend hands the bundle walk."""
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import Sphere
-from dmipy_sim.engine.core import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import SpecError
 from dmipy_sim.spec.walk import DROP_POOL_CHANGE_RULE, _drop_pool_changes
@@ -20,7 +20,7 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, s
 
 
 def _walk(n=400, mask_at=(5, 17, 300)):
-    w = simulate_trajectories(n, 2e-9, Sphere(radius=4e-6), 2e-3, seed=1, K=8, require_gpu=False)
+    w = _walk_geometry(n, 2e-9, Sphere(radius=4e-6), 2e-3, seed=1, K=8, require_gpu=False)
     mask = np.zeros(n, bool); mask[list(mask_at)] = True
     return dataclasses.replace(w, pool_changed=mask), mask
 
@@ -61,4 +61,4 @@ def test_the_pack_certificate_states_the_exclusion():
 
 def test_the_jax_kernels_refuse_the_request():
     with pytest.raises(ValueError, match="JAX kernels carry each walker's label"):
-        simulate_trajectories(10, 2e-9, Sphere(radius=4e-6), 2e-3, K=8, require_gpu=False, drop_pool_changes=True)
+        _walk_geometry(10, 2e-9, Sphere(radius=4e-6), 2e-3, K=8, require_gpu=False, drop_pool_changes=True)

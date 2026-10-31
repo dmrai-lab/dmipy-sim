@@ -1,5 +1,5 @@
 """The band of a pack is the scanner class's, never a search on the walk (#643): ``K = ceil(2 f T)`` with ``f`` the
-class's certified band times the storage margin; a walk from ``walk_spec`` carries its class; a walk with no class
+class's certified band times the storage margin; a walk from ``walk`` carries its class; a walk with no class
 and no stated band is refused by name; a class with no certified band is refused by name; the search is a
 diagnostic no producer calls. And the codec's numpy pieces (#642): the phase GEMM equals the einsum it replaced."""
 import pathlib
@@ -9,12 +9,13 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.storage import mode_count, storage_band_hz, STORAGE_BAND_MARGIN
 from dmipy_sim.replay import compression as cx
-from dmipy_sim.spec.walk import walk_spec
+from dmipy_sim.spec.walk import walk
 
 PAPER = {"prisma": 522.0, "connectom": 310.0, "magnus": 877.0, "connectome_2": 960.0, "bruker_bga_s": 3012.0, "micro_insert": 4095.0}
 
@@ -48,7 +49,7 @@ def test_a_class_without_a_certified_band_is_refused_by_name():
 
 def _walk(**kw):
     g = d.Cylinder(2e-6, (0, 0, 1))
-    return d.simulate_trajectories(300, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False, **kw)
+    return _walk_geometry(300, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False, **kw)
 
 
 def test_a_walk_states_its_own_band():
@@ -68,7 +69,7 @@ def test_scanner_sets_the_band_and_the_pack_records_the_class():
 
 def test_a_walk_from_walk_spec_carries_its_class_and_packs_without_an_argument():
     spec = d.Cylinder(2e-6, (0, 0, 1)).spec
-    w = walk_spec(spec, 300, 4e-3, 5e-4, scanner="prisma", seed=0, require_gpu=False, diffusivity=2e-9)
+    w = walk(spec, 300, 4e-3, 5e-4, scanner="prisma", seed=0, require_gpu=False, diffusivity=2e-9)
     assert w.scanner == "prisma"
     pk = build_replay_pack(w, id="t", license="x", citation="x")
     assert pk.K == mode_count(4e-3, "prisma") and pk.meta["compression"]["scanner"] == "prisma"

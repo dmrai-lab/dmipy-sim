@@ -243,8 +243,9 @@ def pgse_wf(TE_s, n_t=500, slew_rate=None):
 def pack():
     """A 300-walker cylinder walk packed at K = 8: the small pack of the replay tests."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
-    walk = d.simulate_trajectories(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
 
 
@@ -288,10 +289,10 @@ def _three_strands(tmp):
 def field_pack(tmp_path_factory):
     """A strand pack with the path channel (C3), from the three-strand fixture with a sheath; the field sampled in
     the walk with adaptive steps."""
-    from dmipy_sim.spec import walk_spec
+    from dmipy_sim import walk
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
-    w = walk_spec(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
+    w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
 
 

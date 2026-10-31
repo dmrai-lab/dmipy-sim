@@ -169,11 +169,12 @@ class TestB_IntraOnlyMatchesCylinder:
         mc_combined_4sigma = 4.0 * np.sqrt(2) / np.sqrt(n_walkers)  # ~ 0.020
 
         geom_myelin = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=D_intra, D_extra=2e-9,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(1.0, 0.0, 0.0),
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=D_intra, water_fraction=1.0), myelin=Pool(water_fraction=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         geom_cyl = Cylinder(radius=R_in, orientation=[0, 0, 1])
@@ -236,11 +237,12 @@ class TestC_ExtraOnlyFreeDiffusion:
         R_out = 5e-6
 
         geom = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=D_extra,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(0.0, 0.0, 1.0),
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(water_fraction=0.0), extra=Pool(D=D_extra, water_fraction=1.0)),
         )
 
         # Very short diffusion time: sqrt(2*D*Delta) << R_extra - R_out
@@ -295,20 +297,22 @@ class TestD_ExchangeRate:
 
         # Impermeable
         geom_no_exchange = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_myelin=2e-9, D_extra=2e-9,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(1.0, 0.0, 0.0),   # all walkers start in the intra pool
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(D=2e-9, water_fraction=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         # High inner permeability only
         geom_exchange = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_myelin=2e-9, D_extra=2e-9,
-            kappa_inner=1.0, kappa_outer=None,
-            water_fractions=(1.0, 0.0, 0.0),   # all walkers start in the intra pool
+            kappa_inner=1.0,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(D=2e-9, water_fraction=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         # Long diffusion time, moderate b to see diffusivity differences
@@ -338,11 +342,12 @@ class TestD_ExchangeRate:
         n_walkers = 50_000
 
         geom = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
-            kappa_inner=1e-3, kappa_outer=1e-3,
-            water_fractions=(1.0, 1.0, 1.0),
+            kappa_inner=1e-3,
+            kappa_outer=1e-3,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
 
         wf = _make_pgse_waveform(delta=5e-3, Delta=15e-3, n_t=2000)
@@ -402,10 +407,10 @@ class TestE_T2MultiTE:
             geom = MyelinatedCylinder(
                 inner_radius=R_in, outer_radius=R_out,
                 orientation=[0, 0, 1],
-                D_intra=2e-9, D_extra=2e-9,
                 kappa_inner=None, kappa_outer=None,
-                compartments={"intra": {"T2": T2_intra}, "myelin": {"T2": T2_myelin}, "extra": {"T2": T2_extra}},
-                water_fractions=wf_weights,
+                compartments=Compartments(intra=Pool(D=2e-9, T2=T2_intra, water_fraction=wf_weights[0]),
+                                          myelin=Pool(T2=T2_myelin, water_fraction=wf_weights[1], D=0.0),
+                                          extra=Pool(D=2e-9, T2=T2_extra, water_fraction=wf_weights[2])),
             )
 
             wf = _make_b0_waveform(n_t=2000, TE=TE)
@@ -437,10 +442,9 @@ class TestE_T2MultiTE:
             geom = MyelinatedCylinder(
                 inner_radius=R_in, outer_radius=R_out,
                 orientation=[0, 0, 1],
-                D_intra=2e-9, D_extra=2e-9,
                 kappa_inner=None, kappa_outer=None,
-                compartments={"myelin": {"T2": T2_myelin}},
-                water_fractions=(0.0, 1.0, 0.0),
+                compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(T2=T2_myelin, water_fraction=1.0, D=0.0),
+                                          extra=Pool(D=2e-9, water_fraction=0.0)),
             )
 
             wf = _make_b0_waveform(n_t=2000, TE=TE)
@@ -483,20 +487,22 @@ class TestF_WaterFractionApproachAvsB:
 
         # Approach A: weighted init
         geom_a = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(1.0, 0.15, 1.0),
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=0.15, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
 
         # Approach B: uniform init
         geom_b = MyelinatedCylinder(
-            inner_radius=R_in, outer_radius=R_out,
+            inner_radius=R_in,
+            outer_radius=R_out,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(1.0, 1.0, 1.0),
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
 
         wf = _make_pgse_waveform(delta=5e-3, Delta=15e-3, n_t=2000)
@@ -546,11 +552,12 @@ class TestG_BoundaryReflection:
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
-            inner_radius=3e-6, outer_radius=5e-6,
+            inner_radius=3e-6,
+            outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(0.0, 1.0, 0.0),
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         # Long TE to give walkers time to potentially leak
@@ -569,11 +576,12 @@ class TestG_BoundaryReflection:
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
-            inner_radius=3e-6, outer_radius=5e-6,
+            inner_radius=3e-6,
+            outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
-            kappa_inner=None, kappa_outer=None,
-            water_fractions=(1.0, 0.0, 0.0),
+            kappa_inner=None,
+            kappa_outer=None,
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         wf = _make_b0_waveform(n_t=2000, TE=80e-3)
@@ -594,10 +602,9 @@ class TestG_BoundaryReflection:
         geom = MyelinatedCylinder(
             inner_radius=3e-6, outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
             kappa_inner=None, kappa_outer=None,
-            compartments=Compartments(myelin=Pool(T2=T2_myelin)),
-            water_fractions=(0.0, 1.0, 0.0),
+            compartments=Compartments(intra=Pool(D=2e-9, water_fraction=0.0), myelin=Pool(T2=T2_myelin, water_fraction=1.0, D=0.0),
+                                      extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
         wf = _make_b0_waveform(n_t=2000, TE=TE)
@@ -626,9 +633,10 @@ class TestH_SignalMonotonicityBounds:
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
-            inner_radius=3e-6, outer_radius=5e-6,
+            inner_radius=3e-6,
+            outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
+            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
         b_values = np.array([0.0, 0.2e9, 0.5e9, 1.0e9, 2.0e9, 3.0e9])
@@ -665,9 +673,10 @@ class TestH_SignalMonotonicityBounds:
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
-            inner_radius=3e-6, outer_radius=5e-6,
+            inner_radius=3e-6,
+            outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
+            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
         for grad_dir, label in [([1, 0, 0], "x"), ([0, 1, 0], "y"), ([0, 0, 1], "z")]:
@@ -696,9 +705,10 @@ class TestBasicSmoke:
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
-            inner_radius=3e-6, outer_radius=5e-6,
+            inner_radius=3e-6,
+            outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=2e-9, D_extra=2e-9,
+            compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
 
         wf = _make_pgse_waveform(delta=5e-3, Delta=15e-3, n_t=2000)
@@ -718,9 +728,10 @@ class TestBasicSmoke:
         """outer_radius <= inner_radius should raise ValueError."""
         try:
             MyelinatedCylinder(
-                inner_radius=5e-6, outer_radius=3e-6,
+                inner_radius=5e-6,
+                outer_radius=3e-6,
                 orientation=[0, 0, 1],
-                D_intra=2e-9, D_extra=2e-9,
+                compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
             )
             assert False, "Should have raised ValueError"
         except ValueError:

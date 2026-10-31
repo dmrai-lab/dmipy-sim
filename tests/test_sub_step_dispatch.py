@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.physics import (resolve_sub_steps, tolerance_sub_steps, surface_sub_steps,
                                permeable_sub_steps, collision_sub_steps, mt_sub_steps,
                                make_step_fn, make_packed_myelin_step_fn)
@@ -26,13 +27,13 @@ def _sphere_rho():
 def _mesh_rho():
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
-    return d.Mesh(V, F, feature_radius=0.4e-6, compartments={"intra": {"surface_relaxivity_t2": 1e-6}})
+    return d.Mesh(V, F, feature_radius=0.4e-6, compartments=d.Compartments(intra=d.Pool(surface_relaxivity_t2=1e-6)))
 
 
 def _packed_myelin():
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 4, 0.7, 0.5, seed=0)
     L = float(np.sqrt(np.pi * 4 * (1e-6 / 0.7) ** 2 / 0.5))
-    return d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, c, L, N_max=8, rho_inner=1e-6)
+    return d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, c, L, N_max=8, rho_inner=1e-6, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
 
 
 # ── the composition rule ──────────────────────────────────────────────────────────────────
@@ -89,21 +90,21 @@ def test_packed_myelin_kernel_takes_the_dispatched_count():
     g = _packed_myelin()
     D_ref = float(max(np.max(np.asarray(g._D_intra_jax)), np.max(np.asarray(g._D_extra_jax))))
     assert make_packed_myelin_step_fn(g, DT).n_sub == resolve_sub_steps(g, D_ref, DT, surface=True)
-    g0 = d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, g._centers_np[:4], g._L_float, N_max=8)
+    g0 = d.PackedMyelinatedCylinders([1e-6] * 4, 0.7, g._centers_np[:4], g._L_float, N_max=8, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     assert make_packed_myelin_step_fn(g0, DT).n_sub == resolve_sub_steps(g0, D_ref, DT) > 1
 
 
 def test_trajectory_producers_take_the_dispatched_count():
     g = _sphere_rho()
     T_max, block_h = 5 * DT, DT
-    n_plain = d.simulate_trajectories(64, D, g, T_max, block_h, seed=0, require_gpu=False, tiers=()).sub_steps
+    n_plain = _walk_geometry(64, D, g, T_max, block_h, seed=0, require_gpu=False, tiers=()).sub_steps
     assert n_plain == resolve_sub_steps(g, D, block_h)
-    out = d.simulate_trajectories(64, D, g, T_max, block_h, seed=0,
+    out = _walk_geometry(64, D, g, T_max, block_h, seed=0,
                                   require_gpu=False)
     assert out.sub_steps == resolve_sub_steps(g, D, block_h, surface=True)
     b = d.Box1D(4e-6, surface_relaxivity_t2=1e-6)                     # flat walls, a low band: the surface rule binds
-    n_box = d.simulate_trajectories(64, D, b, T_max, block_h, seed=0, require_gpu=False, tiers=(), f_band=100.0).sub_steps
-    n_rho = d.simulate_trajectories(64, D, b, T_max, block_h, seed=0, require_gpu=False, f_band=100.0).sub_steps
+    n_box = _walk_geometry(64, D, b, T_max, block_h, seed=0, require_gpu=False, tiers=(), f_band=100.0).sub_steps
+    n_rho = _walk_geometry(64, D, b, T_max, block_h, seed=0, require_gpu=False, f_band=100.0).sub_steps
     assert n_rho == resolve_sub_steps(b, D, block_h, surface=True, f_band=100.0) > n_box == 1, \
         "recording the boundary local time resolves the surface criterion"
 
@@ -134,10 +135,10 @@ def test_a_degenerate_feature_is_refused_with_the_reason_and_the_remedy():
     inner = np.array([0.011e-6, 0.3e-6, 0.3e-6])
     L = float(np.sqrt(np.pi * np.sum((inner / 0.7) ** 2) / 0.55))
     _, _, c = d.pack_myelinated_cylinders(inner, 0.7, None, cell_size=L, seed=0)
-    g = d.PackedMyelinatedCylinders(inner, 0.7, c, L, N_max=4)
+    g = d.PackedMyelinatedCylinders(inner, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     with pytest.raises(ValueError, match="11.0 nm.*sub_steps="):
         resolve_sub_steps(g, D, 4e-4, surface=True)
     with pytest.raises(ValueError, match="sub-steps"):
-        d.simulate_trajectories(8, D, g, 8e-4, 4e-4, seed=0, require_gpu=False)
+        _walk_geometry(8, D, g, 8e-4, 4e-4, seed=0, require_gpu=False)
     assert resolve_sub_steps(g, D, 4e-4, surface=True, override=50) == 50
     assert resolve_sub_steps(d.Cylinder(3e-6, (0, 0, 1)), D, 4e-4, surface=True) < MAX_SUB_STEPS

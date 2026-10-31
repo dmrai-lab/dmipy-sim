@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack, sequences
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_sim.replay import bank
@@ -32,7 +33,7 @@ def cylinder_walk():
     """A reflecting cylinder of radius 3 um walked on the CPU with the contact channel and every walker kept raw."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return d.simulate_trajectories(1500, D0, d.Cylinder(radius=R, orientation=[0, 0, 1]), T, H, seed=1,
+        return _walk_geometry(1500, D0, d.Cylinder(radius=R, orientation=[0, 0, 1]), T, H, seed=1,
                                        require_gpu=False, K=32, raw_subset=1500, window_T=T)
 
 

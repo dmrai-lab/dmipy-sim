@@ -22,6 +22,7 @@ from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phanto
 from dmipy_replay.acquisition.waveforms import rotate_waveform
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.spec import Tissue
+from dmipy_sim import Pose
 
 N, R_IN, R_OUT = 40, 11.0, 17.0
 KAPPA, KAPPA_FAN = (16.0, 16.0), (1.0, 40.0)     # a cone around the ring, and a fan in one sector
@@ -128,9 +129,9 @@ def sweeps(ph, pack_path, n_frames=36):
         R = np.asarray(_r_so3.rotation_of(d), float).T
         return rotate_waveform(seq, R), R
     seq_n, R_n = posed(pgse(pack, dirs), (0.0, 1.0, 0.0))
-    S_g = ph.sparse(ph.replay(seq_n, pose=R_n, scanner=B0_T))[1]              # B0 north, g turning
+    S_g = ph.sparse(ph.replay(seq_n, pose=Pose(R_n), scanner=B0_T))[1]              # B0 north, g turning
     seq1 = pgse(pack, [[0.0, 0.0, 1.0]], refocus=False)                       # through the plane, across every fibre
-    S_b = np.stack([ph.sparse(ph.replay(s_d, pose=R_d, scanner=B0_T))[1][:, 0] for s_d, R_d in (posed(seq1, d) for d in dirs)], axis=1)
+    S_b = np.stack([ph.sparse(ph.replay(s_d, pose=Pose(R_d), scanner=B0_T))[1][:, 0] for s_d, R_d in (posed(seq1, d) for d in dirs)], axis=1)
     return ang, dirs, S_g, S_b
 
 

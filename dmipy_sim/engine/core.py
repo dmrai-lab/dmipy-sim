@@ -1,6 +1,6 @@
 """The simulation entry points.
 
-``simulate()`` walks the substrate to coefficients (:func:`simulate_trajectories`: per walker the exact endpoints and
+``simulate()`` walks the substrate to coefficients (:func:`_walk_geometry`: per walker the exact endpoints and
 the sine-band projections of its path, accumulated as the walk runs) and contracts them with the waveform
 (:meth:`~dmipy_sim.replay.replay.ReplayPack.replay`). The producers return a
 :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`; ``walk_cost`` prices one before it runs. The single-pass
@@ -32,7 +32,7 @@ from dmipy_replay.acquisition.scanner_sequence import Protocol
 # ═══════════════════════════════════════════════════════════════════════════
 # ROUTING
 # ═══════════════════════════════════════════════════════════════════════════
-# simulate() walks once (simulate_trajectories -> CoefficientWalk), then contracts the walk's bands with the
+# simulate() walks once (_walk_geometry -> CoefficientWalk), then contracts the walk's bands with the
 # waveform, the scalar / per-compartment T2, T1 and the wall's surface relaxivity (ReplayPack.replay), when the
 # geometry declares `replay_parity` (the producer's walk IS the fused walk, validated in
 # tests/test_replay_parity.py) and _replay_gap() finds nothing the producer cannot walk (a dedicated fused step
@@ -166,7 +166,7 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
         kw['walker_batch_size'] = walker_batch_size
     if sub_steps:
         kw['sub_steps'] = sub_steps
-    walk = simulate_trajectories(n_walkers, diffusivity, geometry, T_max, **kw)
+    walk = _walk_geometry(n_walkers, diffusivity, geometry, T_max, **kw)
     pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate")
 
     pools = sorted(pack.substrate.pools, key=lambda p: p.id)
@@ -204,7 +204,7 @@ def simulate(
     """The signal of ``waveform`` on ``geometry``: the substrate walked to coefficients, the waveform contracted
     with them.
 
-    The walk is :func:`simulate_trajectories` over the waveform's span at the band the waveform reads
+    The walk is :func:`_walk_geometry` over the waveform's span at the band the waveform reads
     (:func:`~dmipy_sim.acquisition.waveforms.band_hz`); the contraction is
     :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
     (geometry, diffusivity, seed), so the waveform, ``T2``, ``T1`` and the wall's surface relaxivity are replay
@@ -224,7 +224,7 @@ def simulate(
         :class:`~dmipy_sim.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
-        The substrate: a geometry, a :class:`~dmipy_sim.spec.SubstrateSpec`, its dict or a ``.sub.json`` path.
+        The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.
     seed : int
         Master PRNG seed (split into per-walker keys internally).
     T2 : float, optional
@@ -258,7 +258,7 @@ def simulate(
     """
     with Run("simulate", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         _acq = waveform.waveform if hasattr(waveform, 'waveform') else waveform
         if isinstance(_acq, Protocol):
             # a multi-TE scheme: one sequence per echo time, one walk each, the signals placed at their rows
@@ -354,7 +354,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     """
     with Run("simulate_cpmg", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         if hasattr(waveform, 'waveform'):
             waveform = waveform.waveform
         echo_indices = [int(i) for i in waveform.readout]
@@ -411,7 +411,7 @@ class _Rows:
 
 
 DEFAULT_WALKER_BATCH = 50_000
-"""Walkers per batch of :func:`simulate_trajectories` unless the caller says otherwise."""
+"""Walkers per batch of :func:`_walk_geometry` unless the caller says otherwise."""
 
 #: the length each sub-step rule divides, as the :class:`~dmipy_sim.geometry.base.LengthScales` field it reads;
 #: ``None`` where the rule's scale is not a length (the crossing rule reads the permeability, the binding rule the dwell time)
@@ -453,9 +453,9 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     :func:`~dmipy_sim.engine.accumulate.block_length`, unless ``block_h`` gives one), the sub-step count per block
     (``physics.resolve_sub_steps`` over the rules ``physics.sub_step_rules`` at the band ``K / (2 T)``), the field
     read's interval (a given one, read every ``n`` steps within it and at every block end, else the step: the pilot's read,
-    which :func:`simulate_trajectories` replaces by the read the pilot derives,
+    which :func:`_walk_geometry` replaces by the read the pilot derives,
     :func:`~dmipy_sim.engine.accumulate.field_read_of_pilot`), the geometries this walk cannot represent
-    (refused), and the :class:`WalkResolution` a backend is handed. :func:`simulate_trajectories` walks what this
+    (refused), and the :class:`WalkResolution` a backend is handed. :func:`_walk_geometry` walks what this
     returns and :func:`walk_cost` reports it, so a cost and a walk state one count."""
     from .accumulate import (block_length, BLOCK_ORDER, default_K, window_count, field_rule_scale, field_read_of_pilot,
                              FIELD_READ_FLOOR)
@@ -485,7 +485,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
                           length_scales_of as _length_scales_of, STEP_TOLERANCE)
     ls = _length_scales_of(geometry)
-    # the band the step law resolves: the caller's (walk_spec passes the scanner class's), else the walk's own K / (2 T)
+    # the band the step law resolves: the caller's (walk passes the scanner class's), else the walk's own K / (2 T)
     f_band = float(K / (2.0 * float(T_win)) if f_band is None else f_band)
     mt_dwell = dwell_time if kappa_MT > 0.0 else None
     rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell, f_band=f_band)
@@ -503,13 +503,13 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     _warn_step(geometry, diffusivity, dt_actual, n_sub, "trajectory walk")
 
     # Reject geometries whose boundaries this path cannot represent. The one source of truth is the geometry's own
-    # `trajectory_walk_gap` (never a class-name list), which `spec.walk.walk_spec` also checks before the walk.
+    # `trajectory_walk_gap` (never a class-name list), which `dmipy_sim.walk` also checks before the walk.
     gap = geometry.trajectory_walk_gap()
     if gap is not None:
-        raise NotImplementedError(f"simulate_trajectories cannot walk a {type(geometry).__name__}: {gap}")
+        raise NotImplementedError(f"_walk_geometry cannot walk a {type(geometry).__name__}: {gap}")
     if geometry._is_packed_myelinated and not record:
         raise NotImplementedError(
-            "simulate_trajectories on PackedMyelinatedCylinders requires the recorded channels "
+            "_walk_geometry on PackedMyelinatedCylinders requires the recorded channels "
             "(tiers='all'), which route to the fused kernel "
             "physics.make_packed_myelin_traj_step_fn. The position-only path has no "
             "compartment state and would return an unrestricted walk.")
@@ -607,7 +607,7 @@ class WalkProfile:
 
 @dataclass(frozen=True)
 class WalkCost:
-    """What a trajectory walk costs, stated before it runs: the resolution :func:`simulate_trajectories` walks, in work
+    """What a trajectory walk costs, stated before it runs: the resolution :func:`_walk_geometry` walks, in work
     and bytes, and optionally the time measured on the real device."""
     n_walkers: int                    #: walkers of the walk
     walker_batch_size: int            #: walkers per batch (``n_walkers`` for a single batch)
@@ -796,7 +796,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
               backend=None, measure=False, **walk_kwargs):
     """What a trajectory walk costs, stated before it runs: a :class:`WalkCost`.
 
-    It takes the arguments of :func:`simulate_trajectories`, with its names and defaults, and costs that call: the
+    It takes the arguments of :func:`_walk_geometry`, with its names and defaults, and costs that call: the
     request is resolved exactly as the walk resolves it (one code path: ``walk.sub_steps`` equals
     ``walk_cost(...).sub_steps``) and refused where the walk refuses. ``walk_kwargs`` are the walk's other keywords
     (``K``, ``block_order``, ``tiers``, ``sub_steps``, ``f_band``, ``kappa_MT``, ``dwell_time``, ``seed``,
@@ -807,7 +807,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     Parameters
     ----------
     n_walkers, diffusivity, geometry, T_max, block_h
-        As :func:`simulate_trajectories`. ``T_max`` scales the walker-steps linearly; the bands ``K`` set the
+        As :func:`_walk_geometry`. ``T_max`` scales the walker-steps linearly; the bands ``K`` set the
         accumulators' bytes per walker and the memory-limited batch, and, without ``f_band``, the band the step law
         resolves; ``block_h`` is the block when the band's own is not wanted.
     walker_batch_size : int or None
@@ -824,7 +824,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
         ``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) on the real device and backend and
         times it at two pilot lengths, each the second call of its shape (the compile is in the first):
         :attr:`WalkCost.measured`. The walk is the production program (``walk_kwargs`` included; ``r0`` is sliced
-        to the batch). A timed call is the whole of :func:`simulate_trajectories`: seeding, setup, the walk and the
+        to the batch). A timed call is the whole of :func:`_walk_geometry`: seeding, setup, the walk and the
         transfer to the host. Only the walk grows with the blocks; the rest is paid once per call, so one pilot
         length would multiply that fixed part by every block of the walk and flatten the rate curve. The pilot is
         therefore timed at n1 = 1 block and at n2 blocks (the walk's own block, ``K`` and step), n2 starting at 2 and
@@ -843,9 +843,9 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     """
     import inspect
     import time
-    unknown = set(walk_kwargs) - set(inspect.signature(simulate_trajectories).parameters)
+    unknown = set(walk_kwargs) - set(inspect.signature(_walk_geometry).parameters)
     if unknown:
-        raise TypeError(f"walk_cost got keywords simulate_trajectories does not take: {sorted(unknown)}")
+        raise TypeError(f"walk_cost got keywords _walk_geometry does not take: {sorted(unknown)}")
     kw = dict(walk_kwargs)
     be = resolve_backend(backend)
     name = JAX if be is None else str(be.name)
@@ -879,7 +879,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
         def seconds(b, blocks):
             """Seconds of the second call of this shape (the first holds the compile)."""
             k = dict(kw, **({} if r0 is None else dict(r0=r0[:b])))
-            walk = lambda: simulate_trajectories(b, diffusivity, geometry, blocks * res.block_h, res.block_h,
+            walk = lambda: _walk_geometry(b, diffusivity, geometry, blocks * res.block_h, res.block_h,
                                                  walker_batch_size=b, backend=backend, **k)
             walk()
             t0 = time.perf_counter(); walk()
@@ -989,7 +989,7 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_pe
     return {k: np.concatenate([p[k] for p in parts], axis=0) for k in parts[0]}
 
 
-def simulate_trajectories(
+def _walk_geometry(
     n_walkers: int,
     diffusivity: float,
     geometry,
@@ -1003,7 +1003,7 @@ def simulate_trajectories(
     r0=None,
     kappa_MT: float = 0.0,
     dwell_time: float = 0.0,
-    equilibrate_binding="auto",
+    equilibrate_binding="burnin",
     K: int = None,
     block_order: int = None,
     window_T: float = None,
@@ -1059,7 +1059,7 @@ def simulate_trajectories(
     diffusivity : float
         Diffusion coefficient in m²/s.
     geometry : Geometry
-        Boundary geometry (a spec, a spec file or its dict too).
+        Boundary geometry (a :class:`~dmipy_sim.spec.SubstrateSpec` too).
     T_max : float
         Total simulation duration in seconds.
     block_h : float, optional
@@ -1085,7 +1085,7 @@ def simulate_trajectories(
         bind / unbind events. At ``kappa_MT = 0`` the walk is the plain one.
     dwell_time : float
         Mean bound-pool residence time (s); must be ``> 0`` when ``kappa_MT > 0``.
-    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+    equilibrate_binding : {'burnin', 'fast', 'off'}
         How the bound pool reaches thermal-equilibrium occupancy before t=0 (MT only);
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.
     K : int, optional
@@ -1126,7 +1126,7 @@ def simulate_trajectories(
         Ask the backend for the walkers of this IMPERMEABLE walk whose label changed (a walker that crossed a wall no
         crossing was granted at) instead of refusing the walk: they come back as ``CoefficientWalk.pool_changed`` and
         every other walker's coefficients are the walk's. The caller decides what to do with them
-        (:func:`~dmipy_sim.spec.walk_spec` excludes them and records it). A permeable walk records its crossings as
+        (:func:`~dmipy_sim.walk` excludes them and records it). A permeable walk records its crossings as
         events and is refused this; the JAX kernels refuse it (they carry the label).
     field_read_interval : float, optional
         The interval (s) between the walk's reads of the field. None derives it from a pilot of
@@ -1186,12 +1186,12 @@ def simulate_trajectories(
     if drop_pool_changes and _backend is None:
         raise ValueError("drop_pool_changes asks a backend for the walkers of an impermeable walk that changed pool; the "
                          "JAX kernels carry each walker's label and report deviations (work['label_deviations']) instead")
-    with Run("simulate_trajectories", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget):
+    with Run("_walk_geometry", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
         from .gpu import check_gpu
-        check_gpu(n_walkers, require_gpu, what="simulate_trajectories")
+        check_gpu(n_walkers, require_gpu, what="_walk_geometry")
         if kappa_MT > 0.0 and dwell_time <= 0.0:
             raise ValueError("dwell_time must be > 0 when kappa_MT > 0.")
         res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=tiers, sub_steps=sub_steps, kappa_MT=kappa_MT,
@@ -1375,7 +1375,7 @@ def simulate_trajectories(
         # MyelinatedCylinder's step has no such state and is refused here, before any device work (#536).
         if kappa_MT > 0.0 and not is_packed_myelin_geom and (is_myelin_geom or not has_reflect_with_log_weight):
             raise NotImplementedError(
-                f"simulate_trajectories: kappa_MT > 0 (magnetization transfer) is carried by PackedMyelinatedCylinders' "
+                f"_walk_geometry: kappa_MT > 0 (magnetization transfer) is carried by PackedMyelinatedCylinders' "
                 f"trajectory step (make_packed_myelin_traj_step_fn) and by the walls of a geometry with has_walls; "
                 f"{type(geometry).__name__} has no bound pool to bind into. Pass kappa_MT=0.0 (the default), or walk a "
                 f"PackedMyelinatedCylinders or a walled geometry.")
@@ -2071,7 +2071,7 @@ def certify_bounce_budget(geometry, n_walkers, diffusivity, T_max, block_h=None,
     budget = derived
     while budget >= 1:
         t0 = time.perf_counter()
-        w = simulate_trajectories(n_walkers, diffusivity, geometry, T_max=T_max, block_h=block_h, seed=seed, tiers=(),
+        w = _walk_geometry(n_walkers, diffusivity, geometry, T_max=T_max, block_h=block_h, seed=seed, tiers=(),
                                   bounce_budget=budget, **walk_kwargs)
         seconds[budget] = time.perf_counter() - t0
         exhausted[budget] = int(w.work["exhausted_steps"])

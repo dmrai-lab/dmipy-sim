@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.analytic import PermeableSlab1D, PermeableShell
 from dmipy_sim.spec import spec_of, geometry_from_spec, SubstrateSpec, SpecError, load_spec
 
@@ -14,7 +15,7 @@ def _packed_myelin():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=1e-6, rho_outer=1e-6, kappa_inner=1e-5,
-                                       compartments=d.Compartments(extra=d.Pool(T2=0.08), intra=d.Pool(T2=0.05), myelin=d.Pool(T2=0.01)))
+                                       compartments=d.Compartments(extra=d.Pool(T2=0.08, D=2e-9), intra=d.Pool(T2=0.05, D=2e-9), myelin=d.Pool(T2=0.01, D=0.0)))
 
 
 def _packed_cyl():
@@ -38,8 +39,8 @@ GEOMETRIES = {
     "shell_cyl": lambda: PermeableShell(2e-6, 4e-6, 1e-5, kind="cylinder"),
     "packed_cyl": _packed_cyl,
     "packed_sph": _packed_sph,
-    "myelinated": lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D, D, kappa_inner=1e-5,
-                                               compartments=d.Compartments(intra=d.Pool(T2=0.05), myelin=d.Pool(T2=0.01), extra=d.Pool(T2=0.08))),
+    "myelinated": lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), kappa_inner=1e-5,
+                                               compartments=d.Compartments(intra=d.Pool(D=D, T2=0.05), myelin=d.Pool(T2=0.01, D=0.0), extra=d.Pool(D=D, T2=0.08))),
     "packed_myelin": _packed_myelin,
     "curved": lambda: d.CurvedCylinder(CL, 1e-6),
     "multishell": lambda: d.CurvedMyelinatedCylinder(CL, 1e-6, 1.5e-6, pool="myelin"),
@@ -59,8 +60,8 @@ def test_spec_round_trip_rebuilds_the_same_geometry(name):
     assert g2.spec == spec                                  # the spec is a fixed point
     if name in ("packed_curved", "multishell", "curved"):
         return                                             # no producer walk for these (fused kernels only)
-    w1 = d.simulate_trajectories(48, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
-    w2 = d.simulate_trajectories(48, D, g2, 4e-4, 2e-4, seed=1, require_gpu=False)
+    w1 = _walk_geometry(48, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
+    w2 = _walk_geometry(48, D, g2, 4e-4, 2e-4, seed=1, require_gpu=False)
     np.testing.assert_array_equal(w1.position_coeffs, w2.position_coeffs)
 
 
@@ -88,14 +89,14 @@ def test_the_published_examples_build_geometries(tmp_path):
     assert isinstance(cyl, d.Cylinder) and cyl.radius == 5e-6
     pm = geometry_from_spec(load_spec(fix / "packed_myelinated_cylinders.sub.json"))
     assert isinstance(pm, d.PackedMyelinatedCylinders) and pm.N_actual == 3
-    with pytest.raises(SpecError, match="pool by pool"):                 # a multi-surface bundle: walk_spec's job
+    with pytest.raises(SpecError, match="pool by pool"):                 # a multi-surface bundle: walk's job
         geometry_from_spec(load_spec(fix / "mesh_bundle.sub.json"))
 
 
 def test_per_instance_wall_properties_are_refused_honestly():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    g2 = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=[1e-6, 2e-6, 3e-6])
+    g2 = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, rho_inner=[1e-6, 2e-6, 3e-6], compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     with pytest.raises(SpecError, match="varies per axon"):
         g2.spec
 

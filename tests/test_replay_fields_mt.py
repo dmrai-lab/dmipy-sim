@@ -21,7 +21,8 @@ from dmipy_sim import RFEvent
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import simulate_trajectories, simulate_mt_trajectories, SusceptibilitySources, mt
+from dmipy_sim import simulate_mt_trajectories, SusceptibilitySources, mt
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax
 from dmipy_replay.replay.bloch import finite_180_longitudinal_dwell
 
@@ -41,7 +42,7 @@ def test_bloch_replay_matches_forward_spin_echo():
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
 
     fwd = _simulate_bloch(N, D, replace(wf, rf=rf), geom, T2=T2, seed=seed, require_gpu=False)
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    walk = _walk_geometry(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
     traj, dt_tr, subs = walk.raw_positions, walk.h, walk.sub_steps
     assert subs == 1                                       # bit-identical walk to forward
     rep = replay_bloch(traj, dt_tr, G, dt, rf, T2=T2)
@@ -56,7 +57,7 @@ def test_susceptibility_replay_gre_and_se():
     TE, dt = 15e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
     geom, T2 = d.Sphere(radius=8e-6), 120e-3
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    walk = _walk_geometry(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
     traj, dt_tr, subs = walk.raw_positions, walk.h, walk.sub_steps
     assert subs == 1
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
@@ -87,7 +88,7 @@ def test_scalar_susceptibility_replay_eps_p_refocus():
     TE, dt = 15e-3, 0.15e-3
     n_t = int(round(TE / dt)) + 1
     geom = d.Sphere(radius=8e-6)
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    walk = _walk_geometry(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
     traj, dt_tr = walk.raw_positions, walk.h
     prov = SusceptibilitySources(centers=[[0, 0, 0]], radii=[3e-6],
                                  delta_chi=8e-6, B0=3.0)
@@ -139,7 +140,7 @@ def test_mt_replay_zspectrum_matches_oracle():
     assert rep[3] < rep[0] - 0.3
 
 
-# ── packed-myelin MT: simulate_trajectories carries the bound state of a binding walk ───
+# ── packed-myelin MT: _walk_geometry carries the bound state of a binding walk ───
 def test_simulate_trajectories_packed_myelin_mt_channel():
     """kappa_MT == 0 keeps the walk bit-for-bit (no binding column); kappa_MT > 0 adds the bound state of every
     block end (0 free, 1 bound) and the walk's start state (RNG-preserved packed-myelin walk)."""
@@ -148,16 +149,16 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
                    cell_size=40e-6, N_max=3, D_intra=2e-9, D_myelin=0.1e-9, D_extra=2e-9)
     D, N, T, dt, seed = 2e-9, 400, 8e-3, 0.4e-3, 1
 
-    base = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
+    base = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,
                                  seed=seed, require_gpu=False)
-    off = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
+    off = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,
                                 seed=seed, require_gpu=False,
                                 kappa_MT=0.0)
     assert not base.has_binding and not off.has_binding and base.bound_start is None and off.bound_start is None
     assert np.array_equal(base.position_coeffs, off.position_coeffs)          # positions bit-identical
     assert np.array_equal(base.boundary_bands, off.boundary_bands)            # dlog bit-identical
 
-    on = simulate_trajectories(N, D, d.PackedMyelinatedCylinders(**geom_kw), T, dt,
+    on = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,
                                seed=seed, require_gpu=False,
                                kappa_MT=5e-5, dwell_time=3e-3, raw_subset=N)
     assert on.has_binding
@@ -174,7 +175,7 @@ def test_bloch_replay_jax_matches_numpy():
     n_t = int(round(TE / dt)) + 1
     G = np.zeros((1, n_t, 3)); G[0, :, 0] = 0.015
     geom, T2 = d.Sphere(radius=8e-6), 100e-3
-    walk = simulate_trajectories(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
+    walk = _walk_geometry(N, D, geom, TE, dt, seed=seed, require_gpu=False, tiers=(), raw_subset=N, sub_steps=1)
     traj, dt_tr = walk.raw_positions, walk.h
     rf = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0),
           RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]

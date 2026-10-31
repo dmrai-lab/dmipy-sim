@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.accumulate import block_length
 from dmipy_sim.engine.physics import tolerance_sub_steps, STEP_TOLERANCE
 from dmipy_sim.math.step_law import diffusion_spectrum, step_certificate, PILOT_STEP_RATIO
@@ -17,13 +18,13 @@ def test_a_free_walk_s_spectrum_is_flat_and_a_pore_s_rises_to_the_free_value():
     standard error; a 5 um sphere's spectrum is under a third of ``D`` at the lowest band and near ``D`` thirty pore
     rates up. The bands sit at ``k / (2 T)`` and there is no zero-frequency one."""
     T, K = 0.02, 80
-    w = d.simulate_trajectories(3000, D0, d.FreeDiffusion(), T, K=K, seed=0, require_gpu=False, window_T=0.1, tiers=())
+    w = _walk_geometry(3000, D0, d.FreeDiffusion(), T, K=K, seed=0, require_gpu=False, window_T=0.1, tiers=())
     f, D, se = diffusion_spectrum(w.position_coeffs, w.T_window)
     assert f.size == K and f[0] == pytest.approx(0.5 / T) and f[-1] == pytest.approx(K / (2 * T))
     z = (D - D0) / se
     assert np.abs(z).max() < 4.5 and abs(z.mean()) < 0.3                         # flat, and unbiased over the band
     T, K = 0.1, 400
-    w = d.simulate_trajectories(3000, D0, d.Sphere(5e-6), T, K=K, seed=0, require_gpu=False, window_T=0.1, tiers=())
+    w = _walk_geometry(3000, D0, d.Sphere(5e-6), T, K=K, seed=0, require_gpu=False, window_T=0.1, tiers=())
     f, D, se = diffusion_spectrum(w.position_coeffs, T)
     f1 = D0 * (2.0816 / 5e-6) ** 2 / (2 * np.pi)                                  # the pore rate, 55 Hz
     assert D[0] < 0.3 * D0 and f[0] < f1 / 4
@@ -46,8 +47,8 @@ def test_two_pilot_walks_measure_the_fine_step_s_error():
     eps = STEP_TOLERANCE * n_rule / n_fine                                         # first order: eps scales as the step
     n_coarse = max(1, n_fine // PILOT_STEP_RATIO)
     kw = dict(K=K, require_gpu=False, window_T=T, tiers=())
-    fine = d.simulate_trajectories(16000, D0, g, T, seed=1, sub_steps=n_fine, **kw)
-    coarse = d.simulate_trajectories(16000, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
+    fine = _walk_geometry(16000, D0, g, T, seed=1, sub_steps=n_fine, **kw)
+    coarse = _walk_geometry(16000, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
     assert fine.h == coarse.h == pytest.approx(h)
     cert = step_certificate(fine.position_coeffs, coarse.position_coeffs, T, n_fine / n_coarse, f_band=f_band,
                             eps_declared=eps)

@@ -153,7 +153,8 @@ def test_the_rounds_of_a_block_merge_to_the_shard_walked_by_hand(certified):
     packs merged with the union's weights, equal to the same rounds walked, packed and merged by hand."""
     from dmipy_sim.replay import read_rpk
     from dmipy_sim.replay.bank import build_replay_pack, merge_packs
-    from dmipy_sim.spec import draw_seeds, walk_spec
+    from dmipy_sim.spec import draw_seeds
+    from dmipy_sim import walk
     hub, work = certified
     rc = Recipe(hub)
     assert rc.context() is rc.context()
@@ -168,7 +169,7 @@ def test_the_rounds_of_a_block_merge_to_the_shard_walked_by_hand(certified):
     packs = []
     for r in range(3):
         seeding, seed, n_plan, tot, scale = round_seeding(rc, row, r, 3, P, None)
-        w = walk_spec(rc.spec(), T_max=W["T_max_s"], block_h=rc.block_h(), seeding=draw_seeds(rc.spec(), seeding, seed, context=rc.context()), seed=seed,
+        w = walk(rc.spec(), T_max=W["T_max_s"], block_h=rc.block_h(), seeding=draw_seeds(rc.spec(), seeding, seed, context=rc.context()), seed=seed,
                       require_gpu=False, walker_batch_size=W["walker_batch_size"], adaptive_steps=True, scanner=W["scanner"],
                       K=PK["K"], context=rc.context())
         packs.append(build_replay_pack(w, id=f"hand/{r}", license="x", citation="x", K=PK["K"], scanner=W["scanner"], position_container=pos_c, blt_container=blt_c,
@@ -283,20 +284,20 @@ def test_the_duty_pauses_the_device_after_a_walk(certified, monkeypatch, tmp_pat
 
 
 def test_the_backend_reaches_the_walk_and_an_unknown_one_is_refused(certified, monkeypatch):
-    """`--backend` is handed to `walk_spec` as given: the walk resolves it (an unknown name is refused naming what
+    """`--backend` is handed to `walk` as given: the walk resolves it (an unknown name is refused naming what
     is installed, before any block is walked) and its record names it."""
     import pytest
     import dmipy_sim.fill.pipeline as pl
     hub, work = certified
     rc = Recipe(hub)
     seen = []
-    real = pl.walk_spec if hasattr(pl, "walk_spec") else None
-    from dmipy_sim import spec as specmod
-    orig = specmod.walk_spec
+    real = pl.walk if hasattr(pl, "walk") else None
+    import dmipy_sim as specmod
+    orig = specmod.walk
 
     def spy(*a, **kw):
         seen.append((kw.get("backend"), kw.get("spool"))); return orig(*a, **kw)
-    monkeypatch.setattr(specmod, "walk_spec", spy)
+    monkeypatch.setattr(specmod, "walk", spy)
     o = dataclasses.replace(opts(work, host="h", block=0, loop=False), no_upload=True, backend="jax")
     Fill(hub, rc, o).run(heartbeat_every=3600)
     assert seen and all(b == ("jax", True) for b in seen)                  # the JAX walk is spooled (the resume)

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.constants import GAMMA
@@ -44,7 +45,7 @@ def test_a_gradient_echo_keeps_the_order_0_phase_and_a_spin_echo_cancels_it():
 def free_phantom(tmp_path_factory):
     seq = sequences.gre(30e-3, gradient_directions=[[1.0, 0.0, 0.0]], bvalues=[1.0e9], delta=8e-3, Delta=9e-3, n_t=301)
     n_t, dt = int(seq.n_t), float(seq.dt)
-    walk = d.simulate_trajectories(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
+    walk = _walk_geometry(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
     build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
     sh, vox = (3, 3, 1), 0.03

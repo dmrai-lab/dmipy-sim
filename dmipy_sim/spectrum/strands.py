@@ -16,7 +16,7 @@ columns of the same size ARE drawn from the same distribution, which is the poin
 **Counts.** A strand's radius is drawn once per strand (axolemma / inner, DiSCo's own statistics) and carried
 for its whole length, as :func:`~dmipy_sim.spec.producers.disco_spec` requires. Per-voxel walker counts come
 from one pilot: a tiny 25 um realisation of the SAME statistics is walked on the JAX engine
-(:func:`~dmipy_sim.spec.walk.walk_spec`) at ``n_pilot = ceil(1 / target_floor**2)`` walkers per pool -- the
+(:func:`~dmipy_sim.walk`) at ``n_pilot = ceil(1 / target_floor**2)`` walkers per pool -- the
 textbook Monte-Carlo floor ``1/sqrt(n)`` this codebase already cites throughout (``scanners.py``'s
 band derivation, ``replay.bank.storage_band_hz``'s certificate) -- which both proves the geometry
 and its seeding are walkable and gives ``n_pilot`` its floor by construction (``floor_pilot = 1/sqrt(n_pilot)``).
@@ -137,10 +137,11 @@ def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, 
     halo budget: :data:`PILOT_EDGE_M` is too small for either policy walk length, dmipy-sim#697's own halo
     rule), and returns ``(n_pilot, floor_pilot, pilot_dir)``. This is the "pilot shard walked on the JAX engine
     at the smallest edge" dmipy-sim#697 asks for: it PROVES the statistics are walkable (a real
-    :func:`~dmipy_sim.spec.walk.walk_spec` call, JAX, CPU) rather than assuming it; the floor itself is the
+    :func:`~dmipy_sim.walk` call, JAX, CPU) rather than assuming it; the floor itself is the
     closed form ``1/sqrt(n_pilot)`` by construction (``n_pilot`` is chosen to hit the stated target exactly),
     not re-measured from the walk's own signal."""
-    from ..spec import disco_spec, walk_spec
+    from ..spec import disco_spec
+    from .. import walk
     pilot_dir = os.path.join(out_dir, "pilot")
     os.makedirs(pilot_dir, exist_ok=True)
     tracks = os.path.join(pilot_dir, "strands.tck")
@@ -159,7 +160,7 @@ def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, 
     spec = disco_spec(tracks, diam, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=PILOT_EDGE_M, field=False)
     T_safe = min((PILOT_EDGE_M / 16.0) ** 2 / (2.0 * HALO_FREE_DIFFUSIVITY_M2_S), 1e-3)
     t0 = time.time()
-    walk_spec(spec, n_pilot * 2, T_safe, seed=pseed, require_gpu=False, n_probe=max(20_000, n_pilot * 4))
+    walk(spec, n_pilot * 2, T_safe, seed=pseed, require_gpu=False, n_probe=max(20_000, n_pilot * 4))
     log.info("spectrum.strands: pilot walked %d walkers/pool in %.1f s (T_max=%.2g s)", n_pilot, time.time() - t0, T_safe)
     floor_pilot = 1.0 / np.sqrt(n_pilot)
     return n_pilot, float(floor_pilot), pilot_dir

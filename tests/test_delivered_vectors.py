@@ -17,7 +17,8 @@ from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom.bore import encoding_classes
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.time_segments import TimeSegmentLayout, segment_rows, write_time_segment_layout
-from dmipy_sim.spec import walk_spec, StratifiedByVoxel
+from dmipy_sim.spec import StratifiedByVoxel
+from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 
 DELTA, BIG_DELTA = 0.2e-3, 0.5e-3
@@ -36,7 +37,7 @@ def layout(spec_grid):
     packs, dirs = [], []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-5, seed=31 + b, require_gpu=False, adaptive_steps=True, K=12,
+        w = walk(spec, T_max=8e-4, block_h=2e-5, seed=31 + b, require_gpu=False, adaptive_steps=True, K=12,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         kw = {} if not packs else dict(position_container=packs[0].meta["compression"]["container"],      # a fill's shards
                                        blt_container=packs[0].meta["compression"]["channels"]["boundary_local_time"]["container"])

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.phantom import PackSubstrate
 from dmipy_sim.replay.bank import build_replay_pack
@@ -25,7 +26,7 @@ INF = float("inf")
 def extra_only():
     """A packed cylinder walked in its extra pool alone: the spec names two pools, the walkers label one."""
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
-    walk = d.simulate_trajectories(120, 2e-9, g, 3e-3, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(120, 2e-9, g, 3e-3, 5e-4, seed=0, require_gpu=False)
     return build_replay_pack(walk, id="t/extra-only", license="x", citation="x", K=6)
 
 

@@ -14,7 +14,8 @@ from dmipy_sim.fill.recipe import manifest_grid
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_certificate
 from dmipy_sim.replay.replay import ReplayPack, read_rpk, write_rpk
-from dmipy_sim.spec import StratifiedByVoxel, walk_spec
+from dmipy_sim.spec import StratifiedByVoxel
+from dmipy_sim import walk
 from tests.conftest import spec_without_source
 from tests.test_field_read_interval import BLOCK, FINE
 
@@ -46,7 +47,7 @@ def rounds(spec_grid):
     cert, written = [], []
     for name, block, per, seed in plan:
         want = np.zeros(grid.shape, np.int64); want[block] = per
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         pk = build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "certified" / f"{name}.rpk"))
         cert.append(pk); written.append(as_written_by_a_walker(pk, str(tmp / "written" / f"{name}.rpk")))
@@ -124,7 +125,7 @@ def field_blocks(tmp_path_factory):
     packs = []
     for block, interval in ((0, FINE), (1, BLOCK)):
         want = np.zeros(grid.shape, np.int64); want[block] = 6
-        w = walk_spec(spec, None, 8e-4, BLOCK, seed=3 + block, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+        w = walk(spec, None, 8e-4, BLOCK, seed=3 + block, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
                       field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}),
                       **({} if interval is None else dict(field_read_interval=interval)))
         pk = build_replay_pack(w, id=f"t/b{block}", license="x", citation="x", K=4, susc_path_K=4, device="numpy", voxel_grid=grid,
