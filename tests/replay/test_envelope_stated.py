@@ -19,7 +19,6 @@ from dmipy_sim.replay import time_segments
 from dmipy_sim.replay.bank import build_replay_pack, _round_sig
 from dmipy_sim.replay.compression import certified_envelope, default_envelope
 from dmipy_sim.spec import disco_spec
-from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 
 BLOCK = 1e-4
@@ -42,7 +41,7 @@ def walk(spec):
     """A DiSCo-like strand walk with the contact and the field on."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return walk(spec, 60, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+        return d.walk(spec, 60, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
                          field_cutoff_max_m=25e-6)
 
 

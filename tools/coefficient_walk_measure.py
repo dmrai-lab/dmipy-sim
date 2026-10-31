@@ -675,7 +675,7 @@ def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0
     env = dict(cx.default_envelope(), B0_list=[B0], theta_deg=[float(theta_deg)])
     secs = {}
 
-    def walk(name, **kw):
+    def walked(name, **kw):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             t0 = time.time()
@@ -683,12 +683,12 @@ def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0
                           envelope=env, **kw)
             secs[name] = time.time() - t0
         return w
-    derived = walk("derived")
+    derived = walked("derived")
     fr = dict(derived.block["field_read"])
     K_c3 = int(derived.K_c3)
     rounds = {name: float(st["round_s"]) for name, st in (derived.stepping.get("pools") or {}).items()}
-    fine = walk("every round", field_read_interval=min(rounds.values()), K_c3=K_c3)
-    block = walk("once per block", field_read_interval=float(derived.h), K_c3=K_c3)
+    fine = walked("every round", field_read_interval=min(rounds.values()), K_c3=K_c3)
+    block = walked("once per block", field_read_interval=float(derived.h), K_c3=K_c3)
     chi = float(fr["chi"])
     names = list(derived.field_basis.channel_names)
     ids = {p.name: p.id for p in spec.pools}
