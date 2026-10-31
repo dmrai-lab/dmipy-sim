@@ -31,14 +31,15 @@ from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 SEED = 42
 
 
-def _make_pgse_waveform(delta, Delta, n_t=2000, grad_dir=None):
-    """Build a single-measurement PGSE waveform with given timing."""
+def _make_pgse_waveform(delta, Delta, n_t=2000, grad_dir=None, **pgse_kw):
+    """Build a single-measurement PGSE waveform with given timing (``pgse_kw``: e.g. ``slew_rate=np.inf`` for
+    the ideal lobes a lobe shorter than its 1 T/m ramp needs)."""
     if grad_dir is None:
         grad_dir = np.array([1.0, 0.0, 0.0])
     grad_dir = np.asarray(grad_dir, dtype=np.float32)
     grad_dir = grad_dir / np.linalg.norm(grad_dir)
     bvecs = grad_dir.reshape(1, 3)
-    wf = pgse(bvecs, delta, Delta, gradient_strengths=1.0, n_t=n_t)
+    wf = pgse(bvecs, delta, Delta, gradient_strengths=1.0, n_t=n_t, **pgse_kw)
     return wf
 
 
@@ -250,7 +251,7 @@ class TestC_ExtraOnlyFreeDiffusion:
         # Parallel gradient: no boundary restriction along z
         b_values = np.array([0.0, 0.3e9, 0.6e9, 1.0e9, 1.5e9])
         wf = _make_pgse_waveform(delta=delta, Delta=Delta, n_t=2000,
-                                  grad_dir=[0, 0, 1])
+                                  grad_dir=[0, 0, 1], slew_rate=np.inf)
         wf_b = set_b(tile_waveform(wf, len(b_values)), b_values)
 
         sig = simulate(n_walkers=n_walkers, waveform=wf_b,
