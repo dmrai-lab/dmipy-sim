@@ -32,6 +32,35 @@ class ConcentricHit(NamedTuple):
     exhausted: jnp.ndarray #: bool -- the bounce budget ran out with path untested
 
 
+def pin_to_pool(xy, q, R_in, R_out, pool, nudge):
+    """``xy`` pulled strictly onto the side of the concentric walls (radii ``R_in < R_out``) that ``pool`` (0 extra,
+    1 lumen, 2 sheath) occupies, ``q`` its offset from the axon's centre: the side rule the fused step kernel applies
+    at the end of every step, and the one the seeders apply to every accepted point."""
+    xy, _ = keep_side_radial(xy, q, R_in, True, nudge, active=pool == 1)
+    xy, _ = keep_side_radial(xy, q, R_in, False, nudge, active=pool == 2)
+    xy, _ = keep_side_radial(xy, q, R_out, True, nudge, active=pool == 2)
+    xy, _ = keep_side_radial(xy, q, R_out, False, nudge, active=pool == 0)
+    return xy
+
+
+def _pin_seeds(xy, centers, L, R_in, R_out, pool, nudge):
+    """``(n, 2)`` float32 seeds ``xy`` pulled strictly onto their pool's side of their axon's walls.
+
+    A seeder accepts a point by a float64 test and casts it to float32; a draw within half a float32 ulp of a wall
+    can round onto or past it, where the first step reads it as the neighbouring pool for good. ``centers``,
+    ``R_in``, ``R_out`` and ``pool`` are per point; ``L`` is the periodic cell edge (``None`` when there is none)."""
+    f32 = jnp.float32
+
+    def _one(p, c, ri, ro, pl):
+        q = p - c
+        if L is not None:
+            q = q - f32(L) * jnp.floor(q / f32(L) + f32(0.5))
+        return pin_to_pool(p, q, ri, ro, pl, f32(nudge))
+
+    return np.asarray(jax.vmap(_one)(jnp.asarray(xy, f32), jnp.asarray(centers, f32), jnp.asarray(R_in, f32),
+                                     jnp.asarray(R_out, f32), jnp.asarray(pool, jnp.int32)))
+
+
 def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
                            kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
@@ -80,12 +109,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         return q if L is None else q - L * jnp.floor(q / L + f32(0.5))
 
     def _pin(xy, q, R_in, R_out, pool):
-        """Strict side of the walls of ``pool`` around the axon at offset ``q``."""
-        xy, _ = keep_side_radial(xy, q, R_in, True, nudge, active=pool == 1)
-        xy, _ = keep_side_radial(xy, q, R_in, False, nudge, active=pool == 2)
-        xy, _ = keep_side_radial(xy, q, R_out, True, nudge, active=pool == 2)
-        xy, _ = keep_side_radial(xy, q, R_out, False, nudge, active=pool == 0)
-        return xy
+        return pin_to_pool(xy, q, R_in, R_out, pool, nudge)
 
     def wall(xy, d_hat, step_l, pool, k, u):
         q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
@@ -370,6 +394,10 @@ class MyelinatedCylinder(Geometry):
             positions[idx:idx + n_extra, 1] = xy_extra[:, 1]
             compartments[idx:idx + n_extra] = 0
             idx += n_extra
+
+        # the float64 accept tests above can round a draw onto a wall in float32: pull every seed onto its pool's side
+        positions[:, :2] = _pin_seeds(positions[:, :2], np.zeros((n_walkers, 2)), None, np.full(n_walkers, R_in),
+                                      np.full(n_walkers, R_out), compartments, self._nudge)
 
         r_lab = positions                                   # the substrate frame: xy the cross-section, z the axis
 
@@ -852,6 +880,13 @@ class PackedMyelinatedCylinders(Geometry):
             positions[idx:idx + n_extra_actual, 0] = xy_ex[:, 0]
             positions[idx:idx + n_extra_actual, 1] = xy_ex[:, 1]
             compartments[idx:idx + n_extra_actual] = 0
+
+        # the float64 accept tests above can round a draw onto a wall in float32: pull every lumen and sheath seed
+        # onto its pool's side of its own axon's walls (the extra seeds were pulled by `_seed_periodic`)
+        own = np.concatenate([np.repeat(np.arange(N), n_intra), np.repeat(np.arange(N), n_myelin)]).astype(int)
+        m = len(own)
+        pool = np.where(compartments[:m] <= N_max, 1, 2)
+        positions[:m, :2] = _pin_seeds(positions[:m, :2], centers[own], L, inner[own], outer[own], pool, self._nudge)
 
         r_lab = positions                                   # the substrate frame: xy the cross-section, z = 0
 

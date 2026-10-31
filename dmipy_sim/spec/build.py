@@ -652,6 +652,13 @@ def _geometry_from_spec(spec):
         if len(spec.seeding.pools) != 1:
             raise SpecError(f"a label_volume is walked one pool at a time; the spec seeds {spec.seeding.pools}")
         w = walls[0]
+        # LabelVolume takes ONE surface relaxivity for every voxel face; a spec that gives two sides or two walls
+        # different values would be walked at one of them
+        rho_of = {x.name: (x.surface_relaxivity.inside, x.surface_relaxivity.outside) for x in walls}
+        if len({v for pair in rho_of.values() for v in pair}) > 1:
+            raise SpecError(f"a label_volume walks ONE surface relaxivity at every voxel face, but the walls give "
+                            f"(inside, outside) {rho_of}; the pool-id convention is that 'inside' is the wall's "
+                            f"inside_pool (the higher pool id of the pair). Give every wall and side the same value")
         labels, vox, origin, pool_map = label_volume_arrays(w.surface)
         by_id = {p.id: p.name for p in spec.pools}
         order = {p.name: p.id for p in spec.pools}

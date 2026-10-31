@@ -1005,11 +1005,12 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     g = ctx.tests
     pools, inside_w, outside_w, boundary, member, sampler = g.pools, g.inside_w, g.outside_w, g.boundary, g.member, g.sampler
     lo, hi, periodic, reflect, seeded, wf = g.lo, g.hi, g.periodic, g.reflect, g.seeded, g.wf
-    if seeding is None:
+    if seeding is None and spec.seeding.rule == "explicit":
+        def seeds(pid, s):                                 # the cited list, read for this pool: n_walkers of it
+            return _explicit_seeds(spec, pid, int(n_walkers), member(pid))
+    elif seeding is None:
         probe = np.random.default_rng(int(seed) + 99).uniform(lo, hi, (int(n_probe), 3))
         frac = {pid: float(member(pid)(probe).mean()) for pid in seeded}
-        if spec.seeding.rule == "explicit":
-            return _explicit_seeds(spec, pid, n, member(pid))
         if spec.seeding.weights == "thin":                 # seed by volume x water fraction, every walker weight 1
             mass = {pid: frac[pid] * wf[pid] for pid in seeded}
         else:                                              # seed by volume, carry the water fraction as a weight

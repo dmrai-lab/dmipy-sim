@@ -1,4 +1,5 @@
 """The ``label_volume`` surface kind: what the spec must say, and the fixed point with the geometry."""
+import dataclasses
 import json
 import os
 import shutil
@@ -216,3 +217,27 @@ def test_the_geometry_refuses_a_spec_whose_image_has_changed(image):
     d["walls"][0]["surface"]["sha256"] = "0" * 64
     with pytest.raises(SpecError, match="does not match the sha256"):
         geometry_from_spec(SubstrateSpec.from_dict(d))
+
+
+@pytest.mark.parametrize("sides", [(1e-5, 2e-5), (2e-5, 1e-5)])
+def test_a_label_volume_refuses_a_relaxivity_that_differs_between_its_sides(image, sides):
+    """A label volume walks ONE surface relaxivity at every voxel face; a wall whose inside and outside differ
+    is refused by name rather than walked at one of them."""
+    from dmipy_replay.spec.substrate import Sided
+    spec = label_volume_spec(image[0], rho2=1e-5, D=2e-9)
+    wall = dataclasses.replace(spec.walls[0], surface_relaxivity=Sided(*sides))
+    with pytest.raises(SpecError, match=rf"{wall.name}.*{sides[0]}"):
+        geometry_from_spec(spec.replace(walls=[wall]))
+
+
+def test_a_label_volume_refuses_a_relaxivity_that_differs_between_its_walls(tmp_path):
+    from dmipy_replay.spec.substrate import Sided
+    lab = np.zeros((12, 6, 6), np.uint8)
+    lab[4:8] = 1
+    lab[8:] = 2
+    p = tmp_path / "three.nrrd"
+    write_nrrd(p, lab, 1e-6)
+    spec = label_volume_spec(p, pools={0: "free", 1: "intra", 2: "myelin"}, D=2e-9, rho2=1e-5)
+    second = dataclasses.replace(spec.walls[1], surface_relaxivity=Sided(3e-5, 3e-5))
+    with pytest.raises(SpecError, match=r"myelin\|intra.*3e-05"):
+        geometry_from_spec(spec.replace(walls=[spec.walls[0], second]))
