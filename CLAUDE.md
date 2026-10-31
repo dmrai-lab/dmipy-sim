@@ -243,7 +243,7 @@ Packed geometries (`classify_returns_object_id`) return 1..N for the object a wa
 extra=Pool(T2=…)))` stores `(T2_extra, T2_intra)`). `PackedMyelinatedCylinders` carries an encoded id (`k+1` lumen of
 axon k, `N_max+k+1` its sheath) and maps it with `geometry.pool_of(...)` at the API boundary.
 **Per-compartment properties have one spelling**: `compartments=Compartments(extra=Pool(T2=…, D=…), intra=Pool(…), myelin=Pool(…))`
-(`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map; `Substrate.compartments` builds one). A geometry's
+(`dmipy_sim.compartments`; `pool_id(name)` is the only name→id map, and pools are addressed by name (`Compartments["intra"]`; an integer id is refused); `Substrate.compartments` builds one). A geometry's
 `compartments=` takes a `Compartments` or `None`: a dict of pools, a dict of a pool's properties and `Compartments({...})`
 are refused by name, as are `Mesh(intra=, extra=)` and the `T2_intra/T2_myelin/T2_extra` scalars; per-axon arrays on
 `PackedMyelinatedCylinders` stay kwargs because they are per object, not per pool.

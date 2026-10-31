@@ -3,7 +3,7 @@
 A substrate has up to three water pools -- ``extra`` (id 0), ``intra`` (id 1), ``myelin``
 (id 2) -- the ids every compartment channel, ``return_compartments`` array and ``.rpk`` pack
 use. `Compartments` maps pool names to a `Pool` of bulk and wall properties; geometries and the
-`Substrate` accept one, and ``pool_id`` is the only place a name becomes an index.
+`Substrate` accept one, and ``pool_id`` is the only place a name becomes an index. Pools are addressed by name.
 """
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
@@ -14,16 +14,15 @@ POOL_NAMES = tuple(POOL_IDS)                     # index = pool id
 
 
 def pool_id(name):
-    """Compartment id of a pool name (``extra`` 0, ``intra`` 1, ``myelin`` 2); an int passes through."""
-    if isinstance(name, str):
-        try:
-            return POOL_IDS[name]
-        except KeyError:
-            raise KeyError(f"unknown pool {name!r}; pools are {POOL_NAMES}") from None
-    i = int(name)
-    if i not in POOL_IDS.values():
-        raise KeyError(f"unknown pool id {i}; ids are {sorted(POOL_IDS.values())}")
-    return i
+    """Compartment id of a pool name (``extra`` 0, ``intra`` 1, ``myelin`` 2). Pools are addressed by name; the integer
+    id is the engine's storage form, and an id is refused."""
+    if not isinstance(name, str):
+        raise TypeError(f"a pool is addressed by its name {POOL_NAMES}, got {type(name).__name__} {name!r}; "
+                        f"the integer id is internal")
+    try:
+        return POOL_IDS[name]
+    except KeyError:
+        raise KeyError(f"unknown pool {name!r}; pools are {POOL_NAMES}") from None
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,14 @@ class Compartments(Mapping):
             raise KeyError(f"unknown pools {sorted(given)}; pools are {POOL_NAMES}")
 
     def __getitem__(self, name):
-        return self._pools[POOL_NAMES[pool_id(name)]]
+        pool_id(name)                                 # a name only; an unknown name or an id is refused
+        try:
+            return self._pools[name]
+        except KeyError:
+            raise KeyError(f"no {name!r} pool in {self!r}") from None
+
+    def __contains__(self, name):
+        return isinstance(name, str) and name in self._pools
 
     def __iter__(self):
         return iter(self._pools)

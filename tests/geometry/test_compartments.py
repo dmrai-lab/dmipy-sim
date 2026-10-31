@@ -8,17 +8,23 @@ from dmipy_sim.compartments import Compartments, Pool, pool_id
 
 def test_pool_ids_are_the_channel_convention():
     assert (pool_id("extra"), pool_id("intra"), pool_id("myelin")) == (0, 1, 2)
-    assert pool_id(1) == 1
     with pytest.raises(KeyError, match="unknown pool"):
         pool_id("csf")
-    with pytest.raises(KeyError):
-        pool_id(3)
+    for an_id in (0, 1, 3, True, None):                                # pools are addressed by name; the id is internal
+        with pytest.raises(TypeError, match="addressed by its name"):
+            pool_id(an_id)
 
 
 def test_compartments_order_by_id():
     c = Compartments(intra=Pool(T2=0.05, D=1.7e-9), extra=Pool(T2=0.08, D=1.7e-9))
     assert list(c) == ["extra", "intra"] and c.ids == (0, 1)
-    assert c["intra"].T2 == 0.05 and c[1].T2 == 0.05 and c[0] is c["extra"]
+    assert c["intra"].T2 == 0.05 and c["extra"].D == 1.7e-9
+    for an_id in (0, 1):
+        with pytest.raises(TypeError, match="addressed by its name"):
+            c[an_id]
+    assert 1 not in c and "intra" in c and "myelin" not in c
+    with pytest.raises(KeyError, match="no 'myelin' pool"):
+        c["myelin"]
     assert c.by_id("T2") == (0.08, 0.05) and c.by_id("D") == (1.7e-9, 1.7e-9)
     assert c.by_id("T1") is None
     assert Compartments.coerce(c) is c
