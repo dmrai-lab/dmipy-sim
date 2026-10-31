@@ -139,6 +139,16 @@ def test_compartment_property_parsing():
     npt.assert_allclose([float(mk._kappa_mult_out), float(mk._kappa_mult_in)], [1.0, 0.25], atol=1e-6)
 
 
+def test_directional_permeability_names_exactly_both_directions():
+    V, F = _icosphere(2)
+    for bad, match in (({"intra_to_extra": 1e-5}, "missing \\['extra_to_intra'\\]"),
+                       ({"extra_to_intra": 1e-5}, "missing \\['intra_to_extra'\\]"),
+                       ({"intra_to_extra": 1e-5, "extra_to_intra": 1e-5, "out": 1.0}, "unknown \\['out'\\]"),
+                       ({"in": 1e-5, "out": 1e-5}, "missing")):
+        with pytest.raises(ValueError, match=match):
+            Mesh(V, F, permeability=bad)
+
+
 def test_compartment_unsupported_key_raises():
     V, F = _icosphere(2)
     with pytest.raises(TypeError, match="kurtosis"):

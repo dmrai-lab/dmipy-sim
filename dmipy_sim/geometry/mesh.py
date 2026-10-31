@@ -37,6 +37,7 @@ tessellation (its bias falls ~``O(h^2)``), so accurate permeability needs a fair
 fine mesh (edge length ``<~ 0.04`` of the local feature radius).
 """
 
+from collections.abc import Mapping
 import itertools
 from collections import deque
 import warnings
@@ -735,9 +736,9 @@ class Mesh(Geometry):
         (a step may not outrun the 27-cell gather).  Defaults to half the smallest box side, which is
         the pore of a closed cell and far too large for a bundle in a big box: **pass
         the real cell radius for packed substrates**, otherwise the step is too coarse.
-    permeability : float or dict, optional
+    permeability : float or mapping, optional
         Membrane permeability κ (m/s).  A float is symmetric (same both directions,
-        the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
+        the default). A mapping ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
         makes it direction-dependent — note asymmetric κ is a *pump* (net flux, not
         passive equilibrium). None → impermeable.
     compartments : Compartments, optional
@@ -960,9 +961,15 @@ class Mesh(Geometry):
 
         # permeability: scalar κ (symmetric, default) OR
         # dict(intra_to_extra=…, extra_to_intra=…) for a direction-dependent (rectifying) wall.
-        if isinstance(permeability, dict):
-            k_out = float(permeability.get("intra_to_extra", 0.0))   # leaving a cell
-            k_in = float(permeability.get("extra_to_intra", 0.0))    # entering a cell
+        if isinstance(permeability, Mapping):
+            keys = ("intra_to_extra", "extra_to_intra")
+            if set(permeability) != set(keys):
+                missing = [k for k in keys if k not in permeability]
+                unknown = sorted(set(permeability) - set(keys))
+                raise ValueError(f"Mesh(permeability=) is a scalar (symmetric) or a mapping with exactly the keys "
+                                 f"{keys}; missing {missing}, unknown {unknown}")
+            k_out = float(permeability["intra_to_extra"])   # leaving a cell
+            k_in = float(permeability["extra_to_intra"])    # entering a cell
         elif permeability is not None:
             k_out = k_in = float(permeability)
         else:
