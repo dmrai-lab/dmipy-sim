@@ -271,7 +271,7 @@ everywhere: 0 extra-cellular, 1 intra (the lumen / inside a closed surface), 2 m
 
 Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inner, outer)`,
 `spec.caterpillar_spec(csv)`, `spec.label_volume_spec(image)` (a segmented micro-CT / EM / mask volume in NRRD,
-MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(txt)` read the files and write down
+MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(tracks, diameters)` (the MRtrix track file and the strand-diameter list) read the files and write down
 domain, pools, walls and seeding; `walk_spec(spec, ...)` walks them pool by pool and the pack embeds the spec.
 The scanner class gives the band, the band gives the block: `walk_spec` accumulates the class's certified band
 (`scanner="prisma" | "magnus" | "connectom" | ...`), `K` sine bands per 100 ms storage window, in blocks of

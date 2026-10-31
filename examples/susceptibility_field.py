@@ -9,13 +9,12 @@ Three ways to define a susceptibility source, each yielding an off-resonance fie
 
 Run:  python examples/susceptibility_field.py
 """
-from dataclasses import replace
 import numpy as np
 import jax, jax.numpy as jnp
 
 from dmipy_sim.engine.bloch import _simulate_bloch      # the forward vector-Bloch oracle
 
-from dmipy_sim import (FreeDiffusion, GAMMA,
+from dmipy_sim import (FreeDiffusion, GAMMA, bare_spin_echo,
                        SusceptibilitySources, MyelinSusceptibility, GridSusceptibility,
                        dipole_field, myelin_susceptibility_tensor, mesh_shapes as ms)
 
@@ -38,14 +37,9 @@ print(f"grid intra ΔBz (perp)         = {dB[rho < 0.6 * a].mean(): .3e} T  "
       f"(analytic {-0.1e-6 * 7.0 * 0.5 * np.log(b / a): .3e})")
 
 # ---- 3. forward Bloch spin echo: uniform field refocuses; diffusion attenuates ----
-dt, TE = 1e-4, 6e-3
-n_t = int(round(TE / dt)) + 1
-from types import SimpleNamespace
-wf = SimpleNamespace(G=np.zeros((1, n_t, 3)), dt=dt)
-exc = [{'t_s': 0.0, 'flip_deg': 90.0, 'axis_deg': 90.0}]
-se = exc + [{'t_s': TE / 2, 'flip_deg': 180.0, 'axis_deg': 0.0}]
+wf = bare_spin_echo(TE=6e-3, dt=1e-4)
 src = SusceptibilitySources(centers=[[0., 0., 0.]], radii=[2e-6], delta_chi=3e-6, B0=7.0)
-frozen = abs(_simulate_bloch(4000, 1e-13, replace(wf, rf=se), FreeDiffusion(), seed=0, susceptibility=src)[0])
-moving = abs(_simulate_bloch(4000, 2e-9, replace(wf, rf=se), FreeDiffusion(), seed=0, susceptibility=src)[0])
+frozen = abs(_simulate_bloch(4000, 1e-13, wf, FreeDiffusion(), seed=0, susceptibility=src)[0])
+moving = abs(_simulate_bloch(4000, 2e-9, wf, FreeDiffusion(), seed=0, susceptibility=src)[0])
 print(f"spin-echo |S| frozen spins    = {frozen:.3f}  (static field refocused)")
 print(f"spin-echo |S| diffusing spins = {moving:.3f}  (susceptibility x diffusion)")
