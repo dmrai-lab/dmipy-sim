@@ -282,7 +282,7 @@ def test_packed_cylinders_mc_mixture_vs_callaghan():
     B_VALUES = np.array([0., 5e8, 1e9, 2e9])
     BVECS    = np.tile([[1., 0., 0.]], (len(B_VALUES), 1))
     scheme   = acquisition_scheme_from_bvalues(B_VALUES, BVECS, DELTA_S, DELTA_L)
-    wf       = set_b(pgse(BVECS, DELTA_S, DELTA_L, gradient_strengths=1.0, n_t=1000), B_VALUES)
+    wf       = set_b(pgse(BVECS, DELTA_S, DELTA_L, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), B_VALUES)
 
     # --- Empirical analytical: area-weighted Callaghan sum ---
     area    = radii ** 2

@@ -26,7 +26,7 @@ _ATOL = 1.0 / np.sqrt(N_WALKERS)  # MC noise floor, ~0.003 for N=100 000
 
 def _make_waveform(b_values):
     bvecs = np.tile([1., 0., 0.], (len(b_values), 1))
-    return set_b(pgse(bvecs, 1e-3, 40e-3, gradient_strengths=1.0, n_t=500),
+    return set_b(pgse(bvecs, 1e-3, 40e-3, gradient_strengths=1.0, n_t=500, slew_rate=np.inf),
                  b_values)
 
 

@@ -69,12 +69,13 @@ os.makedirs(FIG_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 
 def _b0_waveform(TE_s, n_t=500):
-    """PGSE waveform with negligible b (b=1 s/m² → exp(-bD) ≈ 1)."""
+    """PGSE waveform with negligible b (b=1 s/m² → exp(-bD) ≈ 1); its lobes are ideal (square), the unit
+    amplitude being a placeholder for the b-value that ``set_b`` fixes."""
     delta = max(TE_s * 0.05, 5e-6)
     DELTA = TE_s - delta
     bvecs = np.array([[1.0, 0.0, 0.0]])
     wf = set_b(
-        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t),
+        pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t, slew_rate=np.inf),
         np.array([1.0]))   # b=1 s/m² → attenuation = exp(-2e-9) ≈ 1
     actual_TE = wf.echo_idx * wf.dt
     return wf, actual_TE

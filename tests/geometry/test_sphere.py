@@ -138,7 +138,7 @@ def test_sphere_signal_above_free():
     from dmipy_sim.sequences import pgse
     b_values = np.linspace(1e8, 3e9, 20)
     bvecs = np.tile([1., 0., 0.], (20, 1))
-    wf = set_b(pgse(bvecs, 0.2e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
+    wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
 
     S_sphere = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
     S_free   = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
