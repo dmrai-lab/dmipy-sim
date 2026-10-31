@@ -1487,7 +1487,7 @@ def _battery_b_max(env, T=None):
 
 
 def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_contact=None, rho_over_D=None,
-                         rounding_rel=None, field=None, h_round=None):
+                         rounding_rel=None, field=None, h_round=None, band_var=None):
     """The walk-free certificate of a pack built from a coefficient walk, per measurement of the envelope's battery
     (on the window's block ends) and per family: the TRUNCATION, the phase the bands beyond ``K`` would carry for a
     free walk at ``D`` (:func:`compression.band_phase_variances`), half of it as the signal it costs; the QUADRATURE
@@ -1519,7 +1519,12 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     the battery's at K = 256 on Connectome 2.0). The truncation guarantee is per waveform: the replay's band check
     (:meth:`ReplayPack._check_band`) refuses every actual waveform whose truncation, bounded by half the free bridge's
     phase variance beyond ``K``, exceeds the pack's ``fidelity.target_floor`` less the other rows of this certificate
-    (:func:`~dmipy_sim.replay.replay.truncation_budget`)."""
+    (:func:`~dmipy_sim.replay.replay.truncation_budget`).
+
+    ``band_var`` (m^2, per band and axis) states the positions' quadrature directly, in place of ``rel(m, h) x QV``: the
+    interpolation variance a walk of saves leaves in every band (:mod:`dmipy_sim.foreign`, ``D h^2 / 6``), bounded from the
+    diffusivity and the save interval alone, since the quadratic variation of saves does not measure the roughness
+    between them."""
     from dmipy_replay.constants import GAMMA
     T, h, K = float(T), float(h), int(K)
     n_t = int(round(T / h)) + 1
@@ -1533,10 +1538,13 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
         rel = rel + _cx.quadrature_rel(0, float(h_round), np.pi * k / T)
     qv = np.full(3, 2.0 * float(D) * T) if qv_pos is None else np.asarray(qv_pos, np.float64)
     G_max = _cx.envelope_G_max(env)
+    bvar = (rel * T / (np.pi * k) ** 2)[:, None] * qv[None, :]                                         # (K, 3): the band variance the table adds
+    if band_var is not None:
+        bvar = np.full((K, 3), float(band_var))
     if G_max is None:
-        quad = 0.5 * GAMMA ** 2 * np.einsum("mkc,k,c->m", W ** 2, rel * T / (np.pi * k) ** 2, qv)
+        quad = 0.5 * GAMMA ** 2 * np.einsum("mkc,kc->m", W ** 2, bvar)
     else:                       # every waveform of the class: sum_k W_k^2 a_k <= max_k a_k G_max^2 T per axis (Bessel)
-        quad = np.full(len(meta), 0.5 * GAMMA ** 2 * G_max ** 2 * T * float((rel * T / (np.pi * k) ** 2).max()) * float(qv.sum()))
+        quad = np.full(len(meta), 0.5 * GAMMA ** 2 * G_max ** 2 * T * float(bvar.max(axis=0).sum()))
     quad_surface = 0.0
     if qv_contact is not None and rho_over_D is not None:
         quad_surface = 0.5 * float(rho_over_D) ** 2 * float((rel * 2.0 * float(qv_contact) / (np.pi * k) ** 2).sum())
@@ -2156,7 +2164,9 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                                         qv_increments=np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0),
                                         constants=fr.get("constants")))
         field_terms["quantisation_eps"] = field_quantisation(_a, _pm, env, T=T, h=h, B0=B0_r, chi_iso=chi_scale[0], chi_aniso=chi_scale[1])
+    source = cw.block.get("source")                            # a walk of another engine's saves (dmipy_sim.foreign)
     fid = _derived_certificate(scales, T=T, h=h, K=K, m=cw.m, D=D, env=env, floor=floor,
+                               band_var=(None if source is None else float(source["interpolation_variance_bound_value_m2"])),
                                qv_pos=(None if cw.qv_positions is None
                                        else np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)),
                                qv_contact=qv_b, rho_over_D=(None if qv_b is None else _cx.envelope_rho2_max(env) / D),
@@ -2285,7 +2295,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         comp_meta["channels"] = chan_meta
     fid = _round_certificate(fid)
     seed = seed_value(cw.seed)
-    block = {k: v for k, v in dict(cw.block).items() if k not in ("window", "quadratic_variation", "field_read", "field_band", "calibration_scope", "calibration_pools", "events", "t_start")}
+    block = {k: v for k, v in dict(cw.block).items() if k not in ("source", "window", "quadratic_variation", "field_read", "field_band", "calibration_scope", "calibration_pools", "events", "t_start")}
     qv = dict(positions=[float(x) for x in np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)])
     if cw.boundary_bands is not None:
         qv["local_time"] = float(np.mean(cw.qv_boundary))
@@ -2294,6 +2304,11 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         qv["field"] = [float(x) for x in np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0)]
         qv["field_increments"] = [float(x) for x in np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0)]
         wp_field["field_read_interval"] = float(cw.field_read_interval)
+    if source is not None:                       # what the band is limited by: another engine's save grid
+        fid["source"] = dict(kind=source["kind"], engine=source["engine"], version=source["version"], dt_save=source["dt_save"],
+                             K_max=source["K_max"], limited_by="save grid",
+                             interpolation_variance_bound_m2=source["interpolation_variance_bound_value_m2"],
+                             err_interpolation=float(fid["err_quadrature"]))
     fid["terms"] = _terms_of(dict(fid, has_contact=cw.boundary_bands is not None, field=field_terms))
     _cover_terms(_measured_truncation(fid) if fid.get("measured_by") == "raw_subset" else fid)
     env_acq = _envelope_summary(env, T)
@@ -2318,7 +2333,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
         walk_params=dict(n_walkers=cw.n_walkers, T_max=T, diffusivity=D, seed=seed,
                          windows=dict(n=1, T=T, walks=[dict(first=0, last=0, seed=seed)]),
-                         block=block, qv=qv, **wp_field,
+                         block=block, qv=qv, **wp_field, **({} if source is None else dict(producer=source)),
                          substrate_frame=(None if substrate_frame is None else np.asarray(substrate_frame, float).tolist())),
         replay_envelope=replay_env,
         fidelity=fid, provenance=dict(provenance or {}, code=_code(), walk=dict(kind="coefficient", stepping=cw.stepping)),
