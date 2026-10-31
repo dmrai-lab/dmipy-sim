@@ -396,7 +396,8 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     wsum_in = np.bincount(flat[ids == 1], weights=wt[ids == 1], minlength=64)
     wf_in = spec.pool("intra").water_fraction
     assert np.abs(wsum_in - f_in * wf_in).max() < 0.03 * wf_in, (wsum_in, f_in * wf_in)
-    pk = build_replay_pack(w, id="t/strat", license="x", citation="x", K=4, voxel_grid=grid)
+    # a K = 4 pack over 0.8 ms is lean by design: it states the budget its band is held to (the band gate reads it)
+    pk = build_replay_pack(w, id="t/strat", license="x", citation="x", K=4, voxel_grid=grid, sigma_star=0.1, planned_floor=0.1)
     pv = pk.meta["fidelity"]["per_voxel"]
     assert pv["n_voxels"] == 64 and pv["pools"] == [0, 1] and pv["floor_max"] > 0 and pk.arrays["voxel_certificate"].shape == (64, 2, 3)
     g2, floors, counts = voxel_fidelity_volumes(pk)

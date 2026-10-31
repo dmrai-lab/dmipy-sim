@@ -169,7 +169,7 @@ def test_replay_and_the_pose_closed_form_agree(sphere_pack):
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
     tissue = Tissue(rho2=2e-6, rho1=8e-6)
-    S_replay = np.asarray(pk.replay(wf, tissue=tissue))
+    S_replay = np.asarray(pk.replay(wf, tissue=tissue, tol=None))     # the full read: the pose response reads every stored band, a plan drops tol x floor
     pr = pk.pose_response(wf, tissue=tissue)
     S_pose = np.abs(np.asarray(pr.compose(Distribution.pose(np.eye(3)))))
     np.testing.assert_allclose(S_replay, S_pose, rtol=1e-4)
