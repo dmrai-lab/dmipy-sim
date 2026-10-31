@@ -51,13 +51,13 @@ def test_simulate_cpmg_hands_every_argument_that_shapes_the_walk_to_the_producer
     from dmipy_sim.engine import core
     seq = cpmg(8, 2e-3, n_t_per_echo=2)
     geom = Sphere(radius=5e-6, surface_relaxivity_t2=1e-5)
-    seen, real = [], core.simulate_trajectories
+    seen, real = [], core._walk_geometry
 
     def spy(*a, **kw):
         seen.append(kw)
         return real(*a, **kw)
 
-    core.simulate_trajectories = spy
+    core._walk_geometry = spy
     try:
         for asked in (None, 1, 7):
             seen.clear()
@@ -68,4 +68,4 @@ def test_simulate_cpmg_hands_every_argument_that_shapes_the_walk_to_the_producer
         simulate_cpmg(400, 2e-9, seq, geom, r0=r0, walker_batch_size=100, require_gpu=False)
         assert len(seen) == 1 and seen[0]["r0"] is r0
     finally:
-        core.simulate_trajectories = real
+        core._walk_geometry = real

@@ -1,4 +1,4 @@
-"""The walk's band accumulation (``simulate_trajectories``, dmrai-lab/dmipy-sim#741): the walk accumulates the bands
+"""The walk's band accumulation (``_walk_geometry``, dmrai-lab/dmipy-sim#741): the walk accumulates the bands
 a pack stores while it runs, on the continuous basis, and returns a :class:`CoefficientWalk`;
 :func:`build_replay_pack` takes it and certifies it walk-free.
 
@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
@@ -180,24 +181,24 @@ def test_the_walk_takes_the_bands_own_block_and_the_storage_band():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
     T, K = 0.01, 32
     assert default_K(0.1) == 256 and default_K(T) == 26
-    plain = _quiet(d.simulate_trajectories, 20, 2e-9, g, T, require_gpu=False)
+    plain = _quiet(_walk_geometry, 20, 2e-9, g, T, require_gpu=False)
     assert plain.K == 26 and plain.n_windows == 1
-    cw = _quiet(d.simulate_trajectories, 50, 2e-9, g, T, K=K, require_gpu=False)
+    cw = _quiet(_walk_geometry, 50, 2e-9, g, T, K=K, require_gpu=False)
     n = int(round(T * np.pi * K / (0.8 * T)))
     assert BLOCK_ORDER == 3 and cw.m == 3 and cw.block["rule"] == "derived"
     assert cw.n_blocks == n and cw.h == pytest.approx(T / n) == pytest.approx(block_length(T, K))
     assert np.pi * K / T * cw.h == pytest.approx(0.8, rel=0.01)
     assert cx.quadrature_rel(3, cw.h, np.pi * K / T) == pytest.approx(1.3e-7, rel=0.05)
-    free = _quiet(d.simulate_trajectories, 2000, 2e-9, d.FreeDiffusion(), T, K=K, require_gpu=False)
+    free = _quiet(_walk_geometry, 2000, 2e-9, d.FreeDiffusion(), T, K=K, require_gpu=False)
     qv = free.block["quadratic_variation"]                                                # sum (dx)^2 = 2 D T per axis
     assert np.allclose(qv["positions_over_2DT"], 1.0, rtol=0.05), qv
     assert free.qv_positions.shape == (2000, 1, 3) and cw.qv_boundary.shape == (50, 1)
-    given = _quiet(d.simulate_trajectories, 50, 2e-9, g, T, 2e-4, K=K, block_order=1, require_gpu=False)
+    given = _quiet(_walk_geometry, 50, 2e-9, g, T, 2e-4, K=K, block_order=1, require_gpu=False)
     assert (given.m, given.h, given.block["rule"]) == (1, pytest.approx(2e-4), "given")
-    long = _quiet(d.simulate_trajectories, 20, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
+    long = _quiet(_walk_geometry, 20, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
     assert long.n_windows == 2 and long.position_coeffs.shape == (20, 2, 10, 3) and long.n_blocks == 100
     with pytest.raises(ValueError, match="whole number"):
-        d.simulate_trajectories(10, 2e-9, g, 0.15, require_gpu=False)
+        _walk_geometry(10, 2e-9, g, 0.15, require_gpu=False)
 
 
 def test_walk_cost_states_the_accumulators():
@@ -215,8 +216,8 @@ def test_walk_cost_states_the_accumulators():
 def walks():
     g = d.Cylinder(radius=2.5e-6, orientation=(0, 0, 1))
     kw = dict(T_max=0.01, block_h=1e-4, seed=4, require_gpu=False, sub_steps=4)
-    return dict(c=_quiet(d.simulate_trajectories, 600, 2e-9, g, K=24, raw_subset=200, **kw),
-                z=_quiet(d.simulate_trajectories, 600, 2e-9, g, K=24, block_order=0, **kw))
+    return dict(c=_quiet(_walk_geometry, 600, 2e-9, g, K=24, raw_subset=200, **kw),
+                z=_quiet(_walk_geometry, 600, 2e-9, g, K=24, block_order=0, **kw))
 
 
 def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(walks):
@@ -277,7 +278,7 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
 
 def test_a_walk_of_several_windows_packs_window_by_window():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1), permeability=1e-5)
-    cw = _quiet(d.simulate_trajectories, 200, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
+    cw = _quiet(_walk_geometry, 200, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
     pk = build_replay_pack(cw, id="t/w", license="x", citation="x")
     assert pk.n_windows == 2 and pk.windows["T"] == pytest.approx(0.1) and pk.n_t == 101
     assert pk.meta["walk_params"]["block"]["n_blocks"] == 100 and pk.fidelity["combined"] == "bound_over_windows"
@@ -302,10 +303,10 @@ def test_what_a_walk_does_not_carry_is_refused_by_name():
             return WalkBatch(np.repeat(np.asarray(r0, np.float32)[:, None], n_t, axis=1), None, None, zero, (None, None, zero))
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
     with pytest.raises(ValueError, match="returned a WalkBatch for the coefficient walk.*converts nothing"):
-        d.simulate_trajectories(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=8, backend=Other())
+        _walk_geometry(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=8, backend=Other())
     with pytest.raises(ValueError, match="hold 19 bands"):
-        d.simulate_trajectories(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=30, block_order=0)
-    cw = _quiet(d.simulate_trajectories, 50, 2e-9, g, 0.2, 2e-3, require_gpu=False, K=8, sub_steps=2)
+        _walk_geometry(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=30, block_order=0)
+    cw = _quiet(_walk_geometry, 50, 2e-9, g, 0.2, 2e-3, require_gpu=False, K=8, sub_steps=2)
     with pytest.raises(ValueError, match="window_T"):
         build_replay_pack(cw, id="t/x", license="x", citation="x", window_T=0.05)
     assert cw.raw_positions is None                                    # no raw subset asked for, none kept

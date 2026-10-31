@@ -8,6 +8,7 @@ from dmipy_replay.spec.tissue import Tissue
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import Encoding, Prescription, RFEvent, ScannerSequence
 from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
 from dmipy_sim.replay import read_rpk
@@ -17,7 +18,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 @pytest.fixture(scope="module")
 def walk():
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    return d.simulate_trajectories(2000, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False)
+    return _walk_geometry(2000, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False)
 
 
 @pytest.fixture(scope="module")

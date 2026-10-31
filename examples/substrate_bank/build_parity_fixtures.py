@@ -144,6 +144,7 @@ def walk_of(mcdc_data, disimpy_data):
 
     def walk(spec, n, *, T, K, seed, sub_steps=None):
         import dmipy_sim as d
+        from dmipy_sim.engine.core import _walk_geometry
         from dmipy_sim.spec import geometry_from_spec
         geom = geometry_from_spec(spec)
         name = name_of_spec(spec)
@@ -151,10 +152,10 @@ def walk_of(mcdc_data, disimpy_data):
             from dmipy_sim.io import mcdc
             p = X.mcdc_paths(mcdc_data, *mcdc_params(name))
             r0 = mcdc.seed_positions(mcdc.read_ini_walkers(p["ini"]), int(n))
-            return d.simulate_trajectories(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE, K=int(K), seed=X.SEED,
+            return _walk_geometry(int(n), X.MCDC_D, geom, T_max=X.MCDC_TE, K=int(K), seed=X.SEED,
                                            tiers="all", r0=r0, require_gpu=False, walker_batch_size=2000,
                                            sub_steps=sub_steps, window_T=X.MCDC_TE)
-        return d.simulate_trajectories(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE, K=int(K), seed=X.SEED,
+        return _walk_geometry(int(n), X.DISIMPY_D, geom, T_max=X.DISIMPY_TE, K=int(K), seed=X.SEED,
                                        tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
                                        window_T=X.DISIMPY_TE)
     return walk

@@ -44,9 +44,9 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     A spec that declares a susceptibility source has its field read in the walk at the pack's own band and read
     interval: a gridded source by every walk, a strand source with ``adaptive_steps=True`` regardless of what is
     given (:func:`~dmipy_sim.spec.walk.field_source_kind`)."""
-    from ..engine.core import simulate_trajectories
+    from ..engine.core import _walk_geometry
     from ..spec.build import geometry_from_spec
-    from ..spec.walk import walk_spec, _needs_bundle_walk, field_source_kind, _single_geometry_field_grid
+    from ..spec.walk import walk, _needs_bundle_walk, field_source_kind, _single_geometry_field_grid
     from ..spec.seeding import DrawnSeeds
     from dmipy_replay.phantom.grid import Grid
     spec = pack.substrate
@@ -69,7 +69,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
         if D is None:
             raise ValueError("the pack records no diffusivity to continue the walk at")
         fb = _single_geometry_field_grid(spec, g, None, None) if field_source_kind(spec) == "grid" else None
-        w = simulate_trajectories(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
+        w = _walk_geometry(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
                                   K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg, **(field_kw if fb is not None else {}))
         walk = dataclasses.replace(w, geometry=g, spec=spec) if w.spec is None else w
@@ -87,7 +87,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
                        weights={names[pid]: weights[pool == pid] for pid in ids}, grid=grid, seed=int(seed))
     if field_source_kind(spec) == "strands":
         adaptive_steps = True
-    w = walk_spec(spec, T_max=float(T_add), block_h=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
+    w = walk(spec, T_max=float(T_add), block_h=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu,
                   walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers,
                   K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg, **field_kw)
     inv = np.empty_like(order); inv[order] = np.arange(order.size)                     # back to the pack's order

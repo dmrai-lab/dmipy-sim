@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import reference as R
 
 REAL_CODE_COMMIT = R.code_commit        # the module fixture patches R.code_commit; its own test needs the real one
@@ -52,7 +53,7 @@ def _spec_off():
 
 def _walk(spec, n, *, T, K, seed, sub_steps=None):
     from dmipy_sim.spec import geometry_from_spec
-    return d.simulate_trajectories(int(n), D0, geometry_from_spec(spec), T_max=T, K=K, seed=int(seed), tiers="all",
+    return _walk_geometry(int(n), D0, geometry_from_spec(spec), T_max=T, K=K, seed=int(seed), tiers="all",
                                    require_gpu=False, sub_steps=sub_steps)
 
 

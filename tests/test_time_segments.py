@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.compression import default_envelope
 from dmipy_replay.replay.time_segments import FORMAT, Partition, Shape, read_manifest
@@ -21,7 +22,8 @@ from dmipy_sim.replay.time_segments import (
     segment_rows,
     write_time_segment_layout,
 )
-from dmipy_sim.spec import walk_spec, StratifiedByVoxel
+from dmipy_sim.spec import StratifiedByVoxel
+from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 
 UM = 1e-6
@@ -64,7 +66,7 @@ def myelin(tmp_path_factory):
     from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("segments")
     g = d.MyelinatedCylinder(2.0 * UM, 2.8 * UM, (0, 0, 1), D0, D0)
-    w = d.simulate_trajectories(1200, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
+    w = _walk_geometry(1200, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
     r0 = np.asarray(w.position_coeffs)[:, 0, 0, :]
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
@@ -307,7 +309,7 @@ def blocks(spec_grid):
     packs, dirs = [], []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         # certified up to ten times the sheath's chi, so that the layout's field words resolve its field at the
         # fixture's coarse floor (at the sheath's own the field rounds to zero on every row of 24 walkers)
@@ -364,7 +366,7 @@ def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):
     for b, pools in ((0, ("extra",)), (1, ("extra", "intra"))):
         want = np.zeros(grid.shape, np.int64); want[b] = 24 // len(pools)            # as many walkers in each block
         per = {p: (want if p in pools else np.zeros(grid.shape, np.int64)) for p in ("extra", "intra")}
-        w = walk_spec(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, adaptive_steps=True, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, adaptive_steps=True, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=per))
         pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid)
         packs.append(pk); dirs.append(str(tmp_path / f"pl_rows{b}"))

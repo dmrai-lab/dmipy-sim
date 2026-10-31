@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError, walk_spec
+from dmipy_sim.spec import SpecError
+from dmipy_sim import walk
 from tests.test_bank import _env7, _susc_walk
 from tests.test_grid_field_in_walk import D0, UM
 
@@ -54,18 +56,18 @@ def test_the_budget_goes_with_a_derived_field_band():
     kw = dict(require_gpu=False)
     geom = d.Box1D(6e-6)
     with pytest.raises(ValueError, match="goes with field_basis= and without K_c3"):
-        d.simulate_trajectories(8, D0, geom, 2e-3, 5e-4, field_target_floor=BUDGET, **kw)
+        _walk_geometry(8, D0, geom, 2e-3, 5e-4, field_target_floor=BUDGET, **kw)
     with pytest.raises(ValueError, match="goes with field_basis= and without K_c3"):
-        d.simulate_trajectories(8, D0, geom, 2e-3, 5e-4, field_basis=_slab_grid(), K_c3=4, field_target_floor=BUDGET, **kw)
+        _walk_geometry(8, D0, geom, 2e-3, 5e-4, field_basis=_slab_grid(), K_c3=4, field_target_floor=BUDGET, **kw)
     with pytest.raises(ValueError, match="positive error budget"):
-        d.simulate_trajectories(8, D0, geom, 2e-3, 5e-4, field_basis=_slab_grid(), field_target_floor=0.0, **kw)
+        _walk_geometry(8, D0, geom, 2e-3, 5e-4, field_basis=_slab_grid(), field_target_floor=0.0, **kw)
 
 
 def test_walk_spec_passes_the_budget_to_a_gridded_walk_and_refuses_it_elsewhere():
     geom = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
-    w = walk_spec(geom.spec, 300, 5e-3, seed=2, require_gpu=False, field_target_floor=1e-3)
+    w = walk(geom.spec, 300, 5e-3, seed=2, require_gpu=False, field_target_floor=1e-3)
     assert w.block["field_band"]["target_floor"] == 1e-3 and w.block["field_band"]["floor"] == 1e-3
     with pytest.raises(SpecError, match="K_c3 was given"):
-        walk_spec(geom.spec, 8, 5e-3, seed=2, require_gpu=False, K_c3=4, field_target_floor=1e-3)
+        walk(geom.spec, 8, 5e-3, seed=2, require_gpu=False, K_c3=4, field_target_floor=1e-3)
     with pytest.raises(SpecError, match="gridded field"):
-        walk_spec(geom.spec, 8, 5e-3, seed=2, require_gpu=False, adaptive_steps=True, field_target_floor=1e-3)
+        walk(geom.spec, 8, 5e-3, seed=2, require_gpu=False, adaptive_steps=True, field_target_floor=1e-3)

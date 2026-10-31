@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition import epg
 from dmipy_sim.replay.bank import build_replay_pack
@@ -21,7 +22,7 @@ T2, T1, TM, DELTA = 0.08, 0.3, 0.02, 0.003
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     """Free water, so the only thing left in a b = 0 readout is relaxation and the pathway's amplitude."""
-    walk = d.simulate_trajectories(600, 2e-9, d.FreeDiffusion(), 0.05, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(600, 2e-9, d.FreeDiffusion(), 0.05, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pw") / "free.rpk"
     return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, out_path=str(out))
 

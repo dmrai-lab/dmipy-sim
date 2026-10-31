@@ -26,9 +26,10 @@ def wm_pack(tmp_path_factory):
     """A 30 ms cylinder walk standing in for the CACTUS pack (its frame is the identity: axis z): a 1 um axon in a
     2.5 um cell, half the water inside, so the signal is anisotropic beyond the noise of 300 walkers."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 2.5e-6)
-    walk = d.simulate_trajectories(300, 2e-9, g, 30e-3, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(300, 2e-9, g, 30e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "wm.rpk"
     build_replay_pack(walk, id="test/wm", license="x", citation="x", K=8, out_path=str(out))
     return str(out)

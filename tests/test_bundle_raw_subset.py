@@ -1,4 +1,4 @@
-"""A bundle walk keeps a raw subset (the pools' joined walk, ``walk_spec(raw_subset=n)``): the first ``n`` walkers of
+"""A bundle walk keeps a raw subset (the pools' joined walk, ``walk(raw_subset=n)``): the first ``n`` walkers of
 the joined order carry raw block ends, drawn from the pools in proportion to their walkers, and every raw array is the
 walk's own for those walkers -- the diffusing pools' from their walks, a frozen pool's its seats held at every block
 end. A pool walk that lacks a raw array it was asked for is refused by name."""
@@ -11,7 +11,8 @@ import dmipy_sim as d
 import dmipy_sim.engine.core as core
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError, walk_spec
+from dmipy_sim.spec import SpecError
+from dmipy_sim import walk
 from dmipy_sim.spec.walk import _raw_allocation
 
 D = 2e-9
@@ -58,7 +59,7 @@ def spec(tmp_path_factory):
 @pytest.fixture(scope="module")
 def bundle(spec):
     """An order-0 walk of the bundle with ``N_RAW`` raw walkers."""
-    return walk_spec(spec, N, T_max=T_MAX, block_h=H, K=K, block_order=0, seed=3, require_gpu=False, raw_subset=N_RAW)
+    return walk(spec, N, T_max=T_MAX, block_h=H, K=K, block_order=0, seed=3, require_gpu=False, raw_subset=N_RAW)
 
 
 def test_the_raw_arrays_have_the_walks_shapes_and_lead_the_order(bundle):
@@ -115,9 +116,9 @@ def test_the_raw_contact_sums_to_the_walkers_boundary_endpoint(bundle):
 
 
 def test_the_raw_subset_is_clipped_to_the_walkers_and_absent_when_not_asked(spec):
-    w = walk_spec(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=1000)
+    w = walk(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=1000)
     assert w.raw_positions.shape[0] == w.n_walkers and w.raw_field.shape[0] == w.n_walkers
-    w = walk_spec(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False)
+    w = walk(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False)
     assert w.raw_positions is None and w.raw_boundary is None and w.raw_compartment is None and w.raw_field is None
 
 
@@ -136,19 +137,19 @@ def test_the_joined_raw_subset_measures_a_pack(bundle):
 
 def test_a_pool_walk_that_lost_its_raw_subset_is_refused_by_name(spec, monkeypatch):
     import dataclasses
-    real = core.simulate_trajectories
+    real = core._walk_geometry
 
     def stripped(*a, **k):
         return dataclasses.replace(real(*a, **k), raw_positions=None)
-    monkeypatch.setattr(core, "simulate_trajectories", stripped)
+    monkeypatch.setattr(core, "_walk_geometry", stripped)
     with pytest.raises(SpecError, match=r"pool '(intra|extra)'.*raw_positions"):
-        walk_spec(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=30)
+        walk(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=30)
 
 
 def test_an_adaptive_strand_bundle_joins_its_raw_subset_too(tmp_path):
     """The adaptive producer's pools (strand field read in the walk) join on the same terms."""
     from tests.conftest import _three_strands
-    w = walk_spec(_three_strands(tmp_path), 300, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True,
+    w = walk(_three_strands(tmp_path), 300, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True,
                   K=4, block_order=0, raw_subset=100)
     comp = np.asarray(w.compartment)
     assert w.raw_positions.shape == (100, w.n_blocks + 1, 3) and w.raw_field.shape[:2] == (100, len(w.field_read_instants))

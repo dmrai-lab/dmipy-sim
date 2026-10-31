@@ -245,7 +245,7 @@ class PackedCylinders(Geometry):
     carries_side = True            #: `permeate` accepts the walker's own side
 
     # `classify_position` returns 0=extra and 1..N = the cylinder the walker is in,
-    # i.e. an OBJECT id, not a pool id. core.simulate_trajectories collapses it to a
+    # i.e. an OBJECT id, not a pool id. core._walk_geometry collapses it to a
     # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
     # per-pool, not per-cylinder, and because an object id overflows the int8 channel
     # above 127 cylinders.
@@ -443,7 +443,7 @@ class PackedSpheres(Geometry):
     supports_permeability = True   #: has a membrane a walker can cross
 
     # `classify_position` returns 0=extra and 1..N = the sphere the walker is in,
-    # i.e. an OBJECT id, not a pool id. core.simulate_trajectories collapses it to a
+    # i.e. an OBJECT id, not a pool id. core._walk_geometry collapses it to a
     # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
     # per-pool, not per-sphere, and because an object id overflows the int8 channel
     # above 127 spheres.

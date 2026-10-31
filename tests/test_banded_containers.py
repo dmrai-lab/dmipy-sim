@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
@@ -67,7 +68,7 @@ def test_the_c2_container_and_the_static_c1_column():
 
 @pytest.fixture(scope="module")
 def packs(tmp_path_factory):
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     tmp = tmp_path_factory.mktemp("bands")
     f = build_replay_pack(walk, id="t/float", K=8, license="x", citation="x", blt_temporal_K=8)
     b = build_replay_pack(walk, id="t/bands", K=8, license="x", citation="x", blt_temporal_K=8,
@@ -150,7 +151,7 @@ def test_the_curve_is_the_rule_grouped_into_whole_bytes():
 
 
 def test_a_pack_with_a_five_bit_range_reads_back_and_replays(tmp_path):
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived",
                           position_container=((4, 16), (None, 8)))
     p = build_replay_pack(walk, id="t/p", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived",
@@ -177,7 +178,7 @@ def test_the_two_level_container_still_reads_as_before():
 # ------------------------------------------------------------- C2 on a curve, and the C3 path channel's container
 
 def test_the_contact_channel_takes_a_curve_and_replays(tmp_path):
-    walk = d.simulate_trajectories(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived")
     c = _cx.band_curve(16, 12)
     p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, blt_container=c,
@@ -259,7 +260,7 @@ def test_the_derived_container_is_one_common_step_and_gains_a_bit_per_quartered_
 
 
 def test_the_default_pack_is_derived_for_its_floor(tmp_path):
-    walk = d.simulate_trajectories(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=400)
+    walk = _walk_geometry(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=400)
     p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, fidelity="measured")
     q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3)
     assert p.meta["compression"]["container"] != _cx.band_curve(16, 10)
@@ -367,7 +368,7 @@ def straight_cylinder_walk():
     from dmipy_sim.replay import compression as cx
     g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D0, D0)
     env = dict(cx.default_envelope(), B0_list=[7.0], theta_deg=[90.0], max_refocus_pulses=4)
-    w = d.simulate_trajectories(300, D0, g, 0.01, seed=1, require_gpu=False, K=16, window_T=0.01, field_basis=HollowCylinderField.of(g),
+    w = _walk_geometry(300, D0, g, 0.01, seed=1, require_gpu=False, K=16, window_T=0.01, field_basis=HollowCylinderField.of(g),
                                 envelope=env)
     return w, env
 
@@ -429,7 +430,7 @@ def test_the_contact_container_is_held_to_the_contacts_own_floor():
     split-half floor (``floor_surface``): more bits than the pack's floor alone asks for, and a quantisation, read
     back walk-free, well inside that floor."""
     from dmipy_sim.replay import bank
-    walk = d.simulate_trajectories(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2)
     f = p.meta["fidelity"]
     assert f["floor_surface"] > 0 and f["err_surface_quantisation"] <= 0.5 * f["floor_surface"] and f["err_surface"] <= f["floor_surface"]
@@ -452,8 +453,9 @@ def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor
     walker count removes it), its random part adds at most eps / sqrt(n_eff) to the standard error, beside the float
     walkers' floor, never inside the numerical sum."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
-    w = d.simulate_trajectories(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())
+    w = _walk_geometry(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())
     f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05).meta["fidelity"]
     eps = f["floor_quantisation"] * np.sqrt(2000.0)
     assert 0.0 < eps < 0.1

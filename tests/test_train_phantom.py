@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay import read_rpk
@@ -19,7 +20,7 @@ SH = (6, 6, 2)
 @pytest.fixture(scope="module")
 def pack_path(tmp_path_factory):
     out = tmp_path_factory.mktemp("pk") / "wm.rpk"
-    walk = d.simulate_trajectories(600, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=0, require_gpu=False, K=10, window_T=0.14)
+    walk = _walk_geometry(600, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=0, require_gpu=False, K=10, window_T=0.14)
     build_replay_pack(walk, id="test/wm", license="x", citation="x", out_path=str(out), window_T=0.14)   # one 140 ms window
     return str(out)
 
@@ -231,7 +232,7 @@ def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
     from dmipy_sim.spec import Tissue
     import tempfile, os
     out = os.path.join(tempfile.mkdtemp(), "wm.rpk")
-    walk = d.simulate_trajectories(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False, K=10, window_T=0.14)
+    walk = _walk_geometry(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False, K=10, window_T=0.14)
     build_replay_pack(walk, id="test/wm2", license="x", citation="x", out_path=out, window_T=0.14)   # one 140 ms window
     pack = read_rpk(out)
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
@@ -334,7 +335,7 @@ def field_pack(tmp_path_factory):
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     D0 = 2.0e-9
     g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    walk = d.simulate_trajectories(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6), K=8)
+    walk = _walk_geometry(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6), K=8)
     out = tmp_path_factory.mktemp("pk") / "sheathed.rpk"
     build_replay_pack(walk, id="test/sheathed", license="x", citation="x", K=8, out_path=str(out),
                       envelope=dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,

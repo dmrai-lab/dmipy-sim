@@ -15,6 +15,7 @@ from dmipy_sim import RFEvent
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import trajectories as T
 from dmipy_sim.replay import compression as cx
 from dmipy_replay.replay._replay_kernel import effective_gradient, waveform_moments, gradient_phase, field_gate
@@ -214,7 +215,7 @@ def test_one_field_gate():
 def test_mt_walk_at_zero_binding_is_the_plain_walk_to_the_bit():
     g = d.Sphere(2e-6, surface_relaxivity_t2=1e-6)
     kw = dict(seed=3, require_gpu=False)
-    plain = d.simulate_trajectories(200, 2e-9, g, 2e-3, 5e-4, f_band=0.5 / 5e-4, raw_subset=200, **kw)
+    plain = _walk_geometry(200, 2e-9, g, 2e-3, 5e-4, f_band=0.5 / 5e-4, raw_subset=200, **kw)
     mt = d.simulate_mt_trajectories(200, 2e-9, g, 2e-3, 5e-4, kappa_MT=0.0, dwell_time=0.0,
                                     equilibrate_binding="off", raw_subset=200, f_band=0.5 / 5e-4, **kw)
     assert mt.position_coeffs.dtype == np.float32 and mt.raw_positions.dtype == np.float32
@@ -234,12 +235,13 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     traced batch twin equals the looped twin. Needs ``jax_enable_x64`` for the device/host parity check below
     (the ``x64`` fixture scopes it to this test and restores the flag on teardown)."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_replay.replay.replay import compile_scheme, replay_signal, replay_coefficients, surface_logweight
     from dmipy_sim.replay import replay_signal_jax, replay_batch_jax
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.replay.compression import read_position_coeffs
     g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), surface_relaxivity_t2=0.0)
-    walk = d.simulate_trajectories(300, 2e-9, g, 8e-3, 4e-4, seed=3, require_gpu=False)
+    walk = _walk_geometry(300, 2e-9, g, 8e-3, 4e-4, seed=3, require_gpu=False)
     pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4)
     seq = d.set_b(d.pgse([[1, 0, 0], [0, 1, 1], [1, 1, 1]], 2e-3, 5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9] * 3)
     G = np.asarray(seq.G_eff)

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition import epg
 from dmipy_sim.replay.bank import build_replay_pack
@@ -68,7 +69,7 @@ def test_the_train_depends_on_its_refocusing_flip_as_the_pathways_say():
     """The builder's crusher is what makes this true: replayed, the train's echoes follow the coherence
     pathway enumeration, which is the whole reason a reduced-flip train behaves differently from a perfect
     one. Compared as a ratio to the 180 train, so the preparation and the relaxation divide out."""
-    walk = d.simulate_trajectories(1500, 2e-9, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(1500, 2e-9, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
     pack = _float_pack(walk, id="test/free", license="x", citation="x", K=8)
     tissue = Tissue(T2={"extra": 0.081}, T1={"extra": 0.275})   # the free pack's one pool is named
     ref = np.abs(np.asarray(pack.replay_bloch(_seq(180.0), tissue=tissue))).reshape(-1)
@@ -131,7 +132,7 @@ def test_the_replayed_train_is_the_sum_over_pathways_at_every_echo(beta):
     """What a readout measures is not one pathway but ALL of them arriving together, and the replayed train
     reproduces that sum at every echo, not merely the first. Taken as a ratio to the 180 train so the
     preparation, the relaxation and the diffusion weighting divide out."""
-    walk = d.simulate_trajectories(600, 1e-14, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(600, 1e-14, d.FreeDiffusion(), 0.30, 2.5e-4, seed=0, require_gpu=False)
     pack = _float_pack(walk, id="test/static", license="x", citation="x", K=8)
     n = 5
 
@@ -204,7 +205,7 @@ def test_the_replayed_split_train_reproduces_both_echo_families(beta):
     through the actual pulses with a voxel-scale winding. Scaled so the first echo matches, since the
     preparation's own amplitude is not what is being tested."""
     n = 5
-    walk = d.simulate_trajectories(4_000, 1e-14, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(4_000, 1e-14, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False)
     pack = _float_pack(walk, id="test/static", license="x", citation="x", K=8)
     seq = sequences.splice([[1.0, 0, 0]], 35e-3, 42e-3, n, 10e-3, bvalues=[0.0], TE_prep=PREP,
                            beta_deg=beta, n_t_per_echo=40).with_split_readout()
@@ -260,7 +261,7 @@ def test_what_b_value_each_echo_of_a_split_train_actually_delivers():
     # for dropping a third of the free pack's phase, #277, and the delivered b it read was 17 % low within the
     # tolerance below)
     mk = lambda diff: _float_pack(
-        d.simulate_trajectories(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False, K=16, window_T=0.40),
+        _walk_geometry(16_000, diff, d.FreeDiffusion(), 0.40, 2.5e-4, seed=0, require_gpu=False, K=16, window_T=0.40),
         id="test/b", license="x", citation="x", K=16)
     static, free = mk(1e-14), mk(D)
 

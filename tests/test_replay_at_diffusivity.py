@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
@@ -30,7 +31,7 @@ def _same_walk(a, b):
 
 
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, K=12, **kw):
-    walk = d.simulate_trajectories(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
+    walk = _walk_geometry(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
     out = tmp / f"{name}.rpk"
     _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=K, out_path=str(out), **kw)
     return read_rpk(str(out))
@@ -212,7 +213,7 @@ def sheathed(tmp_path_factory):
     for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
         # the field read once per block in both: the same path read at the same instants of its own clock (a read
         # each pilot derives depends on the pilot's QV against the absolute floor, not on the clock's scale)
-        walk = d.simulate_trajectories(1500, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
+        walk = _walk_geometry(1500, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
                                        field_basis=field_grid_of(geom, res=0.2e-6), field_read_interval=dt)
         path = tmp / f"{name}.rpk"
         _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,

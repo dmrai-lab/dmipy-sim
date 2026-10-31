@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.phantom.bore import encoding_classes
@@ -26,7 +27,7 @@ DEVICES = ["cpu", pytest.param("cuda", marks=[pytest.mark.gpu, pytest.mark.skipi
 @pytest.fixture(scope="module")
 def walk_pack():
     """A 400-walker cylinder walk of 12 ms at K = 12: the field-off pack."""
-    walk = d.simulate_trajectories(400, 2e-9, d.PackedCylinders([2e-6], [[0.0, 0.0]], 8e-6), 12e-3, 5e-4, seed=4,
+    walk = _walk_geometry(400, 2e-9, d.PackedCylinders([2e-6], [[0.0, 0.0]], 8e-6), 12e-3, 5e-4, seed=4,
                                    require_gpu=False)
     return build_replay_pack(walk, id="test/torch", license="x", citation="x", K=12)
 

@@ -9,6 +9,7 @@ import pytest
 from scipy.special import spherical_jn
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk, so3
 from dmipy_sim.replay.bank import build_replay_pack
@@ -31,7 +32,7 @@ def myelin_pack():
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, np.asarray(c), L, N_max=4, D_intra=2e-9, D_extra=2e-9)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w = d.simulate_trajectories(1500, 2e-9, pm, 30e-3, 5e-4, seed=3, require_gpu=False, field_basis=field_grid_of(pm, res=0.4e-6),
+        w = _walk_geometry(1500, 2e-9, pm, 30e-3, 5e-4, seed=3, require_gpu=False, field_basis=field_grid_of(pm, res=0.4e-6),
                                     sub_steps=25)
     return build_replay_pack(w, id="t/myelin-cell", license="x", citation="x")
 
@@ -39,7 +40,7 @@ def myelin_pack():
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
+    walk = _walk_geometry(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
     build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
     return read_rpk(str(p))
@@ -269,7 +270,7 @@ def test_the_background_and_the_field_compose_in_closed_form(myelin_pack):
 @pytest.fixture(scope="module")
 def long_pack(tmp_path_factory):
     g = d.PackedCylinders([3e-6], [[0.0, 0.0]], 10e-6)
-    walk = d.simulate_trajectories(1000, 2e-9, g, 60e-3, 5e-4, seed=3, require_gpu=False)
+    walk = _walk_geometry(1000, 2e-9, g, 60e-3, 5e-4, seed=3, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "swoop.rpk"
     build_replay_pack(walk, id="t/swoop", license="x", citation="x", K=24, out_path=str(p))
     return read_rpk(str(p))

@@ -20,6 +20,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
 from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
@@ -49,7 +50,7 @@ def _fixture_walk():
     """The reflecting slab walked for 30 ms in blocks of 0.5 ms and accumulated in three windows of 10 ms, 19 bands
     each, on the fixture's substrate (one pool, a relaxing face)."""
     import dataclasses
-    w = d.simulate_trajectories(N_W, D0, d.Box1D(L), (N_T - 1) * DT, DT, seed=0, require_gpu=False, K=19, window_T=0.01)
+    w = _walk_geometry(N_W, D0, d.Box1D(L), (N_T - 1) * DT, DT, seed=0, require_gpu=False, K=19, window_T=0.01)
     return dataclasses.replace(w, spec=SubstrateSpec.from_dict(_fixture_spec()))
 
 

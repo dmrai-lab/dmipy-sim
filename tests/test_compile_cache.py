@@ -1,6 +1,6 @@
 """One compiled program per geometry and configuration, not one per call.
 
-`simulate` (fused engine) and `simulate_trajectories` (the replay producer) keep their jitted
+`simulate` (fused engine) and `_walk_geometry` (the replay producer) keep their jitted
 batch functions on the geometry object (`geometry._batch_cache`), keyed on its scalar state and
 the configuration the closure bakes in. The waveform samples, positions, keys and labels are
 arguments, so a sweep over b, seed or direction runs the same executable; a knob changed on the
@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine import core
 from dmipy_sim.engine._fused import simulate_fused
 
@@ -100,8 +101,8 @@ def test_the_cache_dies_with_the_geometry():
 def test_the_replay_producer_caches_too():
     g = d.Sphere(3e-6, surface_relaxivity_t2=1e-6)
     for seed in (0, 1):
-        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False, tiers=())
-        d.simulate_trajectories(400, D, g, 2e-3, 5e-4, seed=seed,
+        _walk_geometry(400, D, g, 2e-3, 5e-4, seed=seed, require_gpu=False, tiers=())
+        _walk_geometry(400, D, g, 2e-3, 5e-4, seed=seed,
                                 require_gpu=False)
     keys = [(k[0][0], k[0][1]) for k in _entries(g)]
     assert set(keys) == {("coefficient walk", "gen"), ("coefficient walk", "relax")}, keys

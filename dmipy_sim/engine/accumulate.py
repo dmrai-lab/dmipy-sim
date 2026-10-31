@@ -1,4 +1,4 @@
-"""The walk's band accumulation: what a walk (``simulate_trajectories``, a
+"""The walk's band accumulation: what a walk (``_walk_geometry``, a
 :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`) carries per walker.
 
 A walk runs in blocks of ``h`` seconds, the band's own unless given (:func:`block_length`: ``omega_K h =``

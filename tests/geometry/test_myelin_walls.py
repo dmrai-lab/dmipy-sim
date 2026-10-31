@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.myelin import concentric_wall_kernel
 from dmipy_sim.engine._fused import simulate_fused
 
@@ -225,13 +226,13 @@ def test_lumen_boundary_local_time_is_brownstein_tarr():
     R_l, N, T_max, block_h = 2e-6, 20_000, 4e-3, 2e-4
     c, L = _pack([R_l] * 4, 0.7, 0.5, seed=0)
     pm = d.PackedMyelinatedCylinders([R_l] * 4, 0.7, c, L, N_max=4)
-    out = d.simulate_trajectories(N, D, pm, T_max, block_h, seed=5,
+    out = _walk_geometry(N, D, pm, T_max, block_h, seed=5,
                                   require_gpu=False, raw_subset=N)
     dlog, comp = np.asarray(out.raw_boundary), np.asarray(out.raw_compartment)
     intra = (comp == 1).all(axis=1)
     rate_pm = -dlog[intra].mean() / block_h
     cyl = d.Cylinder(R_l, (0, 0, 1))
-    out_c = d.simulate_trajectories(N, D, cyl, T_max, block_h, seed=5,
+    out_c = _walk_geometry(N, D, cyl, T_max, block_h, seed=5,
                                     require_gpu=False, raw_subset=N)
     rate_c = -np.asarray(out_c.raw_boundary).mean() / block_h
     theory = 2 * D / R_l

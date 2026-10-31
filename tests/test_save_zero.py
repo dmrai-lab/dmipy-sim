@@ -5,6 +5,7 @@ import numpy as np
 import jax
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
 from dmipy_sim.spec import geometry_from_spec
 from dmipy_sim.substrate import Substrate
@@ -17,7 +18,7 @@ def test_the_first_save_is_the_start_for_every_producer():
     # a single-pool geometry (positions + contact + occupancy through the relaxation kernel)
     g = d.Cylinder(3e-6, (0, 0, 1))
     r0 = np.asarray(g.init_positions(50, jax.random.PRNGKey(3)))
-    w = d.simulate_trajectories(50, D0, g, 1e-3, 2.5e-4, seed=0, r0=r0, require_gpu=False, raw_subset=50)
+    w = _walk_geometry(50, D0, g, 1e-3, 2.5e-4, seed=0, r0=r0, require_gpu=False, raw_subset=50)
     np.testing.assert_allclose(np.asarray(w.raw_positions)[:, 0], r0, atol=1e-12)
     assert np.all(np.asarray(w.raw_boundary)[:, 0] == 0) and w.n_blocks + 1 == 5
     assert np.all(np.asarray(w.raw_compartment)[:, 0] == np.asarray(w.compartment))
@@ -25,7 +26,7 @@ def test_the_first_save_is_the_start_for_every_producer():
     spec = Substrate.canonical(field_T=3.0).request(n_fibres=3, seed=1)
     pm = geometry_from_spec(spec)
     r0 = np.asarray(pm.init_positions(60, jax.random.PRNGKey(4)))
-    w = d.simulate_trajectories(60, D0, pm, 1e-3, 2.5e-4, seed=1, r0=r0, require_gpu=False, raw_subset=60)
+    w = _walk_geometry(60, D0, pm, 1e-3, 2.5e-4, seed=1, r0=r0, require_gpu=False, raw_subset=60)
     np.testing.assert_allclose(np.asarray(w.raw_positions)[:, 0], r0, atol=1e-12)
     assert np.all(np.asarray(w.raw_boundary)[:, 0] == 0)
     assert np.all(np.asarray(w.raw_compartment)[:, 0] == np.asarray(w.compartment))

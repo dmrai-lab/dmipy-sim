@@ -5,13 +5,14 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.trajectories import replay
 
 
 def _walk(geom, n, seed=0, r0=None):
-    return d.simulate_trajectories(n, 2e-9, geom, 4e-3, 4e-5, seed=seed, walker_batch_size=n, require_gpu=False, r0=r0,
+    return _walk_geometry(n, 2e-9, geom, 4e-3, 4e-5, seed=seed, walker_batch_size=n, require_gpu=False, r0=r0,
                                    K=16, raw_subset=n)
 
 

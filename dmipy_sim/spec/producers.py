@@ -666,7 +666,7 @@ def _strands_spec(centerlines, R, lo, hi, *, boundary, g_ratio, field_T, rho2, i
         id, Domain(list(lo), list(hi), [boundary] * 3), pools, walls,
         Seeding([p.id for p in pools if p.water_fraction > 0], "uniform_by_volume", "water_fraction"),
         # the curved tubes record their wall contact (surface); a sheath is a field source (the per-segment closed
-        # form along each path, or the raster within walk_spec's field_budget)
+        # form along each path, or the raster within walk's field_budget)
         Validity(smallest, ["gradient", "relaxation", "surface"] + (["field"] if any(p.susceptibility is not None for p in pools) else []),
                  thinnest_shell=thinnest),
         frame=Frame(F[:, 2].tolist(), F[:, 1].tolist()), nominal_field_T=float(field_T),
@@ -713,7 +713,7 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
     sha256 on the seeding, and the rule is then ``explicit`` rather than ``uniform_by_volume``, because the
     released list spans only the central ~40 um of a 250 um tube and is NOT a uniform draw over the lumen.
     A spec whose rule is ``explicit`` and which cites no positions cannot be re-walked as it was walked, so
-    :func:`~dmipy_sim.spec.walk_spec` refuses it rather than seeding the whole tube.
+    :func:`~dmipy_sim.walk` refuses it rather than seeding the whole tube.
     """
     notes = []
     (mesh,), smallest, edge_med, open_files = _surface_stats([ply], scale, notes)

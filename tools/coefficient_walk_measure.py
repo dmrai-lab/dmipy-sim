@@ -1,4 +1,4 @@
-"""The measurements of the walk's band accumulation (``simulate_trajectories``, dmrai-lab/dmipy-sim#741), each a
+"""The measurements of the walk's band accumulation (``_walk_geometry``, dmrai-lab/dmipy-sim#741), each a
 function the tests read and a table this script prints:
 
 * ``exactness``  -- at ``block_order=0`` the pack of the accumulated walk against the pack of the same walk's block
@@ -80,6 +80,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
     endpoint and bands likewise, whether the occupancy read off the events at the block ends is the raw one, and the
     measured certificate of the pack (the battery replayed on the block ends against the bands)."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from scipy.fft import dst
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.replay.compression import read_position_coeffs
@@ -94,7 +95,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
                   blt_dtype=np.float32)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            cw = d.simulate_trajectories(n, 2e-9, make(), K=K, block_order=0, raw_subset=n, **kw)
+            cw = _walk_geometry(n, 2e-9, make(), K=K, block_order=0, raw_subset=n, **kw)
             spec = cw.spec
             if spec.field_source_pools:            # the sheath's field is the C3 tier, not this measurement's: declared inert
                 spec = spec.replace(susceptibility={p_.name: None for p_ in spec.field_source_pools},
@@ -140,6 +141,7 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
     measurements, and the relative error of the top quarter of the modes against the table on the axis where it is
     largest (what must NOT be the criterion on a restricted walk)."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_replay.constants import GAMMA
     from dmipy_sim.replay import compression as cx
     h_max = max(h for _, h in cases)
@@ -154,7 +156,7 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
     def walk(h, m):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return d.simulate_trajectories(n, D, geometry, T_max=T, block_h=h, seed=seed, require_gpu=False, tiers=(),
+            return _walk_geometry(n, D, geometry, T_max=T, block_h=h, seed=seed, require_gpu=False, tiers=(),
                                            sub_steps=int(round(h / dt_sim)), K=K, block_order=m, window_T=T)
     ref_walk = walk(dt_sim, 1)
     ref = bands(ref_walk)
@@ -192,6 +194,7 @@ def _probe(mode, block_h, n, T, dt_sim, K):
     kept beside them, ``raw_subset=n``): VmHWM (from /proc/self/status) over the walk's second call, the high-water
     mark reset after the first (which compiles), and the device's peak bytes when it reports them."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
 
     def vm(key):
         with open("/proc/self/status") as f:
@@ -203,12 +206,12 @@ def _probe(mode, block_h, n, T, dt_sim, K):
     geom = d.Cylinder(radius=4e-6, orientation=(0, 0, 1))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w = d.simulate_trajectories(n, 2e-9, geom, **kw)
+        w = _walk_geometry(n, 2e-9, geom, **kw)
         del w
         base = vm("VmRSS")
         with open("/proc/self/clear_refs", "w") as f:
             f.write("5")                                                          # the high-water mark := now
-        w = d.simulate_trajectories(n, 2e-9, geom, **kw)
+        w = _walk_geometry(n, 2e-9, geom, **kw)
     out = dict(mode=mode, block_h=block_h, n_blocks=int(w.n_blocks), host_peak_over_base=vm("VmHWM") - base,
                walk_host_bytes=int(w.nbytes))
     try:
@@ -244,6 +247,7 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, block_h=None, seed=1):
     (``dmipy_sim.math.matrix_method``) on the same waveform. Per pore and measurement: both signals, the difference and
     the standard error of the replay's ensemble mean."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.math.matrix_method import MatrixPore
     from dmipy_sim.replay.bank import build_replay_pack
     seq = d.ogse([[1, 0, 0], [1, 0, 0]], f, 0.015, shape="cosine", bvalues=[1e9, 2e9], TE=T, n_t=4001, slew_rate=np.inf)
@@ -252,7 +256,7 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, block_h=None, seed=1):
                                     ("cylinder", d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), "cylinder", 6e-6)):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            cw = d.simulate_trajectories(n, D, geom, T_max=T, block_h=block_h, seed=seed, require_gpu=False, K=K, tiers=(),
+            cw = _walk_geometry(n, D, geom, T_max=T, block_h=block_h, seed=seed, require_gpu=False, K=K, tiers=(),
                                          window_T=T)
         pk = build_replay_pack(cw, id=f"oracle/{name}", license="x", citation="x")
         w, ew, E = pk.walker_signals(seq)
@@ -276,12 +280,13 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
     Per row the three signals, the replay's standard error, and the differences accumulated - raw (the codec) and
     accumulated - fused (two walks)."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.spec.tissue import Tissue
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         g = d.Sphere(radius=R)
-        cw = d.simulate_trajectories(n, D, g, T_max=T, seed=seed, require_gpu=False, K=K, raw_subset=n, window_T=T)
+        cw = _walk_geometry(n, D, g, T_max=T, seed=seed, require_gpu=False, K=K, raw_subset=n, window_T=T)
     pa = build_replay_pack(cw, id="surface/acc", license="x", citation="x", fidelity="measured")
     tissue = Tissue(rho2=rho)
     rows = []
@@ -383,6 +388,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
 
     Every row carries both signals, their difference and the replay's standard error."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo, bare_spin_echo
     from dmipy_sim.fields.susceptibility import MyelinSusceptibility
@@ -401,7 +407,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         t0 = time.time()
-        w = d.simulate_trajectories(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
+        w = _walk_geometry(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
                                     raw_subset=n_raw, envelope=env, r0=_shuffled_starts(g, n, seed))
         t_walk = time.time() - t0
         t0 = time.time()
@@ -474,7 +480,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     fg2 = _myelin_field(cellm, field)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        w2 = d.simulate_trajectories(n, D, cellp, T, seed=seed + 7, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg2,
+        w2 = _walk_geometry(n, D, cellp, T, seed=seed + 7, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg2,
                                      raw_subset=n_raw, envelope=env)
         w2 = dataclasses.replace(w2, spec=cellm.spec, weights=None)             # the cell's spec names the sheath as the source
         pk2 = build_replay_pack(w2, id="admission/cell-extra", license="x", citation="x", envelope=env, fidelity="measured")
@@ -600,6 +606,7 @@ def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0,
     ``theta_deg`` to the axis); the seconds of each walk."""
     import time
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
     from dmipy_sim.fields.susceptibility_field import field_grid_of
@@ -614,7 +621,7 @@ def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0,
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             t0 = time.time()
-            w = d.simulate_trajectories(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
+            w = _walk_geometry(n, D, g, T, seed=seed, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg,
                                         envelope=env, **kw)
             secs[name] = time.time() - t0
         return w
@@ -652,7 +659,7 @@ def _strands_spec(tmp):
 
 
 def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0, require_gpu=False):
-    """The field read on the strands fixture (the adaptive producer, ``walk_spec(adaptive_steps=True)``): the read
+    """The field read on the strands fixture (the adaptive producer, ``walk(adaptive_steps=True)``): the read
     each pool's pilot derives from its measured read series (the bundle's record), the walk at it, and the SAME walk
     read every round of each pool and once per block (``field_read_interval=``, the band fixed at the derived walk's),
     each compared with the per-round read per channel and pool (:func:`_read_compare`, each pool at its own interval)
@@ -661,7 +668,7 @@ def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo
     from dmipy_replay.acquisition.waveforms import rotate_waveform
     from dmipy_sim.replay import compression as cx
-    from dmipy_sim.spec import walk_spec
+    from dmipy_sim import walk
     from dmipy_replay.spec.tissue import Tissue
     import time
     spec = _strands_spec(tempfile.mkdtemp())
@@ -672,7 +679,7 @@ def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             t0 = time.time()
-            w = walk_spec(spec, n, T, block_h, seed=seed, n_probe=20_000, require_gpu=require_gpu, adaptive_steps=True, K=K,
+            w = walk(spec, n, T, block_h, seed=seed, n_probe=20_000, require_gpu=require_gpu, adaptive_steps=True, K=K,
                           envelope=env, **kw)
             secs[name] = time.time() - t0
         return w
@@ -719,6 +726,7 @@ def permeable(*, n=4000, D=2e-9, T=0.025, seed=2, kappa=2e-5, T2=(0.03, 0.08), r
     PGSE rows at b = 0, 1 ms/um^2 and TE = T / 2 and T. Per row the signals, the differences and the replay's
     standard error."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.spec.tissue import Tissue
     from dmipy_replay.replay.events import events_at_instants
@@ -729,7 +737,7 @@ def permeable(*, n=4000, D=2e-9, T=0.025, seed=2, kappa=2e-5, T2=(0.03, 0.08), r
         plain, cell = _permeable_mesh(k), _permeable_mesh(k, T2)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            w = d.simulate_trajectories(n, D, plain, T, seed=seed, require_gpu=require_gpu, window_T=T, raw_subset=n)
+            w = _walk_geometry(n, D, plain, T, seed=seed, require_gpu=require_gpu, window_T=T, raw_subset=n)
         pk = build_replay_pack(w, id=f"permeable/{name}", license="x", citation="x")
         lab = np.asarray(w.raw_compartment); T2v = np.array([T2e, T2i])
         lab_ev = events_at_instants(w.comp_events, w.compartment, np.arange(w.n_blocks + 1) * w.h) if w.comp_events is not None else np.repeat(np.asarray(w.compartment)[:, None], w.n_blocks + 1, axis=1)
@@ -797,6 +805,7 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
     cheapest accumulation), the contact's (C0 + C2 against C0, the cylinder) and the field read's (C3 against C2, the
     myelinated cylinder). The device bytes per walker the resolver states at two walk lengths, both substrates."""
     import dmipy_sim as d
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     import time
     r_in = 2e-6
@@ -809,7 +818,7 @@ def timing(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, reps=2, require_gpu=None, l
         for i in range(reps + 1):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                t0 = time.time(); w = d.simulate_trajectories(n, D, g, T, seed=seed, require_gpu=require_gpu, window_T=T, **kw); ts.append(time.time() - t0)
+                t0 = time.time(); w = _walk_geometry(n, D, g, T, seed=seed, require_gpu=require_gpu, window_T=T, **kw); ts.append(time.time() - t0)
         return min(ts[1:]), w
 
     rows, walks = {}, {}

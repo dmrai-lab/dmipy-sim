@@ -1,5 +1,5 @@
 """Slow tests of dmipy_sim.spectrum.strands at 250 um, 1 mm and 5 mm -- dmipy-sim#697's own test requirement
-("each generated edge is walkable by walk_spec", "two tiles of the 5 mm case differ"), run in the
+("each generated edge is walkable by walk", "two tiles of the 5 mm case differ"), run in the
 nightly/offline `slow` lane (`tests/conftest.py::_SLOW_MC_MODULES`), never in a per-PR CI pass. Only the 250 um
 case builds a real far grid here (a few minutes); 1 mm and 5 mm skip it (``T_max_s=()``) since the far-grid
 build's own cost is already measured for real on the L40S and reported in #697's PR body, not something this
@@ -45,11 +45,12 @@ def test_250um_index_verifies(entry_250um):
 
 
 def test_250um_is_walkable_by_walk_spec(entry_250um):
-    from dmipy_sim.spec import disco_spec, walk_spec
+    from dmipy_sim.spec import disco_spec
+    from dmipy_sim import walk
     out = entry_250um["out_dir"]
     spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=250e-6, field=False)
-    w = walk_spec(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
+    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
     assert np.isfinite(w.position_coeffs).all()
 
 
@@ -66,11 +67,12 @@ def test_1mm_is_walkable_and_has_a_plan(edge_m, tmp_path):
     blocks = json.load(open(os.path.join(r["out_dir"], "substrate/blocks.json")))["blocks"]
     for pool in ("intra", "extra"):
         assert int(counts[f"count_{pool}"].sum()) == sum(b["walkers"][pool] for b in blocks)
-    from dmipy_sim.spec import disco_spec, walk_spec
+    from dmipy_sim.spec import disco_spec
+    from dmipy_sim import walk
     spec = disco_spec(os.path.join(r["out_dir"], "substrate/strands.tck"),
                       os.path.join(r["out_dir"], "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=edge_m, field=False)
-    w = walk_spec(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
+    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
     assert np.isfinite(w.position_coeffs).all()
 
 

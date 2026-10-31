@@ -126,7 +126,7 @@ def dwell_time_from_fraction(f_bound, k_f):
 
 # ── bound-pool equilibration for the MT walk generator ──────────────────────────
 # Shared by ``mt_walk.simulate_mt_trajectories`` (and the packed-myelin MT walk in
-# ``core.simulate_trajectories``).  The saved walk carries no RF/gradient (those are
+# ``core._walk_geometry``).  The saved walk carries no RF/gradient (those are
 # replay knobs), so equilibration is purely of the bound-pool OCCUPANCY (and the
 # equilibrated spatial state): an all-free start under-fills the macromolecular pool
 # and biases the transfer whenever ``1/k_f`` is not ``<<`` the walk duration. The three

@@ -757,7 +757,7 @@ def test_a_refused_step_is_counted_by_the_engine():
     budget of 64 can follow.
     """
     import warnings
-    from dmipy_sim import simulate_trajectories
+    from dmipy_sim.engine.core import _walk_geometry
     h = 1e-6
     lab = np.ones((4, 4, 4), np.uint8)
     lab[1:3, 1:3, 1:3] = 2                                           # a grain: two pools, walls on the path
@@ -768,7 +768,7 @@ def test_a_refused_step_is_counted_by_the_engine():
         dt = (voxels * h) ** 2 / (6 * D)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            walk = simulate_trajectories(500, D, g, T_max=3 * dt, block_h=dt, seed=0, sub_steps=1, require_gpu=False,
+            walk = _walk_geometry(500, D, g, T_max=3 * dt, block_h=dt, seed=0, sub_steps=1, require_gpu=False,
                                          window_T=3 * dt)      # one window: the step is dt
         return walk, [w for w in caught if "were refused" in str(w.message)]
 
@@ -789,13 +789,14 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     0.61221, and the fused walk with the same rho2 baked in gives 0.61001 -- a difference of 0.0022
     against the walk's own floor of 0.0158.
     """
-    from dmipy_sim import build_replay_pack, pgse, simulate, simulate_trajectories
+    from dmipy_sim import build_replay_pack, pgse, simulate
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.spec import Tissue
     monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path))
     R, h = 5e-6, 1e-6
     lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 8e-6, h)
     g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
-    walk = simulate_trajectories(4000, D, g, T_max=0.02, block_h=5e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(4000, D, g, T_max=0.02, block_h=5e-4, seed=0, require_gpu=False)
     assert walk.has_surface and walk.has_compartments
     pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", scanner="connectom")
     assert pack.substrate.walls[0].surface.kind == "label_volume"

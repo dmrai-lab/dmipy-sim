@@ -81,8 +81,8 @@ pool's measured `QV` and interval, and the constants; a bundle walked pool by po
 interval and states the coarsest, and the certificate charges the term there on every pool's read series.
 
 A gridded basis (`FieldGrid`, from `fields.susceptibility_field.field_grid_of`) is read by
-`simulate_trajectories(field_basis=)`; a strand basis (`StrandFieldBasis`) by the adaptive producer, at the
-end of every `n_read`-th round. `walk_spec` builds and passes the basis whenever a pool of the spec is a field
+`_walk_geometry(field_basis=)`; a strand basis (`StrandFieldBasis`) by the adaptive producer, at the
+end of every `n_read`-th round. `walk` builds and passes the basis whenever a pool of the spec is a field
 source: there is no switch and no deferral.
 
 ## The channel
@@ -275,7 +275,7 @@ Anchored on a measured floor of `9.4e-3` at 31 000 walkers (`n(eps) = 31000*(9.4
 Three things must hold for a prefix read to be *valid*:
 
 1. **Walkers must be stored SHUFFLED.** A walk that seeds pool by pool (all intra, then all myelin) has a
-   prefix of one pool and *zero* of the other. Walkers are exchangeable, so `walk_spec` joins the pools'
+   prefix of one pool and *zero* of the other. Walkers are exchangeable, so `walk` joins the pools'
    walks under one permutation of every walker-indexed array (`spec.walk._join_pool_walks`), after which a
    prefix is an unbiased subsample (N=1 000 -> 1.2e-4, N=10 000 -> 5.4e-5 against the full-pack value).
    `build_replay_pack` records `compression.precision_tiers` with `walkers_shuffled`, which also carries

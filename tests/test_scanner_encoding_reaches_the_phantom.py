@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.acquisition.scanners import ScannerLimits
@@ -33,7 +34,7 @@ def _seq():
 def pack_path(tmp_path_factory):
     seq = _seq()
     n_t, dt = int(seq.n_t), float(seq.dt)
-    walk = d.simulate_trajectories(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
+    walk = _walk_geometry(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
     build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
     return str(out)

@@ -10,6 +10,7 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.replay import ReplayPack, read_rpk
 from dmipy_replay.spec.tissue import Tissue
@@ -184,7 +185,7 @@ def _timing_packs(tmp_path):
     """A free walk long in blocks and wide in band (2000 blocks, K = 1000), and the same walk in four windows: the
     cost of a pose expansion is then the band contraction of the windows the acquisition spans."""
     g = d.FreeDiffusion()
-    walk = d.simulate_trajectories(4000, 2e-9, g, 0.1, 5e-5, seed=2, require_gpu=False, K=1000, window_T=0.1, tiers=())
+    walk = _walk_geometry(4000, 2e-9, g, 0.1, 5e-5, seed=2, require_gpu=False, K=1000, window_T=0.1, tiers=())
     env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[])
     parent = _float_pack(walk, id="t/long", license="x", citation="x", envelope=env, K=1000, window_T=0.1)
     parent.save(tmp_path / "long.rpk")

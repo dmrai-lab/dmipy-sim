@@ -636,7 +636,7 @@ def _geometry_from_spec(spec):
         if w.mt_reactivity.inside > 0 or w.mt_reactivity.outside > 0:
             raise SpecError(f"wall {w.name!r} has mt_reactivity (inside={w.mt_reactivity.inside}, "
                             f"outside={w.mt_reactivity.outside}) but geometry_from_spec does not walk MT: the "
-                            f"spec carries no dwell time and walk_spec never passes MT to a driver")
+                            f"spec carries no dwell time and walk never passes MT to a driver")
 
     if not walls:
         if dom.boundary == ["open"] * 3:
@@ -676,7 +676,7 @@ def _geometry_from_spec(spec):
                                                     and any(k == "swept_polyline" for k in kinds)):
         if len(walls) != 1 or len(spec.seeding.pools) != 1:
             raise SpecError("a multi-surface (or multi-pool) sphere-union / strand spec is walked pool by pool by "
-                            "spec.walk_spec; it has no single Geometry")
+                            "dmipy_sim.walk; it has no single Geometry")
         w = walls[0]; s = w.surface
         seeded = spec.seeding.pools[0]
         pool = "intra" if seeded == w.inside_pool else "extra"
@@ -690,7 +690,7 @@ def _geometry_from_spec(spec):
                                surface_relaxivity_t2=rho2(w), box=box)
     if any(k == "mesh" for k in kinds):
         if len(walls) != 1:
-            raise SpecError("a multi-surface mesh spec is walked pool by pool by spec.walk_spec; it has no "
+            raise SpecError("a multi-surface mesh spec is walked pool by pool by dmipy_sim.walk; it has no "
                             "single Geometry")
         from ..geometry.mesh import Mesh
         from ..compartments import Compartments, Pool as CPool

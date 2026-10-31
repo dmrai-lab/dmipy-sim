@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.analytic import PermeableSlab1D, PermeableShell
 from dmipy_sim.spec import spec_of, geometry_from_spec, SubstrateSpec, SpecError, load_spec
 
@@ -59,8 +60,8 @@ def test_spec_round_trip_rebuilds_the_same_geometry(name):
     assert g2.spec == spec                                  # the spec is a fixed point
     if name in ("packed_curved", "multishell", "curved"):
         return                                             # no producer walk for these (fused kernels only)
-    w1 = d.simulate_trajectories(48, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
-    w2 = d.simulate_trajectories(48, D, g2, 4e-4, 2e-4, seed=1, require_gpu=False)
+    w1 = _walk_geometry(48, D, g, 4e-4, 2e-4, seed=1, require_gpu=False)
+    w2 = _walk_geometry(48, D, g2, 4e-4, 2e-4, seed=1, require_gpu=False)
     np.testing.assert_array_equal(w1.position_coeffs, w2.position_coeffs)
 
 
@@ -88,7 +89,7 @@ def test_the_published_examples_build_geometries(tmp_path):
     assert isinstance(cyl, d.Cylinder) and cyl.radius == 5e-6
     pm = geometry_from_spec(load_spec(fix / "packed_myelinated_cylinders.sub.json"))
     assert isinstance(pm, d.PackedMyelinatedCylinders) and pm.N_actual == 3
-    with pytest.raises(SpecError, match="pool by pool"):                 # a multi-surface bundle: walk_spec's job
+    with pytest.raises(SpecError, match="pool by pool"):                 # a multi-surface bundle: walk's job
         geometry_from_spec(load_spec(fix / "mesh_bundle.sub.json"))
 
 

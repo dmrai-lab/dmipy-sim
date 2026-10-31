@@ -116,17 +116,18 @@ def test_a_pack_records_the_runs_that_made_it(tmp_path, monkeypatch):
     """The run that produced the walk and the run that built the pack are recorded beside the pack, in its
     ``.run.json`` sidecar, not inside it (dmipy-sim#541): the file itself carries only content-derived
     provenance, so two builds of the same content are byte-identical."""
-    from dmipy_sim import Cylinder, simulate_trajectories
+    from dmipy_sim import Cylinder
+    from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     monkeypatch.setenv("DMIPY_SIM_RUN_DIR", str(tmp_path / "runs"))
-    w = simulate_trajectories(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, block_h=1e-4, seed=0, require_gpu=False, K=8)
-    assert w.run is not None and w.run.status == "ok" and w.run.summary["producer"] == "simulate_trajectories"
+    w = _walk_geometry(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, block_h=1e-4, seed=0, require_gpu=False, K=8)
+    assert w.run is not None and w.run.status == "ok" and w.run.summary["producer"] == "_walk_geometry"
     out = tmp_path / "r.rpk"
     pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out))
     assert "run" not in pk.meta["provenance"]                       # not in the file ...
     assert pk.meta["provenance"]["code"]["version"]                 # ... only its content-derived provenance is
     prov = json.load(open(str(out) + ".run.json"))                  # ... the run record is in the sidecar beside it
-    assert prov["walk"]["producer"] == "simulate_trajectories" and prov["walk"]["status"] == "ok" and prov["walk"]["wall_s"] > 0
+    assert prov["walk"]["producer"] == "_walk_geometry" and prov["walk"]["status"] == "ok" and prov["walk"]["wall_s"] > 0
     assert prov["pack"]["id"].endswith(f"-build_replay_pack-{os.getpid()}") and prov["pack"]["cpu_arch"]
     assert "host" not in prov["pack"] and "host" not in prov["walk"]             # never which machine
     import hashlib
@@ -149,18 +150,18 @@ def test_every_long_producer_opens_a_run():
     """The rule: a producer that can run for hours is a defect without a record."""
     import inspect
     from dmipy_sim.engine import core, adaptive, bloch, mt_walk
-    from dmipy_sim.spec import walk
+    import dmipy_sim.spec.walk as walk_module
     from dmipy_sim.replay import bank
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     from dmipy_sim.replay.phantom import ReplayPhantom
     from dmipy_sim.replay.replay import ReplayPack
-    for f in (core.simulate, core.simulate_cpmg, core.simulate_trajectories, adaptive.simulate_trajectories_adaptive,
-              bloch._simulate_bloch, walk.walk_spec, bank.build_replay_pack, bank.merge_packs,
+    for f in (core.simulate, core.simulate_cpmg, core._walk_geometry, adaptive.simulate_trajectories_adaptive,
+              bloch._simulate_bloch, walk_module.walk, bank.build_replay_pack, bank.merge_packs,
               StrandFieldBasis.build_far_grid, ReplayPhantom.replay, ReplayPhantom.replay_train, ReplayPhantom.replay_bloch,
               ReplayPack.pose_responses):
         assert "with Run(" in inspect.getsource(f), f.__name__
-    # the MT producer is a thin wrapper of simulate_trajectories: its walk is that producer's, with that producer's record
-    assert "return simulate_trajectories(" in inspect.getsource(mt_walk.simulate_mt_trajectories)
+    # the MT producer is a thin wrapper of _walk_geometry: its walk is that producer's, with that producer's record
+    assert "return _walk_geometry(" in inspect.getsource(mt_walk.simulate_mt_trajectories)
     # and ONE batch loop: no producer counts its own batches
     for mod in (core, adaptive, bloch, mt_walk):
         assert "n_batches" not in inspect.getsource(mod), mod.__name__

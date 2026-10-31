@@ -1,6 +1,6 @@
-"""The single source of truth for whether `simulate_trajectories` can walk a geometry at all:
+"""The single source of truth for whether `_walk_geometry` can walk a geometry at all:
 `Geometry.trajectory_walk_gap()`. Both entry points that reach the engine's trajectory producer
--- `engine.core.simulate_trajectories` directly, and `spec.walk.walk_spec` on a single-geometry
+-- `engine.core._walk_geometry` directly, and `dmipy_sim.walk` on a single-geometry
 spec -- consult this one method before any device work, so a spec whose geometry has no
 persistent walk is refused by name instead of discovered by a probe walk.
 
@@ -11,10 +11,11 @@ import jax.numpy as jnp
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 import dmipy_sim.engine.core as core
 import dmipy_sim.spec.walk as walk_mod
 from dmipy_sim.geometry.base import Geometry, LengthScales
-from dmipy_sim.spec import walk_spec
+from dmipy_sim import walk
 from dmipy_replay.spec.substrate import SpecError
 
 D = 2e-9
@@ -52,17 +53,17 @@ def test_simulate_trajectories_refuses_an_unwalkable_geometry_before_any_device_
         raise AssertionError("seed_walkers was called: a walk was attempted")
     monkeypatch.setattr(core, "seed_walkers", _boom)
     with pytest.raises(NotImplementedError, match=r"_Unwalkable.*test stub"):
-        d.simulate_trajectories(8, D, _Unwalkable(), T_max=1e-3, block_h=1e-3, require_gpu=False)
+        _walk_geometry(8, D, _Unwalkable(), T_max=1e-3, block_h=1e-3, require_gpu=False)
 
 
-def test_walk_spec_refuses_an_unwalkable_geometry_before_calling_simulate_trajectories(monkeypatch):
-    """walk_spec checks the geometry_from_spec() result's own trajectory_walk_gap() and raises
-    without ever importing or calling engine.core.simulate_trajectories."""
+def test_walk_refuses_an_unwalkable_geometry_before_calling_the_primitive(monkeypatch):
+    """walk checks the geometry_from_spec() result's own trajectory_walk_gap() and raises
+    without ever importing or calling engine.core._walk_geometry."""
     def _boom(*a, **k):
-        raise AssertionError("simulate_trajectories was called: a walk was attempted")
-    monkeypatch.setattr(core, "simulate_trajectories", _boom)
+        raise AssertionError("_walk_geometry was called: a walk was attempted")
+    monkeypatch.setattr(core, "_walk_geometry", _boom)
     monkeypatch.setattr(walk_mod, "geometry_from_spec", lambda spec: _Unwalkable())
 
     g = d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1), D, D)   # any single-geometry spec will do
     with pytest.raises(SpecError, match="test stub"):
-        walk_spec(g.spec, 8, T_max=1e-3)
+        walk(g.spec, 8, T_max=1e-3)

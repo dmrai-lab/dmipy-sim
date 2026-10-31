@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.engine.core import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry._boundary import BounceLoop
 from dmipy_sim.coefficient_walk import CoefficientWalk
 
@@ -23,7 +23,7 @@ R = 2e-6
 
 def _walk(g, n=256, seed=11, **kw):
     """The walk with every walker's block ends kept (``raw_positions``, ``raw_boundary``)."""
-    return simulate_trajectories(n, D, g, 2e-3, 0.5e-3, seed=seed, tiers="all", walker_batch_size=n, raw_subset=n, **kw)
+    return _walk_geometry(n, D, g, 2e-3, 0.5e-3, seed=seed, tiers="all", walker_batch_size=n, raw_subset=n, **kw)
 
 
 def _packed():
@@ -142,8 +142,8 @@ def test_a_binding_walk_counts_only_the_steps_that_happened():
     sub-step (binding has its own sub-step rule, so it is pinned to the free walk's) the bound walk's hits are the
     free walk's less the share of steps spent bound, within the noise of two different walks."""
     g = _packed_myelinated(); g.count_walls = True
-    free = simulate_trajectories(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048)
-    bound = simulate_trajectories(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048,
+    free = _walk_geometry(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048)
+    bound = _walk_geometry(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048,
                                   kappa_MT=5e-4, dwell_time=2e-4, equilibrate_binding=False,
                                   sub_steps=free.sub_steps, raw_subset=2048)                     # 2048: #555
     assert bound.has_binding and bound.raw_bound.mean() > 0 and bound.sub_steps == free.sub_steps
@@ -214,8 +214,8 @@ def test_certify_bounce_budget_sizes_from_a_pilot():
 
 
 def test_walk_spec_passes_the_budget_through_and_keeps_the_work():
-    from dmipy_sim.spec import walk_spec
+    from dmipy_sim import walk
     g = d.Sphere(R)
-    w = walk_spec(g.spec, 128, 2e-3, 0.5e-3, seed=11, diffusivity=D, bounce_budget=g.bounce_loop.budget - 1,
+    w = walk(g.spec, 128, 2e-3, 0.5e-3, seed=11, diffusivity=D, bounce_budget=g.bounce_loop.budget - 1,
                   walker_batch_size=128)
     assert w.work["bounce_budget"] == g.bounce_loop.budget - 1 and w.work["exhausted_steps"] == 0

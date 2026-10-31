@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import (
-    simulate, simulate_trajectories, PackedMyelinatedCylinders, pack_myelinated_cylinders,
+    simulate, _walk_geometry, PackedMyelinatedCylinders, pack_myelinated_cylinders,
     set_b,
 )
 from dmipy_sim.sequences import pgse
@@ -265,6 +265,6 @@ def test_tight_packing_derives_its_budget_with_zero_exhausted_steps_and_names_it
     _, _, c = pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, D_intra=D0, D_extra=D0)
     assert pm.min_gap < 1e-8, "the adversarial case this test guards needs a near-zero gap"
-    walk = simulate_trajectories(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False)
+    walk = _walk_geometry(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False)
     assert walk.work["exhausted_steps"] == 0
     assert walk.work["bounce_budget"] is not None and walk.work["bounce_budget"] >= 2

@@ -1,5 +1,5 @@
 """``walk_cost``: a trajectory walk states its sub-steps, walker-steps, binding rule and measured wall time before it
-runs (dmrai-lab/dmipy-sim#733). It is the resolution ``simulate_trajectories`` walks, not a copy of it."""
+runs (dmrai-lab/dmipy-sim#733). It is the resolution ``_walk_geometry`` walks, not a copy of it."""
 import json
 import logging
 import time
@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import run as R
 from dmipy_sim.engine import backends as B
 
@@ -16,7 +17,7 @@ T, DT, N = 4e-3, 1e-3, 64
 
 
 def cost(g, T_max=T, dt=DT, n=N, **kw):
-    """``walk_cost`` of the walk ``simulate_trajectories(n, D, g, T_max, dt, **kw)``."""
+    """``walk_cost`` of the walk ``_walk_geometry(n, D, g, T_max, dt, **kw)``."""
     return d.walk_cost(n, D, g, T_max, dt, **kw)
 
 
@@ -37,7 +38,7 @@ def _mesh():
 def test_cost_is_what_the_walk_reports(build):
     g = build()
     p = cost(g)
-    w = d.simulate_trajectories(N, D, g, T, DT)
+    w = _walk_geometry(N, D, g, T, DT)
     assert p.sub_steps == w.sub_steps
     assert p.walker_steps == w.work["walker_steps"] == N * p.n_blocks * w.sub_steps
     assert p.n_blocks == w.n_blocks and p.K == w.K and p.block_s == pytest.approx(w.h)
@@ -68,7 +69,7 @@ def test_cost_refuses_what_the_walk_refuses():
     with pytest.raises(NotImplementedError, match="requires the recorded channels"):
         cost(g, tiers=())
     with pytest.raises(NotImplementedError, match="requires the recorded channels"):
-        d.simulate_trajectories(N, D, g, T, DT, tiers=())
+        _walk_geometry(N, D, g, T, DT, tiers=())
     with pytest.raises(ValueError, match="no backend 'nowhere' is installed"):
         cost(d.Sphere(radius=2e-6), backend="nowhere")
 
@@ -106,7 +107,7 @@ def test_an_installed_backend_that_accepts_the_walk_is_named_and_the_walk_warns(
     assert p.backends_accepting == ["fast"]
     assert set(p.backends_refusing) == {"picky"} and "no spheres" in p.backends_refusing["picky"]
     with caplog.at_level(logging.WARNING, logger="dmipy_sim"):
-        w = d.simulate_trajectories(N, D, d.Sphere(radius=2e-6), T, DT)
+        w = _walk_geometry(N, D, d.Sphere(radius=2e-6), T, DT)
     warned = [r for r in w.run._events if r["kind"] == "warning"]
     assert len(warned) == 1 and warned[0]["backends"] == ["fast"]
     assert any("backend='fast'" in r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
@@ -117,7 +118,7 @@ def test_the_walk_is_silent_when_no_other_backend_accepts_it(monkeypatch, caplog
         _install(monkeypatch, **installed)
         caplog.clear()
         with caplog.at_level(logging.WARNING, logger="dmipy_sim"):
-            w = d.simulate_trajectories(N, D, d.Sphere(radius=2e-6), T, DT)
+            w = _walk_geometry(N, D, d.Sphere(radius=2e-6), T, DT)
         assert not [r for r in w.run._events if r["kind"] == "warning"]
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "walker-steps" in r.getMessage()]
 
@@ -127,7 +128,7 @@ def test_the_cost_is_in_the_runs_events(tmp_path):
     rd = tmp_path / "rec"
     # a persisted record: the walk joins the outer run, whose events.jsonl is on disk
     with R.Run("outer", run_dir=str(rd)):
-        w = d.simulate_trajectories(N, D, g, T, DT)
+        w = _walk_geometry(N, D, g, T, DT)
     rows = [json.loads(l) for l in open(rd / "events.jsonl")]
     c = [r for r in rows if r["kind"] == "cost"]
     assert len(c) == 1
@@ -146,9 +147,9 @@ def test_measure_projects_the_walk():
     assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_block * p.n_blocks))
     assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).profile is None
     # within 2x of a measured walk of the same shape (compile excluded)
-    d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
+    _walk_geometry(n, D, g, t, 1e-3, walker_batch_size=1000)
     t0 = time.perf_counter()
-    d.simulate_trajectories(n, D, g, t, 1e-3, walker_batch_size=1000)
+    _walk_geometry(n, D, g, t, 1e-3, walker_batch_size=1000)
     real = time.perf_counter() - t0
     assert real / 2 < m.projected_s < real * 2
 
@@ -184,11 +185,11 @@ def test_a_cost_is_frozen_and_its_row_is_its_fields():
 
 def test_the_cost_takes_the_walks_arguments():
     import inspect
-    sig, walk = inspect.signature(d.walk_cost).parameters, inspect.signature(d.simulate_trajectories).parameters
+    sig, walk = inspect.signature(d.walk_cost).parameters, inspect.signature(_walk_geometry).parameters
     assert list(sig)[:5] == list(walk)[:5] == ["n_walkers", "diffusivity", "geometry", "T_max", "block_h"]
     assert sig["walker_batch_size"].default == walk["walker_batch_size"].default
     kw = dict(n_walkers=N, diffusivity=D, geometry=d.Sphere(radius=2e-6), T_max=T, block_h=DT, tiers=())
-    assert d.walk_cost(**kw).sub_steps == d.simulate_trajectories(**kw).sub_steps
+    assert d.walk_cost(**kw).sub_steps == _walk_geometry(**kw).sub_steps
 
 
 def test_the_band_is_the_walks():
@@ -198,7 +199,7 @@ def test_the_band_is_the_walks():
     assert c0.f_band_hz == pytest.approx(c0.K / (2 * T))   # the walk's own band, K / (2 T)
     c = cost(g, f_band=1280.0)
     assert c.f_band_hz == 1280.0 and c.sub_step_rules == sub_step_rules(g, D, DT, surface=True, f_band=1280.0)
-    assert c.sub_steps == d.simulate_trajectories(N, D, g, T, DT, f_band=1280.0).sub_steps
+    assert c.sub_steps == _walk_geometry(N, D, g, T, DT, f_band=1280.0).sub_steps
 
 
 def test_the_sweep_stops_after_the_rate_falls_and_recommends_the_fastest():

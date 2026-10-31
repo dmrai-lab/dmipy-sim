@@ -123,7 +123,7 @@ class ParityCase(NamedTuple):
 class WalkBatch(NamedTuple):
     """A batch of walkers as its saves -- what the adaptive producer (:mod:`.adaptive`) takes back from a backend
     until it accumulates (dmipy-sim#742): the JAX kernels' per-save outputs, as arrays. The coefficient producer
-    (:func:`~dmipy_sim.engine.core.simulate_trajectories`) refuses a backend that returns one."""
+    (:func:`~dmipy_sim.engine.core._walk_geometry`) refuses a backend that returns one."""
     positions: np.ndarray             #: (n, n_t, 3) float32, save 0 the start
     boundary_local_time: object       #: (n, n_t) float32 at rho/D = 1, or None when not recorded
     compartment: object               #: (n, n_t) float32 fractional occupancy of pool 1 (int labels when impermeable), or None
@@ -371,7 +371,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
     the case leaves it ``None``), and is held to :func:`void_invariant` on its block ends, a hard pass/fail with no
     JAX side to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is
     the contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
-    from .core import simulate_trajectories
+    from .core import _walk_geometry
     from ..sequences import pgse
     out = []
     for name, case in (cases or parity_cases()).items():
@@ -382,7 +382,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
             bh = block_h if case.block_h is None else case.block_h
             sd = seed if case.seed is None else case.seed
             try:
-                w = simulate_trajectories(nw, 2e-9, g, Tm, bh, seed=sd, tiers="all", walker_batch_size=nw,
+                w = _walk_geometry(nw, 2e-9, g, Tm, bh, seed=sd, tiers="all", walker_batch_size=nw,
                                           r0=case.starts(nw, sd), backend=backend, raw_subset=nw)
             except ValueError as e:
                 if "refuses" in str(e) or "does not" in str(e):
@@ -391,12 +391,12 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
             checks = void_invariant(g, w)
             out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
             continue
-        ref = simulate_trajectories(n_walkers, 2e-9, g, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
+        ref = _walk_geometry(n_walkers, 2e-9, g, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
                                     raw_subset=n_walkers)
         g2 = case(); g2.count_walls = True
         x0 = np.asarray(ref.position_coeffs[:, 0, 0, :], np.float32)                       # the exact starts
         try:
-            w = simulate_trajectories(n_walkers, 2e-9, g2, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
+            w = _walk_geometry(n_walkers, 2e-9, g2, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
                                       r0=x0, backend=backend, raw_subset=n_walkers)
         except ValueError as e:
             if "refuses" in str(e) or "does not" in str(e):

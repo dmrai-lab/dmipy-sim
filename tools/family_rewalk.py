@@ -337,7 +337,7 @@ class Family:
 
 class Pores(Family):
     """The canonical pores: three shapes at every 0.1 um from 0.1 to 20 um, one pool, impermeable, no field;
-    walked by ``simulate_trajectories`` at the pack's own seed (``pack_seed`` of its id)."""
+    walked by ``_walk_geometry`` at the pack's own seed (``pack_seed`` of its id)."""
     name = "pores"
     blt_K = 8
     #: The axes each shape confines, in its own frame (the cylinder along z, the plates' normal along x): the
@@ -367,10 +367,11 @@ class Pores(Family):
 
     def walk(self, name, seed, backend):
         import dmipy_sim as d
+        from dmipy_sim.engine.core import _walk_geometry
         from dmipy_sim.spec import geometry_from_spec
         r = self.rows[name]
         spec = self.m.spec_of(r["shape"], r["d_um"])
-        return d.simulate_trajectories(self.n_walkers(name), self.m.D0, geometry_from_spec(spec), T_max=self.T, K=self.K,
+        return _walk_geometry(self.n_walkers(name), self.m.D0, geometry_from_spec(spec), T_max=self.T, K=self.K,
                                        seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
                                        window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope)
 
@@ -384,10 +385,11 @@ class Pores(Family):
         :func:`toggle_variance_bound`), over the floor squared. The pilot is walked as a pack is (the window, the
         band, every tier, the envelope), so a pore whose count is the pilot's packs it."""
         import dmipy_sim as d
+        from dmipy_sim.engine.core import _walk_geometry
         from dmipy_replay.acquisition.scanners import ScannerLimits
         from dmipy_sim.spec import geometry_from_spec
         r = self.rows[name]
-        w = d.simulate_trajectories(int(n), self.m.D0, geometry_from_spec(self.m.spec_of(r["shape"], r["d_um"])),
+        w = _walk_geometry(int(n), self.m.D0, geometry_from_spec(self.m.spec_of(r["shape"], r["d_um"])),
                                     T_max=self.T, K=self.K, seed=int(seed), tiers="all", require_gpu=(backend != "jax"),
                                     backend=backend, window_T=self.T, raw_subset=int(n), envelope=self.envelope)
         G_max = float(self.envelope.get("G_max") or ScannerLimits.of(self.envelope["scanner"]).G_max)
@@ -473,7 +475,8 @@ class Slab(Family):
 
     def walk(self, name, seed, backend):
         import dmipy_sim as d
-        return d.simulate_trajectories(self.n_walkers(name), self.D0, self.spec(name), T_max=self.T, K=self.K,
+        from dmipy_sim.engine.core import _walk_geometry
+        return _walk_geometry(self.n_walkers(name), self.D0, self.spec(name), T_max=self.T, K=self.K,
                                        seed=int(seed), tiers="all", require_gpu=(backend != "jax"), backend=backend,
                                        window_T=self.T, raw_subset=self.raw_subset, field_basis=self.field_grid(),
                                        field_target_floor=0.5 * self.floor, envelope=self.envelope)
@@ -487,7 +490,7 @@ class Slab(Family):
 class Cactus(Family):
     """The CACTUS bundle: every strand an inner and an outer mesh in a voxel with reflecting faces, three pools
     (intra, myelin water frozen in its sheath, extra), the myelin sheath's susceptibility field rasterised and read
-    along the path. Walked by ``walk_spec`` pool by pool, seeded in proportion to the water (``thin``), which is the
+    along the path. Walked by ``walk`` pool by pool, seeded in proportion to the water (``thin``), which is the
     toggle-proof count at equal cost per walker."""
     name = "cactus"
     floor = 3e-3
@@ -560,7 +563,7 @@ class Cactus(Family):
         return {tests.pools[pid].name: float(tests.member(pid)(probe).mean()) * float(tests.wf[pid]) for pid in tests.seeded}
 
     def pool_costs(self, name, backend):
-        """``{pool: WalkCost}`` of each diffusing pool's walk, the geometry ``walk_spec`` walks it in (inside its
+        """``{pool: WalkCost}`` of each diffusing pool's walk, the geometry ``walk`` walks it in (inside its
         inner walls or outside its outer ones, the cell's faces as the domain says), without the field read."""
         from dmipy_sim.engine.core import walk_cost
         spec = self.spec()
@@ -586,7 +589,7 @@ class Cactus(Family):
                                    n_walkers=int(sum(c.n_walkers for c in costs.values())))
 
     def walk(self, name, seed, backend):
-        from dmipy_sim.spec import walk_spec
+        from dmipy_sim import walk
         kw = dict(field_res=self.field_res_m()) if self.args.field_res else {}
         if getattr(self.args, "bounce_budget", None):
             kw["bounce_budget"] = int(self.args.bounce_budget)
@@ -604,7 +607,7 @@ class Cactus(Family):
             kw["K_c3"] = int(self.args.field_band)
         else:                                                    # a band the pilot derives at half the floor
             kw["field_target_floor"] = 0.5 * self.floor
-        return walk_spec(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
+        return walk(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
                          K=self.K, window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope,
                          backend=backend, require_gpu=(backend != "jax"), **kw)
 
@@ -1016,18 +1019,18 @@ def main(argv=None):
                    help="plan: the memory (GiB) JAX may use on the device the walk runs on, when the planning host is "
                         "not that device; the raster's device bytes are refused above it")
     p.add_argument("--bounce-budget", type=int, default=None,
-                   help="cactus: the walk's bounce budget in place of the mesh's derived one (walk_spec(bounce_budget=)); "
+                   help="cactus: the walk's bounce budget in place of the mesh's derived one (walk(bounce_budget=)); "
                         "the walk records it and its exhausted steps, which build_replay_pack refuses")
     p.add_argument("--drop-pool-changes", type=float, nargs="?", const=0.01, default=None, metavar="MAX_FRACTION",
                    help="cactus: exclude the walkers that change pool in the impermeable walk, at most MAX_FRACTION of a "
                         "pool (0.01 when the flag is given bare), recorded in the walk and the pack's certificate "
-                        "(walk_spec(drop_pool_changes=)); off by default: a walker that changes pool refuses the walk")
+                        "(walk(drop_pool_changes=)); off by default: a walker that changes pool refuses the walk")
     p.add_argument("--field-band", type=int, default=None, metavar="K",
-                   help="cactus: the field channel's band, K cosine modes per window (walk_spec(K_c3=)), in place of the "
+                   help="cactus: the field channel's band, K cosine modes per window (walk(K_c3=)), in place of the "
                         "band a pilot derives at half the floor; the walk records it as stated and the pack's certificate "
                         "holds the measured field error to the cap (check --require-stated)")
     p.add_argument("--field-pilot", default=None, choices=("jax",),
-                   help="cactus: walk the field pilot by the JAX kernels (walk_spec(field_pilot='jax')); by default it "
+                   help="cactus: walk the field pilot by the JAX kernels (walk(field_pilot='jax')); by default it "
                         "walks on --backend")
     p.add_argument("--n-probe", type=int, default=200_000, help="cactus: probe points for the pools' water shares")
     p.add_argument("--rate", type=float, default=1.0e9, help="plan: walker-steps per second the GPU-hours assume")

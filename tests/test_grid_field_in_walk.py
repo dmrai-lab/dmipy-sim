@@ -1,8 +1,8 @@
 """A gridded susceptibility field (:class:`FieldGrid`: a mesh sheath, a myelinated cylinder, a packed cell) is read
-BY THE WALK: :func:`simulate_trajectories` with ``field_basis=`` reads the grid's channels at the kernel's position
+BY THE WALK: :func:`_walk_geometry` with ``field_basis=`` reads the grid's channels at the kernel's position
 every ``field_read_interval`` seconds (every physics step when the rule asks below the step), accumulates the
 trapezoid of the reads as the field's cosine modes per window (and keeps the raw subset's reads at their instants), as
-the strand route does with ``adaptive_steps=True``. ``walk_spec`` reads every gridded source this way, and the pack's path
+the strand route does with ``adaptive_steps=True``. ``walk`` reads every gridded source this way, and the pack's path
 channel is encoded from those modes."""
 import dataclasses
 
@@ -10,9 +10,10 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import walk_spec
+from dmipy_sim import walk
 from tests.conftest import spec_without_source
 
 D0 = 2e-9
@@ -89,9 +90,9 @@ def test_the_in_walk_read_is_the_grid_at_the_sub_steps(case):
     trapezoids (the k = 0 mode to 1e-6), and the read series' quadratic variation is that of the reads."""
     geom, fg, tiers = CASES[case]()
     T, dt = 2e-3, 2e-4
-    w = d.simulate_trajectories(120, D0, geom, T, dt, seed=4, sub_steps=N_SUB, tiers=tiers, require_gpu=False,
+    w = _walk_geometry(120, D0, geom, T, dt, seed=4, sub_steps=N_SUB, tiers=tiers, require_gpu=False,
                                 field_basis=fg, raw_subset=120, field_read_interval=dt / N_SUB)
-    fine = d.simulate_trajectories(120, D0, geom, T, dt / N_SUB, seed=4, sub_steps=1, tiers=tiers, require_gpu=False,
+    fine = _walk_geometry(120, D0, geom, T, dt / N_SUB, seed=4, sub_steps=1, tiers=tiers, require_gpu=False,
                                    raw_subset=120)
     np.testing.assert_allclose(w.raw_positions, fine.raw_positions[:, ::N_SUB], rtol=0, atol=1e-11)   # measured 2.3e-12 m
     fr = w.block["field_read"]
@@ -127,10 +128,10 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     T, dt = 1.8e-3, 2e-4
     dt_sim = dt / N_SUB
     kw = dict(seed=5, sub_steps=N_SUB, require_gpu=False, field_basis=fg, raw_subset=80)
-    w1 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=dt_sim, **kw)
-    w2 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=2 * dt_sim, **kw)
-    w3 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=3 * dt_sim, **kw)
-    w0 = d.simulate_trajectories(80, D0, geom, T, dt, field_read_interval=0.1 * dt_sim, **kw)
+    w1 = _walk_geometry(80, D0, geom, T, dt, field_read_interval=dt_sim, **kw)
+    w2 = _walk_geometry(80, D0, geom, T, dt, field_read_interval=2 * dt_sim, **kw)
+    w3 = _walk_geometry(80, D0, geom, T, dt, field_read_interval=3 * dt_sim, **kw)
+    w0 = _walk_geometry(80, D0, geom, T, dt, field_read_interval=0.1 * dt_sim, **kw)
     assert w1.n_blocks == 9 and w1.block["field_read"]["n_read"] == 1 and w2.block["field_read"]["n_read"] == 2
     assert w2.field_read_interval == pytest.approx(2 * dt_sim) and w1.field_read_interval == pytest.approx(dt_sim)
     assert w0.block["field_read"]["n_read"] == 1 and w0.block["field_read"]["at_step"] and not w1.block["field_read"]["at_step"]
@@ -138,7 +139,7 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     np.testing.assert_allclose(w2.raw_positions, w1.raw_positions, rtol=0, atol=1e-11)
     np.testing.assert_allclose(w2.position_coeffs, w1.position_coeffs, rtol=0, atol=1e-11)
     np.testing.assert_allclose(w2.boundary_bands, w1.boundary_bands, rtol=1e-4, atol=1e-12)
-    fine = d.simulate_trajectories(80, D0, geom, T, dt_sim, seed=5, sub_steps=1, require_gpu=False, raw_subset=80)
+    fine = _walk_geometry(80, D0, geom, T, dt_sim, seed=5, sub_steps=1, require_gpu=False, raw_subset=80)
     for w, n_read in ((w1, 1), (w2, 2)):
         ref = _reads(fg, fine.raw_positions, n_read)
         assert w.raw_field.shape == ref.shape and np.abs(w.raw_field - ref).max() <= 2e-5 * np.abs(ref).max()
@@ -159,7 +160,7 @@ def test_a_coarser_field_read_interval_reads_every_that_many_th_step_only():
     a, b = np.asarray(w1.field_coeffs, np.float64), np.asarray(w2.field_coeffs, np.float64)
     assert np.abs(b - a).max() > 1e-5 * np.abs(a).max()                         # the coarser read is a different quadrature
     with pytest.raises(ValueError, match="go with field_basis"):
-        d.simulate_trajectories(8, D0, geom, T, dt, seed=5, require_gpu=False, field_read_interval=2 * dt_sim)
+        _walk_geometry(8, D0, geom, T, dt, seed=5, require_gpu=False, field_read_interval=2 * dt_sim)
 
 
 def test_a_strand_basis_is_not_read_as_a_grid():
@@ -167,7 +168,7 @@ def test_a_strand_basis_is_not_read_as_a_grid():
     strand = StrandFieldBasis([np.array([[0.0, 0.0, -5 * UM], [0.0, 0.0, 5 * UM]])], [1 * UM], [1.4 * UM], cutoff_m=10 * UM,
                               domain=(np.full(3, -5 * UM), np.full(3, 5 * UM)))
     with pytest.raises(TypeError, match="FieldGrid"):
-        d.simulate_trajectories(8, D0, d.Sphere(2 * UM), 4e-4, 2e-4, require_gpu=False, field_basis=strand)
+        _walk_geometry(8, D0, d.Sphere(2 * UM), 4e-4, 2e-4, require_gpu=False, field_basis=strand)
 
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
@@ -176,11 +177,11 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, s
 
 @pytest.mark.parametrize("family", ["packed", "single"])
 def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_channel(family):
-    """(c) ``walk_spec`` of a myelinated cylinder or a packed cell reads its grid in the walk; the default pack
+    """(c) ``walk`` of a myelinated cylinder or a packed cell reads its grid in the walk; the default pack
     encodes the path channel from the modes the walk accumulated (no grid route: the positions are lossy) and its
     certificate is within twice its floor."""
     geom = _packed() if family == "packed" else d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
-    w = walk_spec(geom.spec, 600, 5e-3, seed=2, require_gpu=False)
+    w = walk(geom.spec, 600, 5e-3, seed=2, require_gpu=False)
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs is not None
     assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
     assert w.field_coeffs.shape == (600, w.n_windows, w.K_c3, 12)
@@ -199,7 +200,7 @@ def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_
     pool's modes are the channels at its seat held over the window: the k = 0 mode alone, ``sqrt(T) b(seat)``."""
     pytest.importorskip("trimesh")
     from tests.test_mesh_spec import _bundle_spec
-    w = walk_spec(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
+    w = walk(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs.shape == (120, w.n_windows, w.K_c3, 12)
     ids = np.asarray(w.compartment)
     frozen = np.asarray(w.field_coeffs)[ids == 2]
@@ -214,7 +215,7 @@ def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_
 
 def test_a_spec_without_a_source_carries_no_field():
     """(d) Unchanged: no source, no basis, no samples, no tier."""
-    w = walk_spec(spec_without_source(_packed().spec), 100, 2e-3, seed=2, require_gpu=False, K=8)
+    w = walk(spec_without_source(_packed().spec), 100, 2e-3, seed=2, require_gpu=False, K=8)
     assert w.field_basis is None and w.field_coeffs is None
     pk = build_replay_pack(w, id="test/no-source", license="x", citation="x", K=8, envelope=ENV)
     assert not pk.has_field
@@ -235,7 +236,7 @@ def test_the_closed_form_hollow_cylinder_is_read_in_the_walk():
                               theta=np.pi / 2, alpha=0.0, periodic=False, n_images=0)
     ref = np.array([float(ms.delta_bz_fn()(jax.numpy.asarray(p, jax.numpy.float32))) for p in P])
     np.testing.assert_allclose(contract(f.channels(P), [1.0, 0.0, 0.0], B0=7.0, chi_aniso=-1e-7), ref, rtol=1e-5, atol=1e-6 * np.abs(ref).max())
-    w = d.simulate_trajectories(300, D0, g, 4e-3, seed=3, K=12, window_T=4e-3, field_basis=f, require_gpu=False)
+    w = _walk_geometry(300, D0, g, 4e-3, seed=3, K=12, window_T=4e-3, field_basis=f, require_gpu=False)
     fr = w.block["field_read"]
     assert fr["pools"]["intra"]["dt_f_rule"] is None and not np.any(fr["pools"]["intra"]["qv_increments"])   # uniform lumen
     assert sum(fr["pools"]["extra"]["qv_increments"]) > 0 and set(w.block["field_band"]["pools"]) >= {"extra", "intra"}

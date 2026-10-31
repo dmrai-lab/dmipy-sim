@@ -237,7 +237,7 @@ _ALLOWED_PROBES = {
     "permeability", "surface_substep_frac", "reflection_step_fraction",
     # optional methods: not every geometry records a boundary local time / binding / membrane
     "reflect_with_log_weight", "reflect_with_binding", "permeate",
-    # core.simulate_trajectories compartment-id derivation (issue #94, A7)
+    # core._walk_geometry compartment-id derivation (issue #94, A7)
     "_R",
     # BoxedMesh wraps a Mesh and reads its box mode
     "box_reflect",
@@ -585,8 +585,8 @@ def test_the_walk_keeps_its_bands_and_has_no_second_spelling():
     opt-in positions; there is no switch to a walk of saves (``accumulate=``, ``compress=``, ``storage_dtype=``) on
     the producer or its cost, and none is spelled anywhere in the package."""
     import inspect
-    from dmipy_sim.engine.core import simulate_trajectories, walk_cost
-    params = inspect.signature(simulate_trajectories).parameters
+    from dmipy_sim.engine.core import _walk_geometry, walk_cost
+    params = inspect.signature(_walk_geometry).parameters
     assert {"K", "block_order", "window_T", "raw_subset"} <= set(params)
     assert not {"compress", "accumulate", "storage_dtype"} & set(params)
     for gone in ("compress", "accumulate"):
@@ -788,10 +788,10 @@ def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     import inspect
     from dmipy_sim import CoefficientWalk
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
-    from dmipy_sim.engine.core import simulate_trajectories, walk_cost
+    from dmipy_sim.engine.core import _walk_geometry, walk_cost
     from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
-    from dmipy_sim.spec import walk_spec
-    for fn, at in ((simulate_trajectories, 4), (simulate_mt_trajectories, 4), (simulate_trajectories_adaptive, 4), (walk_spec, 3)):
+    from dmipy_sim import walk
+    for fn, at in ((_walk_geometry, 4), (simulate_mt_trajectories, 4), (simulate_trajectories_adaptive, 4), (walk, 3)):
         names = list(inspect.signature(fn).parameters)
         assert names[at] == "block_h", (fn.__qualname__, names[:6])
         assert not {"n_t", "dt_save", "field_sample_every", "fill_field", "defer_field"} & set(names), fn.__qualname__
@@ -800,22 +800,36 @@ def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     assert not {"n_t", "dt", "dt_save", "positions", "boundary_local_time", "bound_frac", "field_samples", "field_sample_every"} & fields
     assert not hasattr(CoefficientWalk, "saves") and not (_SRC / "persistent_walk.py").exists()
     cyl = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
-    for walk in (simulate_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
-                 simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
-        assert isinstance(walk, CoefficientWalk) and walk.h == pytest.approx(5e-4)
+    for cw in (_walk_geometry(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
+               simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
+        assert isinstance(cw, CoefficientWalk) and cw.h == pytest.approx(5e-4)
 
 
 # ── the public surface is the replay surface; the fused engine is an internal oracle (#740) ──────────────────────
+def test_walk_is_the_one_public_producer_and_the_engine_primitive_is_not_exported():
+    """``walk(spec, ...)`` is the one public producer of a walk; the engine primitive (one resolved geometry, no spec
+    conversion) lives in ``engine.core`` under a private name and is exported nowhere, and neither is the retired
+    spelling of the producer."""
+    from dmipy_sim.engine import core
+    assert "walk" in dmipy_sim.__all__ and callable(dmipy_sim.walk)
+    for name in ("_walk_geometry", "simulate_trajectories", "walk_spec"):
+        assert name not in dmipy_sim.__all__ and not hasattr(dmipy_sim, name), name
+    assert callable(core._walk_geometry) and not hasattr(core, "simulate_trajectories")
+    import dmipy_sim.spec as spec_pkg
+    assert not hasattr(spec_pkg, "walk_spec") and "walk_spec" not in spec_pkg.__all__
+    assert importlib.import_module("dmipy_sim.spec.walk").walk is dmipy_sim.walk
+
+
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
-    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk_spec``, the pack side
+    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack side
     (``build_replay_pack``, ``read_rpk``, ``ReplayPack``) and the phantom and scanner objects. No walk of saves, no
     positions-replay helper and no forward integrator is exported: the fused scalar engine and the forward vector-Bloch
     engine are the oracles the replay is held to, underscored and imported by the admissions that hold it."""
     import inspect
     from dmipy_sim.engine import bloch, core
-    for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_trajectories", "simulate_mt_trajectories",
-                 "walk_cost", "walk_spec", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
+    for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_mt_trajectories",
+                 "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
                  "Phantom", "ScannerSequence", "ScannerLimits"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
     gone = ("PersistentWalk", "simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",

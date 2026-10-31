@@ -411,7 +411,7 @@ class MyelinatedCylinder(Geometry):
         walker's compartment is STATE that changes only at a granted crossing, which is why
         the real kernel (`physics.make_myelin_step_fn`) carries `compartment_id` and clamps
         the position to match it.  This method used to clamp every walker to the inner
-        cylinder instead, so a `simulate_trajectories` call on a MyelinatedCylinder returned
+        cylinder instead, so a `_walk_geometry` call on a MyelinatedCylinder returned
         a silently single-compartment walk -- myelin and extra-axonal water simply absent,
         with no error.  Failing loudly is the point: a boundary interaction that does not
         happen is exactly the class of defect that produced dmrai-lab/dmipy-sim#86.
@@ -919,7 +919,7 @@ class PackedMyelinatedCylinders(Geometry):
         """Not a usable boundary rule for this geometry -- raises.
 
         This returned `r + step`: free diffusion, no boundaries at all.  Reached through
-        `simulate_trajectories` it produced an unrestricted walk on a packed axon substrate
+        `_walk_geometry` it produced an unrestricted walk on a packed axon substrate
         (measured: RMS displacement 1.02x free through 1 um axons) with no error and no
         warning.  The real kernel is `physics.make_packed_myelin_traj_step_fn`, which
         carries the compartment.
@@ -927,5 +927,5 @@ class PackedMyelinatedCylinders(Geometry):
         raise NotImplementedError(
             "PackedMyelinatedCylinders has no single-surface reflect: it is stepped by the "
             "fused kernel physics.make_packed_myelin_traj_step_fn, which carries the "
-            "compartment id. Use simulate(...) or simulate_trajectories(..., "
+            "compartment id. Use simulate(...) or _walk_geometry(..., "
             "tiers=\"all\"), which dispatch to that kernel.")

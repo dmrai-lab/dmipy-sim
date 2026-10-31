@@ -16,7 +16,7 @@ The substrate geometry is stored canonically (cylinder axis = +z), so at replay 
 import os
 import numpy as np
 
-from dmipy_sim import simulate_trajectories
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import bank
 from dmipy_sim.geometry import Cylinder, Sphere
 
@@ -33,7 +33,7 @@ def walk_restricted(shape, diameter, D0, *, T_max=200e-3, K=128, n_walkers=100_0
         geom = Sphere(radius=radius)
     else:
         raise ValueError(f"shape must be 'cylinder' or 'sphere', got {shape!r}")
-    walk = simulate_trajectories(n_walkers=int(n_walkers), diffusivity=float(D0), geometry=geom, T_max=float(T_max),
+    walk = _walk_geometry(n_walkers=int(n_walkers), diffusivity=float(D0), geometry=geom, T_max=float(T_max),
                                  K=int(K), seed=int(seed), require_gpu=require_gpu,
                                  walker_batch_size=int(walker_batch_size), window_T=float(T_max))
     if verbose:
