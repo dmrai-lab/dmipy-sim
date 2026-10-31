@@ -485,3 +485,51 @@ def test_a_pack_with_the_old_in_file_run_record_still_loads(tmp_path):
     reloaded = read_rpk(out)
     assert reloaded.meta["provenance"]["run"]["pack"]["id"] == "20250101T000000-build_replay_pack-1"
     assert reloaded.fidelity["err_max"] == pk.fidelity["err_max"]        # the rest of the pack is untouched
+
+
+# ------------------------------------------------------------------ the certificate's two budgets and its split-floor
+def test_the_certificate_states_the_numerical_cap_and_the_planned_floor_each_against_its_own_quantity():
+    w = _slab_walk(n_w=400, seed=1, raw=False)
+    kw = dict(id="test/budgets", envelope=_lean_env(), K=16, license="CC-BY-4.0", citation="test")
+    f = build_replay_pack(w, sigma_star=0.05, planned_floor=1.0, **kw).fidelity
+    assert f["target_floor"] == 0.05 and f["planned_floor"] == 1.0
+    assert f["meets_numerical_cap"] == (f["err_max"] <= 0.05) and f["meets_planned_floor"] == (f["floor_max"] <= 1.0)
+    assert f["meets_numerical_cap"] and f["meets_planned_floor"] and f["meets_target"]
+    # the planned floor is a quantity of its own: a planned floor below the measured one fails it, the cap still holds
+    g = build_replay_pack(w, sigma_star=0.05, planned_floor=f["floor_max"] / 2, **kw).fidelity
+    assert g["meets_numerical_cap"] and not g["meets_planned_floor"] and not g["meets_target"]
+    # a floor-sized cap (the old reading of sigma_star for both) would have failed a pack whose codec holds its cap
+    h = build_replay_pack(w, sigma_star=f["err_max"] * 2, planned_floor=1.0, **kw).fidelity
+    assert h["meets_target"]
+
+
+def test_the_two_budgets_are_stated_together_or_not_at_all():
+    w = _slab_walk(n_w=100, seed=1, raw=False)
+    for kw in (dict(sigma_star=0.05), dict(planned_floor=0.05)):
+        with pytest.raises(ValueError, match="planned_floor"):
+            build_replay_pack(w, id="test/b", envelope=_lean_env(), K=16, license="x", citation="x", **kw)
+
+
+def test_the_floor_is_the_standard_error_of_the_weighted_mean_signal_and_deterministic():
+    from dmipy_sim.replay import compression as cx
+    rng = np.random.default_rng(0)
+    C = rng.normal(size=(300, 18, 3)) * 1e-6
+    C[:, 0, :] = 0.0
+    env, w = cx.default_envelope(), rng.uniform(0.5, 1.5, 300)
+    f = cx.measure_floor_coded(C, 1e-4, 33, env, w=w)
+    G, meta = cx.acquisition_battery(33, 1e-4, env)
+    s = np.exp(1j * cx.coded_phases(C, 1e-4, G, 33))
+    S = (w[:, None] * s).sum(0) / w.sum()
+    se = np.sqrt((w[:, None] ** 2 * np.abs(s - S) ** 2).sum(0)) / w.sum()
+    assert f["floor_max"] == pytest.approx(se.max(), rel=1e-9) and f["floor_estimator"] == "standard_error"
+    assert f["per_family"].keys() == {m["fam"] for m in meta} and max(f["per_family"].values()) == pytest.approx(f["floor_max"])
+    assert cx.measure_floor_coded(C, 1e-4, 33, env, w=w)["floor_max"] == f["floor_max"]
+
+
+def test_a_pack_at_the_planned_walker_count_meets_its_planned_floor():
+    """``SE <= 1 / sqrt(N)`` for unit-modulus terms: at ``N = 1 / f^2`` walkers the standard error is within ``f`` by construction."""
+    n = 400
+    f = 1.0 / np.sqrt(n)
+    fid = build_replay_pack(_slab_walk(n_w=n, seed=1, raw=False), id="test/planned", envelope=_lean_env(), K=16, license="x",
+                            citation="x", sigma_star=0.5 * f, planned_floor=f).fidelity
+    assert fid["floor_estimator"] == "standard_error" and fid["floor_max"] <= f and fid["meets_planned_floor"]

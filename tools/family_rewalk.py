@@ -895,7 +895,7 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
                                      n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
     pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
                              envelope=fam.envelope, fidelity=fidelity, provenance=prov,
-                             sigma_star=0.5 * fam.floor, out_path=path + ".part", **kw)
+                             sigma_star=0.5 * fam.floor, planned_floor=fam.floor, out_path=path + ".part", **kw)
     os.replace(path + ".part", path)
     t_pack = time.time() - t1
     fid = pack.meta.get("fidelity") or {}
