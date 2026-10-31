@@ -664,8 +664,7 @@ def test_one_basis_and_no_header_with_a_save_grid():
 #: in the package: a walk has a block (``block_h``), a pack a ``walk_params.block``, and the saves route's encoders,
 #: its RLE occupancy and its dense fidelity oracle are deleted rather than kept beside the band route.
 _SAVE_GRID_NAMES = (r"dt_save", r"field_sample_every", r"save_interval", r"fill_field", r"defer_field", r"FIELD_DT_CAP",
-                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*", r"PersistentWalk",
-                    r"persistent_walk", r"saves_basis", r"decode_saves", r"decode_bridge_dst", r"decode_boundary_bridge",
+                    r"encode_bridge_dst", r"measure_fidelity", r"quadrature_reference", r"comp_rle\w*", r"saves_basis", r"decode_saves", r"decode_bridge_dst", r"decode_boundary_bridge",
                     r"_decoded_channels", r"_window_n_t", r"_dst1_to_continuous", r"pathway_sign_se", r"unwrap_periodic",
                     r"replay_jax", r"pre_pulse_gradient_phase")
 
@@ -807,7 +806,7 @@ def test_every_producer_takes_a_block_and_returns_a_coefficient_walk():
     assert not {"n_t", "dt_save"} & set(inspect.signature(walk_cost).parameters)
     fields = set(CoefficientWalk.__dataclass_fields__)
     assert not {"n_t", "dt", "dt_save", "positions", "boundary_local_time", "bound_frac", "field_samples", "field_sample_every"} & fields
-    assert not hasattr(CoefficientWalk, "saves") and not (_SRC / "persistent_walk.py").exists()
+    assert not hasattr(CoefficientWalk, "saves")
     cyl = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
     for cw in (_walk_geometry(6, 2e-9, cyl, 2e-3, 5e-4, seed=0, require_gpu=False),
                simulate_mt_trajectories(6, 2e-9, cyl, 2e-3, 5e-4, kappa_MT=1e-5, dwell_time=1e-3, seed=0, require_gpu=False)):
@@ -863,7 +862,7 @@ def test_the_public_surface_is_the_replay_surface():
                  "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
                  "Phantom", "ScannerSequence", "ScannerLimits"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
-    gone = ("PersistentWalk", "simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
+    gone = ("simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
             "replay_bloch_jax", "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se")
     for name in gone:
         assert name not in dmipy_sim.__all__ and not hasattr(dmipy_sim, name), name
