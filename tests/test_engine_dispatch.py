@@ -71,7 +71,7 @@ def _mesh_rho():
     m = trimesh.creation.icosphere(subdivisions=2, radius=R)
     return d.Mesh(np.asarray(m.vertices, np.float64),
                   np.asarray(m.faces, np.int32), feature_radius=_MESH_FEATURE,
-                  compartments={"intra": {"surface_relaxivity_t2": RHO}})
+                  compartments=d.Compartments(intra=d.Pool(surface_relaxivity_t2=RHO)))
 
 
 # ── (base geom, surface-relaxivity geom or None, n_walkers, waveform) ─────────

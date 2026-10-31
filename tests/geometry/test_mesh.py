@@ -17,6 +17,7 @@ import pytest
 from dmipy_sim import simulate, Sphere, Mesh, load_ply, set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.engine._fused import simulate_fused
+from dmipy_sim import Compartments, Pool
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -123,11 +124,11 @@ def test_compartment_property_parsing():
     V, F = _icosphere(2)
     # scalar ρ == symmetric intra=extra dict (nominal + unit multipliers)
     m_scalar = Mesh(V, F, surface_relaxivity_t2=5e-6)
-    m_sym = Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": 5e-6}, "extra": {"surface_relaxivity_t2": 5e-6}})
+    m_sym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=5e-6)))
     assert m_scalar.surface_relaxivity_t2 == m_sym.surface_relaxivity_t2 == 5e-6
     assert float(m_scalar._rho_mult_intra) == 1.0 and float(m_scalar._rho_mult_extra) == 1.0
     # asymmetric ρ: nominal = max, multipliers = per-side ratios
-    m_asym = Mesh(V, F, compartments={"intra": {"surface_relaxivity_t2": 5e-6}, "extra": {"surface_relaxivity_t2": 1e-6}})
+    m_asym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=1e-6)))
     assert m_asym.surface_relaxivity_t2 == 5e-6
     npt.assert_allclose([float(m_asym._rho_mult_intra), float(m_asym._rho_mult_extra)], [1.0, 0.2], atol=1e-6)
     # κ: scalar symmetric; dict direction-dependent
@@ -139,24 +140,26 @@ def test_compartment_property_parsing():
 
 def test_compartment_unsupported_key_raises():
     V, F = _icosphere(2)
-    with pytest.raises(KeyError, match="kurtosis"):
-        Mesh(V, F, compartments={"intra": {"kurtosis": 1.0}})         # not a Pool property
+    with pytest.raises(TypeError, match="kurtosis"):
+        Pool(kurtosis=1.0)                                                      # not a Pool property
+    with pytest.raises(TypeError, match="takes a Compartments or None, got dict"):
+        Mesh(V, F, compartments={"intra": {"D": 1e-9}})                         # a dict of properties is not a spelling
 
 
 def test_compartment_bulk_parsing():
     """Per-compartment bulk D/T2 parsing (fast; no Monte-Carlo)."""
     V, F = _icosphere(2)
-    m = Mesh(V, F, compartments={"intra": {"D": 1e-9, "T2": 0.02}, "extra": {"D": 2e-9, "T2": 0.08}})
+    m = Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9, T2=0.02), extra=Pool(D=2e-9, T2=0.08)))
     assert m._has_bulk_comp
     npt.assert_allclose(np.asarray(m._D_comp_jax), [2e-9, 1e-9], rtol=1e-6)          # by pool id: extra, intra
     npt.assert_allclose(np.asarray(m._inv_T2_comp_jax), [1 / 0.08, 1 / 0.02], rtol=1e-6)
     assert m._D_comp_max == 2e-9
     assert Mesh(V, F)._has_bulk_comp is False        # ordinary mesh: scalar path
     with pytest.raises(ValueError):                  # one-sided D not allowed
-        Mesh(V, F, compartments={"intra": {"D": 1e-9}})
+        Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9)))
     with pytest.raises(NotImplementedError):         # unequal D across a permeable wall
-        Mesh(V, F, compartments={"intra": {"D": 1e-9}, "extra": {"D": 2e-9}}, permeability=2e-5)
-    Mesh(V, F, compartments={"intra": {"D": 1e-9}, "extra": {"D": 1e-9}}, permeability=2e-5)   # equal D: OK
+        Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)), permeability=2e-5)
+    Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=1e-9)), permeability=2e-5)   # equal D: OK
 
 
 def test_return_positions_full():
