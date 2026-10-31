@@ -403,3 +403,18 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     # (every mode of every residual row, in one call, #698) -- never the dozens of directions, let alone the
     # residual's own numerical rank (in the hundreds here), which is what #698 cost
     assert len(calls) <= 4 * pack.n_windows
+
+
+def test_the_quadrature_route_reads_every_window_as_the_closed_form_does(pack, seq, tmp_path):
+    """A pack that stores its walk in several windows has its response summed over them (RPK.md 4.3) by the
+    quadrature route as by the closed form: the two routes agree on it to the quadrature's misfit, and the
+    quadrature response of the windowed pack is the one-window pack's."""
+    win = pack.rewindow(pack.T_window / 2, out_path=tmp_path / "w.rpk", id="t/w")
+    assert win.n_windows == 2
+    pc = win.pose_response(seq, method="closed")
+    pq = win.pose_response(seq, method="quadrature")
+    pq1 = pack.pose_response(seq, method="quadrature")
+    tol = 3 * max(pq.misfit.max(), pq1.misfit.max()) + 1e-4
+    for dist in (Distribution.axis((0.3, 0.5, 0.81), pq.lmax, 0), Distribution.watson(6.0, mu=(0, 0, 1), lmax=pq.lmax, nmax=0)):
+        np.testing.assert_allclose(pq.compose(dist), pc.compose(dist), atol=tol)
+        np.testing.assert_allclose(pq.compose(dist), pq1.compose(dist), atol=tol)

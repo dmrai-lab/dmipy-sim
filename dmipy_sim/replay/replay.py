@@ -1613,28 +1613,26 @@ class ReplayPack(_ReplayPack):
         from . import so3
         from dmipy_replay.replay.compression import read_position_coeffs
         G_wf, ew, norm, B0 = P["G_eff_wf"], P["pathway"] * P["ew"], P["norm"], P["B0"]
-        T_w = self.T_window
         b0_dir, chi_iso, chi_aniso = P["b0_dir"], P["chi_iso"], P["chi_aniso"]
         n_meas, n_w = G_wf.shape[0], ew.shape[0]
 
-        C = read_position_coeffs(self.arrays, dtype=np.float64).reshape(n_w, -1)
         # The gradient term at pose R is <R, M_w> with M_w[a, b] = gamma int G_i(t)_a r_w(t)_b dt: the walk is
         # contracted against the waveform once, and every pose after that is a 3x3 inner product. Exact for a
         # multi-axis waveform too, which an expansion in one gradient direction could not take at all.
-        Q = np.empty((n_w, n_meas, 3, 3))
-        for a in range(3):
-            Wa = _compile_continuous(np.asarray(G_wf, np.float64)[:, :, a][:, :, None], P["dt_wf"], self.K, T_w, 0.0)
-            for b_ in range(3):
-                Q[:, :, a, b_] = C[:, b_::3] @ Wa
+        Q = np.zeros((n_w, n_meas, 3, 3))
+        for seg, t0, T_s in P["windows"]:                                      # the windows' tensors sum (RPK.md 4.3)
+            C = read_position_coeffs(seg.arrays, dtype=np.float64).reshape(n_w, -1)
+            for a in range(3):
+                Wa = _compile_continuous(np.asarray(G_wf, np.float64)[:, :, a][:, :, None], P["dt_wf"], seg.K, T_s, t0)
+                for b_ in range(3):
+                    Q[:, :, a, b_] += C[:, b_::3] @ Wa
 
         Psi = names = i_a = None
         if B0 is not None:
-            pm = self.meta.get("compression", {}).get("channels", {}).get("susc_field_basis")
-            if pm is None:
+            if P["ch"].get("susc_field_basis") is None:
                 raise ValueError("the pose expansion with a field needs the pack's field channel (C3)")
-            from dmipy_replay.replay.field import path_field_integral
             from dmipy_replay.replay.field import iso_P6
-            Psi, names = path_field_integral(self.arrays, pm, waveform, T_w)   # (n_w, n_ch)
+            Psi, names = _path_field_channels(P, waveform)                     # (n_w, n_ch): the one read of C3, windows summed
             i_a = names.index("aniso_G_xx") if "aniso_G_xx" in names else None
         b = np.asarray(b0_dir, float); b = b / np.linalg.norm(b)
 
