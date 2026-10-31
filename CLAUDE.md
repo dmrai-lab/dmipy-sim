@@ -372,7 +372,7 @@ meshes:
 - **Compartment (intra/extra) wall properties.** The membrane can relax and permit
   crossing differently by side/direction — the side is known at the collision
   (`sign(step·outward_normal)`). `compartments=Compartments(intra=Pool(surface_relaxivity_t2=ρ_i),
-  extra=Pool(surface_relaxivity_t2=ρ_e))` → side-dependent ρ; `permeability={
+  extra=Pool(surface_relaxivity_t2=ρ_e))` → side-dependent ρ (a Mesh's relaxivity is the pool's, the wall as seen from that side; `Mesh(surface_relaxivity_t2=)` is refused); `permeability={
   "intra_to_extra": κ_out, "extra_to_intra": κ_in}` → direction-dependent κ (scalar
   = symmetric, the default). Stored as a nominal value × per-side/-direction
   multipliers applied in `reflect_with_log_weight` / `permeate` (per sub-step, so an

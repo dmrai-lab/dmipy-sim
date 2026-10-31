@@ -69,7 +69,7 @@ def test_surface_relaxivity_matches_analytic_sphere():
     V, F = _ico(4)
     wf = _pgse(8, 400)
     rho = 5e-6
-    s_mesh = np.asarray(simulate(3000, D, wf, Mesh(V, F, surface_relaxivity_t2=rho), seed=SEED))
+    s_mesh = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=rho), extra=Pool(surface_relaxivity_t2=rho))), seed=SEED))
     s_ana = np.asarray(simulate(3000, D, wf, Sphere(radius=R, surface_relaxivity_t2=rho), seed=SEED))
     npt.assert_allclose(s_mesh, s_ana, atol=0.02,
                         err_msg="mesh surface relaxivity vs analytic Sphere")
@@ -111,15 +111,11 @@ def test_periodic_tube_matches_infinite_cylinder():
 
 
 def test_side_dependent_surface_relaxivity():
-    """Symmetric ρ (intra=extra) reproduces the scalar bit-for-bit; with walkers
-    seeded intra, an intra-side-only ρ attenuates them while an extra-side-only ρ
-    (which they never approach from) leaves them essentially unweighted."""
+    """With walkers seeded intra, an intra-side-only ρ attenuates them while an extra-side-only ρ (which they never
+    approach from) leaves them essentially unweighted."""
     V, F = _ico(4)
     wf = _pgse(4, 300, TE=40e-3)
     rho = 5e-6
-    s_scalar = np.asarray(simulate(3000, D, wf, Mesh(V, F, surface_relaxivity_t2=rho), seed=SEED))
-    s_dict = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=rho), extra=Pool(surface_relaxivity_t2=rho))), seed=SEED))
-    npt.assert_array_equal(s_scalar, s_dict)
     s_in = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=rho), extra=Pool(surface_relaxivity_t2=0.0))), seed=SEED))
     s_ex = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=0.0), extra=Pool(surface_relaxivity_t2=rho))), seed=SEED))
     assert s_in[0] < 0.99 and s_ex[0] > 0.999

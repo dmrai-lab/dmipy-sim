@@ -735,10 +735,6 @@ class Mesh(Geometry):
         (a step may not outrun the 27-cell gather).  Defaults to half the smallest box side, which is
         the pore of a closed cell and far too large for a bundle in a big box: **pass
         the real cell radius for packed substrates**, otherwise the step is too coarse.
-    surface_relaxivity_t2 : float, optional
-        Surface relaxivity ρ₂ (m/s), symmetric (same on both sides of the wall).
-        Applies a Brownstein–Tarr weight at the wall. A side-dependent ρ is given per pool
-        through ``compartments=``.
     permeability : float or dict, optional
         Membrane permeability κ (m/s).  A float is symmetric (same both directions,
         the default). A dict ``{"intra_to_extra": κ_out, "extra_to_intra": κ_in}``
@@ -796,7 +792,7 @@ class Mesh(Geometry):
     radius_is_mesh_feature = True
 
     def __init__(self, vertices, faces, *, periodic=False, voxel_min=None,
-                 voxel_max=None, feature_radius=None, surface_relaxivity_t2=None,
+                 voxel_max=None, feature_radius=None,
                  permeability=None, compartments=None, orientation=None,
                  R=None, cell_size=None, cap=None, max_bounces=None, pool="intra", reject_escape=True,
                  box_reflect=True, adaptive_nudge=False, seeding=None):
@@ -955,10 +951,8 @@ class Mesh(Geometry):
         self.compartments = comps
         intra = comps["intra"] if "intra" in comps else Pool()
         extra = comps["extra"] if "extra" in comps else Pool()
-        rho_i = intra.surface_relaxivity_t2 if intra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
-        rho_e = extra.surface_relaxivity_t2 if extra.surface_relaxivity_t2 is not None else surface_relaxivity_t2
-        rho_i = float(rho_i) if rho_i is not None else 0.0
-        rho_e = float(rho_e) if rho_e is not None else 0.0
+        rho_i = float(intra.surface_relaxivity_t2) if intra.surface_relaxivity_t2 is not None else 0.0
+        rho_e = float(extra.surface_relaxivity_t2) if extra.surface_relaxivity_t2 is not None else 0.0
         rho_nom = max(rho_i, rho_e)
         self.surface_relaxivity_t2 = rho_nom if rho_nom > 0 else None   # nominal (engine reads this)
         self._rho_mult_intra = jnp.float32(rho_i / rho_nom if rho_nom > 0 else 1.0)

@@ -122,11 +122,12 @@ def test_compartment_property_parsing():
     """intra/extra + directional-κ parsing (fast; no Monte-Carlo). Symmetric inputs
     reduce to unit multipliers; asymmetric inputs set nominal=max and ratio mults."""
     V, F = _icosphere(2)
-    # scalar ρ == symmetric intra=extra dict (nominal + unit multipliers)
-    m_scalar = Mesh(V, F, surface_relaxivity_t2=5e-6)
+    # ρ is the pool's, the wall as seen from that side; the same ρ on both sides: nominal + unit multipliers
     m_sym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=5e-6)))
-    assert m_scalar.surface_relaxivity_t2 == m_sym.surface_relaxivity_t2 == 5e-6
-    assert float(m_scalar._rho_mult_intra) == 1.0 and float(m_scalar._rho_mult_extra) == 1.0
+    assert m_sym.surface_relaxivity_t2 == 5e-6
+    assert float(m_sym._rho_mult_intra) == 1.0 and float(m_sym._rho_mult_extra) == 1.0
+    with pytest.raises(TypeError, match="surface_relaxivity_t2"):      # the wall's ρ has one spelling: the pool's
+        Mesh(V, F, surface_relaxivity_t2=5e-6)
     # asymmetric ρ: nominal = max, multipliers = per-side ratios
     m_asym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=1e-6)))
     assert m_asym.surface_relaxivity_t2 == 5e-6
