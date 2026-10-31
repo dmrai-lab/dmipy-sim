@@ -156,3 +156,10 @@ def test_a_crack_of_near_duplicate_vertices_is_closed_by_the_loader(tmp_path):
         Vr, Fr = load_ply(inner, scale=1e-6)
     assert surface_topology(Vr, Fr)["boundary_edges"] == 0 and len(Vr) <= len(V)
     winther_spec(inner, outer, scale=1e-6, pad=1e-6)                            # accepted
+
+
+def test_disco_spec_field_is_a_bool_and_none_is_not_false():
+    from dmipy_sim.spec import disco_spec
+    for bad in (None, "auto", 1):
+        with pytest.raises(TypeError, match="disco_spec\\(field=\\)"):
+            disco_spec("t.tck", "d.txt", field=bad)

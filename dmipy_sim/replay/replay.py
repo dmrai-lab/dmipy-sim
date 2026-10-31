@@ -258,8 +258,8 @@ class ReplayPack(_ReplayPack):
         if is_hub_uri(uri) and uri.endswith(".rpk"):
             from .remote import RemotePack
             return RemotePack(uri)
-        from .columnar import open_columnar
-        return open_columnar(uri, workers=workers)
+        from .columnar import ColumnarPack
+        return ColumnarPack(uri, workers=workers)
 
     def save(self, path):
         """Write this pack to a ``.rpk`` file."""

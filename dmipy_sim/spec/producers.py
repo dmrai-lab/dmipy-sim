@@ -597,6 +597,9 @@ def disco_spec(tracks, diameters, *, coordinate_unit_m=25e-6, diameter_unit_m=1e
     provenance.
     """
     from ..io.strands import read_tck, read_diameters
+    if not isinstance(field, (bool, np.bool_)):
+        raise TypeError(f"disco_spec(field=) is True (the sheath is a susceptibility source) or False (the sheath is inert), "
+                        f"got {field!r}; None is not a spelling of False")
     cls_ = read_tck(tracks, coordinate_unit_m=coordinate_unit_m)
     d = read_diameters(diameters, diameter_unit_m=diameter_unit_m)
     if len(cls_) != len(d):

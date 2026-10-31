@@ -831,6 +831,17 @@ def test_a_package_carries_no_private_name_of_its_module():
     assert callable(viz_pkg.split_cells) and not hasattr(viz_pkg, "_split_cells")
 
 
+def test_one_spelling_of_the_columnar_open_and_the_bounce_budget():
+    """A pack is opened by ``ReplayPack.open(uri)``; the bounce budget is ``geometry._boundary.bounce_budget``. The
+    module-level opener and the packed alias are removed."""
+    from dmipy_sim.geometry import _boundary, packed
+    from dmipy_sim.replay import columnar
+    from dmipy_sim.replay.replay import ReplayPack
+    assert not hasattr(columnar, "open_columnar") and "open_columnar" not in columnar.__all__
+    assert not hasattr(packed, "packed_bounce_budget") and callable(_boundary.bounce_budget)
+    assert callable(ReplayPack.open)
+
+
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
     one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack side

@@ -13,7 +13,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim.geometry.packed import packed_bounce_budget, packed_candidate_count
+from dmipy_sim.geometry._boundary import bounce_budget
+from dmipy_sim.geometry.packed import packed_candidate_count
 from dmipy_sim.math.step_law import LONGEST_STEP
 from dmipy_sim.engine._fused import simulate_fused
 
@@ -69,16 +70,16 @@ def test_a_step_spanning_the_gap_between_two_objects_stays_in_the_gap(kind):
 def test_bounce_budget_and_candidate_count_follow_the_worst_case():
     nudge = 1e-4 * R
     chord = 2 * np.sqrt(2 * nudge * R)
-    assert packed_bounce_budget(R, nudge, np.inf, R / 6) == int(np.ceil((R / 6) / chord) + 1)
-    assert packed_bounce_budget(R, nudge, 0.01 * R, R / 6) == int(np.ceil((R / 6) / (0.01 * R)) + 1)
-    assert packed_bounce_budget(R, nudge, 1e-9, R / 6) == 32                     # capped
-    assert packed_bounce_budget(R, nudge, np.inf, 1e-9) == 2                      # never below two
+    assert bounce_budget(R, nudge, np.inf, R / 6) == int(np.ceil((R / 6) / chord) + 1)
+    assert bounce_budget(R, nudge, 0.01 * R, R / 6) == int(np.ceil((R / 6) / (0.01 * R)) + 1)
+    assert bounce_budget(R, nudge, 1e-9, R / 6) == 32                     # capped
+    assert bounce_budget(R, nudge, np.inf, 1e-9) == 2                      # never below two
     assert packed_candidate_count(100, R, R / 6, 2) == 8 and packed_candidate_count(4, R, R / 6, 2) == 4
     assert packed_candidate_count(100, R, 3 * R, 2) == int(np.ceil(np.pi * 4) + 2)
     assert 8 <= packed_candidate_count(100, R, R / 6, 3) <= 100
     # the geometry builds its kernel at the longest step the sub-step rule allows (the pair's long atom at R_min / 6)
     geom, _ = _two("cylinders", 0.02 * R)
-    assert geom.bounce_loop.budget == packed_bounce_budget(R, nudge, geom.min_gap, LONGEST_STEP * R / 6)
+    assert geom.bounce_loop.budget == bounce_budget(R, nudge, geom.min_gap, LONGEST_STEP * R / 6)
 
 
 def _dense_pack(seed=1):

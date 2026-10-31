@@ -17,11 +17,6 @@ from .packing import periodic_min_gap
 _TINY = 1e-30
 
 
-def packed_bounce_budget(R_min, nudge, min_gap, step_max):
-    """:func:`dmipy_sim.geometry._boundary.bounce_budget` for a pack."""
-    return bounce_budget(R_min, nudge, min_gap, step_max)
-
-
 def packed_candidate_count(N, R_min, step_max, dim):
     """Objects whose wall can lie within one step of a point: disjoint objects of radius at least
     ``R_min`` each subtend, from that point, an angle of at least ``2 asin(R / (R + step))``, so at
@@ -56,7 +51,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     visit.
 
     The bounce budget and the candidate count come from the worst case a step of ``step_max``
-    can meet (:func:`packed_bounce_budget`, :func:`packed_candidate_count`).
+    can meet (:func:`bounce_budget`, :func:`packed_candidate_count`).
 
     Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving a
     :class:`~dmipy_sim.geometry._boundary.WallHit` in ``centers``' space: the end position, the surface
@@ -66,7 +61,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     """
     N, dim = int(centers.shape[0]), int(centers.shape[1])
     R_min = float(np.min(np.asarray(radii)))
-    loop = BounceLoop(budget or packed_bounce_budget(R_min, nudge, min_gap, step_max), count=count)
+    loop = BounceLoop(budget or bounce_budget(R_min, nudge, min_gap, step_max), count=count)
     n_cand = packed_candidate_count(N, R_min, step_max, dim)
     f32 = jnp.float32
     ar = jnp.arange(n_cand)

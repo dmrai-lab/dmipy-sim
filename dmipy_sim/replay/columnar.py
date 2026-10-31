@@ -3,7 +3,7 @@
 voxel sums as an image backend (the default here), and the image of a :class:`~dmipy_sim.replay.study.Study`
 (:meth:`ColumnarPack.image_study`). The layout is written by :mod:`dmipy_sim.fill.consolidate`.
 
-    pack = open_columnar("hf://SubstrateCommons/disco-replay/disco")      # or ReplayPack.open(...)
+    pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")
     plan = pack.plan(seq, tissue=..., scanner=...)                          # bands, modes, tiers, bytes: before any transfer
     view = pack.view(K=32, voxels=[(20, 20, 20)])                           # one voxel's rows at 32 bands: an ordinary ReplayPack
     S, floor, plan = pack.image([seq], settings=[(None, None), (tissue, 3.0)])   # every setting's volume from one pass
@@ -15,7 +15,7 @@ import numpy as np
 
 from dmipy_replay.replay.columnar import ColumnarPack as _ColumnarPack, Source  # noqa: F401
 
-__all__ = ["ColumnarPack", "open_columnar", "Source"]
+__all__ = ["ColumnarPack", "Source"]
 
 _ROWS, _SEGS = 1 << 16, 256                                     # rows and voxel runs padded to multiples: few compiled shapes
 
@@ -139,7 +139,3 @@ class ColumnarPack(_ColumnarPack):
         finally:
             jax.config.update("jax_enable_x64", was_x64)
 
-
-def open_columnar(uri, *, revision="main", workers=8):
-    """The columnar layout at ``uri`` (a directory, or ``hf://owner/name/prefix``) as a :class:`ColumnarPack`."""
-    return ColumnarPack(uri, revision=revision, workers=workers)
