@@ -1003,7 +1003,7 @@ def _walk_geometry(
     r0=None,
     kappa_MT: float = 0.0,
     dwell_time: float = 0.0,
-    equilibrate_binding="auto",
+    equilibrate_binding="burnin",
     K: int = None,
     block_order: int = None,
     window_T: float = None,
@@ -1085,7 +1085,7 @@ def _walk_geometry(
         bind / unbind events. At ``kappa_MT = 0`` the walk is the plain one.
     dwell_time : float
         Mean bound-pool residence time (s); must be ``> 0`` when ``kappa_MT > 0``.
-    equilibrate_binding : {'auto', 'burnin', 'fast', 'off'}
+    equilibrate_binding : {'burnin', 'fast', 'off'}
         How the bound pool reaches thermal-equilibrium occupancy before t=0 (MT only);
         see :func:`dmipy_sim.engine.mt.resolve_equilibrate_mode`.
     K : int, optional

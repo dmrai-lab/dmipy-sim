@@ -32,7 +32,7 @@ W1_HZ, T_SAT, DT = 200.0, 0.025, 2e-5
 KAPPA_MT, DWELL = k_f * R / 3.0, 1.0 / k_r
 
 
-def _mz(offset_hz, *, with_mt, equilibrate='auto'):
+def _mz(offset_hz, *, with_mt, equilibrate='burnin'):
     n_t = int(round(T_SAT / DT)) + 1
     wf = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=DT)
     flip = 360.0 * W1_HZ * T_SAT                            # CW over the window
@@ -67,7 +67,7 @@ def test_emergent_zspectrum_matches_oracle():
     # thermal occupancy (default burn-in), the emergent walker-mean matches the two-pool
     # oracle TOTAL to the Monte-Carlo noise floor across the whole spectrum.
     offsets = np.array([0.0, 500.0, 1000.0, 3000.0, 8000.0])
-    mc = np.array([_mz(o, with_mt=True) for o in offsets])   # equilibrated (auto -> burn-in)
+    mc = np.array([_mz(o, with_mt=True) for o in offsets])   # equilibrated (the default burn-in)
     Z = _oracle_total(offsets)
     rel = np.abs(mc - Z) / np.maximum(np.abs(Z), 0.05)
     assert np.max(rel) < 0.04, f"MC {np.round(mc,3)} vs oracle-total {np.round(Z,3)}"
@@ -116,3 +116,28 @@ def test_mt_prep_gre_offresonance_mtr():
     S_ref = abs(_simulate_bloch(4000, D, bare_gradient_echo(TE=2e-3, dt=DT), Sphere(radius=R), **base, **mt_kw)[0])
     mtr = 1.0 - S_sat / S_ref
     assert mtr > 0.03                                      # emergent off-resonance MTR (bound pool)
+
+
+def test_equilibrate_binding_is_exactly_burnin_fast_or_off():
+    """Three spellings and no other: 'auto', True, False and None are refused by name; 'fast' where it is unsafe (an
+    unknown S/V, or a gradient with a bound pool that is not MR-dark) is a ValueError with the reason, never a warning
+    and a demotion."""
+    import warnings
+    import pytest
+    from dmipy_sim import Box1D, Cylinder
+    from dmipy_sim.engine.mt import resolve_equilibrate_mode as resolve
+    cyl = Cylinder(1e-6, (0, 0, 1))
+    for mode in ("burnin", "fast", "off"):
+        assert resolve(mode, cyl) == mode
+    for bad in ("auto", True, False, None, "Burnin", 1):
+        with pytest.raises(ValueError, match=r"exactly 'burnin' \| 'fast' \| 'off'"):
+            resolve(bad, cyl)
+    with pytest.raises(ValueError, match="surface-to-volume"):
+        resolve("fast", Box1D(1e-6))
+    G = np.ones((1, 5, 3))
+    with pytest.raises(ValueError, match="not MR-dark"):
+        resolve("fast", cyl, G=G, T2=0.05, T2_bound=0.04)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert resolve("fast", cyl, G=G, T2=0.05, T2_bound=1e-4) == "fast"        # MR-dark bound pool
+        assert resolve("fast", cyl, G=0 * G, T2=0.05, T2_bound=0.04) == "fast"    # no gradient

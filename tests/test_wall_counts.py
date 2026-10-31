@@ -153,7 +153,7 @@ def test_a_binding_walk_counts_only_the_steps_that_happened():
     g = _packed_myelinated(); g.count_walls = True
     free = _walk_geometry(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048)
     bound = _walk_geometry(2048, D, g, 2e-3, 0.5e-3, seed=5, tiers="all", walker_batch_size=2048,
-                                  kappa_MT=5e-4, dwell_time=2e-4, equilibrate_binding=False,
+                                  kappa_MT=5e-4, dwell_time=2e-4, equilibrate_binding="off",
                                   sub_steps=free.sub_steps, raw_subset=2048)                     # 2048: #555
     assert bound.has_binding and bound.raw_bound.mean() > 0 and bound.sub_steps == free.sub_steps
     taken = 1.0 - float(bound.raw_bound[:, 1:].mean())            # the share of sub-steps that happened
