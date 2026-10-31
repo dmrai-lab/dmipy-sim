@@ -30,14 +30,13 @@ def pool_id(name):
 class Pool:
     """Tissue properties of one water pool. Bulk: ``D`` (m^2/s), ``T2``, ``T1`` (s),
     ``water_fraction`` (proton-density weight). Wall, seen from this pool's side of its membrane:
-    ``surface_relaxivity_t2`` (rho, m/s) and ``permeability`` (kappa, m/s, crossing OUT of this
-    pool). ``None`` leaves a property to the geometry / driver default."""
+    ``surface_relaxivity_t2`` (rho, m/s). A membrane's permeability is the geometry's ``permeability=``.
+    ``None`` leaves a property to the geometry / driver default."""
     D: Optional[float] = None
     T2: Optional[float] = None
     T1: Optional[float] = None
     water_fraction: Optional[float] = None
     surface_relaxivity_t2: Optional[float] = None
-    permeability: Optional[float] = None
 
     def __post_init__(self):
         for f in fields(self):

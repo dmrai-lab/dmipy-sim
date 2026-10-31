@@ -81,6 +81,8 @@ def test_mesh_takes_compartments_and_refuses_dicts_of_pools():
         d.Mesh(V, F, intra={"T2": 0.02})
     with pytest.raises(TypeError):
         Pool(kurtosis=1.0)
+    with pytest.raises(TypeError, match="permeability"):                # a membrane's kappa is the geometry's
+        Pool(permeability=1e-5)
 
 
 def test_myelinated_cylinder_takes_compartments():
