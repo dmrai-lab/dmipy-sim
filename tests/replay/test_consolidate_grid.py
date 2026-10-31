@@ -9,8 +9,8 @@ import os
 import numpy as np
 import pytest
 
-from dmipy_sim.fill.consolidate import consolidate
-from dmipy_sim.fill.recipe import manifest_grid
+from dmipy_sim.replay.consolidate import consolidate
+from dmipy_sim.replay.consolidate import manifest_grid
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_certificate
 from dmipy_sim.replay.replay import ReplayPack, read_rpk, write_rpk

@@ -11,7 +11,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.fill import FakeHub, sha256_of
+from dmipy_sim.replay.hub import FakeHub, sha256_of
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import publish as pub
@@ -135,7 +135,7 @@ def test_two_publishers_keep_both_rows(pack, hub, tmp_path):
     """Two publishers read the manifest, add their row and write it back. The commit declares the head it was
     prepared against; when the other publisher's commit has moved the head, the hub refuses it (412) and the
     publish is prepared again from the new manifest, so neither row is lost (the canonical pores lost nine)."""
-    from dmipy_sim.fill.hub import StaleParent
+    from dmipy_sim.replay.hub import StaleParent
     other = tmp_path / "other.rpk"
     pack.save(str(other))
     interleaved = []

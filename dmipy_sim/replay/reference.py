@@ -1135,7 +1135,7 @@ class ReferenceFamily:
 
     def hub(self):
         if self._hub is None:
-            from ..fill.hub import Hub
+            from .hub import Hub
             self._hub = Hub(self.publication.repo)
         return self._hub
 
@@ -2257,7 +2257,7 @@ def organisation_card(rows, *, example=None):
 
 def _is_the_real_hub(hub):
     """Whether ``hub`` is a dataset repository on the hub and not a stand-in (``FakeHub`` in the tests)."""
-    from ..fill.hub import Hub
+    from .hub import Hub
     return isinstance(hub, Hub)
 
 

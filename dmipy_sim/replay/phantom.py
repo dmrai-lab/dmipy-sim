@@ -210,7 +210,7 @@ def embed_pack(subs, tensors, i, rpk):
     row, and its identity -- the file's sha256 for a pack given by path, :attr:`ReplayPack.digest` for one in memory."""
     from .replay import read_rpk
     if isinstance(rpk, (str, Path)):
-        from ..fill.hub import sha256_of
+        from .hub import sha256_of
         pk, subs[i]["sha256"] = read_rpk(rpk), sha256_of(rpk)
     else:
         pk, subs[i]["sha256"] = rpk, rpk.digest

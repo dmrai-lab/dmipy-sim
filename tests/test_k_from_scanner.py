@@ -76,9 +76,9 @@ def test_a_walk_from_walk_spec_carries_its_class_and_packs_without_an_argument()
 
 
 def test_no_producer_calls_the_mode_search():
-    """``auto_select_modes`` is a diagnostic: the bank, the fill and the spec walker never call it."""
+    """``auto_select_modes`` is a diagnostic: the bank, the replay and the spec walker never call it."""
     root = pathlib.Path(bank.__file__).parent.parent
-    for rel in ("replay/bank.py", "replay/replay.py", "replay/continuation.py", "fill/pipeline.py", "fill/recipe.py", "spec/walk.py"):
+    for rel in ("replay/bank.py", "replay/replay.py", "replay/continuation.py", "spec/walk.py"):
         src = (root / rel).read_text()
         assert not re.search(r"auto_select_modes\(", src), f"{rel} calls auto_select_modes"
 
