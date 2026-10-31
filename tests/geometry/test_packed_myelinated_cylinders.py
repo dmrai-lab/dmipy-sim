@@ -18,9 +18,10 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import (
-    simulate, _walk_geometry, PackedMyelinatedCylinders, pack_myelinated_cylinders,
+    simulate, PackedMyelinatedCylinders, pack_myelinated_cylinders,
     set_b,
 )
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.sequences import pgse
 
 
