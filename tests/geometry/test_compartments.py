@@ -85,24 +85,34 @@ def test_mesh_takes_compartments_and_refuses_dicts_of_pools():
         Pool(permeability=1e-5)
 
 
-def test_myelinated_cylinder_takes_compartments():
-    kw = dict(orientation=(0, 0, 1), D_intra=D, D_extra=D)
-    comps = Compartments(intra=Pool(T2=0.05), myelin=Pool(T2=0.01), extra=Pool(T2=0.08))
+def test_myelinated_cylinder_takes_compartments_and_no_other_spelling_of_a_pool():
+    kw = dict(orientation=(0, 0, 1))
+    comps = Compartments(intra=Pool(D=D, T2=0.05), myelin=Pool(T2=0.01), extra=Pool(D=D, T2=0.08))
     g = d.MyelinatedCylinder(2e-6, 3e-6, compartments=comps, **kw)
     assert (g.T2_extra, g.T2_intra, g.T2_myelin) == (0.08, 0.05, 0.01) and g.compartments == comps
+    assert (g.D_intra, g.D_myelin, g.D_extra) == (D, 0.0, D)
     with pytest.raises(TypeError, match="takes a Compartments or None, got dict"):
         d.MyelinatedCylinder(2e-6, 3e-6, compartments={"intra": {"T2": 0.05}}, **kw)
     simulate_fused(300, None, _wf(), g, seed=0, require_gpu=False)
+    for spelling in (dict(D_intra=D), dict(D_extra=D), dict(D_myelin=0.0), dict(water_fractions=(1.0, 0.4, 1.0))):
+        with pytest.raises(TypeError, match=next(iter(spelling))):     # a pool's physics is the Pool's, once
+            d.MyelinatedCylinder(2e-6, 3e-6, compartments=comps, **kw, **spelling)
+        with pytest.raises(TypeError, match=next(iter(spelling))):
+            d.PackedMyelinatedCylinders([1e-6], 0.7, np.zeros((1, 2)), 1e-5, N_max=2, compartments=comps, **spelling)
+    with pytest.raises(ValueError, match="diffusivity of its intra pool"):     # D is the Pool's: required, not defaulted
+        d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(extra=Pool(D=D)), **kw)
+    with pytest.raises(ValueError, match="diffusivity of its extra pool"):
+        d.MyelinatedCylinder(2e-6, 3e-6, **kw)
+    with pytest.raises(ValueError, match="all three pools or none"):
+        d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(intra=Pool(D=D, water_fraction=1.0), extra=Pool(D=D)), **kw)
     with pytest.raises(TypeError):                                     # a pool's T2 has one spelling
-        d.MyelinatedCylinder(2e-6, 3e-6, T2_intra=0.05, **kw)
-    with pytest.raises(ValueError, match="given twice"):
-        d.MyelinatedCylinder(2e-6, 3e-6, compartments=Compartments(intra=Pool(D=1e-9)), **kw)
+        d.MyelinatedCylinder(2e-6, 3e-6, T2_intra=0.05, compartments=comps, **kw)
     # the Substrate's pools drive a geometry directly
     sub = d.Substrate() if hasattr(d, "Substrate") else __import__("dmipy_sim.substrate.substrate", fromlist=["Substrate"]).Substrate()
     c = sub.compartments
     assert c.ids == (0, 1, 2) and c["myelin"].water_fraction == sub.myelin_water_proton_density
-    g2 = d.MyelinatedCylinder(2e-6, 3e-6, orientation=(0, 0, 1), D_intra=sub.D_intra, D_extra=sub.D_extra,
-                              D_myelin=sub.D_myelin, compartments=c)
+    g2 = d.MyelinatedCylinder(2e-6, 3e-6, orientation=(0, 0, 1), compartments=c)
+    assert (g2.D_intra, g2.D_extra, g2.D_myelin) == (sub.D_intra, sub.D_extra, sub.D_myelin)
     assert g2.T2_myelin == sub.T2_myelin and g2.water_fractions == (1.0, sub.myelin_water_proton_density, 1.0)
 
 

@@ -64,7 +64,7 @@ def test_the_budget_goes_with_a_derived_field_band():
 
 
 def test_walk_spec_passes_the_budget_to_a_gridded_walk_and_refuses_it_elsewhere():
-    geom = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
+    geom = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
     w = walk(geom.spec, 300, 5e-3, seed=2, require_gpu=False, field_target_floor=1e-3)
     assert w.block["field_band"]["target_floor"] == 1e-3 and w.block["field_band"]["floor"] == 1e-3
     with pytest.raises(SpecError, match="K_c3 was given"):

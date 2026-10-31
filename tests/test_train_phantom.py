@@ -334,7 +334,14 @@ def field_pack(tmp_path_factory):
     """A sheathed axon alone in a wide cell with its field basis: the pack a static field needs (C3 path)."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     D0 = 2.0e-9
-    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
+    g = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+    )
     walk = _walk_geometry(2000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6), K=8)
     out = tmp_path_factory.mktemp("pk") / "sheathed.rpk"
     build_replay_pack(walk, id="test/sheathed", license="x", citation="x", K=8, out_path=str(out),

@@ -116,7 +116,7 @@ def test_anisotropic_lumen_field_matches_wharton_bowtell_on_every_route(theta_de
     lo, hi = np.array([-6e-6, -6e-6, -2e-6]), np.array([6e-6, 6e-6, 2e-6]); res = 0.2e-6
     cl = np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]])
     routes = {}
-    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), 1.7e-9, 1.7e-9), res=res, box=(lo, hi), mask_supersample=4)
+    fg = field_grid_of(d.MyelinatedCylinder(a, b, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9))), res=res, box=(lo, hi), mask_supersample=4)
     routes["cylinder"] = (fg.basis, fg.origin)
     m = myelinated_cylinder(a, b, 12e-6, n_ang=64, n_ax=24)          # the mesh route's containment is the costly
     basis, origin, _ = mesh_field_basis(m["inner"], m["outer"], lo, hi, res=res, mask_supersample=2)   # one: 8 points per voxel

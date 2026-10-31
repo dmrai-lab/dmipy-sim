@@ -174,8 +174,14 @@ def test_membrane_exchange_matches_permeable_shell():
     diffusion time agrees to the MC floor."""
     R_in, R_out, kappa, N = 3e-6, 6e-6, 2e-5, 30_000
     wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 18e-3, gradient_strengths=0.01, n_t=200, slew_rate=np.inf), 1e6)
-    mc = d.MyelinatedCylinder(R_in, R_out, (0, 0, 1), D, D, D_myelin=D, kappa_inner=kappa,
-                              kappa_outer=None, water_fractions=(1.0, 1.0, 0.0))
+    mc = d.MyelinatedCylinder(
+        R_in,
+        R_out,
+        (0, 0, 1),
+        kappa_inner=kappa,
+        kappa_outer=None,
+        compartments=d.Compartments(intra=d.Pool(D=D, water_fraction=1.0), myelin=d.Pool(D=D, water_fraction=1.0), extra=d.Pool(D=D, water_fraction=0.0)),
+    )
     _, o_m, f_m = simulate_fused(N, None, wf, mc, seed=3, return_compartments="final", require_gpu=False)
     keep = o_m == 1                                     # the shell seeds its lumen; compare that population
     sh = d.geometry.PermeableShell(R_in, R_out, kappa, kind="cylinder", orientation=(0, 0, 1))

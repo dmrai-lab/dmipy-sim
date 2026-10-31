@@ -79,7 +79,7 @@ def test_the_remaining_geometries_follow_the_same_convention():
 def test_myelin_kernels_report_pool_ids():
     import jax
     import jax.numpy as jnp
-    mc = d.MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), 2e-9, 2e-9)
+    mc = d.MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9)))
     assert [int(mc.classify_position(jnp.asarray([x, 0, 0], jnp.float32))) for x in (0.0, 4e-6, 6e-6)] \
         == [INTRA, MYELIN, EXTRA]
     assert [int(v) for v in mc.pool_of(jnp.arange(3))] == [EXTRA, INTRA, MYELIN]   # carries pool ids

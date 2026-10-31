@@ -16,6 +16,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry._boundary import BounceLoop
 from dmipy_sim.coefficient_walk import CoefficientWalk
+from dmipy_sim import Compartments, Pool
 
 D = 2e-9
 R = 2e-6
@@ -111,15 +112,23 @@ def test_the_work_round_trips_through_the_walk_file(tmp_path):
 
 def _myelinated():
     from dmipy_sim.geometry.myelin import MyelinatedCylinder
-    return MyelinatedCylinder(inner_radius=R, outer_radius=1.4 * R, orientation=[0, 0, 1], D_intra=D, D_extra=D,
-                              D_myelin=0.1e-9, water_fractions=(1.0, 0.0, 0.0))
+    return MyelinatedCylinder(
+        inner_radius=R,
+        outer_radius=1.4 * R,
+        orientation=[0, 0, 1],
+        compartments=Compartments(intra=Pool(D=D, water_fraction=1.0), myelin=Pool(D=0.1e-9, water_fraction=0.0), extra=Pool(D=D, water_fraction=0.0)),
+    )
 
 
 def _packed_myelinated():
     from dmipy_sim.geometry.myelin import PackedMyelinatedCylinders
-    return PackedMyelinatedCylinders(inner_radii=np.array([R, 0.8 * R]), g_ratios=np.array([0.7, 0.7]),
-                                     centers=np.array([[0.0, 0.0], [3.0 * R, 0.0]]), cell_size=6.0 * R,
-                                     D_intra=D, D_myelin=0.1e-9, D_extra=D)
+    return PackedMyelinatedCylinders(
+        inner_radii=np.array([R, 0.8 * R]),
+        g_ratios=np.array([0.7, 0.7]),
+        centers=np.array([[0.0, 0.0], [3.0 * R, 0.0]]),
+        cell_size=6.0 * R,
+        compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.1e-9), extra=Pool(D=D)),
+    )
 
 
 @pytest.mark.parametrize("make", [_myelinated, _packed_myelinated], ids=["myelinated", "packed_myelinated"])

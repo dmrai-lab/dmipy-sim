@@ -19,7 +19,7 @@ A, B = 1.0e-6, 1.4e-6
 def kspace():
     """One hollow cylinder along z on a 20 um box at 0.1 um (images ~0.2 %), the 12 carried k-space channels per voxel."""
     lo, hi = np.array([-10e-6, -10e-6, -0.3e-6]), np.array([10e-6, 10e-6, 0.3e-6])
-    fg = field_grid_of(d.MyelinatedCylinder(A, B, (0, 0, 1), 1.7e-9, 1.7e-9), res=0.1e-6, box=(lo, hi), mask_supersample=4)
+    fg = field_grid_of(d.MyelinatedCylinder(A, B, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9))), res=0.1e-6, box=(lo, hi), mask_supersample=4)
     bs = fg.basis; shape = tuple(bs["shape"]); vs = np.asarray(bs["voxel_size"]); org = np.asarray(fg.origin)
     ax = [org[k] + (np.arange(shape[k]) + 0.5) * vs[k] for k in range(3)]
     X, Y, Z = np.meshgrid(*ax, indexing="ij")

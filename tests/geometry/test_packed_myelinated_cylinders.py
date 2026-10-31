@@ -23,6 +23,7 @@ from dmipy_sim import (
 )
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.sequences import pgse
+from dmipy_sim import Compartments, Pool
 
 
 SEED = 42
@@ -54,9 +55,7 @@ def _simple_cell(n_cyl=3, inner_r=3e-6, g_ratio=0.7, N_max=None):
         centers=centers,
         cell_size=L,
         N_max=N_max,
-        D_intra=2e-9,
-        D_myelin=0.1e-9,
-        D_extra=2e-9,
+        compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.1e-9), extra=Pool(D=2e-9)),
     )
 
 
@@ -102,8 +101,14 @@ def test_the_cell_wraps_a_step_across_its_edge_and_its_corner():
     wall is in reach (the axon sits 15 um away), so the wrap is the only thing the step does."""
     from dmipy_sim.engine.physics import make_packed_myelin_traj_step_fn
     L = 40e-6
-    geom = PackedMyelinatedCylinders(inner_radii=np.array([3e-6]), g_ratios=np.array([0.7]), centers=np.array([[0.0, 0.0]]),
-                                     cell_size=L, N_max=4, D_intra=2e-9, D_myelin=0.1e-9, D_extra=2e-9)
+    geom = PackedMyelinatedCylinders(
+        inner_radii=np.array([3e-6]),
+        g_ratios=np.array([0.7]),
+        centers=np.array([[0.0, 0.0]]),
+        cell_size=L,
+        N_max=4,
+        compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.1e-9), extra=Pool(D=2e-9)),
+    )
     dt = 1e-4                                                     # a 1.1 um extra-axonal step
     step = jax.jit(lambda carry: make_packed_myelin_traj_step_fn(geom, dt)(carry, None)[0])
     half = np.float32(L / 2)
@@ -264,7 +269,7 @@ def test_tight_packing_derives_its_budget_with_zero_exhausted_steps_and_names_it
     D0 = 2e-9
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, D_intra=D0, D_extra=D0)
+    pm = PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=Compartments(intra=Pool(D=D0), extra=Pool(D=D0)))
     assert pm.min_gap < 1e-8, "the adversarial case this test guards needs a near-zero gap"
     walk = _walk_geometry(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False)
     assert walk.work["exhausted_steps"] == 0

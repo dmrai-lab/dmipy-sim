@@ -299,7 +299,7 @@ def test_a_straight_myelinated_curved_tube_is_the_myelinated_cylinder():
     cl = np.array([[0.0, 0.0, -6e-6], [0.0, 0.0, 6e-6]])
     straight = d.CurvedMyelinatedCylinder(cl, r_in, r_out, pool="intra")
     pack = d.PackedCurvedCylinders([cl], [r_in], interior=True)                 # the strand pack: its radial director
-    cyl = d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), 1.7e-9, 1.7e-9)
+    cyl = d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9)))
     lo, hi = np.array([-3e-6, -3e-6, -2e-6]), np.array([3e-6, 3e-6, 2e-6])
     res = 0.2e-6
     inner = pack.inside_any; outer = d.PackedCurvedCylinders([cl], [r_out], interior=True).inside_any      # chunked membership

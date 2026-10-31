@@ -68,7 +68,12 @@ def test_every_engine_path_caches():
     from dmipy_sim.geometry import mesh_shapes
     V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
     m = d.Mesh(V, F, feature_radius=1e-6)
-    mc = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D, D, water_fractions=(1.0, 0.0, 0.0))
+    mc = d.MyelinatedCylinder(
+        2e-6,
+        3e-6,
+        (0, 0, 1),
+        compartments=d.Compartments(intra=d.Pool(D=D, water_fraction=1.0), myelin=d.Pool(water_fraction=0.0), extra=d.Pool(D=D, water_fraction=0.0)),
+    )
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4)

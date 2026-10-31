@@ -800,10 +800,10 @@ def _geometry_from_spec(spec):
                 by_id = {p.id: p for p in spec.pools}
                 intra_p, myelin_p, extra_p = by_id[intra_id], by_id[myelin_id], by_id[extra_id]
                 # the pack reads pool NAMES and water_fraction off `.compartments` -- built always, straight
-                # from the spec's three pools; T2/T1 are replay knobs (SUBSTRATE.md 4.6, #540) and never go in.
-                comps = Compartments(extra=CPool(water_fraction=extra_p.water_fraction),
-                                     intra=CPool(water_fraction=intra_p.water_fraction),
-                                     myelin=CPool(water_fraction=myelin_p.water_fraction))
+                # from the spec's three pools (D and water fraction); T2/T1 are replay knobs (SUBSTRATE.md 4.6, #540) and never go in.
+                comps = Compartments(extra=CPool(D=extra_p.D or 0.0, water_fraction=extra_p.water_fraction),
+                                     intra=CPool(D=intra_p.D or 0.0, water_fraction=intra_p.water_fraction),
+                                     myelin=CPool(D=myelin_p.D or 0.0, water_fraction=myelin_p.water_fraction))
                 if inner.surface.kind == "swept_polyline":
                     if (inner.permeability.in_to_out > 0 or inner.permeability.out_to_in > 0
                             or outer.permeability.in_to_out > 0 or outer.permeability.out_to_in > 0):
@@ -814,7 +814,6 @@ def _geometry_from_spec(spec):
                     return CurvedMyelinatedCylinder(np.asarray(inner.surface.centerline), inner.surface.radius,
                                                     outer.surface.radius, pool=seeded_role,
                                                     surface_relaxivity_t2=rho2(inner))
-                D = {"intra": intra_p.D or 0.0, "myelin": myelin_p.D or 0.0, "extra": extra_p.D or 0.0}
                 if inner.surface.instances:
                     centers = np.asarray(inner.surface.instances["centers"], float)[:, :2]
                     ri = np.asarray(inner.surface.instances["radii"], float)
@@ -823,7 +822,6 @@ def _geometry_from_spec(spec):
                     return PackedMyelinatedCylinders(ri, ri / ro, centers, L,
                                                      N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
                                                      orientation=tuple(inner.surface.axis or (0, 0, 1)),
-                                                     D_intra=D["intra"], D_myelin=D["myelin"], D_extra=D["extra"],
                                                      kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma"),
                                                      kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath"),
                                                      rho_inner=inner.surface_relaxivity.inside,
@@ -833,7 +831,6 @@ def _geometry_from_spec(spec):
                 refuse_pose(outer.surface, "MyelinatedCylinder", length=True)
                 return MyelinatedCylinder(inner.surface.radius, outer.surface.radius,
                                           tuple(inner.surface.axis or (0, 0, 1)),
-                                          D["intra"], D["extra"], D_myelin=D["myelin"],
                                           kappa_inner=kappa(inner, "MyelinatedCylinder axolemma"),
                                           kappa_outer=kappa(outer, "MyelinatedCylinder sheath"),
                                           compartments=comps)

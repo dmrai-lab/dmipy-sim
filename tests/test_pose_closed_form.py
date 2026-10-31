@@ -29,7 +29,14 @@ def myelin_pack():
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     L = 10e-6
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
-    pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, np.asarray(c), L, N_max=4, D_intra=2e-9, D_extra=2e-9)
+    pm = d.PackedMyelinatedCylinders(
+        [1e-6] * 3,
+        0.7,
+        np.asarray(c),
+        L,
+        N_max=4,
+        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9)),
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         w = _walk_geometry(1500, 2e-9, pm, 30e-3, 5e-4, seed=3, require_gpu=False, field_basis=field_grid_of(pm, res=0.4e-6),

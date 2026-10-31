@@ -69,7 +69,12 @@ def _geometries():
         m = trimesh.creation.icosphere(subdivisions=2, radius=4e-6)
         return d.Mesh(np.asarray(m.vertices, np.float64), np.asarray(m.faces, np.int32), feature_radius=1e-6)
     out["mesh"] = mesh
-    out["myelinated cylinder"] = lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), 2e-9, 2e-9)
+    out["myelinated cylinder"] = lambda: d.MyelinatedCylinder(
+        2e-6,
+        3e-6,
+        (0, 0, 1),
+        compartments=d.Compartments(intra=d.Pool(D=2e-9), extra=d.Pool(D=2e-9)),
+    )
     return out
 
 
@@ -340,7 +345,7 @@ def _ensemble(pk, seq, **kw):
 
 def _myelin(D, r_in, r_out):
     import dmipy_sim as d
-    return d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), D, D)              # D_myelin = 0: the sheath's water stuck
+    return d.MyelinatedCylinder(r_in, r_out, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D)))              # D_myelin = 0: the sheath's water stuck
 
 
 def _myelin_field(g, field):
@@ -476,7 +481,13 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     L = 6.0 * r_out
     import dataclasses
     cellp = d.PackedCylinders([r_out], [[0.0, 0.0]], L, orientation=(0.0, 0.0, 1.0), pool="extra")
-    cellm = d.PackedMyelinatedCylinders([r_in], [r_in / r_out], [[0.0, 0.0]], L, D_intra=D, D_extra=D, D_myelin=0.0)
+    cellm = d.PackedMyelinatedCylinders(
+        [r_in],
+        [r_in / r_out],
+        [[0.0, 0.0]],
+        L,
+        compartments=d.Compartments(intra=d.Pool(D=D), myelin=d.Pool(D=0.0), extra=d.Pool(D=D)),
+    )
     fg2 = _myelin_field(cellm, field)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

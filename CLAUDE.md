@@ -255,7 +255,7 @@ boundary, `d_perp = remaining·|cos α|`, one Powles decision per step, multi-bo
 strict side sentinels. The bounce budget and the number of candidate axons are derived per kernel
 build from the worst case (a step zig-zagging across the narrowest passage: `min_gap`, the thinnest
 sheath, or the shortest nudged grazing chord), not fixed. Per-axon `T2_*`, `rho_inner/outer`,
-`kappa_inner/outer` and `D_*` are indexed by the walker's axon; `rho` is applied per hit with the
+`kappa_inner/outer` are indexed by the walker's axon (the pools' `D` is the `Pool`'s, one per pool: `D_intra=`, `D_extra=`, `D_myelin=` and `water_fractions=` are refused by name); `rho` is applied per hit with the
 diffusivity of the pool the walker is in.
 
 **Packed substrates** (`PackedCylinders`, `PackedSpheres`) are stepped by

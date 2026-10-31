@@ -207,8 +207,22 @@ def sheathed(tmp_path_factory):
     pools, walls with contact, and the susceptibility path channel -- every tier a pack can carry."""
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     tmp = tmp_path_factory.mktemp("sheath")
-    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
-    g2 = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=2 * D0, D_extra=2 * D0)
+    g = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+    )
+    g2 = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=2 * D0), extra=d.Pool(D=2 * D0)),
+    )
     out = []
     for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
         # the field read once per block in both: the same path read at the same instants of its own clock (a read

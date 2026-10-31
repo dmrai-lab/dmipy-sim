@@ -65,7 +65,7 @@ def myelin(tmp_path_factory):
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("segments")
-    g = d.MyelinatedCylinder(2.0 * UM, 2.8 * UM, (0, 0, 1), D0, D0)
+    g = d.MyelinatedCylinder(2.0 * UM, 2.8 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
     w = _walk_geometry(1200, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
     r0 = np.asarray(w.position_coeffs)[:, 0, 0, :]
     lo, hi = r0.min(0), r0.max(0)

@@ -11,6 +11,7 @@ import dmipy_sim as d
 from dmipy_sim.engine import backends
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.fields.susceptibility_field import FieldGrid
+from dmipy_sim import Compartments, Pool
 
 D = 2e-9
 R = 2e-6
@@ -222,8 +223,12 @@ def test_a_batch_of_another_resolution_or_shape_is_refused():
 
 def test_the_jax_only_paths_are_refused_for_another_backend():
     from dmipy_sim.geometry.myelin import MyelinatedCylinder
-    g = MyelinatedCylinder(inner_radius=R, outer_radius=1.4 * R, orientation=[0, 0, 1], D_intra=D, D_extra=D,
-                           D_myelin=0.1e-9, water_fractions=(1.0, 0.0, 0.0))
+    g = MyelinatedCylinder(
+        inner_radius=R,
+        outer_radius=1.4 * R,
+        orientation=[0, 0, 1],
+        compartments=Compartments(intra=Pool(D=D, water_fraction=1.0), myelin=Pool(D=0.1e-9, water_fraction=0.0), extra=Pool(D=D, water_fraction=0.0)),
+    )
     with pytest.raises(ValueError, match="the myelinated substrates.*which only the jax kernels implement"):
         _walk(g, backend=_Still())
     with pytest.raises(ValueError, match="the compartment guard"):

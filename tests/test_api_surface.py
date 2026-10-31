@@ -24,6 +24,7 @@ import pytest
 import dmipy_sim
 from dmipy_sim.geometry import Geometry, LengthScales
 from dmipy_sim.geometry._boundary import WallHit
+from dmipy_sim import Compartments, Pool
 
 _SRC = Path(dmipy_sim.__file__).parent
 import dmipy_replay  # noqa: E402
@@ -99,7 +100,7 @@ def _all_geometries():
         "PermeableShell": PermeableShell(r_inner=3e-6, r_outer=5e-6, permeability=1e-5),
         "PackedCylinders": PackedCylinders([R] * 4, c2, L2),
         "PackedSpheres": PackedSpheres([R] * 4, c3, L3),
-        "MyelinatedCylinder": MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), 2e-9, 2e-9),
+        "MyelinatedCylinder": MyelinatedCylinder(3e-6, 5e-6, (0, 0, 1), compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9))),
         "PackedMyelinatedCylinders": PackedMyelinatedCylinders([R] * 4, 0.7, c4, L4, N_max=8),
         "CurvedCylinder": CurvedCylinder(cl, radius=2e-6),
         "CurvedMyelinatedCylinder": CurvedMyelinatedCylinder(cl, r_in=2e-6, r_out=3e-6),

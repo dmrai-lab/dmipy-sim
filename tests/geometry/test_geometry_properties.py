@@ -17,6 +17,7 @@ from dmipy_sim.geometry import (
     PackedCylinders,
     pack_cylinders,
 )
+from dmipy_sim import Compartments, Pool
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +168,7 @@ class TestMyelinatedCylinder:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            D_intra=1e-9,
-            D_extra=2e-9,
+            compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9)),
         )
 
     def test_volume_intra(self, mc):

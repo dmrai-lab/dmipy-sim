@@ -366,7 +366,7 @@ def straight_cylinder_walk():
     ``aniso_G_xz``, ``aniso_G_yz`` are zero in every walker."""
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_sim.replay import compression as cx
-    g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), D0, D0)
+    g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
     env = dict(cx.default_envelope(), B0_list=[7.0], theta_deg=[90.0], max_refocus_pulses=4)
     w = _walk_geometry(300, D0, g, 0.01, seed=1, require_gpu=False, K=16, window_T=0.01, field_basis=HollowCylinderField.of(g),
                                 envelope=env)

@@ -61,7 +61,14 @@ def absent_walk():
 @pytest.fixture(scope="module")
 def present_walk():
     """One myelinated cylinder in a periodic cell, its field read along the walk: the myelin pool is magnetic."""
-    g = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 30e-6, N_max=2, D_intra=D0, D_extra=D0)
+    g = d.PackedMyelinatedCylinders(
+        [1.0e-6],
+        0.7,
+        [[0.0, 0.0]],
+        30e-6,
+        N_max=2,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+    )
     return _walk_geometry(600, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6),
                                    K=8, K_c3=16)
 
@@ -387,7 +394,14 @@ def test_the_walk_stores_the_field_exactly_when_a_pool_is_magnetic(kind, tmp_pat
     from tests.conftest import spec_without_source
     from tests.test_mesh_spec import _bundle_spec
     if kind == "cylinder":
-        magnetic = d.PackedMyelinatedCylinders([1.0e-6], 0.7, [[0.0, 0.0]], 10e-6, N_max=2, D_intra=D0, D_extra=D0).spec
+        magnetic = d.PackedMyelinatedCylinders(
+            [1.0e-6],
+            0.7,
+            [[0.0, 0.0]],
+            10e-6,
+            N_max=2,
+            compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+        ).spec
         plain = d.Cylinder(radius=3e-6, orientation=(0, 0, 1)).spec.replace(D={"intra": D0})
         res = dict(field_res=0.25e-6)
     elif kind == "mesh":

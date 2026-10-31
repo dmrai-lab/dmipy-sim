@@ -39,7 +39,14 @@ def _dipole_grid(periodic=False):
 
 def _packed():
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=10 * UM, seed=0)
-    return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, np.asarray(c), 10 * UM, N_max=4, D_intra=D0, D_extra=D0)
+    return d.PackedMyelinatedCylinders(
+        [1e-6] * 3,
+        0.7,
+        np.asarray(c),
+        10 * UM,
+        N_max=4,
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+    )
 
 
 def _reads(fg, fine, n_read=1):
@@ -180,7 +187,12 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
     """(c) ``walk`` of a myelinated cylinder or a packed cell reads its grid in the walk; the default pack
     encodes the path channel from the modes the walk accumulated (no grid route: the positions are lossy) and its
     certificate is within twice its floor."""
-    geom = _packed() if family == "packed" else d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
+    geom = _packed() if family == "packed" else d.MyelinatedCylinder(
+        1.0 * UM,
+        1.5 * UM,
+        (0, 0, 1),
+        compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)),
+    )
     w = walk(geom.spec, 600, 5e-3, seed=2, require_gpu=False)
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs is not None
     assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
@@ -229,7 +241,7 @@ def test_the_closed_form_hollow_cylinder_is_read_in_the_walk():
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_replay.replay.field import contract
     from dmipy_sim.fields.susceptibility import MyelinSusceptibility
-    g = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), D0, D0)
+    g = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0)))
     f = HollowCylinderField.of(g)
     P = np.random.default_rng(0).uniform(-4 * UM, 4 * UM, (40, 3))
     ms = MyelinSusceptibility(centers=[[0, 0]], inner_radii=[1 * UM], outer_radii=[1.5 * UM], L=1.0, delta_chi_a=-1e-7, B0=7.0,
