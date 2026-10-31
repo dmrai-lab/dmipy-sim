@@ -136,7 +136,7 @@ def simulate_fused(
     """
     with Run("simulate_fused", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         if return_compartments not in (False, 'final', 'full'):
             raise ValueError(
                 "return_compartments must be False, 'final', or 'full'; "

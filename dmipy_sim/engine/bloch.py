@@ -280,7 +280,7 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
     """
     with Run("simulate_bloch", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)) as run:
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         if require_gpu and not gpu_available():
             raise RuntimeError("_simulate_bloch(require_gpu=True) but no CUDA device is "
                                "visible to JAX.")

@@ -21,6 +21,18 @@ from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility
 from .build import geometry_from_spec
 
 
+def _spec_of_door(substrate):
+    """The :class:`SubstrateSpec` the producer walks: a spec as is, a Geometry reduced to its spec at the door. A spec dict,
+    a ``str`` / path and an object that merely carries a ``.spec`` are refused by name."""
+    from .build import as_geometry, refuse_spec_spelling
+    refuse_spec_spelling(substrate, "walk")
+    if isinstance(substrate, SubstrateSpec):
+        return substrate
+    if substrate is None:
+        raise TypeError("walk takes a SubstrateSpec or a Geometry, got None")
+    return as_geometry(substrate).spec
+
+
 def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom", diffusivity=None,
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
@@ -127,7 +139,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom",
         import logging
         from ..engine.core import _walk_geometry
         from ..replay.bank import class_band
-        spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
+        spec = _spec_of_door(spec)
         spec.validate()
         if T_max is None:
             raise TypeError("walk needs T_max (seconds)")

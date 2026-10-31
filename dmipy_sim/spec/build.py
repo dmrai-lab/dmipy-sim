@@ -542,20 +542,31 @@ def polyline_arrays(surface):
     return [np.asarray(s.centerline, float)], np.asarray([s.radius], float)
 
 
-def as_geometry(substrate):
-    """The geometry a driver walks, from any spelling of a substrate: a ``Geometry`` (returned as is), a
-    :class:`SubstrateSpec`, a spec dict, or the path of a ``.sub.json``. ``None`` and duck-typed objects pass
-    through untouched."""
+def refuse_spec_spelling(substrate, door):
+    """Refuse, by name, the spellings a substrate door does not take: a spec dict (``SubstrateSpec.from_dict(d)`` builds
+    the spec) and a ``str`` / path (``load_spec(path)`` reads it). A door takes a :class:`SubstrateSpec` or a Geometry."""
     import os
+    if isinstance(substrate, dict):
+        raise TypeError(f"{door} takes a SubstrateSpec or a Geometry, not a spec dict; build the spec with "
+                        f"SubstrateSpec.from_dict(d)")
+    if isinstance(substrate, (str, os.PathLike)):
+        raise TypeError(f"{door} takes a SubstrateSpec or a Geometry, not a {type(substrate).__name__} (a spec file's path); "
+                        f"read the spec with load_spec(path)")
+
+
+def as_geometry(substrate):
+    """The geometry a driver walks: a ``Geometry`` (returned as is, its spec the one it is reduced to at the door) or a
+    :class:`SubstrateSpec` (built). ``None`` passes through. A spec dict, a ``str`` / path and an object that merely
+    carries a ``.spec`` are refused by name."""
+    from ..geometry.base import Geometry
     if substrate is None:
         return None
+    refuse_spec_spelling(substrate, "as_geometry")
     if isinstance(substrate, SubstrateSpec):
         return geometry_from_spec(substrate)
-    if isinstance(substrate, dict) and "walls" in substrate and "pools" in substrate:
-        return geometry_from_spec(substrate)
-    if isinstance(substrate, (str, os.PathLike)):
-        from dmipy_replay.spec.substrate import load_spec
-        return geometry_from_spec(load_spec(substrate))
+    if not isinstance(substrate, Geometry):
+        raise TypeError(f"{type(substrate).__name__} is neither a SubstrateSpec nor a Geometry; a driver takes one of those "
+                        f"(an object that carries a .spec is not a substrate)")
     # the door: a driver walks what a spec can describe. The geometry's spec is computed once and kept on it.
     if getattr(substrate, "_spec_source", None) is None:
         try:
@@ -573,8 +584,11 @@ def as_geometry(substrate):
 
 def geometry_from_spec(spec):
     """The geometry a :class:`SubstrateSpec` describes (inverse of :func:`spec_of`); it keeps the spec it was built
-    from as its ``.spec``, nominal values and provenance included."""
-    spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
+    from as its ``.spec``, nominal values and provenance included. A Geometry is returned as :func:`as_geometry` returns
+    it; a spec dict and a path are refused by name."""
+    refuse_spec_spelling(spec, "geometry_from_spec")
+    if not isinstance(spec, SubstrateSpec):
+        return as_geometry(spec)
     g = _geometry_from_spec(spec)
     g._spec_source = spec
     return g
@@ -586,7 +600,6 @@ def _geometry_from_spec(spec):
                             PackedCurvedCylinders, SphereUnion, LabelVolume)
     from ..geometry.analytic import PermeableSlab1D, PermeableShell
     from ..compartments import Compartments, Pool as CPool
-    spec = SubstrateSpec.from_dict(spec) if isinstance(spec, dict) else spec
     spec.validate()
     walls = list(spec.walls)
     dom = spec.domain

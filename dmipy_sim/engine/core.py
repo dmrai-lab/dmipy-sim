@@ -224,7 +224,7 @@ def simulate(
         :class:`~dmipy_sim.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
-        The substrate: a geometry, a :class:`~dmipy_sim.spec.SubstrateSpec`, its dict or a ``.sub.json`` path.
+        The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.
     seed : int
         Master PRNG seed (split into per-walker keys internally).
     T2 : float, optional
@@ -258,7 +258,7 @@ def simulate(
     """
     with Run("simulate", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         _acq = waveform.waveform if hasattr(waveform, 'waveform') else waveform
         if isinstance(_acq, Protocol):
             # a multi-TE scheme: one sequence per echo time, one walk each, the signals placed at their rows
@@ -354,7 +354,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
     """
     with Run("simulate_cpmg", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__)):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         if hasattr(waveform, 'waveform'):
             waveform = waveform.waveform
         echo_indices = [int(i) for i in waveform.readout]
@@ -1059,7 +1059,7 @@ def _walk_geometry(
     diffusivity : float
         Diffusion coefficient in m²/s.
     geometry : Geometry
-        Boundary geometry (a spec, a spec file or its dict too).
+        Boundary geometry (a :class:`~dmipy_sim.spec.SubstrateSpec` too).
     T_max : float
         Total simulation duration in seconds.
     block_h : float, optional
@@ -1188,7 +1188,7 @@ def _walk_geometry(
                          "JAX kernels carry each walker's label and report deviations (work['label_deviations']) instead")
     with Run("_walk_geometry", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget):
         from ..spec.build import as_geometry
-        geometry = as_geometry(geometry)               # a spec, a spec file or a dict is a substrate too
+        geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
         # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
         from .gpu import check_gpu
         check_gpu(n_walkers, require_gpu, what="_walk_geometry")

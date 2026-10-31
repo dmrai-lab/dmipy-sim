@@ -115,7 +115,7 @@ geom = Cylinder(radius=5e-6, orientation=(0,0,1))
 sig  = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=wf, geometry=geom, seed=0)
 ```
 `geometry=` on every driver (`simulate`, `simulate_cpmg`, `_walk_geometry`,
-`simulate_mt_trajectories`) also takes a `SubstrateSpec`, its dict or a `.sub.json` path (`spec.as_geometry`);
+`simulate_mt_trajectories`) also takes a `SubstrateSpec` or a Geometry, reduced to its spec at the door (`spec.as_geometry`); a spec dict or a path is refused by name and pointed to `SubstrateSpec.from_dict` / `load_spec`, and so is an object that merely carries a `.spec`;
 `geom.spec` writes out what the constructor left implicit. **The door is closed**: `as_geometry` computes and caches
 `geometry.spec` (validated) on first use and refuses an object with no spec spelling; a `Mesh` built from arrays writes
 its surface into `spec.build.surface_cache_dir()` (`$DMIPY_SIM_SURFACE_DIR`, else `~/.cache/dmipy-sim/surfaces`, named by

@@ -68,7 +68,8 @@ spec.save("cylinder.sub.json")                                    #   one lumen 
 E    = simulate(n_walkers=100_000, diffusivity=2e-9, waveform=seq, geometry=spec, seed=0)
 ```
 
-Every driver takes the substrate as a **spec** (`SubstrateSpec`, its dict, or a `.sub.json` path) or as the
+Every driver takes the substrate as a **spec** (`SubstrateSpec`; a spec dict is `SubstrateSpec.from_dict(d)` and a
+`.sub.json` is `load_spec(path)` first) or as the
 geometry object that is one spelling of it; `geometry.spec` writes out what a constructor leaves implicit, and a
 substrate with no spec spelling is refused.
 

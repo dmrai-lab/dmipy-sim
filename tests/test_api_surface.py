@@ -318,8 +318,16 @@ def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
         def reflect(self, r, step): return r + step
         length_scales = LengthScales()
 
-    with pytest.raises(SpecError, match="spec spelling"):
+    with pytest.raises(TypeError, match="neither a SubstrateSpec nor a Geometry"):
         as_geometry(Quack())
+
+    class Unspelled(Geometry):                       # a Geometry spec_of does not know
+        def init_positions(self, n, key): return jnp.zeros((n, 3), jnp.float32)
+        def reflect(self, r, step): return r + step
+        length_scales = LengthScales()
+
+    with pytest.raises(SpecError, match="spec spelling"):
+        as_geometry(Unspelled())
     g = dmipy_sim.Cylinder(2e-6, (0, 0, 1))
     assert as_geometry(g) is g and g._spec_source is not None and g._spec_source == g.spec
 
