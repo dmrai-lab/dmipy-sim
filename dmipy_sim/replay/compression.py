@@ -740,6 +740,33 @@ def default_envelope():
                 rho2_list=[1e-5, 3e-5, 1e-4])
 
 
+#: The scanner-class name of a pack built for one stated acquisition (``simulate``'s in-memory pack): the class is that
+#: acquisition's own limits, its ``G_max`` and ``slew_max`` stated with it, not a catalogue entry.
+ACQUISITION_CLASS = "acquisition"
+
+
+def acquisition_envelope(waveform, **envelope):
+    """The envelope of a pack built for ``waveform`` alone: scanner class :data:`ACQUISITION_CLASS` with that
+    acquisition's limits -- ``G_max`` its largest per-axis played gradient, ``slew_max`` its largest per-axis sampled
+    slew (adjacent samples, the first against zero) -- so the reader's check (``check_acquisition_envelope``) holds for
+    ``waveform`` by construction and refuses a waveform that plays more. ``waveform`` is a sequence or a ``Protocol`` of
+    them; ``envelope`` keys (``B0_list``, ...) are stated beside the class. A gradient-free acquisition states the
+    smallest gradient a class can (:data:`GRADIENT_FLOOR`)."""
+    seqs = list(waveform) if hasattr(waveform, "scatter") else [waveform]
+    g = s = 0.0
+    for q in seqs:
+        played = np.asarray(getattr(q, "played_gradient", q.G), np.float64)
+        g = max(g, float(np.abs(played).max(initial=0.0)))
+        s = max(s, float(np.abs(np.diff(played, axis=1, prepend=0.0) / float(q.dt)).max(initial=0.0)))
+    return dict(default_envelope(), scanner=ACQUISITION_CLASS, G_max=max(g, GRADIENT_FLOOR),
+                slew_max=max(s, SLEW_FLOOR), **envelope)
+
+
+#: The gradient (T/m) and slew (T/m/s) an acquisition that plays none states, so the class's limits stay positive.
+GRADIENT_FLOOR = 1e-12
+SLEW_FLOOR = 1e-12
+
+
 def certified_envelope(envelope=None, spec=None):
     """The envelope a pack is walked, built and certified under: ``envelope`` (:func:`default_envelope` when None)
     with ``rho2_list`` and ``B0_list`` stated (:func:`default_envelope`'s where it states none; an empty ``B0_list``
@@ -760,7 +787,11 @@ def certified_envelope(envelope=None, spec=None):
     env["rho2_list"] = envelope_rho2_list(env)
     env["B0_list"] = envelope_B0_list(env, empty=True)
     env["chi_max"] = envelope_chi_max(env)
-    if env.get("scanner") is not None:
+    if env.get("scanner") == ACQUISITION_CLASS:
+        if env.get("G_max") is None or env.get("slew_max") is None:
+            raise ValueError(f"the scanner class {ACQUISITION_CLASS!r} is one acquisition's own limits: state G_max and "
+                             "slew_max (acquisition_envelope(waveform))")
+    elif env.get("scanner") is not None:
         from dmipy_replay.acquisition.scanners import ScannerLimits
         lim = ScannerLimits.of(env["scanner"])
         env.setdefault("G_max", float(lim.G_max))
