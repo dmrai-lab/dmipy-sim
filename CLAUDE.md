@@ -103,6 +103,16 @@ each walked on THEIR surface at THEIR acquisition, with the tolerance measured f
 theirs from the walker count their unnormalised `b = 0` entry states, ours from our split half. The packs are
 `SubstrateCommons/parity-fixtures`, built by `parity-fixtures/build.py`, which runs the reference-pack protocol (#482) as stages that each write one record (`records/source.json` with the host's licence copied verbatim, `reference.json` with the DOI resolved and **which side is a Monte-Carlo estimate**, `design.json` with a pilot MEASURED on the real window and the trade when the target floor and the memory budget cannot both hold, `build.json`, `gate.json`) and a gate that reads only recorded numbers and refuses the publish. Its parity thresholds are DERIVED from the measurement count, never typed: comparing `max|dS|` with `tol_max` compares a maximum with a maximum and hid 2 of 372 measurements outside their own 3-sigma band, and requiring zero of them is equally wrong since chance gives 1.00 over 372 -- so the design record carries at most 5 exceedances (the Poisson 3-sigma bound on that mean) and the worst measurement inside the 3.206-sigma family-wise band.
 
+## The cookbook (`examples/README.md`)
+
+The ladder a newcomer is pointed at: each rung runs, adds one idea, and names the rung it assumes. It is
+ordered from the SUBSTRATE SPEC outward (`examples/spec/`, part I) because the spec fixes what every later
+step can do -- a pack cannot carry a channel the walk did not record, a replay cannot apply a tier the pack
+does not carry, and nothing downstream recovers what the spec did not state. `tests/test_examples.py` runs
+every rung and checks each is on the ladder; #317 tracks the parts still to write. **An example may not
+construct a `ScannerSequence`, a waveform or a crusher: if it needs one, the builder is missing and that is
+the work** (#315).
+
 ## Common tasks (copy-paste)
 
 **Forward signal** (b-values SI, s/m²; diffusivity m²/s; lengths m):
