@@ -1,56 +1,13 @@
 name: Guards
 
-# The static guards of tools/guards, written once and called by every public repository:
-#   jobs:
-#     guards:
-#       uses: dmrai-lab/dmipy-sim/.github/workflows/guards.yml@main
-# Stdlib-only Python, seconds on a free runner; no schedule.
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_call:
-    inputs:
-      src:
-        description: "Space-separated package paths for the AST guards (default: detected packages)"
-        type: string
-        default: ""
-      workflows:
-        description: "Space-separated workflow files that collect the tests"
-        type: string
-        default: ".github/workflows/tests.yml"
-      strict-test-dirs:
-        description: "Each test directory must itself be named by a workflow"
-        type: boolean
-        default: false
-
-permissions:
-  contents: read
 
 jobs:
   guards:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      # dmipy-sim runs its own copy (so a pull request is checked by its own guards); every other repository
-      # runs the guards of dmipy-sim's main
-      - uses: actions/checkout@v4
-        if: github.repository != 'dmrai-lab/dmipy-sim'
-        with:
-          repository: dmrai-lab/dmipy-sim
-          ref: main
-          path: .guards-src
-          sparse-checkout: tools/guards
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Run the guards
-        env:
-          GUARDS_SRC: ${{ inputs.src }}
-          GUARDS_WORKFLOWS: ${{ inputs.workflows || '.github/workflows/tests.yml' }}
-          GUARDS_STRICT: ${{ (inputs.strict-test-dirs || github.repository == 'dmrai-lab/dmipy-sim') && '--strict-test-dirs' || '' }}
-        run: |
-          if [ -d .guards-src ]; then TOOLS=.guards-src/tools; else TOOLS=tools; fi
-          PYTHONPATH="$TOOLS" python -m guards all . --src "$GUARDS_SRC" --workflows "$GUARDS_WORKFLOWS" $GUARDS_STRICT
+    uses: dmrai-lab/.github/.github/workflows/guards.yml@main
+    with:
+      strict-test-dirs: true
