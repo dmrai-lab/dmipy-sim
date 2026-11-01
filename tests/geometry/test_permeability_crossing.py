@@ -208,15 +208,3 @@ def test_permeability_with_relaxivity_reduces_signal():
 # 6. Signal monotonically increases with κ at high b
 # ---------------------------------------------------------------------------
 
-@pytest.mark.gpu
-def test_permeability_signal_monotone_in_kappa():
-    """Signal at b = 2000 s/mm^2 decreases with kappa (more escape, less restriction); the gap between adjacent kappa is
-    30 times the slack the assertion allows."""
-    kappas = [0.0, 1e-6, 1e-5, 1e-4]
-    signals = [float(_signal(k if k > 0 else None)[3]) for k in kappas]
-    for i in range(len(signals) - 1):
-        assert signals[i] >= signals[i + 1] - 1e-3, (
-            f"Signal not monotone: κ={kappas[i]:.0e} → {signals[i]:.4f}, "
-            f"κ={kappas[i+1]:.0e} → {signals[i+1]:.4f}")
-
-

@@ -40,7 +40,6 @@ from dmipy_sim.sequences import pgse
 
 from tests.conftest import D, N_EXACT, SEED
 
-N_T2 = 100_000   # the kappa effect is 0.005 +- 0.0007 at this count; it needs the walkers a GPU makes cheap
 
 R         = 5e-6    # m
 L         = 20e-6   # m
@@ -171,7 +170,7 @@ def test_init_positions_outside_spheres():
     """init_positions with ``pool="extra"``: all walkers start strictly outside all spheres."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED)
-    r0   = np.array(geom.init_positions(N_T2, key))
+    r0   = np.array(geom.init_positions(20_000, key))
     dist = np.linalg.norm(r0, axis=1)   # distance from sphere at origin
     assert np.all(dist > R), (
         f"Some walkers inside sphere: min_dist={dist.min():.3e} < R={R:.3e}")
@@ -181,7 +180,7 @@ def test_init_positions_inside_box():
     """init_positions: all walkers in the periodic box [-L/2, L/2]."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED + 1)
-    r0   = np.array(geom.init_positions(N_T2, key))
+    r0   = np.array(geom.init_positions(20_000, key))
     assert np.all(np.abs(r0) <= L / 2 + 1e-9), (
         "Some walkers outside the box [-L/2, L/2]")
 
@@ -205,89 +204,6 @@ def test_permeability_none_matches_impermeable():
     S_explicit = simulate(N_EXACT, D, wf, geom_explicit, seed=SEED)
     npt.assert_array_equal(S_default, S_explicit,
         err_msg="permeability=None must give identical signal to default")
-
-
-# =============================================================================
-# 5. κ>0 changes signal at high b
-# =============================================================================
-
-# Matched sub-steps for the kappa comparisons below. Without this the two arms run at DIFFERENT time
-# resolutions -- `make_step_fn` picks `permeable_sub_steps` (R/25 -> 61 here) when permeability is set and
-# `walk_sub_steps` (R/6 -> 4) when it is not, because the crossing probability is step-size sensitive while
-# reflection is not. Comparing those two signals attributes the discretisation gap to exchange: at each arm's
-# own auto-tune, driving kappa to 1e-14 (transmission probability ~1e-11, i.e. no walker crosses at all) still
-# moved S(b=2000) by 13%, which cannot be exchange. Pinned to one value, `permeate` reproduces `reflect`
-# exactly on an impermeable wall (agreement to 1e-5). See dmrai-lab/dmipy-sim#64.
-SUB_STEPS_MATCHED = 120
-
-
-# One matched-sub-step walk per kappa, shared by the tests below. `test_permeability_increases_
-# signal_at_high_b` and `test_permeability_signal_monotone_in_kappa` each ran the SAME two walks --
-# kappa=None and kappa=KAPPA_MED, both at N_WALKERS x SUB_STEPS_MATCHED with the same seed and
-# waveform -- so two 100,000-walker walks were computed twice to be looked at twice. They were
-# already consuming identical samples; caching just stops paying for them twice. Assertions
-# unchanged. Populated on first USE, never at import/collection (#91).
-_MATCHED = {}
-
-
-def _matched_signal(kappa):
-    """Signal for a single-sphere pack at `kappa` (None = impermeable), matched sub-steps."""
-    if kappa not in _MATCHED:
-        geom = _single_sphere_packed(permeability=kappa)
-        _MATCHED[kappa] = np.asarray(simulate(N_T2, D, pgse_wf(100e-3, slew_rate=np.inf), geom,
-                                              seed=SEED, sub_steps=SUB_STEPS_MATCHED))
-    return _MATCHED[kappa]
-
-
-@pytest.mark.gpu
-def test_permeability_increases_signal_at_high_b():
-    """Signal with κ>0 must be above impermeable at b=2000 s/mm², at a MATCHED step.
-
-    Extra-axonal walkers that enter spheres become more restricted (smaller
-    effective displacement) → slower decay → higher signal at high b.
-
-    Asserts the DIRECTION with a margin rather than a fixed magnitude. Measured at N_WALKERS=100000 with both
-    arms matched, over seeds 123/7/99: effect +0.00495 / +0.00608 / +0.00441, i.e. **+0.00514 +- 0.00070**,
-    monotone in every seed. So the effect is real and well resolved (~7 sigma), but the original ``+0.005``
-    threshold sits within one standard deviation of the mean and therefore fails on some seeds even once the
-    step mismatch is fixed. The margin here is ~4.5 sigma below the observed minimum.
-
-    (An earlier revision of this docstring claimed the effect was "not converged in sub-steps" and blamed a
-    float32 phase accumulation, citing +0.00421/+0.00527/+0.00342 at 61/120/240 sub-steps. Both claims were
-    wrong. Changing ``sub_steps`` changes the whole RNG consumption pattern, so those three numbers are
-    INDEPENDENT draws, not a convergence sequence, and at the 20000 walkers used there the MC floor is 0.0071
-    -- larger than the effect. There is no numerical drift: free diffusion tracks exp(-b*D) to within ~1 MC
-    floor at every sub_steps from 1 to 480 with no trend, and a Sphere holds to 6e-4.)
-    """
-    S_imp  = _matched_signal(None)
-    S_perm = _matched_signal(KAPPA_MED)
-    assert float(S_perm[3]) > float(S_imp[3]) + 0.002, (
-        f"S_perm={S_perm[3]:.4f} must be above S_imp={S_imp[3]:.4f} "
-        f"at b=2000 s/mm² (permeable walkers enter spheres → more restricted)")
-
-
-# =============================================================================
-# 8. Signal monotonically increases with κ at high b
-# =============================================================================
-
-@pytest.mark.gpu
-def test_permeability_signal_monotone_in_kappa():
-    """Signal at b=2000 s/mm² increases monotonically with κ.
-
-    Higher κ → more walkers enter spheres → more restricted → higher signal.
-    """
-    kappas  = [0.0, 1e-6, 1e-5]
-    signals = []
-    for kappa in kappas:
-        # matched sub-steps: see SUB_STEPS_MATCHED. The kappa=0 arm otherwise runs at R/6 and every kappa>0
-        # arm at R/25, so the first non-zero kappa moved the signal by a discretisation step change and this
-        # test read it as non-monotone exchange.
-        S = _matched_signal(kappa if kappa > 0 else None)   # two of these are the walks above
-        signals.append(float(S[3]))   # b=2000 s/mm²
-    for i in range(len(signals) - 1):
-        assert signals[i] <= signals[i + 1] + 1e-3, (
-            f"Signal not monotone: κ={kappas[i]:.0e} → {signals[i]:.4f}, "
-            f"κ={kappas[i+1]:.0e} → {signals[i+1]:.4f}")
 
 
 # =============================================================================

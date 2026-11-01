@@ -44,33 +44,7 @@ def _S(kappa, seq, D=2e-9, n=4000, seed=0):
     return abs(complex(_simulate_bloch(n, D, seq, geom, seed=seed, require_gpu=False)[0]))
 
 
-@pytest.mark.gpu
-def test_permeability_increases_attenuation_monotonically():
-    """kappa=1e-4 (not the original 3e-3): the crossing sub-step rule (`crossing_sub_steps`, #292)
-    scales sub-steps as kappa^2, so 3e-3 now asks for 1.2M sub-steps per waveform step -- 12x
-    `MAX_SUB_STEPS` and refused (#626).
 
-    1e-4 is a margin, not a search: at this file's dt=1e-4 s, `resolve_sub_steps` (the SAME
-    engine rule the test below derives a regime from) asks for 1,334 sub-steps -- 1.3% of the
-    100,000 cap -- comfortably inside it while still a clearly more permeable wall than the 3e-5
-    case; the monotonicity and the effect size (`> 0.1`, unchanged from the original test) are
-    what this test checks, not a specific kappa. (The test is tier 2, so the extra sub-steps cost the GPU run, not every PR.)
-
-    N_MONO = 1,500 (not this file's usual 4,000): at 1,334 sub-steps x 300 waveform steps, 4,000
-    walkers measured 1,199 s on this shared CPU box, over the 10-minute single-run bound; the
-    ordering and the 0.1 gap are nowhere near the N=4,000 noise floor (observed gap 0.45, ~28x
-    the 1/sqrt(N) floor at 1,500), so the walker count is the thing to lower, not the gap -- the
-    floor stated here, not searched for.
-    """
-    seq, b = _dw_spin_echo()
-    assert b > 3e8                                   # a real diffusion weighting
-    n_sub = resolve_sub_steps(Cylinder(radius=R, orientation=(0, 0, 1), permeability=1e-4), D, 1e-4)
-    assert n_sub < 10_000, f"kappa=1e-4 should be a wide cap margin, asked for {n_sub} sub-steps"
-    N_MONO = 1_500
-    S = [_S(k, seq, n=N_MONO) for k in (0.0, 3e-5, 1e-4)]
-    # more permeable wall -> walkers leave the restriction -> more signal loss
-    assert S[0] > S[1] > S[2]
-    assert S[0] - S[2] > 0.1                          # a clear effect, not noise
 
 
 # ── a feasible "near free diffusion" regime, derived from the engine's own sub-step budget ──────

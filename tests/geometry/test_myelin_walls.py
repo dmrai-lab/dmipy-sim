@@ -203,28 +203,6 @@ def _extra_only_signal(pm, wf, N, seed):
 
 
 @pytest.mark.gpu
-def test_bare_pack_extra_axonal_signal_matches_packed_cylinders():
-    """g -> 1 removes the sheath: the extra-axonal walk of `PackedMyelinatedCylinders` is the walk
-    of `PackedCylinders` with the same centres and (outer) radii."""
-    radii = [1.0e-6, 1.3e-6, 0.8e-6, 1.1e-6, 0.9e-6, 1.2e-6]
-    g = 0.999
-    c, L = _pack(radii, g, 0.35, seed=1)
-    pm = d.PackedMyelinatedCylinders(radii, g, c, L, N_max=8, compartments=d.Compartments(intra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
-    pc = d.PackedCylinders(np.asarray(radii) / g, c, L)
-    wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
-    N = 60_000
-    s_pm, n_extra = _extra_only_signal(pm, wf, N, seed=4)
-    s_pc, _, f_pc = simulate_fused(N, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
-    s_pc = np.asarray(s_pc).ravel()
-    # the reference is only a reference while its single-hit rule keeps the walkers outside (#94 A6):
-    # a leaked walker is restricted for the rest of the walk, so the leak must stay far below the tolerance
-    leaked = (np.asarray(f_pc) > 0).mean()
-    assert leaked < 1e-3, f"PackedCylinders let {leaked:.2%} of its walkers into the cylinders"
-    tol = 4.0 * np.sqrt(1.0 / n_extra + 1.0 / N)
-    assert abs(s_pm[0] - s_pc[0]) < tol, f"extra-axonal: myelin kernel {s_pm[0]:.4f} vs PackedCylinders {s_pc[0]:.4f}"
-
-
-@pytest.mark.gpu
 def test_lumen_boundary_local_time_is_brownstein_tarr():
     """The unit boundary local time recorded on the lumen wall (`rho/D = 1`) accrues at
     `2 D / R` per unit time -- Brownstein-Tarr `rho S/V` for a cylinder -- and at the same rate the

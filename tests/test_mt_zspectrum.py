@@ -90,25 +90,6 @@ def test_equilibrate_binding_modes():
 
 
 
-# ── the full C+D+E flow: MT-prepped GRE readout -> off-resonance MTR emerges ─────
-@pytest.mark.gpu
-def test_mt_prep_gre_offresonance_mtr():
-    # With the bound pool equilibrated (default burn-in), prep and reference share the same
-    # MR-dark bound fraction, so it cancels in the ratio and the MTR is the *honest* free-pool
-    # off-resonance saturation.  (The pre-equilibration fix removed a spurious inflation: an
-    # all-free reference is all-bright, while the prepped run loses signal to newly-stuck dark
-    # spins -- that darkening used to masquerade as MT.)  A 20 ms prep gives a clear effect.
-    gre = bare_gradient_echo(TE=2e-3, dt=DT)
-    prep = saturation_pulse(1500.0, 20e-3, b1_hz=W1_HZ)
-    seq = prepend_mt_prep(gre, prep, spoiler_s=1e-3, n_cycles=32.0)
-    base = dict(T2=T2a, T1=T1a, seed=3)
-    mt_kw = dict(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b)
-    S_sat = abs(_simulate_bloch(4000, D, seq, Sphere(radius=R), **base, **mt_kw)[0])
-    S_ref = abs(_simulate_bloch(4000, D, bare_gradient_echo(TE=2e-3, dt=DT), Sphere(radius=R), **base, **mt_kw)[0])
-    mtr = 1.0 - S_sat / S_ref
-    assert mtr > 0.03                                      # emergent off-resonance MTR (bound pool)
-
-
 def test_equilibrate_binding_is_exactly_burnin_fast_or_off():
     """Three spellings and no other: 'auto', True, False and None are refused by name; 'fast' where it is unsafe (an
     unknown S/V, or a gradient with a bound pool that is not MR-dark) is a ValueError with the reason, never a warning

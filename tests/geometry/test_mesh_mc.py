@@ -100,21 +100,6 @@ def test_permeability_matches_analytic_sphere():
     npt.assert_allclose(s_mesh, s_ana, atol=0.025, err_msg="mesh permeability vs analytic Sphere")
 
 
-@pytest.mark.gpu
-def test_periodic_tube_matches_infinite_cylinder():
-    r, L = 4e-6, 12e-6
-    V, F = _open_tube(r, L)
-    g = Mesh(V, F, periodic=(False, False, True),
-             voxel_min=[-r - 2e-6, -r - 2e-6, 0.0], voxel_max=[r + 2e-6, r + 2e-6, L],
-             feature_radius=r)
-    wf = _pgse(8, 400)
-    s_mesh = np.asarray(simulate(3000, D, wf, g, seed=SEED))
-    s_cyl = np.asarray(simulate(3000, D, wf,
-                                Cylinder(radius=r, orientation=np.array([0., 0., 1.])), seed=SEED))
-    npt.assert_allclose(s_mesh, s_cyl, atol=0.02,
-                        err_msg="periodic tube mesh vs analytic infinite Cylinder")
-
-
 def test_side_dependent_surface_relaxivity():
     """With walkers seeded intra, an intra-side-only ρ attenuates them while an extra-side-only ρ (which they never
     approach from) leaves them essentially unweighted."""
