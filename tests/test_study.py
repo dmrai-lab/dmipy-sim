@@ -34,8 +34,8 @@ def high_b_pack():
 @pytest.mark.parametrize("b", [0.0, 1.0e9, 3.094e9, 1.319e10])
 def test_every_depth_of_a_replay_is_the_same_number_at_every_b(high_b_pack, b):
     """``replay``, ``walker_signals`` and ``walker_primitives(...).signals`` are ONE computation at three depths --
-    one band contraction (:func:`~dmipy_replay.replay.pose._band_phase`), one complex factor
-    (:func:`~dmipy_replay.replay.pose._signal_factor`) -- so the weighted ensemble mean of either per-walker route IS
+    one band contraction (:func:`~dmipy_replay.replay.replay._band_phase`), one complex factor
+    (:func:`~dmipy_replay.replay.replay._signal_factor`) -- so the weighted ensemble mean of either per-walker route IS
     ``replay``, to double-precision rounding and not to a tolerance, at b = 13,190 s/mm^2 as at b = 0.
 
     dmipy-sim#484 compared them per measurement at these b on a published pack and read a growing gap; the gap was

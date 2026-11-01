@@ -373,7 +373,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
     JAX side to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is
     the contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
     from .core import _walk_geometry
-    from ..sequences import pgse
+    from dmipy_replay.sequences import pgse
     out = []
     for name, case in (cases or parity_cases()).items():
         g = case(); g.count_walls = True
