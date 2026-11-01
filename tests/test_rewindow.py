@@ -105,6 +105,18 @@ def test_the_windows_replay_as_the_parent(packs, name, tier):
     assert np.abs(a - b).max() <= 2.0 * seg.fidelity["floor_max"]
 
 
+def test_a_train_deeper_than_a_windows_field_channel_is_refused(packs):
+    """Each window's field channel is certified to its own depth (its K / 2 modes gate that many pulses): the parent
+    serves an eight-pulse train in the first half of the walk, and the windowed pack, two pulses deep per window,
+    refuses it by name, where the eight-echo train across all four windows (two pulses in each) is served above."""
+    parent, seg, _ = packs
+    assert parent.envelope.max_refocusing_pulses == 8 and seg.envelope.max_refocusing_pulses == 2
+    deep = sequences.cpmg(8, 1.2e-3, gradient_directions=[[1.0, 0, 0]], bvalues=[0.0], n_t_per_echo=40)
+    parent.replay(deep, complex_signal=True, **KNOBS["field"])
+    with pytest.raises(ValueError, match=r"refocusing pulses within one .* storage window"):
+        seg.replay(deep, complex_signal=True, **KNOBS["field"])
+
+
 @pytest.mark.parametrize("name", ["pgse_1", "pgse_2", "pgste_3"])
 def test_the_pose_expansion_is_the_parents(packs, name):
     parent, seg, _ = packs

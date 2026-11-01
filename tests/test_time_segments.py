@@ -548,23 +548,28 @@ def test_a_streamed_image_is_the_resident_image_to_the_bit(blocks, backend):
 
 def test_the_field_phase_at_an_oblique_field_is_the_packs(myelin):
     """With the field along an oblique axis and an anisotropic susceptibility alone, an isotropic one alone and both,
-    the layout's image is the pack's replay within the same distance as without any field (the rounding's): the
-    stored channels meet the direction's twelve weights in the basis's own order (RPK.md 5.3, ``iso_P_zz`` folded into
-    the isotropic weights, never formed)."""
+    the layout's image is the pack's replay within the error the layout states for its words (its certificate: the
+    partition's rounding, its group's tier rounding -- the field words' at the certified ``B0 chi`` -- and the pack's
+    own quantisation, as a voxel's term, :func:`_term`): the stored channels meet the direction's twelve weights in the
+    basis's own order (RPK.md 5.3, ``iso_P_zz`` folded into the isotropic weights, never formed)."""
     from dataclasses import replace
     from dmipy_replay.acquisition.scanners import ScannerLimits
     M = myelin
     u = np.array([1.0, 0.3, 0.5]); u /= np.linalg.norm(u)
     sc = replace(ScannerLimits.of("siemens_magnetom_terra_7T"), b0_axis=tuple(u))
     seq = _acquisitions()["pgse"]
+    mw, mp = M["mw"], M["mp"]
+    stated = max(mw["partitions"][n]["rounding"]["variance"] + sum(mw["certificate"]["tiers"][p_["group"]]["rounding"].values())
+                 + mp["partitions"][n]["rounding"]["source_quantisation"] + sum(mp["certificate"]["tiers"][p_["group"]]["source"].values())
+                 for n, p_ in mw["partitions"].items())
+    assert sum(mw["certificate"]["tiers"][g]["rounding"]["field"] for g in mw["certificate"]["tiers"]) > 0   # field words stated
 
-    def gap(t):
+    for t in (replace(TISSUE, chi_iso=0.0, chi_aniso=0.0), replace(TISSUE, chi_iso=0.0, chi_aniso=-2e-7),
+              replace(TISSUE, chi_iso=-2e-7, chi_aniso=0.0), replace(TISSUE, chi_iso=-2e-7, chi_aniso=-2e-7)):
         ref = _per_voxel(M["pack"], M["grid"], seq, tissue=t, scanner=sc)
-        S, _ = M["lw"].image(seq, tissue=t, scanner=float(sc.field_T), b0_direction=tuple(u))
-        return float(np.abs(S.reshape(ref.shape) - ref).max())
-    base = gap(replace(TISSUE, chi_iso=0.0, chi_aniso=0.0))
-    for t in (replace(TISSUE, chi_iso=0.0, chi_aniso=-2e-7), replace(TISSUE, chi_iso=-2e-7, chi_aniso=0.0), replace(TISSUE, chi_iso=-2e-7, chi_aniso=-2e-7)):
-        assert gap(t) < base * 1.05 + 1e-5, (t.chi_iso, t.chi_aniso)
+        S, floor = M["lw"].image(seq, tissue=t, scanner=float(sc.field_T), b0_direction=tuple(u))
+        gap = float(np.abs(S.reshape(ref.shape) - ref).max())
+        assert gap < _term(stated, float(np.nanmax(floor))), (t.chi_iso, t.chi_aniso, gap)
 
 
 def test_the_tier_maps_and_the_files(blocks):
