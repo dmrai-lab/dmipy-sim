@@ -27,6 +27,7 @@ from dmipy_sim.replay.replay import ReplayPack
 from dmipy_replay.replay.replay import _signal_factor
 from dmipy_replay.sequences.builders import gre, ogse, pgse
 from dmipy_replay.spec.tissue import Tissue
+from dmipy_sim.replay.container import save_pack
 
 T_MAX, DT, N_W, K_BANDS = 0.02, 5e-4, 4000, 40
 N_T = int(round(T_MAX / DT)) + 1
@@ -344,7 +345,7 @@ def _tensor_spans(blob):
 def test_a_remote_pack_fetches_only_the_planned_ranges_and_replays_bit_for_bit(pack, tmp_path):
     from dmipy_sim.replay.remote import RemotePack
     local = tmp_path / "pack.rpk"
-    pack.save(str(local))
+    save_pack(pack, str(local))
     data = local.read_bytes()
     spans = _tensor_spans(data)
     seq = _battery()["pgse"]
@@ -381,7 +382,7 @@ def test_a_remote_pack_fetches_only_the_planned_ranges_and_replays_bit_for_bit(p
 def test_a_remote_pack_with_field_modes_fetches_the_mode_ranges_it_plans(field_pack, tmp_path):
     from dmipy_sim.replay.remote import RemotePack
     local = tmp_path / "field.rpk"
-    field_pack.save(str(local))
+    save_pack(field_pack, str(local))
     data = local.read_bytes()
     tissue = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
     seq = d.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / field_pack.dt)) + 1, slew_rate=np.inf)

@@ -35,7 +35,9 @@ from ..engine.accumulate import field_read_term, field_read_limit_B0_chi, field_
 
 from . import compression as _cx
 from dmipy_replay.acquisition.rf import RFEvent
-from .replay import ReplayPack, read_rpk, write_rpk
+from .container import write_rpk
+from .reencode import stated_envelope
+from .replay import ReplayPack, read_rpk
 from dmipy_replay.replay.field import CHANNEL_NAMES as _PATH_CHANNELS, ISO_CHANNEL_NAMES as _ISO_PATH_CHANNELS
 from dmipy_replay.spec.substrate import susceptibility_field_of
 
@@ -388,7 +390,7 @@ def voxel_certificate(pack, grid, *, envelope=None, device="auto"):
     arrays, meta = pack.arrays, pack.meta
     w = None if "spin_weights" not in arrays else np.asarray(arrays["spin_weights"], np.float64)
     ijk, pools, n, floor, err = voxel_floor_coded(arrays, float(pack.dt), int(pack.n_t), grid, _start_pool(arrays, meta),
-                                                  envelope or pack.stated_envelope(), w=w, device=device)
+                                                  envelope or stated_envelope(pack), w=w, device=device)
     cert = np.stack([n.astype(np.float64), floor, err], axis=-1)
     return (dict(voxel_ijk=ijk.astype(np.int32), voxel_certificate=cert.astype(np.float32)),
             per_voxel_summary(grid.to_meta(), pools, cert, shards=1, recertified=False))
@@ -1182,7 +1184,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     _w = union_weights(np.concatenate(arrays["spin_weights"]).astype(np.float64), np.repeat(np.arange(len(pks)), n), _key, _pid)
                     arrays["spin_weights"] = _w.astype(np.float32)
                 _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded([pk.arrays for pk in pks], float(pks[0].dt), int(pks[0].n_t),
-                                                                     grid, comp, envelope or pks[0].stated_envelope(), w=_w, device=device)
+                                                                     grid, comp, envelope or stated_envelope(pks[0]), w=_w, device=device)
                 if [int(p_) for p_ in _pools_r] != [int(p_) for p_ in pools]:
                     raise ValueError(f"the merged walkers' pools {list(_pools_r)} differ from the shards' certificate pools {pools}")
                 ijk, cert = _ijk, np.stack([_n.astype(np.float64), _floor, _err], axis=-1)
@@ -2453,7 +2455,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         raise ValueError(f"the window [{t0:.6g}, {t0 + T_new:.6g}] s is not within the pack's walk of {T:.6g} s")
     n_new = max(int(round(T_new / h)), 2)
     T_new = float(T_new)
-    env = _cx.certified_envelope(pack.stated_envelope() if envelope is None else envelope, pack.substrate)
+    env = _cx.certified_envelope(stated_envelope(pack) if envelope is None else envelope, pack.substrate)
     ch = dict(pack.meta.get("compression", {}).get("channels", {}) or {})
     wp = pack.meta["walk_params"]
     K_new = int(K) if K is not None else max(2, int(np.ceil(pack.K * T_new / T)))

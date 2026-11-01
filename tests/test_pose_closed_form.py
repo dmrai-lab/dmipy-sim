@@ -18,6 +18,7 @@ from dmipy_sim.replay.so3 import Distribution
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 from dmipy_sim import Pose
+from dmipy_sim.replay.reencode import rewindow_pack
 
 
 @pytest.fixture(scope="module")
@@ -419,7 +420,7 @@ def test_the_quadrature_route_reads_every_window_as_the_closed_form_does(pack, s
     """A pack that stores its walk in several windows has its response summed over them (RPK.md 4.3) by the
     quadrature route as by the closed form: the two routes agree on it to the quadrature's misfit, and the
     quadrature response of the windowed pack is the one-window pack's."""
-    win = pack.rewindow(pack.T_window / 2, out_path=tmp_path / "w.rpk", id="t/w")
+    win = rewindow_pack(pack, pack.T_window / 2, out_path=tmp_path / "w.rpk", id="t/w")
     assert win.n_windows == 2
     pc = win.pose_response(seq, method="closed")
     pq = win.pose_response(seq, method="quadrature")

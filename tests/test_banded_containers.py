@@ -20,6 +20,7 @@ from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
+from dmipy_sim.replay.reencode import prefix_pack
 
 D0 = 2e-9
 
@@ -103,7 +104,7 @@ def test_a_prefix_of_a_banded_pack_replays(packs):
     """ReplayPack.prefix re-encodes from the dequantised coefficients: a banded pack cuts like a float one."""
     f, b, tmp = packs
     TE = 5e-3
-    pb, pf = b.prefix(TE), f.prefix(TE)
+    pb, pf = prefix_pack(b, TE), prefix_pack(f, TE)
     seq = _seqmod.pgse([[1, 0, 0]], 1e-3, 3e-3, bvalues=[1e9], TE=TE, n_t=4 * pb.n_t + 1, slew_rate=np.inf)
     np.testing.assert_allclose(pb.replay(seq), pf.replay(seq), rtol=2e-3)
 

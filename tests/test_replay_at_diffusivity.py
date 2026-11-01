@@ -17,6 +17,7 @@ from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.reencode import prefix_pack
 
 D0, T, DT = 2.0e-9, 40e-3, 5e-4
 N_WALK = 150      # the identities need no count; the one statistic (a free-diffusion signal against exp(-bD)) is held to 4 / sqrt(N_WALK), 4 sigma of a signal of unit spread
@@ -136,8 +137,8 @@ def test_the_prefix_of_a_view_is_the_view_of_the_prefix(tmp_path):
     pk_d = _pack(tmp_path, d.FreeDiffusion(), D0, T, DT, "pd", K=24)
     pk_2d = _pack(tmp_path, d.FreeDiffusion(), 2 * D0, T / 2, DT / 2, "p2d", K=24)
     seq = sequences.pgse([[1.0, 0.0, 0.0]], 1.5e-3, 4e-3, bvalues=[1.0e9], TE=T / 4, n_t=41, slew_rate=np.inf)
-    a = pk_d.at_diffusivity(2 * D0).prefix(T / 4, out_path=str(tmp_path / "a.rpk"))
-    b = pk_2d.prefix(T / 4, out_path=str(tmp_path / "b.rpk"))
+    a = prefix_pack(pk_d.at_diffusivity(2 * D0), T / 4, out_path=str(tmp_path / "a.rpk"))
+    b = prefix_pack(pk_2d, T / 4, out_path=str(tmp_path / "b.rpk"))
     np.testing.assert_allclose(a.replay(seq), b.replay(seq), rtol=1e-6)
     assert a.dt == pytest.approx(b.dt)
 

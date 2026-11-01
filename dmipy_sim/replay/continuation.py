@@ -13,7 +13,8 @@ import json
 
 import numpy as np
 
-from .replay import ReplayPack, write_rpk
+from .container import write_rpk
+from .replay import ReplayPack
 
 
 def end_state(pack):

@@ -63,6 +63,8 @@ import numpy as np
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from .container import save_pack
+
 log = logging.getLogger("dmipy_sim.replay")
 
 #: The nine stages, in the only order they run in.
@@ -1403,7 +1405,7 @@ class ReferenceFamily:
             floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded standard-error floor on the envelope
             with tempfile.TemporaryDirectory(prefix="dmipy-pilot-") as tmp:
                 f = os.path.join(tmp, "pilot.rpk")
-                pk.save(f)
+                save_pack(pk, f)
                 pack_bytes = os.path.getsize(f)
         pack_s, pack_peak = time.time() - t1, sampler.peak
         per_walker_bytes = pack_bytes / float(d.pilot_n)
@@ -1658,7 +1660,7 @@ class ReferenceFamily:
         out_dir = os.path.join(self.dir, "packs")
         os.makedirs(out_dir, exist_ok=True)
         local = os.path.join(out_dir, f"{name.lower()}.rpk")
-        pack.save(local)
+        save_pack(pack, local)
         return local, pack
 
     def _certify(self, name, pack, local, des, ref):

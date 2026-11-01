@@ -20,6 +20,8 @@ from dmipy_replay.spec.substrate import Susceptibility
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _slab_grid
 from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.continuation import extend_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 N_T, DT, N_W = 41, 5e-4, 150                 # 20 ms of walk in 40 blocks; two windows of 10 ms; the checks compare two packs of ONE walk against their own certified bounds (which scale with the count), so no count is derived
 T = (N_T - 1) * DT
@@ -156,14 +158,14 @@ def test_a_short_acquisition_reads_the_first_window_alone(packs):
 
 def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_projects(packs):
     w1, w2, one, two = packs
-    pr = two.prefix(0.01)
+    pr = prefix_pack(two, 0.01)
     assert pr.n_windows == 1 and pr.n_t == 21 and set(pr.arrays) == set(two.window(0).arrays)
     for k in pr.arrays:
         npt.assert_array_equal(pr.arrays[k], two.window(0).arrays[k])
     assert pr.fidelity["combined"] == "bound_over_windows" and pr.meta["provenance"]["truncated"]["windows_kept"] == 1
     with pytest.raises(ValueError, match="window"):                       # a prefix inside a later window: no re-projection across windows
-        two.prefix(0.015)
-    pp = one.prefix(0.015)
+        prefix_pack(two, 0.015)
+    pp = prefix_pack(one, 0.015)
     assert pp.n_windows == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"] and "err_reprojection" in pp.fidelity
     seq = d.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
     npt.assert_allclose(pp.replay(seq, tissue=TIS0, complex_signal=True), one.replay(seq, tissue=TIS0, complex_signal=True),
@@ -276,7 +278,7 @@ def test_a_walk_continues_from_its_end_and_appends_as_windows():
     assert np.abs(a - b).max() < 2.0 * max(two.fidelity["floor_max"], ext.fidelity["floor_max"])
     with pytest.raises(ValueError, match="whole number"):
         continue_walk(one, 0.015, seed=1, require_gpu=False)
-    longer = ext.extend(0.02, seed=9, require_gpu=False)
+    longer = extend_pack(ext, 0.02, seed=9, require_gpu=False)
     assert longer.n_windows == 4 and longer.n_t == 81 and longer.windows["walks"][-1] == dict(first=2, last=3, seed=9)
     long_seq = d.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
     assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0

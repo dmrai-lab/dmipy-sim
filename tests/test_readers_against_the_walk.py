@@ -21,6 +21,7 @@ from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 T_MAX, H, K = 2e-3, 1e-4, 12                 # 20 blocks; K below the N - 1 = 19 bands the block ends hold
 
@@ -161,10 +162,10 @@ def test_a_whole_window_read_is_the_pack_of_the_walks_window(two_windows):
     windows, bit for bit on the bands; a cut inside a later window is refused by name."""
     w, pk, kw = two_windows
     assert pk.n_windows == 2 and pk.T_window == pytest.approx(2e-3)
-    _bands_equal(pk.prefix(2e-3), build_replay_pack(w.window(0), id="t/w0", **kw))
+    _bands_equal(prefix_pack(pk, 2e-3), build_replay_pack(w.window(0), id="t/w0", **kw))
     _bands_equal(pk.window(1), build_replay_pack(w.window(1), id="t/w1", **kw))
     with pytest.raises(ValueError, match="cuts inside window 1"):
-        pk.prefix(3e-3)
+        prefix_pack(pk, 3e-3)
 
 
 def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):

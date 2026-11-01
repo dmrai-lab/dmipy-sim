@@ -79,7 +79,8 @@ python -m dmipy_sim.replay.publish my_pack.rpk --repo owner/name        # prints
 
 ```python
 # docs: skip -- the hub, over the network
-uri = pack.publish("owner/name")                     # or publish(path, "owner/name", hub=...) from dmipy_sim.replay.publish
+from dmipy_sim.replay.publish import publish
+uri = publish(pack, "owner/name")                    # or a path; hub= for another hub
 same = ReplayPack.load(uri)                          # fetched into the cache, sha256 checked against the manifest
 ```
 

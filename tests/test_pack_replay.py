@@ -14,6 +14,7 @@ from dmipy_replay.replay.compression import occupancy_at
 from dmipy_sim import sequences as _seqmod
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
+from dmipy_sim.replay.container import save_pack
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
@@ -112,7 +113,7 @@ def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
 
 def test_save_and_load_round_trip(packs, tmp_path):
     full, _ = packs
-    path = full.save(tmp_path / "full.rpk")
+    path = save_pack(full, tmp_path / "full.rpk")
     back = ReplayPack.load(path)
     assert back.has_relaxation and back.has_surface and not back.has_field
     wf = _wf(full.n_t, full.dt)

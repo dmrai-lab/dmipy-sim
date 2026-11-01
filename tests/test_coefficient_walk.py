@@ -22,6 +22,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -265,7 +266,7 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
     assert np.abs(pc.replay(seq, tissue=t) - pz.replay(seq, tissue=t)).max() <= tol + 1e-3
     short = d.pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, bvalues=[1e9], TE=0.003, slew_rate=np.inf)
     assert abs(float(pc.at_diffusivity(4e-9).replay(short)[0]) - float(pz.at_diffusivity(4e-9).replay(short)[0])) <= tol
-    pre = pc.prefix(0.006)
+    pre = prefix_pack(pc, 0.006)
     assert pre.n_t == 61 and abs(float(pre.replay(seq)[0]) - float(pc.replay(seq)[0])) <= 2 * tol
 
 

@@ -31,6 +31,7 @@ from dmipy_sim.replay.study import Acquisition, Protocol, Study
 from dmipy_replay.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of
 from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
+from dmipy_sim.replay.container import save_pack
 
 D0 = 2.0e-9
 ENV = dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
@@ -251,7 +252,7 @@ def test_the_reader_refuses_every_mismatch_on_every_surface_kind(kind, surface_s
         with pytest.raises(SpecError, match=msg):
             pk.replay((present if stored else absent)[1])
         with pytest.raises(SpecError, match=msg):                        # at load
-            pk.save(tmp_path / f"{kind}.rpk"); ReplayPack.load(tmp_path / f"{kind}.rpk")
+            save_pack(pk, tmp_path / f"{kind}.rpk"); ReplayPack.load(tmp_path / f"{kind}.rpk")
     assert _pack_with(absent[0], _variant(spec, pool, False, False)).susceptibility_field == "absent"
     assert _pack_with(present[0], _variant(spec, pool, True, True)).susceptibility_field == "present"
 
@@ -333,7 +334,7 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
     bare = ReplayPack(dict(pa.arrays), meta)
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         bare.replay(seq)
-    bare.save(tmp_path / "bare.rpk")
+    save_pack(bare, tmp_path / "bare.rpk")
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         ReplayPack.load(tmp_path / "bare.rpk")
     w = _walk_geometry(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False, K=4)

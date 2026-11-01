@@ -122,4 +122,4 @@ jobs:
         run: |
           pip install --no-deps -e replay -e sim
       - name: Check this commit against the record
-        run: python replay/tests/parity_move/check_reference.py "$RUNNER_TEMP/before"
+        run: python replay/tests/parity_move/check_reference.py "$RUNNER_TEMP/before" --require-all
