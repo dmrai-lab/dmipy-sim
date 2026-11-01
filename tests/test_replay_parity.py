@@ -19,7 +19,7 @@ noise floor: tolerance ``max(0.02, 1/sqrt(N))``.  The waveforms are sized so tha
 geometry, so the comparison exercises the shared sub-step dispatch rather than a
 single-step special case (the fixture asserts this).
 
-Heavy MC — auto-marked ``slow`` via ``tests/conftest.py::_SLOW_MC_MODULES``.
+Heavy MC — auto-marked ``gpu`` via ``tests/conftest.py::_GPU_TIER_MODULES``.
 """
 import numpy as np
 import numpy.testing as npt

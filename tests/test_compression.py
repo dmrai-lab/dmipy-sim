@@ -85,7 +85,7 @@ def test_the_gated_surface_weight_is_the_bridge_against_the_gate():
     npt.assert_allclose(_r_compression.surface_logweight_bridge(arrays, meta, 3.0), 3.0 * end, rtol=1e-6)           # float32 endpoints
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_contact_bands_replay_surface_signal_below_mc_floor():
     """A real surface-relaxivity walk: the contact bands accumulated in the walk at K=8 reproduce the surface
     survival E(TE) at EVERY echo-time truncation to below the Monte-Carlo floor (1/sqrt(N)) -- the property that

@@ -6,15 +6,15 @@ Companion to ``test_permeability_ladder.py``.  Reuses the runnable example
 cell's Monte-Carlo relaxation time against the exact finite-diffusion eigenvalue
 ``tau_1 = 1/(D lambda_1^2)`` (NOT the fast-limit ``rho*S/V``).
 
-Marked ``slow`` (GPU, minutes): run with ``pytest -m slow``; the fast suite skips it via
-``pytest -m 'not slow'``.  Requires scipy (Bessel functions).
+Marked ``gpu`` (tier 2, minutes of walking); the CPU suite skips it via
+``pytest -m "not gpu"``.  Requires scipy (Bessel functions).
 """
 import os
 import sys
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.gpu
 
 _EXAMPLES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
                                          "examples", "validation"))

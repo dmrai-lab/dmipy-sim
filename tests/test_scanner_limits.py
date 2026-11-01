@@ -655,7 +655,7 @@ def test_the_order_three_argument_is_over_mixtures_not_pure_terms():
     assert "ALL MIXTURES" in leaf["context"]
     for n in ("1.591", "1.364", "1.971"):
         assert n in leaf["context"], f"the leaf does not record {n}"
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_every_catalogued_doi_resolves_to_the_paper_it_claims():
     """A citation that does not resolve reads as provenance and is not. This caught a real one: the de Vos
     concomitant-field DOI in this catalogue pointed at "2D sodium MRI of the human calf", and it was the

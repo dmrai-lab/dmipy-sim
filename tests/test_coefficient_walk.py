@@ -122,7 +122,7 @@ def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
 
 
 # ----------------------------------------------------------------------------------------------- the quadrature
-@pytest.mark.slow
+@pytest.mark.gpu
 @pytest.mark.parametrize("which", ["free", "slab 0.8 um"])
 def test_the_quadrature_is_bounded_absolutely(which):
     """The phase variance the block accumulation adds per measurement of the battery, against the same walk accumulated
@@ -165,7 +165,7 @@ def test_the_contact_tier_is_admitted_at_the_signal():
 
 
 # ------------------------------------------------------------------------------------------------------- memory
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_the_walks_host_bytes_do_not_grow_with_the_block_count():
     """Three blocks spanning 16x at a fixed K, each walk in a process of its own: the accumulated walk's peak host bytes
     stay within a few MB of each other, while the same walk keeping every walker's block ends grows by them."""

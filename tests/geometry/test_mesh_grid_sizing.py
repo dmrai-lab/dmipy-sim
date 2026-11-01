@@ -34,7 +34,7 @@ def test_an_explicit_cell_size_is_honoured():
     assert m.cell_size == 0.5e-6
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_a_twenty_thousand_triangle_sphere_walks_at_default_arguments():
     """The case that asked 18.5 GiB and died: default `feature_radius` (half the box), 20 480
     triangles, 4000 walkers. The cell now sits at the step rather than four steps, so the gather

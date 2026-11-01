@@ -6,7 +6,7 @@ a free spin sticks at a wall, freezes for an exponential dwell, and relaxes with
 bound pool (T2_bound, T1_bound) blended by occupancy.  Validated against the
 two-region exchange law and the two-pool Bloch--McConnell oracle.
 
-Heavy Monte-Carlo (fine binding sub-steps) -> GPU-recommended; marked slow.
+Heavy Monte-Carlo (fine binding sub-steps) -> GPU-recommended; marked gpu (tier 2).
 """
 
 from dataclasses import replace
@@ -19,7 +19,7 @@ import pytest
 from dmipy_sim import Sphere
 from dmipy_sim.engine import mt
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.gpu
 
 EXC = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0, offset_hz=0.0)]
 

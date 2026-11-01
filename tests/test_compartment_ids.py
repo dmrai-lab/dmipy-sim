@@ -140,7 +140,7 @@ def test_comp_traj_is_the_geometrys_own_label(name):
         assert (comp == want).all()
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
     """Per-compartment T2 on a permeable mesh: the occupancy channel and the T2 array share the id."""
     from dmipy_sim.geometry import mesh_shapes

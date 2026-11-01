@@ -217,7 +217,7 @@ class TestSlowExchangeCondition:
 # Uses the correct step size for each κ value.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 class TestResidenceTimeSphere:
     """Sphere: τ = R/(3κ) must be recovered within 5%.
 
@@ -318,7 +318,7 @@ class TestResidenceTimeSphere:
 # We test at κ=20e-6 and accept ≤15% error (with tolerance caveat documented).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 class TestEscapeRateCylinder:
     """Cylinder: measured escape rate vs theoretical value within 25%.
 
@@ -362,7 +362,7 @@ class TestEscapeRateCylinder:
 # Tier 2: κ→∞ free diffusion limit
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_permeability_high_kappa_free_diffusion_cylinder():
     """Cylinder at κ=1.0 m/s (TE/τ >> 1): signal → exp(-bD).
 
@@ -392,7 +392,7 @@ def test_permeability_high_kappa_free_diffusion_cylinder():
             f"S_free={S_free:.4f}, rel_err={rel_err:.3f}")
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_permeability_high_kappa_free_diffusion_sphere():
     """Sphere at κ=1.0 m/s: signal → exp(-bD)."""
     kappa_high = 1.0
@@ -422,7 +422,7 @@ def test_permeability_high_kappa_free_diffusion_sphere():
 # Tier 4: f_inside(3τ) ≈ exp(−3) for Sphere
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_exponential_decay_at_3tau_sphere():
     """Sphere κ=20e-6: f_inside(3τ) must be close to exp(−3) ≈ 0.050.
 
@@ -447,7 +447,7 @@ def test_exponential_decay_at_3tau_sphere():
 # Diagnostic figures: f_inside(t/τ) collapse plots for Sphere
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_permeability_collapse_figure_sphere():
     """Generate f_inside(t/τ) log-scale collapse plot for Sphere.
 

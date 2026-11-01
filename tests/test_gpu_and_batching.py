@@ -57,7 +57,7 @@ def test_list_gpu_processes_returns_list():
         assert {"pid", "used_mib", "name"} <= set(p)
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_walker_batching_matches_single_shot_and_analytic():
     from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
 
