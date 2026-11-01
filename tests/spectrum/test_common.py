@@ -5,9 +5,8 @@ import os
 import numpy as np
 import pytest
 
-from dmipy_sim.spectrum.common import (EDGES_M, HALO_FREE_DIFFUSIVITY_M2_S, SpectrumHaloError, WALK_LENGTHS_S,
-                                       check_halo, derive_seed, halo_m, n_tiles_per_axis, sha256_of, tile_seed,
-                                       verify_index, write_index)
+from dmipy_sim.spectrum.common import EDGES_M, HALO_FREE_DIFFUSIVITY_M2_S, SpectrumHaloError, WALK_LENGTHS_S, check_halo, derive_seed, halo_m, n_tiles_per_axis, tile_seed, verify_index, write_index
+from dmipy_replay.replay.hub import sha256_of
 
 
 def test_halo_matches_the_issue_text_numbers():

@@ -602,7 +602,7 @@ def test_from_a_pack_the_tiers_carry_the_packs_own_quantisation(myelin):
     per-walker departure from the walk's float contraction (and are not vacuous for the contact); a floor target below
     the pack's own term is refused by name."""
     from dmipy_sim.replay.time_segments import tier_quantisation_terms, _gate_sequence
-    from dmipy_sim.replay.study import Acquisition
+    from dmipy_replay.replay.study import Acquisition
     from dmipy_replay.replay.replay import _path_field_channels
     from dmipy_replay.replay.field import field_terms
     M = myelin

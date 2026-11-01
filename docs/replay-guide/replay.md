@@ -108,9 +108,9 @@ every combination unless `pairs=` picks. On a pack it gives the signal of every 
 acquisition formed once.
 
 ```python
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 axial = sequences.pgse([[0, 0, 1]], 0.001, 0.002, bvalues=[2e9], TE=0.005, slew_rate=np.inf)
-study = Study(Protocol([seq, Acquisition(axial, name="axial")]), tissues=[None, wm, wm.replace(T2={"extra": 0.08, "intra": 0.08})], scanners=[None])
+study = Study(StudyProtocol([seq, Acquisition(axial, name="axial")]), tissues=[None, wm, wm.replace(T2={"extra": 0.08, "intra": 0.08})], scanners=[None])
 S_all = pack.study(study)                                      # (pairs, n_meas): 3 tissues x 1 scanner, 3 measurements
 print(S_all.shape, np.allclose(S_all[1, :2], S))
 print(study.to_meta()["pairs"][1]["tissue"])                   # the record of what was replayed

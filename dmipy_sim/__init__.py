@@ -55,13 +55,10 @@ from .fields.susceptibility_field import dipole_field, myelin_susceptibility_ten
 from .geometry import mesh_shapes
 from dmipy_replay.constants import GAMMA
 from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
-from .replay.fod import FOD
-from .replay.so3 import Distribution
 from .engine import mt
 from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
 from dmipy_replay.acquisition.timing import SequenceTiming
 from dmipy_replay.acquisition.scanners import ScannerLimits, SCANNERS
-from .replay.replay import ReplayPack, read_rpk, replay_signal_jax
 from .replay.container import write_rpk
 from dmipy_replay.replay.replay import compile_scheme, replay_signal, surface_logweight
 from .replay import bank
@@ -97,12 +94,14 @@ __all__ = [
     "mesh_shapes",
     "GAMMA",
     "add_rician_noise", "add_rician_noise_batch", "add_nc_chi_noise", "estimate_sigma",
-    # SH convolution
-    "FOD",
-    "Distribution",
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
     "Prescription",
-    "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
+    "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "write_rpk", "compile_scheme", "replay_signal", "bloch_simulate", "slice_profile",
 ]
+
+
+def __getattr__(name):
+    from ._moved import refuse
+    raise refuse(__name__, name)

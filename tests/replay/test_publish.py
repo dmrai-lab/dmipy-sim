@@ -12,8 +12,9 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.hub import FakeHub, sha256_of
-from dmipy_sim.replay import ReplayPack
+from dmipy_sim.replay.hub import FakeHub
+from dmipy_replay.replay.hub import sha256_of
+from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import publish as pub
 from dmipy_sim.replay.container import save_pack
@@ -248,7 +249,7 @@ def test_the_cli_prints_the_uri(pack, hub, tmp_path, capsys, monkeypatch):
 def test_a_phantom_substrate_cites_a_published_pack_by_its_uri(monkeypatch):
     """A PackSubstrate given an hf:// URI loads the pack through ReplayPack.load, so a phantom cites published packs."""
     from dmipy_replay.phantom import PackSubstrate
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"id": "o/p", "walk_params": {"block": {"h": 5e-4, "m": 0, "n_blocks": 2}, "windows": {"n": 1, "T": 1e-3, "walks": []}}})
     monkeypatch.setattr(ReplayPack, "load", classmethod(lambda cls, uri: seen.setdefault("uri", uri) and fake))

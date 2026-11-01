@@ -91,7 +91,7 @@ def test_a_pack_in_the_integer_containers_replays_every_knob_like_the_float_one(
     seq = _seqmod.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, bvalues=[1e9, 1e9], TE=9.5e-3, n_t=4 * b.n_t + 1, slew_rate=np.inf)
     for kw in (dict(), dict(tissue=Tissue(T2={"extra": 0.08, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2})), dict(tissue=Tissue(rho2=1e-5, D=D0))):
         np.testing.assert_allclose(b.replay(seq, **kw), f.replay(seq, **kw), rtol=2e-3)
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     back = read_rpk(str(tmp / "bands.rpk"))
     np.testing.assert_allclose(back.replay(seq), b.replay(seq), rtol=1e-12)
     assert back.arrays["pos_x_b1"].dtype == np.int8

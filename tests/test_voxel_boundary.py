@@ -17,7 +17,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 

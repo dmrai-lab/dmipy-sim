@@ -18,7 +18,7 @@ from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_replay.phantom.bore import encoding_classes
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 D0 = 2.0e-9

@@ -18,9 +18,9 @@ from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.acquisition.waveforms import rotate_waveform
 from dmipy_replay.phantom.bore import encoding_classes
 from dmipy_replay.phantom.grid import Grid
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.pose_series import _cheb_matrix, _cheb_points, _cheb_T, _series_bound
+from dmipy_replay.replay.pose_series import _cheb_matrix, _cheb_points, _cheb_T, _series_bound
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import pose_with_field_along
 from dmipy_replay.phantom import Pose
@@ -238,7 +238,7 @@ def test_the_brain_packs(machine, kind, tissue):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no CUDA device")
-    from dmipy_sim.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     pack = ReplayPack.load(BRAIN_WM if tissue == "wm" else BRAIN_GM, windows=range(1))
     keep = (8, 0) if tissue == "wm" else (0, 0)
     L = ScannerLimits.of(machine)

@@ -32,7 +32,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_sim.acquisition import coil
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 B0 = 0.064                    # the field at which the term is a low-field problem: 47x what 3 T gives

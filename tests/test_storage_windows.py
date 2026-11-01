@@ -15,7 +15,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity
-from dmipy_sim.replay.study import walker_primitives
+from dmipy_replay.replay.study import walker_primitives
 from dmipy_replay.spec.substrate import Susceptibility
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _slab_grid
@@ -198,7 +198,8 @@ def test_a_pack_without_the_table_is_refused():
 def test_a_pack_with_the_earlier_table_is_refused(packs, tmp_path):
     """A header that names its window table ``walk_params.segments`` declares no window table, and is refused by name."""
     import copy
-    from dmipy_sim.replay.replay import read_rpk, write_rpk
+    from dmipy_replay import read_rpk
+    from dmipy_sim.replay.container import write_rpk
     w1, w2, one, two = packs
     meta = copy.deepcopy(two.meta)
     meta["walk_params"]["segments"] = meta["walk_params"].pop("windows")

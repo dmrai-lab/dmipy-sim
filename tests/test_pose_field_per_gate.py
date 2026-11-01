@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_replay.spec.tissue import Tissue
 
 KW = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-5e-8))
@@ -47,7 +47,7 @@ def test_one_gate_is_one_pass_and_one_field_factor(field_pack, monkeypatch):
     """The encoding classes of one timing share a gate: a single acquisition, and a batch of acquisitions of one
     timing with different directions and b-values, are expanded in one pass with the field factor formed once.
     A batch of different gates takes one pass per gate."""
-    import dmipy_sim.replay.replay as rr
+    import dmipy_replay.replay.replay as rr
     pk = field_pack
     se, ste, se_short = _acquisitions(pk)
     se_b = sequences.pgse([[0, 0, 1]], 1e-4, 4e-4, bvalues=[1e9], TE=8e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)

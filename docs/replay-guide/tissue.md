@@ -81,9 +81,9 @@ A tier asked for that the pack does not carry raises, and so does a susceptibili
 [scanner](scanner.md) page has the rule); the alternative in each case would be a plausible wrong number.
 
 ```python
-from dmipy_sim.replay.study import Protocol, Study
+from dmipy_replay.replay.study import StudyProtocol, Study
 try:
-    pack.study(Study(Protocol([seq]), tissues=[Tissue(chi_iso=-1e-7)], scanners=[3.0]))   # chi on a substrate with nothing magnetic
+    pack.study(Study(StudyProtocol([seq]), tissues=[Tissue(chi_iso=-1e-7)], scanners=[3.0]))   # chi on a substrate with nothing magnetic
 except ValueError as e:
     print("refused:", str(e)[:60])
 try:

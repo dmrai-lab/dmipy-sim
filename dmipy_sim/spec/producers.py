@@ -35,7 +35,7 @@ _UM = 1e-6
 
 
 def _sha(path):
-    from ..replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     return sha256_of(path)
 
 

@@ -14,7 +14,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank, compression as cx
 from dmipy_replay.replay.decoded import DecodedCache, PackArrays
-from dmipy_sim.replay.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.spec.tissue import Tissue
 
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho2=1e-5)

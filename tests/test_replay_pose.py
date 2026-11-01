@@ -11,9 +11,10 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import Encoding, ScannerSequence
 from dmipy_sim.fields.susceptibility_field import field_grid_of
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay.fod import FOD
+from dmipy_replay.replay.pose import _pose_coeffs
 
 D0 = 2.0e-9
 ENV = dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
@@ -215,7 +216,7 @@ def test_an_orientation_distribution_must_say_what_basis_it_is_in(hollow):
     # response has nothing above its band for those terms to multiply. (The closed form's full band is large,
     # so the response is truncated to (6, 6) here rather than the distribution raised above it.)
     pr = pk.pose_response(seq, **BAND, **KW)
-    from dmipy_sim.replay.replay import PoseResponse
+    from dmipy_replay.replay.pose import PoseResponse
     low = PoseResponse(so3.truncate_coeffs(pr.coeffs, pr.lmax, pr.nmax, 6, 6), 6, 6, pr.misfit, pr.floor,
                        pr.phase_amplitude, pr.n_samples)
     wide = low.compose(so3.Distribution.watson(3.0, lmax=8, nmax=8))
@@ -229,7 +230,7 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     pk, seq = ellipsoid
     P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     with pytest.raises(ValueError, match="not represented at"):
-        pk._pose_coeffs(P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
+        _pose_coeffs(pk, P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
 
 
 # ── the field's DIRECTION is the machine's, not an assumption (dmipy-sim#349) ────────────────────────

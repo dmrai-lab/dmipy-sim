@@ -7,7 +7,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.compression import occupancy_at
@@ -127,7 +127,7 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
     rounding -- the property a voxel partition of a walk rests on (dmipy-sim#76, #186)."""
     import dmipy_sim as d
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     from dmipy_sim.replay.bank import build_replay_pack
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(200, 2e-9, g, 2e-3, 5e-4, seed=3, require_gpu=False)

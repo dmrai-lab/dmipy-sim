@@ -18,8 +18,8 @@ from dmipy_sim.fields.susceptibility_field import FieldGrid
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
-                       compile_scheme, replay_signal)
+from dmipy_sim import build_replay_pack, build_to_floor, compile_scheme, replay_signal
+from dmipy_replay import read_rpk
 from dmipy_sim.replay import bank, compression as cx_
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue

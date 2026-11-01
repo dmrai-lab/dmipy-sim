@@ -14,7 +14,7 @@ import json
 import numpy as np
 
 from .container import write_rpk
-from .replay import ReplayPack
+from dmipy_replay import ReplayPack
 
 
 def end_state(pack):

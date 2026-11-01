@@ -5,8 +5,8 @@ window the pack was not loaded with is refused by name.
 
 The byte-range selection is exercised against a local HTTP server that honours ``Range`` (``http.server`` does
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
-``url=`` override is for exactly this). The real Hub is not touched: a test that uploads a fixture to a
-shared dataset does not belong in an automated run."""
+``url=`` override is for exactly this). No test writes to the Hub: the published fixture is written by
+``tools/publish_windows_fixture.py``, by hand, and the tier-2 test at the end only reads it."""
 from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import contextlib
@@ -22,7 +22,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.replay import ReplayPack, read_rpk
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
 from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
@@ -210,3 +210,28 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
     assert back._windows == 2
     with pytest.raises(ValueError, match="windows="):
         PackSubstrate("/local/path.rpk", m0=1.0, windows=range(1))
+
+
+# ------------------------------- the real Hub: read only (tier 2) -------------------------------
+FIXTURE_URI = "hf://SubstrateCommons/test-fixtures/windows-fixture.rpk"
+"""The published fixture, :func:`_fixture_pack` written by ``tools/publish_windows_fixture.py`` -- by hand, never by a test."""
+
+
+@pytest.mark.gpu
+def test_a_windowed_read_from_the_real_hub(tmp_path, monkeypatch):
+    """The published fixture's first window read by HTTP byte range through the public entry point, with no
+    ``url=``/``revision=`` override (the real Hub resolver end to end), replays bit for bit as the whole file read
+    from the Hub does. The test only reads; it is skipped where the Hub cannot be reached."""
+    hf = pytest.importorskip("huggingface_hub")
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
+    owner, name, path = FIXTURE_URI[len("hf://"):].split("/", 2)
+    try:
+        hf.HfApi().file_exists(f"{owner}/{name}", path, repo_type="dataset")
+    except Exception as e:                                             # no network, or the Hub is down
+        pytest.skip(f"the Hub cannot be reached: {e}")
+    first = ReplayPack.load(FIXTURE_URI, windows=range(1))
+    whole = ReplayPack.load(FIXTURE_URI)
+    assert first.windows_present == 1 and first.n_windows == 3 and whole.windows_present == 3
+    for k in first.arrays:
+        npt.assert_array_equal(first.arrays[k], whole.arrays[k], err_msg=k)
+    npt.assert_array_equal(first.replay(_seq(0.01), complex_signal=True), whole.replay(_seq(0.01), complex_signal=True))

@@ -2,7 +2,7 @@
 
 ``simulate()`` walks the substrate to coefficients (:func:`_walk_geometry`: per walker the exact endpoints and
 the sine-band projections of its path, accumulated as the walk runs) and contracts them with the waveform
-(:meth:`~dmipy_sim.replay.replay.ReplayPack.replay`). The producers return a
+(:meth:`~dmipy_replay.replay.replay.ReplayPack.replay`). The producers return a
 :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`; ``walk_cost`` prices one before it runs. The single-pass
 integrator of the phase along the walk is the oracle (:mod:`dmipy_sim.engine._fused`), not an entry point.
 """
@@ -141,7 +141,7 @@ def _walk_band(G, dt, T):
 def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, require_gpu, walker_batch_size,
                sub_steps=None):
     """``(pack, tissue, pose)``: the coefficient walk of ``geometry`` over the span of ``waveform`` (one storage
-    window, the band the waveform reads), assembled into an in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`,
+    window, the band the waveform reads), assembled into an in-memory :class:`~dmipy_replay.replay.replay.ReplayPack`,
     with the :class:`~dmipy_sim.spec.tissue.Tissue` (scalar or per-pool ``T2`` / ``T1``, the wall's ``rho2``) and the
     pose (the geometry's placement in the bore) a replay of ``waveform`` reads. The walk depends only on (geometry,
     diffusivity, seed); the waveform and the relaxation are replay settings."""
@@ -208,7 +208,7 @@ def simulate(
 
     The walk is :func:`_walk_geometry` over the waveform's span at the band the waveform reads
     (:func:`~dmipy_replay.acquisition.waveforms.band_hz`); the contraction is
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
     (geometry, diffusivity, seed), so the waveform, ``T2``, ``T1`` and the wall's surface relaxivity are replay
     settings of one walk. A run the coefficient walk is not validated to serve (a geometry that does not declare
     ``replay_parity``, or :func:`_replay_gap`: a dedicated fused step kernel, per-pool diffusivity, no diffusivity)

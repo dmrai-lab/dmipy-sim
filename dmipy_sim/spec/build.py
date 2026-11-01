@@ -296,7 +296,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
 
 
 def _sha256(path):
-    from ..replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     return sha256_of(path)
 
 

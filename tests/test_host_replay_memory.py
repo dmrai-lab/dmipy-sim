@@ -12,7 +12,7 @@ import pytest
 
 from dmipy_replay.replay._replay_kernel import GAMMA, gradient_phase
 from dmipy_sim.replay.compression import pack_position_arrays
-from dmipy_sim.replay.replay import ReplayPack
+from dmipy_replay import ReplayPack
 
 
 def _pack(n_w=50, K=8):

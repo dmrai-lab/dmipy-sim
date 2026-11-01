@@ -182,7 +182,7 @@ def pack(tmp_path_factory):
     import dmipy_sim as d
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     out = tmp_path_factory.mktemp("pk") / "w.rpk"
     # 40 000, not 400. At 400 the Monte-Carlo floor on this pack is 11-14 per cent in ADC against an
     # effect of a few per cent, so a per-direction bias has an SNR under one and its SIGN is not determined.

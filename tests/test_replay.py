@@ -8,7 +8,9 @@ from dmipy_sim.replay.compression import pack_position_arrays
 import pytest
 
 from scipy.fft import dct, idct
-from dmipy_sim.replay.replay import read_rpk, write_rpk, replay_signal_jax, ReplayPack
+from dmipy_replay import read_rpk, ReplayPack
+from dmipy_sim.replay.container import write_rpk
+from dmipy_replay.replay.jax_routes import replay_signal_jax
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion

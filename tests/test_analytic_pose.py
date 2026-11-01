@@ -14,7 +14,8 @@ import pytest
 from dmipy_sim import sequences
 from dmipy_replay.phantom import Grid, Inert, Peaks, Phantom, Watson
 from dmipy_replay.phantom.substrates import substrate_from_meta
-from dmipy_sim.replay import analytic_pose_response, so3
+from dmipy_replay.replay.pose import analytic_pose_response
+from dmipy_replay.replay import so3
 
 
 class Stick:
