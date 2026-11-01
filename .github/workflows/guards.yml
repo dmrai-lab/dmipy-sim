@@ -1,0 +1,11 @@
+name: Guards
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  guards:
+    uses: dmrai-lab/.github/.github/workflows/guards.yml@main
