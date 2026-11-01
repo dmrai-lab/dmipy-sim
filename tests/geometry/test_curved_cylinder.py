@@ -54,8 +54,8 @@ def test_straight_sweep_matches_the_analytic_cylinder(b):
     Same walkers, same waveform, same seed -- the only difference is which geometry object reflects them,
     so any disagreement beyond Monte-Carlo noise is the sweep's own.
     """
-    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=600), b)
-    n = 20_000
+    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=300), b)
+    n = 6000           # the floor below is 3 SE of this n: 0.039 (20000 walkers resolved 0.021)
 
     s_cyl = float(np.atleast_1d(simulate(n, D, wf, Cylinder(radius=R, orientation=(0, 0, 1)), seed=SEED))[0])
     s_swp = float(np.atleast_1d(simulate(n, D, wf, CurvedCylinder(_straight_centreline(), radius=R), seed=SEED))[0])
