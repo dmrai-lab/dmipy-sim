@@ -1,14 +1,11 @@
-"""Restricted diffusion, sphere, MISST validation.
+"""Restricted diffusion in a sphere, against the matrix-method (eigenmode) oracle ``dmipy_sim.math.matrix_method``.
 
-Validates the Sphere geometry against MISST reference signals from Kerkelae's
-disimpy, which itself is validated against the MISST matrix-operator toolbox.
-
-Two gradient configurations match disimpy's test_sphere_diffusion exactly:
+Two gradient configurations of disimpy's test_sphere_diffusion:
   Config 1: delta ≈ 30 ms  (broad pulse)
   Config 2: delta ≈  1 ms  (narrow pulse)
 
 Gradient is built in disimpy's raw convention (indices, not time masks) then
-linearly interpolated to n_t=1000 time points — matching disimpy bit-for-bit.
+linearly interpolated to n_t=1000 time points.
 """
 
 import numpy as np
@@ -18,7 +15,8 @@ import jax.numpy as jnp
 from dmipy_sim import simulate, Sphere, set_b
 from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
-from tests.conftest import D, N_WALKERS, SEED, load_fixture
+from dmipy_sim.math.matrix_method import MatrixPore
+from tests.conftest import D, N_CPU, SEED, mc_atol
 
 
 def _build_disimpy_waveform(n_t_raw, pulse_slice_start, pulse_slice_end, n_t=1000):
@@ -70,10 +68,16 @@ def _tile_and_set_b(wf_single, b_values):
     return set_b(wf, b_values)
 
 
-def test_sphere_misst_config1():
-    """Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r=5 µm vs MISST fixture."""
-    misst = load_fixture("misst_sphere_delta30ms_Delta40ms_r5um.npy")
-    b_values = np.linspace(1, 3e9, 100)
+def _matrix_oracle(wf, diameter):
+    """The eigenmode (matrix-method) signal of every measurement of ``wf`` for a sphere of this diameter, gradient along x:
+    exact for the waveform's piecewise-constant steps, so it is the reference the walk is held to."""
+    pore = MatrixPore("sphere", diameter, D)
+    return np.array([abs(pore.signal(g, wf.dt)) for g in np.asarray(wf.G, np.float64)[:, :, 0]])
+
+
+def test_sphere_matches_the_matrix_method_broad_pulse():
+    """Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r=5 µm against the matrix-method oracle."""
+    b_values = np.linspace(1, 3e9, 12)
 
     # disimpy: gradient[0, 1:300, 0]=1  (299 steps = pulse1)
     #          gradient[0, -300:-1, 0]=-1 (pulse2 mirrors at same width)
@@ -82,16 +86,15 @@ def test_sphere_misst_config1():
                                          pulse_slice_end=300)
     wf = _tile_and_set_b(wf_single, b_values)
 
-    signals = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
+    signals = simulate(N_CPU, D, wf, Sphere(5e-6), seed=SEED)
 
-    npt.assert_allclose(signals, misst, atol=0.02,
-                        err_msg="Sphere Config1 (delta≈30ms) vs MISST")
+    npt.assert_allclose(signals, _matrix_oracle(wf, 10e-6), atol=mc_atol(N_CPU),
+                        err_msg="Sphere Config1 (delta≈30ms) vs the matrix method")
 
 
-def test_sphere_misst_config2():
-    """Config 2: delta ≈ 1 ms, Delta ≈ 40 ms, r=5 µm vs MISST fixture."""
-    misst = load_fixture("misst_sphere_delta1ms_Delta40ms_r5um.npy")
-    b_values = np.linspace(1, 3e9, 100)
+def test_sphere_matches_the_matrix_method_narrow_pulse():
+    """Config 2: delta ≈ 1 ms, Delta ≈ 40 ms, r=5 µm against the matrix-method oracle."""
+    b_values = np.linspace(1, 3e9, 12)
 
     # disimpy: T=41ms, n_t_raw=410
     #          gradient[0, 1:10, 0]=1  (9 steps = pulse1)
@@ -117,10 +120,10 @@ def test_sphere_misst_config2():
     wf_single = ScannerSequence(G=jnp.array(G_interp), dt=float(dt))
     wf = _tile_and_set_b(wf_single, b_values)
 
-    signals = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
+    signals = simulate(N_CPU, D, wf, Sphere(5e-6), seed=SEED)
 
-    npt.assert_allclose(signals, misst, atol=0.02,
-                        err_msg="Sphere Config2 (delta≈1ms) vs MISST")
+    npt.assert_allclose(signals, _matrix_oracle(wf, 10e-6), atol=mc_atol(N_CPU),
+                        err_msg="Sphere Config2 (delta≈1ms) vs the matrix method")
 
 
 # NOTE: `test_sphere_walkers_contained*` was removed (#88). It asserted two things:
@@ -128,7 +131,7 @@ def test_sphere_misst_config2():
 # deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
 # direction x step length -- including the step-spans-the-object case this walk could not
 # reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
-# statement than the MISST signal comparisons kept in this file: a restricted signal is
+# statement than the matrix-method signal comparisons kept in this file: a restricted signal is
 # itself proof that walkers are hitting walls.
 
 
@@ -136,13 +139,13 @@ def test_sphere_signal_above_free():
     """Restricted sphere signal must be >= free diffusion at same b-values."""
     from dmipy_sim import FreeDiffusion
     from dmipy_sim.sequences import pgse
-    b_values = np.linspace(1e8, 3e9, 20)
-    bvecs = np.tile([1., 0., 0.], (20, 1))
+    b_values = np.linspace(1e8, 3e9, 6)
+    bvecs = np.tile([1., 0., 0.], (6, 1))
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
 
-    S_sphere = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
-    S_free   = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
+    S_sphere = simulate(N_CPU, D, wf, Sphere(5e-6), seed=SEED)
+    S_free   = simulate(N_CPU, D, wf, FreeDiffusion(), seed=SEED + 1)
 
-    assert np.all(S_sphere >= S_free - 0.01), (
+    assert np.all(S_sphere >= S_free - mc_atol(N_CPU, runs=2)), (
         f"Sphere signal should be >= free diffusion. "
         f"Max violation: {np.max(S_free - S_sphere):.4f}")

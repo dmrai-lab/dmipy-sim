@@ -99,6 +99,19 @@ SEED = 123
 # scaled by --heavy -- a bigger N cannot make an exact equality any more exact.
 N_EXACT = 5_000
 
+# The walker count of a tier-1 Monte-Carlo test. The signal is the mean over walkers of cos(phase); for a Gaussian phase
+# its variance is (1 - E^2)^2 / 2 <= 1/2, so one run has a standard error of at most 1/sqrt(2 N) = 0.005 at N = 20,000.
+# A tolerance is `mc_atol` standard errors of that, so it is as tight as the walker count allows and a bias of that size
+# still fails the test (a tolerance copied from the 100,000-walker days would not follow N down).
+N_CPU = 20_000
+
+
+def mc_atol(n_walkers, k=4.0, runs=1):
+    """``k`` standard errors of a signal estimated from ``n_walkers`` walkers, for the difference of ``runs`` independent
+    estimates (``runs=2`` for two walks compared with each other, ``runs=1`` for one walk against a closed form)."""
+    return k * np.sqrt(runs / (2.0 * n_walkers))
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--heavy",

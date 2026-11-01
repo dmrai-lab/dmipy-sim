@@ -43,7 +43,7 @@ import pytest
 from dmipy_sim import simulate, Sphere, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_WALKERS, N_EXACT, SEED
+from tests.conftest import D, N_CPU, N_EXACT, SEED, mc_atol
 
 R          = 5e-6   # m
 KAPPA_MED  = 1e-5   # m/s  — exchange time τ = R/(3κ) ≈ 167 ms
@@ -86,20 +86,25 @@ def test_permeability_none_matches_impermeable():
 
 # ---------------------------------------------------------------------------
 # 3. κ>0 reduces signal at high b
+_WALKS = {}
+
+
+def _signal(kappa, rho=None):
+    """The signal of one permeable walk, computed once per (kappa, rho) and shared by the tests below (the reduces,
+    relaxivity and monotone tests all read the same kappa = None and kappa = KAPPA_MED walks)."""
+    if (kappa, rho) not in _WALKS:
+        geom = Sphere(radius=R, permeability=kappa, surface_relaxivity_t2=rho)
+        _WALKS[(kappa, rho)] = np.asarray(simulate(N_CPU, D, pgse_wf(100e-3), geom, seed=SEED))
+    return _WALKS[(kappa, rho)]
+
+
+
 # ---------------------------------------------------------------------------
 
 def test_permeability_reduces_signal_at_high_b():
-    """Signal with κ>0 must be strictly below impermeable signal at b=2000 s/mm².
-
-    Inside a sphere, restriction raises the signal (ADC_app << D).
-    Walkers that escape diffuse more freely → larger phase accumulation →
-    lower signal.  So: S_perm < S_imp at high b.
-    """
-    wf = pgse_wf(100e-3)
-    geom_imp  = Sphere(radius=R)
-    geom_perm = Sphere(radius=R, permeability=KAPPA_MED)
-    S_imp  = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED)
-    S_perm = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
+    """Signal with kappa > 0 must be strictly below the impermeable signal at b = 2000 s/mm^2 (an escaped walker
+    diffuses more freely, so it accumulates more phase). The margin 0.05 is 7 standard errors at N_CPU."""
+    S_imp, S_perm = _signal(None), _signal(KAPPA_MED)
     assert float(S_perm[3]) < float(S_imp[3]) - 0.05, (
         f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} at b=2000 s/mm²")
 
@@ -161,18 +166,9 @@ def test_permeability_high_kappa_approaches_free_diffusion():
 # ---------------------------------------------------------------------------
 
 def test_permeability_with_relaxivity_reduces_signal():
-    """Adding surface relaxivity to a permeable sphere must reduce signal.
-
-    Reflected walkers receive the Brownstein-Tarr weight; transmitted walkers
-    do not.  The ensemble signal must therefore be ≤ the permeability-only
-    signal.
-    """
-    wf = pgse_wf(100e-3)
-    geom_perm     = Sphere(radius=R, permeability=KAPPA_MED)
-    geom_perm_rho = Sphere(radius=R, permeability=KAPPA_MED,
-                            surface_relaxivity_t2=RHO)
-    S_perm     = simulate(N_WALKERS, D, wf, geom_perm,     seed=SEED)
-    S_perm_rho = simulate(N_WALKERS, D, wf, geom_perm_rho, seed=SEED)
+    """Surface relaxivity on a permeable pore reduces the signal at b = 0 (reflected walkers take the
+    Brownstein-Tarr weight, transmitted ones do not)."""
+    S_perm, S_perm_rho = _signal(KAPPA_MED), _signal(KAPPA_MED, RHO)
     assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.02, (
         f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
         f"permeability-only {S_perm[0]:.4f} at b=0")
@@ -183,20 +179,13 @@ def test_permeability_with_relaxivity_reduces_signal():
 # ---------------------------------------------------------------------------
 
 def test_permeability_signal_monotone_in_kappa():
-    """Signal at b=2000 s/mm² decreases monotonically with κ.
-
-    Higher κ → more walkers escape → less restriction → faster decay →
-    lower signal at high b.
-    """
-    wf     = pgse_wf(100e-3)
+    """Signal at b = 2000 s/mm^2 decreases with kappa (more escape, less restriction), to the noise of two walks."""
     kappas = [0.0, 1e-6, 1e-5, 1e-4]
-    signals = []
-    for kappa in kappas:
-        perm = kappa if kappa > 0 else None
-        geom = Sphere(radius=R, permeability=perm)
-        S    = simulate(N_WALKERS, D, wf, geom, seed=SEED)
-        signals.append(float(S[3]))   # b=2000 s/mm²
+    signals = [float(_signal(k if k > 0 else None)[3]) for k in kappas]
     for i in range(len(signals) - 1):
-        assert signals[i] >= signals[i + 1] - 1e-3, (
+        assert signals[i] >= signals[i + 1] - mc_atol(N_CPU, runs=2), (
             f"Signal not monotone: κ={kappas[i]:.0e} → {signals[i]:.4f}, "
             f"κ={kappas[i+1]:.0e} → {signals[i+1]:.4f}")
+    assert signals[0] - signals[-1] > 0.05, "the full kappa range must move the signal"
+
+

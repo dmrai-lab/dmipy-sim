@@ -39,7 +39,7 @@ import numpy.testing as npt
 from dmipy_sim import simulate, PackedCylinders, Cylinder, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_WALKERS, N_EXACT, SEED
+from tests.conftest import D, N_CPU, N_EXACT, SEED, mc_atol
 
 R          = 5e-6    # m
 L          = 20e-6   # m
@@ -97,22 +97,27 @@ def test_permeability_none_matches_impermeable():
         err_msg="permeability=None must give identical signal to default")
 
 
+_WALKS = {}
+
+
+def _signal(kappa, rho=None):
+    """The signal of one permeable walk, computed once per (kappa, rho) and shared by the tests below (the increases,
+    relaxivity and monotone tests all read the same kappa = None and kappa = KAPPA_MED walks)."""
+    if (kappa, rho) not in _WALKS:
+        geom = _single_cylinder_packed(permeability=kappa, surface_relaxivity_t2=rho)
+        _WALKS[(kappa, rho)] = np.asarray(simulate(N_CPU, D, pgse_wf(100e-3), geom, seed=SEED))
+    return _WALKS[(kappa, rho)]
+
+
 # ---------------------------------------------------------------------------
 # 3. κ>0 changes signal at high b: walkers enter cylinders → more restriction
 # ---------------------------------------------------------------------------
 
 def test_permeability_increases_signal_at_high_b():
-    """Signal with κ>0 must be strictly above impermeable at b=2000 s/mm².
-
-    Extra-axonal walkers that enter cylinders become more restricted
-    (ADC_app decreases) → slower decay → higher signal at high b.
-    So: S_perm > S_imp at high b.
-    """
-    wf = pgse_wf(100e-3)
-    geom_imp  = _single_cylinder_packed(permeability=None)
-    geom_perm = _single_cylinder_packed(permeability=KAPPA_MED)
-    S_imp  = simulate(N_WALKERS, D, wf, geom_imp,  seed=SEED)
-    S_perm = simulate(N_WALKERS, D, wf, geom_perm, seed=SEED)
+    """Signal with kappa > 0 is above the impermeable signal at b = 2000 s/mm^2: extra-axonal walkers that enter the
+    cylinders are more restricted. Both walks share the seed, so they share their trajectories until the first
+    transmission and the difference carries far less noise than two independent walks."""
+    S_imp, S_perm = _signal(None), _signal(KAPPA_MED)
     assert float(S_perm[3]) > float(S_imp[3]) + 0.005, (
         f"S_perm={S_perm[3]:.4f} must be above S_imp={S_imp[3]:.4f} "
         f"at b=2000 s/mm² (permeable walkers are more restricted)")
@@ -142,8 +147,8 @@ def test_permeability_high_kappa_between_compartments():
     geom_mixed = _single_cylinder_packed(permeability=KAPPA_HIGH)
     geom_intra = Cylinder(radius=R, orientation=[0., 0., 1.])
 
-    S_mixed = simulate(N_WALKERS, D, wf, geom_mixed, seed=SEED)
-    S_intra = simulate(N_WALKERS, D, wf, geom_intra, seed=SEED)
+    S_mixed = simulate(N_CPU, D, wf, geom_mixed, seed=SEED)
+    S_intra = simulate(N_CPU, D, wf, geom_intra, seed=SEED)
 
     S_free = float(np.exp(-b_val * D))   # analytical free-diffusion limit
     hi = float(S_intra[b_idx])
@@ -159,18 +164,9 @@ def test_permeability_high_kappa_between_compartments():
 # ---------------------------------------------------------------------------
 
 def test_permeability_with_relaxivity_reduces_signal():
-    """Adding surface relaxivity to a permeable PackedCylinders reduces signal.
-
-    Reflected walkers receive the Brownstein-Tarr weight; transmitted walkers
-    do not.  The ensemble signal must therefore be below the permeability-only
-    signal at b=0 where only relaxation (not diffusion) drives the difference.
-    """
-    wf            = pgse_wf(100e-3)
-    geom_perm     = _single_cylinder_packed(permeability=KAPPA_MED)
-    geom_perm_rho = _single_cylinder_packed(permeability=KAPPA_MED,
-                                             surface_relaxivity_t2=RHO)
-    S_perm     = simulate(N_WALKERS, D, wf, geom_perm,     seed=SEED)
-    S_perm_rho = simulate(N_WALKERS, D, wf, geom_perm_rho, seed=SEED)
+    """Surface relaxivity on a permeable PackedCylinders reduces the signal at b = 0 (reflected walkers take the
+    Brownstein-Tarr weight, transmitted ones do not)."""
+    S_perm, S_perm_rho = _signal(KAPPA_MED), _signal(KAPPA_MED, RHO)
     assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.005, (
         f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
         f"permeability-only {S_perm[0]:.4f} at b=0")
@@ -181,20 +177,12 @@ def test_permeability_with_relaxivity_reduces_signal():
 # ---------------------------------------------------------------------------
 
 def test_permeability_signal_monotone_in_kappa():
-    """Signal at b=2000 s/mm² increases monotonically with κ.
-
-    Higher κ → more walkers inside cylinders → more restricted → higher
-    signal at high b.
-    """
-    wf      = pgse_wf(100e-3)
-    kappas  = [0.0, 1e-6, 1e-5]
-    signals = []
-    for kappa in kappas:
-        perm = kappa if kappa > 0 else None
-        geom = _single_cylinder_packed(permeability=perm)
-        S    = simulate(N_WALKERS, D, wf, geom, seed=SEED)
-        signals.append(float(S[3]))   # b=2000 s/mm²
+    """Signal at b = 2000 s/mm^2 increases with kappa (more walkers inside the cylinders, more restriction)."""
+    kappas = [0.0, 1e-6, 1e-5]
+    signals = [float(_signal(k if k > 0 else None)[3]) for k in kappas]
     for i in range(len(signals) - 1):
         assert signals[i] <= signals[i + 1] + 1e-3, (
             f"Signal not monotone: κ={kappas[i]:.0e} → {signals[i]:.4f}, "
             f"κ={kappas[i+1]:.0e} → {signals[i+1]:.4f}")
+
+

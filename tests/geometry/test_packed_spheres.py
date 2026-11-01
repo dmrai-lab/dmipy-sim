@@ -38,7 +38,7 @@ import pytest
 from dmipy_sim import simulate, PackedSpheres, Sphere, pack_spheres, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_WALKERS, N_EXACT, SEED
+from tests.conftest import D, N_CPU, N_EXACT, SEED
 
 R         = 5e-6    # m
 L         = 20e-6   # m
@@ -169,7 +169,7 @@ def test_init_positions_outside_spheres():
     """init_positions with ``pool="extra"``: all walkers start strictly outside all spheres."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED)
-    r0   = np.array(geom.init_positions(N_WALKERS, key))
+    r0   = np.array(geom.init_positions(N_CPU, key))
     dist = np.linalg.norm(r0, axis=1)   # distance from sphere at origin
     assert np.all(dist > R), (
         f"Some walkers inside sphere: min_dist={dist.min():.3e} < R={R:.3e}")
@@ -179,7 +179,7 @@ def test_init_positions_inside_box():
     """init_positions: all walkers in the periodic box [-L/2, L/2]."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED + 1)
-    r0   = np.array(geom.init_positions(N_WALKERS, key))
+    r0   = np.array(geom.init_positions(N_CPU, key))
     assert np.all(np.abs(r0) <= L / 2 + 1e-9), (
         "Some walkers outside the box [-L/2, L/2]")
 
@@ -231,7 +231,7 @@ def _matched_signal(kappa):
     """Signal for a single-sphere pack at `kappa` (None = impermeable), matched sub-steps."""
     if kappa not in _MATCHED:
         geom = _single_sphere_packed(permeability=kappa)
-        _MATCHED[kappa] = np.asarray(simulate(N_WALKERS, D, pgse_wf(100e-3, slew_rate=np.inf), geom,
+        _MATCHED[kappa] = np.asarray(simulate(N_CPU, D, pgse_wf(100e-3, slew_rate=np.inf), geom,
                                               seed=SEED, sub_steps=SUB_STEPS_MATCHED))
     return _MATCHED[kappa]
 
@@ -281,8 +281,8 @@ def test_permeability_high_kappa_between_compartments():
     geom_mixed = _single_sphere_packed(permeability=KAPPA_HIGH)
     geom_intra = Sphere(radius=R)
 
-    S_mixed = simulate(N_WALKERS, D, wf, geom_mixed, seed=SEED)
-    S_intra = simulate(N_WALKERS, D, wf, geom_intra, seed=SEED)
+    S_mixed = simulate(N_CPU, D, wf, geom_mixed, seed=SEED)
+    S_intra = simulate(N_CPU, D, wf, geom_intra, seed=SEED)
 
     S_free = float(np.exp(-b_val * D))
     hi     = float(S_intra[b_idx])
@@ -307,8 +307,8 @@ def test_permeability_with_relaxivity_reduces_signal():
     geom_perm     = _single_sphere_packed(permeability=KAPPA_MED)
     geom_perm_rho = _single_sphere_packed(permeability=KAPPA_MED,
                                           surface_relaxivity_t2=RHO)
-    S_perm     = simulate(N_WALKERS, D, wf, geom_perm,     seed=SEED)
-    S_perm_rho = simulate(N_WALKERS, D, wf, geom_perm_rho, seed=SEED)
+    S_perm     = simulate(N_CPU, D, wf, geom_perm,     seed=SEED)
+    S_perm_rho = simulate(N_CPU, D, wf, geom_perm_rho, seed=SEED)
     assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.005, (
         f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
         f"permeability-only {S_perm[0]:.4f} at b=0")

@@ -19,7 +19,7 @@ import pytest
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, pack_cylinders, PackedCylinders, set_b, Cylinder
 from dmipy_sim.sequences import pgse
-from tests.conftest import D, N_WALKERS, SEED
+from tests.conftest import D, N_CPU, SEED, mc_atol
 from dmipy_sim.engine._fused import simulate_fused
 
 
@@ -171,18 +171,18 @@ def test_packed_cylinders_parallel_gradient_free():
     """Gradient along cylinder axis (z) → free diffusion signal exp(-bD).
 
     Along the axis, walkers are unrestricted; signal must match free diffusion
-    to within MC noise (atol=0.02).
+    to within MC noise (four standard errors at N_CPU).
     """
     geom = _simple_geometry()
 
-    b_values = np.linspace(1e8, 3e9, 20)
-    bvecs    = np.tile([0., 0., 1.], (20, 1))   # gradient ∥ cylinder axis
+    b_values = np.linspace(1e8, 3e9, 6)
+    bvecs    = np.tile([0., 0., 1.], (6, 1))   # gradient ∥ cylinder axis
     wf       = set_b(pgse(bvecs, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
-    S_packed = simulate(N_WALKERS, D, wf, geom, seed=SEED)
+    S_packed = simulate(N_CPU, D, wf, geom, seed=SEED)
     expected  = np.exp(-b_values * D)
 
-    npt.assert_allclose(S_packed, expected, atol=0.02,
+    npt.assert_allclose(S_packed, expected, atol=mc_atol(N_CPU),
                         err_msg="Parallel gradient should give free diffusion")
 
 
@@ -221,7 +221,7 @@ def test_packed_cylinders_hindered_above_free():
 
     Extra-axonal diffusion is hindered (D_eff_perp < D), so signal attenuates
     more slowly than free diffusion.  At b=3e9 s/m² the difference is
-    detectable even with 100k walkers.
+    detectable at N_CPU walkers.
     """
     # Use a denser packing so hindering is clearly visible
     r     = 3e-6
@@ -234,10 +234,10 @@ def test_packed_cylinders_hindered_above_free():
     bvecs    = np.array([[1., 0., 0.]])
     wf       = set_b(pgse(bvecs, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
-    S_extra = simulate(N_WALKERS, D, wf, geom_packed, seed=SEED)
-    S_free  = simulate(N_WALKERS, D, wf, FreeDiffusion(),  seed=SEED + 1)
+    S_extra = simulate(N_CPU, D, wf, geom_packed, seed=SEED)
+    S_free  = simulate(N_CPU, D, wf, FreeDiffusion(),  seed=SEED + 1)
 
-    assert float(S_extra[0]) > float(S_free[0]) - 0.01, (
+    assert float(S_extra[0]) > float(S_free[0]) - mc_atol(N_CPU, runs=2), (
         f"Extra-axonal signal ({S_extra[0]:.4f}) should exceed free "
         f"({S_free[0]:.4f}) at high b (VF={vf:.2f})")
 

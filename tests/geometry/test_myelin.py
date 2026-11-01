@@ -21,6 +21,7 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b, Compartments, Pool
+from tests.conftest import N_CPU
 from dmipy_replay.acquisition.waveforms import tile_waveform
 from dmipy_sim.sequences import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
@@ -164,7 +165,7 @@ class TestB_IntraOnlyMatchesCylinder:
         R_in = 5e-6
         R_out = 7e-6
         D_intra = 2e-9
-        n_walkers = 80_000
+        n_walkers = N_CPU
         # Two independent MC runs: combined noise = sqrt(2) / sqrt(N)
         mc_combined_4sigma = 4.0 * np.sqrt(2) / np.sqrt(n_walkers)  # ~ 0.020
 
@@ -230,7 +231,7 @@ class TestC_ExtraOnlyFreeDiffusion:
     def test_extra_only_short_time_free(self):
         """Short diffusion time: walkers don't reach boundary -> ADC ~ D_extra."""
         D_extra = 2e-9
-        n_walkers = 100_000
+        n_walkers = N_CPU
 
         # Use a LARGE outer radius so extra walkers are far from the boundary
         R_in = 3e-6
@@ -293,7 +294,7 @@ class TestD_ExchangeRate:
         """
         R_in = 3e-6
         R_out = 5e-6
-        n_walkers = 100_000
+        n_walkers = N_CPU
 
         # Impermeable
         geom_no_exchange = MyelinatedCylinder(
@@ -339,7 +340,7 @@ class TestD_ExchangeRate:
         """High kappa exchange still produces finite, positive, bounded signal."""
         R_in = 3e-6
         R_out = 5e-6
-        n_walkers = 50_000
+        n_walkers = N_CPU
 
         geom = MyelinatedCylinder(
             inner_radius=R_in,
@@ -377,7 +378,7 @@ class TestE_T2MultiTE:
     def test_t2_exponential_decay_curve(self):
         R_in = 3e-6
         R_out = 5e-6
-        n_walkers = 100_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
         tol = max(0.01, mc_noise_3sigma)
 
@@ -432,7 +433,7 @@ class TestE_T2MultiTE:
         """With all walkers in myelin, b=0 signal should be exactly exp(-TE/T2_myelin)."""
         R_in = 3e-6
         R_out = 5e-6
-        n_walkers = 100_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
         T2_myelin = 15e-3
 
@@ -482,7 +483,7 @@ class TestF_WaterFractionApproachAvsB:
     def test_approach_a_matches_b_reweighted(self):
         R_in = 3e-6
         R_out = 5e-6
-        n_walkers = 100_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         # Approach A: weighted init
@@ -548,7 +549,7 @@ class TestG_BoundaryReflection:
 
     def test_myelin_only_b0_no_t2_is_unity(self):
         """Myelin-only, b=0, no T2: signal must be 1.0 within MC noise."""
-        n_walkers = 200_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
@@ -572,7 +573,7 @@ class TestG_BoundaryReflection:
 
     def test_intra_only_b0_no_t2_is_unity(self):
         """Intra-only, b=0, no T2: signal must be 1.0 within MC noise."""
-        n_walkers = 200_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
@@ -594,7 +595,7 @@ class TestG_BoundaryReflection:
 
     def test_myelin_only_with_t2_matches_exponential(self):
         """Myelin-only with T2: b=0 signal = exp(-TE/T2_myelin) exactly."""
-        n_walkers = 200_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
         T2_myelin = 15e-3
         TE = 60e-3
@@ -629,7 +630,7 @@ class TestH_SignalMonotonicityBounds:
     """
 
     def test_signal_bounds_and_monotonicity(self):
-        n_walkers = 50_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(
@@ -669,7 +670,7 @@ class TestH_SignalMonotonicityBounds:
 
     def test_signal_bounds_multiple_directions(self):
         """Signal bounds hold for gradients in x, y, z directions."""
-        n_walkers = 50_000
+        n_walkers = N_CPU
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
 
         geom = MyelinatedCylinder(

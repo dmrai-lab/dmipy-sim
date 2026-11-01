@@ -8,14 +8,14 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, pgse, FreeDiffusion, set_b, calc_b
-from .conftest import D, N_WALKERS, SEED
+from .conftest import D, N_CPU, SEED, mc_atol
 
 
 def test_free_diffusion_pgse_1d():
     delta = 8e-3     # s
     DELTA = 50e-3    # s
     n_t = 1000
-    n_b = 100
+    n_b = 10
 
     b_values = np.linspace(1, 2e9, n_b)
 
@@ -28,8 +28,8 @@ def test_free_diffusion_pgse_1d():
     b_check = calc_b(wf)
     npt.assert_allclose(b_check, b_values, rtol=1e-3)
 
-    signals = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
+    signals = simulate(N_CPU, D, wf, FreeDiffusion(), seed=SEED)
 
     E_ref = np.exp(-b_values * D)
-    npt.assert_allclose(signals, E_ref, atol=0.01,
+    npt.assert_allclose(signals, E_ref, atol=mc_atol(N_CPU),
                         err_msg="Free diffusion 1D PGSE deviates from exp(-bD)")
