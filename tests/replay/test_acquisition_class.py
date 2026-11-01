@@ -39,3 +39,11 @@ def test_simulates_pack_replays_its_acquisition_and_refuses_a_stronger_one():
     stronger = SimpleNamespace(G=2.0 * np.asarray(seq.played_gradient), dt=seq.dt)         # the reader's check
     with pytest.raises(ValueError, match="beyond the G_max"):
         check_acquisition_envelope(pack.meta, stronger)
+
+
+def test_a_gradient_free_acquisition_states_zero_limits_and_simulates():
+    seq = _seq(0.0)
+    env = acquisition_envelope(seq)
+    assert env["G_max"] == 0.0 and env["slew_max"] == 0.0
+    S = np.asarray(d.simulate(200, 2e-9, seq, d.Sphere(radius=4e-6), seed=1, require_gpu=False)).ravel()
+    assert S[0] == pytest.approx(1.0, abs=1e-6)
