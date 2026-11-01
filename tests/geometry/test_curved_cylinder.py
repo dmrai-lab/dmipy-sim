@@ -77,10 +77,10 @@ def test_curvature_changes_the_perpendicular_signal():
     some of the restricted direction becomes free. Guards against a 'curved' tube that quietly ignores its
     centreline -- which would pass the straight-limit test above perfectly."""
     wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=200), 2.5e9)
-    # Both walks use one seed, so their noise is shared and the difference has less spread than two independent means;
-    # even independent, the SE of a mean of walker signals in [-1, 1] is <= 1 / sqrt(n) = 0.016 at n = 4000, and the
-    # asserted gap is the signed difference itself (measured below in the failure message).
-    n = 4000
+    # The walkers' signals lie in [-1, 1], so the SE of each mean is <= 1 / sqrt(n) = 0.032 at n = 1000. The gap asserted
+    # is the signed difference: measured 0.75 straight against 0.38 bent (0.37, 12 SE of the difference even with
+    # independent noise; the shared seed makes it tighter), so a bend that is ignored (gap 0) fails it.
+    n = 1000
 
     z = np.linspace(-30e-6, 30e-6, 21)
     straight = np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
