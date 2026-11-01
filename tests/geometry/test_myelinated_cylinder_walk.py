@@ -108,11 +108,12 @@ def test_kappa_mt_is_refused_for_the_isolated_cylinder_before_any_device_work(mo
 
 def test_kappa_mt_still_walks_on_the_packed_class():
     """The refusal above is geometry-specific: PackedMyelinatedCylinders still walks with
-    kappa_MT > 0 and records the bound-fraction channel."""
+    kappa_MT > 0 and records the bound-fraction channel. The claim is that the walk runs and records the channel (a
+    flag), not a bound fraction: 16 walkers over 4 blocks of 0.2 ms are enough to run the binding kernel."""
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D), myelin=d.Pool(D=0.0)))
-    w = _walk_geometry(300, D, pm, T_max=8e-3, block_h=2e-4, seed=1, require_gpu=False,
+    w = _walk_geometry(16, D, pm, T_max=8e-4, block_h=2e-4, seed=1, require_gpu=False,
                                 kappa_MT=5e-5, dwell_time=1e-3, equilibrate_binding="off")
     assert w.has_binding
 
