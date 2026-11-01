@@ -25,7 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LIMIT_USD = 25.0
 TIMEOUT_S = 15 * 60                                   # a run costs at most this much card time
-PER_TEST_S = 120                                       # one tier-2 test may take at most this long
+PER_TEST_S = 120                                       # a tier-2 test is failed once past this, at its next return to Python
 BUILD_ALLOWANCE_S = 10 * 60                            # the client waits at most this much longer, for the image build
 USD_PER_S = {"T4": 0.000164, "L4": 0.000222}          # Modal's list price per second of the card
 LEDGER = "gpu-ledger.txt"
@@ -92,7 +92,8 @@ if modal is not None:
     def gpu_tests():
         t0 = time.time()
         # streamed (not captured), each test on its own line with its outcome: a run cut by the timeout still shows which
-        # tests finished and which one was running; one test is held to PER_TEST_S so it cannot spend the whole budget
+        # tests finished and which one was running. PER_TEST_S fires when a test returns to Python; a single device call
+        # can outlast it, so the function timeout is the hard bound of the run
         p = subprocess.run([sys.executable, "-m", "pytest", "-m", "gpu", "-v", "--tb=short", "-p", "no:cacheprovider",
                             f"--timeout={PER_TEST_S}", "--durations=0", "tests"], cwd="/repo")
         return dict(rc=p.returncode, tail="(pytest output streamed above)", seconds=time.time() - t0)
