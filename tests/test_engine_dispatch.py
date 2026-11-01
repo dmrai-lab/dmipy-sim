@@ -3,20 +3,20 @@
 ``simulate`` walks the substrate to coefficients and contracts them with the waveform; the fused
 single-pass integrator (``engine._fused.simulate_fused``) is the oracle it is held to. This module asserts:
 
-  (1) ``simulate`` == the oracle to ``max(0.02, 1/sqrt(N))`` on each SUPPORTED geometry x effect (pure
+  (1) ``simulate`` == the oracle to four standard errors of the difference on each SUPPORTED geometry x effect (pure
       gradient / scalar T2 / surface relaxivity).
   (2) A run the producer cannot walk (PackedMyelinatedCylinders) is the oracle's, exactly.
 
 SAME seed / N / waveform go through both. The producer walks with a separate scan, so parity is at the
 MC-noise floor, not bit-identical. The waveforms are coarse enough that ``physics.resolve_sub_steps`` asks
 for more than one sub-step on every walled geometry (asserted in the fixture), so both exercise the shared
-dispatch. Heavy MC -> auto-marked ``gpu`` via ``tests/conftest.py::_GPU_TIER_MODULES``.
-"""
+dispatch. """
 import numpy as np
 import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from tests.conftest import mc_atol
 from dmipy_sim import simulate
 from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim.geometry import pack_cylinders, pack_spheres
@@ -26,11 +26,13 @@ SEED = 11
 R = 5e-6          # m
 T2 = 60e-3        # s
 RHO = 1e-5        # m/s
-N = 12_000
+N = 4_000
 
 
 def _tol(n):
-    return max(0.02, 1.0 / np.sqrt(n))
+    """Four standard errors of the difference of two independent walks of ``n`` walkers (the two routes draw their own
+    random numbers, so they agree to the Monte-Carlo floor, not bit for bit)."""
+    return mc_atol(n, runs=2)
 
 
 def _pgse(delta, DELTA, n_t, b, G_magnitude=0.2):
@@ -92,8 +94,10 @@ def _supported_specs():
     }
 
 
-_SUPPORTED = ["free", "box1d", "sphere", "cylinder", "ellipsoid",
-              "packed_cyl", "packed_sph", "mesh"]
+# The analytic pores are tier 1; the ellipsoid, the packs and the mesh cost minutes per case on a CPU runner (their wall
+# rules sub-step by hundreds), so they are tier 2.
+_SUPPORTED = ["free", "box1d", "sphere", "cylinder"] + [
+    pytest.param(g, marks=pytest.mark.gpu) for g in ("ellipsoid", "packed_cyl", "packed_sph", "mesh")]
 
 
 @pytest.fixture(scope="module")

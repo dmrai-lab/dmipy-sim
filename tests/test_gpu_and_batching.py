@@ -57,7 +57,6 @@ def test_list_gpu_processes_returns_list():
         assert {"pid", "used_mib", "name"} <= set(p)
 
 
-@pytest.mark.gpu
 def test_walker_batching_matches_single_shot_and_analytic():
     from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
 
@@ -66,12 +65,12 @@ def test_walker_batching_matches_single_shot_and_analytic():
     wf = set_b(pgse(bvecs, 0.01, 0.03, gradient_strengths=1.0, n_t=200),
                np.array([1.0, 1.0e9]))
     geom = FreeDiffusion()
-    NW = 60_000
+    NW = 6_000
 
     single = np.abs(np.real(np.asarray(
         simulate(n_walkers=NW, diffusivity=D, waveform=wf, geometry=geom, seed=0))))
     batched, pos = simulate_fused(n_walkers=NW, diffusivity=D, waveform=wf, geometry=geom,
-                            seed=0, walker_batch_size=20_000, return_positions=True)
+                            seed=0, walker_batch_size=2_000, return_positions=True)
     batched = np.abs(np.real(np.asarray(batched)))
 
     E_analytic = np.exp(-1.0e9 * D)

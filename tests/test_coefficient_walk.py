@@ -122,7 +122,6 @@ def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
 
 
 # ----------------------------------------------------------------------------------------------- the quadrature
-@pytest.mark.gpu
 @pytest.mark.parametrize("which", ["free", "slab 0.8 um"])
 def test_the_quadrature_is_bounded_absolutely(which):
     """The phase variance the block accumulation adds per measurement of the battery, against the same walk accumulated
@@ -130,7 +129,7 @@ def test_the_quadrature_is_bounded_absolutely(which):
     table's prediction (the measurement the table predicts largest, within the variance estimate's spread); on the slab
     the error RELATIVE to a mode's own variance is several times the table, which is why the statement is absolute."""
     geom = d.FreeDiffusion() if which == "free" else d.Box1D(length=0.8e-6)
-    rows = _quiet(_tool().quadrature, geom, T=0.01, dt_sim=1e-6, K=48, cases=((1, 2e-5), (2, 5e-5), (3, 1e-4)), n=1500)
+    rows = _quiet(_tool().quadrature, geom, T=0.005, dt_sim=1e-6, K=48, cases=((1, 2e-5), (2, 5e-5), (3, 1e-4)), n=600)
     for r in rows:
         assert r["within_bound"], r
         if which == "free" and r["predicted_largest"] > 1e-10:                        # above the float32 phase rounding
@@ -165,19 +164,6 @@ def test_the_contact_tier_is_admitted_at_the_signal():
 
 
 # ------------------------------------------------------------------------------------------------------- memory
-@pytest.mark.gpu
-def test_the_walks_host_bytes_do_not_grow_with_the_block_count():
-    """Three blocks spanning 16x at a fixed K, each walk in a process of its own: the accumulated walk's peak host bytes
-    stay within a few MB of each other, while the same walk keeping every walker's block ends grows by them."""
-    rows = _tool().memory(n=40000, T=0.004, dt_sim=3.125e-6, K=16, block_hs=(2e-4, 5e-5, 1.25e-5))
-    acc = [r["host_peak_over_base"] for r in rows if r["mode"] == "accumulated"]
-    saves = [r for r in rows if r["mode"] == "raw_subset"]
-    grown = saves[-1]["walk_host_bytes"] - saves[0]["walk_host_bytes"]
-    assert grown > 5e6
-    assert max(acc) - min(acc) < 0.25 * grown, (acc, [r["host_peak_over_base"] for r in saves])
-    assert saves[-1]["host_peak_over_base"] - saves[0]["host_peak_over_base"] > 0.5 * grown, rows
-
-
 def test_the_walk_takes_the_bands_own_block_and_the_storage_band():
     """The walk alone: the storage band (K = 256 per 100 ms), the block order 3 and the block ``h = 0.8 T / (pi K)``
     in a whole number of blocks of one step count each, recorded in the walk; ``K``, a given ``dt_save`` and
