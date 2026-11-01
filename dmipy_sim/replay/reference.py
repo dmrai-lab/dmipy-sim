@@ -1307,7 +1307,8 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("spec")
         src = self.records.read("source")
         known = {f["sha256"]: f["cite_as"] for s in src["sources"].values() for f in s["files"]}
-        from ..spec import geometry_from_spec, spec_of, validate
+        from dmipy_replay.spec.substrate import validate
+        from ..spec import geometry_from_spec, spec_of
         out = {}
         for name, make in sorted(self.build.specs.items()):
             spec = make()
@@ -1744,7 +1745,8 @@ class ReferenceFamily:
         held = self.records.reuse("card", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: the snippet is not run again
             return held
-        from ..spec import SubstrateSpec, preview as spec_preview
+        from dmipy_replay.spec.substrate import SubstrateSpec
+        from ..spec import preview as spec_preview
         prev_dir = os.path.join(self.dir, "previews")
         previews = {}
         for name, s in sorted(rec["spec"]["substrates"].items()):
@@ -2207,17 +2209,17 @@ def organisation_card(rows, *, example=None):
            "family's own records.\n",
            "## Use a pack\n",
            "```python\n"
-           "# pip install dmipy-sim\n"
-           "from dmipy_sim.replay import ReplayPack\n"
-           "from dmipy_sim import sequences\n"
-           f"pack = ReplayPack.load('hf://{example or ORGANISATION + '/<family>/packs/<pack>.rpk'}')\n"
-           "seq = sequences.pgse([[1, 0, 0]], 0.04, 0.08, bvalues=[1e9], TE=0.15)\n"
+           "# pip install dmipy-replay\n"
+           "import dmipy_replay as dr\n"
+           f"pack = dr.ReplayPack.load('hf://{example or ORGANISATION + '/<family>/packs/<pack>.rpk'}')\n"
+           "seq = dr.pgse([[1, 0, 0]], 0.04, 0.08, bvalues=[1e9], TE=0.15)\n"
            "S = pack.replay(seq)                                              # the bare diffusion signal\n"
            "S = pack.replay(seq, tissue=pack.nominal)                         # the paper's replay\n"
            "```\n",
            "A replay refuses what the pack cannot serve (a waveform beyond its temporal band, a tier it does not "
            "carry) rather than returning a plausible number. The format is specified in "
-           "[replay-pack-spec](https://github.com/dmrai-lab/replay-pack-spec); the engine and the producers are "
+           "[replay-pack-spec](https://github.com/dmrai-lab/replay-pack-spec); the reader is "
+           "[dmipy-replay](https://github.com/dmrai-lab/dmipy-replay), the engine and the producers are "
            "[dmipy-sim](https://github.com/dmrai-lab/dmipy-sim).\n",
            "## Families\n",
            "| family | what it is | source | reference it reproduces | grade | packs | licence |",

@@ -11,7 +11,7 @@ import numpy as np
 from dmipy_replay.spec.tissue import Tissue
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.phantom import Grid, Inert, Peaks, Phantom, Watson
 from dmipy_replay.phantom.substrates import substrate_from_meta
 from dmipy_replay.replay.pose import analytic_pose_response

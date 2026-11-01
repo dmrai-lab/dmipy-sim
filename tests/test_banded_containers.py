@@ -14,8 +14,10 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences as _seqmod
+from dmipy_replay import sequences as _seqmod
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_replay.spec.tissue import Tissue
@@ -234,7 +236,7 @@ def test_a_pack_with_a_field_stores_the_path_channel_in_a_container_and_replays(
     assert np.isfinite(pk.meta["fidelity"]["terms"]["field_read"])
     from dmipy_sim.replay.bank import read_rpk
     back = read_rpk(str(tmp_path / "pc.rpk"))
-    seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
+    seq = dr.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
     seq_x, R = field_along(seq, (1, 0, 0))
     ten = Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
     E_ref = ref.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=ten)[2]
@@ -396,7 +398,7 @@ def test_the_zero_components_are_not_stored_and_the_trace_component_is_never_a_c
     assert all(np.all(Cq[:, nq.index(n)] == 0.0) for n in zero)
     assert np.abs(Cq - np.transpose(C, (0, 2, 1))).max() < 0.05 * np.abs(C).max()      # the container's own error
     # the replay of the field is the float pack's, to the container's quantisation
-    from dmipy_sim import RFEvent, ScannerSequence
+    from dmipy_replay import RFEvent, ScannerSequence
     nt = pk.n_t; dt = pk.dt; TE = (nt - 1) * dt
     ten = Tissue(chi_iso=-1e-7, chi_aniso=-1e-7)
     for rf in ([RFEvent(0.0, 90)], [RFEvent(0.0, 90), RFEvent(TE / 2, 180)]):
@@ -455,6 +457,7 @@ def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor
     walker count removes it), its random part adds at most eps / sqrt(n_eff) to the standard error, beside the float
     walkers' floor, never inside the numerical sum."""
     import dmipy_sim as d
+    import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     w = _walk_geometry(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())

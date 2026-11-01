@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.accumulate import field_read_rule, field_read_term, field_read_limit_B0_chi, field_read_steps
 from dmipy_sim.io.strands import write_tck, concat_centerlines
@@ -105,7 +107,7 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
     assert pks["derived"].fidelity["terms"]["field_read"] >= pks["fine"].fidelity["terms"]["field_read"]
     pk = pks["derived"]
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
-    seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
+    seq = dr.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
     seq_x, R = field_along(seq, (1, 0, 0))
     w_, ew, E = pk.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6), tol=None)
     w0, ew0, E0 = pk.walker_signals(seq, tol=None)
@@ -149,7 +151,7 @@ def test_shards_with_the_path_channel_merge(walks, tmp_path):
     C_m, names = susc_path_coeffs(m.arrays, pm)
     C_s = np.concatenate([susc_path_coeffs(pk.arrays, pk.meta["compression"]["channels"]["susc_field_basis"])[0] for pk in pks])
     np.testing.assert_allclose(C_m, C_s, rtol=1e-12, atol=0)
-    seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=m.n_t, slew_rate=np.inf)
+    seq = dr.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=m.n_t, slew_rate=np.inf)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6))
     W = [float(np.asarray(pk.arrays["spin_weights"]).sum()) if "spin_weights" in pk.arrays else pk.n_walkers for pk in pks]
     S = [pk.replay(seq, **kw)[0] for pk in pks]
@@ -217,7 +219,7 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
     same one that shows both (the join is wrapped to keep the pool walks, then runs)."""
     import dmipy_sim.spec.walk as spec_walk
     from dmipy_sim.engine.accumulate import read_intervals
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     pools = []
     join = spec_walk._join_pool_walks
 

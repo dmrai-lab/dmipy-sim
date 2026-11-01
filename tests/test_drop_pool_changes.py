@@ -13,7 +13,7 @@ import pytest
 from dmipy_sim import Sphere
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim.spec.walk import DROP_POOL_CHANGE_RULE, _drop_pool_changes
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],

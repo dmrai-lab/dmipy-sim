@@ -18,7 +18,9 @@ from dmipy_sim.fields.susceptibility_field import FieldGrid
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import build_replay_pack, build_to_floor, compile_scheme, replay_signal
+from dmipy_sim import build_replay_pack, build_to_floor
+from dmipy_replay import compile_scheme
+from dmipy_replay.replay.replay import replay_signal
 from dmipy_replay import read_rpk
 from dmipy_sim.replay import bank, compression as cx_
 from dmipy_replay.constants import GAMMA
@@ -243,7 +245,7 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
     assert gm["arrays_in_pack"] is False and gm["replay_route"] == "path"
     assert "susc_grid_iso_local" not in pk.arrays and "susc_grid_iso_P" not in pk.arrays
     # and it still replays: susceptibility off vs on must differ, and chi=0 must match the grid-free case
-    from dmipy_sim import ScannerSequence
+    from dmipy_replay import ScannerSequence
     W = ScannerSequence(G=np.zeros((1, N_T, 3)), dt=DT)     # a bare gradient echo: no pulse folded
     W_lab, R = field_along(W, (1, 0, 0))                    # no T2 given: isolate the field
     s0 = pk.replay(W_lab, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=0.0))
@@ -276,7 +278,7 @@ def test_a_field_replay_can_restrict_to_one_compartment():
     pk = build_replay_pack(w, id="test/slab-susc-comp", **stated(_env7(theta_deg=[0, 90]), G_max=1.0, of=w), K=16,
                            license="CC-BY-4.0", citation="test")
     nt, dt = pk.n_t, pk.dt
-    from dmipy_sim import RFEvent, ScannerSequence
+    from dmipy_replay import RFEvent, ScannerSequence
     W = ScannerSequence(G=np.zeros((1, nt, 3)), dt=dt,                   # no gradient; a spin echo's 180 at TE/2
                         rf=[RFEvent(0.0, 90), RFEvent((nt - 1) * dt / 2, 180)])
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)

@@ -9,9 +9,9 @@ the ensemble signal to the per-walker pieces a study reuses.
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)

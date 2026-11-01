@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank, compression as cx
@@ -30,7 +32,7 @@ def pack():
 
 def _seqs(pk, n=3):
     n_t = int(round(4e-3 / pk.dt)) + 1
-    return [d.pgse([[1, 0, 0]], 5e-4, 1.5e-3, bvalues=[b], TE=4e-3, n_t=n_t, slew_rate=float("inf")) for b in (5e7, 1e8, 2e8)[:n]]
+    return [dr.pgse([[1, 0, 0]], 5e-4, 1.5e-3, bvalues=[b], TE=4e-3, n_t=n_t, slew_rate=float("inf")) for b in (5e7, 1e8, 2e8)[:n]]
 
 
 @pytest.fixture
@@ -222,7 +224,7 @@ def test_a_cache_with_no_room_holds_nothing_and_a_view_of_a_stored_tensor_is_nev
 
 
 def _fid(pk):
-    return d.gre(4e-3, n_t=int(round(4e-3 / pk.dt)) + 1)
+    return dr.gre(4e-3, n_t=int(round(4e-3 / pk.dt)) + 1)
 
 
 def test_a_sequence_without_gradient_reads_no_position(pack, counted):

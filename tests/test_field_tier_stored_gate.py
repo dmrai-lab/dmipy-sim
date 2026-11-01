@@ -10,7 +10,7 @@ was the sign alone already (a spin echo, a gradient echo, every pulse hard), not
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.replay import so3
 from dmipy_replay.replay._replay_kernel import field_gate, gate_weights

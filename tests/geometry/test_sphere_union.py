@@ -6,7 +6,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import pgse, set_b, simulate
+from dmipy_replay import pgse, set_b
+from dmipy_sim import simulate
 from dmipy_sim.geometry.sphere_union import SphereUnion
 from dmipy_sim.spec import geometry_from_spec
 

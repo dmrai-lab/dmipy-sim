@@ -4,7 +4,7 @@ import copy
 
 import numpy as np
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay import ReplayPack
 from dmipy_replay.spec.tissue import Tissue
 

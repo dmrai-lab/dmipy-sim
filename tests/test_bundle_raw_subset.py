@@ -12,7 +12,7 @@ import dmipy_sim as d
 import dmipy_sim.engine.core as core
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim.engine.accumulate import FIELD_RULE_CHI  # the field read rule's own scale: the pools read at the same instants
 from dmipy_sim import walk
 from dmipy_sim.spec.walk import _raw_allocation

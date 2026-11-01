@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import sequences as S
+
+import dmipy_replay as dr
+from dmipy_replay import sequences as S
 from dmipy_replay.acquisition.waveforms import b_from_gradient, btensor_from_gradient
 
 D = 2e-9
@@ -27,9 +29,9 @@ def test_the_amplitude_route_and_the_b_route_build_the_same_gradient():
     assert seq.dt == pytest.approx(wf.dt, rel=1e-12)
     np.testing.assert_allclose(np.asarray(seq.G), np.asarray(wf.G), rtol=2e-6, atol=0.0)   # G is stored in float32
     np.testing.assert_allclose(wf.encoding.bvalues, B, rtol=1e-6)                             # the b follows the amplitude
-    np.testing.assert_allclose(_num_b(seq), d.calc_b(wf), rtol=1e-6)
+    np.testing.assert_allclose(_num_b(seq), dr.calc_b(wf), rtol=1e-6)
     # set_b on the amplitude route lands on the b route
-    scaled = d.set_b(S.pgse(DIRS, DELTA, DELTA_BIG, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf), B)
+    scaled = dr.set_b(S.pgse(DIRS, DELTA, DELTA_BIG, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf), B)
     np.testing.assert_allclose(np.asarray(scaled.G), np.asarray(seq.G), rtol=2e-6, atol=0.0)
     np.testing.assert_allclose(scaled.encoding.bvalues, B)
     np.testing.assert_allclose(scaled.encoding.gradient_strengths, g, rtol=1e-6)
@@ -66,9 +68,9 @@ def test_declared_b_is_the_numeric_b_for_every_constructor():
 
 def test_one_b_integral_and_one_btensor():
     seq = S.pgse(DIRS, DELTA, DELTA_BIG, bvalues=B, n_t=N_T, slew_rate=200.0)
-    wf = d.ScannerSequence(G=seq.G, dt=seq.dt, readout=(seq.echo_idx,), rf=seq.rf)
-    np.testing.assert_array_equal(d.calc_b(wf), _num_b(seq))
-    np.testing.assert_array_equal(d.calc_btensor(wf), seq.btensor())
+    wf = dr.ScannerSequence(G=seq.G, dt=seq.dt, readout=(seq.echo_idx,), rf=seq.rf)
+    np.testing.assert_array_equal(dr.calc_b(wf), _num_b(seq))
+    np.testing.assert_array_equal(dr.calc_btensor(wf), seq.btensor())
     np.testing.assert_array_equal(seq.btensor(), btensor_from_gradient(seq.G_eff, seq.dt))
     np.testing.assert_allclose(np.trace(seq.btensor(), axis1=1, axis2=2), _num_b(seq), rtol=1e-12)
     ste = S.ste(DELTA + DELTA_BIG, bvalues=B / 5, n_t=N_T)
@@ -103,7 +105,7 @@ def test_simulate_accepts_a_sequence_and_a_scheme(which):
     from dmipy_sim.engine._fused import simulate_fused
     run = d.simulate if which == "coefficients" else simulate_fused
     seq = S.pgse(DIRS, DELTA, DELTA_BIG, bvalues=B, n_t=200, slew_rate=np.inf)
-    wf = d.set_b(S.pgse(DIRS, DELTA, DELTA_BIG, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), B)
+    wf = dr.set_b(S.pgse(DIRS, DELTA, DELTA_BIG, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), B)
     geom = d.Cylinder(3e-6, (0, 0, 1))
     kw = dict(seed=0, require_gpu=False)
     s_wf = np.asarray(run(2000, D, wf, geom, **kw)).ravel()

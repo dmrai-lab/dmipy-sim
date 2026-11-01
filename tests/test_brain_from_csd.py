@@ -217,7 +217,7 @@ def test_the_catalogued_machine_reaches_the_brain_s_signal(example, wm_pack):
     was bit-identical to the crop on a bare 64 mT field, while the reference route said the delivered b differed
     by percent. Now the machine's tensor, background and Maxwell term reach every voxel, through the grid's own
     obliquity, once per distinct delivered gradient."""
-    from dmipy_sim import sequences
+    from dmipy_replay import sequences
     from dmipy_replay.acquisition.scanners import ScannerLimits
     ph, fod, R = example.build(str(CROP), wm_pack)
     dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]], float)

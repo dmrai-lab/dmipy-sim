@@ -20,12 +20,13 @@ import numpy.testing as npt
 import jax
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b, Compartments, Pool
+from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, Compartments, Pool
+from dmipy_replay import set_b
 # The myelinated pack walks ~10^5 walker-steps per second on a CPU runner, so each test walks 2,000 walkers; every
 # tolerance below is a standard error derived from that count.
 N_MYEL = 2_000
 from dmipy_replay.acquisition.waveforms import tile_waveform
-from dmipy_sim.sequences import pgse
+from dmipy_replay.sequences import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 
 

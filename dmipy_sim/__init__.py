@@ -29,16 +29,6 @@ from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
                   plot_mesh_section, plot_walkers_3d, plot_cell_surface, plot_mesh_3d,
                   seed_in_cell, walk_paths, plot_trajectories, save_rotation)
-from dmipy_replay.acquisition.scanner_sequence import ScannerSequence, Encoding, Protocol, Prescription
-from dmipy_replay.sequences.builders import pgse, pgste, ogse, cpmg, splice, gre, ste, pte
-from dmipy_replay.acquisition.waveforms import (
-    set_b,
-    calc_b,
-    calc_btensor,
-    btensor_invariants,
-    rotate_waveform,
-    tile_waveform,
-)
 from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinder,
                          Ellipsoid,
                          PackedCylinders, pack_cylinders,
@@ -53,33 +43,22 @@ from .geometry.mesh import Mesh, load_ply
 from .fields.susceptibility import SusceptibilitySources, MyelinSusceptibility, GridSusceptibility
 from .fields.susceptibility_field import dipole_field, myelin_susceptibility_tensor, radial_from_sdf, sample_grid
 from .geometry import mesh_shapes
-from dmipy_replay.constants import GAMMA
 from .acquisition.noise import add_rician_noise, add_rician_noise_batch, add_nc_chi_noise, estimate_sigma
 from .engine import mt
-from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
-from dmipy_replay.acquisition.timing import SequenceTiming
-from dmipy_replay.acquisition.scanners import ScannerLimits, SCANNERS
 from .replay.container import write_rpk
-from dmipy_replay.replay.replay import compile_scheme, replay_signal, surface_logweight
 from .replay import bank
 from .replay.bank import build_replay_pack, build_to_floor, frame_from_bundles
-from dmipy_replay.replay.field import frame_from_axis
 
 __all__ = [
     # the walk and its contraction: the producers return a CoefficientWalk
     "simulate", "simulate_mixture", "simulate_cpmg", "walk_cost", "walk",
     "certify_bounce_budget", "simulate_mt_trajectories", "CoefficientWalk",
     # replay pack assembler (producer side of the substrate bank)
-    "build_replay_pack", "build_to_floor", "frame_from_axis", "frame_from_bundles",
+    "build_replay_pack", "build_to_floor", "frame_from_bundles",
     "Compartments", "Pool", "pool_id",
-    "ScannerSequence", "Encoding", "Protocol",
     "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",
     "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
-    "ScannerLimits", "SCANNERS",
-    "pgse", "pgste", "ogse", "cpmg", "splice", "gre", "ste", "pte",
-    "set_b", "calc_b", "calc_btensor", "btensor_invariants",
-    "rotate_waveform", "tile_waveform",
     "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "MyelinatedCylinder",
     "Ellipsoid",
     "PackedCylinders", "pack_cylinders",
@@ -92,13 +71,11 @@ __all__ = [
     "SusceptibilitySources", "MyelinSusceptibility", "GridSusceptibility",
     "dipole_field", "myelin_susceptibility_tensor", "radial_from_sdf", "sample_grid",
     "mesh_shapes",
-    "GAMMA",
     "add_rician_noise", "add_rician_noise_batch", "add_nc_chi_noise", "estimate_sigma",
     # magnetization transfer (physics + analytic oracle)
     "mt",
-    # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "Prescription",
-    "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "write_rpk", "compile_scheme", "replay_signal", "bloch_simulate", "slice_profile",
+    # the pack's container on the producer's side
+    "write_rpk",
 ]
 
 

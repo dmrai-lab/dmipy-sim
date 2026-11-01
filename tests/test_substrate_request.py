@@ -8,7 +8,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.substrate import Substrate
-from dmipy_sim.spec import geometry_from_spec, SubstrateSpec
+from dmipy_sim.spec import geometry_from_spec
+from dmipy_replay.spec.substrate import SubstrateSpec
 from dmipy_sim import walk
 from tests._envelope import walk_envelope
 

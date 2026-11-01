@@ -4,7 +4,7 @@ from tests._envelope import stated
 import dataclasses
 
 import numpy as np
-from dmipy_sim import ScannerSequence
+from dmipy_replay import ScannerSequence
 import pytest
 
 import dmipy_sim as d
@@ -12,7 +12,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.compartments import Compartments, Pool
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from dmipy_sim.substrate import Substrate
 from tests.replay_frames import field_along

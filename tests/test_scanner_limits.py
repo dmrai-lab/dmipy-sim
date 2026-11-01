@@ -14,6 +14,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim
+
+import dmipy_replay as dr
 from dmipy_replay.acquisition import scanner_constants as scc
 from dmipy_replay.acquisition.scanners import GAMMA_BAR, ScannerLimits, SCANNERS, scanner_limits
 from dmipy_replay.constants import DEFAULT_SLEW_RATE
@@ -114,7 +116,11 @@ def test_safe_model_is_the_representative_example_with_normalised_weights():
 
 
 def test_public_names():
-    assert dmipy_sim.ScannerLimits is ScannerLimits and dmipy_sim.SCANNERS is SCANNERS
+    """The scanner catalogue is dmipy-replay's; dmipy-sim names neither it nor the limits."""
+    assert dr.ScannerLimits is ScannerLimits
+    for name in ("SCANNERS", "ScannerLimits"):
+        with pytest.raises(AttributeError, match=f"from dmipy_replay(\\.\\w+)* import {name}"):
+            getattr(dmipy_sim, name)
 
 
 pypulseq = pytest.importorskip("pypulseq")

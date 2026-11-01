@@ -8,11 +8,13 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine import core
 from dmipy_sim.geometry.analytic import PermeableShell, PermeableSlab1D
 
 D = 2e-9
-WF = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=40, slew_rate=np.inf), 5e8)
+WF = dr.set_b(dr.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=40, slew_rate=np.inf), 5e8)
 
 
 def _programs_used(geometry):

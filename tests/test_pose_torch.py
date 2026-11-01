@@ -9,7 +9,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.phantom.bore import encoding_classes
 from dmipy_replay.phantom.grid import Grid

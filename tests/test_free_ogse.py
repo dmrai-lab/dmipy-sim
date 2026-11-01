@@ -7,7 +7,8 @@ Validates general waveform phase accumulation.
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, ogse, FreeDiffusion, set_b
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import ogse, set_b
 from .conftest import D, N_CPU, SEED, mc_atol
 
 

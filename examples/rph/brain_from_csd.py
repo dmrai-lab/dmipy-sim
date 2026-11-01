@@ -22,11 +22,12 @@ import time
 
 import numpy as np
 
-from dmipy_sim import Prescription, sequences
+from dmipy_replay import Prescription
+from dmipy_replay import sequences
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_replay.phantom import FreeWater, Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_replay.replay.so3 import rotate_sh
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from dmipy_replay.phantom import Pose
 
 # 5TT columns (MRtrix): cortical GM, sub-cortical GM, WM, CSF, pathological tissue

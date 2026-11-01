@@ -8,7 +8,8 @@ import time
 import numpy as np
 import pytest
 
-from dmipy_sim.spec import packed_request, geometry_from_spec, SubstrateSpec, RSA_LIMIT
+from dmipy_sim.spec import packed_request, geometry_from_spec, RSA_LIMIT
+from dmipy_replay.spec.substrate import SubstrateSpec
 from dmipy_sim.geometry import PackedSpheres, PackedCylinders
 
 LAW = {"family": "gamma", "shape": 4.0, "scale": 0.5e-6, "r_min": 0.2e-6}

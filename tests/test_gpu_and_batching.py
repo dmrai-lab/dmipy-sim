@@ -58,7 +58,8 @@ def test_list_gpu_processes_returns_list():
 
 
 def test_walker_batching_matches_single_shot_and_analytic():
-    from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
+    from dmipy_sim import simulate, FreeDiffusion
+    from dmipy_replay import pgse, set_b
 
     D = 2.0e-9
     bvecs = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
@@ -85,7 +86,8 @@ def test_walker_batching_matches_single_shot_and_analytic():
 
 def test_walker_batches_run_and_carry_distinct_seeds():
     """A batched walk runs, and each batch walks its own seed: the halves of a two-batch walk differ."""
-    from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
+    from dmipy_sim import simulate, FreeDiffusion
+    from dmipy_replay import pgse, set_b
 
     bvecs = np.array([[1.0, 0.0, 0.0]])
     wf = set_b(pgse(bvecs, 0.005, 0.01, gradient_strengths=1.0, n_t=40), np.array([1.0e9]))

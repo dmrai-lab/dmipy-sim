@@ -2,7 +2,7 @@
 a pulse is flipped by it exactly wherever the pulse falls and whatever gradient plays through it; and the coherence
 gates read accumulated channels by interval average, sampled ones through the path interpolant."""
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_replay.constants import GAMMA

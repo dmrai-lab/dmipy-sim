@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.geometry._boundary import bounce_budget
 from dmipy_sim.geometry.packed import packed_candidate_count
 from dmipy_sim.math.step_law import LONGEST_STEP
@@ -95,7 +97,7 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     sentinel then keeps them). None may end inside."""
     radii, c, L = _dense_pack()
     pc = d.PackedCylinders(radii, c, L)
-    wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
     _, origin, final = simulate_fused(20_000, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
     assert (origin == 0).all()
     assert (final == 0).all(), f"{(final > 0).sum()} walkers ended inside a cylinder"
@@ -112,7 +114,7 @@ def test_membrane_transmission_does_not_depend_on_the_sub_step():
     c = np.array([[0.0, 0.0], [2 * R + gap, 0.0]])
     pk = d.PackedCylinders([R, R], c, 2 * (2 * R + gap), permeability=2e-5)
     assert abs(pk.min_gap - gap) < 1e-12
-    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
     N = 20_000
     from dmipy_sim.engine.physics import resolve_sub_steps
     n_auto = resolve_sub_steps(pk, D, wf.dt)
@@ -136,7 +138,7 @@ def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     kappa, N = 2e-5, 30_000
     cyl = d.Cylinder(R, (0, 0, 1), permeability=kappa)
     pk = d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=kappa)
-    wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
+    wf = dr.set_b(dr.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
     r0 = cyl.init_positions(N, jax.random.PRNGKey(0))                # inside the lumen
     _, o_c, f_c = simulate_fused(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False)
     _, o_p, f_p = simulate_fused(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False)

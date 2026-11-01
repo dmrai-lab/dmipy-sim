@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.accumulate import field_read_term, spec_chi_scale
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay import time_segments
@@ -59,7 +61,7 @@ def disco_like(walk):
 
 
 def _seq(pk):
-    return d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
+    return dr.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
 
 
 def _surface_quadrature(pk, rho2):

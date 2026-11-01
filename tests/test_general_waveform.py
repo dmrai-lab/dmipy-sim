@@ -13,9 +13,10 @@ import numpy as np
 import numpy.testing as npt
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, FreeDiffusion, Sphere, set_b
+from dmipy_sim import simulate, FreeDiffusion, Sphere
+from dmipy_replay import set_b
 from dmipy_replay.acquisition.waveforms import calc_b
-from dmipy_sim.sequences import pgse, ogse
+from dmipy_replay.sequences import pgse, ogse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_CPU, SEED, mc_atol
 

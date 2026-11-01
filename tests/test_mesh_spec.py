@@ -5,7 +5,7 @@ import json
 import os
 
 import numpy as np
-from dmipy_sim import ScannerSequence
+from dmipy_replay import ScannerSequence
 import pytest
 
 import dataclasses
@@ -14,7 +14,8 @@ import shutil
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry import mesh_shapes
-from dmipy_sim.spec import spec_of, geometry_from_spec, SubstrateSpec, SpecError
+from dmipy_sim.spec import spec_of, geometry_from_spec
+from dmipy_replay.spec.substrate import SubstrateSpec, SpecError
 from dmipy_sim import walk
 from dmipy_sim.spec.build import resolve_surface_file, mesh_surface_file
 from dmipy_sim.replay.bank import build_replay_pack

@@ -16,8 +16,9 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import simulate, FreeDiffusion, pack_cylinders, PackedCylinders, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, FreeDiffusion, pack_cylinders, PackedCylinders
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 from tests.conftest import D, SEED, mc_atol
 
 # The pack kernel sub-steps the walk (several candidate walls per step): 1,500 walkers is a standard error of at most

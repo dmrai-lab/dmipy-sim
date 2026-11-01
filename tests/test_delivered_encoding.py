@@ -7,7 +7,7 @@ from tests._envelope import stated
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.phantom import Grid
 from dmipy_replay.phantom.bore import background_gradient_map, delivered_gradient, delivered_weights, gradient_tensor_map

@@ -7,8 +7,10 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences as _seqmod
+from dmipy_replay import sequences as _seqmod
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study, walker_primitives, study_signals
 from dmipy_replay.spec.tissue import Tissue
@@ -151,12 +153,12 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
                                        **shard_containers(packs)))
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")
     merged = merge_packs(packs, id="t/merged"); col = ReplayPack.open(str(tmp_path / "layout"))
-    seq1 = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
-    seq2 = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [5e8])
+    seq1 = dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
+    seq2 = dr.set_b(dr.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [5e8])
     # a stimulated echo among the acquisitions: its readout's pathway amplitude is 0.5, which the device
     # reduction must apply exactly as walker_signals does (#484 review item 1: it did not, and every voxel of a
     # PGSTE volume came out 1/eta = 2.000x too high)
-    seq3 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[5e8], n_t=merged.n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    seq3 = dr.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[5e8], n_t=merged.n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     from dmipy_replay.acquisition.epg import pathway_weight
     assert pathway_weight(seq3) == pytest.approx(0.5, abs=1e-12) and pathway_weight(seq1) == 1.0
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5)

@@ -10,8 +10,8 @@ import pytest
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.io.label_volume import write_nrrd
-from dmipy_sim.spec import (SpecError, SubstrateSpec, as_geometry, geometry_from_spec, label_volume_spec,
-                            load_spec, spec_of, validate)
+from dmipy_replay.spec.substrate import SpecError, SubstrateSpec, load_spec, validate
+from dmipy_sim.spec import as_geometry, geometry_from_spec, label_volume_spec, spec_of
 from dmipy_sim.spec.build import resolve_surface_file
 from dmipy_replay.spec.substrate import SURFACE_KINDS
 

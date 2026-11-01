@@ -60,7 +60,8 @@ def test_25um_counts_sum_matches_the_blocks_table(entry_cyl_25um):
 
 def test_25um_is_walkable(entry_cyl_25um):
     """dmipy-sim#697's own test requirement: the generated geometry is walkable on the JAX engine, CPU."""
-    from dmipy_sim.spec import geometry_from_spec, load_spec
+    from dmipy_sim.spec import geometry_from_spec
+    from dmipy_replay.spec.substrate import load_spec
     from dmipy_sim.engine.core import _walk_geometry
     spec = load_spec(os.path.join(entry_cyl_25um["out_dir"], "substrate/spec.json"))
     geom = geometry_from_spec(spec)

@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.geometry import mesh_shapes
 from dmipy_sim.geometry._boundary import bounce_budget
 from dmipy_sim.math.step_law import LONGEST_STEP
@@ -19,7 +21,7 @@ D = 2e-9
 
 
 def _wf(n_t=120):
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), 1e9)
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), 1e9)
 
 
 def test_analytic_caps_are_the_grazing_worst_case():

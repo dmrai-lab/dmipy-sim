@@ -13,8 +13,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import simulate, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 
 R, D0 = 0.7182e-6, 0.6e-9
 AXIS = np.array([0.3, -0.5, 0.81]) / np.linalg.norm([0.3, -0.5, 0.81])

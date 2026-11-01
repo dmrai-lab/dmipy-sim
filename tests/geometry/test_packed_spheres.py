@@ -35,8 +35,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from dmipy_sim import simulate, PackedSpheres, Sphere, pack_spheres, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, PackedSpheres, Sphere, pack_spheres
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 
 from tests.conftest import D, N_EXACT, SEED
 

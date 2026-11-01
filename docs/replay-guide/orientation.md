@@ -9,7 +9,7 @@ assumes the substrate is axially symmetric; the axis form is a convenience for s
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 
 from dmipy_replay import Envelope

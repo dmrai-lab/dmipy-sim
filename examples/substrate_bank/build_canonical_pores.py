@@ -152,7 +152,7 @@ DECLARED_PAIRS = ((10e-3, 20e-3), (10e-3, 40e-3), (10e-3, 60e-3), (5e-3, 40e-3))
 
 
 def sequence(delta, Delta, *, b=1e9, direction=(1, 0, 0), n_t=800):
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return pgse([list(direction)], float(delta), float(Delta), bvalues=[float(b)], n_t=int(n_t),
                 slew_rate=np.inf)
 

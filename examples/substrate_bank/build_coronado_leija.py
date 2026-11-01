@@ -326,7 +326,7 @@ def snippet(uri):
 
 def waveforms():
     """The released acquisition itself: one PGSE at the published delta, Delta and highest shell."""
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return (("pgse-delta6ms-Delta11.5ms",
              pgse([[1, 0, 0]], DELTA, BIG_DELTA, bvalues=[max(BVALS)], n_t=400)),)
 

@@ -8,7 +8,7 @@ member is the same numbers as its own call, and a batch whose members share a ga
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.replay import so3
 from dmipy_replay.spec.tissue import Tissue
 

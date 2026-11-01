@@ -8,7 +8,7 @@ from scipy.special import spherical_jn
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.phantom import Grid, PackSubstrate, Phantom, Watson
 from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack

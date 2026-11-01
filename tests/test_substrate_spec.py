@@ -6,8 +6,7 @@ import pathlib
 
 import pytest
 
-from dmipy_sim.spec import (SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, Pool, Wall, Surface,
-                            Susceptibility)
+from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, Pool, Wall, Surface, Susceptibility
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "substrates"
 EXAMPLES = sorted(FIX.glob("*.sub.json"))
@@ -86,7 +85,7 @@ def test_programmatic_construction_validates_too():
 
 def test_nominal_field_is_optional_and_positive():
     import dataclasses
-    from dmipy_sim.spec import load_spec, SpecError
+    from dmipy_replay.spec.substrate import load_spec, SpecError
     spec = load_spec(FIX / "isolated_cylinder.sub.json")
     assert spec.nominal_field_T is None
     assert dataclasses.replace(spec, nominal_field_T=3.0).validate().to_dict()["nominal_field_T"] == 3.0

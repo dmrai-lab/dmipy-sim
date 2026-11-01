@@ -9,7 +9,7 @@ from tests._envelope import stated
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.geometry import FreeDiffusion

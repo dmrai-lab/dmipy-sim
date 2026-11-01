@@ -14,6 +14,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_replay.constants import GAMMA
@@ -33,15 +35,15 @@ BOX, TRAP, COS = "box", "trap", "cos"
 def _templates():
     """A square PGSE, a PGSE with 0.25 ms ramps, a cosine OGSE (one 50 Hz period each side of the 180, its edges ramped)
     and a tensor encoding's three shapes (three whole sines on one interval before the 180, one per row along x)."""
-    box = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
-    trap = d.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
-    cos = d.ogse([[0, 0, 1]], 50.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
+    box = dr.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
+    trap = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
+    cos = dr.ogse([[0, 0, 1]], 50.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
     i0, i1 = 60, 210
     k = np.arange(i1 - i0)
     G = np.zeros((3, N_T, 3), np.float32)
     for j in range(3):
         G[j, i0:i1, 0] = 0.05 * np.sin(2.0 * np.pi * (j + 1) * k / (i1 - i0))
-    tensor = d.ScannerSequence(G=G, dt=box.dt, rf=box.rf, readout=box.readout)
+    tensor = dr.ScannerSequence(G=G, dt=box.dt, rf=box.rf, readout=box.readout)
     return {BOX: box, TRAP: trap, COS: cos, "tensor": tensor}
 
 
@@ -55,7 +57,7 @@ def _partitions():
 
 def _rows(template, G):
     """A sequence of ``template``'s grid, RF schedule and readout playing the rows ``G`` ``(n_meas, n_t, 3)``."""
-    return d.ScannerSequence(G=G, dt=template.dt, rf=template.rf, readout=template.readout)
+    return dr.ScannerSequence(G=G, dt=template.dt, rf=template.rf, readout=template.readout)
 
 
 def _play(template, directions, bvalues):
@@ -316,7 +318,7 @@ def test_a_sequence_that_matches_no_term_is_refused_by_name(small):
     M = small
     trap = M["tmpl"][TRAP]
     for slew in (100.0, 130.0):
-        other = d.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=slew)
+        other = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=slew)
         with pytest.raises(ValueError, match=rf"{TRAP}: the sequence plays a gradient outside the segments of partition '{TRAP}'"):
             M["lay"].image(_play(other, [[0, 0, 1]], [3e9]), partition=TRAP)
         with pytest.raises(ValueError, match="fits no stored partition"):
@@ -327,10 +329,10 @@ def test_a_sequence_that_matches_no_term_is_refused_by_name(small):
     with pytest.raises(ValueError, match=rf"{TRAP}: the sequence's effective gradient does not fit the shapes of partition "
                                          rf"'{TRAP}': row 0 leaves a residual of relative norm .* term [01] "):
         M["lay"].image(tapered, partition=TRAP)
-    near = d.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=170.0)   # a ramp 0.04 ms longer
+    near = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=170.0)   # a ramp 0.04 ms longer
     with pytest.raises(ValueError, match=rf"{TRAP}: .*does not fit the shapes of partition '{TRAP}': row 0 leaves a residual of relative norm"):
         M["lay"].image(_play(near, [[0, 0, 1]], [3e9]), partition=TRAP)
-    faster = d.ogse([[0, 0, 1]], 100.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
+    faster = dr.ogse([[0, 0, 1]], 100.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
     with pytest.raises(ValueError, match=rf"{COS}: .*partition '{COS}'"):
         M["lay"].image(_play(faster, [[0, 0, 1]], [2e9]), partition=COS)
     with pytest.raises(ValueError, match="shaped terms"):

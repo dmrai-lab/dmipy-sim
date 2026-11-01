@@ -8,7 +8,8 @@ from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import cpmg, simulate_cpmg, Sphere, FreeDiffusion
+from dmipy_replay import cpmg
+from dmipy_sim import simulate_cpmg, Sphere, FreeDiffusion
 
 
 def test_cpmg_pure_t2_decay():

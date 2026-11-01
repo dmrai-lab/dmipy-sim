@@ -10,7 +10,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import Encoding, Prescription, RFEvent, ScannerSequence
+from dmipy_replay import Encoding, Prescription, RFEvent, ScannerSequence
 from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
 from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack

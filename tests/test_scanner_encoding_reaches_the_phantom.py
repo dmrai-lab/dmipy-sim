@@ -13,7 +13,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
@@ -193,7 +193,7 @@ def test_a_closed_form_decays_at_the_b_the_machine_delivers_too(phantom, exact):
     so a ventricle on a permanent magnet decayed at the prescribed b while the tissue around it decayed at the
     delivered one (a 13 % error at 8 cm)."""
     from dmipy_replay.phantom import FreeWater
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     grid = _grid()
     csf = FreeWater(m0=1.0, name="csf", tissue=Tissue(D=D0))
     ph = Phantom.compose(grid, fractions={csf: np.ones(SH, np.float32)}, orientation={}, remainder=Inert(name="bg"))

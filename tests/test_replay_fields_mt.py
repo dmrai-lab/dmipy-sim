@@ -15,8 +15,8 @@ Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is aut
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 
 import pytest
 

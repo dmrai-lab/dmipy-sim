@@ -8,8 +8,9 @@ import numpy as np
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import simulate, Box1D, Cylinder, Sphere, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, Box1D, Cylinder, Sphere
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 
 D_DEFAULT = 2e-9     # m^2/s
 R_DEFAULT = 10e-6    # m

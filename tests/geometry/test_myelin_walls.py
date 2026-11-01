@@ -14,6 +14,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.myelin import concentric_wall_kernel
 from dmipy_sim.engine._fused import simulate_fused
@@ -173,7 +175,7 @@ def test_membrane_exchange_matches_permeable_shell():
     two-compartment cylinder `PermeableShell(kind='cylinder')`: the lumen fraction after a
     diffusion time agrees to the MC floor."""
     R_in, R_out, kappa, N = 3e-6, 6e-6, 2e-5, 30_000
-    wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 18e-3, gradient_strengths=0.01, n_t=200, slew_rate=np.inf), 1e6)
+    wf = dr.set_b(dr.pgse([[0, 0, 1]], 2e-3, 18e-3, gradient_strengths=0.01, n_t=200, slew_rate=np.inf), 1e6)
     mc = d.MyelinatedCylinder(
         R_in,
         R_out,
@@ -231,7 +233,7 @@ def test_per_axon_properties_are_per_axon():
     axon's value; a relaxivity on the inner wall only leaves the extra-axonal signal untouched."""
     radii = [1e-6] * 6
     c, L = _pack(radii, 0.7, 0.5, seed=2)
-    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 28e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 2e-3, 28e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
     N = 20_000
     mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[0.01] * 3 + [1.0] * 3,
                                         compartments=d.Compartments(extra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))

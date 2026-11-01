@@ -111,7 +111,7 @@ DECLARED_DELTAS = (60e-3, 80e-3)
 
 def waveforms():
     """Every waveform the family declares, checked against ``waveform_band`` per pack by the pack stage."""
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return tuple((f"pgse-delta{delta * 1e3:.0f}ms",
                   pgse([[1, 0, 0]], delta, max(2 * delta, 160e-3), bvalues=[max(BATTERY["bvals"])], n_t=400))
                  for delta in DECLARED_DELTAS)

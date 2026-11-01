@@ -15,6 +15,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
@@ -149,7 +151,7 @@ def test_a_walk_with_no_envelope_is_refused_by_name(walk):
 
 
 def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():
-    seq = d.pgse([[1, 0, 0]], 4e-3, 12e-3, bvalues=[1e9], TE=0.03, n_t=301, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0]], 4e-3, 12e-3, bvalues=[1e9], TE=0.03, n_t=301, slew_rate=np.inf)
     p = _r_time_segments.Partition.of("pgse", seq)
     idx, V = p.class_vertices(G_MAX)
     d_ = p.durations[idx]
@@ -182,7 +184,7 @@ def disco_timing_layout(tmp_path_factory):
                                     require_gpu=False, K=64, window_T=0.06)
         pk = build_replay_pack(w, id="t/class-layout", license="x", citation="x", K=64,
                                envelope=walk_envelope("connectome_2"))
-    seq = d.pgse([[1, 0, 0]], 7.6e-3, 45.9e-3, bvalues=[3.091e9], TE=0.0535, n_t=1071, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0]], 7.6e-3, 45.9e-3, bvalues=[3.091e9], TE=0.0535, n_t=1071, slew_rate=np.inf)
     grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(0.0,) * 3, attach="substrate")    # one voxel about the axis
     ts.segment_rows(pk, {"b3091": seq}, str(tmp / "rows"), grid=grid, floor_target=0.05)
     ts.write_time_segment_layout([str(tmp / "rows")], str(tmp / "layout"))
