@@ -336,22 +336,24 @@ meet in that substrate, not validated on an average case.
 
 ## Layout
 
-The reader side -- the acquisition object and its builders, the Pulseq and b-table readers, the replay contraction,
-the plan before a read, the Hub client, the columnar and time-segment layouts' readers -- is
-[dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) (numpy only, Apache-2.0), a dependency: dmipy-sim imports
-it and re-exports its public names (`dmipy_sim.pgse is dmipy_replay.pgse`). dmipy-sim is the producer and the device
-side: the walk, the packs and layouts it writes, the JAX and torch backends of the same arithmetic, the pose
-expansion and the phantoms.
+The reader side -- the acquisition object and its builders, the Pulseq and b-table readers, the one `ReplayPack` and
+every route that turns a pack into a signal or an image (the replay, the plan before a read, the vector-Bloch
+propagator, the pose expansion, the study, the RF train as gates, the columnar and time-segment layouts' images, the
+replay phantoms), the Hub client -- is [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) (its core numpy only,
+Apache-2.0), a dependency: dmipy-sim imports it and re-exports none of its names (`dmipy_sim.pgse` is refused, naming
+`dmipy_replay.pgse`). dmipy-sim is the producer: the walk, the encoding and the certificate, the packs and layouts it
+writes, the operations that re-encode a pack (`dmipy_sim.replay.reencode`), publishing.
 
 ```
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
   engine/       core (simulate, _walk_geometry), accumulate, physics, pulse_sequence, mt, mt_walk, gpu;
                 _fused and bloch: the single-pass oracles the replay is held to
-  replay/       replay (ReplayPack: dmipy-replay's with the producer's routes), bank (build_replay_pack), compression
-                (the codec), trajectories, columnar / remote / time_segments (dmipy-replay's readers with the JAX
-                backends; time_segments also writes the layout), study (Acquisition, StudyProtocol, Study), phantom, fod, so3,
-                hub (the dataset repository behind publish), consolidate (shards -> the columnar layout)
+  replay/       bank (build_replay_pack), compression (the codec), container (write_rpk, save_pack), reencode
+                (truncate_pack, rewindow_pack, prefix_pack, stated_envelope, restate_surface_envelope), continuation
+                (end_state, extend_pack), trajectories (the dense oracle), time_segments (writes the layout),
+                consolidate (shards -> the columnar layout), publish, hub (the dataset repository behind publish),
+                reference (the reference-pack protocol)
   acquisition/  noise, coil (ScannerSequence, RFSchedule, ScannerLimits and the integrals are dmipy-replay's)
   sequences/    pulseq (export; the reader is dmipy-replay's)
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)

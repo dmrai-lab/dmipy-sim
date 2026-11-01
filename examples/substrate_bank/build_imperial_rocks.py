@@ -239,7 +239,7 @@ def served_vs_channel(pack, *, n_points=8):
 def snippet(uri):
     """One call that reproduces the T2 log-mean of the reproduction table, on its own grid."""
     return f'''import numpy as np
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from examples.validation.talabi_micro_ct_rocks import t2_distribution, log_mean_T2
 
 pk = ReplayPack.load("{uri}")
