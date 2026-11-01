@@ -146,7 +146,7 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
     block end (0 free, 1 bound) and the walk's start state (RNG-preserved packed-myelin walk)."""
     geom_kw = dict(inner_radii=np.full(3, 2e-6), g_ratios=np.full(3, 0.7),
                    centers=np.array([[0., 0.], [12e-6, 0.], [-12e-6, 0.]]),
-                   cell_size=40e-6, N_max=3, D_intra=2e-9, D_myelin=0.1e-9, D_extra=2e-9)
+                   cell_size=40e-6, N_max=3)
     D, N, T, dt, seed = 2e-9, 400, 8e-3, 0.4e-3, 1
 
     base = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,

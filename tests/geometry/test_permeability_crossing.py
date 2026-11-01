@@ -44,6 +44,7 @@ from tests.conftest import pgse_wf
 import numpy.testing as npt
 import pytest
 
+from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import simulate, Cylinder, set_b
 from dmipy_sim.sequences import pgse
 
@@ -120,6 +121,7 @@ def _signal(kappa, rho=None):
 # 3. κ>0 increases signal vs impermeable at high b
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_reduces_signal_at_high_b():
     """Signal with kappa > 0 is strictly below the impermeable signal at b = 2000 s/mm^2: an escaped walker diffuses
     freely and accumulates more phase than a restricted one."""
@@ -176,7 +178,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     wf = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
     geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_HIGH)
-    S_perm = simulate(N_ORDINAL, D, wf, geom_perm, seed=SEED)
+    S_perm = simulate_fused(N_ORDINAL, D, wf, geom_perm, seed=SEED)
 
     # free-diffusion reference at b=500 s/mm²
     b_val = 500e6  # s/m²
@@ -192,6 +194,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
 # 5. Permeability + relaxivity: signal below permeability-only
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_with_relaxivity_reduces_signal():
     """Surface relaxivity on a permeable cylinder reduces the signal at b = 0 (reflected walkers take the
     Brownstein-Tarr weight, transmitted ones do not)."""

@@ -40,6 +40,7 @@ from tests.conftest import pgse_wf
 import numpy.testing as npt
 import pytest
 
+from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import simulate, Sphere, set_b
 from dmipy_sim.sequences import pgse
 
@@ -142,7 +143,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     wf    = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
     geom_perm = Sphere(radius=R, permeability=KAPPA_HIGH)
-    S_perm    = simulate(N_BUDGET, D, wf, geom_perm, seed=SEED)
+    S_perm    = simulate_fused(N_BUDGET, D, wf, geom_perm, seed=SEED)
 
     b_val  = 500e6   # s/m²
     S_free = np.exp(-b_val * D)

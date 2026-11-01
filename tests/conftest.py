@@ -148,11 +148,8 @@ _GPU_TIER_MODULES = {
                                 "test_bloch_permeation",
             "test_mesh_mc",
     "test_mesh_acceleration_invariance",
-        "test_replay_fields_mt",
-        "test_permeable_crossings",
-    "test_talabi_rocks",
-    "test_cross_engine_parity",
-}
+                "test_permeable_crossings",
+        }
 
 
 def pytest_runtest_logreport(report):
