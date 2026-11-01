@@ -6,6 +6,7 @@ name: GPU tier
 on:
   pull_request:
     branches: [ main ]
+    types: [ opened, ready_for_review, labeled ]   # never on every push (a run is paid); see the job's `if`
     paths:
       - "dmipy_sim/engine/**"
       - "dmipy_sim/geometry/**"
@@ -22,8 +23,18 @@ on:
       - "dmipy_sim/fields/**"
   workflow_dispatch: {}
 
+concurrency:
+  group: gpu-tier-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gpu:
+    # a pull request runs once: when it opens ready (not a draft), when a draft becomes ready, or when the
+    # maintainer adds the `gpu-tier` label; pushes to an open pull request never launch a paid run
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'gpu-tier') ||
+      (github.event.action != 'labeled' && !github.event.pull_request.draft)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
