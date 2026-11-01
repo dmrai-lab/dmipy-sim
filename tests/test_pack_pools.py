@@ -1,7 +1,7 @@
 """A pack follows the spec's pools and never drops a walker silently (dmipy-sim#301): a packed cell walked with its
 default seeding packs every walker at its pool's water, and replays to the raw-trajectory replay of the same walk;
 a walk with walkers in a pool the spec says holds no water is refused."""
-from tests._scanner_class import stated_class
+from tests._envelope import stated
 import numpy as np
 import pytest
 
@@ -29,7 +29,7 @@ def test_a_packed_cell_packs_both_pools_and_replays_to_the_trajectories():
     walk = _walk(geom, 400)
     pool0 = np.asarray(walk.compartment)
     assert 0 < np.mean(pool0 == 1) < 1, "the default seeding covers both pools"
-    pack = build_replay_pack(walk, id="test/packed", license="CC-BY-4.0", citation="test", K=16, envelope=stated_class())
+    pack = build_replay_pack(walk, id="test/packed", license="CC-BY-4.0", citation="test", K=16, **stated(of=walk))
     assert _unit_weights(pack)
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.5e-3, 1.5e-3, bvalues=[2e9, 2e9], TE=4e-3, slew_rate=np.inf)
     f_intra = float(np.mean(pool0 == 1))
@@ -50,6 +50,6 @@ def test_walkers_in_a_dry_pool_are_refused():
     walk = _walk(geom, 50, r0=r0)
     assert np.all(np.asarray(walk.compartment) == 0)
     with pytest.raises(ValueError, match="holds no water"):
-        build_replay_pack(walk, id="test/dry", license="CC-BY-4.0", citation="test", K=8, envelope=stated_class())
-    pack = build_replay_pack(walk, id="test/dry", license="CC-BY-4.0", citation="test", K=8, weights=np.ones(50), envelope=stated_class())
+        build_replay_pack(walk, id="test/dry", license="CC-BY-4.0", citation="test", K=8, **stated(of=walk))
+    pack = build_replay_pack(walk, id="test/dry", license="CC-BY-4.0", citation="test", K=8, weights=np.ones(50), **stated(of=walk))
     assert _unit_weights(pack)

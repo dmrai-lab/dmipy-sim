@@ -328,9 +328,8 @@ class ReplayPack(_ReplayPack):
         the parent's exact reading of the window, and the whole's is the bound over them
         (:func:`~dmipy_sim.replay.bank.combine_window_fidelity`); a window outside ``tol`` times its floor is
         refused. ``provenance.rewindowed`` records the parent (id, sha256 of its file, certificate), ``T_seg``, the
-        bands and ``time_dropped``. ``envelope`` is the battery every window is certified over: by default
-        :func:`~dmipy_sim.replay.compression.default_envelope` with the parent's field strengths (``B0_list``) and
-        the refocusing depth its field channel serves (``max_refocus_pulses``)."""
+        bands and ``time_dropped``. ``envelope`` is the certificate settings every window is certified under: by default
+        :meth:`stated_envelope`, the parent's envelope on the default battery."""
         import copy
         import hashlib
         from .bank import window_of_pack, combine_window_fidelity, join_windows
@@ -398,19 +397,15 @@ class ReplayPack(_ReplayPack):
         return out
 
     def stated_envelope(self):
-        """The envelope this pack states, as one a re-encoding of it (a window, a prefix) is certified under:
-        :func:`~dmipy_sim.replay.compression.default_envelope`'s battery with the pack's field strengths
-        (``acquisition.B0_list``), scanner class (``acquisition.scanner`` where its bound is the class's), the
-        refocusing depth its field channel serves (``max_refocus_pulses``), its contact envelope as ``rho2_list`` (over
-        the walk's ``D``) and its ``chi_max``."""
-        from .compression import default_envelope
-        env = default_envelope()
-        renv = self.meta.get("replay_envelope") or {}
-        acq = renv.get("acquisition") or {}
-        if acq.get("B0_list"):
-            env["B0_list"] = [float(b) for b in acq["B0_list"]]
-        if acq.get("bound") == "scanner_class":
-            env["scanner"] = acq["scanner"]
+        """The certificate settings a re-encoding of this pack (a window, a prefix) is certified under: the pack's
+        :attr:`envelope` on :func:`~dmipy_sim.replay.compression.default_battery` -- its name, band, ``G_max`` and field
+        strengths (``acquisition.B0_list``) -- with the refocusing depth its field channel serves
+        (``max_refocus_pulses``), its contact envelope as ``rho2_list`` (over the walk's ``D``) and its ``chi_max``."""
+        from .compression import default_battery
+        e = self.envelope
+        env = dict(default_battery(), name=e.name, band_hz=e.band_hz, G_max=e.G_max)
+        if e.B0_list:
+            env["B0_list"] = [float(b) for b in e.B0_list]
         pm = ((self.meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis")
         if pm is not None and pm.get("max_refocus_pulses"):
             env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])

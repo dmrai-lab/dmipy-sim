@@ -1,7 +1,7 @@
 """One consume path: `ReplayPack.replay(waveform, ...)` applies every tier the pack carries and the
 request asks for, on any waveform, and refuses a tier the pack does not have. `load` / `save` round-trip.
 """
-from tests._scanner_class import stated_class
+from tests._envelope import stated
 import numpy as np
 import pytest
 
@@ -24,10 +24,10 @@ T2 = {"extra": 0.08, "intra": 0.03}; T1 = {"extra": 1.0, "intra": 1.2}    # by p
 @pytest.fixture(scope="module")
 def packs():
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    full = build_replay_pack(walk, id="test/full", K=8, envelope=stated_class(ENV), license="x", citation="x")
+    full = build_replay_pack(walk, id="test/full", K=8, **stated(ENV, of=walk), license="x", citation="x")
     plain_walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0,
                                          require_gpu=False, tiers=())
-    plain = build_replay_pack(plain_walk, id="test/plain", K=8, envelope=stated_class(ENV), license="x", citation="x")
+    plain = build_replay_pack(plain_walk, id="test/plain", K=8, **stated(ENV, of=plain_walk), license="x", citation="x")
     return full, plain
 
 
@@ -133,7 +133,7 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
     r0 = {}
     for K in (2, 4):
         out = tmp_path / f"k{K}.rpk"
-        build_replay_pack(walk, id="t", license="x", citation="x", K=K, out_path=str(out), envelope=stated_class())
+        build_replay_pack(walk, id="t", license="x", citation="x", K=K, out_path=str(out), **stated(of=walk))
         pk = read_rpk(str(out))
         r0[K] = pk.r0
         assert r0[K].shape == (200, 3) and r0[K].dtype == np.float64
@@ -173,7 +173,7 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2={"extra": np.inf, "intra": np.inf}, T1={"extra": TE, "intra": TE}))), 1.0, rtol=1e-9)
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=300)
-    pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=stated_class(ENV), license="x", citation="x")
+    pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, **stated(ENV, of=walk), license="x", citation="x")
     rho2 = 1e-5
     cum = np.cumsum(np.asarray(walk.raw_boundary, np.float64), axis=1)   # per-block log-weight at rho2 / D = 1
     ref = np.exp(rho2 / D0 * cum[:, n]).mean()

@@ -11,7 +11,7 @@ Every spec, pack and layout holds one equivalence (dmipy-sim#597, ``spec.substra
 pool magnetic <=> ``"field"`` in ``validity.tiers`` <=> the field channel (C3) is stored. Each mismatch is refused at
 write and at read, whatever the surface kind; a pack without an embedded spec declares nothing and is refused; an
 analytic or inert phantom substrate has no field by its kind."""
-from tests._scanner_class import stated_class
+from tests._envelope import stated, walk_envelope
 import copy
 import dataclasses
 
@@ -77,14 +77,14 @@ def present_walk():
 @pytest.fixture(scope="module")
 def absent(absent_walk):
     """The cylinder's pack: no magnetic pool, no field channel, the field absent."""
-    pk = build_replay_pack(absent_walk, id="test/absent", license="x", citation="x", K=8, envelope=stated_class(ENV))
+    pk = build_replay_pack(absent_walk, id="test/absent", license="x", citation="x", K=8, **stated(ENV, of=absent_walk))
     return pk, _pgse(pk, [[1, 0, 0], [0, 0, 1]], [1e8, 1e8])
 
 
 @pytest.fixture(scope="module")
 def present(present_walk):
     """The myelinated cell's pack with its field channel: the field present."""
-    pk = build_replay_pack(present_walk, id="test/present", license="x", citation="x", K=8, envelope=stated_class(ENV), susc_path_K=16)
+    pk = build_replay_pack(present_walk, id="test/present", license="x", citation="x", K=8, **stated(ENV, of=present_walk), susc_path_K=16)
     return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])
 
 
@@ -265,7 +265,7 @@ def test_the_writers_refuse_every_mismatch_on_every_surface_kind(kind, surface_s
         v = _variant(spec, pool, mag, tier)
         with pytest.raises(SpecError, match=msg):                        # build_replay_pack, before anything is encoded
             build_replay_pack(dataclasses.replace(walks[stored], spec=SubstrateSpec.from_dict(v)), id="t", license="x", citation="x", K=4,
-                              weights=np.ones(walks[stored].n_walkers), envelope=stated_class())        # (the spec of another surface kind: its pools hold other water)
+                              weights=np.ones(walks[stored].n_walkers), **stated())        # (the spec of another surface kind: its pools hold other water)
         shard = _pack_with((present if stored else absent)[0], v)
         with pytest.raises(SpecError, match=msg):                        # merge_packs, on every shard
             merge_packs([shard, shard], id="t/merged")
@@ -338,7 +338,7 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
         ReplayPack.load(tmp_path / "bare.rpk")
     w = _walk_geometry(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False, K=4)
     with pytest.raises(ValueError, match="walk carries none"):
-        build_replay_pack(dataclasses.replace(w, spec=None, geometry=None), id="t", license="x", citation="x", K=4, envelope=stated_class())
+        build_replay_pack(dataclasses.replace(w, spec=None, geometry=None), id="t", license="x", citation="x", K=4, **stated())
 
 
 def test_a_closed_or_inert_substrate_has_no_field_by_its_kind():
@@ -386,8 +386,8 @@ def _shell_union_spec(magnetic):
 
 def _walk_and_pack(spec, **kw):
     from dmipy_sim import walk
-    w = walk(spec, 60, 6e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, K=4, **kw)
-    return w, build_replay_pack(w, id="t/walk", license="x", citation="x", K=4, envelope=stated_class())
+    w = walk(spec, 60, 6e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, K=4, **kw, envelope=walk_envelope(of=spec))
+    return w, build_replay_pack(w, id="t/walk", license="x", citation="x", K=4, **stated(of=w))
 
 
 @pytest.mark.parametrize("kind", ["cylinder", "mesh", "sphere_union"])
@@ -423,6 +423,6 @@ def test_a_magnetic_pool_no_field_route_computes_is_refused_before_the_walk(kind
     spec, pool = surface_specs[kind]
     spec = SubstrateSpec.from_dict(_variant(spec, pool, True, True)).validate()
     with pytest.raises(SpecError, match=f"is magnetic.*'{kind}'.*no field route"):
-        walk(spec, 20, 4e-4, 2e-4, seed=0, require_gpu=False)
+        walk(spec, 20, 4e-4, 2e-4, seed=0, require_gpu=False, envelope=walk_envelope(of=spec))
     plain = SubstrateSpec.from_dict(_variant(spec.to_dict(), pool, False, False))
-    assert walk(plain, 20, 4e-4, 2e-4, seed=0, diffusivity=D0, require_gpu=False).field_coeffs is None
+    assert walk(plain, 20, 4e-4, 2e-4, seed=0, diffusivity=D0, require_gpu=False, envelope=walk_envelope(of=plain)).field_coeffs is None

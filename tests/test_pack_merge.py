@@ -18,6 +18,7 @@ from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
+from tests._envelope import TEST_G_MAX, walk_envelope
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +29,7 @@ def shards(spec_grid):
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12                    # the block: one x-slab of the grid
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=7 + b, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec, G_max=TEST_G_MAX))
         packs.append(build_replay_pack(w, id=f"t/shard-{b}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp / f"shard-{b}.rpk")))
     return packs, grid, tmp
@@ -77,7 +78,7 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     for p_, per in ((1, 4), (2, 12)):
         want = np.zeros(grid.shape, np.int64); want[0] = per
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=100 * p_, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec, G_max=TEST_G_MAX))
         walks.append(w)
         packs.append(build_replay_pack(w, id=f"t/pass-{p_}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / f"pass-{p_}.rpk")))
     m = merge_packs(packs, id="t/union", out_path=str(tmp / "union.rpk"), overlap="recertify")

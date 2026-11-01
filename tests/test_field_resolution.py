@@ -18,6 +18,7 @@ from dmipy_sim.fields.susceptibility_field import (FIELD_BYTES_PER_NODE, FIELD_N
 from dmipy_sim.spec import SpecError, field_grid_of_spec, winther_spec
 from dmipy_sim import walk
 from dmipy_sim.spec.producers import shell_thickness
+from tests._envelope import walk_envelope
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -98,7 +99,7 @@ def test_a_mesh_pair_measures_its_shell(tmp_path):
 def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     inner, outer = _thin_axon(tmp_path)
     spec = winther_spec(inner, outer, scale=1e-6, pad=0.5e-6)
-    w = walk(spec, 120, 8e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3, K_c3=4)
+    w = walk(spec, 120, 8e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, K=3, K_c3=4, envelope=walk_envelope(of=spec))
     vs = np.asarray(w.field_basis.basis["voxel_size"], float)
     np.testing.assert_allclose(vs, field_resolution(spec.validity.thinnest_shell), rtol=0.02)   # a whole count of nodes
     cert = w.field_basis.certificate                                                          # the raster checked
@@ -111,11 +112,11 @@ def test_walk_spec_derives_the_grid_and_refuses_one_it_cannot_afford(tmp_path):
     pk = build_replay_pack(w, id="t/raster", license="x", citation="x", K=3, susc_path_K=4)
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["raster"]["res_m"] == cert["res_m"]
     with pytest.raises(SpecError, match="thinnest shell of 0.1"):
-        walk(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_budget=100)
+        walk(spec, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_budget=100, envelope=walk_envelope(of=spec))
     bare = dataclasses.replace(spec, validity=dataclasses.replace(spec.validity, thinnest_shell=None))
     with pytest.raises(SpecError, match="field_res="):
-        walk(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False)
-    coarse = walk(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_res=0.5e-6)
+        walk(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, envelope=walk_envelope(of=bare))
+    coarse = walk(bare, 24, 4e-4, 2e-4, seed=0, n_probe=5_000, require_gpu=False, field_res=0.5e-6, envelope=walk_envelope(of=bare))
     assert np.asarray(coarse.field_basis.basis["voxel_size"], float).max() > 0.4e-6         # an override is obeyed
 
 

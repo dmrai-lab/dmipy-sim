@@ -7,7 +7,7 @@ The byte-range selection is exercised against a local HTTP server that honours `
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
 ``url=`` override is for exactly this). The one test that touches the real Hub is marked ``slow`` and skips
 itself without a login."""
-from tests._scanner_class import stated_class
+from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import contextlib
 import http.server
@@ -58,7 +58,7 @@ def _fixture_walk():
 def _fixture_pack():
     """A tiny, deterministic 3-window pack (positions + C1 + C2): bridge_dst at K=19 over 20-block, 10 ms
     windows -- small enough to serve from memory, with real ``sN/`` tensors to select by byte range."""
-    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, envelope=stated_class(_lean_env(), G_max=0.5),
+    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, **stated(_lean_env(), G_max=0.5),
                                window_T=0.01, license="CC-BY-4.0", citation="dmipy-sim window-read test fixture")
 
 

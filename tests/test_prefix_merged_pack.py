@@ -7,6 +7,7 @@ import numpy as np
 from dmipy_sim import Cylinder
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, seed_value
+from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
 
 
 def _pack(seed, id):
@@ -40,4 +41,8 @@ def _float_pack(*a, **k):
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **{"scanner": "connectom", **k})
+    if isinstance(k.get("envelope"), dict):                          # the test's certificate settings: its envelope and battery
+        settings = k.pop("envelope")
+        k.update(stated(settings, G_max=settings.get("G_max", battery_reach(a[0].T_window, settings)), of=a[0]))
+    return build_replay_pack(*a, **{"envelope": walk_envelope(G_max=battery_reach(a[0].T_window), band_hz=TEST_BAND_HZ,
+                                                              of=a[0]), **k})       # the walk's own bands, read on its battery

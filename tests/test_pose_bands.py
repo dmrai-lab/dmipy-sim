@@ -11,7 +11,7 @@ is the plane-wave sum ``mean_w exp(i q . R r_w)`` in closed form -- so the refer
 amplitude is exactly ``|q| max|r|`` and can be dialled to whatever sharpness a test needs, and there is no
 Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_pose.py``.
 """
-from tests._scanner_class import stated_class
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 from dmipy_sim import Encoding, ScannerSequence
@@ -47,7 +47,7 @@ def pack():
         n_windows=1, dt_sim=DT, sub_steps=1, raw_positions=np.repeat(POS[:, None, :], N_T, axis=1).astype(np.float32),
         qv_positions=np.zeros((len(POS), 1, 3), np.float32), seed=0,
         diffusivity=STATIC_D, spec=spec_of(FreeDiffusion()))            # walkers in no substrate: nothing magnetic
-    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=K, envelope=stated_class(ENV), fidelity="measured")
+    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=K, **stated(ENV, of=walk), fidelity="measured")
     assert pk.fidelity["err_max"] < 1e-8                        # a straight line is compressed exactly
     return pk
 

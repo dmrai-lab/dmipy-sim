@@ -1,0 +1,463 @@
+{
+ "rpk_schema_version": "0.7",
+ "id": "canonical-pores/cylinder/d00.10um",
+ "compression": {
+  "method": "bridge_dst",
+  "K": 256,
+  "walker_preserving": true,
+  "container": [
+   {
+    "bands": [
+     0,
+     8
+    ],
+    "bits": 15
+   },
+   {
+    "bands": [
+     8,
+     10
+    ],
+    "bits": 12
+   },
+   {
+    "bands": [
+     10,
+     26
+    ],
+    "bits": 11
+   },
+   {
+    "bands": [
+     26,
+     46
+    ],
+    "bits": 10
+   },
+   {
+    "bands": [
+     46,
+     86
+    ],
+    "bits": 9
+   },
+   {
+    "bands": [
+     86,
+     156
+    ],
+    "bits": 8
+   },
+   {
+    "bands": [
+     156,
+     164
+    ],
+    "bits": 7
+   },
+   {
+    "bands": [
+     164,
+     166
+    ],
+    "bits": 8
+   },
+   {
+    "bands": [
+     166,
+     174
+    ],
+    "bits": 7
+   },
+   {
+    "bands": [
+     174,
+     176
+    ],
+    "bits": 8
+   },
+   {
+    "bands": [
+     176,
+     256
+    ],
+    "bits": 7
+   }
+  ],
+  "temporal_bandwidth_hz": 1280.0,
+  "precision_tiers": {
+   "bytes_per_walker": 846,
+   "fixed_bytes": 3104,
+   "not_prefix_sliceable": [
+    "blt_band_scale",
+    "pos_band_scale"
+   ],
+   "floor_at_full_n": 0.02322173749926086,
+   "walkers_shuffled": true,
+   "usable": true,
+   "tiers": [
+    {
+     "eps": 0.01,
+     "n_walkers": 8000,
+     "bytes": 6771104,
+     "reachable": false
+    },
+    {
+     "eps": 0.003,
+     "n_walkers": 8000,
+     "bytes": 6771104,
+     "reachable": false
+    },
+    {
+     "eps": 0.001,
+     "n_walkers": 8000,
+     "bytes": 6771104,
+     "reachable": false
+    }
+   ],
+   "note": "prefix reads are unbiased"
+  },
+  "channels": {
+   "compartment": {
+    "channel": "compartment",
+    "columns": [
+     {
+      "name": "comp",
+      "kind": "static"
+     }
+    ]
+   },
+   "boundary_local_time": {
+    "channel": "boundary_local_time",
+    "mode": "bridge_dst",
+    "T": 0.1,
+    "K": 8,
+    "dtype": "bands",
+    "container": [
+     {
+      "bands": [
+       0,
+       4
+      ],
+      "bits": 6
+     },
+     {
+      "bands": [
+       4,
+       8
+      ],
+      "bits": 3
+     }
+    ]
+   }
+  }
+ },
+ "walk_params": {
+  "n_walkers": 8000,
+  "T_max": 0.1,
+  "diffusivity": 2e-09,
+  "seed": 2146504202,
+  "windows": {
+   "n": 1,
+   "T": 0.1,
+   "walks": [
+    {
+     "first": 0,
+     "last": 0,
+     "seed": 2146504202
+    }
+   ]
+  },
+  "block": {
+   "h": 9.950248756218906e-05,
+   "m": 3,
+   "precision": "float64",
+   "n_blocks": 1005,
+   "rule": "derived",
+   "ring": 64,
+   "accumulation": "the moments of each block summed per step, a window of 64 blocks projected in one float32 product, the windows summed in float64 accumulators, the chord subtracted and the bands scaled on the device (csrc/accum.cuh; built: float32 window projection, float64 accumulators)",
+   "k0_residual_m": null,
+   "k0_residual_relative": null
+  },
+  "qv": {
+   "positions": [
+    3.84779575132721e-10,
+    3.8478135247835275e-10,
+    4.0000025239295135e-10
+   ],
+   "local_time": 6.079704101269456e-11
+  },
+  "substrate_frame": [
+   [
+    1.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    1.0,
+    0.0
+   ],
+   [
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
+ },
+ "replay_envelope": {
+  "gradient": true,
+  "bulk_relaxation": true,
+  "surface_relaxivity": true,
+  "field": false,
+  "magnetization_transfer": false,
+  "diffusivity_fixed": true,
+  "acquisition": {
+   "b_max": 4472700323062.501,
+   "ogse_periods": [
+    1,
+    2,
+    3,
+    5
+   ],
+   "B0_list": [
+    1.5,
+    3.0,
+    7.0
+   ],
+   "note": "temporal band set by max OGSE period / min delta",
+   "bound": "scanner_class",
+   "scanner": "connectome_2",
+   "G_max": 0.5,
+   "slew_max": 600.0
+  },
+  "tissue": {
+   "rho2_over_D_max": 1500.0
+  }
+ },
+ "fidelity": {
+  "metric": "max_abs_complex_signal_error",
+  "certified": "measured",
+  "measured_by": "walk_free_terms",
+  "err_truncation": 8.44776e-05,
+  "err_quadrature": 2.04988e-08,
+  "err_quantisation": 5.72403e-05,
+  "err_quadrature_surface": 9.93648e-16,
+  "err_max": 0.000141738,
+  "floor_max": 0.0232217,
+  "noise_floor": 0.0111803,
+  "floor_quantisation": 0.000119625,
+  "floor_total_max": 0.0233414,
+  "within_2x_floor": true,
+  "per_family": {
+   "OGSE1": {
+    "err_max": 0.000115648,
+    "floor_max": 0.00981516
+   },
+   "OGSE2": {
+    "err_max": 0.000115658,
+    "floor_max": 0.0232217
+   },
+   "OGSE3": {
+    "err_max": 0.000115674,
+    "floor_max": 0.0164481
+   },
+   "OGSE5": {
+    "err_max": 0.000115725,
+    "floor_max": 0.00985545
+   },
+   "PGSE": {
+    "err_max": 0.000128787,
+    "floor_max": 0.0144162
+   },
+   "SHORTD": {
+    "err_max": 0.000141738,
+    "floor_max": 0.0158798
+   }
+  },
+  "quadrature": {
+   "m": 3,
+   "h": 9.95025e-05,
+   "f_band_hz": 1280.0,
+   "h_round": null,
+   "qv_positions_m2": [
+    3.8478e-10,
+    3.84781e-10,
+    4e-10
+   ],
+   "qv_contact_m2": 6.0797e-11,
+   "surface_rho_over_D": 1500.0,
+   "rel_at_band_edge": 1.26732e-07
+  },
+  "bounds_diffusivity": 2e-09,
+  "gradient_bound": {
+   "kind": "scanner_class",
+   "scanner": "connectome_2",
+   "G_max_per_axis": 0.5,
+   "T": 0.1,
+   "terms": "quadrature, quantisation and rounding over every waveform within G_max per axis (Bessel's inequality on the sine basis); truncation and floors over the battery's shapes at their class amplitude"
+  },
+  "err_surface": 1.39879e-07,
+  "floor_surface": 1.38502e-06,
+  "surface_certified": "walk_free",
+  "surface_rho2_list": [
+   3e-06
+  ],
+  "err_surface_quantisation": 2.18983e-08,
+  "err_surface_truncation": 1.17981e-07,
+  "err_surface_quadrature": 9.93648e-16,
+  "target_floor": 0.0025,
+  "meets_target": false,
+  "terms": {
+   "truncation": 8.44776e-05,
+   "truncation_from": "band_variance",
+   "quadrature": {
+    "positions": 2.04988e-08,
+    "local_time": 9.93648e-16
+   }
+  }
+ },
+ "provenance": {
+  "campaign": "rewalk-nudge-2026-10-28",
+  "walked_as": "pilot",
+  "seed_rule": "pack_seed(id)",
+  "walker_rule": {
+   "rule": "pilot bound: SE^2 <= V / n for any refocused waveform of the class on the confined axes and any toggle, n = max(n_min, V / f^2)",
+   "floor": 0.005,
+   "counts": {
+    "water": 8000
+   },
+   "smoke": false,
+   "V": 0.00021397825609063945,
+   "var_phi": 0.0001961712788230935,
+   "certified_axes": [
+    0,
+    1
+   ],
+   "free_axes": [
+    2
+   ],
+   "n_pilot": 8000,
+   "n_min": 8000
+  },
+  "code": {
+   "version": "2.2.0"
+  },
+  "walk": {
+   "kind": "coefficient",
+   "stepping": null
+  }
+ },
+ "license": "CC-BY-4.0",
+ "citation": "Fick RHJ (2026), the canonical pores family of replay packs, SubstrateCommons",
+ "substrate": {
+  "id": "analytic/cylinder",
+  "domain": {
+   "box_min": [
+    -2e-07,
+    -2e-07,
+    -2e-07
+   ],
+   "box_max": [
+    2e-07,
+    2e-07,
+    2e-07
+   ],
+   "boundary": [
+    "open",
+    "open",
+    "open"
+   ],
+   "surface_relaxivity": 0.0
+  },
+  "pools": [
+   {
+    "id": 0,
+    "name": "extra",
+    "D": null,
+    "water_fraction": 0.0,
+    "T2": null,
+    "T1": null,
+    "susceptibility": null
+   },
+   {
+    "id": 1,
+    "name": "intra",
+    "D": null,
+    "water_fraction": 1.0,
+    "T2": null,
+    "T1": null,
+    "susceptibility": null
+   }
+  ],
+  "walls": [
+   {
+    "name": "membrane",
+    "surface": {
+     "kind": "cylinder",
+     "center": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "radius": 5e-08,
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "inside_pool": 1,
+    "outside_pool": null,
+    "permeability": {
+     "in_to_out": 0.0,
+     "out_to_in": 0.0
+    },
+    "surface_relaxivity": {
+     "inside": 0.0,
+     "outside": 0.0
+    },
+    "mt_reactivity": {
+     "inside": 0.0,
+     "outside": 0.0
+    }
+   }
+  ],
+  "seeding": {
+   "pools": [
+    1
+   ],
+   "rule": "uniform_by_volume",
+   "weights": "water_fraction",
+   "positions": null
+  },
+  "validity": {
+   "smallest_feature": 5e-08,
+   "tiers": [
+    "gradient",
+    "surface"
+   ],
+   "min_gap": null,
+   "mesh_edge_feature_ratio": null,
+   "thinnest_shell": null
+  },
+  "frame": {
+   "axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "in_plane": null,
+   "source": null
+  },
+  "description": "isolated cylinder; the outside is void unless permeable",
+  "nominal_field_T": null,
+  "request": null,
+  "realisation": null,
+  "provenance": {
+   "source": "analytic",
+   "constructor": "Cylinder"
+  },
+  "substrate_spec_version": "0.1"
+ }
+}

@@ -9,7 +9,7 @@ on, in discrete form. And ``exhausted_steps`` is the certificate that a bounce b
 exhausted gives the trajectories of any larger budget, by the loop's own rule (the leftover path is flown only when
 the last iteration met nothing), while a budget that is exhausted cuts path and moves walkers.
 """
-from tests._scanner_class import stated_class
+from tests._envelope import stated, walk_envelope
 import numpy as np
 import pytest
 
@@ -209,7 +209,7 @@ def test_the_pack_refuses_an_exhausted_walk(tmp_path):
     with pytest.warns(RuntimeWarning):
         w = _walk(g, bounce_budget=1)
     with pytest.raises(ValueError, match="exhausted its bounce budget"):
-        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"), envelope=stated_class())
+        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"), **stated(of=w))
 
 
 def test_certify_bounce_budget_sizes_from_a_pilot():
@@ -227,5 +227,5 @@ def test_walk_spec_passes_the_budget_through_and_keeps_the_work():
     from dmipy_sim import walk
     g = d.Sphere(R)
     w = walk(g.spec, 128, 2e-3, 0.5e-3, seed=11, diffusivity=D, bounce_budget=g.bounce_loop.budget - 1,
-                  walker_batch_size=128)
+                  walker_batch_size=128, envelope=walk_envelope(of=g.spec))
     assert w.work["bounce_budget"] == g.bounce_loop.budget - 1 and w.work["exhausted_steps"] == 0

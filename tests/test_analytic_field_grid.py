@@ -1,6 +1,6 @@
 """An analytic myelinated substrate gets the same field tier a mesh does: `field_grid_of` rasterises
 its sheath onto the field-basis grid, and a pack built from its walk replays with a field."""
-from tests._scanner_class import stated_class
+from tests._envelope import stated
 import numpy as np
 from dmipy_sim import ScannerSequence
 import pytest
@@ -52,7 +52,7 @@ def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
     with pytest.raises(TypeError, match="MyelinatedCylinder"):
         field_grid_of(d.Sphere(1e-6))
     walk = _walk_geometry(40, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False, field_basis=fg)
-    pk = build_replay_pack(walk, id="test/pm-field", K=8, envelope=stated_class(ENV), license="x", citation="x")
+    pk = build_replay_pack(walk, id="test/pm-field", K=8, **stated(ENV, of=walk), license="x", citation="x")
     assert pk.has_field and pk.has_relaxation and pk.has_surface
     G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo
     G_lab, R = field_along(G0, (1, 0, 0))                           # the field along x of the substrate: a posent echo

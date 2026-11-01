@@ -10,10 +10,10 @@ on:
   workflow_dispatch: {}     # run the heavy MC suite on demand
 
 env:
-  # dmipy-replay 0.2 is not released: the suite runs against the commit of its main it was tested with (still versioned
-  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it). Move the ref forward as replay's main does; drop it when
-  # 0.2.0 is on PyPI.
-  DMIPY_REPLAY_REF: 38110c577804e8d122b556ac556d2214b5401262
+  # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): dmrai-lab/dmipy-replay#11 (the Envelope) until it
+  # merges, then its merge on main. Drop the ref when 0.2.0 is on PyPI.
+  DMIPY_REPLAY_REF: 058d24b1c7ba9a74b7001fb09b7ed6a7965a85d9
 
 jobs:
   test:

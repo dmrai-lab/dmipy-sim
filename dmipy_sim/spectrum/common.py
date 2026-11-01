@@ -173,7 +173,7 @@ def pool_census(preds, grid, *, census_draws=200, seed=0):
     return out
 
 
-def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_max_s, scanner, counts_rel,
+def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_max_s, envelope, counts_rel,
                    blocks_rel, total_walkers, n_blocks):
     """A recipe-shaped ``manifest.json`` for a substrate kind that is not a strand set
     (``substrate["kind"]`` is not ``"disco"``): the SAME outer shape (``code``, ``substrate``, ``grid``,
@@ -181,7 +181,6 @@ def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_m
     already expecting that shape finds the same fields, but ``substrate`` carries whatever this generator's
     kind needs (a ``spec_file`` for a packed-cylinder/sphere or label-volume entry, a recipe reader of those kinds
     is the consumer's business; this generator writes the data in the shape the recipe is DEFINED to have). No field basis: these classes carry no susceptibility source (dmipy-sim#697's PR2 scope)."""
-    from dmipy_replay.replay.storage import mode_count
     man = dict(
         id=id_, license=license_, citation=citation,
         code=dict(repo="dmrai-lab/dmipy-sim", commit=git_commit()),
@@ -189,9 +188,9 @@ def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_m
         variants=dict(field=dict(field=False)), default_variant="field",
         grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
                   attach="substrate"),
-        walk=dict(T_max_s=float(T_max_s), scanner=scanner, adaptive_steps=False, walker_batch_size=4096, census_draws=200),
-        pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="derived",
-                  blt_container="derived", field_container="derived", blt_K=mode_count(T_max_s, scanner)),
+        walk=dict(T_max_s=float(T_max_s), envelope=envelope.to_dict(), adaptive_steps=False, walker_batch_size=4096, census_draws=200),
+        pack=dict(K=envelope.mode_count(T_max_s), K_path=envelope.mode_count(T_max_s), position_container="derived",
+                  blt_container="derived", field_container="derived", blt_K=envelope.mode_count(T_max_s)),
         plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),
     )
     path = os.path.join(variant_dir, "manifest.json")

@@ -403,6 +403,8 @@ def _walk_view(walk, weights=None):
                 walk_params=dict(n_walkers=int(walk.n_walkers), T_max=float(walk.T), diffusivity=walk.diffusivity, seed=walk.seed,
                                  windows=dict(n=n, T=T_w, walks=[dict(first=0, last=n - 1, seed=walk.seed)]), block=dict(walk.block)),
                 substrate=walk.spec.to_dict(), fidelity={}, view=dict(of="walk", containers="float"))
+    if walk.envelope is not None:                                     # the envelope the walk was walked for
+        meta["replay_envelope"] = dict(acquisition=walk.envelope.header_acquisition())
     return ReplayPack(arrays, meta)
 
 
@@ -418,31 +420,21 @@ def walk_identity(walk):
 
 
 def _envelope(meta, g_max):
-    """What the widths are derived at, from a pack's header: the encodings -- a scanner class's (``acquisition.bound``
-    ``"scanner_class"``: every level at most ``G_max`` per axis, ``b_max`` None) or those within ``b_max``
-    (``replay_envelope.acquisition.b_max``) --, ``G_max`` (``g_max``, at most the class's, else the envelope's, else
-    the pack's scanner class's), the largest ``rho2 / D`` (the contact tier's
-    envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with one
-    that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
+    """What the widths are derived at, from a pack's header: the encodings of its envelope
+    (:meth:`~dmipy_replay.replay.envelope.Envelope.from_header`: every level at most ``G_max`` per axis, ``b_max``
+    None), ``G_max`` (``g_max``, at most the envelope's, else the envelope's), the largest ``rho2 / D`` (the contact
+    tier's envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with
+    one that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
     ``replay_envelope.acquisition.B0_list`` times ``replay_envelope.tissue.chi_max`` (0 for a pack with no field
-    channel, and a pack with one that states either not is refused)."""
+    channel, and a pack with one that states either not is refused). A header that states no envelope is refused."""
+    from dmipy_replay.replay.envelope import Envelope
+    e = Envelope.from_header(meta)
     env = meta.get("replay_envelope") or {}
-    acq = env.get("acquisition") or {}
-    by_class = acq.get("bound") == "scanner_class"
-    if not by_class and acq.get("b_max") is None:
-        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max or a scanner "
-                         "class): a segment's width is derived from the encodings the pack is certified for")
-    if by_class and g_max is not None and float(g_max) > float(acq["G_max"]) * (1.0 + 1e-12):
-        raise ValueError(f"g_max = {float(g_max):.4g} T/m is beyond the {float(acq['G_max']):.4g} T/m per axis of the "
-                         f"scanner class {acq['scanner']!r} the pack is certified for")
+    if g_max is not None and float(g_max) > e.G_max * (1.0 + 1e-12):
+        raise ValueError(f"g_max = {float(g_max):.4g} T/m is beyond the {e.G_max:.4g} T/m per axis of the envelope "
+                         f"{e.name!r} the pack is certified for")
     if g_max is None:
-        g_max = acq.get("G_max")
-    if g_max is None and (meta.get("compression") or {}).get("scanner"):
-        from dmipy_replay.acquisition.scanners import ScannerLimits
-        g_max = ScannerLimits.of(meta["compression"]["scanner"]).G_max
-    if g_max is None:
-        raise ValueError("the pack names no scanner class and its envelope no G_max: give g_max= (T/m), the largest "
-                         "gradient the layout is certified for")
+        g_max = e.G_max
     rho = (env.get("tissue") or {}).get("rho2_over_D_max")
     if rho is None:
         if ((meta.get("compression") or {}).get("channels") or {}).get("boundary_local_time") is not None:
@@ -452,16 +444,14 @@ def _envelope(meta, g_max):
         rho = 0.0
     b0chi = b0max = 0.0
     if ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") is not None:
-        from .compression import envelope_B0_chi_max, envelope_B0_max
-        tis = env.get("tissue") or {}
-        if tis.get("chi_max") is None:
+        if e.chi_max is None or not e.B0_list:
             raise ValueError("the pack carries a field channel and states no certified susceptibility scale "
-                             "(replay_envelope.tissue.chi_max): the field's width is derived at the one certified B0 chi")
-        stated = dict(B0_list=acq.get("B0_list"), chi_max=tis["chi_max"])
-        b0chi, b0max = envelope_B0_chi_max(stated), envelope_B0_max(stated)
-    return dict(b_max=(None if by_class else float(acq["b_max"])), G_max=float(g_max), rho2_over_D_max=float(rho),
-                B0_chi_max_T=float(b0chi), B0_max_T=float(b0max),
-                **(dict(bound="scanner_class", scanner=acq["scanner"]) if by_class else dict(bound="b_max")))
+                             "(replay_envelope.tissue.chi_max) or field strengths (replay_envelope.acquisition.B0_list): "
+                             "the field's width is derived at the one certified B0 chi")
+        b0max = float(e.B0_max)
+        b0chi = b0max * float(e.chi_max)
+    return dict(b_max=None, G_max=float(g_max), rho2_over_D_max=float(rho), B0_chi_max_T=float(b0chi), B0_max_T=float(b0max),
+                bound="envelope", name=e.name)
 
 
 def _floor_target(meta, given):
@@ -614,7 +604,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     ``source`` is the walk (:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`), read in its float coefficients, with
     ``pack`` the pack built from it (its sibling; refused when its walkers' starts are not the walk's), or a quantised
     :class:`~dmipy_sim.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
-    its median per-voxel floor; the envelope the pack's (``g_max`` when it names no scanner class). Returns the record.
+    its median per-voxel floor; the envelope the pack's (``g_max`` at most its ``G_max``). Returns the record.
 
     The source is read a walker range at a time (:meth:`~dmipy_sim.replay.replay.ReplayPack.walkers`, ranges of
     :func:`~dmipy_sim.replay.compression.slice_walkers` at ``slice_bytes``), every column spilled to ``out_dir`` in
@@ -634,6 +624,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         if pack.n_walkers != source.n_walkers or not np.array_equal(pack.r0.astype(np.float32), starts):
             raise ValueError("pack= is not this walk's pack: its walkers' starts differ")
         view = _walk_view(source, weights)
+        view.meta["replay_envelope"] = pack.meta.get("replay_envelope")     # the sibling's: what the rows are declared at
         if not np.allclose(np.asarray(view.spin_weights, np.float32), np.asarray(pack.spin_weights, np.float32), rtol=1e-6):
             raise ValueError("the walk's weights are not its pack's: give the weights the pack was built with (weights=)")
         decl, kind = pack, "walk"

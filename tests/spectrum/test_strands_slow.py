@@ -12,12 +12,13 @@ import pytest
 
 from dmipy_sim.spectrum import strands
 from dmipy_sim.spectrum.common import verify_index
+from tests._envelope import walk_envelope
 
 
 @pytest.fixture(scope="module")
 def entry_250um(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("spectrum_250um"))
-    return strands(250e-6, 1, out_dir=out)
+    return strands(250e-6, 1, out_dir=out, envelope=walk_envelope())
 
 
 def test_250um_both_walk_lengths_pass_the_halo_rule(entry_250um):
@@ -50,7 +51,7 @@ def test_250um_is_walkable_by_walk(entry_250um):
     out = entry_250um["out_dir"]
     spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=250e-6, field=False)
-    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
+    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000, envelope=walk_envelope(of=spec))
     assert np.isfinite(w.position_coeffs).all()
 
 
@@ -60,7 +61,7 @@ def test_1mm_is_walkable_and_has_a_plan(edge_m, tmp_path):
     the counts/blocks/walkability checks below do not need it, since the per-voxel plan is finished before the
     far grid is ever touched and the walkability check here uses a field-off spec it builds itself."""
     out = str(tmp_path)
-    r = strands(edge_m, 1, out_dir=out, T_max_s=())
+    r = strands(edge_m, 1, out_dir=out, T_max_s=(), envelope=walk_envelope())
     assert r["refused"] == []
     assert r["far_grid"] is None
     counts = np.load(os.path.join(r["out_dir"], "substrate/counts.npz"))
@@ -72,7 +73,7 @@ def test_1mm_is_walkable_and_has_a_plan(edge_m, tmp_path):
     spec = disco_spec(os.path.join(r["out_dir"], "substrate/strands.tck"),
                       os.path.join(r["out_dir"], "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=edge_m, field=False)
-    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
+    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000, envelope=walk_envelope(of=spec))
     assert np.isfinite(w.position_coeffs).all()
 
 

@@ -26,6 +26,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))          # examples.validation is importable
 
+from dmipy_replay import envelope_of
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
                                         Systematic, Tier, Tolerance, pack_seed)
@@ -81,14 +82,15 @@ ROCKS = {
 #: NOT the high-b, short-delta end of the default battery: the acquisition this family reproduces is 2 MHz
 #: relaxometry, which plays no gradient at all, and over a 3 s window a b = 3000 s/mm^2 measurement is a fully
 #: dephased signal whose Monte-Carlo value is noise.
-ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
-                delta_frac=40e-3 / T, Delta_frac=80e-3 / T, ogse_periods=[1, 2, 3],
-                shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T], rho2_list=[15e-6, 41e-6])
+ENVELOPE = envelope_of("connectom", rho2_max=41e-6)
+BATTERY = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+               delta_frac=40e-3 / T, Delta_frac=80e-3 / T, ogse_periods=[1, 2, 3],
+               shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T])
 
 
 #: The distinct deltas the envelope declares, as a set: `delta_frac` and the `shortd_deltas_frac` list name
 #: 40 ms twice, and de-duplicating them inside `waveforms()` hid that the two fields overlap.
-DECLARED_DELTA_FRACS = tuple(sorted({ENVELOPE["delta_frac"], *ENVELOPE["shortd_deltas_frac"]}))
+DECLARED_DELTA_FRACS = tuple(sorted({BATTERY["delta_frac"], *BATTERY["shortd_deltas_frac"]}))
 
 
 def waveforms():
@@ -101,9 +103,9 @@ def waveforms():
     out = []
     for frac in DECLARED_DELTA_FRACS:
         delta = frac * T
-        Delta = max(2 * delta, ENVELOPE["Delta_frac"] * T)
+        Delta = max(2 * delta, BATTERY["Delta_frac"] * T)
         out.append((f"pgse-delta{delta * 1e3:.0f}ms",
-                    pgse([[1, 0, 0]], delta, Delta, bvalues=[max(ENVELOPE["bvals"])], n_t=400)))
+                    pgse([[1, 0, 0]], delta, Delta, bvalues=[max(BATTERY["bvals"])], n_t=400)))
     return tuple(out)
 
 
@@ -351,7 +353,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                  "number."))
 
     design = Design(
-        window_s=T, K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
+        window_s=T, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY, waveforms=waveforms,
         tiers=(Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA),
                Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,
@@ -406,7 +408,7 @@ def direct_se(rock, data_dir, work_dir, grid, *, n=SE_N):
         return cache[rock]["value"]
     w = walk(spec_of(rock, data_dir), int(n), T=T, K=K_BANDS, seed=seed)
     pack = build_replay_pack(w, id=f"imperial-rocks/{rock.lower()}/direct-se", license=LICENCE, citation=CITATION,
-                             envelope=ENVELOPE, K=K_BANDS, scanner="connectom")
+                             envelope=ENVELOPE, battery=BATTERY, K=K_BANDS)
     _t, _S, _lm, se_walk = decay_and_projection(pack, float(ref["rho2"]), grid)
     scale = (int(n) / float(ref["direct_n"])) ** 0.5
     value = dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n), n_direct=int(ref["direct_n"]), scale=scale,

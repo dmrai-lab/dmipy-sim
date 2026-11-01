@@ -38,8 +38,9 @@ picture of the paths.
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
 replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's `K` is the storage band by
-default (256 bands per 100 ms); `walk` walks the scanner class's certified band times the storage margin, and
-`build_replay_pack(walk, scanner="prisma")` or `K=` stores a smaller band of a walk. The walk's length `T` is the longest echo time the pack can
+default (256 bands per 100 ms); `walk(spec, ..., envelope=)` walks the envelope's band (`envelope_of("prisma")`: the
+class's certified band times the storage margin), and `build_replay_pack(walk, envelope=envelope_of("prisma"))` or
+`K=` stores a smaller band of a walk; the pack states the band it stores. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix (`pack.prefix(TE)`, below).
 
 A walk is accumulated in **storage windows** of one duration, 100 ms by default (`_walk_geometry(window_T=)`),

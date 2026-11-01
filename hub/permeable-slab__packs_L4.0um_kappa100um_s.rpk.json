@@ -1,0 +1,983 @@
+{
+ "rpk_schema_version": "0.7",
+ "id": "permeable-slab/L4.0um-kappa100um_s",
+ "compression": {
+  "method": "bridge_dst",
+  "K": 256,
+  "walker_preserving": true,
+  "container": [
+   {
+    "bands": [
+     0,
+     8
+    ],
+    "bits": 15
+   },
+   {
+    "bands": [
+     8,
+     12
+    ],
+    "bits": 12
+   },
+   {
+    "bands": [
+     12,
+     28
+    ],
+    "bits": 11
+   },
+   {
+    "bands": [
+     28,
+     48
+    ],
+    "bits": 10
+   },
+   {
+    "bands": [
+     48,
+     104
+    ],
+    "bits": 9
+   },
+   {
+    "bands": [
+     104,
+     105
+    ],
+    "bits": 8
+   },
+   {
+    "bands": [
+     105,
+     113
+    ],
+    "bits": 9
+   },
+   {
+    "bands": [
+     113,
+     174
+    ],
+    "bits": 8
+   },
+   {
+    "bands": [
+     174,
+     182
+    ],
+    "bits": 7
+   },
+   {
+    "bands": [
+     182,
+     186
+    ],
+    "bits": 8
+   },
+   {
+    "bands": [
+     186,
+     256
+    ],
+    "bits": 7
+   }
+  ],
+  "temporal_bandwidth_hz": 1280.0,
+  "precision_tiers": {
+   "bytes_per_walker": 1025,
+   "fixed_bytes": 2475684,
+   "not_prefix_sliceable": [
+    "blt_band_scale",
+    "comp_events_label",
+    "comp_events_offsets",
+    "comp_events_t",
+    "pos_band_scale",
+    "susc_path_scale"
+   ],
+   "floor_at_full_n": 0.010253070882880968,
+   "walkers_shuffled": true,
+   "usable": true,
+   "tiers": [
+    {
+     "eps": 0.01,
+     "n_walkers": 40000,
+     "bytes": 43475684,
+     "reachable": false
+    },
+    {
+     "eps": 0.003,
+     "n_walkers": 40000,
+     "bytes": 43475684,
+     "reachable": false
+    },
+    {
+     "eps": 0.001,
+     "n_walkers": 40000,
+     "bytes": 43475684,
+     "reachable": false
+    }
+   ],
+   "note": "prefix reads are unbiased"
+  },
+  "channels": {
+   "susc_field_basis": {
+    "channel": "susc_field_basis",
+    "K": 32,
+    "T": 0.1,
+    "n_ch": 2,
+    "channels": [
+     "iso_local",
+     "iso_P_xx"
+    ],
+    "trace_residual": 6.661338147750939e-16,
+    "max_refocus_pulses": 8,
+    "sampling": "accumulated_in_walk",
+    "zero_components": [
+     "iso_P_yy",
+     "iso_P_xy",
+     "iso_P_xz",
+     "iso_P_yz"
+    ],
+    "read_interval": 1.1686718760766804e-05,
+    "bits": null,
+    "dtype": "bands",
+    "container": [
+     {
+      "modes": [
+       0,
+       16
+      ],
+      "bits": 9
+     },
+     {
+      "modes": [
+       16,
+       20
+      ],
+      "bits": 8
+     },
+     {
+      "modes": [
+       20,
+       32
+      ],
+      "bits": 7
+     }
+    ],
+    "band": {
+     "rule": "pilot",
+     "criterion": "the first rung in ascending band whose codec error on the certificate's battery, in the container derived for its mode scales at its floor, is within the pilot's floor; failing every rung, the narrowest among the least errors",
+     "ladder": [
+      {
+       "K": 16,
+       "err": 0.004713704159739929,
+       "err_truncation": 0.004714970878458291,
+       "floor": 0.0025,
+       "container": [
+        {
+         "modes": [
+          0,
+          4
+         ],
+         "bits": 16
+        },
+        {
+         "modes": [
+          4,
+          12
+         ],
+         "bits": 15
+        },
+        {
+         "modes": [
+          12,
+          16
+         ],
+         "bits": 14
+        }
+       ]
+      },
+      {
+       "K": 32,
+       "err": 0.0006451522161556407,
+       "err_truncation": 0.0006454650019024838,
+       "floor": 0.0025,
+       "container": [
+        {
+         "modes": [
+          0,
+          4
+         ],
+         "bits": 16
+        },
+        {
+         "modes": [
+          4,
+          12
+         ],
+         "bits": 15
+        },
+        {
+         "modes": [
+          12,
+          28
+         ],
+         "bits": 14
+        },
+        {
+         "modes": [
+          28,
+          32
+         ],
+         "bits": 13
+        }
+       ]
+      }
+     ],
+     "K": 32,
+     "K_max": 256,
+     "min_K": 16,
+     "depth": 8,
+     "above_position_band": false,
+     "within_floor": true,
+     "err": 0.0006451522161556407,
+     "err_truncation": 0.0006454650019024838,
+     "floor": 0.0025,
+     "container": [
+      {
+       "modes": [
+        0,
+        4
+       ],
+       "bits": 16
+      },
+      {
+       "modes": [
+        4,
+        12
+       ],
+       "bits": 15
+      },
+      {
+       "modes": [
+        12,
+        28
+       ],
+       "bits": 14
+      },
+      {
+       "modes": [
+        28,
+        32
+       ],
+       "bits": 13
+      }
+     ],
+     "floor_is": "the explicit numerical field error budget",
+     "floor_scale": 1.0,
+     "target_floor": 0.0025,
+     "B0_list": [
+      7.0
+     ],
+     "chi_iso": 1e-07,
+     "chi_aniso": 0.0,
+     "n_blocks": 1005,
+     "binding_pool": "intra",
+     "pools": {
+      "intra": {
+       "rule": "pilot",
+       "criterion": "the first rung in ascending band whose codec error on the certificate's battery, in the container derived for its mode scales at its floor, is within the pilot's floor; failing every rung, the narrowest among the least errors",
+       "K": 32,
+       "K_max": 256,
+       "min_K": 16,
+       "depth": 8,
+       "above_position_band": false,
+       "within_floor": true,
+       "err": 0.0006451522161556407,
+       "err_truncation": 0.0006454650019024838,
+       "floor": 0.0025,
+       "container": [
+        {
+         "modes": [
+          0,
+          4
+         ],
+         "bits": 16
+        },
+        {
+         "modes": [
+          4,
+          12
+         ],
+         "bits": 15
+        },
+        {
+         "modes": [
+          12,
+          28
+         ],
+         "bits": 14
+        },
+        {
+         "modes": [
+          28,
+          32
+         ],
+         "bits": 13
+        }
+       ],
+       "floor_is": "the explicit numerical field error budget",
+       "floor_scale": 1.0,
+       "target_floor": 0.0025,
+       "B0_list": [
+        7.0
+       ],
+       "chi_iso": 1e-07,
+       "chi_aniso": 0.0,
+       "n_blocks": 1005,
+       "walkers": 1024
+      }
+     },
+     "per_pool": "each pool's band by its own pilot walkers, the widest taken",
+     "pilot_walkers": 1024,
+     "production_walkers": 40000
+    },
+    "read": {
+     "rule": "pilot",
+     "dt_f_rule": 1.1695433007128638e-05,
+     "dt_f": 1.1686718760766804e-05,
+     "n_read": 424,
+     "reads_per_block": 9,
+     "at_step": false,
+     "B0": 7.0,
+     "chi": 1e-07,
+     "floor": 0.001,
+     "T_e": 0.1,
+     "step_s": 2.7563015945204726e-08,
+     "steps_per_block": 3610,
+     "constant": 0.08333333333333333,
+     "constants": [
+      0.2092630195955124,
+      0.20926038533835106,
+      0.08333333333333333,
+      0.08333333333333333,
+      0.08333333333333333,
+      0.08333333333333333
+     ],
+     "constants_measured": true,
+     "pools": {
+      "intra": {
+       "walkers": 1024,
+       "qv_increments": [
+        124.53836831450462,
+        1120.8452442288399,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+       ],
+       "dt_f_rule": 1.1695433007128638e-05
+      }
+     },
+     "channels": [
+      "iso_local",
+      "iso_P_xx",
+      "iso_P_yy",
+      "iso_P_xy",
+      "iso_P_xz",
+      "iso_P_yz"
+     ],
+     "measured_constants": {
+      "2": [
+       0.229049652421669,
+       0.22904588833564227,
+       null,
+       null,
+       null,
+       null
+      ],
+      "3": [
+       0.30669435771737,
+       0.30668112610687104,
+       null,
+       null,
+       null,
+       null
+      ],
+      "4": [
+       0.29788295224029526,
+       0.2978741719949218,
+       null,
+       null,
+       null,
+       null
+      ],
+      "7": [
+       0.3948920945919963,
+       0.39487456193459475,
+       null,
+       null,
+       null,
+       null
+      ],
+      "10": [
+       0.3971343676305578,
+       0.397136661701214,
+       null,
+       null,
+       null,
+       null
+      ],
+      "15": [
+       0.4336504196257491,
+       0.43353695270208414,
+       null,
+       null,
+       null,
+       null
+      ],
+      "23": [
+       0.43079201849949667,
+       0.43082964869262375,
+       null,
+       null,
+       null,
+       null
+      ],
+      "34": [
+       0.39358374201675816,
+       0.3936597585308518,
+       null,
+       null,
+       null,
+       null
+      ],
+      "51": [
+       0.3833197210397141,
+       0.383345809513188,
+       null,
+       null,
+       null,
+       null
+      ],
+      "77": [
+       0.4186142490723793,
+       0.41841619710305816,
+       null,
+       null,
+       null,
+       null
+      ],
+      "115": [
+       0.3615015499472662,
+       0.36150282534889155,
+       null,
+       null,
+       null,
+       null
+      ],
+      "173": [
+       0.3418860767921996,
+       0.3418394407882442,
+       null,
+       null,
+       null,
+       null
+      ],
+      "259": [
+       0.2623281207220425,
+       0.2623211471809726,
+       null,
+       null,
+       null,
+       null
+      ],
+      "389": [
+       0.2361564372689103,
+       0.23615153590691593,
+       null,
+       null,
+       null,
+       null
+      ],
+      "584": [
+       0.2092630195955124,
+       0.20926038533835106,
+       null,
+       null,
+       null,
+       null
+      ],
+      "876": [
+       0.17120967667978798,
+       0.1711990517180455,
+       null,
+       null,
+       null,
+       null
+      ],
+      "1314": [
+       0.15757338001022747,
+       0.15763503430832396,
+       null,
+       null,
+       null,
+       null
+      ],
+      "1971": [
+       0.14744744742497742,
+       0.14753083514337462,
+       null,
+       null,
+       null,
+       null
+      ],
+      "2956": [
+       0.1093536284573557,
+       0.10941933901611195,
+       null,
+       null,
+       null,
+       null
+      ],
+      "3610": [
+       0.12028402794047148,
+       0.12035951614055737,
+       null,
+       null,
+       null,
+       null
+      ]
+     },
+     "term_pilot": 0.000998510358723481,
+     "read_limit_B0_chi_T_pilot": 7.00521957666489e-07,
+     "pilot_walkers": 1024,
+     "pilot_seconds": 513.4545090198517
+    }
+   },
+   "susceptibility_grid": {
+    "origin": [
+     0.0,
+     -0.5,
+     -0.5
+    ],
+    "voxel_size": [
+     1e-08,
+     1.0,
+     1.0
+    ],
+    "shape": [
+     400,
+     1,
+     1
+    ],
+    "has_aniso": false,
+    "periodic": [
+     false,
+     false,
+     false
+    ],
+    "arrays_in_pack": false,
+    "replay_route": "path",
+    "raster": null
+   },
+   "compartment": {
+    "channel": "compartment",
+    "columns": [
+     {
+      "name": "comp",
+      "kind": "events"
+     }
+    ]
+   },
+   "boundary_local_time": {
+    "channel": "boundary_local_time",
+    "mode": "bridge_dst",
+    "T": 0.1,
+    "K": 256,
+    "dtype": "bands",
+    "container": [
+     {
+      "bands": [
+       0,
+       4
+      ],
+      "bits": 6
+     },
+     {
+      "bands": [
+       4,
+       256
+      ],
+      "bits": 3
+     }
+    ]
+   }
+  }
+ },
+ "walk_params": {
+  "n_walkers": 40000,
+  "T_max": 0.1,
+  "diffusivity": 2e-09,
+  "seed": 4004954989,
+  "windows": {
+   "n": 1,
+   "T": 0.1,
+   "walks": [
+    {
+     "first": 0,
+     "last": 0,
+     "seed": 4004954989
+    }
+   ]
+  },
+  "block": {
+   "h": 9.950248756218906e-05,
+   "m": 3,
+   "precision": "float64",
+   "n_blocks": 1005,
+   "rule": "derived",
+   "ring": 64,
+   "accumulation": "the moments of each block summed per step, a window of 64 blocks projected in one float32 product, the windows summed in float64 accumulators, the chord subtracted and the bands scaled on the device (csrc/accum.cuh; built: float32 window projection, float64 accumulators)",
+   "k0_residual_m": null,
+   "k0_residual_relative": null
+  },
+  "qv": {
+   "positions": [
+    3.977849660510846e-10,
+    3.999691052032628e-10,
+    3.9997136374661514e-10
+   ],
+   "local_time": 2.204409181236211e-12,
+   "field": [
+    3.145865843565687e-08,
+    2.831278916126223e-07,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "field_increments": [
+    0.8740326333597302,
+    7.866293198798597,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  "field_read_interval": 1.1686718760766804e-05,
+  "substrate_frame": [
+   [
+    1.0,
+    0.0,
+    0.0
+   ],
+   [
+    0.0,
+    1.0,
+    0.0
+   ],
+   [
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
+ },
+ "replay_envelope": {
+  "gradient": true,
+  "bulk_relaxation": true,
+  "surface_relaxivity": true,
+  "field": true,
+  "magnetization_transfer": false,
+  "diffusivity_fixed": true,
+  "acquisition": {
+   "b_max": 4472700323062.501,
+   "ogse_periods": [
+    1,
+    2,
+    3,
+    5
+   ],
+   "B0_list": [
+    1.5,
+    3.0,
+    7.0
+   ],
+   "note": "temporal band set by max OGSE period / min delta",
+   "bound": "scanner_class",
+   "scanner": "connectome_2",
+   "G_max": 0.5,
+   "slew_max": 600.0,
+   "field_modes": 32,
+   "max_refocusing_pulses": 8
+  },
+  "tissue": {
+   "rho2_over_D_max": 1500.0,
+   "chi_max": 1e-07
+  },
+  "field_read": {
+   "interval_s": 1.1686718760766804e-05,
+   "at_step": false,
+   "read_limit_B0_chi_T": 8.361987509101887e-06,
+   "term_at": {
+    "B0": 7.0,
+    "chi": 1e-07,
+    "floor": 0.001
+   }
+  }
+ },
+ "fidelity": {
+  "metric": "max_abs_complex_signal_error",
+  "certified": "measured",
+  "measured_by": "walk_free_terms",
+  "err_truncation": 8.44776e-05,
+  "err_quadrature": 2.09924e-08,
+  "err_quantisation": 0.000216246,
+  "err_quadrature_surface": 3.60282e-17,
+  "err_quadrature_field": 1.32581e-19,
+  "err_field_read": 7.00773e-06,
+  "err_quantisation_field": 6.7002e-05,
+  "err_max": 0.000712467,
+  "floor_max": 0.0102531,
+  "noise_floor": 0.005,
+  "floor_quantisation": 0.000103982,
+  "floor_total_max": 0.0103571,
+  "within_2x_floor": true,
+  "per_family": {
+   "OGSE1": {
+    "err_max": 0.000281662,
+    "floor_max": 0.00615217
+   },
+   "OGSE2": {
+    "err_max": 0.000281671,
+    "floor_max": 0.00756467
+   },
+   "OGSE3": {
+    "err_max": 0.000281687,
+    "floor_max": 0.0065446
+   },
+   "OGSE5": {
+    "err_max": 0.000281738,
+    "floor_max": 0.00656188
+   },
+   "PGSE": {
+    "err_max": 0.000294801,
+    "floor_max": 0.0102531
+   },
+   "SHORTD": {
+    "err_max": 0.000307752,
+    "floor_max": 0.00854426
+   }
+  },
+  "quadrature": {
+   "m": 3,
+   "h": 9.95025e-05,
+   "f_band_hz": 1280.0,
+   "h_round": null,
+   "qv_positions_m2": [
+    3.97785e-10,
+    3.99969e-10,
+    3.99971e-10
+   ],
+   "qv_contact_m2": 2.20441e-12,
+   "surface_rho_over_D": 1500.0,
+   "rel_at_band_edge": 1.26732e-07
+  },
+  "bounds_diffusivity": 2e-09,
+  "gradient_bound": {
+   "kind": "scanner_class",
+   "scanner": "connectome_2",
+   "G_max_per_axis": 0.5,
+   "T": 0.1,
+   "terms": "quadrature, quantisation and rounding over every waveform within G_max per axis (Bessel's inequality on the sine basis); truncation and floors over the battery's shapes at their class amplitude"
+  },
+  "err_susc_path": 0.000712467,
+  "floor_susc_path": 0.0025,
+  "susc_path_pulses_certified": 8,
+  "susc_path_measured_on": "pilot",
+  "susc_path_walkers": 1024,
+  "err_surface": 5.6655e-06,
+  "floor_surface": 3.25061e-05,
+  "surface_certified": "walk_free",
+  "surface_rho2_list": [
+   3e-06
+  ],
+  "err_surface_quantisation": 5.6655e-06,
+  "err_surface_truncation": 0.0,
+  "err_surface_quadrature": 3.60282e-17,
+  "target_floor": 0.0025,
+  "meets_target": false,
+  "terms": {
+   "truncation": 8.44776e-05,
+   "truncation_from": "band_variance",
+   "quadrature": {
+    "positions": 2.09924e-08,
+    "local_time": 3.60282e-17,
+    "field": 1.3258140568614968e-19
+   },
+   "field_read": 7.007725005466056e-06
+  }
+ },
+ "provenance": {
+  "substrate": "LabelVolume",
+  "L_m": 4e-06,
+  "kappa_m_s": 0.0001,
+  "D0": 2e-09,
+  "field": "the isotropic dipole basis of compartment B (x > L/2), a layer of normal x",
+  "campaign": "rewalk-slab-2026-10-29",
+  "walked_as": "walk",
+  "seed_rule": "pack_seed(id)",
+  "walker_rule": {
+   "rule": "toggle-proof: SE^2 <= sum_p a_p^2 / n_p for any toggle, n_p = a_p / f^2 at equal cost",
+   "floor": 0.005,
+   "counts": {
+    "water": 40000
+   },
+   "smoke": false
+  },
+  "code": {
+   "version": "2.2.0"
+  },
+  "walk": {
+   "kind": "coefficient",
+   "stepping": null
+  }
+ },
+ "license": "CC-BY-4.0",
+ "citation": "Fick RHJ (2026), replayable Monte-Carlo packs, SubstrateCommons",
+ "substrate": {
+  "id": "label_volume/labels-1bd001502eb7539e0ac23c8d",
+  "domain": {
+   "box_min": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "box_max": [
+    4e-06,
+    4e-06,
+    4e-06
+   ],
+   "boundary": [
+    "reflect",
+    "periodic",
+    "periodic"
+   ],
+   "surface_relaxivity": 0.0
+  },
+  "pools": [
+   {
+    "id": 0,
+    "name": "extra",
+    "D": null,
+    "water_fraction": 0.0,
+    "T2": null,
+    "T1": null,
+    "susceptibility": {
+     "chi_iso": -1e-07,
+     "chi_aniso": null,
+     "director": "none"
+    }
+   },
+   {
+    "id": 1,
+    "name": "intra",
+    "D": null,
+    "water_fraction": 1.0,
+    "T2": null,
+    "T1": null,
+    "susceptibility": null
+   }
+  ],
+  "walls": [
+   {
+    "name": "intra|extra",
+    "surface": {
+     "kind": "label_volume",
+     "file": "labels-1bd001502eb7539e0ac23c8d.nrrd",
+     "format": "nrrd",
+     "sha256": "4b348d4ac4dd5b48b4950928a7c4f90670e4221791f779caeee1107835cdffa1",
+     "voxel_size": [
+      2e-06,
+      4e-06,
+      4e-06
+     ],
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "labels": {
+      "0": "extra",
+      "1": "intra"
+     }
+    },
+    "inside_pool": 1,
+    "outside_pool": 0,
+    "permeability": {
+     "in_to_out": 0.0001,
+     "out_to_in": 0.0001
+    },
+    "surface_relaxivity": {
+     "inside": 0.0,
+     "outside": 0.0
+    },
+    "mt_reactivity": {
+     "inside": 0.0,
+     "outside": 0.0
+    }
+   }
+  ],
+  "seeding": {
+   "pools": [
+    1
+   ],
+   "rule": "uniform_by_volume",
+   "weights": "water_fraction",
+   "positions": null
+  },
+  "validity": {
+   "smallest_feature": 2e-06,
+   "tiers": [
+    "gradient",
+    "surface",
+    "exchange",
+    "field"
+   ],
+   "min_gap": null,
+   "mesh_edge_feature_ratio": null,
+   "thinnest_shell": null
+  },
+  "frame": {
+   "axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "in_plane": null,
+   "source": null
+  },
+  "description": "a segmented 2x1x1 label volume; the intra pool walks between its voxel faces",
+  "nominal_field_T": null,
+  "request": null,
+  "realisation": null,
+  "provenance": {
+   "source": "analytic",
+   "constructor": "LabelVolume",
+   "files": [
+    {
+     "path": "labels-1bd001502eb7539e0ac23c8d.nrrd",
+     "sha256": "4b348d4ac4dd5b48b4950928a7c4f90670e4221791f779caeee1107835cdffa1"
+    }
+   ],
+   "transformations": [
+    "pool 'extra' susceptibility replaced: None -> Susceptibility(chi_iso=-1e-07, chi_aniso=None, director='none', file=None) (SubstrateSpec.replace)"
+   ]
+  },
+  "substrate_spec_version": "0.1"
+ }
+}

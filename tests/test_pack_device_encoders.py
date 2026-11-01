@@ -20,10 +20,10 @@ def _coefficients(n_w, K, seed, *, start=5e-6):
 def test_the_device_coded_phases_match_the_numpy_route():
     """``coded_phases`` (``gamma sum C W``, the replay's own reading of a pack) on the device against the host's
     float64: the same phase of every walker under every waveform of the battery, to float32 rounding."""
-    from dmipy_sim.replay.compression import coded_phases, acquisition_battery, default_envelope
+    from dmipy_sim.replay.compression import coded_phases, acquisition_battery, default_battery
     n_t, dt = 257, 1e-4
     C = _coefficients(300, 32, 3)
-    G, _ = acquisition_battery(n_t, dt, default_envelope())
+    G, _ = acquisition_battery(n_t, dt, default_battery())
     phi_np = coded_phases(C, dt, G, n_t, device="numpy")
     phi_dv = coded_phases(C, dt, G, n_t, device="jax")
     assert phi_np.shape == phi_dv.shape == (300, G.shape[0])
@@ -91,13 +91,13 @@ def test_voxel_floor_coded_device_matches_numpy_and_uses_the_vectorised_census()
     """``voxel_floor_coded`` (the per-voxel certificate of a fill block, dmipy-sim#685) gives the same occupied
     voxels and walker counts on either device, and floors that agree to the coded phases' own float32 rounding."""
     from dmipy_sim.replay.bank import voxel_floor_coded
-    from dmipy_sim.replay.compression import default_envelope, pack_position_arrays
+    from dmipy_sim.replay.compression import default_battery, pack_position_arrays
     from dmipy_sim.phantom import Grid
     n_w, n_t, K = 400, 65, 8
     C = _coefficients(n_w, K, 13)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
     comp = np.zeros((n_w, n_t), np.int8)
-    env = default_envelope()
+    env = default_battery()
     P = pack_position_arrays(C, np.float64)
     ijk_np, pools_np, n_np, floor_np, _ = voxel_floor_coded(P, 2e-5, n_t, grid, comp, env, device="numpy")
     ijk_jx, pools_jx, n_jx, floor_jx, _ = voxel_floor_coded(P, 2e-5, n_t, grid, comp, env, device="jax")
@@ -113,13 +113,13 @@ def test_the_voxel_floor_of_one_cell_is_the_walks_standard_error():
     """A grid whose one voxel holds every walker: the cell's floor is the walk's ``measure_floor_coded`` (the standard
     error, weighted)."""
     from dmipy_sim.replay.bank import voxel_floor_coded
-    from dmipy_sim.replay.compression import default_envelope, pack_position_arrays, measure_floor_coded
+    from dmipy_sim.replay.compression import default_battery, pack_position_arrays, measure_floor_coded
     from dmipy_sim.phantom import Grid
     n_w, n_t, K = 400, 65, 8
     C = _coefficients(n_w, K, 13)
     grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(-1e-5,) * 3)
     w = np.random.default_rng(1).uniform(0.5, 1.5, n_w)
-    env = default_envelope()
+    env = default_battery()
     _, _, n, floor, _ = voxel_floor_coded(pack_position_arrays(C, np.float64), 2e-5, n_t, grid, np.zeros(n_w, np.int8), env, w=w, device="numpy")
     assert n.sum() == n_w and floor.shape == (1, 1)
     assert abs(floor[0, 0] - measure_floor_coded(C, 2e-5, n_t, env, w=w, device="numpy")["floor_max"]) < 1e-6

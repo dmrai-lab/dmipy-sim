@@ -19,6 +19,7 @@ from dmipy_sim.replay.study import walker_primitives
 from dmipy_replay.spec.substrate import Susceptibility
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _slab_grid
+from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
 
 N_T, DT, N_W = 41, 5e-4, 150                 # 20 ms of walk in 40 blocks; two windows of 10 ms; the checks compare two packs of ONE walk against their own certified bounds (which scale with the count), so no count is derived
 T = (N_T - 1) * DT
@@ -299,4 +300,8 @@ def _float_pack(*a, **k):
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **{"scanner": "connectom", **k})
+    if isinstance(k.get("envelope"), dict):                          # the test's certificate settings: its envelope and battery
+        settings = k.pop("envelope")
+        k.update(stated(settings, G_max=settings.get("G_max", battery_reach(a[0].T_window, settings)), of=a[0]))
+    return build_replay_pack(*a, **{"envelope": walk_envelope(G_max=battery_reach(a[0].T_window), band_hz=TEST_BAND_HZ,
+                                                              of=a[0]), **k})       # the walk's own bands, read on its battery

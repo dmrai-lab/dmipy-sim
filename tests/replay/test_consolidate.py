@@ -17,12 +17,13 @@ from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
+from tests._envelope import walk_envelope
 
 
 def _shard(spec, grid, tmp, name, block, per, seed):
     want = np.zeros(grid.shape, np.int64); want[block] = per
     w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
-                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
     os.makedirs(str(tmp / "shards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"))
 
@@ -130,7 +131,7 @@ def _curve_shard(spec, grid, tmp, name, block, per, seed, K):
     from dmipy_sim.replay.compression import band_curve
     want = np.zeros(grid.shape, np.int64); want[block] = per
     w = walk(spec, T_max=6e-3, block_h=2e-4, seed=seed, require_gpu=False, K=K,
-                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
     os.makedirs(str(tmp / "cshards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=K,
                              position_container=band_curve(K, 7), blt_container=band_curve(K, 7),
@@ -182,7 +183,7 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     for blk, seed in ((0, 7), (1, 8)):
         want = np.zeros(grid.shape, np.int64); want[blk] = 12
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3, K_c3=4, field_cutoff_max_m=25e-6, n_probe=2000, adaptive_steps=True,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         os.makedirs(str(tmp / "pshards"), exist_ok=True)
         packs.append(build_replay_pack(w, id=f"t/p{blk}", license="x", citation="x", K=3, voxel_grid=grid, susc_path_K=4, field_container=cont, position_container=((None, 8),), blt_container=((None, 8),),
                                        device="numpy", out_path=str(tmp / "pshards" / f"block-000{blk}.p1.rpk")))
@@ -219,7 +220,7 @@ def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):
     fill shares (the certifying pack's, which the walker writes; shards built apart would each derive their own)."""
     want = np.zeros(grid.shape, np.int64); want[block] = per
     w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
-                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}))
+                  seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}), envelope=walk_envelope(of=spec))
     os.makedirs(out_dir, exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"),
                              position_container=((16, 16), (None, 8)), blt_container=((16, 16), (None, 8)))

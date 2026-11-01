@@ -1,5 +1,5 @@
 """A pack's pose: one rotation exactly, or a distribution of rotations through the SO(3) response (#157)."""
-from tests._scanner_class import stated_class
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
@@ -34,7 +34,7 @@ def hollow():
     )
     walk = _walk_geometry(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
     # certified up to the strongest susceptibility the field-direction tests replay (|chi_iso| + |chi_aniso| = 9.1e-6)
-    pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=stated_class(dict(ENV, chi_max=9.1e-6)),
+    pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, **stated(dict(ENV, chi_max=9.1e-6), of=walk),
                            susc_path_K=16)
     assert pk.has_field and "susc_field_basis" in pk.meta["compression"]["channels"]
     return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])
@@ -47,7 +47,7 @@ def ellipsoid():
     g = d.Ellipsoid(semiaxes=(1.0e-6, 3.5e-6, 8.0e-6))
     walk = _walk_geometry(4000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/ellipsoid", license="x", citation="x", K=8,
-                           envelope=stated_class(dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8)))
+                           **stated(dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8), of=walk))
     # a closed pore bounds the displacement, so a high b here is a sharp *angular* response at a modest phase
     # amplitude -- which is what makes this the substrate that shows azimuthal structure
     return pk, _pgse(pk, [[1, 0, 0], [0, 1, 0]], [6e8, 6e8])

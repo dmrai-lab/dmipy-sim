@@ -1,7 +1,7 @@
 """``Phantom.partition``: one walk cut into voxels by where each walker started (RPH.md partition addressing,
 dmipy-sim#76, #186). Membership is derived from the stored ``r0``, fractions are emergent from the weights, the
 grid is free, and the anatomy rotates as a block."""
-from tests._scanner_class import stated_class
+from tests._envelope import battery_reach, stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
@@ -29,12 +29,12 @@ def pack_paths(walk, tmp_path_factory):
     out = {}
     for K in (2, 8):
         p = root / f"k{K}.rpk"
-        build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, sigma_star=5e-2, planned_floor=5e-2, out_path=str(p), envelope=stated_class())
+        build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, sigma_star=5e-2, planned_floor=5e-2, out_path=str(p), **stated(of=walk, G_max=battery_reach(walk.T_window)))
         out[K] = str(p)
     comp = np.asarray(walk.compartment)                                     # one label per walker
     for name, sel in (("intra", comp == 0), ("extra", comp != 0)):
         p = root / f"{name}.rpk"
-        build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=4, weights=sel.astype(float), out_path=str(p), envelope=stated_class())
+        build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=4, weights=sel.astype(float), out_path=str(p), **stated(of=walk, G_max=battery_reach(walk.T_window)))
         out[name] = str(p)
     out["comp"] = comp
     return out

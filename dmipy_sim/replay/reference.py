@@ -330,6 +330,9 @@ class Design:
     band's own (``h = 0.8 T / (pi K)``, :func:`~dmipy_sim.engine.accumulate.block_length`), which the pilot's record
     states with the windows and the quadratic variation it measured.
 
+    ``envelope`` is the :class:`~dmipy_replay.replay.envelope.Envelope` the packs are certified for, and ``battery``
+    where their certificates are read (:func:`~dmipy_sim.replay.compression.default_battery`'s keys).
+
     ``waveforms`` is a callable returning ``((label, ScannerSequence), ...)`` -- every waveform the family
     DECLARES, which the pack stage checks against ``waveform_band`` and the gate then reads.
 
@@ -345,7 +348,8 @@ class Design:
     """
     window_s: float
     K: int
-    envelope: dict
+    envelope: object
+    battery: dict
     waveforms: object
     tiers: tuple
     memory_budget_bytes: int
@@ -1352,7 +1356,7 @@ class ReferenceFamily:
         spc, ref = self.records.read("spec"), self.records.read("reference")
         d = self.design
         waveform_labels = [label for label, _ in self.design.waveforms()]
-        inputs = self._inputs(prev_sha, dict(asdict(d), waveforms=None, envelope=d.envelope), waveform_labels)
+        inputs = self._inputs(prev_sha, dict(asdict(d), waveforms=None, envelope=d.envelope.to_dict()), waveform_labels)
         held = self.records.reuse("design", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: the pilot is not walked again
             return held
@@ -1394,7 +1398,7 @@ class ReferenceFamily:
         import tempfile
         with _PeakRSS() as sampler:
             pk = build_replay_pack(walk, id=f"pilot/{self.name}", license="pilot", citation="pilot", K=int(d.K),
-                                   envelope=d.envelope, position_container="derived", blt_container="derived",
+                                   envelope=d.envelope, battery=d.battery, position_container="derived", blt_container="derived",
                                    verbose=False)
             floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded standard-error floor on the envelope
             with tempfile.TemporaryDirectory(prefix="dmipy-pilot-") as tmp:
@@ -1438,7 +1442,7 @@ class ReferenceFamily:
                      f"the pack stage on this window). The design therefore sets {n_walkers:,} walkers; the tier that "
                      f"holds its target at that count is {', '.join(holds) or 'none'}, and every tier's achieved floor "
                      f"is certified in the pack and shown on the card.")
-        waveforms, b_bound = [], max(float(x) for x in (d.envelope.get("bvals") or (0.0,)))
+        waveforms, b_bound = [], max(float(x) for x in (d.battery.get("bvals") or (0.0,)))
         for label, seq in self.design.waveforms():
             if label in {w["label"] for w in waveforms}:
                 raise ReferenceRefusal(f"design: the waveform {label!r} is declared twice; the envelope is a SET of "
@@ -1470,7 +1474,7 @@ class ReferenceFamily:
                     dof_is="the walker count the design sets, minus one: the smallest count any term's standard "
                            "error is measured over")
         rec = dict(window_s=float(d.window_s), K=int(d.K), block=block, windows=windows, pass_band=band,
-                   envelope=d.envelope, waveforms=waveforms,
+                   envelope=d.envelope.to_dict(), battery=d.battery, waveforms=waveforms,
                    tiers=tiers, memory_budget_bytes=int(d.memory_budget_bytes), tolerance=tol,
                    systematics=systematics,
                    pilot=dict(n_walkers=int(d.pilot_n), on_real_window=True, block=block, windows=windows, qv=qv,
@@ -1645,7 +1649,9 @@ class ReferenceFamily:
         from ..coefficient_walk import CoefficientWalk
         from .bank import build_replay_pack
         walk = CoefficientWalk.load(os.path.join(self.dir, w["walk_path"]))
-        pack = build_replay_pack(walk, id=self.build.pack_id[name], envelope=des["envelope"], K=int(des["K"]),
+        from dmipy_replay.replay.envelope import Envelope
+        pack = build_replay_pack(walk, id=self.build.pack_id[name], envelope=Envelope.from_dict(des["envelope"]),
+                                 battery=des["battery"], K=int(des["K"]),
                                  position_container="derived", blt_container="derived",
                                  license=self.publication.licence, citation=self.publication.citation,
                                  verbose=False)

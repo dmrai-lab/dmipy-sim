@@ -19,6 +19,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.consolidate import consolidate
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
+from dmipy_replay import envelope_of
 from dmipy_sim.spec import Tissue
 
 tmp = tempfile.mkdtemp(); os.makedirs(f"{tmp}/shards")
@@ -28,7 +29,7 @@ spec = disco_spec(f"{tmp}/t.tck", f"{tmp}/d.txt", side_m=20e-6, field=False)
 grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
 for b in (0, 1):                                                       # two blocks of the grid, one shard each
     want = np.zeros(grid.shape, np.int64); want[b] = 12
-    w = walk(spec, T_max=8e-4, seed=7 + b, require_gpu=False,
+    w = walk(spec, T_max=8e-4, seed=7 + b, require_gpu=False, envelope=envelope_of("connectom", rho2_max=1e-4),
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
     build_replay_pack(w, id=f"guide/block-{b}", license="CC-BY-4.0", citation="the guide", voxel_grid=grid, out_path=f"{tmp}/shards/block-000{b}.p1.rpk")
 manifest, index = consolidate(f"{tmp}/shards", f"{tmp}/layout", blocks=[0, 1], id="guide/columns")
