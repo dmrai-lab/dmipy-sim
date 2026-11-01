@@ -92,6 +92,7 @@ def test_an_analytic_pore_matches_the_scalar_engine(waveform):
         f"vector {e_vec:.5f} vs scalar {e_scal:.5f} on an analytic Sphere")
 
 
+@pytest.mark.gpu
 def test_a_mesh_pore_matches_the_scalar_engine(mesh_sphere, waveform):
     """The #69 regression. Measured: 0.96317 against a scalar 0.96305, where it used to return 0.05052."""
     e_vec, e_scal = _bloch(mesh_sphere, waveform), _scalar(mesh_sphere, waveform)

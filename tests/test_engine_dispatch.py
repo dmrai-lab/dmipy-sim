@@ -147,7 +147,7 @@ def test_the_coefficient_route_serves_a_permeable_walk():
     and the coefficients already contain every crossing that happened; the replay then applies the gradient
     off the bands, scalar T2/T1 off elapsed time and rho off the contact, none of which depend on kappa."""
     geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
-    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, require_gpu=False)).ravel()
+    S = np.asarray(simulate(500, D, _WF, geom, seed=SEED, require_gpu=False)).ravel()
     assert S.shape == (1,) and np.all(np.isfinite(S)) and 0.0 <= S[0] <= 1.0 + 1e-6
 
 

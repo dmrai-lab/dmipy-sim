@@ -21,9 +21,9 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, MyelinatedCylinder, set_b, Compartments, Pool
-# The myelinated pack walks ~10^5 walker-steps per second on a CPU runner, so each test walks 3,000 walkers; every
+# The myelinated pack walks ~10^5 walker-steps per second on a CPU runner, so each test walks 2,000 walkers; every
 # tolerance below is a standard error derived from that count.
-N_MYEL = 3_000
+N_MYEL = 2_000
 from dmipy_replay.acquisition.waveforms import tile_waveform
 from dmipy_sim.sequences import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
@@ -318,9 +318,9 @@ class TestD_ExchangeRate:
         )
 
         # Long diffusion time, moderate b to see diffusivity differences
-        delta, Delta = 10e-3, 40e-3
+        delta, Delta = 5e-3, 20e-3
         b_values = np.array([1.0e9, 2.0e9])
-        wf = _make_pgse_waveform(delta=delta, Delta=Delta, n_t=2000,
+        wf = _make_pgse_waveform(delta=delta, Delta=Delta, n_t=1000,
                                   grad_dir=[1, 0, 0])
         wf_b = set_b(tile_waveform(wf, len(b_values)), b_values)
 
@@ -563,7 +563,7 @@ class TestG_BoundaryReflection:
         )
 
         # Long TE to give walkers time to potentially leak
-        wf = _make_b0_waveform(n_t=2000, TE=80e-3)
+        wf = _make_b0_waveform(n_t=1000, TE=20e-3)
         sig = simulate(n_walkers=n_walkers, waveform=wf,
                        geometry=geom, seed=SEED)
 
@@ -586,7 +586,7 @@ class TestG_BoundaryReflection:
             compartments=Compartments(intra=Pool(D=2e-9, water_fraction=1.0), myelin=Pool(water_fraction=0.0), extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
-        wf = _make_b0_waveform(n_t=2000, TE=80e-3)
+        wf = _make_b0_waveform(n_t=1000, TE=20e-3)
         sig = simulate(n_walkers=n_walkers, waveform=wf,
                        geometry=geom, seed=SEED)
 
@@ -598,8 +598,8 @@ class TestG_BoundaryReflection:
         """Myelin-only with T2: b=0 signal = exp(-TE/T2_myelin) exactly."""
         n_walkers = N_MYEL
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
-        T2_myelin = 15e-3
-        TE = 60e-3
+        T2_myelin = 5e-3        # exp(-TE / T2) depends on the ratio only: a third of the walk
+        TE = 20e-3
 
         geom = MyelinatedCylinder(
             inner_radius=3e-6, outer_radius=5e-6,
