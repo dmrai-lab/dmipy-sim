@@ -126,7 +126,6 @@ def test_a_pack_certified_for_a_class_reads_its_position_terms_against_it(walk):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         cls = build_replay_pack(walk, envelope=dict(cx.default_envelope(), scanner="connectome_2"), **kw)
-        bat = build_replay_pack(walk, **kw)
     acq = cls.replay_envelope["acquisition"]
     assert acq["bound"] == "scanner_class" and acq["scanner"] == "connectome_2" and acq["G_max"] == 0.5
     T_w = float(cls.T_window)
@@ -138,7 +137,11 @@ def test_a_pack_certified_for_a_class_reads_its_position_terms_against_it(walk):
     qv = np.asarray(cls.meta["walk_params"]["qv"]["positions"], np.float64)
     expect = 0.5 * GAMMA ** 2 * 0.25 * T_w * float((rel * T_w / (np.pi * k) ** 2).max()) * float(qv.sum())
     assert f["err_quadrature"] == pytest.approx(expect, rel=1e-3)
-    assert "bound" not in bat.replay_envelope["acquisition"] and "gradient_bound" not in bat.fidelity
+
+
+def test_a_walk_with_no_class_is_refused_by_name(walk):
+    with pytest.raises(ValueError, match="state the scanner class this pack is certified for"):
+        build_replay_pack(walk, id="t/none", license="x", citation="x", K=32)
 
 
 def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():

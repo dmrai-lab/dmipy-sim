@@ -6,6 +6,7 @@ does not change its sign, the gate for C2 is on / off (``ScannerSequence.chi_per
 read the same gates, so a PGSE and a spin echo of one TE certify alike and the two routes agree on a pack with a
 refocused battery.
 """
+from tests._scanner_class import stated_class
 import dmipy_replay.replay.compression as _r_compression
 import warnings
 
@@ -40,7 +41,7 @@ def cylinder_walk():
 @pytest.fixture(scope="module")
 def packs(cylinder_walk):
     """The walk-free and the measured pack of the one walk, at the default contact envelope."""
-    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=_env([1e-5, 1e-4]), K=32)
+    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=stated_class(_env([1e-5, 1e-4])), K=32)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return (build_replay_pack(cylinder_walk, fidelity="derived", **kw),
@@ -111,7 +112,7 @@ def test_the_walk_free_contact_term_charges_the_bands_the_pack_does_not_store(cy
     """A pack storing fewer contact bands than the walk accumulated (``blt_temporal_K``) is charged their truncation
     walk-free: in the float container the stored bridge has no quantisation, its whole error against the dense reading
     is the bands left out, and the walk-free ``err_surface`` is the measured one to a quarter of the floor."""
-    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=_env([1e-5, 1e-4]), K=32,
+    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=stated_class(_env([1e-5, 1e-4])), K=32,
               blt_temporal_K=4, blt_container=None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

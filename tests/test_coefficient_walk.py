@@ -8,6 +8,7 @@ their DST-I on five engine classes, the quadrature against a walk accumulated pe
 walk and a 0.8 um slab, the matrix method on a sphere and a cylinder, and the walk's host memory over blocks spanning
 16x (the quadrature and the memory are minutes of walking on a CPU: the slow tier).
 """
+from tests._scanner_class import stated_class
 import dmipy_replay.replay.compression as _r_compression
 import importlib.util
 import warnings
@@ -233,7 +234,7 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
                                rtol=0, atol=1e-12)
     np.testing.assert_array_equal(cw.position_coeffs[:, :, :2], walks["z"].position_coeffs[:, :, :2])
     assert cw.h == pytest.approx(1e-4)
-    pk = build_replay_pack(cw, id="t/derived", license="x", citation="x")
+    pk = build_replay_pack(cw, id="t/derived", license="x", citation="x", envelope=stated_class())
     fid = pk.fidelity
     assert fid["certified"] == "measured" and fid["measured_by"] == "walk_free_terms" and "basis" not in pk.meta["compression"]
     assert pk.meta["walk_params"]["block"]["m"] == 3
@@ -241,12 +242,12 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
         assert k not in pk.meta["walk_params"] and k not in pk.meta["compression"]
     assert pk.n_windows == 1 and "n_t" not in pk.meta["walk_params"]["windows"]
     assert fid["err_quadrature"] > 0 and fid["err_max"] <= 2 * fid["floor_max"], fid
-    pm = build_replay_pack(cw, id="t/measured", license="x", citation="x", fidelity="measured")
+    pm = build_replay_pack(cw, id="t/measured", license="x", citation="x", fidelity="measured", envelope=stated_class())
     assert pm.fidelity["certified"] == "measured" and pm.fidelity["measured_on"] == 200
     with pytest.raises(ValueError, match="raw_subset"):
-        build_replay_pack(walks["z"], id="t/x", license="x", citation="x", fidelity="measured")
+        build_replay_pack(walks["z"], id="t/x", license="x", citation="x", fidelity="measured", envelope=stated_class())
     with pytest.raises(ValueError, match="K >= 48"):
-        build_replay_pack(cw, id="t/x", license="x", citation="x", K=48)
+        build_replay_pack(cw, id="t/x", license="x", citation="x", K=48, envelope=stated_class())
 
 
 def test_err_max_carries_every_term_and_the_float32_rounding(walks):
@@ -255,7 +256,7 @@ def test_err_max_carries_every_term_and_the_float32_rounding(walks):
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import _battery_b_max
     cw = walks["c"]
-    pk = build_replay_pack(cw, id="t/rounding", license="x", citation="x")
+    pk = build_replay_pack(cw, id="t/rounding", license="x", citation="x", envelope=stated_class())
     f, t = pk.fidelity, pk.fidelity["terms"]
     assert cw.block["precision"] == "float32" and "rounding" in t
     want = cw.block["k0_residual_relative"] * np.sqrt(2.0 * _battery_b_max(cx.default_envelope()) * f["bounds_diffusivity"])
@@ -268,8 +269,8 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
     it: a faster diffusivity (the bands renormalised by ``a^(-1/2)``) and a prefix (re-encoded from the bands at the
     block ends)."""
     from dmipy_replay.spec.tissue import Tissue
-    pc = build_replay_pack(walks["c"], id="t/c", license="x", citation="x")
-    pz = build_replay_pack(walks["z"], id="t/z", license="x", citation="x")
+    pc = build_replay_pack(walks["c"], id="t/c", license="x", citation="x", envelope=stated_class())
+    pz = build_replay_pack(walks["z"], id="t/z", license="x", citation="x", envelope=stated_class())
     seq = d.pgse([[1, 0, 0], [0, 0, 1]], 1e-3, 3e-3, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
     tol = pc.fidelity["err_max"] + pz.fidelity["err_max"] + 1e-3
     assert np.abs(pc.replay(seq) - pz.replay(seq)).max() <= tol
@@ -284,11 +285,11 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
 def test_a_walk_of_several_windows_packs_window_by_window():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1), permeability=1e-5)
     cw = _quiet(_walk_geometry, 200, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
-    pk = build_replay_pack(cw, id="t/w", license="x", citation="x")
+    pk = build_replay_pack(cw, id="t/w", license="x", citation="x", envelope=stated_class())
     assert pk.n_windows == 2 and pk.windows["T"] == pytest.approx(0.1) and pk.n_t == 101
     assert pk.meta["walk_params"]["block"]["n_blocks"] == 100 and pk.fidelity["combined"] == "bound_over_windows"
     seq = d.pgse([[1, 0, 0]], 5e-3, 0.12, bvalues=[3e8], TE=0.15, slew_rate=np.inf)
-    one = build_replay_pack(cw.window(0), id="t/w0", license="x", citation="x")
+    one = build_replay_pack(cw.window(0), id="t/w0", license="x", citation="x", envelope=stated_class())
     assert one.n_windows == 1 and np.isfinite(pk.replay(seq)).all()
 
 
@@ -313,7 +314,7 @@ def test_what_a_walk_does_not_carry_is_refused_by_name():
         _walk_geometry(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=30, block_order=0)
     cw = _quiet(_walk_geometry, 50, 2e-9, g, 0.2, 2e-3, require_gpu=False, K=8, sub_steps=2)
     with pytest.raises(ValueError, match="window_T"):
-        build_replay_pack(cw, id="t/x", license="x", citation="x", window_T=0.05)
+        build_replay_pack(cw, id="t/x", license="x", citation="x", window_T=0.05, envelope=stated_class())
     assert cw.raw_positions is None                                    # no raw subset asked for, none kept
 
 

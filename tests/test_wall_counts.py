@@ -9,6 +9,7 @@ on, in discrete form. And ``exhausted_steps`` is the certificate that a bounce b
 exhausted gives the trajectories of any larger budget, by the loop's own rule (the leftover path is flown only when
 the last iteration met nothing), while a budget that is exhausted cuts path and moves walkers.
 """
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -208,7 +209,7 @@ def test_the_pack_refuses_an_exhausted_walk(tmp_path):
     with pytest.warns(RuntimeWarning):
         w = _walk(g, bounce_budget=1)
     with pytest.raises(ValueError, match="exhausted its bounce budget"):
-        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"))
+        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"), envelope=stated_class())
 
 
 def test_certify_bounce_budget_sizes_from_a_pilot():

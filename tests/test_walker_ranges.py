@@ -3,6 +3,7 @@ walkers in either precision, a pack's shape and starts are read without decoding
 copy-on-write and replaced rather than rewritten, and a merge streamed to its file is the merge held in memory."""
 from __future__ import annotations
 
+from tests._scanner_class import stated_class
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
@@ -70,7 +71,7 @@ def test_a_packs_shape_and_starts_are_read_without_decoding(monkeypatch, tmp_pat
     import dmipy_sim as d
     from dmipy_sim.engine.core import _walk_geometry
     w = _walk_geometry(40, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 2e-3, seed=3, K=8, require_gpu=False)
-    pk = build_replay_pack(w, id="t/shape", license="x", citation="x", K=8, out_path=str(tmp_path / "p.rpk"))
+    pk = build_replay_pack(w, id="t/shape", license="x", citation="x", K=8, out_path=str(tmp_path / "p.rpk"), envelope=stated_class())
     pk = read_rpk(str(tmp_path / "p.rpk"))
     r0 = _r_compression.read_position_coeffs(pk.arrays)[:, 0, :]
 
@@ -137,7 +138,7 @@ def test_a_merge_streamed_to_its_file_is_the_merge_in_memory(spec_grid, monkeypa
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=300 + p_, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         packs.append(build_replay_pack(w, id=f"t/stream-{p_}", license="x", citation="x", K=3, voxel_grid=grid,
-                                       out_path=str(tmp / f"stream-{p_}.rpk")))
+                                       out_path=str(tmp / f"stream-{p_}.rpk"), envelope=stated_class()))
     packs = [read_rpk(str(tmp / f"stream-{p_}.rpk")) for p_ in (1, 2)]
     mem = merge_packs(packs, id="t/stream", overlap="recertify")
     monkeypatch.setattr(cx, "SLICE_BYTES", 8 * 3 * 5 * 7)              # seven walkers' coefficients at a time

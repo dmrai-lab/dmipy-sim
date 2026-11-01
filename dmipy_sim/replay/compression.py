@@ -751,20 +751,14 @@ def acquisition_envelope(waveform, **envelope):
     slew (adjacent samples, the first against zero) -- so the reader's check (``check_acquisition_envelope``) holds for
     ``waveform`` by construction and refuses a waveform that plays more. ``waveform`` is a sequence or a ``Protocol`` of
     them; ``envelope`` keys (``B0_list``, ...) are stated beside the class. A gradient-free acquisition states the
-    smallest gradient a class can (:data:`GRADIENT_FLOOR`)."""
+    states ``G_max = slew_max = 0.0``."""
     seqs = list(waveform) if hasattr(waveform, "scatter") else [waveform]
     g = s = 0.0
     for q in seqs:
         played = np.asarray(getattr(q, "played_gradient", q.G), np.float64)
         g = max(g, float(np.abs(played).max(initial=0.0)))
         s = max(s, float(np.abs(np.diff(played, axis=1, prepend=0.0) / float(q.dt)).max(initial=0.0)))
-    return dict(default_envelope(), scanner=ACQUISITION_CLASS, G_max=max(g, GRADIENT_FLOOR),
-                slew_max=max(s, SLEW_FLOOR), **envelope)
-
-
-#: The gradient (T/m) and slew (T/m/s) an acquisition that plays none states, so the class's limits stay positive.
-GRADIENT_FLOOR = 1e-12
-SLEW_FLOOR = 1e-12
+    return dict(default_envelope(), scanner=ACQUISITION_CLASS, G_max=g, slew_max=s, **envelope)
 
 
 def certified_envelope(envelope=None, spec=None):
@@ -811,8 +805,8 @@ def envelope_G_max(env):
     if g is None:
         return None
     g = float(g)
-    if not (np.isfinite(g) and g > 0.0):
-        raise ValueError(f"the envelope's G_max {g!r} is not a finite positive gradient (T/m)")
+    if not (np.isfinite(g) and g >= 0.0):
+        raise ValueError(f"the envelope's G_max {g!r} is not a finite non-negative gradient (T/m)")
     return g
 
 

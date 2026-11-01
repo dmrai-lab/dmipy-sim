@@ -5,6 +5,7 @@ The planner is :mod:`dmipy_sim.replay.planning`, the rule the columnar layout's 
 against the columnar planner on a shared case; the prefix replay against the full decode cut at the plan; the error bound on
 several waveforms (the real canonical-pores pack, when it is on this machine, adds OGSE 400 Hz); the decoded cache's prefix
 entries; the field modes; and ``hf://`` range reads against a local HTTP server that honours ``Range``."""
+from tests._scanner_class import stated_class
 import dmipy_replay.replay.compression as _r_compression
 import contextlib
 import http.server
@@ -37,7 +38,7 @@ def pack():
     """A cylinder of 3 um radius walked for 20 ms: 4000 walkers, 40 quantised bands, the contact bands."""
     w = _walk_geometry(N_W, 2e-9, d.Cylinder(3e-6, (0.0, 0.0, 1.0)), T_MAX, DT, seed=1, require_gpu=False,
                                 K=K_BANDS, window_T=T_MAX)
-    return build_replay_pack(w, id="test/plan-before-read", license="x", citation="x")
+    return build_replay_pack(w, id="test/plan-before-read", license="x", citation="x", envelope=stated_class(G_max=15.0))
 
 
 def cache_kinds(pk):

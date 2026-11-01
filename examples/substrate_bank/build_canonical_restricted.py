@@ -74,7 +74,7 @@ def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128, env
         out_path=out_path,
         provenance=dict(shape=shape, diameter_m=float(diameter), diffusivity=float(D0),
                         geometry="single impermeable restricted pore", real_or_synthetic="synthetic"),
-        verbose=verbose)
+        verbose=verbose, scanner="connectom")
     if verbose:
         f = pack.fidelity
         print(f"[pack] {pid}  floor_max={f.get('floor_max'):.4g} err_max={f.get('err_max'):.4g} "

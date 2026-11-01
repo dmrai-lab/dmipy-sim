@@ -29,6 +29,14 @@ D0, T, K = 2.0e-9, 0.100, 256
 DIAM = 5.0e-6
 
 
+
+def stated_class(envelope=None):
+    """``envelope`` (the default's when None) with the scanner class of this tool's own limits stated: the waveforms it
+    replays are ideal lobes no catalogue scanner plays, and a replay beyond these limits is still refused."""
+    from dmipy_sim.replay.compression import default_envelope
+    return dict(default_envelope() if envelope is None else envelope, scanner="connectome_2", G_max=100.0, slew_max=1e12)
+
+
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -87,7 +95,7 @@ def sweep_c3(a):
     rows_ = []
     for label, knob in cases:
         t0 = time.time()
-        pk = build_replay_pack(walk, id=f"c3/{label}", K=a.c3_K, license="x", citation="x", susc_path_K=Kp, field_container=knob, device="numpy")
+        pk = build_replay_pack(walk, id=f"c3/{label}", K=a.c3_K, license="x", citation="x", susc_path_K=Kp, field_container=knob, device="numpy", envelope=stated_class())
         pm = pk.meta["compression"]["channels"]["susc_field_basis"]
         B = sum(np.asarray(v).nbytes for k, v in pk.arrays.items() if k.startswith("susc_path_dct")) / pk.n_walkers
         f = pk.meta["fidelity"]
@@ -140,7 +148,7 @@ def main(argv=None):
     def build(label, container, blt_container=None, **kw):
         t0 = time.time()
         pk = build_replay_pack(walk, id=f"sweep/{label}", K=K, license="x", citation="x", blt_temporal_K=a.blt_K,
-                               position_container=container, blt_container=blt_container, **kw)
+                               position_container=container, blt_container=blt_container, envelope=stated_class(), **kw)
         pos_b, tot_b = bytes_per_walker(pk)
         sig = {k: float(np.abs(np.asarray(pk.replay(s))).ravel()[0]) for k, s in rows.items()}
         log(f"{label}: built + replayed in {time.time() - t0:.0f} s")

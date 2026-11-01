@@ -3,6 +3,7 @@
 Three things stand between the prescribed gradient and the delivered one -- the coils' nonlinearity, the
 magnet's background, and the coils' concomitant term. All three were modelled and none reached a signal.
 """
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -189,7 +190,7 @@ def pack(tmp_path_factory):
     # The assertions below still passed at 400 -- they compare two weight sets on the SAME walkers, which
     # cancels most of the floor -- but any NUMBER read off such a fixture is a draw, not a measurement.
     walk = _walk_geometry(40_000, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
-    build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out), envelope=stated_class())
     return read_rpk(str(out))
 
 

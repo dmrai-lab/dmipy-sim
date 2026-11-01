@@ -7,6 +7,7 @@ checks are absolute, not comparative: on free water the voxel's signal is ``exp(
 acquisition actually delivers there, which no replay computes; at isocentre every term vanishes and the
 signal is the ideal magnet's to the bit.
 """
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -36,7 +37,7 @@ def pack_path(tmp_path_factory):
     n_t, dt = int(seq.n_t), float(seq.dt)
     walk = _walk_geometry(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
-    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
+    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out), envelope=stated_class())
     return str(out)
 
 

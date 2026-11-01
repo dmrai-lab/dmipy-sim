@@ -1,5 +1,6 @@
 """Mesh substrates are specs too: a single surface round-trips through its spec, and a multi-surface
 bundle is walked pool by pool by `walk` from the spec alone, into a pack that embeds it."""
+from tests._scanner_class import stated_class
 import json
 import os
 
@@ -135,7 +136,7 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     r0 = np.hypot(C[:, 0, 0] - np.where(C[:, 0, 0] < 0, -2e-6, 2e-6), C[:, 0, 1])
     assert (r0[ids == 1] < 0.8e-6 + 1e-9).all() and (r0[ids == 2] > 0.8e-6 - 1e-9).all()      # pools where the walls say
     assert (C[ids == 2, 1:] == 0).all()                                                     # stuck myelin: no path
-    pk = build_replay_pack(w, id="test/bundle", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(w, id="test/bundle", license="x", citation="x", K=8, envelope=stated_class(ENV))
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert pk.meta["substrate"]["id"] == "test/bundle-2" and SubstrateSpec.from_dict(pk.meta["substrate"]) == spec
     assert "per_comp" not in pk.meta and pk.substrate == spec

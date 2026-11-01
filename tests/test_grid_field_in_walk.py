@@ -4,6 +4,7 @@ every ``field_read_interval`` seconds (every physics step when the rule asks bel
 trapezoid of the reads as the field's cosine modes per window (and keeps the raw subset's reads at their instants), as
 the strand route does with ``adaptive_steps=True``. ``walk`` reads every gridded source this way, and the pack's path
 channel is encoded from those modes."""
+from tests._scanner_class import stated_class
 import dataclasses
 
 import numpy as np
@@ -197,7 +198,7 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs is not None
     assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
     assert w.field_coeffs.shape == (600, w.n_windows, w.K_c3, 12)
-    pk = build_replay_pack(w, id=f"test/{family}-in-walk", license="x", citation="x", envelope=ENV)
+    pk = build_replay_pack(w, id=f"test/{family}-in-walk", license="x", citation="x", envelope=stated_class(ENV))
     ch = pk.meta["compression"]["channels"]
     assert pk.has_field and ch["susc_field_basis"]["sampling"] == "accumulated_in_walk"
     assert ch["susceptibility_grid"]["replay_route"] == "path" and not ch["susceptibility_grid"]["arrays_in_pack"]
@@ -221,7 +222,7 @@ def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_
     np.testing.assert_allclose(frozen[:, 0, 0], np.sqrt(w.T_window) * seat, rtol=1e-6, atol=1e-6 * np.abs(seat).max())
     moving = np.asarray(w.field_coeffs)[ids != 2]
     assert np.abs(moving[:, :, 1:]).max() > 0                                      # the walkers move: their field is modulated
-    pk = build_replay_pack(w, id="test/bundle-in-walk", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(w, id="test/bundle-in-walk", license="x", citation="x", K=8, envelope=stated_class(ENV))
     assert pk.meta["compression"]["channels"]["susc_field_basis"]["sampling"] == "accumulated_in_walk"
 
 
@@ -229,7 +230,7 @@ def test_a_spec_without_a_source_carries_no_field():
     """(d) Unchanged: no source, no basis, no samples, no tier."""
     w = walk(spec_without_source(_packed().spec), 100, 2e-3, seed=2, require_gpu=False, K=8)
     assert w.field_basis is None and w.field_coeffs is None
-    pk = build_replay_pack(w, id="test/no-source", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(w, id="test/no-source", license="x", citation="x", K=8, envelope=stated_class(ENV))
     assert not pk.has_field
 
 
@@ -252,7 +253,7 @@ def test_the_closed_form_hollow_cylinder_is_read_in_the_walk():
     fr = w.block["field_read"]
     assert fr["pools"]["intra"]["dt_f_rule"] is None and not np.any(fr["pools"]["intra"]["qv_increments"])   # uniform lumen
     assert sum(fr["pools"]["extra"]["qv_increments"]) > 0 and set(w.block["field_band"]["pools"]) >= {"extra", "intra"}
-    pk = build_replay_pack(w, id="test/closed-form", license="x", citation="x", envelope=ENV)
+    pk = build_replay_pack(w, id="test/closed-form", license="x", citation="x", envelope=stated_class(ENV))
     assert pk.has_field and pk.meta["compression"]["channels"]["susceptibility_grid"]["source"]["kind"] == "hollow_cylinder"
     import tempfile, os
     path = os.path.join(tempfile.mkdtemp(), "w.walk")

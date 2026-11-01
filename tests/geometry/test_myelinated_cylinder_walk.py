@@ -5,6 +5,7 @@ kernel (`physics.make_myelin_substep`) in an open domain, stepped by `physics.ma
 repeats `r`). See `tests/geometry/test_trajectory_walk_gap.py` for the pre-flight check that used to
 refuse it, and `tests/test_compartment_ids.py::test_simulate_and_simulate_trajectories_report_the_same_ids`
 for the packed geometry's version of the fused/trajectory label check mirrored here."""
+from tests._scanner_class import stated_class
 import dataclasses
 
 import jax
@@ -13,6 +14,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_sim.replay.compression import acquisition_envelope
 from dmipy_sim.engine.core import _walk_geometry
 import dmipy_sim.engine.core as core
 from dmipy_sim.replay.bank import build_replay_pack
@@ -86,7 +88,7 @@ def test_a_replay_pack_of_the_walk_agrees_with_the_fused_signal():
 
     w = _walk_geometry(N, D, _g(), T_max=T_max, block_h=T_max / 60, K=59, seed=0, require_gpu=False)
     w = dataclasses.replace(w, spec=spec_without_source(w.spec))      # the bare signal: no field tier here
-    pk = build_replay_pack(w, id="test/isolated-myelin-pgse", K=w.K, license="x", citation="x")
+    pk = build_replay_pack(w, id="test/isolated-myelin-pgse", K=w.K, license="x", citation="x", envelope=acquisition_envelope(wf))
     tissue = Tissue(T2={"intra": 0.05, "myelin": 0.01, "extra": 0.08})
     s_replay = float(np.asarray(pk.replay(wf, tissue=tissue)).ravel()[0])
 
@@ -121,5 +123,5 @@ def test_walk_spec_builds_a_three_pool_pack():
     g = _g()
     w = walk(g.spec, 1500, T_max=1e-3, require_gpu=False)
     assert set(np.unique(np.asarray(w.compartment))) == {EXTRA, INTRA, MYELIN}
-    pack = build_replay_pack(w, id="test/isolated-myelin-spec-walk", license="x", citation="x")   # the sheath's field sampled in the walk
+    pack = build_replay_pack(w, id="test/isolated-myelin-spec-walk", license="x", citation="x", envelope=stated_class())   # the sheath's field sampled in the walk
     assert len(pack.substrate.pools) == 3

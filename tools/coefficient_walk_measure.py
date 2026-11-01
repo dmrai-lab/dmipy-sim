@@ -47,6 +47,14 @@ import numpy as np
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 
+
+def stated_class(envelope=None):
+    """``envelope`` (the default's when None) with the scanner class of this tool's own limits stated: the waveforms it
+    replays are ideal lobes no catalogue scanner plays, and a replay beyond these limits is still refused."""
+    from dmipy_sim.replay.compression import default_envelope
+    return dict(default_envelope() if envelope is None else envelope, scanner="connectome_2", G_max=100.0, slew_max=1e12)
+
+
 def bands(cw):
     """``(n_w, K+2, 3)``: a one-window coefficient walk's coefficients, float64."""
     return np.asarray(cw.position_coeffs, np.float64)[:, 0]
@@ -96,7 +104,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
         if names and name not in names:
             continue
         kw = dict(T_max=T, block_h=block_h, seed=seed, require_gpu=False, sub_steps=sub_steps, window_T=T)
-        pk = dict(license="x", citation="x", K=K, position_container=None, blt_container=None, blt_temporal_K=K,
+        pk = dict(license="x", citation="x", K=K, envelope=stated_class(), position_container=None, blt_container=None, blt_temporal_K=K,
                   blt_dtype=np.float32)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -263,7 +271,7 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, block_h=None, seed=1):
             warnings.simplefilter("ignore")
             cw = _walk_geometry(n, D, geom, T_max=T, block_h=block_h, seed=seed, require_gpu=False, K=K, tiers=(),
                                          window_T=T)
-        pk = build_replay_pack(cw, id=f"oracle/{name}", license="x", citation="x")
+        pk = build_replay_pack(cw, id=f"oracle/{name}", license="x", citation="x", envelope=stated_class())
         w, ew, E = pk.walker_signals(seq)
         S = np.abs((ew[:, None] * E).sum(0) / w.sum())
         se = np.std(np.real(E * np.conj(E.mean(0) / np.abs(E.mean(0)))), axis=0) / np.sqrt(E.shape[0])
@@ -292,7 +300,7 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
         warnings.simplefilter("ignore")
         g = d.Sphere(radius=R)
         cw = _walk_geometry(n, D, g, T_max=T, seed=seed, require_gpu=False, K=K, raw_subset=n, window_T=T)
-    pa = build_replay_pack(cw, id="surface/acc", license="x", citation="x", fidelity="measured")
+    pa = build_replay_pack(cw, id="surface/acc", license="x", citation="x", fidelity="measured", envelope=stated_class())
     tissue = Tissue(rho2=rho)
     rows = []
     for TE in (T, T / 2):
@@ -417,7 +425,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         t_walk = time.time() - t0
         t0 = time.time()
         bits_kw = {} if field_bits is None else dict(field_container=int(field_bits))   # derived for the floor unless a flat depth is given
-        pk = build_replay_pack(w, id="admission/myelin", license="x", citation="x", envelope=env, **bits_kw)
+        pk = build_replay_pack(w, id="admission/myelin", license="x", citation="x", envelope=stated_class(env), **bits_kw)
         t_pack = time.time() - t0
         pm = build_replay_pack(w, id="admission/myelin-measured", license="x", citation="x", envelope=env, fidelity="measured", **bits_kw)
     bytes_pack = sum(np.asarray(v).nbytes for v in pk.arrays.values())
@@ -494,7 +502,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         w2 = _walk_geometry(n, D, cellp, T, seed=seed + 7, require_gpu=require_gpu, K=K, window_T=T, field_basis=fg2,
                                      raw_subset=n_raw, envelope=env)
         w2 = dataclasses.replace(w2, spec=cellm.spec, weights=None)             # the cell's spec names the sheath as the source
-        pk2 = build_replay_pack(w2, id="admission/cell-extra", license="x", citation="x", envelope=env, fidelity="measured")
+        pk2 = build_replay_pack(w2, id="admission/cell-extra", license="x", citation="x", envelope=stated_class(env), fidelity="measured")
     prov = MyelinSusceptibility(centers=[[0.0, 0.0]], inner_radii=[r_in], outer_radii=[r_out], L=L, delta_chi_a=dchi_a, B0=B0,
                                 theta=th, alpha=0.0, periodic=True, n_images=6)
     # the forward engine on the SAME grid the walk read (the 13 channels contracted at this (B0, chi, H)), so the two
@@ -592,8 +600,8 @@ def _signal_compare(fine, other, seq, kw, env):
     """The whole ensemble's replay of ``seq`` from the packs of ``fine`` and ``other``: ``|S|`` of each, the
     difference, the split-half standard error and the term ``other``'s certificate charges."""
     from dmipy_sim.replay.bank import build_replay_pack
-    pf = build_replay_pack(fine, id="read/fine", license="x", citation="x", envelope=env)
-    po = build_replay_pack(other, id="read/other", license="x", citation="x", envelope=env)
+    pf = build_replay_pack(fine, id="read/fine", license="x", citation="x", envelope=stated_class(env))
+    po = build_replay_pack(other, id="read/other", license="x", citation="x", envelope=stated_class(env))
     S0, se0 = _ensemble(pf, seq, **kw)
     S1, _ = _ensemble(po, seq, **kw)
     _, ew0, E0 = pf.walker_signals(seq, **kw)
@@ -749,7 +757,7 @@ def permeable(*, n=4000, D=2e-9, T=0.025, seed=2, kappa=2e-5, T2=(0.03, 0.08), r
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             w = _walk_geometry(n, D, plain, T, seed=seed, require_gpu=require_gpu, window_T=T, raw_subset=n)
-        pk = build_replay_pack(w, id=f"permeable/{name}", license="x", citation="x")
+        pk = build_replay_pack(w, id=f"permeable/{name}", license="x", citation="x", envelope=stated_class())
         lab = np.asarray(w.raw_compartment); T2v = np.array([T2e, T2i])
         lab_ev = events_at_instants(w.comp_events, w.compartment, np.arange(w.n_blocks + 1) * w.h) if w.comp_events is not None else np.repeat(np.asarray(w.compartment)[:, None], w.n_blocks + 1, axis=1)
         f_intra = float((np.asarray(w.compartment) == 1).mean())

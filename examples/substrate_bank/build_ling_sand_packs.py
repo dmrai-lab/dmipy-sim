@@ -306,7 +306,7 @@ def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
     if cache.get(sample, {}).get("key") != key:
         w = walk(spec_of(sample, data_dir, work_dir), int(n), T=T, K=K_BANDS, seed=seed)
         pack = build_replay_pack(w, id=f"ling-sand-packs/{sample.lower()}/direct-se", license=LICENCE,
-                                 citation=CITATION, envelope=ENVELOPE, K=K_BANDS)
+                                 citation=CITATION, envelope=ENVELOPE, K=K_BANDS, scanner="connectom")
         _t, _S, _lm, se_walk = decay_and_log_mean(pack, rho_of(sample), grid)
         scale = (int(n) / float(d["n_walkers"])) ** 0.5
         cache[sample] = dict(key=key, value=dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n),

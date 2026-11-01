@@ -97,7 +97,7 @@ w = walk(spec, 200_000, T_max=0.05, seed=0)            # the band is the scanner
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one
 #    T2, rho2 or chi value lives in the pack; those are what a replay applies
-pack = build_replay_pack(w, id="wm/canonical", license="CC-BY-4.0", citation="...")
+pack = build_replay_pack(w, id="wm/canonical", license="CC-BY-4.0", citation="...")   # states the walk's scanner class
 pack.save("wm.rpk")
 
 # 3. anywhere, later: load it and fire a pulse at it

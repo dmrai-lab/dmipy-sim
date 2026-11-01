@@ -1,6 +1,7 @@
 """The record of a run (`dmipy_sim.run`): a producer opens it, a caller never does; it lives in memory and persists
 itself once it outlives the sampling interval (or at once with run_dir=); a nested producer joins the outer run;
 the event log survives a kill line by line; a pack records the runs that made it."""
+from tests._scanner_class import stated_class
 import json
 import os
 import signal
@@ -123,7 +124,7 @@ def test_a_pack_records_the_runs_that_made_it(tmp_path, monkeypatch):
     w = _walk_geometry(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, block_h=1e-4, seed=0, require_gpu=False, K=8)
     assert w.run is not None and w.run.status == "ok" and w.run.summary["producer"] == "_walk_geometry"
     out = tmp_path / "r.rpk"
-    pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out))
+    pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out), envelope=stated_class())
     assert "run" not in pk.meta["provenance"]                       # not in the file ...
     assert pk.meta["provenance"]["code"]["version"]                 # ... only its content-derived provenance is
     prov = json.load(open(str(out) + ".run.json"))                  # ... the run record is in the sidecar beside it

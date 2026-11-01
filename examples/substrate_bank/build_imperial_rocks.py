@@ -406,7 +406,7 @@ def direct_se(rock, data_dir, work_dir, grid, *, n=SE_N):
         return cache[rock]["value"]
     w = walk(spec_of(rock, data_dir), int(n), T=T, K=K_BANDS, seed=seed)
     pack = build_replay_pack(w, id=f"imperial-rocks/{rock.lower()}/direct-se", license=LICENCE, citation=CITATION,
-                             envelope=ENVELOPE, K=K_BANDS)
+                             envelope=ENVELOPE, K=K_BANDS, scanner="connectom")
     _t, _S, _lm, se_walk = decay_and_projection(pack, float(ref["rho2"]), grid)
     scale = (int(n) / float(ref["direct_n"])) ** 0.5
     value = dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n), n_direct=int(ref["direct_n"]), scale=scale,

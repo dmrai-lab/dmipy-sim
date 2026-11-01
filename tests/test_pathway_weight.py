@@ -5,6 +5,7 @@ the readout carries ``0.5 sin a1 sin a2 sin a3`` of it. That number is derived f
 (:func:`dmipy_sim.acquisition.epg.pathway_weight`), not written down, so a schedule whose pulses are not 90
 degrees gets its own amplitude rather than a flat one half.
 """
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -24,7 +25,7 @@ def pack(tmp_path_factory):
     """Free water, so the only thing left in a b = 0 readout is relaxation and the pathway's amplitude."""
     walk = _walk_geometry(600, 2e-9, d.FreeDiffusion(), 0.05, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pw") / "free.rpk"
-    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, out_path=str(out))
+    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, out_path=str(out), envelope=stated_class())
 
 
 def _pgste(dt_n=600, flips=(90.0, 90.0, 90.0), b=0.0):

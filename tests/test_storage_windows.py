@@ -299,4 +299,4 @@ def _float_pack(*a, **k):
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **k)
+    return build_replay_pack(*a, **{"scanner": "connectom", **k})

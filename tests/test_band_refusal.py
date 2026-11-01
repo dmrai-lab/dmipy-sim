@@ -5,6 +5,7 @@ contract against bands the pack never stored, and the signal would come back smo
 predicate is walk-free: the free bridge's band variances at the walk's diffusivity give the phase the dropped
 bands carry, so a pack of walkers that never move (every band zero) judges a waveform by its band alone.
 """
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -28,7 +29,7 @@ def _static_pack(K, seed=0):
         block=dict(h=DT, m=0, n_blocks=N_T - 1, rule="given", precision="float64", k0_residual_relative=0.0),
         n_windows=1, dt_sim=DT, sub_steps=1, qv_positions=np.zeros((N_W, 1, 3), np.float32), seed=seed,
         diffusivity=D0, spec=spec_of(FreeDiffusion()))
-    return build_replay_pack(walk, id=f"t/static-K{K}", envelope=_lean_env(), K=K, license="x", citation="x")
+    return build_replay_pack(walk, id=f"t/static-K{K}", envelope=stated_class(_lean_env()), K=K, license="x", citation="x")
 
 
 def _ogse(f_hz, sigma, n_t=801):

@@ -4,6 +4,7 @@ overlap, a tensor encoding is three shapes on one interval). The vector of a ter
 (exact), a sequence fits when its effective gradient is sum_s psi_s(t) a_s with a residual inside the layout's
 rounding, and the image of every such sequence is the sibling pack's replay within the layout's rounding term."""
 from __future__ import annotations
+from tests._scanner_class import stated_class
 import dmipy_replay.replay.compression as _r_compression
 import json
 import os
@@ -94,7 +95,7 @@ def small(tmp_path_factory):
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
     grid = Grid(shape=(2, 2, 1), voxel_size_m=tuple(vs), origin_m=(lo[0] - 1e-9 + vs[0] / 2, lo[1] - 1e-9 + vs[1] / 2, 0.0))
-    pk = build_replay_pack(w, id="t/shapes", license="x", citation="x", sigma_star=0.02, planned_floor=0.02, voxel_grid=grid)
+    pk = build_replay_pack(w, id="t/shapes", license="x", citation="x", sigma_star=0.02, planned_floor=0.02, voxel_grid=grid, envelope=stated_class())
     parts = _partitions()
     rec = segment_rows(w, parts, str(tmp / "rows"), grid=grid, pack=pk, g_max=G_MAX)
     man = write_time_segment_layout([str(tmp / "rows")], str(tmp / "layout"))

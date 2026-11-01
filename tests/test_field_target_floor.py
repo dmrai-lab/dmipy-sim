@@ -1,6 +1,7 @@
 """The field band is held to the numerical budget the walk is given (``field_target_floor``), not to the statistical
 floor of its pilot scaled to the walk's walker count: the band is the first whose codec error is within the budget,
 the walk records the budget, and a budget no band reaches is refused by name."""
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -16,7 +17,7 @@ BUDGET = 1e-4                                      # below the pack error of the
 
 
 def _pack_fidelity(w, **kw):
-    return build_replay_pack(w, id="test/field-target", license="x", citation="x", envelope=_env7(), K=16, **kw).fidelity
+    return build_replay_pack(w, id="test/field-target", license="x", citation="x", envelope=stated_class(_env7()), K=16, **kw).fidelity
 
 
 @pytest.fixture(scope="module")

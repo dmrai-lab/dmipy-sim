@@ -2,6 +2,7 @@
 the joined order carry raw block ends, drawn from the pools in proportion to their walkers, and every raw array is the
 walk's own for those walkers -- the diffusing pools' from their walks, a frozen pool's its seats held at every block
 end. A pool walk that lacks a raw array it was asked for is refused by name."""
+from tests._scanner_class import stated_class
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
@@ -131,7 +132,7 @@ def test_the_allocation_is_proportional_exact_and_within_each_pool():
 
 
 def test_the_joined_raw_subset_measures_a_pack(bundle):
-    pk = build_replay_pack(bundle, id="t/bundle-raw", license="x", citation="x", K=K, fidelity="measured")
+    pk = build_replay_pack(bundle, id="t/bundle-raw", license="x", citation="x", K=K, fidelity="measured", envelope=stated_class())
     assert pk.fidelity["certified"] == "measured" and pk.fidelity["measured_by"] == "raw_subset" and pk.fidelity["measured_on"] == N_RAW
 
 

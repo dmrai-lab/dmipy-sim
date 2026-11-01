@@ -2019,6 +2019,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                         f"simulate_trajectories_adaptive, simulate_mt_trajectories); got {type(walk).__name__}. A pack is "
                         "the bands a walk accumulated; it is never built from samples on a grid")
     cw = walk
+    stated = (envelope or {}).get("scanner") or scanner or cw.scanner
+    if stated is None:
+        raise ValueError("state the scanner class this pack is certified for: build_replay_pack(..., scanner=...). The walk "
+                         "carries none (a walk from walk(spec, ...) carries its class, the engine primitive's does not) "
+                         "and the envelope states none; a replay refuses a pack that states no class. A pack built for "
+                         "one acquisition states that acquisition's own (compression.acquisition_envelope).")
+    envelope = dict(_cx.default_envelope() if envelope is None else envelope)
+    envelope.setdefault("scanner", stated)
     if fidelity is None:
         fidelity = "derived"
     if fidelity not in ("derived", "measured"):

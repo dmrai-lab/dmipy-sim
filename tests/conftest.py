@@ -1,5 +1,6 @@
 """Shared test constants and fixture loader."""
 
+from tests._scanner_class import stated_class
 import os
 from pathlib import Path
 
@@ -246,7 +247,7 @@ def pack():
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
+    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x", envelope=stated_class(G_max=15.0))
 
 
 def dense_relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi, active):
@@ -293,7 +294,7 @@ def field_pack(tmp_path_factory):
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
     w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
-    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
+    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4, envelope=stated_class(G_max=15.0))
 
 
 @pytest.fixture(scope="module")

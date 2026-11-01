@@ -1,6 +1,7 @@
 """The dataset producers emit specs and construct nothing: CATERPillar tables (sphere unions, four pools), EPFL
 strand lists (CACTUS / DiSCo, sphere-swept polylines). The specs validate, round-trip through JSON, walk pool by
 pool through `walk` and are embedded in the pack."""
+from tests._scanner_class import stated_class
 import dataclasses
 import json
 import os
@@ -110,7 +111,7 @@ def test_caterpillar_spec_is_walked_pool_by_pool_and_packed(caterpillar_csv):
     assert (C[ids == 2, 1:] == 0).all()                                            # myelin frozen: no path
     assert (np.linalg.norm(pos[ids == 3] - np.array([0, 3.5e-6, 0]), axis=-1) < 1.5e-6 + 2e-9).all()   # glia in its soma
     assert w.field_basis is not None and w.diffusivity == spec.pool("intra").D
-    pk = build_replay_pack(w, id="t/cat", license="x", citation="x", K=3, envelope=ENV)
+    pk = build_replay_pack(w, id="t/cat", license="x", citation="x", K=3, envelope=stated_class(ENV))
     assert pk.has_relaxation and pk.has_surface and pk.has_field and pk.substrate == spec
 
 
@@ -270,7 +271,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     spec_nf = spec_without_source(spec)                    # no source: no field machinery at all
     w = walk(spec_nf, 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, K=4)
     assert w.has_surface and w.has_compartments and w.field_basis is None
-    pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4)
+    pk = build_replay_pack(w, id="t/strands", license="x", citation="x", K=4, envelope=stated_class())
     assert pk.has_relaxation and pk.has_surface and pk.meta["replay_envelope"]["surface_relaxivity"]
     seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9])
     w_, ew, _ = pk.walker_signals(seq, tissue=Tissue(rho2=1e-5))
@@ -281,7 +282,7 @@ def test_a_strand_pack_claims_what_its_walk_recorded(disco_files):
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     wf = walk(spec, 60, 1e-3, 2.5e-4, seed=0, n_probe=20_000, require_gpu=False, field_budget=1e3, adaptive_steps=True, K=4)
     assert isinstance(wf.field_basis, StrandFieldBasis) and wf.field_basis.certificate["converged"]
-    pkf = build_replay_pack(wf, id="t/strands-field", license="x", citation="x", K=4, susc_path_K=4)
+    pkf = build_replay_pack(wf, id="t/strands-field", license="x", citation="x", K=4, susc_path_K=4, envelope=stated_class())
     assert pkf.has_field and pkf.meta["compression"]["channels"]["susceptibility_grid"]["source"]["kind"] == "strand_superposition"
     s_off = pkf.replay(seq)[0]
     gre_x, R = field_along(d.gre(0.5e-3, gradient_directions=[[1, 0, 0]], bvalues=[1e9], delta=0.2e-3, Delta=0.3e-3, n_t=pk.n_t, slew_rate=np.inf), (1, 0, 0))
@@ -342,7 +343,7 @@ def test_the_curved_tubes_record_surface_time_and_the_straight_limit_is_the_cyli
     # the strand walk records it and the pack replays it
     w = _walk_geometry(300, D, d.PackedCurvedCylinders([cl], [R], interior=True), 2e-3, 2.5e-4, seed=0, require_gpu=False, K=8)
     assert w.has_surface and float(np.abs(np.asarray(w.boundary_endpoint)).sum()) > 0
-    pk = build_replay_pack(w, id="t/curved", license="x", citation="x", K=4, blt_temporal_K=4)
+    pk = build_replay_pack(w, id="t/curved", license="x", citation="x", K=4, blt_temporal_K=4, envelope=stated_class())
     assert pk.has_surface
     wf = d.pgse([[1.0, 0.0, 0.0]], 0.1e-3, 1.9e-3, gradient_strengths=1e-4, n_t=100, slew_rate=np.inf)
     assert pk.replay(wf, tissue=Tissue(rho2=rho2, D=D))[0] < 0.99 * pk.replay(wf)[0]
@@ -373,7 +374,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
                    field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": 6, "intra": 4}))
     assert wf.field_coeffs is not None and wf.field_coeffs.shape == (wf.n_walkers, wf.n_windows, wf.K_c3, 12)
     assert not (np.asarray(wf.compartment) == 2).any()                     # nothing walks the dry sheath
-    pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4)
+    pkf2 = build_replay_pack(wf, id="t/strands-sampled", license="x", citation="x", K=4, susc_path_K=4, envelope=stated_class())
     pm2 = pkf2.meta["compression"]["channels"]["susc_field_basis"]
     assert pkf2.has_field and pm2["sampling"] == "accumulated_in_walk"
     assert pm2["n_ch"] == 12 and "iso_P_zz" not in pm2["channels"]        # twelve carried; the trace is the reader's
@@ -398,7 +399,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     wf_in = spec.pool("intra").water_fraction
     assert np.abs(wsum_in - f_in * wf_in).max() < 0.03 * wf_in, (wsum_in, f_in * wf_in)
     # a K = 4 pack over 0.8 ms is lean by design: it states the budget its band is held to (the band gate reads it)
-    pk = build_replay_pack(w, id="t/strat", license="x", citation="x", K=4, voxel_grid=grid, sigma_star=0.1, planned_floor=0.1)
+    pk = build_replay_pack(w, id="t/strat", license="x", citation="x", K=4, voxel_grid=grid, sigma_star=0.1, planned_floor=0.1, envelope=stated_class())
     pv = pk.meta["fidelity"]["per_voxel"]
     assert pv["n_voxels"] == 64 and pv["pools"] == [0, 1] and pv["floor_max"] > 0 and pk.arrays["voxel_certificate"].shape == (64, 2, 3)
     g2, floors, counts = voxel_fidelity_volumes(pk)
@@ -407,7 +408,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     want = plan.count_for("extra")
     assert want.max() == 4 * 12 and want.min() >= 2                     # halving the floor quadruples the count
     with pytest.raises(ValueError, match="no per-voxel certificate"):
-        voxel_fidelity_volumes(build_replay_pack(w, id="t/plain", license="x", citation="x", K=4))
+        voxel_fidelity_volumes(build_replay_pack(w, id="t/plain", license="x", citation="x", K=4, envelope=stated_class()))
     # the floor on the acquisition the pack is meant for (per shell), from the pack alone
     from dmipy_sim.replay.bank import voxel_floor
     seq = d.set_b(d.pgse(np.eye(3), 0.1e-3, 0.4e-3, gradient_strengths=[0.1] * 3, n_t=100, slew_rate=np.inf), [1e9, 1e9, 2e9])

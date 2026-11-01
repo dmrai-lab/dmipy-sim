@@ -2,6 +2,7 @@
 class's certified band times the storage margin; a walk from ``walk`` carries its class; a walk with no class
 and no stated band is refused by name; a class with no certified band is refused by name; the search is a
 diagnostic no producer calls. And the codec's numpy pieces (#642): the phase GEMM equals the einsum it replaced."""
+from tests._scanner_class import stated_class
 import pathlib
 import re
 
@@ -55,7 +56,7 @@ def _walk(**kw):
 def test_a_walk_states_its_own_band():
     """A walk that accumulated its bands states its own K and packs at it, with no class and no band stated."""
     w = _walk()
-    assert build_replay_pack(w, id="t", license="x", citation="x").K == w.K
+    assert build_replay_pack(w, id="t", license="x", citation="x", envelope=stated_class()).K == w.K
 
 
 def test_scanner_sets_the_band_and_the_pack_records_the_class():
@@ -63,7 +64,7 @@ def test_scanner_sets_the_band_and_the_pack_records_the_class():
     pk = build_replay_pack(w, id="t", license="x", citation="x", scanner="prisma")
     assert pk.K == mode_count(4e-3, "prisma") and pk.meta["compression"]["scanner"] == "prisma"
     assert pk.temporal_bandwidth_hz == pytest.approx(pk.K / (2 * 4e-3))
-    k2 = build_replay_pack(w, id="t", license="x", citation="x", K=5)
+    k2 = build_replay_pack(w, id="t", license="x", citation="x", K=5, envelope=stated_class())
     assert k2.K == 5 and "scanner" not in k2.meta["compression"]            # a stated K is the band, no class derived
 
 
@@ -71,7 +72,7 @@ def test_a_walk_from_walk_spec_carries_its_class_and_packs_without_an_argument()
     spec = d.Cylinder(2e-6, (0, 0, 1)).spec
     w = walk(spec, 300, 4e-3, 5e-4, scanner="prisma", seed=0, require_gpu=False, diffusivity=2e-9)
     assert w.scanner == "prisma"
-    pk = build_replay_pack(w, id="t", license="x", citation="x")
+    pk = build_replay_pack(w, id="t", license="x", citation="x", envelope=stated_class())
     assert pk.K == mode_count(4e-3, "prisma") and pk.meta["compression"]["scanner"] == "prisma"
 
 

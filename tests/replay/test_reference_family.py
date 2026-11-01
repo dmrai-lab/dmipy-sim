@@ -29,7 +29,7 @@ B = 1e8
 DELTA = 8e-4
 BIGDELTA = 2.4e-3
 ENV = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
-           delta_frac=0.2, Delta_frac=0.5, rho2_list=[])
+           delta_frac=0.2, Delta_frac=0.5, rho2_list=[], scanner="connectome_2", G_max=2.0, slew_max=1e12)
 LICENCE_TEXT = "SYNTHETIC LICENCE\n\n" + ("This is the verbatim text of a licence that does not exist. " * 12)
 GRID = dict(kind="none", solver="exp(-b D), the closed form of free diffusion")
 
@@ -597,7 +597,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     walk = CoefficientWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
     build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENV, license="CC-BY-4.0",
                       citation="a test pack", position_container="derived", blt_container="derived",
-                      verbose=False).save(real)
+                      verbose=False, scanner="connectome_2").save(real)
     (tmp_path / "bare").mkdir(exist_ok=True)
     fam = _family(tmp_path / "bare",
                   reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)),

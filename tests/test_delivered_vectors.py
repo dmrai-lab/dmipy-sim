@@ -6,6 +6,7 @@ pathway amplitude, held against the reference route -- each voxel's acquisition 
 catalogued machines with every term on, a spin echo, a stimulated echo and a double diffusion encoding of two levels."""
 from __future__ import annotations
 
+from tests._scanner_class import stated_class
 import os
 
 import numpy as np
@@ -41,7 +42,7 @@ def layout(spec_grid):
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         kw = {} if not packs else dict(position_container=packs[0].meta["compression"]["container"],      # a fill's shards
                                        blt_container=packs[0].meta["compression"]["channels"]["boundary_local_time"]["container"])
-        pk = build_replay_pack(w, id=f"t/dm{b}", license="x", citation="x", K=12, susc_path_K=4, voxel_grid=grid, **kw)
+        pk = build_replay_pack(w, id=f"t/dm{b}", license="x", citation="x", K=12, susc_path_K=4, voxel_grid=grid, envelope=stated_class(), **kw)
         packs.append(pk)
         n_t = pk.n_t
         dirs.append(str(tmp / f"dm_rows{b}"))

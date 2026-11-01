@@ -1,6 +1,7 @@
 """The concomitant field's VALUE at a voxel, the order-0 term of dmipy-sim#394: one phase per measurement and
 readout, ``gamma int s(t) B_c(x_v, t) dt``, recorded by ``with_concomitant`` and applied to every voxel's signal
 by the phantom routes. A spin echo with identical lobes cancels it exactly; a gradient echo keeps it."""
+from tests._scanner_class import stated_class
 import numpy as np
 import pytest
 
@@ -47,7 +48,7 @@ def free_phantom(tmp_path_factory):
     n_t, dt = int(seq.n_t), float(seq.dt)
     walk = _walk_geometry(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
-    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
+    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out), envelope=stated_class())
     sh, vox = (3, 3, 1), 0.03
     grid = Grid(shape=sh, voxel_size_m=(vox,) * 3, origin_m=tuple(-0.5 * (n - 1) * vox for n in sh), isocenter_m=(0.0, 0.0, 0.0))
     c = np.zeros(sh + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi)

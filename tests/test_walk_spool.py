@@ -1,5 +1,6 @@
 """A walk as a file (`CoefficientWalk.save` / `load`), the spool of a walk's batches in its run record, and the
 resume that reads them back: a killed walk costs the batch in progress, not the walk."""
+from tests._scanner_class import stated_class
 import os
 import numpy as np
 import pytest
@@ -40,8 +41,8 @@ def test_a_walk_round_trips_through_its_file_and_packs(spec, tmp_path):
     assert back.field_basis.meta == w.field_basis.meta and back.run["producer"] == "walk" and back.stepping == w.stepping
     with pytest.raises(ValueError, match="evaluates nothing"):
         back.field_basis.channels(np.zeros((2, 3)))
-    pk = build_replay_pack(back, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy")
-    pk0 = build_replay_pack(w, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy")
+    pk = build_replay_pack(back, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy", envelope=stated_class())
+    pk0 = build_replay_pack(w, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy", envelope=stated_class())
     for k in pk.arrays:
         np.testing.assert_array_equal(pk.arrays[k], pk0.arrays[k])
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"] == pk0.meta["compression"]["channels"]["susceptibility_grid"]["source"]
