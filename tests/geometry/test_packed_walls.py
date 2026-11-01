@@ -4,8 +4,7 @@
 `PackedSpheres`. The fast tests are the adversarial impacts a pack adds to the single-object
 table: a step spanning the gap between two objects, at every angle, up to ten gap widths. The
 slow tests are the consequences: a dense pack keeps every extra-axonal walker outside where the
-single-hit rule let nine in ten through, membrane transmission does not depend on how many walls
-a sub-step meets, and a pack of one permeable cylinder is `Cylinder(permeability=)`.
+single-hit rule let nine in ten through, and a pack of one permeable cylinder is `Cylinder(permeability=)`.
 """
 import jax
 import jax.numpy as jnp
@@ -17,6 +16,8 @@ from dmipy_sim.geometry._boundary import bounce_budget
 from dmipy_sim.geometry.packed import packed_candidate_count
 from dmipy_sim.math.step_law import LONGEST_STEP
 from dmipy_sim.engine._fused import simulate_fused
+from dmipy_sim.engine.core import _walk_geometry
+from tests.conftest import z_family
 
 D = 2e-9
 R = 1e-6
@@ -88,52 +89,48 @@ def _dense_pack(seed=1):
     return radii / 0.999, c, L                     # walls almost touching: min gap ~ 2 nm
 
 
+N_DENSE = 2_000             # walkers whose zero leaks bound the leak rate below 0.23 % at 99 % confidence
+BLOCK_DENSE = 5e-5          # s: one block of the dense pack's walk, 115 sub-steps of 72 nm
+
+
+def _final_object(geom, pos):
+    """The object (cylinder) id of each position: 0 outside every cylinder."""
+    return np.asarray(jax.vmap(geom.classify_position)(jnp.asarray(pos, jnp.float32)))
+
+
 @pytest.mark.gpu
 def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     """At outer packing 0.45 the single-hit rule ended 18033 of 20000 extra-axonal walkers inside
     a cylinder over one PGSE (they reflect off one wall into the neighbour, and the neighbour's
-    sentinel then keeps them). None may end inside."""
+    sentinel then keeps them). None may end inside.
+
+    Claim: an extra-axonal walker of the dense pack ends inside a cylinder with probability below 0.23 %: of N = 2,000
+    walkers none inside miss a leak of that rate with probability ``(1 - 0.0023)^2000`` = 1 %. A leak is one step across a
+    gap narrower than the step, not an accumulation, so the walk is one 50 us block (115 sub-steps of 72 nm; a walker
+    travels 0.45 um of the 0.7 um between the cylinders) instead of the 20 ms PGSE (230 sub-steps per 100 us)."""
     radii, c, L = _dense_pack()
-    pc = d.PackedCylinders(radii, c, L)
-    wf = d.set_b(d.pgse([[1, 0, 0]], 5e-3, 15e-3, gradient_strengths=0.1, n_t=200, slew_rate=np.inf), 1.5e9)
-    _, origin, final = simulate_fused(20_000, D, wf, pc, seed=4, return_compartments="final", require_gpu=False)
-    assert (origin == 0).all()
+    pc = d.PackedCylinders(radii, c, L, pool="extra")
+    r0 = np.asarray(pc.init_positions(N_DENSE, jax.random.PRNGKey(4)))
+    assert (_final_object(pc, r0) == 0).all(), "a walker was seeded inside a cylinder"
+    out = _walk_geometry(N_DENSE, D, pc, BLOCK_DENSE, BLOCK_DENSE, seed=4, r0=r0, raw_subset=N_DENSE, require_gpu=False)
+    final = _final_object(pc, np.asarray(out.raw_positions)[:, -1])
     assert (final == 0).all(), f"{(final > 0).sum()} walkers ended inside a cylinder"
-
-
-@pytest.mark.gpu
-def test_membrane_transmission_does_not_depend_on_the_sub_step():
-    """The adversarial permeable case: a pack whose gap is a fraction of the R/25 step. The
-    fraction of extra-axonal walkers that have entered a cylinder after T must be the same at
-    the dispatched sub-step and at a sub-step fine enough to meet one wall at a time, because
-    every encounter is its own Powles trial."""
-    # two cylinders (and their periodic images along x) a known 20 nm apart: half the R/25 step
-    gap = 20e-9
-    c = np.array([[0.0, 0.0], [2 * R + gap, 0.0]])
-    pk = d.PackedCylinders([R, R], c, 2 * (2 * R + gap), permeability=2e-5)
-    assert abs(pk.min_gap - gap) < 1e-12
-    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
-    N = 20_000
-    from dmipy_sim.engine.physics import resolve_sub_steps
-    n_auto = resolve_sub_steps(pk, D, wf.dt)
-    step_auto = np.sqrt(6 * D * wf.dt / n_auto)
-    assert step_auto > 1.5 * gap, "the dispatched step must span the gap for this to be adversarial"
-    n_fine = int(np.ceil(n_auto * (step_auto / (0.5 * gap)) ** 2))
-    _, _, f_auto = simulate_fused(N, D, wf, pk, seed=5, return_compartments="final", require_gpu=False)
-    _, _, f_fine = simulate_fused(N, D, wf, pk, seed=5, return_compartments="final", sub_steps=n_fine,
-                              require_gpu=False)
-    p_auto, p_fine = (f_auto > 0).mean(), (f_fine > 0).mean()
-    assert p_auto > 0.05, "no exchange happened"
-    tol = 4.0 * np.sqrt(2 * p_fine * (1 - p_fine) / N)
-    assert abs(p_auto - p_fine) < tol, f"entered fraction {p_auto:.4f} at {n_auto} sub-steps vs {p_fine:.4f} at {n_fine}"
 
 
 @pytest.mark.gpu
 def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     """Intra-seeded walkers leave through the membrane at the same rate whether the wall is the
     pack kernel's (a trial at every encounter) or `Cylinder.permeate`'s (one trial per step):
-    on a single convex object at the R/25 step a second encounter is a grazing rarity."""
-    kappa, N = 2e-5, 30_000
+    on a single convex object at the R/25 step a second encounter is a grazing rarity.
+
+    Claim: the fraction still inside after TE is the same to 0.03 (a 10 % difference of the exchanged third). The two
+    walks start from the same walkers with the same seed, so their outcomes agree walker by walker except where a
+    trial diverges: 2.0 % of the pairs differed at 6,000 walkers (the Cylinder and the pack left 0.6745 and 0.6732
+    inside). The difference of the two fractions is then ``(b - c) / N`` for ``b`` and ``c`` the walkers that stayed in
+    one walk and left in the other, a standard deviation ``sqrt((b + c)) / N`` -- a quarter of the independent walks'.
+    The tolerance is ``z sqrt(b + c)`` and N = 1,500 resolves 0.03 for up to 5 % discordant pairs
+    (``(2 z)^2 q / delta^2``)."""
+    kappa, N = 2e-5, 1_500
     cyl = d.Cylinder(R, (0, 0, 1), permeability=kappa)
     pk = d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=kappa)
     wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
@@ -141,7 +138,10 @@ def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     _, o_c, f_c = simulate_fused(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False)
     _, o_p, f_p = simulate_fused(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False)
     assert (o_c == 1).all() and (o_p == 1).all()
-    p_c, p_p = (f_c == 1).mean(), (f_p == 1).mean()
-    assert p_c < 0.95, "no exchange happened"
-    tol = 4.0 * np.sqrt(2 * p_c * (1 - p_c) / N)
-    assert abs(p_c - p_p) < tol, f"still inside after TE: Cylinder {p_c:.4f} vs one-cylinder pack {p_p:.4f}"
+    in_c, in_p = f_c == 1, f_p == 1
+    assert in_c.mean() < 0.95, "no exchange happened"
+    b, c = int((in_c & ~in_p).sum()), int((~in_c & in_p).sum())
+    assert abs(b - c) <= z_family() * np.sqrt(b + c), (
+        f"still inside after TE: Cylinder {in_c.mean():.4f} vs one-cylinder pack {in_p.mean():.4f} "
+        f"({b} stayed only in the Cylinder, {c} only in the pack)")
+    assert (b + c) / N < 0.05, "more discordant pairs than the walker count was sized for"

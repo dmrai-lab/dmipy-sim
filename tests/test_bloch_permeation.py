@@ -11,7 +11,7 @@ from dmipy_sim.engine.bloch import _simulate_bloch
 from dmipy_sim import pgse
 import pytest
 
-from tests.conftest import N_EXACT
+from tests.conftest import N_EXACT, n_resolving, se_tol
 
 from dmipy_sim import Cylinder, FreeDiffusion
 from dmipy_sim.engine.physics import CROSSING_P_MAX, resolve_sub_steps
@@ -94,15 +94,23 @@ def _free_diffusion_regime_wf():
 @pytest.mark.gpu
 def test_high_permeability_approaches_free_diffusion():
     """At kappa*/TE derived above, the wall is near-transparent (TE/tau = 10) and the original
-    0.12 absolute tolerance holds without touching it -- not fit to a measured gap (#626 review)."""
+    0.12 absolute tolerance holds without touching it -- not fit to a measured gap (#626 review).
+
+    Claim: the permeable cylinder's signal is the free-diffusion signal to 0.12, where the restricted signal is more
+    than 0.4 higher. Statistic: the difference of two walker means of cos(phase) at ``S = exp(-1)``, whose per-walker
+    standard deviation is ``sqrt((1 + S^4) / 2 - S^2) = 0.61``. A 0.24 departure fails with the margin the noise
+    passes 0.12: ``n_resolving(0.24, 0.61, runs=2)`` = 561 walkers, each over the 1.2e5 sub-steps above."""
     wf = _free_diffusion_regime_wf()
     geom = Cylinder(radius=R, orientation=(0, 0, 1), permeability=KAPPA_FREE)
     n_sub = resolve_sub_steps(geom, D, float(wf.dt))
     assert n_sub < 1_000, f"the derived regime should be far under the cap, asked for {n_sub}"
 
-    S_free = abs(complex(_simulate_bloch(4000, D, wf, FreeDiffusion(), seed=0, require_gpu=False)[0]))
-    S_perm = abs(complex(_simulate_bloch(4000, D, wf, geom, seed=0, require_gpu=False)[0]))
-    assert abs(S_perm - S_free) < 0.12               # high-kappa limit ~= free diffusion (original)
+    s_free = np.exp(-B_FREE * D)
+    sd = np.sqrt((1.0 + s_free ** 4) / 2.0 - s_free ** 2)
+    n = n_resolving(0.24, sd, runs=2)
+    S_free = abs(complex(_simulate_bloch(n, D, wf, FreeDiffusion(), seed=0, require_gpu=False)[0]))
+    S_perm = abs(complex(_simulate_bloch(n, D, wf, geom, seed=0, require_gpu=False)[0]))
+    assert abs(S_perm - S_free) < se_tol(n, sd, runs=2)               # high-kappa limit ~= free diffusion
 
 
 def test_impermeable_bloch_walk_is_unchanged():

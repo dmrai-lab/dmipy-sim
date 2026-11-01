@@ -17,6 +17,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.myelin import concentric_wall_kernel
 from dmipy_sim.engine._fused import simulate_fused
+from tests.conftest import SD_COS, se_tol, z_family
 
 D = 2e-9
 R = 1e-6                       # lumen radius of the impact-table axon
@@ -24,6 +25,8 @@ G = 1.4                        # its sheath boundary, in units of R
 OFFSETS = [("1e-3R", 1e-3), ("1e-2R", 1e-2), ("0.1R", 0.1), ("0.3R", 0.3)]
 DISTANCES = [("0.05R", 0.05), ("0.3R", 0.3), ("1R", 1.0), ("3R", 3.0)]
 ANGLES = [("head-on", 0.0), ("30deg", 30.0), ("60deg", 60.0), ("85deg", 85.0), ("89.9deg", 89.9)]
+N_LOCAL_TIME = 3_000        # lumen walkers: the ratio of two rates of relative spread 0.35 holds 3 % at z = 3.48
+N_AXON = 4_000              # 24.5 % of them in a lumen: the 0.46-spread mixture of two T2 weights to 0.05 at z = 3.29
 
 
 def _pack(inner_radii, g, packing, seed):
@@ -202,37 +205,58 @@ def _extra_only_signal(pm, wf, N, seed):
     return np.asarray(s).ravel() * w_total / n[0], int(n[0])
 
 
+def _sem(v):
+    """The standard error of the mean of ``v``, one row per independent walker."""
+    return float(np.std(v.mean(axis=1), ddof=1) / np.sqrt(len(v)))
+
+
 @pytest.mark.gpu
 def test_lumen_boundary_local_time_is_brownstein_tarr():
     """The unit boundary local time recorded on the lumen wall (`rho/D = 1`) accrues at
     `2 D / R` per unit time -- Brownstein-Tarr `rho S/V` for a cylinder -- and at the same rate the
-    `Cylinder` producer records, since they now share one estimator."""
-    R_l, N, T_max, block_h = 2e-6, 20_000, 4e-3, 2e-4
+    `Cylinder` producer records, since they now share one estimator.
+
+    Claim: the two rates agree to 3 %, and the Cylinder's is 2 D / R up to the estimator's own step bias (3.8 % at this
+    step, on both: they share it) within 5 %. Statistic: the mean over walkers of the boundary local time per unit
+    time, whose per-walker spread is 0.35 of the mean (20 blocks of 1.4 each, 15 of them independent). Every walker is
+    seeded in the lumen, so the ratio of the two rates has the standard error ``0.35 sqrt(2 / N)``; its tolerance is the
+    3 % that N = 3,000 holds at z = 3.48 (two comparisons)."""
+    R_l, T_max, block_h = 2e-6, 4e-3, 2e-4
     c, L = _pack([R_l] * 4, 0.7, 0.5, seed=0)
     pm = d.PackedMyelinatedCylinders([R_l] * 4, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
-    out = _walk_geometry(N, D, pm, T_max, block_h, seed=5,
-                                  require_gpu=False, raw_subset=N)
-    dlog, comp = np.asarray(out.raw_boundary), np.asarray(out.raw_compartment)
-    intra = (comp == 1).all(axis=1)
-    rate_pm = -dlog[intra].mean() / block_h
+    n = N_LOCAL_TIME
+    rng = np.random.default_rng(0)
+    rho, th = R_l * np.sqrt(rng.uniform(size=n)), rng.uniform(0.0, 2.0 * np.pi, n)
+    r0 = np.stack([c[0][0] + rho * np.cos(th), c[0][1] + rho * np.sin(th), np.zeros(n)], axis=1).astype(np.float32)
+    out = _walk_geometry(n, D, pm, T_max, block_h, seed=5, r0=r0, require_gpu=False, raw_subset=n)
+    assert (np.asarray(out.raw_compartment) == 1).all(), "a lumen walker left its lumen"
+    s_pm = -np.asarray(out.raw_boundary) / block_h
     cyl = d.Cylinder(R_l, (0, 0, 1))
-    out_c = _walk_geometry(N, D, cyl, T_max, block_h, seed=5,
-                                    require_gpu=False, raw_subset=N)
-    rate_c = -np.asarray(out_c.raw_boundary).mean() / block_h
+    out_c = _walk_geometry(n, D, cyl, T_max, block_h, seed=5, require_gpu=False, raw_subset=n)
+    s_c = -np.asarray(out_c.raw_boundary) / block_h
     theory = 2 * D / R_l
-    for name, rate in (("packed myelin lumen", rate_pm), ("Cylinder", rate_c)):
-        assert abs(rate / theory - 1) < 0.05, f"{name}: rho S/V = {rate:.4g} vs 2D/R = {theory:.4g}"
-    assert abs(rate_pm / rate_c - 1) < 0.03, f"estimators differ: {rate_pm:.4g} vs {rate_c:.4g}"
+    z = z_family(2)
+    for name, v in (("packed myelin lumen", s_pm), ("Cylinder", s_c)):
+        rate = v.mean()
+        assert abs(rate / theory - 1) < 0.05 + z * _sem(v) / rate, f"{name}: rho S/V = {rate:.4g} vs 2D/R = {theory:.4g}"
+    rate_pm, rate_c = s_pm.mean(), s_c.mean()
+    se = np.hypot(_sem(s_pm) / rate_pm, _sem(s_c) / rate_c)
+    assert abs(rate_pm / rate_c - 1) < z * se, f"estimators differ: {rate_pm:.4g} vs {rate_c:.4g} (se {se:.4f})"
 
 
 @pytest.mark.gpu
 def test_per_axon_properties_are_per_axon():
     """Two distinct intra T2 values decay the b = 0 signal by their mixture, not by the first
-    axon's value; a relaxivity on the inner wall only leaves the extra-axonal signal untouched."""
+    axon's value; a relaxivity on the inner wall only leaves the extra-axonal signal untouched.
+
+    Claim: the lumen signal is the mixture of the two weights to ``se_tol`` of the lumen walkers, which are 24.5 % of
+    the cell. A lumen walker's weight is one of the two (0.050 and 0.970 at TE = 30 ms) by which axon it is in, a
+    spread of 0.46; the mixture is held to 0.05 (z = 3.29, 980 lumen walkers) while the first axon's value alone is 0.46
+    away. The extra-axonal pools of the two packs agree to ``se_tol`` of the extra-axonal walkers."""
     radii = [1e-6] * 6
     c, L = _pack(radii, 0.7, 0.5, seed=2)
     wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 28e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
-    N = 20_000
+    N = N_AXON
     mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[0.01] * 3 + [1.0] * 3,
                                         compartments=d.Compartments(extra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))
     first = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(
@@ -244,8 +268,9 @@ def test_per_axon_properties_are_per_axon():
     TE = wf.echo_idx * wf.dt
     intra_first = float(s_first[0]) * w_total / n[1]
     intra_mixed = float(s_mixed[0]) * w_total / n[1]
-    assert abs(intra_first - np.exp(-TE / 0.01)) < 0.03
-    assert abs(intra_mixed - 0.5 * (np.exp(-TE / 0.01) + np.exp(-TE / 1.0))) < 0.03, \
+    w_fast, w_slow = np.exp(-TE / 0.01), np.exp(-TE / 1.0)
+    assert abs(intra_first - w_fast) < 0.03                    # one weight for every lumen walker: no spread
+    assert abs(intra_mixed - 0.5 * (w_fast + w_slow)) < se_tol(n[1], abs(w_slow - w_fast) / 2.0), \
         f"intra b0 signal {intra_mixed:.4f} does not decay by the per-axon T2 mixture"
 
     rho_in = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
@@ -253,7 +278,7 @@ def test_per_axon_properties_are_per_axon():
     plain = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(intra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
     s_rho, n_e = _extra_only_signal(rho_in, wf, N, seed=7)
     s_plain, _ = _extra_only_signal(plain, wf, N, seed=7)
-    assert abs(s_rho[0] - s_plain[0]) < 4.0 * np.sqrt(2.0 / n_e), \
+    assert abs(s_rho[0] - s_plain[0]) < se_tol(n_e, SD_COS, runs=2), \
         f"an inner-wall relaxivity changed the extra-axonal signal: {s_rho[0]:.4f} vs {s_plain[0]:.4f}"
     only_intra = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
                                              compartments=d.Compartments(extra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))

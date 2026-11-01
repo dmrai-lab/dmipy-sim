@@ -44,9 +44,8 @@ from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import simulate, Sphere, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_CPU, N_EXACT, SEED
+from tests.conftest import D, N_CPU, N_EXACT, SEED, n_resolving, se_tol
 
-N_BUDGET = 5_000     # the walker count the high-kappa regime below is derived for
 R          = 5e-6   # m
 KAPPA_MED  = 1e-5   # m/s  — exchange time τ = R/(3κ) ≈ 167 ms
 KAPPA_HIGH = 3.6e-6  # m/s — derived in test_permeability_high_kappa_approaches_free_diffusion
@@ -101,6 +100,12 @@ def test_permeability_none_matches_impermeable():
 def test_permeability_high_kappa_approaches_free_diffusion():
     """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
 
+    Claim: at TE / tau = 10 the exchange is complete and the signal is the free one; at TE / tau = 6 it was not (the
+    cylinder's 21 % relative error at kappa = 1.5e-5, TE = 1 s). Statistic: the walker mean of cos(phase) at
+    b = 500 s/mm^2, whose per-walker standard deviation for free diffusion is ``sqrt((1 + S^4) / 2 - S^2) = 0.61`` at
+    ``S = exp(-1)``. The 21 % error is resolved, i.e. the tolerance is half of it (10.5 %, z = 3.29), by
+    ``n_resolving(0.21 S, 0.61)`` = 2,706 walkers.
+
     ``slew_rate=np.inf`` keeps the lobes square: ``pgse_wf``'s unit-amplitude reference build
     (``gradient_strengths=1.0``) ramps at a FIXED 5 ms regardless of TE, so a short TE whose lobe
     is narrower than 5 ms is refused by the assembler as inexpressible (dmrai-lab/dmipy-sim#475)
@@ -117,30 +122,28 @@ def test_permeability_high_kappa_approaches_free_diffusion():
         ``n_refl = ceil(dt / ((R/6)**2 / (6 D)))``;
       * ``resolve_sub_steps`` takes the max of the two, both linear in dt, so total sub-steps
         over the walk is ``TE * max(216 D / R**2, 24 kappa**2 / (C**2 D))``, independent of n_t;
-      * at ``kappa* = 3 D C / R`` neither rule wastes budget against the other, and for a
-        walker-step budget ``B = N * TE * 216 D / R**2`` (N = N_BUDGET = 5,000) the
-        achieved ``TE / tau = 3 B C / (72 N)`` (the sphere's extra factor of 3/2 over the
-        cylinder's, from ``tau``'s R/(3 kappa) vs R/(2 kappa)).
-      * solving ``TE / tau >= 10`` at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3, N = 5,000 gives
+      * at ``kappa* = 3 D C / R`` neither rule wastes budget against the other; there
+        ``tau = R / (3 kappa)`` is the sphere's exchange time and ``TE = K tau`` for the exchange
+        ratio ``K = TE / tau``.
+      * ``K = 10`` at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3 gives
         ``kappa = 3.6e-6 m/s``, ``TE = 4.630 s``, ``n_sub = 101`` per save (both rules bind,
-        1000x under the 100,000 cap) at ``n_t = 800``: ``TE / tau = 10.0`` exactly, total
-        walker-steps ``5,000 * 800 * 101 ~= 4.04e8`` -- measured at ~2.9 minutes wall clock on
-        this machine (CPU), inside a 10-minute bound. N drops from N_WALKERS (100,000) to
-        N_BUDGET (5,000) because N_WALKERS at this budget
-        would take ~20x as long for the same statistical qualitative check.
+        1000x under the 100,000 cap) at ``n_t = 800``: 8.1e4 sub-steps per walker, so
+        2.2e8 walker-steps for the walkers above.
     """
-    TE    = 4.62962962962963   # s -- derived above: B R**2 / (216 D N) at B = 80,000
+    TE    = 4.62962962962963   # s -- K R / (3 kappa*) for K = 10
     n_t   = 800
     b_idx = 1   # b = 500 s/mm²
     wf    = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
-    geom_perm = Sphere(radius=R, permeability=KAPPA_HIGH)
-    S_perm    = simulate_fused(N_BUDGET, D, wf, geom_perm, seed=SEED)
-
     b_val  = 500e6   # s/m²
     S_free = np.exp(-b_val * D)
+    sd_free = np.sqrt((1.0 + S_free ** 4) / 2.0 - S_free ** 2)
+    n = n_resolving(0.21 * S_free, sd_free)
 
-    rel_err = abs(float(S_perm[b_idx]) - S_free) / S_free
-    assert rel_err < 0.10, (
-        f"High-κ signal {S_perm[b_idx]:.4f} should be within 10% of "
-        f"free diffusion {S_free:.4f} (rel_err={rel_err:.3f})")
+    geom_perm = Sphere(radius=R, permeability=KAPPA_HIGH)
+    S_perm    = simulate_fused(n, D, wf, geom_perm, seed=SEED)
+
+    tol = se_tol(n, sd_free)
+    assert abs(float(S_perm[b_idx]) - S_free) < tol, (
+        f"High-κ signal {S_perm[b_idx]:.4f} should be within {tol:.4f} ({tol / S_free:.1%}) of "
+        f"free diffusion {S_free:.4f} (N = {n})")

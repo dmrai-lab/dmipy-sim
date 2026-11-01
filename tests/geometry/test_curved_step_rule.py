@@ -20,6 +20,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.curved_cylinder import STEP_FRACTION
+from tests.conftest import n_resolving, se_tol
 
 R = 0.7182e-6                                   # DiSCo's thinnest strand
 D0 = 0.6e-9
@@ -79,10 +80,23 @@ def test_an_interior_walker_never_changes_tube():
     assert not (gone > asked * (1 + 1e-4) + 1e-12).any(), "a reflection added distance"
 
 
+# The per-walker spread of the two statistics below, relative to their mean, measured on the walks themselves
+# (N = 3,000): the squared displacement along the worst axis of the hairpin 1.47, the contact channel's boundary local time 0.73.
+CV_MSD = 1.5
+CV_CONTACT = 0.73
+
+
 @pytest.mark.gpu
 def test_the_hairpin_keeps_its_walkers_at_the_rule():
     """The thinnest strand at DiSCo's sharpest joint (173 deg, a hairpin): at the rule's step no walker leaves it and the
-    displacement variance matches a walk at R/12 to the Monte Carlo floor."""
+    displacement variance matches a walk at R/12 to the Monte Carlo floor.
+
+    Claim: the mean squared displacement at the rule's step is the R/12 value, on each of three axes. Statistic: the
+    ratio of the two means, whose relative standard error is ``sqrt(2) CV_MSD / sqrt(N)`` = 1.5 % at N = 20,000. The
+    tolerance is ``se_tol`` for three comparisons: 5.5 %, the floor of the pair of walks, which holds the 7.6 % that the
+    nearest-axis rule moved the variance by at R/2 at 94 % power; resolving it with equal margin takes 41,000 walkers
+    and 4 % (the rule's own step) takes 150,000. Tier 2: the R/12 reference is 2,000 sub-steps per walker, 4e7
+    walker-steps, and the walk is the one kernel the GPU was measured to speed up (5x)."""
     t = np.deg2rad(173.1); u = np.array([np.cos(t), np.sin(t), 0.0]); L = 15.3e-6
     cl = np.array([[-40e-6, 0, 0], [0, 0, 0], L * u, (L + 40e-6) * u])
     g = d.PackedCurvedCylinders([cl], [R], interior=True)
@@ -94,18 +108,23 @@ def test_the_hairpin_keeps_its_walkers_at_the_rule():
         assert g.inside_any(pos[:, -1]).all(), frac
         msd[frac] = ((pos[:, -1] - pos[:, 0]) ** 2).mean(0)
     rel = np.abs(msd[STEP_FRACTION] / msd[12.0] - 1.0)
-    assert np.all(rel < 4.0 * np.sqrt(2.0 / len(r0)) + 0.01), rel      # the floor of two 20k walks, and 1 %
+    assert np.all(rel < se_tol(len(r0), CV_MSD, comparisons=3, runs=2)), rel
 
 
 @pytest.mark.gpu
 def test_the_contact_channel_in_a_narrow_gap_holds_at_the_rule():
     """Two thin strands 0.1 R apart, the exterior pool seeded in the slot: the contact channel at the rule's step is the
-    R/12 channel to 3 % (one bounce and the side guard read 2.6 % low at R/4 and 9 % low at R/2)."""
+    R/12 channel to 3 % (one bounce and the side guard read 2.6 % low at R/4 and 9 % low at R/2).
+
+    Claim: the mean boundary local time at the rule's step is the R/12 value to 3 %. Statistic: the ratio of the two
+    means, whose relative standard error is ``sqrt(2) CV_CONTACT / sqrt(N)``. A 6 % departure (the one-bounce rule's
+    error at the rule's step is between its 2.6 % at R/4 and 9 % at R/2) must fail with the margin the noise passes,
+    so the tolerance is 3 % = ``se_tol`` and ``N = n_resolving(0.06, CV_CONTACT, runs=2)`` = 12,800 walkers."""
     Ro = R / 0.7; gap = 0.1 * Ro
     cl1 = np.array([[-30e-6, 0, 0], [30e-6, 0, 0]]); cl2 = np.array([[-30e-6, 2 * Ro + gap, 0], [30e-6, 2 * Ro + gap, 0]])
     lo = np.array([-36e-6, -Ro - 3e-6, -Ro - 3e-6]); hi = np.array([36e-6, 3 * Ro + gap + 3e-6, Ro + 3e-6])
     g = d.PackedCurvedCylinders([cl1, cl2], [Ro, Ro], interior=False, box=(lo, hi))
-    rng = np.random.default_rng(0); n = 60_000
+    rng = np.random.default_rng(0); n = n_resolving(0.06, CV_CONTACT, runs=2)
     P = np.stack([rng.uniform(-5e-6, 5e-6, 30 * n), rng.uniform(0.8 * Ro, 1.2 * Ro + gap, 30 * n), rng.uniform(-0.5 * Ro, 0.5 * Ro, 30 * n)], 1)
     r0 = P[~g.inside_any(P)][:n]
     contact = {}
@@ -113,4 +132,4 @@ def test_the_contact_channel_in_a_narrow_gap_holds_at_the_rule():
         w = _walk(g, r0, int(np.ceil(2e-4 / ((Ro / frac) ** 2 / (6 * D0)))))
         assert not g.inside_any(np.asarray(w.raw_positions)[:, -1]).any(), frac
         contact[frac] = float(np.asarray(w.raw_boundary).sum(1).mean())
-    assert abs(contact[STEP_FRACTION] / contact[12.0] - 1.0) < 0.03, contact
+    assert abs(contact[STEP_FRACTION] / contact[12.0] - 1.0) < se_tol(len(r0), CV_CONTACT, runs=2), contact

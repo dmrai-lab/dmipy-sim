@@ -38,7 +38,5 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Time
         env:
-          TIMING_MARK: ${{ matrix.mark }}
-          TIMING_K: ${{ matrix.k }}
-          TIMING_BUDGET: ${{ matrix.budget }}
-        run: python tools/_tier2_timing.py ${{ matrix.file }}
+          SPEC: ${{ matrix.spec }}
+        run: python tools/_tier2_timing.py "$SPEC"

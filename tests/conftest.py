@@ -113,6 +113,34 @@ def mc_atol(n_walkers, k=4.0, runs=1):
     return k * np.sqrt(runs / (2.0 * n_walkers))
 
 
+# A size is derived, not fitted. A test that asserts |statistic| < tolerance makes ``comparisons`` assertions at once; its
+# tolerance is ``z_family`` standard errors, so that noise alone passes it with probability 1 - alpha; and the smallest
+# deviation ``delta`` it must catch is twice that tolerance, so that ``delta`` fails it with the same margin. The walker
+# count follows: ``n_resolving``. ``sd`` is the standard deviation of ONE walker's contribution: ``SD_COS`` for a mean of
+# cos(phase), ``sqrt(p (1 - p))`` for a fraction, ``cv`` times the mean for a relative statistic.
+SD_COS = 1.0 / np.sqrt(2.0)
+
+
+def z_family(comparisons=1, alpha=1e-3):
+    """The two-sided normal quantile at the family-wise false-alarm probability ``alpha`` shared by ``comparisons``
+    assertions (Bonferroni)."""
+    from scipy.stats import norm
+    return float(norm.isf(alpha / (2.0 * comparisons)))
+
+
+def se_tol(n_walkers, sd, *, comparisons=1, runs=1, alpha=1e-3):
+    """The tolerance ``z sd sqrt(runs / n)``: ``z_family`` standard errors of a statistic of ``n_walkers`` walkers whose
+    per-walker standard deviation is ``sd``, for the difference of ``runs`` independent estimates (``runs=1`` against a
+    closed form or a count)."""
+    return z_family(comparisons, alpha) * sd * np.sqrt(runs / n_walkers)
+
+
+def n_resolving(delta, sd, *, comparisons=1, runs=1, alpha=1e-3):
+    """The smallest walker count at which a deviation ``delta`` fails the test and noise does not: the one for which
+    ``se_tol`` is ``delta / 2``, i.e. ``(2 z sd / delta)^2 * runs``."""
+    return int(np.ceil((2.0 * z_family(comparisons, alpha) * sd / delta) ** 2 * runs))
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--heavy",

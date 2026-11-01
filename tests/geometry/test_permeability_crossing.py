@@ -48,23 +48,26 @@ from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import simulate, Cylinder, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_EXACT, SEED
+from tests.conftest import D, N_EXACT, SEED, n_resolving, se_tol
 
 # Every test in this module makes an ORDINAL or IDENTITY claim -- monotone in kappa, A < B,
 # "approaches free diffusion", or an exact `assert_array_equal` -- none of which needs the
-# absolute accuracy that N_WALKERS = 100,000 buys. All comparisons share `seed=SEED`, so the
-# walks are correlated and the DIFFERENCES carry far less noise than 0.32% per signal.
+# absolute accuracy that N_WALKERS = 100,000 buys. An ordinal claim "A < B" is held at its own
+# noise: B must sit below A by `se_tol`, the z = 3.29 standard errors of their difference, and the
+# walker count is the smallest at which the effect that was measured clears that margin.
 #
-# Measured on the monotonicity sweep, which is the tightest claim here:
-#     N=100,000  62.9 s  monotone, min gap between adjacent signals +3.04e-02
-#     N= 20,000  46.1 s  monotone, min gap                          +2.89e-02
-#     N=  5,000  42.3 s  monotone, min gap                          +3.00e-02
-# The gap deciding the ordering is 30x the 1e-3 slack the assertion allows, and it is stable
-# at every N -- so the ordering is not what the walkers were buying.
+# Measured (1,500 walkers, 4 cores):
+#     b = 2000 s/mm^2: S_imp = 0.926, S_perm(kappa = 1e-5) = 0.654   -> a gap of 0.272
+#     b = 0, kappa = 1e-5: S = 1 without relaxivity, 0.006 with RHO   -> a gap of 0.994
+# The walker spread of a signal in [0, 1] is at most SD_COS = 0.707 (a bound; 0.25 at S = 0.93, 0.5 at S = 0.65), so
+# the gap of two walks of N walkers has the margin ``se_tol(N, 0.5, runs=2)``: 0.10 at N = 500, a third of the gap.
+# The relaxivity claim is a gap of 0.99 against weights that cannot spread beyond 0.5: 100 walkers.
 #
 # NOT applied to the modules that compare against an ANALYTIC reference to 1-2% (test_cylinder,
 # test_free_1d, test_box_1d, ...): those genuinely need ~90,000 walkers at 3 sigma. See #93.
-N_ORDINAL = 5_000
+N_ORDINAL = 500
+N_RELAXIVITY = 100
+SD_ORDINAL = 0.5
 
 R   = 5e-6   # m
 KAPPA_MED  = 1e-5  # m/s  — exchange time τ = R/(2κ) ≈ 250 ms
@@ -108,13 +111,13 @@ def test_permeability_none_matches_impermeable():
 _WALKS = {}
 
 
-def _signal(kappa, rho=None):
-    """The signal of one permeable walk at N_ORDINAL walkers, computed once per (kappa, rho) and shared by the tests
-    below (the reduces, relaxivity and monotone tests all read the kappa = None and kappa = KAPPA_MED walks)."""
-    if (kappa, rho) not in _WALKS:
+def _signal(kappa, rho=None, n=N_ORDINAL):
+    """The signal of one permeable walk at ``n`` walkers, computed once per (kappa, rho, n) and shared by the tests
+    below (the reduces and monotone tests read the kappa = None and kappa = KAPPA_MED walks)."""
+    if (kappa, rho, n) not in _WALKS:
         geom = Cylinder(radius=R, orientation=[0, 0, 1], permeability=kappa, surface_relaxivity_t2=rho)
-        _WALKS[(kappa, rho)] = np.asarray(simulate(N_ORDINAL, D, pgse_wf(100e-3), geom, seed=SEED))
-    return _WALKS[(kappa, rho)]
+        _WALKS[(kappa, rho, n)] = np.asarray(simulate(n, D, pgse_wf(100e-3), geom, seed=SEED))
+    return _WALKS[(kappa, rho, n)]
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +129,9 @@ def test_permeability_reduces_signal_at_high_b():
     """Signal with kappa > 0 is strictly below the impermeable signal at b = 2000 s/mm^2: an escaped walker diffuses
     freely and accumulates more phase than a restricted one."""
     S_imp, S_perm = _signal(None), _signal(KAPPA_MED)
-    assert float(S_perm[3]) < float(S_imp[3]) - 0.05, (
-        f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} at b=2000 s/mm²")
+    margin = se_tol(N_ORDINAL, SD_ORDINAL, runs=2)
+    assert float(S_perm[3]) < float(S_imp[3]) - margin, (
+        f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} by {margin:.3f} at b=2000 s/mm²")
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +141,12 @@ def test_permeability_reduces_signal_at_high_b():
 @pytest.mark.gpu
 def test_permeability_high_kappa_approaches_free_diffusion():
     """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
+
+    Claim: at TE / tau = 10 the exchange is complete and the signal is the free one; at TE / tau = 6 it was not (a
+    21 % relative error at kappa = 1.5e-5, TE = 1 s). Statistic: the walker mean of cos(phase) at b = 500 s/mm^2, whose
+    per-walker standard deviation for free diffusion is ``sqrt((1 + S^4) / 2 - S^2) = 0.61`` at ``S = exp(-1)``.
+    The 21 % error is resolved, i.e. the tolerance is half of it (10.5 %, z = 3.29), by
+    ``n_resolving(0.21 S, 0.61)`` = 2,706 walkers.
 
     ``slew_rate=np.inf`` keeps the lobes square: ``pgse_wf``'s unit-amplitude reference build
     (``gradient_strengths=1.0``) ramps at a FIXED 5 ms (``1.0 / DEFAULT_SLEW_RATE``) regardless of
@@ -161,33 +171,31 @@ def test_permeability_high_kappa_approaches_free_diffusion():
         ``TE * max(216 D / R**2, 24 kappa**2 / (C**2 D))`` -- independent of how finely the
         n_t grid chops it.
       * neither rule wastes budget against the other at ``kappa* = 3 D C / R`` (where the two
-        match); there, for a walker-step budget ``B = N * TE * 216 D / R**2`` (N = 5,000, the
-        file's N_ORDINAL), ``TE = B R**2 / (216 D N)`` and the achieved exchange ratio
-        ``TE / tau`` (``tau = R / (2 kappa)`` for a cylinder) is ``2 B C / (72 N)``.
-      * solving ``TE / tau >= 10`` (near-complete exchange -- empirically, TE/tau = 6 at
-        κ=1.5e-5, TE=1 s left a 21% relative error, too far above this test's 10% tolerance) for
-        B at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3, N = 5,000 gives
+        match); there ``tau = R / (2 kappa)`` is the cylinder's exchange time, ``TE = K tau`` for
+        the exchange ratio ``K = TE / tau``, and the sub-steps per walker are ``36 K / C``.
+      * ``K = 10`` (near-complete exchange) at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3 gives
         ``kappa = 3.6e-6 m/s``, ``TE = 6.944 s``, ``n_sub = 101`` per save (both rules bind,
-        1000x under the 100,000 cap) at ``n_t = 1,200``: ``TE / tau = 10.0`` exactly, total
-        walker-steps ``5,000 * 1,200 * 101 ~= 6.06e8`` -- measured at ~4.3 minutes wall clock on
-        this machine (CPU), inside a 10-minute bound.
+        1000x under the 100,000 cap) at ``n_t = 1,200``: 1.2e5 sub-steps per walker, so
+        3.3e8 walker-steps for the walkers above.
     """
-    TE = 6.944444444444445   # s -- derived above: B(R**2)/(216 D N) at B = 120,000
+    TE = 6.944444444444445   # s -- K R / (2 kappa*) for K = 10
     n_t = 1200
     b_idx = 1  # b = 500 s/mm² = 500e6 s/m²
     wf = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
-    geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_HIGH)
-    S_perm = simulate_fused(N_ORDINAL, D, wf, geom_perm, seed=SEED)
-
     # free-diffusion reference at b=500 s/mm²
     b_val = 500e6  # s/m²
     S_free = np.exp(-b_val * D)
+    sd_free = np.sqrt((1.0 + S_free ** 4) / 2.0 - S_free ** 2)
+    n = n_resolving(0.21 * S_free, sd_free)
 
-    rel_err = abs(float(S_perm[b_idx]) - S_free) / S_free
-    assert rel_err < 0.10, (
-        f"High-κ signal {S_perm[b_idx]:.4f} should be within 10% of "
-        f"free diffusion {S_free:.4f} (rel_err={rel_err:.3f})")
+    geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_HIGH)
+    S_perm = simulate_fused(n, D, wf, geom_perm, seed=SEED)
+
+    tol = se_tol(n, sd_free)
+    assert abs(float(S_perm[b_idx]) - S_free) < tol, (
+        f"High-κ signal {S_perm[b_idx]:.4f} should be within {tol:.4f} ({tol / S_free:.1%}) of "
+        f"free diffusion {S_free:.4f} (N = {n})")
 
 
 # ---------------------------------------------------------------------------
@@ -198,10 +206,11 @@ def test_permeability_high_kappa_approaches_free_diffusion():
 def test_permeability_with_relaxivity_reduces_signal():
     """Surface relaxivity on a permeable cylinder reduces the signal at b = 0 (reflected walkers take the
     Brownstein-Tarr weight, transmitted ones do not)."""
-    S_perm, S_perm_rho = _signal(KAPPA_MED), _signal(KAPPA_MED, RHO)
-    assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.02, (
+    S_perm, S_perm_rho = _signal(KAPPA_MED, n=N_RELAXIVITY), _signal(KAPPA_MED, RHO, n=N_RELAXIVITY)
+    margin = se_tol(N_RELAXIVITY, SD_ORDINAL, runs=2)
+    assert float(S_perm_rho[0]) < float(S_perm[0]) - margin, (
         f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
-        f"permeability-only {S_perm[0]:.4f} at b=0")
+        f"permeability-only {S_perm[0]:.4f} by {margin:.3f} at b=0")
 
 
 # ---------------------------------------------------------------------------
