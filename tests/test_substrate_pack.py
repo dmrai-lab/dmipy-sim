@@ -1,5 +1,6 @@
 """A calibrated substrate realises itself in one call, the walk keeps its geometry, and the pack
 builder reads pools and field basis from it: nothing the objects already know is retyped."""
+from tests._envelope import stated
 import dataclasses
 
 import numpy as np
@@ -45,7 +46,7 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     g = sub.pack(n_axons=4, seed=0)
     walk = _walk_geometry(120, sub.D_intra, g, 2e-3, 5e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g), K=8)
     assert walk.geometry is g and walk.diffusivity == sub.D_intra
-    pk = build_replay_pack(walk, id="t/sub", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(walk, id="t/sub", license="x", citation="x", K=8, **stated(ENV, of=walk))
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert "per_comp" not in pk.meta and pk.substrate.pools == g.spec.pools     # the spec, never the values
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
@@ -68,9 +69,9 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     # a walk whose spec has no field source, walked without one: its pack leaves the tier out
     walk_nf = dataclasses.replace(walk, spec=spec_without_source(walk.spec), field_basis=None, field_coeffs=None, K_c3=None,
                                   field_read_interval=None, qv_field=None, qv_field_increments=None, raw_field=None)
-    pk2 = build_replay_pack(walk_nf, id="t/own", license="x", citation="x", K=8, envelope=ENV)
+    pk2 = build_replay_pack(walk_nf, id="t/own", license="x", citation="x", K=8, **stated(ENV, of=walk_nf))
     assert pk2.has_relaxation and not pk2.has_field
     # a bare cylinder: occupancy and local time are recorded (T2 / rho2 come at replay), no field source
     plain = _walk_geometry(60, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 2e-3, 5e-4, seed=0, require_gpu=False, K=8)
-    pk3 = build_replay_pack(plain, id="t/plain", license="x", citation="x", K=8, envelope=ENV)
+    pk3 = build_replay_pack(plain, id="t/plain", license="x", citation="x", K=8, **stated(ENV, of=plain))
     assert pk3.has_surface and pk3.has_relaxation and not pk3.has_field

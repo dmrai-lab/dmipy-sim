@@ -22,6 +22,7 @@ from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
 from tests.conftest import READ_BLOCK as BLOCK, READ_FINE as FINE, read_walk as _walk   # noqa: E402  (shared across modules)
+from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
 
 
 @pytest.fixture(scope="module")
@@ -128,7 +129,7 @@ def test_the_read_interval_needs_the_adaptive_producer(spec):
     from dmipy_replay.spec.substrate import SpecError
     for kw in ({}, dict(field_read_interval=BLOCK)):
         with pytest.raises(SpecError, match="adaptive"):
-            walk(spec, 30, 8e-4, BLOCK, seed=3, n_probe=2000, require_gpu=False, **kw)
+            walk(spec, 30, 8e-4, BLOCK, seed=3, n_probe=2000, require_gpu=False, **kw, envelope=walk_envelope(of=spec))
 
 
 def test_shards_with_the_path_channel_merge(walks, tmp_path):
@@ -228,9 +229,9 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
               raw_subset=12, field_read_interval=interval)
     if interval < BLOCK:
         with pytest.raises(SpecError, match=r"pool '(extra|intra)' reads the field at instants other than the bundle's"):
-            walk(*args, **kw)
+            walk(*args, **kw, envelope=walk_envelope(of=spec))
     else:
-        walk(*args, **kw)
+        walk(*args, **kw, envelope=walk_envelope(of=spec))
     assert len(pools) == 2
     uneven = 0
     for w in pools:
@@ -257,4 +258,8 @@ def _float_pack(*a, **k):
     """``build_replay_pack`` in the float containers: this module compares packs and replays to the bit, which the
     derived integer default does not promise."""
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **k)
+    if isinstance(k.get("envelope"), dict):                          # the test's certificate settings: its envelope and battery
+        settings = k.pop("envelope")
+        k.update(stated(settings, G_max=settings.get("G_max", battery_reach(a[0].T_window, settings)), of=a[0]))
+    return build_replay_pack(*a, **{"envelope": walk_envelope(G_max=battery_reach(a[0].T_window), band_hz=TEST_BAND_HZ,
+                                                              of=a[0]), **k})       # the walk's own bands, read on its battery

@@ -7,6 +7,12 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+env:
+  # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): dmrai-lab/dmipy-replay#11 (the Envelope) until it
+  # merges, then its merge on main. Drop the ref when 0.2.0 is on PyPI.
+  DMIPY_REPLAY_REF: 13b198af5c3e401df60a8b2d6edd428fabaa945e
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -37,6 +43,7 @@ jobs:
           # nothing in the package imports -- it is the ORACLE the normative SH basis is
           # checked against (RPH.md Sec. 4.1). Without it those tests skip and the claim
           # goes unverified, so CI installs it even though [dev] deliberately does not.
+          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e ".[dev,interop]"
           # the torch backend of the shape-moment image is checked against the JAX one (dmipy-sim#510): the CPU wheel
           pip install torch --index-url https://download.pytorch.org/whl/cpu

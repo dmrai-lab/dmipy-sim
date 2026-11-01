@@ -1,5 +1,6 @@
 """Shared test constants and fixture loader."""
 
+from tests._envelope import stated, walk_envelope
 import os
 from pathlib import Path
 
@@ -215,7 +216,7 @@ def pack():
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
+    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x", **stated(G_max=15.0, of=walk))
 
 
 def dense_relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi, active):
@@ -262,8 +263,9 @@ def field_pack(tmp_path_factory):
     from dmipy_sim import walk
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
-    w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
-    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
+    w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, envelope=walk_envelope(of=spec))
+    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4,
+                             **stated(of=w))                              # the tests' short lobes reach 56 T/m
 
 
 #: The field-read walks (tests/test_field_read_interval.py, tests/replay/test_merge_field_read.py): the three-strand spec
@@ -276,7 +278,7 @@ READ_FINE = READ_BLOCK / 4         # a given read finer than the derived one: ev
 def read_walk(spec, interval=None, seed=3):
     from dmipy_sim import walk
     return walk(spec, 60, 8e-4, READ_BLOCK, seed=seed, n_probe=2000, require_gpu=False, adaptive_steps=True, K=4,
-                field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)))
+                field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)), envelope=walk_envelope(of=spec))
 
 
 @pytest.fixture(scope="session")

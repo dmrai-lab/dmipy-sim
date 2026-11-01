@@ -6,6 +6,7 @@ coefficients' difference is a function on SO(3) bounded pointwise by their sum, 
 too), the series' misfit bounds the direct posed replay at every rotation, torch is numpy, the truncation bound of
 the series is a bound, and a class outside the series is refused by name. The same comparisons on the brain's packs
 are the `gpu` tests at the end."""
+from tests._envelope import stated
 import numpy as np
 import pytest
 from scipy.special import spherical_jn
@@ -33,7 +34,7 @@ def walk_pack():
     """A 400-walker cylinder walk of 12 ms at K = 12: the field-off pack."""
     walk = _walk_geometry(400, 2e-9, d.PackedCylinders([2e-6], [[0.0, 0.0]], 8e-6), 12e-3, 5e-4, seed=4,
                                    require_gpu=False)
-    return build_replay_pack(walk, id="test/series", license="x", citation="x", K=12)
+    return build_replay_pack(walk, id="test/series", license="x", citation="x", K=12, **stated(of=walk))
 
 
 def _classes(machine, kind, T, g, R=None):

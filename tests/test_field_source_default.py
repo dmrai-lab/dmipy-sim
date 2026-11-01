@@ -11,6 +11,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import disco_spec
 from dmipy_sim import walk
 from tests.conftest import spec_without_source
+from tests._envelope import walk_envelope
 
 
 @pytest.fixture(scope="module")
@@ -25,7 +26,7 @@ def spec(tmp_path_factory):
 
 
 def _walk(spec, **kw):
-    return walk(spec, 30, 2e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, **kw)
+    return walk(spec, 30, 2e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, **kw, envelope=walk_envelope(of=spec))
 
 
 def test_a_source_walks_with_its_field_by_default_and_the_pack_carries_the_tier(spec):

@@ -168,7 +168,8 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
         kw['sub_steps'] = sub_steps
     walk = _walk_geometry(n_walkers, diffusivity, geometry, T_max, **kw)
     pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate",
-                             envelope=acquisition_envelope(waveform))
+                             envelope=acquisition_envelope(waveform, band_hz=float(walk.K) / (2.0 * float(walk.T_window)),
+                                                           rho2_max=(float(rho) if has_surf else None)))
 
     pools = sorted(pack.substrate.pools, key=lambda p: p.id)
 
@@ -486,7 +487,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
                           length_scales_of as _length_scales_of, STEP_TOLERANCE)
     ls = _length_scales_of(geometry)
-    # the band the step law resolves: the caller's (walk passes the scanner class's), else the walk's own K / (2 T)
+    # the band the step law resolves: the caller's (walk passes its envelope's), else the walk's own K / (2 T)
     f_band = float(K / (2.0 * float(T_win)) if f_band is None else f_band)
     mt_dwell = dwell_time if kappa_MT > 0.0 else None
     rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell, f_band=f_band)
@@ -1150,7 +1151,7 @@ def _walk_geometry(
     events_capacity : int, optional
         The events buffer per walker and column, in place of the pilot's.
     envelope : dict, optional
-        The certificate's envelope (:func:`~dmipy_sim.replay.compression.default_envelope`) the field read's ``B0``
+        The certificate settings (:func:`~dmipy_sim.replay.compression.certificate_settings`) the field read's ``B0``
         and the field band's pilot are derived at; the defaults otherwise.
 
     Returns

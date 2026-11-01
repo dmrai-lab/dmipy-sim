@@ -17,6 +17,7 @@ coefficients for a uniform initial condition are elementary integrals of ``sin``
 check themselves: ``rho1 -> 0`` gives ``tan(x) = x``, the reflecting (Neumann) sphere, decay 0;
 ``rho1 R / D -> 0`` gives the well-known fast-diffusion rate ``rho1 (S/V) = 3 rho1 / R``.
 """
+from tests._envelope import stated, walk_envelope
 import numpy as np
 import pytest
 from scipy.optimize import brentq
@@ -41,7 +42,7 @@ ENV = dict(bvals=[0.0], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9,
 @pytest.fixture(scope="module")
 def sphere_pack():
     walk = _walk_geometry(N_WALKERS, D0, d.Sphere(R), T_MAX, DT_SAVE, seed=SEED, require_gpu=False, K=128)
-    return build_replay_pack(walk, id="test/sphere-rho1", K=128, envelope=ENV, license="x", citation="x")
+    return build_replay_pack(walk, id="test/sphere-rho1", K=128, **stated(ENV, of=walk), license="x", citation="x")
 
 
 # --------------------------------------------------------------------------- the analytical reference
@@ -202,9 +203,9 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=23 + b, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid,
-                                       out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))
+                                       out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk"), **stated(of=w)))
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")
     merged = merge_packs(packs, id="t/merged")
     col = ReplayPack.open(str(tmp_path / "layout"))

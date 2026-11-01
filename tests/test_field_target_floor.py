@@ -1,6 +1,7 @@
 """The field band is held to the numerical budget the walk is given (``field_target_floor``), not to the statistical
 floor of its pilot scaled to the walk's walker count: the band is the first whose codec error is within the budget,
 the walk records the budget, and a budget no band reaches is refused by name."""
+from tests._envelope import stated, walk_envelope
 import numpy as np
 import pytest
 
@@ -16,7 +17,7 @@ BUDGET = 1e-4                                      # below the pack error of the
 
 
 def _pack_fidelity(w, **kw):
-    return build_replay_pack(w, id="test/field-target", license="x", citation="x", envelope=_env7(), K=16, **kw).fidelity
+    return build_replay_pack(w, id="test/field-target", license="x", citation="x", **stated(_env7(), of=w), K=16, **kw).fidelity
 
 
 @pytest.fixture(scope="module")
@@ -65,9 +66,9 @@ def test_the_budget_goes_with_a_derived_field_band():
 
 def test_walk_spec_passes_the_budget_to_a_gridded_walk_and_refuses_it_elsewhere():
     geom = d.MyelinatedCylinder(1.0 * UM, 1.5 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
-    w = walk(geom.spec, 300, 5e-3, seed=2, require_gpu=False, field_target_floor=1e-3)
+    w = walk(geom.spec, 300, 5e-3, seed=2, require_gpu=False, field_target_floor=1e-3, envelope=walk_envelope(of=geom.spec))
     assert w.block["field_band"]["target_floor"] == 1e-3 and w.block["field_band"]["floor"] == 1e-3
     with pytest.raises(SpecError, match="K_c3 was given"):
-        walk(geom.spec, 8, 5e-3, seed=2, require_gpu=False, K_c3=4, field_target_floor=1e-3)
+        walk(geom.spec, 8, 5e-3, seed=2, require_gpu=False, K_c3=4, field_target_floor=1e-3, envelope=walk_envelope(of=geom.spec))
     with pytest.raises(SpecError, match="gridded field"):
-        walk(geom.spec, 8, 5e-3, seed=2, require_gpu=False, adaptive_steps=True, field_target_floor=1e-3)
+        walk(geom.spec, 8, 5e-3, seed=2, require_gpu=False, adaptive_steps=True, field_target_floor=1e-3, envelope=walk_envelope(of=geom.spec))

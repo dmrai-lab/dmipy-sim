@@ -8,12 +8,13 @@ import pytest
 
 from dmipy_sim.spectrum.common import verify_index
 from dmipy_sim.spectrum.label_volumes import TARGET_FRACTION, label_volume
+from tests._envelope import walk_envelope
 
 
 @pytest.fixture(scope="module")
 def entry_25um(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("spectrum_lv25"))
-    return label_volume(25e-6, 1, out_dir=out)
+    return label_volume(25e-6, 1, out_dir=out, envelope=walk_envelope())
 
 
 def test_25um_refuses_both_policy_walk_lengths(entry_25um):

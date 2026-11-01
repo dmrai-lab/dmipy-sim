@@ -4,6 +4,7 @@ and tier field, per-block rows consolidated into tiles; the image of every seque
 partition (a PGSE, a stimulated echo's three segments, a double diffusion encoding's four) is the sibling pack's replay
 within the layout's rounding term, bare and with the tiers."""
 from __future__ import annotations
+from tests._envelope import shard_containers, stated, walk_envelope
 import json
 import os
 
@@ -13,7 +14,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
-from dmipy_sim.replay.compression import default_envelope
+from dmipy_sim.replay.compression import default_battery
 from dmipy_replay.replay.time_segments import FORMAT, Partition, Shape, read_manifest
 from dmipy_sim.replay.time_segments import (
     TimeSegmentLayout,
@@ -72,6 +73,8 @@ def myelin(tmp_path_factory):
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
     grid = Grid(shape=(2, 2, 1), voxel_size_m=tuple(vs), origin_m=(lo[0] - 1e-9 + vs[0] / 2, lo[1] - 1e-9 + vs[1] / 2, 0.0))
+    import dataclasses
+    w = dataclasses.replace(w, envelope=stated(of=w)["envelope"])       # the test's envelope, which the walk view states
     pk = build_replay_pack(w, id="t/segments", license="x", citation="x", sigma_star=0.02, planned_floor=0.02, voxel_grid=grid)
     parts = _partitions()
     rec_w = segment_rows(w, parts, str(tmp / "rows_walk"), grid=grid, pack=pk, g_max=G_MAX, tiers=True, background=True)
@@ -271,10 +274,9 @@ def test_the_tier_columns_are_words(myelin):
 
 
 def test_a_sequence_beyond_the_envelope_and_a_foreign_pack_are_refused(myelin):
-    """A row above b_max or G_max is refused by name; a walk's rows need its own pack."""
+    """A row above G_max is refused by name (an envelope's layout has no b bound); a walk's rows need its own pack."""
     M = myelin
-    with pytest.raises(ValueError, match="b_max"):
-        M["lw"].image(d.pgse([[0, 0, 1]], 4e-3, 10e-3, bvalues=[5e9], TE=TE, n_t=N_T, slew_rate=np.inf))
+    assert M["lw"].manifest["source"]["envelope"]["b_max"] is None
     se, _, dde, _ = _sequences()
     with pytest.raises(ValueError, match="G_max"):
         M["lw"].image(dde.with_gradient(np.asarray(dde.G) * 12.0))
@@ -311,11 +313,11 @@ def blocks(spec_grid):
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         # certified up to ten times the sheath's chi, so that the layout's field words resolve its field at the
         # fixture's coarse floor (at the sheath's own the field rounds to zero on every row of 24 walkers)
         pk = build_replay_pack(w, id=f"t/sb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
-                               envelope=dict(default_envelope(), chi_max=2e-6))
+                               **stated(dict(default_battery(), chi_max=2e-6), of=w), **shard_containers(packs))
         packs.append(pk)
         dirs.append(str(tmp / f"sb_rows{b}"))
         segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3,
@@ -372,8 +374,9 @@ def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):
         want = np.zeros(grid.shape, np.int64); want[b] = 24 // len(pools)            # as many walkers in each block
         per = {p: (want if p in pools else np.zeros(grid.shape, np.int64)) for p in ("extra", "intra")}
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=per))
-        pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid)
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=per), envelope=walk_envelope(of=spec))
+        pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid, **stated(of=w),
+                               **shard_containers(packs))
         packs.append(pk); dirs.append(str(tmp_path / f"pl_rows{b}"))
         segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3, tiers=True)
     m = write_time_segment_layout(dirs, str(tmp_path / "pl_layout"))
@@ -545,23 +548,28 @@ def test_a_streamed_image_is_the_resident_image_to_the_bit(blocks, backend):
 
 def test_the_field_phase_at_an_oblique_field_is_the_packs(myelin):
     """With the field along an oblique axis and an anisotropic susceptibility alone, an isotropic one alone and both,
-    the layout's image is the pack's replay within the same distance as without any field (the rounding's): the
-    stored channels meet the direction's twelve weights in the basis's own order (RPK.md 5.3, ``iso_P_zz`` folded into
-    the isotropic weights, never formed)."""
+    the layout's image is the pack's replay within the error the layout states for its words (its certificate: the
+    partition's rounding, its group's tier rounding -- the field words' at the certified ``B0 chi`` -- and the pack's
+    own quantisation, as a voxel's term, :func:`_term`): the stored channels meet the direction's twelve weights in the
+    basis's own order (RPK.md 5.3, ``iso_P_zz`` folded into the isotropic weights, never formed)."""
     from dataclasses import replace
     from dmipy_replay.acquisition.scanners import ScannerLimits
     M = myelin
     u = np.array([1.0, 0.3, 0.5]); u /= np.linalg.norm(u)
     sc = replace(ScannerLimits.of("siemens_magnetom_terra_7T"), b0_axis=tuple(u))
     seq = _acquisitions()["pgse"]
+    mw, mp = M["mw"], M["mp"]
+    stated = max(mw["partitions"][n]["rounding"]["variance"] + sum(mw["certificate"]["tiers"][p_["group"]]["rounding"].values())
+                 + mp["partitions"][n]["rounding"]["source_quantisation"] + sum(mp["certificate"]["tiers"][p_["group"]]["source"].values())
+                 for n, p_ in mw["partitions"].items())
+    assert sum(mw["certificate"]["tiers"][g]["rounding"]["field"] for g in mw["certificate"]["tiers"]) > 0   # field words stated
 
-    def gap(t):
+    for t in (replace(TISSUE, chi_iso=0.0, chi_aniso=0.0), replace(TISSUE, chi_iso=0.0, chi_aniso=-2e-7),
+              replace(TISSUE, chi_iso=-2e-7, chi_aniso=0.0), replace(TISSUE, chi_iso=-2e-7, chi_aniso=-2e-7)):
         ref = _per_voxel(M["pack"], M["grid"], seq, tissue=t, scanner=sc)
-        S, _ = M["lw"].image(seq, tissue=t, scanner=float(sc.field_T), b0_direction=tuple(u))
-        return float(np.abs(S.reshape(ref.shape) - ref).max())
-    base = gap(replace(TISSUE, chi_iso=0.0, chi_aniso=0.0))
-    for t in (replace(TISSUE, chi_iso=0.0, chi_aniso=-2e-7), replace(TISSUE, chi_iso=-2e-7, chi_aniso=0.0), replace(TISSUE, chi_iso=-2e-7, chi_aniso=-2e-7)):
-        assert gap(t) < base * 1.05 + 1e-5, (t.chi_iso, t.chi_aniso)
+        S, floor = M["lw"].image(seq, tissue=t, scanner=float(sc.field_T), b0_direction=tuple(u))
+        gap = float(np.abs(S.reshape(ref.shape) - ref).max())
+        assert gap < _term(stated, float(np.nanmax(floor))), (t.chi_iso, t.chi_aniso, gap)
 
 
 def test_the_tier_maps_and_the_files(blocks):

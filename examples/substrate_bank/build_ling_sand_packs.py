@@ -37,6 +37,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
+from dmipy_replay import envelope_of
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
                                         Systematic, Tier, Tolerance, pack_seed)
@@ -98,10 +99,10 @@ SOLVER = "non-negative least squares with a second-difference penalty, lam = 0.1
 #: What these packs say they are FOR: a relaxometry envelope. The acquisition this family reproduces plays no
 #: gradient at all, so the declared waveforms are a clinical diffusion pair and the band is small and stated --
 #: a consumer asking for more is refused by ``waveform_band`` rather than served a wrong number.
-ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
-                ogse_periods=[1, 2, 3], shortd_b=1e9, delta_frac=60e-3 / 3.5,
-                shortd_deltas_frac=[80e-3 / 3.5, 60e-3 / 3.5], Delta_frac=160e-3 / 3.5,
-                rho2_list=sorted(RHO.values()))
+ENVELOPE = envelope_of("connectom", rho2_max=max(RHO.values()))
+BATTERY = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+               ogse_periods=[1, 2, 3], shortd_b=1e9, delta_frac=60e-3 / 3.5,
+               shortd_deltas_frac=[80e-3 / 3.5, 60e-3 / 3.5], Delta_frac=160e-3 / 3.5)
 
 #: The deltas the family declares, in seconds: the envelope's own clinical pair, which the stored band (640 Hz,
 #: K = 128 per 100 ms window) holds on every pack.
@@ -112,7 +113,7 @@ def waveforms():
     """Every waveform the family declares, checked against ``waveform_band`` per pack by the pack stage."""
     from dmipy_sim import pgse
     return tuple((f"pgse-delta{delta * 1e3:.0f}ms",
-                  pgse([[1, 0, 0]], delta, max(2 * delta, 160e-3), bvalues=[max(ENVELOPE["bvals"])], n_t=400))
+                  pgse([[1, 0, 0]], delta, max(2 * delta, 160e-3), bvalues=[max(BATTERY["bvals"])], n_t=400))
                  for delta in DECLARED_DELTAS)
 
 
@@ -306,7 +307,7 @@ def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
     if cache.get(sample, {}).get("key") != key:
         w = walk(spec_of(sample, data_dir, work_dir), int(n), T=T, K=K_BANDS, seed=seed)
         pack = build_replay_pack(w, id=f"ling-sand-packs/{sample.lower()}/direct-se", license=LICENCE,
-                                 citation=CITATION, envelope=ENVELOPE, K=K_BANDS)
+                                 citation=CITATION, envelope=ENVELOPE, battery=BATTERY, K=K_BANDS)
         _t, _S, _lm, se_walk = decay_and_log_mean(pack, rho_of(sample), grid)
         scale = (int(n) / float(d["n_walkers"])) ** 0.5
         cache[sample] = dict(key=key, value=dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n),
@@ -459,7 +460,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
                      "is its prefix, read within the same walk.")))
 
     design = Design(
-        window_s=window, K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
+        window_s=window, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY, waveforms=waveforms,
         tiers=(Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA),
                Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,

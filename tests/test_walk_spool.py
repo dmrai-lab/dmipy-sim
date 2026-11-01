@@ -1,5 +1,6 @@
 """A walk as a file (`CoefficientWalk.save` / `load`), the spool of a walk's batches in its run record, and the
 resume that reads them back: a killed walk costs the batch in progress, not the walk."""
+from tests._envelope import stated, walk_envelope
 import os
 import numpy as np
 import pytest
@@ -25,7 +26,7 @@ def spec(tmp_path_factory):
 def _walk(spec, run_dir=None, spool=False):
     # 30 walkers in batches of 10: three batches per pool, which is what the resume test removes one of
     return walk(spec, 30, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
-                     field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=run_dir, spool=spool)
+                     field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=run_dir, spool=spool, envelope=walk_envelope(of=spec))
 
 
 @pytest.fixture(scope="module")
@@ -49,8 +50,8 @@ def test_a_walk_round_trips_through_its_file_and_packs(spooled, tmp_path):
     assert back.field_basis.meta == w.field_basis.meta and back.run["producer"] == "walk" and back.stepping == w.stepping
     with pytest.raises(ValueError, match="evaluates nothing"):
         back.field_basis.channels(np.zeros((2, 3)))
-    pk = build_replay_pack(back, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy")
-    pk0 = build_replay_pack(w, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy")
+    pk = build_replay_pack(back, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy", **stated(of=back))
+    pk0 = build_replay_pack(w, id="t/loaded", license="x", citation="x", K=8, susc_path_K=4, device="numpy", **stated(of=w))
     for k in pk.arrays:
         np.testing.assert_array_equal(pk.arrays[k], pk0.arrays[k])
     assert pk.meta["compression"]["channels"]["susceptibility_grid"]["source"] == pk0.meta["compression"]["channels"]["susceptibility_grid"]["source"]
@@ -81,4 +82,4 @@ def test_a_spooled_walk_resumes_from_its_batches(spec, spooled):
     np.testing.assert_array_equal(w2.position_coeffs, w0.position_coeffs)
     with pytest.raises(ValueError, match="another run"):
         walk(spec, 31, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
-                  field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=d, spool=True)
+                  field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=d, spool=True, envelope=walk_envelope(of=spec))

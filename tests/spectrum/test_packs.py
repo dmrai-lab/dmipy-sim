@@ -8,18 +8,19 @@ import pytest
 
 from dmipy_sim.spectrum.common import verify_index
 from dmipy_sim.spectrum.packs import TARGET_FRACTION, _gamma_scale_for, _place_tile, cylinders, spheres
+from tests._envelope import walk_envelope
 
 
 @pytest.fixture(scope="module")
 def entry_cyl_25um(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("spectrum_cyl25"))
-    return cylinders(25e-6, 1, out_dir=out)
+    return cylinders(25e-6, 1, out_dir=out, envelope=walk_envelope())
 
 
 @pytest.fixture(scope="module")
 def entry_sph_25um(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("spectrum_sph25"))
-    return spheres(25e-6, 1, out_dir=out)
+    return spheres(25e-6, 1, out_dir=out, envelope=walk_envelope())
 
 
 @pytest.mark.parametrize("entry_name", ["entry_cyl_25um", "entry_sph_25um"])

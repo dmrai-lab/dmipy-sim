@@ -8,6 +8,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.spec import as_geometry, SubstrateSpec
+from tests._envelope import walk_envelope
 
 D0 = 2e-9
 
@@ -41,7 +42,7 @@ def test_a_door_takes_a_spec_or_a_geometry_and_refuses_every_other_spelling(tmp_
         as_geometry(object())
     for bad, match in ((spec.to_dict(), "SubstrateSpec.from_dict"), (str(path), "load_spec"), (carrier, "not a substrate")):
         with pytest.raises(TypeError, match=match):
-            d.walk(bad, 4, 1e-3, 2.5e-4, require_gpu=False)
+            d.walk(bad, 4, 1e-3, 2.5e-4, require_gpu=False, envelope=walk_envelope(of=bad))
         with pytest.raises(TypeError, match=match):
             _walk_geometry(4, D0, bad, 1e-3, 2.5e-4, require_gpu=False)
         with pytest.raises(TypeError, match=match):
@@ -50,8 +51,8 @@ def test_a_door_takes_a_spec_or_a_geometry_and_refuses_every_other_spelling(tmp_
 
 def test_walk_takes_a_geometry_reduced_to_its_spec():
     g = d.Cylinder(3e-6, (0, 0, 1))
-    w_g = d.walk(g, 40, 1e-3, 2.5e-4, seed=1, require_gpu=False, K=8, diffusivity=D0)
-    w_s = d.walk(g.spec, 40, 1e-3, 2.5e-4, seed=1, require_gpu=False, K=8, diffusivity=D0)
+    w_g = d.walk(g, 40, 1e-3, 2.5e-4, seed=1, require_gpu=False, K=8, diffusivity=D0, envelope=walk_envelope(of=g))
+    w_s = d.walk(g.spec, 40, 1e-3, 2.5e-4, seed=1, require_gpu=False, K=8, diffusivity=D0, envelope=walk_envelope(of=g.spec))
     np.testing.assert_array_equal(w_g.position_coeffs, w_s.position_coeffs)
     assert w_g.spec == g.spec
 

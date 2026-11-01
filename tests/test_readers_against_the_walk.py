@@ -9,6 +9,7 @@ columnar image and the pose expansion of the pack agree with that reference to f
 whole-window reads (``prefix`` on a window boundary, ``window(i)``) are the pack of the walk's own window, bit for bit
 on the bands. A consolidation of shards that disagree on the block or the window table is refused by name.
 """
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
@@ -81,7 +82,7 @@ def walked(tmp_path_factory):
             walks.append(w)
             packs.append(build_replay_pack(w, id=f"t/oracle-{block}", license="x", citation="x", K=K, voxel_grid=grid,
                                            position_container=None, blt_container=None,
-                                           out_path=str(tmp / "shards" / f"block-{block:04d}.p1.rpk")))
+                                           out_path=str(tmp / "shards" / f"block-{block:04d}.p1.rpk"), **stated(of=w)))
     out = str(tmp / "layout")
     consolidate(str(tmp / "shards"), out, blocks=[0, 1], id="t/oracle")
     return walks, packs, ReplayPack.open(out), grid
@@ -146,7 +147,7 @@ def test_the_pose_expansion_is_the_walks_own_posed_signal(walked):
 def two_windows():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
     w = _walk_geometry(300, 2e-9, g, 4e-3, 1e-4, seed=9, require_gpu=False, K=12, window_T=2e-3, sub_steps=2)
-    kw = dict(license="x", citation="x", K=12, position_container=None, blt_container=None)
+    kw = dict(license="x", citation="x", K=12, position_container=None, blt_container=None, **stated())
     return w, build_replay_pack(w, id="t/two", **kw), kw
 
 
@@ -171,7 +172,7 @@ def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
     the key."""
     from dmipy_sim.replay.consolidate import consolidate
     g, grid = _cell()
-    kw = dict(license="x", citation="x", K=4, voxel_grid=grid)
+    kw = dict(license="x", citation="x", K=4, voxel_grid=grid, **stated())
 
     def shard(name, **walk):
         w = _walk_geometry(60, 2e-9, g, 2e-3, **walk, seed=len(name), require_gpu=False, K=4, sub_steps=2)

@@ -4,6 +4,7 @@ overlap, a tensor encoding is three shapes on one interval). The vector of a ter
 (exact), a sequence fits when its effective gradient is sum_s psi_s(t) a_s with a residual inside the layout's
 rounding, and the image of every such sequence is the sibling pack's replay within the layout's rounding term."""
 from __future__ import annotations
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import json
 import os
@@ -94,6 +95,8 @@ def small(tmp_path_factory):
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
     grid = Grid(shape=(2, 2, 1), voxel_size_m=tuple(vs), origin_m=(lo[0] - 1e-9 + vs[0] / 2, lo[1] - 1e-9 + vs[1] / 2, 0.0))
+    import dataclasses
+    w = dataclasses.replace(w, envelope=stated(of=w, G_max=G_MAX)["envelope"])     # the test's envelope, its levels' bound
     pk = build_replay_pack(w, id="t/shapes", license="x", citation="x", sigma_star=0.02, planned_floor=0.02, voxel_grid=grid)
     parts = _partitions()
     rec = segment_rows(w, parts, str(tmp / "rows"), grid=grid, pack=pk, g_max=G_MAX)
@@ -390,9 +393,6 @@ def test_the_manifest_states_each_terms_shape_and_the_level_bound_uses_its_weigh
     assert man["partitions"][COS]["segments"][0]["shape"]["kind"] == "sampled"
     assert man["partitions"][COS]["segments"][0]["shape"]["cells"] == 200
     assert man["partitions"][BOX]["segments"][0]["shape"] == {"kind": "constant"}
-    # the reach of a shaped class from the b matrix: the largest level within b_max is sqrt(b_max / b_unit) on one term
-    cos = M["lay"].partitions[COS]
-    N = cos.refocused_basis()[1]
-    Bm = N.T @ cos.b_matrix() @ N
-    want = np.sqrt(3e9 * np.diag(N @ np.linalg.solve(Bm, N.T)))
-    np.testing.assert_allclose(np.minimum(want, G_MAX), man["partitions"][COS]["segments"][0]["q_max"] * np.ones(2), rtol=1e-9)
+    # the reach of a shaped term under the envelope: every axis at G_max at once, |a| = sqrt(3) G_max (no b bound)
+    assert man["source"]["envelope"]["b_max"] is None
+    np.testing.assert_allclose(man["partitions"][COS]["segments"][0]["q_max"], np.sqrt(3.0) * G_MAX, rtol=1e-9)

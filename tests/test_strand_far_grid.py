@@ -8,6 +8,7 @@ from dmipy_sim.fields.strand_field import StrandFieldBasis, FarGrid
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.spec import disco_spec
 from dmipy_sim import walk
+from tests._envelope import walk_envelope
 
 
 def _strands(rng, n=40, side=40e-6, n_pts=7):
@@ -62,7 +63,7 @@ def world(tmp_path_factory):
     tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
     write_tck(tck, *concat_centerlines([c + 0.0 for c in cls]), coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
-    return dict(spec=spec, cls=cls, ri=ri, ro=ro, tmp=tmp, w0=walk(spec, N_WALK, K=6, K_c3=4, **KW))
+    return dict(spec=spec, cls=cls, ri=ri, ro=ro, tmp=tmp, w0=walk(spec, N_WALK, K=6, K_c3=4, **KW, envelope=walk_envelope(of=spec)))
 
 
 def test_the_far_grid_round_trips_and_the_walk_reads_it(world):
@@ -74,14 +75,14 @@ def test_the_far_grid_round_trips_and_the_walk_reads_it(world):
     far.save(str(tmp / "far.npy")); back = FarGrid.load(str(tmp / "far.npy"))
     np.testing.assert_array_equal(back.values, far.values); assert back.meta == far.meta
     kw = dict(KW, K=6, K_c3=4)
-    w1 = walk(spec, N_WALK, field_far=str(tmp / "far.npy"), **kw)
+    w1 = walk(spec, N_WALK, field_far=str(tmp / "far.npy"), **kw, envelope=walk_envelope(of=spec))
     np.testing.assert_array_equal(w1.position_coeffs, w0.position_coeffs)
     d = w1.field_coeffs - w0.field_coeffs
     assert np.sqrt((d ** 2).sum()) / np.sqrt((w0.field_coeffs ** 2).sum()) < 5e-2      # measured 3.1 % on this 0.5 um grid: the segments' end fields are sharper than a line's
     assert w1.field_basis.far is not None and w1.field_basis.certificate["far_grid"]["sha256"] == far.sha256
     from dmipy_sim.spec import WalkContext                                        # the context: the basis and grid kept across walks
     ctx = WalkContext(spec, field_far=str(tmp / "far.npy"))
-    w2 = walk(spec, N_WALK, context=ctx, **kw)
+    w2 = walk(spec, N_WALK, context=ctx, **kw, envelope=walk_envelope(of=spec))
     np.testing.assert_array_equal(w2.position_coeffs, w1.position_coeffs); np.testing.assert_array_equal(w2.field_coeffs, w1.field_coeffs)
     assert w2.field_basis is ctx.field_basis() and ctx.key[1] == far.sha256
     with pytest.raises(ValueError, match="another far grid"):
@@ -144,10 +145,10 @@ def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(world, mo
 
     from dmipy_sim.spec import WalkContext
     ctx = WalkContext(spec)
-    w1 = walk(spec, N_WALK, context=ctx, **kw)
+    w1 = walk(spec, N_WALK, context=ctx, **kw, envelope=walk_envelope(of=spec))
     n_geom_1, n_field_1 = n_geom[0], n_field[0]
     assert n_geom_1 > 0 and n_field_1 > 0                           # the first call pays for both
-    w2 = walk(spec, N_WALK, context=ctx, **kw)
+    w2 = walk(spec, N_WALK, context=ctx, **kw, envelope=walk_envelope(of=spec))
     assert n_geom[0] == n_geom_1 and n_field[0] == n_field_1         # the second call builds neither again
 
     # w0, the shared fixture's walk, is the no-context walk: unaffected, same to the bit

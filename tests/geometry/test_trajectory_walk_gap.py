@@ -17,6 +17,7 @@ import dmipy_sim.spec.walk as walk_mod
 from dmipy_sim.geometry.base import Geometry, LengthScales
 from dmipy_sim import walk
 from dmipy_replay.spec.substrate import SpecError
+from tests._envelope import walk_envelope
 
 D = 2e-9
 
@@ -66,4 +67,4 @@ def test_walk_refuses_an_unwalkable_geometry_before_calling_the_primitive(monkey
 
     g = d.MyelinatedCylinder(2e-6, 2.8e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D), extra=d.Pool(D=D), myelin=d.Pool(D=0.0)))   # any single-geometry spec will do
     with pytest.raises(SpecError, match="test stub"):
-        walk(g.spec, 8, T_max=1e-3)
+        walk(g.spec, 8, T_max=1e-3, envelope=walk_envelope(of=g.spec))

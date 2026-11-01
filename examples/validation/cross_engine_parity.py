@@ -444,8 +444,8 @@ def multiplicity_thresholds(n_live, dof, *, k_per=3.0, expected_family_wise=0.5,
 
 
 # --------------------------------------------------------------------------------------------- the envelope
-def mcdc_envelope():
-    """What an MC/DC-axon pack is certified FOR: the fixture's own scheme, and nothing wider.
+def mcdc_battery():
+    """Where an MC/DC-axon pack's certificate is read: the fixture's own scheme, and nothing wider.
 
     The four ActiveAx shells as (b, delta, Delta) over the scheme's three orthogonal-ish axes, so
     ``waveform_band`` is checked against the acquisition the pack exists to reproduce.
@@ -457,8 +457,8 @@ def mcdc_envelope():
                 ogse_periods=[1, 2])        # not in the scheme; a stricter band tier than PGSE alone
 
 
-def disimpy_envelope():
-    """What the Disimpy pack is certified FOR: the fixture's own PGSE, b to 3e9 s/m^2 at 30 / 40 ms along x."""
+def disimpy_battery():
+    """Where the Disimpy pack's certificate is read: the fixture's own PGSE, b to 3e9 s/m^2 at 30 / 40 ms along x."""
     return dict(bvals=[0.0, 1.5e9, 3.0e9], dirs=[[1, 0, 0], [0, 0, 1], [1, 0, 1]],
                 delta_frac=DISIMPY_DELTA / DISIMPY_TE, Delta_frac=DISIMPY_BIGDELTA / DISIMPY_TE,
                 shortd_b=3.0e9, shortd_deltas_frac=[DISIMPY_DELTA / DISIMPY_TE],

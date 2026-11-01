@@ -1,5 +1,6 @@
 """Mesh substrates are specs too: a single surface round-trips through its spec, and a multi-surface
 bundle is walked pool by pool by `walk` from the spec alone, into a pack that embeds it."""
+from tests._envelope import stated, walk_envelope
 import json
 import os
 
@@ -126,7 +127,7 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     spec = _bundle_spec(tmp_path)
     with pytest.raises(SpecError, match="pool by pool"):
         geometry_from_spec(spec)
-    w = walk(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=4000, field_res=0.4e-6, require_gpu=False, K=8)
+    w = walk(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=4000, field_res=0.4e-6, require_gpu=False, K=8, envelope=walk_envelope(of=spec))
     assert w.spec is spec and w.geometry is None and w.weights is None      # thinned: unweighted
     ids = np.asarray(w.compartment)                                              # one label per walker
     assert set(np.unique(ids)) == {0, 1, 2} and ids.ndim == 1
@@ -135,7 +136,7 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     r0 = np.hypot(C[:, 0, 0] - np.where(C[:, 0, 0] < 0, -2e-6, 2e-6), C[:, 0, 1])
     assert (r0[ids == 1] < 0.8e-6 + 1e-9).all() and (r0[ids == 2] > 0.8e-6 - 1e-9).all()      # pools where the walls say
     assert (C[ids == 2, 1:] == 0).all()                                                     # stuck myelin: no path
-    pk = build_replay_pack(w, id="test/bundle", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(w, id="test/bundle", license="x", citation="x", K=8, **stated(ENV, of=w))
     assert pk.has_relaxation and pk.has_surface and pk.has_field
     assert pk.meta["substrate"]["id"] == "test/bundle-2" and SubstrateSpec.from_dict(pk.meta["substrate"]) == spec
     assert "per_comp" not in pk.meta and pk.substrate == spec
@@ -148,13 +149,13 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
 
 def test_walk_spec_walks_an_analytic_spec_too():
     g = d.Cylinder(3e-6, (0, 0, 1))
-    from dmipy_sim.replay.bank import class_band
-    w = walk(g.spec, 32, 4e-4, 2e-4, diffusivity=D, seed=1, require_gpu=False)
-    ref = _walk_geometry(32, D, g, 4e-4, 2e-4, seed=1, require_gpu=False, K=w.K, f_band=class_band("connectom"))
+    from dmipy_replay import envelope_of
+    w = walk(g.spec, 32, 4e-4, 2e-4, diffusivity=D, seed=1, require_gpu=False, envelope=walk_envelope(of=g.spec))
+    ref = _walk_geometry(32, D, g, 4e-4, 2e-4, seed=1, require_gpu=False, K=w.K, f_band=envelope_of("connectom").band_hz)
     np.testing.assert_array_equal(w.position_coeffs, ref.position_coeffs)
     assert w.spec == g.spec and type(w.geometry) is d.Cylinder
     with pytest.raises(SpecError, match="no D"):
-        walk(g.spec, 32, 4e-4, 2e-4, seed=1, require_gpu=False)
+        walk(g.spec, 32, 4e-4, 2e-4, seed=1, require_gpu=False, envelope=walk_envelope(of=g.spec))
 
 
 def test_the_bundle_diffusivity_refusal_names_routes_that_exist(tmp_path, monkeypatch):
@@ -165,7 +166,7 @@ def test_the_bundle_diffusivity_refusal_names_routes_that_exist(tmp_path, monkey
     monkeypatch.setattr(accumulate, "block_length", lambda *a, **k: pytest.fail("the refused number reached the block rule"))
     monkeypatch.setattr(core, "_walk_geometry", lambda *a, **k: pytest.fail("the refused number reached a walk"))
     with pytest.raises(SpecError) as e:
-        walk(spec, 8, 4e-4, diffusivity=0.6e-9, seed=0, require_gpu=False)   # block derived
+        walk(spec, 8, 4e-4, diffusivity=0.6e-9, seed=0, require_gpu=False, envelope=walk_envelope(of=spec))   # block derived
     msg = str(e.value)
     assert "the producer's own argument" in msg and "SubstrateSpec.replace" in msg
     assert "spec.replace(D={'extra': 6e-10, 'intra': 6e-10})" in msg      # the frozen myelin pool is not in it
@@ -173,7 +174,7 @@ def test_the_bundle_diffusivity_refusal_names_routes_that_exist(tmp_path, monkey
     out = spec.replace(D={"extra": 0.6e-9, "intra": 0.6e-9})
     assert (out.pool("extra").D, out.pool("intra").D, out.pool("myelin").D) == (0.6e-9, 0.6e-9, 0.0)
     monkeypatch.undo()
-    w = walk(out, 24, 4e-4, 2e-4, seed=0, n_probe=2_000, require_gpu=False, field_res=0.4e-6)
+    w = walk(out, 24, 4e-4, 2e-4, seed=0, n_probe=2_000, require_gpu=False, field_res=0.4e-6, envelope=walk_envelope(of=out))
     assert w.spec.pool("intra").D == 0.6e-9
 
 
@@ -183,4 +184,4 @@ def test_walk_spec_refuses_a_diffusivity_a_bundle_walk_cannot_honour(tmp_path):
     and only the walk's run record said so."""
     spec = _bundle_spec(tmp_path)
     with pytest.raises(SpecError, match="walks each pool at its own D"):
-        walk(spec, 8, 4e-4, 2e-4, diffusivity=0.6e-9, seed=0, require_gpu=False)
+        walk(spec, 8, 4e-4, 2e-4, diffusivity=0.6e-9, seed=0, require_gpu=False, envelope=walk_envelope(of=spec))

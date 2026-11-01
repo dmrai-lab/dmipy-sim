@@ -19,8 +19,11 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
 
+from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")
+env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
+               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
+pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide", envelope=env)
 print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
 
@@ -38,8 +41,9 @@ picture of the paths.
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
 replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's `K` is the storage band by
-default (256 bands per 100 ms); `walk` walks the scanner class's certified band times the storage margin, and
-`build_replay_pack(walk, scanner="prisma")` or `K=` stores a smaller band of a walk. The walk's length `T` is the longest echo time the pack can
+default (256 bands per 100 ms); `walk(spec, ..., envelope=)` walks the envelope's band (`envelope_of("prisma")`: the
+class's certified band times the storage margin), and `build_replay_pack(walk, envelope=envelope_of("prisma"))` or
+`K=` stores a smaller band of a walk; the pack states the band it stores. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix (`pack.prefix(TE)`, below).
 
 A walk is accumulated in **storage windows** of one duration, 100 ms by default (`_walk_geometry(window_T=)`),

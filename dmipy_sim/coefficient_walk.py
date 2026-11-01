@@ -119,7 +119,7 @@ class CoefficientWalk:
     weights: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     run: object = field(default=None, compare=False, repr=False)
     work: Optional[dict] = field(default=None, compare=False)
-    scanner: Optional[str] = None
+    envelope: object = None    #: the :class:`~dmipy_replay.replay.envelope.Envelope` the walk was walked for (``walk``)
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
@@ -274,7 +274,7 @@ class CoefficientWalk:
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
                     "qv_boundary", "weights")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
-                     "illegal_crossings", "seed", "diffusivity", "work", "scanner", "stepping")
+                     "illegal_crossings", "seed", "diffusivity", "work", "stepping")
 
     def save(self, path):
         """The walk as one safetensors file: its arrays as tensors (an event list as ``<column>_events_offsets`` /
@@ -293,7 +293,7 @@ class CoefficientWalk:
         run = self.run
         fb = self.field_basis
         header = {k: getattr(self, k) for k in self._FILE_SCALARS}
-        header.update(spec=(None if self.spec is None else self.spec.to_dict()),
+        header.update(envelope=(None if self.envelope is None else self.envelope.to_dict()), spec=(None if self.spec is None else self.spec.to_dict()),
                       field=(None if fb is None else dict(kind=("grid" if hasattr(fb, "basis") else "hollow_cylinder"
                                                                 if fb.meta.get("kind") == "hollow_cylinder" else "strands"), meta=fb.meta)),
                       run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
@@ -334,6 +334,9 @@ class CoefficientWalk:
                 events[name] = EventList(arrays[f"{col}_events_offsets"], arrays[f"{col}_events_t"], arrays[f"{col}_events_label"])
         kw = {k: arrays.get(k) for k in cls._FILE_ARRAYS}
         kw.update({k: h.get(k) for k in cls._FILE_SCALARS})
+        if h.get("envelope") is not None:
+            from dmipy_replay.replay.envelope import Envelope
+            kw["envelope"] = Envelope.from_dict(h["envelope"])
         kw.update(K=int(h["K"]), m=int(h["m"]), n_windows=int(h["n_windows"]), sub_steps=int(h["sub_steps"]),
                   T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h.get("illegal_crossings") or 0),
                   K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)

@@ -23,6 +23,7 @@ concomitant effect. ``with_concomitant`` now applies the exact magnitude ``sqrt(
 B0 - B_n``, and the end-to-end residual is the coil's own: 0.2 per cent of the effect. The truncation is
 recorded as its own test so the reason stays measurable (dmipy-sim#377).
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
@@ -187,7 +188,7 @@ def pack(tmp_path_factory):
     n_t, dt = int(seq.n_t), float(seq.dt)
     walk = _walk_geometry(150, 2.0e-9, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=3, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
-    build_replay_pack(walk, id="test/free", license="x", citation="x", K=40, out_path=str(out))
+    build_replay_pack(walk, id="test/free", license="x", citation="x", K=40, out_path=str(out), **stated(of=walk))
     return read_rpk(str(out))
 
 

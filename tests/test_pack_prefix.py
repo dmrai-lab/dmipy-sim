@@ -9,6 +9,7 @@ from dmipy_sim import sequences
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
+from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
 
 
 @pytest.fixture(scope="module")
@@ -181,4 +182,8 @@ def _float_pack(*a, **k):
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **k)
+    if isinstance(k.get("envelope"), dict):                          # the test's certificate settings: its envelope and battery
+        settings = k.pop("envelope")
+        k.update(stated(settings, G_max=settings.get("G_max", battery_reach(a[0].T_window, settings)), of=a[0]))
+    return build_replay_pack(*a, **{"envelope": walk_envelope(G_max=battery_reach(a[0].T_window), band_hz=TEST_BAND_HZ,
+                                                              of=a[0]), **k})       # the walk's own bands, read on its battery
