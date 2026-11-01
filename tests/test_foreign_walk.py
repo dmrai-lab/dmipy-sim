@@ -9,6 +9,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue
+from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.foreign import (band_limit, interpolation_variance, interpolation_variance_bound, walk_from_positions)
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -77,7 +78,7 @@ def test_a_cylinder_walk_re_encoded_from_its_saves_replays_within_its_certificat
     g = d.Cylinder(radius=2.5e-6, orientation=(0, 0, 1))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        nat = d.simulate_trajectories(400, D0, g, 0.01, K=24, block_h=1e-4, seed=3, require_gpu=False, sub_steps=4, raw_subset=400)
+        nat = _walk_geometry(400, D0, g, 0.01, K=24, block_h=1e-4, seed=3, require_gpu=False, sub_steps=4, raw_subset=400)
     x = nat.raw_positions[:, ::2].astype(np.float64)                                   # saves every 0.2 ms
     h = 2e-4
     fw = walk_from_positions(x, sample_interval=h, K=20, pool="intra", spec=nat.spec, D=D0, producer=PRODUCER)

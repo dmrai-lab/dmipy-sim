@@ -89,7 +89,9 @@ def test_the_producer_and_the_geometry_are_a_fixed_point(image, tmp_path, monkey
     p = tmp_path / "slab.sub.json"
     spec.save(p)
     assert load_spec(p).to_dict() == spec.to_dict()
-    assert isinstance(as_geometry(str(p)), LabelVolume)
+    assert isinstance(as_geometry(load_spec(p)), LabelVolume)
+    with pytest.raises(TypeError, match="load_spec"):              # a path is a file, not a substrate
+        as_geometry(str(p))
 
 
 def test_a_crop_and_a_periodic_axis_travel_in_the_spec(image):
