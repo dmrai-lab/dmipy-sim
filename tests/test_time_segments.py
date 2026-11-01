@@ -463,7 +463,7 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
     order."""
     from dmipy_replay.replay.field import iso_weights, q_of_H
     from dmipy_replay.replay.time_segments import _decode, _field_terms_of_words, _layout_of, unpack_words
-    from dmipy_sim.replay.time_segments import _device_field_spec, _x64
+    from dmipy_replay.replay.time_segments_backends import _device_field_spec, _x64
     lay, merged, grid, n_t, m, tmp = blocks
     g = m["partitions"]["se"]["group"]
     cols = TimeSegmentLayout.columns(m)
