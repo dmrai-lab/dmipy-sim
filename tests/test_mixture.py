@@ -9,10 +9,12 @@ import numpy.testing as npt
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere, set_b
 from dmipy_sim.sequences import pgse
-from .conftest import D, N_WALKERS, SEED
+from .conftest import D, N_EXACT, SEED, mc_atol
+
+N_BETWEEN = 4_000   # the mixture is linear in its parts; the bound is 4 SE of two runs at this count
 
 
-def _waveform(n_b=20):
+def _waveform(n_b=6):
     b_values = np.linspace(1e8, 2e9, n_b)
     bvecs = np.tile([1., 0., 0.], (n_b, 1))
     return set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values), b_values
@@ -23,13 +25,13 @@ def test_mixture_is_weighted_sum():
     wf, _ = _waveform()
     f1, f2 = 0.7, 0.3
 
-    S1 = simulate(N_WALKERS, D,        wf, FreeDiffusion(), seed=SEED)
-    S2 = simulate(N_WALKERS, D * 0.5,  wf, Sphere(5e-6),   seed=SEED + 1)
+    S1 = simulate(N_EXACT, D,        wf, FreeDiffusion(), seed=SEED)
+    S2 = simulate(N_EXACT, D * 0.5,  wf, Sphere(5e-6),   seed=SEED + 1)
 
     S_mix = simulate_mixture([
-        {'fraction': f1, 'n_walkers': N_WALKERS, 'diffusivity': D,
+        {'fraction': f1, 'n_walkers': N_EXACT, 'diffusivity': D,
          'geometry': FreeDiffusion()},
-        {'fraction': f2, 'n_walkers': N_WALKERS, 'diffusivity': D * 0.5,
+        {'fraction': f2, 'n_walkers': N_EXACT, 'diffusivity': D * 0.5,
          'geometry': Sphere(5e-6)},
     ], wf, seed=SEED)
 
@@ -43,18 +45,18 @@ def test_mixture_between_compartments():
     wf, _ = _waveform()
     f1, f2 = 0.5, 0.5
 
-    S_free     = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
-    S_sphere   = simulate(N_WALKERS, D, wf, Sphere(5e-6),   seed=SEED + 1)
+    S_free     = simulate(N_BETWEEN, D, wf, FreeDiffusion(), seed=SEED)
+    S_sphere   = simulate(N_BETWEEN, D, wf, Sphere(5e-6),   seed=SEED + 1)
     S_mix      = simulate_mixture([
-        {'fraction': f1, 'n_walkers': N_WALKERS, 'diffusivity': D,
+        {'fraction': f1, 'n_walkers': N_BETWEEN, 'diffusivity': D,
          'geometry': FreeDiffusion()},
-        {'fraction': f2, 'n_walkers': N_WALKERS, 'diffusivity': D,
+        {'fraction': f2, 'n_walkers': N_BETWEEN, 'diffusivity': D,
          'geometry': Sphere(5e-6)},
     ], wf, seed=SEED)
 
     lo = np.minimum(S_free, S_sphere)
     hi = np.maximum(S_free, S_sphere)
-    assert np.all(S_mix >= lo - 0.01) and np.all(S_mix <= hi + 0.01), (
+    assert np.all(S_mix >= lo - mc_atol(N_BETWEEN, runs=2)) and np.all(S_mix <= hi + mc_atol(N_BETWEEN, runs=2)), (
         "Mixture signal must lie between the two component signals")
 
 
@@ -62,9 +64,9 @@ def test_mixture_fraction_limit():
     """f=1.0 for a single compartment must reproduce simulate() exactly."""
     wf, _ = _waveform()
 
-    S_direct = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED)
+    S_direct = simulate(N_EXACT, D, wf, FreeDiffusion(), seed=SEED)
     S_mix    = simulate_mixture([
-        {'fraction': 1.0, 'n_walkers': N_WALKERS, 'diffusivity': D,
+        {'fraction': 1.0, 'n_walkers': N_EXACT, 'diffusivity': D,
          'geometry': FreeDiffusion()},
     ], wf, seed=SEED)
 

@@ -1,5 +1,5 @@
 """Fast tests of dmipy_sim.spectrum.packs: the 25 um edge only (both policy walk lengths refused by the halo
-rule, as for every class in the spectrum). 250 um / 1 mm / 5 mm are exercised in test_packs_slow.py."""
+rule, as for every class in the spectrum). 250 um / 1 mm / 5 mm are exercised in test_packs_large_edges.py."""
 import json
 import os
 

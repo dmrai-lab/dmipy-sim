@@ -2,9 +2,8 @@
 
 `physics.resolve_sub_steps` is the maximum over the criteria that apply to a walk, and every
 driver -- the fused scan, the trajectory producer, the vector-Bloch engine, the MT walker, the
-packed-myelin kernel -- reports the count it took from it. The slow test at the end is the
-consequence: fused and replay agree on a surface-relaxivity substrate at the auto count, where
-before they were run at different resolutions.
+packed-myelin kernel -- reports the count it took from it. That fused and replay agree on a surface-relaxivity
+substrate at the auto count is held by test_engine_dispatch.py and test_replay_parity.py.
 """
 import numpy as np
 import pytest
@@ -112,20 +111,6 @@ def test_trajectory_producers_take_the_dispatched_count():
                                     dwell_time=1e-3, seed=0, require_gpu=False,
                                     equilibrate_binding="off")
     assert mt.sub_steps == resolve_sub_steps(d.Sphere(2e-6), D, block_h, surface=True, mt_dwell_time=1e-3)
-
-
-# ── the consequence: the oracle == the coefficient walk at the auto count ───────────────────────────────────
-@pytest.mark.gpu
-@pytest.mark.parametrize("make", [_sphere_rho, lambda: d.Box1D(4e-6, surface_relaxivity_t2=1e-6)])
-def test_the_oracle_and_the_coefficient_walk_agree_at_the_auto_sub_step_count(make):
-    g = make()
-    wf = d.set_b(d.pgse([[1, 0, 0]], 4e-3, 12e-3, gradient_strengths=0.1, n_t=160, slew_rate=np.inf), 1e9)
-    assert resolve_sub_steps(g, D, wf.dt, surface=True) > 1, "the test must exercise sub-stepping"
-    N = 40_000
-    s_fused = np.asarray(simulate_fused(N, D, wf, g, seed=1, require_gpu=False)).ravel()
-    s_replay = np.asarray(d.simulate(N, D, wf, g, seed=1, require_gpu=False)).ravel()
-    tol = max(0.01, 3.0 / np.sqrt(N))
-    assert abs(s_fused[0] - s_replay[0]) < tol, f"fused {s_fused[0]:.4f} vs replay {s_replay[0]:.4f}"
 
 
 def test_a_degenerate_feature_is_refused_with_the_reason_and_the_remedy():

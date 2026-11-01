@@ -290,8 +290,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                 f"(x {_se[rock]['scale']:.6f}). The direct walk's own per-walker decays were not retained; the "
                 "relative per-echo spread is a property of the substrate and the estimator, not of the walk."),
             n_walkers=ROCKS[rock]["direct_n"], grid=grid, solver=SOLVER,
-            source="examples/validation/talabi_micro_ct_rocks.py (run_rock), asserted by "
-                   "tests/validation/test_talabi_rocks.py")) for rock in rocks)
+            source="examples/validation/talabi_micro_ct_rocks.py (run_rock)")) for rock in rocks)
 
     reference = Reference(
         doi=REFERENCE_DOI, title="Pore-scale simulation of NMR response",

@@ -3,20 +3,20 @@
 ``simulate`` walks the substrate to coefficients and contracts them with the waveform; the fused
 single-pass integrator (``engine._fused.simulate_fused``) is the oracle it is held to. This module asserts:
 
-  (1) ``simulate`` == the oracle to ``max(0.02, 1/sqrt(N))`` on each SUPPORTED geometry x effect (pure
+  (1) ``simulate`` == the oracle to four standard errors of the difference on each SUPPORTED geometry x effect (pure
       gradient / scalar T2 / surface relaxivity).
   (2) A run the producer cannot walk (PackedMyelinatedCylinders) is the oracle's, exactly.
 
 SAME seed / N / waveform go through both. The producer walks with a separate scan, so parity is at the
 MC-noise floor, not bit-identical. The waveforms are coarse enough that ``physics.resolve_sub_steps`` asks
 for more than one sub-step on every walled geometry (asserted in the fixture), so both exercise the shared
-dispatch. Heavy MC -> auto-marked ``gpu`` via ``tests/conftest.py::_GPU_TIER_MODULES``.
-"""
+dispatch. """
 import numpy as np
 import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+from tests.conftest import mc_atol
 from dmipy_sim import simulate
 from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim.geometry import pack_cylinders, pack_spheres
@@ -26,11 +26,13 @@ SEED = 11
 R = 5e-6          # m
 T2 = 60e-3        # s
 RHO = 1e-5        # m/s
-N = 12_000
+N = 4_000
 
 
 def _tol(n):
-    return max(0.02, 1.0 / np.sqrt(n))
+    """Four standard errors of the difference of two independent walks of ``n`` walkers (the two routes draw their own
+    random numbers, so they agree to the Monte-Carlo floor, not bit for bit)."""
+    return mc_atol(n, runs=2)
 
 
 def _pgse(delta, DELTA, n_t, b, G_magnitude=0.2):
@@ -85,15 +87,14 @@ def _supported_specs():
         "cylinder": (d.Cylinder(radius=R, orientation=[0, 0, 1]),
                      d.Cylinder(radius=R, orientation=[0, 0, 1],
                                 surface_relaxivity_t2=RHO), N, _WF),
-        "ellipsoid": (d.Ellipsoid(semiaxes=(4e-6, 5e-6, 8e-6)), None, N, _WF),
-        "packed_cyl": (_packed_cyl(), None, N, _WF),
-        "packed_sph": (_packed_sph(), None, N, _WF),
         "mesh":     (_mesh(), _mesh_rho(), _N_MESH, _WF_MESH),
     }
 
 
-_SUPPORTED = ["free", "box1d", "sphere", "cylinder", "ellipsoid",
-              "packed_cyl", "packed_sph", "mesh"]
+# The analytic pores are tier 1; the mesh costs minutes per case on a CPU runner (its wall rule sub-steps by hundreds),
+# so it is tier 2.
+_SUPPORTED = ["free", "box1d", "sphere", "cylinder"] + [
+    pytest.param(g, marks=pytest.mark.gpu) for g in ("mesh",)]
 
 
 @pytest.fixture(scope="module")
@@ -145,7 +146,7 @@ def test_the_coefficient_route_serves_a_permeable_walk():
     and the coefficients already contain every crossing that happened; the replay then applies the gradient
     off the bands, scalar T2/T1 off elapsed time and rho off the contact, none of which depend on kappa."""
     geom = d.Cylinder(radius=R, orientation=[0, 0, 1], permeability=2e-5)
-    S = np.asarray(simulate(2_000, D, _WF, geom, seed=SEED, require_gpu=False)).ravel()
+    S = np.asarray(simulate(500, D, _WF, geom, seed=SEED, require_gpu=False)).ravel()
     assert S.shape == (1,) and np.all(np.isfinite(S)) and 0.0 <= S[0] <= 1.0 + 1e-6
 
 

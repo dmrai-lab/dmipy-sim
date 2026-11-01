@@ -1,5 +1,5 @@
 """Fast tests of dmipy_sim.spectrum.label_volumes: the 25 um edge (both policy walk lengths refused). 250 um /
-1 mm / 5 mm are exercised in test_label_volumes_slow.py."""
+1 mm / 5 mm are exercised in test_label_volumes_large_edges.py."""
 import json
 import os
 

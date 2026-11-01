@@ -5,8 +5,8 @@ window the pack was not loaded with is refused by name.
 
 The byte-range selection is exercised against a local HTTP server that honours ``Range`` (``http.server`` does
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
-``url=`` override is for exactly this). The one test that touches the real Hub is marked ``gpu`` and skips
-itself without a login."""
+``url=`` override is for exactly this). The real Hub is not touched: a test that uploads a fixture to a
+shared dataset does not belong in an automated run."""
 from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import contextlib
@@ -209,64 +209,3 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
     assert back._windows == 2
     with pytest.raises(ValueError, match="windows="):
         PackSubstrate("/local/path.rpk", m0=1.0, windows=range(1))
-
-
-# ------------------------------- the real Hub (slow, skipped without a login) -------------------------------
-FIXTURE_REPO = "SubstrateCommons/test-fixtures"
-#: Its own dataset, not ``parity-fixtures`` (a curated reference dataset of licensed cross-engine parity
-#: packs with provenance records): this file is a test artefact dmipy-sim's own suite uploads to itself, so
-#: it gets a repository where that is the whole premise, with its own short README (:data:`FIXTURE_README`).
-#: At the dataset's root, not under a ``test-fixtures/`` path -- the dataset name already says what it holds.
-FIXTURE_PATH = "windows-fixture.rpk"
-
-FIXTURE_README = """---
-license: cc-by-4.0
-pretty_name: dmipy-sim test fixtures
----
-# dmipy-sim test fixtures
-
-Small artefacts dmipy-sim's own test suite uploads to itself to exercise the Hub read/write paths -- not a
-curated reference dataset. A file here is rebuilt and overwritten by the test that owns it whenever that
-test's fixture changes; nothing here is a citeable measurement. See `SubstrateCommons/parity-fixtures` for
-the licensed, cross-engine parity packs this is not.
-"""
-
-
-@pytest.mark.gpu
-def test_a_windowed_read_from_the_real_hub():
-    """Creates the fixture dataset if it does not exist yet, uploads the tiny fixture pack once -- idempotent,
-    skipped when a file of the same sha256 is already there -- and reads its first window back by HTTP byte
-    range, through the public entry point, with no ``url=``/``revision=`` override: the real Hub resolver
-    end to end."""
-    try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        api.whoami()
-    except Exception as e:
-        pytest.skip(f"no hub login / no network: {e}")
-    from dmipy_sim.replay.hub import sha256_of
-    api.create_repo(FIXTURE_REPO, repo_type="dataset", exist_ok=True, private=False)
-    if not api.file_exists(FIXTURE_REPO, "README.md", repo_type="dataset"):
-        api.upload_file(path_or_fileobj=FIXTURE_README.encode(), path_in_repo="README.md", repo_id=FIXTURE_REPO,
-                        repo_type="dataset", commit_message="describe the dataset")
-    pack = _fixture_pack()
-    with tempfile.TemporaryDirectory(prefix="dmipy-windows-fixture-") as tmp:
-        local = os.path.join(tmp, "windows-fixture.rpk")
-        pack.save(local)
-        sha = sha256_of(local)
-        held = None
-        try:
-            info = api.get_paths_info(FIXTURE_REPO, [FIXTURE_PATH], repo_type="dataset")
-            if info and getattr(info[0], "lfs", None) is not None:
-                held = info[0].lfs.sha256
-        except Exception:
-            held = None
-        if held != sha:
-            api.upload_file(path_or_fileobj=local, path_in_repo=FIXTURE_PATH, repo_id=FIXTURE_REPO,
-                            repo_type="dataset", commit_message="add the windows=range(k) hub-read test fixture (dmipy-sim#525)")
-    uri = pub.uri_of(FIXTURE_REPO, FIXTURE_PATH)
-    loaded = ReplayPack.load(uri, windows=range(1))
-    assert loaded.windows_present == 1 and loaded.n_windows == 3
-    assert loaded.n_walkers == pack.n_walkers
-    npt.assert_array_equal(loaded.arrays["pos_x"], pack.arrays["pos_x"])
-    npt.assert_array_equal(loaded.replay(_seq(0.01), complex_signal=True), pack.replay(_seq(0.01), complex_signal=True))

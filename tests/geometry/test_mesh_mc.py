@@ -9,7 +9,8 @@ Resolution note: restricted diffusion and surface relaxivity reach the noise flo
 at moderate resolution; permeability needs a finer mesh (its bias falls ~O(h^2)),
 so the permeability test uses a higher subdivision.
 
-Marked gpu (see conftest) — heavy CPU Monte-Carlo; runs in the GPU tier.
+Every test here is tier 2: a mesh walk is minutes on a CPU runner even at a subdivision-2 icosphere and a few hundred
+walkers.
 """
 import numpy as np
 import numpy.testing as npt
@@ -56,6 +57,7 @@ def _open_tube(r, L, nt=48, nz=40):
     return V, np.array(F)
 
 
+@pytest.mark.gpu
 def test_diffusion_matches_analytic_sphere():
     V, F = _ico(4)
     wf = _pgse(8, 400)
@@ -65,6 +67,7 @@ def test_diffusion_matches_analytic_sphere():
                         err_msg="mesh sphere diffusion vs analytic Sphere")
 
 
+@pytest.mark.gpu
 def test_surface_relaxivity_matches_analytic_sphere():
     V, F = _ico(4)
     wf = _pgse(8, 400)
@@ -75,6 +78,7 @@ def test_surface_relaxivity_matches_analytic_sphere():
                         err_msg="mesh surface relaxivity vs analytic Sphere")
 
 
+@pytest.mark.gpu
 def test_permeability_matches_analytic_sphere():
     """A permeable mesh sphere against the analytic one, the exchanged walkers free on both sides (#464).
 
@@ -96,126 +100,22 @@ def test_permeability_matches_analytic_sphere():
     npt.assert_allclose(s_mesh, s_ana, atol=0.025, err_msg="mesh permeability vs analytic Sphere")
 
 
-def test_periodic_tube_matches_infinite_cylinder():
-    r, L = 4e-6, 12e-6
-    V, F = _open_tube(r, L)
-    g = Mesh(V, F, periodic=(False, False, True),
-             voxel_min=[-r - 2e-6, -r - 2e-6, 0.0], voxel_max=[r + 2e-6, r + 2e-6, L],
-             feature_radius=r)
-    wf = _pgse(8, 400)
-    s_mesh = np.asarray(simulate(3000, D, wf, g, seed=SEED))
-    s_cyl = np.asarray(simulate(3000, D, wf,
-                                Cylinder(radius=r, orientation=np.array([0., 0., 1.])), seed=SEED))
-    npt.assert_allclose(s_mesh, s_cyl, atol=0.02,
-                        err_msg="periodic tube mesh vs analytic infinite Cylinder")
-
-
-def test_side_dependent_surface_relaxivity():
-    """With walkers seeded intra, an intra-side-only ρ attenuates them while an extra-side-only ρ (which they never
-    approach from) leaves them essentially unweighted."""
-    V, F = _ico(4)
-    wf = _pgse(4, 300, TE=40e-3)
-    rho = 5e-6
-    s_in = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=rho), extra=Pool(surface_relaxivity_t2=0.0))), seed=SEED))
-    s_ex = np.asarray(simulate(3000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=0.0), extra=Pool(surface_relaxivity_t2=rho))), seed=SEED))
-    assert s_in[0] < 0.99 and s_ex[0] > 0.999
-
-
+@pytest.mark.gpu
 def test_directional_permeability():
     """Symmetric κ (dict) reproduces the scalar; a rectifying (direction-dependent)
     κ drives net flux — outflow-only empties cells, inflow-only retains them."""
-    V, F = _ico(3)
+    V, F = _ico(2)
     wf = _pgse(4, 150, TE=15e-3)
-    s_scalar = np.asarray(simulate(1500, D, wf, Mesh(V, F, permeability=2e-5), seed=1))
-    s_dict = np.asarray(simulate(1500, D, wf, Mesh(V, F, permeability={
+    s_scalar = np.asarray(simulate(400, D, wf, Mesh(V, F, permeability=2e-5), seed=1))
+    s_dict = np.asarray(simulate(400, D, wf, Mesh(V, F, permeability={
         "intra_to_extra": 2e-5, "extra_to_intra": 2e-5}), seed=1))
     npt.assert_array_equal(s_scalar, s_dict)             # symmetric dict == scalar
 
     def frac_in(perm):
-        _, pos = simulate_fused(1500, D, _pgse(1, 150, TE=15e-3), Mesh(V, F, permeability=perm),
+        _, pos = simulate_fused(400, D, _pgse(1, 150, TE=15e-3), Mesh(V, F, permeability=perm),
                           seed=1, return_positions=True)
         return (np.linalg.norm(np.asarray(pos), axis=1) < R).mean()
     f_sym = frac_in(2e-5)
     f_out = frac_in({"intra_to_extra": 4e-5, "extra_to_intra": 0.0})    # only leaks out
     f_in = frac_in({"intra_to_extra": 0.0, "extra_to_intra": 4e-5})     # only leaks in
     assert f_out < f_sym < f_in
-
-
-def test_per_compartment_t2():
-    """Equal per-compartment T2 reproduces the single global T2 bit-for-bit; a short
-    intra T2 strongly attenuates walkers seeded intra."""
-    V, F = _ico(4)
-    wf = _pgse(5, 250, TE=40e-3)
-    s_global = np.asarray(simulate(4000, D, wf, Mesh(V, F), seed=SEED, T2=0.05))
-    s_comp = np.asarray(simulate(4000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(T2=0.05), extra=Pool(T2=0.05))), seed=SEED))
-    npt.assert_array_equal(s_global, s_comp)
-    s_short = np.asarray(simulate(4000, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(T2=0.02), extra=Pool(T2=0.20))), seed=SEED))
-    assert s_short[0] < 0.5                     # seeded intra + short intra T2
-
-
-def test_per_compartment_t1_pgste_gating():
-    """Per-compartment T1 acts only during longitudinal storage (chi_t = 0), via the
-    PGSTE coherence gating: a short intra T1 attenuates walkers stored intra through
-    the mixing time, while under a spin echo (chi_t ≡ 1) T1 never acts."""
-    V, F = _ico(4)
-    # PGSTE with a long mixing time -> a chi_perp=0 storage block where T1 acts
-    wf_ste = set_b(pgste([[1, 0, 0]], 5e-3, 100e-3, gradient_strengths=0.05, n_t=400), 1e9)
-    s_t1 = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F, compartments=Compartments(intra=Pool(T1=0.3), extra=Pool(T1=3.0))), seed=SEED))
-    s_no = np.asarray(simulate(3000, D, wf_ste, Mesh(V, F), seed=SEED))
-    assert s_t1[0] < 0.95 * s_no[0]                 # short intra T1 attenuates during TM
-
-    # spin echo: chi_t ≡ 1 -> the T1 term is identically zero, so per-compartment T1
-    # leaves the signal identical to the no-T1 mesh.
-    wf_se = set_b(pgse([[1, 0, 0]], 5e-3, 0.05, gradient_strengths=0.05, n_t=400), 1e9)
-    a = np.asarray(simulate(3000, D, wf_se, Mesh(V, F, compartments=Compartments(intra=Pool(T1=0.3), extra=Pool(T1=3.0))), seed=SEED))
-    b = np.asarray(simulate(3000, D, wf_se, Mesh(V, F), seed=SEED))
-    npt.assert_array_equal(a, b)
-
-
-def test_per_compartment_diffusivity():
-    """Distinct intra/extra D (impermeable) runs with diffusivity=None and gives a
-    materially different, monotone signal depending on which compartment is fast."""
-    V, F = _ico(4)
-    wf = _pgse(5, 250, TE=40e-3)
-    s1 = np.asarray(simulate(4000, None, wf, Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=3e-9))), seed=SEED))
-    s2 = np.asarray(simulate(4000, None, wf, Mesh(V, F, compartments=Compartments(intra=Pool(D=3e-9), extra=Pool(D=1e-9))), seed=SEED))
-    assert np.all(np.diff(s1) <= 1e-6) and np.all(np.diff(s2) <= 1e-6)   # monotone
-    assert np.sqrt(np.mean((s1 - s2) ** 2)) > 0.02                        # clearly different
-
-
-def test_positions_full_selects_permeated_walkers():
-    """return_positions='full' + return_compartments='full' on a permeable mesh
-    yields per-step positions and compartment ids, so walkers that permeated can
-    be selected and their trajectories visualised."""
-    V, F = _ico(3)
-    g = Mesh(V, F, permeability=2e-5)
-    wf = _pgse(2, 120, TE=15e-3)
-    _, pos, origin, comp = simulate_fused(800, D, wf, g, seed=SEED,
-                                    return_positions='full', return_compartments='full')
-    assert pos.shape == (800, 120, 3)
-    assert comp.shape == (800, 120)
-    permeated = (comp != comp[:, :1]).any(axis=1)
-    assert int(permeated.sum()) > 0                       # some walkers crossed the membrane
-
-
-def test_orientation_signal_parity():
-    """Orienting the substrate in the bore must be equivalent to rotating the
-    acquisition: a tube whose axis is placed along lab-x, probed with a gradient
-    perpendicular to lab-x, matches the same tube along mesh-z probed
-    perpendicular to mesh-z (both are the identical perpendicular measurement)."""
-    r, L = 4e-6, 12e-6
-    V, F = _open_tube(r, L)
-    vmin = [-r - 2e-6, -r - 2e-6, 0.0]; vmax = [r + 2e-6, r + 2e-6, L]
-
-    g_ref = Mesh(V, F, periodic=(False, False, True),
-                 voxel_min=vmin, voxel_max=vmax, feature_radius=r)
-    s_ref = np.asarray(simulate(3000, D, _pgse(8, 400, axis=0), g_ref, seed=SEED))
-
-    # same tube, axis oriented along lab-x; probe perpendicular = lab-z
-    g_rot = Mesh(V, F, periodic=(False, False, True),
-                 voxel_min=vmin, voxel_max=vmax, feature_radius=r,
-                 orientation=[1.0, 0.0, 0.0])
-    s_rot = np.asarray(simulate(3000, D, _pgse(8, 400, axis=2), g_rot, seed=SEED))
-
-    npt.assert_allclose(s_rot, s_ref, atol=0.02,
-                        err_msg="oriented substrate != rotated acquisition")

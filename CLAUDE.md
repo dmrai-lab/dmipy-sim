@@ -100,7 +100,7 @@ When adding physics, assert against an **analytical** result or a **MISST** fixt
 and the analytic geometry of the same shape through the identical waveform/seed/N -- that pairing is what
 found #479 (the mesh of a 5 um cylinder under-restricts by 1.3-2.1e-2 at b = 3000 s/mm^2 where the analytic
 cylinder lands on MISST at the floor, and the gap does not close with the step). **Cross-ENGINE** parity has
-its own fixtures (`tests/validation/test_cross_engine_parity.py`, `examples/validation/cross_engine_parity.py`,
+its own fixtures (`examples/validation/cross_engine_parity.py`, run by hand against the data checkouts,
 `io/mcdc.py`, `spec.mcdc_axon_spec`): MC/DC's released undulating-axon signals and Disimpy's cylinder mesh,
 each walked on THEIR surface at THEIR acquisition, with the tolerance measured from the floors of both runs --
 theirs from the walker count their unnormalised `b = 0` entry states, ours from our split half. The packs are

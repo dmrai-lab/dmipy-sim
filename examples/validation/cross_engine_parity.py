@@ -16,7 +16,7 @@ compared at signal level, then published as one certified pack per fixture to ``
 This module is the reproduction: the fixture constants, the substrate specs, the walks, the references and
 the two Monte-Carlo floors. A walk here is the producer's :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`,
 ``K_PARITY`` bands over the fixture's TE in the band's own blocks, and its signal is the gradient phase of those
-bands (:func:`walk_phase`), the contraction a pack of the walk replays. ``tests/validation/test_cross_engine_parity.py`` asserts on it, and the pack
+bands (:func:`walk_phase`), the contraction a pack of the walk replays. The pack
 builder that publishes the family to ``SubstrateCommons/parity-fixtures`` imports it.
 
     DMIPY_SIM_MCDC_ROBUST_DIR=... DMIPY_SIM_DISIMPY_DIR=... python examples/validation/cross_engine_parity.py

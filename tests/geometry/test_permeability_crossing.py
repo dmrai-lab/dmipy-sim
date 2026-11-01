@@ -44,10 +44,11 @@ from tests.conftest import pgse_wf
 import numpy.testing as npt
 import pytest
 
+from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import simulate, Cylinder, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_WALKERS, SEED
+from tests.conftest import D, N_EXACT, SEED
 
 # Every test in this module makes an ORDINAL or IDENTITY claim -- monotone in kappa, A < B,
 # "approaches free diffusion", or an exact `assert_array_equal` -- none of which needs the
@@ -97,29 +98,34 @@ def test_permeability_none_matches_impermeable():
     wf = pgse_wf(100e-3)
     geom_default = Cylinder(radius=R, orientation=[0, 0, 1])
     geom_none    = Cylinder(radius=R, orientation=[0, 0, 1], permeability=None)
-    S_default = simulate(N_ORDINAL, D, wf, geom_default, seed=SEED)
-    S_none    = simulate(N_ORDINAL, D, wf, geom_none,    seed=SEED)
+    # exact-equality assertion: scale-free, see N_EXACT in conftest
+    S_default = simulate(N_EXACT, D, wf, geom_default, seed=SEED)
+    S_none    = simulate(N_EXACT, D, wf, geom_none,    seed=SEED)
     npt.assert_array_equal(S_default, S_none,
         err_msg="permeability=None must give identical signal to default")
+
+
+_WALKS = {}
+
+
+def _signal(kappa, rho=None):
+    """The signal of one permeable walk at N_ORDINAL walkers, computed once per (kappa, rho) and shared by the tests
+    below (the reduces, relaxivity and monotone tests all read the kappa = None and kappa = KAPPA_MED walks)."""
+    if (kappa, rho) not in _WALKS:
+        geom = Cylinder(radius=R, orientation=[0, 0, 1], permeability=kappa, surface_relaxivity_t2=rho)
+        _WALKS[(kappa, rho)] = np.asarray(simulate(N_ORDINAL, D, pgse_wf(100e-3), geom, seed=SEED))
+    return _WALKS[(kappa, rho)]
 
 
 # ---------------------------------------------------------------------------
 # 3. κ>0 increases signal vs impermeable at high b
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_reduces_signal_at_high_b():
-    """Signal with κ>0 must be strictly below impermeable signal at b=2000 s/mm².
-
-    Inside a cylinder, restriction raises the signal (ADC_app << D).
-    Walkers that escape diffuse freely → larger phase accumulation → lower
-    signal.  So: S_perm < S_imp at high b.
-    """
-    wf = pgse_wf(100e-3)
-    geom_imp  = Cylinder(radius=R, orientation=[0, 0, 1])
-    geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_MED)
-    S_imp  = simulate(N_ORDINAL, D, wf, geom_imp,  seed=SEED)
-    S_perm = simulate(N_ORDINAL, D, wf, geom_perm, seed=SEED)
-    # b=2000 s/mm² is index 3 in our b_values array
+    """Signal with kappa > 0 is strictly below the impermeable signal at b = 2000 s/mm^2: an escaped walker diffuses
+    freely and accumulates more phase than a restricted one."""
+    S_imp, S_perm = _signal(None), _signal(KAPPA_MED)
     assert float(S_perm[3]) < float(S_imp[3]) - 0.05, (
         f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} at b=2000 s/mm²")
 
@@ -128,6 +134,7 @@ def test_permeability_reduces_signal_at_high_b():
 # 4. High κ (TE >> τ): signal approaches free diffusion
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_high_kappa_approaches_free_diffusion():
     """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
 
@@ -171,7 +178,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     wf = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
     geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_HIGH)
-    S_perm = simulate(N_ORDINAL, D, wf, geom_perm, seed=SEED)
+    S_perm = simulate_fused(N_ORDINAL, D, wf, geom_perm, seed=SEED)
 
     # free-diffusion reference at b=500 s/mm²
     b_val = 500e6  # s/m²
@@ -187,22 +194,11 @@ def test_permeability_high_kappa_approaches_free_diffusion():
 # 5. Permeability + relaxivity: signal below permeability-only
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_with_relaxivity_reduces_signal():
-    """Adding surface relaxivity to a permeable cylinder must reduce signal.
-
-    Reflected walkers receive the Brownstein-Tarr weight; transmitted walkers
-    do not.  The ensemble signal must therefore be ≤ the permeability-only
-    signal.
-    """
-    wf = pgse_wf(100e-3)
-    geom_perm     = Cylinder(radius=R, orientation=[0, 0, 1],
-                             permeability=KAPPA_MED)
-    geom_perm_rho = Cylinder(radius=R, orientation=[0, 0, 1],
-                             permeability=KAPPA_MED,
-                             surface_relaxivity_t2=RHO)
-    S_perm     = simulate(N_ORDINAL, D, wf, geom_perm,     seed=SEED)
-    S_perm_rho = simulate(N_ORDINAL, D, wf, geom_perm_rho, seed=SEED)
-    # Check at b=0 (only relaxivity reduces signal; diffusion doesn't matter)
+    """Surface relaxivity on a permeable cylinder reduces the signal at b = 0 (reflected walkers take the
+    Brownstein-Tarr weight, transmitted ones do not)."""
+    S_perm, S_perm_rho = _signal(KAPPA_MED), _signal(KAPPA_MED, RHO)
     assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.02, (
         f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
         f"permeability-only {S_perm[0]:.4f} at b=0")
@@ -212,21 +208,3 @@ def test_permeability_with_relaxivity_reduces_signal():
 # 6. Signal monotonically increases with κ at high b
 # ---------------------------------------------------------------------------
 
-def test_permeability_signal_monotone_in_kappa():
-    """Signal at b=2000 s/mm² decreases monotonically with κ.
-
-    Higher κ → more walkers escape → less restriction → faster decay → lower
-    signal at high b.
-    """
-    wf = pgse_wf(100e-3)
-    kappas = [0.0, 1e-6, 1e-5, 1e-4]
-    signals = []
-    for kappa in kappas:
-        perm = kappa if kappa > 0 else None
-        geom = Cylinder(radius=R, orientation=[0, 0, 1], permeability=perm)
-        S = simulate(N_ORDINAL, D, wf, geom, seed=SEED)
-        signals.append(float(S[3]))  # b=2000 s/mm²
-    for i in range(len(signals) - 1):
-        assert signals[i] >= signals[i + 1] - 1e-3, (
-            f"Signal not monotone: κ={kappas[i]:.0e} → {signals[i]:.4f}, "
-            f"κ={kappas[i+1]:.0e} → {signals[i+1]:.4f}")

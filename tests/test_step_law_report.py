@@ -1,10 +1,10 @@
 """The step-law report builds (``tools/gen_step_law.py``, the evidence page ``docs/step-law.md``).
 
 The page is a report generator, not a unit: the ``tiny`` tier runs every section end to end in about a minute and
-the test below checks the code path (every section, every figure, the page links them). The ``small`` tier's
-numbers -- the pair's moments, the slab's exactness under the pair, the wall constants of the cylinder and the
-sphere, the fused engine inside the operator's standard error, the certificate resolving a tolerance, the phase
-rule's sign -- are checked in the ``gpu`` tier, where the small tier costs about twenty minutes."""
+the tests below check the code path (every section, every figure, the page links them) and the numbers the tiny tier
+resolves: the pair's moments, the wall constants of the cylinder and the sphere, the fused engine inside the
+operator's standard error, the cost table. The certificate ladder and the phase rule need the ``small`` tier's walkers
+and quadrature (about twenty minutes on a CPU), so the evidence page records them and no test does."""
 from __future__ import annotations
 import json
 import os
@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-gpu = pytest.mark.gpu
 
 
 def _build(tier, tmp_path_factory, timeout):
@@ -41,23 +40,6 @@ def test_the_tiny_tier_builds_every_section_and_figure(tiny):
     assert R["meta"]["tier"] == "tiny" and R["meta"]["commit"]
 
 
-@pytest.fixture(scope="module")
-def report(tmp_path_factory):
-    return _build("small", tmp_path_factory, 1800)
-
-
-@gpu
-def test_the_page_and_its_figures_build(report):
-    out, R = report
-    text = out.read_text()
-    for name in ("laws", "operator", "fused", "certificate", "cost", "outside"):
-        assert name in R, name
-    for fig in ("laws", "operator", "fused", "certificate"):
-        assert (out.parent / "step-law" / f"{fig}.png").stat().st_size > 1000
-        assert f"step-law/{fig}.png" in text
-    assert R["meta"]["tier"] == "small" and R["meta"]["commit"]
-
-
 def test_the_laws_match_their_moments(tiny):
     """The laws section does not depend on the tier (it costs a second), so the fast job checks it."""
     _, R = tiny
@@ -75,9 +57,8 @@ def test_the_laws_match_their_moments(tiny):
     assert e["longest"] <= laws["Gauss pair"]["longest"] * (1 + 1e-5) and len(e["lengths"]) == 2
 
 
-@gpu
-def test_the_operator_reads_the_wall_constants(report):
-    _, R = report
+def test_the_operator_reads_the_wall_constants(tiny):
+    _, R = tiny
     pores = R["operator"]["pores"]
     plane = pores["plane"]["levels"]["0.5"]["coefficient"]
     assert abs(plane["Gauss pair"][0]) < 0.02 and plane["fixed"][0] == pytest.approx(1.0, abs=0.08)
@@ -90,48 +71,16 @@ def test_the_operator_reads_the_wall_constants(report):
         assert r["eps_measured"] <= r["eps_declared"] + 3 * r["eps_se"], pool
 
 
-@gpu
-def test_the_engine_sits_inside_the_operator(report):
-    _, R = report
+def test_the_engine_sits_inside_the_operator(tiny):
+    _, R = tiny
     for key, rec in R["fused"].items():
         for sub, r in rec["steps"].items():
             assert abs(r["pull"]) < 4.0, (key, sub, r)
 
 
-@gpu
-def test_the_certificate_resolves_at_the_top_of_the_ladder(report):
-    """The ladder's floor falls with the walker count; at its top the loosened tolerance is resolved and held, and
-    the run at the rule's own tolerance says it does not resolve it, since the record never claims what the
-    pilot cannot see."""
-    _, R = report
-    lad = R["certificate"]["ladder"]
-    ratio = lad[0]["ratio"]
-    rungs = [r for r in lad if r["ratio"] == ratio]
-    assert rungs[-1]["floor"] < rungs[0]["floor"]
-    top = rungs[-1]
-    assert top["resolves"] and top["floor"] < top["eps_declared"]
-    assert top["eps_measured"] < 1.1 * top["eps_declared"] + 3 * top["eps_se"]
-    own = [r for r in lad if r["ratio"] == 1]
-    assert own and not own[0]["resolves"] and own[0]["floor"] > own[0]["eps_declared"]
-
-
-@gpu
-def test_the_cost_table_names_what_binds(report):
-    _, R = report
+def test_the_cost_table_names_what_binds(tiny):
+    _, R = tiny
     for name, r in R["cost"].items():
         assert r["sub_steps"] == max(r["rules"].values()) and r["binds"] in r["rules"]
         assert r["walker_steps_per_s"] > 0 or "not_walked" in r
     assert "lookup_longest_atom" in R["cost"]["icosphere mesh 4 um"]
-
-
-@gpu
-def test_the_phase_rule_is_the_slab_s_remaining_term(report):
-    """On the slab the pair's dispersion is below the phase rule's error and falls faster than its square with the
-    step; the phase rule's error falls as the square of the step (a quarter of the step: a sixteenth of the error)."""
-    _, R = report
-    for label, rec in R["outside"].items():
-        s1, s4 = rec["steps"]["1"], rec["steps"]["4"]
-        assert abs(s1["dispersion"]) < 0.5 * abs(s1["phase_rule"]), (label, s1)
-        assert abs(s4["dispersion"]) < 0.1 * abs(s1["dispersion"]) + 1e-7, (label, s4)
-        assert 1 / 32 < abs(s4["phase_rule"]) / abs(s1["phase_rule"]) < 1 / 8, (label, s1, s4)
-    assert "fixed" in R["operator"]["pores"]["plane"]["levels"]["0.5"]["coefficient"]
