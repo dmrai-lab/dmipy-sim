@@ -42,7 +42,7 @@ jobs:
       actions: read
     env:
       # the dmipy-replay commit the image installs: tests.yml's DMIPY_REPLAY_REF (until dmipy-replay 0.2.0 is on PyPI)
-      DMIPY_REPLAY_REF: 1a72076dc51a2c0c803b791700dd651c0ef73172
+      DMIPY_REPLAY_REF: 361342a50862adf0de20b08c65357d6407d3455b
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       GH_TOKEN: ${{ github.token }}
