@@ -3,6 +3,7 @@ name: Triage timing
 on:
   push:
     branches: [ tests/tier-triage ]
+    paths: [ tools/triage_ci_timing.py ]
   workflow_dispatch: {}
 jobs:
   time:
