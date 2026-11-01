@@ -1,20 +1,24 @@
-"""This repository is public: no tracked file names a project, service, machine or local path outside it.
+"""No tracked file names a project, service, machine or local path outside the public project.
 
-The forbidden words are never spelled here, in a comment, in a commit message or in test output. Two encodings
-are used, both resolved at runtime:
+The forbidden words are never spelled in clear, in a comment, in a commit message or in output. Two encodings are
+resolved at runtime:
 
 * single words (a repository, a rented-compute vendor, a lab machine) are stored as sha256 hashes of the
-  lowercase token; a file is tokenised on ``[A-Za-z0-9_-]+`` (and on ``-`` / ``_`` inside a token) and each
-  token is hashed the same way;
+  lowercase token; a line is tokenised on ``[A-Za-z0-9_-]+`` (and on ``-`` / ``_`` inside a token) and each token
+  is hashed the same way;
 * multi-token patterns (a package with an issue number, a workspace path, ownership phrasing) are stored as
-  split fragments that are joined into a regular expression when the test runs.
+  split fragments that are joined into a regular expression when the guard runs.
 
-A failure names the FILE (and the pattern's index), never the matched text. Hardware classes (GPU model names)
-may be named; which machine ran a measurement may not."""
+A finding names file:line and the pattern's index, never the matched text. Hardware classes (GPU model names)
+may be named; which machine ran a measurement may not. This file holds the encoded tables, so it is not scanned."""
 import hashlib
-import os
 import re
-import subprocess
+from pathlib import Path
+
+from .allow import Finding, tracked
+
+CHECK = "private-ids"
+SELF = "tools/guards/private_ids.py"
 
 #: sha256 of the lowercase token (single words)
 FORBIDDEN_TOKEN_DIGESTS = frozenset((
@@ -44,7 +48,7 @@ FORBIDDEN_FRAGMENTS = (
 )
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
-_PATTERNS = [re.compile("".join(f), re.IGNORECASE) for f in FORBIDDEN_FRAGMENTS]
+PATTERNS = [re.compile("".join(f), re.IGNORECASE) for f in FORBIDDEN_FRAGMENTS]
 
 
 def _digest(token):
@@ -59,25 +63,21 @@ def _tokens(text):
             yield from parts
 
 
-def tracked_files():
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    out = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True, text=True, check=True)
-    return [os.path.join(root, p) for p in out.stdout.splitlines() if p]
-
-
-def test_no_tracked_file_names_anything_outside_the_public_project():
-    hits = []
-    for path in tracked_files():
-        if os.path.abspath(path) == os.path.abspath(__file__):
-            continue                                          # this file's own encoded tables
+def check(root, digests=None, patterns=None, **_):
+    digests = FORBIDDEN_TOKEN_DIGESTS if digests is None else digests
+    patterns = PATTERNS if patterns is None else patterns
+    found = []
+    for p in tracked(root):
+        if p == SELF:
+            continue
         try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
+            text = (Path(root) / p).read_text(encoding="utf-8")
         except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
-            continue                                          # a binary asset
-        if any(_digest(t) in FORBIDDEN_TOKEN_DIGESTS for t in _tokens(text)):
-            hits.append((os.path.relpath(path), "token"))
-        for i, pat in enumerate(_PATTERNS):
-            if pat.search(text):
-                hits.append((os.path.relpath(path), f"pattern {i}"))
-    assert not hits, f"{len(hits)} forbidden private identifier(s) in tracked files: {hits}"
+            continue                                          # a binary asset, a submodule
+        for n, line in enumerate(text.splitlines(), 1):
+            if any(_digest(t) in digests for t in _tokens(line)):
+                found.append(Finding(CHECK, p, n, "forbidden token"))
+            for i, pat in enumerate(patterns):
+                if pat.search(line):
+                    found.append(Finding(CHECK, p, n, f"forbidden pattern {i}"))
+    return found
