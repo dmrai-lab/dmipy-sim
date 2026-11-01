@@ -30,7 +30,7 @@ from dmipy_replay.spec.tissue import Tissue
 
 T_MAX, DT, N_W, K_BANDS = 0.02, 5e-4, 4000, 40
 N_T = int(round(T_MAX / DT)) + 1
-PORES = os.path.expanduser("~/dmrai-ws/release-work/pores-v2/packs/cylinder/d05.00um.rpk")
+PORES = os.environ.get("DMIPY_SIM_TEST_PORES_PACK", "")      # a canonical-pores cylinder pack; unset skips
 
 
 @pytest.fixture(scope="module")
@@ -181,7 +181,7 @@ def test_the_planned_error_bounds_the_signal_it_costs(pack):
         assert S.plan.error <= S.plan.limit
 
 
-@pytest.mark.skipif(not os.path.exists(PORES), reason="the canonical-pores pack is not on this machine")
+@pytest.mark.skipif(not (PORES and os.path.exists(PORES)), reason="the canonical-pores pack is not on this machine")
 def test_the_planned_error_bounds_the_signal_on_a_pores_pack_including_ogse_400():
     from dmipy_sim.replay.replay import read_rpk
     pk = read_rpk(PORES)

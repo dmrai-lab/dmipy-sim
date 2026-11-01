@@ -40,9 +40,13 @@ def test_the_finest_class_alone_is_the_fused_walk():
 @pytest.mark.parametrize("interior", [False, True])
 def test_the_guarantees_and_the_statistics(interior):
     g = _pack(interior)
-    n = 6000
-    a = simulate_trajectories_adaptive(n, D, g, 2e-3, 2.5e-4, seed=1, require_gpu=False, walker_batch_size=n, raw_subset=n)
-    f = _walk_geometry(n, D, g, 2e-3, 2.5e-4, seed=2, require_gpu=False, raw_subset=n)
+    # n sets only the statistical test below (the guarantees hold walker by walker, at any n). The ratio of the two
+    # walks' end-to-end displacement variances has relative SE sqrt(2/n + 2/n) = 2/sqrt(n) (independent Gaussian
+    # sample variances); the bound is 4 SE, i.e. 8/sqrt(n) = 0.21 at n = 1500 (6000 walkers resolved 0.10).
+    n = 1500
+    T = 5e-4       # two blocks: the guarantees are per step and the statistics compare two walks of the same T (0.5 ms is the restriction time of a 1 um tube)
+    a = simulate_trajectories_adaptive(n, D, g, T, 2.5e-4, seed=1, require_gpu=False, walker_batch_size=n, raw_subset=n)
+    f = _walk_geometry(n, D, g, T, 2.5e-4, seed=2, require_gpu=False, raw_subset=n)
     P = a.raw_positions.reshape(-1, 3)
     if interior:
         assert g.inside_any(P).all()                                   # never left its tube
@@ -55,7 +59,7 @@ def test_the_guarantees_and_the_statistics(interior):
     # end-to-end displacement variance per axis and the accumulated contact, within the floor of n walkers
     da = a.raw_positions[:, -1] - a.raw_positions[:, 0]; df = f.raw_positions[:, -1] - f.raw_positions[:, 0]
     va, vf = (da ** 2).mean(0), (df ** 2).mean(0)
-    assert np.abs(va / vf - 1.0).max() < 5 * np.sqrt(2.0 / n) * 1.5, va / vf
+    assert np.abs(va / vf - 1.0).max() < 4 * 2.0 / np.sqrt(n), va / vf
     ca, cf = a.raw_boundary.sum(1), f.raw_boundary.sum(1)
     se = np.sqrt(ca.var() / n + cf.var() / n)
     assert abs(ca.mean() - cf.mean()) < 4 * se, (ca.mean(), cf.mean(), se)
@@ -70,9 +74,10 @@ def test_the_candidate_cache_is_the_full_gather():
     """A round stepped against the segments within its reach is the round stepped against the 27-cell gather:
     the same walls are met, so the same positions and contact (to rounding), from the same noise."""
     g = _pack(False)
-    kw = dict(seed=5, require_gpu=False, walker_batch_size=2000, raw_subset=2000)
-    full = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, candidate_cache=False, **kw)
-    cache = simulate_trajectories_adaptive(2000, D, g, 2e-3, 2.5e-4, candidate_cache=True, candidate_k_start=4, **kw)
+    n = 1000                                                 # the claim is walker-by-walker equality; 1000 x 3 saves resolve the 2e-3 flip rate
+    kw = dict(seed=5, require_gpu=False, walker_batch_size=n, raw_subset=n)
+    full = simulate_trajectories_adaptive(n, D, g, 5e-4, 2.5e-4, candidate_cache=False, **kw)
+    cache = simulate_trajectories_adaptive(n, D, g, 5e-4, 2.5e-4, candidate_cache=True, candidate_k_start=4, **kw)
     assert cache.stepping["candidate_cache"] and cache.stepping["candidate_k"] >= 4
     # the same segments decide every reflection; the two programs round differently at float32, and a grazing
     # step within an ulp of a wall may flip between hit and miss -- a handful of (walker, save) pairs, by less

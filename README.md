@@ -346,8 +346,8 @@ dmipy_sim/
                 _fused and bloch: the single-pass oracles the replay is held to
   replay/       replay (ReplayPack: dmipy-replay's with the producer's routes), bank (build_replay_pack), compression
                 (the codec), trajectories, columnar / remote / time_segments (dmipy-replay's readers with the JAX
-                backends; time_segments also writes the layout), study (Acquisition, Protocol, Study), phantom, fod, so3
-  fill/         a distributed fill of one recipe into shards (hub, claims, pipeline), consolidate (shards -> columns)
+                backends; time_segments also writes the layout), study (Acquisition, Protocol, Study), phantom, fod, so3,
+                hub (the dataset repository behind publish), consolidate (shards -> the columnar layout)
   acquisition/  noise, coil (ScannerSequence, RFSchedule, ScannerLimits and the integrals are dmipy-replay's)
   sequences/    pulseq (export; the reader is dmipy-replay's)
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)

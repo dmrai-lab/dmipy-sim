@@ -196,7 +196,7 @@ def _timing_packs(tmp_path):
 def test_a_pose_expansion_costs_the_windows_it_spans(tmp_path):
     """The one-window acquisition on the rewindowed pack reads one window of 250 bands where the parent reads its
     whole walk of 1000, and the expansion is the parent's to the floor. Its time is held to a loose ordering only,
-    the best of five on a shared machine."""
+    the best of five on a loaded machine."""
     parent, seg = _timing_packs(tmp_path)
     assert seg.n_windows == 4 and seg.K == 250
     seq = sequences.pgse(_dirs(30), 4e-3, 10e-3, bvalues=[1e9] * 30, TE=20e-3, n_t=800, slew_rate=np.inf)

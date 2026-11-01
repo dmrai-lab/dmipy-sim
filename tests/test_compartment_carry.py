@@ -101,11 +101,16 @@ def test_labels_agree_with_exact_containment_at_the_end_of_a_short_walk():
     """The carry in the engine's scan: after a short walk the label reports where the walker IS, not what its
     mesh can see. Asserted against exact parity on the final positions rather than against confinement, because
     this mesh does not confine reliably once refined (dmrai-lab/dmipy-sim#40) and bundling the two would leave
-    this test failing for a reason it does not test."""
-    mesh, tri = _thick_tube()
+    this test failing for a reason it does not test.
+
+    The tube is 48 sections at no subdivision (triangles 0.4 um on a side, 4x the 96-section subdivided tube's 0.1 um):
+    the carry is needed wherever a walker is farther from the wall than its 27-cell gather reaches, and a 3 um radius
+    is that on either mesh, while the walk's step budget (the lookup cell is the triangle size) falls 16-fold. 100
+    walkers: the precondition asserts that more than 30 of them end inside and clear of the wall."""
+    mesh, tri = _thick_tube(sections=48, subdivisions=0)
     wf = set_b(pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, gradient_strengths=0.05, n_t=20), 5e7)
 
-    out = simulate_fused(300, D, wf, mesh, seed=7, return_compartments='final',
+    out = simulate_fused(100, D, wf, mesh, seed=7, return_compartments='final',
                    return_positions=True, require_gpu=False)
     arrs = [np.asarray(a) for a in out]
     pos = [a for a in arrs if a.ndim == 2 and a.shape[-1] == 3][-1]
@@ -115,7 +120,10 @@ def test_labels_agree_with_exact_containment_at_the_end_of_a_short_walk():
     # the wall is where float32 and exact containment may disagree by rounding; clear of it they may not
     dist = np.minimum(3.0 * UM - np.linalg.norm(pos[:, :2], axis=1), 12.0 * UM - np.abs(pos[:, 2]))
     clear = np.abs(dist) > 0.02 * UM
-    assert (inside & clear).sum() > 100, "precondition: some walkers must end inside, clear of the wall"
+    assert (inside & clear).sum() > 30, "precondition: some walkers must end inside, clear of the wall"
+    from dmipy_sim.geometry.mesh import _gather_is_populated
+    seen = np.asarray(jax.vmap(lambda r: _gather_is_populated(mesh._A, r))(jax.numpy.asarray(pos, jax.numpy.float32)))
+    assert (~seen[inside & clear]).any(), "precondition: some walkers end where the gather sees no wall (the defect's ground)"
     assert (comp[inside & clear] == 1).all(), (
         f"{(comp[inside & clear] != 1).sum()} walkers that ARE inside, clear of the wall, are labelled exterior")
     assert (comp[~inside & clear] == 0).all(), (

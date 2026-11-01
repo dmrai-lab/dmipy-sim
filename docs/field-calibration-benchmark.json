@@ -45,9 +45,6 @@
     }
   ],
   "public_python_sha256": "a466323f4682255e995d8a9fb0edb57c46a2004b046853948e52995228e7dd91",
-  "cuda_source_commit": "065b428883c92245e2d836d9c83c901a37ea5229",
-  "modal_run_id": "26ae29a61a9a4e9fa0a4c048e88b4f3e",
-  "cleanup_confirmed": true,
   "evidence": "Synthetic evidence only to exercise reuse mechanics, not physical admission; small parity_cases strands_extra geometry.",
   "warning": "Fresh time includes first-call initialization and calibration. Warm times are not isolated kernel timings or full DiSCo estimates."
 }

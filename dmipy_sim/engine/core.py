@@ -90,9 +90,8 @@ def _geometry_state(geometry):
 def cached_batch(geometry, key, build):
     """One compiled program per (geometry, configuration, shape), across calls.
 
-    ``simulate`` used to build its scan closure and dispatch it eagerly on every call, so a
-    second call on the same geometry paid a full compile again (measured 4.8-6.4 s against a
-    20 ms kernel run). The jitted batch function is kept ON the geometry object (the closure
+    A second call on the same geometry reuses the compiled scan (a compile costs 4.8-6.4 s against a 20 ms kernel
+    run). The jitted batch function is kept ON the geometry object (the closure
     references the geometry, so a side table keyed by it would pin it forever; on the object the
     reference is a cycle the garbage collector frees with the geometry), keyed on its scalar
     state and ``key`` -- everything the closure bakes in that is not a traced argument. ScannerSequence
@@ -131,7 +130,7 @@ def _replay_gap(geometry, diffusivity):
 
 def _walk_band(G, dt, T):
     """``(K, f_band)`` of a walk that serves the waveform ``G`` (``(n_meas, n_t, 3)`` on a grid of ``dt``) over ``T``:
-    the band the waveform reads (:func:`~dmipy_sim.acquisition.waveforms.band_hz`) sets the step law's band and the
+    the band the waveform reads (:func:`~dmipy_replay.acquisition.waveforms.band_hz`) sets the step law's band and the
     bands ``ceil(2 f T)`` the walk accumulates, never fewer than the storage default's."""
     f = band_hz(G, dt)
     if f is None:
@@ -207,7 +206,7 @@ def simulate(
     with them.
 
     The walk is :func:`_walk_geometry` over the waveform's span at the band the waveform reads
-    (:func:`~dmipy_sim.acquisition.waveforms.band_hz`); the contraction is
+    (:func:`~dmipy_replay.acquisition.waveforms.band_hz`); the contraction is
     :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
     (geometry, diffusivity, seed), so the waveform, ``T2``, ``T1`` and the wall's surface relaxivity are replay
     settings of one walk. A run the coefficient walk is not validated to serve (a geometry that does not declare
@@ -222,8 +221,8 @@ def simulate(
         Diffusion coefficient in m²/s. Required for standard geometries.
         Omit for MyelinatedCylinder (D values are in the geometry).
     waveform : ScannerSequence
-        The acquisition: a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`, a multi-TE
-        :class:`~dmipy_sim.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
+        The acquisition: a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence`, a multi-TE
+        :class:`~dmipy_replay.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
         The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.
@@ -467,7 +466,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     if K < 1:
         raise ValueError(f"K is the number of bands a walk accumulates per window, at least 1; got {K}")
     if block_h is None:
-        h, block_rule = block_length(T_win, K), "derived"     # omega_K h = BLOCK_OMEGA_H at the top band (#740, cuda#74)
+        h, block_rule = block_length(T_win, K), "derived"     # omega_K h = BLOCK_OMEGA_H at the top band (#740)
     else:
         if float(block_h) > float(T_win) * (1.0 + 1e-9):
             raise ValueError(f"block_h = {float(block_h):.6g} s is longer than the storage window of {float(T_win):.6g} s")
@@ -1594,7 +1593,7 @@ def _walk_geometry(
                     RuntimeWarning, stacklevel=3)
 
             # ── The work record: what the walk cost in wall encounters, for a cost model per substrate class
-            # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
+            # and for sizing the bounce budget -- a budget no lane exhausted gives the same
             # trajectories as any larger one, by the loop's own rule. A myelinated geometry has no `bounce_loop`
             # of its own (its loop is sized per walk, from the step's `step_max`, inside the kernel build
             # -- physics.make_myelin_substep / geometry.myelin.concentric_wall_kernel -- and carried on the

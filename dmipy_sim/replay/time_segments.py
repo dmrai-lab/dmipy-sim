@@ -593,9 +593,9 @@ class _Spill:
 def _background_sequence(seq, amplitude=1.0):
     """The magnet's own gradient at ``amplitude`` along x, y and z as a three-row sequence on ``seq``'s grid, RF
     schedule and readout: a constant gradient through the pulses and the dead times
-    (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` on a silent waveform),
+    (:meth:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.with_background_gradient` on a silent waveform),
     so that its phases are a walker's **background vector** ``gamma int e(t) r(t) dt`` with ``e`` the sequence's
-    :attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, zero while
+    :attr:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.effective_gate` (the coherence sign, zero while
     stored) -- what a constant ``g0`` adds to the phase as ``g0 . n``."""
     from dmipy_replay.acquisition.waveforms import tile_waveform
     silent = tile_waveform(_gate_sequence(seq), 3)
@@ -1079,7 +1079,7 @@ class TimeSegmentLayout(_TimeSegmentLayout):
 
     def delivery(self, sequence, scanner, grid=None, *, partition=None, to_scanner=None, nonlinearity=True, background=True,
                  concomitant=True, transmit=True):
-        """What ``scanner`` (a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits`) plays at every voxel with rows when
+        """What ``scanner`` (a :class:`~dmipy_replay.acquisition.scanners.ScannerLimits`) plays at every voxel with rows when
         the layout's grid sits in its bore as ``grid`` says (the layout's own grid, whose isocenter is the grid centre,
         when None; :meth:`~dmipy_sim.phantom.Grid.centred_at` moves it), for ``sequence`` on its stored partition:
         :func:`~dmipy_sim.phantom.bore.delivered_vectors` of each segment's commanded plateau at :attr:`live_voxels`,

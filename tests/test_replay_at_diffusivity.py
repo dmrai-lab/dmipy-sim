@@ -18,6 +18,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 
 D0, T, DT = 2.0e-9, 40e-3, 5e-4
+N_WALK = 150      # the identities need no count; the one statistic (a free-diffusion signal against exp(-bD)) is held to 4 / sqrt(N_WALK), 4 sigma of a signal of unit spread
 #: the view against the walk at 2 D: their bands agree to the float32 they are stored in
 RTOL = 2e-6
 
@@ -31,7 +32,7 @@ def _same_walk(a, b):
 
 
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, K=12, **kw):
-    walk = _walk_geometry(600, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
+    walk = _walk_geometry(N_WALK, D, geometry, T_, dt, seed=seed, require_gpu=False, K=K)
     out = tmp / f"{name}.rpk"
     _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=K, out_path=str(out), **kw)
     return read_rpk(str(out))
@@ -75,7 +76,7 @@ def test_the_view_is_the_walk_at_the_other_diffusivity_to_the_bit(free):
             _same_walk(pk_d.arrays[k], pk_2d.arrays[k])                          # the same walk, coded
     seq = _seq(T / 2)
     np.testing.assert_allclose(view.replay(seq, complex_signal=True), pk_2d.replay(seq, complex_signal=True), rtol=RTOL)
-    np.testing.assert_allclose(np.abs(view.replay(seq)), np.exp(-np.asarray(seq.b()) * 2 * D0), atol=4.0 / np.sqrt(600))
+    np.testing.assert_allclose(np.abs(view.replay(seq)), np.exp(-np.asarray(seq.b()) * 2 * D0), atol=4.0 / np.sqrt(N_WALK))
     assert view.meta["provenance"]["diffusivity_scaled"]["a"] == 2.0
 
 
@@ -227,7 +228,7 @@ def sheathed(tmp_path_factory):
     for geom, D, T_, dt, name in ((g, D0, 6e-3, 3e-4, "d"), (g2, 2 * D0, 3e-3, 1.5e-4, "2d")):
         # the field read once per block in both: the same path read at the same instants of its own clock (a read
         # each pilot derives depends on the pilot's QV against the absolute floor, not on the clock's scale)
-        walk = _walk_geometry(1500, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
+        walk = _walk_geometry(N_WALK, D, geom, T_, dt, seed=0, require_gpu=False, K=8,
                                        field_basis=field_grid_of(geom, res=0.2e-6), field_read_interval=dt)
         path = tmp / f"{name}.rpk"
         _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=8,

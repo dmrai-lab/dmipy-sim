@@ -90,7 +90,7 @@ def label_volume(edge_m, seed, *, out_dir, target_fraction=TARGET_FRACTION, n_ob
 
     license_ = ("synthetic geometry, generated for dmrai-lab/dmipy-sim#697: a random sphere packing "
                "rasterised as a segmented image, no external data")
-    citation = "dmrai-lab/dmipy-sim#697, dmrai-lab/tessera#43"
+    citation = "dmrai-lab/dmipy-sim#697"
     variants, refused = [], []
     for T_max in T_max_s:
         try:

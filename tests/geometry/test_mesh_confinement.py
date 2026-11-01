@@ -141,15 +141,15 @@ def test_box_faces_must_bounce_not_mirror(lattice):
     mirrored = _PostStepMirror(_mesh(V, F, lo, hi, box_reflect=False), lo, hi)
     in_loop = _mesh(V, F, lo, hi, box_reflect=True)
 
-    # 1000 sub-steps, not 3000. Measured leak counts against cost for both arms:
+    # 500 sub-steps (measured below at 400: 7 leaks, 1000: 13, assertion needs 5). Measured leak counts against cost for both arms:
     #     3000  50.2 s   mirror leaked 25, in-loop 0
     #     1000  20.8 s   mirror leaked 13, in-loop 0
     #      400  10.0 s   mirror leaked  7, in-loop 0
     # The separation is qualitative -- the in-loop arm leaks NOTHING at any length -- so the
     # only thing length buys is how many mirror leaks accumulate, and 13 is a wide margin on
     # an assertion that needs one.
-    n_mirror = _crossed(V, F, _run(mirrored, r0, 1000)[0])
-    n_loop = _crossed(V, F, _run(in_loop, r0, 1000)[0])
+    n_mirror = _crossed(V, F, _run(mirrored, r0, 500)[0])
+    n_loop = _crossed(V, F, _run(in_loop, r0, 500)[0])
 
     assert n_mirror >= 5, (
         f"the mirror leak reproduced only {n_mirror} times; this test must detect it by a "

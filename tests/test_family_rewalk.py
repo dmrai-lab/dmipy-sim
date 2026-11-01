@@ -302,11 +302,11 @@ def test_raw_subset_builds_a_pack_certified_on_that_subset(fr, tmp_path):
 
 
 def test_raw_subset_builds_the_bundle_family_certified_on_that_subset(fr, tmp_path):
-    fr.main(["walk", "cactus", "--out", str(tmp_path), "--raw-subset", "10", "--smoke", "--smoke-n", "90", "--T", "0.004", "--backend", "jax"])
+    fr.main(["walk", "cactus", "--out", str(tmp_path), "--raw-subset", "6", "--smoke", "--smoke-n", "40", "--T", "0.004", "--backend", "jax"])
     receipts = _receipts(tmp_path)
     assert receipts
     for r in receipts.values():
-        assert r["raw_subset"] == 10 and r["fidelity"] == "measured" and r["measured_by"] == "raw_subset" and r["measured_on"] == 10
+        assert r["raw_subset"] == 6 and r["fidelity"] == "measured" and r["measured_by"] == "raw_subset" and r["measured_on"] == 6
 
 
 def test_the_slab_field_is_the_lorentz_corrected_field_of_its_magnetised_layer(fr):

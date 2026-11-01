@@ -24,12 +24,21 @@ def spec(tmp_path_factory):
 
 
 def _walk(spec, run_dir=None, spool=False):
-    return walk(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-                     field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=20, run_dir=run_dir, spool=spool)
+    # 30 walkers in batches of 10: three batches per pool, which is what the resume test removes one of
+    return walk(spec, 30, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
+                     field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=run_dir, spool=spool)
 
 
-def test_a_walk_round_trips_through_its_file_and_packs(spec, tmp_path):
-    w = _walk(spec)
+@pytest.fixture(scope="module")
+def spooled(spec, tmp_path_factory):
+    """The one spooled walk of the module and its run record: the file round trip and the resume both start from it
+    (a walk saved to a file is the same walk spooled or not; the resume test then edits the record)."""
+    d = str(tmp_path_factory.mktemp("spool_rec") / "rec")
+    return d, _walk(spec, run_dir=d, spool=True)
+
+
+def test_a_walk_round_trips_through_its_file_and_packs(spooled, tmp_path):
+    _, w = spooled
     w.save(str(tmp_path / "w.walk"))
     back = CoefficientWalk.load(str(tmp_path / "w.walk"))
     np.testing.assert_array_equal(back.position_coeffs, w.position_coeffs)
@@ -53,11 +62,10 @@ def test_a_walk_round_trips_through_its_file_and_packs(spec, tmp_path):
     np.testing.assert_array_equal(back.raw_positions, plain.raw_positions); assert back.field_basis is None
 
 
-def test_a_spooled_walk_resumes_from_its_batches(spec, tmp_path):
+def test_a_spooled_walk_resumes_from_its_batches(spec, spooled):
     """Three batches per pool spooled; the run resumed with one batch missing walks only that one and is the same
     walk to the bit; resumed complete, it walks nothing; a different walk in the same record is refused."""
-    d = str(tmp_path / "rec")
-    w0 = _walk(spec, run_dir=d, spool=True)
+    d, w0 = spooled
     files = sorted(os.listdir(os.path.join(d, "spool")))
     assert len(files) == 6 and files[0].startswith("extra-batch-0000") or len(files) >= 2, files
     victim = os.path.join(d, "spool", files[-1]); os.remove(victim)
@@ -73,5 +81,5 @@ def test_a_spooled_walk_resumes_from_its_batches(spec, tmp_path):
     w2 = _walk(spec, run_dir=d, spool=True)                            # everything read back
     np.testing.assert_array_equal(w2.position_coeffs, w0.position_coeffs)
     with pytest.raises(ValueError, match="another run"):
-        walk(spec, 61, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-                  field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=20, run_dir=d, spool=True)
+        walk(spec, 31, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
+                  field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=d, spool=True)

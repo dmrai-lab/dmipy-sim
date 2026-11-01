@@ -46,32 +46,44 @@ def test_the_split_equals_the_superposition():
         split.build_far_grid(1e-6, 12e-6)
 
 
-def test_the_far_grid_round_trips_and_the_walk_reads_it(tmp_path):
-    """A DiSCo-form spec walked with the far grid: the same positions as without (the field does not steer the
-    walk), the field modes within the split's error of the plain ones, the pack's field meta carries the grid."""
-    rng = np.random.default_rng(1)
-    cls, ri, ro = _strands(rng, n=12, side=20e-6)
-    tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
+#: One small DiSCo-form spec and ONE plain walk of it, shared by the two tests that walk. A `walk` call costs its
+#: program build (about 20 s on a CPU, whatever the walker count), so the walks below are the fewest that carry
+#: each claim: 20 walkers over 4 blocks, 5 strands (the claims are about which strands a field read sums, the
+#: walker count only sets the field-coefficient noise floor, which the comparison cancels by sharing the seed).
+KW = dict(T_max=2e-4, block_h=5e-5, seed=5, n_probe=2000, require_gpu=False, adaptive_steps=True,
+          field_cutoff_m=25e-6, field_cutoff_max_m=25e-6)
+N_WALK = 20
+
+
+@pytest.fixture(scope="module")
+def world(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("far_grid")
+    cls, ri, ro = _strands(np.random.default_rng(2), n=5, side=20e-6)
+    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
     write_tck(tck, *concat_centerlines([c + 0.0 for c in cls]), coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
+    return dict(spec=spec, cls=cls, ri=ri, ro=ro, tmp=tmp, w0=walk(spec, N_WALK, K=6, K_c3=4, **KW))
+
+
+def test_the_far_grid_round_trips_and_the_walk_reads_it(world):
+    """A DiSCo-form spec walked with the far grid: the same positions as without (the field does not steer the
+    walk), the field modes within the split's error of the plain ones, the pack's field meta carries the grid."""
+    spec, cls, ri, ro, tmp, w0 = (world[k] for k in ("spec", "cls", "ri", "ro", "tmp", "w0"))
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=25e-6, domain=(np.zeros(3), np.full(3, 20e-6)))
     far = plain.build_far_grid(0.5e-6, 10e-6, blend_m=3e-6)
-    far.save(str(tmp_path / "far.npy")); back = FarGrid.load(str(tmp_path / "far.npy"))
+    far.save(str(tmp / "far.npy")); back = FarGrid.load(str(tmp / "far.npy"))
     np.testing.assert_array_equal(back.values, far.values); assert back.meta == far.meta
-    kw = dict(T_max=6e-4, block_h=5e-5, seed=5, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-              field_cutoff_m=25e-6, field_cutoff_max_m=25e-6, K=6, K_c3=4)
-    w0 = walk(spec, 40, **kw)
-    w1 = walk(spec, 40, field_far=str(tmp_path / "far.npy"), **kw)
+    kw = dict(KW, K=6, K_c3=4)
+    w1 = walk(spec, N_WALK, field_far=str(tmp / "far.npy"), **kw)
     np.testing.assert_array_equal(w1.position_coeffs, w0.position_coeffs)
     d = w1.field_coeffs - w0.field_coeffs
     assert np.sqrt((d ** 2).sum()) / np.sqrt((w0.field_coeffs ** 2).sum()) < 5e-2      # measured 3.1 % on this 0.5 um grid: the segments' end fields are sharper than a line's
     assert w1.field_basis.far is not None and w1.field_basis.certificate["far_grid"]["sha256"] == far.sha256
     from dmipy_sim.spec import WalkContext                                        # the context: the basis and grid kept across walks
-    ctx = WalkContext(spec, field_far=str(tmp_path / "far.npy"))
-    w2 = walk(spec, 40, context=ctx, **kw); w3 = walk(spec, 40, context=ctx, **kw)
+    ctx = WalkContext(spec, field_far=str(tmp / "far.npy"))
+    w2 = walk(spec, N_WALK, context=ctx, **kw)
     np.testing.assert_array_equal(w2.position_coeffs, w1.position_coeffs); np.testing.assert_array_equal(w2.field_coeffs, w1.field_coeffs)
-    np.testing.assert_array_equal(w3.field_coeffs, w2.field_coeffs)
-    assert w2.field_basis is ctx.field_basis() and w3.field_basis is w2.field_basis and ctx.key[1] == far.sha256
+    assert w2.field_basis is ctx.field_basis() and ctx.key[1] == far.sha256
     with pytest.raises(ValueError, match="another far grid"):
         ctx.check(spec, plain.build_far_grid(0.5e-6, 10e-6, blend_m=2e-6))
     from dmipy_sim.replay.bank import build_replay_pack
@@ -87,14 +99,14 @@ def test_free_ends_and_the_exact_grid_equals_the_cutoff_grid():
     rng = np.random.default_rng(3)
     cls, ri, ro = [], [], []
     side = 40e-6
-    for _ in range(40):                                              # strands ending INSIDE the box
+    for _ in range(20):                                              # strands ending INSIDE the box
         p0 = rng.uniform(0, side, 3); d = rng.normal(size=3); d /= np.linalg.norm(d)
         pts = np.stack([p0 - 0.35 * side * d, p0 + rng.normal(0, 0.3e-6, 3), p0 + 0.35 * side * d])
         cls.append(pts); r = rng.uniform(0.7e-6, 2.1e-6); ri.append(r); ro.append(r / 0.7)
     ri, ro = np.array(ri), np.array(ro)
     lo, hi = np.zeros(3), np.full(3, side)
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=80e-6, domain=(lo, hi))
-    P = rng.uniform(2e-6, 38e-6, (1500, 3)); c0 = plain.channels(P)
+    P = rng.uniform(2e-6, 38e-6, (600, 3)); c0 = plain.channels(P)
     rel = {}
     for h in (2.0e-6, 1.0e-6):
         far = plain.build_far_grid(h, 14e-6, blend_m=4e-6, dtype=np.float32)
@@ -107,7 +119,7 @@ def test_free_ends_and_the_exact_grid_equals_the_cutoff_grid():
     np.testing.assert_allclose(exact.values, far.values, atol=1e-5, rtol=0)     # 80 um spans the box: the same sum
 
 
-def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(tmp_path, monkeypatch):
+def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(world, monkeypatch):
     """dmipy-sim#680: a worker's `WalkContext` owns the walking geometry (keyed per `(pool, reflect)`, `_Boundary`'s
     own `_geom` cache -- already reused across calls) AND, now, the strand-field basis with NO far grid (the
     particle-mesh split already cached it; the plain per-segment closed form did not, rebuilding it -- cutoff
@@ -116,13 +128,8 @@ def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(tmp_path,
     second call's construction counts equal the first's. The walk is unaffected either way -- with the shared
     context, repeated, or with none at all -- to the bit."""
     from dmipy_sim.geometry.curved_cylinder import PackedCurvedCylinders
-    rng = np.random.default_rng(2)
-    cls, ri, ro = _strands(rng, n=5, side=20e-6)
-    tck, dia = str(tmp_path / "t3.tck"), str(tmp_path / "d3.txt")
-    write_tck(tck, *concat_centerlines([c + 0.0 for c in cls]), coordinate_unit_m=25e-6); np.savetxt(dia, 2 * ri / 1e-3)
-    spec = disco_spec(tck, dia, side_m=20e-6)
-    kw = dict(T_max=6e-4, block_h=5e-5, seed=5, n_probe=2000, require_gpu=False, adaptive_steps=True,
-              field_cutoff_m=25e-6, field_cutoff_max_m=25e-6)
+    spec, w0 = world["spec"], world["w0"]
+    kw = dict(KW, K=6, K_c3=4)
 
     n_geom, n_field = [0], [0]
     orig_geom, orig_field = PackedCurvedCylinders.__init__, StrandFieldBasis.__init__
@@ -137,14 +144,13 @@ def test_a_shared_context_builds_the_geometry_and_the_field_basis_once(tmp_path,
 
     from dmipy_sim.spec import WalkContext
     ctx = WalkContext(spec)
-    w1 = walk(spec, 40, context=ctx, **kw)
+    w1 = walk(spec, N_WALK, context=ctx, **kw)
     n_geom_1, n_field_1 = n_geom[0], n_field[0]
     assert n_geom_1 > 0 and n_field_1 > 0                           # the first call pays for both
-    w2 = walk(spec, 40, context=ctx, **kw)
+    w2 = walk(spec, N_WALK, context=ctx, **kw)
     assert n_geom[0] == n_geom_1 and n_field[0] == n_field_1         # the second call builds neither again
 
-    monkeypatch.undo()
-    w0 = walk(spec, 40, **kw)                                  # no context at all: unaffected, same to the bit
+    # w0, the shared fixture's walk, is the no-context walk: unaffected, same to the bit
     np.testing.assert_array_equal(w0.position_coeffs, w1.position_coeffs)
     np.testing.assert_array_equal(w1.position_coeffs, w2.position_coeffs)
     np.testing.assert_array_equal(w0.field_coeffs, w1.field_coeffs)

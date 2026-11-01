@@ -12,7 +12,7 @@ from dmipy_sim.io.strands import write_tck
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.replay import ReplayPack
-from dmipy_sim.fill.consolidate import consolidate, append, band_groups_of
+from dmipy_sim.replay.consolidate import consolidate, append, band_groups_of
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
@@ -181,7 +181,7 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     packs = []
     for blk, seed in ((0, 7), (1, 8)):
         want = np.zeros(grid.shape, np.int64); want[blk] = 12
-        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3, K_c3=4, field_cutoff_max_m=25e-6, n_probe=20_000, adaptive_steps=True,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3, K_c3=4, field_cutoff_max_m=25e-6, n_probe=2000, adaptive_steps=True,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         os.makedirs(str(tmp / "pshards"), exist_ok=True)
         packs.append(build_replay_pack(w, id=f"t/p{blk}", license="x", citation="x", K=3, voxel_grid=grid, susc_path_K=4, field_container=cont, position_container=((None, 8),), blt_container=((None, 8),),
@@ -237,7 +237,7 @@ def test_shards_prepared_apart_and_appended_in_order_write_the_streaming_passs_l
     appended in block order across a checkpoint and a resume, writes the layout ``consolidate`` writes: the same
     column bytes, index and manifest."""
     import json
-    from dmipy_sim.fill.consolidate import Consolidator, PreparedBlock, prepare_block
+    from dmipy_sim.replay.consolidate import Consolidator, PreparedBlock, prepare_block
     from dmipy_sim.replay.replay import read_rpk
     out, manifest, index, _, _, _, _, tmp = layout
     names = ["block-0000.p1.rpk", "block-0001.p1.rpk"]
@@ -256,7 +256,7 @@ def test_shards_prepared_apart_and_appended_in_order_write_the_streaming_passs_l
 
 def test_a_shard_prepared_on_another_grid_is_refused(layout, tmp_path):
     """A shard whose rows were sorted on a grid other than the layout's does not append."""
-    from dmipy_sim.fill.consolidate import Consolidator, prepare_block
+    from dmipy_sim.replay.consolidate import Consolidator, prepare_block
     from dmipy_sim.replay.replay import read_rpk
     _, _, _, _, _, grid, _, tmp = layout
     con = Consolidator(str(tmp_path / "out"))

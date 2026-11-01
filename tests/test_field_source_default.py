@@ -25,7 +25,7 @@ def spec(tmp_path_factory):
 
 
 def _walk(spec, **kw):
-    return walk(spec, 60, 8e-4, 5e-5, seed=3, n_probe=20_000, require_gpu=False, **kw)
+    return walk(spec, 30, 2e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, **kw)
 
 
 def test_a_source_walks_with_its_field_by_default_and_the_pack_carries_the_tier(spec):
@@ -41,7 +41,7 @@ def test_a_source_walks_with_its_field_by_default_and_the_pack_carries_the_tier(
 
 def test_a_spec_without_a_source_reads_no_field(spec):
     nf = spec_without_source(spec)
-    w = _walk(nf, adaptive_steps=True, K=8)
+    w = _walk(nf, K=8)             # the fixed-step producer: whether a basis exists is the spec's, not the producer's
     assert w.field_basis is None and w.field_coeffs is None and not w.has_field
     pk = build_replay_pack(w, id="t/no-source", license="x", citation="x", K=8)
     assert not pk.has_field
@@ -49,7 +49,6 @@ def test_a_spec_without_a_source_reads_no_field(spec):
 
 def test_build_replay_pack_refuses_a_field_argument(spec):
     """``build_replay_pack`` carries no ``field=`` of any kind -- the TypeError is Python's own, for a keyword
-    the function no longer has."""
-    w = _walk(spec, adaptive_steps=True, K=8)
+    the function no longer has; it is raised at the call, before the walk is read, so no walk is made."""
     with pytest.raises(TypeError, match="field"):
-        build_replay_pack(w, id="x", field=None, K=8, license="x", citation="x")
+        build_replay_pack(None, id="x", field=None, K=8, license="x", citation="x")

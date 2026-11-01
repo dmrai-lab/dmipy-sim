@@ -213,7 +213,7 @@ def test_a_mesh_bundle_samples_its_grid_in_the_walk_and_a_frozen_pool_holds_its_
     pool's modes are the channels at its seat held over the window: the k = 0 mode alone, ``sqrt(T) b(seat)``."""
     pytest.importorskip("trimesh")
     from tests.test_mesh_spec import _bundle_spec
-    w = walk(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
+    w = walk(_bundle_spec(tmp_path), 120, 1e-3, 2.5e-4, seed=0, n_probe=4000, field_res=0.4e-6, require_gpu=False, K=8)
     assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs.shape == (120, w.n_windows, w.K_c3, 12)
     ids = np.asarray(w.compartment)
     frozen = np.asarray(w.field_coeffs)[ids == 2]

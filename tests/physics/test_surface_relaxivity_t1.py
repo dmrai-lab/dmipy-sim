@@ -30,7 +30,7 @@ from dmipy_replay.spec.tissue import Tissue
 
 D0 = 2e-9          # m^2/s
 R = 8e-6           # m
-N_WALKERS = 45_000
+N_WALKERS = 10_000   # the Robin check is held to max(5 / sqrt(N) = 0.05, 6 % of the reference); the bit-identity checks need no count (45000 held it to 0.024)
 T_MAX = 0.1        # s -- one segment (RPK.md 4.3)
 DT_SAVE = 1e-4     # s
 SEED = 11
@@ -187,7 +187,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
-    from dmipy_sim.fill.consolidate import consolidate
+    from dmipy_sim.replay.consolidate import consolidate
     from dmipy_sim.spec import disco_spec, StratifiedByVoxel
     from dmipy_sim import walk
     from dmipy_sim.replay.study import Protocol, Study

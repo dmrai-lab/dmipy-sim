@@ -286,15 +286,46 @@ def _three_strands(tmp):
     return disco_spec(tck, dia, side_m=20e-6)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def field_pack(tmp_path_factory):
     """A strand pack with the path channel (C3), from the three-strand fixture with a sheath; the field sampled in
-    the walk with adaptive steps."""
+    the walk with adaptive steps. One walk per session, shared by every module that replays it (CI keeps those
+    modules in one group, tools/ci_groups.py ``TOGETHER``)."""
     from dmipy_sim import walk
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
     w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4, envelope=stated_class(G_max=15.0))
+
+
+#: The field-read walks (tests/test_field_read_interval.py, tests/replay/test_merge_field_read.py): the three-strand spec
+#: walked by the adaptive producer, which costs its program build (tens of seconds on a CPU) whatever the walker
+#: count. Each walk is made once per session and shared by every module that reads it.
+READ_BLOCK = 1e-4                  # the walk's block: two rounds of the extra pool, four of the intra pool
+READ_FINE = READ_BLOCK / 4         # a given read finer than the derived one: every round of each pool
+
+
+def read_walk(spec, interval=None, seed=3):
+    from dmipy_sim import walk
+    return walk(spec, 60, 8e-4, READ_BLOCK, seed=seed, n_probe=2000, require_gpu=False, adaptive_steps=True, K=4,
+                field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)))
+
+
+@pytest.fixture(scope="session")
+def read_spec(tmp_path_factory):
+    return _three_strands(tmp_path_factory.mktemp("readint"))
+
+
+@pytest.fixture(scope="session")
+def read_walks(read_spec):
+    """The default (derived) read and a given finer one."""
+    return read_walk(read_spec), read_walk(read_spec, READ_FINE)
+
+
+@pytest.fixture(scope="session")
+def read_coarse(read_spec):
+    """A walk that reads the field once per block (seed 4)."""
+    return read_walk(read_spec, READ_BLOCK, seed=4)
 
 
 @pytest.fixture(scope="module")

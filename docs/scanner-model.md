@@ -106,11 +106,11 @@ across a voxel (every term is read at the voxel's centre).
 
 ## Reading it
 
-- `dmipy_sim/acquisition/scanner_constants.json` — the catalogue. Every leaf is
+- `dmipy_replay/acquisition/scanner_constants.json` — the catalogue. Every leaf is
   `value, unit, source_key, confidence`, and `source_key` resolves to a citation whose DOI is
   itself checked (#361).
-- `dmipy_sim/acquisition/scanners.py` — the model.
-- `dmipy_sim/acquisition/solid_harmonics.py` — the basis the field laws are written in.
+- `dmipy_replay/acquisition/scanners.py` — the model.
+- `dmipy_replay/acquisition/solid_harmonics.py` — the basis the field laws are written in.
 - `dmipy_sim/phantom/bore.py` — the model evaluated over a phantom grid.
 
 Gap analysis against other simulators' scanner inputs: #359.

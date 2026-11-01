@@ -418,7 +418,10 @@ def test_a_fan_is_a_frame_with_two_concentrations_and_contains_the_watson(pack_p
     Rq = so3.rotations_from_quaternions(cone.file.pose_quat[0, 0])[0]
     np.testing.assert_allclose(Rq[:, 2], (0, 0, 1), atol=1e-6); np.testing.assert_allclose(Rq[:, 0], (1, 0, 0), atol=1e-6)
     pk = read_rpk(pack_path)
-    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    # b = 2e8: the pose response is expanded to the order the b-value needs (12 here, 18 at b = 1e9, where composing the
+    # reference Watson cone alone takes more than 4 GB); the identity with the Watson cone is exact at any order, and
+    # the fan still differs from the cone by 9e-3, three times the bound below
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [2e8, 2e8])
     S_cone, S_fan = _rows(cone, cone.replay(seq)), _rows(fan, fan.replay(seq))
     pr = pk.pose_response(seq, tissue=Tissue(T2={"extra": 0.06, "intra": 0.06}))
     ref = np.abs(0.7 * pr.compose(so3.Distribution.watson(6.0, mu=(0, 0, 1), lmax=pr.lmax, nmax=pr.nmax)))
@@ -456,7 +459,7 @@ def test_the_same_substrate_cited_twice_is_a_crossing(pack_path):
                          orientation=Peaks(dirs, weights=w))
     assert (ph.file.substrate_id[:, :2] == 0).all()                  # one substrate, two slots
     pk = read_rpk(pack_path)
-    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [2e8, 2e8])      # b = 2e8: order 12, not 18 (the reference is composed twice); the weighted sum is an identity at any order
     S = _rows(ph, ph.replay(seq))
     pr = pk.pose_response(seq, tissue=Tissue(T2={"extra": 0.06, "intra": 0.06}))
     ref = np.abs(0.7 * pr.compose(so3.Distribution.axis((0, 0, 1), pr.lmax, pr.nmax))

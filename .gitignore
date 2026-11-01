@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 *.png
+# the step-law page's figures (tools/gen_step_law.py)
+!docs/step-law/*.png
 .pytest_cache/
 dist/
 build/

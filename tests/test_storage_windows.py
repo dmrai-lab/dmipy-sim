@@ -20,7 +20,7 @@ from dmipy_replay.spec.substrate import Susceptibility
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _slab_grid
 
-N_T, DT, N_W = 41, 5e-4, 600                 # 20 ms of walk in 40 blocks; two windows of 10 ms
+N_T, DT, N_W = 41, 5e-4, 150                 # 20 ms of walk in 40 blocks; two windows of 10 ms; the checks compare two packs of ONE walk against their own certified bounds (which scale with the count), so no count is derived
 T = (N_T - 1) * DT
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho2=2e-5, chi_iso=1e-7)
 TIS0 = TIS.replace(chi_iso=None)              # the same material read without a field: no scanner, no chi (#593)

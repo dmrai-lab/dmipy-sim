@@ -42,7 +42,7 @@ except ImportError as _e:  # pragma: no cover
 import os as _os
 
 #: the threads pocketfft runs the sine transforms on: every walker's transform is independent, so this changes no
-#: bit; ``DMIPY_SIM_FFT_WORKERS`` overrides (a shared box), the default is half the cores up to eight (#642)
+#: bit; ``DMIPY_SIM_FFT_WORKERS`` overrides (a loaded host), the default is half the cores up to eight (#642)
 FFT_WORKERS = int(_os.environ.get("DMIPY_SIM_FFT_WORKERS", 0) or max(1, min(8, (_os.cpu_count() or 2) // 2)))
 
 
@@ -57,12 +57,6 @@ from dmipy_replay.constants import GAMMA
 
 
 _F16, _F32 = 2, 4
-
-
-
-
-
-
 
 
 def block_table(T, n_blocks, K, m, *, blocks=None, xp=np):
@@ -119,26 +113,6 @@ def quadrature_rel(m, h, omega):
     walk's increments are no larger than a free walk's while its modes' own variances collapse."""
     m = int(m)
     return (np.asarray(omega, np.float64) * float(h) / 2.0) ** (2 * (m + 1)) / (math.factorial(m + 1) ** 2 * (2 * m + 3))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------------- encoders
@@ -290,7 +264,6 @@ def resolve_container(container, B, n_t=None):
     return container
 
 
-
 def band_curve(K, b1, taper=1.0, b_min=3, b_max=16):
     """The band container of ``K`` bands as a curve: band ``k`` (1-based) holds ``round(b1 - taper * log2(k))``
     bits, clipped to ``[b_min, b_max]``. Contiguous bands of equal bits form one range, and a range's length is
@@ -302,12 +275,6 @@ def band_curve(K, b1, taper=1.0, b_min=3, b_max=16):
         raise ValueError(f"band_curve needs {MIN_BITS} <= b_min <= b_max <= 16 (got {b_min}, {b_max})")
     bits = np.clip(np.rint(float(b1) - float(taper) * np.log2(np.arange(1, K + 1))), b_min, b_max).astype(int)
     return _group_bits(bits)
-
-
-
-
-
-
 
 
 def pack_bits(u, bits):
@@ -322,8 +289,6 @@ def pack_bits(u, bits):
     return out
 
 
-
-
 def _store_range(q, bits):
     """The stored tensor of integer band values ``q`` ``(N, m[, n_axes])`` in ``[-lim, lim]`` at ``bits``: native
     ``int8`` / ``int16``, or offset-binary (``q + 2**(bits-1)``) bit-packed along the band axis."""
@@ -335,12 +300,6 @@ def _store_range(q, bits):
     if q.ndim == 2:
         return pack_bits(u, bits)
     return np.stack([pack_bits(u[..., a], bits) for a in range(q.shape[2])], axis=2)
-
-
-
-
-
-
 
 
 def quantise_bands(B, container, key, scale_key):
@@ -366,12 +325,6 @@ def quantise_bands(B, container, key, scale_key):
     return arrays, {"container": cont}
 
 
-
-
-
-
-
-
 def _jax_has_gpu():
     try:
         import jax
@@ -388,8 +341,6 @@ def resolve_device(device):
     if device == "auto":
         return "jax" if _jax_has_gpu() else "numpy"
     return device
-
-
 
 
 SLICE_BYTES = 1 << 28
@@ -420,28 +371,6 @@ def _dst_matrix(N, K):
     and prefix decode contracts against."""
     n = np.arange(1, int(N) + 1)[:, None]; k = np.arange(1, int(K) + 1)[None, :]
     return np.sqrt(2.0 / (N + 1)) * np.sin(np.pi * n * k / (N + 1))
-
-
-def dct_bands(u, K, *, device="auto", chunk_bytes=None):
-    """The lowest ``K`` orthonormal DCT-II bands along axis 1 of ``u`` ``(N_w, N, ...)``, as float64 -- the cosine
-    twin of :func:`dst_bands` for the path field channel: scipy on the host, or one full-precision matmul against
-    the cosine matrix on the JAX device, in walker chunks."""
-    K = int(K)
-    if resolve_device(device) == "numpy":
-        from scipy.fft import dct
-        return np.asarray(dct(np.asarray(u, np.float64), type=2, norm="ortho", axis=1)[:, :K], np.float64)
-    import jax
-    import jax.numpy as jnp
-    N = int(u.shape[1])
-    n = np.arange(N)[:, None]; k = np.arange(K)[None, :]
-    Cm = np.sqrt(2.0 / N) * np.cos(np.pi * (2 * n + 1) * k / (2 * N)); Cm[:, 0] /= np.sqrt(2.0)
-    Cd = jnp.asarray(Cm, jnp.float32)                                                                 # (N, K)
-    f = jax.jit(lambda x: jnp.einsum("wn...,nk->wk...", x, Cd, precision=jax.lax.Precision.HIGHEST))
-    rows = max(1, int(_chunk(chunk_bytes) // max(int(np.prod(u.shape[1:])) * 4, 1)))
-    out = np.empty((u.shape[0], K) + tuple(u.shape[2:]), np.float64)
-    for i in range(0, u.shape[0], rows):
-        out[i:i + rows] = np.asarray(f(jnp.asarray(np.asarray(u[i:i + rows], np.float32))), np.float64)
-    return out
 
 
 @functools.lru_cache(maxsize=None)
@@ -562,12 +491,6 @@ def encode_boundary_bands(start, endpoint, bands, *, T, dtype=np.float32, contai
     return arrays, meta
 
 
-
-
-
-
-
-
 # C1 is a set of named OCCUPANCY COLUMNS, not a single label track. At every instant a walker has an
 # occupancy over the declared pools summing to 1, and replay weights the per-pool rates by it:
 # R(t) = sum_c f_c(t) R_c. Every case is that one form -- an integer compartment label is one-hot, and MT binding
@@ -623,18 +546,6 @@ def encode_events_occupancy(columns, *, t0=0.0):
     return arrays, {"channel": "compartment", "columns": cols}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------- position layout (axis-addressable)
 # Positions are stored as ONE TENSOR PER SPATIAL AXIS -- pos_x/pos_y/pos_z, each (n_walkers, K) --
 # rather than a single (n_walkers, K, 3). safetensors gives every tensor its own byte range, so this
@@ -664,32 +575,6 @@ def pack_position_arrays(C, dtype=np.float32, container=None):
     return out
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def mode_space_phi(arrays, meta, G, dt, *, dt_wf=None):
     """Gradient phase phi_i (N_w, n_meas) in the compressed basis, WITHOUT reconstructing the trajectory:
     the exact integral of the waveform ``G`` (on its own grid ``dt_wf``, default ``dt``) against the stored path over
@@ -712,16 +597,6 @@ def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None):
     lw = np.zeros(n_w) if logw is None else np.asarray(logw, float)
     w = np.ones(n_w) if weights is None else np.asarray(weights, float)
     return (np.exp(lw[:, None] + 1j * phi) * (w / w.sum())[:, None]).sum(0)
-
-
-
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------- envelope & fidelity
@@ -768,7 +643,7 @@ def certified_envelope(envelope=None, spec=None):
     susceptibility scale ``|chi_iso| + |chi_aniso|`` the field tier is certified at (the substrate ``spec``'s
     magnetic pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). An envelope that
     states a ``scanner`` class is certified for it on the gradient side: its ``G_max`` (per axis) and ``slew_max`` are
-    the catalogue's (:class:`~dmipy_sim.acquisition.scanners.ScannerLimits`), and the position terms are the class's
+    the catalogue's (:class:`~dmipy_replay.acquisition.scanners.ScannerLimits`), and the position terms are the class's
     bounds rather than the b battery's (:func:`class_phase_weight`, :func:`class_b_max`). Every certificate term reads
     these, and the pack states them (``replay_envelope.acquisition``, ``replay_envelope.tissue``). A value that is not
     finite and of its sign is refused."""

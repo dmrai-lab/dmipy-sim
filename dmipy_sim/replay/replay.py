@@ -1105,7 +1105,7 @@ class ReplayPack(_ReplayPack):
 
         **The phase.** A magnet that is not uniform adds a constant ``g0`` to the physical gradient through every
         pulse and dead time (:func:`_background_of`), and it accrues through the effective gate ``e(t)``
-        (:attr:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.effective_gate`) like everything else. So
+        (:attr:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.effective_gate`) like everything else. So
         measurement ``i`` plays two directions with two time courses, ``G_i(t) = q_i s_i(t) + g0_i e(t)``, and
         walker ``w``'s phase at pose ``R`` is
 
@@ -1926,7 +1926,7 @@ def _coupling_tables(l_used, Lam_max, keep_l, keep_n):
 def _background_of(waveform):
     """The magnet's own gradient in an acquisition, as the pose expansion separates it: ``(g0 (n_meas, 3), gate
     (n_t,))`` float64 on the waveform's grid, or ``None`` when the acquisition carries none (no
-    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`, or a zero one).
+    :meth:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`, or a zero one).
 
     ``g0`` is what the physical gradient is wherever the coils play nothing: the magnet's gradient together with
     the concomitant field that gradient carries on its own, which is constant in time as the magnet's is (a

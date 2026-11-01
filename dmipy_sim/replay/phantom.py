@@ -210,7 +210,7 @@ def embed_pack(subs, tensors, i, rpk):
     row, and its identity -- the file's sha256 for a pack given by path, :attr:`ReplayPack.digest` for one in memory."""
     from .replay import read_rpk
     if isinstance(rpk, (str, Path)):
-        from ..fill.hub import sha256_of
+        from .hub import sha256_of
         pk, subs[i]["sha256"] = read_rpk(rpk), sha256_of(rpk)
     else:
         pk, subs[i]["sha256"] = rpk, rpk.digest
@@ -436,7 +436,7 @@ class ReplayPhantom:
         under it, and ``pose`` (a :class:`~dmipy_sim.phantom.partition.Pose`) is the specimen's
         rigid rotation in the bore. Each substrate replays at its own declared ``tissue`` (RPH.md 3.2; a pack
         substrate with none is the bare diffusion signal) and at the one ``scanner`` field (a
-        :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field). ``packs``
+        :class:`~dmipy_replay.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field). ``packs``
         supplies the packs of substrates cited by ``uri`` as ``{id or index: path or ReplayPack}``.
 
         No band is passed: each pack projects its response at the band that response needs, and the composition
@@ -447,7 +447,7 @@ class ReplayPhantom:
         layer. A ``kappa_B1`` layer cannot be carried here -- it acts on the magnetisation, not on a phase sum --
         and is refused with the route that can (:meth:`replay_bloch`), never dropped.
 
-        **The machine's gradient side** (dmipy-sim#377). A :class:`~dmipy_sim.acquisition.scanners.ScannerLimits`
+        **The machine's gradient side** (dmipy-sim#377). A :class:`~dmipy_replay.acquisition.scanners.ScannerLimits`
         that catalogues a gradient-nonlinearity tensor, a field shape or a field strength delivers a different
         gradient at every voxel -- the tensor's tilt and scale, the magnet's own background, the coils' Maxwell
         term -- and each pack is replayed once per distinct delivered gradient rather than once. The voxels are
@@ -516,7 +516,7 @@ class ReplayPhantom:
     @staticmethod
     def gate_integral(waveform):
         """``int g(t) dt`` of the acquisition's effective gate to its echo (s), exact in the pulse instants
-        (:meth:`~dmipy_sim.acquisition.rf.RFSchedule.gate_integral`): what a uniform off-resonance dephases through.
+        (:meth:`~dmipy_replay.acquisition.rf.RFSchedule.gate_integral`): what a uniform off-resonance dephases through.
         Zero for a 180 at TE/2 (the layer refocuses) and for a stimulated echo with equal transverse periods (its
         mixing time stored, accruing nothing), TE for a gradient echo."""
         return waveform.rf.gate_integral(waveform.T)

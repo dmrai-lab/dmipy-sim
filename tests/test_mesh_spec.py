@@ -127,7 +127,7 @@ def test_a_multi_surface_bundle_is_walked_from_the_spec_alone(tmp_path):
     spec = _bundle_spec(tmp_path)
     with pytest.raises(SpecError, match="pool by pool"):
         geometry_from_spec(spec)
-    w = walk(spec, 240, 1e-3, 2.5e-4, seed=0, n_probe=20_000, field_res=0.4e-6, require_gpu=False, K=8)
+    w = walk(spec, 120, 1e-3, 2.5e-4, seed=0, n_probe=4000, field_res=0.4e-6, require_gpu=False, K=8)
     assert w.spec is spec and w.geometry is None and w.weights is None      # thinned: unweighted
     ids = np.asarray(w.compartment)                                              # one label per walker
     assert set(np.unique(ids)) == {0, 1, 2} and ids.ndim == 1

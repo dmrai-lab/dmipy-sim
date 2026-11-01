@@ -30,6 +30,7 @@ from dmipy_replay.spec.tissue import Tissue
 UM = 1e-6
 D0 = 2e-9
 G_MAX = 1.0                                                        # T/m: the envelope's gradient (the walk names no class)
+N_WALK = 400         # every comparison below sets the layout against the pack/walk of the SAME walkers: the walker count is no standard error
 N_T, TE = 201, 0.02                                                # a 0.1 ms grid over a 20 ms echo
 TISSUE = Tissue(T2={"intra": 0.07, "extra": 0.06, "myelin": 0.015}, T1={"intra": 1.0, "extra": 1.2, "myelin": 0.4},
                 rho2=2e-5, chi_iso=-1e-7, chi_aniso=-1e-8)
@@ -60,14 +61,14 @@ def _partitions():
 
 @pytest.fixture(scope="module")
 def myelin(tmp_path_factory):
-    """A myelinated cylinder walked with its closed-form field, the contact and the pools (1200 walkers, 30 ms); its
+    """A myelinated cylinder walked with its closed-form field, the contact and the pools (400 walkers, 30 ms); its
     pack at a declared floor target on a 2 x 2 voxel grid; the segment rows from the walk and from the pack and their
     layouts."""
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_replay.phantom.grid import Grid
     tmp = tmp_path_factory.mktemp("segments")
     g = d.MyelinatedCylinder(2.0 * UM, 2.8 * UM, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
-    w = _walk_geometry(1200, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
+    w = _walk_geometry(N_WALK, D0, g, 0.03, seed=7, window_T=0.03, field_basis=HollowCylinderField.of(g), require_gpu=False)
     r0 = np.asarray(w.position_coeffs)[:, 0, 0, :]
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
@@ -155,7 +156,7 @@ def test_a_sequence_that_does_not_fit_is_refused_by_name():
 
 @pytest.mark.parametrize("source", ["pack", "walk"])
 def test_the_rows_do_not_depend_on_the_walker_ranges_they_are_read_in(myelin, source, tmp_path):
-    """``segment_rows`` read a few walkers at a time (``slice_bytes`` for about 90 of the 1200, so the pools' walkers
+    """``segment_rows`` read a few walkers at a time (``slice_bytes`` for about 30 of the 400, so the pools' walkers
     fall in different ranges) writes every file byte for byte as the rows read in one range -- the segment vectors,
     the pool, the gated contact, the field channels, the background, the weights and the voxels, in (voxel, pool)
     order -- and the same ``rows.json`` but its creation time: the partitions' and groups' largest values (those of
@@ -167,8 +168,8 @@ def test_the_rows_do_not_depend_on_the_walker_ranges_they_are_read_in(myelin, so
     src, kw = (M["pack"], {}) if source == "pack" else (M["walk"], dict(pack=M["pack"]))
     one = 1 << 40                                                       # every walker in one range
     view = M["pack"] if source == "pack" else _walk_view(M["walk"])
-    few = 90 * (one // slice_walkers(view.arrays, one))                 # the bytes of 90 walkers' coefficients
-    assert slice_walkers(view.arrays, few) == 90 and position_shape(view.arrays)[0] == 1200
+    few = 30 * (one // slice_walkers(view.arrays, one))                 # the bytes of 30 walkers' coefficients
+    assert slice_walkers(view.arrays, few) == 30 and position_shape(view.arrays)[0] == N_WALK
     recs = {}
     for name, sb in (("whole", one), ("ranges", few)):
         recs[name] = segment_rows(src, M["parts"], str(tmp_path / name), grid=M["grid"], g_max=G_MAX, tiers=True,
@@ -361,13 +362,17 @@ def test_the_blocks_consolidate_into_one_layout(blocks):
 
 def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):
     """A first block of extra water alone and a second with the intra pool too: the layout's pool count is the
-    largest any block's rows address, so each pool's T2 weights its own rows in the image."""
+    largest any block's rows address, so each pool's T2 weights its own rows in the image. The claim is about the pools'
+    relaxation, so the walk is the fixed-step one of the spec without its field source (the adaptive producer the strand
+    field needs costs a program build per walk, and no field tier is read here)."""
+    from tests.conftest import spec_without_source
     spec, grid, _ = spec_grid
+    spec = spec_without_source(spec)
     packs, dirs = [], []
     for b, pools in ((0, ("extra",)), (1, ("extra", "intra"))):
         want = np.zeros(grid.shape, np.int64); want[b] = 24 // len(pools)            # as many walkers in each block
         per = {p: (want if p in pools else np.zeros(grid.shape, np.int64)) for p in ("extra", "intra")}
-        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, adaptive_steps=True, K=3,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=per))
         pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid, envelope=stated_class())
         packs.append(pk); dirs.append(str(tmp_path / f"pl_rows{b}"))

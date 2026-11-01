@@ -54,8 +54,8 @@ def test_straight_sweep_matches_the_analytic_cylinder(b):
     Same walkers, same waveform, same seed -- the only difference is which geometry object reflects them,
     so any disagreement beyond Monte-Carlo noise is the sweep's own.
     """
-    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=600), b)
-    n = 20_000
+    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=300), b)
+    n = 6000           # the floor below is 3 SE of this n: 0.039 (20000 walkers resolved 0.021)
 
     s_cyl = float(np.atleast_1d(simulate(n, D, wf, Cylinder(radius=R, orientation=(0, 0, 1)), seed=SEED))[0])
     s_swp = float(np.atleast_1d(simulate(n, D, wf, CurvedCylinder(_straight_centreline(), radius=R), seed=SEED))[0])
@@ -76,8 +76,11 @@ def test_curvature_changes_the_perpendicular_signal():
     """A bent fibre is not a straight one: curvature tilts the local axis into the gradient direction, so
     some of the restricted direction becomes free. Guards against a 'curved' tube that quietly ignores its
     centreline -- which would pass the straight-limit test above perfectly."""
-    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=600), 2.5e9)
-    n = 20_000
+    wf = set_b(pgse([[1, 0, 0]], 10e-3, 30e-3, gradient_strengths=0.1, n_t=200), 2.5e9)
+    # The walkers' signals lie in [-1, 1], so the SE of each mean is <= 1 / sqrt(n) = 0.032 at n = 1000. The gap asserted
+    # is the signed difference: measured 0.75 straight against 0.38 bent (0.37, 12 SE of the difference even with
+    # independent noise; the shared seed makes it tighter), so a bend that is ignored (gap 0) fails it.
+    n = 1000
 
     z = np.linspace(-30e-6, 30e-6, 21)
     straight = np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)

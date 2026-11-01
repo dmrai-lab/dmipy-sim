@@ -182,7 +182,7 @@ def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, s
 
     license_ = (f"synthetic geometry, generated for dmrai-lab/dmipy-sim#697: a random periodic {kind} packing "
                f"at a stated volume fraction, no external data")
-    citation = f"dmrai-lab/dmipy-sim#697, dmrai-lab/tessera#43"
+    citation = "dmrai-lab/dmipy-sim#697"
     variants, refused = [], []
     for T_max in T_max_s:
         try:

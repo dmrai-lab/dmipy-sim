@@ -96,10 +96,12 @@ def test_surface_is_closed_lets_a_missing_trimesh_raise(monkeypatch):
 
 
 def test_permeability_none_matches_default():
-    V, F = _icosphere(2)
+    """``permeability=None`` is the default, to the bit: the same seed walks the same walk. Equality is exact, so it
+    needs no statistics and no resolution: the coarsest sphere and 16 walkers carry it."""
+    V, F = _icosphere(1)
     wf = _short_wf()
-    s_def = simulate(400, D, wf, Mesh(V, F), seed=1)
-    s_none = simulate(400, D, wf, Mesh(V, F, permeability=None), seed=1)
+    s_def = simulate(16, D, wf, Mesh(V, F), seed=1)
+    s_none = simulate(16, D, wf, Mesh(V, F, permeability=None), seed=1)
     npt.assert_array_equal(np.asarray(s_def), np.asarray(s_none))
 
 
@@ -174,15 +176,18 @@ def test_compartment_bulk_parsing():
 
 
 def test_return_positions_full():
-    V, F = _icosphere(3)
+    """The shapes and the identities (last step is the final position, same signal) are exact, so they need no count;
+    the confinement fraction below is the one statistic: 60 walkers, at most one outside (the original 1 % of 300)."""
+    n = 60
+    V, F = _icosphere(2)
     g = Mesh(V, F)
     wf = _short_wf(2, 100)
-    sig, pos = simulate_fused(300, D, wf, g, seed=1, return_positions='full')
-    assert pos.shape == (300, 100, 3)                     # per-timestep positions
-    sig2, fin = simulate_fused(300, D, wf, g, seed=1, return_positions=True)
+    sig, pos = simulate_fused(n, D, wf, g, seed=1, return_positions='full')
+    assert pos.shape == (n, 100, 3)                     # per-timestep positions
+    sig2, fin = simulate_fused(n, D, wf, g, seed=1, return_positions=True)
     npt.assert_allclose(pos[:, -1, :], np.asarray(fin), atol=1e-9)   # last step == final
     npt.assert_array_equal(np.asarray(sig), np.asarray(sig2))        # identical physics
-    assert (np.linalg.norm(pos.reshape(-1, 3), axis=1) < R * 1.02).mean() > 0.99
+    assert (np.linalg.norm(pos.reshape(-1, 3), axis=1) < R * 1.02).mean() > 0.99      # over n x 100 positions
 
 
 def test_periodic_ghosts_created():
@@ -229,7 +234,7 @@ def test_orientation_is_acquisition_rotation():
     assert g_plain._orient_R is None
     assert g_orient._orient_R is not None                 # mesh->lab rotation stored
     # walk is native-frame in both -> radial confinement about the mesh-z axis
-    _, pos = simulate_fused(400, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
+    _, pos = simulate_fused(150, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
     pos = np.asarray(pos)
     assert (np.linalg.norm(pos[:, :2], axis=1) < 4e-6 * 1.03).mean() > 0.99
 
@@ -265,12 +270,15 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
     assert np.isfinite(pts).all()
 
 def test_periodic_tube_confinement_and_zwrap():
-    """Smoke: walkers stay radially inside an open periodic tube and wrap in z."""
+    """Smoke: walkers stay radially inside an open periodic tube and wrap in z.
+
+    A wall leak shows as a fraction of walkers beyond the wall; the 1 % allowance is two walkers of 200, and a leak
+    of 1.5 % or more (3 walkers) fails it. (600 walkers resolved 1 %; the claim is a leak, not its rate.)"""
     V, F = _open_tube(r=4e-6, L=12e-6)
     g = Mesh(V, F, periodic=(False, False, True),
              voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, 12e-6],
              feature_radius=4e-6)
-    _, pos = simulate_fused(600, D, _short_wf(1, 120), g, seed=1, return_positions=True)
+    _, pos = simulate_fused(200, D, _short_wf(1, 120), g, seed=1, return_positions=True)
     pos = np.asarray(pos)
     rad = np.linalg.norm(pos[:, :2], axis=1)
     assert (rad < 4e-6 * 1.03).mean() > 0.99      # radial confinement (no wall leak)

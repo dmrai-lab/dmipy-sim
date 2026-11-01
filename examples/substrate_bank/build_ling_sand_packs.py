@@ -294,7 +294,7 @@ def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
     the record states it and the numbers it rests on. Measured once and cached on the image's digest, the grid
     and the walk's parameters.
     """
-    from dmipy_sim.fill.hub import sha256_of
+    from dmipy_sim.replay.hub import sha256_of
     from dmipy_sim.replay.bank import build_replay_pack
     d = direct_record(work_dir)[f"{sample}@{rho_of(sample) * 1e6:g}"]
     image = image_path(sample, data_dir, work_dir)
@@ -487,7 +487,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--data", required=True, help="the directory holding the released .am lattices")
-    p.add_argument("--work", default=os.path.join(os.path.expanduser("~"), "dmrai-ws", "ling-sand-packs"))
+    p.add_argument("--work", required=True)
     p.add_argument("--samples", nargs="+", default=list(SAMPLES), choices=list(SAMPLES))
     p.add_argument("--stage", default=None)
     p.add_argument("--dry", action="store_true")

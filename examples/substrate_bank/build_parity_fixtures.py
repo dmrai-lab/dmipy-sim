@@ -505,7 +505,7 @@ def _derived_surface(disimpy_data):
 
 
 def _sha(path):
-    from dmipy_sim.fill.hub import sha256_of
+    from dmipy_sim.replay.hub import sha256_of
     return sha256_of(path)
 
 
@@ -513,7 +513,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--mcdc-data", required=True, help="the MC/DC Experiments archive")
     p.add_argument("--disimpy-data", required=True, help="the directory holding the disimpy checkout")
-    p.add_argument("--work", default=os.path.join(os.path.expanduser("~"), "dmrai-ws", "parity-fixtures"))
+    p.add_argument("--work", required=True)
     p.add_argument("--names", nargs="+", default=list(FIXTURES), choices=list(FIXTURES))
     p.add_argument("--stage", default=None)
     p.add_argument("--dry", action="store_true")

@@ -1,10 +1,13 @@
-"""The step-law report builds (``tools/gen_step_law.py``, the evidence page ``docs/step-law.md``): the small tier
-runs end to end on the CPU and the cases it measures match what the page claims -- the pair's moments, the slab's
-exactness under the pair, the wall constants of the cylinder and the sphere, the fused engine inside the operator's
-standard error, the certificate resolving a tolerance, and the phase rule's sign. A page that no longer builds, or
-whose small cases drift, is a page that lies."""
+"""The step-law report builds (``tools/gen_step_law.py``, the evidence page ``docs/step-law.md``).
+
+The page is a report generator, not a unit: the ``tiny`` tier runs every section end to end in about a minute and
+the test below checks the code path (every section, every figure, the page links them). The ``small`` tier's
+numbers -- the pair's moments, the slab's exactness under the pair, the wall constants of the cylinder and the
+sphere, the fused engine inside the operator's standard error, the certificate resolving a tolerance, the phase
+rule's sign -- are checked in the ``slow`` job (release only), where the small tier costs about twenty minutes."""
 from __future__ import annotations
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,16 +15,38 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+slow = pytest.mark.slow
+
+
+def _build(tier, tmp_path_factory, timeout):
+    out = tmp_path_factory.mktemp("step_law") / "step-law.md"
+    subprocess.run([sys.executable, str(ROOT / "tools" / "gen_step_law.py"), "--tier", tier, "--out", str(out)],
+                   check=True, cwd=ROOT, timeout=timeout, env={**os.environ, "PYTHONPATH": str(ROOT)})
+    return out, json.loads((out.parent / "step-law" / "step_law.json").read_text())
+
+
+@pytest.fixture(scope="module")
+def tiny(tmp_path_factory):
+    return _build("tiny", tmp_path_factory, 600)
+
+
+def test_the_tiny_tier_builds_every_section_and_figure(tiny):
+    out, R = tiny
+    text = out.read_text()
+    for name in ("laws", "operator", "fused", "certificate", "cost", "outside"):
+        assert name in R, name
+    for fig in ("laws", "operator", "fused", "certificate"):
+        assert (out.parent / "step-law" / f"{fig}.png").stat().st_size > 1000
+        assert f"step-law/{fig}.png" in text
+    assert R["meta"]["tier"] == "tiny" and R["meta"]["commit"]
 
 
 @pytest.fixture(scope="module")
 def report(tmp_path_factory):
-    out = tmp_path_factory.mktemp("step_law") / "step-law.md"
-    subprocess.run([sys.executable, str(ROOT / "tools" / "gen_step_law.py"), "--tier", "small", "--out", str(out)],
-                   check=True, cwd=ROOT, timeout=1800)
-    return out, json.loads((out.parent / "step-law" / "step_law.json").read_text())
+    return _build("small", tmp_path_factory, 1800)
 
 
+@slow
 def test_the_page_and_its_figures_build(report):
     out, R = report
     text = out.read_text()
@@ -33,8 +58,9 @@ def test_the_page_and_its_figures_build(report):
     assert R["meta"]["tier"] == "small" and R["meta"]["commit"]
 
 
-def test_the_laws_match_their_moments(report):
-    _, R = report
+def test_the_laws_match_their_moments(tiny):
+    """The laws section does not depend on the tier (it costs a second), so the fast job checks it."""
+    _, R = tiny
     laws = R["laws"]["laws"]
     assert laws["fixed"]["m4"] == pytest.approx(0.6)
     for name, matched in (("equal pair", 2), ("Gauss pair", 3), ("Gauss triple", 3)):
@@ -49,6 +75,7 @@ def test_the_laws_match_their_moments(report):
     assert e["longest"] <= laws["Gauss pair"]["longest"] * (1 + 1e-5) and len(e["lengths"]) == 2
 
 
+@slow
 def test_the_operator_reads_the_wall_constants(report):
     _, R = report
     pores = R["operator"]["pores"]
@@ -63,6 +90,7 @@ def test_the_operator_reads_the_wall_constants(report):
         assert r["eps_measured"] <= r["eps_declared"] + 3 * r["eps_se"], pool
 
 
+@slow
 def test_the_engine_sits_inside_the_operator(report):
     _, R = report
     for key, rec in R["fused"].items():
@@ -70,6 +98,7 @@ def test_the_engine_sits_inside_the_operator(report):
             assert abs(r["pull"]) < 4.0, (key, sub, r)
 
 
+@slow
 def test_the_certificate_resolves_at_the_top_of_the_ladder(report):
     """The ladder's floor falls with the walker count; at its top the loosened tolerance is resolved and held, and
     the run at the rule's own tolerance says it does not resolve it, since the record never claims what the
@@ -86,6 +115,7 @@ def test_the_certificate_resolves_at_the_top_of_the_ladder(report):
     assert own and not own[0]["resolves"] and own[0]["floor"] > own[0]["eps_declared"]
 
 
+@slow
 def test_the_cost_table_names_what_binds(report):
     _, R = report
     for name, r in R["cost"].items():
@@ -94,6 +124,7 @@ def test_the_cost_table_names_what_binds(report):
     assert "lookup_longest_atom" in R["cost"]["icosphere mesh 4 um"]
 
 
+@slow
 def test_the_phase_rule_is_the_slab_s_remaining_term(report):
     """On the slab the pair's dispersion is below the phase rule's error and falls faster than its square with the
     step; the phase rule's error falls as the square of the step (a quarter of the step: a sixteenth of the error)."""

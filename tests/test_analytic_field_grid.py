@@ -45,13 +45,13 @@ def test_packed_grid_is_the_periodic_cell_and_a_pack_replays_with_the_field():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
-    fg = field_grid_of(pm, res=0.1e-6, include_aniso=False)
-    assert fg.basis["iso_local"].shape[:2] == tuple(np.round(np.array([L, L]) / 0.1e-6).astype(int))
+    fg = field_grid_of(pm, res=0.2e-6, include_aniso=False)      # 0.2 um: a quarter of the cells; the claims are the grid's cell and the replay's ordering
+    assert fg.basis["iso_local"].shape[:2] == tuple(np.round(np.array([L, L]) / 0.2e-6).astype(int))
     with pytest.raises(ValueError, match="periodic cell"):
         field_grid_of(pm, box=(np.zeros(2), np.ones(2)))
     with pytest.raises(TypeError, match="MyelinatedCylinder"):
         field_grid_of(d.Sphere(1e-6))
-    walk = _walk_geometry(200, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False, field_basis=fg)
+    walk = _walk_geometry(40, D0, pm, 4e-3, 4e-4, seed=0, require_gpu=False, field_basis=fg)
     pk = build_replay_pack(walk, id="test/pm-field", K=8, envelope=stated_class(ENV), license="x", citation="x")
     assert pk.has_field and pk.has_relaxation and pk.has_surface
     G0 = ScannerSequence(G=np.zeros((1, pk.n_t, 3)), dt=pk.dt)      # b = 0, no pulse: a gradient echo

@@ -393,7 +393,7 @@ def direct_se(rock, data_dir, work_dir, grid, *, n=SE_N):
     """
     import hashlib
     import json
-    from dmipy_sim.fill.hub import sha256_of
+    from dmipy_sim.replay.hub import sha256_of
     from dmipy_sim.replay.bank import build_replay_pack
     ref = ROCKS[rock]
     image = os.path.join(data_dir, f"{rock}.raw")
