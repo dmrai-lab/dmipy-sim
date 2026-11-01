@@ -181,7 +181,7 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
     packs = []
     for blk, seed in ((0, 7), (1, 8)):
         want = np.zeros(grid.shape, np.int64); want[blk] = 12
-        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3, K_c3=4, field_cutoff_max_m=25e-6, n_probe=20_000, adaptive_steps=True,
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3, K_c3=4, field_cutoff_max_m=25e-6, n_probe=2000, adaptive_steps=True,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
         os.makedirs(str(tmp / "pshards"), exist_ok=True)
         packs.append(build_replay_pack(w, id=f"t/p{blk}", license="x", citation="x", K=3, voxel_grid=grid, susc_path_K=4, field_container=cont, position_container=((None, 8),), blt_container=((None, 8),),
