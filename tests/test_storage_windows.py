@@ -151,7 +151,7 @@ def test_the_primitives_sum_over_windows(packs):
 def test_a_short_acquisition_reads_the_first_window_alone(packs):
     w1, w2, one, two = packs
     short = dr.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms
-    blind = d.replay.ReplayPack({k: (np.full_like(v, np.nan) if k.startswith("s1/") and np.issubdtype(np.asarray(v).dtype, np.floating) else v)
+    blind = dr.ReplayPack({k: (np.full_like(v, np.nan) if k.startswith("s1/") and np.issubdtype(np.asarray(v).dtype, np.floating) else v)
                                  for k, v in two.arrays.items()}, two.meta)
     a = blind.replay(short, tissue=TIS, scanner=3.0, complex_signal=True)
     assert np.all(np.isfinite(a))
@@ -194,7 +194,7 @@ def test_the_bound_over_windows():
 
 def test_a_pack_without_the_table_is_refused():
     with pytest.raises(ValueError, match="walk_params.windows"):
-        d.replay.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"block": {"h": 1e-3}}}).n_windows
+        dr.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"block": {"h": 1e-3}}}).n_windows
 
 
 def test_a_pack_with_the_earlier_table_is_refused(packs, tmp_path):
