@@ -67,3 +67,4 @@ if summary:
             s.write(f"| {r['id'].split('::', 1)[1]} | {r['st']} | {r['t']} |\n")
 for r in rows:
     print(f"{r['t']:8.2f} {r['st']:8} {r['id']} {r.get('reason', '')[:100]!r}")
+# verify run 1
