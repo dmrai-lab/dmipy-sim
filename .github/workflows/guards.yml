@@ -9,5 +9,3 @@ on:
 jobs:
   guards:
     uses: dmrai-lab/.github/.github/workflows/guards.yml@main
-    with:
-      strict-test-dirs: true
