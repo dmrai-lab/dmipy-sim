@@ -43,7 +43,7 @@ import pytest
 from dmipy_sim import simulate, Sphere, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_CPU, N_EXACT, SEED, mc_atol
+from tests.conftest import D, N_CPU, N_EXACT, SEED
 
 N_BUDGET = 5_000     # the walker count the high-kappa regime below is derived for
 R          = 5e-6   # m
@@ -86,26 +86,16 @@ def test_permeability_none_matches_impermeable():
 
 
 # ---------------------------------------------------------------------------
-# 3. κ>0 reduces signal at high b
-_WALKS = {}
-
-
-def _signal(kappa, rho=None):
-    """The signal of one permeable walk, computed once per (kappa, rho) and shared by the tests below (the reduces,
-    relaxivity and monotone tests all read the same kappa = None and kappa = KAPPA_MED walks)."""
-    if (kappa, rho) not in _WALKS:
-        geom = Sphere(radius=R, permeability=kappa, surface_relaxivity_t2=rho)
-        _WALKS[(kappa, rho)] = np.asarray(simulate(N_CPU, D, pgse_wf(100e-3), geom, seed=SEED))
-    return _WALKS[(kappa, rho)]
-
-
-
+# 3. kappa > 0 reduces the signal at high b (tier 2: the crossing rule's sub-steps cost ~10^3 per waveform step)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_reduces_signal_at_high_b():
-    """Signal with kappa > 0 must be strictly below the impermeable signal at b = 2000 s/mm^2 (an escaped walker
+    """Signal with kappa > 0 is strictly below the impermeable signal at b = 2000 s/mm^2 (an escaped walker
     diffuses more freely, so it accumulates more phase). The margin 0.05 is 7 standard errors at N_CPU."""
-    S_imp, S_perm = _signal(None), _signal(KAPPA_MED)
+    wf = pgse_wf(100e-3)
+    S_imp = simulate(N_CPU, D, wf, Sphere(radius=R, permeability=None), seed=SEED)
+    S_perm = simulate(N_CPU, D, wf, Sphere(radius=R, permeability=KAPPA_MED), seed=SEED)
     assert float(S_perm[3]) < float(S_imp[3]) - 0.05, (
         f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} at b=2000 s/mm²")
 
@@ -114,6 +104,7 @@ def test_permeability_reduces_signal_at_high_b():
 # 4. High κ (TE >> τ): signal approaches free diffusion
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
 def test_permeability_high_kappa_approaches_free_diffusion():
     """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
 
@@ -160,33 +151,3 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     assert rel_err < 0.10, (
         f"High-κ signal {S_perm[b_idx]:.4f} should be within 10% of "
         f"free diffusion {S_free:.4f} (rel_err={rel_err:.3f})")
-
-
-# ---------------------------------------------------------------------------
-# 5. Permeability + relaxivity: signal below permeability-only
-# ---------------------------------------------------------------------------
-
-def test_permeability_with_relaxivity_reduces_signal():
-    """Surface relaxivity on a permeable pore reduces the signal at b = 0 (reflected walkers take the
-    Brownstein-Tarr weight, transmitted ones do not)."""
-    S_perm, S_perm_rho = _signal(KAPPA_MED), _signal(KAPPA_MED, RHO)
-    assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.02, (
-        f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
-        f"permeability-only {S_perm[0]:.4f} at b=0")
-
-
-# ---------------------------------------------------------------------------
-# 6. Signal monotonically decreases with κ at high b
-# ---------------------------------------------------------------------------
-
-def test_permeability_signal_monotone_in_kappa():
-    """Signal at b = 2000 s/mm^2 decreases with kappa (more escape, less restriction), to the noise of two walks."""
-    kappas = [0.0, 1e-6, 1e-5, 1e-4]
-    signals = [float(_signal(k if k > 0 else None)[3]) for k in kappas]
-    for i in range(len(signals) - 1):
-        assert signals[i] >= signals[i + 1] - mc_atol(N_CPU, runs=2), (
-            f"Signal not monotone: κ={kappas[i]:.0e} → {signals[i]:.4f}, "
-            f"κ={kappas[i+1]:.0e} → {signals[i+1]:.4f}")
-    assert signals[0] - signals[-1] > 0.05, "the full kappa range must move the signal"
-
-

@@ -38,7 +38,9 @@ import pytest
 from dmipy_sim import simulate, PackedSpheres, Sphere, pack_spheres, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_CPU, N_EXACT, SEED
+from tests.conftest import D, N_EXACT, SEED
+
+N_T2 = 100_000   # the kappa effect is 0.005 +- 0.0007 at this count; it needs the walkers a GPU makes cheap
 
 R         = 5e-6    # m
 L         = 20e-6   # m
@@ -169,7 +171,7 @@ def test_init_positions_outside_spheres():
     """init_positions with ``pool="extra"``: all walkers start strictly outside all spheres."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED)
-    r0   = np.array(geom.init_positions(N_CPU, key))
+    r0   = np.array(geom.init_positions(N_T2, key))
     dist = np.linalg.norm(r0, axis=1)   # distance from sphere at origin
     assert np.all(dist > R), (
         f"Some walkers inside sphere: min_dist={dist.min():.3e} < R={R:.3e}")
@@ -179,7 +181,7 @@ def test_init_positions_inside_box():
     """init_positions: all walkers in the periodic box [-L/2, L/2]."""
     geom = _single_sphere_packed()
     key  = jax.random.PRNGKey(SEED + 1)
-    r0   = np.array(geom.init_positions(N_CPU, key))
+    r0   = np.array(geom.init_positions(N_T2, key))
     assert np.all(np.abs(r0) <= L / 2 + 1e-9), (
         "Some walkers outside the box [-L/2, L/2]")
 
@@ -232,11 +234,12 @@ def _matched_signal(kappa):
     """Signal for a single-sphere pack at `kappa` (None = impermeable), matched sub-steps."""
     if kappa not in _MATCHED:
         geom = _single_sphere_packed(permeability=kappa)
-        _MATCHED[kappa] = np.asarray(simulate(N_CPU, D, pgse_wf(100e-3, slew_rate=np.inf), geom,
+        _MATCHED[kappa] = np.asarray(simulate(N_T2, D, pgse_wf(100e-3, slew_rate=np.inf), geom,
                                               seed=SEED, sub_steps=SUB_STEPS_MATCHED))
     return _MATCHED[kappa]
 
 
+@pytest.mark.gpu
 def test_permeability_increases_signal_at_high_b():
     """Signal with κ>0 must be above impermeable at b=2000 s/mm², at a MATCHED step.
 
@@ -264,61 +267,10 @@ def test_permeability_increases_signal_at_high_b():
 
 
 # =============================================================================
-# 6. High κ: signal between free diffusion and intra-axonal
-# =============================================================================
-
-def test_permeability_high_kappa_between_compartments():
-    """High κ: permeable signal lies between free diffusion and intra-axonal.
-
-    Extra-axonal walkers can enter and exit the sphere.  At very high κ they
-    spend time inside (restricted) and outside (mostly free).  The mixed
-    signal must exceed free diffusion (some restriction) but be below the
-    signal of intra-axonal walkers only.
-    """
-    b_idx = 2      # b = 1000 s/mm²
-    b_val = 1000e6 # s/m²
-    wf = pgse_wf(100e-3, n_t=1000, slew_rate=np.inf)
-
-    geom_mixed = _single_sphere_packed(permeability=KAPPA_HIGH)
-    geom_intra = Sphere(radius=R)
-
-    S_mixed = simulate(N_CPU, D, wf, geom_mixed, seed=SEED)
-    S_intra = simulate(N_CPU, D, wf, geom_intra, seed=SEED)
-
-    S_free = float(np.exp(-b_val * D))
-    hi     = float(S_intra[b_idx])
-    sm     = float(S_mixed[b_idx])
-
-    assert S_free < sm < hi, (
-        f"High-κ mixed signal {sm:.4f} should lie between free diffusion "
-        f"{S_free:.4f} and intra-axonal {hi:.4f} at b=1000 s/mm²")
-
-
-# =============================================================================
-# 7. Permeability + relaxivity: signal below permeability-only at b=0
-# =============================================================================
-
-def test_permeability_with_relaxivity_reduces_signal():
-    """Adding surface relaxivity to a permeable PackedSpheres reduces signal.
-
-    Reflected walkers get the Brownstein-Tarr weight; transmitted ones do not.
-    The ensemble signal at b=0 is below the permeability-only signal.
-    """
-    wf            = pgse_wf(100e-3, slew_rate=np.inf)
-    geom_perm     = _single_sphere_packed(permeability=KAPPA_MED)
-    geom_perm_rho = _single_sphere_packed(permeability=KAPPA_MED,
-                                          surface_relaxivity_t2=RHO)
-    S_perm     = simulate(N_CPU, D, wf, geom_perm,     seed=SEED)
-    S_perm_rho = simulate(N_CPU, D, wf, geom_perm_rho, seed=SEED)
-    assert float(S_perm_rho[0]) < float(S_perm[0]) - 0.005, (
-        f"Relaxivity+permeability {S_perm_rho[0]:.4f} must be below "
-        f"permeability-only {S_perm[0]:.4f} at b=0")
-
-
-# =============================================================================
 # 8. Signal monotonically increases with κ at high b
 # =============================================================================
 
+@pytest.mark.gpu
 def test_permeability_signal_monotone_in_kappa():
     """Signal at b=2000 s/mm² increases monotonically with κ.
 

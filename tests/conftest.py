@@ -145,39 +145,16 @@ def load_fixture(name):
 # These test modules are dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes each) and
 # are tier 2 until slimmed.
 _GPU_TIER_MODULES = {
-    "test_cylinder", "test_ellipsoid", "test_sphere", "test_mixture", "test_myelin",
-    "test_box_1d", "test_free_1d", "test_free_3d", "test_free_ogse", "test_general_waveform",
-    "test_packed_cylinders", "test_packed_spheres",
-    "test_packed_cylinders_permeability", "test_ellipsoid_permeability",
-    "test_sphere_permeability", "test_permeability_crossing", "test_bloch_permeation",
-    "test_compartment_tagging", "test_t2",
-    "test_karger_mc_parity", "test_t2_walker_parity",
+                                "test_bloch_permeation",
+        "test_t2_walker_parity",
     "test_mesh_mc",
-    # Six mesh MC walks (three grid resolutions x two assertions). Collision sub-stepping makes each
-    # one several times what it would otherwise cost, which is the point of it -- but it belongs in the
-    # nightly job, not the ~1 min lane.
     "test_mesh_acceleration_invariance",
     "test_replay_parity",
     "test_replay_fields_mt",
     "test_engine_dispatch",
-    # Crossing-RATE validation against the closed two-compartment exchange law: six walks of
-    # 6000 walkers x 10000 sub-steps. The cheap sealed-wall detector that guards the same
-    # property lives in the fast lane, in test_boundary_compartment_integrity.
     "test_permeable_crossings",
-    # One 200,000-walker, 6000-step walk per rock on a 300^3 micro-CT image, against Talabi 2008
-    # (needs DMIPY_SIM_IMPERIAL2007_DIR; skipped without it).
     "test_talabi_rocks",
-    # Three 372-measurement MC/DC axon walks and one Disimpy cylinder walk against published signals
-    # (needs DMIPY_SIM_MCDC_ROBUST_DIR / DMIPY_SIM_DISIMPY_DIR; skipped without them).
     "test_cross_engine_parity",
-    # The substrate spectrum's 250 um / 1 mm / 5 mm strands cases (dmipy-sim#697): a real far-grid build is
-    # minutes per edge even at the smallest of the three. The 25 um case (no far grid, both policy walk
-    # lengths refused by the halo rule) stays in the fast lane, test_strands.py.
-    "test_strands_slow",
-    # The substrate spectrum's 250 um / 1 mm packed-cylinder/sphere and label-volume cases (dmipy-sim#697):
-    # the 25 um case stays in the fast lane (test_packs.py / test_label_volumes.py).
-    "test_packs_slow",
-    "test_label_volumes_slow",
 }
 
 

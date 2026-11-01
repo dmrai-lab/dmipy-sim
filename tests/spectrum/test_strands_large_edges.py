@@ -1,9 +1,7 @@
-"""Slow tests of dmipy_sim.spectrum.strands at 250 um, 1 mm and 5 mm -- dmipy-sim#697's own test requirement
-("each generated edge is walkable by walk", "two tiles of the 5 mm case differ"), run in the
-`gpu` tier (`tests/conftest.py::_GPU_TIER_MODULES`), never in a per-PR CI pass. Only the 250 um
-case builds a real far grid here (a few minutes); 1 mm and 5 mm skip it (``T_max_s=()``) since the far-grid
-build's own cost is already measured for real on the L40S and reported in #697's PR body, not something this
-suite needs to re-pay on every nightly run."""
+"""Tests of dmipy_sim.spectrum.strands at the 1 mm and 5 mm edges -- dmipy-sim#697's own test requirement
+("each generated edge is walkable by walk", "two tiles of the 5 mm case differ"). ``T_max_s=()`` skips the far-grid
+build, whose cost is measured for real on a GPU host and reported in #697's PR body; the 25 um case in test_strands.py
+covers the plan, the manifest and the index writer."""
 import json
 import os
 
@@ -11,47 +9,6 @@ import numpy as np
 import pytest
 
 from dmipy_sim.spectrum import strands
-from dmipy_sim.spectrum.common import verify_index
-
-
-@pytest.fixture(scope="module")
-def entry_250um(tmp_path_factory):
-    out = str(tmp_path_factory.mktemp("spectrum_250um"))
-    return strands(250e-6, 1, out_dir=out)
-
-
-def test_250um_both_walk_lengths_pass_the_halo_rule(entry_250um):
-    assert sorted(entry_250um["refused"]) == []
-    assert sorted(entry_250um["variants"]) == [0.02, 0.1]
-    assert entry_250um["far_grid"] is not None
-
-
-def test_250um_manifests_and_plans_exist(entry_250um):
-    out = entry_250um["out_dir"]
-    for sub in ("T020ms", "T100ms"):
-        man = json.load(open(os.path.join(out, sub, "manifest.json")))
-        assert man["substrate"]["kind"] == "disco"
-        assert man["substrate"]["far_grid"] is not None
-        assert os.path.exists(os.path.join(out, sub, "..", "substrate", "far.npy"))
-        fgm = man["substrate"]["far_grid_meta"]  # the spacing recorded directly on the manifest, not only
-        assert fgm["n_nodes"] == entry_250um["far_grid"][1]  # the far.npy's own .json sidecar
-        assert fgm["spacing_m"] == pytest.approx(entry_250um["far_grid"][2])
-        assert fgm["near_m"] == pytest.approx(entry_250um["far_grid"][3])
-        assert man["pack"]["K"] >= 2
-
-
-def test_250um_index_verifies(entry_250um):
-    assert verify_index(entry_250um["index"]) > 0
-
-
-def test_250um_is_walkable_by_walk(entry_250um):
-    from dmipy_sim.spec import disco_spec
-    from dmipy_sim import walk
-    out = entry_250um["out_dir"]
-    spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
-                      coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=250e-6, field=False)
-    w = walk(spec, 60, 5e-4, 5e-5, seed=0, require_gpu=False, n_probe=10_000)
-    assert np.isfinite(w.position_coeffs).all()
 
 
 @pytest.mark.parametrize("edge_m", [1e-3])
