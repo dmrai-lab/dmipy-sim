@@ -79,7 +79,7 @@ def test_an_interior_walker_never_changes_tube():
     assert not (gone > asked * (1 + 1e-4) + 1e-12).any(), "a reflection added distance"
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_the_hairpin_keeps_its_walkers_at_the_rule():
     """The thinnest strand at DiSCo's sharpest joint (173 deg, a hairpin): at the rule's step no walker leaves it and the
     displacement variance matches a walk at R/12 to the Monte Carlo floor."""
@@ -97,7 +97,7 @@ def test_the_hairpin_keeps_its_walkers_at_the_rule():
     assert np.all(rel < 4.0 * np.sqrt(2.0 / len(r0)) + 0.01), rel      # the floor of two 20k walks, and 1 %
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_the_contact_channel_in_a_narrow_gap_holds_at_the_rule():
     """Two thin strands 0.1 R apart, the exterior pool seeded in the slot: the contact channel at the rule's step is the
     R/12 channel to 3 % (one bounce and the side guard read 2.6 % low at R/4 and 9 % low at R/2)."""

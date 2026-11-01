@@ -1,6 +1,6 @@
 """Slow tests of dmipy_sim.spectrum.packs at 250 um, 1 mm and 5 mm -- dmipy-sim#697's own test requirement
-("two tiles of the 5 mm case differ"), run in the nightly/offline `slow` lane
-(`tests/conftest.py::_SLOW_MC_MODULES`)."""
+("two tiles of the 5 mm case differ"), run in the `gpu` tier
+(`tests/conftest.py::_GPU_TIER_MODULES`)."""
 import json
 import os
 

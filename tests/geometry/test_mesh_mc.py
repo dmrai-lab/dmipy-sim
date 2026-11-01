@@ -9,7 +9,7 @@ Resolution note: restricted diffusion and surface relaxivity reach the noise flo
 at moderate resolution; permeability needs a finer mesh (its bias falls ~O(h^2)),
 so the permeability test uses a higher subdivision.
 
-Marked slow (see conftest) — heavy CPU Monte-Carlo; runs in the weekly job.
+Marked gpu (see conftest) — heavy CPU Monte-Carlo; runs in the GPU tier.
 """
 import numpy as np
 import numpy.testing as npt

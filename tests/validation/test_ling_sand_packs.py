@@ -35,7 +35,7 @@ def script():
     return importlib.import_module("examples.validation.ling_sand_packs")
 
 
-pytestmark = [pytest.mark.slow,
+pytestmark = [pytest.mark.gpu,
               pytest.mark.skipif(not DATA, reason="set DMIPY_SIM_LING2022_DIR to the Ling 2022 images")]
 
 #: What this walk measured on the two PURE packs: 19,998 walkers, dt = 500 us x 8 sub-steps, the pack's

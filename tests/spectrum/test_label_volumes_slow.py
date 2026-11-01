@@ -1,5 +1,5 @@
 """Slow tests of dmipy_sim.spectrum.label_volumes at 250 um, 1 mm and 5 mm -- dmipy-sim#697's own test
-requirement ("two tiles of the 5 mm case differ"), run in the nightly/offline `slow` lane."""
+requirement ("two tiles of the 5 mm case differ"), run in the `gpu` tier."""
 import json
 import os
 

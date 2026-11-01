@@ -36,7 +36,7 @@ def script():
     return importlib.import_module("examples.validation.talabi_micro_ct_rocks")
 
 
-pytestmark = [pytest.mark.slow,
+pytestmark = [pytest.mark.gpu,
               pytest.mark.skipif(not DATA, reason="set DMIPY_SIM_IMPERIAL2007_DIR to the Imperial 2007 images")]
 
 #: What this walk measured, per rock: porosity, staircase S/V (1/m) and the log-mean T2 (s) of the

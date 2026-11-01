@@ -22,7 +22,7 @@ import pytest
 from dmipy_sim import Sphere, bare_gradient_echo, prepend_mt_prep
 from dmipy_sim.engine import mt
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.gpu
 
 # well-mixed sphere (mixing R^2/D = 2 ms << 1/k_f = 25 ms); bound pool broad (T2b ~ 10 us)
 R, D = 2e-6, 2e-9

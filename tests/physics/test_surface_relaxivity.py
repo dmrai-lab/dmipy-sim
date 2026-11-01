@@ -123,7 +123,7 @@ def _measure_t2(geometry, T2_theory, D=D_DEFAULT, n_walkers=N_WALKERS_T2,
 # Tier 1: ρ=0 baseline — E(t) must be 1.0 to machine precision
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 class TestBaseline:
     """ρ=0 (no surface relaxivity): E(t) = 1.0 at all times."""
 
@@ -159,7 +159,7 @@ class TestBaseline:
 # Tier 2: T2 recovery across ρ values
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 class TestT2RecoveryBox1D:
     """Box1D: T2 = d/(2ρ) must be recovered within 5%."""
 
@@ -183,7 +183,7 @@ class TestT2RecoveryBox1D:
         assert ratio < 0.15, f"ρ·R/D = {ratio:.3f} ≥ 0.15"
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 class TestT2RecoveryCylinder:
     """Cylinder: T2 = R/(2ρ) must be recovered within 5%."""
 
@@ -206,7 +206,7 @@ class TestT2RecoveryCylinder:
         assert ratio < 0.15
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 class TestT2RecoverySphere:
     """Sphere: T2 = R/(3ρ) must be recovered within 5%."""
 
@@ -227,7 +227,7 @@ class TestT2RecoverySphere:
 # Tier 3: S/V scaling — log(T2) vs log(R) slope = 1.0 ± 0.02
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_sv_scaling_cylinder():
     """Cylinder: T2 ∝ R — log-log slope must be 1.0 ± 0.02.
 
@@ -258,7 +258,7 @@ def test_sv_scaling_cylinder():
         f"Cylinder S/V scaling: slope={slope:.4f}, expected 1.0 ± 0.02")
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_sv_scaling_sphere():
     """Sphere: T2 ∝ R — log-log slope must be 1.0 ± 0.02."""
     rho = 1e-6
@@ -282,7 +282,7 @@ def test_sv_scaling_sphere():
         f"Sphere S/V scaling: slope={slope:.4f}, expected 1.0 ± 0.02")
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_sv_scaling_box1d():
     """Box1D: T2 ∝ d — log-log slope must be 1.0 ± 0.02."""
     rho = 1e-6
@@ -310,7 +310,7 @@ def test_sv_scaling_box1d():
 # Tier 4: D independence — T2 flat across D values
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_t2_d_independence_cylinder():
     """Cylinder T2 must be flat as D varies (T2 = R/(2ρ) has no D).
 
@@ -339,7 +339,7 @@ def test_t2_d_independence_cylinder():
         f"T2_vals={t2_arr*1e3}")
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_t2_d_independence_sphere():
     """Sphere T2 must be flat as D varies."""
     rho = 1e-6
@@ -366,7 +366,7 @@ def test_t2_d_independence_sphere():
 # Diagnostic figures
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_relaxivity_t2_decay_figure():
     """Generate E(t) log-scale decay plots for all geometries × ρ values."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -415,7 +415,7 @@ def test_relaxivity_t2_decay_figure():
     assert os.path.exists(out)
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_sv_scaling_figure():
     """Generate T2 vs R log-log plot with slope annotation."""
     rho = 1e-6
@@ -461,7 +461,7 @@ def test_sv_scaling_figure():
     assert os.path.exists(out)
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_d_independence_figure():
     """Generate T2 vs D scatter plot (should be flat)."""
     rho = 1e-6

@@ -10,7 +10,7 @@ single-pass integrator (``engine._fused.simulate_fused``) is the oracle it is he
 SAME seed / N / waveform go through both. The producer walks with a separate scan, so parity is at the
 MC-noise floor, not bit-identical. The waveforms are coarse enough that ``physics.resolve_sub_steps`` asks
 for more than one sub-step on every walled geometry (asserted in the fixture), so both exercise the shared
-dispatch. Heavy MC -> auto-marked ``slow`` via ``tests/conftest.py::_SLOW_MC_MODULES``.
+dispatch. Heavy MC -> auto-marked ``gpu`` via ``tests/conftest.py::_GPU_TIER_MODULES``.
 """
 import numpy as np
 import numpy.testing as npt

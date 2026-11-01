@@ -88,7 +88,7 @@ def _dense_pack(seed=1):
     return radii / 0.999, c, L                     # walls almost touching: min gap ~ 2 nm
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     """At outer packing 0.45 the single-hit rule ended 18033 of 20000 extra-axonal walkers inside
     a cylinder over one PGSE (they reflect off one wall into the neighbour, and the neighbour's
@@ -101,7 +101,7 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     assert (final == 0).all(), f"{(final > 0).sum()} walkers ended inside a cylinder"
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_membrane_transmission_does_not_depend_on_the_sub_step():
     """The adversarial permeable case: a pack whose gap is a fraction of the R/25 step. The
     fraction of extra-axonal walkers that have entered a cylinder after T must be the same at
@@ -128,7 +128,7 @@ def test_membrane_transmission_does_not_depend_on_the_sub_step():
     assert abs(p_auto - p_fine) < tol, f"entered fraction {p_auto:.4f} at {n_auto} sub-steps vs {p_fine:.4f} at {n_fine}"
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     """Intra-seeded walkers leave through the membrane at the same rate whether the wall is the
     pack kernel's (a trial at every encounter) or `Cylinder.permeate`'s (one trial per step):

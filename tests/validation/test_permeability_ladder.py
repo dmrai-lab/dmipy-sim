@@ -7,8 +7,8 @@ solvers + MC exchange), and checks each closed-cell geometry's Monte-Carlo excha
 against the exact finite-diffusion eigenvalue plus the equilibrium partition (detailed
 balance).
 
-Marked ``slow`` (GPU, minutes): run with ``pytest -m slow``; the fast suite skips it via
-``pytest -m 'not slow'``.  Requires scipy (Bessel functions).
+Marked ``gpu`` (tier 2: minutes of walking): run on the GPU tier; the CPU suite skips it via
+``pytest -m 'not gpu'``.  Requires scipy (Bessel functions).
 """
 import os
 import sys
@@ -16,7 +16,7 @@ import sys
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.gpu
 
 _EXAMPLES = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",
                                          "examples", "validation"))

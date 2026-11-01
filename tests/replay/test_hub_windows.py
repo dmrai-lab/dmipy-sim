@@ -5,7 +5,7 @@ window the pack was not loaded with is refused by name.
 
 The byte-range selection is exercised against a local HTTP server that honours ``Range`` (``http.server`` does
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
-``url=`` override is for exactly this). The one test that touches the real Hub is marked ``slow`` and skips
+``url=`` override is for exactly this). The one test that touches the real Hub is marked ``gpu`` and skips
 itself without a login."""
 from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
@@ -235,7 +235,7 @@ the licensed, cross-engine parity packs this is not.
 """
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_a_windowed_read_from_the_real_hub():
     """Creates the fixture dataset if it does not exist yet, uploads the tiny fixture pack once -- idempotent,
     skipped when a file of the same sha256 is already there -- and reads its first window back by HTTP byte

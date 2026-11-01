@@ -5,9 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  schedule:
-    - cron: '0 4 * * 0'    # weekly, Sunday 04:00 UTC — runs the heavy MC suite
-  workflow_dispatch: {}     # run the heavy MC suite on demand
+  workflow_dispatch: {}
 
 env:
   # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
@@ -70,18 +68,17 @@ jobs:
 
       - name: Run tests (CPU)
         run: |
-          # GitHub runners have no GPU, so pin JAX to CPU and deselect the
-          # slow / GPU-only Monte Carlo tests (mark heavy tests with @pytest.mark.gpu
-          # or @pytest.mark.slow as they are identified).
+          # GitHub runners have no GPU, so JAX is pinned to the CPU and the `gpu` tier (gpu-tier.yml) is deselected.
+          # A test that is merely expensive is slimmed or deleted, not marked (tests/test_no_tiers.py).
           python tools/ci_groups.py 8 --check
           PATHS=$(python tools/ci_groups.py 8 ${{ matrix.group }})
-          JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not slow and not gpu" --durations=0 --durations-min=5
+          JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not gpu" --durations=0 --durations-min=5
 
       - name: Collect the whole suite
         run: |
           # every test file is collected by some invocation of this workflow (the shared ci-coverage guard reads this
           # line); the groups above are checked to partition the same files
-          JAX_PLATFORMS=cpu pytest tests --collect-only -q -m "not slow and not gpu" | tail -1
+          JAX_PLATFORMS=cpu pytest tests --collect-only -q -m "not gpu" | tail -1
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
@@ -90,23 +87,3 @@ jobs:
           name: coverage-report-${{ matrix.group }}
           path: .coverage
           if-no-files-found: ignore
-
-  slow-tests:
-    # Heavy CPU Monte-Carlo validation. Excluded from every-push CI (it takes hours);
-    # runs weekly on schedule or manually via workflow_dispatch so the MC physics stays covered.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 330
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies (CPU JAX only)
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest
-          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
-          pip install -e ".[dev,interop]"
-      - name: Run full suite including slow MC (CPU)
-        run: JAX_PLATFORMS=cpu pytest tests/ -q --tb=short -m "not gpu" --durations=0 --durations-min=5

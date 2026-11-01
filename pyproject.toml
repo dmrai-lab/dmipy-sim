@@ -131,8 +131,7 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 markers = [
-    "slow: marks tests that take > 30 s (deselect with -m 'not slow')",
-    "gpu: marks tests that require a CUDA GPU (deselect on CPU CI with -m 'not gpu')",
+    "gpu: tier 2, run on a GPU by .github/workflows/gpu-tier.yml (deselected on the CPU runners with -m 'not gpu')",
 ]
 filterwarnings = [
     # A sub-step longer than the collision-lookup cell means the walk misses walls, so any confinement,

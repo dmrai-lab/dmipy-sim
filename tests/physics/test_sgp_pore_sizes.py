@@ -30,7 +30,7 @@ SGP conditions enforced per test:
 
 N_walkers = 1_000_000 (non-negotiable; MC noise floor ≈ 1/√N ≈ 0.001).
 
-All tests are marked @pytest.mark.slow.
+All tests are marked @pytest.mark.gpu.
 """
 
 import numpy as np
@@ -201,7 +201,7 @@ class TestSlabSGP:
     RTPP = (1/π) ∫₀^∞ E(q) dq = 1/d.
     """
 
-    @pytest.mark.slow
+    @pytest.mark.gpu
     @pytest.mark.parametrize("d_um", [5.0, 10.0, 20.0])
     def test_pore_size_recovery(self, d_um):
         d = d_um * 1e-6  # metres
@@ -283,7 +283,7 @@ class TestCylinderSGP:
     RTAP = (1/2π) ∫₀^∞ E(q)·q dq = 1/(πR²).
     """
 
-    @pytest.mark.slow
+    @pytest.mark.gpu
     @pytest.mark.parametrize("R_um", [2.0, 5.0, 10.0])
     def test_pore_size_recovery(self, R_um):
         R = R_um * 1e-6  # metres
@@ -360,7 +360,7 @@ class TestSphereSGP:
     RTOP = (1/2π²) ∫₀^∞ E(q)·q² dq = 3/(4πR³).
     """
 
-    @pytest.mark.slow
+    @pytest.mark.gpu
     @pytest.mark.parametrize("R_um", [3.0, 6.0, 10.0])
     def test_pore_size_recovery(self, R_um):
         R = R_um * 1e-6  # metres
