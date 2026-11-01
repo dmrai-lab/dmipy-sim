@@ -48,7 +48,7 @@ def read_scheme(path, *, n_t=None, gradient_directions=None, min_samples_per_del
     ``Delta = delta = 0``, and what MC/DC plays for them -- nothing -- is not a PGSE this builder can express,
     so that file is refused entire rather than read with a guessed timing).
     """
-    from ..sequences import pgse
+    from dmipy_replay.sequences import pgse
     with open(path) as fh:
         text = fh.read()
     head, _, body = text.partition("\n")
