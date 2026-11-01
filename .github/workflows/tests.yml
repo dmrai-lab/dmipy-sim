@@ -11,6 +11,12 @@ on:
     - cron: '0 4 * * 0'    # weekly, Sunday 04:00 UTC — runs the heavy MC suite
   workflow_dispatch: {}     # run the heavy MC suite on demand
 
+env:
+  # dmipy-replay 0.2 is not released: the suite runs against the commit of its main it was tested with (still versioned
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it). Move the ref forward as replay's main does; drop it when
+  # 0.2.0 is on PyPI.
+  DMIPY_REPLAY_REF: 38110c577804e8d122b556ac556d2214b5401262
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -41,6 +47,7 @@ jobs:
           # nothing in the package imports -- it is the ORACLE the normative SH basis is
           # checked against (RPH.md Sec. 4.1). Without it those tests skip and the claim
           # goes unverified, so CI installs it even though [dev] deliberately does not.
+          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e ".[dev,interop]"
           # the torch backend of the shape-moment image is checked against the JAX one (dmipy-sim#510): the CPU wheel
           pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -98,6 +105,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest
+          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e ".[dev,interop]"
       - name: Run full suite including slow MC (CPU)
         run: JAX_PLATFORMS=cpu pytest tests/ -q --tb=short -m "not gpu"
