@@ -183,18 +183,20 @@ def test_a_pore_at_n_min_is_walked_once_and_a_larger_one_afresh(fr, tmp_path, mo
     """``plan --pilot n_min`` packs a pore whose count is ``n_min`` from its pilot (walked once, at the pack's seed,
     its receipt saying so); a pore that needs more is walked by ``walk --plan`` at its count from a seed of its own;
     a walk resumed walks nothing."""
+    import functools
     import json
-    import dmipy_sim as d
+    import dmipy_sim.engine.core as core
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.reference import pack_seed
     calls = []
     real = _walk_geometry
 
+    @functools.wraps(real)                                   # walk_cost reads the primitive's signature
     def counted(n, *a, seed=42, **kw):
         calls.append((int(n), int(seed)))
         return real(n, *a, seed=seed, **kw)
 
-    monkeypatch.setattr(d, "_walk_geometry", counted)
+    monkeypatch.setattr(core, "_walk_geometry", counted)
     common = ["--floor", "0.05", "--T", str(T_WIN), "--diameters", "1", "20", "--backend", "jax", "--out", str(tmp_path)]
     fr.main(["plan", "pores", "--pilot", "200", "--n-min", "200"] + common)
     plan = tmp_path / "plan_pores.json"

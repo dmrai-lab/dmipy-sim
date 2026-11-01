@@ -44,7 +44,7 @@ def test_250um_index_verifies(entry_250um):
     assert verify_index(entry_250um["index"]) > 0
 
 
-def test_250um_is_walkable_by_walk_spec(entry_250um):
+def test_250um_is_walkable_by_walk(entry_250um):
     from dmipy_sim.spec import disco_spec
     from dmipy_sim import walk
     out = entry_250um["out_dir"]
