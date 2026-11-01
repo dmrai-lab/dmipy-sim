@@ -3,8 +3,7 @@
     python tools/gpu_tier.py budget            # exit 0 if this month's recorded spend is under the limit, 3 if not
     python tools/gpu_tier.py run [--gpu T4]    # one container, a hard timeout, the card-seconds recorded
 
-``run`` builds an image from this checkout (CUDA JAX, the dmipy-replay commit ``DMIPY_REPLAY_REF`` names, the package,
-pytest), runs ``pytest -m gpu`` inside a single
+``run`` builds an image from this checkout (CUDA JAX + the package + pytest), runs ``pytest -m gpu`` inside a single
 Modal function whose ``timeout`` is the cost ceiling (``TIMEOUT_S`` of card time), and writes ``gpu-ledger.txt`` with
 one line ``<UTC date> <card> <seconds> <usd>`` for the workflow to upload as an artifact and print in the job summary.
 ``budget`` sums the ledger artifacts of the workflow's runs in the current month through ``gh api`` and refuses past
@@ -67,10 +66,8 @@ except ImportError:                                   # `budget` needs no Modal
 
 if modal is not None:
     app = modal.App("dmipy-sim-gpu-tier")
-    REPLAY_REF = os.environ.get("DMIPY_REPLAY_REF")
     image = (modal.Image.debian_slim(python_version="3.12")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
-             .pip_install(*([f"dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{REPLAY_REF}"] if REPLAY_REF else []))
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
@@ -86,8 +83,6 @@ def cmd_run(a):
     if not have_credentials():
         print("no Modal credentials: GPU tier skipped")
         return 0
-    if not os.environ.get("DMIPY_REPLAY_REF"):
-        raise SystemExit("DMIPY_REPLAY_REF is not set: the image installs the dmipy-replay commit the workflow pins")
     t0 = time.time()
     try:
         with modal.enable_output(), app.run():
