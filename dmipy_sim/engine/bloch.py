@@ -231,7 +231,7 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                    kappa_MT=0.0, dwell_time=0.0, T2_bound=1e-5, T1_bound=1.0,
                    off_resonance_bound=0.0, sub_steps=None, return_bound_frac=False,
                    equilibrate_binding="burnin", susceptibility=None, require_gpu=None):
-    """Forward vector-Bloch signal of a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`:
+    """Forward vector-Bloch signal of a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence`:
     its PHYSICAL gradient ``G``, its RF schedule ``rf`` (each pulse a Rodrigues rotation about its B1 axis;
     ``duration_s = 0`` an instantaneous hard pulse, ``offset_hz`` an off-resonance carrier), its emergent
     voxel-scale ``crusher``, and its ``readout``: the signal at the last sample, or at every echo of a train.

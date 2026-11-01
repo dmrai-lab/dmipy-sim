@@ -137,24 +137,14 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
     step size has to resolve is *the local time*, and -- on a mesh -- the *encounters themselves*. It does
     NOT have to resolve a crossing, which is what permeability's much finer rule is for.
 
-    The rule this replaces was ``step_l = R/25``, justified as "binding freezes walkers
-    (trajectory-altering, like permeability)". Three things were wrong with that:
+    The geometry criterion is therefore not a pore-size rule (``R/25`` binds the step to a length the physics does
+    not set): the linearisation needs ``p_stick << 1`` (``p_stick ~ 1e-5`` at canonical parameters), a mesh's
+    ``_geometry_radius`` is its ``feature_radius``, a mesh-resolution parameter and not a pore, and on the canonical
+    well-mixed sphere the emergent equilibrium bound fraction sits within 0.43% of the analytic ``k_f/(k_f+k_r)``
+    at every setting from 1 to 38 sub-steps. MCMRSimulator, which implements the same emergent model, derives its
+    binding timestep from the binding rate and the dwell time alone.
 
-    * It is geometric, while the binding physics is not. The linearisation needs ``p_stick << 1``; at
-      canonical parameters ``p_stick ~ 1e-5``, four orders below where it would matter. MCMRSimulator --
-      which implements the same emergent model -- derives its binding timestep purely from the binding
-      rate and the dwell time, with no length scale, and does NOT tighten its geometric term when MT is
-      enabled (its permeability term is likewise geometry-free, so the heritage was geometry-free at
-      source).
-    * For a Mesh, ``_geometry_radius`` returns ``feature_radius`` -- a MESH-RESOLUTION parameter, not a
-      pore. The same physical sphere therefore demanded 38 sub-steps as an analytic geometry and 6610 as a
-      mesh, and refining the mesh multiplied the cost quadratically for no physical reason.
-    * Measured, it bought nothing on the analytic side: on the canonical well-mixed sphere the emergent
-      equilibrium bound fraction sits within 0.43% of the analytic ``k_f/(k_f+k_r)`` at EVERY setting from
-      1 to 38 sub-steps, with no trend, at 8.9x the wall time.
-
-    So the geometry criterion is dispatched to whichever one the engine already uses for this class of
-    geometry, rather than inventing a third:
+    The geometry criterion is dispatched to whichever one the engine already uses for this class of geometry:
 
     * **Mesh-like** (anything with a ``cell_size``): :func:`collision_sub_steps`. A step that outruns the
       27-cell collision lookup misses wall encounters outright, and a missed encounter contributes no

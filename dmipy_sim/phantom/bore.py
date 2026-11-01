@@ -2,13 +2,13 @@
 
 A magnet's field is not uniform, and the way it departs from uniformity is a property of the MACHINE while
 where the sample sits in it is a property of the GRID. This module is the one place the two meet: it renders
-a catalogued field law (:meth:`~dmipy_sim.acquisition.scanners.ScannerLimits.b0_offset`) onto a grid and
+a catalogued field law (:meth:`~dmipy_replay.acquisition.scanners.ScannerLimits.b0_offset`) onto a grid and
 hands back what a replay already accepts as ``off_resonance``.
 
 Nothing here is a new kind of input. A phantom has taken a callable of scanner coordinates for its
 macroscopic layers all along; this supplies one that a machine, rather than a person, is the author of.
 
-Every function takes the machine as a :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` and asks it
+Every function takes the machine as a :class:`~dmipy_replay.acquisition.scanners.ScannerLimits` and asks it
 the one question each map needs -- ``has_field_law``, ``has_gradient_nonlinearity``, ``has_transmit_profile``
 -- so a machine that publishes nothing yields ``None``, which is what a replay already means by "no such
 term".
@@ -78,7 +78,7 @@ def b0_offset_map(scanner, grid, *, to_scanner=None, delta_T_K=0.0):
     what the grid says.
 
     ``delta_T_K`` adds the UNIFORM offset a magnet this much warmer holds
-    (:meth:`~dmipy_sim.acquisition.scanners.ScannerLimits.b0_drift`). It is a separate argument from the
+    (:meth:`~dmipy_replay.acquisition.scanners.ScannerLimits.b0_drift`). It is a separate argument from the
     shape rather than part of it because it is separate physics: the shape is fixed and spatial, the drift
     is uniform and moves. A scanner cancels the uniform part by re-tuning and cannot cancel the shape, so
     what belongs here is the drift ACCRUED SINCE THE LAST RE-CENTRING, not the drift since the magnet was
@@ -129,7 +129,7 @@ def b1_scale_map(scanner, grid, *, to_scanner=None):
 def background_gradient_map(scanner, grid, *, to_scanner=None):
     """A callable giving the magnet's OWN encoding gradient, in T/m, at each voxel of ``grid``: ``(n, 3)``
     in the GRID's frame, ready for
-    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`.
+    :meth:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.with_background_gradient`.
 
     This is :func:`b0_offset_map`'s companion and the same law differentiated, but the rotation enters
     TWICE and in opposite directions, which is the one thing to get right. A position goes forward into the
@@ -190,7 +190,7 @@ def delivered_gradient(scanner, grid, sequence, *, voxels=None, to_scanner=None,
       so it varies through the sequence and does not reverse when the coils do.
 
     This is the reference route: it builds the acquisition as played at each voxel through
-    :meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_gradient_nonlinearity`,
+    :meth:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.with_gradient_nonlinearity`,
     ``with_background_gradient`` and ``with_concomitant``, which is exact and costs a sequence per voxel.
     :func:`delivered_weights` is the same thing in the replay's own coefficient space, at a few thousand
     flops per voxel, and the two are held against each other by test.
@@ -256,7 +256,7 @@ class EncodingClasses:
     A class is identified by its member's exact tensor / background / position values alone -- a 3x3, a
     3-vector and a 3-vector, a few dozen bytes -- which is what this object stores, keyed by the bin a voxel
     fell in. :meth:`__getitem__` (and iteration, which is just every index in order) builds the
-    :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` :func:`delivered_gradient` would have
+    :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence` :func:`delivered_gradient` would have
     built, from those numbers, when a caller asks for it, and keeps nothing after returning it.
 
     Composing a class is :func:`with_gradient_nonlinearity` / :func:`with_background_gradient` /
@@ -389,7 +389,7 @@ def delivered_weights(scanner, grid, sequence, *, K, T, voxels=None, to_scanner=
     * the background is a constant vector times the RF sign, so its projection is an outer product of
       ``g0(r)`` with one precomputed time course;
     * the concomitant term is the exact field magnitude's departure from ``B0 + B_n`` at the voxel
-      (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.with_concomitant`), which is not
+      (:meth:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.with_concomitant`), which is not
       polynomial in position and is quadratic in the DELIVERED gradient ``L(r) G``, so it is projected per
       voxel from the composed acquisition -- one projection of a single increment per voxel. The magnet's
       background is left out of it, for a reason of SIZE rather than principle: ``div B = 0`` forces
@@ -466,7 +466,7 @@ def delivered_vectors(scanner, grid, plateaus, gate, *, voxels=None, to_scanner=
 
     On segment ``s`` row ``i`` commands the constant ``G_is``. The coils deliver ``L G_is`` (linear in ``G``); the
     Maxwell term adds ``gc(L G_is)``, a POINTWISE function of the coils' gradient
-    (:func:`~dmipy_sim.acquisition.scanner_sequence.concomitant_terms`), so on a segment where the gradient is constant
+    (:func:`~dmipy_replay.acquisition.scanner_sequence.concomitant_terms`), so on a segment where the gradient is constant
     it is one constant vector too, whatever the levels of the other segments; the phase accrues through the gate, so the
     delivered effective vector is ``q_is = e_s (L G_is + gc(L G_is))``. The magnet adds its constant ``g0`` (its own
     shape, the effective gate alone: a second moment). None of this is an approximation: the phase is linear in the

@@ -152,7 +152,7 @@ acquisition; assert to `max(0.02, 1/√N)`.
 ## Module map (`dmipy_sim/`)
 
 **The reader side is [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay)** (numpy only, a dependency; its
-`docs/dedup-ledger.md` lists every definition): `constants`, `acquisition/` (`scanner_sequence`, `rf`, `timing`,
+dmipy-replay's `docs/dedup-ledger.md` lists every definition): `constants`, `acquisition/` (`scanner_sequence`, `rf`, `timing`,
 `waveforms`, `scanners`, `scanner_constants` + `.json`, `epg`, `maxwell`, ...), `sequences/` (`builders`,
 `assemble`; the Pulseq READER), `spec/substrate` and `spec/tissue`, `phantom/grid`, `replay/_replay_kernel`,
 `replay/decoded`, `replay/planning`, and the readers of `replay/compression`, `replay/replay` (`ReplayPack`'s read,

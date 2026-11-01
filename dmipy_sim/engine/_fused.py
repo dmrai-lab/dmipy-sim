@@ -55,7 +55,7 @@ def simulate_fused(
         Diffusion coefficient in m²/s. Required for standard geometries.
         Omit for MyelinatedCylinder (D values are in the geometry).
     waveform : ScannerSequence
-        One sequence (a multi-TE :class:`~dmipy_sim.acquisition.scanner_sequence.Protocol` is the public
+        One sequence (a multi-TE :class:`~dmipy_replay.acquisition.scanner_sequence.Protocol` is the public
         entry's). Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
         Boundary geometry. Provides init_positions() and reflect().

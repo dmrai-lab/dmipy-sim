@@ -349,7 +349,7 @@ def replay_bloch(trajectory, h, G, dt_wf, rf_events, *,
     Parameters
     ----------
     rf_events : RFSchedule or sequence of RFEvent
-        The pulses (:class:`~dmipy_sim.acquisition.rf.RFEvent`, fields ``t_s``, ``flip_deg``, ``axis_deg``,
+        The pulses (:class:`~dmipy_replay.acquisition.rf.RFEvent`, fields ``t_s``, ``flip_deg``, ``axis_deg``,
         ``duration_s``, ``offset_hz``); ``axis_deg`` is the B1 phase (0 = x, 90 = y); ``duration_s = 0`` is an
         instantaneous hard pulse at ``t_s`` (any instant, not a block end); ``offset_hz`` an off-resonance carrier
         over a finite pulse.

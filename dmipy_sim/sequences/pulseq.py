@@ -9,13 +9,13 @@ sequence format.  This module bridges it to dmipy-sim's base representation
     sequences directly, no manual parameter transfer;
   * ``to_pulseq`` exports a ``ScannerSequence`` back to a ``.seq`` (the round-trip is the
     consistency/safety check on the bridge);
-  * ``PULSEQ_SYSTEMS`` is the scanner catalogue (:mod:`dmipy_sim.acquisition.scanner_constants`)
+  * ``PULSEQ_SYSTEMS`` is the scanner catalogue (:mod:`dmipy_replay.acquisition.scanner_constants`)
     in Pulseq's own ``Opts`` schema (max_grad/max_slew/raster/dead-times), one preset per
     legacy name, derived at import -- so our slew-limited constructors, the exported files
     and every other reader of the catalogue speak the same numbers.
 
 Units: pypulseq works in Hz/m with gamma in Hz/T; we work in T/m with
-``dmipy_sim.constants.GAMMA`` in rad/s/T.  The boundary conversion uses
+``dmipy_replay.constants.GAMMA`` in rad/s/T.  The boundary conversion uses
 ``gamma_Hz = GAMMA / (2*pi)`` consistently in both directions, so round-trips do
 not pick up a gyromagnetic mismatch.
 
@@ -108,7 +108,7 @@ def _encode_rf_events(rf_events):
 
 def to_pulseq(waveform, m=0, *, system=None, filename=None,
               excitation_flip_deg=90.0, native_rf=True):
-    """Export measurement ``m`` of a :class:`dmipy_sim.acquisition.scanner_sequence.ScannerSequence` to a
+    """Export measurement ``m`` of a :class:`dmipy_replay.acquisition.scanner_sequence.ScannerSequence` to a
     pypulseq ``Sequence`` (written to ``filename`` if given).
 
     The gradient is emitted as arbitrary-gradient blocks split at the pulses, the pulses as blocks, an ADC at

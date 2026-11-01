@@ -90,9 +90,8 @@ def _geometry_state(geometry):
 def cached_batch(geometry, key, build):
     """One compiled program per (geometry, configuration, shape), across calls.
 
-    ``simulate`` used to build its scan closure and dispatch it eagerly on every call, so a
-    second call on the same geometry paid a full compile again (measured 4.8-6.4 s against a
-    20 ms kernel run). The jitted batch function is kept ON the geometry object (the closure
+    A second call on the same geometry reuses the compiled scan (a compile costs 4.8-6.4 s against a 20 ms kernel
+    run). The jitted batch function is kept ON the geometry object (the closure
     references the geometry, so a side table keyed by it would pin it forever; on the object the
     reference is a cycle the garbage collector frees with the geometry), keyed on its scalar
     state and ``key`` -- everything the closure bakes in that is not a traced argument. ScannerSequence
@@ -131,7 +130,7 @@ def _replay_gap(geometry, diffusivity):
 
 def _walk_band(G, dt, T):
     """``(K, f_band)`` of a walk that serves the waveform ``G`` (``(n_meas, n_t, 3)`` on a grid of ``dt``) over ``T``:
-    the band the waveform reads (:func:`~dmipy_sim.acquisition.waveforms.band_hz`) sets the step law's band and the
+    the band the waveform reads (:func:`~dmipy_replay.acquisition.waveforms.band_hz`) sets the step law's band and the
     bands ``ceil(2 f T)`` the walk accumulates, never fewer than the storage default's."""
     f = band_hz(G, dt)
     if f is None:
@@ -147,6 +146,7 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
     pose (the geometry's placement in the bore) a replay of ``waveform`` reads. The walk depends only on (geometry,
     diffusivity, seed); the waveform and the relaxation are replay settings."""
     from ..replay.bank import build_replay_pack
+    from ..replay.compression import acquisition_envelope
     from dmipy_replay.spec.tissue import Tissue
 
     G = np.asarray(waveform.G_eff, dtype=np.float64)
@@ -167,7 +167,8 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
     if sub_steps:
         kw['sub_steps'] = sub_steps
     walk = _walk_geometry(n_walkers, diffusivity, geometry, T_max, **kw)
-    pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate")
+    pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate",
+                             envelope=acquisition_envelope(waveform))
 
     pools = sorted(pack.substrate.pools, key=lambda p: p.id)
 
@@ -205,7 +206,7 @@ def simulate(
     with them.
 
     The walk is :func:`_walk_geometry` over the waveform's span at the band the waveform reads
-    (:func:`~dmipy_sim.acquisition.waveforms.band_hz`); the contraction is
+    (:func:`~dmipy_replay.acquisition.waveforms.band_hz`); the contraction is
     :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
     (geometry, diffusivity, seed), so the waveform, ``T2``, ``T1`` and the wall's surface relaxivity are replay
     settings of one walk. A run the coefficient walk is not validated to serve (a geometry that does not declare
@@ -220,8 +221,8 @@ def simulate(
         Diffusion coefficient in m²/s. Required for standard geometries.
         Omit for MyelinatedCylinder (D values are in the geometry).
     waveform : ScannerSequence
-        The acquisition: a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence`, a multi-TE
-        :class:`~dmipy_sim.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
+        The acquisition: a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence`, a multi-TE
+        :class:`~dmipy_replay.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
         The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.

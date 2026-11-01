@@ -34,7 +34,7 @@ single mesh walk replay an entire ``(B0-direction, B0, chi_I, chi_A, g)`` sweep.
 Units: lengths m, ``voxel_size`` m, ``B0`` Tesla, susceptibilities dimensionless
 (SI volume susceptibility; e.g. ``chi_A = -0.1e-6``).  ``dB`` is returned in Tesla.
 The phase accrued by a spin is ``phi = GAMMA * integral eps(t) dB(r(t)) dt`` with
-``GAMMA`` from :mod:`dmipy_sim.constants`, exactly as the analytic path.
+``GAMMA`` from :mod:`dmipy_replay.constants`, exactly as the analytic path.
 
 Reference / zero level
 ----------------------
