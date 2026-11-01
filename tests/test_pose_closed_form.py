@@ -338,7 +338,7 @@ def test_a_shell_of_delivered_amplitudes_is_one_body_in_powers_of_its_amplitude(
     -- but one shape. Their bodies are one polynomial in the amplitude (the Bessel series), the walkers contracted
     once per power: the same numbers as contracting every row on its own (to the float32 rounding of the rows'
     waveforms about their one shape), and the direct posed replay to the misfit."""
-    import dmipy_replay.replay.replay as rr
+    import dmipy_replay.replay.pose as rr                                      # the module that reads the threshold
     rng = np.random.default_rng(7)
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     tilt = np.eye(3) + 0.05 * rng.normal(size=(24, 3, 3))                      # every row its own delivered amplitude
