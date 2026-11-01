@@ -68,7 +68,7 @@ Large Monte-Carlo runs belong on GPU; use `float32` on GPU. If a CUDA jaxlib is
 installed but `jax.devices()` shows only CPU, the loader path is usually missing —
 export `LD_LIBRARY_PATH` to the venv's `nvidia/*/lib` dirs (see README).
 **GPU work runs on Modal, not on a shared machine's card**: builds, admissions and benchmarks that need one run on a
-Modal T4, one container per run (the recipe is `tests/modal_admit.py` in dmipy-sim-cuda); everything local and in CI is
+Modal T4, one container per run; everything local and in CI is
 CPU (`JAX_PLATFORMS=cpu`), and the whole suite is run in groups of files, not in one process.
 
 ## Tests — two tiers
@@ -153,7 +153,7 @@ acquisition; assert to `max(0.02, 1/√N)`.
 ## Module map (`dmipy_sim/`)
 
 **The reader side is [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay)** (numpy only, a dependency; its
-`docs/dedup-ledger.md` lists every definition): `constants`, `acquisition/` (`scanner_sequence`, `rf`, `timing`,
+dmipy-replay's `docs/dedup-ledger.md` lists every definition): `constants`, `acquisition/` (`scanner_sequence`, `rf`, `timing`,
 `waveforms`, `scanners`, `scanner_constants` + `.json`, `epg`, `maxwell`, ...), `sequences/` (`builders`,
 `assemble`; the Pulseq READER), `spec/substrate` and `spec/tissue`, `phantom/grid`, `replay/_replay_kernel`,
 `replay/decoded`, `replay/planning`, and the readers of `replay/compression`, `replay/replay` (`ReplayPack`'s read,

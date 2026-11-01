@@ -2,7 +2,7 @@
 
 A stimulated echo is not the whole magnetisation: the store keeps one part and the rest is crushed away, so
 the readout carries ``0.5 sin a1 sin a2 sin a3`` of it. That number is derived from the RF schedule
-(:func:`dmipy_sim.acquisition.epg.pathway_weight`), not written down, so a schedule whose pulses are not 90
+(:func:`dmipy_replay.acquisition.epg.pathway_weight`), not written down, so a schedule whose pulses are not 90
 degrees gets its own amplitude rather than a flat one half.
 """
 import numpy as np

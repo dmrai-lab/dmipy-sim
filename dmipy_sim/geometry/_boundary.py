@@ -229,16 +229,12 @@ def bind_probability(kappa_over_D, local_time):
 # ─────────────────────────────────────────────────────────────────────────────
 # The wall-interaction contract.
 #
-# `reflect`, `reflect_with_log_weight` and `permeate` were the same function at different
-# argument values, written out 36 times across the geometries (18 / 10 / 8) with 23 lines
-# of engine dispatch to choose between them. Measured, they are not even an optimisation:
-# `reflect` and `permeate(kappa=0)` both cost 0.11 ms / 40k walkers, because XLA constant-
-# folds kappa = 0 and drops the dead transmit branch.
-#
-# Keeping them apart is what let them drift. `PackedCylinders.reflect` expelled 100% of
-# intra-axonal walkers at kappa = 0 -- where nothing may cross, so a walker must reflect
-# whichever side it is on -- while `permeate(kappa=0)` confined them correctly, and the two
-# were bit-identical on the extra-axonal side. Same algorithm, silently wrong on one side.
+# `reflect`, `reflect_with_log_weight` and `permeate` are one function at different argument values: one
+# implementation here serves every geometry. They are not even an optimisation apart: `reflect` and
+# `permeate(kappa=0)` both cost 0.11 ms / 40k walkers, because XLA constant-folds kappa = 0 and drops the dead
+# transmit branch. Two implementations may disagree (a per-geometry `reflect` that expels intra-axonal walkers
+# at kappa = 0, where nothing may cross and a walker must reflect whichever side it is on, against
+# `permeate(kappa=0)` that confines them), so there is one.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -246,8 +242,7 @@ class WallHit(NamedTuple):
     """Outcome of one wall interaction.
 
     A NamedTuple so it is a JAX pytree: it passes through `scan`/`vmap` unchanged, and a
-    caller that only wants the position writes `.r` instead of unpacking a tuple whose
-    length used to depend on which arguments were passed.
+    caller that only wants the position writes `.r` instead of unpacking a tuple.
     """
     r: jnp.ndarray        #: new position
     dlog_w: jnp.ndarray   #: surface log-weight increment (<= 0; exactly 0 when rho = 0)

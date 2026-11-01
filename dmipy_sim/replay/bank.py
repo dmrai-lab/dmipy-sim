@@ -58,8 +58,6 @@ def seed_value(seed):
     return int(seed)
 
 
-
-
 def frame_of_spec(spec):
     """The substrate frame a spec declares, as the 3x3 basis: ``frame.axis`` (and ``frame.in_plane`` when
     given) through :func:`frame_from_axis`."""
@@ -883,22 +881,6 @@ def susc_path_encode_series(series, names, *, K=32, container=None, dtype=np.flo
     return _quantise_susc_path(coeffs, meta, container, device=device)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def held_voxels(cert):
     """The rows of a voxel certificate ``(n_v, n_pools, 3)`` (walkers, floor, err per pool) a shard certifies: walkers
     in the voxel and a floor measured for at least one pool. A row with walkers but no floor is a stray, a walker
@@ -913,14 +895,6 @@ def grid_periodic_of(grid_meta):
     :func:`~dmipy_sim.fields.susceptibility_field.sample_grid` reads it with. A grid that declares none is clamped."""
     per = grid_meta.get("periodic", grid_meta.get("susc_grid_periodic"))
     return (False, False, False) if per is None else tuple(bool(p) for p in per)
-
-
-def grid_basis_of(arrays, grid_meta):
-    """The pack's stored field basis as :func:`~dmipy_sim.fields.susceptibility_field.assemble_field` reads it."""
-    return {"iso_local": np.asarray(arrays["susc_grid_iso_local"], np.float64),
-            "iso_P": np.asarray(arrays["susc_grid_iso_P"], np.float64),
-            "aniso_G": (np.asarray(arrays["susc_grid_aniso_G"], np.float64) if "susc_grid_aniso_G" in arrays else None),
-            "shape": tuple(grid_meta["shape"]), "voxel_size": np.asarray(grid_meta["voxel_size"], float)}
 
 
 # --------------------------------------------------------------- susceptibility replay (consume)
@@ -1278,8 +1252,6 @@ def class_band(scanner):
     (:func:`storage_band_hz`, the certified band times its margin); ``None`` -- the block's Nyquist frequency -- when
     no class is named."""
     return None if scanner is None else float(storage_band_hz(scanner))
-
-
 
 
 _SHARED_KEYS = ("spin_weights", "comp_static", "band_block", "voxel_ijk", "voxel_certificate")
@@ -1726,12 +1698,6 @@ def susc_path_encode_modes(coeffs, names, *, T, container, atol_zero=1e-4, trace
     if isinstance(container, DerivedFieldContainer):
         container = container.ranges(np.abs(coeffs).max(axis=0), meta["channels"], T)
     return _quantise_susc_path(coeffs, meta, container, device=device)
-
-
-
-
-
-
 
 
 def _field_scale(env, spec=None):

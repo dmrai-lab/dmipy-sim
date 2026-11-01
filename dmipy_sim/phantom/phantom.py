@@ -318,7 +318,7 @@ class Phantom:
         that with its own orientation distribution (RPH.md 6). Each substrate replays at its own declared
         :class:`~dmipy_sim.spec.Tissue` (``PackSubstrate(..., tissue=)``, ``FreeWater(tissue=)``; a pack substrate
         with none is the bare diffusion signal). Two things are image-wide: ``scanner``, the static field (a
-        :class:`~dmipy_sim.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field), and ``pose``, the
+        :class:`~dmipy_replay.acquisition.scanners.ScannerLimits` or tesla, ``None`` for no field), and ``pose``, the
         specimen's rigid rotation in the bore (a :class:`~dmipy_sim.phantom.partition.Pose`; a bare matrix is ``Pose(R)``).
 
         **Maps at replay time**, each a scalar, a volume of the grid's shape, or a callable of scanner
@@ -345,7 +345,7 @@ class Phantom:
 
         The grid's voxels are the acquisition's: a sequence with no prescription is given this grid's, so an
         encoding that leaves a net moment at the readout is averaged over this voxel
-        (:meth:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence.voxel_factor`).
+        (:meth:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence.voxel_factor`).
 
         ``cache`` (a directory, or ``True``) keeps each pack's expansion on disk under the acquisition and the knobs,
         so a phantom replayed twice under the same acquisition pays the expansion once

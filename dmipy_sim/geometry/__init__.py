@@ -1,7 +1,6 @@
 """Geometry: where a walker may be, and what happens when it reaches a wall.
 
-Split out of the former 3,548-line ``geometries.py`` (see #88). The division follows the
-only real coupling in that file: every class inherits :class:`base.Geometry` and shares the
+The division follows the only real coupling: every class inherits :class:`base.Geometry` and shares the
 frame helper, and *nothing else* crosses these boundaries.
 
     _boundary   the boundary RULES, one implementation each, for every geometry here
