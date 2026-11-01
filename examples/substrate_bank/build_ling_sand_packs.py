@@ -487,7 +487,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--data", required=True, help="the directory holding the released .am lattices")
-    p.add_argument("--work", default=os.path.join(os.path.expanduser("~"), "dmrai-ws", "ling-sand-packs"))
+    p.add_argument("--work", required=True)
     p.add_argument("--samples", nargs="+", default=list(SAMPLES), choices=list(SAMPLES))
     p.add_argument("--stage", default=None)
     p.add_argument("--dry", action="store_true")

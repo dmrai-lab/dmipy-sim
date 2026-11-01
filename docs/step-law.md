@@ -125,4 +125,4 @@ The walk accrues each sub-step's phase from the position at the step's end, a re
 | OGSE 50 Hz | 100 | -7.0e-05 | +3.0e-06 | -7.0e-05 |
 | OGSE 50 Hz | 25 | -4.6e-06 | -3.9e-08 | -4.4e-06 |
 
-The CUDA backend's kernels take the same two atoms and weight from the request and are admitted against this operator (dmrai-lab/dmipy-sim-cuda#60).
+A GPU backend's kernels take the same two atoms and weight from the request and are admitted against this operator.

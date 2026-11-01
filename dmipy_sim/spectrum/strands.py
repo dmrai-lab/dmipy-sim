@@ -350,7 +350,7 @@ def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per
     license_ = ("synthetic geometry, generated for dmrai-lab/dmipy-sim#697: not DiSCo's own data, only its "
               "released radius/density STATISTICS (CC BY 4.0, Rafael-Patino et al. 2021) are reused")
     citation = ("Rafael-Patino et al., Data in Brief 38 (2021) 107429, doi:10.1016/j.dib.2021.107429 (the "
-              "statistics this generator matches); dmrai-lab/dmipy-sim#697, dmrai-lab/tessera#43")
+              "statistics this generator matches); dmrai-lab/dmipy-sim#697")
     for T_max in T_max_s:
         try:
             check_halo(edge_m, T_max, what=f"strands edge={edge_m * 1e6:.0f} um")

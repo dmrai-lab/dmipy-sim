@@ -1,4 +1,4 @@
-"""The pack's device routes (dmipy-sim-cuda#33, the pack stage): the coded phases and the split-half floors read from a
+"""The pack's device routes (the pack stage): the coded phases and the split-half floors read from a
 pack's bridge coefficients on the device give the numpy route's to float32 rounding. The field series' DCT/quantisation
 and the per-voxel census (dmipy-sim#685) follow the same pattern: a cached device matmul gives the numpy route's
 coefficients to float32 rounding, and the census (a vectorised lookup, host-only) gives the retired per-walker loop's

@@ -70,7 +70,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-#: The certificate envelope every family states: DiSCo's (tessera's recipe ``pack``: rho2_max_m_s, B0_list_T; its
+#: The certificate envelope every family states: DiSCo's (the recipe's ``pack`` table: rho2_max_m_s, B0_list_T; its
 #: ``walk.scanner``). The battery's shapes are the library default's; ``chi_max`` is the spec's unless a family
 #: states its own.
 ENVELOPE = dict(scanner="connectome_2", rho2_list=[3e-6], B0_list=[1.5, 3.0, 7.0])

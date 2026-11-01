@@ -43,12 +43,12 @@ from dmipy_replay.constants import GAMMA
 #: blocks per ring: the projection's inner sum and the stride of the level-2 chain
 RING = 16
 
-#: the block table's order a walk takes by default (dmipy-sim-cuda#74)
+#: the block table's order a walk takes by default
 BLOCK_ORDER = 3
 
 #: ``omega_K h`` at the top band of the block a walk takes by default: with ``m = 3`` the quadrature adds
 #: ``quadrature_rel(3, h, omega_K) = 0.8^8 / 1327104 = 1.3e-7`` of the top band's phase variance, for every class
-#: (measured 1.41e-7 on a T4, dmipy-sim-cuda#74)
+#: (measured 1.41e-7 on a T4)
 BLOCK_OMEGA_H = 0.8
 
 

@@ -171,12 +171,15 @@ def test_a_hand_edited_structural_frame_is_refused_before_the_walk():
         build_replay_pack(walk, id="t/bad-structural", license="x", citation="x", K=4)
 
 
-@pytest.mark.skipif(not __import__("os").path.isdir("/home/rutger/dmrai-ws/CACTUS/prod/cactus_bundle_00000"),
-                    reason="the CACTUS production run is not on this machine")
+_CACTUS_BUNDLE = __import__("os").environ.get("DMIPY_SIM_TEST_CACTUS_BUNDLE", "")
+
+
+@pytest.mark.skipif(not (_CACTUS_BUNDLE and __import__("os").path.isdir(_CACTUS_BUNDLE)),
+                    reason="set DMIPY_SIM_TEST_CACTUS_BUNDLE to a CACTUS bundle directory")
 def test_the_cactus_run_declares_its_bundle_along_x():
     from dmipy_sim.spec import cactus_spec
     from dmipy_sim.replay.bank import frame_of_spec
-    spec = cactus_spec("/home/rutger/dmrai-ws/CACTUS/prod/cactus_bundle_00000")
+    spec = cactus_spec(_CACTUS_BUNDLE)
     F = frame_of_spec(spec)
     assert np.degrees(np.arccos(abs(F[:, 2] @ [1, 0, 0]))) < 2.0
     assert len(spec.realisation["bundles"]) == 1
