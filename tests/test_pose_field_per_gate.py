@@ -47,23 +47,23 @@ def test_one_gate_is_one_pass_and_one_field_factor(field_pack, monkeypatch):
     """The encoding classes of one timing share a gate: a single acquisition, and a batch of acquisitions of one
     timing with different directions and b-values, are expanded in one pass with the field factor formed once.
     A batch of different gates takes one pass per gate."""
-    import dmipy_replay.replay.replay as rr
+    import dmipy_replay.replay.pose as rp                     # the module whose routes call the two
     pk = field_pack
     se, ste, se_short = _acquisitions(pk)
     se_b = sequences.pgse([[0, 0, 1]], 1e-4, 4e-4, bvalues=[1e9], TE=8e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     calls = {"pass": 0, "factor": 0}
-    many, factor = rr.ReplayPack._pose_coeffs_closed_many, rr.ReplayPack._field_harmonics_of
+    many, factor = rp._pose_coeffs_closed_many, rp._field_harmonics_of
 
-    def counted_many(self, *a, **k):
+    def counted_many(*a, **k):
         calls["pass"] += 1
-        return many(self, *a, **k)
+        return many(*a, **k)
 
-    def counted_factor(self, *a, **k):
+    def counted_factor(*a, **k):
         calls["factor"] += 1
-        return factor(self, *a, **k)
+        return factor(*a, **k)
 
-    monkeypatch.setattr(rr.ReplayPack, "_pose_coeffs_closed_many", counted_many)
-    monkeypatch.setattr(rr.ReplayPack, "_field_harmonics_of", counted_factor)
+    monkeypatch.setattr(rp, "_pose_coeffs_closed_many", counted_many)
+    monkeypatch.setattr(rp, "_field_harmonics_of", counted_factor)
     for batch, n_pass in (([se], 1), ([se, se_b], 1), ([se, ste, se_short, se_b], 1 + 3)):
         pk.__dict__.pop("_field_factor_cache", None)
         calls.update(dict.fromkeys(calls, 0))
