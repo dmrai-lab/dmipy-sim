@@ -176,10 +176,16 @@ def test_the_first_order_form_is_short_by_the_gradients_own_field_over_b0_and_th
 @pytest.fixture(scope="module")
 def pack(tmp_path_factory):
     """A free-diffusion walk on the acquisition's own save grid, so the replay's per-save weights and the
-    oracle's per-save sum are the same quadrature and only the physics can differ."""
+    oracle's per-save sum are the same quadrature and only the physics can differ.
+
+    Every comparison below sets two signals of the SAME walkers against each other (the true field's phase, the
+    composed gradient's phase, the pack's replay of each), so the walkers' sampling spread cancels and the walker
+    count is no standard error: 150 walkers (the oracle sums the Biot-Savart field over each walker's path, and its
+    cost goes with their number) carry the same difference as 1500 do, and the checks' own floors -- an effect
+    above 1.5e-3, a residual under 1 % of it -- are exact statements about the mean of that difference."""
     seq = _acquisition()
     n_t, dt = int(seq.n_t), float(seq.dt)
-    walk = _walk_geometry(1500, 2.0e-9, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=3, require_gpu=False)
+    walk = _walk_geometry(150, 2.0e-9, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=3, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
     build_replay_pack(walk, id="test/free", license="x", citation="x", K=40, out_path=str(out))
     return read_rpk(str(out))
