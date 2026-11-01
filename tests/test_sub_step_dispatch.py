@@ -115,7 +115,7 @@ def test_trajectory_producers_take_the_dispatched_count():
 
 
 # ── the consequence: the oracle == the coefficient walk at the auto count ───────────────────────────────────
-@pytest.mark.slow
+@pytest.mark.gpu
 @pytest.mark.parametrize("make", [_sphere_rho, lambda: d.Box1D(4e-6, surface_relaxivity_t2=1e-6)])
 def test_the_oracle_and_the_coefficient_walk_agree_at_the_auto_sub_step_count(make):
     g = make()

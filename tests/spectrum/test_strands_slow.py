@@ -1,6 +1,6 @@
 """Slow tests of dmipy_sim.spectrum.strands at 250 um, 1 mm and 5 mm -- dmipy-sim#697's own test requirement
 ("each generated edge is walkable by walk", "two tiles of the 5 mm case differ"), run in the
-nightly/offline `slow` lane (`tests/conftest.py::_SLOW_MC_MODULES`), never in a per-PR CI pass. Only the 250 um
+`gpu` tier (`tests/conftest.py::_GPU_TIER_MODULES`), never in a per-PR CI pass. Only the 250 um
 case builds a real far grid here (a few minutes); 1 mm and 5 mm skip it (``T_max_s=()``) since the far-grid
 build's own cost is already measured for real on the L40S and reported in #697's PR body, not something this
 suite needs to re-pay on every nightly run."""

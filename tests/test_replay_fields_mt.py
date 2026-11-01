@@ -10,7 +10,7 @@ Validates the replay operators AGAINST the public forward engine
 * (c) MT replay Z-spectrum vs the analytic ``mt.mt_z_spectrum`` oracle.
 
 Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is auto-marked
-``slow`` in ``conftest.py`` (heavy MC); the pure-function unit checks at the end are cheap.
+``gpu`` (tier 2) in ``conftest.py`` (heavy MC); the pure-function unit checks at the end are cheap.
 """
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch

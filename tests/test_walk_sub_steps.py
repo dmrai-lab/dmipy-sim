@@ -89,7 +89,7 @@ def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
     assert 2 * 1e-5 / D * np.sqrt(6 * D * dt / n) <= CROSSING_P_MAX + 1e-12
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_the_observables_are_converged_at_the_collision_criterion():
     """Refining 4x beyond the collision criterion must not move the walk's observables.
 

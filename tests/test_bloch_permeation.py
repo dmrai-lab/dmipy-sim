@@ -52,7 +52,7 @@ def test_permeability_increases_attenuation_monotonically():
     100,000 cap -- comfortably inside it while still a clearly more permeable wall than the 3e-5
     case; the monotonicity and the effect size (`> 0.1`, unchanged from the original test) are
     what this test checks, not a specific kappa. (The module is already in
-    `conftest._SLOW_MC_MODULES`, so the extra sub-steps cost the weekly lane, not every PR.)
+    `conftest._GPU_TIER_MODULES`, so the extra sub-steps cost the weekly lane, not every PR.)
 
     N_MONO = 1,500 (not this file's usual 4,000): at 1,334 sub-steps x 300 waveform steps, 4,000
     walkers measured 1,199 s on this shared CPU box, over the 10-minute single-run bound; the

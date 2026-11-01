@@ -167,7 +167,7 @@ def test_bounce_budget_and_candidates_follow_the_worst_case():
 
 
 # ── the consequences on signals ───────────────────────────────────────────────────────────
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_membrane_exchange_matches_permeable_shell():
     """`MyelinatedCylinder(kappa_inner=k, kappa_outer=None)` with one diffusivity is the closed
     two-compartment cylinder `PermeableShell(kind='cylinder')`: the lumen fraction after a
@@ -202,7 +202,7 @@ def _extra_only_signal(pm, wf, N, seed):
     return np.asarray(s).ravel() * w_total / n[0], int(n[0])
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_bare_pack_extra_axonal_signal_matches_packed_cylinders():
     """g -> 1 removes the sheath: the extra-axonal walk of `PackedMyelinatedCylinders` is the walk
     of `PackedCylinders` with the same centres and (outer) radii."""
@@ -224,7 +224,7 @@ def test_bare_pack_extra_axonal_signal_matches_packed_cylinders():
     assert abs(s_pm[0] - s_pc[0]) < tol, f"extra-axonal: myelin kernel {s_pm[0]:.4f} vs PackedCylinders {s_pc[0]:.4f}"
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_lumen_boundary_local_time_is_brownstein_tarr():
     """The unit boundary local time recorded on the lumen wall (`rho/D = 1`) accrues at
     `2 D / R` per unit time -- Brownstein-Tarr `rho S/V` for a cylinder -- and at the same rate the
@@ -247,7 +247,7 @@ def test_lumen_boundary_local_time_is_brownstein_tarr():
     assert abs(rate_pm / rate_c - 1) < 0.03, f"estimators differ: {rate_pm:.4g} vs {rate_c:.4g}"
 
 
-@pytest.mark.slow
+@pytest.mark.gpu
 def test_per_axon_properties_are_per_axon():
     """Two distinct intra T2 values decay the b = 0 signal by their mixture, not by the first
     axon's value; a relaxivity on the inner wall only leaves the extra-axonal signal untouched."""

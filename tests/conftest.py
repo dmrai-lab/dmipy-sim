@@ -125,13 +125,13 @@ def load_fixture(name):
     return np.load(path)
 
 
-# Test modules dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes
-# each). Mark every test in them `slow` so the default CI selection (-m "not slow and not gpu")
-# stays fast (~1 min): it keeps the primitive / geometry / waveform unit tests plus a packed-myelin
-# MC smoke and the fast permeability checks, while the heavy statistical MC-validation runs in the
-# nightly / offline `slow` job. (Analytical parity on the dmipy-fit side is covered separately by
-# committed MC fixtures there, with no live Monte Carlo.)
-_SLOW_MC_MODULES = {
+# There are two tiers, by hardware. Tier 1 is the regular suite on a CPU runner. Tier 2 is the `gpu` marker, the only
+# marker: tests whose claim needs scale or a device (heavy Monte-Carlo validation, float32 device behaviour), run on a
+# GPU by .github/workflows/gpu-tier.yml (tools/gpu_tier.py) under a monthly budget. A test moves from tier 2 to
+# tier 1 by being slimmed until it is cheap on a CPU runner; tier 2 is not a parking place (tests/test_no_tiers.py).
+# These test modules are dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes each) and
+# are tier 2 until slimmed.
+_GPU_TIER_MODULES = {
     "test_cylinder", "test_ellipsoid", "test_sphere", "test_mixture", "test_myelin",
     "test_box_1d", "test_free_1d", "test_free_3d", "test_free_ogse", "test_general_waveform",
     "test_packed_cylinders", "test_packed_spheres",
@@ -190,12 +190,12 @@ _last_module = [None]
 
 
 def pytest_collection_modifyitems(config, items):
-    slow = pytest.mark.slow
+    gpu = pytest.mark.gpu
     for item in items:
         mod = getattr(item, "module", None)
         name = mod.__name__.rsplit(".", 1)[-1] if mod is not None else ""
-        if name in _SLOW_MC_MODULES:
-            item.add_marker(slow)
+        if name in _GPU_TIER_MODULES:
+            item.add_marker(gpu)
 
 def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.9):
     """Fail unless a hand-picked step is short enough for the mesh's collision lookup to cover it.

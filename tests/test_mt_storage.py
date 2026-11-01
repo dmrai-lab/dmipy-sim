@@ -11,7 +11,7 @@ against the two-pool Bloch-McConnell longitudinal oracle.
 This is why MT is the residual confound for PGSTE permeability: susceptibility and
 surface relaxivity are transverse-gated (off during storage), MT is not.
 
-Heavy Monte-Carlo -> GPU-recommended; marked slow.
+Heavy Monte-Carlo -> GPU-recommended; marked gpu (tier 2).
 """
 
 from dataclasses import replace
@@ -24,7 +24,7 @@ import pytest
 from dmipy_sim import Sphere
 from dmipy_sim.engine import mt
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.gpu
 
 R, D = 5e-6, 1e-9
 k_f, k_r = 30.0, 100.0                       # -> f_b = k_f/(k_f+k_r) = 0.23

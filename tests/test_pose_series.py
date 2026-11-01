@@ -5,7 +5,7 @@ Held here on CI-sized packs: each class's response equals its per-class closed f
 coefficients' difference is a function on SO(3) bounded pointwise by their sum, so its L2 norm per measurement is
 too), the series' misfit bounds the direct posed replay at every rotation, torch is numpy, the truncation bound of
 the series is a bound, and a class outside the series is refused by name. The same comparisons on the brain's packs
-are the `gpu`/`slow` tests at the end."""
+are the `gpu` tests at the end."""
 import numpy as np
 import pytest
 from scipy.special import spherical_jn
@@ -226,7 +226,6 @@ def _brain_classes(machine, kind):
     return played
 
 
-@pytest.mark.slow
 @pytest.mark.gpu
 @pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
 @pytest.mark.parametrize("machine", MACHINES[1:])

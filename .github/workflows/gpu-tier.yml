@@ -1,0 +1,77 @@
+name: GPU tier
+
+# Tier 2: the tests marked `gpu`, on one bounded Modal function (tools/gpu_tier.py), under a monthly budget. Tier 1 (the
+# regular suite on CPU runners) is tests.yml. Runs when the engine, geometry, replay or field code or the gpu tests
+# change, and by hand for a release.
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "dmipy_sim/engine/**"
+      - "dmipy_sim/geometry/**"
+      - "dmipy_sim/replay/**"
+      - "dmipy_sim/fields/**"
+      - "tools/gpu_tier.py"
+      - ".github/workflows/gpu-tier.yml"
+  push:
+    branches: [ main ]
+    paths:
+      - "dmipy_sim/engine/**"
+      - "dmipy_sim/geometry/**"
+      - "dmipy_sim/replay/**"
+      - "dmipy_sim/fields/**"
+  workflow_dispatch: {}
+
+jobs:
+  gpu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Credentials
+        id: creds
+        run: |
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "::notice title=GPU tier::no Modal credentials: GPU tier skipped"
+            echo "### GPU tier: no Modal credentials, skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Monthly budget
+        id: budget
+        if: steps.creds.outputs.run == 'yes'
+        run: |
+          set +e
+          python tools/gpu_tier.py budget | tee budget.txt
+          rc=${PIPESTATUS[0]}
+          cat budget.txt >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" = "3" ]; then
+            echo "::notice title=GPU tier::monthly budget reached: GPU tier skipped"
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+      - name: Run the gpu tests on Modal
+        if: steps.creds.outputs.run == 'yes' && steps.budget.outputs.run == 'yes'
+        run: |
+          pip install modal
+          python tools/gpu_tier.py run --gpu T4
+          cat gpu-ledger.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Ledger
+        if: always() && hashFiles('gpu-ledger.txt') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-ledger-${{ github.run_id }}
+          path: gpu-ledger.txt
