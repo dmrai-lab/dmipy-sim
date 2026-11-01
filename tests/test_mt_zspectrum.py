@@ -22,6 +22,8 @@ import pytest
 from dmipy_sim import Sphere, bare_gradient_echo, prepend_mt_prep
 from dmipy_sim.engine import mt
 
+from tests.conftest import se_tol
+
 # well-mixed sphere (mixing R^2/D = 2 ms << 1/k_f = 25 ms); bound pool broad (T2b ~ 10 us)
 R, D = 2e-6, 2e-9
 k_f, k_r = 40.0, 80.0
@@ -30,7 +32,11 @@ W1_HZ, T_SAT, DT = 200.0, 0.025, 2e-5
 KAPPA_MT, DWELL = k_f * R / 3.0, 1.0 / k_r
 
 
-def _mz(offset_hz, *, with_mt, equilibrate='burnin', seed=3):
+SD_MZ = 0.3          # a walker's longitudinal magnetisation spreads by at most this about the mean (0.285 on resonance, measured)
+N_Z = 3_000          # n_resolving(0.04, SD_MZ, comparisons=3): a 0.04 error fails the 0.02 tolerance the noise passes (z = 3.64)
+
+
+def _mz(offset_hz, *, with_mt, equilibrate='burnin', seed=3, n=N_Z):
     n_t = int(round(T_SAT / DT)) + 1
     wf = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=DT)
     flip = 360.0 * W1_HZ * T_SAT                            # CW over the window
@@ -39,7 +45,7 @@ def _mz(offset_hz, *, with_mt, equilibrate='burnin', seed=3):
     if with_mt:
         kw.update(kappa_MT=KAPPA_MT, dwell_time=DWELL, T2_bound=T2b, T1_bound=T1b,
                   equilibrate_binding=equilibrate)
-    _, mz = _simulate_bloch(4000, D, replace(wf, rf=rf), Sphere(radius=R), **kw)
+    _, mz = _simulate_bloch(n, D, replace(wf, rf=rf), Sphere(radius=R), **kw)
     return float(mz[0])
 
 
@@ -61,13 +67,16 @@ def _oracle_total(offsets):
 def test_emergent_zspectrum_matches_oracle():
     """The walker-mean Z-spectrum (free + bound, thermal-equilibrium start) matches the two-pool oracle total across the
     spectrum: on resonance, in the exchange-shaped wing and far off resonance. The bound pool is equilibrated (the
-    default burn-in), so there is no initial-condition offset on resonance; the walker mean of two seeds is compared,
-    since the 4 % bound is ~3 standard errors of one 4,000-walker run on resonance (sd 0.0045 on a signal of 0.24)."""
+    default burn-in), so there is no initial-condition offset on resonance.
+
+    Claim: the walk's Z is the oracle's to ``se_tol`` at three offsets, 0.020 at 3,000 walkers (z = 3.64): a 0.04 error,
+    a twentieth of the 0.76 dip, fails with the margin the noise passes. Statistic: a walker mean of the longitudinal
+    magnetisation, whose spread is at most 0.3 (0.285 on resonance, where the signal is 0.24)."""
     offsets = np.array([0.0, 1000.0, 8000.0])
-    mc = np.array([np.mean([_mz(o, with_mt=True, seed=sd) for sd in (3, 11)]) for o in offsets])
+    mc = np.array([_mz(o, with_mt=True) for o in offsets])
     Z = _oracle_total(offsets)
-    rel = np.abs(mc - Z) / np.maximum(np.abs(Z), 0.05)
-    assert np.max(rel) < 0.04, f"MC {np.round(mc,3)} vs oracle-total {np.round(Z,3)}"
+    tol = se_tol(N_Z, SD_MZ, comparisons=len(offsets))
+    assert np.max(np.abs(mc - Z)) < tol, f"MC {np.round(mc,3)} vs oracle-total {np.round(Z,3)} (tolerance {tol:.3f})"
 
 
 @pytest.mark.gpu
@@ -76,17 +85,21 @@ def test_equilibrate_binding_modes():
     comparable to t_sat = 25 ms, so the start matters).  'burnin' (adaptive) and 'fast'
     (mid-air; the Z-spectrum has no gradient, so it is provably position-invariant) both reach
     the equilibrium bound pool and match the oracle TOTAL; the legacy 'off' (all-free) is
-    biased high because the bound pool is still filling during the saturation."""
+    biased high because the bound pool is still filling during the saturation.
+
+    Four comparisons (z = 3.89) of runs of 3,000 walkers (spread 0.3): a run against the oracle to 0.021, two runs against
+    each other to 0.030, and the legacy start above the oracle by more than a run's noise."""
     off = 3000.0
     Z_tot = float(_oracle_total(off)[0])
     m_burn = _mz(off, with_mt=True, equilibrate='burnin')
     m_fast = _mz(off, with_mt=True, equilibrate='fast')
     m_off = _mz(off, with_mt=True, equilibrate='off')
-    assert abs(m_burn - Z_tot) < 0.02, f"burnin {m_burn:.3f} vs oracle-total {Z_tot:.3f}"
-    assert abs(m_fast - Z_tot) < 0.02, f"fast {m_fast:.3f} vs oracle-total {Z_tot:.3f}"
-    assert abs(m_burn - m_fast) < 0.02, f"burnin {m_burn:.3f} vs fast {m_fast:.3f}"
+    tol, tol_pair = se_tol(N_Z, SD_MZ, comparisons=4), se_tol(N_Z, SD_MZ, comparisons=4, runs=2)
+    assert abs(m_burn - Z_tot) < tol, f"burnin {m_burn:.3f} vs oracle-total {Z_tot:.3f}"
+    assert abs(m_fast - Z_tot) < tol, f"fast {m_fast:.3f} vs oracle-total {Z_tot:.3f}"
+    assert abs(m_burn - m_fast) < tol_pair, f"burnin {m_burn:.3f} vs fast {m_fast:.3f}"
     # the legacy all-free start under-fills the bound pool -> biased high (the artifact fixed here)
-    assert m_off - Z_tot > 0.02, f"expected 'off' biased high: off {m_off:.3f} vs total {Z_tot:.3f}"
+    assert m_off - Z_tot > tol, f"expected 'off' biased high: off {m_off:.3f} vs total {Z_tot:.3f}"
 
 
 

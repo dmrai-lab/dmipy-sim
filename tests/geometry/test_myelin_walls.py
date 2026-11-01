@@ -174,8 +174,17 @@ def test_bounce_budget_and_candidates_follow_the_worst_case():
 def test_membrane_exchange_matches_permeable_shell():
     """`MyelinatedCylinder(kappa_inner=k, kappa_outer=None)` with one diffusivity is the closed
     two-compartment cylinder `PermeableShell(kind='cylinder')`: the lumen fraction after a
-    diffusion time agrees to the MC floor."""
-    R_in, R_out, kappa, N = 3e-6, 6e-6, 2e-5, 30_000
+    diffusion time agrees to the MC floor.
+
+    Claim: the lumen fraction after TE is the shell's to 0.035, i.e. a 0.07 difference (30 % of the 0.225 that
+    exchanged: the closed form's 0.775 left in the lumen) fails the test with the margin the noise passes it.
+    Statistic: the difference of two binomial fractions, ``z sqrt(f (1 - f) (1 / n_myelin + 1 / n_shell))`` at
+    z = 3.29, where the walkers of the myelin kernel that are seeded in the lumen are 1/16 of those it seeds (the
+    lumen, the sheath and an annulus of extra-axonal space by volume: 9 : 27 : 108). 1,940 lumen walkers of 31,000 and
+    7,800 of the shell, which seeds only its lumen, give the margin; the shell's step is the expensive one (146
+    sub-steps per 0.1 ms at this kappa against the kernel's 17), so it takes the fewer walkers."""
+    R_in, R_out, kappa = 3e-6, 6e-6, 2e-5
+    n_myelin, n_shell = 31_000, 7_800
     wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 18e-3, gradient_strengths=0.01, n_t=200, slew_rate=np.inf), 1e6)
     mc = d.MyelinatedCylinder(
         R_in,
@@ -185,15 +194,15 @@ def test_membrane_exchange_matches_permeable_shell():
         kappa_outer=None,
         compartments=d.Compartments(intra=d.Pool(D=D, water_fraction=1.0), myelin=d.Pool(D=D, water_fraction=1.0), extra=d.Pool(D=D, water_fraction=0.0)),
     )
-    _, o_m, f_m = simulate_fused(N, None, wf, mc, seed=3, return_compartments="final", require_gpu=False)
+    _, o_m, f_m = simulate_fused(n_myelin, None, wf, mc, seed=3, return_compartments="final", require_gpu=False)
     keep = o_m == 1                                     # the shell seeds its lumen; compare that population
     sh = d.geometry.PermeableShell(R_in, R_out, kappa, kind="cylinder", orientation=(0, 0, 1))
-    _, o_s, f_s = simulate_fused(N, D, wf, sh, seed=3, return_compartments="final", require_gpu=False)
+    _, o_s, f_s = simulate_fused(n_shell, D, wf, sh, seed=3, return_compartments="final", require_gpu=False)
     assert (o_s == 1).all()
     fT_m, fT_s = (f_m[keep] == 1).mean(), (f_s == 1).mean()
     assert fT_s < 0.95, "no exchange happened"
-    tol = max(0.015, 4.0 * np.sqrt(fT_s * (1 - fT_s) * (1.0 / keep.sum() + 1.0 / N)))
-    assert abs(fT_m - fT_s) < tol, f"lumen fraction after TE: myelin kernel {fT_m:.4f} vs shell {fT_s:.4f}"
+    tol = z_family() * np.sqrt(fT_s * (1 - fT_s) * (1.0 / keep.sum() + 1.0 / n_shell))
+    assert abs(fT_m - fT_s) < tol, f"lumen fraction after TE: myelin kernel {fT_m:.4f} vs shell {fT_s:.4f} (tolerance {tol:.4f})"
 
 
 def _extra_only_signal(pm, wf, N, seed):

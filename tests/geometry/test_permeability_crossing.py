@@ -124,7 +124,6 @@ def _signal(kappa, rho=None, n=N_ORDINAL):
 # 3. κ>0 increases signal vs impermeable at high b
 # ---------------------------------------------------------------------------
 
-@pytest.mark.gpu
 def test_permeability_reduces_signal_at_high_b():
     """Signal with kappa > 0 is strictly below the impermeable signal at b = 2000 s/mm^2: an escaped walker diffuses
     freely and accumulates more phase than a restricted one."""
@@ -202,7 +201,6 @@ def test_permeability_high_kappa_approaches_free_diffusion():
 # 5. Permeability + relaxivity: signal below permeability-only
 # ---------------------------------------------------------------------------
 
-@pytest.mark.gpu
 def test_permeability_with_relaxivity_reduces_signal():
     """Surface relaxivity on a permeable cylinder reduces the signal at b = 0 (reflected walkers take the
     Brownstein-Tarr weight, transmitted ones do not)."""

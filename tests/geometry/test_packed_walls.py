@@ -3,7 +3,7 @@
 `geometry.packed.packed_wall_kernel` is the one wall interaction behind `PackedCylinders` and
 `PackedSpheres`. The fast tests are the adversarial impacts a pack adds to the single-object
 table: a step spanning the gap between two objects, at every angle, up to ten gap widths. The
-slow tests are the consequences: a dense pack keeps every extra-axonal walker outside where the
+consequences on signals are the next two tests: a dense pack keeps every extra-axonal walker outside where the
 single-hit rule let nine in ten through, and a pack of one permeable cylinder is `Cylinder(permeability=)`.
 """
 import jax
@@ -98,7 +98,6 @@ def _final_object(geom, pos):
     return np.asarray(jax.vmap(geom.classify_position)(jnp.asarray(pos, jnp.float32)))
 
 
-@pytest.mark.gpu
 def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     """At outer packing 0.45 the single-hit rule ended 18033 of 20000 extra-axonal walkers inside
     a cylinder over one PGSE (they reflect off one wall into the neighbour, and the neighbour's
@@ -117,7 +116,6 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     assert (final == 0).all(), f"{(final > 0).sum()} walkers ended inside a cylinder"
 
 
-@pytest.mark.gpu
 def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     """Intra-seeded walkers leave through the membrane at the same rate whether the wall is the
     pack kernel's (a trial at every encounter) or `Cylinder.permeate`'s (one trial per step):
