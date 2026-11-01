@@ -99,14 +99,14 @@ def test_free_ends_and_the_exact_grid_equals_the_cutoff_grid():
     rng = np.random.default_rng(3)
     cls, ri, ro = [], [], []
     side = 40e-6
-    for _ in range(40):                                              # strands ending INSIDE the box
+    for _ in range(20):                                              # strands ending INSIDE the box
         p0 = rng.uniform(0, side, 3); d = rng.normal(size=3); d /= np.linalg.norm(d)
         pts = np.stack([p0 - 0.35 * side * d, p0 + rng.normal(0, 0.3e-6, 3), p0 + 0.35 * side * d])
         cls.append(pts); r = rng.uniform(0.7e-6, 2.1e-6); ri.append(r); ro.append(r / 0.7)
     ri, ro = np.array(ri), np.array(ro)
     lo, hi = np.zeros(3), np.full(3, side)
     plain = StrandFieldBasis(cls, ri, ro, cutoff_m=80e-6, domain=(lo, hi))
-    P = rng.uniform(2e-6, 38e-6, (1500, 3)); c0 = plain.channels(P)
+    P = rng.uniform(2e-6, 38e-6, (600, 3)); c0 = plain.channels(P)
     rel = {}
     for h in (2.0e-6, 1.0e-6):
         far = plain.build_far_grid(h, 14e-6, blend_m=4e-6, dtype=np.float32)

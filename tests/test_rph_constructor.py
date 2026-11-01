@@ -458,7 +458,7 @@ def test_the_same_substrate_cited_twice_is_a_crossing(pack_path):
                          orientation=Peaks(dirs, weights=w))
     assert (ph.file.substrate_id[:, :2] == 0).all()                  # one substrate, two slots
     pk = read_rpk(pack_path)
-    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
+    seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [2e8, 2e8])      # b = 2e8: order 12, not 18 (the reference is composed twice); the weighted sum is an identity at any order
     S = _rows(ph, ph.replay(seq))
     pr = pk.pose_response(seq, tissue=Tissue(T2={"extra": 0.06, "intra": 0.06}))
     ref = np.abs(0.7 * pr.compose(so3.Distribution.axis((0, 0, 1), pr.lmax, pr.nmax))

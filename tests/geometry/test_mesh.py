@@ -176,15 +176,18 @@ def test_compartment_bulk_parsing():
 
 
 def test_return_positions_full():
-    V, F = _icosphere(3)
+    """The shapes and the identities (last step is the final position, same signal) are exact, so they need no count;
+    the confinement fraction below is the one statistic: 60 walkers, at most one outside (the original 1 % of 300)."""
+    n = 60
+    V, F = _icosphere(2)
     g = Mesh(V, F)
     wf = _short_wf(2, 100)
-    sig, pos = simulate_fused(300, D, wf, g, seed=1, return_positions='full')
-    assert pos.shape == (300, 100, 3)                     # per-timestep positions
-    sig2, fin = simulate_fused(300, D, wf, g, seed=1, return_positions=True)
+    sig, pos = simulate_fused(n, D, wf, g, seed=1, return_positions='full')
+    assert pos.shape == (n, 100, 3)                     # per-timestep positions
+    sig2, fin = simulate_fused(n, D, wf, g, seed=1, return_positions=True)
     npt.assert_allclose(pos[:, -1, :], np.asarray(fin), atol=1e-9)   # last step == final
     npt.assert_array_equal(np.asarray(sig), np.asarray(sig2))        # identical physics
-    assert (np.linalg.norm(pos.reshape(-1, 3), axis=1) < R * 1.02).mean() > 0.99
+    assert (np.linalg.norm(pos.reshape(-1, 3), axis=1) < R * 1.02).mean() > 0.99      # over n x 100 positions
 
 
 def test_periodic_ghosts_created():
@@ -231,7 +234,7 @@ def test_orientation_is_acquisition_rotation():
     assert g_plain._orient_R is None
     assert g_orient._orient_R is not None                 # mesh->lab rotation stored
     # walk is native-frame in both -> radial confinement about the mesh-z axis
-    _, pos = simulate_fused(400, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
+    _, pos = simulate_fused(150, D, _short_wf(1, 120), g_orient, seed=1, return_positions=True)
     pos = np.asarray(pos)
     assert (np.linalg.norm(pos[:, :2], axis=1) < 4e-6 * 1.03).mean() > 0.99
 

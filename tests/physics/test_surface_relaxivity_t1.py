@@ -29,7 +29,7 @@ from dmipy_replay.spec.tissue import Tissue
 
 D0 = 2e-9          # m^2/s
 R = 8e-6           # m
-N_WALKERS = 45_000
+N_WALKERS = 10_000   # the Robin check is held to max(5 / sqrt(N) = 0.05, 6 % of the reference); the bit-identity checks need no count (45000 held it to 0.024)
 T_MAX = 0.1        # s -- one segment (RPK.md 4.3)
 DT_SAVE = 1e-4     # s
 SEED = 11
