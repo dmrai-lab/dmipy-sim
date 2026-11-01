@@ -285,10 +285,11 @@ def _three_strands(tmp):
     return disco_spec(tck, dia, side_m=20e-6)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def field_pack(tmp_path_factory):
     """A strand pack with the path channel (C3), from the three-strand fixture with a sheath; the field sampled in
-    the walk with adaptive steps."""
+    the walk with adaptive steps. One walk per session, shared by every module that replays it (CI keeps those
+    modules in one group, tools/ci_groups.py ``TOGETHER``)."""
     from dmipy_sim import walk
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
