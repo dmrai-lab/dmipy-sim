@@ -24,7 +24,7 @@ def spec(tmp_path_factory):
 
 def _walk(spec, run_dir=None, spool=False):
     # 30 walkers in batches of 10: three batches per pool, which is what the resume test removes one of
-    return walk(spec, 30, 8e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
+    return walk(spec, 30, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
                      field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=run_dir, spool=spool)
 
 
@@ -80,5 +80,5 @@ def test_a_spooled_walk_resumes_from_its_batches(spec, spooled):
     w2 = _walk(spec, run_dir=d, spool=True)                            # everything read back
     np.testing.assert_array_equal(w2.position_coeffs, w0.position_coeffs)
     with pytest.raises(ValueError, match="another run"):
-        walk(spec, 31, 8e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
+        walk(spec, 31, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
                   field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=d, spool=True)
