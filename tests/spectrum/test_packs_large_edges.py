@@ -8,13 +8,14 @@ import pytest
 
 from dmipy_sim.spectrum.common import verify_index
 from dmipy_sim.spectrum.packs import cylinders, spheres
+from tests._envelope import walk_envelope
 
 
 @pytest.mark.parametrize("edge_m", [250e-6, 1e-3])
 @pytest.mark.parametrize("fn", [cylinders, spheres])
 def test_edge_passes_both_walk_lengths_and_has_a_plan(fn, edge_m, tmp_path):
     out = str(tmp_path / f"{fn.__name__}_{edge_m}")
-    r = fn(edge_m, 1, out_dir=out)
+    r = fn(edge_m, 1, out_dir=out, envelope=walk_envelope())
     assert r["refused"] == []
     assert sorted(r["variants"]) == [0.02, 0.1]
     counts = np.load(os.path.join(r["out_dir"], "substrate/counts.npz"))
