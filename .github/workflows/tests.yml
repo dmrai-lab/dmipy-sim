@@ -12,7 +12,7 @@ env:
   # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the head of the replay move's last reader PR
   # (dmrai-lab/dmipy-replay#20, R6) until it merges, then its merge on main. gpu-tier.yml pins the same commit.
   # Drop the ref when 0.2.0 is on PyPI.
-  DMIPY_REPLAY_REF: 1a72076dc51a2c0c803b791700dd651c0ef73172
+  DMIPY_REPLAY_REF: 361342a50862adf0de20b08c65357d6407d3455b
 
 jobs:
   test:
