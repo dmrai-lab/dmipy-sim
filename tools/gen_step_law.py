@@ -9,7 +9,8 @@ the walker counts and the device it was built on.
 
 Run::
 
-    python tools/gen_step_law.py --tier small          # minutes on a CPU: what tests/test_step_law_report.py runs
+    python tools/gen_step_law.py --tier tiny           # seconds on a CPU: the code path, what the fast suite runs
+    python tools/gen_step_law.py --tier small          # tens of minutes on a CPU: the slow job's numbers
     python tools/gen_step_law.py --tier full           # on a GPU: the committed page
     python tools/gen_step_law.py --only laws,operator  # a subset of the sections (the rest read from the json)
 
@@ -45,6 +46,10 @@ CERT_T, CERT_F_BAND, CERT_K = 0.04, 1000.0, 80   #: the certificate's window, ba
 EPS = 1e-3                  #: the tolerance the engine declares (physics.STEP_TOLERANCE)
 
 TIERS = {
+    "tiny": dict(levels=(0.5,), quad=dict(n_rad=16, n_th=6, n_a=8, n_b=16), op_modes=(3, 3),
+                 fused_geoms=("sphere",), fused_rows=("OGSE 50 Hz",), fused_subs=(1,), fused_seeds=(11,),
+                 fused_n=500, cert_walkers=(200, 400), cert_ratio=4, pack_walkers=200, pack_ratio=4,
+                 cost_n=200, cost_T=0.005, mesh_full=False),
     "small": dict(levels=(0.5,), quad=dict(n_rad=60, n_th=16, n_a=32, n_b=64), op_modes=(6, 6),
                   fused_geoms=("sphere",), fused_rows=("OGSE 50 Hz",), fused_subs=(1, 2), fused_seeds=(11,),
                   fused_n=10_000, cert_walkers=(2_000, 12_000), cert_ratio=4, pack_walkers=4_000, pack_ratio=4,
