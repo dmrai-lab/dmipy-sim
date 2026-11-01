@@ -39,18 +39,19 @@ PLUGIN = textwrap.dedent('''
 ''')
 
 f = sys.argv[1]
+MARK = os.environ.get("TRIAGE_MARK", "gpu")
 name = f.replace("/", "_")
 res = os.path.abspath(f"triage-{name}.jsonl")
 plug = tempfile.mkdtemp()
 open(os.path.join(plug, "triage_plugin.py"), "w").write(PLUGIN)
-collected = subprocess.run([sys.executable, "-m", "pytest", f, "-m", "gpu", "--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"],
+collected = subprocess.run([sys.executable, "-m", "pytest", f, "-m", MARK, "--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"],
                            capture_output=True, text=True).stdout.splitlines()
 want = [l.strip() for l in collected if "::" in l]
 for _ in range(60):
     done = set(json.loads(l)["id"] for l in open(res)) if os.path.exists(res) else set()
     if all(w in done for w in want):
         break
-    cmd = [sys.executable, "-m", "pytest", f, "-m", "gpu", "-p", "triage_plugin", "-p", "no:cacheprovider",
+    cmd = [sys.executable, "-m", "pytest", f, "-m", MARK, "-p", "triage_plugin", "-p", "no:cacheprovider",
            "-o", "addopts=", "-q", "--tb=line", "-rs"]
     for d in done:
         cmd += ["--deselect", d]
@@ -68,4 +69,4 @@ if summary:
 for r in rows:
     print(f"{r['t']:8.2f} {r['st']:8} {r['id']} {r.get('reason', '')[:100]!r}")
 # verify run 1
-# verify run 2
+# after run 1
