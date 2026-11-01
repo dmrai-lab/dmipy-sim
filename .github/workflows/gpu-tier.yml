@@ -29,20 +29,17 @@ concurrency:
 
 jobs:
   gpu:
-    # a pull request runs once: when it opens ready (not a draft), when a draft becomes ready, or when the
-    # maintainer adds the `gpu-tier` label; pushes to an open pull request never launch a paid run
+    # tier 2 does not fit its 15-minute cap yet (measured on a T4: 6 of its 54 tests in 15 minutes), so a run would
+    # spend the cap and fail; until it fits, a run starts only by hand or by the maintainer's `gpu-tier` label
     if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'gpu-tier') ||
-      (github.event.action != 'labeled' && !github.event.pull_request.draft)
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'gpu-tier')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       actions: read
     env:
-      # the dmipy-replay commit the image installs: tests.yml's DMIPY_REPLAY_REF (until dmipy-replay 0.2.0 is on PyPI)
-      DMIPY_REPLAY_REF: 361342a50862adf0de20b08c65357d6407d3455b
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       GH_TOKEN: ${{ github.token }}
