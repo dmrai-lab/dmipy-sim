@@ -17,7 +17,7 @@ from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
-from tests._envelope import TEST_BAND_HZ, TEST_G_MAX, walk_envelope
+from tests._envelope import TEST_BAND_HZ, TEST_G_MAX, shard_containers, walk_envelope
 
 
 def _shard(spec, grid, tmp, name, block, per, seed):
@@ -25,8 +25,11 @@ def _shard(spec, grid, tmp, name, block, per, seed):
     w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
     os.makedirs(str(tmp / "shards"), exist_ok=True)
+    first = sorted(f for f in os.listdir(str(tmp / "shards")) if f.endswith(".rpk"))
+    certifying = [] if not first else [ReplayPack.load(str(tmp / "shards" / first[0]))]   # a fill's shards take its containers
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"),
-                             envelope=walk_envelope(of=spec, G_max=TEST_G_MAX, band_hz=TEST_BAND_HZ))   # ideal lobes, its 3 bands
+                             envelope=walk_envelope(of=spec, G_max=TEST_G_MAX, band_hz=TEST_BAND_HZ),   # ideal lobes, its 3 bands
+                             **shard_containers(certifying))
 
 
 @pytest.fixture(scope="module")
@@ -136,7 +139,7 @@ def _curve_shard(spec, grid, tmp, name, block, per, seed, K):
     os.makedirs(str(tmp / "cshards"), exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=K, voxel_grid=grid, blt_temporal_K=K,
                              position_container=band_curve(K, 7), blt_container=band_curve(K, 7),
-                             out_path=str(tmp / "cshards" / f"{name}.rpk"))
+                             out_path=str(tmp / "cshards" / f"{name}.rpk"), envelope=walk_envelope(of=spec, G_max=TEST_G_MAX, band_hz=TEST_BAND_HZ))
 
 
 @pytest.fixture(scope="module")
@@ -187,7 +190,7 @@ def test_a_path_container_pack_consolidates_and_reads_back_as_the_merged_pack(sp
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         os.makedirs(str(tmp / "pshards"), exist_ok=True)
         packs.append(build_replay_pack(w, id=f"t/p{blk}", license="x", citation="x", K=3, voxel_grid=grid, susc_path_K=4, field_container=cont, position_container=((None, 8),), blt_container=((None, 8),),
-                                       device="numpy", out_path=str(tmp / "pshards" / f"block-000{blk}.p1.rpk")))
+                                       device="numpy", out_path=str(tmp / "pshards" / f"block-000{blk}.p1.rpk"), envelope=walk_envelope(of=spec, G_max=TEST_G_MAX, band_hz=TEST_BAND_HZ)))
     out = str(tmp / "players")
     consolidate(str(tmp / "pshards"), out, blocks=[0, 1], id="t/pcolumns")
     merged = merge_packs(packs, id="t/pmerged")
@@ -224,7 +227,7 @@ def _shard_pools(spec, grid, tmp, name, block, per, seed, *, pools, out_dir):
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={p: (want if p in pools else 0 * want) for p in ("extra", "intra")}), envelope=walk_envelope(of=spec))
     os.makedirs(out_dir, exist_ok=True)
     return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=os.path.join(out_dir, f"{name}.rpk"),
-                             position_container=((16, 16), (None, 8)), blt_container=((16, 16), (None, 8)))
+                             position_container=((16, 16), (None, 8)), blt_container=((16, 16), (None, 8)), envelope=walk_envelope(of=spec, G_max=TEST_G_MAX, band_hz=TEST_BAND_HZ))
 
 
 def _layout_bytes(out, manifest, index):

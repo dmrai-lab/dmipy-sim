@@ -274,10 +274,9 @@ def test_the_tier_columns_are_words(myelin):
 
 
 def test_a_sequence_beyond_the_envelope_and_a_foreign_pack_are_refused(myelin):
-    """A row above b_max or G_max is refused by name; a walk's rows need its own pack."""
+    """A row above G_max is refused by name (an envelope's layout has no b bound); a walk's rows need its own pack."""
     M = myelin
-    with pytest.raises(ValueError, match="b_max"):
-        M["lw"].image(d.pgse([[0, 0, 1]], 4e-3, 10e-3, bvalues=[5e9], TE=TE, n_t=N_T, slew_rate=np.inf))
+    assert M["lw"].manifest["source"]["envelope"]["b_max"] is None
     se, _, dde, _ = _sequences()
     with pytest.raises(ValueError, match="G_max"):
         M["lw"].image(dde.with_gradient(np.asarray(dde.G) * 12.0))
