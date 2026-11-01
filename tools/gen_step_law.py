@@ -618,8 +618,8 @@ def render(R, meta):
             for sub, r in rec["steps"].items():
                 L.append(f"| {label} | {r['dt_p_us']:.0f} | {r['total']:+.1e} | {r['dispersion']:+.1e} | {r['phase_rule']:+.1e} |")
         L.append("")
-        L.append("The CUDA backend's kernels take the same two atoms and weight from the request and are admitted against "
-                 "this operator (dmrai-lab/dmipy-sim-cuda#60).")
+        L.append("A GPU backend's kernels take the same two atoms and weight from the request and are admitted against "
+                 "this operator.")
         L.append("")
     return "\n".join(L)
 

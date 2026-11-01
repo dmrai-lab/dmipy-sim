@@ -1,39 +1,46 @@
-"""Native field pilots and scoped reuse on an actual CUDA device, with CPU JAX host utilities."""
+"""Native field pilots and scoped reuse on an installed GPU backend (the first entry point beside the JAX one), with CPU JAX host utilities. Skipped when none is installed."""
 import time
 import numpy as np
 import pytest
 
-pytest.importorskip("dmipy_sim_cuda")
-from dmipy_sim_cuda.backend import CudaBackend
 from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
-from dmipy_sim.engine.backends import parity_cases
+from dmipy_sim.engine.backends import installed, parity_cases, resolve
 from dmipy_sim.fields.strand_field import StrandFieldBasis
 from dmipy_sim.engine.calibration import FieldCalibration, REQUIRED_TERMS, SIGNAL_METRIC
 from dmipy_sim.math.accuracy import ErrorBound, assess_accuracy
 from dmipy_sim.math.step_law import assess_step_certificate, STEP_METRIC
 
 
-class TrackedBackend(CudaBackend):
-    def __init__(self):
-        super().__init__()
-        self.requests = []
-        self.pilot_reads = None
+def _tracked_backend():
+    """An instance of the first installed backend, recording each request and the pilot's raw field reads."""
+    names = sorted(installed())
+    if not names:
+        pytest.skip("no backend is installed beside the JAX one")
+    base = type(resolve(names[0]))
 
-    def walk_batch(self, request, r0, keys, **kw):
-        self.requests.append(request)
-        result = super().walk_batch(request, r0, keys, **kw)
-        if request.K_c3 == 0 and request.raw_subset:
-            self.pilot_reads = np.array(result.saves.field_samples, copy=True)
-        return result
+    class TrackedBackend(base):
+        def __init__(self):
+            super().__init__()
+            self.requests = []
+            self.pilot_reads = None
+
+        def walk_batch(self, request, r0, keys, **kw):
+            self.requests.append(request)
+            result = super().walk_batch(request, r0, keys, **kw)
+            if request.K_c3 == 0 and request.raw_subset:
+                self.pilot_reads = np.array(result.saves.field_samples, copy=True)
+            return result
+
+    return TrackedBackend()
 
 
 @pytest.fixture
 def backend():
-    be = TrackedBackend()
+    be = _tracked_backend()
     try:
         be.device_info()
     except (RuntimeError, OSError) as exc:
-        pytest.skip(f"native CUDA device unavailable: {exc}")
+        pytest.skip(f"the installed backend's device is unavailable: {exc}")
     return be
 
 
@@ -53,7 +60,7 @@ def test_native_pilot_uses_native_reads_and_reuse_skips_all_pilot_work(backend, 
     start = time.monotonic()
     fresh = simulate_trajectories_adaptive(128, 2e-9, geometry, seed=3, **kwargs)
     cold = time.monotonic()-start
-    assert fresh.stepping["field_pilot_backend"] == "cuda"
+    assert fresh.stepping["field_pilot_backend"] == backend.name
     assert len(backend.requests) == 2
     probe, production = backend.requests
     assert probe.block_h*probe.field.reuse_intervals == pytest.approx(

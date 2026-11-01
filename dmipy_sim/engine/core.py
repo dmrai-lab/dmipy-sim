@@ -465,7 +465,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     if K < 1:
         raise ValueError(f"K is the number of bands a walk accumulates per window, at least 1; got {K}")
     if block_h is None:
-        h, block_rule = block_length(T_win, K), "derived"     # omega_K h = BLOCK_OMEGA_H at the top band (#740, cuda#74)
+        h, block_rule = block_length(T_win, K), "derived"     # omega_K h = BLOCK_OMEGA_H at the top band (#740)
     else:
         if float(block_h) > float(T_win) * (1.0 + 1e-9):
             raise ValueError(f"block_h = {float(block_h):.6g} s is longer than the storage window of {float(T_win):.6g} s")
@@ -1592,7 +1592,7 @@ def _walk_geometry(
                     RuntimeWarning, stacklevel=3)
 
             # ── The work record: what the walk cost in wall encounters, for a cost model per substrate class
-            # (dmrai-lab/tessera#12) and for sizing the bounce budget -- a budget no lane exhausted gives the same
+            # and for sizing the bounce budget -- a budget no lane exhausted gives the same
             # trajectories as any larger one, by the loop's own rule. A myelinated geometry has no `bounce_loop`
             # of its own (its loop is sized per walk, from the step's `step_max`, inside the kernel build
             # -- physics.make_myelin_substep / geometry.myelin.concentric_wall_kernel -- and carried on the

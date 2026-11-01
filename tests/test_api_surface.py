@@ -606,7 +606,7 @@ def test_the_walk_keeps_its_bands_and_has_no_second_spelling():
 
 
 def test_a_backends_request_names_the_walk_and_no_save_grid():
-    """``WalkRequest`` (dmrai-lab/dmipy-sim#747, dmipy-sim-cuda#73 section 3) names the walk a backend accumulates --
+    """``WalkRequest`` (dmrai-lab/dmipy-sim#747) names the walk a backend accumulates --
     the block, the blocks, the steps per block, the band ``K``, the order ``m``, the field's modes and read interval,
     the event capacity, the raw subset -- and carries no save grid: no ``n_t``, no ``dt_save``, no
     ``field_sample_every``. A backend returns the coefficient form (``CoefficientBatch``); ``WalkBatch`` is the

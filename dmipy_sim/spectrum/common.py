@@ -1,4 +1,4 @@
-"""What every generator of the substrate spectrum (dmrai-lab/dmipy-sim#697, tessera#43) shares: the edges and
+"""What every generator of the substrate spectrum (dmrai-lab/dmipy-sim#697) shares: the edges and
 walk lengths the policy suite is built at, the halo rule that refuses a combination before any geometry is
 drawn, the file index (sha256 per file) every entry ships, and the tiling arithmetic (a tile of 1 mm, its own
 RNG stream, never two equal) a streaming generator partitions its domain into.
@@ -22,7 +22,7 @@ __all__ = ["EDGES_M", "WALK_LENGTHS_S", "HALO_FREE_DIFFUSIVITY_M2_S", "HALO_MARG
 #: the four edges of the spectrum (#697): one voxel, DiSCo's own two sizes, and the "100x" tiled case.
 EDGES_M = (25e-6, 250e-6, 1e-3, 5e-3)
 
-#: the two walk lengths of the policy suite (#697 / tessera#43): 20 ms and 100 ms.
+#: the two walk lengths of the policy suite (#697): 20 ms and 100 ms.
 WALK_LENGTHS_S = (0.020, 0.100)
 
 #: m^2/s, the free-water diffusivity the COMMON halo policy is checked against -- not a pool's own diffusivity

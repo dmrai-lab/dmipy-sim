@@ -113,7 +113,7 @@ def test_an_unknown_backend_is_refused_naming_what_is_installed():
 
 
 def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
-    """The request's fields are the agreed names (#747, dmipy-sim-cuda#73 section 3): the block, the blocks, the steps
+    """The request's fields are the agreed names (#747): the block, the blocks, the steps
     per block, the band, the order, the field's modes and read interval, the event capacity, the raw subset; no
     ``n_t``, no ``dt_save``, no ``field_sample_every``."""
     assert backends.WalkRequest._fields == ("geometry", "block_h", "n_blocks", "sub_steps", "dt_sim", "diffusivity", "record",

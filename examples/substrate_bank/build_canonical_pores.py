@@ -443,7 +443,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--work", default=os.path.join(os.path.expanduser("~"), "dmrai-ws", "canonical-pores"),
+    p.add_argument("--work", required=True,
                    help="the family directory (records/, previews/, README.md)")
     p.add_argument("--stage", default=None, help="run one stage (the protocol's order still holds)")
     p.add_argument("--dry", action="store_true", help="gate and render, upload nothing")

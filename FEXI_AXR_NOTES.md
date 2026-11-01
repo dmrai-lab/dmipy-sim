@@ -58,7 +58,7 @@ FEXI needs a **>=2× inter-pool ADC contrast** or σ→0. Findings:
   a *non-permeable* multi-D substrate is ever wanted; irrelevant for the permeable FEXI case above.
 
 ## How to test (AXR sweep)
-1. GPU (GH200): set the CUDA loader path (jaxlib needs it), modest mem fraction (shared box):
+1. GPU (GH200): set the CUDA loader path (jaxlib needs it), modest mem fraction (a GPU other jobs also use):
    ```
    NVLIBS=$(find ~/.local/lib/python3.11/site-packages/nvidia -name '*.so*' -path '*/lib/*' \
            | sed 's:/[^/]*$::' | sort -u | tr '\n' ':')

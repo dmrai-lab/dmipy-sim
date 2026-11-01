@@ -36,7 +36,7 @@ Numerical bias does not shrink with production walker count. assess_accuracy add
 
 A reused calibration is not a certificate of a new shard's Monte Carlo precision. Assess production statistical uncertainty again from that run's outputs, and combine it with the applicable numerical bounds. In particular, changing the number or distribution of walkers can change statistical reliability even when the numerical settings remain reusable.
 
-The current API consumes trusted bounds; it does not yet obtain the scanner-class trajectory, spatial-field, C2/C3 refinement and representation evidence, nor wire Tessera production admission to those checks. Tests marked synthetic verify workflow mechanics only. Do not use them as DiSCo production evidence. Issue #765 remains open for that integration and physical validation.
+The current API consumes trusted bounds; it does not yet obtain the scanner-class trajectory, spatial-field, C2/C3 refinement and representation evidence, nor wire a production admission gate to those checks. Tests marked synthetic verify workflow mechanics only. Do not use them as DiSCo production evidence. Issue #765 remains open for that integration and physical validation.
 
 ## Native reuse benchmark
 

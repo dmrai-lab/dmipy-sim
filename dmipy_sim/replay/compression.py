@@ -42,7 +42,7 @@ except ImportError as _e:  # pragma: no cover
 import os as _os
 
 #: the threads pocketfft runs the sine transforms on: every walker's transform is independent, so this changes no
-#: bit; ``DMIPY_SIM_FFT_WORKERS`` overrides (a shared box), the default is half the cores up to eight (#642)
+#: bit; ``DMIPY_SIM_FFT_WORKERS`` overrides (a loaded host), the default is half the cores up to eight (#642)
 FFT_WORKERS = int(_os.environ.get("DMIPY_SIM_FFT_WORKERS", 0) or max(1, min(8, (_os.cpu_count() or 2) // 2)))
 
 

@@ -11,7 +11,7 @@ from dmipy_sim.spectrum.common import (EDGES_M, HALO_FREE_DIFFUSIVITY_M2_S, Spec
 
 
 def test_halo_matches_the_issue_text_numbers():
-    # dmipy-sim#697 / tessera#43: halos of 72 and 160 um at 20 and 100 ms, at the common 2.0e-9 m^2/s policy D.
+    # dmipy-sim#697: halos of 72 and 160 um at 20 and 100 ms, at the common 2.0e-9 m^2/s policy D.
     assert HALO_FREE_DIFFUSIVITY_M2_S == 2.0e-9
     assert halo_m(0.020) == pytest.approx(71.55e-6, rel=5e-3)
     assert halo_m(0.100) == pytest.approx(160.0e-6, rel=5e-3)

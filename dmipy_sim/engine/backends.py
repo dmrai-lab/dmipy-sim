@@ -96,7 +96,7 @@ def event_capacity(n_steps, *, p_max=None, sigma=6.0, floor=16):
     :data:`~dmipy_sim.engine.physics.CROSSING_P_MAX` by default, which sizes the step so), so the crossings per
     walker are bounded by Binomial(``n_steps``, ``p_max``); the capacity is its mean plus ``sigma`` standard
     deviations, at least ``floor``. A backend refuses by name a walker that exceeds it (the count returned), so the
-    bound costs memory only: 9 bytes per entry on the CUDA backend."""
+    bound costs memory only: 9 bytes per entry on a GPU backend."""
     if p_max is None:
         from .physics import CROSSING_P_MAX as p_max
     mu = float(p_max) * int(n_steps)
@@ -192,7 +192,7 @@ class Backend:
         A request with ``K = 0`` is the adaptive producer's walk of saves (a :class:`WalkBatch`; ``out``, when given,
         is a dict of that producer's own contiguous float32 arrays -- ``positions`` (n, n_t, 3),
         ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, n_ch) -- a backend may write
-        into instead of allocating its own, dmipy-sim-cuda#33)."""
+        into instead of allocating its own)."""
         raise NotImplementedError
 
 
@@ -266,7 +266,7 @@ def parity_cases():
     def void_build():
         # one tube in a 200 um box: starts (below) sit in the void 2.5 cells from its wall, where a gather whose
         # 27-cell neighbourhood is empty must still bound the walk by the nearest wall it CAN reach, not by the
-        # box (dmipy-sim-cuda#36).
+        # box.
         return d.PackedCurvedCylinders([np.array([[VOID_XT, VOID_YT, 0.0], [VOID_XT, VOID_YT, VOID_L]])], [VOID_R],
                                        interior=False, box=(np.zeros(3), np.full(3, VOID_L)))
 

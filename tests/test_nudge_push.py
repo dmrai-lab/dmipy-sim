@@ -1,4 +1,4 @@
-"""The boundary local time counts the nudge a reflecting wall sets the walker off by (dmipy-sim-cuda#100).
+"""The boundary local time counts the nudge a reflecting wall sets the walker off by.
 
 After a reflection the walker is a ``nudge`` off the wall and the rest of the step is shortened by it, so it ends
 ``nudge - cos min(nudge, rem)`` further from the wall than the ideal specular reflection leaves it. That displacement is
