@@ -9,10 +9,10 @@ on:
 
 env:
   # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
-  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the head of the replay move's last reader PR
-  # (dmrai-lab/dmipy-replay#20, R6) until it merges, then its merge on main. gpu-tier.yml pins the same commit.
-  # Drop the ref when 0.2.0 is on PyPI.
-  DMIPY_REPLAY_REF: 361342a50862adf0de20b08c65357d6407d3455b
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the merge of the replay move's last reader PR
+  # (dmrai-lab/dmipy-replay#20, R6) on its main. The GPU tier installs the same commit, read from here
+  # (tools/gpu_tier.py).
+  DMIPY_REPLAY_REF: 1871a40630364107c0adca3c35541f6bbe112eb8
 
 jobs:
   test:
