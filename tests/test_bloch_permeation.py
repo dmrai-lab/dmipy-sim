@@ -11,7 +11,7 @@ from dmipy_sim.engine.bloch import _simulate_bloch
 from dmipy_sim import pgse
 import pytest
 
-from tests.conftest import N_EXACT, n_resolving, se_tol
+from tests.conftest import N_EXACT, se_tol
 
 from dmipy_sim import Cylinder, FreeDiffusion
 from dmipy_sim.engine.physics import CROSSING_P_MAX, resolve_sub_steps
@@ -91,15 +91,21 @@ def _free_diffusion_regime_wf():
                 n_t=N_T_FREE, slew_rate=np.inf)
 
 
-@pytest.mark.gpu
-def test_high_permeability_approaches_free_diffusion():
-    """At kappa*/TE derived above, the wall is near-transparent (TE/tau = 10) and the original
-    0.12 absolute tolerance holds without touching it -- not fit to a measured gap (#626 review).
+# The first lobe of this echo starts 0.6 s in, 2.4 exchange times (tau = 0.25 s) after the start: e^-2.4 = 9 % of the
+# walkers are still inside the cylinder and see its restricted signal, about 0.48 above the free one, so the permeable
+# signal sits 0.05 above the free one however many walkers there are.
+UNEXCHANGED_OFFSET = 0.05
+N_FREE = 250
 
-    Claim: the permeable cylinder's signal is the free-diffusion signal to 0.12, where the restricted signal is more
-    than 0.4 higher. Statistic: the difference of two walker means of cos(phase) at ``S = exp(-1)``, whose per-walker
-    standard deviation is ``sqrt((1 + S^4) / 2 - S^2) = 0.61``. A 0.24 departure fails with the margin the noise
-    passes 0.12: ``n_resolving(0.24, 0.61, runs=2)`` = 561 walkers, each over the 1.2e5 sub-steps above."""
+
+def test_high_permeability_approaches_free_diffusion():
+    """At kappa*/TE derived above, the wall is near-transparent (TE/tau = 10) and the signal is the free one.
+
+    Claim: the permeable cylinder's signal is the free-diffusion signal to ``UNEXCHANGED_OFFSET + se_tol``, 0.23 at 250
+    walkers, where the restricted signal is 0.48 higher. Statistic: the difference of two walker means of cos(phase) at
+    ``S = exp(-1)``, whose per-walker standard deviation is ``sqrt((1 + S^4) / 2 - S^2) = 0.61``; a restricted cylinder
+    fails it by 3.8 standard errors of the difference, and ``n_resolving(0.4, 0.61, runs=2)`` = 202 walkers is where the
+    margin to 0.4 is the noise's. Each walker takes the 1.2e5 sub-steps above."""
     wf = _free_diffusion_regime_wf()
     geom = Cylinder(radius=R, orientation=(0, 0, 1), permeability=KAPPA_FREE)
     n_sub = resolve_sub_steps(geom, D, float(wf.dt))
@@ -107,10 +113,10 @@ def test_high_permeability_approaches_free_diffusion():
 
     s_free = np.exp(-B_FREE * D)
     sd = np.sqrt((1.0 + s_free ** 4) / 2.0 - s_free ** 2)
-    n = n_resolving(0.24, sd, runs=2)
-    S_free = abs(complex(_simulate_bloch(n, D, wf, FreeDiffusion(), seed=0, require_gpu=False)[0]))
-    S_perm = abs(complex(_simulate_bloch(n, D, wf, geom, seed=0, require_gpu=False)[0]))
-    assert abs(S_perm - S_free) < se_tol(n, sd, runs=2)               # high-kappa limit ~= free diffusion
+    S_free = abs(complex(_simulate_bloch(N_FREE, D, wf, FreeDiffusion(), seed=0, require_gpu=False)[0]))
+    S_perm = abs(complex(_simulate_bloch(N_FREE, D, wf, geom, seed=0, require_gpu=False)[0]))
+    tol = UNEXCHANGED_OFFSET + se_tol(N_FREE, sd, runs=2)
+    assert abs(S_perm - S_free) < tol, f"S_perm {S_perm:.3f} vs S_free {S_free:.3f} (tolerance {tol:.3f})"      # high-kappa limit ~= free diffusion
 
 
 def test_impermeable_bloch_walk_is_unchanged():

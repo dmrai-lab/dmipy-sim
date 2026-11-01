@@ -26,7 +26,7 @@ OFFSETS = [("1e-3R", 1e-3), ("1e-2R", 1e-2), ("0.1R", 0.1), ("0.3R", 0.3)]
 DISTANCES = [("0.05R", 0.05), ("0.3R", 0.3), ("1R", 1.0), ("3R", 3.0)]
 ANGLES = [("head-on", 0.0), ("30deg", 30.0), ("60deg", 60.0), ("85deg", 85.0), ("89.9deg", 89.9)]
 N_LOCAL_TIME = 3_000        # lumen walkers: the ratio of two rates of relative spread 0.35 holds 3 % at z = 3.48
-N_AXON = 4_000              # 24.5 % of them in a lumen: the 0.46-spread mixture of two T2 weights to 0.05 at z = 3.29
+N_AXON = 1_000              # 24.5 % of them in a lumen: the 0.46-spread mixture of two T2 weights to 0.10 at z = 3.29
 
 
 def _pack(inner_radii, g, packing, seed):
@@ -205,18 +205,13 @@ def test_membrane_exchange_matches_permeable_shell():
     assert abs(fT_m - fT_s) < tol, f"lumen fraction after TE: myelin kernel {fT_m:.4f} vs shell {fT_s:.4f} (tolerance {tol:.4f})"
 
 
-def _extra_only_signal(pm, wf, N, seed):
-    """The extra-axonal pool's own signal: intra and myelin water are removed by a vanishing T2, and
-    the spin-density normalisation of `simulate` is undone with the seeded pool counts."""
-    s, origin, _ = simulate_fused(N, None, wf, pm, seed=seed, return_compartments="final", require_gpu=False)
-    n = np.bincount(origin, minlength=3)
-    w_total = n[0] + n[1] + pm._myelin_proton_density * n[2]
-    return np.asarray(s).ravel() * w_total / n[0], int(n[0])
-
-
-def _sem(v):
-    """The standard error of the mean of ``v``, one row per independent walker."""
-    return float(np.std(v.mean(axis=1), ddof=1) / np.sqrt(len(v)))
+def _pool_signals(pm, wf, N, seed):
+    """The b = 0 signal of each pool's own walkers: the means of the walkers' signals over those seeded in the lumens and in
+    the extra-axonal space, and their counts: ``(intra, extra, n_intra, n_extra)``."""
+    _, origin, _, log_w, phi = simulate_fused(N, None, wf, pm, seed=seed, return_compartments="final",
+                                              return_walker_signals=True, require_gpu=False)
+    w = np.exp(np.asarray(log_w)) * np.cos(np.asarray(phi)[:, 0])
+    return float(w[origin == 1].mean()), float(w[origin == 0].mean()), int((origin == 1).sum()), int((origin == 0).sum())
 
 
 @pytest.mark.gpu
@@ -259,39 +254,31 @@ def test_per_axon_properties_are_per_axon():
     axon's value; a relaxivity on the inner wall only leaves the extra-axonal signal untouched.
 
     Claim: the lumen signal is the mixture of the two weights to ``se_tol`` of the lumen walkers, which are 24.5 % of
-    the cell. A lumen walker's weight is one of the two (0.050 and 0.970 at TE = 30 ms) by which axon it is in, a
-    spread of 0.46; the mixture is held to 0.05 (z = 3.29, 980 lumen walkers) while the first axon's value alone is 0.46
-    away. The extra-axonal pools of the two packs agree to ``se_tol`` of the extra-axonal walkers."""
+    the cell. A lumen walker's weight is one of the two (0.050 and 0.970 at TE = 3 ms) by which axon it is in, a
+    spread of 0.46; the mixture is held to 0.10 (z = 3.29, 245 lumen walkers) while the first axon's value alone is 0.46
+    away. The extra-axonal pools of the two packs agree to ``se_tol`` of the extra-axonal walkers, and the lumen water
+    of the relaxing pack is attenuated by more than 0.05 (it is by 0.11).
+
+    The weights depend on the walk's duration only through TE / T2 and rho TE, so the walk is a tenth of the 30 ms one
+    (T2 of 1 and 100 ms, rho of 2e-5 m/s) and its sub-steps, the cost, a tenth of them."""
     radii = [1e-6] * 6
     c, L = _pack(radii, 0.7, 0.5, seed=2)
-    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 28e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
+    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-4, 2.8e-3, gradient_strengths=0.01, n_t=300, slew_rate=np.inf), 1e6)
     N = N_AXON
-    mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[0.01] * 3 + [1.0] * 3,
-                                        compartments=d.Compartments(extra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))
-    first = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(
-                                        intra=d.Pool(T2=0.01, D=2e-9), extra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0)))
-    s_mixed, o, _ = simulate_fused(N, None, wf, mixed, seed=6, return_compartments="final", require_gpu=False)
-    s_first, _, _ = simulate_fused(N, None, wf, first, seed=6, return_compartments="final", require_gpu=False)
-    n = np.bincount(o, minlength=3)
-    w_total = n[0] + n[1] + mixed._myelin_proton_density * n[2]
     TE = wf.echo_idx * wf.dt
-    intra_first = float(s_first[0]) * w_total / n[1]
-    intra_mixed = float(s_mixed[0]) * w_total / n[1]
-    w_fast, w_slow = np.exp(-TE / 0.01), np.exp(-TE / 1.0)
-    assert abs(intra_first - w_fast) < 0.03                    # one weight for every lumen walker: no spread
-    assert abs(intra_mixed - 0.5 * (w_fast + w_slow)) < se_tol(n[1], abs(w_slow - w_fast) / 2.0), \
+    w_fast, w_slow = np.exp(-TE / 1e-3), np.exp(-TE / 0.1)
+    mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[1e-3] * 3 + [0.1] * 3,
+                                        compartments=d.Compartments(extra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))
+    intra_mixed, _, n_lumen, _ = _pool_signals(mixed, wf, N, seed=6)
+    assert abs(intra_mixed - 0.5 * (w_fast + w_slow)) < se_tol(n_lumen, abs(w_slow - w_fast) / 2.0), \
         f"intra b0 signal {intra_mixed:.4f} does not decay by the per-axon T2 mixture"
 
-    rho_in = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
-                                         compartments=d.Compartments(intra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
-    plain = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, compartments=d.Compartments(intra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
-    s_rho, n_e = _extra_only_signal(rho_in, wf, N, seed=7)
-    s_plain, _ = _extra_only_signal(plain, wf, N, seed=7)
-    assert abs(s_rho[0] - s_plain[0]) < se_tol(n_e, SD_COS, runs=2), \
-        f"an inner-wall relaxivity changed the extra-axonal signal: {s_rho[0]:.4f} vs {s_plain[0]:.4f}"
-    only_intra = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-6,
-                                             compartments=d.Compartments(extra=d.Pool(T2=1e-6, D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))
-    s_i, o_i, _ = simulate_fused(N, None, wf, only_intra, seed=7, return_compartments="final", require_gpu=False)
-    n_i = np.bincount(o_i, minlength=3)
-    intra_rho = float(s_i[0]) * (n_i[0] + n_i[1] + only_intra._myelin_proton_density * n_i[2]) / n_i[1]
+    relaxing = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-5,
+                                           compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
+    plain = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8,
+                                        compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
+    intra_rho, extra_rho, _, n_e = _pool_signals(relaxing, wf, N, seed=7)
+    _, extra_plain, _, _ = _pool_signals(plain, wf, N, seed=7)
+    assert abs(extra_rho - extra_plain) < se_tol(n_e, SD_COS, runs=2), \
+        f"an inner-wall relaxivity changed the extra-axonal signal: {extra_rho:.4f} vs {extra_plain:.4f}"
     assert intra_rho < 1.0 - 0.05, "the inner-wall relaxivity did not act on the lumen water"

@@ -59,8 +59,8 @@ N_REFERENCE = 16_000      # the analytic sphere is cheap: its noise is a seventh
 # The mesh walk: the difference of its signal and the sphere's at b = 0, 1 and 2 ms/um^2 is held to ``tol`` at the
 # Bonferroni quantile of three comparisons; a difference of 0.1 fails with the margin the noise passes 0.05.
 # The walker's cos(phase) spreads by at most SD_COS, so
-#   N = (2 z SD_COS / 0.1)^2 (1 + N / N_REFERENCE) = 2,950.
-N_MESH_MC = 2_950
+#   N = (2 z SD_COS / 0.1)^2 (1 + N / N_REFERENCE) = 3,050.
+N_MESH_MC = 3_050
 
 
 def _equal_volume_radius(V, F):
@@ -71,10 +71,10 @@ def _equal_volume_radius(V, F):
 def test_diffusion_and_surface_relaxivity_match_analytic_sphere():
     """The mesh sphere's signal over a b-ladder, with relaxing walls, is the analytic sphere's of the same volume.
 
-    Claim: the signals agree to ``tol`` = 0.052 at b = 0 (where only the relaxation acts: the wall relaxes S from 1 to
+    Claim: the signals agree to ``tol`` = 0.050 at b = 0 (where only the relaxation acts: the wall relaxes S from 1 to
     0.62, so a mesh without relaxivity is 0.38 off), 1 and 2 ms/um^2 (restricted diffusion). Statistic: the difference
-    of the mesh walk's walker mean (N = 2,950) and the sphere's (16,000), ``z SD_COS sqrt(1 / N + 1 / N_ref)``
-    at z = 3.64 (three comparisons)."""
+    of the mesh walk's walker mean (N = 3,050) and the sphere's (16,000), ``z SD_COS sqrt(1 / N + 1 / N_ref)``
+    at z = 3.59 (three comparisons)."""
     V, F = _ico(3)
     R_eq = _equal_volume_radius(V, F)
     wf = _pgse(3, 400)

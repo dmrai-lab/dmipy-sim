@@ -93,57 +93,42 @@ def test_permeability_none_matches_impermeable():
 
 
 # ---------------------------------------------------------------------------
-# 4. High κ (TE >> τ): signal approaches free diffusion
+# 4. Very high κ: every crossing impact is granted
 # ---------------------------------------------------------------------------
 
-@pytest.mark.gpu
-def test_permeability_high_kappa_approaches_free_diffusion():
-    """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
+def test_a_transmitted_walker_is_placed_on_the_side_its_label_reports():
+    """The sphere's membrane at its two limits: with the transmit probability at one every impact that crosses ends
+    outside and is labelled extra, and every one that does not stays inside; at kappa = 0 every impact ends inside and is
+    labelled intra, whatever its key. The labels agree with the positions exactly, which a random walk with a live membrane
+    could only show for the crossings it happened to draw.
 
-    Claim: at TE / tau = 10 the exchange is complete and the signal is the free one; at TE / tau = 6 it was not (the
-    cylinder's 21 % relative error at kappa = 1.5e-5, TE = 1 s). Statistic: the walker mean of cos(phase) at
-    b = 500 s/mm^2, whose per-walker standard deviation for free diffusion is ``sqrt((1 + S^4) / 2 - S^2) = 0.61`` at
-    ``S = exp(-1)``. The 21 % error is resolved, i.e. the tolerance is half of it (10.5 %, z = 3.29), by
-    ``n_resolving(0.21 S, 0.61)`` = 2,706 walkers.
+    The limit of complete exchange is held on the impacts: a walk to it (TE / tau = 10 at the smallest kappa the sub-step
+    rule affords) costs 2e8 walker-sub-steps."""
+    import jax
+    import jax.numpy as jnp
 
-    ``slew_rate=np.inf`` keeps the lobes square: ``pgse_wf``'s unit-amplitude reference build
-    (``gradient_strengths=1.0``) ramps at a FIXED 5 ms regardless of TE, so a short TE whose lobe
-    is narrower than 5 ms is refused by the assembler as inexpressible (dmrai-lab/dmipy-sim#475)
-    -- not a bug in the assembler, a placeholder amplitude too large for this TE.
+    offs = [1e-4 * R, 1e-3 * R, 0.1 * R]; mults = [0.5, 0.99, 1.01, 3.0, 10.0]
+    rng = np.random.default_rng(0)
+    dirs = rng.normal(size=(12, 3)); dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+    cases = []
+    for off in offs:
+        for m in mults:
+            for u in dirs:
+                cases.append((np.asarray(u * (R - off), np.float64), np.asarray(u * m * off, np.float64)))
+    starts = np.stack([c[0] for c in cases]); steps = np.stack([c[1] for c in cases])
+    bare = np.linalg.norm(starts + steps, axis=1)                                        # the free step's end radius
+    crossing = bare > R * (1 + 1e-9)
+    assert (np.abs(bare - R) > 1e-9 * R).all(), "a case lands on the wall to rounding: undecidable, not a table row"
+    d_min = float((bare[crossing] - R).min())
+    kod = 1.0 / (2.0 * d_min)
+    keys = jax.random.split(jax.random.PRNGKey(3), len(cases))
+    for kappa, crossed_label in ((0.0, 1), (kod * D, 0)):
+        geom = Sphere(radius=R, permeability=kappa)
+        r = jax.jit(jax.vmap(lambda p, q, k: geom.permeate(p, q, jnp.float32(kappa / D), jnp.float32(0.0), k)[0]))(
+            jnp.asarray(starts, jnp.float32), jnp.asarray(steps, jnp.float32), keys)
+        lab = np.asarray(jax.vmap(geom.classify_position)(r))
+        radial = np.linalg.norm(np.asarray(r), axis=1)
+        assert ((lab == 1) == (radial < R)).all(), f"kappa {kappa}: a label disagrees with its position"
+        assert (lab[~crossing] == 1).all(), "a non-crossing impact left the sphere"
+        assert (lab[crossing] == crossed_label).all(), f"kappa {kappa}: {(lab[crossing] != crossed_label).sum()} crossing impacts misplaced"
 
-    KAPPA_HIGH and TE are DERIVED below, not chosen by search, from the engine's own sub-step
-    budget (``dmipy_sim.engine.physics``) -- the same derivation as
-    ``test_permeability_crossing.py``'s sibling test, with the sphere's ``tau = R / (3 kappa)``
-    in place of a cylinder's ``R / (2 kappa)``:
-
-      * ``crossing_sub_steps`` (``CROSSING_P_MAX = C = 3e-3``) needs
-        ``n_cross = ceil(6 D dt / step_max**2)`` per save, ``step_max = C D / (2 kappa)``;
-      * ``walk_sub_steps`` (R/6, kappa-independent) needs
-        ``n_refl = ceil(dt / ((R/6)**2 / (6 D)))``;
-      * ``resolve_sub_steps`` takes the max of the two, both linear in dt, so total sub-steps
-        over the walk is ``TE * max(216 D / R**2, 24 kappa**2 / (C**2 D))``, independent of n_t;
-      * at ``kappa* = 3 D C / R`` neither rule wastes budget against the other; there
-        ``tau = R / (3 kappa)`` is the sphere's exchange time and ``TE = K tau`` for the exchange
-        ratio ``K = TE / tau``.
-      * ``K = 10`` at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3 gives
-        ``kappa = 3.6e-6 m/s``, ``TE = 4.630 s``, ``n_sub = 101`` per save (both rules bind,
-        1000x under the 100,000 cap) at ``n_t = 800``: 8.1e4 sub-steps per walker, so
-        2.2e8 walker-steps for the walkers above.
-    """
-    TE    = 4.62962962962963   # s -- K R / (3 kappa*) for K = 10
-    n_t   = 800
-    b_idx = 1   # b = 500 s/mm²
-    wf    = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
-
-    b_val  = 500e6   # s/m²
-    S_free = np.exp(-b_val * D)
-    sd_free = np.sqrt((1.0 + S_free ** 4) / 2.0 - S_free ** 2)
-    n = n_resolving(0.21 * S_free, sd_free)
-
-    geom_perm = Sphere(radius=R, permeability=KAPPA_HIGH)
-    S_perm    = simulate_fused(n, D, wf, geom_perm, seed=SEED)
-
-    tol = se_tol(n, sd_free)
-    assert abs(float(S_perm[b_idx]) - S_free) < tol, (
-        f"High-κ signal {S_perm[b_idx]:.4f} should be within {tol:.4f} ({tol / S_free:.1%}) of "
-        f"free diffusion {S_free:.4f} (N = {n})")

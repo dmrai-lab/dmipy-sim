@@ -225,7 +225,8 @@ def _recover_pore_size(e_fn, geometry, R, q_first_zero, name):
     n = n_resolving(R_ERROR_RESOLVED, sd_R)
     wf = _build_sgp_waveform(q_values, np.array([1.0, 0.0, 0.0]), delta, DELTA, n_t)
     E_mc = np.array(simulate_fused(n, D, wf, geometry, seed=SEED), dtype=np.float64)
-    E_theory = e_fn(q_values, R)
+    with np.errstate(all="ignore"):                      # q = 0 is the removable 0/0 of the form factor
+        E_theory = e_fn(q_values, R)
 
     sigma_q = np.sqrt(np.diag(_form_factor_covariance(e_fn, R, q)) / n)
     z = np.abs(E_mc[1:] - E_theory[1:]) / sigma_q

@@ -18,11 +18,13 @@ Analytical limits validated here
 2. κ=0  (zero permeability)       → identical signal to impermeable Cylinder.
 3. κ>0 at high b                  → signal strictly above impermeable (walkers
                                     that escape are less restricted → higher S).
-4. Very high κ (TE >> τ)          → walkers mostly escaped, signal close to
-                                    free diffusion exp(−bD).  Tested at
-                                    b = 500 s/mm² where the gap between
-                                    restricted and free is large enough to give
-                                    a clear bound.
+4. Very high κ (TE >> τ)          → the transmit probability saturates at one:
+                                    every impact that crosses is granted
+                                    (tests/geometry/test_permeable_crossings.py).
+                                    The walk to complete exchange costs 3e8
+                                    walker-sub-steps (the crossing rule keeps
+                                    the probability per hit at 3e-3) and is not
+                                    run.
 
 Combination with surface relaxivity
 -------------------------------------
@@ -32,10 +34,6 @@ Combination with surface relaxivity
 Parameters chosen so σ/R < 0.1 (good-practice criterion):
     R = 5 µm,  D = 2e-9 m²/s,  n_t = 500,  TE ≈ 100 ms
     σ = √(6D·dt) ≈ √(6·2e-9·0.2e-3) ≈ 1.55 µm → σ/R ≈ 0.31
-
-For the high-κ test we use a short TE (20 ms) with fine time-stepping:
-    τ = R/(2κ) = 5e-6/(2·1e-2) = 0.25 ms
-    TE/τ ≈ 80  → ≈ 100% of walkers have had exchange opportunity
 """
 
 import numpy as np
@@ -44,11 +42,10 @@ from tests.conftest import pgse_wf
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import simulate, Cylinder, set_b
 from dmipy_sim.sequences import pgse
 
-from tests.conftest import D, N_EXACT, SEED, n_resolving, se_tol
+from tests.conftest import D, N_EXACT, SEED, se_tol
 
 # Every test in this module makes an ORDINAL or IDENTITY claim -- monotone in kappa, A < B,
 # "approaches free diffusion", or an exact `assert_array_equal` -- none of which needs the
@@ -71,8 +68,6 @@ SD_ORDINAL = 0.5
 
 R   = 5e-6   # m
 KAPPA_MED  = 1e-5  # m/s  — exchange time τ = R/(2κ) ≈ 250 ms
-KAPPA_HIGH = 3.6e-6  # m/s — derived in test_permeability_high_kappa_approaches_free_diffusion
-                      # below from the engine's own sub-step budget, together with its TE
 RHO        = 5e-4  # m/s  — surface relaxivity for combination test
 
 
@@ -131,70 +126,6 @@ def test_permeability_reduces_signal_at_high_b():
     margin = se_tol(N_ORDINAL, SD_ORDINAL, runs=2)
     assert float(S_perm[3]) < float(S_imp[3]) - margin, (
         f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} by {margin:.3f} at b=2000 s/mm²")
-
-
-# ---------------------------------------------------------------------------
-# 4. High κ (TE >> τ): signal approaches free diffusion
-# ---------------------------------------------------------------------------
-
-@pytest.mark.gpu
-def test_permeability_high_kappa_approaches_free_diffusion():
-    """Very high κ (TE/τ >> 1): signal within 10% of exp(-bD) at b=500 s/mm².
-
-    Claim: at TE / tau = 10 the exchange is complete and the signal is the free one; at TE / tau = 6 it was not (a
-    21 % relative error at kappa = 1.5e-5, TE = 1 s). Statistic: the walker mean of cos(phase) at b = 500 s/mm^2, whose
-    per-walker standard deviation for free diffusion is ``sqrt((1 + S^4) / 2 - S^2) = 0.61`` at ``S = exp(-1)``.
-    The 21 % error is resolved, i.e. the tolerance is half of it (10.5 %, z = 3.29), by
-    ``n_resolving(0.21 S, 0.61)`` = 2,706 walkers.
-
-    ``slew_rate=np.inf`` keeps the lobes square: ``pgse_wf``'s unit-amplitude reference build
-    (``gradient_strengths=1.0``) ramps at a FIXED 5 ms (``1.0 / DEFAULT_SLEW_RATE``) regardless of
-    TE, so a short TE whose lobe is narrower than 5 ms is refused by the assembler as inexpressible
-    (dmrai-lab/dmipy-sim#475) -- not a bug in the assembler, a placeholder amplitude too large for
-    this TE.
-
-    KAPPA_HIGH and TE are DERIVED below, not chosen by search, from the engine's own sub-step
-    budget (``dmipy_sim.engine.physics``), because the obvious choice -- the original κ=1e-2 m/s
-    at TE=20 ms -- asks ``resolve_sub_steps`` for 1.33e6 sub-steps per save (13x its 100,000 cap):
-    at the save grid this TE needs, a step small enough to keep the crossing rule's per-hit
-    probability near first order is a few e-10 m, no matter how n_t is chosen.
-
-      * the crossing rule (``crossing_sub_steps``, ``CROSSING_P_MAX = C = 3e-3``) bounds the
-        per-hit transmission probability: the largest step is
-        ``step_max = C D / (2 kappa)``, so a save of ``dt`` needs
-        ``n_cross = ceil(6 D dt / step_max**2)`` sub-steps.
-      * the reflection rule (``walk_sub_steps``, R/6) needs
-        ``n_refl = ceil(dt / ((R/6)**2 / (6 D)))``, independent of kappa.
-      * ``resolve_sub_steps`` takes ``max(n_cross, n_refl)``; both are linear in dt, so the
-        TOTAL sub-steps over the whole walk, ``n_t * n_sub``, is
-        ``TE * max(216 D / R**2, 24 kappa**2 / (C**2 D))`` -- independent of how finely the
-        n_t grid chops it.
-      * neither rule wastes budget against the other at ``kappa* = 3 D C / R`` (where the two
-        match); there ``tau = R / (2 kappa)`` is the cylinder's exchange time, ``TE = K tau`` for
-        the exchange ratio ``K = TE / tau``, and the sub-steps per walker are ``36 K / C``.
-      * ``K = 10`` (near-complete exchange) at R = 5e-6 m, D = 2e-9 m^2/s, C = 3e-3 gives
-        ``kappa = 3.6e-6 m/s``, ``TE = 6.944 s``, ``n_sub = 101`` per save (both rules bind,
-        1000x under the 100,000 cap) at ``n_t = 1,200``: 1.2e5 sub-steps per walker, so
-        3.3e8 walker-steps for the walkers above.
-    """
-    TE = 6.944444444444445   # s -- K R / (2 kappa*) for K = 10
-    n_t = 1200
-    b_idx = 1  # b = 500 s/mm² = 500e6 s/m²
-    wf = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
-
-    # free-diffusion reference at b=500 s/mm²
-    b_val = 500e6  # s/m²
-    S_free = np.exp(-b_val * D)
-    sd_free = np.sqrt((1.0 + S_free ** 4) / 2.0 - S_free ** 2)
-    n = n_resolving(0.21 * S_free, sd_free)
-
-    geom_perm = Cylinder(radius=R, orientation=[0, 0, 1], permeability=KAPPA_HIGH)
-    S_perm = simulate_fused(n, D, wf, geom_perm, seed=SEED)
-
-    tol = se_tol(n, sd_free)
-    assert abs(float(S_perm[b_idx]) - S_free) < tol, (
-        f"High-κ signal {S_perm[b_idx]:.4f} should be within {tol:.4f} ({tol / S_free:.1%}) of "
-        f"free diffusion {S_free:.4f} (N = {n})")
 
 
 # ---------------------------------------------------------------------------
