@@ -1,6 +1,6 @@
 """Fast tests of dmipy_sim.spectrum.strands: the 25 um edge only (one voxel, both policy walk lengths refused by
 the halo rule -- dmipy-sim#697). The 250 um / 1 mm / 5 mm cases (a real far-grid build, minutes each) are
-exercised in test_strands_slow.py."""
+exercised in test_strands_large_edges.py."""
 import json
 import os
 
@@ -98,7 +98,7 @@ def test_manifest_records_the_far_grid_spacing_without_a_real_build(tmp_path):
     """A manifest's own substrate.far_grid_meta carries the far grid's spacing_m/near_m/n_nodes directly (the
     coordinator's #699 follow-up): a reader should not have to open the far.npy's own .json sidecar just to
     see what resolution an edge's field was built at. Checked against a synthetic far_grid_info -- the real
-    far-grid build this would normally come from is minutes even at 250 um (test_strands_slow.py)."""
+    far-grid build this would normally come from is minutes even at 250 um (test_strands_large_edges.py)."""
     from dmipy_sim.phantom import Grid
     from dmipy_sim.spectrum.strands import _manifest_for
     grid = Grid(shape=(10, 10, 10), voxel_size_m=(25e-6,) * 3, origin_m=(12.5e-6,) * 3)

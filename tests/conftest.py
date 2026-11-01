@@ -94,10 +94,10 @@ SEED = 123
 # deterministic too and shows in the walkers that reach the branch. There is no sampling error to
 # average down, so a statistical N buys nothing and costs two full-size walks per test.
 #
-# 5,000 is not a new judgement: tests/test_permeability_crossing.py already runs exactly this
-# assertion at N_ORDINAL = 5_000. This makes the other copies consistent with it. Deliberately NOT
-# scaled by --heavy -- a bigger N cannot make an exact equality any more exact.
-N_EXACT = 5_000
+# 500 walkers carry the assertion: two code paths that must be bit-identical diverge on the first walker that reaches
+# the branch, and 500 walkers reach every wall branch of a pore a few steps wide. Deliberately NOT scaled by --heavy -- a
+# bigger N cannot make an exact equality any more exact.
+N_EXACT = 500
 
 # The walker count of a tier-1 Monte-Carlo test. The signal is the mean over walkers of cos(phase); for a Gaussian phase
 # its variance is (1 - E^2)^2 / 2 <= 1/2, so one run has a standard error of at most 1/sqrt(2 N) = 0.005 at N = 20,000.

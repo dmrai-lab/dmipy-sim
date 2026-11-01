@@ -40,6 +40,7 @@ from dmipy_sim.sequences import pgse
 
 from tests.conftest import D, N_CPU, N_EXACT, SEED, mc_atol
 
+N_BUDGET = 5_000     # the walker count the high-kappa regime below is derived for
 A          = 3e-6   # m  — short semi-axis
 C_AXIS     = 9e-6   # m  — long semi-axis
 SEMIAXES   = [A, A, C_AXIS]
@@ -135,7 +136,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
       * total sub-steps over the walk is ``TE * max(216 D / A**2, 24 kappa**2 / (C**2 D))``,
         independent of n_t; neither rule wastes budget against the other at
         ``kappa* = 3 D C / A``;
-      * for a walker-step budget ``B = N * TE * 216 D / A**2`` (N = 5,000, this file's N_EXACT),
+      * for a walker-step budget ``B = N * TE * 216 D / A**2`` (N = N_BUDGET = 5,000),
         ``TE = B A**2 / (216 D N)`` and the achieved ``TE / tau = TE * 3 kappa* / R_eq``
         (the ellipsoid's tau uses ``R_eq``, not ``A``, so this does not collapse to as clean a
         closed form in B as the cylinder/sphere siblings; it is evaluated numerically below).
@@ -144,7 +145,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
         rules bind, 1000x under the 100,000 cap) at ``n_t = 1,000``: ``TE / tau = 10.0``
         exactly, total walker-steps ``5,000 * 1,000 * 98 ~= 4.90e8`` -- measured at ~3.5 minutes
         wall clock on this machine (CPU), inside a 10-minute bound. N drops from N_WALKERS
-        (100,000) to N_EXACT (5,000, this module's reduced ordinal count) because N_WALKERS at
+        (100,000) to N_BUDGET (5,000) because N_WALKERS at
         this budget would take ~20x as long for the same statistical qualitative check.
     """
     TE    = 2.0337916666666667   # s -- derived above: B A**2 / (216 D N) at B = 97,622
@@ -153,7 +154,7 @@ def test_permeability_high_kappa_approaches_free_diffusion():
     wf    = pgse_wf(TE, n_t=n_t, slew_rate=np.inf)
 
     geom_perm = Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_HIGH)
-    S_perm    = simulate(N_EXACT, D, wf, geom_perm, seed=SEED)
+    S_perm    = simulate(N_BUDGET, D, wf, geom_perm, seed=SEED)
 
     b_val  = 500e6
     S_free = np.exp(-b_val * D)

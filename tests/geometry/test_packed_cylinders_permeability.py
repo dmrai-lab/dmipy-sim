@@ -89,6 +89,7 @@ def test_permeability_none_matches_impermeable():
         centers=np.array([[0., 0.]]),
         L=L,
         orientation=[0., 0., 1.],
+        pool="extra",
     )
     # exact-equality assertion -> scale-free; see N_EXACT in conftest (#93)
     S_default  = simulate(N_EXACT, D, wf, geom_default,  seed=SEED)
