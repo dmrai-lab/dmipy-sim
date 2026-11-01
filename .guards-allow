@@ -1,4 +1,3 @@
-dmipy_sim/_blas.py:499119a375 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/coefficient_walk.py:0556ae100d pre-existing, tracked in dmipy-sim#847
 dmipy_sim/coefficient_walk.py:58a4ad5670 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/coefficient_walk.py:c6793404d4 pre-existing, tracked in dmipy-sim#847
@@ -28,9 +27,6 @@ dmipy_sim/geometry/myelin.py:f8b76a9eeb pre-existing, tracked in dmipy-sim#847
 dmipy_sim/io/label_volume.py:b98da3d84b pre-existing, tracked in dmipy-sim#847
 dmipy_sim/io/mcdc.py:afcf66b675 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/math/accuracy.py:8f4ef5212c pre-existing, tracked in dmipy-sim#847
-dmipy_sim/phantom/phantom.py:bbda5ffd76 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/phantom/substrates.py:15222a2bb6 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/phantom/substrates.py:161f4bbc3f pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/bank.py:24c4996575 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/bank.py:2c240a80ae pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/bank.py:2f5fa6a478 pre-existing, tracked in dmipy-sim#847
@@ -61,18 +57,11 @@ dmipy_sim/replay/bank.py:d6a624ba6f pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/bank.py:de7df4dccf pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/bank.py:fdc89d7a75 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/bank.py:fecad99f38 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/columnar.py:96c58f530b pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/compression.py:76a822ee69 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/consolidate.py:a1ae0a5082 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/continuation.py:3e29e95b26 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/continuation.py:96bf374871 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/continuation.py:c7a9f0be4b pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/pathways.py:9dbdf45554 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/pathways.py:e3f31404c7 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:1a6e913e99 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:4ed8f9b1b8 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:edb51a24aa pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:eeeaa43f7e pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/publish.py:04096c16e7 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/publish.py:7d1bbf9878 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/publish.py:f65a670d7a pre-existing, tracked in dmipy-sim#847
@@ -88,7 +77,6 @@ dmipy_sim/replay/replay.py:2bff182daf pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/replay.py:4977410db6 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/replay.py:ec1844e271 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/time_segments.py:9a400a3629 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/time_segments.py:a965e2a113 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/replay/time_segments.py:c2096d39ba pre-existing, tracked in dmipy-sim#847
 dmipy_sim/run.py:211209eea0 pre-existing, tracked in dmipy-sim#847
 dmipy_sim/run.py:483b37c9bc pre-existing, tracked in dmipy-sim#847

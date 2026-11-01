@@ -860,8 +860,8 @@ def test_the_class_nonlinearity_is_an_isotropic_scaling_that_says_it_is_inferred
     refused beyond the anchor; the leaves say 'inferred' and their context says why."""
     import json
     from dmipy_replay.acquisition import scanner_constants as scc
-    from dmipy_sim.phantom import Grid
-    from dmipy_sim.phantom.bore import gradient_tensor_map
+    from dmipy_replay.phantom import Grid
+    from dmipy_replay.phantom.bore import gradient_tensor_map
     cat = json.load(open(scc.__file__.replace(".py", ".json")))
     for name in ("siemens_prisma", "terra"):
         s = ScannerLimits.of(name)

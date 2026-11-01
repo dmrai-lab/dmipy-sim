@@ -1965,7 +1965,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     coded split-half floors; the field channel's pilot error beside them), or ``"measured"``, which also replays the
     battery on the walk's raw subset against its own coefficients -- the positions, and the field channel on the
     scalar gates and on the vector-Bloch path (:func:`_susc_path_bloch_fidelity`) -- and is refused by name on a walk
-    that kept none. ``voxel_grid`` (a :class:`~dmipy_sim.phantom.Grid`, substrate-attached) adds the per-voxel
+    that kept none. ``voxel_grid`` (a :class:`~dmipy_replay.phantom.Grid`, substrate-attached) adds the per-voxel
     certificate a partition needs (:func:`voxel_floor_coded`). ``device`` runs the coded floors on the JAX device
     (``"auto"``: when it is a GPU). Returns a :class:`~dmipy_sim.replay.replay.ReplayPack`; writes it to
     ``out_path`` if given.
@@ -2268,7 +2268,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
     if voxel_grid is not None:
         from dmipy_replay.phantom.grid import Grid
         if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
-            raise TypeError("voxel_grid must be a dmipy_sim.phantom.Grid attached to the substrate")
+            raise TypeError("voxel_grid must be a dmipy_replay.phantom.Grid attached to the substrate")
         _w = None if weights is None else np.asarray(weights, np.float64)
         _ijk, _pools, _n, _floor, _err = voxel_floor_coded(pos_arrays, h, n_t, voxel_grid, comp, env, w=_w, device=device)
         arrays["voxel_ijk"] = _ijk.astype(np.int32)

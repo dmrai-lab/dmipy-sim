@@ -64,7 +64,7 @@ class StratifiedByVoxel:
 
     def __post_init__(self):
         if not isinstance(self.grid, Grid):
-            raise TypeError("grid must be a dmipy_sim.phantom.Grid")
+            raise TypeError("grid must be a dmipy_replay.phantom.Grid")
         if self.grid.attach != "substrate":
             raise ValueError("a seeding grid is welded to the substrate: Grid(..., attach='substrate')")
         if int(self.trials_per_voxel_max) < 1:

@@ -288,7 +288,7 @@ def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per
     tracks = os.path.join(sub_dir, "strands.tck")
     diam = os.path.join(sub_dir, "strands_diameters.txt")
     shape = (int(round(edge_m / VOXEL_SIZE_M)),) * 3
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
     grid = Grid(shape=shape, voxel_size_m=(VOXEL_SIZE_M,) * 3, origin_m=(VOXEL_SIZE_M / 2.0,) * 3)
     f_inner = np.zeros(grid.n_voxels)
     f_outer = np.zeros(grid.n_voxels)

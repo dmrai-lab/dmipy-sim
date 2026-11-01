@@ -10,7 +10,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
+from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay.bank import build_replay_pack
 
 D0, B0 = 2.0e-9, 0.064
@@ -61,7 +61,7 @@ def test_the_phantom_turns_each_voxel_by_its_own_concomitant_phase(free_phantom)
     ph, seq = free_phantom
     swoop = ScannerLimits.of("swoop")
     S = ph.replay(seq, scanner=swoop, off_resonance=0.0, complex_signal=True)       # the field law's offset held off
-    from dmipy_sim.phantom.bore import concomitant_phase_map
+    from dmipy_replay.phantom.bore import concomitant_phase_map
     expect = concomitant_phase_map(swoop, ph.grid, ph._on_this_grid(seq))[:, 0, -1]  # every voxel, in grid order
     got = np.angle(S.reshape(-1, S.shape[-1])[:, 0])
     iso = 4                                                                          # the centre of the 3 x 3

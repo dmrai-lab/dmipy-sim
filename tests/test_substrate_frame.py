@@ -11,7 +11,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
+from dmipy_replay.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
 from dmipy_sim.replay import ReplayPack, read_rpk, so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import pack_position_arrays

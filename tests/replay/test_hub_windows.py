@@ -191,7 +191,7 @@ def test_replay_pack_load_takes_windows_through_a_hub_uri_only(pack, served, tmp
 
 
 def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
-    from dmipy_sim.phantom import PackSubstrate
+    from dmipy_replay.phantom import PackSubstrate
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)},
                       {"id": "o/p", "windows_present": 2,

@@ -111,6 +111,6 @@ across a voxel (every term is read at the voxel's centre).
   itself checked (#361).
 - `dmipy_replay/acquisition/scanners.py` — the model.
 - `dmipy_replay/acquisition/solid_harmonics.py` — the basis the field laws are written in.
-- `dmipy_sim/phantom/bore.py` — the model evaluated over a phantom grid.
+- `dmipy_replay/phantom/bore.py` (dmipy-replay) — the model evaluated over a phantom grid.
 
 Gap analysis against other simulators' scanner inputs: #359.

@@ -184,7 +184,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     term; this is the same class of bug, so it gets the same style of test."""
     import os
     from dmipy_sim.io.strands import write_tck, concat_centerlines
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
     from dmipy_sim.replay.consolidate import consolidate

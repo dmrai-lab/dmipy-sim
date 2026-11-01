@@ -20,15 +20,8 @@ from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.time_segments import Partition, Shape, _RTOL
-from dmipy_sim.replay.time_segments import (
-    TimeSegmentLayout,
-    _walk_view,
-    level_bound,
-    rounding_eps,
-    segment_rows,
-    segment_vectors,
-    write_time_segment_layout,
-)
+from dmipy_replay.replay.time_segments import TimeSegmentLayout
+from dmipy_sim.replay.time_segments import _walk_view, level_bound, rounding_eps, segment_rows, segment_vectors, write_time_segment_layout
 
 D0 = 2e-9
 G_MAX = 1.0                                                          # T/m: the envelope's gradient (the walk names no class)

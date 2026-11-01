@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.io.strands import write_tck
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.spec import DrawnSeeds, StratifiedByVoxel, disco_spec, draw_seeds
 from dmipy_sim import walk
 from tests.conftest import spec_without_source

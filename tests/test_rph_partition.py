@@ -11,7 +11,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import Encoding, Prescription, RFEvent, ScannerSequence
-from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
+from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -254,7 +254,7 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
 
 def test_pose_is_a_Pose_and_a_bare_matrix_is_refused_by_name():
     """Every ``pose=`` takes a ``Pose`` (or ``None``): the matrix is spelled ``Pose(R)``."""
-    from dmipy_sim.phantom.partition import pose_rotation
+    from dmipy_replay.phantom.partition import pose_rotation
     R = np.eye(3)
     assert pose_rotation(None) is None and np.array_equal(pose_rotation(Pose(R)), R)
     for bad in (R, R.tolist(), 3.0):

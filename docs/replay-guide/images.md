@@ -13,7 +13,7 @@ import os, tempfile
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.io.strands import write_tck, concat_centerlines
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.consolidate import consolidate

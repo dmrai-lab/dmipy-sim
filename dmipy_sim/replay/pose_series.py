@@ -4,7 +4,7 @@ of a machine an evaluation of that pass's series (dmrai-lab/dmipy-sim#610).
 **The setting.** A machine plays one commanded acquisition differently at every voxel: its coils' nonlinearity
 scales and tilts each row, its own gradient ``g0`` adds a constant through every pulse and dead time, and its Maxwell
 term adds a gradient quadratic in the coils'. Binned to a tolerance of ``b`` these are the encoding classes
-(:func:`~dmipy_sim.phantom.bore.encoding_classes`), thousands over a head on a permanent magnet, and the closed form
+(:func:`~dmipy_replay.phantom.bore.encoding_classes`), thousands over a head on a permanent magnet, and the closed form
 (:meth:`~dmipy_sim.replay.replay.ReplayPack.pose_responses`) contracts the walkers once per class. The classes are
 one timing class: what changes from one to the next is each row's amplitude and direction, the background's
 magnitude ``|g0|`` and direction, and the small part of each row that is not its commanded shape.
@@ -496,9 +496,9 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
     from . import so3
     from dmipy_replay.replay.compression import read_position_coeffs
     from .pose_device import bessel_tails, route, field_bodies, field_bodies_torch
-    from ..phantom.partition import pose_rotation
+    from dmipy_replay.phantom.partition import pose_rotation
     from .replay import _factor_channels, _factor_of, _coupling_tables, PoseResponse, TORCH_GROUPS
-    from ..run import Run, current
+    from dmipy_replay.replay.phases import Phases, current
     if backend not in ("jax", "torch"):
         raise ValueError(f"backend is 'jax' or 'torch', got {backend!r}")
     kernels = "auto" if backend == "jax" else ("torch" if device is None else f"torch:{device}")
@@ -516,7 +516,7 @@ def pose_series(pack, waveforms, *, tissue=None, scanner=None, pose=None, compar
         raise ValueError("a pose series needs at least one acquisition") from None
     first = first.waveform if hasattr(first, "waveform") else first
     R_s = pose_rotation(pose)
-    with Run("pose_series", params=dict(id=pack.id, n_meas=int(first.n_meas), keep=None if keep is None else list(keep))):
+    with Phases("pose_series", params=dict(id=pack.id, n_meas=int(first.n_meas), keep=None if keep is None else list(keep))):
         run = current()
         _ph = (lambda name, **f: run.phase(name, **f)) if run is not None else (lambda name, **f: None)
         from dmipy_replay.acquisition.waveforms import rotate_waveform

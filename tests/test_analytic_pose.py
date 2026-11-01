@@ -12,8 +12,8 @@ from dmipy_replay.spec.tissue import Tissue
 import pytest
 
 from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, Inert, Peaks, Phantom, Watson
-from dmipy_sim.phantom.substrates import substrate_from_meta
+from dmipy_replay.phantom import Grid, Inert, Peaks, Phantom, Watson
+from dmipy_replay.phantom.substrates import substrate_from_meta
 from dmipy_sim.replay import analytic_pose_response, so3
 
 
@@ -77,7 +77,7 @@ def test_a_watson_field_on_the_form_is_the_dispersed_integral():
 
 
 def test_a_form_with_an_axis_needs_an_orientation_and_free_water_refuses_one():
-    from dmipy_sim.phantom import FreeWater
+    from dmipy_replay.phantom import FreeWater
     stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     with pytest.raises(ValueError, match="no orientation given"):
         Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))}, orientation={})
@@ -126,7 +126,7 @@ def test_a_namespaced_model_is_read_by_its_package_or_refused_naming_it(tmp_path
 def test_a_closed_form_is_full_tier_with_zeros():
     """A form with no susceptibility source has a field of zero at any B0: the signal is unchanged and nothing is
     said; free water carries its bulk relaxation when declared, and none when not."""
-    from dmipy_sim.phantom import FreeWater
+    from dmipy_replay.phantom import FreeWater
     seq = _seq(); stick = Stick(m0=1.0, tissue=Tissue(D=1.7e-9))
     ph = Phantom.compose(Grid(shape=(1, 1, 1), voxel_size_m=(2e-3, 2e-3, 2e-3)), fractions={stick: np.ones((1, 1, 1))},
                          orientation=Peaks(np.zeros((1, 1, 1, 1, 3)) + [0, 0, 1.0]))

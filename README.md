@@ -188,7 +188,7 @@ samples depending on the angle between the field and the fibre.
 ```python
 import numpy as np
 from dmipy_sim import sequences
-from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
+from dmipy_replay.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
 from dmipy_sim.spec import Tissue
 
 n = 40
@@ -236,7 +236,7 @@ into the file. A layer the replay cannot carry raises rather than being dropped.
 
 ```python
 from dmipy_sim import Prescription
-from dmipy_sim.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Pose
+from dmipy_replay.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Pose
 
 pack = PackSubstrate("disco.rpk", m0=1.0)                           # ONE walk of a 1 mm^3 anatomy, spin_weights carried
 ph = Phantom.partition(pack, Grid(shape=(40, 40, 40), voxel_size_m=(25e-6,) * 3, attach="substrate"),

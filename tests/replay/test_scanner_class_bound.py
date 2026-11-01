@@ -174,7 +174,7 @@ def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():
 def disco_timing_layout(tmp_path_factory):
     """A pack certified for connectome_2 over a window that holds DiSCo's b = 3091 s/mm^2 shell (ActiveAx delta 7.6 ms,
     Delta 45.9 ms, TE 53.5 ms), its segment layout of that shell's partition, and the shell's sequence."""
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     tmp = tmp_path_factory.mktemp("class_layout")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

@@ -16,13 +16,8 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.compression import default_battery
 from dmipy_replay.replay.time_segments import FORMAT, Partition, Shape, read_manifest
-from dmipy_sim.replay.time_segments import (
-    TimeSegmentLayout,
-    _walk_view,
-    rounding_eps,
-    segment_rows,
-    write_time_segment_layout,
-)
+from dmipy_replay.replay.time_segments import TimeSegmentLayout
+from dmipy_sim.replay.time_segments import _walk_view, rounding_eps, segment_rows, write_time_segment_layout
 from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue

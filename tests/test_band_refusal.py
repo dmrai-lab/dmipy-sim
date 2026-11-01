@@ -125,7 +125,7 @@ def test_the_estimate_is_the_free_tail_beyond_k_to_infinity_not_to_a_grid():
 
 def _layout(K, *, cap, floor=0.02, other=None):
     """A columnar layout's header: ``K`` bands of a free walk at ``D0`` over 20 ms, every stored band at the free variance."""
-    from dmipy_sim.replay.columnar import ColumnarPack
+    from dmipy_replay.replay.columnar import ColumnarPack
     from dmipy_replay.replay.compression import band_variances
     T = (N_T - 1) * DT
     lay = ColumnarPack.__new__(ColumnarPack)

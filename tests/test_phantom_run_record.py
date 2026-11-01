@@ -1,5 +1,5 @@
-"""A phantom replay is a run producer: phases, progress in encoding classes, and a report of what each response cost
-(dmrai-lab/dmipy-sim#449). A pose expansion inside it joins the same record with its own phases."""
+"""A phantom replay reports its phases (dmipy-replay's timing record, ``dmipy_replay.replay.phases``) and what each
+response cost (dmrai-lab/dmipy-sim#449); a pose expansion inside it joins the same record with its own phases."""
 from tests._envelope import stated
 import numpy as np
 import pytest
@@ -7,7 +7,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, Phantom, PackSubstrate, Watson
+from dmipy_replay.phantom import Grid, Phantom, PackSubstrate, Watson
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -40,7 +40,7 @@ def test_a_replay_reports_its_phases_and_each_response(pack):
 
 
 def test_a_pose_expansion_on_its_own_is_a_run(pack):
-    from dmipy_sim.run import current
+    from dmipy_replay.replay.phases import current
     seq = sequences.pgse([[1, 0, 0]], 2e-3, 5e-3, gradient_strengths=[0.3], TE=10e-3)
     assert current() is None
     resp = pack.pose_response(seq)

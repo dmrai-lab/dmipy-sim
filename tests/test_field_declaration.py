@@ -24,7 +24,7 @@ from dmipy_sim import Encoding, ScannerSequence
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.fields.susceptibility_field import field_grid_of
-from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
+from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.study import Acquisition, Protocol, Study
@@ -275,7 +275,7 @@ def test_the_writers_refuse_every_mismatch_on_every_surface_kind(kind, surface_s
 def _columnar_dir(tmp, base, spec, stored):
     """A columnar layout's manifest and index around ``base``'s meta under ``spec``, with or without field modes."""
     import json
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     meta = copy.deepcopy(base.meta); meta["substrate"] = spec
     meta["fidelity"]["per_voxel"] = dict(grid=Grid(shape=(1, 1, 1), voxel_size_m=(1e-3,) * 3).to_meta(), floor_median=0.01)
     tmp.mkdir(parents=True, exist_ok=True)
@@ -287,7 +287,7 @@ def _columnar_dir(tmp, base, spec, stored):
 def _moments_dir(tmp, spec, stored):
     """A tier time-segment layout's manifest under ``spec``, its one group storing field columns or not."""
     import json
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_replay.replay.time_segments import FORMAT, TILE
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "manifest.json").write_text(json.dumps(dict(
@@ -299,8 +299,8 @@ def _moments_dir(tmp, spec, stored):
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_layouts_refuse_every_mismatch_on_every_surface_kind(kind, surface_specs, absent, present, tmp_path):
-    from dmipy_sim.replay.columnar import ColumnarPack
-    from dmipy_sim.replay.time_segments import TimeSegmentLayout
+    from dmipy_replay.replay.columnar import ColumnarPack
+    from dmipy_replay.replay.time_segments import TimeSegmentLayout
     spec, pool = surface_specs[kind]
     for i, ((mag, tier, stored), msg) in enumerate(MISMATCHES):
         v = _variant(spec, pool, mag, tier)
@@ -345,7 +345,7 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
 def test_a_closed_or_inert_substrate_has_no_field_by_its_kind():
     """``analytic`` and ``inert`` phantom substrates hold nothing magnetic: a chi on one is refused by ``field_term``,
     on the object and from the file's record."""
-    from dmipy_sim.phantom.substrates import FIELD_BY_KIND, substrate_from_meta
+    from dmipy_replay.phantom.substrates import FIELD_BY_KIND, substrate_from_meta
     assert FIELD_BY_KIND == {"analytic": "absent", "inert": "absent"}
     for t in (Tissue(D=3e-9, chi_iso=1e-7), Tissue(D=3e-9, chi_aniso=-1e-8)):
         with pytest.raises(ValueError, match="field absent"):

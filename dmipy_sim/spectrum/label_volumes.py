@@ -41,7 +41,7 @@ def label_volume(edge_m, seed, *, out_dir, target_fraction=TARGET_FRACTION, n_ob
     grain confined by its centre to its own tile, not its radius)."""
     from ..spec.producers import label_volume_spec
     from ..io.label_volume import write_nrrd
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
 
     t_start = time.time()
     os.makedirs(out_dir, exist_ok=True)

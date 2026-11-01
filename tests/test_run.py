@@ -154,12 +154,9 @@ def test_every_long_producer_opens_a_run():
     import dmipy_sim.spec.walk as walk_module
     from dmipy_sim.replay import bank
     from dmipy_sim.fields.strand_field import StrandFieldBasis
-    from dmipy_sim.replay.phantom import ReplayPhantom
-    from dmipy_sim.replay.replay import ReplayPack
     for f in (core.simulate, core.simulate_cpmg, core._walk_geometry, adaptive.simulate_trajectories_adaptive,
               bloch._simulate_bloch, walk_module.walk, bank.build_replay_pack, bank.merge_packs,
-              StrandFieldBasis.build_far_grid, ReplayPhantom.replay, ReplayPhantom.replay_train, ReplayPhantom.replay_bloch,
-              ReplayPack.pose_responses):
+              StrandFieldBasis.build_far_grid):
         assert "with Run(" in inspect.getsource(f), f.__name__
     # the MT producer is a thin wrapper of _walk_geometry: its walk is that producer's, with that producer's record
     assert "return _walk_geometry(" in inspect.getsource(mt_walk.simulate_mt_trajectories)
