@@ -4,7 +4,7 @@ and tier field, per-block rows consolidated into tiles; the image of every seque
 partition (a PGSE, a stimulated echo's three segments, a double diffusion encoding's four) is the sibling pack's replay
 within the layout's rounding term, bare and with the tiers."""
 from __future__ import annotations
-from tests._envelope import stated, walk_envelope
+from tests._envelope import shard_containers, stated, walk_envelope
 import json
 import os
 
@@ -73,7 +73,9 @@ def myelin(tmp_path_factory):
     lo, hi = r0.min(0), r0.max(0)
     vs = np.array([(hi[0] - lo[0]) / 2 * 1.001, (hi[1] - lo[1]) / 2 * 1.001, 1e-5])
     grid = Grid(shape=(2, 2, 1), voxel_size_m=tuple(vs), origin_m=(lo[0] - 1e-9 + vs[0] / 2, lo[1] - 1e-9 + vs[1] / 2, 0.0))
-    pk = build_replay_pack(w, id="t/segments", license="x", citation="x", sigma_star=0.02, planned_floor=0.02, voxel_grid=grid, **stated(of=w))
+    import dataclasses
+    w = dataclasses.replace(w, envelope=stated(of=w)["envelope"])       # the test's envelope, which the walk view states
+    pk = build_replay_pack(w, id="t/segments", license="x", citation="x", sigma_star=0.02, planned_floor=0.02, voxel_grid=grid)
     parts = _partitions()
     rec_w = segment_rows(w, parts, str(tmp / "rows_walk"), grid=grid, pack=pk, g_max=G_MAX, tiers=True, background=True)
     rec_p = segment_rows(pk, parts, str(tmp / "rows_pack"), grid=grid, g_max=G_MAX, tiers=True, background=True)
@@ -316,7 +318,7 @@ def blocks(spec_grid):
         # certified up to ten times the sheath's chi, so that the layout's field words resolve its field at the
         # fixture's coarse floor (at the sheath's own the field rounds to zero on every row of 24 walkers)
         pk = build_replay_pack(w, id=f"t/sb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
-                               **stated(dict(default_battery(), chi_max=2e-6), of=w))
+                               **stated(dict(default_battery(), chi_max=2e-6), of=w), **shard_containers(packs))
         packs.append(pk)
         dirs.append(str(tmp / f"sb_rows{b}"))
         segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3,
@@ -374,7 +376,8 @@ def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):
         per = {p: (want if p in pools else np.zeros(grid.shape, np.int64)) for p in ("extra", "intra")}
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=31 + b, require_gpu=False, K=3,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel=per), envelope=walk_envelope(of=spec))
-        pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid, **stated(of=w))
+        pk = build_replay_pack(w, id=f"t/pl{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid, **stated(of=w),
+                               **shard_containers(packs))
         packs.append(pk); dirs.append(str(tmp_path / f"pl_rows{b}"))
         segment_rows(w, _strand_partitions(pk.n_t), dirs[-1], grid=grid, pack=pk, g_max=60.0, floor_target=0.3, tiers=True)
     m = write_time_segment_layout(dirs, str(tmp_path / "pl_layout"))

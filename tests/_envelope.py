@@ -40,3 +40,20 @@ def stated(settings=None, G_max=None, *, of=None, band_hz=TEST_BAND_HZ, chi_max=
                    rho2_max=(max(rho) if rho else None), max_refocusing_pulses=s.get("max_refocus_pulses"))
     return dict(envelope=env, battery=battery)
 
+
+def shard_containers(packs):
+    """The containers a later shard of a fill takes from its certifying pack (the first of ``packs``): its position,
+    contact and field containers, so that the shards merge (``merge_packs``, the columnar consolidation)."""
+    if not packs:
+        return {}
+    from dmipy_sim.replay.bank import FieldCodec
+    cm = packs[0].meta["compression"]
+    ch = cm.get("channels") or {}
+    out = {}
+    if cm.get("container"):
+        out["position_container"] = cm["container"]
+    if (ch.get("boundary_local_time") or {}).get("container"):
+        out["blt_container"] = ch["boundary_local_time"]["container"]
+    if ch.get("susc_field_basis"):
+        out["field_container"] = FieldCodec.of(ch["susc_field_basis"])
+    return out

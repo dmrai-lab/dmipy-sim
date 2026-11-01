@@ -17,7 +17,7 @@ from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
-from tests._envelope import walk_envelope
+from tests._envelope import TEST_BAND_HZ, TEST_G_MAX, walk_envelope
 
 
 def _shard(spec, grid, tmp, name, block, per, seed):
@@ -25,7 +25,8 @@ def _shard(spec, grid, tmp, name, block, per, seed):
     w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
     os.makedirs(str(tmp / "shards"), exist_ok=True)
-    return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"))
+    return build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "shards" / f"{name}.rpk"),
+                             envelope=walk_envelope(of=spec, G_max=TEST_G_MAX, band_hz=TEST_BAND_HZ))   # ideal lobes, its 3 bands
 
 
 @pytest.fixture(scope="module")

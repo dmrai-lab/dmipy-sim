@@ -393,9 +393,6 @@ def test_the_manifest_states_each_terms_shape_and_the_level_bound_uses_its_weigh
     assert man["partitions"][COS]["segments"][0]["shape"]["kind"] == "sampled"
     assert man["partitions"][COS]["segments"][0]["shape"]["cells"] == 200
     assert man["partitions"][BOX]["segments"][0]["shape"] == {"kind": "constant"}
-    # the reach of a shaped class from the b matrix: the largest level within b_max is sqrt(b_max / b_unit) on one term
-    cos = M["lay"].partitions[COS]
-    N = cos.refocused_basis()[1]
-    Bm = N.T @ cos.b_matrix() @ N
-    want = np.sqrt(3e9 * np.diag(N @ np.linalg.solve(Bm, N.T)))
-    np.testing.assert_allclose(np.minimum(want, G_MAX), man["partitions"][COS]["segments"][0]["q_max"] * np.ones(2), rtol=1e-9)
+    # the reach of a shaped term under the envelope: every axis at G_max at once, |a| = sqrt(3) G_max (no b bound)
+    assert man["source"]["envelope"]["b_max"] is None
+    np.testing.assert_allclose(man["partitions"][COS]["segments"][0]["q_max"], np.sqrt(3.0) * G_MAX, rtol=1e-9)

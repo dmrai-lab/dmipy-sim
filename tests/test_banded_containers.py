@@ -7,7 +7,7 @@ coefficient-space replay of #242 and the dense oracles read either container ali
 """
 from __future__ import annotations
 
-from tests._envelope import battery_reach, stated
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.field as _r_field
 import numpy as np
@@ -262,8 +262,8 @@ def test_the_derived_container_is_one_common_step_and_gains_a_bit_per_quartered_
 
 def test_the_default_pack_is_derived_for_its_floor(tmp_path):
     walk = _walk_geometry(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=400)
-    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, planned_floor=5e-3, fidelity="measured", **stated(G_max=battery_reach(walk.T_window), of=walk))
-    q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3, planned_floor=1e-3, **stated(G_max=battery_reach(walk.T_window), of=walk))
+    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, planned_floor=5e-3, fidelity="measured", **stated(G_max=0.5, of=walk))
+    q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3, planned_floor=1e-3, **stated(G_max=0.5, of=walk))
     assert p.meta["compression"]["container"] != _cx.band_curve(16, 10)
     assert sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in q.meta["compression"]["container"]) > \
         sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in p.meta["compression"]["container"])      # a lower floor: more bits

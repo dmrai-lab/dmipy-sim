@@ -52,7 +52,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 def stated(settings=None, spec=None, *, band_hz=1e9, G_max=100.0):
     """``dict(envelope=, battery=)`` of this tool's own limits from its certificate ``settings``: the waveforms it
     replays are ideal lobes no catalogue scanner plays (``G_max``, 100 T/m per axis unless a measured certificate is read
-    on the battery alone; a band wider than any pack it stores, which then states the band it stores), and a replay
+    on the battery, at the strongest human class's amplitude; a band wider than any pack it stores, which then states the band it stores), and a replay
     beyond them is still refused. The battery keys are the battery; the
     envelope states the settings' field strengths, their largest surface relaxivity and refocusing depth, and the
     susceptibility scale of the substrate ``spec`` where it has a field."""
@@ -109,7 +109,6 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
     from scipy.fft import dst
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.replay.compression import read_position_coeffs
-    from dmipy_sim.replay import compression as cx
     seq = d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 5e-3, bvalues=[2e9, 2e9], TE=0.009, slew_rate=np.inf)
     out = {}
     import dataclasses
@@ -117,7 +116,7 @@ def exactness(names=None, *, n=400, T=0.01, block_h=2e-4, K=24, sub_steps=4, see
         if names and name not in names:
             continue
         kw = dict(T_max=T, block_h=block_h, seed=seed, require_gpu=False, sub_steps=sub_steps, window_T=T)
-        pk = dict(license="x", citation="x", K=K, **stated(G_max=cx.battery_reach(T)), position_container=None, blt_container=None, blt_temporal_K=K,
+        pk = dict(license="x", citation="x", K=K, **stated(G_max=envelope_of("connectome_2").G_max), position_container=None, blt_container=None, blt_temporal_K=K,
                   blt_dtype=np.float32)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

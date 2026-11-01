@@ -4,7 +4,7 @@ every ``field_read_interval`` seconds (every physics step when the rule asks bel
 trapezoid of the reads as the field's cosine modes per window (and keeps the raw subset's reads at their instants), as
 the strand route does with ``adaptive_steps=True``. ``walk`` reads every gridded source this way, and the pack's path
 channel is encoded from those modes."""
-from tests._envelope import battery_reach, stated, walk_envelope
+from tests._envelope import stated, walk_envelope
 import dataclasses
 
 import numpy as np
@@ -199,7 +199,7 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
     assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
     assert w.field_coeffs.shape == (600, w.n_windows, w.K_c3, 12)
     pk = build_replay_pack(w, id=f"test/{family}-in-walk", license="x", citation="x",
-                           **stated(ENV, of=w, G_max=battery_reach(w.T_window, ENV)))     # certified on its battery
+                           **stated(ENV, of=w, G_max=0.5))       # the strongest human class: a certificate within its floor
     ch = pk.meta["compression"]["channels"]
     assert pk.has_field and ch["susc_field_basis"]["sampling"] == "accumulated_in_walk"
     assert ch["susceptibility_grid"]["replay_route"] == "path" and not ch["susceptibility_grid"]["arrays_in_pack"]

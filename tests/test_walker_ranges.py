@@ -3,7 +3,7 @@ walkers in either precision, a pack's shape and starts are read without decoding
 copy-on-write and replaced rather than rewritten, and a merge streamed to its file is the merge held in memory."""
 from __future__ import annotations
 
-from tests._envelope import battery_reach, stated, walk_envelope
+from tests._envelope import battery_reach, shard_containers, stated, walk_envelope
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
@@ -139,7 +139,7 @@ def test_a_merge_streamed_to_its_file_is_the_merge_in_memory(spec_grid, monkeypa
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         packs.append(build_replay_pack(w, id=f"t/stream-{p_}", license="x", citation="x", K=3, voxel_grid=grid,
                                        out_path=str(tmp / f"stream-{p_}.rpk"),
-                                       **stated(of=w, G_max=battery_reach(w.T_window))))
+                                       **stated(of=w, G_max=battery_reach(w.T_window)), **shard_containers(packs)))
     packs = [read_rpk(str(tmp / f"stream-{p_}.rpk")) for p_ in (1, 2)]
     mem = merge_packs(packs, id="t/stream", overlap="recertify")
     monkeypatch.setattr(cx, "SLICE_BYTES", 8 * 3 * 5 * 7)              # seven walkers' coefficients at a time
