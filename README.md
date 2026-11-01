@@ -141,8 +141,8 @@ scanners, and is replayed once: the bands are contracted per acquisition, every 
 on the result, and an image of every pair comes from one read with a certified floor per volume.
 
 ```python
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
-study = Study(Protocol([Acquisition(seq)]), tissues=[None, pack.nominal], scanners=[None, 3.0, 7.0],
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
+study = Study(StudyProtocol([Acquisition(seq)]), tissues=[None, pack.nominal], scanners=[None, 3.0, 7.0],
               pairs=[(0, 0), (1, 1), (1, 2)])                    # bare, white matter at 3 T, white matter at 7 T
 S = pack.study(study)                                            # (pairs, n_meas) on a loaded pack
 S, floor, plan = big.image(study)                                # (pairs, *grid, n_meas) on a pack opened by reference
@@ -351,7 +351,7 @@ dmipy_sim/
                 _fused and bloch: the single-pass oracles the replay is held to
   replay/       replay (ReplayPack: dmipy-replay's with the producer's routes), bank (build_replay_pack), compression
                 (the codec), trajectories, columnar / remote / time_segments (dmipy-replay's readers with the JAX
-                backends; time_segments also writes the layout), study (Acquisition, Protocol, Study), phantom, fod, so3,
+                backends; time_segments also writes the layout), study (Acquisition, StudyProtocol, Study), phantom, fod, so3,
                 hub (the dataset repository behind publish), consolidate (shards -> the columnar layout)
   acquisition/  noise, coil (ScannerSequence, RFSchedule, ScannerLimits and the integrals are dmipy-replay's)
   sequences/    pulseq (export; the reader is dmipy-replay's)

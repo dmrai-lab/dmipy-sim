@@ -183,8 +183,8 @@ class PoseResponse:
 
 class ReplayPack(_ReplayPack):
     """A replay pack: :class:`dmipy_replay.ReplayPack` (the reader: every replay route, the plan, the band check) with
-    the pose expansion of a distribution of poses (:meth:`pose_response`, :meth:`pose_series`), the study
-    primitives and the JAX vector-Bloch propagator (``replay_bloch(backend="jax")``). The operations that write or re-encode a pack are functions of
+    the pose expansion of a distribution of poses (:meth:`pose_response`, :meth:`pose_series`) and the JAX vector-Bloch
+    propagator (``replay_bloch(backend="jax")``). The operations that write or re-encode a pack are functions of
     one (:mod:`dmipy_sim.replay.container`, :mod:`dmipy_sim.replay.reencode`)."""
 
     BLOCH_BACKENDS = dict(_ReplayPack.BLOCH_BACKENDS, jax=lambda: _jax_bloch())
@@ -194,23 +194,6 @@ class ReplayPack(_ReplayPack):
         """``orientation=`` as a distribution of poses (a :class:`~dmipy_sim.replay.so3.Distribution`, or an
         :class:`~dmipy_sim.replay.fod.FOD` read as an axis density), or None when it names a single pose."""
         return _as_distribution(orientation)
-
-    def walker_primitives(self, acquisition, *, tol=PLAN_TOL, K=None, modes=None):
-        """What ``acquisition`` (a :class:`~dmipy_sim.replay.study.Acquisition`, or a sequence) leaves of every
-        walker before any tissue or scanner is applied -- the bands and the path channel contracted once, the
-        exposures and the contact read once: a :class:`~dmipy_sim.replay.study.Primitives`, whose ``signals(tissue,
-        scanner)`` is :meth:`walker_signals` for every pair without touching the bands again (dmipy-sim#297). The bands and
-        modes read are the plan's (``tol=``, ``K=``, ``modes=`` as in :meth:`replay`), recorded as ``Primitives.plan``. The
-        plan weighs the acquisition's gradient and gate; the tissue and the scanner are not yet known, so a field is
-        planned at the pack's certified envelope (its largest ``B0`` and ``chi``) -- the mode count :meth:`replay` reads as well, and a bound for every pair."""
-        from .study import walker_primitives
-        return walker_primitives(self, acquisition, tol=tol, K=K, modes=modes)
-
-    def study(self, study):
-        """The signal for every pair of a :class:`~dmipy_sim.replay.study.Study`, ``(pairs, n_meas)``: the
-        protocol's acquisitions contracted once each, every tissue and scanner applied elementwise."""
-        from .study import study_signals
-        return study_signals(self, study)
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
                       method="auto", keep=None, cache=None, backend="jax", device=None):

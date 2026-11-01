@@ -14,7 +14,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition import epg
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_replay.spec.tissue import Tissue
 
 T2, T1, TM, DELTA = 0.08, 0.3, 0.02, 0.003
@@ -78,7 +78,7 @@ def test_every_route_agrees(pack):
     direct = float(np.asarray(pack.replay(seq, tissue=tis))[0])
     w, ew, E = pack.walker_signals(seq, tissue=tis)
     from_walkers = float(np.abs((ew[:, None] * E).sum(0) / w.sum())[0])
-    prim = float(np.abs(np.asarray(pack.study(Study(Protocol([Acquisition(seq)]), tissues=[tis], scanners=[None])))[0, 0]))
+    prim = float(np.abs(np.asarray(pack.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[tis], scanners=[None])))[0, 0]))
     assert from_walkers == pytest.approx(direct, rel=1e-9)
     assert prim == pytest.approx(direct, rel=1e-9)
 

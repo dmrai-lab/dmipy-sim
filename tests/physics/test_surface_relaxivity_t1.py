@@ -190,7 +190,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     from dmipy_sim.replay.consolidate import consolidate
     from dmipy_sim.spec import disco_spec, StratifiedByVoxel
     from dmipy_sim import walk
-    from dmipy_sim.replay.study import Protocol, Study
+    from dmipy_replay.replay.study import StudyProtocol, Study
 
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
@@ -211,7 +211,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     col = ReplayPack.open(str(tmp_path / "layout"))
     seq1 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
     tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, rho1=8e-6)
-    study = Study(Protocol([seq1]), tissues=[None, tissue], scanners=[None])
+    study = Study(StudyProtocol([seq1]), tissues=[None, tissue], scanners=[None])
     assert study.needs_contact
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)
     ijk, _ = grid.bin(merged.r0)

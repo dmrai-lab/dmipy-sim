@@ -99,7 +99,7 @@ partition) and forms ``|sum_w w exp(i sum_s G_s . m_s)| / sum_w w`` per voxel wi
 from device-resident words: each word decoded in the kernel (a shift up and an arithmetic shift down per field, the
 shifts constant per partition, a scale), float32 phases written out as products (a float32 matmul on CUDA is TF32),
 complex64 exponentials, complex128 tile sums and accumulator. ``tissue=`` / ``scanner=`` / ``b0_direction=`` turn the
-tiers into exactly :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms`: the row weight ``amp exp(-tau_2 / T2_pool
+tiers into exactly :meth:`~dmipy_replay.replay.study.Primitives.reduction_terms`: the row weight ``amp exp(-tau_2 / T2_pool
 - tau_1 / T1_pool + (rho2 / D) c)`` and the phase ``B0 (chi_iso A + chi_aniso B)``, ``A, B`` contracted from the decoded
 channels for that direction. Two backends run that arithmetic, ``"jax"`` (the reference) and ``"torch"`` (Hugging
 Face's shared GPU pool runs PyTorch only, and drops the device between calls).
@@ -472,7 +472,7 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude, ref
     field channels (with ``tiers``) and the background vector (with ``background``). ``ref`` is the record of the
     walkers before ``view``'s (a walker range's): their exposure times are the ones every walker's must equal."""
     from dmipy_replay.replay.replay import _band_phase, _path_field_channels
-    from .study import Acquisition
+    from dmipy_replay.replay.study import Acquisition
     from dmipy_replay.acquisition.epg import pathway_weight
     rows, rec = {}, dict(pathway=float(pathway_weight(gate_seq)), tau_t2=None, tau_t1=None, contact=False, field=None,
                          background=False)

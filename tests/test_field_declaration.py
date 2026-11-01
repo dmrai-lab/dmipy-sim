@@ -27,7 +27,7 @@ from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
 from dmipy_sim.replay import ReplayPack, so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_replay.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of
 from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
@@ -131,8 +131,8 @@ def test_absent_accepts_any_B0_and_it_changes_nothing(absent):
     np.testing.assert_array_equal(pk.pose_response(seq, scanner=7.0, keep=(4, 0)).coeffs, pk.pose_response(seq, keep=(4, 0)).coeffs)
     prim = pk.walker_primitives(Acquisition(seq))
     np.testing.assert_array_equal(prim.signal(None, 7.0), prim.signal(None, None))
-    np.testing.assert_array_equal(pk.study(Study(Protocol([Acquisition(seq)]), scanners=[None, 3.0, 7.0]))[1:],
-                                  np.repeat(pk.study(Study(Protocol([Acquisition(seq)])))[:1], 2, axis=0))
+    np.testing.assert_array_equal(pk.study(Study(StudyProtocol([Acquisition(seq)]), scanners=[None, 3.0, 7.0]))[1:],
+                                  np.repeat(pk.study(Study(StudyProtocol([Acquisition(seq)])))[:1], 2, axis=0))
 
 
 # ---- case 3: present + a non-zero chi + no B0 is refused
@@ -146,7 +146,7 @@ def test_present_refuses_chi_without_a_B0(present):
     with pytest.raises(ValueError, match="no scanner field"):
         pk.walker_primitives(Acquisition(seq)).signal(MYELIN, None)
     with pytest.raises(ValueError, match="no scanner field"):
-        pk.study(Study(Protocol([Acquisition(seq)]), tissues=[MYELIN]))
+        pk.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[MYELIN]))
 
 
 def test_present_with_no_or_zero_chi_at_a_B0_is_the_field_free_signal(present):
@@ -166,7 +166,7 @@ def test_present_with_chi_and_a_B0_replays_the_field(present):
     # the dense trapezoid over the raw block means; the save-grid route of #745 put 1.3e-3 here, its own error
     assert np.abs(S - pk.replay(seq, complex_signal=True)).max() > 1e-5
     np.testing.assert_allclose(pk.walker_primitives(Acquisition(seq)).signal(MYELIN, 3.0, complex_signal=True), S, rtol=1e-9, atol=1e-12)
-    np.testing.assert_allclose(pk.study(Study(Protocol([Acquisition(seq)]), tissues=[MYELIN], scanners=[3.0]))[0],
+    np.testing.assert_allclose(pk.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[MYELIN], scanners=[3.0]))[0],
                                np.abs(S), rtol=1e-9, atol=1e-12)
 
 

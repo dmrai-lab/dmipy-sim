@@ -463,7 +463,7 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
     order."""
     from dmipy_replay.replay.field import iso_weights, q_of_H
     from dmipy_replay.replay.time_segments import _decode, _field_terms_of_words, _layout_of, unpack_words
-    from dmipy_sim.replay.time_segments import _device_field_spec, _x64
+    from dmipy_replay.replay.time_segments_backends import _device_field_spec, _x64
     lay, merged, grid, n_t, m, tmp = blocks
     g = m["partitions"]["se"]["group"]
     cols = TimeSegmentLayout.columns(m)
@@ -602,7 +602,7 @@ def test_from_a_pack_the_tiers_carry_the_packs_own_quantisation(myelin):
     per-walker departure from the walk's float contraction (and are not vacuous for the contact); a floor target below
     the pack's own term is refused by name."""
     from dmipy_sim.replay.time_segments import tier_quantisation_terms, _gate_sequence
-    from dmipy_sim.replay.study import Acquisition
+    from dmipy_replay.replay.study import Acquisition
     from dmipy_replay.replay.replay import _path_field_channels
     from dmipy_replay.replay.field import field_terms
     M = myelin

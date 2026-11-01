@@ -15,7 +15,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity
-from dmipy_sim.replay.study import walker_primitives
+from dmipy_replay.replay.study import walker_primitives
 from dmipy_replay.spec.substrate import Susceptibility
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env, _slab_grid

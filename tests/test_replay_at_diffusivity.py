@@ -163,13 +163,13 @@ def test_a_study_refuses_a_tissue_at_another_diffusivity_and_takes_the_view(free
     """A study contracts the bands once on the walked grid and applies tissues afterwards, so a tissue at
     another diffusivity cannot be served from those primitives -- every term changes, not the surface divisor
     alone, which is the half-transformation a mismatched ``Tissue.D`` used to apply silently."""
-    from dmipy_sim.replay.study import Acquisition, Protocol, Study
+    from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
     pk_d, pk_2d = free
     seq = _seq(T / 2)
     with pytest.raises(ValueError, match="another grid"):
-        pk_d.study(Study(Protocol([Acquisition(seq)]), tissues=[Tissue(D=2 * D0)]))
-    S_view = pk_d.at_diffusivity(2 * D0).study(Study(Protocol([Acquisition(seq)]), tissues=[None]))
-    S_own = pk_2d.study(Study(Protocol([Acquisition(seq)]), tissues=[None]))
+        pk_d.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[Tissue(D=2 * D0)]))
+    S_view = pk_d.at_diffusivity(2 * D0).study(Study(StudyProtocol([Acquisition(seq)]), tissues=[None]))
+    S_own = pk_2d.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[None]))
     np.testing.assert_allclose(np.asarray(S_view), np.asarray(S_own), rtol=RTOL)
 
 

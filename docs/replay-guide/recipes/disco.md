@@ -8,7 +8,7 @@ downloaded whole; the pack is opened by reference and read by range.
 # docs: skip -- reads from the hub over the network
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim import sequences
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_sim.spec import Tissue
 
 pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")       # 150 M walkers, 31,802 voxels; zero bytes so far
@@ -20,7 +20,7 @@ print(view.replay(seq))                                                  # bare 
 print(view.nominal)                                                      # the spec's material: DiSCo's D, the catalogue's T2 / rho2 / chi
 
 wm = lambda scanner: Tissue(T2={"intra": 0.05, "extra": 0.055, "myelin": 0.01}, rho2=1.16e-6, chi_iso=-1e-7, chi_aniso=-1e-7)
-study = Study(Protocol([Acquisition(seq, name="two directions")]), tissues=[None, wm], scanners=[None, 3.0, 7.0], pairs=[(0, 0), (1, 1), (1, 2)])
+study = Study(StudyProtocol([Acquisition(seq, name="two directions")]), tissues=[None, wm], scanners=[None, 3.0, 7.0], pairs=[(0, 0), (1, 1), (1, 2)])
 S, floor, plan = pack.image(study)                                       # (3, 40, 40, 40, 2): one pass, a floor per volume
 ```
 
