@@ -1,6 +1,6 @@
 """Bloch-side sequence builders: bare readouts for the vector-Bloch engine, FEXI, and the MT preparation block.
 
-Everything here is a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical gradient,
+Everything here is a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence` -- the physical gradient,
 the schedule, the readout, and where the engine models one, the emergent voxel-scale ``crusher`` (windings over
 windows; a um cell-scale gradient cannot wind >> 2 pi across a cell, so the crusher acts at the mm scale it
 physically has). The vector-Bloch oracle (``engine.bloch._simulate_bloch``) runs one, applying its pulses

@@ -39,17 +39,6 @@ def non_negative(name, v):
     return v
 
 
-def non_positive(name, v):
-    """Require v <= 0 (myelin susceptibility is diamagnetic vs water)."""
-    v = _num(name, v)
-    if not v <= 0.0:
-        raise ValueError(
-            f"{name} must be <= 0: myelin is diamagnetic relative to water, so "
-            f"the susceptibility difference is non-positive (got {v!r}). The "
-            f"field formula uses its magnitude; a positive value is a sign error.")
-    return v
-
-
 def in_open_interval(name, v, lo, hi):
     """Require lo < v < hi (e.g. g_ratio in (0, 1))."""
     v = _num(name, v)

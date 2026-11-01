@@ -1,4 +1,4 @@
-"""Tests for the continuous B1(t) RF representation (dmipy_sim.acquisition.rf)."""
+"""Tests for the continuous B1(t) RF representation (dmipy_replay.acquisition.rf)."""
 import numpy as np
 import pytest
 

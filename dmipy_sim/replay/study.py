@@ -30,7 +30,7 @@ from dmipy_replay.replay.primitives import Primitives
 
 @dataclass(frozen=True)
 class Acquisition:
-    """A sequence in a pose: ``sequence`` a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` (or an
+    """A sequence in a pose: ``sequence`` a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence` (or an
     object carrying one as ``.waveform``), ``orientation`` the substrate's pose as :meth:`ReplayPack.replay` takes
     it (``None``: the pack's own frame), ``name`` for the record."""
     sequence: object

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FEXI apparent-exchange-rate (AXR) demo — WORK IN PROGRESS, see FEXI_AXR_NOTES.md.
+"""FEXI apparent-exchange-rate (AXR) demo.
 
 Runs the ``dmipy_sim.engine.pulse_sequence.fexi`` stimulated-echo filter-exchange sequence on a
 permeable packed substrate through the vector-Bloch engine (which now models membrane
@@ -10,13 +10,12 @@ permeation), sweeps the mixing time, and fits the AXR recovery model
 for an exchanging (kappa>0) vs a non-exchanging (kappa=0) substrate. With exchange the filtered
 ADC' recovers toward equilibrium at rate AXR; without it, ADC' is flat (the null).
 
-STATUS: the sequence + engine are correct, but a *clean* AXR curve needs a substrate with a
-strong (>=2x) inter-pool ADC contrast. Packed cylinders (single bulk D) give only a weak filter
+A clean AXR curve needs a substrate with a strong (>=2x) inter-pool ADC contrast. Packed cylinders (single bulk D) give only a weak filter
 (sigma ~ 0.2) and a noisy curve; packed SPHERES (3D confinement -> much lower intra ADC) are more
 promising and are the default here. A realistic grey-matter mesh (ConCeG, arXiv:2607.03286, via
 Mesh.from_ply) is the faithful substrate. Do NOT use per-compartment D + permeability together —
 dmipy-sim rejects a diffusivity discontinuity across a permeable wall (the FEXI contrast is
-geometric restriction, not a bulk-D difference). See FEXI_AXR_NOTES.md for the full findings.
+geometric restriction, not a bulk-D difference).
 
 Run (GPU strongly recommended — this is a heavy permeable MC):
     NVLIBS=$(find ~/.local/lib/python3.11/site-packages/nvidia -name '*.so*' -path '*/lib/*' \

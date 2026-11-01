@@ -1,6 +1,6 @@
 """The sequence builders and the Pulseq bridge.
 
-Every builder returns a :class:`~dmipy_sim.acquisition.scanner_sequence.ScannerSequence` -- the physical
+Every builder returns a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence` -- the physical
 gradient, the RF schedule, the readout, the per-measurement encoding an analytical layer reads::
 
     seq = dmipy_sim.sequences.pgse(gdirs, delta, Delta, bvalues=bvalues, slew_rate=200.)
