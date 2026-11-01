@@ -1,7 +1,7 @@
 """The strands generator of the substrate spectrum (dmrai-lab/dmipy-sim#697): random curved strands at DiSCo's
 own radius and density statistics (:mod:`dmipy_sim.spectrum.disco_stats`), streamed tile by tile so a 5 mm pack
-is never held whole in memory, built into the exact same shape a DiSCo fill reads
-(:func:`dmipy_sim.spec.producers.disco_spec` + :mod:`dmipy_sim.fill.recipe`).
+is never held whole in memory, built into the exact same shape a DiSCo recipe has
+(:func:`dmipy_sim.spec.producers.disco_spec`).
 
 **Tiling.** The domain is a cube of edge ``edge_m``. It is partitioned into columns of
 :data:`~dmipy_sim.spectrum.common.TILE_EDGE_M` (1 mm) lateral size (one column when ``edge_m <= 1 mm``, else a
@@ -174,7 +174,7 @@ def _build_far_grid(spec, out_path, *, node_budget=FAR_GRID_NODE_BUDGET, spacing
     and the largest sheath radius so the switch always starts beyond its required gate
     (``near_m = 2 R_out_max + 4.5h``, ``blend_m = 2h``: the basis's own ``near - blend >= r_min`` check with a
     margin of ``0.5h``, as tight as is safe) -- fixing them independently of ``h`` (as
-    ``tests/fill/conftest.py``'s tiny fixed-spacing template does) breaks the moment a coarser-than-fixture
+    a tiny fixed-spacing template does) breaks the moment a coarser-than-fixture
     ``h`` makes ``2h`` comparable to the sheath radius, which is exactly what a budget-coarsened 5 mm spacing
     does. Because the gather cost per node grows with ``near_m**3`` and ``near_m`` must grow with ``h`` once
     ``h`` is no longer tiny next to the sheath radius, coarsening ``h`` for a bigger edge does NOT keep the

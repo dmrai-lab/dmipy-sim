@@ -5,8 +5,7 @@ RNG stream, never two equal) a streaming generator partitions its domain into.
 
 A spectrum entry is one directory: a substrate spec (geometry files + ``spec.json``), one ``manifest.json`` +
 ``plan/`` per walkable (edge, walk length) pair (the halo rule may refuse some), and a ``spectrum.json`` index
-of every file's sha256. ``dmipy_sim.spectrum`` writes these; a fill (:mod:`dmipy_sim.fill`) reads them exactly
-as it reads any other recipe -- the spectrum is generated, not a new kind of thing.
+of every file's sha256. ``dmipy_sim.spectrum`` writes these in the shape of any other recipe -- the spectrum is generated, not a new kind of thing.
 """
 from __future__ import annotations
 
@@ -34,7 +33,7 @@ WALK_LENGTHS_S = (0.020, 0.100)
 #: :data:`WALK_LENGTHS_S`, this gives halos of 71.6 and 160.0 um, rounding to the 72 / 160 um of the issue text.
 HALO_FREE_DIFFUSIVITY_M2_S = 2.0e-9
 
-#: the halo rule's margin cells (dmipy_sim.fill.kit._reach_margin: ``8 sqrt(2 D T)``).
+#: the halo rule's margin cells (``8 sqrt(2 D T)``, the excursion of a walk).
 HALO_MARGIN_CELLS = 8.0
 
 #: m, the tile a streaming generator fills independently (own RNG stream) and stitches: #697's "1 mm" unit.
@@ -46,8 +45,8 @@ class SpectrumHaloError(ValueError):
 
 
 def halo_m(T_max_s, *, D=HALO_FREE_DIFFUSIVITY_M2_S):
-    """The excursion halo (m) of a walk of ``T_max_s`` seconds at diffusivity ``D``: ``8 sqrt(2 D T)``, the same
-    rule :func:`dmipy_sim.fill.kit._reach_margin` applies to a block's own download margin."""
+    """The excursion halo (m) of a walk of ``T_max_s`` seconds at diffusivity ``D``: ``8 sqrt(2 D T)``, the excursion
+    a block of a distributed walk needs around its own box."""
     return float(HALO_MARGIN_CELLS) * float(np.sqrt(2.0 * float(D) * float(T_max_s)))
 
 
@@ -176,14 +175,12 @@ def pool_census(preds, grid, *, census_draws=200, seed=0):
 
 def write_manifest(variant_dir, *, id_, license_, citation, substrate, grid, T_max_s, scanner, counts_rel,
                    blocks_rel, total_walkers, n_blocks):
-    """A recipe-shaped ``manifest.json`` for a substrate kind :mod:`dmipy_sim.fill` does not read yet
+    """A recipe-shaped ``manifest.json`` for a substrate kind that is not a strand set
     (``substrate["kind"]`` is not ``"disco"``): the SAME outer shape (``code``, ``substrate``, ``grid``,
     ``walk``, ``pack``, ``plan``) dmipy_sim.spectrum.strands.strands's own manifest uses, so a reader
     already expecting that shape finds the same fields, but ``substrate`` carries whatever this generator's
-    kind needs (a ``spec_file`` for a packed-cylinder/sphere or label-volume entry, since none of those has a
-    :mod:`dmipy_sim.fill.recipe.Recipe` reader of its own -- extending ``Recipe`` to the new kinds is a
-    follow-up, not this generator's job, which is to write the data in the shape the recipe is DEFINED to
-    have). No field basis: these classes carry no susceptibility source (dmipy-sim#697's PR2 scope)."""
+    kind needs (a ``spec_file`` for a packed-cylinder/sphere or label-volume entry, a recipe reader of those kinds
+    is the consumer's business; this generator writes the data in the shape the recipe is DEFINED to have). No field basis: these classes carry no susceptibility source (dmipy-sim#697's PR2 scope)."""
     from dmipy_replay.replay.storage import mode_count
     man = dict(
         id=id_, license=license_, citation=citation,

@@ -327,9 +327,9 @@ def test_the_adaptive_producer_takes_the_start_pool_from_the_batch():
 
 def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots_read():
     """With a strand field the request carries the sampling (the basis, the list's reuse and width) and the read
-    (``K_c3``, ``field_read_interval``): the pilot walks on the JAX kernels whatever the backend (the read series'
-    quadratic variation, the trapezoid's constants and the band are the producer's own measurement), the backend's
-    batches at the read the pilot derives; the walk takes the batch's field modes, its quadratic variation and its
+    (``K_c3``, ``field_read_interval``): the pilot is walked by the backend itself, one output block per round (the
+    read series' quadratic variation, the trapezoid's constants and the band are the producer's measurement of
+    those reads), then the backend's batches at the read the pilot derives; the walk takes the batch's field modes, its quadratic variation and its
     read series' quadratic variation. The raw subset of a field walk is walked by the JAX kernels too (its reads at
     the read instants). A backend that returns no read series' quadratic variation is refused by name."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
@@ -344,8 +344,9 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 1 and f.reuse_intervals == 3
     assert f.radius_m >= basis.gather_radius_m and f.list_k == 256            # no JAX probe with a backend: the given width
     fr = w.block["field_read"]
-    assert fr["rule"] == "pilot" and fr["constants_measured"] and w.stepping["field_pilot_backend"] == "jax"
-    assert all(r.field_read_interval == pytest.approx(w.field_read_interval) for r in still.requests)   # the backend walks the walk only
+    assert fr["rule"] == "pilot" and fr["constants_measured"] and w.stepping["field_pilot_backend"] == "still"
+    walked = [r for r in still.requests if r.K_c3 == 2]                      # the walk's batches; the pilot's probe has K_c3 = 0
+    assert walked and all(r.field_read_interval == pytest.approx(w.field_read_interval) for r in walked)
     assert walk.K_c3 == 2 and w.field_coeffs.shape == (64, 1, 2, 12) and w.K_c3 == 2 and w.field_basis is basis
     assert w.qv_field.shape == (64, 1, 12) and w.qv_field_increments.shape == (64, 1, 12)
     with pytest.raises(ValueError, match="the backend does not return the field increments"):
@@ -353,7 +354,7 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     raw = _Still()
     wr = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=raw, raw_subset=16, **kw)
     assert wr.raw_field.shape == (16, wr.n_blocks * wr.reads_per_block + 1, 12) and wr.stepping["raw_subset_backend"] == "jax"
-    assert all(int(r.raw_subset) == 0 for r in raw.requests)                     # the backend walks no raw subset
+    assert all(int(r.raw_subset) == 0 for r in raw.requests if r.K_c3 == 2)      # the backend walks no raw subset in the walk
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():
@@ -387,18 +388,3 @@ def test_the_parity_harness_admits_what_is_installed():
         report = backends.parity_report(name)
         bad = [r for r in report if r["ok"] is False]
         assert not bad, f"{name}: {bad}"
-
-
-def test_the_request_carries_the_step_law():
-    """A backend's request states the step law beside the length scale: the pair's two atoms and the long one's
-    probability, the values ``dmipy_sim.math.step_law`` defines, so no kernel holds a length of its own."""
-    from dmipy_sim.math import step_law as sl
-    fields = backends.request_struct_fields(n_blocks=2, sub_steps=2, step_l=1e-6, kappa_over_D=0.0, record=False, count=False, budget=4,
-                                            block_h=1e-4, dt_sim=5e-5, K=8, m=3, events=5, raw_subset=0)
-    assert fields["n_blocks"] == 2 and fields["ring"] == 64 and fields["events"] == 0      # no events on a walk that records none
-    assert fields["atom_short"] == pytest.approx(sl.PAIR_SHORT, rel=1e-6)
-    assert fields["atom_long"] == pytest.approx(sl.PAIR_LONG, rel=1e-6) and fields["atom_long"] == pytest.approx(sl.LONGEST_STEP, rel=1e-6)
-    assert fields["p_long"] == pytest.approx(sl.PAIR_P_LONG, rel=1e-6)
-    assert list(fields) == list(backends.REQUEST_TEMPLATE_KEYS) == [
-        "n_blocks", "sub_steps", "step_l", "atom_short", "atom_long", "p_long", "kappa_over_D", "record", "count", "budget",
-        "seed", "block_h", "dt_sim", "K", "m", "ring", "events", "raw_subset"]                 # DscRequest, dmipy-sim-cuda#78

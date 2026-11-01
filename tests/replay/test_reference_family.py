@@ -976,7 +976,7 @@ def test_publish_refuses_a_record_changed_after_the_gate(tmp_path, monkeypatch):
 def test_the_manifest_carries_the_gate_verdict_per_pack(tmp_path, monkeypatch):
     """A withheld pack is not deleted -- its bytes are the maintainer's -- but it must not sit in the manifest
     with nothing to say the gate failed it."""
-    from dmipy_sim.fill import FakeHub
+    from dmipy_sim.replay.hub import FakeHub
     from dmipy_sim.replay import publish as pub
     hub = FakeHub(str(tmp_path / "hub"))
     pubn = R.Publication(repo="owner/synthetic", licence="CC-BY-4.0", citation="a test family",
@@ -1005,7 +1005,7 @@ def test_the_manifest_and_the_card_name_the_built_and_the_published_commit_disti
     """dmipy-sim#499: the manifest row and the card state the SAME built commit -- the one the pack's own
     provenance records, sealed in its header and never corrected after the fact -- and each separately names the
     publishing commit, never one unlabelled ``commit`` meaning two different facts."""
-    from dmipy_sim.fill import FakeHub
+    from dmipy_sim.replay.hub import FakeHub
     hub = FakeHub(str(tmp_path / "hub"))
     pubn = R.Publication(repo="owner/synthetic", licence="CC-BY-4.0", citation="a test family",
                          snippet=_snippet, snippet_substrate="sphere", dry=False)

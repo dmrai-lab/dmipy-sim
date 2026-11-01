@@ -246,7 +246,7 @@ def test_a_windowed_read_from_the_real_hub():
         api.whoami()
     except Exception as e:
         pytest.skip(f"no hub login / no network: {e}")
-    from dmipy_sim.fill.hub import sha256_of
+    from dmipy_sim.replay.hub import sha256_of
     api.create_repo(FIXTURE_REPO, repo_type="dataset", exist_ok=True, private=False)
     if not api.file_exists(FIXTURE_REPO, "README.md", repo_type="dataset"):
         api.upload_file(path_or_fileobj=FIXTURE_README.encode(), path_in_repo="README.md", repo_id=FIXTURE_REPO,

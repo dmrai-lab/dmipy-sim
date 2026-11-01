@@ -132,7 +132,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     from dmipy_sim.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
-    from dmipy_sim.fill.consolidate import consolidate
+    from dmipy_sim.replay.consolidate import consolidate
     from dmipy_sim.spec import disco_spec, StratifiedByVoxel
     from dmipy_sim import walk
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]

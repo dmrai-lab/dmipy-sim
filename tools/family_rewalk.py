@@ -36,7 +36,7 @@ Stages::
 
     python tools/family_rewalk.py plan pores                          # counts, step resolution, cost, backend
     python tools/family_rewalk.py plan pores --pilot 4000 --out DIR   # the counts from a pilot bound per pore
-    python tools/family_rewalk.py walk pores --out DIR --backend cuda # walk + pack every substrate not yet in DIR
+    python tools/family_rewalk.py walk pores --out DIR --backend NAME # walk + pack every substrate not yet in DIR
     python tools/family_rewalk.py check DIR                           # every pack: stated envelope, certificate, a replay
 
 ``walk --keep-walk DIR`` also saves each substrate's float ``CoefficientWalk`` to ``DIR/<pack id>.safetensors``
@@ -435,7 +435,7 @@ class Slab(Family):
     def geometry(self, name):
         """The slab as a two-voxel label volume (``--slab-geometry label``, the default: A the first voxel, B the
         second, the x faces reflecting, y and z periodic, every face between them the membrane; an engine class the
-        CUDA backend walks) or as ``PermeableSlab1D`` (``analytic``). Both are the same closed slab under the same
+        an accelerated backend walks) or as ``PermeableSlab1D`` (``analytic``). Both are the same closed slab under the same
         Powles rule, ``p = min(1, 2 kappa d_perp / D)`` per encounter, and resolve the same step."""
         kappa = self.substrates()[name]["kappa"]
         if self.args.slab_geometry == "analytic":
@@ -685,17 +685,10 @@ def _commit(path):
 
 def _sim_identity():
     """Where the ``dmipy_sim`` that walked is imported from and its checkout's commit (an installed copy shadowing
-    the intended checkout is the trap this records), and the CUDA backend's when it is installed."""
+    the intended checkout is the trap this records)."""
     import dmipy_sim
     sim = os.path.dirname(os.path.abspath(dmipy_sim.__file__))
-    out = dict(path=sim, commit=_commit(sim))
-    try:
-        import dmipy_sim_cuda
-        cu = os.path.dirname(os.path.abspath(dmipy_sim_cuda.__file__))
-        out["cuda"] = dict(path=cu, commit=_commit(cu))
-    except ImportError:
-        out["cuda"] = None
-    return out
+    return dict(path=sim, commit=_commit(sim))
 
 
 def _device():
@@ -715,18 +708,10 @@ def _shard(names, shard):
 
 
 def _plan_backend(backend):
-    """The backend a plan asks: the installed one of that name, else for ``"cuda"`` the dmipy-sim-cuda checkout's
-    :class:`CudaBackend` on the path (its refusals need no built library), so a CPU host states what the card
-    would refuse."""
+    """The backend a plan asks: the installed one of that name (refused by name when none is)."""
     from dmipy_sim.engine.backends import resolve
-    try:
-        resolve(backend)
-        return backend
-    except ValueError:
-        if backend != "cuda":
-            raise
-        from dmipy_sim_cuda.backend import CudaBackend
-        return CudaBackend()
+    resolve(backend)
+    return backend
 
 
 def _backend_check(fam, name, backend):
@@ -995,7 +980,7 @@ def main(argv=None):
     p.add_argument("stage", choices=("plan", "walk", "check"))
     p.add_argument("family", nargs="?", choices=tuple(FAMILIES))
     p.add_argument("--out", default=None, help="the family's output directory (packs/, receipts/)")
-    p.add_argument("--backend", default="jax", help="'cuda' for production, 'jax' for a CPU smoke")
+    p.add_argument("--backend", default="jax", help="an installed backend's name for production, 'jax' for a CPU smoke")
     p.add_argument("--envelope", default=None, help="a JSON file of envelope keys over the family's (scanner, "
                                                     "rho2_list, B0_list, chi_max, ...)")
     p.add_argument("--floor", type=float, default=None, help="the toggle-proof standard-error floor f")
@@ -1006,7 +991,7 @@ def main(argv=None):
     p.add_argument("--diameters", type=float, nargs="+", default=None, help="pores: a sub-grid (um)")
     p.add_argument("--kappas", type=float, nargs="+", default=None, help="slab: permeabilities (m/s)")
     p.add_argument("--slab-geometry", choices=("label", "analytic"), default="label",
-                   help="slab: a two-voxel LabelVolume (CUDA-walked) or PermeableSlab1D (JAX only)")
+                   help="slab: a two-voxel LabelVolume (walked by a backend) or PermeableSlab1D (JAX only)")
     p.add_argument("--cactus-run", default=None, help="cactus: the CACTUS run directory")
     p.add_argument("--cactus-reference", default=None, help="cactus: a spec (JSON) whose walls, cell side and frame the "
                                                             "walk keeps, its surfaces found under --cactus-run by sha256")
@@ -1073,8 +1058,8 @@ def main(argv=None):
     if not a.out:
         p.error("walk needs --out")
     if not a.smoke and a.backend == "jax" and not a.allow_jax:
-        p.error("a production walk runs on --backend cuda; --smoke for the CPU check, --allow-jax for a family the "
-                "CUDA backend refuses and the campaign walks on the JAX kernels (its receipts say so)")
+        p.error("a production walk names an installed --backend; --smoke for the CPU check, --allow-jax for a family "
+                "no installed backend walks and the campaign walks on the JAX kernels (its receipts say so)")
     return stage_walk(fam, a)
 
 

@@ -1,20 +1,17 @@
-"""The dataset repository a fill runs against, behind one small interface: files down, ONE write primitive, and
-a fake of it for tests.
+"""A dataset repository behind one small interface: files down, ONE write primitive, and a fake of it for tests.
 
-A fill's workers coordinate through files in the repository and nothing else. The repository allows 128 commits
-an hour (huggingface.co, per repository), so everything a block leaves -- its shard, its summary, the run
-records of its walk, the release of its claim -- goes up in one :meth:`Hub.commit`, and claims are written
-several per commit. A 429 from the hub waits :data:`RATE_LIMIT_WAIT_S` and tries again; any other error backs
-off; a heartbeat that must not block passes ``tries=1``. Every added file is verified after the commit: the
-hub's LFS sha256 (or the size of a small file) must match the local one.
+:func:`~dmipy_sim.replay.publish.publish` and the reference-family builders put packs on a repository and read them
+back through this interface. The repository allows 128 commits an hour (huggingface.co, per repository), so
+everything one step leaves goes up in one :meth:`Hub.commit`. A 429 from the hub waits :data:`RATE_LIMIT_WAIT_S` and
+tries again; any other error backs off; a caller that must not block passes ``tries=1``. Every added file is
+verified after the commit: the hub's LFS sha256 (or the size of a small file) must match the local one.
 
-Recipe files are read at the revision the worker started on (:meth:`Hub.get`): the repository gains a commit
-every few minutes while a fill runs, and files fetched at different revisions land in different snapshot
-directories (a far grid's ``.json`` was not beside its ``.npy``). Claims are read as they are now
-(:meth:`Hub.get_live`).
+Files are read at the revision the :class:`Hub` was opened on (:meth:`Hub.get`): the repository gains commits while a
+job runs, and files fetched at different revisions land in different snapshot directories. A file as it is now is
+:meth:`Hub.get_live`.
 
-:class:`FakeHub` is the same interface over a directory, with a commit log and an injectable 429, for the tests
-of everything above it."""
+:class:`FakeHub` is the same interface over a directory, with a commit log and an injectable 429, for the tests of
+everything above it."""
 import hashlib
 import json
 import logging
@@ -27,7 +24,7 @@ UPLOAD_TRIES = 6             # a commit retried with backoff: a transient hub er
 OUTAGE_WAIT_S = 60           # a 5xx (the hub refusing commits) waits this long before the retry ...
 OUTAGE_TRIES = 60            # ... up to this many times (an hour): a hub outage must not crash every worker
 READ_TRIES = 8               # a read (a listing, an exists, a download) retried with backoff 30, 60, ... s: a network blip must not end a loop
-log = logging.getLogger("dmipy_sim.fill")
+log = logging.getLogger("dmipy_sim.replay.hub")
 
 
 def sha256_of(path):
@@ -151,16 +148,16 @@ class Hub(HubBase):
         from huggingface_hub import HfApi
         self.repo = repo
         self.api = HfApi()
-        self.revision = self.api.dataset_info(repo).sha    # the recipe as of the start: every file from ONE revision
-        self.queue = []                                    # blocks claimed ahead in one commit (claims.claim_next)
+        self.revision = self.api.dataset_info(repo).sha    # every file from ONE revision
+        self.queue = []                                    # work items the caller claimed ahead; the caller owns the list
 
     def get(self, f):
-        """A recipe file, at the revision the worker started on (a local path)."""
+        """A file at the revision this object was opened on (a local path)."""
         from huggingface_hub import hf_hub_download
         return self.read(f"download of {f}", lambda: hf_hub_download(self.repo, f, repo_type="dataset", revision=self.revision))
 
     def get_live(self, f):
-        """A file as it is now (a claim, another worker's heartbeat)."""
+        """A file as it is now (a local path)."""
         from huggingface_hub import hf_hub_download
         return self.read(f"download of {f}", lambda: hf_hub_download(self.repo, f, repo_type="dataset"))
 
@@ -201,7 +198,7 @@ class Hub(HubBase):
 
 
 class FakeHub(HubBase):
-    """The same interface over a directory ``root``: what the tests of a fill run against. ``log`` holds every
+    """The same interface over a directory ``root``: what the tests run against. ``log`` holds every
     commit as ``dict(time, message, adds, deletes)``; ``fail_429`` is a list of message prefixes whose first
     commit raises the hub's 429 (a retry then succeeds); ``fail_read`` a list of read names (``"exists"``,
     ``"files"``, ``"get"``) each of which makes the next such read raise a 5xx once."""

@@ -294,7 +294,7 @@ def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
     the record states it and the numbers it rests on. Measured once and cached on the image's digest, the grid
     and the walk's parameters.
     """
-    from dmipy_sim.fill.hub import sha256_of
+    from dmipy_sim.replay.hub import sha256_of
     from dmipy_sim.replay.bank import build_replay_pack
     d = direct_record(work_dir)[f"{sample}@{rho_of(sample) * 1e6:g}"]
     image = image_path(sample, data_dir, work_dir)

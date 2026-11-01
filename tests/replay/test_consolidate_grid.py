@@ -9,8 +9,8 @@ import os
 import numpy as np
 import pytest
 
-from dmipy_sim.fill.consolidate import consolidate
-from dmipy_sim.fill.recipe import manifest_grid
+from dmipy_sim.replay.consolidate import consolidate
+from dmipy_sim.replay.consolidate import manifest_grid
 from dmipy_sim.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_certificate
 from dmipy_sim.replay.replay import ReplayPack, read_rpk, write_rpk
@@ -71,8 +71,9 @@ def test_the_pack_certificate_is_the_one_a_build_with_the_grid_measures(rounds):
     arrays, pv = voxel_certificate(written[2], grid)
     np.testing.assert_array_equal(arrays["voxel_ijk"], cert[2].arrays["voxel_ijk"])
     np.testing.assert_allclose(arrays["voxel_certificate"], cert[2].arrays["voxel_certificate"], rtol=1e-6, equal_nan=True)
+    # the pack's meta states six significant digits (``_round_sig``): a relative half unit of the last one is 5e-6
     for k in ("n_voxels", "walkers_min", "floor_max", "floor_median", "thin_voxels", "pools"):
-        assert pv[k] == pytest.approx(cert[2].meta["fidelity"]["per_voxel"][k])
+        assert pv[k] == pytest.approx(cert[2].meta["fidelity"]["per_voxel"][k], rel=5e-6)
 
 
 def test_a_layout_of_walkers_shards_is_the_layout_of_certified_shards(rounds, tmp_path):
@@ -83,8 +84,9 @@ def test_a_layout_of_walkers_shards_is_the_layout_of_certified_shards(rounds, tm
     pv, pv_ref = man["meta"]["fidelity"]["per_voxel"], ref["meta"]["fidelity"]["per_voxel"]
     assert pv["n_voxels"] == pv_ref["n_voxels"] == 8 and pv["shards"] == pv_ref["shards"] == 2
     assert pv["within_2x_floor_fraction"] is None and pv["err_max"] is None            # the error is the pack's, not a voxel's
-    for k in ("walkers_min", "floor_max", "floor_median", "thin_voxels", "pools", "grid"):
-        assert pv[k] == pytest.approx(pv_ref[k])
+    for k in ("walkers_min", "floor_max", "floor_median", "thin_voxels", "pools"):
+        assert pv[k] == pytest.approx(pv_ref[k], rel=5e-6)      # both state six significant digits
+    assert pv["grid"] == pv_ref["grid"]
     pack, table = certified_table(str(tmp_path / "out")); _, table_ref = certified_table(str(tmp_path / "ref"))
     np.testing.assert_array_equal(table["voxel_ijk"], table_ref["voxel_ijk"])
     np.testing.assert_allclose(table["voxel_certificate"], table_ref["voxel_certificate"], rtol=1e-5, equal_nan=True)

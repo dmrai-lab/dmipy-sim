@@ -35,7 +35,7 @@ _UM = 1e-6
 
 
 def _sha(path):
-    from ..fill.hub import sha256_of
+    from ..replay.hub import sha256_of
     return sha256_of(path)
 
 

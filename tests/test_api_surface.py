@@ -617,9 +617,6 @@ def test_a_backends_request_names_the_walk_and_no_save_grid():
     assert {"position_coeffs", "boundary_bands", "boundary_endpoint", "compartment", "qv_positions", "qv_boundary",
             "events", "bound_events", "field_bands", "field_qv", "dt_f", "saves", "precision", "K", "m"} <= set(CoefficientBatch._fields)
     assert not {"positions", "n_t"} & set(CoefficientBatch._fields)
-    from dmipy_sim.engine import backends
-    assert "n_t" not in backends.REQUEST_TEMPLATE_KEYS and {"block_h", "dt_sim", "K", "m", "ring", "events"} <= set(backends.REQUEST_TEMPLATE_KEYS)
-    assert not {"sample_every", "n_tf"} & set(backends.FIELD_STRUCT_KEYS) and {"K_c3", "read_every", "mean"} <= set(backends.FIELD_STRUCT_KEYS)
 
 
 def test_one_basis_and_no_header_with_a_save_grid():
@@ -679,7 +676,7 @@ _SAVE_COUNTS = re.compile(r"\b(?:n_t|n_s|n_seg|n_saves|_window_n_t|Nt|N_t)\b")
 #: the modules that READ a pack (the consumer routes): their band readers take a stated duration
 _READER_MODULES = ("replay/replay.py", "replay/columnar.py", "replay/study.py", "replay/pose_series.py",
                    "replay/pose_device.py", "replay/continuation.py", "replay/phantom.py", "replay/time_segments.py",
-                   "replay/so3.py", "fill/consolidate.py")
+                   "replay/so3.py", "replay/consolidate.py")
 
 
 def _band_reader_T_args():

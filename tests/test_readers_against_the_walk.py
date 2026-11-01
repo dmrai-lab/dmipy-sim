@@ -66,7 +66,7 @@ def walked(tmp_path_factory):
     blocks of one fill -- each an order-0 walk with every walker's block ends kept, packed in the float containers
     (the pack is the walk's coefficients in float32) and consolidated into the columnar layout."""
     import warnings
-    from dmipy_sim.fill.consolidate import consolidate
+    from dmipy_sim.replay.consolidate import consolidate
     g, grid = _cell()
     tmp = tmp_path_factory.mktemp("oracle"); (tmp / "shards").mkdir()
     with warnings.catch_warnings():
@@ -169,7 +169,7 @@ def test_a_whole_window_read_is_the_pack_of_the_walks_window(two_windows):
 def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
     """A consolidation of shards that disagree on ``walk_params.block`` or ``walk_params.windows`` is refused, naming
     the key."""
-    from dmipy_sim.fill.consolidate import consolidate
+    from dmipy_sim.replay.consolidate import consolidate
     g, grid = _cell()
     kw = dict(license="x", citation="x", K=4, voxel_grid=grid)
 
