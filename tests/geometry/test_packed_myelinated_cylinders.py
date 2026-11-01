@@ -253,8 +253,9 @@ def test_simulate_packed_myelin_signal():
     """
     geom = _simple_cell()
     wf = _make_waveform(np.array([0.0, 0.5e9, 1.0e9, 2.0e9]))
-    sig = np.asarray(simulate(20000, None, wf, geom, seed=SEED))
-    npt.assert_allclose(sig[0], 1.0, atol=3.0 / np.sqrt(20000))   # b0 unattenuated
+    n = 2000       # the b-values share their walkers, so the steps between them (>= 0.05 here) carry far less noise than 3 / sqrt(n) = 0.067
+    sig = np.asarray(simulate(n, None, wf, geom, seed=SEED))
+    npt.assert_allclose(sig[0], 1.0, atol=3.0 / np.sqrt(n))   # b0 unattenuated
     assert np.all(np.diff(sig) < 0)                               # monotonic decay in b
     assert np.all(sig > 0) and np.all(sig <= 1.0 + 1e-6)
 
