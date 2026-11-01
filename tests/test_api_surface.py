@@ -674,16 +674,18 @@ _SAVE_COUNTS = re.compile(r"\b(?:n_t|n_s|n_seg|n_saves|_window_n_t|Nt|N_t)\b")
 
 
 #: the modules that READ a pack (the consumer routes): their band readers take a stated duration
-_READER_MODULES = ("replay/replay.py", "replay/study.py", "replay/pose_series.py",
-                   "replay/pose_device.py", "replay/continuation.py", "replay/time_segments.py",
-                   "replay/so3.py", "replay/consolidate.py")
+_READER_MODULES = tuple((_SRC, m) for m in ("replay/replay.py", "replay/pose_series.py", "replay/pose_device.py",
+                                            "replay/continuation.py", "replay/time_segments.py", "replay/so3.py",
+                                            "replay/consolidate.py")) + \
+                  tuple((_REPLAY_SRC, m) for m in ("replay/study.py", "replay/columnar.py", "replay/phantom.py"))
 
 
 def _band_reader_T_args():
     """``(file, line, T argument's source)`` of every call to a band reader in the reader modules."""
     import ast
     out = []
-    for f in (_SRC / m for m in _READER_MODULES):
+    for root, m in _READER_MODULES:
+        f = root / m
         src = f.read_text()
         for node in ast.walk(ast.parse(src)):
             if not isinstance(node, ast.Call):
@@ -696,7 +698,7 @@ def _band_reader_T_args():
             if arg is None and len(node.args) > at:
                 arg = node.args[at]
             if arg is not None:
-                out.append((str(f.relative_to(_SRC)), node.lineno, ast.get_source_segment(src, arg)))
+                out.append((str(f.relative_to(root)), node.lineno, ast.get_source_segment(src, arg)))
     return out
 
 
