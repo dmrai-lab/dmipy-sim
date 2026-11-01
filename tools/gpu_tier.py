@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LIMIT_USD = 25.0
 TIMEOUT_S = 15 * 60                                   # a run costs at most this much card time
+BUILD_ALLOWANCE_S = 10 * 60                            # the client waits at most this much longer, for the image build
 USD_PER_S = {"T4": 0.000164, "L4": 0.000222}          # Modal's list price per second of the card
 LEDGER = "gpu-ledger.txt"
 WORKFLOW = "gpu-tier.yml"
@@ -75,11 +76,14 @@ def replay_ref():
 
 
 if modal is not None:
+    # the checkout exists on the client only; inside the container this module is imported again from /root, where the
+    # image is already built, so the pin is read where the image is defined and nowhere else
+    REPLAY_REF = replay_ref() if modal.is_local() else None
     app = modal.App("dmipy-sim-gpu-tier")
     image = (modal.Image.debian_slim(python_version="3.12")
              .apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
-             .run_commands(f'pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{replay_ref()}"')
+             .run_commands(f'pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{REPLAY_REF}"')
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
@@ -96,11 +100,16 @@ def cmd_run(a):
         print("no Modal credentials: GPU tier skipped")
         return 0
     t0 = time.time()
+    res = dict(rc=1, tail=f"no result within {TIMEOUT_S + BUILD_ALLOWANCE_S} s: the call was cancelled and the app stopped")
     try:
-        with modal.enable_output(), app.run():
-            res = gpu_tests.with_options(gpu=a.gpu).remote()
+        with modal.enable_output(), app.run():                 # leaving this block stops the app, on every path
+            call = gpu_tests.with_options(gpu=a.gpu).spawn()
+            try:
+                res = call.get(timeout=TIMEOUT_S + BUILD_ALLOWANCE_S)
+            except TimeoutError:                       # e.g. a container that fails at startup and is restarted
+                call.cancel()
     finally:
-        seconds = time.time() - t0                    # the container's wall time, bounded by the function timeout
+        seconds = time.time() - t0                    # wall time on the client: an upper bound of the card time
     usd = min(seconds, TIMEOUT_S) * USD_PER_S[a.gpu]
     line = f"{_dt.datetime.now(_dt.timezone.utc):%Y-%m-%d} {a.gpu} {seconds:.0f} {usd:.4f}"
     Path(LEDGER).write_text(line + "\n")
