@@ -147,6 +147,7 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
     pose (the geometry's placement in the bore) a replay of ``waveform`` reads. The walk depends only on (geometry,
     diffusivity, seed); the waveform and the relaxation are replay settings."""
     from ..replay.bank import build_replay_pack
+    from ..replay.compression import acquisition_envelope
     from dmipy_replay.spec.tissue import Tissue
 
     G = np.asarray(waveform.G_eff, dtype=np.float64)
@@ -167,7 +168,8 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
     if sub_steps:
         kw['sub_steps'] = sub_steps
     walk = _walk_geometry(n_walkers, diffusivity, geometry, T_max, **kw)
-    pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate")
+    pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate",
+                             envelope=acquisition_envelope(waveform))
 
     pools = sorted(pack.substrate.pools, key=lambda p: p.id)
 
