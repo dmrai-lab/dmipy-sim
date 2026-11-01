@@ -48,7 +48,7 @@ def test_25um_index_hashes_verify(entry_25um):
     assert n >= 7
 
 
-def test_25um_is_walkable_by_walk_spec(entry_25um):
+def test_25um_is_walkable_by_walk(entry_25um):
     """The generated 25 um geometry itself (not the pilot) is a walkable dmipy_sim spec on the JAX engine, CPU:
     dmipy-sim#697's own test requirement."""
     from dmipy_sim.spec import disco_spec
