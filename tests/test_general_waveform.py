@@ -19,6 +19,8 @@ from dmipy_sim.sequences import pgse, ogse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_CPU, SEED, mc_atol
 
+N_REST = 4_000   # the sphere's wall rule sub-steps the walk; the 0.4 gaps between restricted and free signals are 10+ SE here
+
 
 def test_ogse_free_diffusion_matches_exp_bD():
     """OGSE on FreeDiffusion must give exp(-b*D) to within MC noise."""
@@ -48,17 +50,17 @@ def test_pgse_long_delta_more_restricted_than_ogse():
     wf_ogse = set_b(ogse(bvecs, 100.0, (80e-3) / 2, gradient_strengths=1.0, shape="cosine", slew_rate=np.inf, n_t=1000), np.array([b_target]))
 
     geom = Sphere(radius=5e-6)
-    S_pgse = simulate(N_CPU, D, wf_pgse, geom, seed=SEED)
-    S_ogse = simulate(N_CPU, D, wf_ogse, geom, seed=SEED + 1)
+    S_pgse = simulate(N_REST, D, wf_pgse, geom, seed=SEED)
+    S_ogse = simulate(N_REST, D, wf_ogse, geom, seed=SEED + 1)
     S_free = np.exp(-b_target * D)
 
     # Long-DELTA PGSE → maximum restriction → highest signal
-    assert float(S_pgse[0]) >= float(S_ogse[0]) - mc_atol(N_CPU, runs=2), (
+    assert float(S_pgse[0]) >= float(S_ogse[0]) - mc_atol(N_REST, runs=2), (
         f"PGSE (long DELTA) signal {S_pgse[0]:.4f} should be >= "
         f"OGSE signal {S_ogse[0]:.4f}")
     # Both restricted signals must exceed free diffusion
-    assert float(S_pgse[0]) >= S_free - mc_atol(N_CPU)
-    assert float(S_ogse[0]) >= S_free - mc_atol(N_CPU)
+    assert float(S_pgse[0]) >= S_free - mc_atol(N_REST)
+    assert float(S_ogse[0]) >= S_free - mc_atol(N_REST)
 
 
 def test_arbitrary_waveform_zero_net_gradient_gives_free():

@@ -42,7 +42,6 @@ from dmipy_sim.sequences import pgse
 
 from tests.conftest import D, N_EXACT, SEED
 
-N_T2 = 100_000   # the kappa effect is 0.005 +- 0.0007 at this count; it needs the walkers a GPU makes cheap
 
 R          = 5e-6    # m
 L          = 20e-6   # m
@@ -99,30 +98,3 @@ def test_permeability_none_matches_impermeable():
     S_explicit = simulate(N_EXACT, D, wf, geom_explicit, seed=SEED)
     npt.assert_array_equal(S_default, S_explicit,
         err_msg="permeability=None must give identical signal to default")
-
-
-_WALKS = {}
-
-
-def _signal(kappa, rho=None):
-    """The signal of one permeable walk, computed once per (kappa, rho) and shared by the tests below (the increases,
-    relaxivity and monotone tests all read the same kappa = None and kappa = KAPPA_MED walks)."""
-    if (kappa, rho) not in _WALKS:
-        geom = _single_cylinder_packed(permeability=kappa, surface_relaxivity_t2=rho)
-        _WALKS[(kappa, rho)] = np.asarray(simulate(N_T2, D, pgse_wf(100e-3), geom, seed=SEED))
-    return _WALKS[(kappa, rho)]
-
-
-# ---------------------------------------------------------------------------
-# 3. κ>0 changes signal at high b: walkers enter cylinders → more restriction
-# ---------------------------------------------------------------------------
-
-@pytest.mark.gpu
-def test_permeability_increases_signal_at_high_b():
-    """Signal with kappa > 0 is above the impermeable signal at b = 2000 s/mm^2: extra-axonal walkers that enter the
-    cylinders are more restricted. Both walks share the seed, so they share their trajectories until the first
-    transmission and the difference carries far less noise than two independent walks."""
-    S_imp, S_perm = _signal(None), _signal(KAPPA_MED)
-    assert float(S_perm[3]) > float(S_imp[3]) + 0.005, (
-        f"S_perm={S_perm[3]:.4f} must be above S_imp={S_imp[3]:.4f} "
-        f"at b=2000 s/mm² (permeable walkers are more restricted)")

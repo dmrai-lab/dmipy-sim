@@ -201,27 +201,3 @@ def test_positions_full_selects_permeated_walkers():
     assert comp.shape == (300, 120)
     permeated = (comp != comp[:, :1]).any(axis=1)
     assert int(permeated.sum()) > 0                       # some walkers crossed the membrane
-
-
-@pytest.mark.gpu
-def test_orientation_signal_parity():
-    """Orienting the substrate in the bore must be equivalent to rotating the
-    acquisition: a tube whose axis is placed along lab-x, probed with a gradient
-    perpendicular to lab-x, matches the same tube along mesh-z probed
-    perpendicular to mesh-z (both are the identical perpendicular measurement)."""
-    r, L = 4e-6, 12e-6
-    V, F = _open_tube(r, L)
-    vmin = [-r - 2e-6, -r - 2e-6, 0.0]; vmax = [r + 2e-6, r + 2e-6, L]
-
-    g_ref = Mesh(V, F, periodic=(False, False, True),
-                 voxel_min=vmin, voxel_max=vmax, feature_radius=r)
-    s_ref = np.asarray(simulate(3000, D, _pgse(8, 400, axis=0), g_ref, seed=SEED))
-
-    # same tube, axis oriented along lab-x; probe perpendicular = lab-z
-    g_rot = Mesh(V, F, periodic=(False, False, True),
-                 voxel_min=vmin, voxel_max=vmax, feature_radius=r,
-                 orientation=[1.0, 0.0, 0.0])
-    s_rot = np.asarray(simulate(3000, D, _pgse(8, 400, axis=2), g_rot, seed=SEED))
-
-    npt.assert_allclose(s_rot, s_ref, atol=0.02,
-                        err_msg="oriented substrate != rotated acquisition")

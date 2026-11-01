@@ -383,9 +383,9 @@ class TestE_T2MultiTE:
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
         tol = max(0.01, mc_noise_3sigma)
 
-        T2_intra = 80e-3
-        T2_myelin = 15e-3
-        T2_extra = 100e-3
+        T2_intra = 40e-3                      # exp(-TE / T2) depends on the ratio only: halving every time halves the walk
+        T2_myelin = 7.5e-3
+        T2_extra = 50e-3
 
         # Volume fractions for expected signal
         vol_intra = np.pi * R_in**2
@@ -403,7 +403,7 @@ class TestE_T2MultiTE:
         f_myelin = w_myelin / w_total
         f_extra = w_extra / w_total
 
-        TE_values = [20e-3, 40e-3, 60e-3, 80e-3]
+        TE_values = [10e-3, 20e-3, 30e-3, 40e-3]
 
         for TE in TE_values:
             geom = MyelinatedCylinder(
@@ -415,7 +415,7 @@ class TestE_T2MultiTE:
                                           extra=Pool(D=2e-9, T2=T2_extra, water_fraction=wf_weights[2])),
             )
 
-            wf = _make_b0_waveform(n_t=2000, TE=TE)
+            wf = _make_b0_waveform(n_t=1000, TE=TE)
             sig = simulate(n_walkers=n_walkers, waveform=wf,
                            geometry=geom, seed=SEED)
 
@@ -436,9 +436,9 @@ class TestE_T2MultiTE:
         R_out = 5e-6
         n_walkers = N_MYEL
         mc_noise_3sigma = 3.0 / np.sqrt(n_walkers)
-        T2_myelin = 15e-3
+        T2_myelin = 7.5e-3      # exp(-TE / T2) depends on the ratio only: halving every time halves the walk
 
-        TE_values = [10e-3, 20e-3, 30e-3, 50e-3]
+        TE_values = [5e-3, 10e-3, 15e-3, 25e-3]
 
         for TE in TE_values:
             geom = MyelinatedCylinder(
@@ -449,7 +449,7 @@ class TestE_T2MultiTE:
                                           extra=Pool(D=2e-9, water_fraction=0.0)),
             )
 
-            wf = _make_b0_waveform(n_t=2000, TE=TE)
+            wf = _make_b0_waveform(n_t=1000, TE=TE)
             sig = simulate(n_walkers=n_walkers, waveform=wf,
                            geometry=geom, seed=SEED)
 
@@ -609,7 +609,7 @@ class TestG_BoundaryReflection:
                                       extra=Pool(D=2e-9, water_fraction=0.0)),
         )
 
-        wf = _make_b0_waveform(n_t=2000, TE=TE)
+        wf = _make_b0_waveform(n_t=1000, TE=TE)
         sig = simulate(n_walkers=n_walkers, waveform=wf,
                        geometry=geom, seed=SEED)
 

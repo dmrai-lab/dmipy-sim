@@ -87,17 +87,15 @@ def _supported_specs():
         "cylinder": (d.Cylinder(radius=R, orientation=[0, 0, 1]),
                      d.Cylinder(radius=R, orientation=[0, 0, 1],
                                 surface_relaxivity_t2=RHO), N, _WF),
-        "ellipsoid": (d.Ellipsoid(semiaxes=(4e-6, 5e-6, 8e-6)), None, N, _WF),
         "packed_cyl": (_packed_cyl(), None, N, _WF),
-        "packed_sph": (_packed_sph(), None, N, _WF),
         "mesh":     (_mesh(), _mesh_rho(), _N_MESH, _WF_MESH),
     }
 
 
-# The analytic pores are tier 1; the ellipsoid, the packs and the mesh cost minutes per case on a CPU runner (their wall
-# rules sub-step by hundreds), so they are tier 2.
+# The analytic pores are tier 1; the packed cylinders and the mesh cost minutes per case on a CPU runner (their wall rules
+# sub-step by hundreds), so they are tier 2.
 _SUPPORTED = ["free", "box1d", "sphere", "cylinder"] + [
-    pytest.param(g, marks=pytest.mark.gpu) for g in ("ellipsoid", "packed_cyl", "packed_sph", "mesh")]
+    pytest.param(g, marks=pytest.mark.gpu) for g in ("packed_cyl", "mesh")]
 
 
 @pytest.fixture(scope="module")

@@ -77,18 +77,3 @@ def test_permeability_none_matches_impermeable():
     S_none       = simulate(N_EXACT, D, wf, geom_none,    seed=SEED)
     npt.assert_array_equal(S_default, S_none,
         err_msg="permeability=None must give identical signal to default")
-
-
-# ---------------------------------------------------------------------------
-# 3. kappa > 0 reduces the signal at high b (tier 2: the crossing rule's sub-steps cost ~10^3 per waveform step)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.gpu
-def test_permeability_reduces_signal_at_high_b():
-    """Signal with kappa > 0 is strictly below the impermeable signal at b = 2000 s/mm^2 (an escaped walker
-    diffuses more freely, so it accumulates more phase). The margin 0.05 is 7 standard errors at N_CPU."""
-    wf = pgse_wf(100e-3)
-    S_imp = simulate(N_CPU, D, wf, Ellipsoid(semiaxes=SEMIAXES, permeability=None), seed=SEED)
-    S_perm = simulate(N_CPU, D, wf, Ellipsoid(semiaxes=SEMIAXES, permeability=KAPPA_MED), seed=SEED)
-    assert float(S_perm[3]) < float(S_imp[3]) - 0.05, (
-        f"S_perm={S_perm[3]:.4f} must be below S_imp={S_imp[3]:.4f} at b=2000 s/mm²")

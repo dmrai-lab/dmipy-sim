@@ -71,7 +71,7 @@ def _tile_and_set_b(wf_single, b_values):
 def _matrix_oracle(wf, diameter):
     """The eigenmode (matrix-method) signal of every measurement of ``wf`` for a sphere of this diameter, gradient along x:
     exact for the waveform's piecewise-constant steps, so it is the reference the walk is held to."""
-    pore = MatrixPore("sphere", diameter, D)
+    pore = MatrixPore("sphere", diameter, D, n_modes=(16, 12))
     return np.array([abs(pore.signal(g, wf.dt)) for g in np.asarray(wf.G, np.float64)[:, :, 0]])
 
 

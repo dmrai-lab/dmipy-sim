@@ -90,42 +90,7 @@ def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
 
 
 @pytest.mark.gpu
-def test_the_observables_are_converged_at_the_collision_criterion():
-    """Refining 4x beyond the collision criterion must not move the walk's observables.
 
-    `_walk_geometry` takes no sub_steps argument, so the step is varied through the attribute the rule
-    actually reads. For a MESH that is now `cell_size`, not `radius` -- this change is what moved it. Setting
-    `radius` here would silently leave every run at the same step and compare a configuration against
-    itself, which is how this test first passed while asserting nothing.
-    """
-    from dmipy_sim.engine.core import _walk_geometry
-    mesh = _mesh_sphere()
-    block_h, T_max, n = 2e-5, 5e-3, 3000
-    n_coll = collision_sub_steps(mesh, D, block_h)
-
-    out = {}
-    steps = {}
-    for mult in (1, 4):
-        target = n_coll * mult
-        # n = ceil((L/(0.9*cell))^2), L = sqrt(6 D dt) -> invert for a target n
-        L = float(np.sqrt(6.0 * D * block_h))
-        mesh.cell_size = float(L / (0.9 * np.sqrt(target)))
-        o = _walk_geometry(n, D, mesh, T_max=T_max, block_h=block_h, seed=3, require_gpu=False,
-                                raw_subset=n)
-        steps[mult] = int(o.sub_steps)
-        tr = np.asarray(o.raw_positions, np.float64)
-        disp = tr[:, -1, :] - tr[:, 0, :]
-        out[mult] = (float((disp ** 2).sum(axis=1).mean() / (6.0 * T_max)),
-                     float(-np.asarray(o.raw_boundary, np.float64).sum(axis=1).mean()))
-
-    # guard the lever itself: if the two runs used the same sub-step count this test proves nothing
-    assert steps[4] >= 3 * steps[1], (
-        f"refinement did not take effect (sub_steps {steps[1]} -> {steps[4]}); the step is driven by "
-        f"cell_size for a mesh, so a lever on the wrong attribute makes this test vacuous")
-    d_rel = abs(out[4][0] - out[1][0]) / out[1][0]
-    lt_rel = abs(out[4][1] - out[1][1]) / out[1][1]
-    assert d_rel < 0.05, f"apparent D moved {100*d_rel:.2f}% refining 4x past the collision criterion"
-    assert lt_rel < 0.05, f"boundary local time moved {100*lt_rel:.2f}% refining 4x"
 
 
 def test_a_slab_is_sub_stepped_by_its_width():

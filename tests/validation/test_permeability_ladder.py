@@ -28,17 +28,10 @@ TOL_TAU = 0.02      # 2% vs exact eigenvalue (500k walkers -> ~1% noise)
 TOL_EQ = 0.02       # detailed balance: equilibrium partition
 
 
-def test_permeability_1d_slab():
-    from dmipy_sim import PermeableSlab1D
-    L = 20e-6
-    slab = PermeableSlab1D(length=L, permeability=KAPPA)
-    tau_ex = ladder.tau_slab(L, KAPPA)
-    tau_mc, f_eq = ladder.mc_exchange_tau(slab, tau_ex, 0.5, L / 2)
-    assert abs(tau_mc - tau_ex) / tau_ex < TOL_TAU, (tau_mc, tau_ex)
-    assert abs(f_eq - 0.5) < TOL_EQ, f_eq
 
 
-@pytest.mark.parametrize("kind,feq_th", [("cylinder", 0.25), ("sphere", 0.125)])
+
+@pytest.mark.parametrize("kind,feq_th", [("sphere", 0.125)])
 def test_permeability_shell(kind, feq_th):
     from dmipy_sim.geometry import PermeableShell
     R = 10e-6

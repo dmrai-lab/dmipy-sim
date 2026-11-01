@@ -9,7 +9,9 @@ import numpy.testing as npt
 
 from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere, set_b
 from dmipy_sim.sequences import pgse
-from .conftest import D, N_CPU, N_EXACT, SEED, mc_atol
+from .conftest import D, N_EXACT, SEED, mc_atol
+
+N_BETWEEN = 4_000   # the mixture is linear in its parts; the bound is 4 SE of two runs at this count
 
 
 def _waveform(n_b=6):
@@ -43,18 +45,18 @@ def test_mixture_between_compartments():
     wf, _ = _waveform()
     f1, f2 = 0.5, 0.5
 
-    S_free     = simulate(N_CPU, D, wf, FreeDiffusion(), seed=SEED)
-    S_sphere   = simulate(N_CPU, D, wf, Sphere(5e-6),   seed=SEED + 1)
+    S_free     = simulate(N_BETWEEN, D, wf, FreeDiffusion(), seed=SEED)
+    S_sphere   = simulate(N_BETWEEN, D, wf, Sphere(5e-6),   seed=SEED + 1)
     S_mix      = simulate_mixture([
-        {'fraction': f1, 'n_walkers': N_CPU, 'diffusivity': D,
+        {'fraction': f1, 'n_walkers': N_BETWEEN, 'diffusivity': D,
          'geometry': FreeDiffusion()},
-        {'fraction': f2, 'n_walkers': N_CPU, 'diffusivity': D,
+        {'fraction': f2, 'n_walkers': N_BETWEEN, 'diffusivity': D,
          'geometry': Sphere(5e-6)},
     ], wf, seed=SEED)
 
     lo = np.minimum(S_free, S_sphere)
     hi = np.maximum(S_free, S_sphere)
-    assert np.all(S_mix >= lo - mc_atol(N_CPU, runs=2)) and np.all(S_mix <= hi + mc_atol(N_CPU, runs=2)), (
+    assert np.all(S_mix >= lo - mc_atol(N_BETWEEN, runs=2)) and np.all(S_mix <= hi + mc_atol(N_BETWEEN, runs=2)), (
         "Mixture signal must lie between the two component signals")
 
 
