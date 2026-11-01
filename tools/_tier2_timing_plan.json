@@ -1,76 +1,48 @@
 [
  {
-  "name": "mesh-tier1",
+  "name": "curved+sgp",
   "spec": [
    {
-    "file": "tests/geometry/test_mesh_acceleration_invariance.py",
+    "file": "tests/geometry/test_curved_step_rule.py",
     "mark": "",
-    "budget": "900"
+    "k": "hairpin or contact",
+    "budget": "1500"
    },
    {
-    "file": "tests/geometry/test_mesh_mc.py",
+    "file": "tests/physics/test_sgp_pore_sizes.py",
     "mark": "",
-    "k": "directional",
-    "budget": "900"
-   },
-   {
-    "file": "tests/test_mt_mesh_binding.py",
-    "mark": "",
-    "budget": "900"
+    "budget": "1500"
    }
   ]
  },
  {
-  "name": "mesh-walks",
+  "name": "myelin",
   "spec": [
    {
-    "file": "tests/geometry/test_mesh_mc.py",
-    "mark": "gpu",
-    "budget": "3000"
-   },
-   {
-    "file": "tests/test_compartment_ids.py",
-    "mark": "gpu",
-    "budget": "3000"
-   },
-   {
-    "file": "tests/test_engine_dispatch.py",
-    "mark": "gpu",
-    "budget": "3000"
-   },
-   {
-    "file": "tests/test_replay_parity.py",
-    "mark": "gpu",
-    "budget": "3000"
+    "file": "tests/geometry/test_myelin_walls.py",
+    "mark": "",
+    "k": "membrane_exchange or lumen_boundary or per_axon",
+    "budget": "2400"
    }
   ]
  },
  {
-  "name": "mt-new",
+  "name": "mt+bloch",
   "spec": [
+   {
+    "file": "tests/test_bloch_permeation.py",
+    "mark": "",
+    "k": "high_permeability",
+    "budget": "1500"
+   },
    {
     "file": "tests/test_mt_binding.py",
-    "mark": "gpu",
+    "mark": "",
+    "k": "timestep or transverse",
     "budget": "2400"
    },
    {
     "file": "tests/test_mt_zspectrum.py",
-    "mark": "gpu",
-    "budget": "2400"
-   }
-  ]
- },
- {
-  "name": "myelin-membrane+ladder",
-  "spec": [
-   {
-    "file": "tests/geometry/test_myelin_walls.py",
-    "mark": "gpu",
-    "k": "membrane_exchange",
-    "budget": "2400"
-   },
-   {
-    "file": "tests/validation/test_surface_relaxivity_ladder.py",
     "mark": "gpu",
     "budget": "2400"
    }

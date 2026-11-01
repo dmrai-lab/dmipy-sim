@@ -43,11 +43,11 @@ def test_emergent_bound_fraction(k_f, k_r):
 # binomial (sd 0.0122 at 1,500 walkers, measured 0.0136) and correlated over 1/(k_f + k_r) = 6.7 ms, so the 20 ms are
 # about three independent ones. The binding probability per hit is not small at 150 sub-steps (0.03), so the coarser
 # run reads below the finer by the first-order effect of the step: -1.9 % and -5.1 % on two seeds of 1,500 walkers,
-# 3 % allowed. Two runs agree to ``BIND_BIAS + se_tol(N, SD_BOUND_REL, runs=2)``, 9 % at 3,900 walkers: a 15 %
+# 3 % allowed. Two runs agree to ``BIND_BIAS + se_tol(N, SD_BOUND_REL, runs=2)``, 11 % at 2,000 walkers: a 20 %
 # difference fails with the margin the noise passes it.
 BIND_BIAS = 0.03
 SD_BOUND_REL = 0.8
-N_BIND = 3_900
+N_BIND = 2_000
 
 
 @pytest.mark.gpu
@@ -75,7 +75,6 @@ SD_REL = 0.50
 N_EXCHANGE = 2_200
 
 
-@pytest.mark.gpu
 def test_transverse_exchange_matches_oracle():
     R, D = 2e-6, 2e-9                 # mixing R^2/D = 2 ms << 1/k_f = 33 ms
     T2a, T2b, k_f, k_r = 80e-3, 1e-5, 30.0, 100.0

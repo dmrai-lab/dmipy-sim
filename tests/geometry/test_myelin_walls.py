@@ -214,7 +214,6 @@ def _pool_signals(pm, wf, N, seed):
     return float(w[origin == 1].mean()), float(w[origin == 0].mean()), int((origin == 1).sum()), int((origin == 0).sum())
 
 
-@pytest.mark.gpu
 def test_lumen_boundary_local_time_is_brownstein_tarr():
     """The unit boundary local time recorded on the lumen wall (`rho/D = 1`) accrues at
     `2 D / R` per unit time -- Brownstein-Tarr `rho S/V` for a cylinder -- and at the same rate the
@@ -256,8 +255,8 @@ def test_per_axon_properties_are_per_axon():
     Claim: the lumen signal is the mixture of the two weights to ``se_tol`` of the lumen walkers, which are 24.5 % of
     the cell. A lumen walker's weight is one of the two (0.050 and 0.970 at TE = 3 ms) by which axon it is in, a
     spread of 0.46; the mixture is held to 0.10 (z = 3.29, 245 lumen walkers) while the first axon's value alone is 0.46
-    away. The extra-axonal pools of the two packs agree to ``se_tol`` of the extra-axonal walkers, and the lumen water
-    of the relaxing pack is attenuated by more than 0.05 (it is by 0.11).
+    away. A relaxivity on the inner wall of the same pack leaves the extra-axonal walkers' signal to ``se_tol`` of their
+    count and attenuates the lumen's by more than 5 % (it is by 11 %).
 
     The weights depend on the walk's duration only through TE / T2 and rho TE, so the walk is a tenth of the 30 ms one
     (T2 of 1 and 100 ms, rho of 2e-5 m/s) and its sub-steps, the cost, a tenth of them."""
@@ -267,18 +266,13 @@ def test_per_axon_properties_are_per_axon():
     N = N_AXON
     TE = wf.echo_idx * wf.dt
     w_fast, w_slow = np.exp(-TE / 1e-3), np.exp(-TE / 0.1)
-    mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[1e-3] * 3 + [0.1] * 3,
-                                        compartments=d.Compartments(extra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), intra=d.Pool(D=2e-9)))
-    intra_mixed, _, n_lumen, _ = _pool_signals(mixed, wf, N, seed=6)
-    assert abs(intra_mixed - 0.5 * (w_fast + w_slow)) < se_tol(n_lumen, abs(w_slow - w_fast) / 2.0), \
-        f"intra b0 signal {intra_mixed:.4f} does not decay by the per-axon T2 mixture"
-
-    relaxing = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, rho_inner=2e-5,
-                                           compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
-    plain = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8,
-                                        compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9)))
-    intra_rho, extra_rho, _, n_e = _pool_signals(relaxing, wf, N, seed=7)
-    _, extra_plain, _, _ = _pool_signals(plain, wf, N, seed=7)
-    assert abs(extra_rho - extra_plain) < se_tol(n_e, SD_COS, runs=2), \
-        f"an inner-wall relaxivity changed the extra-axonal signal: {extra_rho:.4f} vs {extra_plain:.4f}"
-    assert intra_rho < 1.0 - 0.05, "the inner-wall relaxivity did not act on the lumen water"
+    pools = d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(T2=1e-6, D=0.0), extra=d.Pool(D=2e-9))
+    mixed = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[1e-3] * 3 + [0.1] * 3, compartments=pools)
+    relaxing = d.PackedMyelinatedCylinders(radii, 0.7, c, L, N_max=8, T2_intra=[1e-3] * 3 + [0.1] * 3, rho_inner=2e-5, compartments=pools)
+    intra, extra, n_lumen, n_extra = _pool_signals(mixed, wf, N, seed=6)
+    intra_rho, extra_rho, _, _ = _pool_signals(relaxing, wf, N, seed=6)       # the same walkers, the same noise
+    assert abs(intra - 0.5 * (w_fast + w_slow)) < se_tol(n_lumen, abs(w_slow - w_fast) / 2.0), \
+        f"intra b0 signal {intra:.4f} does not decay by the per-axon T2 mixture"
+    assert abs(extra_rho - extra) < se_tol(n_extra, SD_COS, runs=2), \
+        f"an inner-wall relaxivity changed the extra-axonal signal: {extra_rho:.4f} vs {extra:.4f}"
+    assert intra_rho < 0.95 * intra, "the inner-wall relaxivity did not act on the lumen water"

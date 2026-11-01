@@ -111,7 +111,6 @@ def test_the_hairpin_keeps_its_walkers_at_the_rule():
     assert np.all(rel < se_tol(len(r0), CV_MSD, comparisons=3, runs=2)), rel
 
 
-@pytest.mark.gpu
 def test_the_contact_channel_in_a_narrow_gap_holds_at_the_rule():
     """Two thin strands 0.1 R apart, the exterior pool seeded in the slot: the contact channel at the rule's step is the
     R/8 channel to 3 % (one bounce and the side guard read 2.6 % low at R/4 and 9 % low at R/2).

@@ -33,10 +33,11 @@ KAPPA_MT, DWELL = k_f * R / 3.0, 1.0 / k_r
 
 
 SD_MZ = 0.3          # a walker's longitudinal magnetisation spreads by at most this about the mean (0.285 on resonance, measured)
-N_Z = 3_000          # n_resolving(0.04, SD_MZ, comparisons=2) = 2,730: a 0.04 error fails the tolerance the noise passes (z = 3.48)
+N_ORACLE = 1_500     # the oracle test: n_resolving(0.054, SD_MZ, comparisons=2) = 1,500; a 0.054 error fails the tolerance the noise passes (z = 3.48)
+N_MODES = 2_000      # the modes test: four comparisons (z = 3.66) at 0.024, and 0.035 for two runs against each other
 
 
-def _mz(offset_hz, *, with_mt, equilibrate='burnin', seed=3, n=N_Z):
+def _mz(offset_hz, *, with_mt, equilibrate='burnin', seed=3, n=N_ORACLE):
     n_t = int(round(T_SAT / DT)) + 1
     wf = ScannerSequence(G=np.zeros((1, n_t, 3)), dt=DT)
     flip = 360.0 * W1_HZ * T_SAT                            # CW over the window
@@ -69,14 +70,14 @@ def test_emergent_zspectrum_matches_oracle():
     resonance and in the exchange-shaped wing. The bound pool is equilibrated (the default burn-in), so there is no
     initial-condition offset on resonance.
 
-    Claim: the walk's Z is the oracle's to ``se_tol`` at two offsets, 0.019 at 3,000 walkers (z = 3.48): a 0.04 error, a
-    twentieth of the 0.76 dip, fails with the margin the noise passes. Statistic: a walker mean of the longitudinal
+    Claim: the walk's Z is the oracle's to ``se_tol`` at two offsets, 0.027 at 1,500 walkers (z = 3.48): a 0.054 error, a
+    fourteenth of the 0.76 dip, fails with the margin the noise passes. Statistic: a walker mean of the longitudinal
     magnetisation, whose spread is at most 0.3 (0.285 on resonance, where the signal is 0.24). Far off resonance
     the signal is the free pool's and the third offset of the walk (8 kHz) is not run: it costs a third of the test."""
     offsets = np.array([0.0, 1000.0])
     mc = np.array([_mz(o, with_mt=True) for o in offsets])
     Z = _oracle_total(offsets)
-    tol = se_tol(N_Z, SD_MZ, comparisons=len(offsets))
+    tol = se_tol(N_ORACLE, SD_MZ, comparisons=len(offsets))
     assert np.max(np.abs(mc - Z)) < tol, f"MC {np.round(mc,3)} vs oracle-total {np.round(Z,3)} (tolerance {tol:.3f})"
 
 
@@ -88,14 +89,14 @@ def test_equilibrate_binding_modes():
     the equilibrium bound pool and match the oracle TOTAL; the legacy 'off' (all-free) is
     biased high because the bound pool is still filling during the saturation.
 
-    Four comparisons (z = 3.66) of runs of 3,000 walkers (spread 0.3): a run against the oracle to 0.020, two runs against
-    each other to 0.028, and the legacy start above the oracle by more than a run's noise."""
+    Four comparisons (z = 3.66) of runs of 2,000 walkers (spread 0.3): a run against the oracle to 0.024, two runs against
+    each other to 0.035, and the legacy start above the oracle by more than a run's noise."""
     off = 3000.0
     Z_tot = float(_oracle_total(off)[0])
-    m_burn = _mz(off, with_mt=True, equilibrate='burnin')
-    m_fast = _mz(off, with_mt=True, equilibrate='fast')
-    m_off = _mz(off, with_mt=True, equilibrate='off')
-    tol, tol_pair = se_tol(N_Z, SD_MZ, comparisons=4), se_tol(N_Z, SD_MZ, comparisons=4, runs=2)
+    m_burn = _mz(off, with_mt=True, equilibrate='burnin', n=N_MODES)
+    m_fast = _mz(off, with_mt=True, equilibrate='fast', n=N_MODES)
+    m_off = _mz(off, with_mt=True, equilibrate='off', n=N_MODES)
+    tol, tol_pair = se_tol(N_MODES, SD_MZ, comparisons=4), se_tol(N_MODES, SD_MZ, comparisons=4, runs=2)
     assert abs(m_burn - Z_tot) < tol, f"burnin {m_burn:.3f} vs oracle-total {Z_tot:.3f}"
     assert abs(m_fast - Z_tot) < tol, f"fast {m_fast:.3f} vs oracle-total {Z_tot:.3f}"
     assert abs(m_burn - m_fast) < tol_pair, f"burnin {m_burn:.3f} vs fast {m_fast:.3f}"

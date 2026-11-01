@@ -43,7 +43,7 @@ fitted radius alone and are not asserted separately.
 Both tests run the oracle ``simulate_fused`` (the full-resolution walk): the waveform's gradient is two pulses of
 0.1 % of the diffusion time, far above the temporal band of a replay pack.
 
-All tests are marked @pytest.mark.gpu.
+Each is 5e7 walker-steps, about 40 s on four CPU cores.
 """
 
 import numpy as np
@@ -256,7 +256,6 @@ class TestCylinderSGP:
     RTAP = (1/2π) ∫₀^∞ E(q)·q dq = 1/(πR²).
     """
 
-    @pytest.mark.gpu
     @pytest.mark.parametrize("R_um", [5.0])
     def test_pore_size_recovery(self, R_um):
         R = R_um * 1e-6  # metres
@@ -275,7 +274,6 @@ class TestSphereSGP:
     RTOP = (1/2π²) ∫₀^∞ E(q)·q² dq = 3/(4πR³).
     """
 
-    @pytest.mark.gpu
     @pytest.mark.parametrize("R_um", [6.0])
     def test_pore_size_recovery(self, R_um):
         R = R_um * 1e-6  # metres
