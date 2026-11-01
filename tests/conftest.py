@@ -296,7 +296,7 @@ def field_pack(tmp_path_factory):
     spec = _three_strands(tmp_path_factory.mktemp("field"))
     w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, envelope=walk_envelope(of=spec))
     return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4,
-                             **stated(G_max=50.0, of=w))                  # the tests' short lobes reach 45 T/m
+                             **stated(of=w))                              # the tests' short lobes reach 56 T/m
 
 
 #: The field-read walks (tests/test_field_read_interval.py, tests/replay/test_merge_field_read.py): the three-strand spec
