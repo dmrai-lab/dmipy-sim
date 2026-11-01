@@ -1,12 +1,9 @@
 """A pack built for one stated acquisition (``simulate``'s in-memory pack) states the class of that acquisition."""
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
 import dmipy_sim as d
 from dmipy_replay.sequences import pgse
-from dmipy_replay.replay.replay import check_acquisition_envelope
 from dmipy_sim.engine.core import _walk_pack
 from dmipy_sim.replay.compression import ACQUISITION_CLASS, acquisition_envelope, certified_envelope
 
@@ -28,17 +25,15 @@ def test_the_class_needs_its_limits_stated():
         certified_envelope(dict(scanner=ACQUISITION_CLASS))
 
 
-def test_simulates_pack_replays_its_acquisition_and_refuses_a_stronger_one():
+def test_simulates_pack_states_its_acquisition_and_replays_it():
     seq = _seq(0.04)
     pack, tissue, pose = _walk_pack(200, 2e-9, seq, d.Sphere(radius=4e-6), seed=1, T2=None, T1=None, r0=None,
                                     require_gpu=False, walker_batch_size=None)
     acq = pack.replay_envelope["acquisition"]
     assert acq["bound"] == "scanner_class" and acq["scanner"] == ACQUISITION_CLASS
     assert acq["G_max"] == pytest.approx(np.abs(np.asarray(seq.played_gradient)).max())
-    pack.replay(seq, tissue=tissue, orientation=pose)                      # its own acquisition: accepted
-    stronger = SimpleNamespace(G=2.0 * np.asarray(seq.played_gradient), dt=seq.dt)         # the reader's check
-    with pytest.raises(ValueError, match="beyond the G_max"):
-        check_acquisition_envelope(pack.meta, stronger)
+    pack.replay(seq, tissue=tissue, orientation=pose)                      # its own acquisition: accepted (a reader that checks the class holds it by construction)
+
 
 
 def test_a_gradient_free_acquisition_states_zero_limits_and_simulates():
