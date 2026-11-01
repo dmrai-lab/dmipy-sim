@@ -18,9 +18,8 @@ permissions:
 
 jobs:
   integration:
-    uses: dmrai-lab/.github/.github/workflows/integration.yml@integration/smoke
+    uses: dmrai-lab/.github/.github/workflows/integration.yml@main
     with:
-      ref: integration/smoke
       notify: dmipy-fit dmipy-design dmipy-tract
     secrets:
       DMRAI_DISPATCH_TOKEN: ${{ secrets.DMRAI_DISPATCH_TOKEN }}
