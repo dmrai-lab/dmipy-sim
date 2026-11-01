@@ -41,8 +41,11 @@ from dmipy_sim import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import Tissue
 
+from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1), permeability=1e-5), 0.01, seed=0, require_gpu=False, K=8)
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
+env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
+               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
+pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide", envelope=env)
 
 fast = pack.at_diffusivity(4e-9)                                  # a = 2: the same walk, twice as fast
 print(fast.diffusivity, fast.permeability, fast.dt, fast.n_t)    # 4e-9, 2e-5 (the pair), h / 2, the same blocks

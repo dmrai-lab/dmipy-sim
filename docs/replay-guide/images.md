@@ -27,11 +27,17 @@ cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x 
 write_tck(f"{tmp}/t.tck", *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(f"{tmp}/d.txt", np.array([3e-6, 2e-6, 4e-6]) / 1e-3)
 spec = disco_spec(f"{tmp}/t.tck", f"{tmp}/d.txt", side_m=20e-6, field=False)
 grid = Grid(shape=(2, 2, 2), voxel_size_m=(10e-6,) * 3, origin_m=(5e-6,) * 3)
+shared = {}                                                            # every shard takes the first's containers
 for b in (0, 1):                                                       # two blocks of the grid, one shard each
     want = np.zeros(grid.shape, np.int64); want[b] = 12
     w = walk(spec, T_max=8e-4, seed=7 + b, require_gpu=False, envelope=envelope_of("connectom", rho2_max=1e-4),
                   seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-    build_replay_pack(w, id=f"guide/block-{b}", license="CC-BY-4.0", citation="the guide", voxel_grid=grid, out_path=f"{tmp}/shards/block-000{b}.p1.rpk")
+    env = w.envelope.replace(name="guide", band_hz=w.K / (2 * w.T_window), G_max=50.0)   # its stored band, its lobes
+    shard = build_replay_pack(w, id=f"guide/block-{b}", license="CC-BY-4.0", citation="the guide", voxel_grid=grid,
+                              envelope=env, out_path=f"{tmp}/shards/block-000{b}.p1.rpk", **shared)
+    ch = shard.meta["compression"]["channels"]
+    shared = dict(position_container=shard.meta["compression"]["container"],
+                  blt_container=(ch.get("boundary_local_time") or {}).get("container", "derived"))
 manifest, index = consolidate(f"{tmp}/shards", f"{tmp}/layout", blocks=[0, 1], id="guide/columns")
 print(sorted(os.listdir(f"{tmp}/layout"))[:3], index["n_rows"], "rows")
 ```

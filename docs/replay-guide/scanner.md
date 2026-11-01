@@ -24,8 +24,11 @@ from dmipy_sim import ScannerLimits
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.spec import Tissue
 
+from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
+env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
+               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
+pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide", envelope=env)
 seq = sequences.pgse([[1, 0, 0]], 0.001, 0.003, bvalues=[1e9], TE=0.006, slew_rate=np.inf)
 
 prisma = ScannerLimits.of("prisma")                             # the catalogue: field, gradient and slew limits
