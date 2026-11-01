@@ -1,6 +1,7 @@
 """The pose expansion cached on disk (#200 item 5): the same pack under the same acquisition and knobs is expanded
 once; anything that changes what the expansion depends on is a different entry; and the Bessel orders come from
 one recurrence that matches scipy."""
+from tests._envelope import stated
 import numpy as np
 import pytest
 from scipy.special import spherical_jn
@@ -21,7 +22,7 @@ def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(300, 2e-9, g, 10e-3, 5e-4, seed=5, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
-    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
+    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p), **stated(of=walk))
     return read_rpk(str(p))
 
 

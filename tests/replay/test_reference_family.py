@@ -17,6 +17,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import reference as R
+from dmipy_replay import Envelope
 
 REAL_CODE_COMMIT = R.code_commit        # the module fixture patches R.code_commit; its own test needs the real one
 
@@ -28,8 +29,10 @@ N_WALK = 300
 B = 1e8
 DELTA = 8e-4
 BIGDELTA = 2.4e-3
-ENV = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
-           delta_frac=0.2, Delta_frac=0.5, rho2_list=[])
+BATTERY = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
+               delta_frac=0.2, Delta_frac=0.5)
+#: the test's own envelope: 2 T/m per axis (its ideal lobes), a band wider than the 8 bands it stores, no contact
+ENVELOPE = Envelope(name="test", band_hz=1e9, G_max=2.0, B0_list=(), chi_max=None, rho2_max=None, max_refocusing_pulses=None)
 LICENCE_TEXT = "SYNTHETIC LICENCE\n\n" + ("This is the verbatim text of a licence that does not exist. " * 12)
 GRID = dict(kind="none", solver="exp(-b D), the closed form of free diffusion")
 
@@ -133,7 +136,7 @@ def _reference(direct_value=None, direct_se=0.05, **kw):
 
 
 def _design(**kw):
-    base = dict(window_s=T_WIN, K=K_BANDS, envelope=ENV,
+    base = dict(window_s=T_WIN, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY,
                 waveforms=waveforms,
                 # the split-half floor of 300 walkers is a draw per pack, 0.06 and 0.12 on the two spheres at their
                 # own seeds: the target sits above both, so the tier holds as designed on either
@@ -595,7 +598,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     os.makedirs(os.path.dirname(real), exist_ok=True)
     from dmipy_sim.coefficient_walk import CoefficientWalk
     walk = CoefficientWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
-    build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENV, license="CC-BY-4.0",
+    build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENVELOPE, battery=BATTERY, license="CC-BY-4.0",
                       citation="a test pack", position_container="derived", blt_container="derived",
                       verbose=False).save(real)
     (tmp_path / "bare").mkdir(exist_ok=True)

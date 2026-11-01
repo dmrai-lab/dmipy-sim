@@ -7,6 +7,7 @@ coefficient-space replay of #242 and the dense oracles read either container ali
 """
 from __future__ import annotations
 
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.field as _r_field
 import numpy as np
@@ -70,9 +71,9 @@ def test_the_c2_container_and_the_static_c1_column():
 def packs(tmp_path_factory):
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     tmp = tmp_path_factory.mktemp("bands")
-    f = build_replay_pack(walk, id="t/float", K=8, license="x", citation="x", blt_temporal_K=8)
+    f = build_replay_pack(walk, id="t/float", K=8, license="x", citation="x", blt_temporal_K=8, **stated(G_max=3.0, of=walk))
     b = build_replay_pack(walk, id="t/bands", K=8, license="x", citation="x", blt_temporal_K=8,
-                          position_container=((4, 16), (None, 8)), blt_container="derived", out_path=str(tmp / "bands.rpk"))
+                          position_container=((4, 16), (None, 8)), blt_container="derived", out_path=str(tmp / "bands.rpk"), **stated(G_max=3.0, of=walk))
     return f, b, tmp
 
 
@@ -153,9 +154,9 @@ def test_the_curve_is_the_rule_grouped_into_whole_bytes():
 def test_a_pack_with_a_five_bit_range_reads_back_and_replays(tmp_path):
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
     f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived",
-                          position_container=((4, 16), (None, 8)))
+                          position_container=((4, 16), (None, 8)), **stated(G_max=3.0, of=walk))
     p = build_replay_pack(walk, id="t/p", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived",
-                          position_container=((8, 12), (None, 5)), out_path=str(tmp_path / "p.rpk"))
+                          position_container=((8, 12), (None, 5)), out_path=str(tmp_path / "p.rpk"), **stated(G_max=3.0, of=walk))
     cont = p.meta["compression"]["container"]
     assert any(r["bits"] == 5 for r in cont) and any(k.endswith("u5") for k in p.arrays)
     from dmipy_sim.replay.bank import read_rpk
@@ -179,10 +180,10 @@ def test_the_two_level_container_still_reads_as_before():
 
 def test_the_contact_channel_takes_a_curve_and_replays(tmp_path):
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived")
+    f = build_replay_pack(walk, id="t/f", K=16, license="x", citation="x", blt_temporal_K=16, blt_container="derived", **stated(G_max=3.0, of=walk))
     c = _cx.band_curve(16, 12)
     p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, blt_container=c,
-                          position_container=c, out_path=str(tmp_path / "c.rpk"))
+                          position_container=c, out_path=str(tmp_path / "c.rpk"), **stated(G_max=3.0, of=walk))
     cont = p.meta["compression"]["channels"]["boundary_local_time"]["container"]
     assert cont == c and any(k.startswith("blt_b") and "u" in k for k in p.arrays)
     from dmipy_sim.replay.bank import read_rpk
@@ -223,7 +224,7 @@ def test_a_pack_with_a_field_stores_the_path_channel_in_a_container_and_replays(
     from tests.test_bank import _susc_walk
     from tests.replay_frames import field_along
     w = _susc_walk(200, seed=3, K_c3=8)
-    kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy")
+    kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy", **stated(G_max=3.0, of=w))
     ref = build_replay_pack(w, id="t/p8", field_container=((None, 16),), **kw)
     cont = [{"modes": [0, 2], "bits": 14}, {"modes": [2, 8], "bits": 6}]
     pk = build_replay_pack(w, id="t/pc", field_container=cont, out_path=str(tmp_path / "pc.rpk"), **kw)
@@ -261,8 +262,8 @@ def test_the_derived_container_is_one_common_step_and_gains_a_bit_per_quartered_
 
 def test_the_default_pack_is_derived_for_its_floor(tmp_path):
     walk = _walk_geometry(400, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=400)
-    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, planned_floor=5e-3, fidelity="measured")
-    q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3, planned_floor=1e-3)
+    p = build_replay_pack(walk, id="t/d", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-3, planned_floor=5e-3, fidelity="measured", **stated(G_max=0.5, of=walk))
+    q = build_replay_pack(walk, id="t/d2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=1e-3, planned_floor=1e-3, **stated(G_max=0.5, of=walk))
     assert p.meta["compression"]["container"] != _cx.band_curve(16, 10)
     assert sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in q.meta["compression"]["container"]) > \
         sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in p.meta["compression"]["container"])      # a lower floor: more bits
@@ -325,7 +326,7 @@ def test_the_field_container_is_one_common_step_in_the_contracted_field():
         depth[f] = np.concatenate([[r["bits"]] * (r["modes"][1] - r["modes"][0]) for r in cont])
         assert depth[f][0] >= depth[f][-1]                                       # the redder modes hold more bits
         # the realised noise of the stored steps against the unit-modulus bound the derivation holds to the budget
-        eps = bank.field_quantisation(a, m, _cx.default_envelope(), T=T, h=T / 200, **kw)
+        eps = bank.field_quantisation(a, m, _cx.default_battery(), T=T, h=T / 200, **kw)
         assert 0.0 < eps <= _cx.container_eps(f) * 1.0001
     assert 0.5 < depth[5e-3].mean() - depth[2e-2].mean() < 1.5 and 0.5 < depth[1.25e-3].mean() - depth[5e-3].mean() < 1.5
     # the measured phase error of the stored modes under the gradient echo (all the weight on mode 0) and a spin echo
@@ -338,7 +339,7 @@ def test_the_field_container_is_one_common_step_in_the_contracted_field():
         g = _r_compression.cosine_projection(gate.reshape(1, -1, 1), h, T, K)[0, :, 0]
         for dvec in ([0, 0, 1], [1, 0, 0], [1, 1, 1]):
             phi = lambda X: GAMMA * _r_field.susc_path_field(X, np.asarray(dvec, float), B0=7.0, chi_iso=1e-7, chi_aniso=1e-8, has_aniso=True) @ g
-            assert np.std(phi(Cq) - phi(ref)) <= bank.field_quantisation(a, m, _cx.default_envelope(), T=T, h=h, **kw) * 1.05
+            assert np.std(phi(Cq) - phi(ref)) <= bank.field_quantisation(a, m, _cx.default_battery(), T=T, h=h, **kw) * 1.05
 
 
 def test_the_default_field_container_is_derived_and_the_quantisation_term_carries_it(tmp_path):
@@ -346,7 +347,7 @@ def test_the_default_field_container_is_derived_and_the_quantisation_term_carrie
     from dmipy_sim.replay.bank import read_rpk
     env = _env7(theta_deg=[0, 90])
     w = _susc_walk(200, seed=3, K_c3=8, envelope=env)
-    kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy", envelope=env, fidelity="measured")
+    kw = dict(license="x", citation="x", K=8, susc_path_K=8, device="numpy", **stated(env, G_max=3.0, of=w), fidelity="measured")
     pk = build_replay_pack(w, id="t/pd", out_path=str(tmp_path / "pd.rpk"), **kw)
     fl = build_replay_pack(w, id="t/pf", field_container=None, **kw)
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
@@ -367,7 +368,7 @@ def straight_cylinder_walk():
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_sim.replay import compression as cx
     g = d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)))
-    env = dict(cx.default_envelope(), B0_list=[7.0], theta_deg=[90.0], max_refocus_pulses=4)
+    env = dict(cx.default_battery(), B0_list=[7.0], theta_deg=[90.0], max_refocus_pulses=4)
     w = _walk_geometry(300, D0, g, 0.01, seed=1, require_gpu=False, K=16, window_T=0.01, field_basis=HollowCylinderField.of(g),
                                 envelope=env)
     return w, env
@@ -381,7 +382,7 @@ def test_the_zero_components_are_not_stored_and_the_trace_component_is_never_a_c
     assert len(names) == 12 and "iso_P_zz" not in names
     zero = ["iso_P_xz", "iso_P_yz", "aniso_G_xz", "aniso_G_yz"]
     assert all(np.abs(C[..., names.index(n)]).max() == 0.0 for n in zero)
-    kw = dict(license="x", citation="x", envelope=env, device="numpy")
+    kw = dict(license="x", citation="x", **stated(env, G_max=3.0, of=w), device="numpy")
     full = build_replay_pack(w, id="t/f", field_container=None, **kw)
     pk = build_replay_pack(w, id="t/z", **kw)
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
@@ -408,7 +409,7 @@ def test_the_zero_components_are_not_stored_and_the_trace_component_is_never_a_c
 def test_a_shard_takes_the_certifying_packs_layout_or_is_refused(straight_cylinder_walk):
     from dmipy_sim.replay import bank
     w, env = straight_cylinder_walk
-    kw = dict(license="x", citation="x", envelope=env, device="numpy")
+    kw = dict(license="x", citation="x", **stated(env, G_max=3.0, of=w), device="numpy")
     pk = build_replay_pack(w, id="t/z", **kw)
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     again = build_replay_pack(w, id="t/z2", field_container=pm, **kw)
@@ -431,18 +432,18 @@ def test_the_contact_container_is_held_to_the_contacts_own_floor():
     back walk-free, well inside that floor."""
     from dmipy_sim.replay import bank
     walk = _walk_geometry(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2, planned_floor=5e-2)
+    p = build_replay_pack(walk, id="t/c", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2, planned_floor=5e-2, **stated(G_max=3.0, of=walk))
     f = p.meta["fidelity"]
     assert f["floor_surface"] > 0 and f["err_surface_quantisation"] <= 0.5 * f["floor_surface"] and f["err_surface"] <= f["floor_surface"]
     c2 = np.asarray(walk.boundary_endpoint)[:, 0]; bands = np.asarray(walk.boundary_bands)[:, 0, :16]
-    env = _cx.default_envelope()
+    env = _cx.certificate_settings(p.envelope)                          # the settings the pack was certified under
     assert bank._contact_floor(c2, bands, env, T=walk.T, h=walk.h, D=D0) == pytest.approx(f["floor_surface"], rel=0.2)
     # the container follows that floor: a tighter one asks for more bits than the pack's floor alone
     bits = lambda q: sum(r["bits"] * (r["bands"][1] - r["bands"][0]) for r in q.meta["compression"]["channels"]["boundary_local_time"]["container"])
     real = bank._contact_floor
     bank._contact_floor = lambda *a, **k: 1e-6
     try:
-        tight = build_replay_pack(walk, id="t/c2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2, planned_floor=5e-2)
+        tight = build_replay_pack(walk, id="t/c2", K=16, license="x", citation="x", blt_temporal_K=16, sigma_star=5e-2, planned_floor=5e-2, **stated(G_max=3.0, of=walk))
     finally:
         bank._contact_floor = real
     assert bits(tight) > bits(p)
@@ -456,7 +457,7 @@ def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     w = _walk_geometry(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())
-    f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05, planned_floor=0.05).meta["fidelity"]
+    f = build_replay_pack(w, id="t/q", license="x", citation="x", sigma_star=0.05, planned_floor=0.05, **stated(G_max=3.0, of=w)).meta["fidelity"]
     eps = f["floor_quantisation"] * np.sqrt(2000.0)
     assert 0.0 < eps < 0.1
     assert f["err_quantisation"] == pytest.approx(eps ** 2 / 2, rel=1e-4)

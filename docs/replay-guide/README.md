@@ -6,7 +6,7 @@ and the operations that join them. Every code block on these pages runs in the t
 
 A Monte Carlo walk's natural output is neither an acquisition-specific signal nor a trajectory history but an
 acquisition-independent set of sufficient projections, accumulated while the physics is simulated; the engine
-encodes as it goes. The scanner class gives the band, the band gives the block, and a pack is those projections
+encodes as it goes. The envelope gives the band, the band gives the block, and a pack is those projections
 (one basis, the continuous sine basis over a window) with the spec they were walked from.
 
 ## The objects, and what each one is

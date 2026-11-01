@@ -6,6 +6,7 @@ coordinate in [0, 1) that winds ``n_cycles`` turns over each window. Without it 
 pulse train stays degenerate and recombines, so the echoes barely depend on the refocusing flip angle -- which
 is not what a train does, and was the defect (dmipy-sim#305).
 """
+from tests._envelope import stated
 import dataclasses
 
 import numpy as np
@@ -26,7 +27,7 @@ DT, N_T = 5e-5, 401
 def pack():
     """Free water on a fine save grid: nothing here is about the substrate."""
     walk = _walk_geometry(2000, 2e-9, d.FreeDiffusion(), 0.02, DT, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8)
+    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, **stated(of=walk))
 
 
 def _spin_echo(crusher=None):

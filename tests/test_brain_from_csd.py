@@ -1,6 +1,7 @@
 """The brain-from-CSD example (#193) on the bundled BATMAN crop: the MRtrix inputs become a phantom on the image's
 own grid, the oblique prescription is carried by a rotation rather than a resampling, and the replayed signal has
 its minimum along each voxel's FOD peak."""
+from tests._envelope import stated
 import importlib.util
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def wm_pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 2.5e-6)
     walk = _walk_geometry(300, 2e-9, g, 30e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "wm.rpk"
-    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
     return str(out)
 
 

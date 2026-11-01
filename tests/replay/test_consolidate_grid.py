@@ -18,6 +18,7 @@ from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from tests.conftest import spec_without_source
 from tests.test_field_read_interval import BLOCK, FINE
+from tests._envelope import walk_envelope
 
 
 def as_written_by_a_walker(pack, path):
@@ -48,7 +49,7 @@ def rounds(spec_grid):
     for name, block, per, seed in plan:
         want = np.zeros(grid.shape, np.int64); want[block] = per
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=seed, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         pk = build_replay_pack(w, id=f"t/{name}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp / "certified" / f"{name}.rpk"))
         cert.append(pk); written.append(as_written_by_a_walker(pk, str(tmp / "written" / f"{name}.rpk")))
     return grid, str(tmp / "certified"), str(tmp / "written"), cert, written, tmp
@@ -129,7 +130,7 @@ def field_blocks(tmp_path_factory):
         want = np.zeros(grid.shape, np.int64); want[block] = 6
         w = walk(spec, None, 4e-4, BLOCK, seed=3 + block, n_probe=2000, require_gpu=False, adaptive_steps=True, K=4,
                       field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}),
-                      **({} if interval is None else dict(field_read_interval=interval)))
+                      **({} if interval is None else dict(field_read_interval=interval)), envelope=walk_envelope(of=spec))
         pk = build_replay_pack(w, id=f"t/b{block}", license="x", citation="x", K=4, susc_path_K=4, device="numpy", voxel_grid=grid,
                                position_container=None, blt_container=None)
         packs.append(as_written_by_a_walker(pk, str(tmp / "w" / f"block-{block:04d}.p1.rpk")))

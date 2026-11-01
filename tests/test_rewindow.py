@@ -27,7 +27,7 @@ def _parent(T_max=T):
     """The cell walk as ONE window (K = 38 over 20 ms): C1 events, the contact bridge and the path channel."""
     K = int(round(38 * T_max / T))
     kw = _kw()
-    kw["envelope"] = dict(kw["envelope"], theta_deg=[0, 90], max_refocus_pulses=8)
+    kw["envelope"] = dict(kw["envelope"], theta_deg=[0, 90], max_refocus_pulses=8, G_max=3.0)   # the tests' lobes reach 2.3 T/m
     return _float_pack(_walk(T_max, K, T_max=T_max), id="t/parent", K=K, blt_temporal_K=K, susc_path_K=16, window_T=T_max, **kw)
 
 
@@ -103,6 +103,18 @@ def test_the_windows_replay_as_the_parent(packs, name, tier):
     a = parent.replay(seq, complex_signal=True, **KNOBS[tier])
     b = seg.replay(seq, complex_signal=True, **KNOBS[tier])
     assert np.abs(a - b).max() <= 2.0 * seg.fidelity["floor_max"]
+
+
+def test_a_train_deeper_than_a_windows_field_channel_is_refused(packs):
+    """Each window's field channel is certified to its own depth (its K / 2 modes gate that many pulses): the parent
+    serves an eight-pulse train in the first half of the walk, and the windowed pack, two pulses deep per window,
+    refuses it by name, where the eight-echo train across all four windows (two pulses in each) is served above."""
+    parent, seg, _ = packs
+    assert parent.envelope.max_refocusing_pulses == 8 and seg.envelope.max_refocusing_pulses == 2
+    deep = sequences.cpmg(8, 1.2e-3, gradient_directions=[[1.0, 0, 0]], bvalues=[0.0], n_t_per_echo=40)
+    parent.replay(deep, complex_signal=True, **KNOBS["field"])
+    with pytest.raises(ValueError, match=r"refocusing pulses within one .* storage window"):
+        seg.replay(deep, complex_signal=True, **KNOBS["field"])
 
 
 @pytest.mark.parametrize("name", ["pgse_1", "pgse_2", "pgste_3"])
@@ -186,7 +198,7 @@ def _timing_packs(tmp_path):
     cost of a pose expansion is then the band contraction of the windows the acquisition spans."""
     g = d.FreeDiffusion()
     walk = _walk_geometry(4000, 2e-9, g, 0.1, 5e-5, seed=2, require_gpu=False, K=1000, window_T=0.1, tiers=())
-    env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[])
+    env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[], G_max=0.5)    # its waveforms reach 0.32 T/m
     parent = _float_pack(walk, id="t/long", license="x", citation="x", envelope=env, K=1000, window_T=0.1)
     parent.save(tmp_path / "long.rpk")
     parent = read_rpk(str(tmp_path / "long.rpk"))

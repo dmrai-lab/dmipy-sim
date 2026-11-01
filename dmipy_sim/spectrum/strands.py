@@ -18,7 +18,7 @@ for its whole length, as :func:`~dmipy_sim.spec.producers.disco_spec` requires. 
 from one pilot: a tiny 25 um realisation of the SAME statistics is walked on the JAX engine
 (:func:`~dmipy_sim.walk`) at ``n_pilot = ceil(1 / target_floor**2)`` walkers per pool -- the
 textbook Monte-Carlo floor ``1/sqrt(n)`` this codebase already cites throughout (``scanners.py``'s
-band derivation, ``replay.bank.storage_band_hz``'s certificate) -- which both proves the geometry
+band derivation, ``dmipy_replay.envelope_of``'s certificate) -- which both proves the geometry
 and its seeding are walkable and gives ``n_pilot`` its floor by construction (``floor_pilot = 1/sqrt(n_pilot)``).
 Because the strand statistics are translation-invariant across columns, that SAME ``n_pilot`` is the target for
 every occupied voxel of every larger grid: the per-voxel CENSUS (the pool's local volume fraction, read off the
@@ -130,7 +130,7 @@ def _census_from_segments(A, B, r, grid):
     return np.bincount(vox, weights=w, minlength=grid.n_voxels) / float(np.prod(grid.voxel_size_m))
 
 
-def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, scanner="connectom"):
+def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, envelope):
     """Build and walk the pilot (:data:`PILOT_EDGE_M`, one column, seed :func:`~.common.derive_seed`'s
     ``"pilot"`` branch -- never one of the main generation's own tile seeds): writes ``pilot/strands.tck`` +
     ``pilot/strands_diameters.txt`` under ``out_dir``, walks it a short, safe ``T_max`` (well inside its own
@@ -160,7 +160,7 @@ def _pilot_walk(seed, radii_stats, density, points_per_mm, *, out_dir, n_pilot, 
     spec = disco_spec(tracks, diam, coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=PILOT_EDGE_M, field=False)
     T_safe = min((PILOT_EDGE_M / 16.0) ** 2 / (2.0 * HALO_FREE_DIFFUSIVITY_M2_S), 1e-3)
     t0 = time.time()
-    walk(spec, n_pilot * 2, T_safe, seed=pseed, require_gpu=False, n_probe=max(20_000, n_pilot * 4))
+    walk(spec, n_pilot * 2, T_safe, envelope=envelope, seed=pseed, require_gpu=False, n_probe=max(20_000, n_pilot * 4))
     log.info("spectrum.strands: pilot walked %d walkers/pool in %.1f s (T_max=%.2g s)", n_pilot, time.time() - t0, T_safe)
     floor_pilot = 1.0 / np.sqrt(n_pilot)
     return n_pilot, float(floor_pilot), pilot_dir
@@ -221,12 +221,11 @@ def _build_far_grid(spec, out_path, *, node_budget=FAR_GRID_NODE_BUDGET, spacing
 
 
 def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, far_grid_info, grid, counts_rel,
-                  blocks_rel, n_tiles, id_, license_, citation, scanner="connectom", total_walkers, n_blocks):
+                  blocks_rel, n_tiles, id_, license_, citation, envelope, total_walkers, n_blocks):
     """``far_grid_info``: ``(n_nodes, spacing_m, near_m)`` of the far grid this manifest's variant carries, or
     None (no field). Recorded directly on ``substrate`` (not just in the ``.npy``'s own ``.json`` sidecar a
     reader has to open separately, or in the entry's ``spectrum.json`` index) so a quick read of the manifest
     alone says what resolution this edge's field was built at -- the coordinator's own ask on #697/#699."""
-    from dmipy_replay.replay.storage import mode_count
     commit = _git_commit()
     far_grid_meta = (None if far_grid_info is None else
                     dict(path=far_grid_rel, n_nodes=int(far_grid_info[0]), spacing_m=float(far_grid_info[1]),
@@ -240,9 +239,9 @@ def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, 
         variants=dict(field=dict(field=far_grid_rel is not None)), default_variant="field",
         grid=dict(shape=list(grid.shape), voxel_size_m=list(grid.voxel_size_m), origin_m=list(grid.origin_m),
                   attach="substrate"),
-        walk=dict(T_max_s=float(T_max_s), scanner=scanner, adaptive_steps=True, walker_batch_size=4096, census_draws=200),
-        pack=dict(K=mode_count(T_max_s, scanner), K_path=mode_count(T_max_s, scanner), position_container="derived",
-                  blt_container="derived", field_container="derived", blt_K=mode_count(T_max_s, scanner)),
+        walk=dict(T_max_s=float(T_max_s), envelope=envelope.to_dict(), adaptive_steps=True, walker_batch_size=4096, census_draws=200),
+        pack=dict(K=envelope.mode_count(T_max_s), K_path=envelope.mode_count(T_max_s), position_container="derived",
+                  blt_container="derived", field_container="derived", blt_K=envelope.mode_count(T_max_s)),
         plan=dict(file=counts_rel, blocks=blocks_rel, walkers=int(total_walkers), n_blocks=int(n_blocks)),
     )
     path = os.path.join(variant_dir, "manifest.json")
@@ -253,7 +252,7 @@ def _manifest_for(edge_m, T_max_s, *, variant_dir, substrate_rel, far_grid_rel, 
 
 def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per_mm=DISCO_POINTS_PER_MM,
            T_max_s=(0.020, 0.100), target_floor=PILOT_TARGET_FLOOR, far_grid_node_budget=FAR_GRID_NODE_BUDGET,
-           scanner="connectom"):
+           envelope):
     """Generate one strands entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): random curved strands at
     DiSCo's own radius and density statistics (:mod:`dmipy_sim.spectrum.disco_stats`, overridable for a
     different class of statistics) in a cube of ``edge_m`` side, tiled in 1 mm columns streamed one at a time.
@@ -282,7 +281,7 @@ def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per
 
     n_pilot = int(np.ceil(1.0 / float(target_floor) ** 2))
     n_pilot, floor_pilot, _pilot_dir = _pilot_walk(seed, radii_stats, density, points_per_mm, out_dir=out_dir,
-                                                  n_pilot=n_pilot, scanner=scanner)
+                                                  n_pilot=n_pilot, envelope=envelope)
 
     n_side = n_tiles_per_axis(edge_m)
     tile_edge = edge_m / n_side
@@ -369,7 +368,7 @@ def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per
                      far_grid_rel="../substrate/far.npy", far_grid_info=(far_info[1], far_info[2], far_info[3]),
                      grid=grid, counts_rel="../substrate/counts.npz",
                      blocks_rel="../substrate/blocks.json", n_tiles=n_side, id_=f"{id_base}/T{T_max}",
-                     license_=license_, citation=citation, scanner=scanner, total_walkers=total_walkers,
+                     license_=license_, citation=citation, envelope=envelope, total_walkers=total_walkers,
                      n_blocks=len(blocks))
         variants.append(float(T_max))
 

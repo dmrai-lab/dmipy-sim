@@ -2,6 +2,7 @@
 signals exactly as the replay routes do; a study on a pack is the per-pair replay; and the columnar image of a study
 is one pass over the rows with every pair's volume and its own floor."""
 from __future__ import annotations
+from tests._envelope import battery_reach, shard_containers, stated, walk_envelope
 import numpy as np
 import pytest
 
@@ -24,7 +25,8 @@ def high_b_pack():
     there the phases are 5.9 rad mean and 26 rad at most, the scale at which #484 found the replay's depths
     compared apart."""
     walk = _walk_geometry(2000, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 1e-4, seed=0, require_gpu=False, K=64)
-    return build_replay_pack(walk, id="test/high-b", K=64, license="x", citation="x")
+    return build_replay_pack(walk, id="test/high-b", K=64, license="x", citation="x",
+                             **stated(of=walk, G_max=9.0))            # the scheme's strongest lobe is 8.3 T/m
 
 
 @pytest.mark.parametrize("b", [0.0, 1.0e9, 3.094e9, 1.319e10])
@@ -143,8 +145,10 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
         w = walk(spec, T_max=8e-4, block_h=2e-4, seed=7 + b, require_gpu=False, K=3,
-                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}))
-        packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk")))
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
+        packs.append(build_replay_pack(w, id=f"t/{b}", license="x", citation="x", K=3, voxel_grid=grid, out_path=str(tmp_path / "shards" / f"block-000{b}.p1.rpk"),
+                                       **stated(of=w, G_max=battery_reach(w.T_window)),
+                                       **shard_containers(packs)))
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")
     merged = merge_packs(packs, id="t/merged"); col = ReplayPack.open(str(tmp_path / "layout"))
     seq1 = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])

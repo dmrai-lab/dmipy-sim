@@ -1,11 +1,11 @@
-"""The gradient side of a certificate stated for a scanner class.
+"""The gradient side of a certificate stated for an envelope (a scanner class's, ``envelope_of``).
 
 A waveform the class plays keeps every axis within ``G_max`` over the window ``T``. Its band weights ``W_k = int G s_k
 dt`` on the orthonormal sine basis then obey Bessel's inequality, ``sum_k W_k^2 <= int G_axis^2 dt <= G_max^2 T`` per
 axis, so ``gamma^2 sum_{k, axis} W_k^2 <= 3 gamma^2 G_max^2 T`` (``compression.class_phase_weight``) whatever its shape,
 direction, timing or b; and a refocused axis has ``|q(t)| <= gamma G_max min(t, T - t)``, so ``b <= gamma^2 G_max^2 T^3
-/ 4`` (``compression.class_b_max``). A pack certified for a class reads its position terms against these, and a segment
-layout its widths against the class's levels.
+/ 4`` (``compression.class_b_max``). A pack certified for an envelope reads its position terms against these, and a
+segment layout its widths against the envelope's levels.
 """
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.time_segments as _r_time_segments
@@ -20,6 +20,8 @@ from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay import time_segments as ts
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_replay import envelope_of
+from tests._envelope import walk_envelope
 
 G_MAX, SLEW, T, N_T = 0.5, 600.0, 0.1, 1001
 DT = T / (N_T - 1)
@@ -102,15 +104,17 @@ def test_no_refocused_waveform_of_the_class_exceeds_the_b_bound():
 
 
 def test_the_envelope_of_a_class_states_it_and_its_phase_weight_is_the_class_bound():
-    env = cx.certified_envelope(dict(cx.default_envelope(), scanner="connectome_2"))
-    assert env["scanner"] == "connectome_2" and env["G_max"] == 0.5 and env["slew_max"] == 600.0
+    env = cx.certified_envelope(cx.certificate_settings(envelope_of("connectome_2")))
+    assert env["name"] == "connectome_2" and env["G_max"] == 0.5 and "slew_max" not in env
     assert cx._phase_weight(64, N_T, DT, cx._env_key(env)) == pytest.approx(cx.class_phase_weight(0.5, T))
     G, meta = cx.acquisition_battery(N_T, DT, env)
     top = [m for m in meta if m.get("class_amplitude")]
     assert top and all(np.abs(G[i]).max() <= 0.5 * (1 + 1e-9) for i in range(len(meta)))
     assert max(np.abs(G[i]).max() for i, m in enumerate(meta) if m.get("class_amplitude")) == pytest.approx(0.5)
-    with pytest.raises(ValueError, match="no scanner"):
-        cx.certified_envelope(dict(cx.default_envelope(), G_max=0.5))
+    with pytest.raises(ValueError, match="not a battery's"):
+        cx.certificate_settings(envelope_of("connectome_2"), dict(cx.default_battery(), G_max=0.5))
+    with pytest.raises(TypeError, match="certified for an Envelope"):
+        cx.certificate_settings(dict(cx.default_battery(), scanner="connectome_2"))
 
 
 @pytest.fixture(scope="module")
@@ -125,10 +129,9 @@ def test_a_pack_certified_for_a_class_reads_its_position_terms_against_it(walk):
     kw = dict(id="t/class", license="x", citation="x", K=32)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        cls = build_replay_pack(walk, envelope=dict(cx.default_envelope(), scanner="connectome_2"), **kw)
-        bat = build_replay_pack(walk, **kw)
+        cls = build_replay_pack(walk, envelope=walk_envelope("connectome_2"), **kw)
     acq = cls.replay_envelope["acquisition"]
-    assert acq["bound"] == "scanner_class" and acq["scanner"] == "connectome_2" and acq["G_max"] == 0.5
+    assert acq["bound"] == "envelope" and acq["name"] == "connectome_2" and acq["G_max"] == 0.5
     T_w = float(cls.T_window)
     assert acq["b_max"] == pytest.approx(cx.class_b_max(0.5, T_w))
     f = cls.fidelity
@@ -138,7 +141,11 @@ def test_a_pack_certified_for_a_class_reads_its_position_terms_against_it(walk):
     qv = np.asarray(cls.meta["walk_params"]["qv"]["positions"], np.float64)
     expect = 0.5 * GAMMA ** 2 * 0.25 * T_w * float((rel * T_w / (np.pi * k) ** 2).max()) * float(qv.sum())
     assert f["err_quadrature"] == pytest.approx(expect, rel=1e-3)
-    assert "bound" not in bat.replay_envelope["acquisition"] and "gradient_bound" not in bat.fidelity
+
+
+def test_a_walk_with_no_envelope_is_refused_by_name(walk):
+    with pytest.raises(ValueError, match="state the envelope this pack is certified for"):
+        build_replay_pack(walk, id="t/none", license="x", citation="x", K=32)
 
 
 def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():
@@ -174,7 +181,7 @@ def disco_timing_layout(tmp_path_factory):
         w = _walk_geometry(300, 2e-9, d.Cylinder(radius=4e-6, orientation=[0, 0, 1]), 0.06, 5e-4, seed=4,
                                     require_gpu=False, K=64, window_T=0.06)
         pk = build_replay_pack(w, id="t/class-layout", license="x", citation="x", K=64,
-                               envelope=dict(cx.default_envelope(), scanner="connectome_2"))
+                               envelope=walk_envelope("connectome_2"))
     seq = d.pgse([[1, 0, 0]], 7.6e-3, 45.9e-3, bvalues=[3.091e9], TE=0.0535, n_t=1071, slew_rate=np.inf)
     grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(0.0,) * 3, attach="substrate")    # one voxel about the axis
     ts.segment_rows(pk, {"b3091": seq}, str(tmp / "rows"), grid=grid, floor_target=0.05)
@@ -187,7 +194,7 @@ def test_a_layout_of_a_class_reads_any_level_the_class_plays_and_refuses_one_bey
     level on every axis at once (b far above any battery's) are served, a level above G_max on one axis is refused."""
     lay, seq = disco_timing_layout
     env = lay.manifest["source"]["envelope"]
-    assert env["bound"] == "scanner_class" and env["b_max"] is None and env["G_max"] == 0.5
+    assert env["bound"] == "envelope" and env["b_max"] is None and env["G_max"] == 0.5
     S, _ = lay.image(seq)
     assert np.isfinite(np.asarray(S)).any()
     G = np.asarray(seq.G, np.float64)

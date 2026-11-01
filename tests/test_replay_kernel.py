@@ -9,6 +9,7 @@ amplitude) to the float32 their coefficients are stored in. The
 field gate has one implementation, the kernel's, which every field route reads, and the MT
 trajectory producer at zero binding is the plain producer to the bit.
 """
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 from dmipy_sim import RFEvent
@@ -242,7 +243,7 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     from dmipy_replay.replay.compression import read_position_coeffs
     g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), surface_relaxivity_t2=0.0)
     walk = _walk_geometry(300, 2e-9, g, 8e-3, 4e-4, seed=3, require_gpu=False)
-    pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4)
+    pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4, **stated(of=walk))
     seq = d.set_b(d.pgse([[1, 0, 0], [0, 1, 1], [1, 1, 1]], 2e-3, 5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9] * 3)
     G = np.asarray(seq.G_eff)
     W3 = compile_scheme(G, seq.dt, pk.K, T=pk.T_window)

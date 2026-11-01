@@ -12,7 +12,8 @@ from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.foreign import (band_limit, interpolation_variance, interpolation_variance_bound, walk_from_positions)
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.compression import default_envelope
+from dmipy_sim.replay.compression import default_battery
+from tests._envelope import stated
 
 D0 = 2e-9
 PRODUCER = dict(engine="synthetic", version="0")
@@ -85,9 +86,9 @@ def test_a_cylinder_walk_re_encoded_from_its_saves_replays_within_its_certificat
     fw = walk_from_positions(x, sample_interval=h, K=20, pool="intra", spec=nat.spec, D=D0, producer=PRODUCER)
     env = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
                shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5],
-               scanner="connectome_2", G_max=10.0, slew_max=1e12)      # the test's ideal lobes: a class of its own limits
-    pf = build_replay_pack(fw, id="t/foreign", license="x", citation="x", envelope=env)
-    pn = build_replay_pack(nat, id="t/native", license="x", citation="x", envelope=env, K=20)
+               G_max=10.0)                                                  # the test's ideal lobes: limits of its own
+    pf = build_replay_pack(fw, id="t/foreign", license="x", citation="x", **stated(env, of=fw))
+    pn = build_replay_pack(nat, id="t/native", license="x", citation="x", **stated(env, of=nat), K=20)
     fid = pf.fidelity
     assert fid["source"]["engine"] == "synthetic" and fid["source"]["limited_by"] == "save grid" and fid["source"]["sample_interval"] == h
     assert fid["terms"]["quadrature"]["positions"] == pytest.approx(fid["err_quadrature"], rel=1e-5) and fid["err_quadrature"] > 0
@@ -129,7 +130,7 @@ def test_refusals_by_name(good):
 
 def test_the_reader_refuses_the_channels_the_pack_does_not_carry(good):
     pk = build_replay_pack(_walk(good, 1e-4, 8), id="t/c0", license="x", citation="x",
-                           envelope=dict(default_envelope(), scanner="connectome_2", G_max=10.0, slew_max=1e12))
+                           **stated(G_max=10.0))
     ch = pk.meta["compression"]["channels"]
     assert set(ch) == {"compartment"} and pk.meta["replay_envelope"]["surface_relaxivity"] is False and pk.meta["replay_envelope"]["field"] is False
     wf = d.set_b(d.pgse([[1, 0, 0]], 5e-4, 1.5e-3, gradient_strengths=0.05, n_t=pk.n_t, slew_rate=np.inf), [5e8])

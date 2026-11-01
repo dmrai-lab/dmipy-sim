@@ -1,5 +1,6 @@
 """A phantom replay is a run producer: phases, progress in encoding classes, and a report of what each response cost
 (dmrai-lab/dmipy-sim#449). A pose expansion inside it joins the same record with its own phases."""
+from tests._envelope import stated
 import numpy as np
 import pytest
 
@@ -16,7 +17,7 @@ def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
-    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
+    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p), **stated(of=walk))
     return read_rpk(str(p))
 
 

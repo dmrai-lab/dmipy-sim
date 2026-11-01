@@ -1,6 +1,7 @@
 """Publishing a pack (dmipy_sim.replay.publish) against the fake hub: the file, its manifest row and the rendered card
 go up in one commit; a second publish replaces the row; a pack without its contract is refused; the sha256 the hub holds
 is checked on publish and on ``ReplayPack.load("hf://...")``; a local load is untouched."""
+from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import json
 import os
@@ -23,7 +24,7 @@ REPO = "owner/packs"
 
 def _pack(id="test/cyl", **kw):
     walk = _walk_geometry(200, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 4e-3, 5e-4, seed=0, require_gpu=False, K=4)
-    return build_replay_pack(walk, id=id, K=4, envelope=ENV, **{"license": "CC-BY-4.0", "citation": "a test pack", **kw})
+    return build_replay_pack(walk, id=id, K=4, **stated(ENV, G_max=1.0, of=walk), **{"license": "CC-BY-4.0", "citation": "a test pack", **kw})
 
 
 @pytest.fixture(scope="module")

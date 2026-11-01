@@ -1,7 +1,8 @@
-"""The band of a pack is the scanner class's, never a search on the walk (#643): ``K = ceil(2 f T)`` with ``f`` the
-class's certified band times the storage margin; a walk from ``walk`` carries its class; a walk with no class
-and no stated band is refused by name; a class with no certified band is refused by name; the search is a
-diagnostic no producer calls. And the codec's numpy pieces (#642): the phase GEMM equals the einsum it replaced."""
+"""The band of a pack is its envelope's, never a search on the walk (#643): ``K = ceil(2 band_hz T)``, and a scanner
+class's envelope (``envelope_of``) states the class's certified band times the storage margin; a walk from ``walk``
+carries its envelope; a walk with none and none stated is refused by name; a class with no certified band is refused
+by name; the search is a diagnostic no producer calls. And the codec's numpy pieces (#642): the phase GEMM equals the
+einsum it replaced."""
 import pathlib
 import re
 
@@ -9,42 +10,45 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+from dmipy_replay import envelope_of
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.replay import bank
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_replay.replay.storage import mode_count, storage_band_hz, STORAGE_BAND_MARGIN
+from dmipy_replay.replay.storage import mode_count, STORAGE_BAND_MARGIN
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.spec.walk import walk
+from tests._envelope import stated, walk_envelope
 
 PAPER = {"prisma": 522.0, "connectom": 310.0, "magnus": 877.0, "connectome_2": 960.0, "bruker_bga_s": 3012.0, "micro_insert": 4095.0}
 
 
 @pytest.mark.parametrize("scanner,hz", sorted(PAPER.items()))
-def test_the_certified_band_is_the_papers_and_the_stored_band_is_it_times_the_margin(scanner, hz):
+def test_the_certified_band_is_the_papers_and_the_envelopes_band_is_it_times_the_margin(scanner, hz):
     assert ScannerLimits.of(scanner).certified_band_hz == hz
-    assert storage_band_hz(scanner) == pytest.approx(STORAGE_BAND_MARGIN * hz)
+    assert envelope_of(scanner).band_hz == pytest.approx(STORAGE_BAND_MARGIN * hz)
 
 
 @pytest.mark.parametrize("T", [0.02, 0.1, 0.3])
 @pytest.mark.parametrize("scanner", ["prisma", "connectom", "connectome_2"])
 def test_the_mode_count_is_two_f_t_rounded_up(scanner, T):
-    assert mode_count(T, scanner) == max(2, int(np.ceil(2.0 * STORAGE_BAND_MARGIN * PAPER[scanner] * T)))
+    assert envelope_of(scanner).mode_count(T) == max(2, int(np.ceil(2.0 * STORAGE_BAND_MARGIN * PAPER[scanner] * T - 1e-9)))
+    assert mode_count(T, envelope_of(scanner).band_hz) == envelope_of(scanner).mode_count(T)
 
 
 def test_a_stored_k_of_256_is_above_the_certified_band_of_every_human_class_and_below_the_rule_on_connectome_2():
     """The rule is a design rule (certified band x margin); a pack stored at K = 256 per 100 ms resolves 1280 Hz, above every
     human class's certified band (192 bands on Connectome 2.0) and 13 bands short of the rule's 269 there: whether it serves
     a waveform is the band check's, per waveform."""
-    assert mode_count(0.1, "connectome_2") == 269
+    assert envelope_of("connectome_2").mode_count(0.1) == 269
     for scanner in ("prisma", "connectom", "magnus", "connectome_2"):
         assert 2.0 * 0.1 * ScannerLimits.of(scanner).certified_band_hz <= 256
-    assert 256 < mode_count(0.1, "connectome_2")
+    assert 256 < envelope_of("connectome_2").mode_count(0.1)
 
 
 def test_a_class_without_a_certified_band_is_refused_by_name():
     with pytest.raises(ValueError, match="no certified band.*hyperfine_swoop_64mT"):
-        storage_band_hz("low_field")
+        envelope_of("low_field")
 
 
 def _walk(**kw):
@@ -52,27 +56,42 @@ def _walk(**kw):
     return _walk_geometry(300, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False, **kw)
 
 
-def test_a_walk_states_its_own_band():
-    """A walk that accumulated its bands states its own K and packs at it, with no class and no band stated."""
-    w = _walk()
-    assert build_replay_pack(w, id="t", license="x", citation="x").K == w.K
+def test_a_walk_with_no_envelope_and_none_stated_is_refused_by_name():
+    with pytest.raises(ValueError, match="state the envelope this pack is certified for"):
+        build_replay_pack(_walk(), id="t", license="x", citation="x")
+    with pytest.raises(TypeError, match="takes an Envelope"):
+        walk(d.Cylinder(2e-6, (0, 0, 1)).spec, 300, 4e-3, 5e-4, envelope="prisma", seed=0, require_gpu=False,
+             diffusivity=2e-9)
+    with pytest.raises(TypeError, match="envelope"):
+        walk(d.Cylinder(2e-6, (0, 0, 1)).spec, 300, 4e-3, 5e-4, seed=0, require_gpu=False, diffusivity=2e-9)
 
 
-def test_scanner_sets_the_band_and_the_pack_records_the_class():
+def test_a_wide_envelope_packs_the_walks_own_band_and_states_it():
+    """An envelope wider than the walk accumulated packs the walk's own K and states the band it stores."""
     w = _walk()
-    pk = build_replay_pack(w, id="t", license="x", citation="x", scanner="prisma")
-    assert pk.K == mode_count(4e-3, "prisma") and pk.meta["compression"]["scanner"] == "prisma"
+    pk = build_replay_pack(w, id="t", license="x", citation="x", **stated(of=w))
+    assert pk.K == w.K and pk.envelope.band_hz == pytest.approx(pk.temporal_bandwidth_hz)
+
+
+def test_the_envelope_sets_the_band_and_the_pack_states_it():
+    w = _walk()
+    pk = build_replay_pack(w, id="t", license="x", citation="x", envelope=walk_envelope("prisma"))
+    assert pk.K == envelope_of("prisma").mode_count(4e-3)
+    acq = pk.meta["replay_envelope"]["acquisition"]
+    assert acq["bound"] == "envelope" and acq["name"] == "prisma" and acq["band_hz"] == pytest.approx(envelope_of("prisma").band_hz)
+    assert acq["G_max"] == envelope_of("prisma").G_max and "slew_max" not in acq and "scanner" not in pk.meta["compression"]
     assert pk.temporal_bandwidth_hz == pytest.approx(pk.K / (2 * 4e-3))
-    k2 = build_replay_pack(w, id="t", license="x", citation="x", K=5)
-    assert k2.K == 5 and "scanner" not in k2.meta["compression"]            # a stated K is the band, no class derived
+    k2 = build_replay_pack(w, id="t", license="x", citation="x", K=5, envelope=walk_envelope("prisma"))
+    assert k2.K == 5 and k2.envelope.band_hz == pytest.approx(5 / (2 * 4e-3))    # fewer bands narrow the envelope
 
 
-def test_a_walk_from_walk_spec_carries_its_class_and_packs_without_an_argument():
+def test_a_walk_from_walk_carries_its_envelope_and_packs_without_an_argument():
     spec = d.Cylinder(2e-6, (0, 0, 1)).spec
-    w = walk(spec, 300, 4e-3, 5e-4, scanner="prisma", seed=0, require_gpu=False, diffusivity=2e-9)
-    assert w.scanner == "prisma"
+    env = walk_envelope("prisma")
+    w = walk(spec, 300, 4e-3, 5e-4, envelope=env, seed=0, require_gpu=False, diffusivity=2e-9)
+    assert w.envelope == env and w.K == env.mode_count(4e-3)
     pk = build_replay_pack(w, id="t", license="x", citation="x")
-    assert pk.K == mode_count(4e-3, "prisma") and pk.meta["compression"]["scanner"] == "prisma"
+    assert pk.K == env.mode_count(4e-3) and pk.envelope.name == "prisma"
 
 
 def test_no_producer_calls_the_mode_search():

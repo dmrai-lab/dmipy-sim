@@ -7,6 +7,7 @@ The byte-range selection is exercised against a local HTTP server that honours `
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
 ``url=`` override is for exactly this). The one test that touches the real Hub is marked ``gpu`` and skips
 itself without a login."""
+from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import contextlib
 import http.server
@@ -26,7 +27,6 @@ from dmipy_sim.replay import publish as pub
 from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
 
-pytest.importorskip("huggingface_hub")        # the window reads monkeypatch its cache constant; absent, these tests are skipped
 
 N_T, DT, N_W = 61, 5e-4, 300          # 30 ms of walk, three windows of 10 ms each
 REPO, PATH = "owner/windows", "packs/windows-fixture.rpk"
@@ -57,7 +57,7 @@ def _fixture_walk():
 def _fixture_pack():
     """A tiny, deterministic 3-window pack (positions + C1 + C2): bridge_dst at K=19 over 20-block, 10 ms
     windows -- small enough to serve from memory, with real ``sN/`` tensors to select by byte range."""
-    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, envelope=_lean_env(),
+    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, **stated(_lean_env(), G_max=0.5),
                                window_T=0.01, license="CC-BY-4.0", citation="dmipy-sim window-read test fixture")
 
 
@@ -117,9 +117,10 @@ def pack():
 
 
 @pytest.fixture
-def served(pack, tmp_path):
-    """The fixture pack served over a local Range-honouring HTTP server, and the Hub cache directory
-    redirected under ``tmp_path`` so the test never touches the real cache."""
+def served(pack, tmp_path, monkeypatch):
+    """The fixture pack served over a local Range-honouring HTTP server, and the reader's cache
+    (``$DMIPY_REPLAY_CACHE``) redirected under ``tmp_path``, so that no test reads a window file an earlier run cached."""
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
     local = tmp_path / "src.rpk"
     pack.save(str(local))
     data = local.read_bytes()
@@ -128,7 +129,6 @@ def served(pack, tmp_path):
 
 
 def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pack, served, tmp_path, monkeypatch):
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, data = served
     assert pack.n_windows == 3
     local1 = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
@@ -163,7 +163,6 @@ def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pac
 
 
 def test_an_acquisition_beyond_the_loaded_windows_is_refused_by_name(pack, served, tmp_path, monkeypatch):
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, _ = served
     local = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p1 = read_rpk(local)
@@ -181,7 +180,6 @@ def test_window_prefix_refuses_a_non_prefix_selection():
 
 
 def test_replay_pack_load_takes_windows_through_a_hub_uri_only(pack, served, tmp_path, monkeypatch):
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, _ = served
     p1 = read_rpk(_r_hub.fetch_windows(URI, range(1), url=url, revision="rev0"))
     reloaded = ReplayPack.load(URI, windows=range(1), url=url, revision="rev0")

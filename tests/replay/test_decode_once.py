@@ -1,6 +1,7 @@
 """A pack decodes each stored tensor selection once (dmipy-sim#812): the position bands, the contact bands, the field
 modes and the occupancy events are dequantised on the first read and every later replay, on any route, reads the held
 read-only array -- bit for bit what a decode per call gives. The decoders are counted, never timed."""
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.field as _r_field
 import collections
@@ -24,7 +25,7 @@ def pack():
     """Two storage windows of a permeable cell: quantised bit-packed bands, the contact bridge, the occupancy events."""
     w = _walk_geometry(300, 2e-9, d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, permeability=2e-5), 4e-3, 1e-4,
                                 seed=1, require_gpu=False, K=8, window_T=2e-3)
-    return build_replay_pack(w, id="t/decode-once", license="x", citation="x")
+    return build_replay_pack(w, id="t/decode-once", license="x", citation="x", **stated(G_max=5.0, of=w))
 
 
 def _seqs(pk, n=3):

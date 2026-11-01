@@ -1,5 +1,6 @@
 """``Phantom.compose``: a phantom is built from volumes keyed by substrate objects, not hand-rolled arrays (RPH.md,
 issues #151, #162, #186)."""
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
@@ -24,7 +25,7 @@ def _pack(tmp_path, n_walkers=400):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
     walk = _walk_geometry(n_walkers, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path / "tiny.rpk"
-    build_replay_pack(walk, id="test/tiny", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="test/tiny", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
     return str(out)
 
 

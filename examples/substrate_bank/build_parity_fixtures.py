@@ -30,6 +30,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
+from dmipy_replay import envelope_of
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
                                         Systematic, Tier, Tolerance)
@@ -103,8 +104,12 @@ def sequence_of(name, mcdc_data):
     return X.disimpy_sequence()
 
 
-def envelope_of(name, mcdc_data=None):
-    """The envelope the pack is built to, with its b bound taken from the fixture's OWN scheme.
+#: What a parity fixture is certified for: the Connectome 2.0 class's envelope (both fixtures' schemes are inside it).
+PARITY_ENVELOPE = envelope_of("connectome_2", rho2_max=1e-4)
+
+
+def battery_of(name, mcdc_data=None):
+    """The battery the pack's certificate is read on, with its b bound taken from the fixture's OWN scheme.
 
     ``mcdc_envelope`` states the four ActiveAx shells to four figures (1.319e10); ``read_scheme`` computes b from
     the scheme's own columns and lands a hair above it, so the declared waveform read as outside the envelope it
@@ -112,7 +117,7 @@ def envelope_of(name, mcdc_data=None):
     both of them are.
     """
     X = fixtures_module()
-    env = X.mcdc_envelope() if is_mcdc(name) else X.disimpy_envelope()
+    env = X.mcdc_battery() if is_mcdc(name) else X.disimpy_battery()
     if mcdc_data is not None:
         b = float(max(sequence_of(name, mcdc_data).b()))
         env = dict(env, bvals=sorted(set(list(env["bvals"]) + [b])))
@@ -456,7 +461,7 @@ def family(mcdc_data, disimpy_data, work_dir, *, names, dry, create_dataset):
                        "same way.")})
 
     design = Design(
-        window_s=(X.MCDC_TE if is_mcdc(names[0]) else X.DISIMPY_TE), K=K_BANDS, envelope=envelope_of(names[0], mcdc_data),
+        window_s=(X.MCDC_TE if is_mcdc(names[0]) else X.DISIMPY_TE), K=K_BANDS, envelope=PARITY_ENVELOPE, battery=battery_of(names[0], mcdc_data),
         waveforms=lambda: _waveforms(names[0], mcdc_data),
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),

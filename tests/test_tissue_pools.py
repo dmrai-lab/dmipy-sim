@@ -7,6 +7,7 @@ replicated, a list by id was taken unchecked (an over-long one accepted), and th
 the caller used. Now a missing pool, an unknown name, a scalar, a list or a zero is refused by name, ``inf`` is
 no decay, ``replace`` merges pool by pool, and completeness is judged on the spec rather than on the walkers.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
@@ -27,7 +28,7 @@ def extra_only():
     """A packed cylinder walked in its extra pool alone: the spec names two pools, the walkers label one."""
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
     walk = _walk_geometry(120, 2e-9, g, 3e-3, 5e-4, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="t/extra-only", license="x", citation="x", K=6)
+    return build_replay_pack(walk, id="t/extra-only", license="x", citation="x", K=6, **stated(of=walk))
 
 
 def _b0(pack, TE=2e-3):

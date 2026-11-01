@@ -44,6 +44,7 @@ from dmipy_sim.engine.accumulate import block_length
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
+from dmipy_replay import envelope_of
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceRefusal, ReferenceQuantity, Publication,
                                         Source, SourceFile, Tier, Tolerance, crossref)
@@ -130,9 +131,11 @@ SUB_STEPS_NO_SURFACE = {("lm", BLOCK_S): 334}
 #: its ``meets_target`` vacuously true, which is a certificate that certifies nothing.
 RHO_PROBE = (1e-5, 3e-5, 1e-4)
 
-ENVELOPE = dict(bvals=list(BVALS), dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
-                delta_frac=DELTA / TE, Delta_frac=BIG_DELTA / TE, ogse_periods=[1, 2, 3],
-                shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE], rho2_list=list(RHO_PROBE))
+#: What these packs are certified FOR: the Connectome 2.0 class's envelope, the contact tier up to the largest probe.
+ENVELOPE = envelope_of("connectome_2", rho2_max=max(RHO_PROBE))
+BATTERY = dict(bvals=list(BVALS), dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+               delta_frac=DELTA / TE, Delta_frac=BIG_DELTA / TE, ogse_periods=[1, 2, 3],
+               shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE])
 
 
 # ----------------------------------------------------------------- the regions of interest, as released
@@ -688,7 +691,7 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
     pilot = min(names, key=lambda n: int(np.prod([rois[n]["crop"][i + 3] - rois[n]["crop"][i]
                                                  for i in range(3)])))
     design = Design(
-        window_s=TE, K=K_BANDS, envelope=ENVELOPE,
+        window_s=TE, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY,
         waveforms=waveforms,
         # BOTH tiers, deliberately, and this is what makes #478 load-bearing rather than an optimisation: the
         # contact tier is the stored boundary local time, and declaring it puts the surface-local-time rule in

@@ -5,6 +5,7 @@ The planner is :mod:`dmipy_sim.replay.planning`, the rule the columnar layout's 
 against the columnar planner on a shared case; the prefix replay against the full decode cut at the plan; the error bound on
 several waveforms (the real canonical-pores pack, when it is on this machine, adds OGSE 400 Hz); the decoded cache's prefix
 entries; the field modes; and ``hf://`` range reads against a local HTTP server that honours ``Range``."""
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import contextlib
 import http.server
@@ -37,7 +38,7 @@ def pack():
     """A cylinder of 3 um radius walked for 20 ms: 4000 walkers, 40 quantised bands, the contact bands."""
     w = _walk_geometry(N_W, 2e-9, d.Cylinder(3e-6, (0.0, 0.0, 1.0)), T_MAX, DT, seed=1, require_gpu=False,
                                 K=K_BANDS, window_T=T_MAX)
-    return build_replay_pack(w, id="test/plan-before-read", license="x", citation="x")
+    return build_replay_pack(w, id="test/plan-before-read", license="x", citation="x", **stated(G_max=15.0, of=w))
 
 
 def cache_kinds(pk):
@@ -76,7 +77,7 @@ def test_a_plan_states_its_counts_error_source_and_bytes(pack):
     plan = pack.plan(seq)
     assert isinstance(plan, ReadPlan)
     assert 0 < plan.K < pack.K and plan.K_stored == pack.K and plan.bands_chosen == "planned"
-    assert plan.band_error <= plan.limit and plan.tol == PLAN_TOL and plan.floor == floor_of(pack.meta, pack.n_walkers)
+    assert plan.band_error <= plan.limit and plan.tol == PLAN_TOL and (plan.floor, plan.floor_source) == floor_of(pack.meta, pack.n_walkers)
     assert plan.band_variance.startswith("free bridge")           # no measured record in the header: the walk-free closed form
     assert plan.modes == 0 and plan.modes_stored == 0 and plan.mode_error == 0.0   # no field channel
     assert 0 < plan.bytes_read < plan.bytes_stored
@@ -101,7 +102,7 @@ def test_the_plan_is_the_columnar_planners_on_a_shared_case(pack):
     meta = dict(pack.meta, columnar=dict(band_variance=var.T.tolist()))
     stamped = ReplayPack(pack.arrays, meta)
     col = ColumnarPack.__new__(ColumnarPack)
-    col.meta, col.K, col.floor = meta, pack.K, floor_of(pack.meta, pack.n_walkers)
+    col.meta, col.K, col.floor = meta, pack.K, floor_of(pack.meta, pack.n_walkers)[0]
     for seq in _battery().values():
         plan = stamped.plan(seq)
         assert plan.band_variance.startswith("stored: header columnar.band_variance")
@@ -118,7 +119,10 @@ def test_the_plan_is_the_columnar_planners_on_a_shared_case(pack):
 
 def test_a_pack_with_no_variance_and_no_diffusivity_is_refused_by_name(pack):
     wp = {k: v for k, v in pack.meta["walk_params"].items() if k != "diffusivity"}
-    bare = ReplayPack(pack.arrays, dict(pack.meta, walk_params=wp))
+    with pytest.raises(ValueError, match="states a contact bound rho2_over_D_max and no diffusivity"):
+        ReplayPack(pack.arrays, dict(pack.meta, walk_params=wp)).plan(_battery()["pgse"])     # its envelope cannot be read
+    env = dict(pack.meta["replay_envelope"]); env.pop("tissue", None)                         # the contact bound dropped too
+    bare = ReplayPack(pack.arrays, dict(pack.meta, walk_params=wp, replay_envelope=env))
     with pytest.raises(ValueError, match="stores no per-band variance and records no diffusivity"):
         bare.plan(_battery()["pgse"])
     assert bare.plan(_battery()["pgse"], K=pack.K).K == pack.K            # a full read states no error to compute

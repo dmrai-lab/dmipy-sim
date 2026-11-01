@@ -2,7 +2,7 @@
 
 Adaptive strand-field walks can reuse numerical field settings across seeds and shard sizes. The spatial geometry, material spec, diffusivity, immutable far grid, time window, stepping plan, scanner band, block projection, numerical field budget, query scope and backend must agree exactly. The worker process and its loaded source and far grid are assumed immutable. Backend library bytes are hashed when available; public Python source is hashed once per process.
 
-The scanner class still sets C0. Calibration chooses the separate field read and C3 band within an explicit numerical budget, independent of production walker count. This does not expand the supported scanner/RF domain. For the base coefficient artifact, query_scope must identify the scanner-wide capability contract and tissue domain, rather than pinning one acquisition or the published DiSCo protocol. A hash identifies that domain; it does not demonstrate physical coverage.
+The envelope (its band) still sets C0. Calibration chooses the separate field read and C3 band within an explicit numerical budget, independent of production walker count. This does not expand the supported scanner/RF domain. For the base coefficient artifact, query_scope must identify the scanner-wide capability contract and tissue domain, rather than pinning one acquisition or the published DiSCo protocol. A hash identifies that domain; it does not demonstrate physical coverage.
 
 ## Two output contracts
 

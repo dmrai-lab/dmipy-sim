@@ -15,6 +15,7 @@ from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.geometry.base import Box1D, LengthScales
 from dmipy_sim.io.label_volume import (LabelVolumeError, crop_labels, read_amira, read_label_volume,
                                        read_mhd, read_nrrd, write_nrrd)
+from tests._envelope import TEST_G_MAX, walk_envelope
 
 D = 2e-9
 
@@ -798,7 +799,7 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
     walk = _walk_geometry(4000, D, g, T_max=0.02, block_h=5e-4, seed=0, require_gpu=False)
     assert walk.has_surface and walk.has_compartments
-    pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", scanner="connectom")
+    pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", envelope=walk_envelope("connectom", G_max=TEST_G_MAX))
     assert pack.substrate.walls[0].surface.kind == "label_volume"
     assert [p.name for p in pack.substrate.pools] == ["free", "grain"]
     wf = pgse([[1, 0, 0]], 0.003, 0.012, bvalues=[1e9], n_t=80)
