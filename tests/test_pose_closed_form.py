@@ -400,7 +400,7 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     walker, a cost that grows with ``k`` -- where the torch branch beside it already batches every mode into ONE
     projection. Pinning the number of ``_compile_continuous`` calls pins that cost: it must stay the few calls the
     per-axis vector contraction and ONE residual batch take, never one per mode."""
-    from dmipy_sim.replay import replay as rr
+    from dmipy_replay.replay import pose as rr                 # the module whose routes call it
     rng = np.random.default_rng(11)
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     seq = sequences.pgse(dirs, 2e-3, 5e-3, bvalues=[1e9] * 24, TE=10e-3, slew_rate=np.inf)
@@ -414,7 +414,7 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     # per window: 3 calls for the main vector contraction (one per axis) and ONE for the residual bound's batch
     # (every mode of every residual row, in one call, #698) -- never the dozens of directions, let alone the
     # residual's own numerical rank (in the hundreds here), which is what #698 cost
-    assert len(calls) <= 4 * pack.n_windows
+    assert 0 < len(calls) <= 4 * pack.n_windows                # counted where the routes call it
 
 
 def test_the_quadrature_route_reads_every_window_as_the_closed_form_does(pack, seq, tmp_path):
