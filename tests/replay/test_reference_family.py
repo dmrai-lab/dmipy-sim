@@ -591,6 +591,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     """A walk record carries the counters the engine reported and the log they were reported in."""
     import dataclasses
     from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.container import save_pack
     plain = _family(tmp_path, reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)))
     for st in ("source", "reference", "spec", "design", "walk"):
         plain.stage(st)
@@ -598,9 +599,9 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     os.makedirs(os.path.dirname(real), exist_ok=True)
     from dmipy_sim.coefficient_walk import CoefficientWalk
     walk = CoefficientWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
-    build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENVELOPE, battery=BATTERY, license="CC-BY-4.0",
-                      citation="a test pack", position_container="derived", blt_container="derived",
-                      verbose=False).save(real)
+    save_pack(build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENVELOPE, battery=BATTERY, license="CC-BY-4.0",
+                                citation="a test pack", position_container="derived", blt_container="derived",
+                                verbose=False), real)
     (tmp_path / "bare").mkdir(exist_ok=True)
     fam = _family(tmp_path / "bare",
                   reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)),
