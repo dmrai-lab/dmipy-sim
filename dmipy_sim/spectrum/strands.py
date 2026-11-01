@@ -259,7 +259,7 @@ def strands(edge_m, seed, *, out_dir, radii_stats=None, density=None, points_per
 
     Writes under ``out_dir``: ``substrate/strands.tck`` + ``strands_diameters.txt`` (the generated geometry,
     DiSCo's own track/diameter file formats) and ``substrate/spec.json`` (the built
-    :class:`~dmipy_sim.spec.SubstrateSpec`, field off -- a spec is cheap and always written; the field-on
+    :class:`~dmipy_replay.spec.substrate.SubstrateSpec`, field off -- a spec is cheap and always written; the field-on
     variant lives in each walk length's own manifest, which carries the far grid), then for every ``T_max`` in
     ``T_max_s`` whose halo (:func:`~dmipy_sim.spectrum.common.check_halo`) fits ``edge_m``: a
     ``T<ms>ms/manifest.json`` + ``T<ms>ms/plan/{counts.npz,blocks.json}`` and, once per entry (not per walk

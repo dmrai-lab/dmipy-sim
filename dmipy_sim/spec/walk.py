@@ -67,7 +67,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``diffusivity`` is the SINGLE-surface path's reference D: that walk has one diffusivity, the intra pool's when
     the spec declares one, else the seeded pool's, and this argument when the pool declares none or in place of it.
     A multi-surface spec carries a D per pool and walks each pool at its own, so the argument is refused there --
-    the D belongs in the pools (:meth:`~dmipy_sim.spec.SubstrateSpec.replace`, or the producer's own argument).
+    the D belongs in the pools (:meth:`~dmipy_replay.spec.substrate.SubstrateSpec.replace`, or the producer's own argument).
 
     ``field_gather_every`` is how many blocks the adaptive walk reuses a walker's list of strands in reach (gathered
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's

@@ -28,7 +28,7 @@ def read_scheme(path, *, n_t=None, gradient_directions=None, min_samples_per_del
     vector, ``|G|`` in T/m and the three times in seconds -- which MC/DC plays as an **effective** gradient
     centred on the echo: ``pad = (TE - Delta - delta) / 2``, ``+G`` over ``[pad, pad + delta]`` and ``-G`` over
     ``[pad + Delta, pad + Delta + delta]`` (``PGSESequence::getGradImpulse``). That is a PGSE with square lobes
-    and no ramp, so the sequence is built through :func:`dmipy_sim.pgse` at ``slew_rate = inf`` with per-row
+    and no ramp, so the sequence is built through :func:`dmipy_replay.pgse` at ``slew_rate = inf`` with per-row
     ``delta`` and ``Delta`` about one 180 at ``TE/2``.
 
     ``n_t`` defaults to the coarsest grid on which every ``delta``, ``Delta``, ``pad`` and ``TE`` of the file is

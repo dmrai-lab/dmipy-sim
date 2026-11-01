@@ -206,7 +206,7 @@ class Geometry(ABC):
 
     @property
     def spec(self):
-        """The :class:`~dmipy_sim.spec.SubstrateSpec` of this geometry: the one it was built from, else the
+        """The :class:`~dmipy_replay.spec.substrate.SubstrateSpec` of this geometry: the one it was built from, else the
         situation it puts a walker in written out (domain and faces, pools, walls and their physics, seeding)."""
         if self._spec_source is not None:
             return self._spec_source
