@@ -70,3 +70,4 @@ for r in rows:
     print(f"{r['t']:8.2f} {r['st']:8} {r['id']} {r.get('reason', '')[:100]!r}")
 # verify run 1
 # after run 1
+# verify run 3

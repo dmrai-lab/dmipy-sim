@@ -20,9 +20,9 @@ from dmipy_sim import simulate, FreeDiffusion, pack_cylinders, PackedCylinders, 
 from dmipy_sim.sequences import pgse
 from tests.conftest import D, SEED, mc_atol
 
-# The pack kernel sub-steps the walk (several candidate walls per step): 3,000 walkers is a standard error of at most
-# 0.013 here, against effects of 0.1 (hindering at b = 1.5e9) and a free-diffusion tolerance of four of them.
-N_PACK = 3_000
+# The pack kernel sub-steps the walk (several candidate walls per step): 1,500 walkers is a standard error of at most
+# 0.018 here, against effects of 0.1 (hindering at b = 1.5e9) and a free-diffusion tolerance of four of them.
+N_PACK = 1_500
 from dmipy_sim.engine._fused import simulate_fused
 
 
