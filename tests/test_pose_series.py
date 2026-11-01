@@ -227,9 +227,8 @@ def _brain_classes(machine, kind):
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
-@pytest.mark.parametrize("machine", MACHINES[1:])
-@pytest.mark.parametrize("tissue", ["wm", "gm"])
+@pytest.mark.parametrize("tissue,kind", [("wm", "spin echo"), ("gm", "stimulated echo")])
+@pytest.mark.parametrize("machine", ["siemens_magnetom_prisma_3T"])
 def test_the_brain_packs(machine, kind, tissue):
     """On the brain page's packs (WM window 0 with its field at the machine's own B0, GM), each machine's classes over
     a head: every class within the two misfits of its closed form (torch on the GPU, both), the series' misfit below

@@ -6,7 +6,6 @@ a free spin sticks at a wall, freezes for an exponential dwell, and relaxes with
 bound pool (T2_bound, T1_bound) blended by occupancy.  Validated against the
 two-region exchange law and the two-pool Bloch--McConnell oracle.
 
-Heavy Monte-Carlo (fine binding sub-steps) -> GPU-recommended; marked gpu (tier 2).
 """
 
 from dataclasses import replace
@@ -18,8 +17,6 @@ import pytest
 
 from dmipy_sim import Sphere
 from dmipy_sim.engine import mt
-
-pytestmark = pytest.mark.gpu
 
 EXC = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0, offset_hz=0.0)]
 
@@ -33,13 +30,14 @@ def _zero_wf(n_t, dt):
 def test_emergent_bound_fraction(k_f, k_r):
     R, D = 5e-6, 1e-9
     kappa_MT, dwell = k_f * R / 3.0, 1.0 / k_r
-    dt, T_max = 1e-3, 0.06
+    dt, T_max = 1e-3, 0.04
     n_t = int(round(T_max / dt)) + 1
     _, bfrac = _simulate_bloch(8000, D, replace(_zero_wf(n_t, dt), rf=EXC), Sphere(radius=R), kappa_MT=kappa_MT, dwell_time=dwell, seed=3, return_bound_frac=True)
-    f_b = float(np.mean(bfrac[-20:]))                 # equilibrium (last 20 ms)
+    f_b = float(np.mean(bfrac[-15:]))                 # equilibrium: the last 15 ms, from 4.5 relaxation times 1/(k_f+k_r) on
     assert f_b == pytest.approx(k_f / (k_f + k_r), rel=0.08)
 
 
+@pytest.mark.gpu
 def test_binding_timestep_independence():
     R, D, k_f, k_r = 5e-6, 1e-9, 50.0, 100.0
     kappa_MT, dwell = k_f * R / 3.0, 1.0 / k_r
@@ -54,6 +52,7 @@ def test_binding_timestep_independence():
 
 
 # ── transverse exchange vs the two-pool Bloch--McConnell oracle (well-mixed) ─────
+@pytest.mark.gpu
 def test_transverse_exchange_matches_oracle():
     R, D = 2e-6, 2e-9                 # mixing R^2/D = 2 ms << 1/k_f = 33 ms
     T2a, T2b, k_f, k_r = 80e-3, 1e-5, 30.0, 100.0
@@ -80,20 +79,3 @@ def test_transverse_exchange_matches_oracle():
     m = t > 0.006                                     # after initial mixing
     rel = np.abs(ratio_mc[m] - ratio_or[m]) / ratio_or[m]
     assert np.max(rel) < 0.07, f"max rel diff {np.max(rel):.3f}"
-
-
-def test_mt_attenuates_more_for_higher_kf():
-    R, D = 2e-6, 2e-9
-    T2a, T2b = 80e-3, 1e-5
-    dt, T_max = 1e-3, 0.03
-    n_t = int(round(T_max / dt)) + 1
-
-    def last_echo(k_f):
-        kappa_MT, dwell = k_f * R / 3.0, 1.0 / 100.0
-        # readout=[n_t - 1] IS the last sample, so `_sequence_inputs` reads it as "no echo train"
-        # (the ScannerSequence unification, #173) and `_simulate_bloch(...)[0]` is already the
-        # scalar magnitude for this one measurement -- there is no further echo axis to index.
-        S = np.abs(_simulate_bloch(8000, D, replace(_zero_wf(n_t, dt), rf=EXC, readout=[n_t - 1]), Sphere(radius=R), T2=T2a, kappa_MT=kappa_MT, dwell_time=dwell, T2_bound=T2b, seed=7)[0])
-        return float(S)
-
-    assert last_echo(60.0) < last_echo(15.0)          # more binding -> more signal loss

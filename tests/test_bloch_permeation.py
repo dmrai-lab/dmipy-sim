@@ -11,6 +11,8 @@ from dmipy_sim.engine.bloch import _simulate_bloch
 from dmipy_sim import pgse
 import pytest
 
+from tests.conftest import N_EXACT
+
 from dmipy_sim import Cylinder, FreeDiffusion
 from dmipy_sim.engine.physics import CROSSING_P_MAX, resolve_sub_steps
 from dmipy_sim.engine.pulse_sequence import bare_spin_echo
@@ -42,6 +44,7 @@ def _S(kappa, seq, D=2e-9, n=4000, seed=0):
     return abs(complex(_simulate_bloch(n, D, seq, geom, seed=seed, require_gpu=False)[0]))
 
 
+@pytest.mark.gpu
 def test_permeability_increases_attenuation_monotonically():
     """kappa=1e-4 (not the original 3e-3): the crossing sub-step rule (`crossing_sub_steps`, #292)
     scales sub-steps as kappa^2, so 3e-3 now asks for 1.2M sub-steps per waveform step -- 12x
@@ -51,8 +54,7 @@ def test_permeability_increases_attenuation_monotonically():
     engine rule the test below derives a regime from) asks for 1,334 sub-steps -- 1.3% of the
     100,000 cap -- comfortably inside it while still a clearly more permeable wall than the 3e-5
     case; the monotonicity and the effect size (`> 0.1`, unchanged from the original test) are
-    what this test checks, not a specific kappa. (The module is already in
-    `conftest._GPU_TIER_MODULES`, so the extra sub-steps cost the weekly lane, not every PR.)
+    what this test checks, not a specific kappa. (The test is tier 2, so the extra sub-steps cost the GPU run, not every PR.)
 
     N_MONO = 1,500 (not this file's usual 4,000): at 1,334 sub-steps x 300 waveform steps, 4,000
     walkers measured 1,199 s on this shared CPU box, over the 10-minute single-run bound; the
@@ -115,6 +117,7 @@ def _free_diffusion_regime_wf():
                 n_t=N_T_FREE, slew_rate=np.inf)
 
 
+@pytest.mark.gpu
 def test_high_permeability_approaches_free_diffusion():
     """At kappa*/TE derived above, the wall is near-transparent (TE/tau = 10) and the original
     0.12 absolute tolerance holds without touching it -- not fit to a measured gap (#626 review)."""
@@ -131,6 +134,6 @@ def test_high_permeability_approaches_free_diffusion():
 def test_impermeable_bloch_walk_is_unchanged():
     """permeability=None must reproduce the plain reflecting walk (no regression)."""
     seq, _ = _dw_spin_echo()
-    a = _S(0.0, seq, seed=7)
-    b = _S(0.0, seq, seed=7)
+    a = _S(0.0, seq, n=N_EXACT, seed=7)
+    b = _S(0.0, seq, n=N_EXACT, seed=7)
     assert a == pytest.approx(b, abs=1e-9)           # deterministic, reflecting path

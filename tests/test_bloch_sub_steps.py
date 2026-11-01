@@ -31,10 +31,12 @@ UM = 1e-6
 R = 2e-6
 D = 2e-9
 B = 2.0e9
-N = 2000
+# The restricted ensemble sits near 0.96 (phases stay small), so one run's standard error is 0.1 / sqrt(N) = 0.006 at N = 300
+# and two engines differ by 3.7 of the 0.03 bound's standard errors; the free-diffusion limit is 0.018, far below.
+N = 300
 FREE = float(np.exp(-B * D))
 EXC = [RFEvent(0.0, 90.0, axis_deg=90.0)]     # 90_y -> Mx = cos(phi)
-TOL = max(0.02, 1.0 / np.sqrt(N))
+TOL = 0.03
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +77,6 @@ def _scalar(geom, wf, **kw):
     return float(simulate_fused(N, D, wf, geom, seed=3, require_gpu=False, **kw)[0])
 
 
-@pytest.mark.gpu
 def test_free_diffusion_is_untouched(waveform):
     """The sub-step rule must not move a geometry that never collides: exp(-b*D) either way."""
     assert _bloch(FreeDiffusion(), waveform) == pytest.approx(FREE, abs=TOL)
@@ -83,7 +84,6 @@ def test_free_diffusion_is_untouched(waveform):
         _scalar(FreeDiffusion(), waveform), abs=1e-6)
 
 
-@pytest.mark.gpu
 def test_an_analytic_pore_matches_the_scalar_engine(waveform):
     sph = Sphere(radius=R)
     e_vec, e_scal = _bloch(sph, waveform), _scalar(sph, waveform)
@@ -92,7 +92,6 @@ def test_an_analytic_pore_matches_the_scalar_engine(waveform):
         f"vector {e_vec:.5f} vs scalar {e_scal:.5f} on an analytic Sphere")
 
 
-@pytest.mark.gpu
 def test_a_mesh_pore_matches_the_scalar_engine(mesh_sphere, waveform):
     """The #69 regression. Measured: 0.96317 against a scalar 0.96305, where it used to return 0.05052."""
     e_vec, e_scal = _bloch(mesh_sphere, waveform), _scalar(mesh_sphere, waveform)
@@ -102,7 +101,6 @@ def test_a_mesh_pore_matches_the_scalar_engine(mesh_sphere, waveform):
         f"the Bloch walk is not resolving the mesh collisions")
 
 
-@pytest.mark.gpu
 def test_one_displacement_per_waveform_step_still_resolves_the_mesh(mesh_sphere, waveform):
     """`sub_steps=1` no longer loses the mesh (#626; this test used to pin the opposite).
 

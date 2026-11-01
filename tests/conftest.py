@@ -145,8 +145,7 @@ def load_fixture(name):
 # These test modules are dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes each) and
 # are tier 2 until slimmed.
 _GPU_TIER_MODULES = {
-                                "test_bloch_permeation",
-            "test_mesh_mc",
+                                            "test_mesh_mc",
     "test_mesh_acceleration_invariance",
                 "test_permeable_crossings",
         }

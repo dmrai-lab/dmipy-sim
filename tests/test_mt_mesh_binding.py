@@ -79,7 +79,6 @@ def test_mesh_mt_reaches_the_analytic_bound_fraction():
         f"(rel {rel:.3f}, n_sub={n_sub}, S/V={s_over_v:.5g})")
 
 
-@pytest.mark.gpu
 def test_the_mt_driver_walks_the_pool_its_seeds_name():
     """`simulate_mt_trajectories` had no `r0`, so it always seeded `init_positions(n, key)` -- and that
     defaults to `intra=True`, INSIDE the surface.
