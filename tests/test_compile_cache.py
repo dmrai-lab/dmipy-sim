@@ -65,8 +65,12 @@ def test_the_cached_run_is_the_fresh_run_to_the_bit():
 
 
 def test_every_engine_path_caches():
+    # Whether a second call compiles again is decided by the program's shape and configuration, never by how many
+    # walkers it carries or how long the waveform is (both are arguments of the cached function), so the smallest
+    # batch that still runs the path twice proves the claim: 20 walkers, 20 time samples.
+    N, NT = 20, 20
     from dmipy_sim.geometry import mesh_shapes
-    V, F = mesh_shapes.icosphere(2e-6, subdivisions=2)
+    V, F = mesh_shapes.icosphere(2e-6, subdivisions=1)
     m = d.Mesh(V, F, feature_radius=1e-6)
     mc = d.MyelinatedCylinder(
         2e-6,
@@ -78,15 +82,15 @@ def test_every_engine_path_caches():
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
     for g, diff in ((m, D), (mc, None), (pm, None)):
-        simulate_fused(500, diff, _wf(5e8), g, seed=0, require_gpu=False)
-        simulate_fused(500, diff, _wf(1e9), g, seed=3, require_gpu=False)
+        simulate_fused(N, diff, _wf(5e8, n_t=NT), g, seed=0, require_gpu=False)
+        simulate_fused(N, diff, _wf(1e9, n_t=NT), g, seed=3, require_gpu=False)
         entries = _entries(g)
         assert len(entries) == 1 and next(iter(entries.values()))._cache_size() == 1, type(g).__name__
     cp = d.cpmg(3, 10e-3, gradient_strengths=0.0, gradient_directions=[[0, 0, 1]], n_t_per_echo=20)
     sp = d.Sphere(4e-6)
-    d.simulate_cpmg(300, D, cp, sp, T2=0.05, seed=0, require_gpu=False)
+    d.simulate_cpmg(N, D, cp, sp, T2=0.05, seed=0, require_gpu=False)
     n = len(_entries(sp))
-    d.simulate_cpmg(300, D, cp, sp, T2=0.05, seed=1, require_gpu=False)
+    d.simulate_cpmg(N, D, cp, sp, T2=0.05, seed=1, require_gpu=False)
     assert n >= 1 and len(_entries(sp)) == n                    # the train rides on the producer's program
 
 

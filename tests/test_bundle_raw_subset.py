@@ -17,7 +17,8 @@ from dmipy_sim.spec.walk import _raw_allocation
 
 D = 2e-9
 T_MAX, H, K = 2e-3, 1e-4, 12                 # 20 blocks; K below the N - 1 = 19 bands the block ends hold
-N, N_RAW = 600, 200
+N, N_RAW = 120, 40                           # every check is a shape, an identity of the walk or a proportion with a stated slack of one walker
+N_PROBE = 4000                          # probe points that set the pools' shares of the walkers: share SE <= 0.008; the checks compare the subset to the walk's own counts
 EXTRA, INTRA, MYELIN = 0, 1, 2          # the pool ids of the CACTUS spec
 
 
@@ -59,7 +60,7 @@ def spec(tmp_path_factory):
 @pytest.fixture(scope="module")
 def bundle(spec):
     """An order-0 walk of the bundle with ``N_RAW`` raw walkers."""
-    return walk(spec, N, T_max=T_MAX, block_h=H, K=K, block_order=0, seed=3, require_gpu=False, raw_subset=N_RAW)
+    return walk(spec, N, T_max=T_MAX, block_h=H, K=K, block_order=0, seed=3, require_gpu=False, raw_subset=N_RAW, n_probe=N_PROBE)
 
 
 def test_the_raw_arrays_have_the_walks_shapes_and_lead_the_order(bundle):
@@ -116,9 +117,9 @@ def test_the_raw_contact_sums_to_the_walkers_boundary_endpoint(bundle):
 
 
 def test_the_raw_subset_is_clipped_to_the_walkers_and_absent_when_not_asked(spec):
-    w = walk(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=1000)
+    w = walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=1000, n_probe=N_PROBE)
     assert w.raw_positions.shape[0] == w.n_walkers and w.raw_field.shape[0] == w.n_walkers
-    w = walk(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False)
+    w = walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, n_probe=N_PROBE)
     assert w.raw_positions is None and w.raw_boundary is None and w.raw_compartment is None and w.raw_field is None
 
 
@@ -143,17 +144,17 @@ def test_a_pool_walk_that_lost_its_raw_subset_is_refused_by_name(spec, monkeypat
         return dataclasses.replace(real(*a, **k), raw_positions=None)
     monkeypatch.setattr(core, "_walk_geometry", stripped)
     with pytest.raises(SpecError, match=r"pool '(intra|extra)'.*raw_positions"):
-        walk(spec, 60, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=30)
+        walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=6, n_probe=N_PROBE)
 
 
 def test_an_adaptive_strand_bundle_joins_its_raw_subset_too(tmp_path):
     """The adaptive producer's pools (strand field read in the walk) join on the same terms."""
     from tests.conftest import _three_strands
-    w = walk(_three_strands(tmp_path), 300, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-                  K=4, block_order=0, raw_subset=100)
+    w = walk(_three_strands(tmp_path), 60, 8e-4, 2e-4, seed=0, n_probe=2000, require_gpu=False, adaptive_steps=True,
+                  K=4, block_order=0, raw_subset=20)
     comp = np.asarray(w.compartment)
-    assert w.raw_positions.shape == (100, w.n_blocks + 1, 3) and w.raw_field.shape[:2] == (100, len(w.field_read_instants))
-    np.testing.assert_array_equal(w.raw_compartment, np.repeat(comp[:100, None], w.n_blocks + 1, axis=1))
-    np.testing.assert_array_equal(w.raw_positions[:, 0], w.position_coeffs[:100, 0, 0])
+    assert w.raw_positions.shape == (20, w.n_blocks + 1, 3) and w.raw_field.shape[:2] == (20, len(w.field_read_instants))
+    np.testing.assert_array_equal(w.raw_compartment, np.repeat(comp[:20, None], w.n_blocks + 1, axis=1))
+    np.testing.assert_array_equal(w.raw_positions[:, 0], w.position_coeffs[:20, 0, 0])
     for pid in np.unique(comp):
-        assert abs((comp[:100] == pid).sum() - (comp == pid).sum() / 3) <= 1.0
+        assert abs((comp[:20] == pid).sum() - (comp == pid).sum() / 3) <= 1.0

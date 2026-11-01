@@ -12,16 +12,21 @@ from tests.conftest import spec_without_source
 
 
 def test_a_walk_from_drawn_seeds_is_the_walk_from_the_seeding(spec_grid):
+    """The drawn seeds ARE the seeding's start positions and weights, so the walks agree in every channel the producer
+    accumulates. The walk is the fixed-step one on the spec without its field source: the adaptive producer (which the
+    strand field needs) costs a minute of program build for a claim about where walkers START, and a field read along
+    the walk is a function of the positions, which are compared."""
     spec, grid, _ = spec_grid
+    spec = spec_without_source(spec)
     want = np.zeros(grid.shape, np.int64); want[0] = 6
     seeding = StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want})
     drawn = draw_seeds(spec, seeding, 11)
     assert isinstance(drawn, DrawnSeeds) and set(drawn.positions) == {"extra", "intra"} and drawn.seed == 11 and drawn.drawn_from is seeding
     assert drawn.n_walkers == sum(len(P) for P in drawn.positions.values()) > 0
-    kw = dict(T_max=8e-4, block_h=2e-4, seed=11, require_gpu=False, adaptive_steps=True)      # the strand field is read by the adaptive producer
+    kw = dict(T_max=4e-4, block_h=2e-4, seed=11, require_gpu=False)
     a = walk(spec, seeding=seeding, **kw); b = walk(spec, seeding=drawn, **kw)
     np.testing.assert_array_equal(a.position_coeffs, b.position_coeffs)
-    np.testing.assert_array_equal(a.field_coeffs, b.field_coeffs)
+    np.testing.assert_array_equal(a.boundary_endpoint, b.boundary_endpoint)
     np.testing.assert_array_equal(a.compartment, b.compartment)
     np.testing.assert_array_equal(np.asarray(a.weights), np.asarray(b.weights))
     assert a.n_walkers == drawn.n_walkers
