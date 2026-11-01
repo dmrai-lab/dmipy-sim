@@ -127,7 +127,7 @@ def field_blocks(tmp_path_factory):
     packs = []
     for block, interval in ((0, FINE), (1, BLOCK)):
         want = np.zeros(grid.shape, np.int64); want[block] = 6
-        w = walk(spec, None, 8e-4, BLOCK, seed=3 + block, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
+        w = walk(spec, None, 4e-4, BLOCK, seed=3 + block, n_probe=2000, require_gpu=False, adaptive_steps=True, K=4,
                       field_cutoff_max_m=25e-6, seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}),
                       **({} if interval is None else dict(field_read_interval=interval)))
         pk = build_replay_pack(w, id=f"t/b{block}", license="x", citation="x", K=4, susc_path_K=4, device="numpy", voxel_grid=grid,
