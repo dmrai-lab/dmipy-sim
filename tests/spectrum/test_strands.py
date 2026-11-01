@@ -1,6 +1,6 @@
 """Fast tests of dmipy_sim.spectrum.strands: the 25 um edge only (one voxel, both policy walk lengths refused by
-the halo rule -- dmipy-sim#697). The 250 um / 1 mm / 5 mm cases (a real far-grid build, minutes each) are
-exercised in test_strands_large_edges.py."""
+the halo rule -- dmipy-sim#697). The 250 um / 1 mm / 5 mm cases (a far-grid build, minutes each, and a 1 mm plan
+that does not fit a 7 GB runner) are not run in the suite."""
 import json
 import os
 
