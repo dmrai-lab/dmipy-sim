@@ -11,7 +11,7 @@ env:
   # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
   # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): dmrai-lab/dmipy-replay#11 (the Envelope) until it
   # merges, then its merge on main. Drop the ref when 0.2.0 is on PyPI.
-  DMIPY_REPLAY_REF: 9c7c9d2fe1f43f4d6ba4d77ec9b76d9ae57ae942
+  DMIPY_REPLAY_REF: 13b198af5c3e401df60a8b2d6edd428fabaa945e
 
 jobs:
   test:
