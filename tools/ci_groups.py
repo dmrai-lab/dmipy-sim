@@ -122,17 +122,33 @@ SECONDS = {
 }
 
 
+#: files that read one session fixture (a walk built once per process, ``tests/conftest.py``), kept in one group so
+#: the walk is paid once, not once per group
+TOGETHER = (
+    ("test_field_read_interval.py", "replay/test_merge_field_read.py"),
+    ("test_pack_prefix.py", "test_replay_coefficient_space.py", "replay/test_plan_before_read.py", "test_pose_field_per_gate.py",
+     "test_train_phantom.py", "test_pose_torch.py", "test_field_record_optional.py", "test_field_tier_stored_gate.py",
+     "test_pose_series.py", "test_study.py", "test_api_surface.py"),
+)
+
+
 def files():
     return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "tests").rglob("test_*.py"))
 
 
 def groups(n):
+    weight = lambda f: SECONDS.get(f.removeprefix("tests/"), DEFAULT)
+    units = {f: [f] for f in files()}
+    for together in TOGETHER:
+        members = ["tests/" + t for t in together]
+        assert all(m in units for m in members), together
+        for m in members[1:]:
+            units[members[0]] += units.pop(m)
     bins = [[0.0, []] for _ in range(n)]
-    ranked = sorted(files(), key=lambda f: (-SECONDS.get(f.removeprefix("tests/"), DEFAULT), f))
-    for f in ranked:
+    for lead, unit in sorted(units.items(), key=lambda kv: (-sum(map(weight, kv[1])), kv[0])):
         b = min(bins, key=lambda b: (b[0], len(b[1])))
-        b[0] += SECONDS.get(f.removeprefix("tests/"), DEFAULT)
-        b[1].append(f)
+        b[0] += sum(map(weight, unit))
+        b[1] += unit
     return [sorted(b[1]) for b in bins], [b[0] for b in bins]
 
 
