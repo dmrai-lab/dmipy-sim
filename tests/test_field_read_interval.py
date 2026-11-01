@@ -21,28 +21,18 @@ from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
-BLOCK = 1e-4                       # the walk's block: two rounds of the extra pool, four of the intra pool
-FINE = BLOCK / 4                   # a given read finer than the derived one: every round of each pool
+from tests.conftest import READ_BLOCK as BLOCK, READ_FINE as FINE, read_walk as _walk   # noqa: E402  (shared across modules)
 
 
 @pytest.fixture(scope="module")
-def spec(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("readint")
-    cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
-    tck, dia = str(tmp / "t.tck"), str(tmp / "d.txt")
-    write_tck(tck, *concat_centerlines(cls_), coordinate_unit_m=25e-6); np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
-    return disco_spec(tck, dia, side_m=20e-6)
-
-
-def _walk(spec, interval=None, seed=3):
-    return walk(spec, 60, 8e-4, BLOCK, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
-                     field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)))
+def spec(read_spec):
+    return read_spec
 
 
 @pytest.fixture(scope="module")
-def walks(spec):
-    """The default (derived) read and a given finer one."""
-    return _walk(spec), _walk(spec, FINE)
+def walks(read_walks):
+    """The default (derived) read and a given finer one (built once per session, in tests/conftest.py)."""
+    return read_walks
 
 
 def test_the_field_is_read_at_its_interval_and_the_walk_is_unchanged(walks):
@@ -138,19 +128,20 @@ def test_the_read_interval_needs_the_adaptive_producer(spec):
     from dmipy_replay.spec.substrate import SpecError
     for kw in ({}, dict(field_read_interval=BLOCK)):
         with pytest.raises(SpecError, match="adaptive"):
-            walk(spec, 30, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, **kw)
+            walk(spec, 30, 8e-4, BLOCK, seed=3, n_probe=2000, require_gpu=False, **kw)
 
 
-def test_shards_with_the_path_channel_merge(spec, tmp_path):
+def test_shards_with_the_path_channel_merge(walks, tmp_path):
     """Each pack quantises its path channel with its own scale table; a merge stacks the tables with a block axis
     and the decoder applies each walker's own, so the merged coefficients are the shards' and the field replay is
-    the weight-averaged replay of the shards."""
+    the weight-averaged replay of the shards. The two shards are the derived-read and the given-read packs of the
+    walks above: two packs with their own scale tables, which is what the claim needs."""
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_replay.replay.field import susc_path_coeffs
-    pks = [_float_pack(_walk(spec, BLOCK, seed=s_), id=f"t/shard-{s_}", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
-                       field_container=((None, 8),), out_path=str(tmp_path / f"s{s_}.rpk"))
-           for s_ in (3, 4)]
-    m = merge_packs([str(tmp_path / "s3.rpk"), str(tmp_path / "s4.rpk")], id="t/merged")
+    pks = [_float_pack(w, id=f"t/shard-{i}", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
+                       field_container=((None, 8),), out_path=str(tmp_path / f"s{i}.rpk"))
+           for i, w in enumerate(walks)]
+    m = merge_packs([str(tmp_path / "s0.rpk"), str(tmp_path / "s1.rpk")], id="t/merged")
     pm = m.meta["compression"]["channels"]["susc_field_basis"]
     assert m.arrays["susc_path_scale"].shape[0] == 2 and "band_block" in m.arrays
     C_m, names = susc_path_coeffs(m.arrays, pm)
@@ -217,15 +208,29 @@ def test_the_window_mean_is_the_length_weighted_trapezoid_of_the_reads_at_the_ke
 def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_its_reads(spec, monkeypatch, interval):
     """The adaptive producer reads every ``n`` rounds and at every block's end (a pool of three rounds a block read
     every two ends on a one-round interval): each pool's k = 0 mode is the window integral of the chord through the
-    raw subset's reads at the walk's read instants, each interval weighted by its own length."""
+    raw subset's reads at the walk's read instants, each interval weighted by its own length.
+
+    The pools read at their own instants unless the interval is a whole number of both pools' rounds, and the joined
+    walk has one series of them, so a raw subset over pools that disagree is refused by pool name: the walk is the
+    same one that shows both (the join is wrapped to keep the pool walks, then runs)."""
     import dmipy_sim.spec.walk as spec_walk
     from dmipy_sim.engine.accumulate import read_intervals
+    from dmipy_sim.spec import SpecError
     pools = []
-    # the pools read at their own instants (the join refuses their raw reads on one series), so the walks are read before it
-    monkeypatch.setattr(spec_walk, "_join_pool_walks",
-                        lambda parts, *a, **k: (pools.extend(w for _, w in parts if not isinstance(w, np.ndarray)), parts[0][1])[1])
-    walk(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
+    join = spec_walk._join_pool_walks
+
+    def keep_then_join(parts, *a, **k):
+        pools.extend(w for _, w in parts if not isinstance(w, np.ndarray))
+        return join(parts, *a, **k)
+    monkeypatch.setattr(spec_walk, "_join_pool_walks", keep_then_join)
+    args = (spec, 60, 4e-4, BLOCK)
+    kw = dict(seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True, K=4, field_cutoff_max_m=25e-6,
               raw_subset=12, field_read_interval=interval)
+    if interval < BLOCK:
+        with pytest.raises(SpecError, match=r"pool '(extra|intra)' reads the field at instants other than the bundle's"):
+            walk(*args, **kw)
+    else:
+        walk(*args, **kw)
     assert len(pools) == 2
     uneven = 0
     for w in pools:
@@ -238,15 +243,6 @@ def test_the_adaptive_producers_window_mean_is_the_length_weighted_trapezoid_of_
         mode0 = np.asarray(w.field_coeffs, np.float64)[:raw.shape[0], 0, 0] * np.sqrt(w.T)
         np.testing.assert_allclose(mode0, window, rtol=0, atol=2e-5 * np.abs(window).max())
     assert uneven == (interval < BLOCK)
-
-
-def test_a_bundle_whose_pools_read_at_other_instants_refuses_a_joined_raw_field(spec):
-    """The pools of a bundle read the field at their own instants; the joined walk has one series of them, so a raw
-    subset over pools that disagree is refused by pool name."""
-    from dmipy_sim.spec import SpecError
-    with pytest.raises(SpecError, match=r"pool '(extra|intra)' reads the field at instants other than the bundle's"):
-        walk(spec, 120, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
-                  field_cutoff_max_m=25e-6, raw_subset=12, field_read_interval=0.75 * BLOCK)
 
 
 def test_the_cost_counts_the_reads_of_a_block_with_its_shorter_last_interval():
