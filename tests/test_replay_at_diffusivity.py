@@ -145,7 +145,7 @@ def test_the_prefix_of_a_view_is_the_view_of_the_prefix(tmp_path):
 
 def test_nothing_is_decoded_on_the_way(free, monkeypatch):
     """The no-decode lock of the coefficient-space replay, extended to the scaled view."""
-    from dmipy_sim.replay import compression, replay as rp
+    from dmipy_replay import ReplayPack
     pk_d, _ = free
     seq = _seq(T / 2)
 
@@ -154,7 +154,7 @@ def test_nothing_is_decoded_on_the_way(free, monkeypatch):
     monkeypatch.setattr(_r_compression, "local_time_at", boom)
     monkeypatch.setattr(_r_compression, "positions_at", boom)
     monkeypatch.setattr(_r_compression, "decode_occupancy", boom)
-    monkeypatch.setattr(rp.ReplayPack, "positions", boom)
+    monkeypatch.setattr(ReplayPack, "positions", boom)
     pk_d.replay(seq, tissue=Tissue(D=2 * D0))
     pk_d.walker_signals(seq, tissue=Tissue(D=2 * D0))
 
