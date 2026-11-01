@@ -64,10 +64,22 @@ try:
 except ImportError:                                   # `budget` needs no Modal
     modal = None
 
+def replay_ref():
+    """The dmipy-replay commit the CPU suite runs against: ``DMIPY_REPLAY_REF`` in ``.github/workflows/tests.yml``, the one
+    place it is stated, so both tiers test the same reader. Refused by name when the workflow states none."""
+    import re
+    m = re.search(r"^\s*DMIPY_REPLAY_REF:\s*([0-9a-f]{7,40})\s*$", (ROOT / ".github/workflows/tests.yml").read_text(), re.M)
+    if not m:
+        raise SystemExit("tests.yml states no DMIPY_REPLAY_REF: the GPU tier installs the reader the CPU suite tests")
+    return m.group(1)
+
+
 if modal is not None:
     app = modal.App("dmipy-sim-gpu-tier")
     image = (modal.Image.debian_slim(python_version="3.12")
+             .apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
+             .run_commands(f'pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{replay_ref()}"')
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
