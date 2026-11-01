@@ -46,9 +46,10 @@ def test_two_pilot_walks_measure_the_fine_step_s_error():
     assert n_fine // PILOT_STEP_RATIO >= regime_sub_steps(g, D0, h)
     eps = STEP_TOLERANCE * n_rule / n_fine                                         # first order: eps scales as the step
     n_coarse = max(1, n_fine // PILOT_STEP_RATIO)
+    NW = 6000     # the claim is held by the certificate's own floor < eps and eps_se; its floor goes as 1/sqrt(NW) (16000 held it with margin, asserted below)
     kw = dict(K=K, require_gpu=False, window_T=T, tiers=())
-    fine = _walk_geometry(16000, D0, g, T, seed=1, sub_steps=n_fine, **kw)
-    coarse = _walk_geometry(16000, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
+    fine = _walk_geometry(NW, D0, g, T, seed=1, sub_steps=n_fine, **kw)
+    coarse = _walk_geometry(NW, D0, g, T, seed=2, sub_steps=n_coarse, **kw)
     assert fine.h == coarse.h == pytest.approx(h)
     cert = step_certificate(fine.position_coeffs, coarse.position_coeffs, T, n_fine / n_coarse, f_band=f_band,
                             eps_declared=eps)

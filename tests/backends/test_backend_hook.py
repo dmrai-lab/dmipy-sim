@@ -334,11 +334,12 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     the read instants). A backend that returns no read series' quadratic variation is refused by name."""
     from dmipy_sim.engine.adaptive import simulate_trajectories_adaptive
     from dmipy_sim.fields.strand_field import StrandFieldBasis
+    # the claims are what the request carries and what the walk takes from the batch: 16 walkers over two rounds, raw subset 4
     g = backends.parity_cases()["strands_intra"]()
     basis = StrandFieldBasis(g.centerlines, 0.7 * g.radii, g.radii, cutoff_m=8e-6, domain=(g.box[0], g.box[1]))
-    kw = dict(seed=3, require_gpu=False, walker_batch_size=64, field_basis=basis, field_reuse_intervals=3, K_c3=2, K=6)
+    kw = dict(seed=3, require_gpu=False, walker_batch_size=16, field_basis=basis, field_reuse_intervals=3, K_c3=2, K=6)
     still = _Still()
-    w = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=still, **kw)
+    w = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=still, **kw)
     walk = still.requests[-1]
     f = walk.field
     assert isinstance(f, backends.FieldSampling) and f.basis is basis and f.sample_every == 1 and f.reuse_intervals == 3
@@ -347,13 +348,13 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     assert fr["rule"] == "pilot" and fr["constants_measured"] and w.stepping["field_pilot_backend"] == "still"
     walked = [r for r in still.requests if r.K_c3 == 2]                      # the walk's batches; the pilot's probe has K_c3 = 0
     assert walked and all(r.field_read_interval == pytest.approx(w.field_read_interval) for r in walked)
-    assert walk.K_c3 == 2 and w.field_coeffs.shape == (64, 1, 2, 12) and w.K_c3 == 2 and w.field_basis is basis
-    assert w.qv_field.shape == (64, 1, 12) and w.qv_field_increments.shape == (64, 1, 12)
+    assert walk.K_c3 == 2 and w.field_coeffs.shape == (16, 1, 2, 12) and w.K_c3 == 2 and w.field_basis is basis
+    assert w.qv_field.shape == (16, 1, 12) and w.qv_field_increments.shape == (16, 1, 12)
     with pytest.raises(ValueError, match="the backend does not return the field increments"):
-        simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=_Still(field_increments=False), **kw)
+        simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=_Still(field_increments=False), **kw)
     raw = _Still()
-    wr = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, backend=raw, raw_subset=16, **kw)
-    assert wr.raw_field.shape == (16, wr.n_blocks * wr.reads_per_block + 1, 12) and wr.stepping["raw_subset_backend"] == "jax"
+    wr = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=raw, raw_subset=4, **kw)
+    assert wr.raw_field.shape == (4, wr.n_blocks * wr.reads_per_block + 1, 12) and wr.stepping["raw_subset_backend"] == "jax"
     assert all(int(r.raw_subset) == 0 for r in raw.requests if r.K_c3 == 2)      # the backend walks no raw subset in the walk
 
 
