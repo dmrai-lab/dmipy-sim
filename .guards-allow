@@ -139,3 +139,6 @@ dmipy_sim/replay/consolidate.py:8d76956bee pre-existing, tracked in dmipy-sim#83
 dmipy_sim/replay/hub.py:1847389f52 pre-existing, tracked in dmipy-sim#834
 dmipy_sim/spectrum/strands.py:7c078772d5 pre-existing, tracked in dmipy-sim#834
 dmipy_sim/substrate/biophysical_constants.py:f6918f327f pre-existing, tracked in dmipy-sim#834
+tools/gpu_tier.py:b54bb84589 the GPU tier's launcher names the vendor it runs on (#834 step 10)
+tools/gpu_tier.py:f9bbf3ca06 the GPU tier's launcher names the vendor it runs on (#834 step 10)
+tools/gpu_tier.py:a0b2d74bbf the GPU tier's launcher names the vendor it runs on (#834 step 10)
