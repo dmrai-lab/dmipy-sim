@@ -303,7 +303,7 @@ class Substrate:
 
     def request(self, n_fibres: int = 300, packing_fraction=None, *, seed: int = 0, min_gap=None, d_min=None,
                 orientation=(0.0, 0.0, 1.0), max_attempts: int = 100_000, id=None):
-        """Realise the substrate and return its :class:`~dmipy_sim.spec.SubstrateSpec`.
+        """Realise the substrate and return its :class:`~dmipy_replay.spec.substrate.SubstrateSpec`.
 
         What was asked -- ``n_fibres`` outer diameters from the Gamma law floored at ``d_min`` (default
         ``self.d_min``), the periodic cell sized for ``packing_fraction`` (default ``f_axon``), fibres

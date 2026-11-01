@@ -836,7 +836,7 @@ def _radii_from_law(radius_law, n, seed):
 def packed_request(kind, n_objects, radius_law, target_fraction, *, seed=0, min_gap=None, max_attempts=100_000,
                    orientation=(0.0, 0.0, 1.0), surface_relaxivity_t2=None, permeability=None, pool=None, id=None):
     """Realise a periodic RSA packing of ``kind`` (``"sphere"`` or ``"cylinder"``) objects and return its
-    :class:`~dmipy_sim.spec.SubstrateSpec`, the one producer for both (SUBSTRATE.md §5, §7).
+    :class:`~dmipy_replay.spec.substrate.SubstrateSpec`, the one producer for both (SUBSTRATE.md §5, §7).
 
     What was asked -- ``n_objects`` radii from ``radius_law`` (the same ``{family, shape, scale, r_min}``
     vocabulary as the myelinated ``diameter_law``), the periodic cell sized for ``target_fraction``, objects
