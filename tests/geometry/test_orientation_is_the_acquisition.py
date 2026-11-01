@@ -20,9 +20,12 @@ R, D0 = 0.7182e-6, 0.6e-9
 AXIS = np.array([0.3, -0.5, 0.81]) / np.linalg.norm([0.3, -0.5, 0.81])
 
 
+NT = 300
+
+
 def _seq(grad):
     b = np.array([1.0e9, 3.0e9])
-    return set_b(pgse(np.tile(grad, (len(b), 1)), 10e-3, 30e-3, gradient_strengths=1.0, n_t=1500), b)
+    return set_b(pgse(np.tile(grad, (len(b), 1)), 10e-3, 30e-3, gradient_strengths=1.0, n_t=NT), b)
 
 
 @pytest.mark.parametrize("make", [
@@ -55,11 +58,16 @@ def test_the_walk_is_in_the_substrate_frame_whatever_the_pose(make):
 ], ids=["cylinder", "myelinated"])
 def test_a_posed_substrate_is_the_upright_one_under_the_rotated_acquisition(make, D):
     """Same seed, same walk: the posed geometry with a lab gradient g gives what the upright one gives with the
-    gradient rotated into the substrate frame, to float32 rounding."""
+    gradient rotated into the substrate frame, to float32 rounding.
+
+    Both sides walk the SAME walkers (one seed, one substrate frame) and differ only in how the gradient meets them, so
+    the walkers' sampling spread cancels: the comparison has no standard error to resolve and 300 walkers over 300 time
+    samples carry it (4000 over 1500 did). A pose that did not rotate the gradient would put the lab y axis at
+    cos = -0.5 to the substrate axis instead of the rotated one's, a change of order one in the signal."""
     g_lab = np.array([0.0, 1.0, 0.0])
     posed = make(AXIS); upright = make((0.0, 0.0, 1.0))
     g_sub = posed._orient_R.T @ g_lab
-    kw = dict(n_walkers=4000, seed=3)
+    kw = dict(n_walkers=300, seed=3)
     if D is not None:
         kw["diffusivity"] = D
     s_posed = np.asarray(simulate(waveform=_seq(g_lab), geometry=posed, **kw))
