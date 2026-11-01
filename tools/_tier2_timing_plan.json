@@ -1,0 +1,116 @@
+[
+ {
+  "file": "tests/geometry/test_curved_step_rule.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/geometry/test_mesh_acceleration_invariance.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/geometry/test_mesh_mc.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/geometry/test_myelin_walls.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/geometry/test_packed_walls.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/geometry/test_permeability_crossing.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/geometry/test_sphere_permeability.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/physics/test_sgp_pore_sizes.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_bloch_permeation.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_compartment_ids.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_compression.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_engine_dispatch.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_mt_binding.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_mt_mesh_binding.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_mt_zspectrum.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_pose_series.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/test_replay_parity.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/validation/test_permeability_ladder.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ },
+ {
+  "file": "tests/validation/test_surface_relaxivity_ladder.py",
+  "mark": "gpu",
+  "k": "",
+  "budget": "900"
+ }
+]
