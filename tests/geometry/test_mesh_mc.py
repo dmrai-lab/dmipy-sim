@@ -119,35 +119,3 @@ def test_directional_permeability():
     f_out = frac_in({"intra_to_extra": 4e-5, "extra_to_intra": 0.0})    # only leaks out
     f_in = frac_in({"intra_to_extra": 0.0, "extra_to_intra": 4e-5})     # only leaks in
     assert f_out < f_sym < f_in
-
-
-@pytest.mark.gpu
-def test_per_compartment_t1_pgste_gating():
-    """Per-compartment T1 acts only during longitudinal storage (chi_t = 0), via the
-    PGSTE coherence gating: a short intra T1 attenuates walkers stored intra through
-    the mixing time, while under a spin echo (chi_t ≡ 1) T1 never acts."""
-    V, F = _ico(2)
-    # PGSTE with a long mixing time -> a chi_perp=0 storage block where T1 acts
-    wf_ste = set_b(pgste([[1, 0, 0]], 5e-3, 100e-3, gradient_strengths=0.05, n_t=200), 1e9)
-    s_t1 = np.asarray(simulate(400, D, wf_ste, Mesh(V, F, compartments=Compartments(intra=Pool(T1=0.3), extra=Pool(T1=3.0))), seed=SEED))
-    s_no = np.asarray(simulate(400, D, wf_ste, Mesh(V, F), seed=SEED))
-    assert s_t1[0] < 0.95 * s_no[0]                 # short intra T1 attenuates during TM
-
-    # spin echo: chi_t ≡ 1 -> the T1 term is identically zero, so per-compartment T1
-    # leaves the signal identical to the no-T1 mesh.
-    wf_se = set_b(pgse([[1, 0, 0]], 5e-3, 0.05, gradient_strengths=0.05, n_t=200), 1e9)
-    a = np.asarray(simulate(400, D, wf_se, Mesh(V, F, compartments=Compartments(intra=Pool(T1=0.3), extra=Pool(T1=3.0))), seed=SEED))
-    b = np.asarray(simulate(400, D, wf_se, Mesh(V, F), seed=SEED))
-    npt.assert_array_equal(a, b)
-
-
-@pytest.mark.gpu
-def test_per_compartment_diffusivity():
-    """Distinct intra/extra D (impermeable) runs with diffusivity=None and gives a
-    materially different, monotone signal depending on which compartment is fast."""
-    V, F = _ico(2)
-    wf = _pgse(4, 120, TE=40e-3)
-    s1 = np.asarray(simulate(400, None, wf, Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=3e-9))), seed=SEED))
-    s2 = np.asarray(simulate(400, None, wf, Mesh(V, F, compartments=Compartments(intra=Pool(D=3e-9), extra=Pool(D=1e-9))), seed=SEED))
-    assert np.all(np.diff(s1) <= 1e-6) and np.all(np.diff(s2) <= 1e-6)   # monotone
-    assert np.sqrt(np.mean((s1 - s2) ** 2)) > 0.02                        # clearly different

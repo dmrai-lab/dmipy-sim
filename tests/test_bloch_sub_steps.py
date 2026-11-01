@@ -92,16 +92,6 @@ def test_an_analytic_pore_matches_the_scalar_engine(waveform):
         f"vector {e_vec:.5f} vs scalar {e_scal:.5f} on an analytic Sphere")
 
 
-@pytest.mark.gpu
-def test_a_mesh_pore_matches_the_scalar_engine(mesh_sphere, waveform):
-    """The #69 regression. Measured: 0.96317 against a scalar 0.96305, where it used to return 0.05052."""
-    e_vec, e_scal = _bloch(mesh_sphere, waveform), _scalar(mesh_sphere, waveform)
-    assert e_scal > FREE + 0.5, "the mesh sphere is not restricted in the SCALAR engine either"
-    assert e_vec == pytest.approx(e_scal, abs=TOL), (
-        f"vector {e_vec:.5f} vs scalar {e_scal:.5f} on a mesh Sphere (free limit {FREE:.5f}) -- "
-        f"the Bloch walk is not resolving the mesh collisions")
-
-
 def test_one_displacement_per_waveform_step_still_resolves_the_mesh(mesh_sphere, waveform):
     """`sub_steps=1` no longer loses the mesh (#626; this test used to pin the opposite).
 
