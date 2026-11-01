@@ -12,13 +12,17 @@ from dmipy_sim import cpmg, simulate_cpmg, Sphere, FreeDiffusion
 
 
 def test_cpmg_pure_t2_decay():
-    """G=0 CPMG: echo k signal == exp(-k*TE/T2) (single walk, all echoes)."""
+    """G=0 CPMG: echo k signal == exp(-k*TE/T2) (single walk, all echoes).
+
+    With no gradient there is nothing to dephase, so every walker carries exactly exp(-k TE/T2): the signal has no
+    Monte-Carlo spread (SE = 0) and one walker per core would do; 64 walkers keep the batch a real batch. The
+    tolerance is therefore float32 accumulation of the decay (1e-4), not a multiple of an SE."""
     TE, T2, n_ech = 12e-3, 60e-3, 8
     wf = cpmg(n_ech, TE, gradient_strengths=0.0, gradient_directions=[[1, 0, 0]], n_t_per_echo=60)
-    S = np.asarray(simulate_cpmg(20000, 2e-9, wf, Sphere(radius=5e-6), T2=T2,
+    S = np.asarray(simulate_cpmg(64, 2e-9, wf, Sphere(radius=5e-6), T2=T2,
                                  seed=1, require_gpu=False)).ravel()
     expected = np.exp(-np.arange(1, n_ech + 1) * TE / T2)
-    npt.assert_allclose(S, expected, atol=0.01)
+    npt.assert_allclose(S, expected, atol=1e-4)
     assert S.shape == (n_ech,)
 
 
