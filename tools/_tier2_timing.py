@@ -70,3 +70,4 @@ for _ in range(80):
 rows = [json.loads(l) for l in open(res)] if os.path.exists(res) else []
 for r in rows:
     print("TIMING_ROW " + json.dumps(r), flush=True)
+# round 1
