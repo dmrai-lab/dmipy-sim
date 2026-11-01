@@ -16,11 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-        # Three processes, not one: the suite's memory only grows across a session (every jit is built over a
-        # fresh closure, so the compile caches never hit and never shrink; 3.0 GB after the first file, 6.2 GB
-        # by the p-files), and the 7 GB hosted runner shut the single 3.11 job down at that point six times in
-        # one day. Each group starts at a fresh process; they also run in parallel.
-        group: ["dirs", "a-l", "m-z"]
+        # Eight processes per Python version, not one: the suite's memory only grows across a session (every jit is
+        # built over a fresh closure, so the compile caches never hit and never shrink), and each group starts at a
+        # fresh process; they run in parallel on separate runners. tools/ci_groups.py assigns every test file to one
+        # group, balanced by measured time, so a new file needs no list edited.
+        group: [0, 1, 2, 3, 4, 5, 6, 7]
 
     steps:
       - uses: actions/checkout@v4
@@ -66,14 +66,15 @@ jobs:
           # GitHub runners have no GPU, so pin JAX to CPU and deselect the
           # slow / GPU-only Monte Carlo tests (mark heavy tests with @pytest.mark.gpu
           # or @pytest.mark.slow as they are identified).
-          case "${{ matrix.group }}" in
-            # every test directory is in "dirs" (the letter groups are the files of tests/ itself): a new directory is
-            # added here, and tests/test_dirs_are_in_ci.py fails when one is in no group
-            dirs) PATHS="tests/backends tests/geometry tests/math tests/physics tests/replay tests/spectrum tests/validation" ;;
-            a-l)  PATHS=$(ls tests/test_[a-l]*.py) ;;
-            m-z)  PATHS=$(ls tests/test_[m-z]*.py) ;;
-          esac
+          python tools/ci_groups.py 8 --check
+          PATHS=$(python tools/ci_groups.py 8 ${{ matrix.group }})
           JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not slow and not gpu" --durations=0 --durations-min=5
+
+      - name: Collect the whole suite
+        run: |
+          # every test file is collected by some invocation of this workflow (the shared ci-coverage guard reads this
+          # line); the groups above are checked to partition the same files
+          JAX_PLATFORMS=cpu pytest tests --collect-only -q -m "not slow and not gpu" | tail -1
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
