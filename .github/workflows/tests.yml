@@ -2,11 +2,9 @@ name: Tests
 
 on:
   push:
-    # `swoop` is a long-lived integration branch (dmipy-sim#285, #322): pieces land in it on green and it
-    # merges to main as one. It is listed here so that a push to it is tested like a push to main.
-    branches: [ main, swoop ]
+    branches: [ main ]
   pull_request:
-    branches: [ master, main, swoop ]
+    branches: [ main ]
   schedule:
     - cron: '0 4 * * 0'    # weekly, Sunday 04:00 UTC — runs the heavy MC suite
   workflow_dispatch: {}     # run the heavy MC suite on demand
@@ -69,7 +67,9 @@ jobs:
           # slow / GPU-only Monte Carlo tests (mark heavy tests with @pytest.mark.gpu
           # or @pytest.mark.slow as they are identified).
           case "${{ matrix.group }}" in
-            dirs) PATHS="tests/geometry tests/physics tests/validation tests/replay tests/math/test_accuracy.py tests/math/test_field_read_statistics.py tests/math/test_read_calibration.py" ;;
+            # every test directory is in "dirs" (the letter groups are the files of tests/ itself): a new directory is
+            # added here, and tests/test_dirs_are_in_ci.py fails when one is in no group
+            dirs) PATHS="tests/backends tests/geometry tests/math tests/physics tests/replay tests/spectrum tests/validation" ;;
             a-l)  PATHS=$(ls tests/test_[a-l]*.py) ;;
             m-z)  PATHS=$(ls tests/test_[m-z]*.py) ;;
           esac
