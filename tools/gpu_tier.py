@@ -59,30 +59,36 @@ def cmd_budget(a):
     return 0 if spent < LIMIT_USD else 3
 
 
-def cmd_run(a):
-    if not have_credentials():
-        print("no Modal credentials: GPU tier skipped")
-        return 0
+try:
     import modal
+except ImportError:                                   # `budget` needs no Modal
+    modal = None
+
+if modal is not None:
     app = modal.App("dmipy-sim-gpu-tier")
     image = (modal.Image.debian_slim(python_version="3.12")
              .pip_install("jax[cuda12]", "pytest", "pytest-timeout")
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
-    @app.function(image=image, gpu=a.gpu, timeout=TIMEOUT_S, retries=0)
+    @app.function(image=image, gpu="T4", timeout=TIMEOUT_S, retries=0)
     def gpu_tests():
         t0 = time.time()
         p = subprocess.run([sys.executable, "-m", "pytest", "-m", "gpu", "-q", "--tb=short", "-p", "no:cacheprovider",
                             "--timeout=600", "--durations=20", "tests"], cwd="/repo", capture_output=True, text=True)
         return dict(rc=p.returncode, tail=p.stdout[-6000:], seconds=time.time() - t0)
 
+
+def cmd_run(a):
+    if not have_credentials():
+        print("no Modal credentials: GPU tier skipped")
+        return 0
     t0 = time.time()
     try:
         with modal.enable_output(), app.run():
-            res = gpu_tests.remote()
+            res = gpu_tests.with_options(gpu=a.gpu).remote()
     finally:
-        seconds = time.time() - t0                    # card time is billed to the container's end, the timeout bounds it
+        seconds = time.time() - t0                    # the container's wall time, bounded by the function timeout
     usd = min(seconds, TIMEOUT_S) * USD_PER_S[a.gpu]
     line = f"{_dt.datetime.now(_dt.timezone.utc):%Y-%m-%d} {a.gpu} {seconds:.0f} {usd:.4f}"
     Path(LEDGER).write_text(line + "\n")
