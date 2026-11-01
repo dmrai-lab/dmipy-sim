@@ -1,10 +1,6 @@
-"""Restricted diffusion in a cylinder, against the matrix-method (eigenmode) oracle ``dmipy_sim.math.matrix_method``.
-
-The configurations of disimpy's test_cylinder_diffusion:
-  - Gradient along x, cylinder axis along z (gradient ⊥ axis → maximum restriction)
-  - Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r = 5 µm
-  - Config 2: delta ≈  1 ms, Delta ≈ 40 ms, r = 5 µm
-"""
+"""Restricted diffusion in a cylinder (disimpy's test_cylinder_diffusion setups): a gradient along the axis is free
+diffusion, one across it is restricted, and the sign of the axis does not matter. The eigenmode (matrix-method)
+agreement is held by test_coefficient_walk.py::test_sphere_and_cylinder_agree_with_the_matrix_method."""
 
 import numpy as np
 import numpy.testing as npt
@@ -12,8 +8,9 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
-from dmipy_sim.math.matrix_method import MatrixPore
 from tests.conftest import D, N_CPU, SEED, mc_atol
+
+N_COUPLED = 2_000   # same seed: the two orientations share their draws, so 0.02 is far above the difference noise
 
 
 def _build_disimpy_waveform(T, n_t_raw, pulse_start, pulse_end, n_t=1000):
@@ -42,45 +39,6 @@ def _tile_and_set_b(wf_single, b_values):
     G_tiled = jnp.tile(wf_single.G, (n_b, 1, 1))
     wf = ScannerSequence(G=G_tiled, dt=wf_single.dt, readout=wf_single.readout)
     return set_b(wf, b_values)
-
-
-def _matrix_oracle(wf, diameter):
-    """The eigenmode (matrix-method) signal of every measurement of ``wf`` for a cylinder of this diameter, gradient along x:
-    exact for the waveform's piecewise-constant steps, so it is the reference the walk is held to."""
-    pore = MatrixPore("cylinder", diameter, D, n_modes=(16, 12))
-    return np.array([abs(pore.signal(g, wf.dt)) for g in np.asarray(wf.G, np.float64)[:, :, 0]])
-
-
-def test_cylinder_matches_the_matrix_method_broad_pulse():
-    """Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r=5 µm against the matrix-method oracle."""
-    b_values = np.linspace(1, 3e9, 12)
-
-    wf_single = _build_disimpy_waveform(T=70e-3, n_t_raw=700,
-                                         pulse_start=1, pulse_end=300)
-    wf = _tile_and_set_b(wf_single, b_values)
-
-    signals = simulate(N_CPU, D, wf,
-                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
-                       seed=SEED)
-
-    npt.assert_allclose(signals, _matrix_oracle(wf, 10e-6), atol=mc_atol(N_CPU),
-                        err_msg="Cylinder Config1 (delta≈30ms) vs the matrix method")
-
-
-def test_cylinder_matches_the_matrix_method_narrow_pulse():
-    """Config 2: delta ≈ 1 ms, Delta ≈ 40 ms, r=5 µm against the matrix-method oracle."""
-    b_values = np.linspace(1, 3e9, 12)
-
-    wf_single = _build_disimpy_waveform(T=41e-3, n_t_raw=410,
-                                         pulse_start=1, pulse_end=10)
-    wf = _tile_and_set_b(wf_single, b_values)
-
-    signals = simulate(N_CPU, D, wf,
-                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
-                       seed=SEED)
-
-    npt.assert_allclose(signals, _matrix_oracle(wf, 10e-6), atol=mc_atol(N_CPU),
-                        err_msg="Cylinder Config2 (delta≈1ms) vs the matrix method")
 
 
 def test_cylinder_parallel_gradient_is_free():
@@ -112,6 +70,7 @@ def test_cylinder_signal_above_free_perp():
 
     assert np.all(S_cyl >= S_free - mc_atol(N_CPU, runs=2)), (
         f"Cylinder signal should be >= free. Max violation: {np.max(S_free - S_cyl):.4f}")
+    assert np.max(S_cyl - S_free) > mc_atol(N_CPU, runs=2)      # and the restriction is there
 
 
 # NOTE: `test_cylinder_walkers_contained*` was removed (#88). It asserted two things:
@@ -119,7 +78,7 @@ def test_cylinder_signal_above_free_perp():
 # deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
 # direction x step length -- including the step-spans-the-object case this walk could not
 # reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
-# statement than the matrix-method signal comparisons kept in this file: a restricted signal is
+# statement than the signal comparisons kept in this file: a restricted signal is
 # itself proof that walkers are hitting walls.
 
 
@@ -139,12 +98,12 @@ def test_cylinder_orientation_sign_invariance():
                                          pulse_start=1, pulse_end=300)
     wf = _tile_and_set_b(wf_single, b_values)
 
-    S1 = simulate(N_CPU, D, wf,
+    S1 = simulate(N_COUPLED, D, wf,
                   Cylinder(radius=5e-6, orientation=[1.0, 0.0, 1.0]),  seed=SEED)
-    S2 = simulate(N_CPU, D, wf,
+    S2 = simulate(N_COUPLED, D, wf,
                   Cylinder(radius=5e-6, orientation=[-1.0, 0.0, -1.0]), seed=SEED)
 
-    npt.assert_allclose(S1, S2, atol=mc_atol(N_CPU, runs=2),
+    npt.assert_allclose(S1, S2, atol=0.02,
                         err_msg="Orientation sign flip must give identical signals")
 
 

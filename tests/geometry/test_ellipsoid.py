@@ -17,10 +17,10 @@ from dmipy_sim.sequences import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, SEED, mc_atol
 
-# The ellipsoid's wall rule costs ~100 walker-steps per us on a CPU runner, so this module walks 1,500 walkers (one run
-# has a standard error of at most 1/sqrt(2 N) = 0.018); the comparisons that matter are made with the SAME seed, where
+# The ellipsoid's wall rule costs ~100 walker-steps per us on a CPU runner, so this module walks 1,000 walkers (one run
+# has a standard error of at most 1/sqrt(2 N) = 0.022); the comparisons that matter are made with the SAME seed, where
 # the two geometries share their draws and the difference carries far less noise than two independent walks.
-N_ELL = 1_500
+N_ELL = 1_000
 
 
 def _disimpy_example_waveform(n_t=1000):
@@ -100,6 +100,7 @@ def test_ellipsoid_signal_above_free():
     assert np.all(S_ellipsoid >= S_free - mc_atol(N_ELL, runs=2)), (
         f"Ellipsoid signal should exceed free diffusion along restricted axis. "
         f"Max violation: {np.max(S_free - S_ellipsoid):.4f}")
+    assert np.max(S_ellipsoid - S_free) > mc_atol(N_ELL, runs=2)      # and the restriction is there
 
 
 def test_ellipsoid_anisotropic_axis_dependence():

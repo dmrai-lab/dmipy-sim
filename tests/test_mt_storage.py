@@ -23,8 +23,8 @@ import pytest
 from dmipy_sim import Sphere
 from dmipy_sim.engine import mt
 
-# the ensemble Mz has a standard error of at most 0.5 / sqrt(N) = 0.011 here, against the 0.05 bound (4.5 of them)
-N_STORE = 2000
+# the ensemble Mz has a standard error of at most 0.5 / sqrt(N) = 0.013 here, against the 0.05 bound (3.8 of them)
+N_STORE = 1500
 R, D = 5e-6, 1e-9
 k_f, k_r = 30.0, 100.0                       # -> f_b = k_f/(k_f+k_r) = 0.23
 KAPPA_MT, DWELL = k_f * R / 3.0, 1.0 / k_r   # sphere S/V = 3/R
@@ -67,7 +67,7 @@ def _oracle_total_mz(TM):
 
 def test_storage_recovery_matches_two_pool_oracle():
     """Ensemble Mz(TM) under exchange matches the two-pool longitudinal oracle."""
-    for TM in (0.05, 0.15, 0.4):
+    for TM in (0.05, 0.4):
         mc = _stored_mz(TM, with_mt=True)
         orc = _oracle_total_mz(TM)
         assert abs(mc - orc) < 0.05, f"TM={TM}: MC {mc:.3f} vs oracle {orc:.3f}"

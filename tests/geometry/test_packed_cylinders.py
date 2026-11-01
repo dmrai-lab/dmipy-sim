@@ -18,7 +18,11 @@ import pytest
 
 from dmipy_sim import simulate, FreeDiffusion, pack_cylinders, PackedCylinders, set_b
 from dmipy_sim.sequences import pgse
-from tests.conftest import D, N_CPU, SEED, mc_atol
+from tests.conftest import D, SEED, mc_atol
+
+# The pack kernel sub-steps the walk (several candidate walls per step): 3,000 walkers is a standard error of at most
+# 0.013 here, against effects of 0.1 (hindering at b = 1.5e9) and a free-diffusion tolerance of four of them.
+N_PACK = 3_000
 from dmipy_sim.engine._fused import simulate_fused
 
 
@@ -170,7 +174,7 @@ def test_packed_cylinders_parallel_gradient_free():
     """Gradient along cylinder axis (z) → free diffusion signal exp(-bD).
 
     Along the axis, walkers are unrestricted; signal must match free diffusion
-    to within MC noise (four standard errors at N_CPU).
+    to within MC noise (four standard errors at N_PACK).
     """
     geom = _simple_geometry()
 
@@ -178,10 +182,10 @@ def test_packed_cylinders_parallel_gradient_free():
     bvecs    = np.tile([0., 0., 1.], (6, 1))   # gradient ∥ cylinder axis
     wf       = set_b(pgse(bvecs, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
-    S_packed = simulate(N_CPU, D, wf, geom, seed=SEED)
+    S_packed = simulate(N_PACK, D, wf, geom, seed=SEED)
     expected  = np.exp(-b_values * D)
 
-    npt.assert_allclose(S_packed, expected, atol=mc_atol(N_CPU),
+    npt.assert_allclose(S_packed, expected, atol=mc_atol(N_PACK),
                         err_msg="Parallel gradient should give free diffusion")
 
 
@@ -219,8 +223,8 @@ def test_packed_cylinders_hindered_above_free():
     """Extra-axonal perpendicular signal > free diffusion at high b.
 
     Extra-axonal diffusion is hindered (D_eff_perp < D), so signal attenuates
-    more slowly than free diffusion.  At b=3e9 s/m² the difference is
-    detectable at N_CPU walkers.
+    more slowly than free diffusion.  At b=1.5e9 s/m² the difference is
+    detectable at N_PACK walkers.
     """
     # Use a denser packing so hindering is clearly visible
     r     = 3e-6
@@ -229,14 +233,14 @@ def test_packed_cylinders_hindered_above_free():
     centers, L, vf = pack_cylinders(radii, target_vf=0.30, seed=5)
     geom_packed = PackedCylinders(radii=radii, centers=centers, L=L, pool="extra")
 
-    b_values = np.array([3e9])
+    b_values = np.array([1.5e9])
     bvecs    = np.array([[1., 0., 0.]])
     wf       = set_b(pgse(bvecs, 10e-3, 40e-3, gradient_strengths=1.0, n_t=1000), b_values)
 
-    S_extra = simulate(N_CPU, D, wf, geom_packed, seed=SEED)
-    S_free  = simulate(N_CPU, D, wf, FreeDiffusion(),  seed=SEED + 1)
+    S_extra = simulate(N_PACK, D, wf, geom_packed, seed=SEED)
+    S_free  = simulate(N_PACK, D, wf, FreeDiffusion(),  seed=SEED + 1)
 
-    assert float(S_extra[0]) > float(S_free[0]) - mc_atol(N_CPU, runs=2), (
+    assert float(S_extra[0]) > float(S_free[0]) + mc_atol(N_PACK, k=2.0, runs=2), (
         f"Extra-axonal signal ({S_extra[0]:.4f}) should exceed free "
         f"({S_free[0]:.4f}) at high b (VF={vf:.2f})")
 

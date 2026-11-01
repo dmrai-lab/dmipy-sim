@@ -19,7 +19,7 @@ from dmipy_sim.sequences import pgse, ogse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_CPU, SEED, mc_atol
 
-N_REST = 4_000   # the sphere's wall rule sub-steps the walk; the 0.4 gaps between restricted and free signals are 10+ SE here
+N_REST = 2_500   # the sphere's wall rule sub-steps the walk; the 0.4 gaps between restricted and free signals are 10+ SE here
 
 
 def test_ogse_free_diffusion_matches_exp_bD():

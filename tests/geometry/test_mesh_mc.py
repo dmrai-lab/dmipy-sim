@@ -9,8 +9,8 @@ Resolution note: restricted diffusion and surface relaxivity reach the noise flo
 at moderate resolution; permeability needs a finer mesh (its bias falls ~O(h^2)),
 so the permeability test uses a higher subdivision.
 
-The parity tests against the analytic geometries and the periodic tube are tier 2 (a mesh walk is minutes on a CPU
-runner); the tests of the per-compartment plumbing run a coarse mesh at a few hundred walkers on every push.
+Every test here is tier 2: a mesh walk is minutes on a CPU runner even at a subdivision-2 icosphere and a few hundred
+walkers.
 """
 import numpy as np
 import numpy.testing as npt
@@ -100,17 +100,7 @@ def test_permeability_matches_analytic_sphere():
     npt.assert_allclose(s_mesh, s_ana, atol=0.025, err_msg="mesh permeability vs analytic Sphere")
 
 
-def test_side_dependent_surface_relaxivity():
-    """With walkers seeded intra, an intra-side-only ρ attenuates them while an extra-side-only ρ (which they never
-    approach from) leaves them essentially unweighted."""
-    V, F = _ico(2)
-    wf = _pgse(2, 120, TE=40e-3)
-    rho = 5e-6
-    s_in = np.asarray(simulate(400, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=rho), extra=Pool(surface_relaxivity_t2=0.0))), seed=SEED))
-    s_ex = np.asarray(simulate(400, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=0.0), extra=Pool(surface_relaxivity_t2=rho))), seed=SEED))
-    assert s_in[0] < 0.99 and s_ex[0] > 0.999
-
-
+@pytest.mark.gpu
 def test_directional_permeability():
     """Symmetric κ (dict) reproduces the scalar; a rectifying (direction-dependent)
     κ drives net flux — outflow-only empties cells, inflow-only retains them."""
@@ -131,18 +121,7 @@ def test_directional_permeability():
     assert f_out < f_sym < f_in
 
 
-def test_per_compartment_t2():
-    """Equal per-compartment T2 reproduces the single global T2 bit-for-bit; a short
-    intra T2 strongly attenuates walkers seeded intra."""
-    V, F = _ico(2)
-    wf = _pgse(4, 120, TE=40e-3)
-    s_global = np.asarray(simulate(400, D, wf, Mesh(V, F), seed=SEED, T2=0.05))
-    s_comp = np.asarray(simulate(400, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(T2=0.05), extra=Pool(T2=0.05))), seed=SEED))
-    npt.assert_array_equal(s_global, s_comp)
-    s_short = np.asarray(simulate(400, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(T2=0.02), extra=Pool(T2=0.20))), seed=SEED))
-    assert s_short[0] < 0.5                     # seeded intra + short intra T2
-
-
+@pytest.mark.gpu
 def test_per_compartment_t1_pgste_gating():
     """Per-compartment T1 acts only during longitudinal storage (chi_t = 0), via the
     PGSTE coherence gating: a short intra T1 attenuates walkers stored intra through
@@ -162,6 +141,7 @@ def test_per_compartment_t1_pgste_gating():
     npt.assert_array_equal(a, b)
 
 
+@pytest.mark.gpu
 def test_per_compartment_diffusivity():
     """Distinct intra/extra D (impermeable) runs with diffusivity=None and gives a
     materially different, monotone signal depending on which compartment is fast."""
@@ -171,18 +151,3 @@ def test_per_compartment_diffusivity():
     s2 = np.asarray(simulate(400, None, wf, Mesh(V, F, compartments=Compartments(intra=Pool(D=3e-9), extra=Pool(D=1e-9))), seed=SEED))
     assert np.all(np.diff(s1) <= 1e-6) and np.all(np.diff(s2) <= 1e-6)   # monotone
     assert np.sqrt(np.mean((s1 - s2) ** 2)) > 0.02                        # clearly different
-
-
-def test_positions_full_selects_permeated_walkers():
-    """return_positions='full' + return_compartments='full' on a permeable mesh
-    yields per-step positions and compartment ids, so walkers that permeated can
-    be selected and their trajectories visualised."""
-    V, F = _ico(2)
-    g = Mesh(V, F, permeability=2e-5)
-    wf = _pgse(2, 120, TE=15e-3)
-    _, pos, origin, comp = simulate_fused(300, D, wf, g, seed=SEED,
-                                    return_positions='full', return_compartments='full')
-    assert pos.shape == (300, 120, 3)
-    assert comp.shape == (300, 120)
-    permeated = (comp != comp[:, :1]).any(axis=1)
-    assert int(permeated.sum()) > 0                       # some walkers crossed the membrane

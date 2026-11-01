@@ -44,6 +44,8 @@ def test_box_1d_restricted_signal_above_free():
     assert np.all(S_box >= S_free - mc_atol(N_CPU, runs=2)), (
         "Restricted box signal should be >= free diffusion signal at same b-values. "
         f"Max violation: {np.max(S_free - S_box):.4f}")
+    # and the restriction is there: somewhere over the b-range the box signal clears the free one by more than the noise
+    assert np.max(S_box - S_free) > mc_atol(N_CPU, runs=2)
 
 
 def test_box_1d_monotonically_decreasing():
