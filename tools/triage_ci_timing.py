@@ -2,7 +2,7 @@
 
     python tools/triage_ci_timing.py tests/geometry/test_box_1d.py
 
-Each test gets a 120 s wall budget: a watchdog records TIMEOUT and ends the process, and the file's remaining tests
+Each test gets a wall budget (TRIAGE_BUDGET, 120 s by default): a watchdog records TIMEOUT and ends the process, and the file's remaining tests
 are run in a fresh process (so a timed-out test does not hide the others). One JSON line per test goes to
 ``triage-<file>.jsonl`` and a table to the job summary."""
 import json
@@ -15,6 +15,7 @@ import textwrap
 PLUGIN = textwrap.dedent('''
     import os, json, threading, time, pytest
     RES = os.environ["TRIAGE_RES"]
+    BUDGET = float(os.environ.get("TRIAGE_BUDGET", "120"))
     _t = {}
     def _log(rec):
         with open(RES, "a") as f: f.write(json.dumps(rec) + "\\n")
@@ -22,9 +23,9 @@ PLUGIN = textwrap.dedent('''
     def pytest_runtest_protocol(item, nextitem):
         start = time.time()
         def boom():
-            _log({"id": item.nodeid, "st": "TIMEOUT", "t": 120.0})
+            _log({"id": item.nodeid, "st": "TIMEOUT", "t": BUDGET})
             os._exit(99)
-        timer = threading.Timer(120.0, boom); timer.daemon = True; timer.start()
+        timer = threading.Timer(BUDGET, boom); timer.daemon = True; timer.start()
         _t[item.nodeid] = {"st": "passed", "reason": ""}
         yield
         timer.cancel()
@@ -53,7 +54,7 @@ for _ in range(60):
            "-o", "addopts=", "-q", "--tb=line", "-rs"]
     for d in done:
         cmd += ["--deselect", d]
-    env = {**os.environ, "PYTHONPATH": plug + os.pathsep + os.environ.get("PYTHONPATH", ""), "TRIAGE_RES": res, "JAX_PLATFORMS": "cpu"}
+    env = {**os.environ, "PYTHONPATH": plug + os.pathsep + os.environ.get("PYTHONPATH", ""), "TRIAGE_RES": res, "JAX_PLATFORMS": "cpu", "TRIAGE_BUDGET": os.environ.get("TRIAGE_BUDGET", "120")}
     rc = subprocess.run(cmd, env=env).returncode
     if rc != 99:
         break
