@@ -1,6 +1,6 @@
 """The CPU thread cap (dmipy_sim._blas, dmrai-lab/dmipy-sim#700) and its floor on the one BLAS build that hangs
-(#564): the cap is applied at import and readable through threadpoolctl, an explicit setting wins over the
-environment variable and the default, a bad value is refused by name, and the hanging build never runs above its
+(#564, and the x86-64 segfault of the same OpenBLAS version): the cap is applied at import and readable through threadpoolctl, an explicit setting wins over the
+environment variable and the default, a bad value is refused by name, and the faulty build never runs above its
 floor whatever was asked."""
 import os
 import subprocess
@@ -71,8 +71,8 @@ def test_a_bad_environment_value_is_refused_by_name(monkeypatch, bad):
         _blas.cpu_threads()
 
 
-@pytest.mark.parametrize("pool", [_pool(version="0.3.27"), _pool(architecture="Haswell"), _pool(internal_api="mkl"),
-                                  _pool(num_threads=8), _pool(user_api="openmp")])
+@pytest.mark.parametrize("pool", [_pool(version="0.3.27"), _pool(version="0.3.29", architecture="Haswell"),
+                                  _pool(internal_api="mkl"), _pool(user_api="openmp")])
 def test_an_unaffected_build_gets_exactly_what_was_asked(monkeypatch, pool):
     calls = []
     monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [pool])
@@ -81,10 +81,19 @@ def test_an_unaffected_build_gets_exactly_what_was_asked(monkeypatch, pool):
     assert calls == [dict(limits=72, user_api="blas")]
 
 
-@pytest.mark.parametrize("asked,held", [(72, _blas.SAFE_THREADS), (3, 3)])
-def test_the_hanging_build_never_exceeds_its_floor(monkeypatch, asked, held):
+@pytest.mark.parametrize("arch", ["neoversev1", "Haswell"])
+@pytest.mark.parametrize("asked,held", [(72, _blas.SAFE_THREADS), (1, 1)])
+def test_the_faulty_build_never_exceeds_its_floor(monkeypatch, arch, asked, held):
     calls = []
-    monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [_pool()])
+    monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [_pool(architecture=arch)])
     monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k))
     _blas._cap_blas(asked)
     assert calls == [dict(limits=held, user_api="blas")]
+
+
+def test_reapplying_the_cap_never_raises_the_faulty_build_above_its_floor(monkeypatch):
+    calls = []
+    monkeypatch.setattr(threadpoolctl, "threadpool_info", lambda: [_pool(architecture="Haswell", num_threads=_blas.SAFE_THREADS)])
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda **k: calls.append(k))
+    _blas._cap_blas(8)
+    assert calls == [dict(limits=_blas.SAFE_THREADS, user_api="blas")]

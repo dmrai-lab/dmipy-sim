@@ -1,4 +1,4 @@
-"""The CPU thread count dmipy-sim owns: BLAS and torch at one cap (dmrai-lab/dmipy-sim#700), and the floor that cap keeps on the one BLAS build that hangs (#564).
+"""The CPU thread count dmipy-sim owns: BLAS and torch at one cap (dmrai-lab/dmipy-sim#700), and the floor that cap keeps on the one BLAS build that fails multithreaded (#564).
 
 The cap is ONE number, taken from the first of: the ``n`` passed to :func:`cap_cpu_threads`, the environment
 variable ``DMIPY_SIM_CPU_THREADS`` (read when the package is imported), :data:`DEFAULT_CPU_THREADS` bounded by
@@ -11,12 +11,13 @@ torch is never imported here: it is capped when it is already loaded, and again 
 XLA's CPU client has no thread-count setting; its pool follows the process's CPU affinity (``taskset``), which
 this module leaves alone.
 
-scipy-openblas 0.3.28 as numpy's wheels ship it on aarch64 (``USE64BITINT DYNAMIC_ARCH NO_AFFINITY neoversen1
-MAX_THREADS=64``; the runtime core is reported as Neoverse-V1 on a 72-core GH200) never returns from its
-multithreaded LAPACK drivers: an SVD of a 1455 x 1002 matrix, a symmetric eigensolve of its 1002 x 1002 Gram
-and a column-pivoted QR of it run in well under a second on one thread and do not finish in a minute on 64 (at
-16 the eigensolve took 17 s a call). On that build alone BLAS is held to :data:`SAFE_THREADS` whatever count was
-asked; on every other build BLAS gets exactly the count asked.
+OpenBLAS 0.3.28, as the scipy-openblas wheels ship it, fails in its multithreaded drivers on two architectures:
+on aarch64 (``neoversen1`` build, Neoverse-V1 runtime core, a 72-core GH200) its LAPACK drivers never return (an
+SVD of a 1455 x 1002 matrix, a symmetric eigensolve of its Gram and a column-pivoted QR: under a second on one
+thread, unfinished after a minute on 64, 17 s a call at 16); on x86-64 (Haswell runtime core; scipy 1.15.3, the
+last scipy for Python 3.10) scipy's L-BFGS-B segfaults from 4 threads on (dmipy-design's codesign test, 2 threads
+pass). On that version, whatever its architecture, BLAS is held to :data:`SAFE_THREADS` whatever count was asked;
+on every other build BLAS gets exactly the count asked.
 """
 import os
 import sys
@@ -28,11 +29,11 @@ ENV_VAR = "DMIPY_SIM_CPU_THREADS"
 DEFAULT_CPU_THREADS = 8
 """The cap when neither an argument nor :data:`ENV_VAR` states one, bounded by ``os.cpu_count()``."""
 
-HANG_SIGNATURE = dict(internal_api="openblas", version="0.3.28", architectures=("neoversev1", "neoversen1"))
-"""The build of #564: OpenBLAS 0.3.28 on a Neoverse core (as threadpoolctl reports the runtime core)."""
+FAULTY_BUILD = dict(internal_api="openblas", version="0.3.28")
+"""The BLAS build of #564 and of the L-BFGS-B segfault: OpenBLAS 0.3.28, on any architecture."""
 
-SAFE_THREADS = 8
-"""The threads BLAS keeps on #564's build: the stall begins at 16 threads, and 8 returns at once."""
+SAFE_THREADS = 2
+"""The threads BLAS keeps on that build: the x86-64 segfault begins at 4 threads, the aarch64 stall at 16."""
 
 _threads = None          # the cap in force; None until the first application
 _torch_applied = None    # the count torch was last set to
@@ -62,13 +63,13 @@ def cpu_threads(n=None):
 
 
 def _affected():
-    """The loaded BLAS pools that are #564's build and run more threads than :data:`SAFE_THREADS`."""
+    """The loaded BLAS pools of :data:`FAULTY_BUILD`, whatever their current thread count: a pool already held to
+    :data:`SAFE_THREADS` stays one, so that applying the cap again never raises it back."""
     from threadpoolctl import threadpool_info
-    sig = HANG_SIGNATURE
+    sig = FAULTY_BUILD
     return [p for p in threadpool_info()
             if p.get("user_api") == "blas" and p.get("internal_api") == sig["internal_api"]
-            and p.get("version") == sig["version"] and str(p.get("architecture", "")).lower() in sig["architectures"]
-            and int(p.get("num_threads") or 0) > SAFE_THREADS]
+            and p.get("version") == sig["version"]]
 
 
 def _cap_blas(n):
