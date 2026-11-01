@@ -140,15 +140,9 @@ def load_fixture(name):
 
 # There are two tiers, by hardware. Tier 1 is the regular suite on a CPU runner. Tier 2 is the `gpu` marker, the only
 # marker: tests whose claim needs scale or a device (heavy Monte-Carlo validation, float32 device behaviour), run on a
-# GPU by .github/workflows/gpu-tier.yml (tools/gpu_tier.py) under a monthly budget. A test moves from tier 2 to
-# tier 1 by being slimmed until it is cheap on a CPU runner; tier 2 is not a parking place (tests/test_no_tiers.py).
-# These test modules are dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes each) and
-# are tier 2 until slimmed.
-_GPU_TIER_MODULES = {
-                                            "test_mesh_mc",
-    "test_mesh_acceleration_invariance",
-                "test_permeable_crossings",
-        }
+# GPU by .github/workflows/gpu-tier.yml (tools/gpu_tier.py) under a monthly budget. Each tier-2 test carries the mark
+# itself, so a reader of the test sees where it runs. A test moves from tier 2 to tier 1 by being slimmed until it is
+# cheap on a CPU runner; tier 2 is not a parking place (tests/test_no_tiers.py).
 
 
 def pytest_runtest_logreport(report):
@@ -171,14 +165,6 @@ def pytest_runtest_logreport(report):
 
 _last_module = [None]
 
-
-def pytest_collection_modifyitems(config, items):
-    gpu = pytest.mark.gpu
-    for item in items:
-        mod = getattr(item, "module", None)
-        name = mod.__name__.rsplit(".", 1)[-1] if mod is not None else ""
-        if name in _GPU_TIER_MODULES:
-            item.add_marker(gpu)
 
 def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.9):
     """Fail unless a hand-picked step is short enough for the mesh's collision lookup to cover it.
