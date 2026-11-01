@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LIMIT_USD = 25.0
 TIMEOUT_S = 15 * 60                                   # a run costs at most this much card time
+PER_TEST_S = 120                                       # one tier-2 test may take at most this long
 BUILD_ALLOWANCE_S = 10 * 60                            # the client waits at most this much longer, for the image build
 USD_PER_S = {"T4": 0.000164, "L4": 0.000222}          # Modal's list price per second of the card
 LEDGER = "gpu-ledger.txt"
@@ -90,9 +91,11 @@ if modal is not None:
     @app.function(image=image, gpu="T4", timeout=TIMEOUT_S, retries=0)
     def gpu_tests():
         t0 = time.time()
-        p = subprocess.run([sys.executable, "-m", "pytest", "-m", "gpu", "-q", "--tb=short", "-p", "no:cacheprovider",
-                            "--timeout=600", "--durations=20", "tests"], cwd="/repo", capture_output=True, text=True)
-        return dict(rc=p.returncode, tail=p.stdout[-6000:], seconds=time.time() - t0)
+        # streamed (not captured), each test on its own line with its outcome: a run cut by the timeout still shows which
+        # tests finished and which one was running; one test is held to PER_TEST_S so it cannot spend the whole budget
+        p = subprocess.run([sys.executable, "-m", "pytest", "-m", "gpu", "-v", "--tb=short", "-p", "no:cacheprovider",
+                            f"--timeout={PER_TEST_S}", "--durations=0", "tests"], cwd="/repo")
+        return dict(rc=p.returncode, tail="(pytest output streamed above)", seconds=time.time() - t0)
 
 
 def cmd_run(a):
@@ -108,13 +111,15 @@ def cmd_run(a):
                 res = call.get(timeout=TIMEOUT_S + BUILD_ALLOWANCE_S)
             except TimeoutError:                       # e.g. a container that fails at startup and is restarted
                 call.cancel()
+            except modal.exception.FunctionTimeoutError:  # the function's own timeout: the run used its whole budget
+                res = dict(rc=1, tail=f"the run hit its {TIMEOUT_S} s timeout; the tests that finished are listed above")
     finally:
         seconds = time.time() - t0                    # wall time on the client: an upper bound of the card time
-    usd = min(seconds, TIMEOUT_S) * USD_PER_S[a.gpu]
-    line = f"{_dt.datetime.now(_dt.timezone.utc):%Y-%m-%d} {a.gpu} {seconds:.0f} {usd:.4f}"
-    Path(LEDGER).write_text(line + "\n")
+        usd = min(seconds, TIMEOUT_S) * USD_PER_S[a.gpu]
+        line = f"{_dt.datetime.now(_dt.timezone.utc):%Y-%m-%d} {a.gpu} {seconds:.0f} {usd:.4f}"
+        Path(LEDGER).write_text(line + "\n")           # written on every path: the monthly budget sums these lines
+        print("ledger:", line)
     print(res["tail"])
-    print("ledger:", line)
     return res["rc"]
 
 
