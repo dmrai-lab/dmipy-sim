@@ -83,11 +83,11 @@ images = [
     "h5py>=3.8",
 ]
 # The cross-engine flagship example (examples/canonical_wm_parity_from_sim.py) additionally needs the analytical
-# engine dmipy-fit, the release line that pairs with this one (dmipy-fit 3 depends on dmipy-sim 3); so do the
-# Karger and brain-from-CSD tests, which skip without it. It is an OPTIONAL example dependency only -- the
-# dmipy-sim package itself never imports dmipy-fit (the fit -> sim dependency is one-directional).
+# engine dmipy-fit, a release that imports the reader's names from dmipy-replay (2.3 and earlier import them from
+# dmipy-sim); so do the Karger and brain-from-CSD tests, which skip without it. It is an OPTIONAL example dependency
+# only -- the dmipy-sim package itself never imports dmipy-fit (the fit -> sim dependency is one-directional).
 examples = [
-    "dmipy-fit>=3,<4",
+    "dmipy-fit>2.3,<4",
 ]
 # Pulseq (.seq) interoperability: from_pulseq / to_pulseq (dmipy_sim.sequences.pulseq).
 # Install isolated from the numpy/jax stack:  pip install --no-deps pypulseq
