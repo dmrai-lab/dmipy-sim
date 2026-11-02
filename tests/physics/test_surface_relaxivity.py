@@ -38,4 +38,5 @@ def test_no_relaxivity_loses_no_signal(geometry):
     """A geometry without surface relaxivity: the signal at b ~ 0 is 1.0 at a 100 ms echo."""
     wf, _ = _b0_waveform(0.1)
     s = simulate(N_BASELINE, D_DEFAULT, wf, geometry, seed=SEED)
-    npt.assert_allclose(float(s[0]), 1.0, atol=0.005)
+    # one walker's lost weight moves the mean by 1 / N_BASELINE; the b = 1 s/m^2 phase by b D = 2e-9
+    npt.assert_allclose(float(s[0]), 1.0, atol=0.5 / N_BASELINE)

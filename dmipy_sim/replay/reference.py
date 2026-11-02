@@ -1032,10 +1032,10 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
             f"so the memory budget cannot be checked against a measurement for it; name peak_rss_bytes in "
             f"not_recorded to record that, or supply a pack whose walk reported one")
     cert = ((meta.get("provenance") or {}).get("certified") or {})
-    peak = int(max(int(run.get("peak_rss_bytes") or 0), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
-    if not peak:
-        peak = None
-    elif peak > budget:
+    peaks = ([int(run["peak_rss_bytes"])] if run.get("peak_rss_bytes") else []) + \
+            ([int(float(cert["peak_rss_gb"]) * 1e9)] if cert.get("peak_rss_gb") else [])
+    peak = max(peaks) if peaks else None                      # the larger of the recorded peaks; None when neither is
+    if peak is not None and peak > budget:
         raise ReferenceRefusal(f"walk {name!r}: the recorded walk and pack peaked at {peak / 1e9:.1f} GB against the "
                                f"design's {budget / 1e9:.1f} GB budget; the budget is a hard cap")
     n = int(wp["n_walkers"])
@@ -1056,7 +1056,7 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
                 illegal_crossings=(None if recorded.illegal_crossings is None
                                    else int(recorded.illegal_crossings)),
                 counters_not_recorded=list(declared) or None, counters_evidence=recorded.evidence,
-                seconds=round(float(run.get("wall_s") or 0.0), 1), peak_rss_bytes=peak,
+                seconds=(None if run.get("wall_s") is None else round(float(run["wall_s"]), 1)), peak_rss_bytes=peak,
                 budget_checked=peak is not None, budget_bytes=int(budget), status=run.get("status"),
                 code_commit=(run.get("code") or {}).get("commit"))
 
@@ -1419,8 +1419,11 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"design: the tier {t.name!r} reads {t.floor_key!r} / {t.err_key!r}, which the "
                                        f"pilot pack's certificate does not carry ({sorted(k for k in fid if isinstance(fid[k], (int, float)))}); "
                                        f"a declared tier is certified, never 'not applicable'")
+            if fid[t.floor_key] is None:
+                raise ReferenceRefusal(f"design: the pilot pack's certificate states no {t.floor_key!r} (None) for the tier "
+                                       f"{t.name!r}; a declared tier is certified, never 'not applicable'")
             tiers.append(asdict(t))
-            tier_floor[t.name] = float(fid[t.floor_key] or 0.0)
+            tier_floor[t.name] = float(fid[t.floor_key])
         target = min(float(t.target_floor) for t in d.tiers)
         n_floor = max(int(d.pilot_n), int(round(d.pilot_n * (floor0 / target) ** 2 * float(d.safety))))
         n_budget = int(max(0.0, (float(d.memory_budget_bytes) - rss0)) / per_walker_rss)
@@ -1479,7 +1482,7 @@ class ReferenceFamily:
                               substrate_is=("declared" if d.pilot_substrate else
                                             "the first of this family's substrates in sorted order, undeclared"),
                               walk_seconds=round(walk_s, 1), pack_seconds=round(pack_s, 1),
-                              sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
+                              sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings),
                               envelope_floor=floor0, tier_floor=tier_floor, pack_bytes=int(pack_bytes),
                               bytes_per_walker=per_walker_bytes, rss_bytes_per_walker=per_walker_rss,
                               resident_bytes_per_walker_sampled=per_walker_resident,
@@ -1519,7 +1522,10 @@ class ReferenceFamily:
                                    f"the step certificate cannot step coarser; a block this close to the physics step "
                                    f"leaves the step unmeasured -- the block is the band's own (h = 0.8 T / (pi K)), so a "
                                    f"longer one is a smaller K per window")
-        regime = int((rule.get("rules") or {}).get("regime") or 1)        # the coarse walk stays in the first-order regime
+        if (rule.get("rules") or {}).get("regime") is None:
+            raise ReferenceRefusal(f"design: the pilot walk of {name!r} states no first-order regime in its step rule "
+                                   f"(work['step_rule']['rules']['regime']), which the coarse walk is held to")
+        regime = int(rule["rules"]["regime"])                         # the coarse walk stays in the first-order regime
         n_coarse = max(n_fine // (PILOT_STEP_RATIO if n_fine >= PILOT_STEP_RATIO else 2), regime)
         if n_coarse >= n_fine:
             raise ReferenceRefusal(f"design: the pilot of {name!r} steps at the first-order regime's ceiling ({n_fine} per "
@@ -1545,7 +1551,7 @@ class ReferenceFamily:
         return dict(cert, sub_steps_fine=n_fine, sub_steps_coarse=n_coarse, dt_p_s=float(walk.dt_sim), block_h_s=float(walk.h),
                     band_is=("the largest band the declared waveforms read" if bands and f_band < top else
                              "the walk's own top band, K / (2 T)" if bands else "the walk's own band"),
-                    rules=rule.get("rules"), coarse_walk_seconds=round(time.time() - t0, 1), illegal_crossings_coarse=int(coarse.illegal_crossings or 0))
+                    rules=rule.get("rules"), coarse_walk_seconds=round(time.time() - t0, 1), illegal_crossings_coarse=int(coarse.illegal_crossings))
 
     # ---------------- 5. walk
     def _walk(self):
@@ -1611,7 +1617,7 @@ class ReferenceFamily:
         block, windows, qv = _walk_params(walk)
         return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=sha256_of(path),
                     n_walkers=int(n), K=int(walk.K), block=block, windows=windows, qv=qv,
-                    sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
+                    sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings),
                     seconds=round(seconds, 1), peak_rss_bytes=int(peak), rss_bytes_before=int(rss0),
                     projected_rss_bytes=int(projected), budget_bytes=int(des["memory_budget_bytes"]),
                     code_commit=code_commit(require_clean=False))
