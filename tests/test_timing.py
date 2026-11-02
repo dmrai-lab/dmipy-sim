@@ -110,7 +110,7 @@ def test_from_pgse_builds_to_a_budget():
     assert TE == pytest.approx(seq.rf.refocus_time * 2) and TE >= st.min_TE()
     t = np.arange(seq.G.shape[1]) * seq.dt
     assert np.all(np.abs(np.asarray(seq.G))[:, st.on_mask(t, TE) == 0.0, :] == 0.0)   # nothing in an off window
-    np.testing.assert_allclose(dr.calc_b(seq), B, rtol=1e-6)
+    np.testing.assert_allclose(seq.b(), B, rtol=1e-6)
     chi = np.asarray(seq.chi_perp, float)
     assert 0.0 < chi.min() < 1.0 and seq.refocusing_residual < 1e-6
     assert seq.refocus_gap >= st.t_refocus

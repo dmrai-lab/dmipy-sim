@@ -884,6 +884,28 @@ def test_the_public_surface_is_the_replay_surface():
     assert not exporting, f"an oracle is exported from {exporting}"
 
 
+@pytest.mark.parametrize("module,name,spelling", [
+    ("dmipy_sim", "calc_b", "seq.b()"), ("dmipy_sim", "calc_btensor", "seq.btensor()"),
+    ("dmipy_sim.spec", "Pool", "PoolSpec (from dmipy_replay.spec.substrate import PoolSpec)")])
+def test_a_refused_name_says_its_spelling_accessed_or_imported(module, name, spelling):
+    """A sequence's b and B-tensor are its methods, and the spec's pool record is dmipy-replay's ``PoolSpec`` (the
+    walk's ``dmipy_sim.Pool`` is the compartments API): ``dmipy_sim.calc_b``, ``calc_btensor`` and ``spec.Pool`` raise
+    an error that says the spelling, accessed (an ``AttributeError``, so ``hasattr`` is false) or imported (an
+    ``ImportError``)."""
+    message = re.escape(f"{module}.{name} does not exist: use {spelling}")
+    with pytest.raises(AttributeError, match=message):
+        getattr(importlib.import_module(module), name)
+    with pytest.raises(ImportError, match=message):
+        exec(f"from {module} import {name}", {})
+    assert not hasattr(importlib.import_module(module), name)
+
+
+def test_a_name_that_moved_to_dmipy_replay_says_where_it_went_when_imported():
+    moved = r"dmipy_sim\.ReplayPack is not dmipy-sim's: it is dmipy_replay\.ReplayPack \(from dmipy_replay import ReplayPack\)"
+    with pytest.raises(ImportError, match=moved):
+        exec("from dmipy_sim import ReplayPack", {})
+
+
 # ── every band channel's container is derived; none is flat or a fixed curve by default (#769) ──────────────────
 def test_no_band_channel_container_is_flat_or_fixed_by_default():
     """Positions, contact and field are held in containers derived per pack against its floor (``"derived"``); the

@@ -17,7 +17,6 @@ import dmipy_sim as d
 
 import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
@@ -67,7 +66,7 @@ def _play(template, directions, bvalues):
     prof = G[:, int(np.abs(G).max(axis=0).argmax())]
     prof = prof / np.abs(prof).max()                                  # the unit shape; the amplitude is set by b
     u = np.asarray(directions, np.float64); u = u / np.linalg.norm(u, axis=1)[:, None]
-    unit = float(calc_b(template)[0]) / float(np.abs(G).max()) ** 2
+    unit = float(template.b()[0]) / float(np.abs(G).max()) ** 2
     amp = np.sqrt(np.asarray(bvalues, np.float64) / unit)
     return _rows(template, np.stack([prof[:, None] * (a * v)[None, :] for a, v in zip(amp, u)]))
 
@@ -267,7 +266,7 @@ def test_the_image_of_a_trapezoid_class_is_the_replay(small):
     name, L = M["lay"].fit(seq)
     assert name == TRAP
     b = np.einsum("msc,st,mtc->m", L, p.b_matrix(), L)
-    np.testing.assert_allclose(b, calc_b(seq), rtol=3e-3, atol=1e5)
+    np.testing.assert_allclose(b, seq.b(), rtol=3e-3, atol=1e5)
     assert _assert_image(M, TRAP, seq) > 0.0
 
 
@@ -282,7 +281,7 @@ def test_the_image_of_a_cosine_ogse_class_is_the_replay(small):
     assert name == COS and L.shape == (9, 2, 3)
     np.testing.assert_allclose(np.einsum("msc,s->mc", L, M["lay"].partitions[COS].areas), 0.0, atol=1e-6)
     b = np.einsum("msc,st,mtc->m", L, M["lay"].partitions[COS].b_matrix(), L)
-    np.testing.assert_allclose(b, calc_b(seq), rtol=3e-3)
+    np.testing.assert_allclose(b, seq.b(), rtol=3e-3)
     _assert_image(M, COS, seq)
 
 
@@ -297,7 +296,7 @@ def test_a_tensor_encoding_is_three_shapes_on_one_interval(small):
     R = Rotation.random(9, random_state=4).as_matrix()
     wts = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1], [1, 0.5, 0.25], [0.3, 1, 0.7]], float)
     seq = _tensor(M["tmpl"]["tensor"], R, wts)
-    b0 = calc_b(seq)
+    b0 = seq.b()
     seq = _rows(M["tmpl"]["tensor"], np.asarray(seq.G, np.float64) * np.sqrt(1.5e9 / b0.max()))
     name, L = M["lay"].fit(seq)
     assert name == "tensor" and L.shape == (9, 3, 3)
@@ -307,7 +306,7 @@ def test_a_tensor_encoding_is_three_shapes_on_one_interval(small):
     for m in range(9):                                                # the levels are a_k R e_k
         np.testing.assert_allclose(L[m], scale * (wts[m] * peak)[:, None] * R[m].T, atol=2e-6)
     b = np.einsum("msc,st,mtc->m", L, p.b_matrix(), L)
-    np.testing.assert_allclose(b, calc_b(seq), rtol=3e-3)
+    np.testing.assert_allclose(b, seq.b(), rtol=3e-3)
     _assert_image(M, "tensor", seq)
 
 

@@ -739,9 +739,8 @@ def _check_band(view, partition, env):
     temporal band than the source stores (the
     replay's own check, :meth:`~dmipy_replay.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
     waveform's, and the bands beyond the pack's would carry phase the vectors do not."""
-    from dmipy_replay.acquisition.waveforms import calc_b
     seq = partition.template
-    b = np.asarray(calc_b(seq), np.float64)
+    b = np.asarray(seq.b(), np.float64)
     if not np.any(b > 0):
         return
     if env.get("b_max") is None:                                     # the class's strongest: its peak axis at G_max

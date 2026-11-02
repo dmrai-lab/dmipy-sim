@@ -15,7 +15,6 @@ import jax.numpy as jnp
 
 from dmipy_sim import simulate, FreeDiffusion, Sphere
 from dmipy_replay import set_b
-from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_replay.sequences import pgse, ogse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .conftest import D, N_CPU, SEED, mc_atol
@@ -78,7 +77,7 @@ def test_arbitrary_waveform_zero_net_gradient_gives_free():
     G_arr[0, q1:2*q1, 0] = -1.0
 
     wf_raw = ScannerSequence(G=jnp.array(G_arr), dt=float(dt), readout=(n_t - 1,))
-    b_raw = calc_b(wf_raw)
+    b_raw = wf_raw.b()
     assert b_raw[0] > 0, "b-value should be positive"
 
     wf = set_b(wf_raw, np.array([1e9]))
@@ -89,8 +88,8 @@ def test_arbitrary_waveform_zero_net_gradient_gives_free():
                         err_msg="Arbitrary refocused waveform on FreeDiffusion must give exp(-bD)")
 
 
-def test_calc_b_pgse_analytical():
-    """calc_b should match the analytical PGSE b-value: (gamma*G*delta)^2*(Delta-delta/3)."""
+def test_the_sequences_b_is_the_analytical_pgse_b():
+    """``seq.b()`` matches the analytical PGSE b-value: (gamma*G*delta)^2*(Delta-delta/3)."""
     from dmipy_replay.constants import GAMMA
     delta = 10e-3
     DELTA = 40e-3
@@ -100,8 +99,8 @@ def test_calc_b_pgse_analytical():
     # the analytic formula is for SQUARE lobes -> build the instantaneous waveform
     # (sim now defaults to slew-limited, whose ramps give a slightly smaller b)
     wf = pgse(bvecs, delta, DELTA, gradient_strengths=G_mag, n_t=2000, slew_rate=np.inf)
-    b_sim = calc_b(wf)[0]
+    b_sim = wf.b()[0]
     b_analytic = (GAMMA * G_mag * delta) ** 2 * (DELTA - delta / 3)
 
     npt.assert_allclose(b_sim, b_analytic, rtol=0.01,
-                        err_msg="calc_b must match analytical PGSE b-value within 1%")
+                        err_msg="seq.b() must match analytical PGSE b-value within 1%")
