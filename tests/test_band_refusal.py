@@ -5,10 +5,11 @@ contract against bands the pack never stored, and the signal would come back smo
 predicate is walk-free: the free bridge's band variances at the walk's diffusivity give the phase the dropped
 bands carry, so a pack of walkers that never move (every band zero) judges a waveform by its band alone.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.geometry import FreeDiffusion
@@ -28,7 +29,7 @@ def _static_pack(K, seed=0):
         block=dict(h=DT, m=0, n_blocks=N_T - 1, rule="given", precision="float64", k0_residual_relative=0.0),
         n_windows=1, dt_sim=DT, sub_steps=1, qv_positions=np.zeros((N_W, 1, 3), np.float32), seed=seed,
         diffusivity=D0, spec=spec_of(FreeDiffusion()))
-    return build_replay_pack(walk, id=f"t/static-K{K}", envelope=_lean_env(), K=K, license="x", citation="x")
+    return build_replay_pack(walk, id=f"t/static-K{K}", **stated(_lean_env(), of=walk), K=K, license="x", citation="x")
 
 
 def _ogse(f_hz, sigma, n_t=801):
@@ -71,7 +72,7 @@ def test_the_battery_waveforms_of_a_walked_pack_are_within_its_band(pack):
 def _with_cap(pk, cap, **terms):
     """``pk`` with its certificate stating ``cap`` as its numerical cap and ``terms`` as its other certified rows."""
     import copy
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     meta = copy.deepcopy(pk.meta)
     meta["fidelity"].update(target_floor=cap, **terms)
     return ReplayPack(pk.arrays, meta)
@@ -124,13 +125,15 @@ def test_the_estimate_is_the_free_tail_beyond_k_to_infinity_not_to_a_grid():
 
 def _layout(K, *, cap, floor=0.02, other=None):
     """A columnar layout's header: ``K`` bands of a free walk at ``D0`` over 20 ms, every stored band at the free variance."""
-    from dmipy_sim.replay.columnar import ColumnarPack
+    from dmipy_replay.replay.columnar import ColumnarPack
     from dmipy_replay.replay.compression import band_variances
     T = (N_T - 1) * DT
     lay = ColumnarPack.__new__(ColumnarPack)
     var = band_variances(K, T, D0)[:, None] * np.ones((1, 3))
     fid = dict(target_floor=cap, **(other or {})) if cap is not None else {}
+    env = stated()["envelope"]                                         # the test's wide envelope: the stored K decides
     lay.meta = dict(walk_params=dict(diffusivity=D0, windows=dict(n=1, T=T), T_max=T), fidelity=fid,
+                    replay_envelope=dict(acquisition=env.header_acquisition()),
                     columnar=dict(band_variance=var.T.tolist(), band_variance_max=var.T.tolist()))
     lay.K, lay.floor, lay.band_groups = K, floor, [K // 4, K // 2, K]
     return lay

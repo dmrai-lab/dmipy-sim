@@ -32,7 +32,7 @@ N_VOXELS_PER_AXIS = 40
 
 
 def label_volume(edge_m, seed, *, out_dir, target_fraction=TARGET_FRACTION, n_objects_per_tile=N_OBJECTS_PER_TILE,
-                 shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner="connectom"):
+                 shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), envelope):
     """Generate one label-volume entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): a random sphere
     packing at ``target_fraction`` (default 0.3, under the RSA saturation of 0.40) rasterised onto a
     ``VOXEL_SIZE_M``-voxel grid of ``edge_m`` side as a segmented image (grain = solid, free = pore space),
@@ -41,7 +41,7 @@ def label_volume(edge_m, seed, *, out_dir, target_fraction=TARGET_FRACTION, n_ob
     grain confined by its centre to its own tile, not its radius)."""
     from ..spec.producers import label_volume_spec
     from ..io.label_volume import write_nrrd
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
 
     t_start = time.time()
     os.makedirs(out_dir, exist_ok=True)
@@ -106,7 +106,7 @@ def label_volume(edge_m, seed, *, out_dir, target_fraction=TARGET_FRACTION, n_ob
                       substrate=dict(kind="label_volume", spec_file="../substrate/spec.json",
                                     image_file="../substrate/labels.nrrd", n_objects=int(len(radii)),
                                     target_fraction=float(target_fraction), side_m=float(edge_m)),
-                      grid=grid, T_max_s=T_max, scanner=scanner, counts_rel="../substrate/counts.npz",
+                      grid=grid, T_max_s=T_max, envelope=envelope, counts_rel="../substrate/counts.npz",
                       blocks_rel="../substrate/blocks.json", total_walkers=total_walkers, n_blocks=len(blocks))
         variants.append(float(T_max))
 

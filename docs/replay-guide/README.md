@@ -6,7 +6,7 @@ and the operations that join them. Every code block on these pages runs in the t
 
 A Monte Carlo walk's natural output is neither an acquisition-specific signal nor a trajectory history but an
 acquisition-independent set of sufficient projections, accumulated while the physics is simulated; the engine
-encodes as it goes. The scanner class gives the band, the band gives the block, and a pack is those projections
+encodes as it goes. The envelope gives the band, the band gives the block, and a pack is those projections
 (one basis, the continuous sine basis over a window) with the spec they were walked from.
 
 ## The objects, and what each one is
@@ -79,7 +79,8 @@ python -m dmipy_sim.replay.publish my_pack.rpk --repo owner/name        # prints
 
 ```python
 # docs: skip -- the hub, over the network
-uri = pack.publish("owner/name")                     # or publish(path, "owner/name", hub=...) from dmipy_sim.replay.publish
+from dmipy_sim.replay.publish import publish
+uri = publish(pack, "owner/name")                    # or a path; hub= for another hub
 same = ReplayPack.load(uri)                          # fetched into the cache, sha256 checked against the manifest
 ```
 

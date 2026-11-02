@@ -15,15 +15,16 @@ Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is aut
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim import simulate_mt_trajectories, SusceptibilitySources, mt
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax
+from dmipy_sim.replay.trajectories import replay, replay_bloch
+from dmipy_replay.replay.bloch_jax import replay_bloch_jax
 from dmipy_replay.replay.bloch import finite_180_longitudinal_dwell
 
 
@@ -146,7 +147,7 @@ def test_simulate_trajectories_packed_myelin_mt_channel():
     block end (0 free, 1 bound) and the walk's start state (RNG-preserved packed-myelin walk)."""
     geom_kw = dict(inner_radii=np.full(3, 2e-6), g_ratios=np.full(3, 0.7),
                    centers=np.array([[0., 0.], [12e-6, 0.], [-12e-6, 0.]]),
-                   cell_size=40e-6, N_max=3, D_intra=2e-9, D_myelin=0.1e-9, D_extra=2e-9)
+                   cell_size=40e-6, N_max=3)
     D, N, T, dt, seed = 2e-9, 400, 8e-3, 0.4e-3, 1
 
     base = _walk_geometry(N, D, d.PackedMyelinatedCylinders(**geom_kw, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9))), T, dt,

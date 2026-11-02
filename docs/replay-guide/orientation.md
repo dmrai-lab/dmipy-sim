@@ -9,11 +9,14 @@ assumes the substrate is axially symmetric; the axis form is a convenience for s
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 
+from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
+env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
+               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
+pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide", envelope=env)
 seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.001, 0.003, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
 
 along = pack.replay(seq)                                       # the cylinder along z: x is across, z is along
@@ -40,4 +43,4 @@ not a contraction, while two tissues or two scanners on one pose share both.
 A voxel is rarely one pose. `pack.pose_response(seq)` expands the pack's response over every pose in the real
 Wigner basis, and a distribution of poses composes against it: a Watson or Bingham distribution, a single axis, or a
 fibre orientation distribution in a named basis. That is the machinery of a composed phantom, and it is described
-with the phantoms in [phantoms](phantoms.md) and in `dmipy_sim.replay.so3`.
+with the phantoms in [phantoms](phantoms.md) and in `dmipy_replay.replay.so3`.

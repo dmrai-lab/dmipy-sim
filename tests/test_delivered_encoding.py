@@ -3,14 +3,14 @@
 Three things stand between the prescribed gradient and the delivered one -- the coils' nonlinearity, the
 magnet's background, and the coils' concomitant term. All three were modelled and none reached a signal.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import (background_gradient_map, delivered_gradient, delivered_weights,
-                                    gradient_tensor_map)
+from dmipy_replay.phantom import Grid
+from dmipy_replay.phantom.bore import background_gradient_map, delivered_gradient, delivered_weights, gradient_tensor_map
 from dmipy_replay.replay.replay import compile_scheme
 
 SH = (3, 3, 3)
@@ -182,14 +182,14 @@ def pack(tmp_path_factory):
     import dmipy_sim as d
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     out = tmp_path_factory.mktemp("pk") / "w.rpk"
     # 40 000, not 400. At 400 the Monte-Carlo floor on this pack is 11-14 per cent in ADC against an
     # effect of a few per cent, so a per-direction bias has an SNR under one and its SIGN is not determined.
     # The assertions below still passed at 400 -- they compare two weight sets on the SAME walkers, which
     # cancels most of the floor -- but any NUMBER read off such a fixture is a draw, not a measurement.
     walk = _walk_geometry(40_000, 2e-9, d.FreeDiffusion(), 0.05, 1e-3, seed=0, require_gpu=False)
-    build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="t", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
     return read_rpk(str(out))
 
 
@@ -343,7 +343,7 @@ def test_a_turned_acquisition_turns_what_the_machine_delivered():
     finite pulse still sees none), where the Maxwell term was read, and the nonlinearity tensor (R L R^T)."""
     from dmipy_replay.acquisition.timing import SequenceTiming
     from dmipy_replay.acquisition.waveforms import rotate_waveform
-    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_replay.phantom.bore import encoding_classes
     sw = ScannerLimits.of("swoop")
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 12e-3, 26e-3, gradient_strengths=[0.02, 0.02], TE=60e-3,
                          slew_rate=float(sw.slew_max),

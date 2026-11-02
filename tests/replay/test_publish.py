@@ -1,6 +1,7 @@
 """Publishing a pack (dmipy_sim.replay.publish) against the fake hub: the file, its manifest row and the rendered card
 go up in one commit; a second publish replaces the row; a pack without its contract is refused; the sha256 the hub holds
 is checked on publish and on ``ReplayPack.load("hf://...")``; a local load is untouched."""
+from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import json
 import os
@@ -11,10 +12,12 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.hub import FakeHub, sha256_of
-from dmipy_sim.replay import ReplayPack
+from dmipy_sim.replay.hub import FakeHub
+from dmipy_replay.replay.hub import sha256_of
+from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import publish as pub
+from dmipy_sim.replay.container import save_pack
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
            B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
@@ -23,7 +26,7 @@ REPO = "owner/packs"
 
 def _pack(id="test/cyl", **kw):
     walk = _walk_geometry(200, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 4e-3, 5e-4, seed=0, require_gpu=False, K=4)
-    return build_replay_pack(walk, id=id, K=4, envelope=ENV, **{"license": "CC-BY-4.0", "citation": "a test pack", **kw})
+    return build_replay_pack(walk, id=id, K=4, **stated(ENV, G_max=1.0, of=walk), **{"license": "CC-BY-4.0", "citation": "a test pack", **kw})
 
 
 @pytest.fixture(scope="module")
@@ -111,10 +114,10 @@ def test_the_manifest_names_the_built_and_the_published_commit_distinctly(pack, 
 
 
 def test_a_file_publishes_the_same_as_the_object_and_the_method_is_the_function(pack, hub, tmp_path):
-    pack.save(str(tmp_path / "cyl.rpk"))
+    save_pack(pack, str(tmp_path / "cyl.rpk"))
     assert pub.publish(str(tmp_path / "cyl.rpk"), REPO, hub=hub, path="mine/cyl.rpk", message="the pack") == f"hf://{REPO}/mine/cyl.rpk"
     assert hub.log[0]["message"] == "the pack"
-    assert pack.publish(REPO, hub=hub) == f"hf://{REPO}/packs/test-cyl.rpk"
+    assert pub.publish(pack, REPO, hub=hub) == f"hf://{REPO}/packs/test-cyl.rpk"
     rows = _manifest(hub)["packs"]
     assert [r["path"] for r in rows] == ["mine/cyl.rpk", "packs/test-cyl.rpk"] and rows[0]["sha256"] == rows[1]["sha256"]
 
@@ -137,7 +140,7 @@ def test_two_publishers_keep_both_rows(pack, hub, tmp_path):
     publish is prepared again from the new manifest, so neither row is lost (the canonical pores lost nine)."""
     from dmipy_sim.replay.hub import StaleParent
     other = tmp_path / "other.rpk"
-    pack.save(str(other))
+    save_pack(pack, str(other))
     interleaved = []
     real_commit = hub._commit
 
@@ -166,7 +169,7 @@ def test_a_pack_without_its_contract_is_refused(hub, tmp_path):
     p.meta["license"] = "CC-BY-4.0"; p.meta["fidelity"] = {}; p.meta["citation"] = ""
     with pytest.raises(ValueError, match="no citation, fidelity"):
         pub.publish(p, REPO, hub=hub)
-    p.meta["id"] = None; p.save(str(tmp_path / "noid.rpk"))
+    p.meta["id"] = None; save_pack(p, str(tmp_path / "noid.rpk"))
     with pytest.raises(ValueError, match="no id"):
         pub.publish(str(tmp_path / "noid.rpk"), REPO, hub=hub)
     assert not hub.log and not hub.exists("manifest.json")
@@ -232,12 +235,12 @@ def test_a_local_load_never_touches_the_hub(pack, tmp_path, monkeypatch):
     for name in ("_download", "_get"):
         monkeypatch.setattr(rhub, name, lambda *a, **k: pytest.fail("the hub was asked for a local file"))
     p = tmp_path / "cyl.rpk"
-    pack.save(str(p))
+    save_pack(pack, str(p))
     assert ReplayPack.load(str(p)).digest == pack.digest and ReplayPack.load(p).source == str(p)
 
 
 def test_the_cli_prints_the_uri(pack, hub, tmp_path, capsys, monkeypatch):
-    pack.save(str(tmp_path / "cyl.rpk"))
+    save_pack(pack, str(tmp_path / "cyl.rpk"))
     monkeypatch.setattr(pub, "_publish_file", lambda local, meta, repo, **kw: pub.uri_of(repo, kw["path"] or "packs/x.rpk"))
     pub.main([str(tmp_path / "cyl.rpk"), "--repo", REPO, "--path", "packs/y.rpk"])
     assert capsys.readouterr().out.strip() == f"hf://{REPO}/packs/y.rpk"
@@ -245,11 +248,12 @@ def test_the_cli_prints_the_uri(pack, hub, tmp_path, capsys, monkeypatch):
 
 def test_a_phantom_substrate_cites_a_published_pack_by_its_uri(monkeypatch):
     """A PackSubstrate given an hf:// URI loads the pack through ReplayPack.load, so a phantom cites published packs."""
-    from dmipy_sim.phantom import PackSubstrate
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay.phantom import PackSubstrate
+    from dmipy_replay import ReplayPack
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"id": "o/p", "walk_params": {"block": {"h": 5e-4, "m": 0, "n_blocks": 2}, "windows": {"n": 1, "T": 1e-3, "walks": []}}})
-    monkeypatch.setattr(ReplayPack, "load", classmethod(lambda cls, uri: seen.setdefault("uri", uri) and fake))
+    monkeypatch.setattr("dmipy_replay.replay.replay.ReplayPack.load",            # the class PackSubstrate loads
+                        classmethod(lambda cls, uri: seen.setdefault("uri", uri) and fake))
     sub = PackSubstrate("hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk", m0=1.0)
     assert sub.uri.startswith("hf://") and sub.name == "100ms_K48"
     assert sub.pack is fake and seen["uri"] == "hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk"

@@ -2,7 +2,7 @@
 
 Only what a replay phantom needs: the image data in its **canonical** axis order (the order the header's
 ``dim`` and ``transform`` refer to, whatever the storage ``layout``), the voxel-to-scanner affine in
-millimetres (the NIfTI convention, so :meth:`dmipy_sim.phantom.Grid.from_affine` reads it), and the header.
+millimetres (the NIfTI convention, so :meth:`dmipy_replay.phantom.Grid.from_affine` reads it), and the header.
 MRtrix's ``transform`` is the rotation-and-translation of the **canonical** axes; the affine is that with the
 voxel sizes folded in, ``affine[:3, :3] = transform[:3, :3] @ diag(vox)``.
 """

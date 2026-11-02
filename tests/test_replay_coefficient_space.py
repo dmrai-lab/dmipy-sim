@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import sequences as _seqmod
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import sequences as _seqmod
+from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import compression as _cx
 from dmipy_replay.replay._replay_kernel import bin_gate
@@ -88,7 +88,7 @@ def test_the_field_phase_equals_the_decoded_path_integral(field_pack):
     projection; the dense route (the 13 channels' mode series evaluated finely, the held gate integrated against
     it) is the oracle."""
     from dmipy_replay.replay.field import susc_path_coeffs, susc_path_field
-    from dmipy_sim.replay.replay import GAMMA
+    from dmipy_replay.replay.replay import GAMMA
     pk = field_pack
     seq = _seqmod.gre(6e-4, gradient_directions=[[1, 0, 0]], bvalues=[5e8], delta=1e-4, Delta=3e-4, n_t=4 * pk.n_t + 1, slew_rate=np.inf)
     b0_dir = (0.6, 0.0, 0.8)

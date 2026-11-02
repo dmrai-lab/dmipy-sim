@@ -3,9 +3,9 @@ every acquisition piecewise constant on a stored partition -- at any amplitude, 
 a few products per walker on the device (dmipy-sim#505, #770: a whole grid replayed while a user waits).
 
 The layout's reader -- the format, :class:`Shape`, :class:`Partition` and its fit, the words, the tiers and the image
-on numpy -- is :mod:`dmipy_replay.replay.time_segments`; this module writes the layout (:func:`segment_rows`,
-:func:`write_time_segment_layout`) and its :class:`TimeSegmentLayout` adds the JAX (the default) and torch backends of
-the image and a machine's delivered gradient (:meth:`TimeSegmentLayout.delivery`).
+on numpy, JAX and torch, a machine's delivered gradient -- is :mod:`dmipy_replay.replay.time_segments`
+(:class:`~dmipy_replay.replay.time_segments.TimeSegmentLayout`); this module writes the layout (:func:`segment_rows`,
+:func:`write_time_segment_layout`).
 
 **Terms, not a shape.** A layout stores PARTITIONS (:class:`Partition`): TERMS, each an interval ``[a_s, b_s]`` of the
 walk's clock and a temporal shape ``psi_s`` on it (:class:`Shape`, a stated record normalised to ``max |psi| = 1``), with
@@ -39,7 +39,7 @@ named), or leaves a net moment, is refused by name (:meth:`Partition.levels`).
 built from the same walk (``pack=``, its sibling: the floor target and the envelope are the pack's, and the rows'
 provenance names the walk and the pack): two artefacts of one walk, each with its own certificate, the segments'
 carrying the walk's terms (truncation, quadrature, field read, the accumulator's rounding) and its own rounding, and no
-band quantisation. Given a quantised :class:`~dmipy_sim.replay.replay.ReplayPack` instead (``source: "pack"``) it
+band quantisation. Given a quantised :class:`~dmipy_replay.replay.replay.ReplayPack` instead (``source: "pack"``) it
 contracts the pack's bands: the certificate then carries the pack's band quantisation contracted through the partition
 (:func:`quantisation_term`), and the vectors are held to what the floor's budget leaves of it, so their words are wider.
 
@@ -94,19 +94,18 @@ with as many collisions as a half has tiles (a scatter over rows serialises on a
 and ``t_<g>.npy``, with the background ``bg_<g>.npy``, and ``manifest.json`` (the partitions, the groups, the widths,
 the floor, the source, the walk's identity, the certificate).
 
-**The image.** :meth:`TimeSegmentLayout.image` takes a sequence (any rows, each piecewise constant on a stored
+**The image.** :meth:`~dmipy_replay.replay.time_segments.TimeSegmentLayout.image` takes a sequence (any rows, each piecewise constant on a stored
 partition) and forms ``|sum_w w exp(i sum_s G_s . m_s)| / sum_w w`` per voxel with its split-half floor, on the device
 from device-resident words: each word decoded in the kernel (a shift up and an arithmetic shift down per field, the
 shifts constant per partition, a scale), float32 phases written out as products (a float32 matmul on CUDA is TF32),
 complex64 exponentials, complex128 tile sums and accumulator. ``tissue=`` / ``scanner=`` / ``b0_direction=`` turn the
-tiers into exactly :meth:`~dmipy_sim.replay.study.Primitives.reduction_terms`: the row weight ``amp exp(-tau_2 / T2_pool
+tiers into exactly :meth:`~dmipy_replay.replay.study.Primitives.reduction_terms`: the row weight ``amp exp(-tau_2 / T2_pool
 - tau_1 / T1_pool + (rho2 / D) c)`` and the phase ``B0 (chi_iso A + chi_aniso B)``, ``A, B`` contracted from the decoded
 channels for that direction. Two backends run that arithmetic, ``"jax"`` (the reference) and ``"torch"`` (Hugging
 Face's shared GPU pool runs PyTorch only, and drops the device between calls).
 """
 from __future__ import annotations
 
-from dmipy_replay.replay.time_segments import TimeSegmentLayout as _TimeSegmentLayout
 import dmipy_replay.replay.compression as _r_compression
 import collections
 import functools
@@ -118,6 +117,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+from ..coefficient_walk import _window_t0
 from dmipy_replay.replay.time_segments import Delivered, FORMAT, MANIFEST, Partition, TILE, WORD_BITS, _AXES, _RTOL, _decode, _group_key, _layout_of, _phase, _row_terms
 
 ROWS = "rows.json"
@@ -321,7 +321,7 @@ def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
     worst over the envelope, rad^2 of phase (the contact's relative weight error counted as a phase, as its width is).
     Each contraction is linear in the stored bands / modes, so a step ``s_k`` (the largest over the scale tables) is a
     variance ``w_k^2 s_k^2 / 12`` with ``w_k`` the contraction's weight on it: the contact's ``(rho2 / D)_max`` times the
-    gated bridge's weights (:func:`~dmipy_sim.replay.replay.surface_logweight` of unit bands), each field component's
+    gated bridge's weights (:func:`~dmipy_replay.replay.replay.surface_logweight` of unit bands), each field component's
     ``B0 chi_max alpha_c gamma g_k`` with ``g_k`` the gate's cosine projection (``alpha`` 2 on ``iso_local``, which the
     layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
     walker holds no step (its scale is a placeholder). Zero for a float container. The live bands and modes are read a
@@ -364,12 +364,12 @@ def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
 
 
 def _walk_view(walk, weights=None):
-    """The walk's float coefficients as an uncertified in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`: per
+    """The walk's float coefficients as an uncertified in-memory :class:`~dmipy_replay.replay.replay.ReplayPack`: per
     window the positions, the contact and the field modes in the float containers and the occupancy's events, exactly
     the walk's own numbers, so that every reader of a pack contracts the walk before any quantiser."""
     from .bank import _coefficient_weights
     from . import compression as cx
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     w = _coefficient_weights(walk, weights)
     n, T_w = int(walk.n_windows), float(walk.T_window)
     arrays, channels = {}, {}
@@ -377,7 +377,7 @@ def _walk_view(walk, weights=None):
     for i in range(n):
         cw = walk.window(i)
         p = "" if i == 0 else f"s{i}/"
-        t0 = float((cw.block.get("window") or {}).get("t0", cw.block.get("t_start", 0.0)))
+        t0 = _window_t0(cw.block)
         a = dict(cx.pack_position_arrays(np.asarray(cw.position_coeffs)[:, 0], np.float32))
         if cw.boundary_bands is not None:
             a_, cm = cx.encode_boundary_bands(np.zeros(cw.n_walkers, np.float32), np.asarray(cw.boundary_endpoint)[:, 0],
@@ -403,6 +403,8 @@ def _walk_view(walk, weights=None):
                 walk_params=dict(n_walkers=int(walk.n_walkers), T_max=float(walk.T), diffusivity=walk.diffusivity, seed=walk.seed,
                                  windows=dict(n=n, T=T_w, walks=[dict(first=0, last=n - 1, seed=walk.seed)]), block=dict(walk.block)),
                 substrate=walk.spec.to_dict(), fidelity={}, view=dict(of="walk", containers="float"))
+    if walk.envelope is not None:                                     # the envelope the walk was walked for
+        meta["replay_envelope"] = dict(acquisition=walk.envelope.header_acquisition())
     return ReplayPack(arrays, meta)
 
 
@@ -418,31 +420,21 @@ def walk_identity(walk):
 
 
 def _envelope(meta, g_max):
-    """What the widths are derived at, from a pack's header: the encodings -- a scanner class's (``acquisition.bound``
-    ``"scanner_class"``: every level at most ``G_max`` per axis, ``b_max`` None) or those within ``b_max``
-    (``replay_envelope.acquisition.b_max``) --, ``G_max`` (``g_max``, at most the class's, else the envelope's, else
-    the pack's scanner class's), the largest ``rho2 / D`` (the contact tier's
-    envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with one
-    that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
+    """What the widths are derived at, from a pack's header: the encodings of its envelope
+    (:meth:`~dmipy_replay.replay.envelope.Envelope.from_header`: every level at most ``G_max`` per axis, ``b_max``
+    None), ``G_max`` (``g_max``, at most the envelope's, else the envelope's), the largest ``rho2 / D`` (the contact
+    tier's envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with
+    one that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
     ``replay_envelope.acquisition.B0_list`` times ``replay_envelope.tissue.chi_max`` (0 for a pack with no field
-    channel, and a pack with one that states either not is refused)."""
+    channel, and a pack with one that states either not is refused). A header that states no envelope is refused."""
+    from dmipy_replay.replay.envelope import Envelope
+    e = Envelope.from_header(meta)
     env = meta.get("replay_envelope") or {}
-    acq = env.get("acquisition") or {}
-    by_class = acq.get("bound") == "scanner_class"
-    if not by_class and acq.get("b_max") is None:
-        raise ValueError("the pack declares no acquisition envelope (replay_envelope.acquisition.b_max or a scanner "
-                         "class): a segment's width is derived from the encodings the pack is certified for")
-    if by_class and g_max is not None and float(g_max) > float(acq["G_max"]) * (1.0 + 1e-12):
-        raise ValueError(f"g_max = {float(g_max):.4g} T/m is beyond the {float(acq['G_max']):.4g} T/m per axis of the "
-                         f"scanner class {acq['scanner']!r} the pack is certified for")
+    if g_max is not None and float(g_max) > e.G_max * (1.0 + 1e-12):
+        raise ValueError(f"g_max = {float(g_max):.4g} T/m is beyond the {e.G_max:.4g} T/m per axis of the envelope "
+                         f"{e.name!r} the pack is certified for")
     if g_max is None:
-        g_max = acq.get("G_max")
-    if g_max is None and (meta.get("compression") or {}).get("scanner"):
-        from dmipy_replay.acquisition.scanners import ScannerLimits
-        g_max = ScannerLimits.of(meta["compression"]["scanner"]).G_max
-    if g_max is None:
-        raise ValueError("the pack names no scanner class and its envelope no G_max: give g_max= (T/m), the largest "
-                         "gradient the layout is certified for")
+        g_max = e.G_max
     rho = (env.get("tissue") or {}).get("rho2_over_D_max")
     if rho is None:
         if ((meta.get("compression") or {}).get("channels") or {}).get("boundary_local_time") is not None:
@@ -452,16 +444,14 @@ def _envelope(meta, g_max):
         rho = 0.0
     b0chi = b0max = 0.0
     if ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") is not None:
-        from .compression import envelope_B0_chi_max, envelope_B0_max
-        tis = env.get("tissue") or {}
-        if tis.get("chi_max") is None:
+        if e.chi_max is None or not e.B0_list:
             raise ValueError("the pack carries a field channel and states no certified susceptibility scale "
-                             "(replay_envelope.tissue.chi_max): the field's width is derived at the one certified B0 chi")
-        stated = dict(B0_list=acq.get("B0_list"), chi_max=tis["chi_max"])
-        b0chi, b0max = envelope_B0_chi_max(stated), envelope_B0_max(stated)
-    return dict(b_max=(None if by_class else float(acq["b_max"])), G_max=float(g_max), rho2_over_D_max=float(rho),
-                B0_chi_max_T=float(b0chi), B0_max_T=float(b0max),
-                **(dict(bound="scanner_class", scanner=acq["scanner"]) if by_class else dict(bound="b_max")))
+                             "(replay_envelope.tissue.chi_max) or field strengths (replay_envelope.acquisition.B0_list): "
+                             "the field's width is derived at the one certified B0 chi")
+        b0max = float(e.B0_max)
+        b0chi = b0max * float(e.chi_max)
+    return dict(b_max=None, G_max=float(g_max), rho2_over_D_max=float(rho), B0_chi_max_T=float(b0chi), B0_max_T=float(b0max),
+                bound="envelope", name=e.name)
 
 
 def _floor_target(meta, given):
@@ -483,7 +473,7 @@ def _group_tiers(view, gate_seq, *, tiers, background, background_amplitude, ref
     field channels (with ``tiers``) and the background vector (with ``background``). ``ref`` is the record of the
     walkers before ``view``'s (a walker range's): their exposure times are the ones every walker's must equal."""
     from dmipy_replay.replay.replay import _band_phase, _path_field_channels
-    from .study import Acquisition
+    from dmipy_replay.replay.study import Acquisition
     from dmipy_replay.acquisition.epg import pathway_weight
     rows, rec = {}, dict(pathway=float(pathway_weight(gate_seq)), tau_t2=None, tau_t1=None, contact=False, field=None,
                          background=False)
@@ -530,7 +520,7 @@ def _positions_decoded(pack):
     range's readers -- each partition's vectors, each group's tiers and background -- decode none again."""
     from dmipy_replay.replay.compression import POSITION_AXES, read_position_coeffs
     from .compression import pack_position_arrays
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     arrays = dict(pack.arrays)
     shared = {k: v for k, v in arrays.items() if k == "band_block"}
     for p in sorted({k[:len(k) - len(k.split("/")[-1])] for k in arrays if k.split("/")[-1].startswith(POSITION_AXES)}):
@@ -613,10 +603,10 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
 
     ``source`` is the walk (:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`), read in its float coefficients, with
     ``pack`` the pack built from it (its sibling; refused when its walkers' starts are not the walk's), or a quantised
-    :class:`~dmipy_sim.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
-    its median per-voxel floor; the envelope the pack's (``g_max`` when it names no scanner class). Returns the record.
+    :class:`~dmipy_replay.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
+    its median per-voxel floor; the envelope the pack's (``g_max`` at most its ``G_max``). Returns the record.
 
-    The source is read a walker range at a time (:meth:`~dmipy_sim.replay.replay.ReplayPack.walkers`, ranges of
+    The source is read a walker range at a time (:meth:`~dmipy_replay.replay.replay.ReplayPack.walkers`, ranges of
     :func:`~dmipy_sim.replay.compression.slice_walkers` at ``slice_bytes``), every column spilled to ``out_dir`` in
     walker order and gathered into (voxel, pool) order by one sort over all rows at the end; a record's largest
     values are those of the stored float32 rows, the largest over the ranges. The rows and the record do not depend on the ranges: memory is bounded
@@ -624,7 +614,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     from ..coefficient_walk import CoefficientWalk
     from .compression import slice_walkers
     from dmipy_replay.phantom.grid import Grid
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     parts = _partitions(partitions)
     if isinstance(source, CoefficientWalk):
         if not isinstance(pack, ReplayPack):
@@ -634,6 +624,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         if pack.n_walkers != source.n_walkers or not np.array_equal(pack.r0.astype(np.float32), starts):
             raise ValueError("pack= is not this walk's pack: its walkers' starts differ")
         view = _walk_view(source, weights)
+        view.meta["replay_envelope"] = pack.meta.get("replay_envelope")     # the sibling's: what the rows are declared at
         if not np.allclose(np.asarray(view.spin_weights, np.float32), np.asarray(pack.spin_weights, np.float32), rtol=1e-6):
             raise ValueError("the walk's weights are not its pack's: give the weights the pack was built with (weights=)")
         decl, kind = pack, "walk"
@@ -746,7 +737,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
 def _check_band(view, partition, env):
     """Refuse a partition whose template at the envelope's b_max (a class's: at ``G_max`` on its peak axis) needs more
     temporal band than the source stores (the
-    replay's own check, :meth:`~dmipy_sim.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
+    replay's own check, :meth:`~dmipy_replay.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
     waveform's, and the bands beyond the pack's would carry phase the vectors do not."""
     from dmipy_replay.acquisition.waveforms import calc_b
     seq = partition.template
@@ -845,7 +836,7 @@ def _source_tier_terms(recs, g, eps):
     from a walk). A floor target a caller STATED (``segment_rows(floor_target=)``) whose budget ``eps^2`` is below it is
     refused by name, since no width meets it; the pack's own declared target is taken as it is and the certificate
     states the error."""
-    out = {k: max(float((r["groups"][g].get("quantisation") or {}).get(k, 0.0)) for r in recs) for k in ("contact", "field")}
+    out = {k: max(float(r["groups"][g]["quantisation"][k]) for r in recs) for k in ("contact", "field")}
     stated = any(r["source"].get("floor_target_stated") for r in recs)
     for k, q in out.items():
         if stated and q >= eps ** 2:
@@ -1067,295 +1058,3 @@ def _code():
     except (OSError, subprocess.SubprocessError):
         commit = None
     return dict(package="dmipy-sim", version=ver, commit=commit)
-
-
-# ------------------------------------------------------------------ the layout
-class TimeSegmentLayout(_TimeSegmentLayout):
-    """:class:`dmipy_replay.replay.time_segments.TimeSegmentLayout` (the manifest, the fit, the words, the tiers and the
-    image) with the JAX and torch backends of the image beside numpy's (:attr:`BACKENDS`; JAX the default) and a
-    machine's delivered gradient per voxel (:meth:`delivery`)."""
-
-    DEFAULT_BACKEND = "jax"
-
-    def delivery(self, sequence, scanner, grid=None, *, partition=None, to_scanner=None, nonlinearity=True, background=True,
-                 concomitant=True, transmit=True):
-        """What ``scanner`` (a :class:`~dmipy_replay.acquisition.scanners.ScannerLimits`) plays at every voxel with rows when
-        the layout's grid sits in its bore as ``grid`` says (the layout's own grid, whose isocenter is the grid centre,
-        when None; :meth:`~dmipy_sim.phantom.Grid.centred_at` moves it), for ``sequence`` on its stored partition:
-        :func:`~dmipy_sim.phantom.bore.delivered_vectors` of each segment's commanded plateau at :attr:`live_voxels`,
-        for :meth:`image`'s ``delivered``. The term switches are those of
-        :func:`~dmipy_sim.phantom.bore.delivered_gradient` and ``transmit``."""
-        from ..phantom.bore import delivered_vectors
-        grid = self.grid if grid is None else grid
-        if tuple(grid.shape) != tuple(self.grid.shape):
-            raise ValueError(f"the grid placed in the bore is the layout's own ({tuple(self.grid.shape)}), got {tuple(grid.shape)}")
-        name, L = self.fit(sequence, partition)
-        if not self.partitions[name].is_constant:
-            raise ValueError(f"partition {name!r} has shaped terms: a machine's delivered gradient (its Maxwell term is "
-                             "quadratic in the waveform) is one vector per constant segment, not per shape")
-        e = np.asarray(self.partitions[name].gate, np.float64)
-        plateau = L * np.where(e == 0.0, 0.0, e)[None, :, None]          # the commanded (physical) gradient: e = +-1
-        live = self.live_voxels
-        ijk = np.stack(np.unravel_index(live, tuple(self.grid.shape)), axis=1)
-        d = delivered_vectors(scanner, grid, plateau, e, voxels=ijk, to_scanner=to_scanner, nonlinearity=nonlinearity,
-                              background=background, concomitant=concomitant, transmit=transmit)
-        durations = self.partitions[name].durations
-        net = np.abs(np.einsum("vmsc,s->vmc", d.q, durations)).max(initial=0.0)
-        if net > _RTOL * (float(np.abs(d.q).max(initial=0.0)) or 1.0) * float(durations.sum()):
-            raise ValueError("the machine's delivered gradient leaves a net moment at the readout (a Maxwell term "
-                             "the encoding does not refocus, as a bipolar pair's does not): a segment vector is the path "
-                             "relative to the walker's start, which only a refocused encoding does not see")
-        return Delivered(partition=name, voxels=live, levels=L, q=d.q, g0=d.g0, kappa=d.kappa)
-
-# ------------------------------------------------------------------ the kernels
-class _x64:
-    """JAX's 64-bit types for the duration of a JAX image (the field channels in float64, the tile sums and the
-    accumulator in complex128), the flag restored after; nothing for torch."""
-
-    def __init__(self, backend):
-        self.on = backend == "jax"
-
-    def __enter__(self):
-        if self.on:
-            import jax
-            self.was = bool(jax.config.read("jax_enable_x64"))
-            jax.config.update("jax_enable_x64", True)
-        return self
-
-    def __exit__(self, *exc):
-        if self.on:
-            import jax
-            jax.config.update("jax_enable_x64", self.was)
-
-
-def _device_field_spec(fspec, backend, device):
-    """:meth:`TimeSegmentLayout._field_spec` with its scales and weights on the backend's device (float64)."""
-    layout, scale, coef, n_iso = fspec
-    if backend == "torch":
-        import torch
-        return layout, torch.as_tensor(scale, device=device), torch.as_tensor(coef, device=device), n_iso
-    import jax.numpy as jnp
-    return layout, jnp.asarray(scale, jnp.float64), jnp.asarray(coef, jnp.float64), n_iso
-
-
-
-
-
-
-
-
-
-
-_KERNELS = {}
-
-
-def _compiled(n_halves, layout, per_tile, tiers, contact, f_static, bg_layout):
-    """The JAX chunk kernel: the words decoded, the phase, the tiers and the background folded in, ``w exp(i ph)`` in
-    complex64 summed over each tile's rows (a fused reduction), the tile sums scattered into their voxel halves in
-    complex128. One per (voxel halves, field layout, delivery, tiers, contact, field channels, background layout)."""
-    import jax
-    import jax.numpy as jnp
-    key = (n_halves, layout, per_tile, tiers, contact, f_static, bg_layout)
-    if key not in _KERNELS:
-        @jax.jit
-        def kernel(words, scale, w, tiles, levels, slot, pool, tw, c_scale, f_scale, f_coef, logw_pool, rho_D, a_iso, a_aniso,
-                   amp, nb, b_scale, G0, acc):
-            comps = _decode(words, scale, layout)
-            lev = levels[slot] if per_tile else levels
-            ph = _phase(comps, lev, per_tile)
-            if ph is None:
-                ph = jnp.zeros(words.shape[:2] + (levels.shape[-3],), jnp.float32)
-            fspec = None if f_static is None else (f_static[0], f_scale, f_coef, f_static[1])
-            tier = (((contact, c_scale) if contact is not None else None, fspec, logw_pool, rho_D, a_iso, a_aniso, amp)
-                    if tiers else None)
-            bg = (bg_layout, b_scale, G0) if bg_layout is not None else None
-            ph, wf = _row_terms(ph, w, pool, tw, nb, slot, tier, bg, False)
-            E = jnp.exp(1j * ph) * wf[:, :, None]
-            return acc + jax.ops.segment_sum(E.sum(1).astype(jnp.complex128), tiles, num_segments=n_halves)
-        _KERNELS[key] = kernel
-    return _KERNELS[key]
-
-
-def _sums_jax(chunks, scale, layout, levels, per_tile, tier, bg, n_halves, backend=None, device=None):
-    """The per-voxel-half sums ``(n_halves, M_pad)`` complex128 on JAX: the compiled kernel over the ``chunks``
-    (:meth:`TimeSegmentLayout._chunks`: the partition's words, the weights, the tiles, then the slot with a delivery, the
-    pool and the tier words with the tiers, the background words with a background)."""
-    import jax.numpy as jnp
-    contact = None if tier is None or tier[0] is None else tier[0][0]
-    fspec = None if tier is None else tier[1]
-    f_static = None if fspec is None else (fspec[0], fspec[3])
-    bg_layout = None if bg is None else bg[0]
-    kernel = _compiled(n_halves, layout, per_tile, tier is not None, contact, f_static, bg_layout)
-    M = levels.shape[-3]
-    acc = jnp.zeros((n_halves, M), jnp.complex128)
-    z = jnp.zeros(1, jnp.float32); zi = jnp.zeros((1, 1, 1), jnp.int32); z64 = jnp.zeros(1, jnp.float64)
-    lev, sc = jnp.asarray(levels), jnp.asarray(scale)
-    if tier is not None:
-        ct, _, lw, rho_D, a_iso, a_aniso, amp = tier
-        c_scale = jnp.asarray(ct[1]) if ct is not None else z
-        f_scale, f_coef = (z64, z64) if fspec is None else (jnp.asarray(fspec[1], jnp.float64), jnp.asarray(fspec[2], jnp.float64))
-        tconst = (c_scale, f_scale, f_coef, jnp.asarray(lw), jnp.float32(rho_D), jnp.float32(a_iso), jnp.float32(a_aniso), jnp.float32(amp))
-    if bg is not None:
-        _, b_scale, G0 = bg
-        bconst = (jnp.asarray(b_scale), jnp.asarray(G0))
-    for cols in chunks:
-        words, w, tiles = cols[:3]; k = 3
-        slot = cols[k] if per_tile else z
-        k += 1 if per_tile else 0
-        if tier is not None:
-            pool, tw = cols[k:k + 2]; k += 2
-            targs = (pool, tw) + tconst
-        else:
-            targs = (z, zi, z, z64, z64, z, z, z, z, z)
-        bargs = (cols[k],) + bconst if bg is not None else (zi, z, z)
-        acc = kernel(words, sc, w, tiles, lev, slot, *targs, *bargs, acc)
-    return np.asarray(acc)
-
-
-def _tile_sums_torch(words, scale, layout, w, levels, slot, pool, tw, nb, tier, bg, per_tile):
-    """One chunk's tile sums on torch, ``(chunk, M_pad)`` complex128: the decoded words, the phase with the tiers and
-    the background, ``w exp(i ph)`` in complex64, the reduce over each tile's rows."""
-    import torch
-    comps = _decode(words, scale, layout)
-    lev = levels[slot.long()] if per_tile else levels
-    ph = _phase(comps, lev, per_tile)
-    if ph is None:
-        ph = torch.zeros(words.shape[:2] + (levels.shape[-3],), dtype=torch.float32, device=words.device)
-    ph, wf = _row_terms(ph, w, pool, tw, nb, slot.long() if per_tile else None, tier, bg, True)
-    return torch.polar(wf[:, :, None].expand_as(ph), ph).sum(1).to(torch.complex128)
-
-
-_TORCH_KERNEL = {}
-
-
-def _torch_kernel():
-    """The chunk function fused by ``torch.compile`` when the compiler is available (eager otherwise; measured on the
-    L40S, DiSCo's layout, 184 measurements: eager 3.3 s per image, compiled 1.44 s, JAX 0.97 s)."""
-    if "fn" not in _TORCH_KERNEL:
-        import torch
-        try:
-            _TORCH_KERNEL["fn"] = torch.compile(_tile_sums_torch, dynamic=False)
-        except Exception:                                     # no compiler on this platform: eager
-            _TORCH_KERNEL["fn"] = _tile_sums_torch
-    return _TORCH_KERNEL["fn"]
-
-
-def _sums_torch(chunks, scale, layout, levels, per_tile, tier, bg, n_halves, backend=None, device=None):
-    """The same sums on torch: the tile sums of every chunk (:func:`_tile_sums_torch`, compiled when possible)
-    ``index_add_``-ed into a complex128 accumulator (deterministic under ``torch.use_deterministic_algorithms(True)``)."""
-    import torch
-    dev = torch.device(device)
-    lev = torch.as_tensor(levels, device=dev); sc = torch.as_tensor(scale, device=dev)
-    t = None
-    if tier is not None:
-        ct, fspec, lw, rho_D, a_iso, a_aniso, amp = tier
-        ct = None if ct is None else (ct[0], torch.as_tensor(ct[1], device=dev))
-        fspec = None if fspec is None else _device_field_spec(fspec, "torch", dev)
-        t = (ct, fspec, torch.as_tensor(lw, device=dev), rho_D, a_iso, a_aniso, amp)
-    b = None
-    if bg is not None:
-        b_layout, b_scale, G0 = bg
-        b = (b_layout, torch.as_tensor(b_scale, device=dev), torch.as_tensor(G0, device=dev))
-    acc = torch.zeros((n_halves, levels.shape[-3]), dtype=torch.complex128, device=dev)
-    fn = _torch_kernel()
-    with torch.no_grad():
-        for cols in chunks:
-            words, w, tiles = cols[:3]; k = 3
-            slot = cols[k] if per_tile else None
-            k += 1 if per_tile else 0
-            pool = tw = nb = None
-            if tier is not None:
-                pool, tw = cols[k:k + 2]; k += 2
-            if bg is not None:
-                nb = cols[k]
-            args = (words, sc, layout, w, lev, slot, pool, tw, nb, t, b, per_tile)
-            try:
-                ts = fn(*args)
-            except Exception:                                  # the compiled path failed at run time: eager, once for all
-                _TORCH_KERNEL["fn"] = fn = _tile_sums_torch
-                ts = fn(*args)
-            acc.index_add_(0, tiles, ts)
-    return acc.cpu().numpy()
-
-
-def _voxel_sums_torch(rows, n_q, chunks, n_halves):
-    """The weighted per-voxel-half sums ``(n_q, n_halves)`` float64 on torch of the ``n_q`` per-row quantities
-    ``rows(w, pool, tw, torch)`` gives for each chunk ``(w, tiles, pool, tw)`` of ``chunks``."""
-    import torch
-    acc = None
-    with torch.no_grad():
-        for w, tiles, pool, tw in chunks:
-            if acc is None:
-                acc = torch.zeros((n_q, n_halves), dtype=torch.float64, device=w.device)
-            ts = torch.stack([(q * w).sum(1) for q in rows(w, pool, tw, torch)]).to(torch.float64)
-            acc.index_add_(1, tiles, ts)
-    return acc.cpu().numpy()
-
-
-def _voxel_sums_jax(rows, n_q, chunks, n_halves):
-    """:func:`_voxel_sums_torch` on JAX (``segment_sum`` into the voxel halves)."""
-    import jax
-    import jax.numpy as jnp
-    acc = jnp.zeros((n_halves, n_q), jnp.float64)
-    for w, tiles, pool, tw in chunks:
-        ts = jnp.stack([(q * w).sum(1) for q in rows(w, pool, tw, jnp)], axis=1).astype(jnp.float64)
-        acc = acc + jax.ops.segment_sum(ts, tiles, num_segments=n_halves)
-    return np.asarray(acc).T
-
-
-
-class _JaxBackend:
-    """The image's arithmetic on JAX (its default device): :func:`_sums_jax`, :func:`_voxel_sums_jax`, 64-bit types
-    for the duration of a call (:class:`_x64`)."""
-    name = "jax"
-    torch = False
-
-    def device(self, device):
-        return device
-
-    def put(self, device):
-        import jax.numpy as jnp
-        return lambda a, name: jnp.asarray(a)
-
-    def context(self):
-        return _x64("jax")
-
-    def field_spec(self, fspec, device):
-        return _device_field_spec(fspec, "jax", device)
-
-    def sums(self, chunks, scale, layout, levels, per_tile, tier, bg, n_halves, device):
-        return _sums_jax(chunks, scale, layout, levels, per_tile, tier, bg, n_halves, "jax", device)
-
-    voxel_sums = staticmethod(_voxel_sums_jax)
-
-
-class _TorchBackend:
-    """The image's arithmetic on torch (``device``; CUDA when torch sees one, else its CPU): :func:`_sums_torch`,
-    :func:`_voxel_sums_torch`; tile and slot indices as int64."""
-    name = "torch"
-    torch = True
-
-    def device(self, device):
-        if device is None:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        return device
-
-    def put(self, device):
-        import torch
-        return lambda a, name: torch.as_tensor(a.astype(np.int64) if name in ("tiles", "slot") else a, device=device)
-
-    def context(self):
-        import contextlib
-        return contextlib.nullcontext()
-
-    def field_spec(self, fspec, device):
-        return _device_field_spec(fspec, "torch", device)
-
-    def sums(self, chunks, scale, layout, levels, per_tile, tier, bg, n_halves, device):
-        return _sums_torch(chunks, scale, layout, levels, per_tile, tier, bg, n_halves, "torch", device)
-
-    voxel_sums = staticmethod(_voxel_sums_torch)
-
-
-TimeSegmentLayout.BACKENDS = dict(_TimeSegmentLayout.BACKENDS, jax=_JaxBackend(), torch=_TorchBackend())

@@ -1,5 +1,6 @@
 """Shared test constants and fixture loader."""
 
+from tests._envelope import stated, walk_envelope
 import os
 from pathlib import Path
 
@@ -94,10 +95,23 @@ SEED = 123
 # deterministic too and shows in the walkers that reach the branch. There is no sampling error to
 # average down, so a statistical N buys nothing and costs two full-size walks per test.
 #
-# 5,000 is not a new judgement: tests/test_permeability_crossing.py already runs exactly this
-# assertion at N_ORDINAL = 5_000. This makes the other copies consistent with it. Deliberately NOT
-# scaled by --heavy -- a bigger N cannot make an exact equality any more exact.
-N_EXACT = 5_000
+# 500 walkers carry the assertion: two code paths that must be bit-identical diverge on the first walker that reaches
+# the branch, and 500 walkers reach every wall branch of a pore a few steps wide. Deliberately NOT scaled by --heavy -- a
+# bigger N cannot make an exact equality any more exact.
+N_EXACT = 500
+
+# The walker count of a tier-1 Monte-Carlo test. The signal is the mean over walkers of cos(phase); for a Gaussian phase
+# its variance is (1 - E^2)^2 / 2 <= 1/2, so one run has a standard error of at most 1/sqrt(2 N) = 0.005 at N = 20,000.
+# A tolerance is `mc_atol` standard errors of that, so it is as tight as the walker count allows and a bias of that size
+# still fails the test (a tolerance copied from the 100,000-walker days would not follow N down).
+N_CPU = 20_000
+
+
+def mc_atol(n_walkers, k=4.0, runs=1):
+    """``k`` standard errors of a signal estimated from ``n_walkers`` walkers, for the difference of ``runs`` independent
+    estimates (``runs=2`` for two walks compared with each other, ``runs=1`` for one walk against a closed form)."""
+    return k * np.sqrt(runs / (2.0 * n_walkers))
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -127,45 +141,9 @@ def load_fixture(name):
 
 # There are two tiers, by hardware. Tier 1 is the regular suite on a CPU runner. Tier 2 is the `gpu` marker, the only
 # marker: tests whose claim needs scale or a device (heavy Monte-Carlo validation, float32 device behaviour), run on a
-# GPU by .github/workflows/gpu-tier.yml (tools/gpu_tier.py) under a monthly budget. A test moves from tier 2 to
-# tier 1 by being slimmed until it is cheap on a CPU runner; tier 2 is not a parking place (tests/test_no_tiers.py).
-# These test modules are dominated by heavy CPU Monte-Carlo (measured per file: tens of seconds to minutes each) and
-# are tier 2 until slimmed.
-_GPU_TIER_MODULES = {
-    "test_cylinder", "test_ellipsoid", "test_sphere", "test_mixture", "test_myelin",
-    "test_box_1d", "test_free_1d", "test_free_3d", "test_free_ogse", "test_general_waveform",
-    "test_packed_cylinders", "test_packed_spheres",
-    "test_packed_cylinders_permeability", "test_ellipsoid_permeability",
-    "test_sphere_permeability", "test_permeability_crossing", "test_bloch_permeation",
-    "test_compartment_tagging", "test_t2",
-    "test_karger_mc_parity", "test_t2_walker_parity",
-    "test_mesh_mc",
-    # Six mesh MC walks (three grid resolutions x two assertions). Collision sub-stepping makes each
-    # one several times what it would otherwise cost, which is the point of it -- but it belongs in the
-    # nightly job, not the ~1 min lane.
-    "test_mesh_acceleration_invariance",
-    "test_replay_parity",
-    "test_replay_fields_mt",
-    "test_engine_dispatch",
-    # Crossing-RATE validation against the closed two-compartment exchange law: six walks of
-    # 6000 walkers x 10000 sub-steps. The cheap sealed-wall detector that guards the same
-    # property lives in the fast lane, in test_boundary_compartment_integrity.
-    "test_permeable_crossings",
-    # One 200,000-walker, 6000-step walk per rock on a 300^3 micro-CT image, against Talabi 2008
-    # (needs DMIPY_SIM_IMPERIAL2007_DIR; skipped without it).
-    "test_talabi_rocks",
-    # Three 372-measurement MC/DC axon walks and one Disimpy cylinder walk against published signals
-    # (needs DMIPY_SIM_MCDC_ROBUST_DIR / DMIPY_SIM_DISIMPY_DIR; skipped without them).
-    "test_cross_engine_parity",
-    # The substrate spectrum's 250 um / 1 mm / 5 mm strands cases (dmipy-sim#697): a real far-grid build is
-    # minutes per edge even at the smallest of the three. The 25 um case (no far grid, both policy walk
-    # lengths refused by the halo rule) stays in the fast lane, test_strands.py.
-    "test_strands_slow",
-    # The substrate spectrum's 250 um / 1 mm packed-cylinder/sphere and label-volume cases (dmipy-sim#697):
-    # the 25 um case stays in the fast lane (test_packs.py / test_label_volumes.py).
-    "test_packs_slow",
-    "test_label_volumes_slow",
-}
+# GPU by .github/workflows/gpu-tier.yml (tools/gpu_tier.py) under a monthly budget. Each tier-2 test carries the mark
+# itself, so a reader of the test sees where it runs. A test moves from tier 2 to tier 1 by being slimmed until it is
+# cheap on a CPU runner; tier 2 is not a parking place (tests/test_no_tiers.py).
 
 
 def pytest_runtest_logreport(report):
@@ -188,14 +166,6 @@ def pytest_runtest_logreport(report):
 
 _last_module = [None]
 
-
-def pytest_collection_modifyitems(config, items):
-    gpu = pytest.mark.gpu
-    for item in items:
-        mod = getattr(item, "module", None)
-        name = mod.__name__.rsplit(".", 1)[-1] if mod is not None else ""
-        if name in _GPU_TIER_MODULES:
-            item.add_marker(gpu)
 
 def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.9):
     """Fail unless a hand-picked step is short enough for the mesh's collision lookup to cover it.
@@ -231,8 +201,8 @@ def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.
 def pgse_wf(TE_s, n_t=500, slew_rate=None):
     """The permeability tests' PGSE along x at b = 0, 0.5, 1 and 2 ms/um^2, its lobes 5 % of ``TE_s`` (5 us at the
     least); ``slew_rate=np.inf`` for the square lobes the restricted-diffusion checks were validated against."""
-    from dmipy_sim import set_b
-    from dmipy_sim.sequences import pgse
+    from dmipy_replay import set_b
+    from dmipy_replay.sequences import pgse
     delta = max(TE_s * 0.05, 5e-6)
     kw = {} if slew_rate is None else {"slew_rate": slew_rate}
     return set_b(pgse(np.tile([1.0, 0.0, 0.0], (4, 1)), delta, TE_s - delta, gradient_strengths=1.0, n_t=n_t, **kw),
@@ -246,7 +216,7 @@ def pack():
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x")
+    return build_replay_pack(walk, id="test/full", K=8, license="x", citation="x", **stated(G_max=15.0, of=walk))
 
 
 def dense_relaxation_logweight(comp, T2_per_comp, T1_per_comp, dt, chi, active):
@@ -293,8 +263,9 @@ def field_pack(tmp_path_factory):
     from dmipy_sim import walk
     from dmipy_sim.replay.bank import build_replay_pack
     spec = _three_strands(tmp_path_factory.mktemp("field"))
-    w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4)
-    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4)
+    w = walk(spec, 90, 8e-4, 2e-4, seed=0, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4, envelope=walk_envelope(of=spec))
+    return build_replay_pack(w, id="test/field", license="x", citation="x", K=4, susc_path_K=4,
+                             **stated(of=w))                              # the tests' short lobes reach 56 T/m
 
 
 #: The field-read walks (tests/test_field_read_interval.py, tests/replay/test_merge_field_read.py): the three-strand spec
@@ -307,7 +278,7 @@ READ_FINE = READ_BLOCK / 4         # a given read finer than the derived one: ev
 def read_walk(spec, interval=None, seed=3):
     from dmipy_sim import walk
     return walk(spec, 60, 8e-4, READ_BLOCK, seed=seed, n_probe=2000, require_gpu=False, adaptive_steps=True, K=4,
-                field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)))
+                field_cutoff_max_m=25e-6, **({} if interval is None else dict(field_read_interval=interval)), envelope=walk_envelope(of=spec))
 
 
 @pytest.fixture(scope="session")

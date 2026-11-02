@@ -61,13 +61,15 @@ def test_invalid_pools_and_names_fail_at_construction():
 import numpy as np
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine._fused import simulate_fused
 
 D = 2e-9
 
 
 def _wf():
-    return d.set_b(d.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=60, slew_rate=np.inf), 1e9)
+    return dr.set_b(dr.pgse([[1, 0, 0]], 3e-3, 8e-3, gradient_strengths=0.1, n_t=60, slew_rate=np.inf), 1e9)
 
 
 def test_mesh_takes_compartments_and_refuses_dicts_of_pools():

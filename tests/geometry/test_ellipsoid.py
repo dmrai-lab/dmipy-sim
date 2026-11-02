@@ -12,10 +12,16 @@ import numpy as np
 import numpy.testing as npt
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, Ellipsoid, Sphere
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
-from tests.conftest import D, N_WALKERS, SEED
+from tests.conftest import D, SEED, mc_atol
+
+# The ellipsoid's wall rule costs ~100 walker-steps per us on a CPU runner, so this module walks 1,000 walkers (one run
+# has a standard error of at most 1/sqrt(2 N) = 0.022); the comparisons that matter are made with the SAME seed, where
+# the two geometries share their draws and the difference carries far less noise than two independent walks.
+N_ELL = 1_000
 
 
 def _disimpy_example_waveform(n_t=1000):
@@ -67,14 +73,14 @@ def test_ellipsoid_isotropic_matches_sphere():
       assert_almost_equal(signals, signals_sphere)
 
     Uses identical seeds so the only difference is the geometry class.
-    Tolerance atol=0.02 accounts for MC noise at N=100 000 walkers.
+    Same seed: the walks share their draws, so 0.02 is far above the difference noise.
     """
     radius = 5e-6
     semiaxes = np.ones(3) * radius
     wf = set_b(_disimpy_example_waveform(), np.array([1e9]))
 
-    S_ellipsoid = simulate(N_WALKERS, D, wf, Ellipsoid(semiaxes), seed=SEED)
-    S_sphere    = simulate(N_WALKERS, D, wf, Sphere(radius),       seed=SEED)
+    S_ellipsoid = simulate(N_ELL, D, wf, Ellipsoid(semiaxes), seed=SEED)
+    S_sphere    = simulate(N_ELL, D, wf, Sphere(radius),       seed=SEED)
 
     npt.assert_allclose(S_ellipsoid, S_sphere, atol=0.02,
                         err_msg="Isotropic ellipsoid should match sphere signal")
@@ -83,18 +89,19 @@ def test_ellipsoid_isotropic_matches_sphere():
 def test_ellipsoid_signal_above_free():
     """Prolate ellipsoid with gradient along short axis must exceed free diffusion."""
     from dmipy_sim import FreeDiffusion
-    b_values = np.linspace(1e8, 3e9, 20)
-    bvecs = np.tile([1., 0., 0.], (20, 1))   # gradient along x (short semi-axis)
+    b_values = np.linspace(1e9, 3e9, 3)
+    bvecs = np.tile([1., 0., 0.], (3, 1))   # gradient along x (short semi-axis)
     # Prolate ellipsoid: short axes a=b=2µm, long axis c=10µm
     semiaxes = np.array([2e-6, 2e-6, 10e-6])
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
 
-    S_ellipsoid = simulate(N_WALKERS, D, wf, Ellipsoid(semiaxes), seed=SEED)
-    S_free      = simulate(N_WALKERS, D, wf, FreeDiffusion(),     seed=SEED + 1)
+    S_ellipsoid = simulate(N_ELL, D, wf, Ellipsoid(semiaxes), seed=SEED)
+    S_free      = simulate(N_ELL, D, wf, FreeDiffusion(),     seed=SEED + 1)
 
-    assert np.all(S_ellipsoid >= S_free - 0.01), (
+    assert np.all(S_ellipsoid >= S_free - mc_atol(N_ELL, runs=2)), (
         f"Ellipsoid signal should exceed free diffusion along restricted axis. "
         f"Max violation: {np.max(S_free - S_ellipsoid):.4f}")
+    assert np.max(S_ellipsoid - S_free) > mc_atol(N_ELL, runs=2)      # and the restriction is there
 
 
 def test_ellipsoid_anisotropic_axis_dependence():
@@ -112,10 +119,10 @@ def test_ellipsoid_anisotropic_axis_dependence():
     wf_z = set_b(pgse(np.array([[0., 0., 1.]]), 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf),
                  np.array([b]))
 
-    S_x = simulate(N_WALKERS, D, wf_x, Ellipsoid(semiaxes), seed=SEED)
-    S_z = simulate(N_WALKERS, D, wf_z, Ellipsoid(semiaxes), seed=SEED + 1)
+    S_x = simulate(N_ELL, D, wf_x, Ellipsoid(semiaxes), seed=SEED)
+    S_z = simulate(N_ELL, D, wf_z, Ellipsoid(semiaxes), seed=SEED + 1)
 
     # Short-axis gradient (x, 2µm) → more restriction → higher signal
-    assert float(S_x[0]) > float(S_z[0]) - 0.01, (
+    assert float(S_x[0]) > float(S_z[0]) - mc_atol(N_ELL, runs=2), (
         f"Short-axis signal ({S_x[0]:.4f}) should exceed "
         f"long-axis signal ({S_z[0]:.4f}) for prolate ellipsoid")

@@ -7,15 +7,16 @@ replicated, a list by id was taken unchecked (an over-long one accepted), and th
 the caller used. Now a missing pool, an unknown name, a scalar, a list or a zero is refused by name, ``inf`` is
 no decay, ``replace`` merges pool by pool, and completeness is judged on the spec rather than on the walkers.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.phantom import PackSubstrate
+from dmipy_replay import sequences
+from dmipy_replay.phantom import PackSubstrate
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.phantom import _check_tissue_entry
+from dmipy_replay.replay.phantom import _check_tissue_entry
 from dmipy_replay.spec.substrate import SubstrateSpec
 from dmipy_replay.spec.tissue import Tissue
 
@@ -27,7 +28,7 @@ def extra_only():
     """A packed cylinder walked in its extra pool alone: the spec names two pools, the walkers label one."""
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
     walk = _walk_geometry(120, 2e-9, g, 3e-3, 5e-4, seed=0, require_gpu=False)
-    return build_replay_pack(walk, id="t/extra-only", license="x", citation="x", K=6)
+    return build_replay_pack(walk, id="t/extra-only", license="x", citation="x", K=6, **stated(of=walk))
 
 
 def _b0(pack, TE=2e-3):

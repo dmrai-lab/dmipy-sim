@@ -1,12 +1,13 @@
 """A batch of acquisitions on one pack is one pass over the walkers, and each response is the one the acquisition
 gets alone (dmrai-lab/dmipy-sim#449 section 3)."""
+from tests._envelope import stated
 import numpy as np
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import sequences
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 
@@ -15,7 +16,7 @@ def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(500, 2e-9, g, 10e-3, 5e-4, seed=2, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
-    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
+    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p), **stated(of=walk))
     return read_rpk(str(p))
 
 

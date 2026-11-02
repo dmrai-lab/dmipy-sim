@@ -9,7 +9,9 @@ from dmipy_replay.acquisition.timing import SequenceTiming
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import sequences as S
+
+import dmipy_replay as dr
+from dmipy_replay import sequences as S
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.scanner_sequence import Encoding, Protocol, ScannerSequence
 from dmipy_replay.acquisition.waveforms import b_from_gradient
@@ -140,7 +142,7 @@ def test_pgste_is_a_stimulated_echo_with_its_lobes_physical_and_same_sign():
     tipped = S.pgste(D2, 4e-3, 30e-3, bvalues=B, n_t=400, ste_flip_angles=(90.0, 60.0, 60.0))
     assert [e.flip_deg for e in tipped.rf] == [90, 60, 60] and tipped.stimulated_echo   # the label says the role
     # the same physics from the amplitude-first builder
-    w = d.pgste(D2, 4e-3, 30e-3, gradient_strengths=0.05, n_t=400)
+    w = dr.pgste(D2, 4e-3, 30e-3, gradient_strengths=0.05, n_t=400)
     assert w.stimulated_echo and w.TM == pytest.approx(30e-3, abs=2 * w.dt) and w.family == "pgste"
 
 
@@ -201,7 +203,7 @@ def test_a_protocol_is_a_tuple_of_sequences_one_te_each_in_acquisition_order():
         Protocol([a, b], rows=[[0, 1], [1, 3]])
     with pytest.raises(TypeError, match="holds ScannerSequences"):
         Protocol([a, np.asarray(b.G)])
-    assert d.Protocol is Protocol and d.ScannerSequence is ScannerSequence and d.Encoding is Encoding
+    assert dr.Protocol is Protocol and dr.ScannerSequence is ScannerSequence and dr.Encoding is Encoding
     # simulate takes it: one walk per sequence, the signal in acquisition order
     E = d.simulate(1500, 2e-9, q, d.FreeDiffusion(), seed=0, require_gpu=False)
     Ea = d.simulate(1500, 2e-9, a, d.FreeDiffusion(), seed=0, require_gpu=False)
@@ -295,8 +297,9 @@ def test_pgse_and_pgste_build_and_validate_across_n_t_on_an_asymmetric_budget():
 def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing():
     """The acquisition in space: isocenter, axes, voxel size, matrix. Optional, keyword-only, and the waveform,
     the schedule and b are the same with or without it (ACQUISITION.md 3.6, 5.7)."""
-    from dmipy_sim import Prescription, sequences
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay import Prescription
+    from dmipy_replay import sequences
+    from dmipy_replay.phantom import Grid
     p = Prescription(voxel_size_m=(1.5e-3,) * 3, matrix=(40, 40, 1))
     assert p.isocenter_m == (0.0, 0.0, 0.0) and p.axes == "RAS" and p.fov_m == (0.06, 0.06, 1.5e-3)
     np.testing.assert_allclose(p.origin_m, (-0.02925, -0.02925, 0.0))            # the FOV centred on the isocenter
@@ -318,7 +321,7 @@ def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing()
 
 # ── a magnet's own gradient (dmipy-sim#285 item 3) ──────────────────────────────────────────────────
 def _pgse_1e9():
-    return d.pgse([[1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9], TE=0.05, n_t=600)
+    return dr.pgse([[1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9], TE=0.05, n_t=600)
 
 
 def test_a_background_gradient_is_added_everywhere_and_remembered():
@@ -377,7 +380,7 @@ def test_a_background_gradient_is_refused_twice_over_and_in_the_wrong_shape():
 
 def test_a_background_gradient_may_be_given_per_measurement():
     """Different voxels sit at different places in the bore, so an image asks for one vector per row."""
-    two = d.pgse([[1.0, 0, 0], [1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9, 1e9], TE=0.05, n_t=600)
+    two = dr.pgse([[1.0, 0, 0], [1.0, 0, 0]], 0.008, 0.030, bvalues=[1e9, 1e9], TE=0.05, n_t=600)
     bg = two.with_background_gradient([[1.4e-3, 0, 0], [-1.4e-3, 0, 0]])
     b = bg.b()
     assert b[0] > float(two.b()[0]) > b[1]
@@ -451,7 +454,7 @@ def test_the_concomitant_term_is_refused_twice_over_and_at_a_nonsense_field():
 def _swoop_protocol(directions):
     """The published protocol: b = 945 s/mm2, delta 35 ms, Delta 42 ms (Gholam 2025 / O'Halloran 2022)."""
     n = len(directions)
-    return d.pgse(directions, 0.035, 0.042, bvalues=[945e6] * n, TE=0.090, n_t=900)
+    return dr.pgse(directions, 0.035, 0.042, bvalues=[945e6] * n, TE=0.090, n_t=900)
 
 
 def test_the_background_gradient_reproduces_the_papers_ADC_error_at_8_cm():

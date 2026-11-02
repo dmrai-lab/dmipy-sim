@@ -1,4 +1,4 @@
-"""The shards of one dataset consolidated into the columnar layout of :mod:`dmipy_sim.replay.columnar` (dmipy-sim#290), in
+"""The shards of one dataset consolidated into the columnar layout of :mod:`dmipy_replay.replay.columnar` (dmipy-sim#290), in
 one streaming pass: every shard is fetched, split into its columns and appended to the open part of each column,
 then deleted; a part that reaches ``cap_bytes`` is closed and uploaded while the pass goes on, so the machine that
 consolidates never holds more than the open parts. Rows are ordered by (block, voxel, pool), so the row index is
@@ -63,7 +63,7 @@ def parse_shard(f):
 
 def manifest_grid(man):
     """The voxel grid a manifest states (``grid``: ``shape``, ``voxel_size_m``, ``origin_m``), attached to the substrate."""
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
     G = man["grid"]
     return Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
 
@@ -674,7 +674,7 @@ class Consolidator:
             from .bank import _precision_tiers
             shapes = {k: np.broadcast_to(np.zeros((), c_.dtype), (self.n_rows, *c_.row_shape)) for k, c_ in self.columns.items()}
             shapes.update(tables)
-            comp_meta["precision_tiers"] = _precision_tiers(shapes, self.n_rows, float(fid.get("floor_max") or 0.0), False)
+            comp_meta["precision_tiers"] = _precision_tiers(shapes, self.n_rows, fid.get("floor_max"), False)
         meta = dict(self.meta0)
         meta.update(id=id, compression=comp_meta, fidelity=fid, walk_params=dict(self.meta0["walk_params"], n_walkers=self.n_rows, seed=self.seeds),
                     provenance=dict(self.meta0.get("provenance") or {}, shards=self.prov))
@@ -763,7 +763,7 @@ def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None,
     ``repo``) into the layout under ``out_dir``, published under ``upload`` on ``repo`` when given. ``grid`` is the
     recipe's voxel grid (:func:`manifest_grid`): the per-voxel certificate of every shard that
     carries none is measured on it. Returns ``(manifest, index)``."""
-    from .replay import read_rpk
+    from dmipy_replay import read_rpk
     sh = Shards(shards, repo); up = Uploader(repo, upload)
     con = Consolidator(out_dir, cap_bytes, up, grid=grid)
     if resume:
@@ -794,7 +794,7 @@ def append(shards_dir, out_dir, *, id, pass_, repo=None, upload=None, cap_bytes=
     ``block-NNNN.p<pass>.<pool>.r<r>.rpk``, merged) appended to the layout under
     ``out_dir`` (its checkpoint resumed): the union weights on both sides, the old rows patched in their weights
     part, the repaired pools' certificate rows the union's. Returns ``(manifest, index)``."""
-    from .replay import read_rpk
+    from dmipy_replay import read_rpk
     up = Uploader(repo, upload); con = Consolidator(out_dir, cap_bytes, up); con.resume()
     n_before = len(con.done); boundary = con.n_rows
     old_ranges = {}

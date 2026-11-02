@@ -1,5 +1,5 @@
-"""Slow tests of dmipy_sim.spectrum.label_volumes at 250 um, 1 mm and 5 mm -- dmipy-sim#697's own test
-requirement ("two tiles of the 5 mm case differ"), run in the `gpu` tier."""
+"""Tests of dmipy_sim.spectrum.label_volumes at the 250 um, 1 mm and 5 mm edges -- dmipy-sim#697's own test
+requirement ("two tiles of the 5 mm case differ")."""
 import json
 import os
 
@@ -8,11 +8,12 @@ import pytest
 
 from dmipy_sim.spectrum.common import verify_index
 from dmipy_sim.spectrum.label_volumes import label_volume
+from tests._envelope import walk_envelope
 
 
 @pytest.mark.parametrize("edge_m", [250e-6, 1e-3])
 def test_edge_passes_both_walk_lengths_and_has_a_plan(edge_m, tmp_path):
-    r = label_volume(edge_m, 1, out_dir=str(tmp_path))
+    r = label_volume(edge_m, 1, out_dir=str(tmp_path), envelope=walk_envelope())
     assert r["refused"] == []
     assert sorted(r["variants"]) == [0.02, 0.1]
     counts = np.load(os.path.join(r["out_dir"], "substrate/counts.npz"))
@@ -32,6 +33,6 @@ def test_5mm_two_tiles_differ(tmp_path):
 
 
 def test_5mm_label_volume_generates(tmp_path):
-    r = label_volume(5e-3, 1, out_dir=str(tmp_path))
+    r = label_volume(5e-3, 1, out_dir=str(tmp_path), envelope=walk_envelope())
     assert r["n_tiles_per_axis"] == 5
     assert r["n_objects"] > 0

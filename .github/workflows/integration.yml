@@ -1,0 +1,25 @@
+name: Integration
+
+# The mains of dmipy-replay, dmipy-sim, dmipy-fit, dmipy-design and dmipy-tract installed together and smoke-tested
+# (dmrai-lab/.github, integration.yml), at this repository's commit on a push to main and on a pull request,
+# and at its main when dmipy-replay changes.
+# A push to main tells dmipy-fit, dmipy-design and dmipy-tract; the notice needs the secret DMRAI_DISPATCH_TOKEN (see that workflow)
+# and is skipped, with a notice in the run, without it.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  repository_dispatch:
+    types: [ dmrai-main-changed ]
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    uses: dmrai-lab/.github/.github/workflows/integration.yml@main
+    with:
+      notify: dmipy-fit dmipy-design dmipy-tract
+    secrets:
+      DMRAI_DISPATCH_TOKEN: ${{ secrets.DMRAI_DISPATCH_TOKEN }}

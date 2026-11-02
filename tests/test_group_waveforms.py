@@ -4,7 +4,7 @@ grouping by the exact test, found through a window of sorted projections (dmrai-
 import numpy as np
 import pytest
 
-from dmipy_sim.replay.replay import _group_waveforms
+from dmipy_replay.replay.pose import _group_waveforms
 
 
 def _every_row(s, rtol):

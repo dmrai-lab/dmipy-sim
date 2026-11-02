@@ -5,8 +5,9 @@ window the pack was not loaded with is refused by name.
 
 The byte-range selection is exercised against a local HTTP server that honours ``Range`` (``http.server`` does
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
-``url=`` override is for exactly this). The one test that touches the real Hub is marked ``gpu`` and skips
-itself without a login."""
+``url=`` override is for exactly this). No test writes to the Hub: the published fixture is written by
+``tools/publish_windows_fixture.py``, by hand, and the tier-2 test at the end only reads it."""
+from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import contextlib
 import http.server
@@ -20,13 +21,15 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.replay import ReplayPack, read_rpk
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
 from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
+from dmipy_sim.replay.container import save_pack
 
-pytest.importorskip("huggingface_hub")        # the window reads monkeypatch its cache constant; absent, these tests are skipped
 
 N_T, DT, N_W = 61, 5e-4, 300          # 30 ms of walk, three windows of 10 ms each
 REPO, PATH = "owner/windows", "packs/windows-fixture.rpk"
@@ -57,12 +60,12 @@ def _fixture_walk():
 def _fixture_pack():
     """A tiny, deterministic 3-window pack (positions + C1 + C2): bridge_dst at K=19 over 20-block, 10 ms
     windows -- small enough to serve from memory, with real ``sN/`` tensors to select by byte range."""
-    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, envelope=_lean_env(),
+    return d.build_replay_pack(_fixture_walk(), id="test/windows-fixture", K=19, **stated(_lean_env(), G_max=0.5),
                                window_T=0.01, license="CC-BY-4.0", citation="dmipy-sim window-read test fixture")
 
 
 def _seq(TE):
-    return d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.2, n_t=TE_N_T(TE), slew_rate=np.inf, TE=TE)
+    return dr.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.2, n_t=TE_N_T(TE), slew_rate=np.inf, TE=TE)
 
 
 def TE_N_T(TE):
@@ -117,18 +120,18 @@ def pack():
 
 
 @pytest.fixture
-def served(pack, tmp_path):
-    """The fixture pack served over a local Range-honouring HTTP server, and the Hub cache directory
-    redirected under ``tmp_path`` so the test never touches the real cache."""
+def served(pack, tmp_path, monkeypatch):
+    """The fixture pack served over a local Range-honouring HTTP server, and the reader's cache
+    (``$DMIPY_REPLAY_CACHE``) redirected under ``tmp_path``, so that no test reads a window file an earlier run cached."""
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
     local = tmp_path / "src.rpk"
-    pack.save(str(local))
+    save_pack(pack, str(local))
     data = local.read_bytes()
     with _serve(data) as url:
         yield url, data
 
 
 def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pack, served, tmp_path, monkeypatch):
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, data = served
     assert pack.n_windows == 3
     local1 = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
@@ -163,7 +166,6 @@ def test_a_one_window_read_fetches_only_its_bytes_and_matches_the_whole_file(pac
 
 
 def test_an_acquisition_beyond_the_loaded_windows_is_refused_by_name(pack, served, tmp_path, monkeypatch):
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, _ = served
     local = _r_hub.fetch_windows(URI, range(1), url=url, revision="rev0")
     p1 = read_rpk(local)
@@ -181,7 +183,6 @@ def test_window_prefix_refuses_a_non_prefix_selection():
 
 
 def test_replay_pack_load_takes_windows_through_a_hub_uri_only(pack, served, tmp_path, monkeypatch):
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hfcache"))
     url, _ = served
     p1 = read_rpk(_r_hub.fetch_windows(URI, range(1), url=url, revision="rev0"))
     reloaded = ReplayPack.load(URI, windows=range(1), url=url, revision="rev0")
@@ -192,7 +193,7 @@ def test_replay_pack_load_takes_windows_through_a_hub_uri_only(pack, served, tmp
 
 
 def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
-    from dmipy_sim.phantom import PackSubstrate
+    from dmipy_replay.phantom import PackSubstrate
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)},
                       {"id": "o/p", "windows_present": 2,
@@ -202,7 +203,7 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
         seen["uri"], seen["windows"] = uri, windows
         return fake
 
-    monkeypatch.setattr(ReplayPack, "load", classmethod(fake_load))
+    monkeypatch.setattr("dmipy_replay.replay.replay.ReplayPack.load", classmethod(fake_load))   # the class PackSubstrate loads
     sub = PackSubstrate("hf://o/windows/packs/x.rpk", m0=1.0, windows=range(2))
     assert sub.pack is fake and seen["uri"] == "hf://o/windows/packs/x.rpk" and seen["windows"] == range(2)
     m = sub.to_meta()
@@ -213,62 +214,26 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
         PackSubstrate("/local/path.rpk", m0=1.0, windows=range(1))
 
 
-# ------------------------------- the real Hub (slow, skipped without a login) -------------------------------
-FIXTURE_REPO = "SubstrateCommons/test-fixtures"
-#: Its own dataset, not ``parity-fixtures`` (a curated reference dataset of licensed cross-engine parity
-#: packs with provenance records): this file is a test artefact dmipy-sim's own suite uploads to itself, so
-#: it gets a repository where that is the whole premise, with its own short README (:data:`FIXTURE_README`).
-#: At the dataset's root, not under a ``test-fixtures/`` path -- the dataset name already says what it holds.
-FIXTURE_PATH = "windows-fixture.rpk"
-
-FIXTURE_README = """---
-license: cc-by-4.0
-pretty_name: dmipy-sim test fixtures
----
-# dmipy-sim test fixtures
-
-Small artefacts dmipy-sim's own test suite uploads to itself to exercise the Hub read/write paths -- not a
-curated reference dataset. A file here is rebuilt and overwritten by the test that owns it whenever that
-test's fixture changes; nothing here is a citeable measurement. See `SubstrateCommons/parity-fixtures` for
-the licensed, cross-engine parity packs this is not.
-"""
+# ------------------------------- the real Hub: read only (tier 2) -------------------------------
+FIXTURE_URI = "hf://SubstrateCommons/test-fixtures/windows-fixture.rpk"
+"""The published fixture, :func:`_fixture_pack` written by ``tools/publish_windows_fixture.py`` -- by hand, never by a test."""
 
 
 @pytest.mark.gpu
-def test_a_windowed_read_from_the_real_hub():
-    """Creates the fixture dataset if it does not exist yet, uploads the tiny fixture pack once -- idempotent,
-    skipped when a file of the same sha256 is already there -- and reads its first window back by HTTP byte
-    range, through the public entry point, with no ``url=``/``revision=`` override: the real Hub resolver
-    end to end."""
+def test_a_windowed_read_from_the_real_hub(tmp_path, monkeypatch):
+    """The published fixture's first window read by HTTP byte range through the public entry point, with no
+    ``url=``/``revision=`` override (the real Hub resolver end to end), replays bit for bit as the whole file read
+    from the Hub does. The test only reads; it is skipped where the Hub cannot be reached."""
+    hf = pytest.importorskip("huggingface_hub")
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
+    owner, name, path = FIXTURE_URI[len("hf://"):].split("/", 2)
     try:
-        from huggingface_hub import HfApi
-        api = HfApi()
-        api.whoami()
-    except Exception as e:
-        pytest.skip(f"no hub login / no network: {e}")
-    from dmipy_sim.replay.hub import sha256_of
-    api.create_repo(FIXTURE_REPO, repo_type="dataset", exist_ok=True, private=False)
-    if not api.file_exists(FIXTURE_REPO, "README.md", repo_type="dataset"):
-        api.upload_file(path_or_fileobj=FIXTURE_README.encode(), path_in_repo="README.md", repo_id=FIXTURE_REPO,
-                        repo_type="dataset", commit_message="describe the dataset")
-    pack = _fixture_pack()
-    with tempfile.TemporaryDirectory(prefix="dmipy-windows-fixture-") as tmp:
-        local = os.path.join(tmp, "windows-fixture.rpk")
-        pack.save(local)
-        sha = sha256_of(local)
-        held = None
-        try:
-            info = api.get_paths_info(FIXTURE_REPO, [FIXTURE_PATH], repo_type="dataset")
-            if info and getattr(info[0], "lfs", None) is not None:
-                held = info[0].lfs.sha256
-        except Exception:
-            held = None
-        if held != sha:
-            api.upload_file(path_or_fileobj=local, path_in_repo=FIXTURE_PATH, repo_id=FIXTURE_REPO,
-                            repo_type="dataset", commit_message="add the windows=range(k) hub-read test fixture (dmipy-sim#525)")
-    uri = pub.uri_of(FIXTURE_REPO, FIXTURE_PATH)
-    loaded = ReplayPack.load(uri, windows=range(1))
-    assert loaded.windows_present == 1 and loaded.n_windows == 3
-    assert loaded.n_walkers == pack.n_walkers
-    npt.assert_array_equal(loaded.arrays["pos_x"], pack.arrays["pos_x"])
-    npt.assert_array_equal(loaded.replay(_seq(0.01), complex_signal=True), pack.replay(_seq(0.01), complex_signal=True))
+        hf.HfApi().file_exists(f"{owner}/{name}", path, repo_type="dataset")
+    except Exception as e:                                             # no network, or the Hub is down
+        pytest.skip(f"the Hub cannot be reached: {e}")
+    first = ReplayPack.load(FIXTURE_URI, windows=range(1))
+    whole = ReplayPack.load(FIXTURE_URI)
+    assert first.windows_present == 1 and first.n_windows == 3 and whole.windows_present == 3
+    for k in first.arrays:
+        npt.assert_array_equal(first.arrays[k], whole.arrays[k], err_msg=k)
+    npt.assert_array_equal(first.replay(_seq(0.01), complex_signal=True), whole.replay(_seq(0.01), complex_signal=True))

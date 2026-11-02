@@ -32,12 +32,12 @@ _REPLAY_SRC = Path(dmipy_replay.__file__).parent      # the reader dmipy-sim imp
 
 # Every module path of the package; downstream (dmipy-fit / dmipy-design) imports a subset of these.
 _DOWNSTREAM_MODULES = [
-    "dmipy_sim.replay.replay", "dmipy_replay.constants", "dmipy_replay.acquisition.waveforms",
-    "dmipy_sim.replay.so3", "dmipy_sim.replay.fod", "dmipy_sim.replay.compression", "dmipy_replay.acquisition.rf",
+    "dmipy_replay.replay.replay", "dmipy_replay.constants", "dmipy_replay.acquisition.waveforms",
+    "dmipy_replay.replay.so3", "dmipy_replay.replay.fod", "dmipy_sim.replay.compression", "dmipy_replay.acquisition.rf",
     "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_cylinder",
-    "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories", "dmipy_sim.phantom",
+    "dmipy_sim.replay.trajectories",
     "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
     # the engine package
     "dmipy_sim.engine", "dmipy_sim.engine.core", "dmipy_sim.engine.physics", "dmipy_sim.engine.bloch",
@@ -312,7 +312,8 @@ def test_every_public_geometry_has_a_spec():
 def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
     """The door: a driver walks what a spec can describe. An object that only quacks like a geometry is refused,
     with the reason; a Mesh built from arrays gets its surface written to the spec cache so it HAS a spelling."""
-    from dmipy_sim.spec import SpecError, as_geometry
+    from dmipy_replay.spec.substrate import SpecError
+    from dmipy_sim.spec import as_geometry
 
     class Quack:
         def init_positions(self, n, key): return jnp.zeros((n, 3), jnp.float32)
@@ -408,7 +409,7 @@ def test_no_new_acquisition_container():
 
 def _every_builder():
     """One instance of every constructor that declares an RF schedule (or is documented not to), built small."""
-    from dmipy_sim import sequences as _seqmod
+    from dmipy_replay import sequences as _seqmod
     import dmipy_sim.engine.pulse_sequence as P
     bv = np.array([[1.0, 0.0, 0.0]])
     out = {
@@ -570,11 +571,11 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
     ``orientation`` / the phantom's pose, ``scanner``. No replay entry point takes a flat physical value -- a T2, a
     B0, a chi, a field direction -- and none takes a string or a boolean for the tissue."""
     import inspect
-    from dmipy_sim.replay.replay import ReplayPack
-    from dmipy_sim.replay.phantom import ReplayPhantom
-    from dmipy_sim.phantom.phantom import Phantom
-    from dmipy_sim.phantom.partition import PartitionPhantom
-    from dmipy_sim.phantom.substrates import PackSubstrate, FreeWater
+    from dmipy_replay import ReplayPack
+    from dmipy_replay.replay.phantom import ReplayPhantom
+    from dmipy_replay.phantom.phantom import Phantom
+    from dmipy_replay.phantom.partition import PartitionPhantom
+    from dmipy_replay.phantom.substrates import PackSubstrate, FreeWater
     flat = {"T2", "T1", "rho2", "rho1", "D", "B0", "b0_dir", "chi_iso", "chi_aniso", "T2_s", "T1_s", "rho_m_s", "D_m2_s", "B0_T"}
     entry_points = [ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.walker_phases, ReplayPack.replay_bloch, ReplayPack.pose_response,
                     ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay,
@@ -673,17 +674,20 @@ _BAND_READERS = {"band_projection": 2, "band_projection_matrix": 2, "segment_pro
 _SAVE_COUNTS = re.compile(r"\b(?:n_t|n_s|n_seg|n_saves|_window_n_t|Nt|N_t)\b")
 
 
-#: the modules that READ a pack (the consumer routes): their band readers take a stated duration
-_READER_MODULES = ("replay/replay.py", "replay/columnar.py", "replay/study.py", "replay/pose_series.py",
-                   "replay/pose_device.py", "replay/continuation.py", "replay/phantom.py", "replay/time_segments.py",
-                   "replay/so3.py", "replay/consolidate.py")
+#: the modules that READ a pack (the consumer routes, dmipy-replay's, and the producer's that read one): their band
+#: readers take a stated duration
+_READER_MODULES = tuple((_REPLAY_SRC, m) for m in ("replay/replay.py", "replay/columnar.py", "replay/study.py", "replay/pose.py",
+                                                     "replay/pose_series.py", "replay/pose_device.py", "replay/phantom.py",
+                                                     "replay/so3.py")) + \
+                  tuple((_SRC, m) for m in ("replay/continuation.py", "replay/time_segments.py", "replay/consolidate.py"))
 
 
 def _band_reader_T_args():
     """``(file, line, T argument's source)`` of every call to a band reader in the reader modules."""
     import ast
     out = []
-    for f in (_SRC / m for m in _READER_MODULES):
+    for root, m in _READER_MODULES:
+        f = root / m
         src = f.read_text()
         for node in ast.walk(ast.parse(src)):
             if not isinstance(node, ast.Call):
@@ -696,7 +700,7 @@ def _band_reader_T_args():
             if arg is None and len(node.args) > at:
                 arg = node.args[at]
             if arg is not None:
-                out.append((str(f.relative_to(_SRC)), node.lineno, ast.get_source_segment(src, arg)))
+                out.append((str(f.relative_to(root)), node.lineno, ast.get_source_segment(src, arg)))
     return out
 
 
@@ -705,27 +709,29 @@ def test_no_reader_indexes_a_band_by_a_save_count():
     one rebuilt from a count of saves (``(n_t - 1) * dt``): a band is a projection over an interval, and the interval is
     what the pack states. The readers' windows are ``(pack, t0, T)``; ``ReplayPack`` keeps no per-window save count;
     no reader reads ``compression.basis`` (only the refusal names it)."""
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     calls = _band_reader_T_args()
     assert len(calls) >= 8, calls                                         # the scan sees the readers
     bad = [c for c in calls if _SAVE_COUNTS.search(c[2] or "")]
     assert not bad, f"a band reader is given a duration rebuilt from a save count: {bad}"
     assert not hasattr(ReplayPack, "_window_n_t") and not hasattr(ReplayPack, "_decoded_channels")
     reads = []
-    for f in sorted(_SRC.rglob("*.py")):
-        for i, line in enumerate(f.read_text().splitlines(), 1):
-            if re.search(r"""(?:\[|get\()\s*["']basis["']""", line) and "REFUSED" not in line:
-                reads.append(f"{f.relative_to(_SRC)}:{i}")
+    for root in (_SRC, _REPLAY_SRC):                        # the moved readers are held to it in dmipy-replay
+        for f in sorted(root.rglob("*.py")):
+            for i, line in enumerate(f.read_text().splitlines(), 1):
+                if re.search(r"""(?:\[|get\()\s*["']basis["']""", line) and "REFUSED" not in line:
+                    reads.append(f"{root.name}/{f.relative_to(root)}:{i}")
     assert not reads, f"compression.basis is read in {reads}"
 
 
 def test_no_spelling_of_the_save_grid_survives_in_the_package():
     pat = re.compile(r"\b(?:" + "|".join(_SAVE_GRID_NAMES) + r")\b")
     hits = {}
-    for f in sorted(_SRC.rglob("*.py")):
-        found = sorted({m.group(0) for m in pat.finditer(f.read_text())})
-        if found:
-            hits[str(f.relative_to(_SRC))] = found
+    for root in (_SRC, _REPLAY_SRC):                        # the moved readers are held to it in dmipy-replay
+        for f in sorted(root.rglob("*.py")):
+            found = sorted({m.group(0) for m in pat.finditer(f.read_text())})
+            if found:
+                hits[f"{root.name}/{f.relative_to(root)}"] = found
     assert not hits, f"the save grid is spelled in {hits}"
 
 
@@ -827,7 +833,7 @@ def test_walk_is_the_one_public_producer_and_the_engine_primitive_is_not_exporte
 
 def test_a_package_carries_no_private_name_of_its_module():
     """``dmipy_sim.replay`` and ``dmipy_sim.viz`` re-export their module's PUBLIC names; a private name is reached at
-    its module (``dmipy_sim.replay.replay._x``), never through the package. A name a caller needs is public."""
+    its module (``dmipy_replay.replay.pose._x``), never through the package. A name a caller needs is public."""
     import dmipy_sim.replay as replay_pkg
     import dmipy_sim.viz as viz_pkg
     for pkg in (replay_pkg, viz_pkg):
@@ -837,28 +843,33 @@ def test_a_package_carries_no_private_name_of_its_module():
 
 
 def test_one_spelling_of_the_columnar_open_and_the_bounce_budget():
-    """A pack is opened by ``ReplayPack.open(uri)``; the bounce budget is ``geometry._boundary.bounce_budget``. The
-    module-level opener and the packed alias are removed."""
+    """A pack is opened by ``ReplayPack.open(uri)``; the bounce budget is ``geometry._boundary.bounce_budget``. dmipy-sim
+    has no opener of its own, and the packed alias is removed."""
+    import dmipy_sim.replay
     from dmipy_sim.geometry import _boundary, packed
-    from dmipy_sim.replay import columnar
-    from dmipy_sim.replay.replay import ReplayPack
-    assert not hasattr(columnar, "open_columnar") and "open_columnar" not in columnar.__all__
+    from dmipy_replay import ReplayPack
+    assert not hasattr(dmipy_sim, "open_columnar") and not hasattr(dmipy_sim.replay, "open_columnar")
     assert not hasattr(packed, "packed_bounce_budget") and callable(_boundary.bounce_budget)
     assert callable(ReplayPack.open)
 
 
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
-    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack side
-    (``build_replay_pack``, ``read_rpk``, ``ReplayPack``) and the phantom and scanner objects. No walk of saves, no
+    one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack's producer side
+    (``build_replay_pack``, ``write_rpk``); the reader's names (``ReplayPack``, ``read_rpk``, the acquisitions, the
+    builders, the scanner catalogue) are dmipy-replay's and refused here by name. No walk of saves, no
     positions-replay helper and no forward integrator is exported: the fused scalar engine and the forward vector-Bloch
     engine are the oracles the replay is held to, underscored and imported by the admissions that hold it."""
     import inspect
     from dmipy_sim.engine import bloch, core
     for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_mt_trajectories",
-                 "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
-                 "Phantom", "ScannerSequence", "ScannerLimits"):
+                 "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "write_rpk"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
+    for name in ("ReplayPack", "read_rpk", "FOD", "Distribution", "Phantom", "Pose", "Grid", "ScannerSequence",
+                 "ScannerLimits", "pgse", "GAMMA", "compile_scheme"):
+        assert name not in dmipy_sim.__all__
+        with pytest.raises(AttributeError, match=rf"from dmipy_replay(\.\w+)* import {name}"):
+            getattr(dmipy_sim, name)
     gone = ("simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
             "replay_bloch_jax", "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se")
     for name in gone:

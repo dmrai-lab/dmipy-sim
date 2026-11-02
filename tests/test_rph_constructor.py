@@ -1,5 +1,6 @@
 """``Phantom.compose``: a phantom is built from volumes keyed by substrate objects, not hand-rolled arrays (RPH.md,
 issues #151, #162, #186)."""
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
@@ -8,10 +9,10 @@ from dataclasses import replace
 
 import pytest
 
-from dmipy_sim import Encoding, RFEvent, ScannerSequence
-from dmipy_sim.phantom import Fan, Frames, FreeWater, Grid, Inert, ODF, PackSubstrate, Peaks, Phantom, Watson
-from dmipy_sim.replay.fod import FOD
-from dmipy_sim.replay.so3 import n_sh_coeffs
+from dmipy_replay import Encoding, RFEvent, ScannerSequence
+from dmipy_replay.phantom import Fan, Frames, FreeWater, Grid, Inert, ODF, PackSubstrate, Peaks, Phantom, Watson
+from dmipy_replay.replay.fod import FOD
+from dmipy_replay.replay.so3 import n_sh_coeffs
 
 
 def _pack(tmp_path, n_walkers=400):
@@ -24,7 +25,7 @@ def _pack(tmp_path, n_walkers=400):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, pool="extra")
     walk = _walk_geometry(n_walkers, 2e-9, g, 4e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path / "tiny.rpk"
-    build_replay_pack(walk, id="test/tiny", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="test/tiny", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
     return str(out)
 
 
@@ -256,7 +257,7 @@ def test_the_pack_can_be_embedded_so_the_phantom_is_standalone(tmp_path, pack_pa
 def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     """Composition, substrate by substrate: the pack contributes its pose-composed response, free water its
     closed form, inert nothing -- and each is the same number the pack or the closed form gives on its own."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     ph, wm, csf, bg = _phantom(pack_path)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1], [1, 0, 0]], [0.0, 1e9, 1e9])
@@ -267,7 +268,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     f_wm, f_csf = ph.sparse(ph.fraction(wm.name))[1], ph.sparse(ph.fraction(csf.name))[1]
     # b = 0: the m0-weighted volume of each substrate times its own b = 0 response -- at the T2 the phantom
     # declares for that substrate (RPH.md 3.2), not its nominal value; free water's own decay; nothing from inert
-    from dmipy_sim.phantom.substrates import _echo_time
+    from dmipy_replay.phantom.substrates import _echo_time
     E0 = float(pk.replay(seq, tissue=Tissue(T2={"extra": 0.06, "intra": 0.06}))[0])
     assert E0 < float(pk.replay(seq)[0])
     E_csf = np.exp(-_echo_time(seq) / T2_CSF)
@@ -276,7 +277,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     if f_csf[csf_v] > 0.99:
         np.testing.assert_allclose(S[csf_v, 1], np.exp(-1e9 * 3e-9) * E_csf, rtol=1e-6)
     wm_v = int(np.argmax(f_wm))
-    from dmipy_sim.replay.so3 import Distribution
+    from dmipy_replay.replay.so3 import Distribution
     pr = pk.pose_response(seq, tissue=Tissue(T2={"extra": 0.06, "intra": 0.06}))
     ref = pr.compose(Distribution.axis_density(FOD.native(ph.file.odf_sh[wm_v, 0].astype(float))))
     np.testing.assert_allclose(S[wm_v], np.abs(f_wm[wm_v] * 0.7 * ref + f_csf[wm_v] * np.exp(-seq.encoding.bvalues * 3e-9)),
@@ -284,7 +285,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
 
 
 def test_a_layer_is_applied_or_refused_never_dropped(pack_path):
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [0.0, 1e9])
     base, *_ = _phantom(pack_path)
@@ -319,7 +320,7 @@ def test_a_layer_is_applied_or_refused_never_dropped(pack_path):
 
 
 def test_a_referenced_pack_is_resolved_or_overridden(tmp_path, pack_path):
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     ph, wm, *_ = _phantom(pack_path)
     ph.write(tmp_path / "p.rph", id="t", license="x", citation="x", embed=False)
     pk = read_rpk(pack_path)
@@ -337,7 +338,7 @@ def test_the_transmit_layer_goes_through_the_bloch_route(pack_path):
     """kappa_B1 scales every flip angle, which the pose expansion cannot carry, so it goes through a
     magnetisation propagation per pose. At kappa = 1 that route reproduces the ideal-pulse answer; at
     kappa != 1 it follows the spin-echo law; and an ODF phantom is refused rather than approximated."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     n = 2
     wm, *_ = _subs(pack_path)
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: what a propagation needs
@@ -381,7 +382,8 @@ def test_a_frame_is_one_pose_and_a_peak_is_that_pose_with_its_azimuth_unstated(p
     """RPH.md 4, the two modes side by side: a frames slot is a rotation, so its voxel is the pack replayed at
     that rotation; a peaks slot is the same direction with the azimuth left open, so its voxel is the average
     over that azimuth. They agree only where the substrate is axially symmetric."""
-    from dmipy_sim.replay import read_rpk, so3
+    from dmipy_replay import read_rpk
+    from dmipy_replay.replay import so3
     n = 2
     wm, *_ = _subs(pack_path)
     R0 = _r_so3.rotation_of((0.3, 0.5, 0.81))
@@ -403,7 +405,8 @@ def test_a_fan_is_a_frame_with_two_concentrations_and_contains_the_watson(pack_p
     """Equal concentrations are the Watson cone of that width -- checked against the same analytic distribution
     composed directly -- and unequal ones are a fan the ODF mode cannot express. ``Fan.from_axis`` builds the
     frame from the two directions a user thinks in."""
-    from dmipy_sim.replay import read_rpk, so3
+    from dmipy_replay import read_rpk
+    from dmipy_replay.replay import so3
     n = 2
     wm, *_ = _subs(pack_path)
     grid = Grid(shape=(n, n, 1), voxel_size_m=(1e-3,) * 3, origin_m=(0.0, 0.0, 0.0))
@@ -432,7 +435,7 @@ def test_a_fan_is_a_frame_with_two_concentrations_and_contains_the_watson(pack_p
 
 def test_peaks_agree_with_a_concentrated_odf(pack_path):
     """RPH.md 4 states this as a MUST: a peak is the zero-dispersion limit of an axis density."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     n = 2
     wm, *_ = _subs(pack_path)
     d = np.zeros((n, n, 1, 3)); d[..., :] = (0.3, 0.5, 0.81)
@@ -449,7 +452,8 @@ def test_peaks_agree_with_a_concentrated_odf(pack_path):
 def test_the_same_substrate_cited_twice_is_a_crossing(pack_path):
     """Two populations of one solved microstructure at two poses, with two fractions: the voxel is
     their weighted sum, and its two slots cite the same substrate."""
-    from dmipy_sim.replay import read_rpk, so3
+    from dmipy_replay import read_rpk
+    from dmipy_replay.replay import so3
     n = 2
     wm, *_ = _subs(pack_path)
     dirs = np.zeros((n, n, 1, 2, 3)); dirs[..., 0, :] = (0.0, 0.0, 1.0); dirs[..., 1, :] = (1.0, 0.0, 0.0)
@@ -468,7 +472,7 @@ def test_the_same_substrate_cited_twice_is_a_crossing(pack_path):
 
 def test_an_analytic_slot_ignores_the_orientation_it_is_given(pack_path):
     """A closed form has no pose, so whatever orientation field covers its voxels makes no difference."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0], [0, 0, 1]], [1e9, 1e9])
     out = []
@@ -487,8 +491,8 @@ def test_an_analytic_slot_ignores_the_orientation_it_is_given(pack_path):
 def test_a_prescribed_acquisition_must_share_the_grid_axes(pack_path):
     """The gradient and B0 directions are given in the scanner frame, so a sequence prescribed on other axes than
     the grid's is refused rather than rotated; a grid built from the prescription agrees by construction."""
-    from dmipy_sim import Prescription
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import Prescription
+    from dmipy_replay import read_rpk
     ph, *_ = _phantom(pack_path)
     pk = read_rpk(pack_path)
     seq = _acq(pk, [[1, 0, 0]], [1e9])
@@ -543,7 +547,7 @@ def test_a_phantom_refuses_a_layer_on_a_grid_it_only_guessed_the_place_of(pack_p
 # ── a machine's own field, end to end on a phantom (dmipy-sim#322 PR 4) ─────────────────────────────
 def _gre_and_se(pack_path):
     """A gradient echo on the pack's grid and the same waveform refocused at TE/2."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     pk = read_rpk(pack_path)
     gre = _acq(pk, [[1, 0, 0]], [0.0])
     se = replace(gre, G=np.abs(np.asarray(gre.G)), family="pgse",
@@ -583,7 +587,7 @@ def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(
     effect a spin echo does not refocus, reaches the phantom separately (dmipy-sim#377), and is why the
     whole machine is NOT bit-identical to the bare field under the spin echo."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom.bore import b0_offset_map
+    from dmipy_replay.phantom.bore import b0_offset_map
     ph, *_ = _phantom(pack_path, grid=_swoop_grid())
     swoop = ScannerLimits.of("swoop")
     gre, se = _gre_and_se(pack_path)
@@ -619,7 +623,7 @@ def test_a_smooth_transmit_map_costs_one_propagation_per_distinct_scale():
     across a plausible 0.6 to 1.2 at the default, which is 601 vector-Bloch propagations of every pack in
     the phantom. Binning is what makes such a map affordable, and it was not reachable at all from
     `Phantom.replay` before."""
-    from dmipy_sim.replay.phantom import quantise
+    from dmipy_replay.replay.phantom import quantise
     kappa = np.linspace(0.6, 1.2, 4001)
     assert len(np.unique(quantise(kappa, 1e-3))) == 601                  # the default tolerance
     assert len(np.unique(quantise(kappa, None))) == 4001                 # None bins nothing
@@ -636,7 +640,7 @@ def test_binning_the_transmit_map_moves_the_signal_by_no_more_than_the_tolerance
     """The flip angle reaches the signal through a sine, so an error of `tol` in the scale is an error of
     the same order in the signal and never larger. That is what lets a tolerance be chosen from what the
     answer needs rather than guessed."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     n = 4
     wm, *_ = _subs(pack_path)
     R = np.zeros((n, n, 1, 3, 3)); R[..., :, :] = np.eye(3)          # a stated pose: the RF route needs one
@@ -663,7 +667,7 @@ def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):
     scale moves the whole replay onto the vector-Bloch route. Something that changes the cost of a replay by
     orders of magnitude is asked for."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map, b1_scale_map
+    from dmipy_replay.phantom import b0_offset_map, b1_scale_map
     swoop = ScannerLimits.of("swoop")
     grid = _swoop_grid()
     assert b0_offset_map(swoop, grid) is not None and b1_scale_map(swoop, grid) is not None
@@ -680,7 +684,7 @@ def test_a_drifting_magnet_is_a_uniform_offset_on_top_of_a_fixed_shape():
     spread untouched, and a machine with no coefficient refuses the request rather than quietly ignoring it
     -- a superconducting magnet has no room temperature to drift with."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map
+    from dmipy_replay.phantom import b0_offset_map
     swoop, grid = ScannerLimits.of("swoop"), _swoop_grid()
     at = grid.offset_m(grid.every_voxel).reshape(-1, 3)
     base = b0_offset_map(swoop, grid)(at)

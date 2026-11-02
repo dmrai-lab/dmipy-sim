@@ -44,6 +44,8 @@ from dmipy_sim.engine.accumulate import block_length
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
+from dmipy_replay import envelope_of
+from examples.substrate_bank import common
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceRefusal, ReferenceQuantity, Publication,
                                         Source, SourceFile, Tier, Tolerance, crossref)
@@ -130,9 +132,11 @@ SUB_STEPS_NO_SURFACE = {("lm", BLOCK_S): 334}
 #: its ``meets_target`` vacuously true, which is a certificate that certifies nothing.
 RHO_PROBE = (1e-5, 3e-5, 1e-4)
 
-ENVELOPE = dict(bvals=list(BVALS), dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
-                delta_frac=DELTA / TE, Delta_frac=BIG_DELTA / TE, ogse_periods=[1, 2, 3],
-                shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE], rho2_list=list(RHO_PROBE))
+#: What these packs are certified FOR: the Connectome 2.0 class's envelope, the contact tier up to the largest probe.
+ENVELOPE = envelope_of("connectome_2", rho2_max=max(RHO_PROBE))
+BATTERY = dict(bvals=list(BVALS), dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+               delta_frac=DELTA / TE, Delta_frac=BIG_DELTA / TE, ogse_periods=[1, 2, 3],
+               shortd_b=max(BVALS), shortd_deltas_frac=[DELTA / TE])
 
 
 # ----------------------------------------------------------------- the regions of interest, as released
@@ -214,24 +218,6 @@ def mri_files(data_dir, animal):
         raise ReferenceRefusal(f"source: neither {pre} nor {rois} holds a file; the dMRI half of the pair is "
                                f"not on disk and cannot be digested")
     return out
-
-
-# ----------------------------------------------------------------- the licence text, verbatim from the host
-def licence_text(url, cache_dir, name):
-    """The licence at ``url``, fetched once and cached: what the source record copies verbatim.
-
-    Both Fairdata records state ``Creative Commons Attribution 4.0 International (CC BY 4.0)`` with this URL,
-    and the EM release's own README repeats the grant in its "Rights and permissions" paragraph. The TEXT is
-    what the record carries, because a title is not a licence.
-    """
-    import urllib.request
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, name)
-    if not os.path.exists(cache):
-        req = urllib.request.Request(url, headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
-        with urllib.request.urlopen(req, timeout=60) as fh, open(cache, "wb") as out:
-            out.write(fh.read())
-    return open(cache, encoding="utf-8", errors="replace").read()
 
 
 # ----------------------------------------------------------------- the spec producer, as far as it goes
@@ -323,7 +309,7 @@ def snippet(uri):
 
 def waveforms():
     """The released acquisition itself: one PGSE at the published delta, Delta and highest shell."""
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return (("pgse-delta6ms-Delta11.5ms",
              pgse([[1, 0, 0]], DELTA, BIG_DELTA, bvalues=[max(BVALS)], n_t=400)),)
 
@@ -497,9 +483,9 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
     if unknown:
         raise ReferenceRefusal(f"{unknown} is not a released region of this study; the regions are "
                                f"{sorted(rois)}")
-    cache = os.path.join(work_dir, ".licence-cache")
-    cc_by = licence_text("https://creativecommons.org/licenses/by/4.0/legalcode.txt", cache,
-                         "cc-by-4.0-legalcode.txt")
+    # Both Fairdata records state CC BY 4.0, and the EM release's own README repeats the grant in its "Rights and
+    # permissions" paragraph; the TEXT is what the record carries, because a title is not a licence
+    cc_by = common.cc_by_4_legal_code(os.path.join(work_dir, ".licence-cache"))
     nyu = open(os.path.join(data_dir, "nyu-analysis", "LICENSE"), encoding="utf-8").read()
 
     em = [SourceFile(path=p, cite_as=f"White matter EM/{s}/{os.path.basename(p)}",
@@ -688,7 +674,7 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
     pilot = min(names, key=lambda n: int(np.prod([rois[n]["crop"][i + 3] - rois[n]["crop"][i]
                                                  for i in range(3)])))
     design = Design(
-        window_s=TE, K=K_BANDS, envelope=ENVELOPE,
+        window_s=TE, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY,
         waveforms=waveforms,
         # BOTH tiers, deliberately, and this is what makes #478 load-bearing rather than an optimisation: the
         # contact tier is the stored boundary local time, and declaring it puts the surface-local-time rule in

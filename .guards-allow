@@ -1,132 +1,44 @@
-dmipy_sim/_blas.py:499119a375 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/coefficient_walk.py:0556ae100d pre-existing, tracked in dmipy-sim#847
-dmipy_sim/coefficient_walk.py:58a4ad5670 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/coefficient_walk.py:c6793404d4 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/_gpu_config.py:b12a06686c pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/accumulate.py:a215de9550 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/adaptive.py:68478e3b03 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/bloch.py:55f0aed863 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/calibration.py:77b0b009e2 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/calibration.py:fc192b1558 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:487424d54f pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:4ff2b4db0a pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:5b11bb416c pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:9ee688e1f4 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:b19b9d7c55 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:ca41573e59 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:e2cc7824c1 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/engine/core.py:e5ca662182 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/fields/hollow_cylinder.py:b70fee7250 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/fields/strand_field.py:6330cd3fa2 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/fields/susceptibility_field.py:1a9cd3dc6e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/geometry/curved_cylinder.py:dd336af13d pre-existing, tracked in dmipy-sim#847
-dmipy_sim/geometry/label_volume.py:b29aa2b647 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/geometry/label_volume.py:c0c0c42c0f pre-existing, tracked in dmipy-sim#847
-dmipy_sim/geometry/label_volume.py:cf6a20024e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/geometry/myelin.py:595970b241 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/geometry/myelin.py:f8b76a9eeb pre-existing, tracked in dmipy-sim#847
-dmipy_sim/io/label_volume.py:b98da3d84b pre-existing, tracked in dmipy-sim#847
-dmipy_sim/io/mcdc.py:afcf66b675 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/math/accuracy.py:8f4ef5212c pre-existing, tracked in dmipy-sim#847
-dmipy_sim/phantom/phantom.py:bbda5ffd76 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/phantom/substrates.py:15222a2bb6 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/phantom/substrates.py:161f4bbc3f pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:24c4996575 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:2c240a80ae pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:2f5fa6a478 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:2fb51bcc3c pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:363d4d79ce pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:43f9267516 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:445df797cb pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:491110b995 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:5904cfdd77 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:59ee2c519b pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:5be4a1ea37 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:5d13d3f502 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:5dda63ab8f pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:62c9eb7eb2 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:63076f1a1a pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:684577ff4e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:689cc4efca pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:68cd7a11f4 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:82d97eb9d2 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:ab3e3124ca pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:ba1cf0336e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:bebfb4677d pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:c2096d39ba pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:c59b6033e5 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:c82e5d9302 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:d3746247cb pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:d6a624ba6f pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:de7df4dccf pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:fdc89d7a75 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/bank.py:fecad99f38 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/columnar.py:96c58f530b pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/compression.py:76a822ee69 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/consolidate.py:a1ae0a5082 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/continuation.py:3e29e95b26 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/continuation.py:96bf374871 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/continuation.py:c7a9f0be4b pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/pathways.py:9dbdf45554 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/pathways.py:e3f31404c7 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:1a6e913e99 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:4ed8f9b1b8 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:edb51a24aa pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/phantom.py:eeeaa43f7e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/publish.py:04096c16e7 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/publish.py:7d1bbf9878 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/publish.py:f65a670d7a pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:0e3d361dd2 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:5316082426 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:54c3d51c36 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:567b671d49 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:7255994c86 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:a8874bcbe8 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:ba4d468dff pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/reference.py:ed63aec9b7 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/replay.py:2bff182daf pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/replay.py:4977410db6 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/replay.py:ec1844e271 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/time_segments.py:9a400a3629 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/time_segments.py:a965e2a113 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/replay/time_segments.py:c2096d39ba pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:211209eea0 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:483b37c9bc pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:496680f9fd pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:9c8f69d1e7 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:a366ce95c0 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:d2f96419f6 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:ebef4876bd pre-existing, tracked in dmipy-sim#847
-dmipy_sim/run.py:fa55bb0945 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/sequences/pulseq.py:c7bdf157f1 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:03b18795af pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:0485749c42 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:182ee78fc7 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:1c71919bf5 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:2371e66756 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:23945511f3 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:43040e19b9 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:467866d94d pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:5f7aa476ae pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:8726f8971e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:a7502e2614 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:ba0c48bd04 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:ded5d5ea45 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/build.py:e21f07c2b8 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/producers.py:0437717053 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/producers.py:3ecdb241c1 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/producers.py:641efb5762 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/producers.py:7bffea9708 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/producers.py:b3c49e0d93 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/producers.py:f9e9ddcd16 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/walk.py:00040682bb pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/walk.py:7e0b144c24 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/walk.py:a1ecc14d98 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/spec/walk.py:f3620a253e pre-existing, tracked in dmipy-sim#847
-dmipy_sim/substrate/substrate.py:cfd04f8943 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/viz/pedagogy.py:1951d99187 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/viz/pedagogy.py:6c871302f5 pre-existing, tracked in dmipy-sim#847
-dmipy_sim/viz/viz.py:6cbe2fbd94 pre-existing, tracked in dmipy-sim#847
+dmipy_sim/engine/_gpu_config.py:b12a06686c the device memory where nvidia-smi reports none: it sizes the allocator cap DMIPY_GPU_MEM_GB is read against, no stated or certified quantity
+dmipy_sim/engine/core.py:5b11bb416c the cost model's bytes: a field band the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
+dmipy_sim/engine/core.py:9ee688e1f4 the cost model's bytes: an event buffer the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
+dmipy_sim/engine/core.py:e2cc7824c1 a device that reports no bytes in use has none in use (its memory statistics), no quantity
+dmipy_sim/engine/core.py:e5ca662182 the cost model's bytes: a field band the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
+dmipy_sim/fields/strand_field.py:6330cd3fa2 the far-grid build's chunk (memory per pass), no quantity
+dmipy_sim/fields/susceptibility_field.py:1a9cd3dc6e the worker processes of a large query where the host reports no CPU count, no quantity
+dmipy_sim/geometry/curved_cylinder.py:dd336af13d a chunk size (an empty query is one chunk), no quantity
+dmipy_sim/geometry/label_volume.py:b29aa2b647 the zero a running sum of face areas starts from
+dmipy_sim/geometry/label_volume.py:c0c0c42c0f the zero a running count starts from
+dmipy_sim/geometry/label_volume.py:cf6a20024e the zero a running count starts from
+dmipy_sim/geometry/myelin.py:595970b241 None is the impermeable membrane (kappa 0), the constructor's stated meaning
+dmipy_sim/geometry/myelin.py:f8b76a9eeb None is the impermeable membrane (kappa 0), the constructor's stated meaning
+dmipy_sim/io/label_volume.py:b98da3d84b an HDF5 group has no ndim: only a 3-D dataset is a candidate, no quantity
+dmipy_sim/io/mcdc.py:afcf66b675 a configuration without scale_from_stu reads 0 here and is refused by this line
+dmipy_sim/math/accuracy.py:8f4ef5212c the total of the KNOWN bounds; an unknown statistical bound is listed in `unresolved`, which the status reads
+dmipy_sim/replay/bank.py:684577ff4e open, the maintainer's decision on dmipy-sim#847: a float32 pack whose walk stated no k0 residual is charged no rounding term
+dmipy_sim/replay/bank.py:d3746247cb open, the maintainer's decision on dmipy-sim#847: a float32 walk whose backend states no k0 residual is charged no rounding term
+dmipy_sim/replay/compression.py:76a822ee69 the threads pocketfft runs the transforms on (no bit changes): an unset override and an unknown core count, no quantity
+dmipy_sim/replay/reference.py:0e3d361dd2 the organisation page's size cell: a manifest row without bytes adds none to its dataset's total, no certified quantity
+dmipy_sim/replay/reference.py:7255994c86 a source record without a character count reads 0 here and fails the check
+dmipy_sim/run.py:211209eea0 a run record's resource row without a reading adds nothing to the peak
+dmipy_sim/run.py:483b37c9bc the run listing's display: a row without a rate prints 0
+dmipy_sim/run.py:496680f9fd the run listing's display: a row without a heartbeat prints 0
+dmipy_sim/run.py:9c8f69d1e7 the zero a phase's wall time sums from (a run record)
+dmipy_sim/run.py:a366ce95c0 the zero a phase's wall time sums from (a run record)
+dmipy_sim/run.py:d2f96419f6 the budget guard's reading: a host whose RSS cannot be read adds no growth to the projection, no quantity
+dmipy_sim/run.py:ebef4876bd the zero a phase's wall time sums from (a run record)
+dmipy_sim/run.py:fa55bb0945 a run record's resource row without a reading adds nothing to the peak
+dmipy_sim/spec/build.py:182ee78fc7 None is no surface relaxivity, which a spec writes as the rate 0
+dmipy_sim/spec/build.py:23945511f3 None is no surface relaxivity, which a spec writes as the rate 0
+dmipy_sim/spec/build.py:467866d94d None is an impermeable wall, which a spec writes as the rate 0
+dmipy_sim/spec/build.py:5f7aa476ae None is an impermeable membrane, which a spec writes as the rate 0
+dmipy_sim/spec/build.py:a7502e2614 None is an impermeable wall, which a spec writes as the rate 0
+dmipy_sim/spec/producers.py:b3c49e0d93 the sign of a zero z component is taken +1: the axis's orientation convention, not a missing input
+dmipy_sim/spec/walk.py:00040682bb walk()'s own raw_subset default (none kept) for a bundle walked with no walk keywords
+dmipy_sim/spec/walk.py:f3620a253e a pool absent from the raw allocation keeps no raw walkers
+dmipy_sim/substrate/substrate.py:cfd04f8943 an unstated mt_side reacts at the nominal kappa_MT (multiplier 1), as mt_side_mults states
+dmipy_sim/viz/pedagogy.py:1951d99187 a plot's scale, no quantity
+dmipy_sim/viz/pedagogy.py:6c871302f5 a plot's scale, no quantity
+dmipy_sim/viz/viz.py:6cbe2fbd94 a plot's scale, no quantity
 dmipy_sim/engine/core.py:6dacb584ce pre-existing, tracked in dmipy-sim#834
 dmipy_sim/engine/gpu.py:ef1a9ecfc8 pre-existing, tracked in dmipy-sim#834
 dmipy_sim/geometry/mesh.py:6350e15098 pre-existing, tracked in dmipy-sim#834

@@ -15,6 +15,7 @@ from dmipy_sim.geometry import LabelVolume
 from dmipy_sim.geometry.base import Box1D, LengthScales
 from dmipy_sim.io.label_volume import (LabelVolumeError, crop_labels, read_amira, read_label_volume,
                                        read_mhd, read_nrrd, write_nrrd)
+from tests._envelope import TEST_G_MAX, walk_envelope
 
 D = 2e-9
 
@@ -789,16 +790,17 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     0.61221, and the fused walk with the same rho2 baked in gives 0.61001 -- a difference of 0.0022
     against the walk's own floor of 0.0158.
     """
-    from dmipy_sim import build_replay_pack, pgse, simulate
+    from dmipy_sim import build_replay_pack, simulate
+    from dmipy_replay import pgse
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path))
     R, h = 5e-6, 1e-6
     lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 8e-6, h)
     g = LabelVolume(lab, h, origin=org, surface_relaxivity_t2=1e-5)
     walk = _walk_geometry(4000, D, g, T_max=0.02, block_h=5e-4, seed=0, require_gpu=False)
     assert walk.has_surface and walk.has_compartments
-    pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", scanner="connectom")
+    pack = build_replay_pack(walk, id="test/label-volume", license="CC-BY-4.0", citation="test", envelope=walk_envelope("connectom", G_max=TEST_G_MAX))
     assert pack.substrate.walls[0].surface.kind == "label_volume"
     assert [p.name for p in pack.substrate.pools] == ["free", "grain"]
     wf = pgse([[1, 0, 0]], 0.003, 0.012, bvalues=[1e9], n_t=80)

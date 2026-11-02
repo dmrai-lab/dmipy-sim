@@ -16,7 +16,7 @@ compared at signal level, then published as one certified pack per fixture to ``
 This module is the reproduction: the fixture constants, the substrate specs, the walks, the references and
 the two Monte-Carlo floors. A walk here is the producer's :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`,
 ``K_PARITY`` bands over the fixture's TE in the band's own blocks, and its signal is the gradient phase of those
-bands (:func:`walk_phase`), the contraction a pack of the walk replays. ``tests/validation/test_cross_engine_parity.py`` asserts on it, and the pack
+bands (:func:`walk_phase`), the contraction a pack of the walk replays. The pack
 builder that publishes the family to ``SubstrateCommons/parity-fixtures`` imports it.
 
     DMIPY_SIM_MCDC_ROBUST_DIR=... DMIPY_SIM_DISIMPY_DIR=... python examples/validation/cross_engine_parity.py
@@ -194,7 +194,7 @@ def disimpy_spec(data):
     the pickle it came from is cited by sha256 in the provenance."""
     import dataclasses
     from dmipy_sim.spec import spec_of
-    from dmipy_sim.replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     pkl = os.path.join(data, "disimpy", "tests", "cylinder_mesh_closed.pkl")
     g = _disimpy_mesh_object(data)
     spec = spec_of(g, id="disimpy/cylinder_mesh_closed", provenance={
@@ -222,7 +222,7 @@ def disimpy_sequence(*, delta=DISIMPY_DELTA, Delta=DISIMPY_BIGDELTA, n_t=DISIMPY
     timing is worth 2.6e-4 of signal here (measured: max abs dS 0.02103 against 0.02077 at 8,000 walkers), so
     the choice does not decide anything.
     """
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return pgse([[1.0, 0.0, 0.0]] * len(DISIMPY_BVALUES), delta, Delta, bvalues=DISIMPY_BVALUES,
                 TE=DISIMPY_TE, n_t=int(n_t), slew_rate=np.inf)
 
@@ -444,8 +444,8 @@ def multiplicity_thresholds(n_live, dof, *, k_per=3.0, expected_family_wise=0.5,
 
 
 # --------------------------------------------------------------------------------------------- the envelope
-def mcdc_envelope():
-    """What an MC/DC-axon pack is certified FOR: the fixture's own scheme, and nothing wider.
+def mcdc_battery():
+    """Where an MC/DC-axon pack's certificate is read: the fixture's own scheme, and nothing wider.
 
     The four ActiveAx shells as (b, delta, Delta) over the scheme's three orthogonal-ish axes, so
     ``waveform_band`` is checked against the acquisition the pack exists to reproduce.
@@ -457,8 +457,8 @@ def mcdc_envelope():
                 ogse_periods=[1, 2])        # not in the scheme; a stricter band tier than PGSE alone
 
 
-def disimpy_envelope():
-    """What the Disimpy pack is certified FOR: the fixture's own PGSE, b to 3e9 s/m^2 at 30 / 40 ms along x."""
+def disimpy_battery():
+    """Where the Disimpy pack's certificate is read: the fixture's own PGSE, b to 3e9 s/m^2 at 30 / 40 ms along x."""
     return dict(bvals=[0.0, 1.5e9, 3.0e9], dirs=[[1, 0, 0], [0, 0, 1], [1, 0, 1]],
                 delta_frac=DISIMPY_DELTA / DISIMPY_TE, Delta_frac=DISIMPY_BIGDELTA / DISIMPY_TE,
                 shortd_b=3.0e9, shortd_deltas_frac=[DISIMPY_DELTA / DISIMPY_TE],

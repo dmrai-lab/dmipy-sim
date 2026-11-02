@@ -6,6 +6,7 @@ name: GPU tier
 on:
   pull_request:
     branches: [ main ]
+    types: [ opened, ready_for_review, labeled ]   # never on every push (a run is paid); see the job's `if`
     paths:
       - "dmipy_sim/engine/**"
       - "dmipy_sim/geometry/**"
@@ -22,8 +23,17 @@ on:
       - "dmipy_sim/fields/**"
   workflow_dispatch: {}
 
+concurrency:
+  group: gpu-tier-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gpu:
+    # tier 2 does not fit its 15-minute cap yet (measured on a T4: 6 of its 54 tests in 15 minutes), so a run would
+    # spend the cap and fail; until it fits, a run starts only by hand or by the maintainer's `gpu-tier` label
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'gpu-tier')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

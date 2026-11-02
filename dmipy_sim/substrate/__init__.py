@@ -3,7 +3,7 @@
 * :class:`Substrate` -- the white-matter physical ground truth (geometry,
   diffusivity, relaxation, surface, water content, susceptibility amplitude).
 * biophysical_constants -- the cited constant catalogue + ``canonical_white_matter``
-  (the single source for every physical constant; dmipy-fit re-exports from here).
+  (the single source for every physical constant; dmipy-fit imports it).
 """
 from .substrate import Substrate, mean_inv_diameter_4
 from .biophysical_constants import (

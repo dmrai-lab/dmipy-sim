@@ -8,8 +8,10 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.substrate import Substrate
-from dmipy_sim.spec import geometry_from_spec, SubstrateSpec
+from dmipy_sim.spec import geometry_from_spec
+from dmipy_replay.spec.substrate import SubstrateSpec
 from dmipy_sim import walk
+from tests._envelope import walk_envelope
 
 
 def test_request_records_request_and_realisation_separately():
@@ -45,9 +47,9 @@ def test_pack_is_the_specs_geometry_and_walks_the_same():
     g = geometry_from_spec(spec)
     p = sub.pack(n_axons=6, seed=3)
     assert type(p) is d.PackedMyelinatedCylinders and p.spec.walls == g.spec.walls and p.spec.pools == g.spec.pools
-    w_spec = walk(spec, 40, 4e-4, 2e-4, seed=1, require_gpu=False)
-    from dmipy_sim.replay.bank import class_band
+    w_spec = walk(spec, 40, 4e-4, 2e-4, seed=1, require_gpu=False, envelope=walk_envelope(of=spec))
+    from dmipy_replay import envelope_of
     w_pack = _walk_geometry(40, sub.D_intra, p, 4e-4, 2e-4, seed=1, require_gpu=False, K=w_spec.K,
-                                     f_band=class_band("connectom"))
+                                     f_band=envelope_of("connectom").band_hz)
     np.testing.assert_array_equal(w_spec.position_coeffs, w_pack.position_coeffs)
     assert w_spec.spec == spec and w_spec.diffusivity == pytest.approx(sub.D_intra, rel=1e-6)   # float32 pool D

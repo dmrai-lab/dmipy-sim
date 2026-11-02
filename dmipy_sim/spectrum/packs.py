@@ -116,10 +116,10 @@ def _occupied_by_objects(kind, radii, centers, grid):
     return occ.reshape(-1)
 
 
-def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, shape, T_max_s, scanner):
+def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, shape, T_max_s, envelope):
     from ..spec.build import spec_of
     from ..geometry.packed import PackedCylinders, PackedSpheres
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
 
     t_start = time.time()
     os.makedirs(out_dir, exist_ok=True)
@@ -198,7 +198,7 @@ def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, s
                       substrate=dict(kind=f"packed_{kind}", spec_file="../substrate/spec.json",
                                     n_objects=int(n_objects), target_fraction=float(target_fraction),
                                     side_m=float(edge_m)),
-                      grid=grid, T_max_s=T_max, scanner=scanner, counts_rel="../substrate/counts.npz",
+                      grid=grid, T_max_s=T_max, envelope=envelope, counts_rel="../substrate/counts.npz",
                       blocks_rel="../substrate/blocks.json", total_walkers=total_walkers, n_blocks=len(blocks))
         variants.append(float(T_max))
 
@@ -215,21 +215,21 @@ def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, s
 
 
 def cylinders(edge_m, seed, *, out_dir, target_fraction=None, n_objects_per_tile=N_OBJECTS_PER_TILE,
-             shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner="connectom"):
+             shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), envelope):
     """Generate one packed-cylinder entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): a random
     periodic packing of parallel cylinders at ``target_fraction`` (default :data:`TARGET_FRACTION`, 0.5, under
     the RSA saturation of 0.60) in a square cross-section of ``edge_m`` side, the axis unconfined. See the
     module docstring for the tiling and object-count rule."""
     return _pack("cylinder", edge_m, seed, out_dir=out_dir,
                 target_fraction=float(target_fraction if target_fraction is not None else TARGET_FRACTION["cylinder"]),
-                n_objects_per_tile=n_objects_per_tile, shape=shape, T_max_s=T_max_s, scanner=scanner)
+                n_objects_per_tile=n_objects_per_tile, shape=shape, T_max_s=T_max_s, envelope=envelope)
 
 
 def spheres(edge_m, seed, *, out_dir, target_fraction=None, n_objects_per_tile=N_OBJECTS_PER_TILE,
-           shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), scanner="connectom"):
+           shape=GAMMA_SHAPE, T_max_s=(0.020, 0.100), envelope):
     """Generate one packed-sphere entry of the substrate spectrum (dmrai-lab/dmipy-sim#697): a random periodic
     packing of spheres at ``target_fraction`` (default :data:`TARGET_FRACTION`, 0.3, under the RSA saturation
     of 0.40) in a cube of ``edge_m`` side. See the module docstring for the tiling and object-count rule."""
     return _pack("sphere", edge_m, seed, out_dir=out_dir,
                 target_fraction=float(target_fraction if target_fraction is not None else TARGET_FRACTION["sphere"]),
-                n_objects_per_tile=n_objects_per_tile, shape=shape, T_max_s=T_max_s, scanner=scanner)
+                n_objects_per_tile=n_objects_per_tile, shape=shape, T_max_s=T_max_s, envelope=envelope)

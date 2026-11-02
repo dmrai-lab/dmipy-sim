@@ -28,11 +28,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 import jax
 
-from dmipy_sim import Sphere, cpmg, pgse, set_b, simulate_cpmg
+from dmipy_sim import Sphere, simulate_cpmg
+from dmipy_replay import cpmg, pgse, set_b
 from dmipy_sim.engine.bloch import _simulate_bloch
 
 R = 2e-6
@@ -96,7 +97,6 @@ def _assert_r0_reaches_the_walk(run, seeds, label, min_sep=0.08):
         f"r0 is being ignored or overwritten")
 
 
-@pytest.mark.gpu
 def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
     def run(r0):
         return float(np.real(_simulate_bloch(N, D, replace(waveform, rf=_rf(waveform)), sphere, seed=3, r0=r0, require_gpu=False)[0]))
@@ -104,7 +104,6 @@ def test_simulate_bloch_starts_where_r0_says(sphere, seeds, waveform):
     _assert_r0_reaches_the_walk(run, seeds, "_simulate_bloch")
 
 
-@pytest.mark.gpu
 def test_the_bloch_mt_path_starts_where_r0_says(sphere, seeds, waveform):
     """`kappa_MT > 0` dispatches to `_simulate_bloch_mt`, which seeds at its own separate site."""
     def run(r0):
@@ -113,7 +112,6 @@ def test_the_bloch_mt_path_starts_where_r0_says(sphere, seeds, waveform):
     _assert_r0_reaches_the_walk(run, seeds, "_simulate_bloch_mt")
 
 
-@pytest.mark.gpu
 def test_simulate_cpmg_starts_where_r0_says(sphere, seeds):
     """Same short-time argument, on the echo train: TE 2 ms against tau_D 2 ms, first echo read.
 

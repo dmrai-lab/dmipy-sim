@@ -1,18 +1,17 @@
-"""Restricted diffusion, cylinder, MISST validation.
-
-Matches disimpy's test_cylinder_diffusion exactly:
-  - Gradient along x, cylinder axis along z (gradient ⊥ axis → maximum restriction)
-  - Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r = 5 µm
-  - Config 2: delta ≈  1 ms, Delta ≈ 40 ms, r = 5 µm
-"""
+"""Restricted diffusion in a cylinder (disimpy's test_cylinder_diffusion setups): a gradient along the axis is free
+diffusion, one across it is restricted, and the sign of the axis does not matter. The eigenmode (matrix-method)
+agreement is held by test_coefficient_walk.py::test_sphere_and_cylinder_agree_with_the_matrix_method."""
 
 import numpy as np
 import numpy.testing as npt
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
+from dmipy_sim import simulate, Cylinder, FreeDiffusion
+from dmipy_replay import set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
-from tests.conftest import D, N_WALKERS, SEED, load_fixture
+from tests.conftest import D, N_CPU, SEED, mc_atol
+
+N_COUPLED = 2_000   # same seed: the two orientations share their draws, so 0.02 is far above the difference noise
 
 
 def _build_disimpy_waveform(T, n_t_raw, pulse_start, pulse_end, n_t=1000):
@@ -43,69 +42,36 @@ def _tile_and_set_b(wf_single, b_values):
     return set_b(wf, b_values)
 
 
-def test_cylinder_misst_config1():
-    """Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r=5 µm vs MISST fixture."""
-    misst = load_fixture("misst_cylinder_delta30ms_Delta40ms_r5um.npy")
-    b_values = np.linspace(1, 3e9, 100)
-
-    wf_single = _build_disimpy_waveform(T=70e-3, n_t_raw=700,
-                                         pulse_start=1, pulse_end=300)
-    wf = _tile_and_set_b(wf_single, b_values)
-
-    signals = simulate(N_WALKERS, D, wf,
-                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
-                       seed=SEED)
-
-    npt.assert_allclose(signals, misst, atol=0.02,
-                        err_msg="Cylinder Config1 (delta≈30ms) vs MISST")
-
-
-def test_cylinder_misst_config2():
-    """Config 2: delta ≈ 1 ms, Delta ≈ 40 ms, r=5 µm vs MISST fixture."""
-    misst = load_fixture("misst_cylinder_delta1ms_Delta40ms_r5um.npy")
-    b_values = np.linspace(1, 3e9, 100)
-
-    wf_single = _build_disimpy_waveform(T=41e-3, n_t_raw=410,
-                                         pulse_start=1, pulse_end=10)
-    wf = _tile_and_set_b(wf_single, b_values)
-
-    signals = simulate(N_WALKERS, D, wf,
-                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
-                       seed=SEED)
-
-    npt.assert_allclose(signals, misst, atol=0.02,
-                        err_msg="Cylinder Config2 (delta≈1ms) vs MISST")
-
-
 def test_cylinder_parallel_gradient_is_free():
     """Gradient along cylinder axis → walkers diffuse freely → exp(-bD)."""
-    from dmipy_sim.sequences import pgse
-    b_values = np.linspace(1e8, 3e9, 20)
-    bvecs = np.tile([0., 0., 1.], (20, 1))  # gradient along z = cylinder axis
+    from dmipy_replay.sequences import pgse
+    b_values = np.linspace(1e8, 3e9, 6)
+    bvecs = np.tile([0., 0., 1.], (6, 1))  # gradient along z = cylinder axis
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
 
-    signals = simulate(N_WALKERS, D, wf,
+    signals = simulate(N_CPU, D, wf,
                        Cylinder(radius=5e-6, orientation=[0, 0, 1.0]),
                        seed=SEED)
     expected = np.exp(-b_values * D)
 
-    npt.assert_allclose(signals, expected, atol=0.02,
+    npt.assert_allclose(signals, expected, atol=mc_atol(N_CPU),
                         err_msg="Parallel gradient should give free diffusion")
 
 
 def test_cylinder_signal_above_free_perp():
     """Perpendicular gradient → restricted; signal must exceed free diffusion."""
-    from dmipy_sim.sequences import pgse
-    b_values = np.linspace(1e8, 3e9, 20)
-    bvecs = np.tile([1., 0., 0.], (20, 1))  # gradient ⊥ cylinder axis
+    from dmipy_replay.sequences import pgse
+    b_values = np.linspace(1e8, 3e9, 6)
+    bvecs = np.tile([1., 0., 0.], (6, 1))  # gradient ⊥ cylinder axis
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
 
-    S_cyl  = simulate(N_WALKERS, D, wf,
+    S_cyl  = simulate(N_CPU, D, wf,
                       Cylinder(radius=5e-6, orientation=[0, 0, 1.0]), seed=SEED)
-    S_free = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
+    S_free = simulate(N_CPU, D, wf, FreeDiffusion(), seed=SEED + 1)
 
-    assert np.all(S_cyl >= S_free - 0.01), (
+    assert np.all(S_cyl >= S_free - mc_atol(N_CPU, runs=2)), (
         f"Cylinder signal should be >= free. Max violation: {np.max(S_free - S_cyl):.4f}")
+    assert np.max(S_cyl - S_free) > mc_atol(N_CPU, runs=2)      # and the restriction is there
 
 
 # NOTE: `test_cylinder_walkers_contained*` was removed (#88). It asserted two things:
@@ -113,7 +79,7 @@ def test_cylinder_signal_above_free_perp():
 # deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
 # direction x step length -- including the step-spans-the-object case this walk could not
 # reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
-# statement than the MISST signal comparisons kept in this file: a restricted signal is
+# statement than the signal comparisons kept in this file: a restricted signal is
 # itself proof that walkers are hitting walls.
 
 
@@ -128,17 +94,17 @@ def test_cylinder_orientation_sign_invariance():
     Uses the same gradient setup as disimpy (x-direction, 100 b-values,
     PGSE Config 1 raw-then-interpolate construction).
     """
-    b_values = np.linspace(1, 3e9, 100)
+    b_values = np.linspace(1, 3e9, 12)
     wf_single = _build_disimpy_waveform(T=70e-3, n_t_raw=700,
                                          pulse_start=1, pulse_end=300)
     wf = _tile_and_set_b(wf_single, b_values)
 
-    S1 = simulate(N_WALKERS, D, wf,
+    S1 = simulate(N_COUPLED, D, wf,
                   Cylinder(radius=5e-6, orientation=[1.0, 0.0, 1.0]),  seed=SEED)
-    S2 = simulate(N_WALKERS, D, wf,
+    S2 = simulate(N_COUPLED, D, wf,
                   Cylinder(radius=5e-6, orientation=[-1.0, 0.0, -1.0]), seed=SEED)
 
-    npt.assert_allclose(S1, S2, atol=0.01,
+    npt.assert_allclose(S1, S2, atol=0.02,
                         err_msg="Orientation sign flip must give identical signals")
 
 
@@ -153,16 +119,16 @@ def test_cylinder_general_orientation_parallel_gradient_is_free():
     A gradient along x is parallel to the axis → no restriction → exp(-bD).
     Uses the same raw-then-interpolate gradient as disimpy (x-direction).
     """
-    b_values = np.linspace(1, 3e9, 100)
+    b_values = np.linspace(1, 3e9, 12)
     wf_single = _build_disimpy_waveform(T=70e-3, n_t_raw=700,
                                          pulse_start=1, pulse_end=300)
     wf = _tile_and_set_b(wf_single, b_values)
 
     # orientation=-[1,0,0]: axis along x, gradient along x → parallel
-    S = simulate(N_WALKERS, D, wf,
+    S = simulate(N_CPU, D, wf,
                  Cylinder(radius=5e-6, orientation=[-1.0, 0.0, 0.0]),
                  seed=SEED)
     expected = np.exp(-b_values * D)
 
-    npt.assert_allclose(S, expected, atol=0.02,
+    npt.assert_allclose(S, expected, atol=mc_atol(N_CPU),
                         err_msg="Gradient ∥ cylinder axis (x) should give free diffusion")

@@ -1,6 +1,7 @@
 """The record of a run (`dmipy_sim.run`): a producer opens it, a caller never does; it lives in memory and persists
 itself once it outlives the sampling interval (or at once with run_dir=); a nested producer joins the outer run;
 the event log survives a kill line by line; a pack records the runs that made it."""
+from tests._envelope import stated
 import json
 import os
 import signal
@@ -123,7 +124,7 @@ def test_a_pack_records_the_runs_that_made_it(tmp_path, monkeypatch):
     w = _walk_geometry(200, 2e-9, Cylinder(radius=3e-6, orientation=(0, 0, 1)), T_max=2e-3, block_h=1e-4, seed=0, require_gpu=False, K=8)
     assert w.run is not None and w.run.status == "ok" and w.run.summary["producer"] == "_walk_geometry"
     out = tmp_path / "r.rpk"
-    pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out))
+    pk = build_replay_pack(w, id="t/run", license="x", citation="x", K=8, device="numpy", out_path=str(out), **stated(of=w))
     assert "run" not in pk.meta["provenance"]                       # not in the file ...
     assert pk.meta["provenance"]["code"]["version"]                 # ... only its content-derived provenance is
     prov = json.load(open(str(out) + ".run.json"))                  # ... the run record is in the sidecar beside it
@@ -153,12 +154,9 @@ def test_every_long_producer_opens_a_run():
     import dmipy_sim.spec.walk as walk_module
     from dmipy_sim.replay import bank
     from dmipy_sim.fields.strand_field import StrandFieldBasis
-    from dmipy_sim.replay.phantom import ReplayPhantom
-    from dmipy_sim.replay.replay import ReplayPack
     for f in (core.simulate, core.simulate_cpmg, core._walk_geometry, adaptive.simulate_trajectories_adaptive,
               bloch._simulate_bloch, walk_module.walk, bank.build_replay_pack, bank.merge_packs,
-              StrandFieldBasis.build_far_grid, ReplayPhantom.replay, ReplayPhantom.replay_train, ReplayPhantom.replay_bloch,
-              ReplayPack.pose_responses):
+              StrandFieldBasis.build_far_grid):
         assert "with Run(" in inspect.getsource(f), f.__name__
     # the MT producer is a thin wrapper of _walk_geometry: its walk is that producer's, with that producer's record
     assert "return _walk_geometry(" in inspect.getsource(mt_walk.simulate_mt_trajectories)

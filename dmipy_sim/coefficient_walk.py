@@ -24,6 +24,19 @@ from dmipy_replay.replay.events import EventList, events_within
 
 
 
+def _t_start(block):
+    """The instant (s) a walk opens on the clock it is placed on: 0 -- a walk's clock starts at its first step -- unless
+    :meth:`CoefficientWalk.shift_time` placed it later (``block["t_start"]``)."""
+    return float(block["t_start"]) if "t_start" in block else 0.0
+
+
+def _window_t0(block):
+    """The instant (s) a walk's first block, or a window's (``block["window"]["t0"]``, :meth:`CoefficientWalk.window`),
+    opens on the walk's clock."""
+    w = block.get("window")
+    return float(w["t0"]) if w is not None else _t_start(block)
+
+
 @dataclass(frozen=True)
 class CoefficientWalk:
     """One walk kept as its bridge bands.
@@ -119,7 +132,7 @@ class CoefficientWalk:
     weights: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     run: object = field(default=None, compare=False, repr=False)
     work: Optional[dict] = field(default=None, compare=False)
-    scanner: Optional[str] = None
+    envelope: object = None    #: the :class:`~dmipy_replay.replay.envelope.Envelope` the walk was walked for (``walk``)
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
@@ -237,7 +250,7 @@ class CoefficientWalk:
             return self
         n_bw = self.n_blocks // n
         T_w = self.T_window
-        ts = float(self.block.get("t_start", 0.0))
+        ts = _t_start(self.block)
         k0, k1 = i * n_bw, (i + 1) * n_bw + 1
         cut = lambda a: None if a is None else np.asarray(a)[:, k0:k1]
         rpb = self.reads_per_block
@@ -265,7 +278,7 @@ class CoefficientWalk:
         import dataclasses
         t_start = float(t_start)
         return dataclasses.replace(
-            self, block=dict(self.block, t_start=t_start + float(self.block.get("t_start", 0.0))),
+            self, block=dict(self.block, t_start=t_start + _t_start(self.block)),
             comp_events=(None if self.comp_events is None else self.comp_events.shifted(t_start)),
             bound_events=(None if self.bound_events is None else self.bound_events.shifted(t_start)))
 
@@ -274,7 +287,7 @@ class CoefficientWalk:
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
                     "qv_boundary", "weights")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
-                     "illegal_crossings", "seed", "diffusivity", "work", "scanner", "stepping")
+                     "illegal_crossings", "seed", "diffusivity", "work", "stepping")
 
     def save(self, path):
         """The walk as one safetensors file: its arrays as tensors (an event list as ``<column>_events_offsets`` /
@@ -293,7 +306,7 @@ class CoefficientWalk:
         run = self.run
         fb = self.field_basis
         header = {k: getattr(self, k) for k in self._FILE_SCALARS}
-        header.update(spec=(None if self.spec is None else self.spec.to_dict()),
+        header.update(envelope=(None if self.envelope is None else self.envelope.to_dict()), spec=(None if self.spec is None else self.spec.to_dict()),
                       field=(None if fb is None else dict(kind=("grid" if hasattr(fb, "basis") else "hollow_cylinder"
                                                                 if fb.meta.get("kind") == "hollow_cylinder" else "strands"), meta=fb.meta)),
                       run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
@@ -334,8 +347,11 @@ class CoefficientWalk:
                 events[name] = EventList(arrays[f"{col}_events_offsets"], arrays[f"{col}_events_t"], arrays[f"{col}_events_label"])
         kw = {k: arrays.get(k) for k in cls._FILE_ARRAYS}
         kw.update({k: h.get(k) for k in cls._FILE_SCALARS})
+        if h.get("envelope") is not None:
+            from dmipy_replay.replay.envelope import Envelope
+            kw["envelope"] = Envelope.from_dict(h["envelope"])
         kw.update(K=int(h["K"]), m=int(h["m"]), n_windows=int(h["n_windows"]), sub_steps=int(h["sub_steps"]),
-                  T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h.get("illegal_crossings") or 0),
+                  T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h["illegal_crossings"]),
                   K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)
         return cls(**kw)
 

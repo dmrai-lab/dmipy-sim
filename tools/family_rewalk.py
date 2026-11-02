@@ -221,7 +221,7 @@ def family_envelope(base, overrides=None, **family):
     the family's own declaration ``base`` over that (a family builder's ``ENVELOPE``), then ``family`` keys, then
     ``overrides`` (the ``--envelope`` file)."""
     from dmipy_sim.replay import compression as cx
-    env = dict(cx.default_envelope())
+    env = dict(cx.default_battery())
     env.update(ENVELOPE)
     env.update(base or {})
     env.update(family)
@@ -229,12 +229,34 @@ def family_envelope(base, overrides=None, **family):
     return env
 
 
+def pack_envelope(env, spec):
+    """The :class:`~dmipy_replay.Envelope` a family's packs are walked and certified for, from the campaign's keys
+    ``env`` (:func:`family_envelope`): its ``scanner`` class (:func:`~dmipy_replay.envelope_of`) with the field
+    strengths ``B0_list``, the largest of ``rho2_list`` and the refocusing depth ``max_refocus_pulses`` the campaign
+    states, and the susceptibility scale ``chi_max`` it states -- for a substrate ``spec`` with a field and no stated
+    ``chi_max``, the spec's own (:func:`~dmipy_sim.engine.accumulate.spec_chi_scale`)."""
+    from dmipy_replay import envelope_of
+    from dmipy_replay.spec.substrate import susceptibility_field_of
+    from dmipy_sim.engine.accumulate import spec_chi_scale
+    rho = env.get("rho2_list") or []
+    chi = env["chi_max"] if "chi_max" in env else (
+        spec_chi_scale(spec) if susceptibility_field_of(spec.to_dict()) == "present" else None)
+    return envelope_of(env["scanner"], B0_list=tuple(env.get("B0_list") or ()), chi_max=chi,
+                       rho2_max=(max(rho) if rho else None), max_refocusing_pulses=env.get("max_refocus_pulses"))
+
+
+def battery_of(env):
+    """The battery keys of the campaign's ``env`` (:data:`~dmipy_sim.replay.compression.BATTERY_KEYS`)."""
+    from dmipy_sim.replay.compression import BATTERY_KEYS
+    return {k: v for k, v in env.items() if k in BATTERY_KEYS}
+
+
 def stated(pack):
-    """What a pack STATES of its envelope (``replay_envelope``): the scanner class and its ``G_max``, the contact
-    tier's ``rho2_over_D_max``, the field's ``chi_max`` and ``B0_list``; None for a key it does not state."""
+    """What a pack STATES of its envelope (``replay_envelope``): its name (the preset it came from), band and ``G_max``,
+    the contact tier's ``rho2_over_D_max``, the field's ``chi_max`` and ``B0_list``; None for a key it does not state."""
     env = pack.meta.get("replay_envelope") or {}
     acq, tis = env.get("acquisition") or {}, env.get("tissue") or {}
-    return dict(scanner=acq.get("scanner"), G_max=acq.get("G_max"), bound=acq.get("bound"), b_max=acq.get("b_max"),
+    return dict(scanner=acq.get("name", acq.get("scanner")), band_hz=acq.get("band_hz"), G_max=acq.get("G_max"), bound=acq.get("bound"), b_max=acq.get("b_max"),
                 B0_list=acq.get("B0_list"), rho2_over_D_max=tis.get("rho2_over_D_max"), chi_max=tis.get("chi_max"),
                 surface_relaxivity=env.get("surface_relaxivity"), field=env.get("field"),
                 bulk_relaxation=env.get("bulk_relaxation"))
@@ -246,7 +268,7 @@ def missing_statements(pack):
     s = stated(pack)
     out = []
     if not s["scanner"] or s["G_max"] is None:
-        out.append("acquisition.scanner/G_max")
+        out.append("acquisition.name/G_max")
     if s["surface_relaxivity"] and s["rho2_over_D_max"] is None:
         out.append("tissue.rho2_over_D_max")
     if s["field"] and (not s["B0_list"] or s["chi_max"] is None):
@@ -349,7 +371,7 @@ class Pores(Family):
         self.m = _pores_module()
         dia = tuple(args.diameters) if args.diameters else ((5.0, 20.0) if args.smoke else self.m.DIAMETERS_UM)
         self.rows = self.m.grid_rows(diameters_um=dia)
-        self.envelope = family_envelope(self.m.ENVELOPE, self.overrides)
+        self.envelope = family_envelope(self.m.BATTERY, self.overrides)
         self.license = self.m.LICENCE
         self.citation = self.m.CITATION
 
@@ -541,7 +563,7 @@ class Cactus(Family):
             spec = cactus_spec(self.run_dir, side_um=side)
             if ref:
                 import dataclasses
-                from dmipy_sim.spec import Frame
+                from dmipy_replay.spec.substrate import Frame
                 prov = dict(spec.provenance)
                 prov["reference_spec"] = ref["record"]
                 prov["transformations"] = list(prov["transformations"]) + [
@@ -607,8 +629,8 @@ class Cactus(Family):
             kw["K_c3"] = int(self.args.field_band)
         else:                                                    # a band the pilot derives at half the floor
             kw["field_target_floor"] = 0.5 * self.floor
-        return walk(self.spec(), self.n_walkers(name), self.T, scanner=self.envelope["scanner"], seed=int(seed),
-                         K=self.K, window_T=self.T, raw_subset=self.raw_subset, envelope=self.envelope,
+        return walk(self.spec(), self.n_walkers(name), self.T, envelope=pack_envelope(self.envelope, self.spec()), seed=int(seed),
+                         K=self.K, window_T=self.T, raw_subset=self.raw_subset, battery=battery_of(self.envelope),
                          backend=backend, require_gpu=(backend != "jax"), **kw)
 
     def pack_kw(self, name, walk):
@@ -727,7 +749,7 @@ def _backend_check(fam, name, backend):
 
 def stage_plan(fam, args):
     from dmipy_sim.replay.reference import pack_seed
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     rows, tot_steps, tot_n = [], 0, 0
     fam.planned = {}
     for name, sub in _shard(list(fam.substrates().items()), args.shard):
@@ -882,7 +904,8 @@ def pack_and_receipt(fam, name, sub, walk, *, seed, seed_is, t_walk, args, out, 
                                      certified_axes=pilot["certified_axes"], free_axes=pilot["free_axes"],
                                      n_pilot=pilot["phase"]["n_pilot"], n_min=pilot["n_min"]))))
     pack = build_replay_pack(walk, id=sub["id"], license=fam.license, citation=fam.citation,
-                             envelope=fam.envelope, fidelity=fidelity, provenance=prov,
+                             envelope=pack_envelope(fam.envelope, walk.spec), battery=battery_of(fam.envelope),
+                             fidelity=fidelity, provenance=prov,
                              sigma_star=0.5 * fam.floor, planned_floor=fam.floor, out_path=path + ".part", **kw)
     os.replace(path + ".part", path)
     t_pack = time.time() - t1
@@ -945,8 +968,8 @@ def stage_walk(fam, args):
 def stage_check(args):
     """Every pack under ``DIR``: it loads, states the campaign's envelope (refused when ``--require-stated``), its
     certificate against its floor, and the replay of a PGSE at b = 1000 s/mm^2 across x is a signal in (0, 1]."""
-    from dmipy_sim import pgse
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import pgse
+    from dmipy_replay import ReplayPack
     rows, bad = [], []
     for dirpath, _, files in os.walk(os.path.abspath(args.out)):
         for f in sorted(files):

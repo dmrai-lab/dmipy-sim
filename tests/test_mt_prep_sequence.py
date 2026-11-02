@@ -8,7 +8,7 @@ is added in Piece E).  Free diffusion, small walker counts, fast.
 """
 import numpy as np
 from dmipy_sim.engine.bloch import _simulate_bloch
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_sim import FreeDiffusion

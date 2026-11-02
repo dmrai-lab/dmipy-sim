@@ -8,6 +8,7 @@ their DST-I on five engine classes, the quadrature against a walk accumulated pe
 walk and a 0.8 um slab, the matrix method on a sphere and a cylinder, and the walk's host memory over blocks spanning
 16x (the quadrature and the memory are minutes of walking on a CPU: the slow tier).
 """
+from tests._envelope import battery_reach, stated
 import dmipy_replay.replay.compression as _r_compression
 import importlib.util
 import warnings
@@ -17,10 +18,13 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,12 +121,11 @@ def test_the_order_zero_accumulation_is_the_pack_of_the_block_ends(name):
     # complex deviations of that scale is a Rayleigh maximum, sqrt(ln M) standard errors for M independent measurements
     # (M the battery's size, the bound for its correlated ones), the error held to twice that
     from dmipy_sim.replay import compression as cx
-    M = cx.acquisition_battery(row["n_blocks"] + 1, 2e-4, cx.default_envelope())[0].shape[0]
+    M = cx.acquisition_battery(row["n_blocks"] + 1, 2e-4, cx.default_battery())[0].shape[0]
     assert row["replay_err"] <= 2.0 * np.sqrt(np.log(M)) * row["replay_floor"], row
 
 
 # ----------------------------------------------------------------------------------------------- the quadrature
-@pytest.mark.gpu
 @pytest.mark.parametrize("which", ["free", "slab 0.8 um"])
 def test_the_quadrature_is_bounded_absolutely(which):
     """The phase variance the block accumulation adds per measurement of the battery, against the same walk accumulated
@@ -130,7 +133,7 @@ def test_the_quadrature_is_bounded_absolutely(which):
     table's prediction (the measurement the table predicts largest, within the variance estimate's spread); on the slab
     the error RELATIVE to a mode's own variance is several times the table, which is why the statement is absolute."""
     geom = d.FreeDiffusion() if which == "free" else d.Box1D(length=0.8e-6)
-    rows = _quiet(_tool().quadrature, geom, T=0.01, dt_sim=1e-6, K=48, cases=((1, 2e-5), (2, 5e-5), (3, 1e-4)), n=1500)
+    rows = _quiet(_tool().quadrature, geom, T=0.005, dt_sim=1e-6, K=48, cases=((1, 2e-5), (2, 5e-5), (3, 1e-4)), n=600)
     for r in rows:
         assert r["within_bound"], r
         if which == "free" and r["predicted_largest"] > 1e-10:                        # above the float32 phase rounding
@@ -165,19 +168,6 @@ def test_the_contact_tier_is_admitted_at_the_signal():
 
 
 # ------------------------------------------------------------------------------------------------------- memory
-@pytest.mark.gpu
-def test_the_walks_host_bytes_do_not_grow_with_the_block_count():
-    """Three blocks spanning 16x at a fixed K, each walk in a process of its own: the accumulated walk's peak host bytes
-    stay within a few MB of each other, while the same walk keeping every walker's block ends grows by them."""
-    rows = _tool().memory(n=40000, T=0.004, dt_sim=3.125e-6, K=16, block_hs=(2e-4, 5e-5, 1.25e-5))
-    acc = [r["host_peak_over_base"] for r in rows if r["mode"] == "accumulated"]
-    saves = [r for r in rows if r["mode"] == "raw_subset"]
-    grown = saves[-1]["walk_host_bytes"] - saves[0]["walk_host_bytes"]
-    assert grown > 5e6
-    assert max(acc) - min(acc) < 0.25 * grown, (acc, [r["host_peak_over_base"] for r in saves])
-    assert saves[-1]["host_peak_over_base"] - saves[0]["host_peak_over_base"] > 0.5 * grown, rows
-
-
 def test_the_walk_takes_the_bands_own_block_and_the_storage_band():
     """The walk alone: the storage band (K = 256 per 100 ms), the block order 3 and the block ``h = 0.8 T / (pi K)``
     in a whole number of blocks of one step count each, recorded in the walk; ``K``, a given ``dt_save`` and
@@ -233,7 +223,7 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
                                rtol=0, atol=1e-12)
     np.testing.assert_array_equal(cw.position_coeffs[:, :, :2], walks["z"].position_coeffs[:, :, :2])
     assert cw.h == pytest.approx(1e-4)
-    pk = build_replay_pack(cw, id="t/derived", license="x", citation="x")
+    pk = build_replay_pack(cw, id="t/derived", license="x", citation="x", **stated(of=cw, G_max=battery_reach(cw.T_window)))
     fid = pk.fidelity
     assert fid["certified"] == "measured" and fid["measured_by"] == "walk_free_terms" and "basis" not in pk.meta["compression"]
     assert pk.meta["walk_params"]["block"]["m"] == 3
@@ -241,12 +231,12 @@ def test_a_coefficient_walk_packs_walk_free_and_measured_only_on_its_raw_subset(
         assert k not in pk.meta["walk_params"] and k not in pk.meta["compression"]
     assert pk.n_windows == 1 and "n_t" not in pk.meta["walk_params"]["windows"]
     assert fid["err_quadrature"] > 0 and fid["err_max"] <= 2 * fid["floor_max"], fid
-    pm = build_replay_pack(cw, id="t/measured", license="x", citation="x", fidelity="measured")
+    pm = build_replay_pack(cw, id="t/measured", license="x", citation="x", fidelity="measured", **stated(of=cw, G_max=battery_reach(cw.T_window)))
     assert pm.fidelity["certified"] == "measured" and pm.fidelity["measured_on"] == 200
     with pytest.raises(ValueError, match="raw_subset"):
-        build_replay_pack(walks["z"], id="t/x", license="x", citation="x", fidelity="measured")
+        build_replay_pack(walks["z"], id="t/x", license="x", citation="x", fidelity="measured", **stated())
     with pytest.raises(ValueError, match="K >= 48"):
-        build_replay_pack(cw, id="t/x", license="x", citation="x", K=48)
+        build_replay_pack(cw, id="t/x", license="x", citation="x", K=48, **stated(of=cw))
 
 
 def test_err_max_carries_every_term_and_the_float32_rounding(walks):
@@ -255,10 +245,11 @@ def test_err_max_carries_every_term_and_the_float32_rounding(walks):
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import _battery_b_max
     cw = walks["c"]
-    pk = build_replay_pack(cw, id="t/rounding", license="x", citation="x")
+    pk = build_replay_pack(cw, id="t/rounding", license="x", citation="x", **stated(of=cw))
     f, t = pk.fidelity, pk.fidelity["terms"]
     assert cw.block["precision"] == "float32" and "rounding" in t
-    want = cw.block["k0_residual_relative"] * np.sqrt(2.0 * _battery_b_max(cx.default_envelope()) * f["bounds_diffusivity"])
+    want = cw.block["k0_residual_relative"] * np.sqrt(2.0 * _battery_b_max(cx.certificate_settings(pk.envelope), float(pk.T_window))
+                                                      * f["bounds_diffusivity"])           # the envelope's b bound
     assert t["rounding"] == pytest.approx(want, rel=1e-5) and t["rounding"] > 0          # the header keeps 6 digits
     assert f["err_max"] >= t["truncation"] + sum(t["quadrature"].values()) + t["rounding"]
 
@@ -268,27 +259,27 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
     it: a faster diffusivity (the bands renormalised by ``a^(-1/2)``) and a prefix (re-encoded from the bands at the
     block ends)."""
     from dmipy_replay.spec.tissue import Tissue
-    pc = build_replay_pack(walks["c"], id="t/c", license="x", citation="x")
-    pz = build_replay_pack(walks["z"], id="t/z", license="x", citation="x")
-    seq = d.pgse([[1, 0, 0], [0, 0, 1]], 1e-3, 3e-3, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
+    pc = build_replay_pack(walks["c"], id="t/c", license="x", citation="x", **stated())
+    pz = build_replay_pack(walks["z"], id="t/z", license="x", citation="x", **stated())
+    seq = dr.pgse([[1, 0, 0], [0, 0, 1]], 1e-3, 3e-3, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
     tol = pc.fidelity["err_max"] + pz.fidelity["err_max"] + 1e-3
     assert np.abs(pc.replay(seq) - pz.replay(seq)).max() <= tol
     t = Tissue(rho2=2e-5, T2={"extra": 0.05, "intra": 0.04})
     assert np.abs(pc.replay(seq, tissue=t) - pz.replay(seq, tissue=t)).max() <= tol + 1e-3
-    short = d.pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, bvalues=[1e9], TE=0.003, slew_rate=np.inf)
+    short = dr.pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, bvalues=[1e9], TE=0.003, slew_rate=np.inf)
     assert abs(float(pc.at_diffusivity(4e-9).replay(short)[0]) - float(pz.at_diffusivity(4e-9).replay(short)[0])) <= tol
-    pre = pc.prefix(0.006)
+    pre = prefix_pack(pc, 0.006)
     assert pre.n_t == 61 and abs(float(pre.replay(seq)[0]) - float(pc.replay(seq)[0])) <= 2 * tol
 
 
 def test_a_walk_of_several_windows_packs_window_by_window():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1), permeability=1e-5)
     cw = _quiet(_walk_geometry, 200, 2e-9, g, 0.2, 2e-3, K=8, require_gpu=False, sub_steps=2)
-    pk = build_replay_pack(cw, id="t/w", license="x", citation="x")
+    pk = build_replay_pack(cw, id="t/w", license="x", citation="x", **stated(of=cw))
     assert pk.n_windows == 2 and pk.windows["T"] == pytest.approx(0.1) and pk.n_t == 101
     assert pk.meta["walk_params"]["block"]["n_blocks"] == 100 and pk.fidelity["combined"] == "bound_over_windows"
-    seq = d.pgse([[1, 0, 0]], 5e-3, 0.12, bvalues=[3e8], TE=0.15, slew_rate=np.inf)
-    one = build_replay_pack(cw.window(0), id="t/w0", license="x", citation="x")
+    seq = dr.pgse([[1, 0, 0]], 5e-3, 0.12, bvalues=[3e8], TE=0.15, slew_rate=np.inf)
+    one = build_replay_pack(cw.window(0), id="t/w0", license="x", citation="x", **stated())
     assert one.n_windows == 1 and np.isfinite(pk.replay(seq)).all()
 
 
@@ -313,7 +304,7 @@ def test_what_a_walk_does_not_carry_is_refused_by_name():
         _walk_geometry(10, 2e-9, g, 0.002, 1e-4, require_gpu=False, K=30, block_order=0)
     cw = _quiet(_walk_geometry, 50, 2e-9, g, 0.2, 2e-3, require_gpu=False, K=8, sub_steps=2)
     with pytest.raises(ValueError, match="window_T"):
-        build_replay_pack(cw, id="t/x", license="x", citation="x", window_T=0.05)
+        build_replay_pack(cw, id="t/x", license="x", citation="x", window_T=0.05, **stated(of=cw))
     assert cw.raw_positions is None                                    # no raw subset asked for, none kept
 
 

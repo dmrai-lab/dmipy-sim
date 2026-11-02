@@ -5,9 +5,11 @@ import os
 import numpy as np
 import pytest
 
-from dmipy_sim.spec import cactus_spec, winther_spec, SpecError
+from dmipy_sim.spec import cactus_spec, winther_spec
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim import walk
 from dmipy_sim.replay.bank import build_replay_pack
+from tests._envelope import stated, walk_envelope
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -69,10 +71,10 @@ def test_a_strand_without_its_inner_surface_is_dropped_and_recorded(tmp_path):
 def test_cactus_spec_walks_into_a_pack(tmp_path):
     run = _cactus_run_dir(tmp_path, n_strands=2, side=12.0, g=0.7)
     spec = cactus_spec(run)
-    w = walk(spec, 150, 6e-4, 2e-4, seed=0, n_probe=10_000, require_gpu=False, K=8)   # the raster at the sheath's own spacing
+    w = walk(spec, 150, 6e-4, 2e-4, seed=0, n_probe=10_000, require_gpu=False, K=8, envelope=walk_envelope(of=spec))   # the raster at the sheath's own spacing
     ids = np.asarray(w.compartment)
     assert set(np.unique(ids)) == {0, 1, 2} and w.spec is spec
-    pk = build_replay_pack(w, id="test/cactus", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(w, id="test/cactus", license="x", citation="x", K=8, **stated(ENV, of=w))
     assert pk.has_relaxation and pk.has_surface and pk.has_field and pk.meta["substrate"]["id"] == spec.id
 
 

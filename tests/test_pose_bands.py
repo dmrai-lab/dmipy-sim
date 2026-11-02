@@ -11,17 +11,18 @@ is the plane-wave sum ``mean_w exp(i q . R r_w)`` in closed form -- so the refer
 amplitude is exactly ``|q| max|r|`` and can be dialled to whatever sharpness a test needs, and there is no
 Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_pose.py``.
 """
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
-from dmipy_sim import Encoding, ScannerSequence
+from dmipy_replay import Encoding, ScannerSequence
 import pytest
 
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.coefficient_walk import CoefficientWalk
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay.fod import FOD
 from dmipy_sim.spec import spec_of
 
 N_T, DT = 65, 2.0e-4
@@ -46,7 +47,7 @@ def pack():
         n_windows=1, dt_sim=DT, sub_steps=1, raw_positions=np.repeat(POS[:, None, :], N_T, axis=1).astype(np.float32),
         qv_positions=np.zeros((len(POS), 1, 3), np.float32), seed=0,
         diffusivity=STATIC_D, spec=spec_of(FreeDiffusion()))            # walkers in no substrate: nothing magnetic
-    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=K, envelope=ENV, fidelity="measured")
+    pk = build_replay_pack(walk, id="test/plane-wave", license="x", citation="x", K=K, **stated(ENV, of=walk), fidelity="measured")
     assert pk.fidelity["err_max"] < 1e-8                        # a straight line is compressed exactly
     return pk
 

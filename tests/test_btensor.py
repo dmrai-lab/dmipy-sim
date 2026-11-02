@@ -8,12 +8,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as ds
-from dmipy_sim import (
-    pgse, ogse,
-    ste, pte,
-    calc_b, calc_btensor, btensor_invariants,
-    set_b, simulate, FreeDiffusion,
-)
+from dmipy_replay import pgse, ogse, ste, pte, calc_b, calc_btensor, btensor_invariants, set_b
+from dmipy_sim import simulate, FreeDiffusion
 
 try:
     import jax

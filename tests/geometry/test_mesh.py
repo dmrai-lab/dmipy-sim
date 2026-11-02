@@ -14,10 +14,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from dmipy_sim import simulate, Sphere, Mesh, load_ply, set_b
+from dmipy_sim import simulate, Sphere, Mesh, load_ply
+from dmipy_replay import set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import Compartments, Pool
+from tests.geometry._meshes import icosphere, open_tube
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -35,26 +37,8 @@ def _short_wf(nb=3, n_t=80):
     return set_b(ScannerSequence(G=Gt, dt=dt), np.linspace(1, 1.5e9, nb))
 
 
-def _icosphere(sub=3, r=R):
-    m = trimesh.creation.icosphere(subdivisions=sub, radius=r)
-    return np.asarray(m.vertices, float), np.asarray(m.faces, int)
-
-
-def _open_tube(r=4e-6, L=12e-6, nt=32, nz=24):
-    th = np.linspace(0, 2 * np.pi, nt, endpoint=False)
-    zs = np.linspace(0, L, nz)
-    V = np.array([[r * np.cos(t), r * np.sin(t), z] for z in zs for t in th])
-    F = []
-    for iz in range(nz - 1):
-        for j in range(nt):
-            a = iz * nt + j; b = iz * nt + (j + 1) % nt
-            c = (iz + 1) * nt + j; d = (iz + 1) * nt + (j + 1) % nt
-            F.append([a, b, d]); F.append([a, d, c])
-    return V, np.array(F)
-
-
 def test_construction_and_attributes():
-    V, F = _icosphere(3)
+    V, F = icosphere(3)
     g = Mesh(V, F)
     assert g.radius > 0
     assert g.C > 0 and g.overflow == 0
@@ -63,7 +47,7 @@ def test_construction_and_attributes():
 
 
 def test_classify_position_inside_outside():
-    V, F = _icosphere(3)
+    V, F = icosphere(3)
     g = Mesh(V, F)
     pts = jnp.array([[0., 0., 0.],               # centre -> inside (1)
                      [0.9 * R, 0., 0.],           # inside
@@ -73,7 +57,7 @@ def test_classify_position_inside_outside():
 
 
 def test_seed_containment_closed():
-    V, F = _icosphere(3)
+    V, F = icosphere(3)
     g = Mesh(V, F)
     pts = np.asarray(g.init_positions(500, jax.random.PRNGKey(0), pool="intra"))
     assert (np.linalg.norm(pts, axis=1) < R).mean() > 0.99
@@ -88,7 +72,7 @@ def test_surface_is_closed_lets_a_missing_trimesh_raise(monkeypatch):
     "cannot seed this OPEN surface: 0 boundary edge(s)". With trimesh unavailable the question
     cannot be answered at all, so it must raise as what it is.
     """
-    V, F = _icosphere(3)
+    V, F = icosphere(3)
     g = Mesh(V, F)
     monkeypatch.setitem(sys.modules, "trimesh", None)
     with pytest.raises(ImportError):
@@ -98,7 +82,7 @@ def test_surface_is_closed_lets_a_missing_trimesh_raise(monkeypatch):
 def test_permeability_none_matches_default():
     """``permeability=None`` is the default, to the bit: the same seed walks the same walk. Equality is exact, so it
     needs no statistics and no resolution: the coarsest sphere and 16 walkers carry it."""
-    V, F = _icosphere(1)
+    V, F = icosphere(1)
     wf = _short_wf()
     s_def = simulate(16, D, wf, Mesh(V, F), seed=1)
     s_none = simulate(16, D, wf, Mesh(V, F, permeability=None), seed=1)
@@ -106,7 +90,7 @@ def test_permeability_none_matches_default():
 
 
 def test_load_ply_roundtrip(tmp_path):
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     m = trimesh.Trimesh(vertices=V, faces=F, process=False)
     p = tmp_path / "ico.ply"
     m.export(p)
@@ -123,7 +107,7 @@ def test_load_ply_roundtrip(tmp_path):
 def test_compartment_property_parsing():
     """intra/extra + directional-κ parsing (fast; no Monte-Carlo). Symmetric inputs
     reduce to unit multipliers; asymmetric inputs set nominal=max and ratio mults."""
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     # ρ is the pool's, the wall as seen from that side; the same ρ on both sides: nominal + unit multipliers
     m_sym = Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=5e-6), extra=Pool(surface_relaxivity_t2=5e-6)))
     assert m_sym.surface_relaxivity_t2 == 5e-6
@@ -142,7 +126,7 @@ def test_compartment_property_parsing():
 
 
 def test_directional_permeability_names_exactly_both_directions():
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     for bad, match in (({"intra_to_extra": 1e-5}, "missing \\['extra_to_intra'\\]"),
                        ({"extra_to_intra": 1e-5}, "missing \\['intra_to_extra'\\]"),
                        ({"intra_to_extra": 1e-5, "extra_to_intra": 1e-5, "out": 1.0}, "unknown \\['out'\\]"),
@@ -152,7 +136,7 @@ def test_directional_permeability_names_exactly_both_directions():
 
 
 def test_compartment_unsupported_key_raises():
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     with pytest.raises(TypeError, match="kurtosis"):
         Pool(kurtosis=1.0)                                                      # not a Pool property
     with pytest.raises(TypeError, match="takes a Compartments or None, got dict"):
@@ -161,7 +145,7 @@ def test_compartment_unsupported_key_raises():
 
 def test_compartment_bulk_parsing():
     """Per-compartment bulk D/T2 parsing (fast; no Monte-Carlo)."""
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     m = Mesh(V, F, compartments=Compartments(intra=Pool(D=1e-9, T2=0.02), extra=Pool(D=2e-9, T2=0.08)))
     assert m._has_bulk_comp
     npt.assert_allclose(np.asarray(m._D_comp_jax), [2e-9, 1e-9], rtol=1e-6)          # by pool id: extra, intra
@@ -179,7 +163,7 @@ def test_return_positions_full():
     """The shapes and the identities (last step is the final position, same signal) are exact, so they need no count;
     the confinement fraction below is the one statistic: 60 walkers, at most one outside (the original 1 % of 300)."""
     n = 60
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     g = Mesh(V, F)
     wf = _short_wf(2, 100)
     sig, pos = simulate_fused(n, D, wf, g, seed=1, return_positions='full')
@@ -191,7 +175,7 @@ def test_return_positions_full():
 
 
 def test_periodic_ghosts_created():
-    V, F = _open_tube()
+    V, F = open_tube()
     closed = Mesh(V, F)
     periodic = Mesh(V, F, periodic=(False, False, True),
                     voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, 12e-6],
@@ -202,7 +186,7 @@ def test_periodic_ghosts_created():
 
 def test_permeability_coarseness_warning_and_report():
     # coarse mesh + permeability -> loud warning; quality_report flags it
-    Vc, Fc = _icosphere(2)                        # edge/feature ~0.3 (coarse)
+    Vc, Fc = icosphere(2)                        # edge/feature ~0.3 (coarse)
     with pytest.warns(UserWarning, match="coarse"):
         gc = Mesh(Vc, Fc, permeability=2e-5)
     rep = gc.quality_report(verbose=False)
@@ -210,7 +194,7 @@ def test_permeability_coarseness_warning_and_report():
     assert rep["diffusion_noise_floor"] is True and rep["relaxivity_noise_floor"] is True
     assert rep["edge_feature_ratio"] > 0.05
     # fine mesh -> no permeability warning
-    Vf, Ff = _icosphere(5)                        # edge/feature ~0.04 (fine)
+    Vf, Ff = icosphere(5)                        # edge/feature ~0.04 (fine)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         gf = Mesh(Vf, Ff, permeability=2e-5)
@@ -225,7 +209,7 @@ def test_orientation_is_acquisition_rotation():
     """Placement in the bore is applied as an acquisition rotation, so the walk
     stays in the mesh's native frame (unchanged containment) and `orientation`
     only records the mesh->lab rotation used to rotate the gradient in simulate."""
-    V, F = _open_tube(r=4e-6, L=12e-6)
+    V, F = open_tube(r=4e-6, L=12e-6)
     kw = dict(periodic=(False, False, True),
               voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, 12e-6],
               feature_radius=4e-6)
@@ -261,7 +245,7 @@ def test_viz_helpers_that_touch_geometry_still_resolve(tmp_path):
     from dmipy_sim import seed_in_cell
     from dmipy_sim.viz.viz import split_cells
 
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     g = Mesh(V, F)
     cell = split_cells(g)[0]                        # geometry split
     pts = np.asarray(seed_in_cell(cell, 8, seed=0))   # the deferred import lives in here
@@ -274,7 +258,7 @@ def test_periodic_tube_confinement_and_zwrap():
 
     A wall leak shows as a fraction of walkers beyond the wall; the 1 % allowance is two walkers of 200, and a leak
     of 1.5 % or more (3 walkers) fails it. (600 walkers resolved 1 %; the claim is a leak, not its rate.)"""
-    V, F = _open_tube(r=4e-6, L=12e-6)
+    V, F = open_tube(r=4e-6, L=12e-6)
     g = Mesh(V, F, periodic=(False, False, True),
              voxel_min=[-6e-6, -6e-6, 0.0], voxel_max=[6e-6, 6e-6, 12e-6],
              feature_radius=4e-6)

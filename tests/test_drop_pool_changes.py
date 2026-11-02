@@ -4,6 +4,7 @@ and the record the pack's certificate carries. The mask is the backend's (`Coeff
 set on a small JAX walk, which is what a backend hands the bundle walk."""
 from __future__ import annotations
 
+from tests._envelope import stated
 import dataclasses
 
 import numpy as np
@@ -12,7 +13,7 @@ import pytest
 from dmipy_sim import Sphere
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim.spec.walk import DROP_POOL_CHANGE_RULE, _drop_pool_changes
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
@@ -55,7 +56,7 @@ def test_the_pack_certificate_states_the_exclusion():
     record = dict(rule=DROP_POOL_CHANGE_RULE, max_fraction=0.01, n_dropped_pool_change=3, fraction=3 / 400,
                   pools={"intra": rec})
     kept = dataclasses.replace(kept, work=dict(kept.work or {}, dropped_pool_change=record))
-    pk = build_replay_pack(kept, id="test/drop", license="x", citation="x", K=8, envelope=ENV)
+    pk = build_replay_pack(kept, id="test/drop", license="x", citation="x", K=8, **stated(ENV, of=kept))
     assert pk.meta["fidelity"]["dropped_pool_change"] == record
 
 

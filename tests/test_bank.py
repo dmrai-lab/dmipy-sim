@@ -6,6 +6,7 @@ tiers, round-trips through .rpk, is consumable by the lean replay-signal forward
 floor-target policy converges. See the end-to-end walk->pack->replay validation in test_replay_parity for the
 physics parity.
 """
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.field as _r_field
 import dataclasses
@@ -17,8 +18,10 @@ from dmipy_sim.fields.susceptibility_field import FieldGrid
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import (build_replay_pack, build_to_floor, read_rpk,
-                       compile_scheme, replay_signal)
+from dmipy_sim import build_replay_pack, build_to_floor
+from dmipy_replay import compile_scheme
+from dmipy_replay.replay.replay import replay_signal
+from dmipy_replay import read_rpk
 from dmipy_sim.replay import bank, compression as cx_
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue
@@ -59,7 +62,7 @@ def _lean_env():
 
 @pytest.fixture(scope="module")
 def pack():
-    return build_replay_pack(_slab_walk(), id="test/slab", envelope=_lean_env(), K=16, fidelity="measured",
+    return build_replay_pack(_slab_walk(), id="test/slab", **stated(_lean_env(), G_max=1.0), K=16, fidelity="measured",
                              license="CC-BY-4.0", citation="test")
 
 
@@ -91,7 +94,7 @@ def test_pack_compresses_within_floor_and_declares_tiers(pack):
 
 def test_rpk_roundtrip_and_lean_consumption(pack, tmp_path):
     out = tmp_path / "slab.rpk"
-    build_replay_pack(_slab_walk(), id="test/slab", envelope=_lean_env(), K=16, fidelity="measured",
+    build_replay_pack(_slab_walk(), id="test/slab", **stated(_lean_env(), G_max=1.0), K=16, fidelity="measured",
                       license="CC-BY-4.0", citation="test", out_path=str(out))
     p2 = read_rpk(out)
     npt.assert_allclose(p2.position_coeffs, pack.position_coeffs, rtol=0, atol=0)
@@ -110,7 +113,7 @@ def test_rpk_roundtrip_and_lean_consumption(pack, tmp_path):
 
 def test_build_to_floor_converges_and_records_target():
     pk = build_to_floor(lambda n: _slab_walk(n_w=n, seed=1, raw=False), id="test/floor",
-                        envelope=_lean_env(), K=16, sigma_star=0.05,
+                        **stated(_lean_env(), G_max=1.0), K=16, sigma_star=0.05,
                         pilot_n=300, max_n=2000,
                         license="CC-BY-4.0", citation="test", verbose=False)
     assert pk.fidelity.get("target_floor") == 0.05
@@ -125,7 +128,7 @@ def test_build_to_floor_keeps_the_pilot_walk_when_it_meets_the_floor():
         calls.append(n)
         return _slab_walk(n_w=n, seed=1, raw=False)
 
-    pk = build_to_floor(make, id="test/floor-pilot", envelope=_lean_env(), K=16, sigma_star=10.0,
+    pk = build_to_floor(make, id="test/floor-pilot", **stated(_lean_env(), G_max=1.0, of=make), K=16, sigma_star=10.0,
                         pilot_n=300, max_n=2000, license="CC-BY-4.0", citation="test", verbose=False)
     assert calls == [300] and pk.n_walkers == 300
 
@@ -170,7 +173,7 @@ def test_susc_path_channel_drops_zz_via_trace_identity_and_certifies_at_its_capa
     and the measured certificate at the CPMG depth the band serves."""
     w = _susc_walk(300, seed=2)
     assert w.has_field and w.field_coeffs.shape == (300, 1, w.K_c3, 6) and w.block["field_band"]["rule"] == "pilot"
-    pk = build_replay_pack(w, id="test/slab-susc", envelope=_env7(), K=16, fidelity="measured",
+    pk = build_replay_pack(w, id="test/slab-susc", **stated(_env7(), G_max=1.0, of=w), K=16, fidelity="measured",
                            license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     K = pm["K"]
@@ -224,7 +227,7 @@ def test_a_broken_trace_identity_is_a_recorded_diagnostic_and_zz_is_still_formed
     fb, origin = _field_basis_for_slab()
     fb = dict(fb, iso_P=fb["iso_P"] * 1.05)                                 # break the trace
     w = _slab_walk(200, seed=3, field_basis=FieldGrid(fb, origin), magnetic=True)
-    pk = build_replay_pack(w, id="test/slab-susc-broken", envelope=_env7(), K=16, license="CC-BY-4.0", citation="test")
+    pk = build_replay_pack(w, id="test/slab-susc-broken", **stated(_env7(), G_max=1.0, of=w), K=16, license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     assert "iso_P_zz" not in pm["channels"] and pm["n_ch"] == 6 and "iso_P_zz" not in pm
     assert pm["trace_residual"] > 1e-3 and pm["trace_residual"] == pytest.approx(FieldGrid(fb, origin).trace_residual)
@@ -235,13 +238,14 @@ def test_a_broken_trace_identity_is_a_recorded_diagnostic_and_zz_is_still_formed
 def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_path():
     """The grid route samples DECODED positions, so it is unsound once the position codec is lossy.
     A path pack with lossy positions must therefore not ship grid arrays offering that route."""
-    pk = build_replay_pack(_susc_walk(200, seed=4), id="test/slab-path-only", envelope=_env7(), K=16,
+    w = _susc_walk(200, seed=4)
+    pk = build_replay_pack(w, id="test/slab-path-only", **stated(_env7(), G_max=1.0, of=w), K=16,
                            license="CC-BY-4.0", citation="test")
     gm = pk.meta["compression"]["channels"]["susceptibility_grid"]
     assert gm["arrays_in_pack"] is False and gm["replay_route"] == "path"
     assert "susc_grid_iso_local" not in pk.arrays and "susc_grid_iso_P" not in pk.arrays
     # and it still replays: susceptibility off vs on must differ, and chi=0 must match the grid-free case
-    from dmipy_sim import ScannerSequence
+    from dmipy_replay import ScannerSequence
     W = ScannerSequence(G=np.zeros((1, N_T, 3)), dt=DT)     # a bare gradient echo: no pulse folded
     W_lab, R = field_along(W, (1, 0, 0))                    # no T2 given: isolate the field
     s0 = pk.replay(W_lab, orientation=R, scanner=7.0, tissue=Tissue(chi_iso=0.0))
@@ -251,7 +255,7 @@ def test_path_pack_with_lossy_positions_omits_the_grid_arrays_and_replays_via_pa
 
 
 def test_precision_tiers_declare_shuffle_and_account_for_non_sliceable_arrays():
-    pk = build_replay_pack(_slab_walk(), id="test/slab-tiers", envelope=_lean_env(), K=16, license="CC-BY-4.0", citation="test")
+    pk = build_replay_pack(_slab_walk(), id="test/slab-tiers", **stated(_lean_env(), G_max=1.0), K=16, license="CC-BY-4.0", citation="test")
     pt = pk.meta["compression"]["precision_tiers"]
     assert pt["usable"] is True and pt["walkers_shuffled"] is True       # the producer's walkers are i.i.d.
     assert pt["bytes_per_walker"] > 0
@@ -271,10 +275,10 @@ def test_a_field_replay_can_restrict_to_one_compartment():
     w = _susc_walk(200, seed=6)
     comp = np.zeros(w.n_walkers, np.int8); comp[w.n_walkers // 2:] = 1            # two pools: ids 0 and 1
     w = dataclasses.replace(w, compartment=comp, raw_compartment=None)
-    pk = build_replay_pack(w, id="test/slab-susc-comp", envelope=_env7(theta_deg=[0, 90]), K=16,
+    pk = build_replay_pack(w, id="test/slab-susc-comp", **stated(_env7(theta_deg=[0, 90]), G_max=1.0, of=w), K=16,
                            license="CC-BY-4.0", citation="test")
     nt, dt = pk.n_t, pk.dt
-    from dmipy_sim import RFEvent, ScannerSequence
+    from dmipy_replay import RFEvent, ScannerSequence
     W = ScannerSequence(G=np.zeros((1, nt, 3)), dt=dt,                   # no gradient; a spin echo's 180 at TE/2
                         rf=[RFEvent(0.0, 90), RFEvent((nt - 1) * dt / 2, 180)])
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=1.06e-6), complex_signal=True)
@@ -330,7 +334,7 @@ def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
     import dmipy_sim as d
     from dmipy_sim.engine.core import _walk_geometry
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, K=16)
-    pk = build_replay_pack(walk, id="test/walk", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
+    pk = build_replay_pack(walk, id="test/walk", K=8, **stated(_lean_env(), G_max=1.0, of=walk), license="CC-BY-4.0", citation="test")
     env = pk.meta["replay_envelope"]
     assert env["gradient"] and env["bulk_relaxation"] and env["surface_relaxivity"] and not env["field"]
     assert "per_comp" not in pk.meta and pk.has_relaxation                   # the channel, never the values
@@ -339,18 +343,18 @@ def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
     assert pk.fidelity["certified"] == "measured" and pk.fidelity["measured_by"] == "walk_free_terms"
     # positions only: gradient tier alone, nothing silently assembled
     plain = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, tiers=(), K=16)
-    pk0 = build_replay_pack(plain, id="test/plain", K=8, envelope=_lean_env(), license="CC-BY-4.0", citation="test")
+    pk0 = build_replay_pack(plain, id="test/plain", K=8, **stated(_lean_env(), G_max=1.0, of=plain), license="CC-BY-4.0", citation="test")
     e0 = pk0.meta["replay_envelope"]
     assert e0["gradient"] and not (e0["bulk_relaxation"] or e0["surface_relaxivity"] or e0["field"])
     # the refusals
     with pytest.raises(ValueError, match="weights has"):
-        build_replay_pack(walk, id="x", weights=np.ones(7), K=8, envelope=_lean_env(), license="x", citation="x")
+        build_replay_pack(walk, id="x", weights=np.ones(7), K=8, **stated(_lean_env(), G_max=1.0, of=walk), license="x", citation="x")
     with pytest.raises(TypeError, match="field"):                 # build_replay_pack takes no field= at all (#539)
-        build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, envelope=_lean_env(), license="x", citation="x")
+        build_replay_pack(walk, id="x", field={"iso_local": 1}, K=8, **stated(_lean_env(), G_max=1.0, of=walk), license="x", citation="x")
     with pytest.raises(TypeError, match="CoefficientWalk"):       # positions at the block ends are not a pack's input
-        build_replay_pack(np.zeros((50, 5, 3), np.float32), id="x", K=4, license="x", citation="x")
+        build_replay_pack(np.zeros((50, 5, 3), np.float32), id="x", K=4, license="x", citation="x", **stated(G_max=1.0))
     with pytest.raises(ValueError, match="measured"):             # a measured certificate needs the raw subset
-        build_replay_pack(walk, id="x", K=8, fidelity="measured", license="x", citation="x")
+        build_replay_pack(walk, id="x", K=8, fidelity="measured", license="x", citation="x", **stated(G_max=1.0, of=walk))
 
 
 def test_the_field_tiers_band_is_derived_on_the_walk():
@@ -361,7 +365,7 @@ def test_the_field_tiers_band_is_derived_on_the_walk():
     w = _susc_walk(300, seed=8, envelope=_env7(theta_deg=[0, 90]))
     band = w.block["field_band"]
     assert band["rule"] == "pilot" and band["pilot_walkers"] > 0 and "bits" not in band
-    pk = build_replay_pack(w, id="test/slab-susc-auto", envelope=_env7(theta_deg=[0, 90]), K=16, license="CC-BY-4.0", citation="test")
+    pk = build_replay_pack(w, id="test/slab-susc-auto", **stated(_env7(theta_deg=[0, 90]), G_max=1.0, of=w), K=16, license="CC-BY-4.0", citation="test")
     pm = pk.meta["compression"]["channels"]["susc_field_basis"]
     assert pm["band"] == band and (pm["K"] in SUSC_PATH_LADDER or pm["K"] == N_T - 1)
     order = [r["K"] for r in band["ladder"]]
@@ -392,7 +396,7 @@ def test_a_declared_train_depth_puts_a_floor_under_the_ladder():
     w = _susc_walk(200, seed=9, envelope=_env7(max_refocus_pulses=12))
     band = w.block["field_band"]
     assert band["min_K"] == 24 and w.K_c3 >= 24 and band["depth"] == 12 and all(r["K"] >= 24 for r in band["ladder"])
-    pk = build_replay_pack(w, id="test/slab-susc-depth", envelope=_env7(max_refocus_pulses=12), K=16, license="CC-BY-4.0", citation="test")
+    pk = build_replay_pack(w, id="test/slab-susc-depth", **stated(_env7(max_refocus_pulses=12), G_max=1.0, of=w), K=16, license="CC-BY-4.0", citation="test")
     assert pk.meta["compression"]["channels"]["susc_field_basis"]["max_refocus_pulses"] == 12      # the declared depth, not K / 2
 
 
@@ -400,10 +404,10 @@ def test_a_given_field_band_is_taken_as_given():
     """``K_c3=`` skips the pilot; ``susc_path_K=`` beyond the walk's band is refused."""
     w = _susc_walk(100, seed=10, K_c3=12)
     assert w.K_c3 == 12 and w.block["field_band"]["rule"] == "given"
-    pk = build_replay_pack(w, id="test/given", envelope=_env7(), K=16, susc_path_K=8, license="x", citation="x")
+    pk = build_replay_pack(w, id="test/given", **stated(_env7(), G_max=1.0, of=w), K=16, susc_path_K=8, license="x", citation="x")
     assert pk.meta["compression"]["channels"]["susc_field_basis"]["K"] == 8
     with pytest.raises(ValueError, match="accumulated 12 field modes"):
-        build_replay_pack(w, id="test/given", envelope=_env7(), K=16, susc_path_K=16, license="x", citation="x")
+        build_replay_pack(w, id="test/given", **stated(_env7(), G_max=1.0, of=w), K=16, susc_path_K=16, license="x", citation="x")
 
 
 def test_build_to_floor_keeps_topping_up_until_the_floor_is_met(monkeypatch):
@@ -415,7 +419,7 @@ def test_build_to_floor_keeps_topping_up_until_the_floor_is_met(monkeypatch):
     floor_of = lambda n: 0.01 if n == 8000 else 0.02 * (8000 / n) ** 0.25
     real = cx.measure_floor_coded
     monkeypatch.setattr(cx, "measure_floor_coded", lambda *a, **kw: dict(real(*a, **kw), floor_max=floor_of(asked[-1])))
-    pk = build_to_floor(lambda n: (asked.append(int(n)), _slab_walk(n_w=64, seed=0, raw=False))[1], id="test/floor-loop", K=16,
+    pk = build_to_floor(lambda n: (asked.append(int(n)), _slab_walk(n_w=64, seed=0, raw=False))[1], **stated(G_max=1.0), id="test/floor-loop", K=16,
                         sigma_star=5e-3, pilot_n=8000, max_n=10_000_000, verbose=False,
                         license="CC0-1.0", citation="test")
     assert len(asked) >= 4, asked                                   # pilot, N*, and at least two top-ups
@@ -429,7 +433,7 @@ def test_build_to_floor_stops_at_the_cap_and_says_the_target_is_not_met(monkeypa
     asked = []
     real = cx.measure_floor_coded
     monkeypatch.setattr(cx, "measure_floor_coded", lambda *a, **kw: dict(real(*a, **kw), floor_max=0.02))   # never met
-    pk = build_to_floor(lambda n: (asked.append(int(n)), _slab_walk(n_w=64, seed=0, raw=False))[1], id="test/floor-cap", K=16,
+    pk = build_to_floor(lambda n: (asked.append(int(n)), _slab_walk(n_w=64, seed=0, raw=False))[1], **stated(G_max=1.0), id="test/floor-cap", K=16,
                         sigma_star=5e-3, pilot_n=8000, max_n=50_000, verbose=False,
                         license="CC0-1.0", citation="test")
     assert asked[-1] == 50_000 and asked.count(50_000) == 1, asked   # walked the cap once, then stopped
@@ -452,7 +456,7 @@ def test_build_replay_pack_is_byte_reproducible(tmp_path):
 
     out1, out2 = tmp_path / "a.rpk", tmp_path / "b.rpk"
     for out in (out1, out2):
-        build_replay_pack(_slab_walk(seed=0), id="test/repro", envelope=_lean_env(), K=16, license="CC-BY-4.0", citation="test", out_path=str(out))
+        build_replay_pack(_slab_walk(seed=0), id="test/repro", **stated(_lean_env(), G_max=1.0), K=16, license="CC-BY-4.0", citation="test", out_path=str(out))
     assert sha(out1) == sha(out2)
 
     for out in (out1, out2):
@@ -477,7 +481,7 @@ def test_a_pack_with_the_old_in_file_run_record_still_loads(tmp_path):
     """A pack built before dmipy-sim#541 carries its run record inside ``provenance.run``: that is just data the
     file carries, read as it is, never translated or stripped on load."""
     out = tmp_path / "old.rpk"
-    build_replay_pack(_slab_walk(), id="test/old", envelope=_lean_env(), K=16, license="CC-BY-4.0", citation="test", out_path=str(out))
+    build_replay_pack(_slab_walk(), id="test/old", **stated(_lean_env(), G_max=1.0), K=16, license="CC-BY-4.0", citation="test", out_path=str(out))
     pk = read_rpk(out)
     meta = dict(pk.meta)
     meta["provenance"] = dict(meta.get("provenance") or {},
@@ -492,7 +496,7 @@ def test_a_pack_with_the_old_in_file_run_record_still_loads(tmp_path):
 # ------------------------------------------------------------------ the certificate's two budgets and its split-floor
 def test_the_certificate_states_the_numerical_cap_and_the_planned_floor_each_against_its_own_quantity():
     w = _slab_walk(n_w=400, seed=1, raw=False)
-    kw = dict(id="test/budgets", envelope=_lean_env(), K=16, license="CC-BY-4.0", citation="test")
+    kw = dict(id="test/budgets", **stated(_lean_env(), G_max=1.0), K=16, license="CC-BY-4.0", citation="test")
     f = build_replay_pack(w, sigma_star=0.05, planned_floor=1.0, **kw).fidelity
     assert f["target_floor"] == 0.05 and f["planned_floor"] == 1.0
     assert f["meets_numerical_cap"] == (f["err_max"] <= 0.05) and f["meets_planned_floor"] == (f["floor_max"] <= 1.0)
@@ -509,7 +513,7 @@ def test_the_two_budgets_are_stated_together_or_not_at_all():
     w = _slab_walk(n_w=100, seed=1, raw=False)
     for kw in (dict(sigma_star=0.05), dict(planned_floor=0.05)):
         with pytest.raises(ValueError, match="planned_floor"):
-            build_replay_pack(w, id="test/b", envelope=_lean_env(), K=16, license="x", citation="x", **kw)
+            build_replay_pack(w, id="test/b", **stated(_lean_env(), of=w), K=16, license="x", citation="x", **kw)
 
 
 def test_the_floor_is_the_standard_error_of_the_weighted_mean_signal_and_deterministic():
@@ -517,7 +521,7 @@ def test_the_floor_is_the_standard_error_of_the_weighted_mean_signal_and_determi
     rng = np.random.default_rng(0)
     C = rng.normal(size=(300, 18, 3)) * 1e-6
     C[:, 0, :] = 0.0
-    env, w = cx.default_envelope(), rng.uniform(0.5, 1.5, 300)
+    env, w = cx.default_battery(), rng.uniform(0.5, 1.5, 300)
     f = cx.measure_floor_coded(C, 1e-4, 33, env, w=w)
     G, meta = cx.acquisition_battery(33, 1e-4, env)
     s = np.exp(1j * cx.coded_phases(C, 1e-4, G, 33))
@@ -532,6 +536,6 @@ def test_a_pack_at_the_planned_walker_count_meets_its_planned_floor():
     """``SE <= 1 / sqrt(N)`` for unit-modulus terms: at ``N = 1 / f^2`` walkers the standard error is within ``f`` by construction."""
     n = 400
     f = 1.0 / np.sqrt(n)
-    fid = build_replay_pack(_slab_walk(n_w=n, seed=1, raw=False), id="test/planned", envelope=_lean_env(), K=16, license="x",
+    fid = build_replay_pack(_slab_walk(n_w=n, seed=1, raw=False), id="test/planned", **stated(_lean_env(), G_max=1.0), K=16, license="x",
                             citation="x", sigma_star=0.5 * f, planned_floor=f).fidelity
     assert fid["floor_estimator"] == "standard_error" and fid["floor_max"] <= f and fid["meets_planned_floor"]

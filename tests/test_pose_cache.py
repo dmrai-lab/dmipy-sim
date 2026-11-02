@@ -1,18 +1,19 @@
 """The pose expansion cached on disk (#200 item 5): the same pack under the same acquisition and knobs is expanded
 once; anything that changes what the expansion depends on is a different entry; and the Bessel orders come from
 one recurrence that matches scipy."""
+from tests._envelope import stated
 import numpy as np
 import pytest
 from scipy.special import spherical_jn
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, PackSubstrate, Phantom, Watson
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import sequences
+from dmipy_replay.phantom import Grid, PackSubstrate, Phantom, Watson
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.replay import PoseResponse
-from dmipy_sim.replay.so3 import spherical_jn_all as _spherical_jn_all
+from dmipy_replay.replay.pose import PoseResponse
+from dmipy_replay.replay.so3 import spherical_jn_all as _spherical_jn_all
 from dmipy_replay.spec.tissue import Tissue
 
 
@@ -21,7 +22,7 @@ def pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(300, 2e-9, g, 10e-3, 5e-4, seed=5, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "c.rpk"
-    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p))
+    build_replay_pack(walk, id="t/c", license="x", citation="x", K=8, out_path=str(p), **stated(of=walk))
     return read_rpk(str(p))
 
 
@@ -40,7 +41,8 @@ def test_the_cache_is_hit_only_by_the_same_expansion(pack, tmp_path, monkeypatch
     files = sorted(cache.glob("*.npz"))
     assert len(files) == 1 and first.route == "closed"
     # a hit: the computation is not run again and the numbers are the stored ones
-    monkeypatch.setattr(pack, "_pose_coeffs_closed_many", lambda *a, **k: (_ for _ in ()).throw(AssertionError("recomputed")))
+    monkeypatch.setattr("dmipy_replay.replay.pose._pose_coeffs_closed_many",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("recomputed")))
     second = pack.pose_response(seq, keep=(8, 0), cache=cache)
     np.testing.assert_array_equal(second.coeffs, first.coeffs)
     assert (second.lmax, second.nmax, second.n_bodies, second.route) == (first.lmax, first.nmax, first.n_bodies, first.route)
@@ -51,7 +53,7 @@ def test_the_cache_is_hit_only_by_the_same_expansion(pack, tmp_path, monkeypatch
     pack.pose_response(seq.with_gradient(np.asarray(seq.G)[:, :, [1, 0, 2]]), keep=(8, 0), cache=cache)
     assert len(sorted(cache.glob("*.npz"))) == 4
     # cache=True goes to the environment's directory
-    monkeypatch.setenv("DMIPY_SIM_CACHE", str(tmp_path / "env"))
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "env"))
     pack.pose_response(seq, keep=(8, 0), cache=True)
     assert len(sorted((tmp_path / "env" / "pose").glob("*.npz"))) == 1
     # round trip of the object itself

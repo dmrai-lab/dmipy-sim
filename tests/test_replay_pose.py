@@ -1,4 +1,5 @@
 """A pack's pose: one rotation exactly, or a distribution of rotations through the SO(3) response (#157)."""
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
@@ -8,11 +9,12 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import Encoding, ScannerSequence
+from dmipy_replay import Encoding, ScannerSequence
 from dmipy_sim.fields.susceptibility_field import field_grid_of
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay.fod import FOD
+from dmipy_replay.replay.pose import _pose_coeffs
 
 D0 = 2.0e-9
 ENV = dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
@@ -33,7 +35,7 @@ def hollow():
     )
     walk = _walk_geometry(3000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False, field_basis=field_grid_of(g, res=0.2e-6))
     # certified up to the strongest susceptibility the field-direction tests replay (|chi_iso| + |chi_aniso| = 9.1e-6)
-    pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, envelope=dict(ENV, chi_max=9.1e-6),
+    pk = build_replay_pack(walk, id="test/hollow", license="x", citation="x", K=8, **stated(dict(ENV, chi_max=9.1e-6), of=walk),
                            susc_path_K=16)
     assert pk.has_field and "susc_field_basis" in pk.meta["compression"]["channels"]
     return pk, _pgse(pk, [[1, 0, 0], [1, 0, 0], [0, 0, 1]], [0.0, 1e8, 1e8])
@@ -46,7 +48,7 @@ def ellipsoid():
     g = d.Ellipsoid(semiaxes=(1.0e-6, 3.5e-6, 8.0e-6))
     walk = _walk_geometry(4000, D0, g, 6e-3, 3e-4, seed=0, require_gpu=False)
     pk = build_replay_pack(walk, id="test/ellipsoid", license="x", citation="x", K=8,
-                           envelope=dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8))
+                           **stated(dict(ENV, bvals=[0.0, 6e8], shortd_b=6e8), of=walk))
     # a closed pore bounds the displacement, so a high b here is a sharp *angular* response at a modest phase
     # amplitude -- which is what makes this the substrate that shows azimuthal structure
     return pk, _pgse(pk, [[1, 0, 0], [0, 1, 0]], [6e8, 6e8])
@@ -214,7 +216,7 @@ def test_an_orientation_distribution_must_say_what_basis_it_is_in(hollow):
     # response has nothing above its band for those terms to multiply. (The closed form's full band is large,
     # so the response is truncated to (6, 6) here rather than the distribution raised above it.)
     pr = pk.pose_response(seq, **BAND, **KW)
-    from dmipy_sim.replay.replay import PoseResponse
+    from dmipy_replay.replay.pose import PoseResponse
     low = PoseResponse(so3.truncate_coeffs(pr.coeffs, pr.lmax, pr.nmax, 6, 6), 6, 6, pr.misfit, pr.floor,
                        pr.phase_amplitude, pr.n_samples)
     wide = low.compose(so3.Distribution.watson(3.0, lmax=8, nmax=8))
@@ -228,7 +230,7 @@ def test_a_response_the_truncation_cannot_hold_is_refused(ellipsoid):
     pk, seq = ellipsoid
     P = pk._prepare(seq, tissue=None, scanner=None, orientation=None, compartment=None)
     with pytest.raises(ValueError, match="not represented at"):
-        pk._pose_coeffs(P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
+        _pose_coeffs(pk, P, seq, band=0, n_check=200)                  # the sampled route, forced below its band
 
 
 # ── the field's DIRECTION is the machine's, not an assumption (dmipy-sim#349) ────────────────────────

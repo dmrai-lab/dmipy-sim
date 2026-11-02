@@ -12,6 +12,7 @@ from dmipy_sim.engine import backends
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.fields.susceptibility_field import FieldGrid
 from dmipy_sim import Compartments, Pool
+from tests._envelope import walk_envelope
 
 D = 2e-9
 R = 2e-6
@@ -271,17 +272,17 @@ def test_a_raster_field_is_the_backends_request_and_its_modes_are_checked():
 
 
 def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     from dmipy_sim import walk
     g = d.Sphere(R)
     still = _Still()
-    w = walk(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=still)
+    w = walk(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=still, envelope=walk_envelope(of=g.spec))
     assert w.work["backend"] == "still" and still.requests
     # the adaptive producer takes the backend too (#651): the sphere is refused for not being a bundle, by the spec,
     # not for the backend
     with pytest.raises(SpecError, match="adaptive stepping is for a bundle"):
         walk(g.spec, 64, 2e-3, 0.5e-3, seed=11, diffusivity=D, walker_batch_size=64, backend=_Still(),
-                  adaptive_steps=True)
+                  adaptive_steps=True, envelope=walk_envelope(of=g.spec))
 
 
 def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():

@@ -1,6 +1,7 @@
 """The README's phantom snippets run (#162, #186): every ```python block under "Replay phantoms" is executed
 against a small pack standing in for the CACTUS / DiSCo ones, with the names the prose defines around it. A
 snippet that stops running fails here, by block."""
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import importlib.util
 import re
@@ -27,7 +28,7 @@ def stand_in_pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(300, 2e-9, g, 30e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "stand_in.rpk"
-    build_replay_pack(walk, id="test/stand-in", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="test/stand-in", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
     return str(out)
 
 
@@ -35,7 +36,7 @@ def test_the_readme_phantom_snippets_run(stand_in_pack, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     spec = importlib.util.spec_from_file_location("ring", ROOT / "examples" / "rph" / "circular_wm_phantom.py")
     ring = importlib.util.module_from_spec(spec); spec.loader.exec_module(ring)
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     ns = {"annulus": ring.annulus, "frames": ring.frames,                       # the volumes the prose points at
           "dirs": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
           "rotation": _r_so3.rotation_of((0.3, 0.5, 0.81)),

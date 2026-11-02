@@ -35,7 +35,7 @@ flowchart LR
         G3["analytic geometries: Cylinder, Sphere, Mesh, ..."]
     end
     SPEC["SubstrateSpec (.sub.json)<br/>domain · pools · walls and their physics<br/>seeding · request vs realisation · nominal values"]
-    ENGINE["dmipy-sim engine<br/>walk / simulate<br/>sub-steps from the spec's smallest feature<br/>the scanner class gives the band, the band gives the block<br/>accumulated in the walk"]
+    ENGINE["dmipy-sim engine<br/>walk / simulate<br/>sub-steps from the spec's smallest feature<br/>the envelope gives the band, the band gives the block<br/>accumulated in the walk"]
     RPK["Replay Pack (.rpk)<br/>positions as bridge + K sine bands<br/>occupancy · wall contact · field basis<br/>+ the spec, no tissue value"]
     subgraph knobs["replay knobs"]
         direction TB
@@ -81,11 +81,12 @@ without a raw path; it is what the substrate bank distributes and what dmipy-fit
 
 ```python
 from dmipy_sim.substrate import Substrate
+from dmipy_replay import envelope_of
 from dmipy_sim import walk
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim import sequences
-
+from dmipy_sim.replay.container import save_pack
+from dmipy_replay import sequences
 # the substrate: histology-calibrated white matter, realised as a SPEC -- domain, pools, walls, seeding,
 # what was requested and what was achieved, all written out (replay-pack-spec/SUBSTRATE.md)
 sub  = Substrate.canonical(field_T=3.0)          # diameter law (floored at d_min), g-ratio, f_axon, D, T2, rho, kappa
@@ -93,12 +94,14 @@ spec = sub.request(n_fibres=300, seed=0)         # refuses an infeasible packing
 spec.save("wm.sub.json")
 
 # 1. walk once, from the spec and nothing else -- positions, occupancy and boundary local time are recorded
-w = walk(spec, 200_000, T_max=0.05, seed=0)            # the band is the scanner class's (scanner="connectom" by default)
+# the envelope is what the pack is certified for: a scanner class's band and amplitude, the field and tissue bounds
+env = envelope_of("connectom", B0_list=(3.0,), chi_max=1.06e-6, rho2_max=1e-4)
+w = walk(spec, 200_000, T_max=0.05, seed=0, envelope=env)   # the walk accumulates the envelope's band
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one
 #    T2, rho2 or chi value lives in the pack; those are what a replay applies
-pack = build_replay_pack(w, id="wm/canonical", license="CC-BY-4.0", citation="...")
-pack.save("wm.rpk")
+pack = build_replay_pack(w, id="wm/canonical", license="CC-BY-4.0", citation="...")   # states the walk's envelope
+save_pack(pack, "wm.rpk")                         # dmipy_sim.replay.container
 
 # 3. anywhere, later: load it and fire a pulse at it
 pack = ReplayPack.load("wm.rpk")
@@ -137,8 +140,8 @@ scanners, and is replayed once: the bands are contracted per acquisition, every 
 on the result, and an image of every pair comes from one read with a certified floor per volume.
 
 ```python
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
-study = Study(Protocol([Acquisition(seq)]), tissues=[None, pack.nominal], scanners=[None, 3.0, 7.0],
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
+study = Study(StudyProtocol([Acquisition(seq)]), tissues=[None, pack.nominal], scanners=[None, 3.0, 7.0],
               pairs=[(0, 0), (1, 1), (1, 2)])                    # bare, white matter at 3 T, white matter at 7 T
 S = pack.study(study)                                            # (pairs, n_meas) on a loaded pack
 S, floor, plan = big.image(study)                                # (pairs, *grid, n_meas) on a pack opened by reference
@@ -183,9 +186,9 @@ samples depending on the angle between the field and the fibre.
 
 ```python
 import numpy as np
-from dmipy_sim import sequences
-from dmipy_sim.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
-from dmipy_sim.spec import Tissue
+from dmipy_replay import sequences
+from dmipy_replay.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
+from dmipy_replay.spec.tissue import Tissue
 
 n = 40
 grid = Grid(shape=(n, n, 1), voxel_size_m=(1.5e-3,) * 3)          # centred on the isocenter unless origin_m= says otherwise
@@ -231,8 +234,8 @@ into the file. A layer the replay cannot carry raises rather than being dropped.
 ### Partition
 
 ```python
-from dmipy_sim import Prescription
-from dmipy_sim.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Pose
+from dmipy_replay import Prescription
+from dmipy_replay.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Pose
 
 pack = PackSubstrate("disco.rpk", m0=1.0)                           # ONE walk of a 1 mm^3 anatomy, spin_weights carried
 ph = Phantom.partition(pack, Grid(shape=(40, 40, 40), voxel_size_m=(25e-6,) * 3, attach="substrate"),
@@ -274,8 +277,9 @@ Datasets enter as **specs**: `spec.cactus_spec(run_dir)`, `spec.winther_spec(inn
 `spec.caterpillar_spec(csv)`, `spec.label_volume_spec(image)` (a segmented micro-CT / EM / mask volume in NRRD,
 MetaImage, NIfTI, TIFF or HDF5), `spec.strands_spec(txt)` / `spec.disco_spec(tracks, diameters)` (the MRtrix track file and the strand-diameter list) read the files and write down
 domain, pools, walls and seeding; `walk(spec, ...)` walks them pool by pool and the pack embeds the spec.
-The scanner class gives the band, the band gives the block: `walk` accumulates the class's certified band
-(`scanner="prisma" | "magnus" | "connectom" | ...`), `K` sine bands per 100 ms storage window, in blocks of
+The envelope gives the band, the band gives the block: `walk` accumulates the band of its envelope
+(`envelope=envelope_of("prisma" | "magnus" | "connectom" | ...)`, the class's certified band times the storage margin,
+or an `Envelope` stated directly), `K` sine bands per 100 ms storage window, in blocks of
 `h = 0.8 T / (pi K)`, while the walk runs -- the positions, the wall contact and the field as band projections of
 their running integrals, the occupancy as events exact in time -- so the walk's memory and the pack's size are set
 by `K`, never by the walk's length or resolution, and the pack certifies itself without a raw path (the block
@@ -332,22 +336,24 @@ meet in that substrate, not validated on an average case.
 
 ## Layout
 
-The reader side -- the acquisition object and its builders, the Pulseq and b-table readers, the replay contraction,
-the plan before a read, the Hub client, the columnar and time-segment layouts' readers -- is
-[dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) (numpy only, Apache-2.0), a dependency: dmipy-sim imports
-it and re-exports its public names (`dmipy_sim.pgse is dmipy_replay.pgse`). dmipy-sim is the producer and the device
-side: the walk, the packs and layouts it writes, the JAX and torch backends of the same arithmetic, the pose
-expansion and the phantoms.
+The reader side -- the acquisition object and its builders, the Pulseq and b-table readers, the one `ReplayPack` and
+every route that turns a pack into a signal or an image (the replay, the plan before a read, the vector-Bloch
+propagator, the pose expansion, the study, the RF train as gates, the columnar and time-segment layouts' images, the
+replay phantoms), the Hub client -- is [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) (its core numpy only,
+Apache-2.0), a dependency: dmipy-sim imports it and re-exports none of its names (`dmipy_sim.pgse` is refused, naming
+`dmipy_replay.pgse`). dmipy-sim is the producer: the walk, the encoding and the certificate, the packs and layouts it
+writes, the operations that re-encode a pack (`dmipy_sim.replay.reencode`), publishing.
 
 ```
 dmipy_sim/
   geometry/     substrates: base, analytic, packed, myelin, packing, curved_cylinder, mesh, mesh_shapes
   engine/       core (simulate, _walk_geometry), accumulate, physics, pulse_sequence, mt, mt_walk, gpu;
                 _fused and bloch: the single-pass oracles the replay is held to
-  replay/       replay (ReplayPack: dmipy-replay's with the producer's routes), bank (build_replay_pack), compression
-                (the codec), trajectories, columnar / remote / time_segments (dmipy-replay's readers with the JAX
-                backends; time_segments also writes the layout), study (Acquisition, Protocol, Study), phantom, fod, so3,
-                hub (the dataset repository behind publish), consolidate (shards -> the columnar layout)
+  replay/       bank (build_replay_pack), compression (the codec), container (write_rpk, save_pack), reencode
+                (truncate_pack, rewindow_pack, prefix_pack, stated_envelope, restate_surface_envelope), continuation
+                (end_state, extend_pack), trajectories (the dense oracle), time_segments (writes the layout),
+                consolidate (shards -> the columnar layout), publish, hub (the dataset repository behind publish),
+                reference (the reference-pack protocol)
   acquisition/  noise, coil (ScannerSequence, RFSchedule, ScannerLimits and the integrals are dmipy-replay's)
   sequences/    pulseq (export; the reader is dmipy-replay's)
   fields/       susceptibility, susceptibility_field (FieldGrid, field_grid_of)

@@ -1,6 +1,7 @@
 """A pack decodes each stored tensor selection once (dmipy-sim#812): the position bands, the contact bands, the field
 modes and the occupancy events are dequantised on the first read and every later replay, on any route, reads the held
 read-only array -- bit for bit what a decode per call gives. The decoders are counted, never timed."""
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import dmipy_replay.replay.field as _r_field
 import collections
@@ -9,11 +10,13 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank, compression as cx
 from dmipy_replay.replay.decoded import DecodedCache, PackArrays
-from dmipy_sim.replay.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.spec.tissue import Tissue
 
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, rho2=1e-5)
@@ -24,12 +27,12 @@ def pack():
     """Two storage windows of a permeable cell: quantised bit-packed bands, the contact bridge, the occupancy events."""
     w = _walk_geometry(300, 2e-9, d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6, permeability=2e-5), 4e-3, 1e-4,
                                 seed=1, require_gpu=False, K=8, window_T=2e-3)
-    return build_replay_pack(w, id="t/decode-once", license="x", citation="x")
+    return build_replay_pack(w, id="t/decode-once", license="x", citation="x", **stated(G_max=5.0, of=w))
 
 
 def _seqs(pk, n=3):
     n_t = int(round(4e-3 / pk.dt)) + 1
-    return [d.pgse([[1, 0, 0]], 5e-4, 1.5e-3, bvalues=[b], TE=4e-3, n_t=n_t, slew_rate=float("inf")) for b in (5e7, 1e8, 2e8)[:n]]
+    return [dr.pgse([[1, 0, 0]], 5e-4, 1.5e-3, bvalues=[b], TE=4e-3, n_t=n_t, slew_rate=float("inf")) for b in (5e7, 1e8, 2e8)[:n]]
 
 
 @pytest.fixture
@@ -221,7 +224,7 @@ def test_a_cache_with_no_room_holds_nothing_and_a_view_of_a_stored_tensor_is_nev
 
 
 def _fid(pk):
-    return d.gre(4e-3, n_t=int(round(4e-3 / pk.dt)) + 1)
+    return dr.gre(4e-3, n_t=int(round(4e-3 / pk.dt)) + 1)
 
 
 def test_a_sequence_without_gradient_reads_no_position(pack, counted):

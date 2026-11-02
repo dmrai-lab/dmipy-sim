@@ -18,7 +18,7 @@ from ..run import Run, current
 import jax.numpy as jnp
 
 from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility_field_of
-from .build import geometry_from_spec
+from .build import file_unit_scale, geometry_from_spec
 
 
 def _spec_of_door(substrate):
@@ -33,19 +33,25 @@ def _spec_of_door(substrate):
     return as_geometry(substrate).spec
 
 
-def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom", diffusivity=None,
+def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivity=None,
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
-              window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
+              window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
               field_pilot=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
-    The walk accumulates the scanner class's band (#643): ``K`` per storage window (``window_T``) the class's
-    certified band times the margin (:func:`~dmipy_sim.replay.bank.mode_count`) unless given, the step law resolving
-    the same band; its block is the band's own (``block_order``, ``block_h`` as in
+    ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
+    walked for and what a pack built from it is certified for: :func:`dmipy_replay.envelope_of` of a scanner class, or
+    an ``Envelope`` stated directly. The walk carries it (``CoefficientWalk.envelope``). A spec with a susceptibility
+    field needs the envelope's ``chi_max`` and ``B0_list``, which the field tier is certified at. ``battery`` is where
+    the field pilot and a pack's certificate read their floors (:func:`~dmipy_sim.replay.compression.default_battery`
+    when None).
+
+    The walk accumulates the envelope's band (#643): ``K`` per storage window (``window_T``) ``ceil(2 band_hz T)``
+    (:meth:`~dmipy_replay.replay.envelope.Envelope.mode_count`) unless given, the step law resolving the same band; its block is the band's own (``block_order``, ``block_h`` as in
     :func:`~dmipy_sim.engine.core._walk_geometry`), with adaptive steps too
     (:func:`~dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`: a block a whole number of rounds).
 
@@ -61,7 +67,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom",
     ``diffusivity`` is the SINGLE-surface path's reference D: that walk has one diffusivity, the intra pool's when
     the spec declares one, else the seeded pool's, and this argument when the pool declares none or in place of it.
     A multi-surface spec carries a D per pool and walks each pool at its own, so the argument is refused there --
-    the D belongs in the pools (:meth:`~dmipy_sim.spec.SubstrateSpec.replace`, or the producer's own argument).
+    the D belongs in the pools (:meth:`~dmipy_replay.spec.substrate.SubstrateSpec.replace`, or the producer's own argument).
 
     ``field_gather_every`` is how many blocks the adaptive walk reuses a walker's list of strands in reach (gathered
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
@@ -138,12 +144,22 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom",
                                       adaptive_steps=adaptive_steps, seed=seed), run_dir=run_dir) as run:
         import logging
         from ..engine.core import _walk_geometry
-        from ..replay.bank import class_band
+        from dmipy_replay.replay.envelope import Envelope
+        from ..replay.compression import certificate_settings
+        if not isinstance(envelope, Envelope):
+            raise TypeError(f"walk(spec, ..., envelope=) takes an Envelope: dmipy_replay.envelope_of(scanner, ...) for a "
+                            f"scanner class, or dmipy_replay.Envelope(...); got {type(envelope).__name__}")
+        settings = certificate_settings(envelope, battery)
         spec = _spec_of_door(spec)
         spec.validate()
         if T_max is None:
             raise TypeError("walk needs T_max (seconds)")
         kind = field_source_kind(spec)
+        if kind is not None and (envelope.chi_max is None or not envelope.B0_list):
+            raise SpecError(f"spec {spec.id!r} has a susceptibility field, and the envelope states no "
+                            + ("chi_max" if envelope.chi_max is None else "B0_list")
+                            + ": the field tier is certified at a stated susceptibility scale and field strengths "
+                              "(envelope_of(..., chi_max=..., B0_list=...))")
         if any(value is not None for value in (field_calibration, calibration_floor, query_scope)):
             if not adaptive_steps or kind != "strands":
                 raise SpecError("scoped field calibration requires an adaptive strand-field walk")
@@ -197,12 +213,11 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom",
                 f"in the spec -- the producer's own argument, or SubstrateSpec.replace, e.g. "
                 f"spec.replace(D={{{', '.join(f'{n!r}: {diffusivity!r}' for n in stepped)}}}) -- rather than beside "
                 f"it; a number here reaches the walk's resolution and nothing else.")
-        if K is None:                                        # the class's band per storage window (#643)
+        if K is None:                                        # the envelope's band per storage window (#643)
             from ..engine.accumulate import window_count
-            from dmipy_replay.replay.storage import mode_count
-            K = mode_count(window_count(T_max, window_T)[1], scanner)
-        walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=envelope, bounce_budget=bounce_budget,
-                       backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=class_band(scanner))
+            K = envelope.mode_count(window_count(T_max, window_T)[1])
+        walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=settings, bounce_budget=bounce_budget,
+                       backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz))
         if field_pilot is not None:
             if adaptive_steps:
                 raise SpecError("field_pilot is the engine the fixed-step walk's field pilot walks on; the adaptive walk "
@@ -236,9 +251,9 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, scanner="connectom",
                                                                                    field_target_floor=field_target_floor)),
                                       **walk_kw)
             import dataclasses
-            return dataclasses.replace(w, geometry=g, spec=spec, scanner=str(scanner))
+            return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope)
         return _walk_bundle(spec, int(n_walkers), float(T_max), (None if block_h is None else float(block_h)), seed, n_probe, field_res,
-                            field_budget=field_budget, scanner=scanner, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
+                            field_budget=field_budget, envelope=envelope, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
                             field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
                             field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
@@ -484,7 +499,7 @@ class _Boundary:
             from ..geometry.mesh import load_ply
             from ..fields.susceptibility_field import MeshBodies
             from .build import mesh_surface_file
-            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=(w.surface.scale or 1.0))
+            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=file_unit_scale(w.surface.scale))
                                       for w in walls])
             self.V, self.F = self.bodies.V, self.bodies.F
         elif self.kind == "sphere_union":
@@ -719,7 +734,7 @@ def _explicit_seeds(spec, pid, n, member=None):
     if fmt != "xyz":
         raise SpecError(f"seeding.positions.format {fmt!r} is not a format this reads; 'xyz' is three numbers "
                         f"per line")
-    A = np.loadtxt(path, dtype=np.float64) * float(pos.get("scale") or 1.0)
+    A = np.loadtxt(path, dtype=np.float64) * file_unit_scale(pos.get("scale"))
     if A.ndim != 2 or A.shape[1] != 3:
         raise SpecError(f"{path}: {A.shape} is not (n, 3) start positions")
     read = (pos.get("read") or "cyclic").lower()
@@ -812,7 +827,7 @@ def _raw_allocation(counts, n_raw):
     return got
 
 
-def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_counts=None):
+def _join_pool_walks(parts, weights_of, seed, spec, field, works, envelope, raw_counts=None):
     """The pools' coefficient walks of a bundle as one :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`:
     ``parts`` is ``(pool id, walk or seats)`` per pool, a frozen pool (``D = 0``) its seats ``(n, 3)``, held there
     over every window (its displacement and bands zero, no contact, the field at its seat: the ``k = 0`` mode alone,
@@ -955,7 +970,7 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, scanner, raw_c
         raw_positions=cat_raw(rp), raw_boundary=(cat_raw(rb) if surface else None), raw_compartment=cat_raw(rc), raw_bound=None,
         raw_field=(cat_raw(rf) if sampled else None), qv_positions=cat(qp),
         qv_boundary=(cat(qb) if surface else None), seed=int(seed), diffusivity=D_ref, geometry=None, spec=spec,
-        weights=(None if np.allclose(wts, 1.0) else wts), block=block, work=merge_work(works), scanner=str(scanner),
+        weights=(None if np.allclose(wts, 1.0) else wts), block=block, work=merge_work(works), envelope=envelope,
         stepping=(dict(rule="adaptive", pools=stepping) if stepping else None),
         illegal_crossings=int(sum(w.illegal_crossings for w in walks)))
 
@@ -999,7 +1014,7 @@ class _PoolCheckpoint:
         os.replace(self.side + ".part", self.side)
 
 
-def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, field_budget=None, scanner=None,
+def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, field_budget=None, envelope=None,
                  field_cutoff_m=25e-6, field_cutoff_tol=0.02, seeding=None, field_cutoff_max_m=50e-6, adaptive_steps=False,
                  field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4, context=None, spool=False, walk_kw=None,
                  field_calibration=None, calibration_floor=None, query_scope=None, field_target_floor=None,
@@ -1151,7 +1166,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     if walked is None:
         raise SpecError("no seeded pool diffuses; nothing to walk")
     current().phase("finalize")
-    walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, scanner, raw_counts)
+    walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, envelope, raw_counts)
     if drop_pool_changes is not None:
         n_drop = sum(r["n_dropped"] for r in dropped.values()); n_all = sum(r["n_walked"] for r in dropped.values())
         record = dict(rule=DROP_POOL_CHANGE_RULE, max_fraction=float(drop_pool_changes), n_dropped_pool_change=int(n_drop),

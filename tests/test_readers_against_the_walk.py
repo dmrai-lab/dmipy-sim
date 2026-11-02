@@ -9,17 +9,22 @@ columnar image and the pose expansion of the pack agree with that reference to f
 whole-window reads (``prefix`` on a window boundary, ``window(i)``) are the pack of the walk's own window, bit for bit
 on the bands. A consolidation of shards that disagree on the block or the window table is refused by name.
 """
+from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
 from scipy.fft import dst
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import ReplayPack, so3
+from dmipy_replay import ReplayPack
+from dmipy_replay.replay import so3
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 T_MAX, H, K = 2e-3, 1e-4, 12                 # 20 blocks; K below the N - 1 = 19 bands the block ends hold
 
@@ -49,7 +54,7 @@ def _reference_phases(C, seq, T, R=None):
 
 
 def _seq():
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 0.3e-3, 0.9e-3, gradient_strengths=0.2,
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 0.3e-3, 0.9e-3, gradient_strengths=0.2,
                           n_t=201, slew_rate=np.inf, TE=T_MAX), [2e9, 2e9, 2e9])
 
 
@@ -81,7 +86,7 @@ def walked(tmp_path_factory):
             walks.append(w)
             packs.append(build_replay_pack(w, id=f"t/oracle-{block}", license="x", citation="x", K=K, voxel_grid=grid,
                                            position_container=None, blt_container=None,
-                                           out_path=str(tmp / "shards" / f"block-{block:04d}.p1.rpk")))
+                                           out_path=str(tmp / "shards" / f"block-{block:04d}.p1.rpk"), **stated(of=w)))
     out = str(tmp / "layout")
     consolidate(str(tmp / "shards"), out, blocks=[0, 1], id="t/oracle")
     return walks, packs, ReplayPack.open(out), grid
@@ -131,7 +136,7 @@ def test_the_pose_expansion_is_the_walks_own_posed_signal(walked):
     turned at every rotation: float32 rounding."""
     walks, packs, _, _ = walked
     w, pk = walks[0], packs[0]
-    seq = d.pgse([[1, 0, 0]], 0.3e-3, 0.9e-3, gradient_strengths=[0.2], n_t=201, slew_rate=np.inf, TE=T_MAX)
+    seq = dr.pgse([[1, 0, 0]], 0.3e-3, 0.9e-3, gradient_strengths=[0.2], n_t=201, slew_rate=np.inf, TE=T_MAX)
     pr = pk.pose_response(seq, method="closed")
     assert pr.n_samples == 0
     C = _reference_coeffs(w.raw_positions, w.h, K)
@@ -146,7 +151,7 @@ def test_the_pose_expansion_is_the_walks_own_posed_signal(walked):
 def two_windows():
     g = d.Cylinder(radius=3e-6, orientation=(0, 0, 1))
     w = _walk_geometry(300, 2e-9, g, 4e-3, 1e-4, seed=9, require_gpu=False, K=12, window_T=2e-3, sub_steps=2)
-    kw = dict(license="x", citation="x", K=12, position_container=None, blt_container=None)
+    kw = dict(license="x", citation="x", K=12, position_container=None, blt_container=None, **stated())
     return w, build_replay_pack(w, id="t/two", **kw), kw
 
 
@@ -160,10 +165,10 @@ def test_a_whole_window_read_is_the_pack_of_the_walks_window(two_windows):
     windows, bit for bit on the bands; a cut inside a later window is refused by name."""
     w, pk, kw = two_windows
     assert pk.n_windows == 2 and pk.T_window == pytest.approx(2e-3)
-    _bands_equal(pk.prefix(2e-3), build_replay_pack(w.window(0), id="t/w0", **kw))
+    _bands_equal(prefix_pack(pk, 2e-3), build_replay_pack(w.window(0), id="t/w0", **kw))
     _bands_equal(pk.window(1), build_replay_pack(w.window(1), id="t/w1", **kw))
     with pytest.raises(ValueError, match="cuts inside window 1"):
-        pk.prefix(3e-3)
+        prefix_pack(pk, 3e-3)
 
 
 def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
@@ -171,7 +176,7 @@ def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
     the key."""
     from dmipy_sim.replay.consolidate import consolidate
     g, grid = _cell()
-    kw = dict(license="x", citation="x", K=4, voxel_grid=grid)
+    kw = dict(license="x", citation="x", K=4, voxel_grid=grid, **stated())
 
     def shard(name, **walk):
         w = _walk_geometry(60, 2e-9, g, 2e-3, **walk, seed=len(name), require_gpu=False, K=4, sub_steps=2)

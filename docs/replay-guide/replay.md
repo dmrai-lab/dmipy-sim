@@ -9,12 +9,15 @@ the ensemble signal to the per-walker pieces a study reuses.
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
+from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
+env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
+               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
+pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide", envelope=env)
 seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.001, 0.003, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
 wm = Tissue(T2={"extra": 0.05, "intra": 0.05}, rho2=1e-6)        # T2 for every pool of the pack's spec
 ```
@@ -105,9 +108,9 @@ every combination unless `pairs=` picks. On a pack it gives the signal of every 
 acquisition formed once.
 
 ```python
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 axial = sequences.pgse([[0, 0, 1]], 0.001, 0.002, bvalues=[2e9], TE=0.005, slew_rate=np.inf)
-study = Study(Protocol([seq, Acquisition(axial, name="axial")]), tissues=[None, wm, wm.replace(T2={"extra": 0.08, "intra": 0.08})], scanners=[None])
+study = Study(StudyProtocol([seq, Acquisition(axial, name="axial")]), tissues=[None, wm, wm.replace(T2={"extra": 0.08, "intra": 0.08})], scanners=[None])
 S_all = pack.study(study)                                      # (pairs, n_meas): 3 tissues x 1 scanner, 3 measurements
 print(S_all.shape, np.allclose(S_all[1, :2], S))
 print(study.to_meta()["pairs"][1]["tissue"])                   # the record of what was replayed

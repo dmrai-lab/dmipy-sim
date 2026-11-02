@@ -1,18 +1,22 @@
 """One consume path: `ReplayPack.replay(waveform, ...)` applies every tier the pack carries and the
 request asks for, on any waveform, and refuses a tier the pack does not have. `load` / `save` round-trip.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.compression import occupancy_at
-from dmipy_sim import sequences as _seqmod
+from dmipy_replay import sequences as _seqmod
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
+from dmipy_sim.replay.container import save_pack
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
@@ -23,15 +27,15 @@ T2 = {"extra": 0.08, "intra": 0.03}; T1 = {"extra": 1.0, "intra": 1.2}    # by p
 @pytest.fixture(scope="module")
 def packs():
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False)
-    full = build_replay_pack(walk, id="test/full", K=8, envelope=ENV, license="x", citation="x")
+    full = build_replay_pack(walk, id="test/full", K=8, **stated(ENV, of=walk), license="x", citation="x")
     plain_walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0,
                                          require_gpu=False, tiers=())
-    plain = build_replay_pack(plain_walk, id="test/plain", K=8, envelope=ENV, license="x", citation="x")
+    plain = build_replay_pack(plain_walk, id="test/plain", K=8, **stated(ENV, of=plain_walk), license="x", citation="x")
     return full, plain
 
 
 def _wf(n_t, dt):
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
 
 
 def _W(pack, wf):
@@ -111,7 +115,7 @@ def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
 
 def test_save_and_load_round_trip(packs, tmp_path):
     full, _ = packs
-    path = full.save(tmp_path / "full.rpk")
+    path = save_pack(full, tmp_path / "full.rpk")
     back = ReplayPack.load(path)
     assert back.has_relaxation and back.has_surface and not back.has_field
     wf = _wf(full.n_t, full.dt)
@@ -124,15 +128,16 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
     read from one slice of the coefficient block, and matches the first sample of the decoded path to float32
     rounding -- the property a voxel partition of a walk rests on (dmipy-sim#76, #186)."""
     import dmipy_sim as d
+    import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     from dmipy_sim.replay.bank import build_replay_pack
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(200, 2e-9, g, 2e-3, 5e-4, seed=3, require_gpu=False)
     r0 = {}
     for K in (2, 4):
         out = tmp_path / f"k{K}.rpk"
-        build_replay_pack(walk, id="t", license="x", citation="x", K=K, out_path=str(out))
+        build_replay_pack(walk, id="t", license="x", citation="x", K=K, out_path=str(out), **stated(of=walk))
         pk = read_rpk(str(out))
         r0[K] = pk.r0
         assert r0[K].shape == (200, 3) and r0[K].dtype == np.float64
@@ -172,7 +177,7 @@ def test_relaxation_and_contact_end_at_the_readout(packs):
     np.testing.assert_allclose(np.abs(full.replay(fid, tissue=Tissue(T2={"extra": np.inf, "intra": np.inf}, T1={"extra": TE, "intra": TE}))), 1.0, rtol=1e-9)
     # the contact term against the walk's own cumulative local time at save n (not n + 1)
     walk = _walk_geometry(300, D0, d.Cylinder(2e-6, (0, 0, 1)), 0.01, 5e-4, seed=0, require_gpu=False, raw_subset=300)
-    pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, envelope=ENV, license="x", citation="x")
+    pk = build_replay_pack(walk, id="test/blt", K=8, blt_temporal_K=full.n_t, **stated(ENV, of=walk), license="x", citation="x")
     rho2 = 1e-5
     cum = np.cumsum(np.asarray(walk.raw_boundary, np.float64), axis=1)   # per-block log-weight at rho2 / D = 1
     ref = np.exp(rho2 / D0 * cum[:, n]).mean()

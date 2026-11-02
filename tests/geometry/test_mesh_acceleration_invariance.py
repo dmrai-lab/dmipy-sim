@@ -29,9 +29,10 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim import set_b, simulate
+from dmipy_replay import set_b
+from dmipy_sim import simulate
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.sequences import pgse
+from dmipy_replay.sequences import pgse
 
 from tests._containment import inside as contains
 from dmipy_sim.engine._fused import simulate_fused
@@ -103,6 +104,7 @@ def _run(subdivisions, r0_um):
     return signal, int((depth_um > ESCAPE_TOL_UM).sum())
 
 
+@pytest.mark.gpu
 def test_an_impermeable_mesh_confines_its_walkers_at_every_grid_resolution(walkers):
     """A closed surface must confine, whatever resolution the triangle index happens to use.
 
@@ -118,6 +120,7 @@ def test_an_impermeable_mesh_confines_its_walkers_at_every_grid_resolution(walke
         f"{100 * MAX_ESCAPE_FRACTION:.2f}%); the surface is closed and watertight at every one of them")
 
 
+@pytest.mark.gpu
 def test_the_signal_does_not_move_when_the_grid_is_refined(walkers):
     """Same geometry, same walkers, same waveform -- only the indexing resolution differs, so the answer
     must not. Refining a mesh is the natural response to a suspicious result; it must not change the

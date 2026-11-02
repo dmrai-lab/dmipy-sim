@@ -12,10 +12,12 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import sequences
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
+from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.reencode import prefix_pack
 
 D0, T, DT = 2.0e-9, 40e-3, 5e-4
 N_WALK = 150      # the identities need no count; the one statistic (a free-diffusion signal against exp(-bD)) is held to 4 / sqrt(N_WALK), 4 sigma of a signal of unit spread
@@ -135,15 +137,15 @@ def test_the_prefix_of_a_view_is_the_view_of_the_prefix(tmp_path):
     pk_d = _pack(tmp_path, d.FreeDiffusion(), D0, T, DT, "pd", K=24)
     pk_2d = _pack(tmp_path, d.FreeDiffusion(), 2 * D0, T / 2, DT / 2, "p2d", K=24)
     seq = sequences.pgse([[1.0, 0.0, 0.0]], 1.5e-3, 4e-3, bvalues=[1.0e9], TE=T / 4, n_t=41, slew_rate=np.inf)
-    a = pk_d.at_diffusivity(2 * D0).prefix(T / 4, out_path=str(tmp_path / "a.rpk"))
-    b = pk_2d.prefix(T / 4, out_path=str(tmp_path / "b.rpk"))
+    a = prefix_pack(pk_d.at_diffusivity(2 * D0), T / 4, out_path=str(tmp_path / "a.rpk"))
+    b = prefix_pack(pk_2d, T / 4, out_path=str(tmp_path / "b.rpk"))
     np.testing.assert_allclose(a.replay(seq), b.replay(seq), rtol=1e-6)
     assert a.dt == pytest.approx(b.dt)
 
 
 def test_nothing_is_decoded_on_the_way(free, monkeypatch):
     """The no-decode lock of the coefficient-space replay, extended to the scaled view."""
-    from dmipy_sim.replay import compression, replay as rp
+    from dmipy_replay import ReplayPack
     pk_d, _ = free
     seq = _seq(T / 2)
 
@@ -152,7 +154,7 @@ def test_nothing_is_decoded_on_the_way(free, monkeypatch):
     monkeypatch.setattr(_r_compression, "local_time_at", boom)
     monkeypatch.setattr(_r_compression, "positions_at", boom)
     monkeypatch.setattr(_r_compression, "decode_occupancy", boom)
-    monkeypatch.setattr(rp.ReplayPack, "positions", boom)
+    monkeypatch.setattr(ReplayPack, "positions", boom)
     pk_d.replay(seq, tissue=Tissue(D=2 * D0))
     pk_d.walker_signals(seq, tissue=Tissue(D=2 * D0))
 
@@ -161,13 +163,13 @@ def test_a_study_refuses_a_tissue_at_another_diffusivity_and_takes_the_view(free
     """A study contracts the bands once on the walked grid and applies tissues afterwards, so a tissue at
     another diffusivity cannot be served from those primitives -- every term changes, not the surface divisor
     alone, which is the half-transformation a mismatched ``Tissue.D`` used to apply silently."""
-    from dmipy_sim.replay.study import Acquisition, Protocol, Study
+    from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
     pk_d, pk_2d = free
     seq = _seq(T / 2)
     with pytest.raises(ValueError, match="another grid"):
-        pk_d.study(Study(Protocol([Acquisition(seq)]), tissues=[Tissue(D=2 * D0)]))
-    S_view = pk_d.at_diffusivity(2 * D0).study(Study(Protocol([Acquisition(seq)]), tissues=[None]))
-    S_own = pk_2d.study(Study(Protocol([Acquisition(seq)]), tissues=[None]))
+        pk_d.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[Tissue(D=2 * D0)]))
+    S_view = pk_d.at_diffusivity(2 * D0).study(Study(StudyProtocol([Acquisition(seq)]), tissues=[None]))
+    S_own = pk_2d.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[None]))
     np.testing.assert_allclose(np.asarray(S_view), np.asarray(S_own), rtol=RTOL)
 
 
@@ -278,4 +280,8 @@ def _float_pack(*a, **k):
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **k)
+    if isinstance(k.get("envelope"), dict):                          # the test's certificate settings: its envelope and battery
+        settings = k.pop("envelope")
+        k.update(stated(settings, G_max=settings.get("G_max", battery_reach(a[0].T_window, settings)), of=a[0]))
+    return build_replay_pack(*a, **{"envelope": walk_envelope(G_max=battery_reach(a[0].T_window), band_hz=TEST_BAND_HZ,
+                                                              of=a[0]), **k})       # the walk's own bands, read on its battery

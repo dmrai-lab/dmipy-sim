@@ -2,7 +2,7 @@
 
 ``simulate()`` walks the substrate to coefficients (:func:`_walk_geometry`: per walker the exact endpoints and
 the sine-band projections of its path, accumulated as the walk runs) and contracts them with the waveform
-(:meth:`~dmipy_sim.replay.replay.ReplayPack.replay`). The producers return a
+(:meth:`~dmipy_replay.replay.replay.ReplayPack.replay`). The producers return a
 :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`; ``walk_cost`` prices one before it runs. The single-pass
 integrator of the phase along the walk is the oracle (:mod:`dmipy_sim.engine._fused`), not an entry point.
 """
@@ -141,7 +141,7 @@ def _walk_band(G, dt, T):
 def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, require_gpu, walker_batch_size,
                sub_steps=None):
     """``(pack, tissue, pose)``: the coefficient walk of ``geometry`` over the span of ``waveform`` (one storage
-    window, the band the waveform reads), assembled into an in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`,
+    window, the band the waveform reads), assembled into an in-memory :class:`~dmipy_replay.replay.replay.ReplayPack`,
     with the :class:`~dmipy_sim.spec.tissue.Tissue` (scalar or per-pool ``T2`` / ``T1``, the wall's ``rho2``) and the
     pose (the geometry's placement in the bore) a replay of ``waveform`` reads. The walk depends only on (geometry,
     diffusivity, seed); the waveform and the relaxation are replay settings."""
@@ -168,7 +168,8 @@ def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, 
         kw['sub_steps'] = sub_steps
     walk = _walk_geometry(n_walkers, diffusivity, geometry, T_max, **kw)
     pack = build_replay_pack(walk, id="simulate", license="in-memory", citation="simulate",
-                             envelope=acquisition_envelope(waveform))
+                             envelope=acquisition_envelope(waveform, band_hz=float(walk.K) / (2.0 * float(walk.T_window)),
+                                                           rho2_max=(float(rho) if has_surf else None)))
 
     pools = sorted(pack.substrate.pools, key=lambda p: p.id)
 
@@ -207,7 +208,7 @@ def simulate(
 
     The walk is :func:`_walk_geometry` over the waveform's span at the band the waveform reads
     (:func:`~dmipy_replay.acquisition.waveforms.band_hz`); the contraction is
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
     (geometry, diffusivity, seed), so the waveform, ``T2``, ``T1`` and the wall's surface relaxivity are replay
     settings of one walk. A run the coefficient walk is not validated to serve (a geometry that does not declare
     ``replay_parity``, or :func:`_replay_gap`: a dedicated fused step kernel, per-pool diffusivity, no diffusivity)
@@ -225,7 +226,7 @@ def simulate(
         :class:`~dmipy_replay.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
-        The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.
+        The substrate: a geometry or a :class:`~dmipy_replay.spec.substrate.SubstrateSpec`.
     seed : int
         Master PRNG seed (split into per-walker keys internally).
     T2 : float, optional
@@ -324,7 +325,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
     One coefficient walk over the whole train, one replay per echo: the signal at echo ``k`` is the replay of the
     train up to that echo (its gradient and its refocusing pulses to the echo time), so the relaxation each echo
-    has seen is the time elapsed to it. Build ``waveform`` with :func:`dmipy_sim.cpmg` (whose ``readout`` is
+    has seen is the time elapsed to it. Build ``waveform`` with :func:`dmipy_replay.cpmg` (whose ``readout`` is
     every echo). A geometry the coefficient walk cannot serve (:func:`_replay_gap`) is refused: the multi-echo
     readout has no fused counterpart.
 
@@ -486,7 +487,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     from .physics import (resolve_sub_steps as _resolve_sub_steps, sub_step_rules as _sub_step_rules,
                           length_scales_of as _length_scales_of, STEP_TOLERANCE)
     ls = _length_scales_of(geometry)
-    # the band the step law resolves: the caller's (walk passes the scanner class's), else the walk's own K / (2 T)
+    # the band the step law resolves: the caller's (walk passes its envelope's), else the walk's own K / (2 T)
     f_band = float(K / (2.0 * float(T_win)) if f_band is None else f_band)
     mt_dwell = dwell_time if kappa_MT > 0.0 else None
     rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell, f_band=f_band)
@@ -848,19 +849,21 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     if unknown:
         raise TypeError(f"walk_cost got keywords _walk_geometry does not take: {sorted(unknown)}")
     kw = dict(walk_kwargs)
+    walk_defaults = {k: p.default for k, p in inspect.signature(_walk_geometry).parameters.items()}
+    arg = lambda k: kw[k] if k in kw else walk_defaults[k]                 # the walk's own default: one copy of it
     be = resolve_backend(backend)
     name = JAX if be is None else str(be.name)
     from ..spec.build import as_geometry
-    with _bounce_budget_override(geometry, kw.get("bounce_budget")):
+    with _bounce_budget_override(geometry, arg("bounce_budget")):
         geometry = as_geometry(geometry)
-        fb = kw.get("field_basis")
-        res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=kw.get("tiers", "all"),
-                            sub_steps=kw.get("sub_steps"), kappa_MT=kw.get("kappa_MT", 0.0),
-                            dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
-                            enforce_compartment=kw.get("enforce_compartment", False),
-                            field_basis=fb, K=kw.get("K"), block_order=kw.get("block_order"),
-                            window_T=kw.get("window_T"), K_c3=kw.get("K_c3"), field_read_interval=kw.get("field_read_interval"),
-                            events_capacity=kw.get("events_capacity"), raw_subset=kw.get("raw_subset", 0), envelope=kw.get("envelope"))
+        fb = arg("field_basis")
+        res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=arg("tiers"),
+                            sub_steps=arg("sub_steps"), kappa_MT=arg("kappa_MT"),
+                            dwell_time=arg("dwell_time"), f_band=arg("f_band"), seed=arg("seed"),
+                            enforce_compartment=arg("enforce_compartment"),
+                            field_basis=fb, K=arg("K"), block_order=arg("block_order"),
+                            window_T=arg("window_T"), K_c3=arg("K_c3"), field_read_interval=arg("field_read_interval"),
+                            events_capacity=arg("events_capacity"), raw_subset=arg("raw_subset"), envelope=arg("envelope"))
         n_ch = 0 if fb is None else len(fb.channel_names)
         if be is not None:
             refusal = _backend_refusal(be, name, res, geometry)
@@ -1060,7 +1063,7 @@ def _walk_geometry(
     diffusivity : float
         Diffusion coefficient in m²/s.
     geometry : Geometry
-        Boundary geometry (a :class:`~dmipy_sim.spec.SubstrateSpec` too).
+        Boundary geometry (a :class:`~dmipy_replay.spec.substrate.SubstrateSpec` too).
     T_max : float
         Total simulation duration in seconds.
     block_h : float, optional
@@ -1150,7 +1153,7 @@ def _walk_geometry(
     events_capacity : int, optional
         The events buffer per walker and column, in place of the pilot's.
     envelope : dict, optional
-        The certificate's envelope (:func:`~dmipy_sim.replay.compression.default_envelope`) the field read's ``B0``
+        The certificate settings (:func:`~dmipy_sim.replay.compression.certificate_settings`) the field read's ``B0``
         and the field band's pilot are derived at; the defaults otherwise.
 
     Returns
@@ -1772,7 +1775,7 @@ def _walk_geometry(
             from .backends import CoefficientBatch
             sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
             n_b = int(r0_all[sel].shape[0])
-            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0), drop_pool_changes=bool(drop_pool_changes),
+            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=(0 if K_c3 is None else int(K_c3)), drop_pool_changes=bool(drop_pool_changes),
                                        events=(int(cap) if cap else res.request.events),
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)

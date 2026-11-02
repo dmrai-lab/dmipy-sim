@@ -26,7 +26,7 @@ The integer band containers (:func:`quantise_bands`, :func:`derive_container`) a
 """
 from __future__ import annotations
 import logging
-from dmipy_replay.replay.compression import CHUNK_BYTES, DEVICES, MIN_BITS, OCCUPANCY_COLUMNS, POSITION_AXES, _EXCLUSIVE_COLUMN, _PACK_ROWS, _RANGE_RE, _band_ranges, band_projection, position_shape, range_name, read_position_coeffs, require_position_method
+from dmipy_replay.replay.compression import CHUNK_BYTES, DEVICES, resolve_device, MIN_BITS, OCCUPANCY_COLUMNS, POSITION_AXES, _EXCLUSIVE_COLUMN, _PACK_ROWS, _RANGE_RE, _band_ranges, band_projection, position_shape, range_name, read_position_coeffs, require_position_method
 
 log = logging.getLogger(__name__)
 
@@ -182,8 +182,8 @@ def _phase_weight(K, n_t, dt, env_key):
     """``max over the envelope's measurements of gamma^2 sum_{k,d} W[m,k,d]^2`` for the lowest ``K`` bands, ``W`` the
     battery's :func:`band_projection` over the window of ``n_t`` blocks of ``dt``: the phase variance per unit
     quantisation variance of one band, summed over bands, for the worst waveform. For an envelope certified for a
-    scanner class it is the class's bound over every waveform it plays (:func:`class_phase_weight`)."""
-    env = dict(env_key) if env_key else default_envelope()
+    ``G_max`` it is the bound over every waveform within it (:func:`class_phase_weight`)."""
+    env = dict(env_key) if env_key else default_battery()
     if envelope_G_max(env) is not None:
         return class_phase_weight(envelope_G_max(env), (int(n_t) - 1) * float(dt))
     G, _ = acquisition_battery(int(n_t), float(dt), env)
@@ -325,24 +325,6 @@ def quantise_bands(B, container, key, scale_key):
     return arrays, {"container": cont}
 
 
-def _jax_has_gpu():
-    try:
-        import jax
-        return any(d.platform == "gpu" for d in jax.devices())
-    except Exception:                                                # no jax, or no backend
-        return False
-
-
-def resolve_device(device):
-    """``"numpy"`` or ``"jax"`` from a device word: ``"auto"`` is the JAX device when one is a GPU, else numpy
-    (a CPU JAX transform is no faster than scipy's)."""
-    if device not in DEVICES:
-        raise ValueError(f"device must be one of {DEVICES}, not {device!r}")
-    if device == "auto":
-        return "jax" if _jax_has_gpu() else "numpy"
-    return device
-
-
 SLICE_BYTES = 1 << 28
 """Bytes of decoded float64 coefficients a walker-sliced pass holds at once (:func:`slice_walkers`): a pass that
 reads a whole pack -- its segment rows, its per-voxel floors, its consolidation -- decodes it a walker range at a
@@ -458,7 +440,7 @@ def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto
     deterministic. Returns ``floor_max`` (the battery maximum of ``SE_m``), ``per_family`` (the same per family),
     ``floor_estimator``, ``noise_floor`` ``1 / sqrt(N_w)`` and the walkers' effective count
     ``n_eff = (sum w)^2 / sum w^2``."""
-    env = env or default_envelope()
+    env = env or default_battery()
     G, meta = acquisition_battery(int(n_t), float(dt), env)
     phi = coded_phases(C, dt, G, n_t, device=device)
     nw = phi.shape[0]
@@ -600,82 +582,102 @@ def mode_space_signal(arrays, meta, G, dt, logw=None, weights=None):
 
 
 # --------------------------------------------------------- envelope & fidelity
-def default_envelope():
-    """The library's default certified envelope for a pack: the acquisition battery (b in s/m^2), the field
-    strengths ``B0_list`` (T) the field tier is certified at, and ``rho2_list``, the surface relaxivities (m/s) the
-    contact tier is certified at. The susceptibility scale ``chi_max`` is the substrate's
-    (:func:`certified_envelope`)."""
-    from ..engine.accumulate import FIELD_RULE_B0
+def default_battery():
+    """The acquisition battery a certificate is read over by default: the waveform shapes (PGSE, the OGSE periods, the
+    short-delta pairs) along the directions at the b values below, each also at its amplitude at the envelope's
+    ``G_max`` (:func:`acquisition_battery`). The battery is where the floors and the truncation reading are measured;
+    the guarantee is the :class:`~dmipy_replay.replay.envelope.Envelope`, never the battery."""
     return dict(bvals=[0.0, 0.5e9, 1e9, 2e9, 3e9],
                 dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 ogse_periods=[1, 2, 3, 5], shortd_b=1e9,
                 shortd_deltas_frac=[0.2, 0.1, 0.05, 0.025],
-                delta_frac=0.2, Delta_frac=0.5,
-                B0_list=[3.0, float(FIELD_RULE_B0)],
-                rho2_list=[1e-5, 3e-5, 1e-4])
+                delta_frac=0.2, Delta_frac=0.5)
 
 
-#: The scanner-class name of a pack built for one stated acquisition (``simulate``'s in-memory pack): the class is that
-#: acquisition's own limits, its ``G_max`` and ``slew_max`` stated with it, not a catalogue entry.
-ACQUISITION_CLASS = "acquisition"
+#: The keys a battery states (:func:`default_battery`), with ``theta_deg``, the field directions the field tier is read
+#: along. Every other bound is the envelope's.
+BATTERY_KEYS = frozenset(default_battery()) | {"theta_deg"}
+
+#: The surface relaxivities the contact tier is read at, as fractions of the envelope's ``rho2_max``.
+RHO2_READ_FRACTIONS = (0.1, 0.3, 1.0)
 
 
-def acquisition_envelope(waveform, **envelope):
-    """The envelope of a pack built for ``waveform`` alone: scanner class :data:`ACQUISITION_CLASS` with that
-    acquisition's limits -- ``G_max`` its largest per-axis played gradient, ``slew_max`` its largest per-axis sampled
-    slew (adjacent samples, the first against zero) -- so the reader's check (``check_acquisition_envelope``) holds for
-    ``waveform`` by construction and refuses a waveform that plays more. ``waveform`` is a sequence or a ``Protocol`` of
-    them; ``envelope`` keys (``B0_list``, ...) are stated beside the class. A gradient-free acquisition states the
-    states ``G_max = slew_max = 0.0``."""
+def certificate_settings(envelope, battery=None):
+    """What every certificate term reads, from an :class:`~dmipy_replay.replay.envelope.Envelope` and a ``battery``
+    (:func:`default_battery` when None; its keys :data:`BATTERY_KEYS` only): the battery with the envelope's ``name``,
+    ``band_hz``, ``G_max``, ``B0_list``, the contact tier's read points ``rho2_list`` (:data:`RHO2_READ_FRACTIONS` of
+    ``rho2_max``; none when the envelope states none), ``chi_max`` and the refocusing depth ``max_refocus_pulses``
+    where it states them. A battery that states one of the envelope's bounds is refused: the bound is the envelope's."""
+    from dmipy_replay.replay.envelope import Envelope
+    if not isinstance(envelope, Envelope):
+        raise TypeError(f"a pack is certified for an Envelope (dmipy_replay.envelope_of(scanner, ...) or "
+                        f"dmipy_replay.Envelope(...)); got {type(envelope).__name__}")
+    b = default_battery() if battery is None else dict(battery)
+    stray = sorted(set(b) - BATTERY_KEYS)
+    if stray:
+        raise ValueError(f"the battery states {stray}, which are not a battery's ({sorted(BATTERY_KEYS)}): the field "
+                         "strengths, the susceptibility, the surface relaxivity, the refocusing depth and the gradient "
+                         "bound are the Envelope's")
+    env = dict(b, name=envelope.name, band_hz=float(envelope.band_hz), G_max=float(envelope.G_max),
+               B0_list=[float(x) for x in envelope.B0_list],
+               rho2_list=([] if envelope.rho2_max is None else [f * float(envelope.rho2_max) for f in RHO2_READ_FRACTIONS]))
+    if envelope.chi_max is not None:
+        env["chi_max"] = float(envelope.chi_max)
+    if envelope.max_refocusing_pulses is not None:
+        env["max_refocus_pulses"] = int(envelope.max_refocusing_pulses)
+    return env
+
+
+def acquisition_envelope(waveform, *, band_hz, rho2_max=None, B0_list=(), chi_max=None):
+    """The :class:`~dmipy_replay.replay.envelope.Envelope` of a pack built for ``waveform`` alone (``simulate``'s): named
+    ``"acquisition"``, its ``G_max`` the acquisition's largest per-axis played gradient and its band ``band_hz`` the band
+    the walk for it stores, so the reader's check holds for ``waveform`` by construction and refuses a waveform that
+    plays more. ``waveform`` is a sequence or a ``Protocol`` of them; the field and contact bounds are stated beside
+    it."""
+    from dmipy_replay.replay.envelope import Envelope
     seqs = list(waveform) if hasattr(waveform, "scatter") else [waveform]
-    g = s = 0.0
+    g = 0.0
     for q in seqs:
         played = np.asarray(getattr(q, "played_gradient", q.G), np.float64)
         g = max(g, float(np.abs(played).max(initial=0.0)))
-        s = max(s, float(np.abs(np.diff(played, axis=1, prepend=0.0) / float(q.dt)).max(initial=0.0)))
-    return dict(default_envelope(), scanner=ACQUISITION_CLASS, G_max=g, slew_max=s, **envelope)
+    return Envelope(name="acquisition", band_hz=float(band_hz), G_max=g, B0_list=tuple(B0_list), chi_max=chi_max,
+                    rho2_max=rho2_max, max_refocusing_pulses=None)
 
 
 def certified_envelope(envelope=None, spec=None):
-    """The envelope a pack is walked, built and certified under: ``envelope`` (:func:`default_envelope` when None)
-    with ``rho2_list`` and ``B0_list`` stated (:func:`default_envelope`'s where it states none; an empty ``B0_list``
-    states none) and ``chi_max``, the
-    susceptibility scale ``|chi_iso| + |chi_aniso|`` the field tier is certified at (the substrate ``spec``'s
-    magnetic pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). An envelope that
-    states a ``scanner`` class is certified for it on the gradient side: its ``G_max`` (per axis) and ``slew_max`` are
-    the catalogue's (:class:`~dmipy_replay.acquisition.scanners.ScannerLimits`), and the position terms are the class's
-    bounds rather than the b battery's (:func:`class_phase_weight`, :func:`class_b_max`). Every certificate term reads
-    these, and the pack states them (``replay_envelope.acquisition``, ``replay_envelope.tissue``). A value that is not
-    finite and of its sign is refused."""
-    from ..engine.accumulate import spec_chi_scale
-    env = dict(default_envelope() if envelope is None else envelope)
-    env.setdefault("rho2_list", default_envelope()["rho2_list"])
-    if not env.get("B0_list"):                   # an empty list states no field strength, as an absent one
-        env["B0_list"] = default_envelope()["B0_list"]
+    """The certificate settings a pack is walked, built and certified under, normalised: ``envelope`` (the settings
+    :func:`certificate_settings` gives; :func:`default_battery` when None) with ``rho2_list`` and ``B0_list`` as floats
+    (the defaults below where the settings state none: a floor read on a battery alone) and ``chi_max``, the
+    susceptibility scale ``|chi_iso| + |chi_aniso|`` the field tier is certified at (the substrate ``spec``'s magnetic
+    pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). Settings with a ``G_max`` are
+    certified for every waveform within it on the gradient side: the position terms are its bounds rather than the b
+    battery's (:func:`class_phase_weight`, :func:`class_b_max`). Every certificate term reads these, and the pack states
+    them (``replay_envelope.acquisition``, ``replay_envelope.tissue``). A value that is not finite and of its sign is
+    refused."""
+    from ..engine.accumulate import spec_chi_scale, FIELD_RULE_B0
+    env = dict(default_battery() if envelope is None else envelope)
+    env.setdefault("rho2_list", [1e-5, 3e-5, 1e-4])
+    env.setdefault("B0_list", [3.0, float(FIELD_RULE_B0)])
     env.setdefault("chi_max", spec_chi_scale(spec))
     env["rho2_list"] = envelope_rho2_list(env)
     env["B0_list"] = envelope_B0_list(env, empty=True)
     env["chi_max"] = envelope_chi_max(env)
-    if env.get("scanner") == ACQUISITION_CLASS:
-        if env.get("G_max") is None or env.get("slew_max") is None:
-            raise ValueError(f"the scanner class {ACQUISITION_CLASS!r} is one acquisition's own limits: state G_max and "
-                             "slew_max (acquisition_envelope(waveform))")
-    elif env.get("scanner") is not None:
-        from dmipy_replay.acquisition.scanners import ScannerLimits
-        lim = ScannerLimits.of(env["scanner"])
-        env.setdefault("G_max", float(lim.G_max))
-        env.setdefault("slew_max", float(lim.slew_max))
-    elif env.get("G_max") is not None:
-        raise ValueError("an envelope states G_max with no scanner: the gradient side is certified for a scanner class "
-                         "(scanner=, its G_max and slew from the catalogue)")
     if env.get("G_max") is not None:
         env["G_max"] = envelope_G_max(env)
     return env
 
 
+def battery_reach(T, battery=None, n_t=1001):
+    """The largest per-axis amplitude (T/m) the shapes of ``battery`` (:func:`default_battery` when None) play at their
+    b values over a window of ``T`` seconds (:func:`acquisition_battery` read with no ``G_max``): the ``G_max`` of an
+    envelope that admits the battery and nothing stronger."""
+    G, _ = acquisition_battery(int(n_t), float(T) / (int(n_t) - 1), certified_envelope(battery or default_battery()))
+    return float(np.abs(np.asarray(G, np.float64)).max())
+
+
 def envelope_G_max(env):
-    """The largest gradient per axis (T/m) of the scanner class envelope ``env`` is certified for (its ``scanner``,
-    resolved by :func:`certified_envelope`), or None for an envelope certified over its b battery alone."""
+    """The largest gradient per axis (T/m) the settings ``env`` are certified for (the envelope's ``G_max``,
+    :func:`certificate_settings`), or None for settings read over a b battery alone."""
     g = env.get("G_max") if isinstance(env, dict) else None
     if g is None:
         return None
@@ -759,10 +761,10 @@ def _bipolar(t, delta, Delta):
 
 def acquisition_battery(n_t, dt, env):
     """Effective (refocused) waveforms G (M,n_t,3) + per-measurement meta, from an envelope: every shape (PGSE, the
-    OGSE periods, the short-delta pairs) along every direction at every b of the envelope. An envelope certified for a
-    scanner class (:func:`envelope_G_max`) plays each shape only where the class can (a component at most ``G_max``
-    per axis) and adds it at its class amplitude, the strongest the class plays of that shape (``fam`` the same,
-    ``class_amplitude`` True)."""
+    OGSE periods, the short-delta pairs) along every direction at every b of the envelope. Settings with a ``G_max``
+    (:func:`envelope_G_max`) play each shape only within it (a component at most ``G_max`` per axis) and add it at the
+    envelope's amplitude, the strongest the envelope admits of that shape (``fam`` the same, ``class_amplitude``
+    True)."""
     t = np.arange(n_t) * dt; T = n_t * dt
     G, meta = [], []
     G_max = envelope_G_max(env)

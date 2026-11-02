@@ -1,126 +1,14 @@
-"""Restricted diffusion, sphere, MISST validation.
-
-Validates the Sphere geometry against MISST reference signals from Kerkelae's
-disimpy, which itself is validated against the MISST matrix-operator toolbox.
-
-Two gradient configurations match disimpy's test_sphere_diffusion exactly:
-  Config 1: delta ≈ 30 ms  (broad pulse)
-  Config 2: delta ≈  1 ms  (narrow pulse)
-
-Gradient is built in disimpy's raw convention (indices, not time masks) then
-linearly interpolated to n_t=1000 time points — matching disimpy bit-for-bit.
-"""
+"""Restricted diffusion in a sphere: the signal is above free diffusion at the same b-values. The sphere's eigenmode
+(matrix-method) agreement is held by test_coefficient_walk.py::test_sphere_and_cylinder_agree_with_the_matrix_method."""
 
 import numpy as np
 import numpy.testing as npt
-import jax.numpy as jnp
 
-from dmipy_sim import simulate, Sphere, set_b
-from dmipy_replay.acquisition.waveforms import calc_b
-from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
-from tests.conftest import D, N_WALKERS, SEED, load_fixture
+from dmipy_sim import simulate, Sphere
+from dmipy_replay import set_b
+from tests.conftest import D, SEED, mc_atol
 
-
-def _build_disimpy_waveform(n_t_raw, pulse_slice_start, pulse_slice_end, n_t=1000):
-    """Replicate disimpy's raw-then-interpolate gradient construction.
-
-    Parameters
-    ----------
-    n_t_raw : int
-        Number of raw time points (e.g. 700).
-    pulse_slice_start : int
-        Start index of first pulse (disimpy uses 1).
-    pulse_slice_end : int
-        End index (exclusive) of first pulse; second pulse mirrors at -end.
-    n_t : int
-        Number of time points after interpolation.
-
-    Returns
-    -------
-    ScannerSequence with G-amplitude 1.0 along x, shape (1, n_t, 3).
-    """
-    T = 70e-3  # same for both configs
-    dt_raw = T / (n_t_raw - 1)
-
-    grad_raw = np.zeros((1, n_t_raw, 3), dtype=np.float64)
-    # Pulse 1
-    grad_raw[0, pulse_slice_start:pulse_slice_end, 0] = 1.0
-    # Pulse 2 (mirrored: -300:-1 means from index n_t_raw-300 to n_t_raw-2)
-    n_pulse = pulse_slice_end - pulse_slice_start
-    grad_raw[0, -(n_pulse + 1):-1, 0] = -1.0
-
-    # Interpolate to n_t points (same as disimpy's gradients.interpolate_gradient)
-    T_total = dt_raw * (n_t_raw - 1)
-    dt = T_total / (n_t - 1)
-    t_old = np.linspace(0, T_total, n_t_raw)
-    t_new = np.linspace(0, T_total, n_t)
-
-    G_interp = np.zeros((1, n_t, 3), dtype=np.float32)
-    for j in range(3):
-        G_interp[0, :, j] = np.interp(t_new, t_old, grad_raw[0, :, j])
-
-    return ScannerSequence(G=jnp.array(G_interp), dt=float(dt))
-
-
-def _tile_and_set_b(wf_single, b_values):
-    """Tile a single-measurement waveform to n_b measurements and set b-values."""
-    n_b = len(b_values)
-    G_tiled = jnp.tile(wf_single.G, (n_b, 1, 1))  # (n_b, n_t, 3)
-    wf = ScannerSequence(G=G_tiled, dt=wf_single.dt, readout=wf_single.readout)
-    return set_b(wf, b_values)
-
-
-def test_sphere_misst_config1():
-    """Config 1: delta ≈ 30 ms, Delta ≈ 40 ms, r=5 µm vs MISST fixture."""
-    misst = load_fixture("misst_sphere_delta30ms_Delta40ms_r5um.npy")
-    b_values = np.linspace(1, 3e9, 100)
-
-    # disimpy: gradient[0, 1:300, 0]=1  (299 steps = pulse1)
-    #          gradient[0, -300:-1, 0]=-1 (pulse2 mirrors at same width)
-    wf_single = _build_disimpy_waveform(n_t_raw=700,
-                                         pulse_slice_start=1,
-                                         pulse_slice_end=300)
-    wf = _tile_and_set_b(wf_single, b_values)
-
-    signals = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
-
-    npt.assert_allclose(signals, misst, atol=0.02,
-                        err_msg="Sphere Config1 (delta≈30ms) vs MISST")
-
-
-def test_sphere_misst_config2():
-    """Config 2: delta ≈ 1 ms, Delta ≈ 40 ms, r=5 µm vs MISST fixture."""
-    misst = load_fixture("misst_sphere_delta1ms_Delta40ms_r5um.npy")
-    b_values = np.linspace(1, 3e9, 100)
-
-    # disimpy: T=41ms, n_t_raw=410
-    #          gradient[0, 1:10, 0]=1  (9 steps = pulse1)
-    #          gradient[0, -10:-1, 0]=-1
-    T_config2 = 41e-3
-    n_t_raw = 410
-    dt_raw = T_config2 / (n_t_raw - 1)
-    n_t = 1000
-
-    grad_raw = np.zeros((1, n_t_raw, 3), dtype=np.float64)
-    grad_raw[0, 1:10, 0] = 1.0
-    grad_raw[0, -10:-1, 0] = -1.0
-
-    T_total = dt_raw * (n_t_raw - 1)
-    dt = T_total / (n_t - 1)
-    t_old = np.linspace(0, T_total, n_t_raw)
-    t_new = np.linspace(0, T_total, n_t)
-
-    G_interp = np.zeros((1, n_t, 3), dtype=np.float32)
-    for j in range(3):
-        G_interp[0, :, j] = np.interp(t_new, t_old, grad_raw[0, :, j])
-
-    wf_single = ScannerSequence(G=jnp.array(G_interp), dt=float(dt))
-    wf = _tile_and_set_b(wf_single, b_values)
-
-    signals = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
-
-    npt.assert_allclose(signals, misst, atol=0.02,
-                        err_msg="Sphere Config2 (delta≈1ms) vs MISST")
+N_SPH = 8_000   # the sphere's wall rule sub-steps the walk; restricted and free signals differ by 0.4+, 10+ SE of two runs
 
 
 # NOTE: `test_sphere_walkers_contained*` was removed (#88). It asserted two things:
@@ -128,21 +16,22 @@ def test_sphere_misst_config2():
 # deterministically and exhaustively by `tests/test_wall_impacts.py`, which sweeps offset x
 # direction x step length -- including the step-spans-the-object case this walk could not
 # reach -- in milliseconds rather than minutes. "Walkers reach the wall" is a far weaker
-# statement than the MISST signal comparisons kept in this file: a restricted signal is
+# statement than the signal comparisons kept in this file: a restricted signal is
 # itself proof that walkers are hitting walls.
 
 
 def test_sphere_signal_above_free():
     """Restricted sphere signal must be >= free diffusion at same b-values."""
     from dmipy_sim import FreeDiffusion
-    from dmipy_sim.sequences import pgse
-    b_values = np.linspace(1e8, 3e9, 20)
-    bvecs = np.tile([1., 0., 0.], (20, 1))
+    from dmipy_replay.sequences import pgse
+    b_values = np.linspace(1e8, 3e9, 6)
+    bvecs = np.tile([1., 0., 0.], (6, 1))
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
 
-    S_sphere = simulate(N_WALKERS, D, wf, Sphere(5e-6), seed=SEED)
-    S_free   = simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED + 1)
+    S_sphere = simulate(N_SPH, D, wf, Sphere(5e-6), seed=SEED)
+    S_free   = simulate(N_SPH, D, wf, FreeDiffusion(), seed=SEED + 1)
 
-    assert np.all(S_sphere >= S_free - 0.01), (
+    assert np.all(S_sphere >= S_free - mc_atol(N_SPH, runs=2)), (
         f"Sphere signal should be >= free diffusion. "
         f"Max violation: {np.max(S_free - S_sphere):.4f}")
+    assert np.max(S_sphere - S_free) > mc_atol(N_SPH, runs=2)      # and the restriction is there

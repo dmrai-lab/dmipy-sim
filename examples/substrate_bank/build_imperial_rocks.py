@@ -26,6 +26,9 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))          # examples.validation is importable
 
+from dmipy_replay import envelope_of
+from examples.substrate_bank import common
+from examples.validation.talabi_micro_ct_rocks import central_crop
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
                                         Systematic, Tier, Tolerance, pack_seed)
@@ -81,14 +84,15 @@ ROCKS = {
 #: NOT the high-b, short-delta end of the default battery: the acquisition this family reproduces is 2 MHz
 #: relaxometry, which plays no gradient at all, and over a 3 s window a b = 3000 s/mm^2 measurement is a fully
 #: dephased signal whose Monte-Carlo value is noise.
-ENVELOPE = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
-                delta_frac=40e-3 / T, Delta_frac=80e-3 / T, ogse_periods=[1, 2, 3],
-                shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T], rho2_list=[15e-6, 41e-6])
+ENVELOPE = envelope_of("connectom", rho2_max=41e-6)
+BATTERY = dict(bvals=[0.0, 0.5e9, 1e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+               delta_frac=40e-3 / T, Delta_frac=80e-3 / T, ogse_periods=[1, 2, 3],
+               shortd_b=1e9, shortd_deltas_frac=[60e-3 / T, 40e-3 / T])
 
 
 #: The distinct deltas the envelope declares, as a set: `delta_frac` and the `shortd_deltas_frac` list name
 #: 40 ms twice, and de-duplicating them inside `waveforms()` hid that the two fields overlap.
-DECLARED_DELTA_FRACS = tuple(sorted({ENVELOPE["delta_frac"], *ENVELOPE["shortd_deltas_frac"]}))
+DECLARED_DELTA_FRACS = tuple(sorted({BATTERY["delta_frac"], *BATTERY["shortd_deltas_frac"]}))
 
 
 def waveforms():
@@ -97,41 +101,17 @@ def waveforms():
     The deltas are the envelope's own, 40 and 60 ms: a relaxation family certifies a clinical diffusion envelope
     beside its contact tier, and the stored band (640 Hz, K = 128 per 100 ms window) holds every one of them.
     """
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     out = []
     for frac in DECLARED_DELTA_FRACS:
         delta = frac * T
-        Delta = max(2 * delta, ENVELOPE["Delta_frac"] * T)
+        Delta = max(2 * delta, BATTERY["Delta_frac"] * T)
         out.append((f"pgse-delta{delta * 1e3:.0f}ms",
-                    pgse([[1, 0, 0]], delta, Delta, bvalues=[max(ENVELOPE["bvals"])], n_t=400)))
+                    pgse([[1, 0, 0]], delta, Delta, bvalues=[max(BATTERY["bvals"])], n_t=400)))
     return tuple(out)
 
 
-# ----------------------------------------------------------------- the licence text, verbatim from the host
-def licence_text(url, cache_dir):
-    """The licence at ``url``, fetched once and cached: what the source record copies verbatim.
-
-    Figshare states each record's licence as ``CC BY 4.0`` with this URL; the TEXT is what the record carries,
-    because a title is not a licence.
-    """
-    import urllib.request
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, "cc-by-4.0-legalcode.txt")
-    if not os.path.exists(cache):
-        req = urllib.request.Request(url, headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
-        with urllib.request.urlopen(req, timeout=60) as fh, open(cache, "wb") as out:
-            out.write(fh.read())
-    return open(cache, encoding="utf-8").read()
-
-
 # ----------------------------------------------------------------- the spec producer
-def central_crop(shape, n=CROP):
-    lo = [(int(s) - int(n)) // 2 for s in shape]
-    if any(v < 0 for v in lo):
-        raise ValueError(f"an image of {shape} has no central {n}^3 cube")
-    return tuple(lo) + tuple(v + int(n) for v in lo)
-
-
 def spec_of(rock, data_dir):
     """The rock's substrate spec: the image cited by the name a dataset distributes it at, the crop, and
     Talabi's values as the NOMINAL ones a consumer overrides."""
@@ -141,7 +121,7 @@ def spec_of(rock, data_dir):
     path = os.path.join(data_dir, f"{rock}.nhdr")
     shape = read_label_volume(path).labels.shape
     return label_volume_spec(
-        path, pools={0: "free", 1: "grain"}, crop=central_crop(shape), rho2=ref["rho2"], D=D0,
+        path, pools={0: "free", 1: "grain"}, crop=central_crop(shape, CROP), rho2=ref["rho2"], D=D0,
         T2_pools={"free": T2B, "grain": T2B}, cite_image_as=f"{rock}.nhdr", id=f"imperial2007/{rock.lower()}",
         source="Imperial College 2007 micro-CT collection (Dong & Blunt 2009), CC BY 4.0",
         description=(f"{rock}: the central {CROP}^3 crop of the released micro-CT image; the pore fluid walks "
@@ -150,57 +130,16 @@ def spec_of(rock, data_dir):
 
 
 def walk(spec, n, *, T, K, seed, sub_steps=None):
-    """The walk the pilot runs and every pack is built from: no relaxivity, C2 stored as a channel, ``K`` bands per
-    100 ms storage window over ``T`` in the band's own blocks; ``sub_steps`` is the step pilot's coarse count, None
-    the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
-    import dmipy_sim as d
-    from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.spec import geometry_from_spec
-    return _walk_geometry(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
-                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
-
-
-# ----------------------------------------------------------------- the quantity, replayed
-def t2_grid(grid):
-    return np.logspace(np.log10(grid["from_s"]), np.log10(grid["to_s"]), int(grid["n"]))
-
-
-def decay_and_projection(pack, rho2, grid, *, chunk=4000):
-    """``(t, S, projection)``: the decay ``S(t) = <exp((rho2/D) L(t) - t/T2B)>`` on the recorded sampling, and
-    each walker's own decay projected on the log-mean's gradient -- what the delta method needs.
-
-    ``pack.contact()`` is the pack's stored C2 channel read at its block ends; the walkers are read in chunks so
-    no float64 copy of the whole walk is held.
-    """
-    from examples.validation.talabi_micro_ct_rocks import log_mean_gradient
-    ell = pack.contact()
-    if ell is None:
-        raise ValueError(f"{pack.meta['id']} carries no C2 channel, so it cannot serve a relaxation decay")
-    n_w, n_t = ell.shape
-    every = max(1, int(round(grid["sample_ms"] * 1e-3 / pack.dt)))
-    t = np.arange(n_t)[every::every] * pack.dt
-
-    def per_walker(lo):
-        L = np.cumsum(np.asarray(ell[lo:lo + chunk], np.float64), axis=1)[:, every::every]
-        return np.exp(float(rho2) / D0 * L - t / T2B)
-
-    acc = np.zeros(len(t))
-    for lo in range(0, n_w, chunk):
-        acc += per_walker(lo).sum(axis=0)
-    S = acc / n_w
-    lm, g = log_mean_gradient(t, S, t2_grid(grid))
-    proj = np.empty(n_w)
-    for lo in range(0, n_w, chunk):
-        s = per_walker(lo)
-        proj[lo:lo + s.shape[0]] = s @ g
-    return t, S, lm, float(np.std(proj, ddof=1) / np.sqrt(n_w) / lm)
+    """The protocol's walk hook: :func:`examples.substrate_bank.common.walk` at this family's ``D0``, in the storage
+    rule's 100 ms windows (C2 stored as a channel: no relaxivity in the walk)."""
+    return common.walk(spec, n, D=D0, T=T, K=K, seed=seed, sub_steps=sub_steps)
 
 
 def reproduce(pack, quantity, grid):
     """The T2 log-mean this pack serves, ON the grid the reference record states, with its analytic standard
     error by the delta method over walkers (no folds, no seed, no coverage factor)."""
     rho2 = float(pack.nominal.rho2)
-    _t, _S, lm, se = decay_and_projection(pack, rho2, grid)
+    _t, _S, lm, se = common.decay_and_log_mean(pack, rho2, grid, D=D0, T2B=T2B)
     return dict(value=lm * 1e3, se=se, se_kind="delta_method", solver=grid["solver"],
                 se_derivation=("the delta method over walkers: the log-mean's gradient with respect to the "
                                "decay it is inverted from (examples.validation.talabi_micro_ct_rocks."
@@ -237,7 +176,7 @@ def served_vs_channel(pack, *, n_points=8):
 def snippet(uri):
     """One call that reproduces the T2 log-mean of the reproduction table, on its own grid."""
     return f'''import numpy as np
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from examples.validation.talabi_micro_ct_rocks import t2_distribution, log_mean_T2
 
 pk = ReplayPack.load("{uri}")
@@ -253,8 +192,8 @@ print("T2 log-mean %.1f ms" % (1e3 * log_mean_T2(g, t2_distribution(t[every::eve
 
 # ----------------------------------------------------------------- the family
 def family(data_dir, work_dir, *, rocks, dry, create_dataset):
-    cache = os.path.join(work_dir, ".licence-cache")
-    text = licence_text("https://creativecommons.org/licenses/by/4.0/legalcode.txt", cache)
+    # Figshare states each record's licence as CC BY 4.0; the TEXT is what the record carries
+    text = common.cc_by_4_legal_code(os.path.join(work_dir, ".licence-cache"))
     sources = [Source(
         key=f"figshare-{rock.lower()}", url=f"https://doi.org/{ROCKS[rock]['doi']}",
         host_record=f"Figshare record {ROCKS[rock]['doi']} ({ROCKS[rock]['version']})",
@@ -288,8 +227,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                 f"(x {_se[rock]['scale']:.6f}). The direct walk's own per-walker decays were not retained; the "
                 "relative per-echo spread is a property of the substrate and the estimator, not of the walk."),
             n_walkers=ROCKS[rock]["direct_n"], grid=grid, solver=SOLVER,
-            source="examples/validation/talabi_micro_ct_rocks.py (run_rock), asserted by "
-                   "tests/validation/test_talabi_rocks.py")) for rock in rocks)
+            source="examples/validation/talabi_micro_ct_rocks.py (run_rock)")) for rock in rocks)
 
     reference = Reference(
         doi=REFERENCE_DOI, title="Pore-scale simulation of NMR response",
@@ -351,7 +289,7 @@ def family(data_dir, work_dir, *, rocks, dry, create_dataset):
                  "number."))
 
     design = Design(
-        window_s=T, K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
+        window_s=T, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY, waveforms=waveforms,
         tiers=(Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA),
                Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4,
@@ -393,7 +331,7 @@ def direct_se(rock, data_dir, work_dir, grid, *, n=SE_N):
     """
     import hashlib
     import json
-    from dmipy_sim.replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     from dmipy_sim.replay.bank import build_replay_pack
     ref = ROCKS[rock]
     image = os.path.join(data_dir, f"{rock}.raw")
@@ -406,8 +344,8 @@ def direct_se(rock, data_dir, work_dir, grid, *, n=SE_N):
         return cache[rock]["value"]
     w = walk(spec_of(rock, data_dir), int(n), T=T, K=K_BANDS, seed=seed)
     pack = build_replay_pack(w, id=f"imperial-rocks/{rock.lower()}/direct-se", license=LICENCE, citation=CITATION,
-                             envelope=ENVELOPE, K=K_BANDS)
-    _t, _S, _lm, se_walk = decay_and_projection(pack, float(ref["rho2"]), grid)
+                             envelope=ENVELOPE, battery=BATTERY, K=K_BANDS)
+    _t, _S, _lm, se_walk = common.decay_and_log_mean(pack, float(ref["rho2"]), grid, D=D0, T2B=T2B)
     scale = (int(n) / float(ref["direct_n"])) ** 0.5
     value = dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n), n_direct=int(ref["direct_n"]), scale=scale,
                  seed=int(seed), image_sha256=sha256_of(image))

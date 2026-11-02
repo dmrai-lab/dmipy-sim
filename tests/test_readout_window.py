@@ -16,9 +16,10 @@ import pytest
 pytest.importorskip("pypulseq")
 import pypulseq as pp
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.timing import SequenceTiming
-from dmipy_sim.sequences import from_pulseq, make_system, to_pulseq
+from dmipy_replay.sequences.pulseq import from_pulseq
+from dmipy_sim.sequences import make_system, to_pulseq
 
 
 def _spin_echo_with_readout(g_T=0.03, delta=8e-3, Delta=30e-3, g_ro=0.01, t_ro=2e-3):

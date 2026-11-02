@@ -2,6 +2,7 @@
 the joined order carry raw block ends, drawn from the pools in proportion to their walkers, and every raw array is the
 walk's own for those walkers -- the diffusing pools' from their walks, a frozen pool's its seats held at every block
 end. A pool walk that lacks a raw array it was asked for is refused by name."""
+from tests._envelope import stated, walk_envelope
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
 import pytest
@@ -11,7 +12,8 @@ import dmipy_sim as d
 import dmipy_sim.engine.core as core
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError
+from dmipy_replay.spec.substrate import SpecError
+from dmipy_sim.engine.accumulate import FIELD_RULE_CHI  # the field read rule's own scale: the pools read at the same instants
 from dmipy_sim import walk
 from dmipy_sim.spec.walk import _raw_allocation
 
@@ -60,7 +62,7 @@ def spec(tmp_path_factory):
 @pytest.fixture(scope="module")
 def bundle(spec):
     """An order-0 walk of the bundle with ``N_RAW`` raw walkers."""
-    return walk(spec, N, T_max=T_MAX, block_h=H, K=K, block_order=0, seed=3, require_gpu=False, raw_subset=N_RAW, n_probe=N_PROBE)
+    return walk(spec, N, T_max=T_MAX, block_h=H, K=K, block_order=0, seed=3, require_gpu=False, raw_subset=N_RAW, n_probe=N_PROBE, envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
 
 
 def test_the_raw_arrays_have_the_walks_shapes_and_lead_the_order(bundle):
@@ -117,9 +119,9 @@ def test_the_raw_contact_sums_to_the_walkers_boundary_endpoint(bundle):
 
 
 def test_the_raw_subset_is_clipped_to_the_walkers_and_absent_when_not_asked(spec):
-    w = walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=1000, n_probe=N_PROBE)
+    w = walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=1000, n_probe=N_PROBE, envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
     assert w.raw_positions.shape[0] == w.n_walkers and w.raw_field.shape[0] == w.n_walkers
-    w = walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, n_probe=N_PROBE)
+    w = walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, n_probe=N_PROBE, envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
     assert w.raw_positions is None and w.raw_boundary is None and w.raw_compartment is None and w.raw_field is None
 
 
@@ -132,7 +134,7 @@ def test_the_allocation_is_proportional_exact_and_within_each_pool():
 
 
 def test_the_joined_raw_subset_measures_a_pack(bundle):
-    pk = build_replay_pack(bundle, id="t/bundle-raw", license="x", citation="x", K=K, fidelity="measured")
+    pk = build_replay_pack(bundle, id="t/bundle-raw", license="x", citation="x", K=K, fidelity="measured", **stated(of=bundle))
     assert pk.fidelity["certified"] == "measured" and pk.fidelity["measured_by"] == "raw_subset" and pk.fidelity["measured_on"] == N_RAW
 
 
@@ -144,14 +146,15 @@ def test_a_pool_walk_that_lost_its_raw_subset_is_refused_by_name(spec, monkeypat
         return dataclasses.replace(real(*a, **k), raw_positions=None)
     monkeypatch.setattr(core, "_walk_geometry", stripped)
     with pytest.raises(SpecError, match=r"pool '(intra|extra)'.*raw_positions"):
-        walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=6, n_probe=N_PROBE)
+        walk(spec, 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, raw_subset=6, n_probe=N_PROBE, envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
 
 
 def test_an_adaptive_strand_bundle_joins_its_raw_subset_too(tmp_path):
     """The adaptive producer's pools (strand field read in the walk) join on the same terms."""
     from tests.conftest import _three_strands
-    w = walk(_three_strands(tmp_path), 60, 8e-4, 2e-4, seed=0, n_probe=2000, require_gpu=False, adaptive_steps=True,
-                  K=4, block_order=0, raw_subset=20)
+    spec = _three_strands(tmp_path)
+    w = walk(spec, 60, 8e-4, 2e-4, seed=0, n_probe=2000, require_gpu=False, adaptive_steps=True,
+             K=4, block_order=0, raw_subset=20, envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
     comp = np.asarray(w.compartment)
     assert w.raw_positions.shape == (20, w.n_blocks + 1, 3) and w.raw_field.shape[:2] == (20, len(w.field_read_instants))
     np.testing.assert_array_equal(w.raw_compartment, np.repeat(comp[:20, None], w.n_blocks + 1, axis=1))

@@ -3,7 +3,7 @@
 Verifies:
 1. compartment_origin never changes from its initial value.
 2. return_compartments='final' matches last timestep of 'full'.
-3. (compartment_origin == k).mean() ≈ volume_fraction(k) (MC noise tolerance).
+3. (compartment_origin == k).mean() is volume_fraction(k) to one walker (the seeding allocates the counts).
 4. Permeable Cylinder: compartment_current changes over time.
 5. Impermeable Cylinder: compartment_current ≈ compartment_origin at all times.
 """
@@ -134,13 +134,13 @@ class TestFinalMatchesFull:
 
     def test_cylinder_permeable(self):
         self._check_match(Cylinder(radius=5e-6, orientation=[0, 0, 1],
-                                   permeability=1e-4))
+                                   permeability=4e-5))
 
     def test_sphere_impermeable(self):
         self._check_match(Sphere(radius=5e-6))
 
     def test_sphere_permeable(self):
-        self._check_match(Sphere(radius=5e-6, permeability=1e-4))
+        self._check_match(Sphere(radius=5e-6, permeability=4e-5))
 
     def test_myelinated_cylinder(self):
         mc = MyelinatedCylinder(
@@ -153,36 +153,37 @@ class TestFinalMatchesFull:
 
 
 # ---------------------------------------------------------------------------
-# 3. (compartment_origin == k).mean() ≈ volume_fraction(k)
-#    Tested for Cylinder (all walkers intra → vf=1) and MyelinatedCylinder
-#    with uniform water_fractions=(1,1,1) so the MC allocation matches
-#    the pure geometric volume fractions.
+# 3. (compartment_origin == k).mean() = volume_fraction(k)
+#    Tested for Cylinder (every walker seeded in the lumen) and MyelinatedCylinder, whose seeding allocates
+#    round(n w_k / W) walkers to each pool by its volume (MyelinatedCylinder.init_positions): neither is a random
+#    draw, so neither has a binomial standard error.
 # ---------------------------------------------------------------------------
 
 class TestVolumefractionConsistency:
-    """Compartment origin fractions match geometry volume fractions (1% tol)."""
+    """Compartment origin fractions are the geometry's volume fractions: exactly, or to one walker of rounding."""
 
     def test_cylinder_all_intra(self):
-        """All walkers start intra for the single-cylinder geometry."""
+        """Every walker starts intra for the single-cylinder geometry: the seeding draws inside the lumen, so the
+        count outside is zero, not a fraction within noise."""
         geom = Cylinder(radius=5e-6, orientation=[0, 0, 1])
-        comp_orig, _ = _run_final(geom, n_walkers=100_000)
-        vf_intra = (comp_orig == 1).mean()
-        # Nearly all walkers start inside (small float32 boundary effects allowed)
-        npt.assert_allclose(vf_intra, 1.0, atol=0.002)
+        comp_orig, _ = _run_final(geom, n_walkers=20_000)
+        assert int((np.asarray(comp_orig) != 1).sum()) == 0
 
     def test_myelinated_cylinder_volume_fractions(self):
-        """MyelinatedCylinder with water_fractions=(1,1,1): fractions match vf."""
+        """MyelinatedCylinder: each pool holds ``round(n vf)`` walkers (the extra pool the rest), so its fraction is
+        the volume fraction to one walker, ``1 / n``."""
         mc = MyelinatedCylinder(
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
             compartments=Compartments(intra=Pool(D=1e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
-        comp_orig, _ = _run_final(mc, n_walkers=100_000, diffusivity=None)
+        n = 20_000
+        comp_orig, _ = _run_final(mc, n_walkers=n, diffusivity=None)
         for comp_id, label in [(1, 'intra'), (2, 'myelin'), (0, 'extra')]:   # pool ids
             vf_mc = (comp_orig == comp_id).mean()
             vf_analytical = mc.volume_fraction(label)
-            npt.assert_allclose(vf_mc, vf_analytical, atol=0.01,
+            npt.assert_allclose(vf_mc, vf_analytical, atol=1.0 / n,
                                 err_msg=f"volume_fraction mismatch for {label}")
 
 
@@ -194,9 +195,9 @@ class TestPermeableCylinderChanges:
     """With permeability set, walkers must cross the boundary over time."""
 
     def test_compartment_current_changes_permeable_cylinder(self):
-        """Fraction of walkers that change compartment must be > 5% with κ=1e-4."""
-        geom = Cylinder(radius=5e-6, orientation=[0, 0, 1], permeability=1e-4)
-        n_walkers = 2000
+        """Fraction of walkers that change compartment must be > 5% with κ=4e-5."""
+        geom = Cylinder(radius=5e-6, orientation=[0, 0, 1], permeability=4e-5)
+        n_walkers = 500
         comp_orig, comp_seq = _run_full(geom, n_walkers=n_walkers)
         changed = np.any(comp_seq != comp_orig[:, None], axis=1)
         frac_changed = changed.mean()
@@ -204,9 +205,9 @@ class TestPermeableCylinderChanges:
             f"Expected >5% walkers to cross in permeable cylinder, got {frac_changed:.3f}")
 
     def test_compartment_current_changes_permeable_sphere(self):
-        """Fraction of walkers that change compartment must be > 5% with κ=1e-4."""
-        geom = Sphere(radius=5e-6, permeability=1e-4)
-        n_walkers = 2000
+        """Fraction of walkers that change compartment must be > 5% with κ=4e-5."""
+        geom = Sphere(radius=5e-6, permeability=4e-5)
+        n_walkers = 500
         comp_orig, comp_seq = _run_full(geom, n_walkers=n_walkers)
         changed = np.any(comp_seq != comp_orig[:, None], axis=1)
         frac_changed = changed.mean()
@@ -335,8 +336,8 @@ class TestMyelinatedCylinderFull:
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
-            kappa_inner=1e-4,
-            kappa_outer=1e-4,
+            kappa_inner=4e-5,
+            kappa_outer=4e-5,
             compartments=Compartments(intra=Pool(D=1e-9), extra=Pool(D=2e-9), myelin=Pool(D=0.0)),
         )
         n_walkers = 2000

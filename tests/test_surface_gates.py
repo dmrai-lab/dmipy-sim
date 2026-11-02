@@ -14,9 +14,11 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import build_replay_pack, sequences
+from dmipy_sim import build_replay_pack
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_sim.replay import bank
+from tests._envelope import stated
 
 D0, R, T, H = 2e-9, 3e-6, 0.02, 5e-4
 N_S = int(round(T / H)) + 1                                   # 41 samples: 40 blocks of 0.5 ms
@@ -40,7 +42,7 @@ def cylinder_walk():
 @pytest.fixture(scope="module")
 def packs(cylinder_walk):
     """The walk-free and the measured pack of the one walk, at the default contact envelope."""
-    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=_env([1e-5, 1e-4]), K=32)
+    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", **stated(_env([1e-5, 1e-4])), K=32)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return (build_replay_pack(cylinder_walk, fidelity="derived", **kw),
@@ -111,7 +113,7 @@ def test_the_walk_free_contact_term_charges_the_bands_the_pack_does_not_store(cy
     """A pack storing fewer contact bands than the walk accumulated (``blt_temporal_K``) is charged their truncation
     walk-free: in the float container the stored bridge has no quantisation, its whole error against the dense reading
     is the bands left out, and the walk-free ``err_surface`` is the measured one to a quarter of the floor."""
-    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", envelope=_env([1e-5, 1e-4]), K=32,
+    kw = dict(id="test/cylinder", license="CC-BY-4.0", citation="test", **stated(_env([1e-5, 1e-4])), K=32,
               blt_temporal_K=4, blt_container=None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

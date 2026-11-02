@@ -1,8 +1,7 @@
 """A pack's certificate is read over the envelope it states, and a replay beyond it is refused.
 
-The build envelope states the surface relaxivities ``rho2_list`` (m/s), the field strengths ``B0_list`` (T) and the
-susceptibility scale ``chi_max`` (``compression.certified_envelope``: the library default where it states none, the
-substrate's magnetic pools' scale for ``chi_max``). The pack records them (``replay_envelope.tissue.rho2_over_D_max``
+The build envelope states the largest surface relaxivity ``rho2_max`` (m/s), the field strengths ``B0_list`` (T) and the
+susceptibility scale ``chi_max``; there is no default. The pack records them (``replay_envelope.tissue.rho2_over_D_max``
 over the walk's ``D``, ``replay_envelope.acquisition.B0_list``, ``replay_envelope.tissue.chi_max``); every field term is
 read at the one certified ``B0 chi``, the largest ``B0`` times ``chi_max``; the field read's own limit is
 ``field_read.read_limit_B0_chi_T``, a different quantity.
@@ -13,13 +12,16 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.accumulate import field_read_term, spec_chi_scale
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_sim.replay import time_segments
 from dmipy_sim.replay.bank import build_replay_pack, _round_sig
-from dmipy_sim.replay.compression import certified_envelope, default_envelope
+from dmipy_sim.replay.compression import RHO2_READ_FRACTIONS
 from dmipy_sim.spec import disco_spec
 from dmipy_replay.spec.tissue import Tissue
+from tests._envelope import stated, walk_envelope
 
 BLOCK = 1e-4
 BATTERY = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.1],
@@ -42,14 +44,14 @@ def walk(spec):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return d.walk(spec, 60, 8e-4, BLOCK, seed=3, n_probe=20_000, require_gpu=False, adaptive_steps=True, K=4,
-                         field_cutoff_max_m=25e-6)
+                         field_cutoff_max_m=25e-6, envelope=walk_envelope(chi_max=spec_chi_scale(spec)))
 
 
 def _pack(walk, **env):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         return build_replay_pack(walk, id="t/envelope", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
-                                 envelope=dict(BATTERY, **env), blt_temporal_K=2)
+                                 **stated(dict(BATTERY, **env), chi_max=spec_chi_scale(walk.spec)), blt_temporal_K=2)
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +61,7 @@ def disco_like(walk):
 
 
 def _seq(pk):
-    return d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
+    return dr.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
 
 
 def _surface_quadrature(pk, rho2):
@@ -86,7 +88,7 @@ def test_the_contact_certificate_is_read_at_the_stated_relaxivity(walk, disco_li
         assert pk.fidelity["err_quadrature_surface"] > 0
         assert pk.fidelity["err_quadrature_surface"] == pytest.approx(_surface_quadrature(pk, rho2), rel=2e-6)   # to its sixth digit
     assert disco_like.rho2_over_D_max == pytest.approx(3e-6 / D) and wider.rho2_over_D_max == pytest.approx(1e-5 / D)
-    assert disco_like.fidelity["surface_rho2_list"] == [3e-6]
+    assert disco_like.fidelity["surface_rho2_list"] == pytest.approx([f * 3e-6 for f in RHO2_READ_FRACTIONS])   # read up to it
 
 
 def test_a_replay_beyond_the_stated_relaxivity_is_refused(disco_like):
@@ -96,16 +98,21 @@ def test_a_replay_beyond_the_stated_relaxivity_is_refused(disco_like):
         disco_like.replay(seq, tissue=Tissue(rho2=1e-5))
 
 
-def test_an_envelope_that_states_none_is_certified_at_the_library_default(walk, spec):
-    """An envelope without ``rho2_list``, ``B0_list`` or ``chi_max`` is built at the default's (and the substrate's
-    chi), written into the pack, and certifies exactly as the same envelope stated in full."""
-    bare, full = _pack(walk), _pack(walk, **{k: certified_envelope(BATTERY, spec)[k] for k in ("rho2_list", "B0_list", "chi_max")})
-    D = bare.diffusivity
-    assert default_envelope()["rho2_list"] == [1e-5, 3e-5, 1e-4] and default_envelope()["B0_list"] == [3.0, 7.0]
-    assert bare.rho2_over_D_max == pytest.approx(1e-4 / D)
-    assert bare.replay_envelope["acquisition"]["B0_list"] == [3.0, 7.0]
-    assert bare.replay_envelope["tissue"]["chi_max"] == pytest.approx(spec_chi_scale(spec))
-    assert bare.fidelity == full.fidelity and bare.replay_envelope == full.replay_envelope
+def test_an_envelope_states_every_bound_and_a_field_pack_without_one_is_refused(walk, spec):
+    """There is no library default: a field channel under an envelope with no ``chi_max`` or no ``B0_list`` is refused
+    by name, and the bounds an envelope states are what the pack writes."""
+    kw = dict(id="t/envelope", license="x", citation="x", K=4, susc_path_K=4, device="numpy", battery=BATTERY,
+              blt_temporal_K=2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="states no chi_max"):
+            build_replay_pack(walk, envelope=walk.envelope.replace(chi_max=None), **kw)
+        with pytest.raises(ValueError, match="states no B0_list"):
+            build_replay_pack(walk, envelope=walk.envelope.replace(B0_list=()), **kw)
+    pk = _pack(walk, rho2_list=[1e-4], B0_list=[3.0, 7.0])
+    assert pk.rho2_over_D_max == pytest.approx(1e-4 / pk.diffusivity) and pk.envelope.rho2_max == pytest.approx(1e-4)
+    assert pk.replay_envelope["acquisition"]["B0_list"] == [3.0, 7.0]
+    assert pk.replay_envelope["tissue"]["chi_max"] == pytest.approx(spec_chi_scale(spec))
 
 
 def test_every_field_term_is_read_at_the_one_certified_scale(walk, spec, disco_like):

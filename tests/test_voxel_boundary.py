@@ -8,15 +8,16 @@ product of sincs. Exactly 1 for a refocused encoding; for an unbalanced one it i
 waveform and the prescription. Without a prescription it is refused, since the un-crushed substrate signal is a
 different number, not an approximation.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 
@@ -45,7 +46,7 @@ def pack(tmp_path_factory):
     n_t, dt = int(seq.n_t), float(seq.dt)
     walk = _walk_geometry(3000, 2.0e-9, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=5, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
-    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
+    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out), **stated(of=walk))
     return read_rpk(str(out))
 
 

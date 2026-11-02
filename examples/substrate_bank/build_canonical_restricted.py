@@ -17,6 +17,7 @@ import os
 import numpy as np
 
 from dmipy_sim.engine.core import _walk_geometry
+from dmipy_replay import envelope_of
 from dmipy_sim.replay import bank
 from dmipy_sim.geometry import Cylinder, Sphere
 
@@ -42,13 +43,17 @@ def walk_restricted(shape, diameter, D0, *, T_max=200e-3, K=128, n_walkers=100_0
     return walk
 
 
-def restricted_envelope():
+#: What a restricted-pore pack is certified for: the Connectom class's envelope, the contact tier up to 100 um/s.
+RESTRICTED_ENVELOPE = envelope_of("connectom", rho2_max=1e-4)
+
+
+def restricted_battery():
     """Lean gradient + relaxation certificate battery for a single restricted pore (no field / MT tier): the bands
     store *positions* (acquisition-agnostic), so a small PGSE / OGSE / short-delta battery over the perpendicular and
     parallel directions certifies them."""
     return dict(bvals=[0.0, 1.5e9, 3e9], dirs=[[0, 0, 1], [1, 0, 0]],
                 ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-                B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5)
+                theta_deg=[0], delta_frac=0.2, Delta_frac=0.5)
 
 
 def pack_id(shape, diameter, D0):
@@ -56,21 +61,21 @@ def pack_id(shape, diameter, D0):
     return f"canonical/D0-{D0*1e9:.2f}e-9/{shape}/d{diameter*1e6:06.2f}um"
 
 
-def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128, envelope=None,
+def build_pack(shape, diameter, D0, *, out_dir=None, sigma_star=5e-3, K=128, battery=None,
                citation="Substrate Commons canonical restricted-shape reference dataset", license="CC-BY-4.0",
                verbose=True, **walk_kw):
     """Walk + freeze one canonical pack. Returns ``(ReplayPack, out_path_or_None)``: the walk's ``K`` bands per axis
     after the two exact endpoints, stored in the band container and certified walk-free."""
     walk = walk_restricted(shape, diameter, D0, K=int(K), verbose=verbose, **walk_kw)
-    if envelope is None:
-        envelope = restricted_envelope()
+    if battery is None:
+        battery = restricted_battery()
     pid = pack_id(shape, diameter, D0)
     out_path = None
     if out_dir is not None:
         out_path = os.path.join(out_dir, pid + ".rpk")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
     pack = bank.build_replay_pack(
-        walk, id=pid, envelope=envelope, K=int(K), sigma_star=sigma_star, planned_floor=sigma_star, license=license, citation=citation,
+        walk, id=pid, envelope=RESTRICTED_ENVELOPE, battery=battery, K=int(K), sigma_star=sigma_star, planned_floor=sigma_star, license=license, citation=citation,
         out_path=out_path,
         provenance=dict(shape=shape, diameter_m=float(diameter), diffusivity=float(D0),
                         geometry="single impermeable restricted pore", real_or_synthetic="synthetic"),

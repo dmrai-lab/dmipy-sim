@@ -1,6 +1,7 @@
 """``Phantom.partition``: one walk cut into voxels by where each walker started (RPH.md partition addressing,
 dmipy-sim#76, #186). Membership is derived from the stored ``r0``, fractions are emergent from the weights, the
 grid is free, and the anatomy rotates as a block."""
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
@@ -9,9 +10,9 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import Encoding, Prescription, RFEvent, ScannerSequence
-from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import Encoding, Prescription, RFEvent, ScannerSequence
+from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 
@@ -28,12 +29,12 @@ def pack_paths(walk, tmp_path_factory):
     out = {}
     for K in (2, 8):
         p = root / f"k{K}.rpk"
-        build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, sigma_star=5e-2, planned_floor=5e-2, out_path=str(p))
+        build_replay_pack(walk, id=f"test/k{K}", license="x", citation="x", K=K, sigma_star=5e-2, planned_floor=5e-2, out_path=str(p), **stated(of=walk, G_max=8.0))
         out[K] = str(p)
     comp = np.asarray(walk.compartment)                                     # one label per walker
     for name, sel in (("intra", comp == 0), ("extra", comp != 0)):
         p = root / f"{name}.rpk"
-        build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=4, weights=sel.astype(float), out_path=str(p))
+        build_replay_pack(walk, id=f"test/{name}", license="x", citation="x", K=4, weights=sel.astype(float), out_path=str(p), **stated(of=walk, G_max=8.0))
         out[name] = str(p)
     out["comp"] = comp
     return out
@@ -160,7 +161,7 @@ def test_the_scanner_decides_the_voxels_when_the_partition_declares_no_grid(pack
 
 # ------------------------------------------------------------------ the pose
 def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_membership_unchanged(pack_paths):
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     pk = read_rpk(pack_paths[8])
     grid = _grid(pk, attach="substrate")
     R = _r_so3.rotation_of((0.3, 0.5, 0.81))
@@ -176,7 +177,7 @@ def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_member
 
 
 def test_a_pose_on_a_bore_attached_grid_rebins_the_walkers(pack_paths):
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     pk = read_rpk(pack_paths[8])
     R = _r_so3.rotation_of((0.0, 1.0, 0.0))                                # tip the cylinder axis into the plane
     lab = Grid.covering(pk.r0 @ R.T, voxel_size_m=(2.5e-6, 2.5e-6, 2.5e-6), attach="lab", margin_voxels=1)
@@ -253,7 +254,7 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
 
 def test_pose_is_a_Pose_and_a_bare_matrix_is_refused_by_name():
     """Every ``pose=`` takes a ``Pose`` (or ``None``): the matrix is spelled ``Pose(R)``."""
-    from dmipy_sim.phantom.partition import pose_rotation
+    from dmipy_replay.phantom.partition import pose_rotation
     R = np.eye(3)
     assert pose_rotation(None) is None and np.array_equal(pose_rotation(Pose(R)), R)
     for bad in (R, R.tolist(), 3.0):

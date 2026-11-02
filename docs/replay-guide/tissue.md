@@ -4,7 +4,7 @@ A `Tissue` is what the water is made of: the numbers a replay applies to the pac
 substrate and not a pack; the pack is the structure, the tissue is the material on it.
 
 ```python
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 wm = Tissue(T2={"intra": 0.05, "extra": 0.055}, T1={"intra": 1.2, "extra": 1.0}, rho2=1.16e-6, chi_iso=-1e-7, chi_aniso=-1e-7)
 print(wm)
 ```
@@ -32,11 +32,14 @@ outside the certificate.
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 
+from dmipy_replay import Envelope
 walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide")
+env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
+               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
+pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide", envelope=env)
 seq = sequences.pgse([[1, 0, 0]], 0.001, 0.003, bvalues=[0.0], TE=0.006, slew_rate=np.inf)   # a b = 0: the relaxation alone
 
 S_bare = pack.replay(seq)                                     # 1. none: bare diffusion, the default
@@ -78,9 +81,9 @@ A tier asked for that the pack does not carry raises, and so does a susceptibili
 [scanner](scanner.md) page has the rule); the alternative in each case would be a plausible wrong number.
 
 ```python
-from dmipy_sim.replay.study import Protocol, Study
+from dmipy_replay.replay.study import StudyProtocol, Study
 try:
-    pack.study(Study(Protocol([seq]), tissues=[Tissue(chi_iso=-1e-7)], scanners=[3.0]))   # chi on a substrate with nothing magnetic
+    pack.study(Study(StudyProtocol([seq]), tissues=[Tissue(chi_iso=-1e-7)], scanners=[3.0]))   # chi on a substrate with nothing magnetic
 except ValueError as e:
     print("refused:", str(e)[:60])
 try:

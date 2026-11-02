@@ -7,8 +7,8 @@ codec (``bridge_dst``), the tier channels the certified envelope needs are carri
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,
 magnetization transfer via the bound-fraction channel), and the pack MEASURES its own replay
 fidelity against the split-half Monte-Carlo floor before it is written. The result is a single
-``safetensors`` file readable by :func:`dmipy_sim.replay.replay.read_rpk` and replayable by the
-:mod:`dmipy_sim.replay.replay` / :mod:`dmipy_sim.replay.trajectories` operators.
+``safetensors`` file readable by :func:`dmipy_replay.replay.replay.read_rpk` and replayable by the
+:mod:`dmipy_replay.replay.replay` / :mod:`dmipy_sim.replay.trajectories` operators.
 
 :func:`build_to_floor` is the bank's default generation policy: size the walker count so the
 Monte-Carlo floor meets a target ``sigma_star``, then build a pack whose codec error meets it too.
@@ -24,18 +24,21 @@ import functools
 import json
 import logging
 from dmipy_replay.replay.field import _refuse_trace_component, frame_from_axis, susc_path_coeffs, susc_path_decode, susc_path_field
-from dmipy_replay.replay.storage import mode_count, storage_band_hz
+from dmipy_replay.replay.storage import mode_count
 
 log = logging.getLogger(__name__)
 
 import numpy as np
 
 from ..run import Run, _code
+from ..coefficient_walk import _window_t0
 from ..engine.accumulate import field_read_term, field_read_limit_B0_chi, field_rule_scale
 
 from . import compression as _cx
 from dmipy_replay.acquisition.rf import RFEvent
-from .replay import ReplayPack, read_rpk, write_rpk
+from .container import write_rpk
+from .reencode import stated_envelope
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_replay.replay.field import CHANNEL_NAMES as _PATH_CHANNELS, ISO_CHANNEL_NAMES as _ISO_PATH_CHANNELS
 from dmipy_replay.spec.substrate import susceptibility_field_of
 
@@ -194,18 +197,15 @@ def frame_from_bundles(axes, *, primary=0, weights=None, tol=1e-3):
 
 
 # --------------------------------------------------------------- fidelity helpers
-def _envelope_summary(env, T):
-    """``replay_envelope.acquisition`` of a pack certified under ``env`` (:func:`compression.certified_envelope`) over
-    a window ``T``: the largest b, the OGSE periods and the field strengths ``B0_list`` the certificate was read at;
-    for a scanner class its name, ``G_max`` (per axis), ``slew_max`` and ``bound: "scanner_class"``, the largest b then
-    the class's bound (:func:`compression.class_b_max`)."""
-    out = dict(b_max=float(max(env["bvals"])), ogse_periods=list(env.get("ogse_periods", [])),
-               B0_list=_cx.envelope_B0_list(env, empty=True),
-               note="temporal band set by max OGSE period / min delta")
-    G_max = _cx.envelope_G_max(env)
-    if G_max is not None:
-        out.update(bound="scanner_class", scanner=env["scanner"], G_max=float(G_max), slew_max=float(env["slew_max"]),
-                   b_max=_cx.class_b_max(G_max, T))
+def _envelope_summary(envelope, env, T, stored_band_hz):
+    """``replay_envelope.acquisition`` of a pack certified for ``envelope`` (an
+    :class:`~dmipy_replay.replay.envelope.Envelope`) under the settings ``env`` (:func:`compression.certified_envelope`)
+    over a window ``T``: the envelope (:meth:`~dmipy_replay.replay.envelope.Envelope.header_acquisition`), its band at
+    most the band the pack stores, ``stored_band_hz`` (a pack stored with fewer bands states the band it stores: its
+    bands narrow the envelope, never widen it); beside it the largest b of any refocused encoding within ``G_max``
+    (:func:`compression.class_b_max`) and the battery's OGSE periods."""
+    out = envelope.replace(band_hz=min(float(envelope.band_hz), float(stored_band_hz))).header_acquisition()
+    out.update(b_max=_cx.class_b_max(envelope.G_max, T), ogse_periods=list(env.get("ogse_periods", [])))
     return out
 
 
@@ -383,14 +383,15 @@ def voxel_certificate(pack, grid, *, envelope=None, device="auto"):
     """The per-voxel certificate of a pack that carries none, as its arrays and its summary: a shard whose writer
     measures no floor (the grid is the recipe's, not the shard's). The walkers are binned on ``grid`` by where they
     start and by pool and the split-half floor of each (voxel, pool) is read from the coefficients
-    (:func:`voxel_floor_coded`, over ``envelope``'s battery, default the envelope every pack is built against), the
+    (:func:`voxel_floor_coded`, under the certificate settings ``envelope``, default the pack's own,
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.stated_envelope`, as its build measured them), the
     codec-error column ``nan``: the pack's error is ``fidelity.err_max`` and its terms. Returns
     ``({"voxel_ijk": ..., "voxel_certificate": ...}, per_voxel)``, the pair a pack built with ``voxel_grid=``
     carries."""
     arrays, meta = pack.arrays, pack.meta
     w = None if "spin_weights" not in arrays else np.asarray(arrays["spin_weights"], np.float64)
     ijk, pools, n, floor, err = voxel_floor_coded(arrays, float(pack.dt), int(pack.n_t), grid, _start_pool(arrays, meta),
-                                                  envelope or _cx.default_envelope(), w=w, device=device)
+                                                  envelope or stated_envelope(pack), w=w, device=device)
     cert = np.stack([n.astype(np.float64), floor, err], axis=-1)
     return (dict(voxel_ijk=ijk.astype(np.int32), voxel_certificate=cert.astype(np.float32)),
             per_voxel_summary(grid.to_meta(), pools, cert, shards=1, recertified=False))
@@ -548,8 +549,8 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     n_w, n_t, n_ch = series.shape
     names = list(names)
     env = _cx.certified_envelope(env)
-    depth = int(env.get("max_refocus_pulses") or 0)
-    min_K = 2 * depth
+    depth = env.get("max_refocus_pulses")                     # None: the envelope certifies no refocusing depth
+    min_K = 0 if depth is None else 2 * int(depth)
     rungs = sorted(set([min(int(k), n_t) for k in ladder if k < n_t] + [n_t] + ([min(min_K, n_t)] if min_K else [])))
     rungs = [k for k in rungs if k >= min_K] or [n_t]
     top = rungs[-1]
@@ -609,7 +610,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                             "for its mode scales at its floor, is within the pilot's floor; failing every rung, the narrowest among the least errors",
                   ladder=[dict(K=int(k), err=float(err[k]), err_truncation=float(trunc[k]), floor=float(floor[k]),
                                container=[dict(r) for r in cont[k]]) for k in order],
-                  K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) or None), above_position_band=bool(K > int(K_max)),
+                  K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) if depth else None), above_position_band=bool(K > int(K_max)),
                   within_floor=bool(err[K] <= floor[K]), err=float(err[K]), err_truncation=float(trunc[K]), floor=float(floor[K]),
                   container=[dict(r) for r in cont[K]],
                   floor_is=("the explicit numerical field error budget" if target_floor is not None else
@@ -988,7 +989,7 @@ def field_read_record(meta):
         return None
     ch = ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") or {}
     return dict(interval=float(interval), term=((meta.get("fidelity") or {}).get("terms") or {}).get("field_read"),
-                qv_increments=(wp.get("qv") or {}).get("field_increments"), n_walkers=int(wp.get("n_walkers") or 0),
+                qv_increments=(wp.get("qv") or {}).get("field_increments"), n_walkers=int(wp["n_walkers"]),
                 envelope=(meta.get("replay_envelope") or {}).get("field_read"), read=ch.get("read"),
                 channel_interval=ch.get("read_interval"))
 
@@ -1024,8 +1025,11 @@ def charge_field_read(meta, records):
     wp["qv"] = dict(wp.get("qv") or {}, field_increments=[float(x) for x in qv])
     meta["walk_params"] = wp
     if coarse["envelope"] is not None:
+        if at.get("floor") is None:
+            raise ValueError("the coarsest shard's replay_envelope.field_read.term_at states no floor, the term its field "
+                             "read is held to and its read limit is charged at; re-walk it with a conformant producer")
         meta["replay_envelope"] = dict(meta["replay_envelope"], field_read=dict(
-            coarse["envelope"], read_limit_B0_chi_T=_finite_or_none(field_read_limit_B0_chi(coarse["interval"], qv, at.get("floor") or 1e-3, consts))))
+            coarse["envelope"], read_limit_B0_chi_T=_finite_or_none(field_read_limit_B0_chi(coarse["interval"], qv, float(at["floor"]), consts))))
     comp = dict(meta["compression"]); chans = dict(comp["channels"]); pm = dict(chans["susc_field_basis"])
     for key, val in (("read", coarse["read"]), ("read_interval", coarse["channel_interval"])):
         if val is not None:
@@ -1184,7 +1188,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     _w = union_weights(np.concatenate(arrays["spin_weights"]).astype(np.float64), np.repeat(np.arange(len(pks)), n), _key, _pid)
                     arrays["spin_weights"] = _w.astype(np.float32)
                 _ijk, _pools_r, _n, _floor, _err = voxel_floor_coded([pk.arrays for pk in pks], float(pks[0].dt), int(pks[0].n_t),
-                                                                     grid, comp, envelope or _cx.default_envelope(), w=_w, device=device)
+                                                                     grid, comp, envelope or stated_envelope(pks[0]), w=_w, device=device)
                 if [int(p_) for p_ in _pools_r] != [int(p_) for p_ in pools]:
                     raise ValueError(f"the merged walkers' pools {list(_pools_r)} differ from the shards' certificate pools {pools}")
                 ijk, cert = _ijk, np.stack([_n.astype(np.float64), _floor, _err], axis=-1)
@@ -1219,7 +1223,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                             m[k] = float(max(vals)) if not isinstance(vals[0], dict) else vals[0]
             comp_meta["channels"] = chans
         if comp_meta.get("walker_preserving"):
-            comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, float(fid.get("floor_max") or 0.0), False)
+            comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, fid.get("floor_max"), False)
         meta = dict(pks[0].meta)
         seeds = [pk.meta["walk_params"]["seed"] for pk in pks]
         seg0 = pks[0].meta["walk_params"].get("windows") or {}
@@ -1242,24 +1246,22 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
 WINDOW_T = 0.1          #: the storage rule's window (s): a pack stores its walk in windows of this duration (RPK.md 4.3)
 
 
-def _walk_scanner(walk):
-    """The scanner class a walk's band was derived for (``CoefficientWalk.scanner``, set by ``walk``), or None."""
-    return getattr(walk, "scanner", None) if not isinstance(walk, dict) else walk.get("scanner")
-
-
-def class_band(scanner):
-    """The band (Hz) a walk for scanner class ``scanner`` resolves its step for: the class's stored band
-    (:func:`storage_band_hz`, the certified band times its margin); ``None`` -- the block's Nyquist frequency -- when
-    no class is named."""
-    return None if scanner is None else float(storage_band_hz(scanner))
-
-
 _SHARED_KEYS = ("spin_weights", "comp_static", "band_block", "voxel_ijk", "voxel_certificate")
 
 
 def _is_shared_key(k):
     """Whether a tensor is the walk's rather than a window's: per-walker constants and substrate tables."""
     return k in _SHARED_KEYS or k.startswith("susc_grid_")
+
+
+def _same_keys(records, keys, where):
+    """Refuse, by name, records of which some carry one of ``keys`` and others do not: the windows (or shards) of one walk
+    carry one set of channels and so one set of certificate terms, and a term some of them lack would be summed as 0."""
+    for k in keys:
+        have = [k in r for r in records]
+        if any(have) and not all(have):
+            raise ValueError(f"{sum(have)} of {len(records)} windows carry {where}.{k} and the others do not; the windows "
+                             f"of one walk carry one set of terms")
 
 
 def combine_window_fidelity(fids):
@@ -1281,21 +1283,22 @@ def combine_window_fidelity(fids):
         out["per_family"] = {fam: dict(err_max=float(sum(f["per_family"][fam]["err_max"] for f in fids if fam in (f.get("per_family") or {}))),
                                        floor_max=float(max(f["per_family"][fam]["floor_max"] for f in fids if fam in (f.get("per_family") or {}))))
                              for fam in fams}
-    if "noise_floor" in fids[0]:
-        out["noise_floor"] = float(max(f.get("noise_floor", 0.0) for f in fids))
+    if any("noise_floor" in f for f in fids):
+        _same_keys(fids, ("noise_floor",), "fidelity")
+        out["noise_floor"] = float(max(f["noise_floor"] for f in fids))
     if all("floor_estimator" in f for f in fids):
         if len({f["floor_estimator"] for f in fids}) != 1:
             raise ValueError("the windows' floors are different estimators: " + ", ".join(sorted({f["floor_estimator"] for f in fids})))
         out["floor_estimator"] = fids[0]["floor_estimator"]
     if all(isinstance(f.get("terms"), dict) for f in fids):                # the bounded terms add like the errors
         t0 = fids[0]["terms"]
+        _same_keys([f["terms"]["quadrature"] for f in fids], t0["quadrature"], "fidelity.terms.quadrature")
         out["terms"] = dict(t0, truncation=float(sum(f["terms"]["truncation"] for f in fids)),
-                            quadrature={c: float(sum(f["terms"]["quadrature"].get(c, 0.0) for f in fids))
-                                        for c in t0["quadrature"]})
-        if any("rounding" in f["terms"] for f in fids):
-            out["terms"]["rounding"] = float(sum(f["terms"].get("rounding", 0.0) for f in fids))
-        if any("field_read" in f["terms"] for f in fids):
-            out["terms"]["field_read"] = float(sum(f["terms"].get("field_read", 0.0) for f in fids))
+                            quadrature={c: float(sum(f["terms"]["quadrature"][c] for f in fids)) for c in t0["quadrature"]})
+        for key in ("rounding", "field_read"):
+            if any(key in f["terms"] for f in fids):
+                _same_keys([f["terms"] for f in fids], (key,), "fidelity.terms")
+                out["terms"][key] = float(sum(f["terms"][key] for f in fids))
     if "err_max" in out and "floor_max" in out:
         out["within_2x_floor"] = bool(out["err_max"] <= 2.0 * out["floor_max"])
     return _cover_terms(out)
@@ -1345,10 +1348,10 @@ def _write_run_sidecar(out_path, run, walk):
     of a bank's packs -- the small or fast ones, this module's own tests among them -- would have no such
     directory to hold a sidecar. A file written next to the pack it describes exists exactly when the pack does.
 
-    Names the pack's own sha256 (:func:`dmipy_sim.replay.hub.sha256_of`, what a consumer pins --
+    Names the pack's own sha256 (:func:`dmipy_replay.replay.hub.sha256_of`, what a consumer pins --
     :func:`dmipy_sim.replay.publish.manifest_row`), so the sidecar for a pack found by its hash is the one its
     bytes point to. Returns the sidecar's path."""
-    from .hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     w = getattr(walk, "run", None)
     sha = sha256_of(out_path)
     sidecar = dict(pack_sha256=sha, pack=run.summary,
@@ -1371,7 +1374,8 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
     This is only meaningful if walker ORDER is exchangeable. Producers that seed pool-by-pool (e.g.
     intra-axonal then myelin) must shuffle, or a prefix silently returns a one-pool substrate; the
     producer asserts that by setting ``walkers_shuffled`` on the master. Without it the tiers are
-    still reported but flagged unusable, rather than quietly offering a biased read.
+    still reported but flagged unusable, rather than quietly offering a biased read. A certificate that states
+    no floor (``floor_max`` None) has no tiers.
     """
     per_walker, fixed, whole = 0, 0, []
     for k, v in arrays.items():
@@ -1385,13 +1389,13 @@ def _precision_tiers(arrays, n_walkers, floor_max, walkers_shuffled):
             # it as fixed overhead keeps a small tier's quoted size honest instead of understating it.
             fixed += nbytes; whole.append(k)
     tiers = []
-    if floor_max > 0:
+    if floor_max is not None and floor_max > 0:
         for eps in (1e-2, 3e-3, 1e-3):
             n = int(min(n_walkers, max(1, np.ceil(n_walkers * (floor_max / eps) ** 2))))
             tiers.append(dict(eps=float(eps), n_walkers=n, bytes=int(n * per_walker + fixed),
                               reachable=bool(n < n_walkers or floor_max <= eps)))
     return dict(bytes_per_walker=per_walker, fixed_bytes=fixed,
-                not_prefix_sliceable=sorted(whole), floor_at_full_n=float(floor_max),
+                not_prefix_sliceable=sorted(whole), floor_at_full_n=(None if floor_max is None else float(floor_max)),
                 walkers_shuffled=bool(walkers_shuffled),
                 usable=bool(walkers_shuffled), tiers=tiers,
                 note=("prefix reads are unbiased" if walkers_shuffled else
@@ -1419,7 +1423,7 @@ def _measured_truncation(fid):
     ``err_max`` bounds the truncation over the battery, so ``terms.truncation`` is the smaller of it and the free
     bridge's walk-free bound (``truncation_from = "pilot"`` when the measurement is the smaller, RPK.md 9.5.5)."""
     t = fid.get("terms")
-    if isinstance(t, dict) and fid.get("err_max") is not None and float(fid["err_max"]) < float(t.get("truncation", 0.0)):
+    if isinstance(t, dict) and fid.get("err_max") is not None and float(fid["err_max"]) < float(t["truncation"]):
         t["truncation"] = float(fid["err_max"]); t["truncation_from"] = "pilot"
     return fid
 
@@ -1430,8 +1434,8 @@ def _cover_terms(fid):
     t = fid.get("terms")
     if not isinstance(t, dict) or fid.get("err_max") is None:
         return fid
-    total = (float(t.get("truncation", 0.0)) + float(sum((t.get("quadrature") or {}).values()))
-             + float(t.get("field_read", 0.0)) + float(t.get("rounding", 0.0)))
+    total = (float(t["truncation"]) + float(sum(t["quadrature"].values()))      # every certificate's terms
+             + float(sum(t[k] for k in ("field_read", "rounding") if k in t)))     # present iff the field / float32 is
     if total > float(fid["err_max"]):
         fid["err_max"] = total
     if fid.get("floor_max") is not None:
@@ -1442,13 +1446,13 @@ def _cover_terms(fid):
 def _terms_of(fid):
     """``fidelity.terms`` (RPK.md 9.5.5) of a certificate that carries its bounded terms as ``err_truncation`` /
     ``err_quadrature`` / ``err_quadrature_surface``."""
-    q = dict(positions=float(fid.get("err_quadrature", 0.0)))
+    q = dict(positions=float(fid["err_quadrature"]))
     if fid.get("err_quadrature_surface") is not None and fid.get("has_contact"):
         q["local_time"] = float(fid["err_quadrature_surface"])
     f = fid.get("field")
     if f is not None:                                                 # iff the field channel is present
         q["field"] = float(f["quadrature"])
-    out = dict(truncation=float(fid.get("err_truncation", 0.0)), truncation_from="band_variance", quadrature=q)
+    out = dict(truncation=float(fid["err_truncation"]), truncation_from="band_variance", quadrature=q)
     if f is not None:
         out["field_read"] = float(f["field_read"])
     if fid.get("err_rounding") is not None:                           # REQUIRED iff block.precision is float32
@@ -1457,11 +1461,15 @@ def _terms_of(fid):
 
 
 def _battery_b_max(env, T=None):
-    """The largest b (s/m^2) the envelope certifies: a scanner class's bound over the window ``T``
+    """The largest b (s/m^2) the envelope certifies: its ``G_max``'s bound over the window ``T``
     (:func:`compression.class_b_max`), else its battery's largest (:func:`compression.acquisition_battery`)."""
     if _cx.envelope_G_max(env) is not None:
         return _cx.class_b_max(_cx.envelope_G_max(env), T)
-    return float(max(list(env.get("bvals") or [0.0]) + [float(env.get("shortd_b") or 0.0)]))
+    b = [float(x) for x in (env.get("bvals") or [])] + ([] if env.get("shortd_b") is None else [float(env["shortd_b"])])
+    if not b:
+        raise ValueError("the envelope states no G_max and its battery no b-value (bvals, shortd_b): it certifies no "
+                         "largest b for the rounding term to be charged at")
+    return float(max(b))
 
 
 def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_contact=None, rho_over_D=None,
@@ -1487,8 +1495,8 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     every band is a phase error correlated with the phase, ``|<e^{i phi (1 + r)}> - <e^{i phi}>| <= r sqrt(<phi^2>)
     <= r sqrt(2 b_max D)``, with ``b_max`` the battery's largest b and ``D`` the bounds' diffusivity.
 
-    An envelope certified for a scanner class (:func:`compression.envelope_G_max`) states the gradient side for every
-    waveform the class plays, ``|G_axis| <= G_max`` over the window: by Bessel's inequality on the orthonormal sine
+    An envelope (:func:`compression.envelope_G_max`) states the gradient side for every waveform within it,
+    ``|G_axis| <= G_max`` over the window: by Bessel's inequality on the orthonormal sine
     basis ``sum_k W_k^2 <= G_max^2 T`` per axis, so the quadrature is at most ``gamma^2 G_max^2 T max_k(rel_k T / (pi
     k)^2) sum_c QV_c / 2``, the quantisation's ``eps^2`` at most ``gamma^2 G_max^2 T sum_c max_k step_ck^2 / 12`` and
     the rounding's b the class's (:func:`compression.class_b_max`). The truncation has no class bound short of the
@@ -1497,7 +1505,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     the battery's at K = 256 on Connectome 2.0). The truncation guarantee is per waveform: the replay's band check
     (:meth:`ReplayPack._check_band`) refuses every actual waveform whose truncation, bounded by half the free bridge's
     phase variance beyond ``K``, exceeds the pack's ``fidelity.target_floor`` less the other rows of this certificate
-    (:func:`~dmipy_sim.replay.replay.truncation_budget`).
+    (:func:`~dmipy_replay.replay.replay.truncation_budget`).
 
     ``band_var`` (m^2, per band and axis) states the positions' quadrature directly, in place of ``rel(m, h) x QV``: the
     interpolation variance a walk of saves leaves in every band (:mod:`dmipy_sim.foreign`, ``D h^2 / 6``), bounded from the
@@ -1534,7 +1542,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
             eps = np.sqrt(GAMMA ** 2 * np.einsum("mkc,ck->m", W ** 2, step2) / 12.0)
         else:                   # every waveform of the class: sum_k W_k^2 step_k^2 <= max_k step_k^2 G_max^2 T per axis
             eps = np.full(len(meta), np.sqrt(GAMMA ** 2 * G_max ** 2 * T * float(step2.max(axis=1).sum()) / 12.0))
-    eps_f = 0.0 if field is None else float(field.get("quantisation_eps", 0.0))               # the field's, a phase of its own
+    eps_f = 0.0 if field is None else float(field["quantisation_eps"])                         # the field's, a phase of its own
     quant_of = lambda e: e ** 2 / 2.0                                                         # the bias; the random part is the floor's
     eps_all = np.sqrt(eps ** 2 + eps_f ** 2)                                                  # independent phases add in variance
     quant = quant_of(eps_all)
@@ -1564,7 +1572,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
                                 rel_at_band_edge=float(_cx.quadrature_rel(m, h, np.pi * K / T))),
                 bounds_diffusivity=float(D),
                 **({} if G_max is None else dict(gradient_bound=dict(
-                    kind="scanner_class", scanner=env.get("scanner"), G_max_per_axis=float(G_max), T=T,
+                    kind="envelope", name=env.get("name"), G_max_per_axis=float(G_max), T=T,
                     terms="quadrature, quantisation and rounding over every waveform within G_max per axis (Bessel's "
                           "inequality on the sine basis); truncation and floors over the battery's shapes at their "
                           "class amplitude"))))
@@ -1624,7 +1632,7 @@ def join_windows(packs, *, fidelity, walks, walkers_shuffled):
                     mm[k] = float(max(vals)) if not isinstance(vals[0], dict) else vals[0]
     n_walkers = int(packs[0].n_walkers)
     if cm.get("walker_preserving"):
-        cm["precision_tiers"] = _precision_tiers(arrays, n_walkers, float(fidelity.get("floor_max") or 0.0), bool(walkers_shuffled))
+        cm["precision_tiers"] = _precision_tiers(arrays, n_walkers, fidelity.get("floor_max"), bool(walkers_shuffled))
     blk = meta["walk_params"]["block"]
     blk["n_blocks"] = int(n_windows) * int(blk["n_blocks"])
     for key in ("k0_residual_m", "k0_residual_relative"):                  # what the windows measured: the worst
@@ -1712,8 +1720,10 @@ def _field_scale(env, spec=None):
     if spec is not None:
         for p in getattr(spec, "field_source_pools", []):
             s = p.susceptibility
-            chi_i = max(chi_i, abs(float(s.chi_iso or 0.0)))
-            chi_a = max(chi_a, abs(float(s.chi_aniso or 0.0)))
+            if s.chi_iso is not None:                                # an unstated chi is a replay knob: it sets no split
+                chi_i = max(chi_i, abs(float(s.chi_iso)))
+            if s.chi_aniso is not None:
+                chi_a = max(chi_a, abs(float(s.chi_aniso)))
     if chi_i <= 0.0 and chi_a <= 0.0:
         return chi, 0.1 * chi
     chi_a = chi_a if chi_a > 0.0 else 0.1 * chi_i
@@ -1753,7 +1763,7 @@ def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h=None, edges=None, 
     chi_i, ca = chi if chi is not None else _field_scale(env)
     if not gm.get("has_aniso"):
         ca = 0.0
-    n_p = int(pm.get("max_refocus_pulses") or 1)
+    n_p = _battery_pulses(pm)
     if edges is None:
         gates, dt = _battery_gates(n_t, n_p), float(h)
     else:
@@ -1771,6 +1781,13 @@ def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, h=None, edges=None, 
             e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
             err, floor = max(err, e), max(floor, f)
     return dict(err=float(err), floor=float(floor), n_pulses_certified=n_p, n_walkers=int(n_w))
+
+
+def _battery_pulses(pm):
+    """The refocusing pulses of the battery's CPMG train for a path channel: the depth its envelope certifies
+    (``max_refocus_pulses``), and one -- the spin echo every battery carries -- where it states none or none at all."""
+    depth = pm.get("max_refocus_pulses")
+    return 1 if depth is None else max(1, int(depth))
 
 
 def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi=None, n_sub=8000):
@@ -1793,7 +1810,7 @@ def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi
     chi_i, ca = chi if chi is not None else _field_scale(env)
     if not gm.get("has_aniso"):
         ca = 0.0
-    n_p = int(pm.get("max_refocus_pulses") or 1)
+    n_p = _battery_pulses(pm)
 
     def rf_train(npul):
         ev = [RFEvent(0.0, 90.0, 'Mz→Mxy')]
@@ -1923,13 +1940,13 @@ def _field_terms(T, h, m, K_c3, qv_field, env, read):
     term = field_read_term(read["dt_f"], read["qv_increments"], read["B0"], read["chi"], read.get("constants"))
     return dict(quadrature=float(0.5 * v.max()), field_read=float(term), B0=B0, chi=float(chi),
                 read=dict(B0=float(read["B0"]), chi=float(read["chi"]), interval_s=float(read["dt_f"]),
-                          read_limit_B0_chi_T=_finite_or_none(field_read_limit_B0_chi(read["dt_f"], read["qv_increments"], read.get("floor", 1e-3),
+                          read_limit_B0_chi_T=_finite_or_none(field_read_limit_B0_chi(read["dt_f"], read["qv_increments"], float(read["floor"]),
                                                                              read.get("constants")))))
 
 
 # ------------------------------------------------------------------------------------------ the pack from the walk
-def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=None, K=None, temporal_bandwidth_hz=None,
-                      scanner=None, sigma_star=None, planned_floor=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
+def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=None, battery=None, K=None, temporal_bandwidth_hz=None,
+                      sigma_star=None, planned_floor=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
                       susc_path_K=None, field_container="derived", voxel_grid=None, position_container="derived", blt_container="derived",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False, fidelity=None, device="auto",
                       window_T=None, pack_license=None, pack_license_url=None):
@@ -1943,22 +1960,26 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     the terms the pack file itself is distributed under, as an SPDX expression, with ``pack_license_url`` where
     its full text lives; absent, the pack is distributed under ``license``.
 
-    **The band is the scanner class's** (#643): ``K = ceil(2 f T)`` per window with ``f`` = :func:`storage_band_hz`
-    of ``scanner`` (the class the walk was walked for, ``CoefficientWalk.scanner``, which :func:`~dmipy_sim.walk`
-    sets) times :data:`STORAGE_BAND_MARGIN`, never more than the walk's own ``K``; ``K`` or ``temporal_bandwidth_hz``
-    state the band directly, and a walk with no class and no stated band is packed at its own ``K`` (what it was
-    walked at). Nothing is searched on the walk: the certificate measures whether the band holds, it does not
-    choose it.
+    **The pack is certified for an envelope** (an :class:`~dmipy_replay.replay.envelope.Envelope`): ``envelope``, else
+    the one the walk was walked for (``CoefficientWalk.envelope``, which :func:`~dmipy_sim.walk` sets); a walk that
+    carries none with none given is refused by name. The band is the envelope's (#643): ``K = ceil(2 band_hz T)`` per
+    window (:meth:`~dmipy_replay.replay.envelope.Envelope.mode_count`), never more than the walk's own ``K``; ``K`` or
+    ``temporal_bandwidth_hz`` state fewer bands, and the pack's header then states the band it stores. Nothing is
+    searched on the walk: the certificate measures whether the band holds, it does not choose it. The header states the
+    envelope (``replay_envelope.acquisition``: ``bound = "envelope"``, ``name``, ``band_hz``, ``G_max``, ``B0_list``;
+    ``replay_envelope.tissue``: ``rho2_over_D_max``, ``chi_max``). A contact channel under an envelope with no
+    ``rho2_max`` is certified at no surface relaxivity (its ``rho2_over_D_max`` is 0); a field channel under one with no
+    ``chi_max`` or ``B0_list`` is refused by name.
 
     ``position_container``, ``blt_container`` and ``field_container`` are the band containers of the position,
     contact and field channels: ``"derived"`` (the default) is :data:`compression.BAND_CONTAINER` for the first two and
     :class:`DerivedFieldContainer` for the field, each derived per pack against the pack's floor; ``None`` the float
     container; an explicit ``((upto, bits), ...)`` or :func:`compression.band_curve` list is taken as given.
 
-    ``envelope`` is what the certificate is read over (:func:`compression.certified_envelope`: the default's battery
-    when None, and the default's ``rho2_list`` when it states none): the acquisition battery, and the surface
-    relaxivities ``rho2_list`` (m/s) the contact tier is certified at. A pack with a contact channel states the
-    largest as ``replay_envelope.tissue.rho2_over_D_max`` (over the walk's ``D``), and a replay beyond it is refused.
+    ``battery`` is where the certificate's floors and truncation are read (:func:`compression.default_battery` when
+    None): waveform shapes and b values, and ``theta_deg``, the field directions. The contact tier is read at
+    :data:`compression.RHO2_READ_FRACTIONS` of the envelope's ``rho2_max``; a pack with a contact channel states its
+    ``rho2_max`` as ``replay_envelope.tissue.rho2_over_D_max`` (over the walk's ``D``), and a replay beyond it is refused.
 
     ``sigma_star`` is the numerical cap the codec is derived at and ``planned_floor`` the Monte-Carlo floor the walker
     count was planned for; given together, the certificate states each against its own quantity (``target_floor`` =
@@ -1973,9 +1994,9 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     coded split-half floors; the field channel's pilot error beside them), or ``"measured"``, which also replays the
     battery on the walk's raw subset against its own coefficients -- the positions, and the field channel on the
     scalar gates and on the vector-Bloch path (:func:`_susc_path_bloch_fidelity`) -- and is refused by name on a walk
-    that kept none. ``voxel_grid`` (a :class:`~dmipy_sim.phantom.Grid`, substrate-attached) adds the per-voxel
+    that kept none. ``voxel_grid`` (a :class:`~dmipy_replay.phantom.Grid`, substrate-attached) adds the per-voxel
     certificate a partition needs (:func:`voxel_floor_coded`). ``device`` runs the coded floors on the JAX device
-    (``"auto"``: when it is a GPU). Returns a :class:`~dmipy_sim.replay.replay.ReplayPack`; writes it to
+    (``"auto"``: when it is a GPU). Returns a :class:`~dmipy_replay.replay.replay.ReplayPack`; writes it to
     ``out_path`` if given.
     """
     from ..coefficient_walk import CoefficientWalk
@@ -1993,6 +2014,14 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                         f"simulate_trajectories_adaptive, simulate_mt_trajectories); got {type(walk).__name__}. A pack is "
                         "the bands a walk accumulated; it is never built from samples on a grid")
     cw = walk
+    envelope = cw.envelope if envelope is None else envelope
+    if envelope is None:
+        raise ValueError("state the envelope this pack is certified for: build_replay_pack(..., envelope=...) with "
+                         "dmipy_replay.envelope_of(scanner, ...) or dmipy_replay.Envelope(...). The walk carries none (a walk "
+                         "from walk(spec, ..., envelope=...) carries its envelope, the engine primitive's does not); a "
+                         "replay refuses a pack that states none. A pack built for one acquisition states that "
+                         "acquisition's own (compression.acquisition_envelope).")
+    _cx.certificate_settings(envelope, battery)                 # an Envelope, and a battery of battery keys only
     if fidelity is None:
         fidelity = "derived"
     if fidelity not in ("derived", "measured"):
@@ -2009,7 +2038,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                          f"window_T = {float(window_T) * 1e3:.4g} ms (RPK.md 4.3): walk it with that window_T, or pass "
                          f"window_T >= {T_win:.6g}")
     weights = _coefficient_weights(cw, weights)
-    kw = dict(license=license, citation=citation, weights=weights, envelope=envelope, scanner=scanner,
+    kw = dict(license=license, citation=citation, weights=weights, envelope=envelope, battery=battery,
               sigma_star=sigma_star, planned_floor=planned_floor, provenance=provenance, blt_dtype=blt_dtype, position_container=position_container,
               blt_container=blt_container, diffusivity=diffusivity, substrate_frame=substrate_frame, verbose=verbose,
               fidelity=fidelity, device=device, pack_license=pack_license, pack_license_url=pack_license_url)
@@ -2073,14 +2102,14 @@ def _target_statements(fid, sigma_star, planned_floor):
                 meets_target=err_ok and floor_ok)
 
 
-def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K, temporal_bandwidth_hz, scanner,
+def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, battery, K, temporal_bandwidth_hz,
                               sigma_star, planned_floor, provenance, blt_temporal_K, blt_dtype, susc_path_K, field_container, voxel_grid,
                               position_container, blt_container, diffusivity, substrate_frame, verbose, fidelity, device,
                               pack_license, pack_license_url, run):
     """One window of :func:`build_replay_pack` as a pack of its own (``cw`` a one-window walk; its block record names
     the window's start on the walk's clock when it is a later window)."""
     T, h = float(cw.T), float(cw.h)
-    t0 = float((cw.block.get("window") or {}).get("t0", cw.block.get("t_start", 0.0)))
+    t0 = _window_t0(cw.block)
     n_t = int(cw.n_blocks) + 1                                 # the battery's grid: the window's block ends
     spec = cw.spec
     sub = spec.to_dict()
@@ -2097,19 +2126,21 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
             ends = np.stack([Cw[:, 0, :], Cw[:, 0, :] + Cw[:, 1, :]], axis=1)       # the walk's two exact endpoints
             check_frame_against_walk(ends, substrate_frame, w=weights,
                                      bundle_axes=(None if not bundles else [b["axis"] for b in bundles]))
-    D = float(diffusivity if diffusivity is not None else (cw.diffusivity or 0.0))
-    if not D > 0.0:
+    D = diffusivity if diffusivity is not None else cw.diffusivity
+    if D is None or not float(D) > 0.0:
         raise ValueError("the walk-free certificate bounds the truncation at the walk's diffusivity, which this walk does not record")
-    band_class = None
-    if K is None and temporal_bandwidth_hz is None and (scanner or cw.scanner) is not None:
-        band_class = scanner if scanner is not None else cw.scanner       # the class the walk was walked for (#643)
-        temporal_bandwidth_hz = storage_band_hz(band_class)
-    if K is None:                                             # else the walk's own band: what it was walked at
-        K = cw.K if temporal_bandwidth_hz is None else min(mode_count(T, temporal_bandwidth_hz=temporal_bandwidth_hz), cw.K)
+    D = float(D)
+    if K is None:                                             # the envelope's band (#643), or a stated one, at most the walk's
+        K = min(mode_count(T, envelope.band_hz if temporal_bandwidth_hz is None else temporal_bandwidth_hz), cw.K)
     K = int(K)
     if K > cw.K:
         raise ValueError(f"the walk accumulated {cw.K} bands per window; a pack of {K} needs a walk with K >= {K}")
-    env = _cx.certified_envelope(envelope, spec)
+    if cw.field_coeffs is not None and (envelope.chi_max is None or not envelope.B0_list):
+        raise ValueError("the walk stores a field channel and the envelope states no "
+                         + ("chi_max" if envelope.chi_max is None else "B0_list")
+                         + ": state the susceptibility scale and the field strengths the field tier is certified at "
+                           "(Envelope(chi_max=..., B0_list=...), envelope_of(..., chi_max=..., B0_list=...))")
+    env = _cx.certified_envelope(_cx.certificate_settings(envelope, battery), spec)
     C = np.asarray(cw.position_coeffs, np.float64)[:, 0, :K + 2, :]
     run.phase("floor")
     floor = _cx.measure_floor_coded(C, h, n_t, env, w=weights, device=device)
@@ -2151,8 +2182,11 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                                          device=device)
         _pm["band"] = dict(band) if band else dict(rule="given", K=K_f)
         _pm["read"] = {k: v for k, v in (cw.block.get("field_read") or {}).items()}
+        if fr.get("floor") is None:
+            raise ValueError("this walk's block.field_read states no floor, the term its field read is held to "
+                             "(accumulate.field_read_of_pilot records it); walk it again")
         field_terms = _field_terms(T, h, cw.m, K_f, np.asarray(cw.qv_field, np.float64)[:, 0].mean(axis=0), env,
-                                   dict(dt_f=float(cw.field_read_interval), B0=B0_r, chi=chi_r, floor=float(fr.get("floor", 1e-3)),
+                                   dict(dt_f=float(cw.field_read_interval), B0=B0_r, chi=chi_r, floor=float(fr["floor"]),
                                         qv_increments=np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0),
                                         constants=fr.get("constants")))
         field_terms["quantisation_eps"] = field_quantisation(_a, _pm, env, T=T, h=h, B0=B0_r, chi_iso=chi_scale[0], chi_aniso=chi_scale[1])
@@ -2204,7 +2238,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         if band.get("err_truncation") is not None and int(band.get("K", K_f)) == K_f:
             fid.update(err_susc_path=float(band["err_truncation"]) + float(fid["err_quantisation_field"]), floor_susc_path=float(band["floor"]),
                        susc_path_pulses_certified=int(_pm["max_refocus_pulses"]), susc_path_measured_on="pilot",
-                       susc_path_walkers=int(band.get("pilot_walkers", 0)))
+                       susc_path_walkers=(None if band.get("pilot_walkers") is None else int(band["pilot_walkers"])))
         if fidelity == "measured" and cw.raw_field is not None:
             run.phase("certificate path")
             series, edges = read_interval_means(cw.raw_field), cw.field_read_instants   # the walk's own reads, interval by interval
@@ -2253,7 +2287,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         # subset's reading
         run.phase("certificate contact")
         _sf = _surface_terms_walk_free(np.asarray(cw.boundary_endpoint)[:, 0], np.asarray(cw.boundary_bands)[:, 0], arrays, cm_,
-                                       env, T=T, h=h, D=D, w=weights, quadrature=float(fid.get("err_quadrature_surface", 0.0)))
+                                       env, T=T, h=h, D=D, w=weights, quadrature=float(fid["err_quadrature_surface"]))
         fid.update(err_surface=_sf["err"], floor_surface=_sf["floor"], surface_certified="walk_free", surface_rho2_list=_sf["rho2_list"],
                    err_surface_quantisation=_sf["quantisation"], err_surface_truncation=_sf["truncation"],
                    err_surface_quadrature=_sf["quadrature"])
@@ -2267,7 +2301,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
     if voxel_grid is not None:
         from dmipy_replay.phantom.grid import Grid
         if not isinstance(voxel_grid, Grid) or voxel_grid.attach != "substrate":
-            raise TypeError("voxel_grid must be a dmipy_sim.phantom.Grid attached to the substrate")
+            raise TypeError("voxel_grid must be a dmipy_replay.phantom.Grid attached to the substrate")
         _w = None if weights is None else np.asarray(weights, np.float64)
         _ijk, _pools, _n, _floor, _err = voxel_floor_coded(pos_arrays, h, n_t, voxel_grid, comp, env, w=_w, device=device)
         arrays["voxel_ijk"] = _ijk.astype(np.int32)
@@ -2279,9 +2313,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
         fid.update(_target_statements(fid, sigma_star, planned_floor))
     comp_meta = dict(method=_r_compression.POSITION_METHOD, K=K, walker_preserving=True, container=pos_meta.get("container"),
                      temporal_bandwidth_hz=float(K) / (2.0 * T))
-    if band_class is not None:
-        comp_meta["scanner"] = str(band_class)
-    comp_meta["precision_tiers"] = _precision_tiers(arrays, cw.n_walkers, float(fid.get("floor_max") or 0.0), True)
+    comp_meta["precision_tiers"] = _precision_tiers(arrays, cw.n_walkers, fid.get("floor_max"), True)
     if chan_meta:
         comp_meta["channels"] = chan_meta
     fid = _round_certificate(fid)
@@ -2302,7 +2334,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
                              err_interpolation=float(fid["err_quadrature"]))
     fid["terms"] = _terms_of(dict(fid, has_contact=cw.boundary_bands is not None, field=field_terms))
     _cover_terms(_measured_truncation(fid) if fid.get("measured_by") == "raw_subset" else fid)
-    env_acq = _envelope_summary(env, T)
+    env_acq = _envelope_summary(envelope, env, T, float(K) / (2.0 * T))
     if channels["susceptibility"]:
         fr = cw.block.get("field_read") or {}
         env_acq["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
@@ -2340,17 +2372,17 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, K
 def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=8000, safety=1.4, max_n=400000, verbose=True, **bp):
     """Adaptive floor-targeting generation policy (the bank default).
 
-    Size the walker count so the standard-error Monte-Carlo floor <= ``sigma_star``, then build the pack at the band
-    ``bp`` states (``scanner=``, ``K=`` or ``temporal_bandwidth_hz=``; #643: the band is never searched) and record
+    Size the walker count so the standard-error Monte-Carlo floor <= ``sigma_star``, then build the pack for the envelope
+    the walk carries or ``envelope`` states, at its band or the one ``bp`` states (``K=`` or ``temporal_bandwidth_hz=``;
+    #643: the band is never searched), over the battery ``battery`` (``bp``), and record
     whether its codec error meets ``sigma_star`` too (``fidelity.meets_target``) -- converging to a defined
     precision instead of a wasteful ultra-high N. ``make_model(n_walkers)`` MUST return a fresh
     :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` on the SAME fixed geometry (only the walker count changes);
     the floor is read from its coefficients (:func:`compression.measure_floor_coded`, no path). Records
     ``sigma_star`` + the achieved floor in the pack.
     """
-    env = envelope or _cx.default_envelope()
-
     def floor_of(cw):
+        env = _cx.certificate_settings(cw.envelope if envelope is None else envelope, bp.get("battery"))
         C = np.asarray(cw.position_coeffs, np.float64)[:, 0]
         return float(_cx.measure_floor_coded(C, float(cw.h), int(cw.n_blocks) // int(cw.n_windows) + 1, env, w=cw.weights)["floor_max"])
     model = make_model(pilot_n)
@@ -2372,7 +2404,7 @@ def build_to_floor(make_model, *, id, envelope=None, sigma_star=1e-3, pilot_n=80
     if verbose:
         log.info(f"[floor-target] N={n_star}: achieved floor={f:.4g} "
               f"({'<=' if f <= sigma_star else '>'} sigma*)")
-    return build_replay_pack(model, id=id, envelope=env, sigma_star=sigma_star, planned_floor=sigma_star, verbose=verbose, **bp)
+    return build_replay_pack(model, id=id, envelope=envelope, sigma_star=sigma_star, planned_floor=sigma_star, verbose=verbose, **bp)
 
 
 # ------------------------------------------------------------------------------------ a window of a pack, re-projected
@@ -2439,7 +2471,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     containers (None: the parent's own ranges; ``"derived"``: derived for the window's floor). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
     truncation measured on the battery -- the parent's exact replay of the window (its bands with the waveform at
     ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``. ``envelope`` is
-    what it is certified under, the parent's (:meth:`~dmipy_sim.replay.replay.ReplayPack.stated_envelope`) by
+    what it is certified under, the parent's (:meth:`~dmipy_replay.replay.replay.ReplayPack.stated_envelope`) by
     default."""
     from dmipy_replay.constants import GAMMA
     from dmipy_replay.replay.compression import (
@@ -2456,7 +2488,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         raise ValueError(f"the window [{t0:.6g}, {t0 + T_new:.6g}] s is not within the pack's walk of {T:.6g} s")
     n_new = max(int(round(T_new / h)), 2)
     T_new = float(T_new)
-    env = _cx.certified_envelope(pack.stated_envelope() if envelope is None else envelope, pack.substrate)
+    env = _cx.certified_envelope(stated_envelope(pack) if envelope is None else envelope, pack.substrate)
     ch = dict(pack.meta.get("compression", {}).get("channels", {}) or {})
     wp = pack.meta["walk_params"]
     K_new = int(K) if K is not None else max(2, int(np.ceil(pack.K * T_new / T)))
@@ -2567,8 +2599,11 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
                              "of a window is charged on; re-walk it with a conformant producer")
         read = pm.get("read") or {}
         at = ((pack.meta.get("replay_envelope") or {}).get("field_read") or {}).get("term_at") or {}
+        if at.get("floor") is None:
+            raise ValueError("this pack's replay_envelope.field_read.term_at states no floor, the term its field read is "
+                             "held to and a window's field read is charged at; re-walk it with a conformant producer")
         field_terms = _field_terms(T_new, h_new, int(blk["m"]), Kf_new, qv_f if qv_f is not None else np.zeros(1), env,
-                                   dict(dt_f=float(wp["field_read_interval"]), B0=B0_r, chi=chi_r, floor=float(at.get("floor") or 1e-3),
+                                   dict(dt_f=float(wp["field_read_interval"]), B0=B0_r, chi=chi_r, floor=float(at["floor"]),
                                         qv_increments=np.asarray(qv["field_increments"], np.float64) * (T_new / T),
                                         constants=read.get("constants")))
         field_terms["quantisation_eps"] = field_quantisation(a_, pm_new, env, T=T_new, h=h_new, B0=B0_r, chi_iso=chi_i, chi_aniso=ca)
@@ -2601,15 +2636,14 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     _cover_terms(fid)
     comp_meta = dict(method=_r_compression.POSITION_METHOD, K=K_new, walker_preserving=True, container=pos_meta.get("container"),
                      temporal_bandwidth_hz=float(K_new) / (2.0 * T_new))
-    if pack.meta["compression"].get("scanner"):
-        comp_meta["scanner"] = pack.meta["compression"]["scanner"]
-    comp_meta["precision_tiers"] = _precision_tiers(arrays, pack.n_walkers, float(fid.get("floor_max") or 0.0),
+    comp_meta["precision_tiers"] = _precision_tiers(arrays, pack.n_walkers, fid.get("floor_max"),
                                                     bool(pack.meta["compression"].get("precision_tiers", {}).get("walkers_shuffled", True)))
     comp_meta["channels"] = chan_meta
     fid = _round_certificate(fid)
     env_out = dict(pack.meta.get("replay_envelope") or {})
     env_out.update(bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"], field=channels["susceptibility"],
-                   magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition") or _envelope_summary(env, T_new)))
+                   magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition")
+                                                                      or _envelope_summary(pack.envelope, env, T_new, float(K_new) / (2.0 * T_new))))
     if pm is not None:
         env_out["acquisition"]["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
         env_out["acquisition"]["max_refocusing_pulses"] = int(chan_meta["susc_field_basis"]["max_refocus_pulses"])

@@ -29,6 +29,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
+from dmipy_replay import envelope_of
+from examples.substrate_bank import common
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference, ReferenceFamily,
                                         pack_seed, ReferenceQuantity, Publication, Source, SourceFile, Systematic,
                                         Tier, Tolerance)
@@ -124,24 +126,18 @@ def spec_of(shape, d_um):
 
 
 def walk(spec, n, *, T, K, seed, sub_steps=None):
-    """The walk the pilot runs and every pack is built from: no relaxivity, every tier stored, ``K`` bands over the
-    window ``T`` in the band's own blocks, at the pack's own ``seed`` (``pack_seed`` of its id); ``sub_steps`` is the
-    step pilot's coarse count, None the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
-    import dmipy_sim as d
-    from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.spec import geometry_from_spec
-    return _walk_geometry(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
-                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
-                                   window_T=float(T))
+    """The protocol's walk hook: :func:`examples.substrate_bank.common.walk` at this family's ``D0``, in ONE storage
+    window spanning ``T``."""
+    return common.walk(spec, n, D=D0, T=T, K=K, seed=seed, sub_steps=sub_steps, window_T=T)
 
 
 # ----------------------------------------------------------------- the envelope and the declared waveforms
-#: What these packs say they are FOR: every waveform the Connectome 2.0 class plays (``scanner``: 0.5 T/m and
-#: 600 T/m/s per axis, the certificate's gradient side), the contact tier at a surface relaxivity up to 3 um/s
-#: (``rho2_list``), and the PGSE / OGSE / short-delta shapes the certificate's truncation and floors are read on.
-#: No pool is magnetic, so no field strength is certified.
-ENVELOPE = dict(scanner="connectome_2", rho2_list=[3e-6],
-                bvals=[0.0, 0.5e9, 1e9, 2e9, 3e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
+#: What these packs say they are FOR: every waveform within the Connectome 2.0 class's envelope (its band and 0.5 T/m
+#: per axis, the certificate's gradient side) and the contact tier at a surface relaxivity up to 3 um/s. No pool is
+#: magnetic, so no field strength is certified.
+ENVELOPE = envelope_of("connectome_2", rho2_max=3e-6)
+#: The PGSE / OGSE / short-delta shapes the certificate's truncation and floors are read on.
+BATTERY = dict(bvals=[0.0, 0.5e9, 1e9, 2e9, 3e9], dirs=[[0, 0, 1], [1, 0, 0], [1, 0, 1]],
                 ogse_periods=[1, 2, 3, 5], shortd_b=1e9, shortd_deltas_frac=[0.2, 0.1, 0.05, 0.025],
                 delta_frac=0.2, Delta_frac=0.5)
 
@@ -151,7 +147,7 @@ DECLARED_PAIRS = ((10e-3, 20e-3), (10e-3, 40e-3), (10e-3, 60e-3), (5e-3, 40e-3))
 
 
 def sequence(delta, Delta, *, b=1e9, direction=(1, 0, 0), n_t=800):
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return pgse([list(direction)], float(delta), float(Delta), bvalues=[float(b)], n_t=int(n_t),
                 slew_rate=np.inf)
 
@@ -244,8 +240,8 @@ def snippet(uri):
     """One call that reproduces one signal of the reproduction table, at its own grid."""
     g = QUANTITY_GRID
     return f'''import numpy as np
-from dmipy_sim import pgse
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import pgse
+from dmipy_replay import ReplayPack
 
 pk = ReplayPack.load("{uri}")
 seq = pgse([{g["direction"]!r}], {g["delta_s"]!r}, {g["Delta_s"]!r}, bvalues=[{g["b_s_per_m2"]!r}],
@@ -255,20 +251,6 @@ print("S = %.6f" % float(np.abs(np.asarray(pk.replay(seq))).ravel()[0]))
 
 
 # ----------------------------------------------------------------- the family
-def licence_text(cache_dir):
-    """The CC BY 4.0 legal code, fetched once and cached: the licence THIS family's packs carry, and the one
-    dmipy-sim itself is the source under."""
-    import urllib.request
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, "cc-by-4.0-legalcode.txt")
-    if not os.path.exists(cache):
-        req = urllib.request.Request("https://creativecommons.org/licenses/by/4.0/legalcode.txt",
-                                     headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
-        with urllib.request.urlopen(req, timeout=60) as fh, open(cache, "wb") as out:
-            out.write(fh.read())
-    return open(cache, encoding="utf-8").read()
-
-
 def measured_quantities(work_dir, rows, grid):
     """The reference's quantities, every number in them MEASURED here at record time and cached on the inputs
     it was measured from: the closed form at two mode counts (its own truncation is the reference's
@@ -324,7 +306,7 @@ def measured_quantities(work_dir, rows, grid):
 def family(work_dir, *, dry, create_dataset, rows=None):
     rows = rows if rows is not None else grid_rows()
     grid = dict(QUANTITY_GRID)
-    text = licence_text(os.path.join(work_dir, ".licence-cache"))
+    text = common.cc_by_4_legal_code(os.path.join(work_dir, ".licence-cache"))   # the licence this family's packs carry
     import dmipy_sim
     from dmipy_sim.replay.reference import code_commit
     sources = [Source(
@@ -412,7 +394,7 @@ def family(work_dir, *, dry, create_dataset, rows=None):
 
     pilot = substrate_name("sphere", 20.0)
     design = Design(
-        window_s=T, K=K_BANDS, envelope=ENVELOPE, waveforms=waveforms,
+        window_s=T, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY, waveforms=waveforms,
         tiers=(Tier(name="positions", floor_key="floor_max", err_key="err_max", target_floor=SIGMA),
                Tier(name="contact", floor_key="floor_surface", err_key="err_surface", target_floor=SIGMA)),
         memory_budget_bytes=BUDGET_BYTES, pilot_n=PILOT_N, safety=1.4, pilot_substrate=pilot,

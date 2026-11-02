@@ -1,6 +1,7 @@
 """The brain-from-CSD example (#193) on the bundled BATMAN crop: the MRtrix inputs become a phantom on the image's
 own grid, the oblique prescription is carried by a rotation rather than a resampling, and the replayed signal has
 its minimum along each voxel's FOD peak."""
+from tests._envelope import stated
 import importlib.util
 from pathlib import Path
 
@@ -8,8 +9,8 @@ import numpy as np
 import pytest
 
 from dmipy_sim.io.mrtrix import read_mif
-from dmipy_sim.replay.so3 import real_sh, rotate_sh
-from dmipy_sim import Pose
+from dmipy_replay.replay.so3 import real_sh, rotate_sh
+from dmipy_replay.phantom import Pose
 
 ROOT = Path(__file__).resolve().parents[1]
 CROP = ROOT / "tests" / "data" / "batman_crop"
@@ -32,7 +33,7 @@ def wm_pack(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 2.5e-6)
     walk = _walk_geometry(300, 2e-9, g, 30e-3, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "wm.rpk"
-    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=8, out_path=str(out))
+    build_replay_pack(walk, id="test/wm", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
     return str(out)
 
 
@@ -83,7 +84,7 @@ def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pac
         pytest.skip("needs a dmipy-fit whose AcquisitionScheme takes a ScannerSequence (fit >= #27)")
     spec = importlib.util.spec_from_file_location("check", ROOT / "examples" / "rph" / "brain_from_csd_check.py")
     check = importlib.util.module_from_spec(spec); spec.loader.exec_module(check)
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     ph, fod, R = example.build(str(CROP), wm_pack)
     seq, g = example.acquisition(str(CROP), ph.grid, TE=0.030, delta=0.006, Delta=0.015)
     S = ph.replay(seq, pose=Pose(R))
@@ -106,7 +107,7 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
     is what makes it visible: its R/L asymmetry is an ODD term in x, so getting the frame wrong shifts the
     field the wrong way on one side of the bore. An isotropic law would have hidden almost all of it."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map
+    from dmipy_replay.phantom import b0_offset_map
 
     ph, fod, R = example.build(str(CROP), wm_pack)
     grid = ph.grid
@@ -136,7 +137,7 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
     # law's anchor radius, it reaches about 9 ppm -- some 25 Hz at 64 mT, against a field that spans about
     # 1050 ppm over the same volume. So it is roughly a percent: not catastrophic, and exactly the size
     # that gets shipped unnoticed.
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     full = Grid(shape=(96, 96, 60), voxel_size_m=grid.voxel_size_m, origin_m=grid.origin_m,
                 isocenter_m=grid.isocenter_m, axes=grid.axes)
     p_full = full.positions_m(full.every_voxel)
@@ -151,7 +152,7 @@ def test_a_field_law_is_none_where_the_machine_publishes_none(example, wm_pack):
     """Every machine but a permanent-magnet one, and `off_resonance=None` is exactly what a replay already
     means by no field offset -- so a brain at 3 T composes as it always did."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map
+    from dmipy_replay.phantom import b0_offset_map
     ph, fod, R = example.build(str(CROP), wm_pack)
     assert b0_offset_map(ScannerLimits.of("prisma"), ph.grid, to_scanner=R) is None
 
@@ -216,7 +217,7 @@ def test_the_catalogued_machine_reaches_the_brain_s_signal(example, wm_pack):
     was bit-identical to the crop on a bare 64 mT field, while the reference route said the delivered b differed
     by percent. Now the machine's tensor, background and Maxwell term reach every voxel, through the grid's own
     obliquity, once per distinct delivered gradient."""
-    from dmipy_sim import sequences
+    from dmipy_replay import sequences
     from dmipy_replay.acquisition.scanners import ScannerLimits
     ph, fod, R = example.build(str(CROP), wm_pack)
     dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [0, 1, 1], [1, 0, 1]], float)

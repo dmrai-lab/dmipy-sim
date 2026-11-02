@@ -5,6 +5,7 @@ kernel (`physics.make_myelin_substep`) in an open domain, stepped by `physics.ma
 repeats `r`). See `tests/geometry/test_trajectory_walk_gap.py` for the pre-flight check that used to
 refuse it, and `tests/test_compartment_ids.py::test_simulate_and_simulate_trajectories_report_the_same_ids`
 for the packed geometry's version of the fused/trajectory label check mirrored here."""
+from tests._envelope import stated, walk_envelope
 import dataclasses
 
 import jax
@@ -13,6 +14,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
+from dmipy_sim.replay.compression import acquisition_envelope
 from dmipy_sim.engine.core import _walk_geometry
 import dmipy_sim.engine.core as core
 from dmipy_sim.replay.bank import build_replay_pack
@@ -34,7 +38,7 @@ def _g():
 def test_walk_spec_no_longer_refuses_the_isolated_cylinder():
     g = _g()
     assert g.trajectory_walk_gap() is None
-    w = walk(g.spec, 8, T_max=1e-3, require_gpu=False)   # must not raise
+    w = walk(g.spec, 8, T_max=1e-3, require_gpu=False, envelope=walk_envelope(of=g.spec))   # must not raise
     assert w.n_walkers == 8 and w.position_coeffs.shape[-1] == 3
 
 
@@ -67,7 +71,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_compartment_at_t0():
     """`simulate`'s return_compartments='final' label and _walk_geometry' raw compartment at block end 0
     are the same classifier, collapsed the same way -- the isolated-cylinder analogue of
     test_compartment_ids.test_simulate_and_simulate_trajectories_report_the_same_ids."""
-    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, _ = simulate_fused(300, None, wf, _g(), seed=0, return_compartments="final", require_gpu=False)
     out = _walk_geometry(300, D, _g(), T_max=6e-3, block_h=2e-3, seed=0, require_gpu=False, raw_subset=300)
     comp0 = np.asarray(out.raw_compartment)[:, 0]
@@ -81,12 +85,12 @@ def test_a_replay_pack_of_the_walk_agrees_with_the_fused_signal():
     within the Monte-Carlo floor, at a few thousand walkers over a few ms. Measured: |dS| = 0.0076
     at N=4000, T_max=4 ms (floor max(0.02, 1/sqrt(N)) = 0.0158)."""
     N, T_max = 4000, 4e-3
-    wf = d.set_b(d.pgse([[1, 0, 0]], 1e-3, 3e-3, gradient_strengths=0.08, n_t=60, slew_rate=np.inf), 5e8)
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 1e-3, 3e-3, gradient_strengths=0.08, n_t=60, slew_rate=np.inf), 5e8)
     s_fused = float(np.asarray(d.simulate(N, None, wf, _g(), seed=0, require_gpu=False)).ravel()[0])
 
     w = _walk_geometry(N, D, _g(), T_max=T_max, block_h=T_max / 60, K=59, seed=0, require_gpu=False)
     w = dataclasses.replace(w, spec=spec_without_source(w.spec))      # the bare signal: no field tier here
-    pk = build_replay_pack(w, id="test/isolated-myelin-pgse", K=w.K, license="x", citation="x")
+    pk = build_replay_pack(w, id="test/isolated-myelin-pgse", K=w.K, license="x", citation="x", envelope=acquisition_envelope(wf, band_hz=w.K / (2.0 * w.T_window), rho2_max=1e-4))
     tissue = Tissue(T2={"intra": 0.05, "myelin": 0.01, "extra": 0.08})
     s_replay = float(np.asarray(pk.replay(wf, tissue=tissue)).ravel()[0])
 
@@ -120,7 +124,7 @@ def test_kappa_mt_still_walks_on_the_packed_class():
 
 def test_walk_spec_builds_a_three_pool_pack():
     g = _g()
-    w = walk(g.spec, 1500, T_max=1e-3, require_gpu=False)
+    w = walk(g.spec, 1500, T_max=1e-3, require_gpu=False, envelope=walk_envelope(of=g.spec))
     assert set(np.unique(np.asarray(w.compartment))) == {EXTRA, INTRA, MYELIN}
-    pack = build_replay_pack(w, id="test/isolated-myelin-spec-walk", license="x", citation="x")   # the sheath's field sampled in the walk
+    pack = build_replay_pack(w, id="test/isolated-myelin-spec-walk", license="x", citation="x", **stated(of=w))   # the sheath's field sampled in the walk
     assert len(pack.substrate.pools) == 3

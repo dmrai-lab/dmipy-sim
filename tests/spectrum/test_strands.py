@@ -1,6 +1,6 @@
 """Fast tests of dmipy_sim.spectrum.strands: the 25 um edge only (one voxel, both policy walk lengths refused by
-the halo rule -- dmipy-sim#697). The 250 um / 1 mm / 5 mm cases (a real far-grid build, minutes each) are
-exercised in test_strands_slow.py."""
+the halo rule -- dmipy-sim#697). The 250 um / 1 mm / 5 mm cases (a far-grid build, minutes each, and a 1 mm plan
+that does not fit a 7 GB runner) are not run in the suite."""
 import json
 import os
 
@@ -11,12 +11,13 @@ from dmipy_sim.spectrum import strands
 from dmipy_sim.spectrum._tck_stream import StreamingTckWriter
 from dmipy_sim.spectrum.common import verify_index
 from dmipy_sim.spectrum.strands import PILOT_TARGET_FLOOR, _generate_column
+from tests._envelope import walk_envelope
 
 
 @pytest.fixture(scope="module")
 def entry_25um(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("spectrum_25um"))
-    return strands(25e-6, 1, out_dir=out)
+    return strands(25e-6, 1, out_dir=out, envelope=walk_envelope())
 
 
 def test_25um_refuses_both_policy_walk_lengths(entry_25um):
@@ -56,7 +57,7 @@ def test_25um_is_walkable_by_walk(entry_25um):
     out = entry_25um["out_dir"]
     spec = disco_spec(os.path.join(out, "substrate/strands.tck"), os.path.join(out, "substrate/strands_diameters.txt"),
                       coordinate_unit_m=25e-6, diameter_unit_m=1e-3, side_m=25e-6, field=False)
-    w = walk(spec, 40, 2e-4, 2e-5, seed=0, require_gpu=False, n_probe=5_000)
+    w = walk(spec, 40, 2e-4, 2e-5, seed=0, require_gpu=False, n_probe=5_000, envelope=walk_envelope(of=spec))
     assert w.n_walkers == 40
     assert np.isfinite(w.position_coeffs).all()
 
@@ -91,21 +92,21 @@ def test_generate_column_two_columns_differ_and_are_reproducible():
 
 def test_strands_refuses_a_bad_tiling_edge(tmp_path):
     with pytest.raises(ValueError):
-        strands(1.5e-3, 1, out_dir=str(tmp_path))
+        strands(1.5e-3, 1, out_dir=str(tmp_path), envelope=walk_envelope())
 
 
 def test_manifest_records_the_far_grid_spacing_without_a_real_build(tmp_path):
     """A manifest's own substrate.far_grid_meta carries the far grid's spacing_m/near_m/n_nodes directly (the
     coordinator's #699 follow-up): a reader should not have to open the far.npy's own .json sidecar just to
     see what resolution an edge's field was built at. Checked against a synthetic far_grid_info -- the real
-    far-grid build this would normally come from is minutes even at 250 um (test_strands_slow.py)."""
-    from dmipy_sim.phantom import Grid
+    far-grid build this would normally come from is minutes even at 250 um (not run in the suite)."""
+    from dmipy_replay.phantom import Grid
     from dmipy_sim.spectrum.strands import _manifest_for
     grid = Grid(shape=(10, 10, 10), voxel_size_m=(25e-6,) * 3, origin_m=(12.5e-6,) * 3)
     _manifest_for(250e-6, 0.02, variant_dir=str(tmp_path), substrate_rel=dict(tracks="t.tck", diameters="d.txt"),
                  far_grid_rel="../substrate/far.npy", far_grid_info=(1_030_301, 2.5e-6, 1.69e-5), grid=grid,
                  counts_rel="counts.npz", blocks_rel="blocks.json", n_tiles=1, id_="x", license_="l", citation="c",
-                 total_walkers=100, n_blocks=1)
+                 total_walkers=100, n_blocks=1, envelope=walk_envelope())
     man = json.load(open(os.path.join(str(tmp_path), "manifest.json")))
     fgm = man["substrate"]["far_grid_meta"]
     assert fgm["n_nodes"] == 1_030_301

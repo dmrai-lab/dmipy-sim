@@ -13,10 +13,12 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import sequences
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
+from tests._envelope import TEST_BAND_HZ, TEST_G_MAX, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.reencode import prefix_pack
 
 D0, T, DT, R, KAPPA = 2.0e-9, 40e-3, 5e-4, 4e-6, 2e-5
 N_WALK = 60       # every check is an identity of the stored walk (exact to float64, or to the walk's float32 rounding): no statistic, no walker count to derive
@@ -25,7 +27,8 @@ N_WALK = 60       # every check is an identity of the stored walk (exact to floa
 def _pack(tmp, geometry, D, T_, dt, name, seed=3, sub_steps=None):
     walk = _walk_geometry(N_WALK, D, geometry, T_, dt, seed=seed, require_gpu=False, K=12, sub_steps=sub_steps)
     out = tmp / f"{name}.rpk"
-    _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out))
+    _float_pack(walk, id=f"test/{name}", license="x", citation="x", K=12, out_path=str(out),
+                envelope=walk_envelope(G_max=TEST_G_MAX, of=walk))                 # the test's ideal lobes
     return read_rpk(str(out))
 
 
@@ -96,14 +99,19 @@ def test_the_view_says_what_it_realises(packs):
 
 
 def test_the_envelope_moves_with_the_size_and_is_held(packs):
+    from dmipy_replay.replay.replay import check_acquisition_envelope
     pk, _, _ = packs
-    b_max = pk.replay_envelope["acquisition"]["b_max"]
+    b_max, G_max = pk.replay_envelope["acquisition"]["b_max"], pk.envelope.G_max
     up = pk.at_length_scale(2.0)
     assert up.replay_envelope["acquisition"]["b_max"] == pytest.approx(b_max / 4)
-    with pytest.raises(ValueError, match="beyond the .* this length-scaled view serves"):
-        up.replay(_seq(T / 2, 0.5 * b_max))
-    up.replay(_seq(T / 2, 0.2 * b_max))                                       # within it
-    pk.at_length_scale(0.5).replay(_seq(T / 2, b_max))                        # s < 1 serves more than the pack states
+    assert up.envelope.G_max == pytest.approx(G_max / 2) and up.envelope.band_hz == pk.envelope.band_hz
+    seq = _seq(T / 2)
+    strong = seq.with_gradient(np.asarray(seq.G, np.float64) * (0.75 * G_max / np.abs(np.asarray(seq.played_gradient)).max()))
+    check_acquisition_envelope(pk.meta, strong)                               # inside the pack's G_max
+    with pytest.raises(ValueError, match=r"G_max = .* T/m per axis .*length-scaled view, s = 2"):
+        check_acquisition_envelope(up.meta, strong)                           # beyond the view's, G_max / 2
+    up.replay(_seq(T / 2, 0.2e9))                                             # within it
+    pk.at_length_scale(0.5).replay(_seq(T / 2))                               # s < 1 serves more than the pack states
     for bad in (0.0, -1.0, np.nan, np.inf):
         with pytest.raises(ValueError, match="positive"):
             pk.at_length_scale(bad)
@@ -126,7 +134,7 @@ def test_the_view_is_the_walk_of_the_scaled_substrate(packs):
 
 
 def test_nothing_is_decoded_on_the_way(packs, monkeypatch):
-    from dmipy_sim.replay import compression, replay as rp
+    from dmipy_replay import ReplayPack
     pk, _, _ = packs
     seq = _seq(T / 2)
 
@@ -135,7 +143,7 @@ def test_nothing_is_decoded_on_the_way(packs, monkeypatch):
     monkeypatch.setattr(_r_compression, "local_time_at", boom)
     monkeypatch.setattr(_r_compression, "positions_at", boom)
     monkeypatch.setattr(_r_compression, "decode_occupancy", boom)
-    monkeypatch.setattr(rp.ReplayPack, "positions", boom)
+    monkeypatch.setattr(ReplayPack, "positions", boom)
     view = pk.at_length_scale(0.5)
     view.replay(seq, tissue=Tissue(rho2=2e-5))
     view.walker_signals(seq)
@@ -144,8 +152,8 @@ def test_nothing_is_decoded_on_the_way(packs, monkeypatch):
 def test_the_prefix_of_a_view_is_the_view_of_the_prefix(packs, tmp_path):
     pk, half, _ = packs
     seq = sequences.pgse([[1.0, 0.0, 0.0]], 1.5e-3, 4e-3, bvalues=[1.0e9], TE=T / 4, n_t=41, slew_rate=np.inf)
-    a = pk.at_length_scale(0.5).prefix(T / 4, out_path=str(tmp_path / "a.rpk"))
-    b = half.prefix(T / 4, out_path=str(tmp_path / "b.rpk"))
+    a = prefix_pack(pk.at_length_scale(0.5), T / 4, out_path=str(tmp_path / "a.rpk"))
+    b = prefix_pack(half, T / 4, out_path=str(tmp_path / "b.rpk"))
     np.testing.assert_allclose(a.replay(seq), b.replay(seq), rtol=1e-4)
     assert a.diffusivity == pytest.approx(D0 / 4)
 
@@ -155,4 +163,8 @@ def _float_pack(*a, **k):
     derived integer default does not promise."""
     from dmipy_sim.replay.bank import build_replay_pack
     k.setdefault("position_container", None); k.setdefault("blt_container", None); k.setdefault("field_container", None)
-    return build_replay_pack(*a, **k)
+    if isinstance(k.get("envelope"), dict):                          # the test's certificate settings: its envelope and battery
+        settings = k.pop("envelope")
+        k.update(stated(settings, G_max=settings.get("G_max", battery_reach(a[0].T_window, settings)), of=a[0]))
+    return build_replay_pack(*a, **{"envelope": walk_envelope(G_max=battery_reach(a[0].T_window), band_hz=TEST_BAND_HZ,
+                                                              of=a[0]), **k})       # the walk's own bands, read on its battery

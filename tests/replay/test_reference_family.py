@@ -15,8 +15,11 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import reference as R
+from dmipy_replay import Envelope
 
 REAL_CODE_COMMIT = R.code_commit        # the module fixture patches R.code_commit; its own test needs the real one
 
@@ -28,14 +31,16 @@ N_WALK = 300
 B = 1e8
 DELTA = 8e-4
 BIGDELTA = 2.4e-3
-ENV = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
-           delta_frac=0.2, Delta_frac=0.5, rho2_list=[])
+BATTERY = dict(bvals=[0.0, B], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=B, shortd_deltas_frac=[0.05],
+               delta_frac=0.2, Delta_frac=0.5)
+#: the test's own envelope: 2 T/m per axis (its ideal lobes), a band wider than the 8 bands it stores, no contact
+ENVELOPE = Envelope(name="test", band_hz=1e9, G_max=2.0, B0_list=(), chi_max=None, rho2_max=None, max_refocusing_pulses=None)
 LICENCE_TEXT = "SYNTHETIC LICENCE\n\n" + ("This is the verbatim text of a licence that does not exist. " * 12)
 GRID = dict(kind="none", solver="exp(-b D), the closed form of free diffusion")
 
 
 def _seq():
-    return d.pgse([[1, 0, 0]], DELTA, BIGDELTA, bvalues=[B], n_t=64, slew_rate=np.inf)
+    return dr.pgse([[1, 0, 0]], DELTA, BIGDELTA, bvalues=[B], n_t=64, slew_rate=np.inf)
 
 
 def waveforms():
@@ -79,10 +84,9 @@ def _served(pack):
 
 def _snippet(uri):
     return (f"import numpy as np\n"
-            f"import dmipy_sim as d\n"
-            f"from dmipy_sim.replay import ReplayPack\n"
-            f"pk = ReplayPack.load({uri!r})\n"
-            f"seq = d.pgse([[1, 0, 0]], {DELTA!r}, {BIGDELTA!r}, bvalues=[{B!r}], n_t=64, slew_rate=np.inf)\n"
+            f"import dmipy_replay as dr\n"
+            f"pk = dr.ReplayPack.load({uri!r})\n"
+            f"seq = dr.pgse([[1, 0, 0]], {DELTA!r}, {BIGDELTA!r}, bvalues=[{B!r}], n_t=64, slew_rate=np.inf)\n"
             f"print('S = %.5f' % float(np.asarray(pk.replay(seq)).ravel()[-1]))\n")
 
 
@@ -133,7 +137,7 @@ def _reference(direct_value=None, direct_se=0.05, **kw):
 
 
 def _design(**kw):
-    base = dict(window_s=T_WIN, K=K_BANDS, envelope=ENV,
+    base = dict(window_s=T_WIN, K=K_BANDS, envelope=ENVELOPE, battery=BATTERY,
                 waveforms=waveforms,
                 # the split-half floor of 300 walkers is a draw per pack, 0.06 and 0.12 on the two spheres at their
                 # own seeds: the target sits above both, so the tier holds as designed on either
@@ -490,7 +494,7 @@ def test_a_spec_citing_a_digest_no_source_holds_is_refused(tmp_path, monkeypatch
     def forged():
         spec = _spec()
         from dataclasses import replace
-        from dmipy_sim.spec import Surface, Wall
+        from dmipy_replay.spec.substrate import Surface, Wall
         w = spec.walls[0]
         return replace(spec, walls=[replace(w, surface=Surface(**{**w.surface.__dict__, "file": "x.ply",
                                                                  "format": "ply", "sha256": "ab" * 32}))])
@@ -517,7 +521,7 @@ def test_a_waveform_declared_twice_is_refused(tmp_path):
 
 def test_a_waveform_beyond_the_envelope_the_pack_is_built_to_is_refused(tmp_path):
     """`design.envelope` and `design.waveforms` were two 'declared envelopes' nothing tied together."""
-    hot = d.pgse([[1, 0, 0]], DELTA, BIGDELTA, bvalues=[10 * B], n_t=64, slew_rate=np.inf)
+    hot = dr.pgse([[1, 0, 0]], DELTA, BIGDELTA, bvalues=[10 * B], n_t=64, slew_rate=np.inf)
     fam = _upto_spec(tmp_path, design=_design(waveforms=lambda: (("pgse-hot", hot),)))
     with pytest.raises(R.ReferenceRefusal, match="the envelope the pack is BUILT to certifies"):
         fam.stage("design")
@@ -588,6 +592,7 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     """A walk record carries the counters the engine reported and the log they were reported in."""
     import dataclasses
     from dmipy_sim.replay.bank import build_replay_pack
+    from dmipy_sim.replay.container import save_pack
     plain = _family(tmp_path, reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)))
     for st in ("source", "reference", "spec", "design", "walk"):
         plain.stage(st)
@@ -595,9 +600,9 @@ def test_a_recorded_walk_without_the_engines_counters_is_refused(tmp_path):
     os.makedirs(os.path.dirname(real), exist_ok=True)
     from dmipy_sim.coefficient_walk import CoefficientWalk
     walk = CoefficientWalk.load(os.path.join(plain.dir, plain.records.read("walk")["substrates"]["sphere"]["walk_path"]))
-    build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENV, license="CC-BY-4.0",
-                      citation="a test pack", position_container="derived", blt_container="derived",
-                      verbose=False).save(real)
+    save_pack(build_replay_pack(walk, id="synthetic/sphere", K=8, envelope=ENVELOPE, battery=BATTERY, license="CC-BY-4.0",
+                                citation="a test pack", position_container="derived", blt_container="derived",
+                                verbose=False), real)
     (tmp_path / "bare").mkdir(exist_ok=True)
     fam = _family(tmp_path / "bare",
                   reference=_reference(quantities=(_quantity(float(np.exp(-B * D0)), 0.05),)),

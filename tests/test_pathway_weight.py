@@ -5,15 +5,16 @@ the readout carries ``0.5 sin a1 sin a2 sin a3`` of it. That number is derived f
 (:func:`dmipy_replay.acquisition.epg.pathway_weight`), not written down, so a schedule whose pulses are not 90
 degrees gets its own amplitude rather than a flat one half.
 """
+from tests._envelope import stated
 import numpy as np
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition import epg
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_replay.spec.tissue import Tissue
 
 T2, T1, TM, DELTA = 0.08, 0.3, 0.02, 0.003
@@ -24,7 +25,7 @@ def pack(tmp_path_factory):
     """Free water, so the only thing left in a b = 0 readout is relaxation and the pathway's amplitude."""
     walk = _walk_geometry(600, 2e-9, d.FreeDiffusion(), 0.05, 5e-4, seed=0, require_gpu=False)
     out = tmp_path_factory.mktemp("pw") / "free.rpk"
-    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, out_path=str(out))
+    return build_replay_pack(walk, id="test/free", license="x", citation="x", K=8, out_path=str(out), **stated(of=walk))
 
 
 def _pgste(dt_n=600, flips=(90.0, 90.0, 90.0), b=0.0):
@@ -77,7 +78,7 @@ def test_every_route_agrees(pack):
     direct = float(np.asarray(pack.replay(seq, tissue=tis))[0])
     w, ew, E = pack.walker_signals(seq, tissue=tis)
     from_walkers = float(np.abs((ew[:, None] * E).sum(0) / w.sum())[0])
-    prim = float(np.abs(np.asarray(pack.study(Study(Protocol([Acquisition(seq)]), tissues=[tis], scanners=[None])))[0, 0]))
+    prim = float(np.abs(np.asarray(pack.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[tis], scanners=[None])))[0, 0]))
     assert from_walkers == pytest.approx(direct, rel=1e-9)
     assert prim == pytest.approx(direct, rel=1e-9)
 

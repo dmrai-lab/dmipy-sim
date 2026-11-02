@@ -10,8 +10,8 @@ stays in the ~1-min fast tier.
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 
 from dmipy_sim import Sphere, emergent_z_spectrum
 

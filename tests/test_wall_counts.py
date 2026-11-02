@@ -9,6 +9,7 @@ on, in discrete form. And ``exhausted_steps`` is the certificate that a bounce b
 exhausted gives the trajectories of any larger budget, by the loop's own rule (the leftover path is flown only when
 the last iteration met nothing), while a budget that is exhausted cuts path and moves walkers.
 """
+from tests._envelope import stated, walk_envelope
 import numpy as np
 import pytest
 
@@ -165,7 +166,7 @@ def test_the_bloch_walk_records_its_work_on_the_run(caplog):
     """The forward vector-Bloch engine has no walk object; with counting on it records the same work on its run
     and in the log, and the signal is the uncounted one to the bit."""
     import logging
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     from dmipy_sim.engine.bloch import _simulate_bloch
     seq = pgse([[1, 0, 0]], 2e-3, 4e-3, bvalues=[1e9], TE=8e-3, n_t=80, slew_rate=np.inf)
     plain = _simulate_bloch(64, D, seq, d.Sphere(R), seed=3)
@@ -208,7 +209,7 @@ def test_the_pack_refuses_an_exhausted_walk(tmp_path):
     with pytest.warns(RuntimeWarning):
         w = _walk(g, bounce_budget=1)
     with pytest.raises(ValueError, match="exhausted its bounce budget"):
-        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"))
+        build_replay_pack(w, id="x", license="CC0-1.0", citation="none", out_path=str(tmp_path / "x.rpk"), **stated(of=w))
 
 
 def test_certify_bounce_budget_sizes_from_a_pilot():
@@ -226,5 +227,5 @@ def test_walk_spec_passes_the_budget_through_and_keeps_the_work():
     from dmipy_sim import walk
     g = d.Sphere(R)
     w = walk(g.spec, 128, 2e-3, 0.5e-3, seed=11, diffusivity=D, bounce_budget=g.bounce_loop.budget - 1,
-                  walker_batch_size=128)
+                  walker_batch_size=128, envelope=walk_envelope(of=g.spec))
     assert w.work["bounce_budget"] == g.bounce_loop.budget - 1 and w.work["exhausted_steps"] == 0

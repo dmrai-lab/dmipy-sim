@@ -14,18 +14,20 @@ validation oracle — for
 
 SAME seed / N / waveform go through both paths.  The generic geometries walk via
 a different (sub-stepped) scan than the fused engine, so parity is at the MC
-noise floor: tolerance ``max(0.02, 1/sqrt(N))``.  The waveforms are sized so that
+noise floor: tolerance four standard errors of the difference.  The waveforms are sized so that
 ``physics.resolve_sub_steps`` asks for MORE than one sub-step on every walled
 geometry, so the comparison exercises the shared sub-step dispatch rather than a
 single-step special case (the fixture asserts this).
 
-Heavy MC — auto-marked ``gpu`` via ``tests/conftest.py::_GPU_TIER_MODULES``.
 """
 import numpy as np
 import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
+from tests.conftest import mc_atol
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim.replay.trajectories import replay
@@ -38,18 +40,19 @@ RHO = 1e-5        # m/s (surface relaxivity)
 
 
 def _tol(n):
-    return max(0.02, 1.0 / np.sqrt(n))
+    """Four standard errors of the difference of two independent walks of ``n`` walkers."""
+    return mc_atol(n, runs=2)
 
 
 def _pgse(delta, DELTA, n_t, b, G_magnitude=0.2):
-    return d.set_b(
-        d.pgse([[1.0, 0.0, 0.0]], delta, DELTA, gradient_strengths=G_magnitude, n_t=n_t, slew_rate=np.inf), b)
+    return dr.set_b(
+        dr.pgse([[1.0, 0.0, 0.0]], delta, DELTA, gradient_strengths=G_magnitude, n_t=n_t, slew_rate=np.inf), b)
 
 
 # ── Geometry specs ──────────────────────────────────────────────────────────
 # Each: (base geom, surface-relaxivity geom or None, n_walkers, waveform).
 # Coarse dt, so the auto-tune sub-steps every walled geometry (R/6 -> 4, pore/8 -> 7 at R=5um).
-_N_STD = 20_000
+_N_STD = 5_000
 _WF_STD = _pgse(delta=8e-3, DELTA=32e-3, n_t=200, b=1.0e9)
 
 # Mesh MC is far heavier per step on CPU -> short TE / small n_t and a small walker count; the
@@ -121,7 +124,7 @@ def _replay_case(request):
                 dlog=dlog, comp=comp, S_a=S_a, S_b=S_b, S_d=S_d)
 
 
-_ALL = ["free", "box1d", "sphere", "cylinder", "mesh"]
+_ALL = ["free", "box1d", "sphere", "cylinder", pytest.param("mesh", marks=pytest.mark.gpu)]   # the mesh walk is tier 2
 
 
 @pytest.mark.parametrize("_replay_case", _ALL, indirect=True)

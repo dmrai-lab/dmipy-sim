@@ -1,15 +1,16 @@
 """The concomitant field's VALUE at a voxel, the order-0 term of dmipy-sim#394: one phase per measurement and
 readout, ``gamma int s(t) B_c(x_v, t) dt``, recorded by ``with_concomitant`` and applied to every voxel's signal
 by the phantom routes. A spin echo with identical lobes cancels it exactly; a gradient echo keeps it."""
+from tests._envelope import stated
 import numpy as np
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
+from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay.bank import build_replay_pack
 
 D0, B0 = 2.0e-9, 0.064
@@ -47,7 +48,7 @@ def free_phantom(tmp_path_factory):
     n_t, dt = int(seq.n_t), float(seq.dt)
     walk = _walk_geometry(1000, D0, d.FreeDiffusion(), (n_t - 1) * dt, dt, seed=11, require_gpu=False)
     out = tmp_path_factory.mktemp("pk") / "free.rpk"
-    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out))
+    build_replay_pack(walk, id="test/free", license="x", citation="x", K=16, out_path=str(out), **stated(of=walk))
     sh, vox = (3, 3, 1), 0.03
     grid = Grid(shape=sh, voxel_size_m=(vox,) * 3, origin_m=tuple(-0.5 * (n - 1) * vox for n in sh), isocenter_m=(0.0, 0.0, 0.0))
     c = np.zeros(sh + (45,), np.float32); c[..., 0] = 1.0 / np.sqrt(4 * np.pi)
@@ -60,7 +61,7 @@ def test_the_phantom_turns_each_voxel_by_its_own_concomitant_phase(free_phantom)
     ph, seq = free_phantom
     swoop = ScannerLimits.of("swoop")
     S = ph.replay(seq, scanner=swoop, off_resonance=0.0, complex_signal=True)       # the field law's offset held off
-    from dmipy_sim.phantom.bore import concomitant_phase_map
+    from dmipy_replay.phantom.bore import concomitant_phase_map
     expect = concomitant_phase_map(swoop, ph.grid, ph._on_this_grid(seq))[:, 0, -1]  # every voxel, in grid order
     got = np.angle(S.reshape(-1, S.shape[-1])[:, 0])
     iso = 4                                                                          # the centre of the 3 x 3

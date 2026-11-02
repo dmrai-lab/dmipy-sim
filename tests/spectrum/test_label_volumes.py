@@ -1,5 +1,5 @@
 """Fast tests of dmipy_sim.spectrum.label_volumes: the 25 um edge (both policy walk lengths refused). 250 um /
-1 mm / 5 mm are exercised in test_label_volumes_slow.py."""
+1 mm / 5 mm are exercised in test_label_volumes_large_edges.py."""
 import json
 import os
 
@@ -8,12 +8,13 @@ import pytest
 
 from dmipy_sim.spectrum.common import verify_index
 from dmipy_sim.spectrum.label_volumes import TARGET_FRACTION, label_volume
+from tests._envelope import walk_envelope
 
 
 @pytest.fixture(scope="module")
 def entry_25um(tmp_path_factory):
     out = str(tmp_path_factory.mktemp("spectrum_lv25"))
-    return label_volume(25e-6, 1, out_dir=out)
+    return label_volume(25e-6, 1, out_dir=out, envelope=walk_envelope())
 
 
 def test_25um_refuses_both_policy_walk_lengths(entry_25um):
@@ -42,7 +43,8 @@ def test_25um_counts_sum_matches_the_blocks_table(entry_25um):
 
 def test_25um_is_walkable(entry_25um):
     """dmipy-sim#697's own test requirement: the generated geometry is walkable on the JAX engine, CPU."""
-    from dmipy_sim.spec import geometry_from_spec, load_spec
+    from dmipy_sim.spec import geometry_from_spec
+    from dmipy_replay.spec.substrate import load_spec
     from dmipy_sim.engine.core import _walk_geometry
     spec = load_spec(os.path.join(entry_25um["out_dir"], "substrate/spec.json"))
     geom = geometry_from_spec(spec)

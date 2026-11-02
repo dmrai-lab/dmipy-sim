@@ -1,6 +1,7 @@
 """A pack's intrinsic frame (RPK.md 4.2, ``walk_params.substrate_frame``) is honoured by every posed replay: a
 walk stored with its bundle along x composes exactly like the same walk stored along z, once the pack says so
 (dmipy-sim#193: the CACTUS packs' bundles run along x while nothing declared it)."""
+from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import copy
 
@@ -9,13 +10,14 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
-from dmipy_sim.replay import ReplayPack, read_rpk, so3
+from dmipy_replay import sequences
+from dmipy_replay.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
+from dmipy_replay import ReplayPack, read_rpk
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import pack_position_arrays
 from dmipy_replay.replay.compression import read_position_coeffs
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay.fod import FOD
 
 
 @pytest.fixture(scope="module")
@@ -25,7 +27,7 @@ def packs(tmp_path_factory):
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(600, 2e-9, g, 10e-3, 5e-4, seed=0, require_gpu=False)
     p = tmp_path_factory.mktemp("pk") / "z.rpk"
-    build_replay_pack(walk, id="t/z", license="x", citation="x", K=8, out_path=str(p))
+    build_replay_pack(walk, id="t/z", license="x", citation="x", K=8, out_path=str(p), **stated(of=walk))
     z = read_rpk(str(p))
     Q = _r_so3.rotation_of((1.0, 0.0, 0.0))                                  # z -> x
     C = read_position_coeffs(z.arrays, dtype=np.float64) @ Q.T           # every coefficient vector rotated
@@ -101,7 +103,7 @@ def test_an_analytic_geometry_is_walked_in_its_own_frame_and_the_pack_says_so():
     walk = _walk_geometry(200, 2e-9, g, 4e-3, 5e-4, seed=1, require_gpu=False, raw_subset=200)
     P = np.asarray(walk.raw_positions)
     assert (np.hypot(P[..., 0], P[..., 1]) < 2e-6).all()                               # confined in x-y, free along z
-    pk = build_replay_pack(walk, id="t/x", license="x", citation="x", K=4)
+    pk = build_replay_pack(walk, id="t/x", license="x", citation="x", K=4, **stated(of=walk))
     F = np.asarray(pk.meta["walk_params"]["substrate_frame"])
     assert np.allclose(F, np.eye(3)) and np.allclose(pk.frame_axis, [0, 0, 1])
 
@@ -114,8 +116,8 @@ def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
     g = d.Cylinder(radius=1e-6, orientation=(0, 0, 1))                    # intra-axonal: free along z, restricted across
     walk = _walk_geometry(400, 2e-9, g, 6e-3, 5e-4, seed=2, require_gpu=False)
     with pytest.raises(ValueError, match="principal displacement axis"):
-        build_replay_pack(walk, id="t/wrong", license="x", citation="x", K=4, substrate_frame=frame_from_axis((1, 0, 0)))
-    pk = build_replay_pack(walk, id="t/right", license="x", citation="x", K=4, substrate_frame=np.eye(3))
+        build_replay_pack(walk, id="t/wrong", license="x", citation="x", K=4, substrate_frame=frame_from_axis((1, 0, 0)), **stated(of=walk))
+    pk = build_replay_pack(walk, id="t/right", license="x", citation="x", K=4, substrate_frame=np.eye(3), **stated(of=walk))
     assert np.allclose(pk.frame_axis, [0, 0, 1])
     rng = np.random.default_rng(0)
     iso = np.cumsum(rng.normal(size=(300, 20, 3)), axis=1) * 1e-7
@@ -132,7 +134,7 @@ def test_a_user_declared_frame_10deg_off_is_still_refused_after_the_walk():
     theta = np.radians(10.0)
     tilted = frame_from_axis([np.sin(theta), 0.0, np.cos(theta)])
     with pytest.raises(ValueError, match="the walk's principal displacement axis"):
-        build_replay_pack(walk, id="t/tilted10", license="x", citation="x", K=4, substrate_frame=tilted)
+        build_replay_pack(walk, id="t/tilted10", license="x", citation="x", K=4, substrate_frame=tilted, **stated(of=walk))
 
 
 # ---------------------------------------------------------------------------- the structural frame of a curved tube (#538)
@@ -151,7 +153,7 @@ def test_a_curved_tubes_structural_frame_builds_despite_the_walks_own_drifting_a
     walk = _walk_geometry(300, 2e-9, g, 5e-3, 5e-4, seed=2, require_gpu=False, raw_subset=300)
     walk_angle = check_frame_against_walk(np.asarray(walk.raw_positions), np.eye(3))
     assert walk_angle > 5.0                            # the walk-based check would have refused this walk
-    pk = build_replay_pack(walk, id="t/curved-structural", license="x", citation="x", K=4)
+    pk = build_replay_pack(walk, id="t/curved-structural", license="x", citation="x", K=4, **stated(of=walk))
     assert np.allclose(pk.frame_axis, [0, 0, 1], atol=1e-5)
 
 
@@ -160,7 +162,7 @@ def test_a_hand_edited_structural_frame_is_refused_before_the_walk():
     (dmipy-sim#538): it reads only the spec's swept_polyline centerline, never the trajectory, so a walk far
     too short/small for the walk-based check to say anything (5 walkers, one step) is still refused."""
     import dataclasses
-    from dmipy_sim.spec import Frame
+    from dmipy_replay.spec.substrate import Frame
     t = np.linspace(0.0, 1.0, 40)
     line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
     g = d.CurvedCylinder(line, 2e-6)
@@ -168,7 +170,7 @@ def test_a_hand_edited_structural_frame_is_refused_before_the_walk():
     walk = _walk_geometry(5, 2e-9, g, 1e-4, 1e-4, seed=0, require_gpu=False)
     walk = dataclasses.replace(walk, spec=bad_spec)
     with pytest.raises(ValueError, match="length-weighted tangent axis"):
-        build_replay_pack(walk, id="t/bad-structural", license="x", citation="x", K=4)
+        build_replay_pack(walk, id="t/bad-structural", license="x", citation="x", K=4, **stated(of=walk))
 
 
 _CACTUS_BUNDLE = __import__("os").environ.get("DMIPY_SIM_TEST_CACTUS_BUNDLE", "")

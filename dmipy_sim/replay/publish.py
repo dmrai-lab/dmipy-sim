@@ -25,7 +25,9 @@ import tempfile
 
 import numpy as np
 
-from .hub import is_not_found, sha256_of
+from dmipy_replay.replay.hub import sha256_of
+
+from .hub import is_not_found
 
 SCHEMA = "substratecommons/1"
 log = logging.getLogger("dmipy_sim.replay")
@@ -172,7 +174,7 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=Non
             row["pack_license_url"] = meta["pack_license_url"]
     if wp.get("windows"):
         row["windows"] = wp["windows"]
-        n = int(wp["windows"].get("n") or 1)
+        n = int(wp["windows"]["n"])
         if n > 1 and local is not None:
             sb = _window_bytes(local, n)
             if sb is not None:
@@ -210,6 +212,8 @@ def _fmt(x, spec):
 
 
 def _size(nbytes):
+    if nbytes is None:
+        return "—"
     for unit, div in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
         if nbytes >= div:
             return f"{nbytes / div:.1f} {unit}"
@@ -220,7 +224,7 @@ def _duration(row):
     T = row.get("T_max")
     s = "—" if T is None else f"{T * 1e3:g} ms"
     seg = row.get("windows")
-    if seg and int(seg.get("n") or 1) > 1:                       # a walk in several windows: how many of what length
+    if seg and int(seg["n"]) > 1:                       # a walk in several windows: how many of what length
         s += f" ({seg.get('n')} × {_fmt(None if seg.get('T') is None else seg['T'] * 1e3, 'g')} ms"
         if row.get("window_bytes"):                             # what one windows=range(k) read costs
             s += f", {_size(row['window_bytes'])}/window"
@@ -273,7 +277,7 @@ def render_readme(manifest, repo):
     lines += ["## Packs", "", "| id | duration | walkers | bands | channels | floor | size | commit | path |", "|---|---|---|---|---|---|---|---|---|"]
     for r in packs:
         lines.append(f"| `{r.get('id')}` | {_duration(r)} | {_fmt(r.get('n_walkers'), 'd')} | {_fmt(r.get('K'), 'd')} | "
-                     f"{', '.join(r.get('channels') or [])} | {_fmt(r.get('floor_max'), '.3g')} | {_size(r.get('bytes') or 0)} | "
+                     f"{', '.join(r.get('channels') or [])} | {_fmt(r.get('floor_max'), '.3g')} | {_size(r.get('bytes'))} | "
                      f"{_commit_cell(r.get('built_commit'), r.get('published_commit'))} | `{r.get('path')}` |")
     cites = sorted({r["citation"] for r in packs if r.get("citation")})
     if cites:
@@ -312,7 +316,7 @@ def _hub_sha256(hub, path):
 def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_commit=None):
     """Put a pack in the dataset ``repo`` (``owner/name``) and return its URI ``hf://owner/name/<path>``.
 
-    ``pack_or_path`` is a ``.rpk`` file or a :class:`~dmipy_sim.replay.ReplayPack` (written to a temporary
+    ``pack_or_path`` is a ``.rpk`` file or a :class:`~dmipy_replay.ReplayPack` (written to a temporary
     file first: the bytes uploaded are the bytes hashed). ``path`` defaults to ``packs/<id>.rpk`` with the id's
     slashes replaced. The file, the manifest row (replacing the row at the same path) and the regenerated card go
     up in ONE commit through ``hub`` (default :class:`~dmipy_sim.replay.hub.Hub`); afterwards the sha256 the hub
@@ -323,13 +327,14 @@ def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_
     reference-pack protocol's stricter, clean-and-pushed :func:`~dmipy_sim.replay.reference.code_commit`) passes
     it; left out, this reads one itself with :func:`code_commit`'s lenient form (no clean-tree or pushed-branch
     requirement -- a plain ``publish()`` call is not that protocol)."""
-    from .replay import ReplayPack
+    from .container import save_pack
+    from dmipy_replay import ReplayPack
     if isinstance(pack_or_path, ReplayPack):
         _check_contract(pack_or_path.meta)
         source = pack_or_path.source
         with tempfile.TemporaryDirectory(prefix="dmipy-publish-") as tmp:
             local = os.path.join(tmp, "pack.rpk")
-            pack_or_path.save(local)
+            save_pack(pack_or_path, local)
             pack_or_path.source = source                          # the temporary file is not where the pack lives
             return _publish_file(local, pack_or_path.meta, repo, path=path, hub=hub, message=message,
                                  published_commit=published_commit)
