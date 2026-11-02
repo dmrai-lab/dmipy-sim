@@ -11,6 +11,8 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_sim.replay import bank
@@ -18,7 +20,6 @@ from dmipy_sim.replay.bank import WINDOW_T, combine_window_fidelity
 from dmipy_replay.replay.study import walker_primitives
 from dmipy_replay.spec.substrate import Susceptibility
 from dmipy_replay.spec.tissue import Tissue
-from dmipy_replay import ReplayPack
 from tests.test_bank import _lean_env, _slab_grid
 from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
 from dmipy_sim.replay.continuation import extend_pack
@@ -74,7 +75,7 @@ def _bound(*packs):
 
 
 def _seq(n_t=N_T, TE=None):
-    return d.pgse([[1, 0, 0], [0, 0, 1]], 0.004, 0.012, gradient_strengths=0.3, n_t=n_t, slew_rate=np.inf, TE=TE)
+    return dr.pgse([[1, 0, 0], [0, 0, 1]], 0.004, 0.012, gradient_strengths=0.3, n_t=n_t, slew_rate=np.inf, TE=TE)
 
 
 def test_the_layout_and_the_table(packs):
@@ -129,7 +130,7 @@ def test_two_windows_replay_as_one_on_every_tier(packs, knobs):
 
 def test_an_acquisition_off_the_block_grid_splits_exactly(packs):
     w1, w2, one, two = packs
-    seq = d.pgse([[1, 0, 0]], 0.0042, 0.0123, gradient_strengths=0.3, n_t=67, slew_rate=np.inf, TE=0.0198)
+    seq = dr.pgse([[1, 0, 0]], 0.0042, 0.0123, gradient_strengths=0.3, n_t=67, slew_rate=np.inf, TE=0.0198)
     npt.assert_allclose(two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True),
                         one.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), atol=_bound(one, two))
 
@@ -149,8 +150,8 @@ def test_the_primitives_sum_over_windows(packs):
 
 def test_a_short_acquisition_reads_the_first_window_alone(packs):
     w1, w2, one, two = packs
-    short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms
-    blind = ReplayPack({k: (np.full_like(v, np.nan) if k.startswith("s1/") and np.issubdtype(np.asarray(v).dtype, np.floating) else v)
+    short = dr.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms
+    blind = dr.ReplayPack({k: (np.full_like(v, np.nan) if k.startswith("s1/") and np.issubdtype(np.asarray(v).dtype, np.floating) else v)
                                  for k, v in two.arrays.items()}, two.meta)
     a = blind.replay(short, tissue=TIS, scanner=3.0, complex_signal=True)
     assert np.all(np.isfinite(a))
@@ -168,7 +169,7 @@ def test_a_prefix_of_whole_windows_is_a_range_and_a_partial_one_re_projects(pack
         prefix_pack(two, 0.015)
     pp = prefix_pack(one, 0.015)
     assert pp.n_windows == 1 and pp.n_t == 31 and pp.fidelity["within_2x_floor"] and "err_reprojection" in pp.fidelity
-    seq = d.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
+    seq = dr.pgse([[1, 0, 0]], 0.003, 0.009, gradient_strengths=0.3, n_t=31, slew_rate=np.inf)   # TE = 15 ms
     npt.assert_allclose(pp.replay(seq, tissue=TIS0, complex_signal=True), one.replay(seq, tissue=TIS0, complex_signal=True),
                         atol=2.0 * pp.fidelity["floor_max"])
 
@@ -193,7 +194,7 @@ def test_the_bound_over_windows():
 
 def test_a_pack_without_the_table_is_refused():
     with pytest.raises(ValueError, match="walk_params.windows"):
-        ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"block": {"h": 1e-3}}}).n_windows
+        dr.ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"walk_params": {"block": {"h": 1e-3}}}).n_windows
 
 
 def test_a_pack_with_the_earlier_table_is_refused(packs, tmp_path):
@@ -211,7 +212,7 @@ def test_a_pack_with_the_earlier_table_is_refused(packs, tmp_path):
 
 def _crushed_train(n_echoes=8, beta=120.0):
     """A refocusing train of 2 ms echoes over 16 ms with a crusher pair about every pulse: echoes in both windows."""
-    from dmipy_sim import sequences
+    from dmipy_replay import sequences
     s = sequences.cpmg(n_echoes, 2e-3, beta_deg=beta, gradient_directions=[[1.0, 0, 0]], bvalues=[0.0], n_t_per_echo=40)
     wins = [(float(e.t_s) - 0.5e-3, float(e.t_s) + 0.5e-3) for e in s.rf if e.label in ("refocus", "refocusing")]
     return dataclasses.replace(s, crusher={"windows_s": wins, "n_cycles": 16.0})
@@ -246,7 +247,7 @@ def test_the_bloch_route_reads_at_the_acquisitions_readout(packs):
     what the stored function holds between its block ends (the Bloch route reads it at the block ends, the scalar
     route integrates it)."""
     w1, w2, one, two = packs
-    short = d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms of 20
+    short = dr.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.3, n_t=21, slew_rate=np.inf)   # TE = 10 ms of 20
     a = one.replay_bloch(short, tissue=TIS0, complex_signal=True)
     b = two.replay_bloch(short, tissue=TIS0, complex_signal=True)
     c = two.window(0).replay_bloch(short, tissue=TIS0, complex_signal=True)
@@ -282,7 +283,7 @@ def test_a_walk_continues_from_its_end_and_appends_as_windows():
         continue_walk(one, 0.015, seed=1, require_gpu=False)
     longer = extend_pack(ext, 0.02, seed=9, require_gpu=False)
     assert longer.n_windows == 4 and longer.n_t == 81 and longer.windows["walks"][-1] == dict(first=2, last=3, seed=9)
-    long_seq = d.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
+    long_seq = dr.pgse([[1, 0, 0]], 0.005, 0.02, gradient_strengths=0.2, n_t=61, slew_rate=np.inf)   # 30 ms: three windows
     assert 0.0 < float(longer.replay(long_seq)[0]) < 1.0
 
 

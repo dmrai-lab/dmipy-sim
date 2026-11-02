@@ -14,7 +14,7 @@ Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_po
 from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
-from dmipy_sim import Encoding, ScannerSequence
+from dmipy_replay import Encoding, ScannerSequence
 import pytest
 
 from dmipy_replay.constants import GAMMA

@@ -6,7 +6,8 @@ import numpy as np
 import numpy.testing as npt
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, Cylinder, FreeDiffusion, set_b
+from dmipy_sim import simulate, Cylinder, FreeDiffusion
+from dmipy_replay import set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, N_CPU, SEED, mc_atol
 
@@ -43,7 +44,7 @@ def _tile_and_set_b(wf_single, b_values):
 
 def test_cylinder_parallel_gradient_is_free():
     """Gradient along cylinder axis → walkers diffuse freely → exp(-bD)."""
-    from dmipy_sim.sequences import pgse
+    from dmipy_replay.sequences import pgse
     b_values = np.linspace(1e8, 3e9, 6)
     bvecs = np.tile([0., 0., 1.], (6, 1))  # gradient along z = cylinder axis
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)
@@ -59,7 +60,7 @@ def test_cylinder_parallel_gradient_is_free():
 
 def test_cylinder_signal_above_free_perp():
     """Perpendicular gradient → restricted; signal must exceed free diffusion."""
-    from dmipy_sim.sequences import pgse
+    from dmipy_replay.sequences import pgse
     b_values = np.linspace(1e8, 3e9, 6)
     bvecs = np.tile([1., 0., 0.], (6, 1))  # gradient ⊥ cylinder axis
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)

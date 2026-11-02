@@ -222,7 +222,7 @@ def disimpy_sequence(*, delta=DISIMPY_DELTA, Delta=DISIMPY_BIGDELTA, n_t=DISIMPY
     timing is worth 2.6e-4 of signal here (measured: max abs dS 0.02103 against 0.02077 at 8,000 walkers), so
     the choice does not decide anything.
     """
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return pgse([[1.0, 0.0, 0.0]] * len(DISIMPY_BVALUES), delta, Delta, bvalues=DISIMPY_BVALUES,
                 TE=DISIMPY_TE, n_t=int(n_t), slew_rate=np.inf)
 

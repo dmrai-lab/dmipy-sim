@@ -23,7 +23,8 @@ import jax.numpy as jnp
 from scipy.special import jv
 from scipy.optimize import brentq
 
-from dmipy_sim import simulate, ScannerSequence, Box1D, Sphere, Cylinder
+from dmipy_sim import simulate, Box1D, Sphere, Cylinder
+from dmipy_replay import ScannerSequence
 
 D = 2e-9            # m^2/s
 NW = 500_000        # walkers (raise for tighter statistics)

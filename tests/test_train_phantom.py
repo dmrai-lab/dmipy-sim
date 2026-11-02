@@ -10,7 +10,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
@@ -180,7 +180,7 @@ def test_a_refocusing_train_is_exactly_insensitive_to_a_uniform_offset(brain):
 def _free_water_brain(T2=None):
     """A phantom of free water alone on the small grid: the closed form's train has no pose to expand."""
     from dmipy_replay.phantom import FreeWater
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
                 origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
     csf = FreeWater(m0=1.0, name="csf", tissue=Tissue(D=3e-9, T2=T2))
@@ -209,7 +209,7 @@ def test_a_closed_form_takes_each_pathway_at_its_own_b_and_the_pack_agrees(brain
     below its b = 0 value by the pathways' own Gaussian factors, and a free-water pack under the same train
     must agree with the closed form to its Monte-Carlo scatter."""
     from dmipy_replay.phantom import FreeWater
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     ph_pack, pack, grid = brain
     D = float(pack.meta["walk_params"]["diffusivity"])
     csf = FreeWater(m0=0.7, name="fw", tissue=Tissue(D=D))
@@ -230,7 +230,7 @@ def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
     """White matter from a pack beside cerebrospinal fluid in closed form, in one train replay: the voxel is
     the fraction-weighted sum of the two routes, and neither is refused or dropped."""
     from dmipy_replay.phantom import FreeWater
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     import tempfile, os
     out = os.path.join(tempfile.mkdtemp(), "wm.rpk")
     walk = _walk_geometry(300, 2e-9, d.FreeDiffusion(), 0.14, 2.5e-4, seed=1, require_gpu=False, K=10, window_T=0.14)
@@ -356,7 +356,7 @@ def test_a_spin_echo_under_a_field_refocuses_on_the_train_route_as_on_the_phase_
     """A spin echo at b = 0 in a field is one pathway with the sign (+1, -1): the train route must return what the
     phase-sum route returns for the same sequence, which it did not while the gated copy carried no sign and the
     field went unrefocused (a T2*-like loss of a tenth at 7 T)."""
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     pack = read_rpk(field_pack)
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
                 origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))

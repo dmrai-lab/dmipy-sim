@@ -9,7 +9,7 @@ from dataclasses import replace
 
 import pytest
 
-from dmipy_sim import Encoding, RFEvent, ScannerSequence
+from dmipy_replay import Encoding, RFEvent, ScannerSequence
 from dmipy_replay.phantom import Fan, Frames, FreeWater, Grid, Inert, ODF, PackSubstrate, Peaks, Phantom, Watson
 from dmipy_replay.replay.fod import FOD
 from dmipy_replay.replay.so3 import n_sh_coeffs
@@ -491,7 +491,7 @@ def test_an_analytic_slot_ignores_the_orientation_it_is_given(pack_path):
 def test_a_prescribed_acquisition_must_share_the_grid_axes(pack_path):
     """The gradient and B0 directions are given in the scanner frame, so a sequence prescribed on other axes than
     the grid's is refused rather than rotated; a grid built from the prescription agrees by construction."""
-    from dmipy_sim import Prescription
+    from dmipy_replay import Prescription
     from dmipy_replay import read_rpk
     ph, *_ = _phantom(pack_path)
     pk = read_rpk(pack_path)

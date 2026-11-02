@@ -17,12 +17,12 @@ import dmipy_replay.replay.so3 as _r_so3
 import sys
 import numpy as np
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
 from dmipy_replay.acquisition.waveforms import rotate_waveform
 from dmipy_replay import read_rpk
 from dmipy_replay.replay import so3
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 from dmipy_replay.phantom import Pose
 
 N, R_IN, R_OUT = 40, 11.0, 17.0

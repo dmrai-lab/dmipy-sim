@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import sequences as _seqmod
+from dmipy_replay import sequences as _seqmod
 from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay import compression as _cx

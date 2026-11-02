@@ -23,8 +23,10 @@ import pytest
 from scipy.optimize import brentq
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences as seq
+from dmipy_replay import sequences as seq
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 
@@ -209,7 +211,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")
     merged = merge_packs(packs, id="t/merged")
     col = ReplayPack.open(str(tmp_path / "layout"))
-    seq1 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
+    seq1 = dr.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
     tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, rho1=8e-6)
     study = Study(StudyProtocol([seq1]), tissues=[None, tissue], scanners=[None])
     assert study.needs_contact

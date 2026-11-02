@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.engine.core import _walk_geometry
@@ -96,7 +98,7 @@ def test_a_cylinder_walk_re_encoded_from_its_saves_replays_within_its_certificat
     assert "compartment" in pf.meta["compression"]["channels"]
     bound = fid["err_max"]
     for TE, delta, Delta, G in ((None, 2e-3, 5e-3, 0.08), (None, 1e-3, 3e-3, 0.15)):
-        wf = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], delta, Delta, gradient_strengths=G, n_t=pf.n_t, slew_rate=np.inf), [1e9, 1e9])
+        wf = dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], delta, Delta, gradient_strengths=G, n_t=pf.n_t, slew_rate=np.inf), [1e9, 1e9])
         a, b = np.asarray(pf.replay(wf, tol=None)), np.asarray(pn.replay(wf, tol=None))
         assert np.abs(a - b).max() <= bound, (np.abs(a - b).max(), bound)
 
@@ -133,7 +135,7 @@ def test_the_reader_refuses_the_channels_the_pack_does_not_carry(good):
                            **stated(G_max=10.0))
     ch = pk.meta["compression"]["channels"]
     assert set(ch) == {"compartment"} and pk.meta["replay_envelope"]["surface_relaxivity"] is False and pk.meta["replay_envelope"]["field"] is False
-    wf = d.set_b(d.pgse([[1, 0, 0]], 5e-4, 1.5e-3, gradient_strengths=0.05, n_t=pk.n_t, slew_rate=np.inf), [5e8])
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 5e-4, 1.5e-3, gradient_strengths=0.05, n_t=pk.n_t, slew_rate=np.inf), [5e8])
     assert np.isfinite(pk.replay(wf, tol=None)).all()
     with pytest.raises(Exception, match="(?i)rho2|boundary_local_time|contact|C2"):
         pk.replay(wf, tissue=Tissue(rho2=1e-5), tol=None)

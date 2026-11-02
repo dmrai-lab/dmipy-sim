@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.compression import default_battery
@@ -34,8 +36,8 @@ TISSUE = Tissue(T2={"intra": 0.07, "extra": 0.06, "myelin": 0.015}, T1={"intra":
 def _sequences():
     """A PGSE, a PGSTE and a DDE (two bipolar pairs about the spin echo's pulse) on a 0.1 ms grid, and the stimulated
     echo's mixing time."""
-    se = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
-    ste = d.pgste([[0, 0, 1]], 3e-3, 10e-3, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    se = dr.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
+    ste = dr.pgste([[0, 0, 1]], 3e-3, 10e-3, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     G = np.zeros((1, N_T, 3), np.float32)
     for i0, v in ((5, [0, 0, 0.1]), (35, [0, 0, -0.1]), (105, [0.1, 0, 0]), (135, [-0.1, 0, 0])):
         G[0, i0:i0 + 25, :] = v
@@ -86,9 +88,9 @@ def _acquisitions():
     u = rng.normal(size=(6, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     b = np.r_[np.full(6, 1e9), np.full(6, 3e9), 0.0]; dirs = np.concatenate([u, u, [[0, 0, 1]]])
     G = np.asarray(dde.G)[0]
-    return dict(pgse=d.pgse(dirs.tolist(), 4e-3, 10e-3, bvalues=b, TE=TE, n_t=N_T, slew_rate=np.inf),
-                pgste=d.pgste(dirs.tolist(), 3e-3, 10e-3, bvalues=b, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0)),
-                dde=d.ScannerSequence(G=np.stack([G * a for a in (0.3, 0.7, 1.0)] + [G * np.array([[-1.0, 1.0, 1.0]]) * 0.5]),
+    return dict(pgse=dr.pgse(dirs.tolist(), 4e-3, 10e-3, bvalues=b, TE=TE, n_t=N_T, slew_rate=np.inf),
+                pgste=dr.pgste(dirs.tolist(), 3e-3, 10e-3, bvalues=b, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0)),
+                dde=dr.ScannerSequence(G=np.stack([G * a for a in (0.3, 0.7, 1.0)] + [G * np.array([[-1.0, 1.0, 1.0]]) * 0.5]),
                                       dt=se.dt, rf=se.rf, readout=se.readout))
 
 
@@ -142,7 +144,7 @@ def test_a_sequence_that_does_not_fit_is_refused_by_name():
     G = np.asarray(se.G).copy(); i = int(round(parts["pgse"].segments[1][0] / se.dt)); G[0, i:i + 40, 2] *= 0.5
     with pytest.raises(ValueError, match="net moment"):
         parts["pgse"].levels(se.with_gradient(G))
-    coarse = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=61, slew_rate=np.inf)
+    coarse = dr.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=61, slew_rate=np.inf)
     with pytest.raises(ValueError, match="grid"):
         parts["dde"].levels(coarse)
     p = Partition("stored", ((0.0, 1e-3), (1e-3, 2e-3), (2e-3, 3e-3)), (1, 0, -1), (Shape.constant(),) * 3)
@@ -276,7 +278,7 @@ def test_a_sequence_beyond_the_envelope_and_a_foreign_pack_are_refused(myelin):
     with pytest.raises(ValueError, match="G_max"):
         M["lw"].image(dde.with_gradient(np.asarray(dde.G) * 12.0))
     with pytest.raises(ValueError, match="fits no stored partition"):
-        M["lw"].image(d.pgse([[0, 0, 1]], 3e-3, 10e-3, bvalues=[1e9], TE=TE, n_t=N_T, slew_rate=np.inf))
+        M["lw"].image(dr.pgse([[0, 0, 1]], 3e-3, 10e-3, bvalues=[1e9], TE=TE, n_t=N_T, slew_rate=np.inf))
     other = M["walk"].take(np.arange(M["walk"].n_walkers)[::-1])
     with pytest.raises(ValueError, match="not this walk's pack"):
         segment_rows(other, M["parts"], str(M["tmp"] / "foreign"), grid=M["grid"], pack=M["pack"], g_max=G_MAX)
@@ -322,7 +324,7 @@ def blocks(spec_grid):
 
 
 def _strand_partitions(n_t):
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    se = dr.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
     return {"se": se}
 
 
@@ -330,7 +332,7 @@ def _strand_protocol(n_t, n=4):
     rng = np.random.default_rng(5)
     u = rng.normal(size=(n, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     b = np.r_[np.full(n, 1e9), 0.0]; dirs = np.concatenate([u, [[0, 0, 1]]])
-    return d.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
+    return dr.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
 
 
 def test_the_blocks_consolidate_into_one_layout(blocks):
@@ -353,7 +355,7 @@ def test_the_blocks_consolidate_into_one_layout(blocks):
         sig2 = m["partitions"]["se"]["rounding"]["variance"]
         assert np.abs(got[live] - ref[live]).max() < _term(sig2, float(np.nanmax(floor)))
     with pytest.raises(ValueError, match="gate"):
-        lay.image(d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, bvalues=[1e9], n_t=2 * n_t - 1, slew_rate=np.inf), tissue=t, scanner=3.0)
+        lay.image(dr.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, bvalues=[1e9], n_t=2 * n_t - 1, slew_rate=np.inf), tissue=t, scanner=3.0)
 
 
 def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):

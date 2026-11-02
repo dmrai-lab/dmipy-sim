@@ -29,7 +29,7 @@ from scipy.optimize import brentq
 import dmipy_sim.math.matrix_method as mm
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.math.matrix_method import DEFAULT_MODES, MatrixPore, matrix_restricted_batch, matrix_restricted_signal, _runs
-from dmipy_sim.sequences import pgse
+from dmipy_replay.sequences import pgse
 
 D0 = 2e-9    # m^2/s, a representative free diffusivity
 A = 5e-6     # m, the pore radius (cylinder/sphere) / half-thickness (plane) used throughout

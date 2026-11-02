@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.io.strands import write_tck
 from dmipy_replay.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
@@ -52,7 +54,7 @@ def _per_voxel(pack, seq, grid, **kw):
 
 
 def _seq(n_t):
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
 
 
 def test_the_layout_holds_the_merged_pack_bit_for_bit(layout):
@@ -162,7 +164,7 @@ def test_a_curve_pack_keeps_its_ranges_as_column_groups_and_replays_as_the_merge
     names = set(pack.columns)
     assert {f"pos_x_b{i}" + ("" if r["bits"] in (8, 16) else f"u{r['bits']}") for i, r in enumerate(cont)} <= names
     full = pack.view(contact=True)
-    seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
+    seq = dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=merged.n_t, slew_rate=np.inf), [1e9, 1e9])
     np.testing.assert_allclose(full.replay(seq, tol=None), merged.replay(seq, tol=None), rtol=1e-9)
     np.testing.assert_allclose(full.replay(seq, tissue=Tissue(rho2=1e-5), tol=None), merged.replay(seq, tissue=Tissue(rho2=1e-5), tol=None), rtol=1e-9)
 

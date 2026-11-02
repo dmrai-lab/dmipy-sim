@@ -9,7 +9,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import ScannerSequence
+from dmipy_replay import ScannerSequence
 from dmipy_sim.fields.susceptibility_field import FieldGrid, field_grid_of
 from dmipy_sim.replay.bank import build_replay_pack, grid_periodic_of
 from dmipy_sim.replay.trajectories import replay

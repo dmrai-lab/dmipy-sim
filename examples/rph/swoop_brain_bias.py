@@ -43,7 +43,7 @@ residual is parts per million rather than parts per thousand, so the catalogue c
 """
 import numpy as np
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.phantom import Grid
 from dmipy_replay.phantom.bore import delivered_gradient

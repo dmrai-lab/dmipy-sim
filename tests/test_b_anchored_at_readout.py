@@ -6,7 +6,7 @@ import pytest
 
 from dmipy_replay.acquisition.waveforms import b_from_gradient, btensor_from_gradient
 from dmipy_replay.constants import GAMMA
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 
 
 def _spoiled_pgse(turns_per_mm):

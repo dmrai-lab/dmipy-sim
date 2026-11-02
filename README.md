@@ -86,8 +86,7 @@ from dmipy_sim import walk
 from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.container import save_pack
-from dmipy_sim import sequences
-
+from dmipy_replay import sequences
 # the substrate: histology-calibrated white matter, realised as a SPEC -- domain, pools, walls, seeding,
 # what was requested and what was achieved, all written out (replay-pack-spec/SUBSTRATE.md)
 sub  = Substrate.canonical(field_T=3.0)          # diameter law (floored at d_min), g-ratio, f_axon, D, T2, rho, kappa
@@ -187,9 +186,9 @@ samples depending on the angle between the field and the fibre.
 
 ```python
 import numpy as np
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.phantom import Fan, FreeWater, Grid, Inert, PackSubstrate, Phantom
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 n = 40
 grid = Grid(shape=(n, n, 1), voxel_size_m=(1.5e-3,) * 3)          # centred on the isocenter unless origin_m= says otherwise
@@ -235,7 +234,7 @@ into the file. A layer the replay cannot carry raises rather than being dropped.
 ### Partition
 
 ```python
-from dmipy_sim import Prescription
+from dmipy_replay import Prescription
 from dmipy_replay.phantom import Grid, Inert, FreeWater, PackSubstrate, Phantom, Pose
 
 pack = PackSubstrate("disco.rpk", m0=1.0)                           # ONE walk of a 1 mm^3 anatomy, spin_weights carried

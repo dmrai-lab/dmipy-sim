@@ -28,7 +28,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from dmipy_sim.substrate.biophysical_constants import get_value
-from dmipy_sim import pack_cylinders, PackedCylinders, simulate, pgse, set_b
+from dmipy_sim import pack_cylinders, PackedCylinders, simulate
+from dmipy_replay import pgse, set_b
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 D = get_value('D_intra_axonal')                          # intrinsic diffusivity (m^2/s)

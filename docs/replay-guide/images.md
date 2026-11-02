@@ -12,6 +12,7 @@ does the same on the hub.
 import os, tempfile
 import numpy as np
 import dmipy_sim as d
+import dmipy_replay as dr
 from dmipy_sim.io.strands import write_tck, concat_centerlines
 from dmipy_replay.phantom import Grid
 from dmipy_replay import ReplayPack
@@ -20,7 +21,7 @@ from dmipy_sim.replay.consolidate import consolidate
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay import envelope_of
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 tmp = tempfile.mkdtemp(); os.makedirs(f"{tmp}/shards")
 cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]   # three strands
@@ -46,7 +47,7 @@ print(sorted(os.listdir(f"{tmp}/layout"))[:3], index["n_rows"], "rows")
 
 ```python
 pack = ReplayPack.open(f"{tmp}/layout")                               # a directory here; "hf://owner/name/prefix" on the hub
-seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [1e9, 1e9])
+seq = dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [1e9, 1e9])
 plan = pack.plan(seq, tissue=Tissue(rho2=1e-6))                       # bands, modes, tiers, bytes: nothing has moved yet
 print(plan["K"], plan["contact"], plan["bytes_per_row"], plan["bytes"])
 view = pack.view(voxels=[(0, 0, 0)], contact=True)                    # one voxel's rows: an ordinary ReplayPack
@@ -77,7 +78,7 @@ print(S3.shape, plan["settings"])                                     # (3, grid
 
 ```python
 from dmipy_replay.replay.study import StudyProtocol, Study
-axial = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [5e8])
+axial = dr.set_b(dr.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [5e8])
 study = Study(StudyProtocol([seq, axial]), tissues=[None, Tissue(rho2=1e-6)], scanners=[None], name="guide")
 S, floor, plan = pack.image(study, chunk_rows=6)
 print(S.shape, floor.shape, plan["study"]["pairs"][1]["tissue"])    # (pairs, grid, 3 measurements), a floor per pair, the record

@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim
+
+import dmipy_replay as dr
 from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule
 from dmipy_replay.constants import GAMMA
 
@@ -128,7 +130,7 @@ def test_a_bloch_sequence_now_carries_coherence_labels_so_it_un_folds():
 
 
 def test_public_names():
-    assert dmipy_sim.RFEvent is RFEvent and dmipy_sim.RFSchedule is RFSchedule
+    assert dr.RFEvent is RFEvent and dr.RFSchedule is RFSchedule
 
 
 def test_the_refocus_time_follows_the_label_not_the_flip():

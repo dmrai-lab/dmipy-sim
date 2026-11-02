@@ -14,7 +14,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from dmipy_sim import simulate, Sphere, Mesh, load_ply, set_b
+from dmipy_sim import simulate, Sphere, Mesh, load_ply
+from dmipy_replay import set_b
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.engine._fused import simulate_fused
 from dmipy_sim import Compartments, Pool

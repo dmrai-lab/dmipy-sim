@@ -17,6 +17,8 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_replay.constants import GAMMA
@@ -259,7 +261,7 @@ def test_a_protocol_carries_one_plan_per_sequence(pack):
 def test_field_modes_are_planned_and_a_prefix_is_bitwise_the_truncated_read(field_pack):
     pk = _fresh(field_pack)
     tissue = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
-    seq = d.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / pk.dt)) + 1, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / pk.dt)) + 1, slew_rate=np.inf)
     plan = pk.plan(seq, tissue=tissue, scanner=3.0)
     assert plan.modes_stored == 4 and 0 <= plan.modes <= 4
     assert plan.mode_variance.startswith("measured on all 90 walkers")
@@ -385,7 +387,7 @@ def test_a_remote_pack_with_field_modes_fetches_the_mode_ranges_it_plans(field_p
     save_pack(field_pack, str(local))
     data = local.read_bytes()
     tissue = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
-    seq = d.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / field_pack.dt)) + 1, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / field_pack.dt)) + 1, slew_rate=np.inf)
     with _serve(data) as (url, handler):
         remote = RemotePack("hf://owner/plan/field.rpk", url=url, revision="rev0")
         want = ReplayPack.load(str(local))

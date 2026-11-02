@@ -41,8 +41,9 @@ import numpy.testing as npt
 import pytest
 
 from dmipy_sim.engine._fused import simulate_fused
-from dmipy_sim import simulate, Sphere, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, Sphere
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 
 from tests.conftest import D, N_CPU, N_EXACT, SEED
 

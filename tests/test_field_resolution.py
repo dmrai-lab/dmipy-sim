@@ -15,7 +15,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.fields.susceptibility_field import (FIELD_BYTES_PER_NODE, FIELD_NODES_ACROSS, assemble_field,
                                                    field_grid_of, field_node_budget, field_resolution)
-from dmipy_sim.spec import SpecError, field_grid_of_spec, winther_spec
+from dmipy_replay.spec.substrate import SpecError
+from dmipy_sim.spec import field_grid_of_spec, winther_spec
 from dmipy_sim import walk
 from dmipy_sim.spec.producers import shell_thickness
 from tests._envelope import walk_envelope

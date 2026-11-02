@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.physics import tolerance_sub_steps, resolve_sub_steps, STEP_TOLERANCE
 from dmipy_sim.math import step_law as sl
@@ -71,9 +73,9 @@ def test_the_envelope_serves_a_geometry_that_declares_no_rate():
 
 
 def test_the_band_of_a_waveform_is_where_its_dephasing_power_ends():
-    pgse = d.pgse([[1, 0, 0]], 0.01, 0.04, bvalues=[3e9], n_t=1000)
-    ogse = d.ogse([[1, 0, 0]], 50.0, 0.02, bvalues=[1e9], n_t=1000)
-    narrow = d.pgse([[1, 0, 0]], 0.004, 0.04, bvalues=[1e9], n_t=1000)
+    pgse = dr.pgse([[1, 0, 0]], 0.01, 0.04, bvalues=[3e9], n_t=1000)
+    ogse = dr.ogse([[1, 0, 0]], 50.0, 0.02, bvalues=[1e9], n_t=1000)
+    narrow = dr.pgse([[1, 0, 0]], 0.004, 0.04, bvalues=[1e9], n_t=1000)
     b_p, b_o, b_n = band_hz(pgse.G_eff, pgse.dt), band_hz(ogse.G_eff, ogse.dt), band_hz(narrow.G_eff, narrow.dt)
     assert 50 < b_p < 150 and 100 < b_o < 300 and b_n > b_p
     assert band_hz(np.zeros((1, 100, 3)), 1e-4) is None
@@ -84,7 +86,7 @@ def test_the_drivers_resolve_the_band_they_serve():
     the walk records what sized its step."""
     from dmipy_sim.engine.physics import make_step_fn
     g = d.Sphere(10e-6)
-    seq = d.pgse([[1, 0, 0]], 0.01, 0.04, bvalues=[1e9], n_t=200)
+    seq = dr.pgse([[1, 0, 0]], 0.01, 0.04, bvalues=[1e9], n_t=200)
     fb = band_hz(seq.G_eff, seq.dt)
     assert make_step_fn(g, D0, seq.dt, f_band=fb)[0].n_sub == resolve_sub_steps(g, D0, seq.dt, f_band=fb)
     w = _walk_geometry(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False)

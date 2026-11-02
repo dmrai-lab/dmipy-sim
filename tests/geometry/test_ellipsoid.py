@@ -12,8 +12,9 @@ import numpy as np
 import numpy.testing as npt
 import jax.numpy as jnp
 
-from dmipy_sim import simulate, Ellipsoid, Sphere, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, Ellipsoid, Sphere
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from tests.conftest import D, SEED, mc_atol
 

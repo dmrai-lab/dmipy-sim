@@ -21,6 +21,8 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
@@ -63,7 +65,7 @@ def _fixture_pack():
 
 
 def _seq(TE):
-    return d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.2, n_t=TE_N_T(TE), slew_rate=np.inf, TE=TE)
+    return dr.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.2, n_t=TE_N_T(TE), slew_rate=np.inf, TE=TE)
 
 
 def TE_N_T(TE):

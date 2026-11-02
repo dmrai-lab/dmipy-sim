@@ -16,6 +16,8 @@ import pytest
 from scipy.fft import dst
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
 from dmipy_replay import ReplayPack
@@ -52,7 +54,7 @@ def _reference_phases(C, seq, T, R=None):
 
 
 def _seq():
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 0.3e-3, 0.9e-3, gradient_strengths=0.2,
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 0.3e-3, 0.9e-3, gradient_strengths=0.2,
                           n_t=201, slew_rate=np.inf, TE=T_MAX), [2e9, 2e9, 2e9])
 
 
@@ -134,7 +136,7 @@ def test_the_pose_expansion_is_the_walks_own_posed_signal(walked):
     turned at every rotation: float32 rounding."""
     walks, packs, _, _ = walked
     w, pk = walks[0], packs[0]
-    seq = d.pgse([[1, 0, 0]], 0.3e-3, 0.9e-3, gradient_strengths=[0.2], n_t=201, slew_rate=np.inf, TE=T_MAX)
+    seq = dr.pgse([[1, 0, 0]], 0.3e-3, 0.9e-3, gradient_strengths=[0.2], n_t=201, slew_rate=np.inf, TE=T_MAX)
     pr = pk.pose_response(seq, method="closed")
     assert pr.n_samples == 0
     C = _reference_coeffs(w.raw_positions, w.h, K)

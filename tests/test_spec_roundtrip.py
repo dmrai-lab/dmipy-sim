@@ -6,7 +6,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.geometry.analytic import PermeableSlab1D, PermeableShell
-from dmipy_sim.spec import spec_of, geometry_from_spec, SubstrateSpec, SpecError, load_spec
+from dmipy_sim.spec import spec_of, geometry_from_spec
+from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, load_spec
 
 D = 2e-9
 

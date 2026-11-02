@@ -14,8 +14,9 @@ These tests exercise the direct simulate() path on FreeDiffusion (CPU-fast).
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, FreeDiffusion, set_b, calc_b
-from dmipy_sim.sequences import pgse, pgste
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import set_b, calc_b
+from dmipy_replay.sequences import pgse, pgste
 from .conftest import D, SEED
 
 # Local walker count: FreeDiffusion is cheap per walker, so this test stays fast

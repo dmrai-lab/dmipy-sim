@@ -7,9 +7,9 @@ downloaded whole; the pack is opened by reference and read by range.
 ```python
 # docs: skip -- reads from the hub over the network
 from dmipy_replay import ReplayPack
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
-from dmipy_sim.spec import Tissue
+from dmipy_replay.spec.tissue import Tissue
 
 pack = ReplayPack.open("hf://SubstrateCommons/disco-replay/disco")       # 150 M walkers, 31,802 voxels; zero bytes so far
 seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 0.0102, 0.0167, bvalues=[1e9, 1e9], TE=0.0535)

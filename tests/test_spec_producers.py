@@ -5,7 +5,8 @@ import os
 import numpy as np
 import pytest
 
-from dmipy_sim.spec import cactus_spec, winther_spec, SpecError
+from dmipy_sim.spec import cactus_spec, winther_spec
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim import walk
 from dmipy_sim.replay.bank import build_replay_pack
 from tests._envelope import stated, walk_envelope

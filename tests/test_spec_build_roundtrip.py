@@ -10,7 +10,8 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.geometry.analytic import PermeableSlab1D, PermeableShell
-from dmipy_sim.spec import spec_of, geometry_from_spec, SpecError
+from dmipy_sim.spec import spec_of, geometry_from_spec
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_replay.spec.substrate import Directional, Sided
 
 D = 2e-9

@@ -312,7 +312,8 @@ def test_every_public_geometry_has_a_spec():
 def test_a_substrate_without_a_spec_spelling_is_refused_by_every_driver():
     """The door: a driver walks what a spec can describe. An object that only quacks like a geometry is refused,
     with the reason; a Mesh built from arrays gets its surface written to the spec cache so it HAS a spelling."""
-    from dmipy_sim.spec import SpecError, as_geometry
+    from dmipy_replay.spec.substrate import SpecError
+    from dmipy_sim.spec import as_geometry
 
     class Quack:
         def init_positions(self, n, key): return jnp.zeros((n, 3), jnp.float32)
@@ -408,7 +409,7 @@ def test_no_new_acquisition_container():
 
 def _every_builder():
     """One instance of every constructor that declares an RF schedule (or is documented not to), built small."""
-    from dmipy_sim import sequences as _seqmod
+    from dmipy_replay import sequences as _seqmod
     import dmipy_sim.engine.pulse_sequence as P
     bv = np.array([[1.0, 0.0, 0.0]])
     out = {
@@ -853,17 +854,17 @@ def test_one_spelling_of_the_columnar_open_and_the_bounce_budget():
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
     one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack's producer side
-    (``build_replay_pack``, ``write_rpk``) and the scanner objects; the reader's names (``ReplayPack``, ``read_rpk``)
-    are dmipy-replay's and refused here by name. No walk of saves, no
+    (``build_replay_pack``, ``write_rpk``); the reader's names (``ReplayPack``, ``read_rpk``, the acquisitions, the
+    builders, the scanner catalogue) are dmipy-replay's and refused here by name. No walk of saves, no
     positions-replay helper and no forward integrator is exported: the fused scalar engine and the forward vector-Bloch
     engine are the oracles the replay is held to, underscored and imported by the admissions that hold it."""
     import inspect
     from dmipy_sim.engine import bloch, core
     for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_mt_trajectories",
-                 "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "write_rpk",
-                 "ScannerSequence", "ScannerLimits"):
+                 "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "write_rpk"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
-    for name in ("ReplayPack", "read_rpk", "FOD", "Distribution", "Phantom", "Pose", "Grid"):
+    for name in ("ReplayPack", "read_rpk", "FOD", "Distribution", "Phantom", "Pose", "Grid", "ScannerSequence",
+                 "ScannerLimits", "pgse", "GAMMA", "compile_scheme"):
         assert name not in dmipy_sim.__all__
         with pytest.raises(AttributeError, match=rf"from dmipy_replay(\.\w+)* import {name}"):
             getattr(dmipy_sim, name)

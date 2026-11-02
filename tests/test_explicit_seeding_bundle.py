@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from dmipy_sim.spec import Seeding, SpecError
+from dmipy_replay.spec.substrate import Seeding, SpecError
 from dmipy_sim import walk
 from tests.conftest import spec_without_source
 from tests._envelope import walk_envelope

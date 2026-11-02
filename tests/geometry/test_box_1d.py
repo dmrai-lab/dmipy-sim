@@ -16,7 +16,8 @@ duration (~9% of L) introduces ~4% error in the narrow-pulse approximation.
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, pgse, Box1D, FreeDiffusion, set_b
+from dmipy_sim import simulate, Box1D, FreeDiffusion
+from dmipy_replay import pgse, set_b
 from tests.conftest import D, N_CPU, SEED, mc_atol
 
 

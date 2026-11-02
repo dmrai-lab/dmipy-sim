@@ -563,7 +563,7 @@ class Cactus(Family):
             spec = cactus_spec(self.run_dir, side_um=side)
             if ref:
                 import dataclasses
-                from dmipy_sim.spec import Frame
+                from dmipy_replay.spec.substrate import Frame
                 prov = dict(spec.provenance)
                 prov["reference_spec"] = ref["record"]
                 prov["transformations"] = list(prov["transformations"]) + [
@@ -749,7 +749,7 @@ def _backend_check(fam, name, backend):
 
 def stage_plan(fam, args):
     from dmipy_sim.replay.reference import pack_seed
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     rows, tot_steps, tot_n = [], 0, 0
     fam.planned = {}
     for name, sub in _shard(list(fam.substrates().items()), args.shard):
@@ -968,7 +968,7 @@ def stage_walk(fam, args):
 def stage_check(args):
     """Every pack under ``DIR``: it loads, states the campaign's envelope (refused when ``--require-stated``), its
     certificate against its floor, and the replay of a PGSE at b = 1000 s/mm^2 across x is a signal in (0, 1]."""
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     from dmipy_replay import ReplayPack
     rows, bad = [], []
     for dirpath, _, files in os.walk(os.path.abspath(args.out)):

@@ -11,8 +11,8 @@ two-region exchange law and the two-pool Bloch--McConnell oracle.
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_sim import Sphere

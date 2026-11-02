@@ -14,9 +14,8 @@ import jax, jax.numpy as jnp
 
 from dmipy_sim.engine.bloch import _simulate_bloch      # the forward vector-Bloch oracle
 
-from dmipy_sim import (FreeDiffusion, GAMMA, bare_spin_echo,
-                       SusceptibilitySources, MyelinSusceptibility, GridSusceptibility,
-                       dipole_field, myelin_susceptibility_tensor, mesh_shapes as ms)
+from dmipy_sim import FreeDiffusion, bare_spin_echo, SusceptibilitySources, MyelinSusceptibility, GridSusceptibility, dipole_field, myelin_susceptibility_tensor, mesh_shapes as ms
+from dmipy_replay import GAMMA
 
 # ---- 1. analytic myelin field: zero at parallel B0, non-zero at perpendicular ----
 a, b, L = 2e-6, 3e-6, 20e-6

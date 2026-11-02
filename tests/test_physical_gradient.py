@@ -12,7 +12,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import sequences as S
+
+import dmipy_replay as dr
+from dmipy_replay import sequences as S
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.timing import SequenceTiming
 from dmipy_replay.acquisition.waveforms import b_from_gradient
@@ -144,8 +146,8 @@ def test_validate_refuses_a_finite_pulse_over_a_live_gradient_and_an_unrefocused
 
 
 def test_the_scalar_engine_and_b_read_the_effective_gradient():
-    wf = d.set_b(d.pgse(bv, 4e-3, 20e-3, gradient_strengths=0.05, n_t=240), B)
-    np.testing.assert_allclose(d.calc_b(wf), B, rtol=1e-6)
+    wf = dr.set_b(dr.pgse(bv, 4e-3, 20e-3, gradient_strengths=0.05, n_t=240), B)
+    np.testing.assert_allclose(dr.calc_b(wf), B, rtol=1e-6)
     assert np.all(b_from_gradient(wf.G, wf.dt) > 1.2 * B)                 # the physical pair alone would not refocus
     E = d.simulate(2000, 2e-9, wf, d.FreeDiffusion(), seed=0, require_gpu=False)
     np.testing.assert_allclose(E, np.exp(-B * 2e-9), atol=0.03)

@@ -17,7 +17,8 @@ CPU-only, self-contained.  Run:  python examples/pgste_t1_mixing_time.py
 """
 import numpy as np
 
-from dmipy_sim import simulate, FreeDiffusion, set_b, calc_b, pgste
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import set_b, calc_b, pgste
 
 D = 2e-9            # m^2/s, free diffusivity
 N_WALKERS = 60_000  # raise for tighter statistics

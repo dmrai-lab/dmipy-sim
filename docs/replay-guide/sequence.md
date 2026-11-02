@@ -7,7 +7,7 @@ directions and either the b-values to realise or the gradient strengths to play,
 refuses what a scanner cannot play.
 
 **If your family is not in that list, the answer is a new builder, not a hand-built array.** Every builder is
-a shape and an assembler driven by `sequences.assemble`, and the assembler is what places the pulses, hands
+a shape and an assembler driven by `dmipy_replay.sequences.assemble`, and the assembler is what places the pulses, hands
 the gradient its stretches, and puts every echo on a sample. Build the array yourself and you own all of
 that: the first hand-built version of the `splice` train put its pulses off the raster, which unbalanced
 every crusher, and then computed readouts that disagreed with the echoes its own schedule makes, which the
@@ -22,7 +22,7 @@ export, a vendor trace, a waveform from `dmipy-design` -- not for one you are ab
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.replay.bank import build_replay_pack
 
 from dmipy_replay import Envelope

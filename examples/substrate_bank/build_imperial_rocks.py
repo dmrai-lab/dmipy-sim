@@ -99,7 +99,7 @@ def waveforms():
     The deltas are the envelope's own, 40 and 60 ms: a relaxation family certifies a clinical diffusion envelope
     beside its contact tier, and the stored band (640 Hz, K = 128 per 100 ms window) holds every one of them.
     """
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     out = []
     for frac in DECLARED_DELTA_FRACS:
         delta = frac * T

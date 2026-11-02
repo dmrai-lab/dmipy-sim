@@ -14,9 +14,9 @@ Fine dt so the carrier
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
+from dmipy_replay import ScannerSequence
 from dmipy_sim.engine.pulse_sequence import saturation_pulse
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_sim import Sphere, bare_gradient_echo, prepend_mt_prep

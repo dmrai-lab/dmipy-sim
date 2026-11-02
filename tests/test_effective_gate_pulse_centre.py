@@ -10,7 +10,7 @@ field. Hard-pulse schedules have a binary ``chi_perp`` already and are unchanged
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_replay.acquisition.timing import SequenceTiming

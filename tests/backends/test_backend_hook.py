@@ -272,7 +272,7 @@ def test_a_raster_field_is_the_backends_request_and_its_modes_are_checked():
 
 
 def test_walk_spec_passes_the_backend_through_with_and_without_adaptive_steps():
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     from dmipy_sim import walk
     g = d.Sphere(R)
     still = _Still()
