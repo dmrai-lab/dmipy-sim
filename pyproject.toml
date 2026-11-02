@@ -23,7 +23,7 @@ requires-python = ">=3.10"
 dependencies = [
     "jax>=0.6.2",
     "numpy>=2.0",
-    "dmipy-replay>=0.1,<0.3",  # the reader: acquisitions, the replay, the Hub client
+    "dmipy-replay>=0.2,<0.3",  # the reader: acquisitions, the replay, the pose replay, the phantoms, the Hub client
     "dmipy-analytic[special,jax]>=3,<4",  # the forms: the constants, the matrix method, the field forms and their JAX twins, the MT forms
     "scipy>=1.10",       # replay: DCT/low-rank compression + compiled-scheme forward; susceptibility field-map sampling
     "safetensors>=0.4",  # replay: .rpk container I/O (dmipy_sim.replay)
@@ -43,7 +43,7 @@ bank = [
 # The torch backends of the shape-moment image (dmipy-sim#510) and the closed-form pose expansion (#603): PyTorch
 # only, for Hugging Face's shared GPU pool.
 torch = [
-    "dmipy-replay[torch]>=0.1,<0.3",
+    "dmipy-replay[torch]>=0.2,<0.3",
 ]
 cuda12 = [
     "jax[cuda12]>=0.6.2",
