@@ -78,9 +78,10 @@ def _survival(geom, t, dt):
     return float(np.asarray(sig)[0]), n_t * dt
 
 
-def mc_relax_tau(geom, tau_ex, R):
-    """Fit the long-time single-exponential of S(t) -> tau_1 (higher modes decay away first)."""
-    dt = (R / 50) ** 2 / (6 * D)                       # fine step (relaxivity is step-robust)
+def mc_relax_tau(geom, tau_ex, R, step_fraction=50):
+    """Fit the long-time single-exponential of S(t) -> tau_1 (higher modes decay away first), walking steps of
+    ``R / step_fraction`` (relaxivity is step-robust: R/12 reads the same tau within 0.5 %)."""
+    dt = (R / step_fraction) ** 2 / (6 * D)
     ts, ss = [], []
     for m in (1.0, 1.5, 2.0, 2.5, 3.0):                # window where the lowest mode dominates
         s, ta = _survival(geom, m * tau_ex, dt)

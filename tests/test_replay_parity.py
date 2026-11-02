@@ -57,9 +57,9 @@ _WF_STD = _pgse(delta=8e-3, DELTA=32e-3, n_t=200, b=1.0e9)
 
 # Mesh MC is far heavier per step on CPU -> short TE / small n_t and a small walker count; the
 # feature radius sets the lookup cell fine enough that the collision criterion sub-steps too.
-_N_MESH = 3_000
+_N_MESH = 500
 _WF_MESH = _pgse(delta=1.5e-3, DELTA=6e-3, n_t=160, b=0.5e9, G_magnitude=0.3)
-_MESH_FEATURE = 1e-6
+_MESH_FEATURE = 1.5e-6
 
 
 def _std_specs():

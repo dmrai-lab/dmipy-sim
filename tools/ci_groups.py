@@ -14,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT = 8
-#: seconds of the tests over 5 s of each file (path under ``tests/``), from the CI run of dmipy-sim#861
+#: seconds of the tests over 5 s of each file (path under ``tests/``), from the CI run of dmipy-sim#861 and, for the
+#: files whose slimmed tier-2 tests joined tier 1, the timing runs of the change that did it
 SECONDS = {
     "test_dataset_producers.py": 222,
     "geometry/test_mesh.py": 220,
@@ -50,6 +51,7 @@ SECONDS = {
     "test_storage_windows.py": 68,
     "test_rewindow.py": 67,
     "test_pgste_t1.py": 64,
+    "physics/test_sgp_pore_sizes.py": 62,
     "test_analytic_field_grid.py": 61,
     "backends/test_void_admission.py": 61,
     "test_substrate_pack.py": 56,
@@ -79,6 +81,10 @@ SECONDS = {
     "test_replay_coefficient_space.py": 33,
     "test_bank.py": 31,
     "test_adaptive_calibration.py": 30,
+    "test_bloch_permeation.py": 30,
+    "test_mt_binding.py": 30,
+    "geometry/test_permeability_crossing.py": 28,
+    "geometry/test_packed_walls.py": 28,
     "test_spec_producers.py": 25,
     "test_compartment_ids.py": 24,
     "geometry/test_orientation_is_the_acquisition.py": 24,
@@ -90,17 +96,20 @@ SECONDS = {
     "test_field_target_floor.py": 21,
     "test_banded_containers.py": 21,
     "test_pack_prefix.py": 21,
+    "geometry/test_curved_step_rule.py": 21,
     "test_save_zero.py": 20,
     "test_scanner_encoding_reaches_the_phantom.py": 20,
     "spectrum/test_strands.py": 20,
     "replay/test_reference_family.py": 19,
     "test_storage_dtype_and_comp_traj.py": 19,
     "test_replay_guide.py": 19,
+    "geometry/test_mesh_acceleration_invariance.py": 19,
     "geometry/test_myelinated_cylinder_walk.py": 18,
     "spectrum/test_packs.py": 17,
     "test_brain_from_csd.py": 17,
     "test_readers_against_the_walk.py": 17,
     "test_drawn_seeds.py": 16,
+    "geometry/test_myelin_walls.py": 15,
     "test_susceptibility.py": 14,
     "test_acquisition_unification.py": 14,
     "test_cpmg_multiecho.py": 14,
@@ -118,6 +127,7 @@ SECONDS = {
     "test_drivers_take_specs.py": 6,
     "test_api_surface.py": 6,
     "geometry/test_explicit_pool.py": 6,
+    "geometry/test_mesh_mc.py": 6,
     "test_phantom_run_record.py": 5,
 }
 
