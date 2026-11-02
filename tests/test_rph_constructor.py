@@ -10,7 +10,7 @@ from dataclasses import replace
 import pytest
 
 from dmipy_sim import Encoding, RFEvent, ScannerSequence
-from dmipy_sim.phantom import Fan, Frames, FreeWater, Grid, Inert, ODF, PackSubstrate, Peaks, Phantom, Watson
+from dmipy_replay.phantom import Fan, Frames, FreeWater, Grid, Inert, ODF, PackSubstrate, Peaks, Phantom, Watson
 from dmipy_sim.replay.fod import FOD
 from dmipy_sim.replay.so3 import n_sh_coeffs
 
@@ -268,7 +268,7 @@ def test_the_phantom_replays_every_voxel_from_one_pack_replay(pack_path):
     f_wm, f_csf = ph.sparse(ph.fraction(wm.name))[1], ph.sparse(ph.fraction(csf.name))[1]
     # b = 0: the m0-weighted volume of each substrate times its own b = 0 response -- at the T2 the phantom
     # declares for that substrate (RPH.md 3.2), not its nominal value; free water's own decay; nothing from inert
-    from dmipy_sim.phantom.substrates import _echo_time
+    from dmipy_replay.phantom.substrates import _echo_time
     E0 = float(pk.replay(seq, tissue=Tissue(T2={"extra": 0.06, "intra": 0.06}))[0])
     assert E0 < float(pk.replay(seq)[0])
     E_csf = np.exp(-_echo_time(seq) / T2_CSF)
@@ -584,7 +584,7 @@ def test_the_machines_field_refocuses_under_a_spin_echo_and_not_a_gradient_echo(
     effect a spin echo does not refocus, reaches the phantom separately (dmipy-sim#377), and is why the
     whole machine is NOT bit-identical to the bare field under the spin echo."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom.bore import b0_offset_map
+    from dmipy_replay.phantom.bore import b0_offset_map
     ph, *_ = _phantom(pack_path, grid=_swoop_grid())
     swoop = ScannerLimits.of("swoop")
     gre, se = _gre_and_se(pack_path)
@@ -620,7 +620,7 @@ def test_a_smooth_transmit_map_costs_one_propagation_per_distinct_scale():
     across a plausible 0.6 to 1.2 at the default, which is 601 vector-Bloch propagations of every pack in
     the phantom. Binning is what makes such a map affordable, and it was not reachable at all from
     `Phantom.replay` before."""
-    from dmipy_sim.replay.phantom import quantise
+    from dmipy_replay.replay.phantom import quantise
     kappa = np.linspace(0.6, 1.2, 4001)
     assert len(np.unique(quantise(kappa, 1e-3))) == 601                  # the default tolerance
     assert len(np.unique(quantise(kappa, None))) == 4001                 # None bins nothing
@@ -664,7 +664,7 @@ def test_a_transmit_map_is_asked_for_rather_than_assumed(pack_path):
     scale moves the whole replay onto the vector-Bloch route. Something that changes the cost of a replay by
     orders of magnitude is asked for."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map, b1_scale_map
+    from dmipy_replay.phantom import b0_offset_map, b1_scale_map
     swoop = ScannerLimits.of("swoop")
     grid = _swoop_grid()
     assert b0_offset_map(swoop, grid) is not None and b1_scale_map(swoop, grid) is not None
@@ -681,7 +681,7 @@ def test_a_drifting_magnet_is_a_uniform_offset_on_top_of_a_fixed_shape():
     spread untouched, and a machine with no coefficient refuses the request rather than quietly ignoring it
     -- a superconducting magnet has no room temperature to drift with."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map
+    from dmipy_replay.phantom import b0_offset_map
     swoop, grid = ScannerLimits.of("swoop"), _swoop_grid()
     at = grid.offset_m(grid.every_voxel).reshape(-1, 3)
     base = b0_offset_map(swoop, grid)(at)

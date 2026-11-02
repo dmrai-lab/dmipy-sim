@@ -67,7 +67,6 @@ from dmipy_replay.replay.replay import compile_scheme, replay_signal, surface_lo
 from .replay import bank
 from .replay.bank import build_replay_pack, build_to_floor, frame_from_bundles
 from dmipy_replay.replay.field import frame_from_axis
-from .phantom import Phantom, PartitionPhantom, Pose, Grid, PackSubstrate, FreeWater, Inert, Peaks, ODF, Watson, Frames, Fan
 
 __all__ = [
     # the walk and its contraction: the producers return a CoefficientWalk
@@ -104,6 +103,6 @@ __all__ = [
     # magnetization transfer (physics + analytic oracle)
     "mt",
     # continuous RF pulses: complex B1(t) envelope + Bloch forward
-    "Prescription", "Phantom", "PartitionPhantom", "Pose", "Grid", "PackSubstrate", "FreeWater", "Inert", "Peaks", "ODF", "Watson", "Frames", "Fan",
+    "Prescription",
     "B1Pulse", "RFEvent", "RFSchedule", "SequenceTiming", "ReplayPack", "read_rpk", "write_rpk", "compile_scheme", "replay_signal", "replay_signal_jax", "bloch_simulate", "slice_profile",
 ]

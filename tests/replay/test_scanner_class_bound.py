@@ -174,7 +174,7 @@ def test_a_layout_of_a_class_derives_its_widths_from_the_class_levels():
 def disco_timing_layout(tmp_path_factory):
     """A pack certified for connectome_2 over a window that holds DiSCo's b = 3091 s/mm^2 shell (ActiveAx delta 7.6 ms,
     Delta 45.9 ms, TE 53.5 ms), its segment layout of that shell's partition, and the shell's sequence."""
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     tmp = tmp_path_factory.mktemp("class_layout")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -186,7 +186,7 @@ def disco_timing_layout(tmp_path_factory):
     grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(0.0,) * 3, attach="substrate")    # one voxel about the axis
     ts.segment_rows(pk, {"b3091": seq}, str(tmp / "rows"), grid=grid, floor_target=0.05)
     ts.write_time_segment_layout([str(tmp / "rows")], str(tmp / "layout"))
-    return ts.TimeSegmentLayout(str(tmp / "layout")), seq
+    return _r_time_segments.TimeSegmentLayout(str(tmp / "layout")), seq      # the reader is dmipy-replay's
 
 
 def test_a_layout_of_a_class_reads_any_level_the_class_plays_and_refuses_one_beyond_it(disco_timing_layout):

@@ -11,7 +11,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
+from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -115,7 +115,7 @@ def test_off_resonance_is_gated_like_the_gradient_not_applied_at_the_end(brain):
     time and so refocuses an offset exactly; a pathway that slept through an interval does not. A train
     therefore has no single coherence gate, and applying one factor at the end would be wrong for every
     pathway but one."""
-    from dmipy_sim.replay.pathways import train_response
+    from dmipy_replay.replay.pathways import train_response
     _ph, pack, _g = brain
     tr = train_response(pack, _train(), keep=(8, 0))
     tau = tr.tau
@@ -129,7 +129,7 @@ def test_off_resonance_is_gated_like_the_gradient_not_applied_at_the_end(brain):
 def test_a_spin_echo_refocuses_a_drifting_magnet_exactly(brain):
     """One pathway survives a perfect 180, its signed transverse time is zero, so a UNIFORM offset leaves
     both magnitude and phase untouched however far the magnet has drifted."""
-    from dmipy_sim.replay.pathways import train_response
+    from dmipy_replay.replay.pathways import train_response
     from dmipy_sim.replay import so3
     _ph, pack, _g = brain
     se = _train(n_echo=1, beta=180.0)
@@ -160,7 +160,7 @@ def test_a_refocusing_train_is_exactly_insensitive_to_a_uniform_offset(brain):
     What this does NOT say is that a real magnet's drift is harmless. It says a UNIFORM offset is refocused
     under HARD pulses. Finite pulses excite about a tilted effective field when off-resonant, so the flip
     angle itself becomes offset-dependent -- a channel this route does not model."""
-    from dmipy_sim.replay.pathways import train_response
+    from dmipy_replay.replay.pathways import train_response
     from dmipy_sim.replay import so3
     _ph, pack, _g = brain
     tr = train_response(pack, _train(n_echo=4, beta=150.0), keep=(8, 0))
@@ -179,7 +179,7 @@ def test_a_refocusing_train_is_exactly_insensitive_to_a_uniform_offset(brain):
 
 def _free_water_brain(T2=None):
     """A phantom of free water alone on the small grid: the closed form's train has no pose to expand."""
-    from dmipy_sim.phantom import FreeWater
+    from dmipy_replay.phantom import FreeWater
     from dmipy_sim.spec import Tissue
     grid = Grid(shape=SH, voxel_size_m=(2.5e-2,) * 3,
                 origin_m=tuple(-0.5 * (n - 1) * 2.5e-2 for n in SH), isocenter_m=(0.0, 0.0, 0.0))
@@ -208,7 +208,7 @@ def test_a_closed_form_takes_each_pathway_at_its_own_b_and_the_pack_agrees(brain
     """Under a diffusion preparation the stimulated pathways carry their own b: free water's amplitude must fall
     below its b = 0 value by the pathways' own Gaussian factors, and a free-water pack under the same train
     must agree with the closed form to its Monte-Carlo scatter."""
-    from dmipy_sim.phantom import FreeWater
+    from dmipy_replay.phantom import FreeWater
     from dmipy_sim.spec import Tissue
     ph_pack, pack, grid = brain
     D = float(pack.meta["walk_params"]["diffusivity"])
@@ -229,7 +229,7 @@ def test_a_closed_form_takes_each_pathway_at_its_own_b_and_the_pack_agrees(brain
 def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
     """White matter from a pack beside cerebrospinal fluid in closed form, in one train replay: the voxel is
     the fraction-weighted sum of the two routes, and neither is refused or dropped."""
-    from dmipy_sim.phantom import FreeWater
+    from dmipy_replay.phantom import FreeWater
     from dmipy_sim.spec import Tissue
     import tempfile, os
     out = os.path.join(tempfile.mkdtemp(), "wm.rpk")
@@ -254,7 +254,7 @@ def test_a_mixed_phantom_composes_a_pack_and_a_closed_form():
 
 
 def test_an_oriented_closed_form_is_refused_under_a_train():
-    from dmipy_sim.replay.pathways import closed_form_train
+    from dmipy_replay.replay.pathways import closed_form_train
 
     class Stick:
         oriented = True
@@ -305,9 +305,9 @@ def test_a_pathway_gated_waveform_carries_its_sign_as_its_coherence():
     with and what the relaxation follows -- transverse where |sign| = 1, stored where 0 -- and a closed form reads
     the transverse time as its echo time and the stored time as its mixing time."""
     from dataclasses import replace
-    from dmipy_sim.phantom.substrates import _echo_time
+    from dmipy_replay.phantom.substrates import _echo_time
     from dmipy_replay.replay._replay_kernel import field_gate
-    from dmipy_sim.replay.pathways import gate_sign, sequence_events
+    from dmipy_replay.replay.pathways import gate_sign, sequence_events
     train = _train(n_echo=2, beta=150.0)
     n_t, dt = train.n_t, float(train.dt)
     prep, tr, on, ro, edges = sequence_events(train)

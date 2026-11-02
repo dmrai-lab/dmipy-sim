@@ -12,7 +12,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.io.strands import write_tck
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk

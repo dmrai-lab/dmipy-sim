@@ -17,7 +17,7 @@ from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.so3 import Distribution
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
-from dmipy_sim import Pose
+from dmipy_replay.phantom import Pose
 from dmipy_sim.replay.reencode import rewindow_pack
 
 
@@ -294,7 +294,7 @@ def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pa
     direction up to the Maxwell residual (#561), g0 is the second plane wave, and the expansion equals the direct
     posed replay of the delivered waveform at every rotation within its misfit."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_replay.phantom.bore import encoding_classes
     from dmipy_replay.phantom.grid import Grid
     sw = ScannerLimits.of("swoop")
     dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
@@ -370,7 +370,7 @@ def test_the_misfit_bounds_what_the_grouping_and_the_rounding_leave_out(pack, ma
     its misfit (dmrai-lab/dmipy-sim#617): the direct posed replay is within it at every rotation, on a 3 T machine's
     classes (where the misfit was 727 times short) as on the ideal scanner and the Swoop."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_replay.phantom.bore import encoding_classes
     from dmipy_replay.phantom.grid import Grid
     rng = np.random.default_rng(3)
     dirs = rng.normal(size=(12, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)

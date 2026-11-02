@@ -44,7 +44,7 @@ from dmipy_replay.replay.decoded import PackArrays
 from dmipy_replay.replay.planning import PLAN_TOL, ReadPlan, planned
 
 from dmipy_replay.constants import GAMMA
-from ..run import Run, current
+from dmipy_replay.replay.phases import Phases, current
 from dmipy_replay.acquisition.scanner_sequence import Protocol, ScannerSequence
 from dmipy_replay.replay.replay import _compile_continuous, _path_field_channels, _refuse_predating
 
@@ -183,8 +183,7 @@ class PoseResponse:
 
 class ReplayPack(_ReplayPack):
     """A replay pack: :class:`dmipy_replay.ReplayPack` (the reader: every replay route, the plan, the band check) with
-    the pose expansion of a distribution of poses (:meth:`pose_response`, :meth:`pose_series`), the study
-    primitives, :meth:`open` building this package's columnar and remote readers, and the JAX vector-Bloch
+    the pose expansion of a distribution of poses (:meth:`pose_response`, :meth:`pose_series`) and the JAX vector-Bloch
     propagator (``replay_bloch(backend="jax")``). The operations that write or re-encode a pack are functions of
     one (:mod:`dmipy_sim.replay.container`, :mod:`dmipy_sim.replay.reencode`)."""
 
@@ -195,38 +194,6 @@ class ReplayPack(_ReplayPack):
         """``orientation=`` as a distribution of poses (a :class:`~dmipy_sim.replay.so3.Distribution`, or an
         :class:`~dmipy_sim.replay.fod.FOD` read as an axis density), or None when it names a single pose."""
         return _as_distribution(orientation)
-
-    @staticmethod
-    def open(uri, workers=8):
-        """A pack open by reference. ``hf://owner/name/path.rpk`` is a single pack on the Hub, a
-        :class:`~dmipy_sim.replay.remote.RemotePack`: it plans an acquisition from the file's header and fetches by HTTP
-        range only the tensors the plan names (``load()`` downloads the whole file). Any other ``uri`` is the columnar layout
-        (a directory, or ``hf://owner/name/prefix`` on the Hub), open by reference:
-        a :class:`~dmipy_sim.replay.columnar.ColumnarPack`, whose ``view`` gives a :class:`ReplayPack` of the rows
-        and bands an acquisition needs and whose ``image`` replays a whole grid in one pass over the rows."""
-        from dmipy_replay.replay.hub import is_hub_uri
-        if is_hub_uri(uri) and uri.endswith(".rpk"):
-            from .remote import RemotePack
-            return RemotePack(uri)
-        from .columnar import ColumnarPack
-        return ColumnarPack(uri, workers=workers)
-
-    def walker_primitives(self, acquisition, *, tol=PLAN_TOL, K=None, modes=None):
-        """What ``acquisition`` (a :class:`~dmipy_sim.replay.study.Acquisition`, or a sequence) leaves of every
-        walker before any tissue or scanner is applied -- the bands and the path channel contracted once, the
-        exposures and the contact read once: a :class:`~dmipy_sim.replay.study.Primitives`, whose ``signals(tissue,
-        scanner)`` is :meth:`walker_signals` for every pair without touching the bands again (dmipy-sim#297). The bands and
-        modes read are the plan's (``tol=``, ``K=``, ``modes=`` as in :meth:`replay`), recorded as ``Primitives.plan``. The
-        plan weighs the acquisition's gradient and gate; the tissue and the scanner are not yet known, so a field is
-        planned at the pack's certified envelope (its largest ``B0`` and ``chi``) -- the mode count :meth:`replay` reads as well, and a bound for every pair."""
-        from .study import walker_primitives
-        return walker_primitives(self, acquisition, tol=tol, K=K, modes=modes)
-
-    def study(self, study):
-        """The signal for every pair of a :class:`~dmipy_sim.replay.study.Study`, ``(pairs, n_meas)``: the
-        protocol's acquisitions contracted once each, every tissue and scanner applied elementwise."""
-        from .study import study_signals
-        return study_signals(self, study)
 
     def pose_response(self, waveform, *, tissue=None, scanner=None, pose=None, compartment=None,
                       method="auto", keep=None, cache=None, backend="jax", device=None):
@@ -253,7 +220,7 @@ class ReplayPack(_ReplayPack):
 
         ``tissue`` and ``scanner`` are :meth:`replay`'s. The substrate's pose is not a knob here, since every pose
         of it is what is being expanded; ``pose`` is the SPECIMEN's rigid rotation in the bore (a
-        :class:`~dmipy_sim.phantom.partition.Pose`; a bare matrix is ``Pose(R)``): the acquisition and the field turn into that
+        :class:`~dmipy_replay.phantom.partition.Pose`; a bare matrix is ``Pose(R)``): the acquisition and the field turn into that
         frame and the expansion runs there.
 
         ``cache`` -- a directory (or ``True`` for ``$DMIPY_SIM_CACHE``, else ``~/.cache/dmipy_sim/pose``): the
@@ -284,14 +251,14 @@ class ReplayPack(_ReplayPack):
             return view.pose_responses(waveforms, tissue=tissue, scanner=scanner, pose=pose, compartment=compartment,
                                        method=method, keep=keep, cache=cache, backend=backend, device=device)
         waveforms = list(waveforms)
-        from ..phantom.partition import pose_rotation
+        from dmipy_replay.phantom.partition import pose_rotation
         R_s = pose_rotation(pose)
         if R_s is not None:                                       # the acquisition in the specimen frame: what the
             from dmipy_replay.acquisition.waveforms import rotate_waveform  # expansion reads, in P and from the waveform itself
             waveforms = [rotate_waveform(wf, R_s.T) for wf in waveforms]
         if method not in ("auto", "closed", "quadrature"):
             raise ValueError("method is 'auto', 'closed' (the per-walker Rayleigh expansion) or 'quadrature'")
-        with Run("pose_response", params=dict(id=self.id, n_acq=len(waveforms), n_meas=int(waveforms[0].n_meas), method=method,
+        with Phases("pose_response", params=dict(id=self.id, n_acq=len(waveforms), n_meas=int(waveforms[0].n_meas), method=method,
                                         keep=(None if keep is None else [None if k is None else int(k) for k in keep]))):
             Ps, paths, out = [], [], [None] * len(waveforms)
             for c, wf in enumerate(waveforms):

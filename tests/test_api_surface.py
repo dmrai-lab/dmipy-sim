@@ -37,7 +37,7 @@ _DOWNSTREAM_MODULES = [
     "dmipy_sim.replay.bank", "dmipy_sim.sequences", "dmipy_sim.sequences.pulseq",
     "dmipy_sim.substrate", "dmipy_sim.substrate.biophysical_constants", "dmipy_sim.substrate.substrate",
     "dmipy_sim.geometry", "dmipy_sim.geometry.mesh", "dmipy_sim.geometry.curved_cylinder",
-    "dmipy_sim.replay.phantom", "dmipy_sim.replay.trajectories", "dmipy_sim.phantom",
+    "dmipy_sim.replay.trajectories",
     "dmipy_sim.fields.susceptibility", "dmipy_sim.fields.susceptibility_field",
     # the engine package
     "dmipy_sim.engine", "dmipy_sim.engine.core", "dmipy_sim.engine.physics", "dmipy_sim.engine.bloch",
@@ -571,10 +571,10 @@ def test_replay_knobs_are_tissue_orientation_and_scanner():
     B0, a chi, a field direction -- and none takes a string or a boolean for the tissue."""
     import inspect
     from dmipy_sim.replay.replay import ReplayPack
-    from dmipy_sim.replay.phantom import ReplayPhantom
-    from dmipy_sim.phantom.phantom import Phantom
-    from dmipy_sim.phantom.partition import PartitionPhantom
-    from dmipy_sim.phantom.substrates import PackSubstrate, FreeWater
+    from dmipy_replay.replay.phantom import ReplayPhantom
+    from dmipy_replay.phantom.phantom import Phantom
+    from dmipy_replay.phantom.partition import PartitionPhantom
+    from dmipy_replay.phantom.substrates import PackSubstrate, FreeWater
     flat = {"T2", "T1", "rho2", "rho1", "D", "B0", "b0_dir", "chi_iso", "chi_aniso", "T2_s", "T1_s", "rho_m_s", "D_m2_s", "B0_T"}
     entry_points = [ReplayPack.replay, ReplayPack.walker_signals, ReplayPack.walker_phases, ReplayPack.replay_bloch, ReplayPack.pose_response,
                     ReplayPhantom.replay, ReplayPhantom.replay_bloch, Phantom.replay, PartitionPhantom.replay,
@@ -674,16 +674,18 @@ _SAVE_COUNTS = re.compile(r"\b(?:n_t|n_s|n_seg|n_saves|_window_n_t|Nt|N_t)\b")
 
 
 #: the modules that READ a pack (the consumer routes): their band readers take a stated duration
-_READER_MODULES = ("replay/replay.py", "replay/columnar.py", "replay/study.py", "replay/pose_series.py",
-                   "replay/pose_device.py", "replay/continuation.py", "replay/phantom.py", "replay/time_segments.py",
-                   "replay/so3.py", "replay/consolidate.py")
+_READER_MODULES = tuple((_SRC, m) for m in ("replay/replay.py", "replay/pose_series.py", "replay/pose_device.py",
+                                            "replay/continuation.py", "replay/time_segments.py", "replay/so3.py",
+                                            "replay/consolidate.py")) + \
+                  tuple((_REPLAY_SRC, m) for m in ("replay/study.py", "replay/columnar.py", "replay/phantom.py"))
 
 
 def _band_reader_T_args():
     """``(file, line, T argument's source)`` of every call to a band reader in the reader modules."""
     import ast
     out = []
-    for f in (_SRC / m for m in _READER_MODULES):
+    for root, m in _READER_MODULES:
+        f = root / m
         src = f.read_text()
         for node in ast.walk(ast.parse(src)):
             if not isinstance(node, ast.Call):
@@ -696,7 +698,7 @@ def _band_reader_T_args():
             if arg is None and len(node.args) > at:
                 arg = node.args[at]
             if arg is not None:
-                out.append((str(f.relative_to(_SRC)), node.lineno, ast.get_source_segment(src, arg)))
+                out.append((str(f.relative_to(root)), node.lineno, ast.get_source_segment(src, arg)))
     return out
 
 
@@ -837,12 +839,12 @@ def test_a_package_carries_no_private_name_of_its_module():
 
 
 def test_one_spelling_of_the_columnar_open_and_the_bounce_budget():
-    """A pack is opened by ``ReplayPack.open(uri)``; the bounce budget is ``geometry._boundary.bounce_budget``. The
-    module-level opener and the packed alias are removed."""
+    """A pack is opened by ``ReplayPack.open(uri)``; the bounce budget is ``geometry._boundary.bounce_budget``. dmipy-sim
+    has no opener of its own, and the packed alias is removed."""
+    import dmipy_sim.replay
     from dmipy_sim.geometry import _boundary, packed
-    from dmipy_sim.replay import columnar
     from dmipy_sim.replay.replay import ReplayPack
-    assert not hasattr(columnar, "open_columnar") and "open_columnar" not in columnar.__all__
+    assert not hasattr(dmipy_sim, "open_columnar") and not hasattr(dmipy_sim.replay, "open_columnar")
     assert not hasattr(packed, "packed_bounce_budget") and callable(_boundary.bounce_budget)
     assert callable(ReplayPack.open)
 
@@ -850,14 +852,14 @@ def test_one_spelling_of_the_columnar_open_and_the_bounce_budget():
 def test_the_public_surface_is_the_replay_surface():
     """The top level exports the walk and its contraction: ``simulate`` (the coefficient walk and its contraction in
     one call), the producers (each returns a ``CoefficientWalk``), ``walk_cost`` / ``walk``, the pack side
-    (``build_replay_pack``, ``read_rpk``, ``ReplayPack``) and the phantom and scanner objects. No walk of saves, no
+    (``build_replay_pack``, ``read_rpk``, ``ReplayPack``) and the scanner objects. No walk of saves, no
     positions-replay helper and no forward integrator is exported: the fused scalar engine and the forward vector-Bloch
     engine are the oracles the replay is held to, underscored and imported by the admissions that hold it."""
     import inspect
     from dmipy_sim.engine import bloch, core
     for name in ("simulate", "simulate_mixture", "simulate_cpmg", "simulate_mt_trajectories",
                  "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "read_rpk", "ReplayPack",
-                 "Phantom", "ScannerSequence", "ScannerLimits"):
+                 "ScannerSequence", "ScannerLimits"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
     gone = ("simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
             "replay_bloch_jax", "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se")

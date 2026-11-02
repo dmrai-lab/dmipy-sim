@@ -16,7 +16,7 @@ from dmipy_sim.replay import so3
 from dmipy_replay.replay._replay_kernel import field_gate, gate_weights
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
-from dmipy_sim import Pose
+from dmipy_replay.phantom import Pose
 
 TISSUE = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
 B0 = 3.0

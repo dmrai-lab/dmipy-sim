@@ -13,7 +13,7 @@ import os, tempfile
 import numpy as np
 import dmipy_sim as d
 from dmipy_sim.io.strands import write_tck, concat_centerlines
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.consolidate import consolidate
@@ -76,9 +76,9 @@ print(S3.shape, plan["settings"])                                     # (3, grid
 ## A study: one pass, a floor per volume
 
 ```python
-from dmipy_sim.replay.study import Protocol, Study
+from dmipy_replay.replay.study import StudyProtocol, Study
 axial = d.set_b(d.pgse([[0, 1, 0]], 0.2e-3, 0.4e-3, gradient_strengths=0.1, n_t=pack.n_t, slew_rate=np.inf), [5e8])
-study = Study(Protocol([seq, axial]), tissues=[None, Tissue(rho2=1e-6)], scanners=[None], name="guide")
+study = Study(StudyProtocol([seq, axial]), tissues=[None, Tissue(rho2=1e-6)], scanners=[None], name="guide")
 S, floor, plan = pack.image(study, chunk_rows=6)
 print(S.shape, floor.shape, plan["study"]["pairs"][1]["tissue"])    # (pairs, grid, 3 measurements), a floor per pair, the record
 print(np.nanmedian(floor[0]) >= 0)

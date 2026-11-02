@@ -358,7 +358,7 @@ def test_stratified_seeding_fills_every_occupied_voxel_and_keeps_the_volumes(dis
     make the per-voxel pool volumes right (against a rejection census), and the pack's per-voxel certificate
     reads back on the grid."""
     from dmipy_sim.spec import StratifiedByVoxel, plan_seeding
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_sim.replay.bank import build_replay_pack, voxel_fidelity_volumes
     spec = disco_spec(*disco_files, side_m=20e-6)
     spec_nf = spec_without_source(spec)      # seeding mechanics, not the field tier

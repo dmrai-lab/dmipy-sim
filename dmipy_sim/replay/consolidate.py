@@ -1,4 +1,4 @@
-"""The shards of one dataset consolidated into the columnar layout of :mod:`dmipy_sim.replay.columnar` (dmipy-sim#290), in
+"""The shards of one dataset consolidated into the columnar layout of :mod:`dmipy_replay.replay.columnar` (dmipy-sim#290), in
 one streaming pass: every shard is fetched, split into its columns and appended to the open part of each column,
 then deleted; a part that reaches ``cap_bytes`` is closed and uploaded while the pass goes on, so the machine that
 consolidates never holds more than the open parts. Rows are ordered by (block, voxel, pool), so the row index is
@@ -63,7 +63,7 @@ def parse_shard(f):
 
 def manifest_grid(man):
     """The voxel grid a manifest states (``grid``: ``shape``, ``voxel_size_m``, ``origin_m``), attached to the substrate."""
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
     G = man["grid"]
     return Grid(shape=tuple(G["shape"]), voxel_size_m=tuple(G["voxel_size_m"]), origin_m=tuple(G["origin_m"]))
 

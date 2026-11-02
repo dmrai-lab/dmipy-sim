@@ -9,7 +9,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.io.strands import write_tck
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.replay import ReplayPack
 from dmipy_sim.replay.consolidate import consolidate, append, band_groups_of

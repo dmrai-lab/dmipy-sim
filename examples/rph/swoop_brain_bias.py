@@ -45,8 +45,8 @@ import numpy as np
 
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom import Grid
-from dmipy_sim.phantom.bore import delivered_gradient
+from dmipy_replay.phantom import Grid
+from dmipy_replay.phantom.bore import delivered_gradient
 
 SHAPE, VOXEL_M = (96, 96, 60), 2.5e-3
 PACK_FLOOR = 0.0048                 # fill/swoop/cactus_1s.rpk, the experiment's own substrate

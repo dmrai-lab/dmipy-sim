@@ -247,11 +247,12 @@ def test_the_cli_prints_the_uri(pack, hub, tmp_path, capsys, monkeypatch):
 
 def test_a_phantom_substrate_cites_a_published_pack_by_its_uri(monkeypatch):
     """A PackSubstrate given an hf:// URI loads the pack through ReplayPack.load, so a phantom cites published packs."""
-    from dmipy_sim.phantom import PackSubstrate
+    from dmipy_replay.phantom import PackSubstrate
     from dmipy_sim.replay.replay import ReplayPack
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)}, {"id": "o/p", "walk_params": {"block": {"h": 5e-4, "m": 0, "n_blocks": 2}, "windows": {"n": 1, "T": 1e-3, "walks": []}}})
-    monkeypatch.setattr(ReplayPack, "load", classmethod(lambda cls, uri: seen.setdefault("uri", uri) and fake))
+    monkeypatch.setattr("dmipy_replay.replay.replay.ReplayPack.load",            # the class PackSubstrate loads
+                        classmethod(lambda cls, uri: seen.setdefault("uri", uri) and fake))
     sub = PackSubstrate("hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk", m0=1.0)
     assert sub.uri.startswith("hf://") and sub.name == "100ms_K48"
     assert sub.pack is fake and seen["uri"] == "hf://SubstrateCommons/gm-spheres/packs/100ms_K48.rpk"

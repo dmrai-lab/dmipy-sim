@@ -15,9 +15,10 @@ import pytest
 import dmipy_sim as d
 from dmipy_replay.acquisition.epg import transmit_amplitude
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom.bore import encoding_classes
+from dmipy_replay.phantom.bore import encoding_classes
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
-from dmipy_sim.replay.time_segments import TimeSegmentLayout, segment_rows, write_time_segment_layout
+from dmipy_replay.replay.time_segments import TimeSegmentLayout
+from dmipy_sim.replay.time_segments import segment_rows, write_time_segment_layout
 from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue

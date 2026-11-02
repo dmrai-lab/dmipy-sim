@@ -16,8 +16,8 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.acquisition.prescription import Prescription
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
-from dmipy_sim.phantom.bore import encoding_classes
+from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
+from dmipy_replay.phantom.bore import encoding_classes
 from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
@@ -147,7 +147,7 @@ def test_the_bloch_route_carries_the_same_classes(pack_path):
     """A frames-mode phantom on the RF-aware route propagates once per (substrate, class, pose, ...) and must
     agree with the pose route to the pack's floor."""
     grid = _grid()
-    from dmipy_sim.phantom import Frames
+    from dmipy_replay.phantom import Frames
     R = np.zeros(SH + (1, 3, 3)); R[..., :, :] = np.eye(3)
     wm = PackSubstrate(pack_path, m0=1.0, name="free")
     ph = Phantom.compose(grid, fractions={wm: np.ones(SH, np.float32)}, orientation=Frames(R), remainder=Inert(name="bg"))
@@ -192,7 +192,7 @@ def test_a_closed_form_decays_at_the_b_the_machine_delivers_too(phantom, exact):
     record, and the closed form must read the delivered ``b()`` rather than that record -- which it did not,
     so a ventricle on a permanent magnet decayed at the prescribed b while the tissue around it decayed at the
     delivered one (a 13 % error at 8 cm)."""
-    from dmipy_sim.phantom import FreeWater
+    from dmipy_replay.phantom import FreeWater
     from dmipy_sim.spec import Tissue
     grid = _grid()
     csf = FreeWater(m0=1.0, name="csf", tissue=Tissue(D=D0))

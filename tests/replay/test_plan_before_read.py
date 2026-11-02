@@ -21,7 +21,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
-from dmipy_sim.replay.columnar import ColumnarPack
+from dmipy_replay.replay.columnar import ColumnarPack
 from dmipy_replay.replay.planning import PLAN_TOL, Planned, ReadPlan, band_tail, fewest, floor_of
 from dmipy_sim.replay.replay import ReplayPack
 from dmipy_replay.replay.replay import _signal_factor
@@ -343,7 +343,7 @@ def _tensor_spans(blob):
 
 
 def test_a_remote_pack_fetches_only_the_planned_ranges_and_replays_bit_for_bit(pack, tmp_path):
-    from dmipy_sim.replay.remote import RemotePack
+    from dmipy_replay.replay.remote import RemotePack
     local = tmp_path / "pack.rpk"
     save_pack(pack, str(local))
     data = local.read_bytes()
@@ -380,7 +380,7 @@ def test_a_remote_pack_fetches_only_the_planned_ranges_and_replays_bit_for_bit(p
 
 
 def test_a_remote_pack_with_field_modes_fetches_the_mode_ranges_it_plans(field_pack, tmp_path):
-    from dmipy_sim.replay.remote import RemotePack
+    from dmipy_replay.replay.remote import RemotePack
     local = tmp_path / "field.rpk"
     save_pack(field_pack, str(local))
     data = local.read_bytes()
@@ -398,7 +398,7 @@ def test_a_remote_pack_with_field_modes_fetches_the_mode_ranges_it_plans(field_p
 
 
 def test_a_prefix_without_rpk_is_the_columnar_layout_and_a_rpk_is_the_remote_reader(monkeypatch):
-    import dmipy_sim.replay.remote as remote
+    import dmipy_replay.replay.remote as remote
     with pytest.raises(ValueError, match="a pack on the Hub is a .rpk file"):
         remote.RemotePack("hf://owner/name/prefix", url="http://unused")
     seen = []

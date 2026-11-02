@@ -10,7 +10,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences as _seqmod
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.study import Acquisition, Protocol, Study, walker_primitives, study_signals
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study, walker_primitives, study_signals
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
 
@@ -109,7 +109,7 @@ def test_a_study_is_the_per_pair_replay(pack):
     seq1 = _seqmod.pgse([[1, 0, 0], [0, 1, 1]], 1e-3, 3e-3, bvalues=[1e9, 5e8], TE=6e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
     seq2 = _seqmod.pgse([[0, 0, 1]], 1e-3, 2e-3, bvalues=[2e9], TE=5e-3, n_t=4 * pack.n_t + 1, slew_rate=np.inf)
     catalogue = lambda scanner: Tissue(T2=T2A if scanner is None else T2B, rho2=1e-5, D=D0)   # a tissue resolved on the scanner
-    study = Study(Protocol([seq1, Acquisition(seq2, name="axial")]), tissues=[None, catalogue], scanners=[None, 0.0], pairs=[(0, 0), (1, 0), (1, 1)], name="t")
+    study = Study(StudyProtocol([seq1, Acquisition(seq2, name="axial")]), tissues=[None, catalogue], scanners=[None, 0.0], pairs=[(0, 0), (1, 0), (1, 1)], name="t")
     assert len(study) == 3 and study.protocol.n_meas == 3 and study.needs_contact and study.needs_relaxation and not study.needs_field
     S = pack.study(study)
     assert S.shape == (3, 3)
@@ -120,9 +120,9 @@ def test_a_study_is_the_per_pair_replay(pack):
     meta = study.to_meta()
     assert meta["pairs"][1]["tissue"]["T2"] == T2A and meta["pairs"][2]["tissue"]["T2"] == T2B and meta["protocol"]["acquisitions"][1]["name"] == "axial"
     with pytest.raises(IndexError):
-        Study(Protocol([seq1]), tissues=[None], scanners=[None], pairs=[(1, 0)])
+        Study(StudyProtocol([seq1]), tissues=[None], scanners=[None], pairs=[(1, 0)])
     with pytest.raises(ValueError, match="field absent"):                 # a chi on a cylinder (nothing magnetic) is refused, as replay refuses it
-        pack.study(Study(Protocol([seq1]), tissues=[lambda scanner: Tissue(chi_iso=-1e-7)], scanners=[3.0]))
+        pack.study(Study(StudyProtocol([seq1]), tissues=[lambda scanner: Tissue(chi_iso=-1e-7)], scanners=[3.0]))
 
 
 def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_path):
@@ -131,7 +131,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     floor, finite where the voxel has rows."""
     import os
     from dmipy_sim.io.strands import write_tck, concat_centerlines
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
     from dmipy_sim.replay.replay import ReplayPack
     from dmipy_sim.replay.consolidate import consolidate
@@ -160,7 +160,7 @@ def test_the_columnar_image_of_a_study_is_one_pass_with_a_floor_per_volume(tmp_p
     from dmipy_replay.acquisition.epg import pathway_weight
     assert pathway_weight(seq3) == pytest.approx(0.5, abs=1e-12) and pathway_weight(seq1) == 1.0
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5)
-    study = Study(Protocol([seq1, seq2, seq3]), tissues=[None, t], scanners=[None])
+    study = Study(StudyProtocol([seq1, seq2, seq3]), tissues=[None, t], scanners=[None])
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)
     assert S.shape == (2,) + tuple(grid.shape) + (4,) and floor.shape == (2,) + tuple(grid.shape) and plan["settings"] == 2
     ijk, _ = grid.bin(merged.r0); v = np.ravel_multi_index(ijk.T, grid.shape)

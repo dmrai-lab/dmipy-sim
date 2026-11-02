@@ -1,4 +1,4 @@
-"""Memory bound for :func:`dmipy_sim.phantom.bore.encoding_classes` (dmipy-sim#563).
+"""Memory bound for :func:`dmipy_replay.phantom.bore.encoding_classes` (dmipy-sim#563).
 
 Before this, ``encoding_classes`` composed and kept every distinct class's ``ScannerSequence`` in one list --
 ``G`` and ``imposed_gradient``, both ``(n_meas, n_t, 3)`` float32, about 12 MB a class at a clinical protocol
@@ -7,7 +7,7 @@ follows the effect: a handful for a uniform scanner, tens of thousands for a per
 over a whole head -- hundreds of GB held at once.
 
 The fix: a class is identified by its member's exact tensor / background / position values (a 3x3 and two
-3-vectors), which is what ``encoding_classes`` now stores (:class:`~dmipy_sim.phantom.bore.EncodingClasses`);
+3-vectors), which is what ``encoding_classes`` now stores (:class:`~dmipy_replay.phantom.bore.EncodingClasses`);
 the full ``ScannerSequence`` is built from them only when a consumer indexes or iterates it, and nothing
 caches it afterwards. Two things are checked here: that nothing a reader sees has changed (the pre-#563
 algorithm is reproduced below, unchanged, as the oracle this must agree with to the bit), and that iterating a
@@ -20,9 +20,8 @@ import pytest
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.phantom.grid import Grid
-from dmipy_sim.phantom.bore import (_b0_axis, _bore, _model, background_gradient_map, encoding_classes,
-                                    gradient_tensor_map)
-from dmipy_sim.replay.phantom import quantise
+from dmipy_replay.phantom.bore import _b0_axis, _bore, _model, background_gradient_map, encoding_classes, gradient_tensor_map
+from dmipy_replay.replay.phantom import quantise
 
 
 def _rss_bytes():

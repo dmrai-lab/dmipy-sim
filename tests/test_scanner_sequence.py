@@ -296,7 +296,7 @@ def test_a_prescription_places_the_acquisition_in_the_bore_and_derives_nothing()
     """The acquisition in space: isocenter, axes, voxel size, matrix. Optional, keyword-only, and the waveform,
     the schedule and b are the same with or without it (ACQUISITION.md 3.6, 5.7)."""
     from dmipy_sim import Prescription, sequences
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     p = Prescription(voxel_size_m=(1.5e-3,) * 3, matrix=(40, 40, 1))
     assert p.isocenter_m == (0.0, 0.0, 0.0) and p.axes == "RAS" and p.fov_m == (0.06, 0.06, 1.5e-3)
     np.testing.assert_allclose(p.origin_m, (-0.02925, -0.02925, 0.0))            # the FOV centred on the isocenter

@@ -10,7 +10,7 @@ import pytest
 
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_sim.replay.so3 import real_sh, rotate_sh
-from dmipy_sim import Pose
+from dmipy_replay.phantom import Pose
 
 ROOT = Path(__file__).resolve().parents[1]
 CROP = ROOT / "tests" / "data" / "batman_crop"
@@ -107,7 +107,7 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
     is what makes it visible: its R/L asymmetry is an ODD term in x, so getting the frame wrong shifts the
     field the wrong way on one side of the bore. An isotropic law would have hidden almost all of it."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map
+    from dmipy_replay.phantom import b0_offset_map
 
     ph, fod, R = example.build(str(CROP), wm_pack)
     grid = ph.grid
@@ -137,7 +137,7 @@ def test_the_field_law_must_be_rendered_through_the_obliquity(example, wm_pack):
     # law's anchor radius, it reaches about 9 ppm -- some 25 Hz at 64 mT, against a field that spans about
     # 1050 ppm over the same volume. So it is roughly a percent: not catastrophic, and exactly the size
     # that gets shipped unnoticed.
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     full = Grid(shape=(96, 96, 60), voxel_size_m=grid.voxel_size_m, origin_m=grid.origin_m,
                 isocenter_m=grid.isocenter_m, axes=grid.axes)
     p_full = full.positions_m(full.every_voxel)
@@ -152,7 +152,7 @@ def test_a_field_law_is_none_where_the_machine_publishes_none(example, wm_pack):
     """Every machine but a permanent-magnet one, and `off_resonance=None` is exactly what a replay already
     means by no field offset -- so a brain at 3 T composes as it always did."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom import b0_offset_map
+    from dmipy_replay.phantom import b0_offset_map
     ph, fod, R = example.build(str(CROP), wm_pack)
     assert b0_offset_map(ScannerLimits.of("prisma"), ph.grid, to_scanner=R) is None
 
