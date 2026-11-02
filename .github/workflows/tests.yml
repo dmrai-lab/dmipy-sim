@@ -9,9 +9,10 @@ on:
 
 env:
   # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
-  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): dmrai-lab/dmipy-replay#11 (the Envelope) until it
-  # merges, then its merge on main. Drop the ref when 0.2.0 is on PyPI.
-  DMIPY_REPLAY_REF: 13b198af5c3e401df60a8b2d6edd428fabaa945e
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the merge of the replay move's last reader PR
+  # (dmrai-lab/dmipy-replay#20, R6) on its main. The GPU tier installs the same commit, read from here
+  # (tools/gpu_tier.py).
+  DMIPY_REPLAY_REF: 1871a40630364107c0adca3c35541f6bbe112eb8
 
 jobs:
   test:
@@ -87,3 +88,38 @@ jobs:
           name: coverage-report-${{ matrix.group }}
           path: .coverage
           if-no-files-found: ignore
+
+  parity-move:
+    # The replay move (#834) is checked value for value: dmipy-replay's tests/parity_move (at DMIPY_REPLAY_REF)
+    # recorded with dmipy-replay and dmipy-sim at the commits before the move (its reference/manifest.json names them),
+    # then the same calls on this commit with the pinned dmipy-replay, both on this runner: a sum's last bit is the BLAS
+    # build's and the CPU's, so a record is compared only with one taken in its own environment.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sim
+      - uses: actions/checkout@v4
+        with:
+          repository: dmrai-lab/dmipy-replay
+          ref: ${{ env.DMIPY_REPLAY_REF }}
+          path: replay
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the packages before the move
+        working-directory: replay
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          ref() { python -c "import json, sys; print(json.load(open('tests/parity_move/reference/manifest.json'))['packages'][sys.argv[1]]['commit'])" "$1"; }
+          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@$(ref dmipy-replay)"
+          pip install "dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@$(ref dmipy-sim)" safetensors
+      - name: Record before the move
+        run: python replay/tests/parity_move/record_reference.py "$RUNNER_TEMP/before"
+      - name: Install the pinned dmipy-replay and this commit
+        run: |
+          pip install --no-deps -e replay -e sim
+      - name: Check this commit against the record
+        run: python replay/tests/parity_move/check_reference.py "$RUNNER_TEMP/before"
