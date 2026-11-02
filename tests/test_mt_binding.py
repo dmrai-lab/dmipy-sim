@@ -69,7 +69,7 @@ def test_binding_timestep_independence():
 # it by that finite mixing: -3.2 % on average over three seeds of 1,500 walkers (-5.4, -3.0, -2.9 %). The walkers'
 # relative spread about it is 0.50 per walker (a seed-to-seed spread of 1.3 % at 1,500). The match is therefore held
 # to the finite-mixing offset plus the noise: ``MIXING_OFFSET + se_tol(N, SD_REL)``, 7 % at the 2,200 walkers that
-# make the noise as large as the offset (z = 3.29), where 12,000 held 7 % with the noise a third of it.
+# make the noise as large as the offset (z = 3.29), where 12,000 held 7 % with the noise less than half of the offset.
 MIXING_OFFSET = 0.035
 SD_REL = 0.50
 N_EXCHANGE = 2_200
