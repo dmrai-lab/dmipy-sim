@@ -14,7 +14,7 @@ what pose, with what proton density. One pack serves every voxel and pose that c
 arrangement rather than the physics. A composed voxel's pose is usually a distribution, and the composition
 contracts the pack's pose response (see [orientation](orientation.md)) against it.
 
-Both are a `Phantom` in `dmipy_sim.phantom`, with `Phantom.compose` and `Phantom.partition`, and both take the
+Both are a `Phantom` in `dmipy_replay.phantom`, with `Phantom.compose` and `Phantom.partition`, and both take the
 same `tissue`, `scanner` and `pose` knobs as a pack. The worked examples are the reference:
 
 - `examples/rph/circular_wm_phantom.py`: one CACTUS pack composed into an annulus with a fanned sector, swept over

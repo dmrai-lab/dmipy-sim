@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 import dmipy_sim as d
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.spec.seeding import fill_swept_by_voxel, fill_per_voxel, _clip_segments_to_voxels
 
 R = 1.0e-6

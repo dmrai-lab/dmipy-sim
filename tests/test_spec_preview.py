@@ -11,7 +11,7 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim import spec as S
-from dmipy_sim.spec import SpecError
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim import Compartments, Pool
 
 

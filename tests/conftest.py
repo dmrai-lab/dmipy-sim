@@ -229,8 +229,8 @@ def assert_step_resolves_the_collision_lookup(geometry, step_length, *, bound=0.
 def pgse_wf(TE_s, n_t=500, slew_rate=None):
     """The permeability tests' PGSE along x at b = 0, 0.5, 1 and 2 ms/um^2, its lobes 5 % of ``TE_s`` (5 us at the
     least); ``slew_rate=np.inf`` for the square lobes the restricted-diffusion checks were validated against."""
-    from dmipy_sim import set_b
-    from dmipy_sim.sequences import pgse
+    from dmipy_replay import set_b
+    from dmipy_replay.sequences import pgse
     delta = max(TE_s * 0.05, 5e-6)
     kw = {} if slew_rate is None else {"slew_rate": slew_rate}
     return set_b(pgse(np.tile([1.0, 0.0, 0.0], (4, 1)), delta, TE_s - delta, gradient_strengths=1.0, n_t=n_t, **kw),

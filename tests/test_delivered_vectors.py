@@ -13,11 +13,14 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_replay.acquisition.epg import transmit_amplitude
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom.bore import encoding_classes
+from dmipy_replay.phantom.bore import encoding_classes
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
-from dmipy_sim.replay.time_segments import TimeSegmentLayout, segment_rows, write_time_segment_layout
+from dmipy_replay.replay.time_segments import TimeSegmentLayout
+from dmipy_sim.replay.time_segments import segment_rows, write_time_segment_layout
 from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
@@ -55,7 +58,7 @@ def _dde(n_t, a=1.0):
     """A double diffusion encoding refocused by the spin echo's one pulse: a pair along z and a pair along x at ``a``
     times its amplitude, each pair's lobes of one polarity on either side of the pulse (so the Maxwell term refocuses
     too, as it does not across a bipolar pair), four segments of two levels."""
-    se = d.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    se = dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
     G = np.zeros((1, n_t, 3), np.float32)
     for i0, v in ((1, [0, 0, 1.0]), (9, [a, 0, 0]), (22, [0, 0, 1.0]), (30, [a, 0, 0])):
         G[0, i0:i0 + 8, :] = v
@@ -63,8 +66,8 @@ def _dde(n_t, a=1.0):
 
 
 def _shapes(n_t):
-    return {"se": d.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf),
-            "ste": d.pgste([[0, 0, 1]], DELTA, BIG_DELTA - DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf,
+    return {"se": dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf),
+            "ste": dr.pgste([[0, 0, 1]], DELTA, BIG_DELTA - DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf,
                            ste_flip_angles=(90.0, 90.0, 90.0)),
             "dde": _dde(n_t)}
 
@@ -74,12 +77,12 @@ def _protocol(name, n_t):
     u = rng.normal(size=(4, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     b = np.array([1e9, 2e9, 3e9, 3e9, 0.0]); dirs = np.concatenate([u, [[0, 0, 1]]])
     if name == "se":
-        return d.pgse(dirs.tolist(), DELTA, BIG_DELTA, bvalues=b, n_t=n_t, slew_rate=np.inf)
+        return dr.pgse(dirs.tolist(), DELTA, BIG_DELTA, bvalues=b, n_t=n_t, slew_rate=np.inf)
     if name == "ste":
-        return d.pgste(dirs.tolist(), DELTA, BIG_DELTA - DELTA, bvalues=b, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+        return dr.pgste(dirs.tolist(), DELTA, BIG_DELTA - DELTA, bvalues=b, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     rows = [np.asarray(_dde(n_t, a).G)[0] * g for g, a in ((20.0, 1.0), (40.0, 0.6), (50.0, 1.0), (30.0, -0.5), (0.0, 1.0))]
     se = _dde(n_t)
-    return d.ScannerSequence(G=np.stack(rows), dt=se.dt, rf=se.rf, readout=se.readout)
+    return dr.ScannerSequence(G=np.stack(rows), dt=se.dt, rf=se.rf, readout=se.readout)
 
 
 def _term(sm, name, floor):
@@ -185,7 +188,7 @@ def test_a_delivery_of_another_sequence_is_refused(layout):
     seq = _protocol("se", n_t)
     dl = sm.delivery(seq, sc, sm.grid.centred_at(OFFSET))
     with pytest.raises(ValueError, match="another sequence"):
-        sm.image(d.pgse([[0, 0, 1]], DELTA, BIG_DELTA, bvalues=[1e9], n_t=n_t, slew_rate=np.inf), delivered=dl)
+        sm.image(dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, bvalues=[1e9], n_t=n_t, slew_rate=np.inf), delivered=dl)
 
 
 def test_a_layout_without_background_refuses_a_magnet_gradient(layout):
@@ -210,7 +213,7 @@ def test_a_magnets_gradient_through_a_stimulated_echo_accrues_nothing_while_stor
     magnetisation is along B0 and a magnet's constant gradient adds no phase, so the background of a stimulated echo
     is refocused like a spin echo's (to one sample per change of the gate) and not left as a winding."""
     from dmipy_sim.replay.time_segments import _background_sequence
-    ste = d.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    ste = dr.pgste([[0, 0, 1]], 7.6e-3, 38.3e-3, gradient_strengths=0.1, n_t=1000, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     bg = _background_sequence(ste)
     G = np.asarray(bg.G_eff)[0, :, 0]
     np.testing.assert_array_equal(G, np.asarray(ste.effective_gate))          # the background's time course IS the gate

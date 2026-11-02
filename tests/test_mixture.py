@@ -7,8 +7,9 @@ signal. We test this against separately computed single-compartment signals.
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, simulate_mixture, FreeDiffusion, Sphere
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 from .conftest import D, N_EXACT, SEED, mc_atol
 
 N_BETWEEN = 4_000   # the mixture is linear in its parts; the bound is 4 SE of two runs at this count

@@ -11,8 +11,10 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.io.strands import write_tck
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
 from dmipy_sim.spec import disco_spec, StratifiedByVoxel
 from dmipy_sim import walk
@@ -40,14 +42,14 @@ def test_the_merged_pack_replays_as_the_weight_combined_shards(shards):
     (a, b), grid, tmp = shards
     m = merge_packs([a, b], id="t/merged", out_path=str(tmp / "merged.rpk"))
     assert m.n_walkers == a.n_walkers + b.n_walkers and m.meta["walk_params"]["seed"] == [7, 8]
-    seq = d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=m.n_t, slew_rate=np.inf), [1e9, 1e9])
+    seq = dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=m.n_t, slew_rate=np.inf), [1e9, 1e9])
     wa, wb = np.asarray(a.spin_weights).sum(), np.asarray(b.spin_weights).sum()
     def combined(**kw):                                                        # the shards' complex signals, by weight
         return np.abs((wa * a.replay(seq, complex_signal=True, **kw) + wb * b.replay(seq, complex_signal=True, **kw)) / (wa + wb))
     expect = combined()
     np.testing.assert_allclose(m.replay(seq), expect, rtol=1e-6)
     np.testing.assert_allclose(m.replay(seq, tissue=Tissue(rho2=1e-5)), combined(tissue=Tissue(rho2=1e-5)), rtol=1e-6)
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     back = read_rpk(str(tmp / "merged.rpk"))
     np.testing.assert_allclose(back.replay(seq), expect, rtol=1e-6)
     # the certificate: the union of the two blocks, each voxel from its shard
@@ -98,7 +100,7 @@ def test_passes_of_one_block_merge_with_the_union_weights(spec_grid):
     g, floors, counts = voxel_fidelity_volumes(m)
     for name in counts:
         assert counts[name][0].sum() == 16 * 4 and counts[name][1].sum() == 0
-    seq = d.set_b(d.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=m.n_t, slew_rate=np.inf), [1e9])
+    seq = dr.set_b(dr.pgse([[1, 0, 0]], 0.2e-3, 0.5e-3, gradient_strengths=0.1, n_t=m.n_t, slew_rate=np.inf), [1e9])
     E = np.concatenate([pk.walker_signals(seq)[2] for pk in packs])                     # per-walker complex signals
     np.testing.assert_allclose(m.replay(seq), np.abs((wm[:, None] * E).sum(0) / wm.sum()), rtol=1e-6)
     alike = np.abs((ws[:, None] * E).sum(0) / ws.sum())
@@ -109,7 +111,7 @@ def test_shards_agree_to_rounding_and_differ_for_real(shards, tmp_path):
     """Two shards of one spec computed on two machines differ in the substrate frame by an ulp (BLAS rounding); the
     merge takes them as the same spec. A real difference in the walk parameters is still refused, naming it."""
     import copy
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     packs, grid, tmp = shards
     a, b = packs
     meta = copy.deepcopy(b.meta)

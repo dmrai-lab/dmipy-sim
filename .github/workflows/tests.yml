@@ -9,9 +9,13 @@ on:
 
 env:
   # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
-  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): dmrai-lab/dmipy-replay#11 (the Envelope) until it
-  # merges, then its merge on main. Drop the ref when 0.2.0 is on PyPI.
-  DMIPY_REPLAY_REF: 13b198af5c3e401df60a8b2d6edd428fabaa945e
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the head of dmrai-lab/dmipy-replay#26 (the forms
+  # imported from dmipy-analytic), which its merge keeps reachable on main. The GPU tier installs the same commit, read
+  # from here (tools/gpu_tier.py).
+  DMIPY_REPLAY_REF: fa2274ffeb8cf5a4e7608582dda9f67d5e350662
+  # dmipy-analytic 3.0 is not on PyPI yet: the commit the suite was tested with, the merge of dmrai-lab/dmipy-analytic#3 on main
+  # (the forms from dmipy-replay and dmipy-sim). The GPU tier installs the same commit, read from here.
+  DMIPY_ANALYTIC_REF: 784830d26e4ec15a5dae4a03f2d01000b73bed1b
 
 jobs:
   test:
@@ -43,6 +47,7 @@ jobs:
           # nothing in the package imports -- it is the ORACLE the normative SH basis is
           # checked against (RPH.md Sec. 4.1). Without it those tests skip and the claim
           # goes unverified, so CI installs it even though [dev] deliberately does not.
+          pip install "dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@${DMIPY_ANALYTIC_REF}"
           pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e ".[dev,interop]"
           # the torch backend of the shape-moment image is checked against the JAX one (dmipy-sim#510): the CPU wheel
@@ -87,3 +92,39 @@ jobs:
           name: coverage-report-${{ matrix.group }}
           path: .coverage
           if-no-files-found: ignore
+
+  parity-move:
+    # The replay move (#834) is checked value for value: dmipy-replay's tests/parity_move (at DMIPY_REPLAY_REF)
+    # recorded with dmipy-replay and dmipy-sim at the commits before the move (its reference/manifest.json names them),
+    # then the same calls on this commit with the pinned dmipy-replay, both on this runner: a sum's last bit is the BLAS
+    # build's and the CPU's, so a record is compared only with one taken in its own environment.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sim
+      - uses: actions/checkout@v4
+        with:
+          repository: dmrai-lab/dmipy-replay
+          ref: ${{ env.DMIPY_REPLAY_REF }}
+          path: replay
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the packages before the move
+        working-directory: replay
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          ref() { python -c "import json, sys; print(json.load(open('tests/parity_move/reference/manifest.json'))['packages'][sys.argv[1]]['commit'])" "$1"; }
+          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@$(ref dmipy-replay)"
+          pip install "dmipy-sim @ git+https://github.com/dmrai-lab/dmipy-sim@$(ref dmipy-sim)" safetensors
+      - name: Record before the move
+        run: python replay/tests/parity_move/record_reference.py "$RUNNER_TEMP/before"
+      - name: Install the pinned dmipy-analytic, the pinned dmipy-replay and this commit
+        run: |
+          pip install --no-deps "dmipy-analytic @ git+https://github.com/dmrai-lab/dmipy-analytic@${DMIPY_ANALYTIC_REF}"
+          pip install --no-deps -e replay -e sim
+      - name: Check this commit against the record
+        run: python replay/tests/parity_move/check_reference.py "$RUNNER_TEMP/before" --require-all

@@ -28,11 +28,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 import jax
 
-from dmipy_sim import Sphere, cpmg, pgse, set_b, simulate_cpmg
+from dmipy_sim import Sphere, simulate_cpmg
+from dmipy_replay import cpmg, pgse, set_b
 from dmipy_sim.engine.bloch import _simulate_bloch
 
 R = 2e-6

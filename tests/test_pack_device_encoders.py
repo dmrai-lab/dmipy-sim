@@ -92,7 +92,7 @@ def test_voxel_floor_coded_device_matches_numpy_and_uses_the_vectorised_census()
     voxels and walker counts on either device, and floors that agree to the coded phases' own float32 rounding."""
     from dmipy_sim.replay.bank import voxel_floor_coded
     from dmipy_sim.replay.compression import default_battery, pack_position_arrays
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     n_w, n_t, K = 400, 65, 8
     C = _coefficients(n_w, K, 13)
     grid = Grid(shape=(2, 2, 2), voxel_size_m=(5e-6,) * 3, origin_m=(2.5e-6,) * 3)
@@ -114,7 +114,7 @@ def test_the_voxel_floor_of_one_cell_is_the_walks_standard_error():
     error, weighted)."""
     from dmipy_sim.replay.bank import voxel_floor_coded
     from dmipy_sim.replay.compression import default_battery, pack_position_arrays, measure_floor_coded
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     n_w, n_t, K = 400, 65, 8
     C = _coefficients(n_w, K, 13)
     grid = Grid(shape=(1, 1, 1), voxel_size_m=(1e-4,) * 3, origin_m=(-1e-5,) * 3)

@@ -20,17 +20,19 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import Encoding, ScannerSequence
+from dmipy_replay import Encoding, ScannerSequence
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.fields.susceptibility_field import field_grid_of
-from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
-from dmipy_sim.replay import ReplayPack, so3
+from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
+from dmipy_replay import ReplayPack
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.study import Acquisition, Protocol, Study
+from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_replay.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of
 from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter
+from dmipy_sim.replay.container import save_pack
 
 D0 = 2.0e-9
 ENV = dict(bvals=[0.0, 1e8], dirs=[[0, 0, 1], [1, 0, 0]], delta_frac=0.2, Delta_frac=0.5,
@@ -130,8 +132,8 @@ def test_absent_accepts_any_B0_and_it_changes_nothing(absent):
     np.testing.assert_array_equal(pk.pose_response(seq, scanner=7.0, keep=(4, 0)).coeffs, pk.pose_response(seq, keep=(4, 0)).coeffs)
     prim = pk.walker_primitives(Acquisition(seq))
     np.testing.assert_array_equal(prim.signal(None, 7.0), prim.signal(None, None))
-    np.testing.assert_array_equal(pk.study(Study(Protocol([Acquisition(seq)]), scanners=[None, 3.0, 7.0]))[1:],
-                                  np.repeat(pk.study(Study(Protocol([Acquisition(seq)])))[:1], 2, axis=0))
+    np.testing.assert_array_equal(pk.study(Study(StudyProtocol([Acquisition(seq)]), scanners=[None, 3.0, 7.0]))[1:],
+                                  np.repeat(pk.study(Study(StudyProtocol([Acquisition(seq)])))[:1], 2, axis=0))
 
 
 # ---- case 3: present + a non-zero chi + no B0 is refused
@@ -145,7 +147,7 @@ def test_present_refuses_chi_without_a_B0(present):
     with pytest.raises(ValueError, match="no scanner field"):
         pk.walker_primitives(Acquisition(seq)).signal(MYELIN, None)
     with pytest.raises(ValueError, match="no scanner field"):
-        pk.study(Study(Protocol([Acquisition(seq)]), tissues=[MYELIN]))
+        pk.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[MYELIN]))
 
 
 def test_present_with_no_or_zero_chi_at_a_B0_is_the_field_free_signal(present):
@@ -165,7 +167,7 @@ def test_present_with_chi_and_a_B0_replays_the_field(present):
     # the dense trapezoid over the raw block means; the save-grid route of #745 put 1.3e-3 here, its own error
     assert np.abs(S - pk.replay(seq, complex_signal=True)).max() > 1e-5
     np.testing.assert_allclose(pk.walker_primitives(Acquisition(seq)).signal(MYELIN, 3.0, complex_signal=True), S, rtol=1e-9, atol=1e-12)
-    np.testing.assert_allclose(pk.study(Study(Protocol([Acquisition(seq)]), tissues=[MYELIN], scanners=[3.0]))[0],
+    np.testing.assert_allclose(pk.study(Study(StudyProtocol([Acquisition(seq)]), tissues=[MYELIN], scanners=[3.0]))[0],
                                np.abs(S), rtol=1e-9, atol=1e-12)
 
 
@@ -251,7 +253,7 @@ def test_the_reader_refuses_every_mismatch_on_every_surface_kind(kind, surface_s
         with pytest.raises(SpecError, match=msg):
             pk.replay((present if stored else absent)[1])
         with pytest.raises(SpecError, match=msg):                        # at load
-            pk.save(tmp_path / f"{kind}.rpk"); ReplayPack.load(tmp_path / f"{kind}.rpk")
+            save_pack(pk, tmp_path / f"{kind}.rpk"); ReplayPack.load(tmp_path / f"{kind}.rpk")
     assert _pack_with(absent[0], _variant(spec, pool, False, False)).susceptibility_field == "absent"
     assert _pack_with(present[0], _variant(spec, pool, True, True)).susceptibility_field == "present"
 
@@ -274,7 +276,7 @@ def test_the_writers_refuse_every_mismatch_on_every_surface_kind(kind, surface_s
 def _columnar_dir(tmp, base, spec, stored):
     """A columnar layout's manifest and index around ``base``'s meta under ``spec``, with or without field modes."""
     import json
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     meta = copy.deepcopy(base.meta); meta["substrate"] = spec
     meta["fidelity"]["per_voxel"] = dict(grid=Grid(shape=(1, 1, 1), voxel_size_m=(1e-3,) * 3).to_meta(), floor_median=0.01)
     tmp.mkdir(parents=True, exist_ok=True)
@@ -286,7 +288,7 @@ def _columnar_dir(tmp, base, spec, stored):
 def _moments_dir(tmp, spec, stored):
     """A tier time-segment layout's manifest under ``spec``, its one group storing field columns or not."""
     import json
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_replay.replay.time_segments import FORMAT, TILE
     tmp.mkdir(parents=True, exist_ok=True)
     (tmp / "manifest.json").write_text(json.dumps(dict(
@@ -298,8 +300,8 @@ def _moments_dir(tmp, spec, stored):
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_the_layouts_refuse_every_mismatch_on_every_surface_kind(kind, surface_specs, absent, present, tmp_path):
-    from dmipy_sim.replay.columnar import ColumnarPack
-    from dmipy_sim.replay.time_segments import TimeSegmentLayout
+    from dmipy_replay.replay.columnar import ColumnarPack
+    from dmipy_replay.replay.time_segments import TimeSegmentLayout
     spec, pool = surface_specs[kind]
     for i, ((mag, tier, stored), msg) in enumerate(MISMATCHES):
         v = _variant(spec, pool, mag, tier)
@@ -333,7 +335,7 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
     bare = ReplayPack(dict(pa.arrays), meta)
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         bare.replay(seq)
-    bare.save(tmp_path / "bare.rpk")
+    save_pack(bare, tmp_path / "bare.rpk")
     with pytest.raises(ValueError, match="embeds no substrate spec"):
         ReplayPack.load(tmp_path / "bare.rpk")
     w = _walk_geometry(50, D0, d.Cylinder(radius=3e-6, orientation=(0, 0, 1)), 1e-3, 2e-4, seed=2, require_gpu=False, K=4)
@@ -344,7 +346,7 @@ def test_a_pack_without_an_embedded_spec_is_refused(absent, tmp_path):
 def test_a_closed_or_inert_substrate_has_no_field_by_its_kind():
     """``analytic`` and ``inert`` phantom substrates hold nothing magnetic: a chi on one is refused by ``field_term``,
     on the object and from the file's record."""
-    from dmipy_sim.phantom.substrates import FIELD_BY_KIND, substrate_from_meta
+    from dmipy_replay.phantom.substrates import FIELD_BY_KIND, substrate_from_meta
     assert FIELD_BY_KIND == {"analytic": "absent", "inert": "absent"}
     for t in (Tissue(D=3e-9, chi_iso=1e-7), Tissue(D=3e-9, chi_aniso=-1e-8)):
         with pytest.raises(ValueError, match="field absent"):
@@ -364,7 +366,7 @@ def _shell_union_spec(magnetic):
     from dmipy_replay.spec.substrate import (
         Directional,
         Domain,
-        Pool,
+        PoolSpec,
         Seeding,
         Sided,
         Surface,
@@ -377,8 +379,8 @@ def _shell_union_spec(magnetic):
                   Directional(), Sided()),
              Wall("outer", Surface("sphere_union", instances={"centers": c, "radii": [1.2e-6, 1.2e-6]}), 2, 0,
                   Directional(), Sided())]
-    pools = [Pool(0, "extra", D0), Pool(1, "intra", D0),
-             Pool(2, "shell", 0.0, water_fraction=0.0, susceptibility=(Susceptibility(None, None, "none") if magnetic else None))]
+    pools = [PoolSpec(0, "extra", D0), PoolSpec(1, "intra", D0),
+             PoolSpec(2, "shell", 0.0, water_fraction=0.0, susceptibility=(Susceptibility(None, None, "none") if magnetic else None))]
     return SubstrateSpec("test/shell-union", Domain([-4e-6] * 3, [4e-6] * 3, ["reflect"] * 3), pools, walls,
                          Seeding([0, 1]), Validity(0.4e-6, ["gradient", "relaxation", "surface"] + (["field"] if magnetic else []),
                                                    thinnest_shell=0.4e-6)).validate()

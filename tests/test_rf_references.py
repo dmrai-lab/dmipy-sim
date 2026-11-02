@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from dmipy_replay.acquisition.rf import B1Pulse, bloch_simulate
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 
 def _rect_offres_analytic(B1_T, tau_s, df_hz):

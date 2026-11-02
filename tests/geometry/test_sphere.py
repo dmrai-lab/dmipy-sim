@@ -4,7 +4,8 @@
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, Sphere, set_b
+from dmipy_sim import simulate, Sphere
+from dmipy_replay import set_b
 from tests.conftest import D, SEED, mc_atol
 
 N_SPH = 8_000   # the sphere's wall rule sub-steps the walk; restricted and free signals differ by 0.4+, 10+ SE of two runs
@@ -22,7 +23,7 @@ N_SPH = 8_000   # the sphere's wall rule sub-steps the walk; restricted and free
 def test_sphere_signal_above_free():
     """Restricted sphere signal must be >= free diffusion at same b-values."""
     from dmipy_sim import FreeDiffusion
-    from dmipy_sim.sequences import pgse
+    from dmipy_replay.sequences import pgse
     b_values = np.linspace(1e8, 3e9, 6)
     bvecs = np.tile([1., 0., 0.], (6, 1))
     wf = set_b(pgse(bvecs, 0.5e-3, 40e-3, gradient_strengths=1.0, n_t=1000, slew_rate=np.inf), b_values)

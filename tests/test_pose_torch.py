@@ -9,14 +9,14 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_sim.phantom.bore import encoding_classes
+from dmipy_replay.phantom.bore import encoding_classes
 from dmipy_replay.phantom.grid import Grid
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
-from dmipy_sim import Pose
+from dmipy_replay.phantom import Pose
 
 torch = pytest.importorskip("torch")
 

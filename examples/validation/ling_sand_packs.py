@@ -47,7 +47,8 @@ import time
 
 import numpy as np
 
-from dmipy_sim import cpmg, simulate_cpmg
+from dmipy_replay import cpmg
+from dmipy_sim import simulate_cpmg
 from dmipy_sim.spec import geometry_from_spec, label_volume_spec
 
 # The inversion is the one the Imperial rocks validation owns: the same estimator on both decays, and

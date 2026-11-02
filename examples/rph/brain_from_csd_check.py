@@ -21,8 +21,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from brain_from_csd import acquisition  # noqa: E402
 
 from dmipy_sim.io.mrtrix import read_mif
-from dmipy_sim.phantom import Grid, PackSubstrate
-from dmipy_sim.replay.so3 import real_sh, rotate_sh
+from dmipy_replay.phantom import Grid, PackSubstrate
+from dmipy_analytic.harmonics import real_sh
+from dmipy_replay.replay.so3 import rotate_sh
 
 
 def fibonacci_sphere(n=724):
@@ -62,7 +63,7 @@ def main(argv=None):
     ap.add_argument("--Delta", type=float, default=0.055); ap.add_argument("--afd", type=float, default=0.15)
     a = ap.parse_args(argv)
     import nibabel as nib
-    from dmipy_sim.replay.phantom import read_rph
+    from dmipy_replay.replay.phantom import read_rph
     fod = read_mif(os.path.join(a.batman, "wmfod_norm.mif"))
     grid, R = Grid.from_oblique_affine(fod.affine, fod.shape[:3])
     seq, g = acquisition(a.batman, grid, TE=a.TE, delta=a.delta, Delta=a.Delta)

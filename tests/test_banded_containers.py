@@ -14,12 +14,15 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences as _seqmod
+from dmipy_replay import sequences as _seqmod
 from dmipy_sim.replay import compression as _cx
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
+from dmipy_sim.replay.reencode import prefix_pack
 
 D0 = 2e-9
 
@@ -90,7 +93,7 @@ def test_a_pack_in_the_integer_containers_replays_every_knob_like_the_float_one(
     seq = _seqmod.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, bvalues=[1e9, 1e9], TE=9.5e-3, n_t=4 * b.n_t + 1, slew_rate=np.inf)
     for kw in (dict(), dict(tissue=Tissue(T2={"extra": 0.08, "intra": 0.03}, T1={"extra": 1.0, "intra": 1.2})), dict(tissue=Tissue(rho2=1e-5, D=D0))):
         np.testing.assert_allclose(b.replay(seq, **kw), f.replay(seq, **kw), rtol=2e-3)
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     back = read_rpk(str(tmp / "bands.rpk"))
     np.testing.assert_allclose(back.replay(seq), b.replay(seq), rtol=1e-12)
     assert back.arrays["pos_x_b1"].dtype == np.int8
@@ -103,7 +106,7 @@ def test_a_prefix_of_a_banded_pack_replays(packs):
     """ReplayPack.prefix re-encodes from the dequantised coefficients: a banded pack cuts like a float one."""
     f, b, tmp = packs
     TE = 5e-3
-    pb, pf = b.prefix(TE), f.prefix(TE)
+    pb, pf = prefix_pack(b, TE), prefix_pack(f, TE)
     seq = _seqmod.pgse([[1, 0, 0]], 1e-3, 3e-3, bvalues=[1e9], TE=TE, n_t=4 * pb.n_t + 1, slew_rate=np.inf)
     np.testing.assert_allclose(pb.replay(seq), pf.replay(seq), rtol=2e-3)
 
@@ -233,7 +236,7 @@ def test_a_pack_with_a_field_stores_the_path_channel_in_a_container_and_replays(
     assert np.isfinite(pk.meta["fidelity"]["terms"]["field_read"])
     from dmipy_sim.replay.bank import read_rpk
     back = read_rpk(str(tmp_path / "pc.rpk"))
-    seq = d.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
+    seq = dr.gre(4e-4, gradient_directions=[[1, 0, 0]], bvalues=[0.0], delta=1e-4, Delta=2e-4, n_t=pk.n_t, slew_rate=np.inf)
     seq_x, R = field_along(seq, (1, 0, 0))
     ten = Tissue(chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
     E_ref = ref.walker_signals(seq_x, orientation=R, scanner=7.0, tissue=ten)[2]
@@ -308,7 +311,7 @@ def test_a_field_range_stores_the_registrys_bit_layout_at_every_depth(bits):
 def test_the_field_container_is_one_common_step_in_the_contracted_field():
     """Bits follow the contracted amplitude of the modes (one step across them), gain a bit per quartered floor, stay in
     3..16, and the realised phase noise of the stored steps is within the budget the floor allows."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_sim.replay import bank
     from dmipy_replay.replay.field import CHANNEL_NAMES
     rng = np.random.default_rng(1); n_w, K, T = 4000, 32, 0.1
@@ -395,7 +398,7 @@ def test_the_zero_components_are_not_stored_and_the_trace_component_is_never_a_c
     assert all(np.all(Cq[:, nq.index(n)] == 0.0) for n in zero)
     assert np.abs(Cq - np.transpose(C, (0, 2, 1))).max() < 0.05 * np.abs(C).max()      # the container's own error
     # the replay of the field is the float pack's, to the container's quantisation
-    from dmipy_sim import RFEvent, ScannerSequence
+    from dmipy_replay import RFEvent, ScannerSequence
     nt = pk.n_t; dt = pk.dt; TE = (nt - 1) * dt
     ten = Tissue(chi_iso=-1e-7, chi_aniso=-1e-7)
     for rf in ([RFEvent(0.0, 90)], [RFEvent(0.0, 90), RFEvent(TE / 2, 180)]):
@@ -454,6 +457,7 @@ def test_quantisation_bias_is_numerical_and_its_random_part_rides_with_the_floor
     walker count removes it), its random part adds at most eps / sqrt(n_eff) to the standard error, beside the float
     walkers' floor, never inside the numerical sum."""
     import dmipy_sim as d
+    import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.replay.bank import build_replay_pack
     w = _walk_geometry(2000, 2e-9, d.Cylinder(3e-6, (0, 0, 1)), 0.02, K=16, seed=0, require_gpu=False, tiers=())

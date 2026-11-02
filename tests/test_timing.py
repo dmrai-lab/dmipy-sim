@@ -12,7 +12,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_sim import sequences as S
+
+import dmipy_replay as dr
+from dmipy_replay import sequences as S
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.timing import SequenceTiming
 
@@ -86,14 +88,14 @@ def test_the_scalar_engine_gates_relaxation_by_the_fractional_mask():
     with the engine to eight digits, so the assertion is tight rather than approximate."""
     n_t, dt, T2, T1 = 401, 1e-4, 30e-3, 300e-3
     rf = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus', duration_s=8e-3)))
-    wf = d.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,), rf=rf)
+    wf = dr.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,), rf=rf)
     chi = np.asarray(wf.chi_perp, float)
     assert 0.0 < chi.min() < 1.0                                            # fractional, and reachable
     S_ = d.simulate(500, 2e-9, wf, d.FreeDiffusion(), T2=T2, T1=T1, seed=0, require_gpu=False)
     held = chi[:-1]                                                         # the readout is held over nothing
     expected = np.exp(-(held.sum() * dt) / T2 - ((1.0 - held).sum() * dt) / T1)
     assert float(S_[0]) == pytest.approx(expected, rel=1e-6)
-    hard = d.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,),
+    hard = dr.ScannerSequence(G=np.zeros((1, n_t, 3), np.float32), dt=dt, readout=(n_t - 1,),
                       rf=RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(20e-3, 180, 'refocus'))))
     S_hard = d.simulate(500, 2e-9, hard, d.FreeDiffusion(), T2=T2, T1=T1, seed=0, require_gpu=False)
     assert float(S_hard[0]) == pytest.approx(np.exp(-(n_t - 1) * dt / T2), rel=1e-6) and S_[0] > S_hard[0]
@@ -108,7 +110,7 @@ def test_from_pgse_builds_to_a_budget():
     assert TE == pytest.approx(seq.rf.refocus_time * 2) and TE >= st.min_TE()
     t = np.arange(seq.G.shape[1]) * seq.dt
     assert np.all(np.abs(np.asarray(seq.G))[:, st.on_mask(t, TE) == 0.0, :] == 0.0)   # nothing in an off window
-    np.testing.assert_allclose(d.calc_b(seq), B, rtol=1e-6)
+    np.testing.assert_allclose(seq.b(), B, rtol=1e-6)
     chi = np.asarray(seq.chi_perp, float)
     assert 0.0 < chi.min() < 1.0 and seq.refocusing_residual < 1e-6
     assert seq.refocus_gap >= st.t_refocus

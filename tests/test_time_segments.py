@@ -12,17 +12,14 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs
 from dmipy_sim.replay.compression import default_battery
 from dmipy_replay.replay.time_segments import FORMAT, Partition, Shape, read_manifest
-from dmipy_sim.replay.time_segments import (
-    TimeSegmentLayout,
-    _walk_view,
-    rounding_eps,
-    segment_rows,
-    write_time_segment_layout,
-)
+from dmipy_replay.replay.time_segments import TimeSegmentLayout
+from dmipy_sim.replay.time_segments import _walk_view, rounding_eps, segment_rows, write_time_segment_layout
 from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
@@ -39,8 +36,8 @@ TISSUE = Tissue(T2={"intra": 0.07, "extra": 0.06, "myelin": 0.015}, T1={"intra":
 def _sequences():
     """A PGSE, a PGSTE and a DDE (two bipolar pairs about the spin echo's pulse) on a 0.1 ms grid, and the stimulated
     echo's mixing time."""
-    se = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
-    ste = d.pgste([[0, 0, 1]], 3e-3, 10e-3, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
+    se = dr.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
+    ste = dr.pgste([[0, 0, 1]], 3e-3, 10e-3, gradient_strengths=0.1, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
     G = np.zeros((1, N_T, 3), np.float32)
     for i0, v in ((5, [0, 0, 0.1]), (35, [0, 0, -0.1]), (105, [0.1, 0, 0]), (135, [-0.1, 0, 0])):
         G[0, i0:i0 + 25, :] = v
@@ -91,9 +88,9 @@ def _acquisitions():
     u = rng.normal(size=(6, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     b = np.r_[np.full(6, 1e9), np.full(6, 3e9), 0.0]; dirs = np.concatenate([u, u, [[0, 0, 1]]])
     G = np.asarray(dde.G)[0]
-    return dict(pgse=d.pgse(dirs.tolist(), 4e-3, 10e-3, bvalues=b, TE=TE, n_t=N_T, slew_rate=np.inf),
-                pgste=d.pgste(dirs.tolist(), 3e-3, 10e-3, bvalues=b, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0)),
-                dde=d.ScannerSequence(G=np.stack([G * a for a in (0.3, 0.7, 1.0)] + [G * np.array([[-1.0, 1.0, 1.0]]) * 0.5]),
+    return dict(pgse=dr.pgse(dirs.tolist(), 4e-3, 10e-3, bvalues=b, TE=TE, n_t=N_T, slew_rate=np.inf),
+                pgste=dr.pgste(dirs.tolist(), 3e-3, 10e-3, bvalues=b, n_t=N_T, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0)),
+                dde=dr.ScannerSequence(G=np.stack([G * a for a in (0.3, 0.7, 1.0)] + [G * np.array([[-1.0, 1.0, 1.0]]) * 0.5]),
                                       dt=se.dt, rf=se.rf, readout=se.readout))
 
 
@@ -116,7 +113,6 @@ def test_a_partition_is_read_from_its_sequence():
     """A PGSE is two lobes under the gate's +1 and -1, a stimulated echo's mixing time is a segment its gate stores, a
     DDE's two bipolar pairs are four lobes; ``b_matrix`` is the b-value of refocused levels (the builder's own b to its
     rectangular rule), and a PGSE's reach is ``min(G_max, sqrt(b_max / b_unit))``; a segment across a pulse is refused."""
-    from dmipy_replay.acquisition.waveforms import calc_b
     parts = _partitions()
     se, ste, dde, mixing = _sequences()
     assert parts["pgse"].gate == (1, -1) and parts["pgste"].gate == (1, 0, -1) and parts["dde"].gate == (1, 1, -1, -1)
@@ -124,8 +120,8 @@ def test_a_partition_is_read_from_its_sequence():
     for name, seq in (("pgse", se), ("dde", dde)):
         L = parts[name].levels(seq)
         b = np.einsum("msc,st,mtc->m", L, parts[name].b_matrix(), L)
-        np.testing.assert_allclose(b, calc_b(seq), rtol=2e-3)
-    b_unit = float(calc_b(se)[0]) / 0.1 ** 2
+        np.testing.assert_allclose(b, seq.b(), rtol=2e-3)
+    b_unit = float(se.b()[0]) / 0.1 ** 2
     reach = parts["pgse"].reach(G_MAX, 3e9)
     np.testing.assert_allclose(reach, min(G_MAX, np.sqrt(3e9 / b_unit)), rtol=2e-3)
     assert parts["pgste"].reach(G_MAX, 3e9)[1] == 0.0
@@ -147,7 +143,7 @@ def test_a_sequence_that_does_not_fit_is_refused_by_name():
     G = np.asarray(se.G).copy(); i = int(round(parts["pgse"].segments[1][0] / se.dt)); G[0, i:i + 40, 2] *= 0.5
     with pytest.raises(ValueError, match="net moment"):
         parts["pgse"].levels(se.with_gradient(G))
-    coarse = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=61, slew_rate=np.inf)
+    coarse = dr.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=61, slew_rate=np.inf)
     with pytest.raises(ValueError, match="grid"):
         parts["dde"].levels(coarse)
     p = Partition("stored", ((0.0, 1e-3), (1e-3, 2e-3), (2e-3, 3e-3)), (1, 0, -1), (Shape.constant(),) * 3)
@@ -281,7 +277,7 @@ def test_a_sequence_beyond_the_envelope_and_a_foreign_pack_are_refused(myelin):
     with pytest.raises(ValueError, match="G_max"):
         M["lw"].image(dde.with_gradient(np.asarray(dde.G) * 12.0))
     with pytest.raises(ValueError, match="fits no stored partition"):
-        M["lw"].image(d.pgse([[0, 0, 1]], 3e-3, 10e-3, bvalues=[1e9], TE=TE, n_t=N_T, slew_rate=np.inf))
+        M["lw"].image(dr.pgse([[0, 0, 1]], 3e-3, 10e-3, bvalues=[1e9], TE=TE, n_t=N_T, slew_rate=np.inf))
     other = M["walk"].take(np.arange(M["walk"].n_walkers)[::-1])
     with pytest.raises(ValueError, match="not this walk's pack"):
         segment_rows(other, M["parts"], str(M["tmp"] / "foreign"), grid=M["grid"], pack=M["pack"], g_max=G_MAX)
@@ -327,7 +323,7 @@ def blocks(spec_grid):
 
 
 def _strand_partitions(n_t):
-    se = d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    se = dr.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
     return {"se": se}
 
 
@@ -335,7 +331,7 @@ def _strand_protocol(n_t, n=4):
     rng = np.random.default_rng(5)
     u = rng.normal(size=(n, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
     b = np.r_[np.full(n, 1e9), 0.0]; dirs = np.concatenate([u, [[0, 0, 1]]])
-    return d.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
+    return dr.pgse(dirs.tolist(), 0.2e-3, 0.5e-3, bvalues=b, n_t=n_t, slew_rate=np.inf)
 
 
 def test_the_blocks_consolidate_into_one_layout(blocks):
@@ -358,7 +354,7 @@ def test_the_blocks_consolidate_into_one_layout(blocks):
         sig2 = m["partitions"]["se"]["rounding"]["variance"]
         assert np.abs(got[live] - ref[live]).max() < _term(sig2, float(np.nanmax(floor)))
     with pytest.raises(ValueError, match="gate"):
-        lay.image(d.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, bvalues=[1e9], n_t=2 * n_t - 1, slew_rate=np.inf), tissue=t, scanner=3.0)
+        lay.image(dr.pgse([[0, 0, 1]], 0.2e-3, 0.5e-3, bvalues=[1e9], n_t=2 * n_t - 1, slew_rate=np.inf), tissue=t, scanner=3.0)
 
 
 def test_a_pool_the_first_block_lacks_keeps_its_relaxation(spec_grid, tmp_path):
@@ -468,7 +464,7 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
     order."""
     from dmipy_replay.replay.field import iso_weights, q_of_H
     from dmipy_replay.replay.time_segments import _decode, _field_terms_of_words, _layout_of, unpack_words
-    from dmipy_sim.replay.time_segments import _device_field_spec, _x64
+    from dmipy_replay.replay.time_segments_backends import _device_field_spec, _x64
     lay, merged, grid, n_t, m, tmp = blocks
     g = m["partitions"]["se"]["group"]
     cols = TimeSegmentLayout.columns(m)
@@ -607,7 +603,7 @@ def test_from_a_pack_the_tiers_carry_the_packs_own_quantisation(myelin):
     per-walker departure from the walk's float contraction (and are not vacuous for the contact); a floor target below
     the pack's own term is refused by name."""
     from dmipy_sim.replay.time_segments import tier_quantisation_terms, _gate_sequence
-    from dmipy_sim.replay.study import Acquisition
+    from dmipy_replay.replay.study import Acquisition
     from dmipy_replay.replay.replay import _path_field_channels
     from dmipy_replay.replay.field import field_terms
     M = myelin

@@ -18,10 +18,13 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -258,14 +261,14 @@ def test_both_orders_replay_one_walk_alike_and_their_views_follow(walks):
     from dmipy_replay.spec.tissue import Tissue
     pc = build_replay_pack(walks["c"], id="t/c", license="x", citation="x", **stated())
     pz = build_replay_pack(walks["z"], id="t/z", license="x", citation="x", **stated())
-    seq = d.pgse([[1, 0, 0], [0, 0, 1]], 1e-3, 3e-3, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0], [0, 0, 1]], 1e-3, 3e-3, bvalues=[1e9, 1e9], TE=0.006, slew_rate=np.inf)
     tol = pc.fidelity["err_max"] + pz.fidelity["err_max"] + 1e-3
     assert np.abs(pc.replay(seq) - pz.replay(seq)).max() <= tol
     t = Tissue(rho2=2e-5, T2={"extra": 0.05, "intra": 0.04})
     assert np.abs(pc.replay(seq, tissue=t) - pz.replay(seq, tissue=t)).max() <= tol + 1e-3
-    short = d.pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, bvalues=[1e9], TE=0.003, slew_rate=np.inf)
+    short = dr.pgse([[1, 0, 0]], 0.5e-3, 1.5e-3, bvalues=[1e9], TE=0.003, slew_rate=np.inf)
     assert abs(float(pc.at_diffusivity(4e-9).replay(short)[0]) - float(pz.at_diffusivity(4e-9).replay(short)[0])) <= tol
-    pre = pc.prefix(0.006)
+    pre = prefix_pack(pc, 0.006)
     assert pre.n_t == 61 and abs(float(pre.replay(seq)[0]) - float(pc.replay(seq)[0])) <= 2 * tol
 
 
@@ -275,7 +278,7 @@ def test_a_walk_of_several_windows_packs_window_by_window():
     pk = build_replay_pack(cw, id="t/w", license="x", citation="x", **stated(of=cw))
     assert pk.n_windows == 2 and pk.windows["T"] == pytest.approx(0.1) and pk.n_t == 101
     assert pk.meta["walk_params"]["block"]["n_blocks"] == 100 and pk.fidelity["combined"] == "bound_over_windows"
-    seq = d.pgse([[1, 0, 0]], 5e-3, 0.12, bvalues=[3e8], TE=0.15, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0]], 5e-3, 0.12, bvalues=[3e8], TE=0.15, slew_rate=np.inf)
     one = build_replay_pack(cw.window(0), id="t/w0", license="x", citation="x", **stated())
     assert one.n_windows == 1 and np.isfinite(pk.replay(seq)).all()
 

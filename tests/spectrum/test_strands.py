@@ -100,7 +100,7 @@ def test_manifest_records_the_far_grid_spacing_without_a_real_build(tmp_path):
     coordinator's #699 follow-up): a reader should not have to open the far.npy's own .json sidecar just to
     see what resolution an edge's field was built at. Checked against a synthetic far_grid_info -- the real
     far-grid build this would normally come from is minutes even at 250 um (not run in the suite)."""
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_sim.spectrum.strands import _manifest_for
     grid = Grid(shape=(10, 10, 10), voxel_size_m=(25e-6,) * 3, origin_m=(12.5e-6,) * 3)
     _manifest_for(250e-6, 0.02, variant_dir=str(tmp_path), substrate_rel=dict(tracks="t.tck", diameters="d.txt"),

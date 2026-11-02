@@ -12,8 +12,8 @@ matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dmipy_sim import pgse, pgste, set_b
-from dmipy_sim import sequences as S
+from dmipy_replay import pgse, pgste, set_b
+from dmipy_replay import sequences as S
 from dmipy_sim.viz import viz
 
 

@@ -5,8 +5,8 @@ window the pack was not loaded with is refused by name.
 
 The byte-range selection is exercised against a local HTTP server that honours ``Range`` (``http.server`` does
 not out of the box, so a 40-line handler stands in for the Hub's own resolve URL -- :func:`fetch_windows`'s
-``url=`` override is for exactly this). The real Hub is not touched: a test that uploads a fixture to a
-shared dataset does not belong in an automated run."""
+``url=`` override is for exactly this). No test writes to the Hub: the published fixture is written by
+``tools/publish_windows_fixture.py``, by hand, and the tier-2 test at the end only reads it."""
 from tests._envelope import stated
 import dmipy_replay.replay.hub as _r_hub
 import contextlib
@@ -21,11 +21,14 @@ import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.replay import ReplayPack, read_rpk
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
-from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
+from dmipy_replay.spec.substrate import Domain, PoolSpec, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
+from dmipy_sim.replay.container import save_pack
 
 
 N_T, DT, N_W = 61, 5e-4, 300          # 30 ms of walk, three windows of 10 ms each
@@ -42,7 +45,7 @@ def _fixture_spec():
     return SubstrateSpec("test/windows-fixture",
                          Domain([0.0, -1e-3, -1e-3], [L, 1e-3, 1e-3], ["reflect", "open", "open"],
                                 surface_relaxivity=1e-5),
-                         [Pool(0, "extra", D0)], [], Seeding([0]),
+                         [PoolSpec(0, "extra", D0)], [], Seeding([0]),
                          Validity(L, ["gradient", "surface"])).validate().to_dict()
 
 
@@ -62,7 +65,7 @@ def _fixture_pack():
 
 
 def _seq(TE):
-    return d.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.2, n_t=TE_N_T(TE), slew_rate=np.inf, TE=TE)
+    return dr.pgse([[1, 0, 0]], 0.002, 0.006, gradient_strengths=0.2, n_t=TE_N_T(TE), slew_rate=np.inf, TE=TE)
 
 
 def TE_N_T(TE):
@@ -122,7 +125,7 @@ def served(pack, tmp_path, monkeypatch):
     (``$DMIPY_REPLAY_CACHE``) redirected under ``tmp_path``, so that no test reads a window file an earlier run cached."""
     monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
     local = tmp_path / "src.rpk"
-    pack.save(str(local))
+    save_pack(pack, str(local))
     data = local.read_bytes()
     with _serve(data) as url:
         yield url, data
@@ -190,7 +193,7 @@ def test_replay_pack_load_takes_windows_through_a_hub_uri_only(pack, served, tmp
 
 
 def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
-    from dmipy_sim.phantom import PackSubstrate
+    from dmipy_replay.phantom import PackSubstrate
     seen = {}
     fake = ReplayPack({"pos_x": np.zeros((2, 4), np.float32)},
                       {"id": "o/p", "windows_present": 2,
@@ -200,7 +203,7 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
         seen["uri"], seen["windows"] = uri, windows
         return fake
 
-    monkeypatch.setattr(ReplayPack, "load", classmethod(fake_load))
+    monkeypatch.setattr("dmipy_replay.replay.replay.ReplayPack.load", classmethod(fake_load))   # the class PackSubstrate loads
     sub = PackSubstrate("hf://o/windows/packs/x.rpk", m0=1.0, windows=range(2))
     assert sub.pack is fake and seen["uri"] == "hf://o/windows/packs/x.rpk" and seen["windows"] == range(2)
     m = sub.to_meta()
@@ -209,3 +212,28 @@ def test_pack_substrate_passes_windows_through_to_the_load(monkeypatch):
     assert back._windows == 2
     with pytest.raises(ValueError, match="windows="):
         PackSubstrate("/local/path.rpk", m0=1.0, windows=range(1))
+
+
+# ------------------------------- the real Hub: read only (tier 2) -------------------------------
+FIXTURE_URI = "hf://SubstrateCommons/test-fixtures/windows-fixture.rpk"
+"""The published fixture, :func:`_fixture_pack` written by ``tools/publish_windows_fixture.py`` -- by hand, never by a test."""
+
+
+@pytest.mark.gpu
+def test_a_windowed_read_from_the_real_hub(tmp_path, monkeypatch):
+    """The published fixture's first window read by HTTP byte range through the public entry point, with no
+    ``url=``/``revision=`` override (the real Hub resolver end to end), replays bit for bit as the whole file read
+    from the Hub does. The test only reads; it is skipped where the Hub cannot be reached."""
+    hf = pytest.importorskip("huggingface_hub")
+    monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
+    owner, name, path = FIXTURE_URI[len("hf://"):].split("/", 2)
+    try:
+        hf.HfApi().file_exists(f"{owner}/{name}", path, repo_type="dataset")
+    except Exception as e:                                             # no network, or the Hub is down
+        pytest.skip(f"the Hub cannot be reached: {e}")
+    first = ReplayPack.load(FIXTURE_URI, windows=range(1))
+    whole = ReplayPack.load(FIXTURE_URI)
+    assert first.windows_present == 1 and first.n_windows == 3 and whole.windows_present == 3
+    for k in first.arrays:
+        npt.assert_array_equal(first.arrays[k], whole.arrays[k], err_msg=k)
+    npt.assert_array_equal(first.replay(_seq(0.01), complex_signal=True), whole.replay(_seq(0.01), complex_signal=True))

@@ -14,15 +14,15 @@ Monte-Carlo floor in the way. The statistical coverage lives in ``test_replay_po
 from tests._envelope import stated
 import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
-from dmipy_sim import Encoding, ScannerSequence
+from dmipy_replay import Encoding, ScannerSequence
 import pytest
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.coefficient_walk import CoefficientWalk
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay.fod import FOD
 from dmipy_sim.spec import spec_of
 
 N_T, DT = 65, 2.0e-4

@@ -12,17 +12,19 @@ trajectory producer at zero binding is the plain producer to the bit.
 from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import trajectories as T
 from dmipy_sim.replay import compression as cx
 from dmipy_replay.replay._replay_kernel import effective_gradient, waveform_moments, gradient_phase, field_gate
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
-from dmipy_sim.replay.replay import replay_signal_jax
+from dmipy_replay.replay.jax_routes import replay_signal_jax
 
 N_T, DT = 200, 1e-4
 T_TOTAL = (N_T - 1) * DT
@@ -128,7 +130,8 @@ def test_the_vector_bloch_replays_return_the_closed_form_phase():
     phi_bloch = np.angle(M_final[0] + 1j * M_final[1])
     assert np.abs(np.abs(phi_bloch) - np.abs(phi_exact)).max() < 1e-6
     sign = np.sign(np.sum(phi_bloch * phi_exact))
-    s_jx = T.replay_bloch_jax(traj, DT, G, DT, rf)
+    from dmipy_replay.replay.bloch_jax import replay_bloch_jax
+    s_jx = replay_bloch_jax(traj, DT, G, DT, rf)
     assert np.abs(s_jx - np.mean(np.exp(1j * sign * phi_exact))).max() < 1e-4
     assert np.abs(s_jx - s_mean).max() < 1e-4
 
@@ -203,11 +206,11 @@ def test_one_field_gate():
     from dmipy_sim.replay import bank
     assert not any(hasattr(bank, n) for n in ("se_gate", "_se_gate", "field_gate"))
     n_wf = 4 * (N_T - 1) + 1                                           # the waveform's grid: the 180 between two saves
-    se = d.pgse([[1, 0, 0]], 2e-3, 1e-2, bvalues=[1e8], TE=T_TOTAL, n_t=n_wf, slew_rate=np.inf)
+    se = dr.pgse([[1, 0, 0]], 2e-3, 1e-2, bvalues=[1e8], TE=T_TOTAL, n_t=n_wf, slew_rate=np.inf)
     s = field_gate(se, N_T, DT)
     assert s.sum() == pytest.approx(0.0, abs=1e-12)                    # a static field refocuses exactly
     np.testing.assert_allclose(s[1: N_T // 4], 1.0, atol=1e-12); np.testing.assert_allclose(s[-N_T // 4:-1], -1.0, atol=1e-12)
-    g = field_gate(d.gre(T_TOTAL, n_t=n_wf), N_T, DT)
+    g = field_gate(dr.gre(T_TOTAL, n_t=n_wf), N_T, DT)
     np.testing.assert_allclose(g[1:-1], 1.0, atol=1e-12)
     assert g[0] == pytest.approx(0.5) and g[-1] == pytest.approx(0.5)
 
@@ -236,15 +239,16 @@ def test_the_compiled_scheme_is_generic_in_its_components_and_the_host_kernel_is
     traced batch twin equals the looped twin. Needs ``jax_enable_x64`` for the device/host parity check below
     (the ``x64`` fixture scopes it to this test and restores the flag on teardown)."""
     import dmipy_sim as d
+    import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_replay.replay.replay import compile_scheme, replay_signal, replay_coefficients, surface_logweight
-    from dmipy_sim.replay import replay_signal_jax, replay_batch_jax
+    from dmipy_replay.replay.jax_routes import replay_signal_jax, replay_batch_jax
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.replay.compression import read_position_coeffs
     g = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), surface_relaxivity_t2=0.0)
     walk = _walk_geometry(300, 2e-9, g, 8e-3, 4e-4, seed=3, require_gpu=False)
     pk = build_replay_pack(walk, id="t/k", license="x", citation="x", K=6, blt_temporal_K=4, **stated(of=walk))
-    seq = d.set_b(d.pgse([[1, 0, 0], [0, 1, 1], [1, 1, 1]], 2e-3, 5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9] * 3)
+    seq = dr.set_b(dr.pgse([[1, 0, 0], [0, 1, 1], [1, 1, 1]], 2e-3, 5e-3, gradient_strengths=0.1, n_t=pk.n_t, slew_rate=np.inf), [1e9] * 3)
     G = np.asarray(seq.G_eff)
     W3 = compile_scheme(G, seq.dt, pk.K, T=pk.T_window)
     W2 = compile_scheme(G[..., [0, 2]], seq.dt, pk.K, T=pk.T_window)

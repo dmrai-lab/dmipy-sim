@@ -7,8 +7,9 @@ At b=0 (no diffusion weighting), signal equals exp(-TE/T2) exactly.
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, FreeDiffusion, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 from .conftest import D, N_CPU, N_EXACT, SEED, mc_atol
 
 

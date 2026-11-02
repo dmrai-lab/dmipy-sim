@@ -16,7 +16,8 @@ import pytest
 
 from dmipy_sim.fields import raster_cache
 from dmipy_sim.fields import susceptibility_field as sf
-from dmipy_sim.spec import SpecError, check_field_raster, field_grid_of_spec, field_raster_plan
+from dmipy_replay.spec.substrate import SpecError
+from dmipy_sim.spec import check_field_raster, field_grid_of_spec, field_raster_plan
 from dmipy_sim.spec.walk import WalkContext
 
 ROOT = Path(__file__).resolve().parents[1]

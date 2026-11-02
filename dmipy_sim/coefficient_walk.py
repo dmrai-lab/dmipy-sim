@@ -24,6 +24,19 @@ from dmipy_replay.replay.events import EventList, events_within
 
 
 
+def _t_start(block):
+    """The instant (s) a walk opens on the clock it is placed on: 0 -- a walk's clock starts at its first step -- unless
+    :meth:`CoefficientWalk.shift_time` placed it later (``block["t_start"]``)."""
+    return float(block["t_start"]) if "t_start" in block else 0.0
+
+
+def _window_t0(block):
+    """The instant (s) a walk's first block, or a window's (``block["window"]["t0"]``, :meth:`CoefficientWalk.window`),
+    opens on the walk's clock."""
+    w = block.get("window")
+    return float(w["t0"]) if w is not None else _t_start(block)
+
+
 @dataclass(frozen=True)
 class CoefficientWalk:
     """One walk kept as its bridge bands.
@@ -237,7 +250,7 @@ class CoefficientWalk:
             return self
         n_bw = self.n_blocks // n
         T_w = self.T_window
-        ts = float(self.block.get("t_start", 0.0))
+        ts = _t_start(self.block)
         k0, k1 = i * n_bw, (i + 1) * n_bw + 1
         cut = lambda a: None if a is None else np.asarray(a)[:, k0:k1]
         rpb = self.reads_per_block
@@ -265,7 +278,7 @@ class CoefficientWalk:
         import dataclasses
         t_start = float(t_start)
         return dataclasses.replace(
-            self, block=dict(self.block, t_start=t_start + float(self.block.get("t_start", 0.0))),
+            self, block=dict(self.block, t_start=t_start + _t_start(self.block)),
             comp_events=(None if self.comp_events is None else self.comp_events.shifted(t_start)),
             bound_events=(None if self.bound_events is None else self.bound_events.shifted(t_start)))
 
@@ -338,7 +351,7 @@ class CoefficientWalk:
             from dmipy_replay.replay.envelope import Envelope
             kw["envelope"] = Envelope.from_dict(h["envelope"])
         kw.update(K=int(h["K"]), m=int(h["m"]), n_windows=int(h["n_windows"]), sub_steps=int(h["sub_steps"]),
-                  T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h.get("illegal_crossings") or 0),
+                  T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h["illegal_crossings"]),
                   K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)
         return cls(**kw)
 

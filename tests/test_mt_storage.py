@@ -16,12 +16,12 @@ surface relaxivity are transverse-gated (off during storage), MT is not.
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_sim import Sphere
-from dmipy_sim.engine import mt
+from dmipy_analytic import relaxation
 
 # the ensemble Mz has a standard error of at most 0.5 / sqrt(N) = 0.013 here, against the 0.05 bound (3.8 of them)
 N_STORE = 1500
@@ -58,10 +58,10 @@ def _oracle_total_mz(TM):
     M0a = 1 - f_b (free), M0b = f_b (bound); the mean Mz is the pool total Mza + Mzb."""
     f_b = k_f / (k_f + k_r)
     M0a, M0b = 1.0 - f_b, f_b
-    A = mt.two_pool_generator(R1a=1 / T1A, R2a=1e3, R1b=1 / T1B, R2b=1e3,
+    A = relaxation.two_pool_generator(R1a=1 / T1A, R2a=1e3, R1b=1 / T1B, R2b=1e3,
                               k_f=k_f, k_r=k_r, M0a=M0a, M0b=M0b)
     s0 = np.array([0, 0, -M0a, 0, 0, -M0b, 1.0])
-    s = mt.evolve_two_pool(s0, TM, A)
+    s = relaxation.evolve_two_pool(s0, TM, A)
     return s[2] + s[5]
 
 

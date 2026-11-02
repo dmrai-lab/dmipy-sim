@@ -15,7 +15,7 @@ import numpy as np
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from .bloch import _simulate_bloch
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 __all__ = ["bare_gradient_echo", "bare_spin_echo", "fexi", "saturation_pulse", "prepend_mt_prep",
            "emergent_z_spectrum"]
@@ -194,7 +194,7 @@ def emergent_z_spectrum(offsets_hz, geometry, *, n_walkers, diffusivity, w1_hz, 
     lineshape is imposed; the dip is produced by real short-``T2_bound`` spins.
 
     This is the *emergent* (Monte-Carlo) counterpart of the analytic two-pool oracle
-    :func:`dmipy_sim.engine.mt.mt_z_spectrum`; the two agree to the MC noise floor once the bound
+    :func:`dmipy_analytic.relaxation.mt_z_spectrum`; the two agree to the MC noise floor once the bound
     pool is burned in (``equilibrate_binding`` other than ``'off'``).  Fine ``dt`` is
     required so the carrier ``2*pi*offset*dt`` does not alias.
 

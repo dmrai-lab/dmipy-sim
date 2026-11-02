@@ -8,7 +8,7 @@ longitudinal-storage mixing time (FEXI).
 """
 import numpy as np
 from dmipy_sim.engine.bloch import _simulate_bloch
-from dmipy_sim import pgse
+from dmipy_replay import pgse
 import pytest
 
 from tests.conftest import N_EXACT, se_tol

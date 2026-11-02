@@ -63,6 +63,10 @@ import numpy as np
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from dmipy_replay.replay.hub import sha256_of
+
+from .container import save_pack
+
 log = logging.getLogger("dmipy_sim.replay")
 
 #: The nine stages, in the only order they run in.
@@ -395,7 +399,7 @@ class Build:
     """How stages 3, 5 and 6 are performed for this family.
 
     ``specs`` maps a substrate name to a zero-argument callable returning its
-    :class:`~dmipy_sim.spec.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
+    :class:`~dmipy_replay.spec.substrate.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
     a count and a seed over the design's window at its band (``walk(spec, n, *, T, K, seed, sub_steps) ->
     CoefficientWalk``: ``T`` the window in seconds, ``K`` the bands per storage window, ``sub_steps`` None for the
     engine's own rule and a count for the step pilot's coarse walk; the producer is called with keywords and no block,
@@ -597,16 +601,8 @@ def _sha256_bytes(b):
     return hashlib.sha256(b).hexdigest()
 
 
-def _sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 24), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _digest(path):
-    return dict(path=os.path.basename(path), sha256=_sha256_file(path), bytes=os.path.getsize(path))
+    return dict(path=os.path.basename(path), sha256=sha256_of(path), bytes=os.path.getsize(path))
 
 
 class Records:
@@ -636,7 +632,7 @@ class Records:
             return json.load(fh)
 
     def digest(self, stage):
-        return _sha256_file(self.path(stage))
+        return sha256_of(self.path(stage))
 
     def check_chain(self, stage):
         """Verify that every earlier record is still the one its successor was written against."""
@@ -1036,10 +1032,10 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
             f"so the memory budget cannot be checked against a measurement for it; name peak_rss_bytes in "
             f"not_recorded to record that, or supply a pack whose walk reported one")
     cert = ((meta.get("provenance") or {}).get("certified") or {})
-    peak = int(max(int(run.get("peak_rss_bytes") or 0), int(float(cert.get("peak_rss_gb") or 0.0) * 1e9)))
-    if not peak:
-        peak = None
-    elif peak > budget:
+    peaks = ([int(run["peak_rss_bytes"])] if run.get("peak_rss_bytes") else []) + \
+            ([int(float(cert["peak_rss_gb"]) * 1e9)] if cert.get("peak_rss_gb") else [])
+    peak = max(peaks) if peaks else None                      # the larger of the recorded peaks; None when neither is
+    if peak is not None and peak > budget:
         raise ReferenceRefusal(f"walk {name!r}: the recorded walk and pack peaked at {peak / 1e9:.1f} GB against the "
                                f"design's {budget / 1e9:.1f} GB budget; the budget is a hard cap")
     n = int(wp["n_walkers"])
@@ -1054,13 +1050,13 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
     pack_path = rel_pack if not rel_pack.startswith("..") else os.path.basename(abs_pack)
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
                 pack_path=pack_path,
-                pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
+                pack_sha256=sha256_of(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
                 block=wp.get("block"), windows=wp.get("windows"), qv=wp.get("qv"),
                 sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
                 illegal_crossings=(None if recorded.illegal_crossings is None
                                    else int(recorded.illegal_crossings)),
                 counters_not_recorded=list(declared) or None, counters_evidence=recorded.evidence,
-                seconds=round(float(run.get("wall_s") or 0.0), 1), peak_rss_bytes=peak,
+                seconds=(None if run.get("wall_s") is None else round(float(run["wall_s"]), 1)), peak_rss_bytes=peak,
                 budget_checked=peak is not None, budget_bytes=int(budget), status=run.get("status"),
                 code_commit=(run.get("code") or {}).get("commit"))
 
@@ -1311,7 +1307,8 @@ class ReferenceFamily:
         prev, prev_sha = self._prev("spec")
         src = self.records.read("source")
         known = {f["sha256"]: f["cite_as"] for s in src["sources"].values() for f in s["files"]}
-        from ..spec import geometry_from_spec, spec_of, validate
+        from dmipy_replay.spec.substrate import validate
+        from ..spec import geometry_from_spec, spec_of
         out = {}
         for name, make in sorted(self.build.specs.items()):
             spec = make()
@@ -1403,7 +1400,7 @@ class ReferenceFamily:
             floor0 = float(pk.meta["fidelity"]["floor_max"])        # the pilot's coded standard-error floor on the envelope
             with tempfile.TemporaryDirectory(prefix="dmipy-pilot-") as tmp:
                 f = os.path.join(tmp, "pilot.rpk")
-                pk.save(f)
+                save_pack(pk, f)
                 pack_bytes = os.path.getsize(f)
         pack_s, pack_peak = time.time() - t1, sampler.peak
         per_walker_bytes = pack_bytes / float(d.pilot_n)
@@ -1422,8 +1419,11 @@ class ReferenceFamily:
                 raise ReferenceRefusal(f"design: the tier {t.name!r} reads {t.floor_key!r} / {t.err_key!r}, which the "
                                        f"pilot pack's certificate does not carry ({sorted(k for k in fid if isinstance(fid[k], (int, float)))}); "
                                        f"a declared tier is certified, never 'not applicable'")
+            if fid[t.floor_key] is None:
+                raise ReferenceRefusal(f"design: the pilot pack's certificate states no {t.floor_key!r} (None) for the tier "
+                                       f"{t.name!r}; a declared tier is certified, never 'not applicable'")
             tiers.append(asdict(t))
-            tier_floor[t.name] = float(fid[t.floor_key] or 0.0)
+            tier_floor[t.name] = float(fid[t.floor_key])
         target = min(float(t.target_floor) for t in d.tiers)
         n_floor = max(int(d.pilot_n), int(round(d.pilot_n * (floor0 / target) ** 2 * float(d.safety))))
         n_budget = int(max(0.0, (float(d.memory_budget_bytes) - rss0)) / per_walker_rss)
@@ -1482,7 +1482,7 @@ class ReferenceFamily:
                               substrate_is=("declared" if d.pilot_substrate else
                                             "the first of this family's substrates in sorted order, undeclared"),
                               walk_seconds=round(walk_s, 1), pack_seconds=round(pack_s, 1),
-                              sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
+                              sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings),
                               envelope_floor=floor0, tier_floor=tier_floor, pack_bytes=int(pack_bytes),
                               bytes_per_walker=per_walker_bytes, rss_bytes_per_walker=per_walker_rss,
                               resident_bytes_per_walker_sampled=per_walker_resident,
@@ -1522,7 +1522,10 @@ class ReferenceFamily:
                                    f"the step certificate cannot step coarser; a block this close to the physics step "
                                    f"leaves the step unmeasured -- the block is the band's own (h = 0.8 T / (pi K)), so a "
                                    f"longer one is a smaller K per window")
-        regime = int((rule.get("rules") or {}).get("regime") or 1)        # the coarse walk stays in the first-order regime
+        if (rule.get("rules") or {}).get("regime") is None:
+            raise ReferenceRefusal(f"design: the pilot walk of {name!r} states no first-order regime in its step rule "
+                                   f"(work['step_rule']['rules']['regime']), which the coarse walk is held to")
+        regime = int(rule["rules"]["regime"])                         # the coarse walk stays in the first-order regime
         n_coarse = max(n_fine // (PILOT_STEP_RATIO if n_fine >= PILOT_STEP_RATIO else 2), regime)
         if n_coarse >= n_fine:
             raise ReferenceRefusal(f"design: the pilot of {name!r} steps at the first-order regime's ceiling ({n_fine} per "
@@ -1548,7 +1551,7 @@ class ReferenceFamily:
         return dict(cert, sub_steps_fine=n_fine, sub_steps_coarse=n_coarse, dt_p_s=float(walk.dt_sim), block_h_s=float(walk.h),
                     band_is=("the largest band the declared waveforms read" if bands and f_band < top else
                              "the walk's own top band, K / (2 T)" if bands else "the walk's own band"),
-                    rules=rule.get("rules"), coarse_walk_seconds=round(time.time() - t0, 1), illegal_crossings_coarse=int(coarse.illegal_crossings or 0))
+                    rules=rule.get("rules"), coarse_walk_seconds=round(time.time() - t0, 1), illegal_crossings_coarse=int(coarse.illegal_crossings))
 
     # ---------------- 5. walk
     def _walk(self):
@@ -1612,9 +1615,9 @@ class ReferenceFamily:
                 f"{projected / 1e9:.2f} GB; the budget is a hard cap and the measurement, not the projection, "
                 f"is what it is held against")
         block, windows, qv = _walk_params(walk)
-        return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=_sha256_file(path),
+        return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=sha256_of(path),
                     n_walkers=int(n), K=int(walk.K), block=block, windows=windows, qv=qv,
-                    sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
+                    sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings),
                     seconds=round(seconds, 1), peak_rss_bytes=int(peak), rss_bytes_before=int(rss0),
                     projected_rss_bytes=int(projected), budget_bytes=int(des["memory_budget_bytes"]),
                     code_commit=code_commit(require_clean=False))
@@ -1633,7 +1636,7 @@ class ReferenceFamily:
         held = self.records.reuse("pack", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: nothing is re-measured
             return held
-        from .replay import ReplayPack
+        from dmipy_replay import ReplayPack
         out = {}
         for name in sorted(wlk["substrates"]):
             w = wlk["substrates"][name]
@@ -1658,7 +1661,7 @@ class ReferenceFamily:
         out_dir = os.path.join(self.dir, "packs")
         os.makedirs(out_dir, exist_ok=True)
         local = os.path.join(out_dir, f"{name.lower()}.rpk")
-        pack.save(local)
+        save_pack(pack, local)
         return local, pack
 
     def _certify(self, name, pack, local, des, ref):
@@ -1748,7 +1751,8 @@ class ReferenceFamily:
         held = self.records.reuse("card", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: the snippet is not run again
             return held
-        from ..spec import SubstrateSpec, preview as spec_preview
+        from dmipy_replay.spec.substrate import SubstrateSpec
+        from ..spec import preview as spec_preview
         prev_dir = os.path.join(self.dir, "previews")
         previews = {}
         for name, s in sorted(rec["spec"]["substrates"].items()):
@@ -2211,17 +2215,17 @@ def organisation_card(rows, *, example=None):
            "family's own records.\n",
            "## Use a pack\n",
            "```python\n"
-           "# pip install dmipy-sim\n"
-           "from dmipy_sim.replay import ReplayPack\n"
-           "from dmipy_sim import sequences\n"
-           f"pack = ReplayPack.load('hf://{example or ORGANISATION + '/<family>/packs/<pack>.rpk'}')\n"
-           "seq = sequences.pgse([[1, 0, 0]], 0.04, 0.08, bvalues=[1e9], TE=0.15)\n"
+           "# pip install dmipy-replay\n"
+           "import dmipy_replay as dr\n"
+           f"pack = dr.ReplayPack.load('hf://{example or ORGANISATION + '/<family>/packs/<pack>.rpk'}')\n"
+           "seq = dr.pgse([[1, 0, 0]], 0.04, 0.08, bvalues=[1e9], TE=0.15)\n"
            "S = pack.replay(seq)                                              # the bare diffusion signal\n"
            "S = pack.replay(seq, tissue=pack.nominal)                         # the paper's replay\n"
            "```\n",
            "A replay refuses what the pack cannot serve (a waveform beyond its temporal band, a tier it does not "
            "carry) rather than returning a plausible number. The format is specified in "
-           "[replay-pack-spec](https://github.com/dmrai-lab/replay-pack-spec); the engine and the producers are "
+           "[replay-pack-spec](https://github.com/dmrai-lab/replay-pack-spec); the reader is "
+           "[dmipy-replay](https://github.com/dmrai-lab/dmipy-replay), the engine and the producers are "
            "[dmipy-sim](https://github.com/dmrai-lab/dmipy-sim).\n",
            "## Families\n",
            "| family | what it is | source | reference it reproduces | grade | packs | licence |",

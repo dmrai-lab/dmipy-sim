@@ -42,7 +42,8 @@ import time
 
 import numpy as np
 
-from dmipy_sim import cpmg, simulate_cpmg
+from dmipy_replay import cpmg
+from dmipy_sim import simulate_cpmg
 from dmipy_sim.spec import label_volume_spec, geometry_from_spec
 
 # ── Talabi's parameters, thesis Table 8-2 and §7.6 ───────────────────────────────────────────

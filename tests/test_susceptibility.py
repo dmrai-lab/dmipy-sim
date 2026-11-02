@@ -7,8 +7,8 @@ a static field and for diffusion-driven attenuation in a varying field.
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 import numpy.testing as npt
 import pytest
 import jax
@@ -18,7 +18,7 @@ from dmipy_sim import (FreeDiffusion,
                        SusceptibilitySources, MyelinSusceptibility, GridSusceptibility,
                        dipole_field, myelin_susceptibility_tensor, radial_from_sdf,
                        sample_grid, mesh_shapes as ms)
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 D = 2e-9
 

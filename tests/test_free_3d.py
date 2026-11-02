@@ -6,7 +6,8 @@ Validates isotropic diffusion: E = exp(-b*D) for all gradient directions.
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, pgse, FreeDiffusion, set_b
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import pgse, set_b
 from .conftest import D, N_CPU, SEED, mc_atol
 
 

@@ -10,9 +10,9 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import Encoding, Prescription, RFEvent, ScannerSequence
-from dmipy_sim.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import Encoding, Prescription, RFEvent, ScannerSequence
+from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, PartitionPhantom, Phantom, Pose
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 
@@ -42,7 +42,7 @@ def pack_paths(walk, tmp_path_factory):
 
 def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3, rf=None):
     """A PGSE on the pack's block grid, as a bare gradient echo (rf None) or with a physical spin-echo schedule."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -161,7 +161,7 @@ def test_the_scanner_decides_the_voxels_when_the_partition_declares_no_grid(pack
 
 # ------------------------------------------------------------------ the pose
 def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_membership_unchanged(pack_paths):
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     pk = read_rpk(pack_paths[8])
     grid = _grid(pk, attach="substrate")
     R = _r_so3.rotation_of((0.3, 0.5, 0.81))
@@ -177,7 +177,7 @@ def test_a_pose_on_a_tissue_attached_grid_is_the_rotated_acquisition_with_member
 
 
 def test_a_pose_on_a_bore_attached_grid_rebins_the_walkers(pack_paths):
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     pk = read_rpk(pack_paths[8])
     R = _r_so3.rotation_of((0.0, 1.0, 0.0))                                # tip the cylinder axis into the plane
     lab = Grid.covering(pk.r0 @ R.T, voxel_size_m=(2.5e-6, 2.5e-6, 2.5e-6), attach="lab", margin_voxels=1)
@@ -216,7 +216,7 @@ def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
 
 
 def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     pk = read_rpk(pack_paths[8])
     grid = _grid(pk)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)
@@ -254,7 +254,7 @@ def test_a_partition_writes_and_reads_back(pack_paths, tmp_path):
 
 def test_pose_is_a_Pose_and_a_bare_matrix_is_refused_by_name():
     """Every ``pose=`` takes a ``Pose`` (or ``None``): the matrix is spelled ``Pose(R)``."""
-    from dmipy_sim.phantom.partition import pose_rotation
+    from dmipy_replay.phantom.partition import pose_rotation
     R = np.eye(3)
     assert pose_rotation(None) is None and np.array_equal(pose_rotation(Pose(R)), R)
     for bad in (R, R.tolist(), 3.0):

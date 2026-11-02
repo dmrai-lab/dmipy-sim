@@ -10,13 +10,14 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
-from dmipy_sim.replay import ReplayPack, read_rpk, so3
+from dmipy_replay import sequences
+from dmipy_replay.phantom import Grid, ODF, PackSubstrate, Peaks, Phantom
+from dmipy_replay import ReplayPack, read_rpk
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import pack_position_arrays
 from dmipy_replay.replay.compression import read_position_coeffs
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay.fod import FOD
 
 
 @pytest.fixture(scope="module")
@@ -161,7 +162,7 @@ def test_a_hand_edited_structural_frame_is_refused_before_the_walk():
     (dmipy-sim#538): it reads only the spec's swept_polyline centerline, never the trajectory, so a walk far
     too short/small for the walk-based check to say anything (5 walkers, one step) is still refused."""
     import dataclasses
-    from dmipy_sim.spec import Frame
+    from dmipy_replay.spec.substrate import Frame
     t = np.linspace(0.0, 1.0, 40)
     line = np.column_stack([5e-6 * np.sin(2 * np.pi * t), np.zeros_like(t), 40e-6 * t - 20e-6])
     g = d.CurvedCylinder(line, 2e-6)

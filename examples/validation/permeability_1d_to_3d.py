@@ -22,7 +22,8 @@ import jax.numpy as jnp
 from scipy.special import jv, yv, spherical_jn, spherical_yn
 from scipy.optimize import brentq
 
-from dmipy_sim import ScannerSequence, PermeableSlab1D
+from dmipy_replay import ScannerSequence
+from dmipy_sim import PermeableSlab1D
 from dmipy_sim.geometry import PermeableShell
 from dmipy_sim.engine._fused import simulate_fused
 

@@ -23,8 +23,10 @@ import pytest
 from scipy.optimize import brentq
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences as seq
+from dmipy_replay import sequences as seq
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 
@@ -165,9 +167,9 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
 # --------------------------------------------------------------------------- acceptance: replay vs the pose closed form
 def test_replay_and_the_pose_closed_form_agree(sphere_pack):
     """The pose expansion at the identity pose composes back to the plain replay (#197): since
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.pose_response` reads the SAME ``_prepare`` weights
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.pose_response` reads the SAME ``_prepare`` weights
     (``ew``), this is a structural check that rho1 reaches the closed form too, not a new route."""
-    from dmipy_sim.replay.so3 import Distribution
+    from dmipy_replay.replay.so3 import Distribution
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
     tissue = Tissue(rho2=2e-6, rho1=8e-6)
@@ -184,13 +186,13 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     term; this is the same class of bug, so it gets the same style of test."""
     import os
     from dmipy_sim.io.strands import write_tck, concat_centerlines
-    from dmipy_sim.phantom import Grid
+    from dmipy_replay.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     from dmipy_sim.replay.consolidate import consolidate
     from dmipy_sim.spec import disco_spec, StratifiedByVoxel
     from dmipy_sim import walk
-    from dmipy_sim.replay.study import Protocol, Study
+    from dmipy_replay.replay.study import StudyProtocol, Study
 
     cls_ = [np.array([[x, 0, -12e-6], [x, 0.5e-6, 0], [x, 0, 12e-6]]) + 10e-6 for x in (-5e-6, 0, 5e-6)]
     tck, dia = str(tmp_path / "t.tck"), str(tmp_path / "d.txt")
@@ -209,9 +211,9 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     consolidate(str(tmp_path / "shards"), str(tmp_path / "layout"), blocks=[0, 1], id="t/columns")
     merged = merge_packs(packs, id="t/merged")
     col = ReplayPack.open(str(tmp_path / "layout"))
-    seq1 = d.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
+    seq1 = dr.pgste([[1, 0, 0]], 0.2e-3, 0.4e-3, bvalues=[0.0], n_t=merged.n_t, slew_rate=np.inf)
     tissue = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, rho1=8e-6)
-    study = Study(Protocol([seq1]), tissues=[None, tissue], scanners=[None])
+    study = Study(StudyProtocol([seq1]), tissues=[None, tissue], scanners=[None])
     assert study.needs_contact
     S, floor, plan = col.image(study, tol=1e-9, chunk_rows=5)
     ijk, _ = grid.bin(merged.r0)

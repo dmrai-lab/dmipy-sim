@@ -2,7 +2,7 @@
 
 ``simulate()`` walks the substrate to coefficients (:func:`_walk_geometry`: per walker the exact endpoints and
 the sine-band projections of its path, accumulated as the walk runs) and contracts them with the waveform
-(:meth:`~dmipy_sim.replay.replay.ReplayPack.replay`). The producers return a
+(:meth:`~dmipy_replay.replay.replay.ReplayPack.replay`). The producers return a
 :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`; ``walk_cost`` prices one before it runs. The single-pass
 integrator of the phase along the walk is the oracle (:mod:`dmipy_sim.engine._fused`), not an entry point.
 """
@@ -141,7 +141,7 @@ def _walk_band(G, dt, T):
 def _walk_pack(n_walkers, diffusivity, waveform, geometry, *, seed, T2, T1, r0, require_gpu, walker_batch_size,
                sub_steps=None):
     """``(pack, tissue, pose)``: the coefficient walk of ``geometry`` over the span of ``waveform`` (one storage
-    window, the band the waveform reads), assembled into an in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`,
+    window, the band the waveform reads), assembled into an in-memory :class:`~dmipy_replay.replay.replay.ReplayPack`,
     with the :class:`~dmipy_sim.spec.tissue.Tissue` (scalar or per-pool ``T2`` / ``T1``, the wall's ``rho2``) and the
     pose (the geometry's placement in the bore) a replay of ``waveform`` reads. The walk depends only on (geometry,
     diffusivity, seed); the waveform and the relaxation are replay settings."""
@@ -208,7 +208,7 @@ def simulate(
 
     The walk is :func:`_walk_geometry` over the waveform's span at the band the waveform reads
     (:func:`~dmipy_replay.acquisition.waveforms.band_hz`); the contraction is
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.replay` on the pack of that walk. The walk depends only on
     (geometry, diffusivity, seed), so the waveform, ``T2``, ``T1`` and the wall's surface relaxivity are replay
     settings of one walk. A run the coefficient walk is not validated to serve (a geometry that does not declare
     ``replay_parity``, or :func:`_replay_gap`: a dedicated fused step kernel, per-pool diffusivity, no diffusivity)
@@ -226,7 +226,7 @@ def simulate(
         :class:`~dmipy_replay.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
-        The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.
+        The substrate: a geometry or a :class:`~dmipy_replay.spec.substrate.SubstrateSpec`.
     seed : int
         Master PRNG seed (split into per-walker keys internally).
     T2 : float, optional
@@ -325,7 +325,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
     One coefficient walk over the whole train, one replay per echo: the signal at echo ``k`` is the replay of the
     train up to that echo (its gradient and its refocusing pulses to the echo time), so the relaxation each echo
-    has seen is the time elapsed to it. Build ``waveform`` with :func:`dmipy_sim.cpmg` (whose ``readout`` is
+    has seen is the time elapsed to it. Build ``waveform`` with :func:`dmipy_replay.cpmg` (whose ``readout`` is
     every echo). A geometry the coefficient walk cannot serve (:func:`_replay_gap`) is refused: the multi-echo
     readout has no fused counterpart.
 
@@ -849,19 +849,21 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     if unknown:
         raise TypeError(f"walk_cost got keywords _walk_geometry does not take: {sorted(unknown)}")
     kw = dict(walk_kwargs)
+    walk_defaults = {k: p.default for k, p in inspect.signature(_walk_geometry).parameters.items()}
+    arg = lambda k: kw[k] if k in kw else walk_defaults[k]                 # the walk's own default: one copy of it
     be = resolve_backend(backend)
     name = JAX if be is None else str(be.name)
     from ..spec.build import as_geometry
-    with _bounce_budget_override(geometry, kw.get("bounce_budget")):
+    with _bounce_budget_override(geometry, arg("bounce_budget")):
         geometry = as_geometry(geometry)
-        fb = kw.get("field_basis")
-        res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=kw.get("tiers", "all"),
-                            sub_steps=kw.get("sub_steps"), kappa_MT=kw.get("kappa_MT", 0.0),
-                            dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
-                            enforce_compartment=kw.get("enforce_compartment", False),
-                            field_basis=fb, K=kw.get("K"), block_order=kw.get("block_order"),
-                            window_T=kw.get("window_T"), K_c3=kw.get("K_c3"), field_read_interval=kw.get("field_read_interval"),
-                            events_capacity=kw.get("events_capacity"), raw_subset=kw.get("raw_subset", 0), envelope=kw.get("envelope"))
+        fb = arg("field_basis")
+        res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=arg("tiers"),
+                            sub_steps=arg("sub_steps"), kappa_MT=arg("kappa_MT"),
+                            dwell_time=arg("dwell_time"), f_band=arg("f_band"), seed=arg("seed"),
+                            enforce_compartment=arg("enforce_compartment"),
+                            field_basis=fb, K=arg("K"), block_order=arg("block_order"),
+                            window_T=arg("window_T"), K_c3=arg("K_c3"), field_read_interval=arg("field_read_interval"),
+                            events_capacity=arg("events_capacity"), raw_subset=arg("raw_subset"), envelope=arg("envelope"))
         n_ch = 0 if fb is None else len(fb.channel_names)
         if be is not None:
             refusal = _backend_refusal(be, name, res, geometry)
@@ -1061,7 +1063,7 @@ def _walk_geometry(
     diffusivity : float
         Diffusion coefficient in m²/s.
     geometry : Geometry
-        Boundary geometry (a :class:`~dmipy_sim.spec.SubstrateSpec` too).
+        Boundary geometry (a :class:`~dmipy_replay.spec.substrate.SubstrateSpec` too).
     T_max : float
         Total simulation duration in seconds.
     block_h : float, optional
@@ -1540,7 +1542,8 @@ def _walk_geometry(
             _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
             if _mode == "fast":                 # seed f_b walkers bound with a residual dwell (a known S/V)
                 S_V = _mt.surface_to_volume(geometry)
-                P_eq = _mt.bound_fraction(kappa_MT, dwell_time, S_V)
+                from dmipy_analytic.relaxation import bound_fraction
+                P_eq = bound_fraction(kappa_MT, dwell_time, S_V)
                 ek = jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E)
                 u_state, u_dwell = jax.random.uniform(ek, (2, n_walkers), dtype=jnp.float32)
                 brem0_all = jnp.where(u_state < jnp.float32(P_eq),
@@ -1773,7 +1776,7 @@ def _walk_geometry(
             from .backends import CoefficientBatch
             sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
             n_b = int(r0_all[sel].shape[0])
-            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0), drop_pool_changes=bool(drop_pool_changes),
+            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=(0 if K_c3 is None else int(K_c3)), drop_pool_changes=bool(drop_pool_changes),
                                        events=(int(cap) if cap else res.request.events),
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)

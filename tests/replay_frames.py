@@ -6,7 +6,7 @@ import dmipy_replay.replay.so3 as _r_so3
 import numpy as np
 
 from dmipy_replay.acquisition.waveforms import rotate_waveform
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 
 
 def pose_with_field_along(d):

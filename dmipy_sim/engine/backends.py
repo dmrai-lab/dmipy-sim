@@ -343,7 +343,7 @@ def coefficient_signal(walk, G, dt_wf):
     their own grid ``dt_wf``, read from the bands alone (the replay's own reading of a pack of the walk,
     :func:`~dmipy_sim.replay.compression.band_projection`): ``(signal (n_meas,), standard error (n_meas,))`` of the
     walkers' ``cos(gamma sum C W)`` at float32 coefficients, what the pack stores."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from ..replay import compression as _cx
     C = np.asarray(walk.position_coeffs, np.float32).astype(np.float64)[:, 0]              # (n, K + 2, 3)
     W = _r_compression.band_projection(np.asarray(G, np.float64), float(dt_wf), float(walk.T_window), int(C.shape[1]) - 2)
@@ -373,7 +373,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
     JAX side to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is
     the contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
     from .core import _walk_geometry
-    from ..sequences import pgse
+    from dmipy_replay.sequences import pgse
     out = []
     for name, case in (cases or parity_cases()).items():
         g = case(); g.count_walls = True

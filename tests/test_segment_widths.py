@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
-from dmipy_replay.constants import GAMMA
+
+import dmipy_replay as dr
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.replay.compression import container_eps
 from dmipy_sim.replay.time_segments import FIELD_BITS_MAX, field_code, pack_words, rounding_eps, word_layout
 from dmipy_replay.replay.time_segments import Partition, _decode, unpack_words
@@ -37,7 +39,7 @@ def test_the_free_water_example():
     walkers -- takes 10 or 11 bits per component: three components of both lobes in two 32-bit words."""
     eps = rounding_eps(1e-2)
     assert eps == pytest.approx(np.sqrt(0.1 * 0.01)) == pytest.approx(container_eps(1e-2))
-    se = d.pgse([[0, 0, 1]], 10e-3, 30e-3, gradient_strengths=0.05, n_t=501, slew_rate=np.inf)
+    se = dr.pgse([[0, 0, 1]], 10e-3, 30e-3, gradient_strengths=0.05, n_t=501, slew_rate=np.inf)
     p = Partition.of("pgse", se)
     reach = p.reach(1.0, 3e9)
     b_unit = (GAMMA * 10e-3) ** 2 * (30e-3 - 10e-3 / 3)

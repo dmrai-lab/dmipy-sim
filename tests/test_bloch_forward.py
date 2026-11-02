@@ -11,11 +11,12 @@ walker counts suffice because with G=0 every walker is coherent.
 
 from dataclasses import replace
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 import pytest
 
-from dmipy_sim import simulate, pgse, set_b, FreeDiffusion
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import pgse, set_b
 from dmipy_sim.engine.bloch import _simulate_bloch
 
 D = 2e-9

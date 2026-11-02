@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine import core
 from dmipy_sim.engine._fused import simulate_fused
@@ -18,7 +20,7 @@ D = 2e-9
 
 
 def _wf(b, n_t=100, direction=(1, 0, 0)):
-    return d.set_b(d.pgse([list(direction)], 3e-3, 8e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), b)
+    return dr.set_b(dr.pgse([list(direction)], 3e-3, 8e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), b)
 
 
 def _entries(geometry):
@@ -86,7 +88,7 @@ def test_every_engine_path_caches():
         simulate_fused(N, diff, _wf(1e9, n_t=NT), g, seed=3, require_gpu=False)
         entries = _entries(g)
         assert len(entries) == 1 and next(iter(entries.values()))._cache_size() == 1, type(g).__name__
-    cp = d.cpmg(3, 10e-3, gradient_strengths=0.0, gradient_directions=[[0, 0, 1]], n_t_per_echo=20)
+    cp = dr.cpmg(3, 10e-3, gradient_strengths=0.0, gradient_directions=[[0, 0, 1]], n_t_per_echo=20)
     sp = d.Sphere(4e-6)
     d.simulate_cpmg(N, D, cp, sp, T2=0.05, seed=0, require_gpu=False)
     n = len(_entries(sp))

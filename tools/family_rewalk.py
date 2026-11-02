@@ -154,7 +154,7 @@ def phase_variance_bound(position_coeffs, T, *, G_max, axes=(0, 1, 2), margin_se
     truncation). ``S`` is the pilot's, centred over the walkers, each eigenvalue the largest of the whole pilot's and
     its two halves' times ``1 + margin_se sqrt(2 / (n / 2 - 1))``. Returns a dict with the bound ``var_phi`` and its
     parts."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     C = np.asarray(position_coeffs, np.float64)
     if C.ndim == 4:
         if C.shape[1] != 1:
@@ -563,7 +563,7 @@ class Cactus(Family):
             spec = cactus_spec(self.run_dir, side_um=side)
             if ref:
                 import dataclasses
-                from dmipy_sim.spec import Frame
+                from dmipy_replay.spec.substrate import Frame
                 prov = dict(spec.provenance)
                 prov["reference_spec"] = ref["record"]
                 prov["transformations"] = list(prov["transformations"]) + [
@@ -749,7 +749,7 @@ def _backend_check(fam, name, backend):
 
 def stage_plan(fam, args):
     from dmipy_sim.replay.reference import pack_seed
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     rows, tot_steps, tot_n = [], 0, 0
     fam.planned = {}
     for name, sub in _shard(list(fam.substrates().items()), args.shard):
@@ -968,8 +968,8 @@ def stage_walk(fam, args):
 def stage_check(args):
     """Every pack under ``DIR``: it loads, states the campaign's envelope (refused when ``--require-stated``), its
     certificate against its floor, and the replay of a PGSE at b = 1000 s/mm^2 across x is a signal in (0, 1]."""
-    from dmipy_sim import pgse
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import pgse
+    from dmipy_replay import ReplayPack
     rows, bad = [], []
     for dirpath, _, files in os.walk(os.path.abspath(args.out)):
         for f in sorted(files):

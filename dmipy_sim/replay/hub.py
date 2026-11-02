@@ -24,15 +24,9 @@ UPLOAD_TRIES = 6             # a commit retried with backoff: a transient hub er
 OUTAGE_WAIT_S = 60           # a 5xx (the hub refusing commits) waits this long before the retry ...
 OUTAGE_TRIES = 60            # ... up to this many times (an hour): a hub outage must not crash every worker
 READ_TRIES = 8               # a read (a listing, an exists, a download) retried with backoff 30, 60, ... s: a network blip must not end a loop
+from dmipy_replay.replay.hub import sha256_of
+
 log = logging.getLogger("dmipy_sim.replay.hub")
-
-
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 24), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _expected(adds):

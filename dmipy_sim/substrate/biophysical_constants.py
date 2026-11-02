@@ -14,6 +14,8 @@ where the value can be found (or 'NEEDS VERIFICATION' if not yet pinpointed).
 
 import warnings
 
+from dmipy_analytic.constants import GAMMA
+
 # Shared citation dicts referenced by multiple constants
 _CITATION_MILLS1973 = {
     'key': 'mills1973',
@@ -281,7 +283,7 @@ BIOPHYSICAL_CONSTANTS = {
     },
     'gamma_proton': {
         'default': {
-            'value': 267.513e6,
+            'value': GAMMA,                                     # the ecosystem's one gyromagnetic ratio
             'unit': 'rad/s/T',
             'field_T': None,
             'species': None,
@@ -347,8 +349,8 @@ BIOPHYSICAL_CONSTANTS = {
     # (s), neither of which is measured directly. What qMT reports is the macromolecular pool fraction M0B
     # and the fundamental exchange rate R, from which the pseudo-first-order rates follow as
     # k_f = R*M0B and k_r = R*M0A (M0A = 1 - M0B); detailed balance k_f*M0A = k_r*M0B then holds and
-    # f_bound = k_f/(k_f + k_r) recovers M0B. Convert with mt.kappa_MT_from_forward_rate (which needs the
-    # substrate's own S/V, so kappa_MT is geometry-dependent) and mt.dwell_time_from_fraction.
+    # f_bound = k_f/(k_f + k_r) recovers M0B. Convert with dmipy_analytic.relaxation.kappa_MT_from_forward_rate (which needs the
+    # substrate's own S/V, so kappa_MT is geometry-dependent) and dmipy_analytic.relaxation.dwell_time_from_fraction.
     'mt_bound_pool_fraction': {
         'default': {
             'value': 0.139,
@@ -1637,7 +1639,7 @@ def canonical_white_matter(field_T=3.0):
         'kappa': get_value('kappa_membrane', field_T, allow_nearest=True),
         # quantitative MT (two-pool). These are the MEASURED qMT observables, not the walk's
         # (kappa_MT, dwell_time) -- kappa_MT depends on the substrate's own S/V, so it cannot live in a
-        # tissue table. Convert with mt.kappa_MT_from_forward_rate / mt.dwell_time_from_fraction, or
+        # tissue table. Convert with dmipy_analytic.relaxation.kappa_MT_from_forward_rate / dmipy_analytic.relaxation.dwell_time_from_fraction, or
         # Substrate.with_mt(f_bound, k_forward, S_over_V).
         'mt_bound_pool_fraction': get_value('mt_bound_pool_fraction', field_T, allow_nearest=True),
         'mt_exchange_rate': get_value('mt_exchange_rate', field_T, allow_nearest=True),

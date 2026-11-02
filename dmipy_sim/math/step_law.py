@@ -35,8 +35,8 @@ from functools import lru_cache
 import numpy as np
 from scipy import special
 
-from dmipy_replay.constants import GAMMA
-from .matrix_method import _cyl_neumann_roots, _sph_neumann_roots
+from dmipy_analytic.constants import GAMMA
+from dmipy_analytic.restricted.matrix_method import cylinder_neumann_roots, sphere_neumann_roots
 
 __all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",
            "FIXED_LENGTHS", "FIXED_WEIGHTS", "WALL_COEFFICIENT_ENVELOPE", "PORE_RATE_ENVELOPE",
@@ -164,7 +164,7 @@ class SteppedPore:
             self.rgrid = r
             ks, ang, Rf = [], [], []
             for m in range(n_modes[0] + 1):
-                for k in _cyl_neumann_roots(m, n_modes[1]) / a:
+                for k in cylinder_neumann_roots(m, n_modes[1]) / a:
                     R = special.jv(m, k * r)
                     R = R / np.sqrt(np.trapezoid(R * R * r, r) * (2 * np.pi if m == 0 else np.pi))
                     ks.append(k); ang.append(m); Rf.append(R)
@@ -185,7 +185,7 @@ class SteppedPore:
             ang_norm = {l: 2 * np.pi * np.trapezoid(P[l] * P[l] * st, th) for l in range(n_modes[0] + 2)}
             ks, ang, Rf = [], [], []
             for l in range(n_modes[0] + 1):
-                for k in _sph_neumann_roots(l, n_modes[1]) / a:
+                for k in sphere_neumann_roots(l, n_modes[1]) / a:
                     R = special.spherical_jn(l, k * r)
                     R = R / np.sqrt(np.trapezoid(R * R * r * r, r) * ang_norm[l])
                     ks.append(k); ang.append(l); Rf.append(R)

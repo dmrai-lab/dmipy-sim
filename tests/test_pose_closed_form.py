@@ -11,13 +11,15 @@ from scipy.special import spherical_jn
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.replay import read_rpk, so3
+from dmipy_replay import sequences
+from dmipy_replay import read_rpk
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.replay.so3 import Distribution
+from dmipy_replay.replay.so3 import Distribution
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along
-from dmipy_sim import Pose
+from dmipy_replay.phantom import Pose
+from dmipy_sim.replay.reencode import rewindow_pack
 
 
 @pytest.fixture(scope="module")
@@ -293,7 +295,7 @@ def test_the_swoop_as_delivered_at_a_head_position_takes_the_closed_form(long_pa
     direction up to the Maxwell residual (#561), g0 is the second plane wave, and the expansion equals the direct
     posed replay of the delivered waveform at every rotation within its misfit."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_replay.phantom.bore import encoding_classes
     from dmipy_replay.phantom.grid import Grid
     sw = ScannerLimits.of("swoop")
     dirs = [[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0], [0.0, 0.6, 0.8]]
@@ -336,13 +338,13 @@ def test_a_shell_of_delivered_amplitudes_is_one_body_in_powers_of_its_amplitude(
     -- but one shape. Their bodies are one polynomial in the amplitude (the Bessel series), the walkers contracted
     once per power: the same numbers as contracting every row on its own (to the float32 rounding of the rows'
     waveforms about their one shape), and the direct posed replay to the misfit."""
-    import dmipy_sim.replay.replay as rr
+    import dmipy_replay.replay.pose as rr                                      # the module that reads the threshold
     rng = np.random.default_rng(7)
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     tilt = np.eye(3) + 0.05 * rng.normal(size=(24, 3, 3))                      # every row its own delivered amplitude
     played = (sequences.pgse(dirs, 2e-3, 5e-3, gradient_strengths=[0.3] * 24, TE=10e-3)
               .with_gradient_nonlinearity(tilt).with_background_gradient(_g0(0.02)))
-    import dmipy_sim.replay.pose_device as pd
+    import dmipy_replay.replay.pose_device as pd
 
     def per_row(*a, **k):
         raise AssertionError("a row of the shell was contracted on its own")
@@ -369,7 +371,7 @@ def test_the_misfit_bounds_what_the_grouping_and_the_rounding_leave_out(pack, ma
     its misfit (dmrai-lab/dmipy-sim#617): the direct posed replay is within it at every rotation, on a 3 T machine's
     classes (where the misfit was 727 times short) as on the ideal scanner and the Swoop."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    from dmipy_sim.phantom.bore import encoding_classes
+    from dmipy_replay.phantom.bore import encoding_classes
     from dmipy_replay.phantom.grid import Grid
     rng = np.random.default_rng(3)
     dirs = rng.normal(size=(12, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
@@ -394,11 +396,11 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     exactly zero for even an ideal scanner's rows -- so on a many-direction single-shell batch nearly every row
     gets a residual, and its numerical rank ``k`` runs to the hundreds (unstructured rounding has no preferred
     direction). The numpy branch projected each of those ``k`` modes through its own call into
-    :func:`dmipy_sim.replay.replay._compile_continuous` (the band projection) and its own matmul against every
+    :func:`dmipy_replay.replay.pose._compile_continuous` (the band projection) and its own matmul against every
     walker, a cost that grows with ``k`` -- where the torch branch beside it already batches every mode into ONE
     projection. Pinning the number of ``_compile_continuous`` calls pins that cost: it must stay the few calls the
     per-axis vector contraction and ONE residual batch take, never one per mode."""
-    from dmipy_sim.replay import replay as rr
+    from dmipy_replay.replay import pose as rr                 # the module whose routes call it
     rng = np.random.default_rng(11)
     dirs = rng.normal(size=(24, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     seq = sequences.pgse(dirs, 2e-3, 5e-3, bvalues=[1e9] * 24, TE=10e-3, slew_rate=np.inf)
@@ -412,14 +414,14 @@ def test_residual_bound_projects_every_mode_in_one_pass(pack, monkeypatch):
     # per window: 3 calls for the main vector contraction (one per axis) and ONE for the residual bound's batch
     # (every mode of every residual row, in one call, #698) -- never the dozens of directions, let alone the
     # residual's own numerical rank (in the hundreds here), which is what #698 cost
-    assert len(calls) <= 4 * pack.n_windows
+    assert 0 < len(calls) <= 4 * pack.n_windows                # counted where the routes call it
 
 
 def test_the_quadrature_route_reads_every_window_as_the_closed_form_does(pack, seq, tmp_path):
     """A pack that stores its walk in several windows has its response summed over them (RPK.md 4.3) by the
     quadrature route as by the closed form: the two routes agree on it to the quadrature's misfit, and the
     quadrature response of the windowed pack is the one-window pack's."""
-    win = pack.rewindow(pack.T_window / 2, out_path=tmp_path / "w.rpk", id="t/w")
+    win = rewindow_pack(pack, pack.T_window / 2, out_path=tmp_path / "w.rpk", id="t/w")
     assert win.n_windows == 2
     pc = win.pose_response(seq, method="closed")
     pq = win.pose_response(seq, method="quadrature")

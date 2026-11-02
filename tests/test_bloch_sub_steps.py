@@ -16,12 +16,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim import FreeDiffusion, Sphere, pgse, set_b, simulate
+from dmipy_sim import FreeDiffusion, Sphere, simulate
+from dmipy_replay import pgse, set_b
 from dmipy_sim.engine.bloch import _simulate_bloch
 from dmipy_sim.geometry.mesh import Mesh
 from dmipy_sim.engine.physics import tolerance_sub_steps

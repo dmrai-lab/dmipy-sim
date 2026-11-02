@@ -790,9 +790,10 @@ def test_a_label_volume_walk_packs_and_replays_C0_C1_C2(tmp_path, monkeypatch):
     0.61221, and the fused walk with the same rho2 baked in gives 0.61001 -- a difference of 0.0022
     against the walk's own floor of 0.0158.
     """
-    from dmipy_sim import build_replay_pack, pgse, simulate
+    from dmipy_sim import build_replay_pack, simulate
+    from dmipy_replay import pgse
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.spec import Tissue
+    from dmipy_replay.spec.tissue import Tissue
     monkeypatch.setenv("DMIPY_SIM_SURFACE_DIR", str(tmp_path))
     R, h = 5e-6, 1e-6
     lab, org = voxelised(lambda x, y, z: x * x + y * y + z * z < R * R, 8e-6, h)

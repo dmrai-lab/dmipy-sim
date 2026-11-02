@@ -14,8 +14,9 @@ These tests exercise the direct simulate() path on FreeDiffusion (CPU-fast).
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, FreeDiffusion, set_b, calc_b
-from dmipy_sim.sequences import pgse, pgste
+from dmipy_sim import simulate, FreeDiffusion
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse, pgste
 from .conftest import D, SEED
 
 # Local walker count: FreeDiffusion is cheap per walker, so this test stays fast
@@ -36,7 +37,7 @@ def test_pgste_signal_equals_half_diffusion_times_t1():
     T1 = 1.0
     b = 1.0e9
     wf = _pgste_at_b(delta=5e-3, TM=TM, b=b)
-    b_eff = calc_b(wf)[0]
+    b_eff = wf.b()[0]
 
     S = simulate(N, D, wf, FreeDiffusion(), seed=SEED, T1=T1, require_gpu=False)
     expected = 0.5 * np.exp(-b_eff * D) * np.exp(-TM / T1)
@@ -71,7 +72,7 @@ def test_pgste_without_t1_is_half_diffusion_attenuation():
     """
     b = 1.0e9
     wf = _pgste_at_b(delta=5e-3, TM=40e-3, b=b)
-    b_eff = calc_b(wf)[0]
+    b_eff = wf.b()[0]
 
     S = simulate(N, D, wf, FreeDiffusion(), seed=SEED, require_gpu=False)
     expected = 0.5 * np.exp(-b_eff * D)

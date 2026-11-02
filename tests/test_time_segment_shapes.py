@@ -14,21 +14,15 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay.acquisition.waveforms import calc_b
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.time_segments import Partition, Shape, _RTOL
-from dmipy_sim.replay.time_segments import (
-    TimeSegmentLayout,
-    _walk_view,
-    level_bound,
-    rounding_eps,
-    segment_rows,
-    segment_vectors,
-    write_time_segment_layout,
-)
+from dmipy_replay.replay.time_segments import TimeSegmentLayout
+from dmipy_sim.replay.time_segments import _walk_view, level_bound, rounding_eps, segment_rows, segment_vectors, write_time_segment_layout
 
 D0 = 2e-9
 G_MAX = 1.0                                                          # T/m: the envelope's gradient (the walk names no class)
@@ -40,15 +34,15 @@ BOX, TRAP, COS = "box", "trap", "cos"
 def _templates():
     """A square PGSE, a PGSE with 0.25 ms ramps, a cosine OGSE (one 50 Hz period each side of the 180, its edges ramped)
     and a tensor encoding's three shapes (three whole sines on one interval before the 180, one per row along x)."""
-    box = d.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
-    trap = d.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
-    cos = d.ogse([[0, 0, 1]], 50.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
+    box = dr.pgse([[0, 0, 1]], 4e-3, 10e-3, gradient_strengths=0.1, TE=TE, n_t=N_T, slew_rate=np.inf)
+    trap = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
+    cos = dr.ogse([[0, 0, 1]], 50.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
     i0, i1 = 60, 210
     k = np.arange(i1 - i0)
     G = np.zeros((3, N_T, 3), np.float32)
     for j in range(3):
         G[j, i0:i1, 0] = 0.05 * np.sin(2.0 * np.pi * (j + 1) * k / (i1 - i0))
-    tensor = d.ScannerSequence(G=G, dt=box.dt, rf=box.rf, readout=box.readout)
+    tensor = dr.ScannerSequence(G=G, dt=box.dt, rf=box.rf, readout=box.readout)
     return {BOX: box, TRAP: trap, COS: cos, "tensor": tensor}
 
 
@@ -62,7 +56,7 @@ def _partitions():
 
 def _rows(template, G):
     """A sequence of ``template``'s grid, RF schedule and readout playing the rows ``G`` ``(n_meas, n_t, 3)``."""
-    return d.ScannerSequence(G=G, dt=template.dt, rf=template.rf, readout=template.readout)
+    return dr.ScannerSequence(G=G, dt=template.dt, rf=template.rf, readout=template.readout)
 
 
 def _play(template, directions, bvalues):
@@ -72,7 +66,7 @@ def _play(template, directions, bvalues):
     prof = G[:, int(np.abs(G).max(axis=0).argmax())]
     prof = prof / np.abs(prof).max()                                  # the unit shape; the amplitude is set by b
     u = np.asarray(directions, np.float64); u = u / np.linalg.norm(u, axis=1)[:, None]
-    unit = float(calc_b(template)[0]) / float(np.abs(G).max()) ** 2
+    unit = float(template.b()[0]) / float(np.abs(G).max()) ** 2
     amp = np.sqrt(np.asarray(bvalues, np.float64) / unit)
     return _rows(template, np.stack([prof[:, None] * (a * v)[None, :] for a, v in zip(amp, u)]))
 
@@ -272,7 +266,7 @@ def test_the_image_of_a_trapezoid_class_is_the_replay(small):
     name, L = M["lay"].fit(seq)
     assert name == TRAP
     b = np.einsum("msc,st,mtc->m", L, p.b_matrix(), L)
-    np.testing.assert_allclose(b, calc_b(seq), rtol=3e-3, atol=1e5)
+    np.testing.assert_allclose(b, seq.b(), rtol=3e-3, atol=1e5)
     assert _assert_image(M, TRAP, seq) > 0.0
 
 
@@ -287,7 +281,7 @@ def test_the_image_of_a_cosine_ogse_class_is_the_replay(small):
     assert name == COS and L.shape == (9, 2, 3)
     np.testing.assert_allclose(np.einsum("msc,s->mc", L, M["lay"].partitions[COS].areas), 0.0, atol=1e-6)
     b = np.einsum("msc,st,mtc->m", L, M["lay"].partitions[COS].b_matrix(), L)
-    np.testing.assert_allclose(b, calc_b(seq), rtol=3e-3)
+    np.testing.assert_allclose(b, seq.b(), rtol=3e-3)
     _assert_image(M, COS, seq)
 
 
@@ -302,7 +296,7 @@ def test_a_tensor_encoding_is_three_shapes_on_one_interval(small):
     R = Rotation.random(9, random_state=4).as_matrix()
     wts = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0], [1, 0, 1], [0, 1, 1], [1, 1, 1], [1, 0.5, 0.25], [0.3, 1, 0.7]], float)
     seq = _tensor(M["tmpl"]["tensor"], R, wts)
-    b0 = calc_b(seq)
+    b0 = seq.b()
     seq = _rows(M["tmpl"]["tensor"], np.asarray(seq.G, np.float64) * np.sqrt(1.5e9 / b0.max()))
     name, L = M["lay"].fit(seq)
     assert name == "tensor" and L.shape == (9, 3, 3)
@@ -312,7 +306,7 @@ def test_a_tensor_encoding_is_three_shapes_on_one_interval(small):
     for m in range(9):                                                # the levels are a_k R e_k
         np.testing.assert_allclose(L[m], scale * (wts[m] * peak)[:, None] * R[m].T, atol=2e-6)
     b = np.einsum("msc,st,mtc->m", L, p.b_matrix(), L)
-    np.testing.assert_allclose(b, calc_b(seq), rtol=3e-3)
+    np.testing.assert_allclose(b, seq.b(), rtol=3e-3)
     _assert_image(M, "tensor", seq)
 
 
@@ -323,7 +317,7 @@ def test_a_sequence_that_matches_no_term_is_refused_by_name(small):
     M = small
     trap = M["tmpl"][TRAP]
     for slew in (100.0, 130.0):
-        other = d.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=slew)
+        other = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=slew)
         with pytest.raises(ValueError, match=rf"{TRAP}: the sequence plays a gradient outside the segments of partition '{TRAP}'"):
             M["lay"].image(_play(other, [[0, 0, 1]], [3e9]), partition=TRAP)
         with pytest.raises(ValueError, match="fits no stored partition"):
@@ -334,10 +328,10 @@ def test_a_sequence_that_matches_no_term_is_refused_by_name(small):
     with pytest.raises(ValueError, match=rf"{TRAP}: the sequence's effective gradient does not fit the shapes of partition "
                                          rf"'{TRAP}': row 0 leaves a residual of relative norm .* term [01] "):
         M["lay"].image(tapered, partition=TRAP)
-    near = d.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=170.0)   # a ramp 0.04 ms longer
+    near = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=170.0)   # a ramp 0.04 ms longer
     with pytest.raises(ValueError, match=rf"{TRAP}: .*does not fit the shapes of partition '{TRAP}': row 0 leaves a residual of relative norm"):
         M["lay"].image(_play(near, [[0, 0, 1]], [3e9]), partition=TRAP)
-    faster = d.ogse([[0, 0, 1]], 100.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
+    faster = dr.ogse([[0, 0, 1]], 100.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
     with pytest.raises(ValueError, match=rf"{COS}: .*partition '{COS}'"):
         M["lay"].image(_play(faster, [[0, 0, 1]], [2e9]), partition=COS)
     with pytest.raises(ValueError, match="shaped terms"):

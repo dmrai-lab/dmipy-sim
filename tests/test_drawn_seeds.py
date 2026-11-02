@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.io.strands import write_tck
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.spec import DrawnSeeds, StratifiedByVoxel, disco_spec, draw_seeds
 from dmipy_sim import walk
 from tests.conftest import spec_without_source
@@ -102,7 +102,7 @@ def test_a_pool_the_seeding_wants_nowhere_is_not_walked(spec_grid, tmp_path):
     carries the other pools only, its pack certifies them, and a merge with a shard that holds the pool counts
     the union; a pool wanted somewhere that no draw lands in, or a seeding with nothing in it, is refused."""
     from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_fidelity_volumes
-    from dmipy_sim.spec import SpecError
+    from dmipy_replay.spec.substrate import SpecError
     spec, grid, _ = spec_grid
     spec = spec_without_source(spec)      # pack mechanics, not the field tier
     want = np.zeros(grid.shape, np.int64); want[0] = 6

@@ -8,8 +8,8 @@ number of periods (cosine) or half-periods (trapezoid lobes); a block that would
 import numpy as np
 import pytest
 
-from dmipy_sim.sequences import ogse
-from dmipy_replay.constants import GAMMA
+from dmipy_replay.sequences import ogse
+from dmipy_analytic.constants import GAMMA
 
 BVECS = np.array([[1.0, 0.0, 0.0]])
 

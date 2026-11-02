@@ -166,7 +166,7 @@ def test_the_bloch_walk_records_its_work_on_the_run(caplog):
     """The forward vector-Bloch engine has no walk object; with counting on it records the same work on its run
     and in the log, and the signal is the uncounted one to the bit."""
     import logging
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     from dmipy_sim.engine.bloch import _simulate_bloch
     seq = pgse([[1, 0, 0]], 2e-3, 4e-3, bvalues=[1e9], TE=8e-3, n_t=80, slew_rate=np.inf)
     plain = _simulate_bloch(64, D, seq, d.Sphere(R), seed=3)

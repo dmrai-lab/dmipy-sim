@@ -19,9 +19,10 @@ os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 import numpy as np
 import numpy.testing as npt
 
-from dmipy_sim import simulate, PackedSpheres, set_b
+from dmipy_sim import simulate, PackedSpheres
+from dmipy_replay import set_b
 from dmipy_sim.geometry import Sphere
-from dmipy_sim.sequences import pgse, pgste
+from dmipy_replay.sequences import pgse, pgste
 
 import importlib.util
 

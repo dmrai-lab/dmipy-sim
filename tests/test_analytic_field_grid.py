@@ -2,7 +2,7 @@
 its sheath onto the field-basis grid, and a pack built from its walk replays with a field."""
 from tests._envelope import stated
 import numpy as np
-from dmipy_sim import ScannerSequence
+from dmipy_replay import ScannerSequence
 import pytest
 
 import dmipy_sim as d

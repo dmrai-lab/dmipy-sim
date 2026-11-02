@@ -55,9 +55,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dmipy_sim import pgse, Cylinder, Sphere
+from dmipy_sim import Cylinder, Sphere
 from dmipy_sim.engine._fused import simulate_fused
-from dmipy_replay.acquisition.waveforms import calc_b
+from dmipy_replay import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 import jax.numpy as jnp
 
@@ -107,7 +107,7 @@ def _build_sgp_waveform(q_values, bvec, delta, DELTA, n_t):
 
     # Template with G_magnitude=1 T/m; actual magnitude set by scaling below.
     wf_template = pgse(bvecs, delta, DELTA, gradient_strengths=1.0, n_t=n_t, slew_rate=np.inf)
-    b_template = calc_b(wf_template)  # (n_q,) — same for all measurements
+    b_template = wf_template.b()  # (n_q,) — same for all measurements
 
     # b = q² · (Δ - δ/3) — exact for PGSE in the SGP limit
     b_target = q_values ** 2 * (DELTA - delta / 3.0)

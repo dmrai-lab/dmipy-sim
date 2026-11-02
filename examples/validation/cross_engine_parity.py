@@ -194,7 +194,7 @@ def disimpy_spec(data):
     the pickle it came from is cited by sha256 in the provenance."""
     import dataclasses
     from dmipy_sim.spec import spec_of
-    from dmipy_sim.replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     pkl = os.path.join(data, "disimpy", "tests", "cylinder_mesh_closed.pkl")
     g = _disimpy_mesh_object(data)
     spec = spec_of(g, id="disimpy/cylinder_mesh_closed", provenance={
@@ -222,7 +222,7 @@ def disimpy_sequence(*, delta=DISIMPY_DELTA, Delta=DISIMPY_BIGDELTA, n_t=DISIMPY
     timing is worth 2.6e-4 of signal here (measured: max abs dS 0.02103 against 0.02077 at 8,000 walkers), so
     the choice does not decide anything.
     """
-    from dmipy_sim import pgse
+    from dmipy_replay import pgse
     return pgse([[1.0, 0.0, 0.0]] * len(DISIMPY_BVALUES), delta, Delta, bvalues=DISIMPY_BVALUES,
                 TE=DISIMPY_TE, n_t=int(n_t), slew_rate=np.inf)
 
@@ -265,7 +265,7 @@ def walk_phase(walk, seq, *, chunk=20_000):
     projection on that window's bands (:func:`~dmipy_sim.replay.compression.band_projection`), ``gamma sum C W``,
     summed over the windows: the contraction a pack of this walk replays (``ReplayPack.walker_primitives(seq).phi``),
     with no container between the walk and the number."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import band_projection
     G = np.asarray(seq.G_eff, np.float64)
     C = np.asarray(walk.position_coeffs)

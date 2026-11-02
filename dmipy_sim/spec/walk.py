@@ -18,7 +18,7 @@ from ..run import Run, current
 import jax.numpy as jnp
 
 from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility_field_of
-from .build import geometry_from_spec
+from .build import file_unit_scale, geometry_from_spec
 
 
 def _spec_of_door(substrate):
@@ -67,7 +67,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``diffusivity`` is the SINGLE-surface path's reference D: that walk has one diffusivity, the intra pool's when
     the spec declares one, else the seeded pool's, and this argument when the pool declares none or in place of it.
     A multi-surface spec carries a D per pool and walks each pool at its own, so the argument is refused there --
-    the D belongs in the pools (:meth:`~dmipy_sim.spec.SubstrateSpec.replace`, or the producer's own argument).
+    the D belongs in the pools (:meth:`~dmipy_replay.spec.substrate.SubstrateSpec.replace`, or the producer's own argument).
 
     ``field_gather_every`` is how many blocks the adaptive walk reuses a walker's list of strands in reach (gathered
     with the margin the walker can travel in between; 4 by default): with a far grid the reach is the switch's
@@ -499,7 +499,7 @@ class _Boundary:
             from ..geometry.mesh import load_ply
             from ..fields.susceptibility_field import MeshBodies
             from .build import mesh_surface_file
-            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=(w.surface.scale or 1.0))
+            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=file_unit_scale(w.surface.scale))
                                       for w in walls])
             self.V, self.F = self.bodies.V, self.bodies.F
         elif self.kind == "sphere_union":
@@ -734,7 +734,7 @@ def _explicit_seeds(spec, pid, n, member=None):
     if fmt != "xyz":
         raise SpecError(f"seeding.positions.format {fmt!r} is not a format this reads; 'xyz' is three numbers "
                         f"per line")
-    A = np.loadtxt(path, dtype=np.float64) * float(pos.get("scale") or 1.0)
+    A = np.loadtxt(path, dtype=np.float64) * file_unit_scale(pos.get("scale"))
     if A.ndim != 2 or A.shape[1] != 3:
         raise SpecError(f"{path}: {A.shape} is not (n, 3) start positions")
     read = (pos.get("read") or "cyclic").lower()

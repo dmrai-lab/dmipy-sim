@@ -26,7 +26,8 @@ except ImportError:
     sys.exit(0)
 
 from dmipy_sim.substrate.biophysical_constants import canonical_white_matter, get_value
-from dmipy_sim import pack_myelinated_cylinders, PackedMyelinatedCylinders, Compartments, Pool, simulate, pgse
+from dmipy_sim import pack_myelinated_cylinders, PackedMyelinatedCylinders, Compartments, Pool, simulate
+from dmipy_replay import pgse
 
 C = canonical_white_matter(3.0)
 D, G, RHO = C['D_intra'], C['g_ratio'], C['rho2']

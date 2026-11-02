@@ -277,9 +277,9 @@ def _name_of(pack):
 # ----------------------------------------------------------------- the "Use me" snippet
 def snippet(uri):
     return f'''import numpy as np
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from examples.validation.cross_engine_parity import MCDC_N_T, MCDC_TE
-from dmipy_sim import pgse
+from dmipy_replay import pgse
 
 pk = ReplayPack.load("{uri}")
 # the ActiveAx shell this fixture's number is read at, as a single PGSE row
@@ -510,7 +510,7 @@ def _derived_surface(disimpy_data):
 
 
 def _sha(path):
-    from dmipy_sim.replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     return sha256_of(path)
 
 

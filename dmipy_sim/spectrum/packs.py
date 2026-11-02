@@ -119,7 +119,7 @@ def _occupied_by_objects(kind, radii, centers, grid):
 def _pack(kind, edge_m, seed, *, out_dir, target_fraction, n_objects_per_tile, shape, T_max_s, envelope):
     from ..spec.build import spec_of
     from ..geometry.packed import PackedCylinders, PackedSpheres
-    from ..phantom import Grid
+    from dmipy_replay.phantom.grid import Grid
 
     t_start = time.time()
     os.makedirs(out_dir, exist_ok=True)

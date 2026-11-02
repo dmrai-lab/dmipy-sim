@@ -6,14 +6,17 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.compression import occupancy_at
-from dmipy_sim import sequences as _seqmod
+from dmipy_replay import sequences as _seqmod
 from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import dense_relaxation_logweight
+from dmipy_sim.replay.container import save_pack
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
@@ -32,7 +35,7 @@ def packs():
 
 
 def _wf(n_t, dt):
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1]], 2e-3, 6e-3, gradient_strengths=0.1, n_t=n_t, slew_rate=np.inf), [1e9, 1e9])
 
 
 def _W(pack, wf):
@@ -112,7 +115,7 @@ def test_any_waveform_grid_and_a_sequence_are_accepted(packs):
 
 def test_save_and_load_round_trip(packs, tmp_path):
     full, _ = packs
-    path = full.save(tmp_path / "full.rpk")
+    path = save_pack(full, tmp_path / "full.rpk")
     back = ReplayPack.load(path)
     assert back.has_relaxation and back.has_surface and not back.has_field
     wf = _wf(full.n_t, full.dt)
@@ -125,8 +128,9 @@ def test_r0_is_the_stored_start_read_without_decoding(tmp_path):
     read from one slice of the coefficient block, and matches the first sample of the decoded path to float32
     rounding -- the property a voxel partition of a walk rests on (dmipy-sim#76, #186)."""
     import dmipy_sim as d
+    import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     from dmipy_sim.replay.bank import build_replay_pack
     g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
     walk = _walk_geometry(200, 2e-9, g, 2e-3, 5e-4, seed=3, require_gpu=False)

@@ -16,9 +16,10 @@ import jax
 import numpy as np
 import pytest
 
-from dmipy_sim import Cylinder, simulate, set_b
+from dmipy_sim import Cylinder, simulate
+from dmipy_replay import set_b
 from dmipy_sim.geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder
-from dmipy_sim.sequences import pgse
+from dmipy_replay.sequences import pgse
 from dmipy_sim.engine._fused import simulate_fused
 
 D = 2.0e-9

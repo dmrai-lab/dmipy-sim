@@ -9,7 +9,7 @@ from tests._envelope import stated
 import numpy as np
 import pytest
 
-from dmipy_sim import sequences
+from dmipy_replay import sequences
 from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.geometry import FreeDiffusion
@@ -72,7 +72,7 @@ def test_the_battery_waveforms_of_a_walked_pack_are_within_its_band(pack):
 def _with_cap(pk, cap, **terms):
     """``pk`` with its certificate stating ``cap`` as its numerical cap and ``terms`` as its other certified rows."""
     import copy
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     meta = copy.deepcopy(pk.meta)
     meta["fidelity"].update(target_floor=cap, **terms)
     return ReplayPack(pk.arrays, meta)
@@ -125,7 +125,7 @@ def test_the_estimate_is_the_free_tail_beyond_k_to_infinity_not_to_a_grid():
 
 def _layout(K, *, cap, floor=0.02, other=None):
     """A columnar layout's header: ``K`` bands of a free walk at ``D0`` over 20 ms, every stored band at the free variance."""
-    from dmipy_sim.replay.columnar import ColumnarPack
+    from dmipy_replay.replay.columnar import ColumnarPack
     from dmipy_replay.replay.compression import band_variances
     T = (N_T - 1) * DT
     lay = ColumnarPack.__new__(ColumnarPack)

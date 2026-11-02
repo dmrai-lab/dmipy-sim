@@ -10,25 +10,24 @@ import tempfile
 import warnings
 
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 pytest.importorskip("pypulseq")
 import pypulseq as pp
 
-from dmipy_replay.acquisition.waveforms import calc_b
-from dmipy_sim.sequences import ogse, pgse
+from dmipy_replay.sequences import ogse, pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
-from dmipy_sim.sequences import (
-    from_pulseq, to_pulseq, make_system, PULSEQ_SYSTEMS)
-from dmipy_replay.constants import GAMMA
+from dmipy_replay.sequences.pulseq import from_pulseq
+from dmipy_sim.sequences import to_pulseq, make_system, PULSEQ_SYSTEMS
+from dmipy_analytic.constants import GAMMA
 import jax.numpy as jnp
 
 BVEC = np.array([[1., 0., 0.]], dtype=np.float32)
 
 
 def _b(wf):
-    return float(calc_b(wf)[0])
+    return float(wf.b()[0])
 
 
 def test_scanner_catalogue_opts():
@@ -153,7 +152,7 @@ def test_stimulated_echo_state_survives_the_round_trip():
     TM the gap between them. That holds for any sequence whose RF is described, not only for files we
     wrote, and leaves no stored copy to disagree with the schedule.
     """
-    from dmipy_sim.sequences import pgste
+    from dmipy_replay.sequences import pgste
 
     w = pgste([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=0.04, n_t=400)
     assert w.TM is not None and w.stimulated_echo, "precondition: pgste must set the STE state"
@@ -213,7 +212,7 @@ def test_native_rf_export_is_scanner_shaped_and_costs_time_when_there_is_no_gap(
     and the sequence lengthens -- what it would cost on a scanner, warned about rather than hidden, and
     asserted here rather than assumed.
     """
-    from dmipy_sim.sequences import pgse, ogse
+    from dmipy_replay.sequences import pgse, ogse
     from dmipy_replay.acquisition.timing import SequenceTiming
 
     free = pgse([[1, 0, 0]], 5e-3, 20e-3, gradient_strengths=0.04, n_t=400,
@@ -262,7 +261,7 @@ def test_a_gradient_free_train_inserts_nothing():
     not from the number of pulses. Adding the optional constant diffusion gradient -- which is never off --
     is what forces room to be made for all five.
     """
-    from dmipy_sim.sequences import cpmg
+    from dmipy_replay.sequences import cpmg
 
     plain = cpmg(4, 10e-3, gradient_strengths=0.0, gradient_directions=[[1, 0, 0]], n_t_per_echo=50)
     with warnings.catch_warnings(record=True) as w:
@@ -302,8 +301,10 @@ def test_a_coarse_grid_plays_as_ramps_on_a_real_scanner_or_is_refused():
 def test_the_prescription_travels_through_pulseq(tmp_path):
     """A prescribed acquisition writes Pulseq's own FOV definition plus the full object, and reads back equal;
     an unprescribed one writes neither and reads back with none."""
-    from dmipy_sim import Prescription, sequences
-    from dmipy_sim.sequences import from_pulseq, to_pulseq
+    from dmipy_replay import Prescription
+    from dmipy_replay import sequences
+    from dmipy_replay.sequences.pulseq import from_pulseq
+    from dmipy_sim.sequences import to_pulseq
     p = Prescription(isocenter_m=(0.0, 0.01, 0.0), voxel_size_m=(2e-3, 2e-3, 3e-3), matrix=(64, 64, 20), axes="LPS")
     seq = sequences.pgse([[0, 0, 1]], 0.010, 0.030, bvalues=[1e9], TE=0.060).with_prescription(p)
     f = tmp_path / "p.seq"

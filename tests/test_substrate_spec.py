@@ -6,8 +6,7 @@ import pathlib
 
 import pytest
 
-from dmipy_sim.spec import (SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, Pool, Wall, Surface,
-                            Susceptibility)
+from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, PoolSpec, Wall, Surface, Susceptibility
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "substrates"
 EXAMPLES = sorted(FIX.glob("*.sub.json"))
@@ -77,7 +76,7 @@ def test_void_outside_a_permeable_wall_is_refused():
 def test_programmatic_construction_validates_too():
     spec = SubstrateSpec(
         id="t/sphere", domain={"box_min": [-1e-5] * 3, "box_max": [1e-5] * 3, "boundary": ["open"] * 3},
-        pools=[Pool(0, "extra", 0.0, water_fraction=0.0), Pool(1, "intra", 2e-9, T2=0.05)],
+        pools=[PoolSpec(0, "extra", 0.0, water_fraction=0.0), PoolSpec(1, "intra", 2e-9, T2=0.05)],
         walls=[Wall("membrane", Surface("sphere", center=[0, 0, 0], radius=3e-6), inside_pool=1, outside_pool=None)],
         seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]})
     spec = SubstrateSpec.from_dict(spec.to_dict()).validate()
@@ -86,7 +85,7 @@ def test_programmatic_construction_validates_too():
 
 def test_nominal_field_is_optional_and_positive():
     import dataclasses
-    from dmipy_sim.spec import load_spec, SpecError
+    from dmipy_replay.spec.substrate import load_spec, SpecError
     spec = load_spec(FIX / "isolated_cylinder.sub.json")
     assert spec.nominal_field_T is None
     assert dataclasses.replace(spec, nominal_field_T=3.0).validate().to_dict()["nominal_field_T"] == 3.0
@@ -139,7 +138,7 @@ def test_a_replaced_spec_says_what_was_replaced_and_round_trips():
     assert again == out and again.pool("intra").D == 0.6e-9 and again.provenance["transformations"] == prov
     bare = SubstrateSpec.from_dict(SubstrateSpec(
         id="t/sphere", domain={"box_min": [-1e-5] * 3, "box_max": [1e-5] * 3, "boundary": ["open"] * 3},
-        pools=[Pool(0, "extra", 0.0, water_fraction=0.0), Pool(1, "intra", 2e-9, T2=0.05)],
+        pools=[PoolSpec(0, "extra", 0.0, water_fraction=0.0), PoolSpec(1, "intra", 2e-9, T2=0.05)],
         walls=[Wall("membrane", Surface("sphere", center=[0, 0, 0], radius=3e-6), inside_pool=1, outside_pool=None)],
         seeding={"pools": [1]}, validity={"smallest_feature": 3e-6, "tiers": ["gradient", "surface"]}).to_dict()).validate()
     assert bare.provenance is None

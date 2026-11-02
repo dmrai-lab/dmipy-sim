@@ -5,7 +5,7 @@ engine on an MT-binding substrate, saturates the broad (short-T2b) bound pool ov
 wide offset range while sparing the narrow free-water line; the saturation transfers
 to the free pool through the walk's emergent bind/release exchange -- the MT dip and
 its Z-spectrum EMERGE (no super-Lorentzian lineshape is imposed).  Validated against
-the analytic two-pool Z-spectrum oracle (dmipy_sim.engine.mt.mt_z_spectrum).
+the analytic two-pool Z-spectrum oracle (dmipy_sim.engine.relaxation.mt_z_spectrum).
 
 Fine dt so the carrier
 2*pi*offset*dt does not alias.
@@ -14,13 +14,13 @@ Fine dt so the carrier
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
+from dmipy_replay import ScannerSequence
 from dmipy_sim.engine.pulse_sequence import saturation_pulse
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_sim import Sphere, bare_gradient_echo, prepend_mt_prep
-from dmipy_sim.engine import mt
+from dmipy_analytic import relaxation
 
 from tests.conftest import se_tol
 
@@ -61,8 +61,8 @@ def _oracle_total(offsets):
     thermal-equilibrium start (see test_equilibrate_binding_modes)."""
     offsets = np.atleast_1d(offsets)
     kw = dict(w1_hz=W1_HZ, t_sat=T_SAT, T1a=T1a, T2a=T2a, T1b=T1b, T2b=T2b, k_f=k_f, k_r=k_r)
-    za = np.atleast_1d(mt.mt_z_spectrum(offsets, read_pool='a', **kw))
-    zb = np.atleast_1d(mt.mt_z_spectrum(offsets, read_pool='b', **kw))
+    za = np.atleast_1d(relaxation.mt_z_spectrum(offsets, read_pool='a', **kw))
+    zb = np.atleast_1d(relaxation.mt_z_spectrum(offsets, read_pool='b', **kw))
     M0b = k_f / k_r
     return (za + M0b * zb) / (1.0 + M0b)
 

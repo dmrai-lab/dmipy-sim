@@ -8,7 +8,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.spec import SpecError
+from dmipy_replay.spec.substrate import SpecError
 from dmipy_sim import walk
 from tests.test_bank import _env7, _susc_walk
 from tests.test_grid_field_in_walk import D0, UM

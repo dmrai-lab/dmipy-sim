@@ -1,29 +1,29 @@
 """Plan before read (dmipy-sim#813): a replay decodes only the position bands and field modes its acquisition needs, states
 the truncation error that costs, and gives the same signal bit for bit as a full decode cut at the same band.
 
-The planner is :mod:`dmipy_sim.replay.planning`, the rule the columnar layout's planner reads too. Tests: the plan of a pack
-against the columnar planner on a shared case; the prefix replay against the full decode cut at the plan; the error bound on
-several waveforms (the real canonical-pores pack, when it is on this machine, adds OGSE 400 Hz); the decoded cache's prefix
-entries; the field modes; and ``hf://`` range reads against a local HTTP server that honours ``Range``."""
+The planner is :mod:`dmipy_replay.replay.planning`, the rule the columnar layout's planner reads too; these tests hold it on
+packs this repository walks. Tests: the plan of a pack against the columnar planner on a shared case; the prefix replay
+against the full decode cut at the plan; the error bound on several waveforms (the real canonical-pores pack, when it is on
+this machine, adds OGSE 400 Hz); the decoded cache's prefix entries; the field modes. The ``hf://`` range reads of a pack
+(:class:`~dmipy_replay.replay.remote.RemotePack`) are dmipy-replay's own tests (``tests/test_remote.py``)."""
 from tests._envelope import stated
 import dmipy_replay.replay.compression as _r_compression
-import contextlib
-import http.server
 import os
-import threading
 
 import numpy as np
 import numpy.testing as npt
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import build_replay_pack
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.replay import compression as cx
-from dmipy_sim.replay.columnar import ColumnarPack
+from dmipy_replay.replay.columnar import ColumnarPack
 from dmipy_replay.replay.planning import PLAN_TOL, Planned, ReadPlan, band_tail, fewest, floor_of
-from dmipy_sim.replay.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.replay.replay import _signal_factor
 from dmipy_replay.sequences.builders import gre, ogse, pgse
 from dmipy_replay.spec.tissue import Tissue
@@ -186,7 +186,7 @@ def test_the_planned_error_bounds_the_signal_it_costs(pack):
 
 @pytest.mark.skipif(not (PORES and os.path.exists(PORES)), reason="the canonical-pores pack is not on this machine")
 def test_the_planned_error_bounds_the_signal_on_a_pores_pack_including_ogse_400():
-    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_replay import read_rpk
     pk = read_rpk(PORES)
     n_t, T = 1001, 0.1
     axis = [[1.0, 0.0, 0.0]]
@@ -258,7 +258,7 @@ def test_a_protocol_carries_one_plan_per_sequence(pack):
 def test_field_modes_are_planned_and_a_prefix_is_bitwise_the_truncated_read(field_pack):
     pk = _fresh(field_pack)
     tissue = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
-    seq = d.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / pk.dt)) + 1, slew_rate=np.inf)
+    seq = dr.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / pk.dt)) + 1, slew_rate=np.inf)
     plan = pk.plan(seq, tissue=tissue, scanner=3.0)
     assert plan.modes_stored == 4 and 0 <= plan.modes <= 4
     assert plan.mode_variance.startswith("measured on all 90 walkers")
@@ -294,112 +294,3 @@ def test_primitives_carry_the_plan_and_the_field_at_the_certified_scale(pack):
     assert prim.plan == pk.plan(seq)
     npt.assert_array_equal(prim.phi, np.asarray(pk.walker_phases(seq)[2]))
     assert prim.signal().plan == prim.plan
-
-
-# ------------------------------------------------------------------ the Hub, by range
-class _Ranges(http.server.BaseHTTPRequestHandler):
-    """A GET that honours ``Range`` over one in-memory payload, recording every range asked (``type(self).asked``)."""
-    data = b""
-    asked = []
-
-    def do_GET(self):
-        body = type(self).data
-        rng = self.headers.get("Range")
-        start_s, _, end_s = rng.split("=", 1)[1].partition("-")
-        start, end = int(start_s), min(int(end_s), len(body) - 1)
-        type(self).asked.append((start, end))
-        chunk = body[start:end + 1]
-        self.send_response(206)
-        self.send_header("Content-Range", f"bytes {start}-{end}/{len(body)}")
-        self.send_header("Content-Length", str(len(chunk)))
-        self.end_headers()
-        self.wfile.write(chunk)
-
-    def log_message(self, *a):
-        pass
-
-
-@contextlib.contextmanager
-def _serve(data):
-    handler = type("H", (_Ranges,), {"data": data, "asked": []})
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    try:
-        yield f"http://127.0.0.1:{httpd.server_port}/pack.rpk", handler
-    finally:
-        httpd.shutdown()
-        t.join()
-
-
-def _tensor_spans(blob):
-    """Name -> inclusive byte span of every tensor in a .rpk byte string."""
-    import json
-    n = int.from_bytes(blob[:8], "little")
-    head = json.loads(blob[8:8 + n])
-    head.pop("__metadata__", None)
-    return {k: (8 + n + v["data_offsets"][0], 8 + n + v["data_offsets"][1] - 1) for k, v in head.items()}
-
-
-def test_a_remote_pack_fetches_only_the_planned_ranges_and_replays_bit_for_bit(pack, tmp_path):
-    from dmipy_sim.replay.remote import RemotePack
-    local = tmp_path / "pack.rpk"
-    pack.save(str(local))
-    data = local.read_bytes()
-    spans = _tensor_spans(data)
-    seq = _battery()["pgse"]
-    tissue = Tissue(rho2=1e-6)
-    with _serve(data) as (url, handler):
-        remote = RemotePack("hf://owner/plan/pack.rpk", url=url, revision="rev0")
-        header_bytes = remote.bytes_fetched
-        assert header_bytes < 0.05 * len(data)
-        # the plan comes from the header alone: no tensor moved
-        plan = remote.plan(seq)
-        assert plan == ReplayPack.load(str(local)).plan(seq) and remote.bytes_fetched == header_bytes
-        S = remote.replay(seq)
-        want = ReplayPack.load(str(local)).replay(seq)
-        npt.assert_array_equal(np.asarray(S), np.asarray(want))
-        assert S.plan == plan
-        # nothing beyond the plan's band ranges was asked for: no request touches a band-range tensor above K
-        starts = [int(r["bands"][0]) for r in pack.meta["compression"]["container"]]
-        import re
-        beyond = [spans[k] for k in spans if re.fullmatch(r"pos_[xyz]_b\d+(u\d+)?", k) and
-                  starts[int(re.match(r"pos_[xyz]_b(\d+)", k).group(1))] >= plan.K]
-        assert beyond and not any(s <= b and a <= e for a, b in handler.asked for s, e in beyond)
-        assert not any(s <= b and a <= e for a, b in handler.asked for k, (s, e) in spans.items() if k.startswith("blt_"))   # no contact asked for
-        assert 0 < remote.bytes_fetched < 0.6 * len(data)
-        # a replay with a relaxivity adds the contact tensors; a higher band adds ranges, never the ones held
-        before = remote.bytes_fetched
-        S2 = remote.replay(_battery()["ogse500"], tissue=tissue)
-        npt.assert_array_equal(np.asarray(S2), np.asarray(ReplayPack.load(str(local)).replay(_battery()["ogse500"], tissue=tissue)))
-        assert remote.bytes_fetched > before
-        again = remote.bytes_fetched
-        remote.replay(_battery()["ogse500"], tissue=tissue)
-        assert remote.bytes_fetched == again                                   # held: a repeat moves nothing
-
-
-def test_a_remote_pack_with_field_modes_fetches_the_mode_ranges_it_plans(field_pack, tmp_path):
-    from dmipy_sim.replay.remote import RemotePack
-    local = tmp_path / "field.rpk"
-    field_pack.save(str(local))
-    data = local.read_bytes()
-    tissue = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)
-    seq = d.pgse([[1, 0, 0]], 1.2e-4, 3.6e-4, bvalues=[2e8], TE=8e-4, n_t=int(round(8e-4 / field_pack.dt)) + 1, slew_rate=np.inf)
-    with _serve(data) as (url, handler):
-        remote = RemotePack("hf://owner/plan/field.rpk", url=url, revision="rev0")
-        want = ReplayPack.load(str(local))
-        plan = remote.plan(seq, tissue=tissue, scanner=3.0)                    # a pilot of the modes is fetched for the variance
-        assert plan == want.plan(seq, tissue=tissue, scanner=3.0)
-        S = remote.replay(seq, tissue=tissue, scanner=3.0)
-        npt.assert_array_equal(np.asarray(S), np.asarray(want.replay(seq, tissue=tissue, scanner=3.0)))
-        S0 = remote.replay(seq)                                                # no field term: no mode tensor is read for it
-        npt.assert_array_equal(np.asarray(S0), np.asarray(want.replay(seq)))
-
-
-def test_a_prefix_without_rpk_is_the_columnar_layout_and_a_rpk_is_the_remote_reader(monkeypatch):
-    import dmipy_sim.replay.remote as remote
-    with pytest.raises(ValueError, match="a pack on the Hub is a .rpk file"):
-        remote.RemotePack("hf://owner/name/prefix", url="http://unused")
-    seen = []
-    monkeypatch.setattr(remote, "RemotePack", lambda uri, **kw: seen.append(uri) or "remote")
-    assert ReplayPack.open("hf://owner/name/packs/x.rpk") == "remote" and seen == ["hf://owner/name/packs/x.rpk"]

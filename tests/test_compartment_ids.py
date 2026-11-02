@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine._fused import simulate_fused
 
@@ -107,7 +109,7 @@ def test_simulate_and_simulate_trajectories_report_the_same_ids():
     L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
     _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
     pm = d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, compartments=d.Compartments(intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0), extra=d.Pool(D=2e-9)))
-    wf = d.set_b(d.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
+    wf = dr.set_b(dr.pgse([[1, 0, 0]], 2e-3, 4e-3, gradient_strengths=0.05, n_t=30, slew_rate=np.inf), 5e8)
     _, origin, final = simulate_fused(60, None, wf, pm, seed=0, return_compartments="final",
                                   require_gpu=False)
     out = _walk_geometry(60, 2e-9, pm, T_max=2e-3, block_h=1e-3, seed=0, require_gpu=False)

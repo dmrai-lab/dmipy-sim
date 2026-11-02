@@ -11,9 +11,10 @@ import pytest
 
 from dmipy_sim.replay.consolidate import consolidate
 from dmipy_sim.replay.consolidate import manifest_grid
-from dmipy_sim.phantom import Grid
+from dmipy_replay.phantom import Grid
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, voxel_certificate
-from dmipy_sim.replay.replay import ReplayPack, read_rpk, write_rpk
+from dmipy_replay import ReplayPack, read_rpk
+from dmipy_sim.replay.container import write_rpk
 from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from tests.conftest import spec_without_source

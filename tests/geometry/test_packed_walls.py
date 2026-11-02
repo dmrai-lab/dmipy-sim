@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.geometry._boundary import bounce_budget
 from dmipy_sim.geometry.packed import packed_candidate_count
 from dmipy_sim.math.step_law import LONGEST_STEP
@@ -131,7 +133,7 @@ def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     kappa, N = 2e-5, 1_500
     cyl = d.Cylinder(R, (0, 0, 1), permeability=kappa)
     pk = d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=kappa)
-    wf = d.set_b(d.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
+    wf = dr.set_b(dr.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
     r0 = cyl.init_positions(N, jax.random.PRNGKey(0))                # inside the lumen
     _, o_c, f_c = simulate_fused(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False)
     _, o_p, f_p = simulate_fused(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False)

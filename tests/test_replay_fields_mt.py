@@ -1,13 +1,13 @@
 """Phase-2 replay: vector-Bloch, susceptibility, and magnetization-transfer replay.
 
 Validates the replay operators AGAINST the public forward engine
-(``bloch._simulate_bloch``) and the analytic two-pool oracle (``mt.mt_z_spectrum``):
+(``bloch._simulate_bloch``) and the analytic two-pool oracle (``relaxation.mt_z_spectrum``):
 
 * (a) vector-Bloch replay vs the fused ``_simulate_bloch`` forward on a spin echo with a
       gradient — emergent refocusing, noise-floor parity;
 * (b) susceptibility replay vs ``_simulate_bloch(susceptibility=<provider>)`` on a GRE
       (dephasing) and an SE (refocused) — same provider both paths;
-* (c) MT replay Z-spectrum vs the analytic ``mt.mt_z_spectrum`` oracle.
+* (c) MT replay Z-spectrum vs the analytic ``relaxation.mt_z_spectrum`` oracle.
 
 Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is auto-marked
 ``gpu`` (tier 2) in ``conftest.py`` (heavy MC); the pure-function unit checks at the end are cheap.
@@ -15,15 +15,18 @@ Kept CPU-feasible (small N, coarse grids, short walks).  The whole module is aut
 from dataclasses import replace
 from dmipy_sim.engine.bloch import _simulate_bloch
 import numpy as np
-from dmipy_sim import ScannerSequence
-from dmipy_sim import RFEvent
+
+from dmipy_analytic import relaxation
+from dmipy_replay import ScannerSequence
+from dmipy_replay import RFEvent
 
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim import simulate_mt_trajectories, SusceptibilitySources, mt
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax
+from dmipy_sim.replay.trajectories import replay, replay_bloch
+from dmipy_replay.replay.bloch_jax import replay_bloch_jax
 from dmipy_replay.replay.bloch import finite_180_longitudinal_dwell
 
 
@@ -105,7 +108,7 @@ def test_scalar_susceptibility_replay_eps_p_refocus():
 # ── (c) MT replay Z-spectrum vs the analytic two-pool oracle ─────────────────────
 def test_mt_replay_zspectrum_matches_oracle():
     """Emergent MT Z-spectrum by replay (simulate_mt_trajectories + replay_bloch
-    bound-pool blend) vs the analytic mt.mt_z_spectrum oracle.  RF rotates the bound spins
+    bound-pool blend) vs the analytic relaxation.mt_z_spectrum oracle.  RF rotates the bound spins
     too, so the saturation transfer is emergent; the broad short-T2b pool produces the dip."""
     D, N, seed, R = 1.5e-9, 2000, 3, 5e-6
     kappa_MT, dwell = 3.3e-5, 5.5e-3
@@ -116,7 +119,7 @@ def test_mt_replay_zspectrum_matches_oracle():
     S_V = 3.0 / R
     k_f, k_r = kappa_MT * S_V, 1.0 / dwell
 
-    oracle = mt.mt_z_spectrum(offsets, w1_hz=w1_hz, t_sat=t_sat, T1a=T1, T2a=T2,
+    oracle = relaxation.mt_z_spectrum(offsets, w1_hz=w1_hz, t_sat=t_sat, T1a=T1, T2a=T2,
                               T1b=T1b, T2b=T2b, k_f=k_f, k_r=k_r)
     walk = simulate_mt_trajectories(
         N, D, geom, t_sat, dt, kappa_MT, dwell, seed=seed, require_gpu=False, raw_subset=N)

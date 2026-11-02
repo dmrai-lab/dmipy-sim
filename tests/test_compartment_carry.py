@@ -17,9 +17,10 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dmipy_sim import simulate, set_b
+from dmipy_sim import simulate
+from dmipy_replay import set_b
 from dmipy_sim.geometry.mesh import Mesh
-from dmipy_sim.sequences import pgse
+from dmipy_replay.sequences import pgse
 
 from ._containment import inside as contains
 from dmipy_sim.engine._fused import simulate_fused

@@ -42,8 +42,9 @@ from tests.conftest import pgse_wf
 import numpy.testing as npt
 import pytest
 
-from dmipy_sim import simulate, Cylinder, set_b
-from dmipy_sim.sequences import pgse
+from dmipy_sim import simulate, Cylinder
+from dmipy_replay import set_b
+from dmipy_replay.sequences import pgse
 
 from tests.conftest import D, N_EXACT, SEED, se_tol
 

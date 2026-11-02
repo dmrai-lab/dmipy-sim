@@ -2,24 +2,26 @@
 to the bit, on the fused engine, the trajectory producer, the Bloch engine and the MT walk."""
 from dataclasses import replace
 import numpy as np
-from dmipy_sim import RFEvent
+from dmipy_replay import RFEvent
 import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.spec import as_geometry, SubstrateSpec
+from dmipy_sim.spec import as_geometry
+from dmipy_replay.spec.substrate import SubstrateSpec
 from tests._envelope import walk_envelope
 
 D0 = 2e-9
 
 
 def _seq():
-    from dmipy_sim import sequences as _seqmod
+    from dmipy_replay import sequences as _seqmod
     return _seqmod.pgse([[1, 0, 0]] * 2, 2e-3, 6e-3, bvalues=[0, 1e9], slew_rate=np.inf)
 
 
 def test_a_door_takes_a_spec_or_a_geometry_and_refuses_every_other_spelling(tmp_path):
-    from dmipy_sim.spec import geometry_from_spec, load_spec
+    from dmipy_sim.spec import geometry_from_spec
+    from dmipy_replay.spec.substrate import load_spec
     g = d.Cylinder(3e-6, (0, 0, 1))
     spec = g.spec
     assert as_geometry(g) is g and as_geometry(None) is None

@@ -11,11 +11,13 @@ import pytest
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim import sequences
-from dmipy_sim.replay import ReplayPack, read_rpk
+from dmipy_replay import sequences
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env
 from tests.test_storage_windows import DT, N_T, T, _kw, _walk, _float_pack
+from dmipy_sim.replay.reencode import rewindow_pack, truncate_pack
+from dmipy_sim.replay.container import save_pack
 
 TIS = Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5}, rho2=2e-5, chi_iso=1e-7)
 KNOBS = {"bare": dict(), "relaxation": dict(tissue=Tissue(T2={"extra": 0.05, "intra": 0.02}, T1={"extra": 1.0, "intra": 0.5})),
@@ -35,9 +37,9 @@ def _parent(T_max=T):
 def packs(tmp_path_factory):
     parent = _parent()
     p = tmp_path_factory.mktemp("reseg")
-    parent.save(p / "parent.rpk")
+    save_pack(parent, p / "parent.rpk")
     parent = read_rpk(str(p / "parent.rpk"))
-    seg = parent.rewindow(T / 4, out_path=p / "seg.rpk", id="t/seg")
+    seg = rewindow_pack(parent, T / 4, out_path=p / "seg.rpk", id="t/seg")
     return parent, seg, p
 
 
@@ -144,7 +146,7 @@ def test_a_one_window_acquisition_reads_window_zero_alone(packs):
 
 def test_a_truncated_rewindowed_pack_is_its_first_window(packs, tmp_path):
     parent, seg, _ = packs
-    one = seg.truncate(1, out_path=tmp_path / "one.rpk")
+    one = truncate_pack(seg, 1, out_path=tmp_path / "one.rpk")
     assert one.n_windows == 1 and one.n_t == 11
     seq = _waveforms()["pgse_1"]
     for knobs in KNOBS.values():
@@ -157,14 +159,14 @@ def test_the_trailing_remainder_is_dropped_within_its_bound_and_refused_beyond(p
     """Windows of 5.5 ms leave 3.5 ms of the 20 ms walk: refused at the default bound, dropped and recorded at 0.2."""
     parent, seg, _ = packs
     with pytest.raises(ValueError, match="uncovered"):
-        parent.rewindow(5.5e-3, out_path=tmp_path / "x.rpk")
-    s = parent.rewindow(5.5e-3, out_path=tmp_path / "seg.rpk", max_dropped_fraction=0.2)
+        rewindow_pack(parent, 5.5e-3, out_path=tmp_path / "x.rpk")
+    s = rewindow_pack(parent, 5.5e-3, out_path=tmp_path / "seg.rpk", max_dropped_fraction=0.2)
     assert s.n_windows == 3 and s.meta["provenance"]["rewindowed"]["time_dropped"] == pytest.approx(3.5e-3)
     seq = _waveforms()["pgse_2"]
     a = parent.replay(seq, complex_signal=True, **KNOBS["all"])
     assert np.abs(a - s.replay(seq, complex_signal=True, **KNOBS["all"])).max() <= 2.0 * s.fidelity["floor_max"]
     with pytest.raises(ValueError, match="already stores"):
-        seg.rewindow(T / 8, out_path=tmp_path / "y.rpk")
+        rewindow_pack(seg, T / 8, out_path=tmp_path / "y.rpk")
 
 
 def test_the_window_maps_are_the_closed_form_projection():
@@ -200,9 +202,9 @@ def _timing_packs(tmp_path):
     walk = _walk_geometry(4000, 2e-9, g, 0.1, 5e-5, seed=2, require_gpu=False, K=1000, window_T=0.1, tiers=())
     env = dict(_lean_env(), ogse_periods=[], shortd_deltas_frac=[], G_max=0.5)    # its waveforms reach 0.32 T/m
     parent = _float_pack(walk, id="t/long", license="x", citation="x", envelope=env, K=1000, window_T=0.1)
-    parent.save(tmp_path / "long.rpk")
+    save_pack(parent, tmp_path / "long.rpk")
     parent = read_rpk(str(tmp_path / "long.rpk"))
-    return parent, parent.rewindow(0.025, out_path=tmp_path / "long_seg.rpk", envelope=env)
+    return parent, rewindow_pack(parent, 0.025, out_path=tmp_path / "long_seg.rpk", envelope=env)
 
 
 def test_a_pose_expansion_costs_the_windows_it_spans(tmp_path):
@@ -295,7 +297,7 @@ def test_the_band_is_judged_over_the_windows_an_acquisition_spans(packs):
     assert seg._span(_duration(wf["pgse_2"])) == (pytest.approx(2 * seg.T_window), 2)
     assert seg._span(_duration(wf["train_4"])) == (pytest.approx(4 * seg.T_window), 4)
     assert parent._span(_duration(wf["pgse_1"])) == (pytest.approx(parent.T_window), 1)
-    one, two = seg.truncate(1), seg.truncate(2)
+    one, two = truncate_pack(seg, 1), truncate_pack(seg, 2)
     for name, pk in (("pgse_1", one), ("pgse_2", two)):
         t = float(seg.fidelity["floor_max"])                                      # one tolerance: the spans compared
         hz_s, k_s, err_s = seg.waveform_band(wf[name], tol=t)

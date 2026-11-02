@@ -16,11 +16,15 @@ import pytest
 from scipy.fft import dst
 
 import dmipy_sim as d
+
+import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import ReplayPack, so3
+from dmipy_analytic.constants import GAMMA
+from dmipy_replay import ReplayPack
+from dmipy_replay.replay import so3
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.reencode import prefix_pack
 
 T_MAX, H, K = 2e-3, 1e-4, 12                 # 20 blocks; K below the N - 1 = 19 bands the block ends hold
 
@@ -50,7 +54,7 @@ def _reference_phases(C, seq, T, R=None):
 
 
 def _seq():
-    return d.set_b(d.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 0.3e-3, 0.9e-3, gradient_strengths=0.2,
+    return dr.set_b(dr.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 0.3e-3, 0.9e-3, gradient_strengths=0.2,
                           n_t=201, slew_rate=np.inf, TE=T_MAX), [2e9, 2e9, 2e9])
 
 
@@ -132,7 +136,7 @@ def test_the_pose_expansion_is_the_walks_own_posed_signal(walked):
     turned at every rotation: float32 rounding."""
     walks, packs, _, _ = walked
     w, pk = walks[0], packs[0]
-    seq = d.pgse([[1, 0, 0]], 0.3e-3, 0.9e-3, gradient_strengths=[0.2], n_t=201, slew_rate=np.inf, TE=T_MAX)
+    seq = dr.pgse([[1, 0, 0]], 0.3e-3, 0.9e-3, gradient_strengths=[0.2], n_t=201, slew_rate=np.inf, TE=T_MAX)
     pr = pk.pose_response(seq, method="closed")
     assert pr.n_samples == 0
     C = _reference_coeffs(w.raw_positions, w.h, K)
@@ -161,10 +165,10 @@ def test_a_whole_window_read_is_the_pack_of_the_walks_window(two_windows):
     windows, bit for bit on the bands; a cut inside a later window is refused by name."""
     w, pk, kw = two_windows
     assert pk.n_windows == 2 and pk.T_window == pytest.approx(2e-3)
-    _bands_equal(pk.prefix(2e-3), build_replay_pack(w.window(0), id="t/w0", **kw))
+    _bands_equal(prefix_pack(pk, 2e-3), build_replay_pack(w.window(0), id="t/w0", **kw))
     _bands_equal(pk.window(1), build_replay_pack(w.window(1), id="t/w1", **kw))
     with pytest.raises(ValueError, match="cuts inside window 1"):
-        pk.prefix(3e-3)
+        prefix_pack(pk, 3e-3)
 
 
 def test_shards_on_another_block_or_window_table_are_refused_by_name(tmp_path):
