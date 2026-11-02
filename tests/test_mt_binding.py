@@ -16,7 +16,7 @@ from dmipy_replay import RFEvent
 import pytest
 
 from dmipy_sim import Sphere
-from dmipy_sim.engine import mt
+from dmipy_analytic import relaxation
 
 EXC = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0, offset_hz=0.0)]
 
@@ -70,10 +70,10 @@ def test_transverse_exchange_matches_oracle():
     S0 = np.abs(_simulate_bloch(12000, D, replace(_zero_wf(n_t, dt), rf=EXC, readout=echo), geom, T2=T2a, seed=5)[0])       # no MT -> plain T2a
     ratio_mc = S_mt / S0
 
-    A = mt.two_pool_generator(R1a=0.1, R2a=1 / T2a, R1b=1.0, R2b=1 / T2b, k_f=k_f, k_r=k_r)
+    A = relaxation.two_pool_generator(R1a=0.1, R2a=1 / T2a, R1b=1.0, R2b=1 / T2b, k_f=k_f, k_r=k_r)
     s0 = np.array([1., 0, 0, 0, 0, 0, 1.])            # only the free pool is excited
     t = np.array(echo) * dt
-    S_or = np.array([abs(complex(*mt.evolve_two_pool(s0, tt, A)[[0, 1]])) for tt in t])
+    S_or = np.array([abs(complex(*relaxation.evolve_two_pool(s0, tt, A)[[0, 1]])) for tt in t])
     ratio_or = S_or / np.exp(-t / T2a)
 
     m = t > 0.006                                     # after initial mixing

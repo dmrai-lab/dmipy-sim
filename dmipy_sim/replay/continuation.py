@@ -72,7 +72,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
         fb = _single_geometry_field_grid(spec, g, None, None) if field_source_kind(spec) == "grid" else None
         w = _walk_geometry(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
-                                  K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg, **(field_kw if fb is not None else {}))
+                                  K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **(field_kw if fb is not None else {}))
         return dataclasses.replace(w, geometry=g, spec=(spec if w.spec is None else w.spec), envelope=pack.envelope)
     if pool is None:
         raise ValueError("a multi-surface spec is continued pool by pool, and the pack carries no compartment channel to say "
@@ -89,7 +89,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
         adaptive_steps = True
     w = walk(spec, T_max=float(T_add), block_h=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu, envelope=pack.envelope,
                   walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers,
-                  K=int(pack.K), block_order=int(pack.block.get("m", 3)), window_T=T_seg, **field_kw)
+                  K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **field_kw)
     inv = np.empty_like(order); inv[order] = np.arange(order.size)                     # back to the pack's order
     return w.take(inv)
 
@@ -160,7 +160,7 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
                 if v is not None and mm.get(k) is not None:
                     mm[k] = float(max(mm[k], v))
     if meta["compression"].get("walker_preserving"):
-        meta["compression"]["precision_tiers"] = _precision_tiers(arrays, int(pack.n_walkers), float(meta["fidelity"].get("floor_max") or 0.0),
+        meta["compression"]["precision_tiers"] = _precision_tiers(arrays, int(pack.n_walkers), meta["fidelity"].get("floor_max"),
                                                                   bool(meta["compression"].get("precision_tiers", {}).get("walkers_shuffled", False)))
     prov = meta.setdefault("provenance", {})
     prov["continuations"] = list(prov.get("continuations") or []) + [dict(first=S0, last=S0 + S1 - 1, seed=int(seed))]

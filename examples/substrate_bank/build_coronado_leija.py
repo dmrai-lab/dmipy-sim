@@ -45,6 +45,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
 from dmipy_replay import envelope_of
+from examples.substrate_bank import common
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceRefusal, ReferenceQuantity, Publication,
                                         Source, SourceFile, Tier, Tolerance, crossref)
@@ -217,24 +218,6 @@ def mri_files(data_dir, animal):
         raise ReferenceRefusal(f"source: neither {pre} nor {rois} holds a file; the dMRI half of the pair is "
                                f"not on disk and cannot be digested")
     return out
-
-
-# ----------------------------------------------------------------- the licence text, verbatim from the host
-def licence_text(url, cache_dir, name):
-    """The licence at ``url``, fetched once and cached: what the source record copies verbatim.
-
-    Both Fairdata records state ``Creative Commons Attribution 4.0 International (CC BY 4.0)`` with this URL,
-    and the EM release's own README repeats the grant in its "Rights and permissions" paragraph. The TEXT is
-    what the record carries, because a title is not a licence.
-    """
-    import urllib.request
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, name)
-    if not os.path.exists(cache):
-        req = urllib.request.Request(url, headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
-        with urllib.request.urlopen(req, timeout=60) as fh, open(cache, "wb") as out:
-            out.write(fh.read())
-    return open(cache, encoding="utf-8", errors="replace").read()
 
 
 # ----------------------------------------------------------------- the spec producer, as far as it goes
@@ -500,9 +483,9 @@ def family(data_dir, work_dir, *, substrates=None, dry=True, create_dataset=Fals
     if unknown:
         raise ReferenceRefusal(f"{unknown} is not a released region of this study; the regions are "
                                f"{sorted(rois)}")
-    cache = os.path.join(work_dir, ".licence-cache")
-    cc_by = licence_text("https://creativecommons.org/licenses/by/4.0/legalcode.txt", cache,
-                         "cc-by-4.0-legalcode.txt")
+    # Both Fairdata records state CC BY 4.0, and the EM release's own README repeats the grant in its "Rights and
+    # permissions" paragraph; the TEXT is what the record carries, because a title is not a licence
+    cc_by = common.cc_by_4_legal_code(os.path.join(work_dir, ".licence-cache"))
     nyu = open(os.path.join(data_dir, "nyu-analysis", "LICENSE"), encoding="utf-8").read()
 
     em = [SourceFile(path=p, cite_as=f"White matter EM/{s}/{os.path.basename(p)}",

@@ -117,6 +117,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+from ..coefficient_walk import _window_t0
 from dmipy_replay.replay.time_segments import Delivered, FORMAT, MANIFEST, Partition, TILE, WORD_BITS, _AXES, _RTOL, _decode, _group_key, _layout_of, _phase, _row_terms
 
 ROWS = "rows.json"
@@ -237,7 +238,7 @@ def segment_vectors(pack, partition):
     """``(n_w, n_term, 3)`` float64: every walker's term vectors ``gamma int psi_s(t) (r(t) - r(0)) dt`` (rad per T/m;
     ``psi_s = 1`` on a segment) of ``partition`` from the pack's coefficients, each window's bands against
     :func:`~dmipy_sim.replay.compression.segment_projection` (a window that opens after the last term adds nothing)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import read_position_coeffs, segment_projection
     S = np.asarray(partition.segments, np.float64).reshape(-1, 2)
     shapes = partition.projection_shapes()
@@ -281,7 +282,7 @@ def quantisation_term(pack, partition, env):
     rad^2: the bands' rounding (a step ``scale_k`` is a variance ``scale_k^2 / 12``, the largest over the scale tables)
     moves an encoding's phase by ``l^T A l`` with ``A_st = gamma^2 sum_k W_sk W_tk scale_k^2 / 12`` per axis, at its
     largest over the envelope's levels (:func:`level_bound`). Zero for the float container."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import position_container, segment_projection
     if position_container(pack.arrays) != "bands":
         return 0.0
@@ -325,7 +326,7 @@ def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
     layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
     walker holds no step (its scale is a placeholder). Zero for a float container. The live bands and modes are read a
     walker range at a time (``slice_bytes``, :func:`~dmipy_sim.replay.compression.slice_walkers`)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from . import compression as cx
     from dmipy_replay.replay.field import susc_path_coeffs
     from dmipy_replay.replay.replay import surface_logweight
@@ -376,7 +377,7 @@ def _walk_view(walk, weights=None):
     for i in range(n):
         cw = walk.window(i)
         p = "" if i == 0 else f"s{i}/"
-        t0 = float((cw.block.get("window") or {}).get("t0", cw.block.get("t_start", 0.0)))
+        t0 = _window_t0(cw.block)
         a = dict(cx.pack_position_arrays(np.asarray(cw.position_coeffs)[:, 0], np.float32))
         if cw.boundary_bands is not None:
             a_, cm = cx.encode_boundary_bands(np.zeros(cw.n_walkers, np.float32), np.asarray(cw.boundary_endpoint)[:, 0],
@@ -738,9 +739,8 @@ def _check_band(view, partition, env):
     temporal band than the source stores (the
     replay's own check, :meth:`~dmipy_replay.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
     waveform's, and the bands beyond the pack's would carry phase the vectors do not."""
-    from dmipy_replay.acquisition.waveforms import calc_b
     seq = partition.template
-    b = np.asarray(calc_b(seq), np.float64)
+    b = np.asarray(seq.b(), np.float64)
     if not np.any(b > 0):
         return
     if env.get("b_max") is None:                                     # the class's strongest: its peak axis at G_max
@@ -835,7 +835,7 @@ def _source_tier_terms(recs, g, eps):
     from a walk). A floor target a caller STATED (``segment_rows(floor_target=)``) whose budget ``eps^2`` is below it is
     refused by name, since no width meets it; the pack's own declared target is taken as it is and the certificate
     states the error."""
-    out = {k: max(float((r["groups"][g].get("quantisation") or {}).get(k, 0.0)) for r in recs) for k in ("contact", "field")}
+    out = {k: max(float(r["groups"][g]["quantisation"][k]) for r in recs) for k in ("contact", "field")}
     stated = any(r["source"].get("floor_target_stated") for r in recs)
     for k, q in out.items():
         if stated and q >= eps ** 2:

@@ -18,7 +18,7 @@ from ..run import Run, current
 import jax.numpy as jnp
 
 from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, susceptibility_field_of
-from .build import geometry_from_spec
+from .build import file_unit_scale, geometry_from_spec
 
 
 def _spec_of_door(substrate):
@@ -499,7 +499,7 @@ class _Boundary:
             from ..geometry.mesh import load_ply
             from ..fields.susceptibility_field import MeshBodies
             from .build import mesh_surface_file
-            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=(w.surface.scale or 1.0))
+            self.bodies = MeshBodies([load_ply(mesh_surface_file(w.surface), scale=file_unit_scale(w.surface.scale))
                                       for w in walls])
             self.V, self.F = self.bodies.V, self.bodies.F
         elif self.kind == "sphere_union":
@@ -734,7 +734,7 @@ def _explicit_seeds(spec, pid, n, member=None):
     if fmt != "xyz":
         raise SpecError(f"seeding.positions.format {fmt!r} is not a format this reads; 'xyz' is three numbers "
                         f"per line")
-    A = np.loadtxt(path, dtype=np.float64) * float(pos.get("scale") or 1.0)
+    A = np.loadtxt(path, dtype=np.float64) * file_unit_scale(pos.get("scale"))
     if A.ndim != 2 or A.shape[1] != 3:
         raise SpecError(f"{path}: {A.shape} is not (n, 3) start positions")
     read = (pos.get("read") or "cyclic").lower()

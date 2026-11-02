@@ -12,7 +12,7 @@ import warnings
 
 import numpy as np
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG, LONGEST_STEP
 
 
@@ -243,11 +243,13 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
         # geometry advertises finite volume and surface area, so say so rather than guessing.
         try:
             sa, vol = geometry.surface_area, geometry.volume
+        except AttributeError:                               # a geometry that states no walls
+            sa = vol = None
+        confined = False
+        if sa is not None and vol is not None:               # one that states them is read; a failure to read them raises
             sa = sa() if callable(sa) else sa
             vol = vol() if callable(vol) else vol
             confined = float(sa) > 0 and 0 < float(vol) < float('inf')
-        except Exception:
-            confined = False
         if confined:
             warnings.warn(
                 f"{type(geometry).__name__} exposes walls (finite surface_area and volume) but no length "

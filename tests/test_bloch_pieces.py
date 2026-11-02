@@ -5,7 +5,7 @@ import numpy as np
 from dmipy_replay import RFEvent
 import pytest
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.replay._replay_kernel import effective_gradient, gate_weights, bin_gate, piece_moments
 from dmipy_sim.replay.trajectories import replay, replay_bloch
 from dmipy_replay.replay.bloch_jax import replay_bloch_jax

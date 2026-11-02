@@ -674,7 +674,7 @@ class Consolidator:
             from .bank import _precision_tiers
             shapes = {k: np.broadcast_to(np.zeros((), c_.dtype), (self.n_rows, *c_.row_shape)) for k, c_ in self.columns.items()}
             shapes.update(tables)
-            comp_meta["precision_tiers"] = _precision_tiers(shapes, self.n_rows, float(fid.get("floor_max") or 0.0), False)
+            comp_meta["precision_tiers"] = _precision_tiers(shapes, self.n_rows, fid.get("floor_max"), False)
         meta = dict(self.meta0)
         meta.update(id=id, compression=comp_meta, fidelity=fid, walk_params=dict(self.meta0["walk_params"], n_walkers=self.n_rows, seed=self.seeds),
                     provenance=dict(self.meta0.get("provenance") or {}, shards=self.prov))

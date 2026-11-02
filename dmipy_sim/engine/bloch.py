@@ -38,7 +38,7 @@ import jax.numpy as jnp
 from dmipy_replay.replay.bloch import _rf_increment
 from ..geometry._boundary import bind_probability
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
 from .gpu import gpu_available
 from ..run import Run
@@ -124,7 +124,7 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
             return (None, None, exh)
         n = hit.n_hits if hit.n_hits is not None else jnp.int32(0)
         return (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), exh)
-    has_perm = float(geometry.permeability or 0.0) > 0.0 and geometry.supports_permeability
+    has_perm = geometry.permeability is not None and float(geometry.permeability) > 0.0 and geometry.supports_permeability
 
     def _apply(r_new, phi_grad, surf, M, rf_dflip, rf_axis, rf_carrier, crush_rate, uc,
                phi_field=None):

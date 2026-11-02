@@ -31,7 +31,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay import sequences
 from dmipy_sim.acquisition import coil
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 

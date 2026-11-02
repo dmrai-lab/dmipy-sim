@@ -16,19 +16,18 @@ import pytest
 pytest.importorskip("pypulseq")
 import pypulseq as pp
 
-from dmipy_replay.acquisition.waveforms import calc_b
 from dmipy_replay.sequences import ogse, pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_replay.sequences.pulseq import from_pulseq
 from dmipy_sim.sequences import to_pulseq, make_system, PULSEQ_SYSTEMS
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 import jax.numpy as jnp
 
 BVEC = np.array([[1., 0., 0.]], dtype=np.float32)
 
 
 def _b(wf):
-    return float(calc_b(wf)[0])
+    return float(wf.b()[0])
 
 
 def test_scanner_catalogue_opts():

@@ -12,7 +12,7 @@ import dmipy_sim
 
 import dmipy_replay as dr
 from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 IDEAL = RFSchedule((RFEvent(0.0, 90, 'Mz→Mxy'), RFEvent(0.02, 180, 'refocus')))
 FINITE = RFSchedule((RFEvent(0.0, 90.0, axis_deg=90.0), RFEvent(0.02, 180.0, duration_s=2e-3, offset_hz=40.0)))

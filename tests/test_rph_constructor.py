@@ -12,7 +12,7 @@ import pytest
 from dmipy_replay import Encoding, RFEvent, ScannerSequence
 from dmipy_replay.phantom import Fan, Frames, FreeWater, Grid, Inert, ODF, PackSubstrate, Peaks, Phantom, Watson
 from dmipy_replay.replay.fod import FOD
-from dmipy_replay.replay.so3 import n_sh_coeffs
+from dmipy_analytic.harmonics import n_sh_coeffs
 
 
 def _pack(tmp_path, n_walkers=400):
@@ -87,7 +87,7 @@ def _phantom(pack_path, *, grid=GRID8, fractions=None, orientation=None, remaind
 
 def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3):
     """A PGSE on the pack's save grid, one measurement per (direction, b), read as a bare gradient echo."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -297,7 +297,7 @@ def test_a_layer_is_applied_or_refused_never_dropped(pack_path):
     off, *_ = _phantom(pack_path, layers={"delta_B0_T": np.full((8, 8, 1), 1e-7)})
     S, S0 = _rows(off, off.replay(seq, complex_signal=True)), _rows(base, base.replay(seq, complex_signal=True))
     assert np.abs(np.angle(S / S0)).max() > 1e-3                # a gradient echo carries the off-resonance
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     TE = (pk.n_t - 1) * pk.dt
     np.testing.assert_allclose(np.angle(S / S0), GAMMA * 1e-7 * TE, rtol=1e-6)   # gamma dB0 TE, over the acquisition
     # the same offset given at replay time, and the two adding

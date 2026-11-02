@@ -614,7 +614,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             r0_b = np.ascontiguousarray(r0_all[sel], np.float32)
             keys_b = np.ascontiguousarray(np.asarray(keys_all[sel]), np.uint32)
             n_read_, dt_f_, _checks, keep_reads = rd if rd is not None else _rd[0]
-            rq = req._replace(raw_subset=(nb if raw else 0), K_c3=int(K_f or 0),
+            rq = req._replace(raw_subset=(nb if raw else 0), K_c3=(0 if K_f is None else int(K_f)),
                               field_read_interval=(float(dt_f_) if sampling else 0.0))
             batch = _backend.walk_batch(rq, r0_b, keys_b)
             if not isinstance(batch, CoefficientBatch):

@@ -849,19 +849,21 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     if unknown:
         raise TypeError(f"walk_cost got keywords _walk_geometry does not take: {sorted(unknown)}")
     kw = dict(walk_kwargs)
+    walk_defaults = {k: p.default for k, p in inspect.signature(_walk_geometry).parameters.items()}
+    arg = lambda k: kw[k] if k in kw else walk_defaults[k]                 # the walk's own default: one copy of it
     be = resolve_backend(backend)
     name = JAX if be is None else str(be.name)
     from ..spec.build import as_geometry
-    with _bounce_budget_override(geometry, kw.get("bounce_budget")):
+    with _bounce_budget_override(geometry, arg("bounce_budget")):
         geometry = as_geometry(geometry)
-        fb = kw.get("field_basis")
-        res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=kw.get("tiers", "all"),
-                            sub_steps=kw.get("sub_steps"), kappa_MT=kw.get("kappa_MT", 0.0),
-                            dwell_time=kw.get("dwell_time", 0.0), f_band=kw.get("f_band"), seed=kw.get("seed", 42),
-                            enforce_compartment=kw.get("enforce_compartment", False),
-                            field_basis=fb, K=kw.get("K"), block_order=kw.get("block_order"),
-                            window_T=kw.get("window_T"), K_c3=kw.get("K_c3"), field_read_interval=kw.get("field_read_interval"),
-                            events_capacity=kw.get("events_capacity"), raw_subset=kw.get("raw_subset", 0), envelope=kw.get("envelope"))
+        fb = arg("field_basis")
+        res = _resolve_walk(geometry, diffusivity, T_max, block_h, tiers=arg("tiers"),
+                            sub_steps=arg("sub_steps"), kappa_MT=arg("kappa_MT"),
+                            dwell_time=arg("dwell_time"), f_band=arg("f_band"), seed=arg("seed"),
+                            enforce_compartment=arg("enforce_compartment"),
+                            field_basis=fb, K=arg("K"), block_order=arg("block_order"),
+                            window_T=arg("window_T"), K_c3=arg("K_c3"), field_read_interval=arg("field_read_interval"),
+                            events_capacity=arg("events_capacity"), raw_subset=arg("raw_subset"), envelope=arg("envelope"))
         n_ch = 0 if fb is None else len(fb.channel_names)
         if be is not None:
             refusal = _backend_refusal(be, name, res, geometry)
@@ -1540,7 +1542,8 @@ def _walk_geometry(
             _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
             if _mode == "fast":                 # seed f_b walkers bound with a residual dwell (a known S/V)
                 S_V = _mt.surface_to_volume(geometry)
-                P_eq = _mt.bound_fraction(kappa_MT, dwell_time, S_V)
+                from dmipy_analytic.relaxation import bound_fraction
+                P_eq = bound_fraction(kappa_MT, dwell_time, S_V)
                 ek = jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E)
                 u_state, u_dwell = jax.random.uniform(ek, (2, n_walkers), dtype=jnp.float32)
                 brem0_all = jnp.where(u_state < jnp.float32(P_eq),
@@ -1773,7 +1776,7 @@ def _walk_geometry(
             from .backends import CoefficientBatch
             sel = slice(a, b) if b is not None else np.asarray(a)          # a range of walkers, or a pilot's indices
             n_b = int(r0_all[sel].shape[0])
-            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=int(K_c3 or 0), drop_pool_changes=bool(drop_pool_changes),
+            req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=(0 if K_c3 is None else int(K_c3)), drop_pool_changes=bool(drop_pool_changes),
                                        events=(int(cap) if cap else res.request.events),
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)

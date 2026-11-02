@@ -29,40 +29,12 @@ import numpy as np
 
 from dmipy_replay.acquisition import solid_harmonics
 
-MU0 = 4.0e-7 * np.pi
 SEGMENTS = 720                 # per closed turn; the discretisation error is 6.3e-6 here and falls as 1/n^2
-
-
-def segment_field(a, b, points, current=1.0):
-    """``B`` at ``points`` from a straight current segment running ``a -> b``, in tesla.
-
-    The closed form of the Biot-Savart integral over a finite segment. Points ON the wire give zero rather
-    than a singularity, which keeps a probe grid that happens to touch a turn from poisoning a whole field.
-    """
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    P = np.atleast_2d(np.asarray(points, dtype=np.float64))
-    r1, r2 = a - P, b - P
-    n1 = np.linalg.norm(r1, axis=-1, keepdims=True)
-    n2 = np.linalg.norm(r2, axis=-1, keepdims=True)
-    cross = np.cross(r1, r2)
-    denom = n1 * n2 * (n1 * n2 + np.sum(r1 * r2, axis=-1, keepdims=True))
-    # ON the wire both the numerator and the denominator are rounding noise, and their ratio is a FINITE
-    # number of plausible size -- up to six orders above the field being measured. It is never a NaN, so it
-    # is never caught, and one such point in a probe set destroyed a whole fit. An oracle may not return a
-    # wrong number that looks right, so a denominator that is not resolvably non-zero is refused.
-    floor = 8.0 * np.finfo(np.float64).eps * (n1 * n2) ** 2
-    if np.any(np.abs(denom) <= floor):
-        bad = int(np.argmax(np.abs(denom) <= floor))
-        raise ValueError(
-            f"point {tuple(np.round(P[bad], 6))} lies on (or within rounding of) the segment "
-            f"{tuple(np.round(a, 4))} -> {tuple(np.round(b, 4))}, where the Biot-Savart integrand diverges. "
-            f"The field there is not defined; move the probe off the conductor")
-    return (MU0 * current / (4.0 * np.pi)) * cross * (n1 + n2) / denom
 
 
 def polyline_field(vertices, points, current=1.0):
     """``B`` at ``points`` from a current following a polyline, in tesla."""
+    from dmipy_analytic.fields import segment_field
     v = np.asarray(vertices, dtype=np.float64)
     B = np.zeros((len(np.atleast_2d(points)), 3))
     for a, b in zip(v[:-1], v[1:]):
@@ -421,3 +393,8 @@ def cross_term(coil, b0_axis=(0.0, 0.0, 1.0), h=2e-3):
     """
     w, _axes, g = transverse_block(coil, b0_axis, h)
     return float(abs(w[0] - w[1]) / abs(g)) if g else float("inf")
+
+
+def __getattr__(name):
+    from .._moved import refuse
+    raise refuse(__name__, name)

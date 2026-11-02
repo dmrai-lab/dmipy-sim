@@ -26,7 +26,7 @@ import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
-from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
+from dmipy_replay.spec.substrate import Domain, PoolSpec, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
 from dmipy_sim.replay.container import save_pack
 
@@ -45,7 +45,7 @@ def _fixture_spec():
     return SubstrateSpec("test/windows-fixture",
                          Domain([0.0, -1e-3, -1e-3], [L, 1e-3, 1e-3], ["reflect", "open", "open"],
                                 surface_relaxivity=1e-5),
-                         [Pool(0, "extra", D0)], [], Seeding([0]),
+                         [PoolSpec(0, "extra", D0)], [], Seeding([0]),
                          Validity(L, ["gradient", "surface"])).validate().to_dict()
 
 

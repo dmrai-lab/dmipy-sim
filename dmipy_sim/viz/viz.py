@@ -16,7 +16,7 @@ try:
 except ImportError:
     _MPL_AVAILABLE = False
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
 
 # x / y / z colour palette

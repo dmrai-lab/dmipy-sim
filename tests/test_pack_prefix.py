@@ -107,7 +107,7 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     off-resonance under ITS gate, zero beyond its echo, so the parent and its prefix agree to the certificate."""
     from tests.test_bank import _susc_walk, _lean_env
     from dmipy_replay.replay.field import susc_path_decode, susc_path_field
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     parent = _float_pack(_susc_walk(300), id="test/slab-susc", envelope=env, K=16, susc_path_K=16, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt

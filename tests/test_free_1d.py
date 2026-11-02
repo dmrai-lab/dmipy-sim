@@ -8,7 +8,7 @@ import numpy as np
 import numpy.testing as npt
 
 from dmipy_sim import simulate, FreeDiffusion
-from dmipy_replay import pgse, set_b, calc_b
+from dmipy_replay import pgse, set_b
 from .conftest import D, N_CPU, SEED, mc_atol
 
 
@@ -26,7 +26,7 @@ def test_free_diffusion_pgse_1d():
     wf = set_b(wf_unit, b_values)
 
     # Verify b-values were set correctly
-    b_check = calc_b(wf)
+    b_check = wf.b()
     npt.assert_allclose(b_check, b_values, rtol=1e-3)
 
     signals = simulate(N_CPU, D, wf, FreeDiffusion(), seed=SEED)

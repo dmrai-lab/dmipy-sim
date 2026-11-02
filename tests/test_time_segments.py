@@ -113,7 +113,6 @@ def test_a_partition_is_read_from_its_sequence():
     """A PGSE is two lobes under the gate's +1 and -1, a stimulated echo's mixing time is a segment its gate stores, a
     DDE's two bipolar pairs are four lobes; ``b_matrix`` is the b-value of refocused levels (the builder's own b to its
     rectangular rule), and a PGSE's reach is ``min(G_max, sqrt(b_max / b_unit))``; a segment across a pulse is refused."""
-    from dmipy_replay.acquisition.waveforms import calc_b
     parts = _partitions()
     se, ste, dde, mixing = _sequences()
     assert parts["pgse"].gate == (1, -1) and parts["pgste"].gate == (1, 0, -1) and parts["dde"].gate == (1, 1, -1, -1)
@@ -121,8 +120,8 @@ def test_a_partition_is_read_from_its_sequence():
     for name, seq in (("pgse", se), ("dde", dde)):
         L = parts[name].levels(seq)
         b = np.einsum("msc,st,mtc->m", L, parts[name].b_matrix(), L)
-        np.testing.assert_allclose(b, calc_b(seq), rtol=2e-3)
-    b_unit = float(calc_b(se)[0]) / 0.1 ** 2
+        np.testing.assert_allclose(b, seq.b(), rtol=2e-3)
+    b_unit = float(se.b()[0]) / 0.1 ** 2
     reach = parts["pgse"].reach(G_MAX, 3e9)
     np.testing.assert_allclose(reach, min(G_MAX, np.sqrt(3e9 / b_unit)), rtol=2e-3)
     assert parts["pgste"].reach(G_MAX, 3e9)[1] == 0.0

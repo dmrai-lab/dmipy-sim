@@ -25,7 +25,7 @@ import numpy as np
 
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
 _COMP_NAME = {0: 'extra-axonal', 1: 'intra-axonal', 2: 'myelin'}

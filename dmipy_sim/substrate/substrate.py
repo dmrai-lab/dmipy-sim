@@ -24,10 +24,10 @@ from ..compartments import Compartments, Pool
 
 
 def mean_inv_diameter_4(alpha, scale_diameter, volume_weighted=True):
-    """<4/d> for the (volume- or number-weighted) Gamma distribution.
+    """<4/d> for the (volume- or number-weighted) Gamma distribution of shape ``alpha`` and scale
+    ``scale_diameter`` (m), with ``beta = 1 / scale_diameter``.
 
-    number:  4 beta/(alpha-1);   volume (d^2 P): 4 beta/(alpha+1).
-    Vendored from dmipy_fit.white_matter.surface.mean_inv_diameter_4.
+    number:  4 beta/(alpha-1);   volume (d^2 P): 4 beta/(alpha+1). The ecosystem's one copy of it.
     """
     a = alpha + 2.0 if volume_weighted else alpha
     beta = 1.0 / scale_diameter
@@ -455,17 +455,17 @@ class Substrate:
         surface for the geometry in use (e.g. 2/R for a cylinder cross-section,
         computed by the caller).  Exact analogue of 1/T2_surf = rho * (S/V).
         """
-        from ..engine.mt import forward_rate
+        from dmipy_analytic.relaxation import forward_rate
         return forward_rate(self.kappa_MT, S_over_V)
 
     def mt_backward_rate(self) -> float:
         """Backward (bound->free) exchange rate k_r = 1/dwell_time, s^-1."""
-        from ..engine.mt import backward_rate
+        from dmipy_analytic.relaxation import backward_rate
         return backward_rate(self.dwell_time)
 
     def mt_bound_fraction(self, S_over_V: float) -> float:
         """Equilibrium bound-pool fraction f_b = k_f/(k_f+k_r) for this geometry."""
-        from ..engine.mt import bound_fraction
+        from dmipy_analytic.relaxation import bound_fraction
         return bound_fraction(self.kappa_MT, self.dwell_time, S_over_V)
 
     @classmethod
@@ -479,7 +479,7 @@ class Substrate:
         exchange rate ``k_forward`` (s^-1) into the microscopic (kappa_MT,
         dwell_time) for a surface of ratio ``S_over_V`` (1/m).
         """
-        from ..engine.mt import kappa_MT_from_forward_rate, dwell_time_from_fraction
+        from dmipy_analytic.relaxation import kappa_MT_from_forward_rate, dwell_time_from_fraction
         kappa_MT = kappa_MT_from_forward_rate(k_forward, S_over_V)
         dwell_time = dwell_time_from_fraction(f_bound, k_forward)
         overrides.update(kappa_MT=kappa_MT, dwell_time=dwell_time,

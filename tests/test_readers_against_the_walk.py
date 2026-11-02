@@ -19,7 +19,7 @@ import dmipy_sim as d
 
 import dmipy_replay as dr
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay import ReplayPack
 from dmipy_replay.replay import so3
 from dmipy_sim.replay import compression as cx
