@@ -677,6 +677,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                               resolution_s=float(h) * n_t / int(K_max), gates_per_setting=len(gre) + len(se_t) + 2,
                               settings=len(settings), rungs_read=len(order)),
                   ladder=[dict(K=int(k), err=float(err[k]), err_truncation=float(trunc[k]), floor=float(floor[k]),
+                               within_floor=bool(train[k] <= floor_train[k] and worst[k]["ratio"] <= 1.0),
                                worst=dict(worst[k]), container=[dict(r) for r in cont[k]]) for k in order],
                   K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) if depth else None), above_position_band=bool(K > int(K_max)),
                   within_floor=bool(train[K] <= floor_train[K] and worst[K]["ratio"] <= 1.0),
