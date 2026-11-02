@@ -147,7 +147,7 @@ def test_validate_refuses_a_finite_pulse_over_a_live_gradient_and_an_unrefocused
 
 def test_the_scalar_engine_and_b_read_the_effective_gradient():
     wf = dr.set_b(dr.pgse(bv, 4e-3, 20e-3, gradient_strengths=0.05, n_t=240), B)
-    np.testing.assert_allclose(dr.calc_b(wf), B, rtol=1e-6)
+    np.testing.assert_allclose(wf.b(), B, rtol=1e-6)
     assert np.all(b_from_gradient(wf.G, wf.dt) > 1.2 * B)                 # the physical pair alone would not refocus
     E = d.simulate(2000, 2e-9, wf, d.FreeDiffusion(), seed=0, require_gpu=False)
     np.testing.assert_allclose(E, np.exp(-B * 2e-9), atol=0.03)

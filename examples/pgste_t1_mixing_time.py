@@ -18,7 +18,7 @@ CPU-only, self-contained.  Run:  python examples/pgste_t1_mixing_time.py
 import numpy as np
 
 from dmipy_sim import simulate, FreeDiffusion
-from dmipy_replay import set_b, calc_b, pgste
+from dmipy_replay import set_b, pgste
 
 D = 2e-9            # m^2/s, free diffusivity
 N_WALKERS = 60_000  # raise for tighter statistics
@@ -39,7 +39,7 @@ def run():
     for TM in TM_VALUES:
         wf = set_b(pgste(bvecs, DELTA, TM, gradient_strengths=1.0, n_t=800),
                    np.array([B]))
-        b_eff = calc_b(wf)[0]
+        b_eff = wf.b()[0]
         S = float(simulate(N_WALKERS, D, wf, FreeDiffusion(), seed=SEED,
                            T1=T1, require_gpu=False)[0])
         S_model = 0.5 * np.exp(-b_eff * D) * np.exp(-TM / T1)

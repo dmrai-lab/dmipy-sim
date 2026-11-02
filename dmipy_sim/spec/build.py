@@ -5,7 +5,7 @@ follow (#130 PR 3).
 Conventions written out here, once: an isolated object sits in an ``open`` box of ``margin`` radii
 around it; pool 0 is present even when it holds no water (an isolated lumen), so ids are dense;
 a packed cell is ``periodic`` in the plane and ``open`` along the axis, its objects one wall entry
-with per-instance arrays; the walk's diffusivity is the driver's (``Pool.D`` null) unless the geometry
+with per-instance arrays; the walk's diffusivity is the driver's (``PoolSpec.D`` null) unless the geometry
 carries per-pool diffusivities.
 """
 import hashlib
@@ -19,7 +19,7 @@ from dmipy_replay.spec.substrate import (
     SubstrateSpec,
     Domain,
     Frame,
-    Pool,
+    PoolSpec,
     Susceptibility,
     Surface,
     Wall,
@@ -85,9 +85,9 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
         wf = (wf_by_name or {}).get(n)
         if wf is None:
             wf = c.water_fraction if (c is not None and c.water_fraction is not None) else 1.0
-        out.append(Pool(i, n, D_by_name.get(n), water_fraction=wf,
-                        T2=(c.T2 if c is not None else None), T1=(c.T1 if c is not None else None),
-                        susceptibility=(Susceptibility(None, None, "radial") if n == "myelin" else None)))
+        out.append(PoolSpec(i, n, D_by_name.get(n), water_fraction=wf,
+                            T2=(c.T2 if c is not None else None), T1=(c.T1 if c is not None else None),
+                            susceptibility=(Susceptibility(None, None, "radial") if n == "myelin" else None)))
     return out
 
 
@@ -150,15 +150,15 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         return _spec_of_sphere_union(g, sid, prov)
     if isinstance(g, LabelVolume):
         return _spec_of_label_volume(g, id, prov, surface_dir)
-    extra0 = Pool(0, "extra", None, water_fraction=0.0)
+    extra0 = PoolSpec(0, "extra", None, water_fraction=0.0)
     if isinstance(g, FreeDiffusion):
         half = 1e-4
-        return SubstrateSpec(sid, Domain(*_box(half), ["open"] * 3), [Pool(0, "extra", None, water_fraction=1.0)], [],
+        return SubstrateSpec(sid, Domain(*_box(half), ["open"] * 3), [PoolSpec(0, "extra", None, water_fraction=1.0)], [],
                              Seeding([0]), Validity(half, ["gradient"]), description="unbounded free diffusion",
                              provenance=prov)
     if isinstance(g, PermeableSlab1D):
         L = g.length
-        pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=1.0)]
+        pools = [PoolSpec(0, "extra", None, water_fraction=1.0), PoolSpec(1, "intra", None, water_fraction=1.0)]
         wall = Wall("membrane", Surface("plane", point=[L / 2, 0.0, 0.0], normal=[1.0, 0.0, 0.0]), 1, 0,
                     Directional(_kappa(g), _kappa(g)), Sided(_rho2(g), _rho2(g)))
         dom = Domain([0.0, -MARGIN * L, -MARGIN * L], [L, MARGIN * L, MARGIN * L], ["reflect", "open", "open"], _rho2(g))
@@ -166,14 +166,14 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                              description="closed 1-D two-compartment slab; A = x < L/2 is pool 1", provenance=prov)
     if isinstance(g, Box1D):
         L = g.length
-        pools = [extra0, Pool(1, "intra", None, water_fraction=1.0)]
+        pools = [extra0, PoolSpec(1, "intra", None, water_fraction=1.0)]
         dom = Domain([0.0, -MARGIN * L, -MARGIN * L], [L, MARGIN * L, MARGIN * L], ["reflect", "open", "open"], _rho2(g))
         return SubstrateSpec(sid, dom, pools, [], Seeding([1]),
                              Validity(L, ["gradient"] + (["surface"] if _rho2(g) > 0 else [])),
                              description="reflecting slab 0 <= x <= L, y and z free", provenance=prov)
     if isinstance(g, PermeableShell):
         ri, ro = g.r_inner, g.r_outer
-        pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=1.0)]
+        pools = [PoolSpec(0, "extra", None, water_fraction=1.0), PoolSpec(1, "intra", None, water_fraction=1.0)]
         kind = "sphere" if g.kind == "sphere" else "cylinder"
         ax = {} if kind == "sphere" else {"axis": np.asarray(g._o, float).tolist()}
         inner = Wall("membrane", Surface(kind, center=[0.0] * 3, radius=ri, **ax), 1, 0,
@@ -185,7 +185,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                              description=f"closed radial two-compartment {kind} shell", provenance=prov)
     if isinstance(g, (Sphere, Cylinder, Ellipsoid)):
         kappa = _kappa(g)
-        pools = [Pool(0, "extra", None, water_fraction=0.0), Pool(1, "intra", None, water_fraction=1.0)]
+        pools = [PoolSpec(0, "extra", None, water_fraction=0.0), PoolSpec(1, "intra", None, water_fraction=1.0)]
         if isinstance(g, Sphere):
             surf, R = Surface("sphere", center=[0.0] * 3, radius=g.radius), g.radius
         elif isinstance(g, Cylinder):
@@ -200,7 +200,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     if isinstance(g, (PackedCylinders, PackedSpheres)):
         kappa = _kappa(g)
         L = float(g._L_float)
-        pools = [Pool(0, "extra", None, water_fraction=1.0), Pool(1, "intra", None, water_fraction=1.0)]
+        pools = [PoolSpec(0, "extra", None, water_fraction=1.0), PoolSpec(1, "intra", None, water_fraction=1.0)]
         seeded = {None: [0, 1], "extra": [0], "intra": [1]}[g.pool]
         centers = np.asarray(getattr(g, "_centers_np", None) if getattr(g, "_centers_np", None) is not None else g._centers_jax, float)
         if centers.shape[1] == 2:
@@ -261,7 +261,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                              description=f"periodic cell of {N} myelinated cylinders", provenance=prov)
     if isinstance(g, CurvedMyelinatedCylinder):
         cl = np.asarray(g.centerline, float)
-        pools = [Pool(0, "extra", None), Pool(1, "intra", None), Pool(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
+        pools = [PoolSpec(0, "extra", None), PoolSpec(1, "intra", None), PoolSpec(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
         inner = Wall("axolemma", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_in), 1, 2,
                     Directional(), Sided(_rho2(g), _rho2(g)))
         outer = Wall("sheath", Surface("swept_polyline", centerline=cl.tolist(), radius=g.r_out), 2, 0,
@@ -274,7 +274,7 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                              description="myelinated curved axon: concentric shells swept along a polyline", provenance=prov)
     if isinstance(g, CurvedCylinder):
         cl = np.asarray(g.centerline, float)
-        pools = [extra0, Pool(1, "intra", None, water_fraction=1.0)]
+        pools = [extra0, PoolSpec(1, "intra", None, water_fraction=1.0)]
         wall = Wall("cylinder", Surface("swept_polyline", centerline=cl.tolist(), radius=g.radius), 1, None,
                    Directional(), Sided(_rho2(g), _rho2(g)))
         lo = (cl.min(0) - MARGIN * g.radius).tolist(); hi = (cl.max(0) + MARGIN * g.radius).tolist()
@@ -283,8 +283,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     if isinstance(g, PackedCurvedCylinders):
         cls_ = [np.asarray(c, float).tolist() for c in g.centerlines]
         radii = np.asarray(g.radii, float).tolist()
-        pools = [Pool(0, "extra", None, water_fraction=(0.0 if g.interior else 1.0)),
-                 Pool(1, "intra", None, water_fraction=(1.0 if g.interior else 0.0))]
+        pools = [PoolSpec(0, "extra", None, water_fraction=(0.0 if g.interior else 1.0)),
+                 PoolSpec(1, "intra", None, water_fraction=(1.0 if g.interior else 0.0))]
         wall = Wall("cylinders", Surface("swept_polyline", instances={"centerlines": cls_, "radii": radii}), 1, 0,
                    Directional(), Sided(_rho2(g), _rho2(g)))
         if g.box is not None:
@@ -345,8 +345,8 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
     # unwalked pool dry, which is every isolated-object producer (dmrai-lab/dmipy-sim#481 review item 7).
     def pool(i, n):
         c = comps[n] if n in comps else None
-        return Pool(i, n, (c.D if c is not None else None), water_fraction=(1.0 if n == g.pool else 0.0),
-                    T2=(c.T2 if c is not None else None), T1=(c.T1 if c is not None else None))
+        return PoolSpec(i, n, (c.D if c is not None else None), water_fraction=(1.0 if n == g.pool else 0.0),
+                        T2=(c.T2 if c is not None else None), T1=(c.T1 if c is not None else None))
     pools = [pool(0, "extra"), pool(1, "intra")]
     rho2_nom = float(g.surface_relaxivity_t2 or 0.0)
     rho2_in = rho2_nom * float(g._rho_mult_intra); rho2_out = rho2_nom * float(g._rho_mult_extra)
@@ -367,8 +367,8 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
 
 
 def _spec_of_sphere_union(g, sid, prov):
-    pools = [Pool(0, "extra", None, water_fraction=(1.0 if g.pool == "extra" else 0.0)),
-             Pool(1, "intra", None, water_fraction=(1.0 if g.pool == "intra" else 0.0))]
+    pools = [PoolSpec(0, "extra", None, water_fraction=(1.0 if g.pool == "extra" else 0.0)),
+             PoolSpec(1, "intra", None, water_fraction=(1.0 if g.pool == "intra" else 0.0))]
     wall = Wall("union", Surface("sphere_union", instances={"centers": g.centers.tolist(), "radii": g.radii.tolist()}),
                 1, 0, Directional(), Sided(_rho2(g) if g.pool == "intra" else 0.0, _rho2(g) if g.pool == "extra" else 0.0))
     if g.box is not None:
@@ -407,8 +407,8 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
                  else f"label_volume/{os.path.splitext(os.path.basename(src['file']))[0]}")
     names = list(g.pools.values())
     said = {p.name: p for p in (was.pools if was is not None else [])}
-    pools = [Pool(i, n, (said[n].D if n in said else None), water_fraction=(1.0 if i == g.pool_index else 0.0),
-                  T2=(said[n].T2 if n in said else None), T1=(said[n].T1 if n in said else None))
+    pools = [PoolSpec(i, n, (said[n].D if n in said else None), water_fraction=(1.0 if i == g.pool_index else 0.0),
+                      T2=(said[n].T2 if n in said else None), T1=(said[n].T1 if n in said else None))
              for i, n in enumerate(names)]
     surf_kw = dict(file=cite_file, format=src["format"], sha256=src.get("sha256"),
                    voxel_size=np.asarray(g.voxel_size, float).tolist(),

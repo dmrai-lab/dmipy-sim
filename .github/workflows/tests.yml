@@ -9,10 +9,10 @@ on:
 
 env:
   # dmipy-replay 0.2 is not released: the suite runs against the replay commit it was tested with (still versioned
-  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the merge of the replay move's last reader PR
-  # (dmrai-lab/dmipy-replay#20, R6) on its main. The GPU tier installs the same commit, read from here
-  # (tools/gpu_tier.py).
-  DMIPY_REPLAY_REF: 1871a40630364107c0adca3c35541f6bbe112eb8
+  # 0.1.0, so the `dmipy-replay>=0.1,<0.3` bound is met by it): the head of dmrai-lab/dmipy-replay#25 (`PoolSpec`,
+  # `ColumnSource`, a sequence's b spelled `seq.b()`), which its merge keeps reachable on main. The GPU tier installs
+  # the same commit, read from here (tools/gpu_tier.py).
+  DMIPY_REPLAY_REF: 9594afe66251f29db707b63a0d826a375b0a250f
 
 jobs:
   test:

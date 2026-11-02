@@ -5,15 +5,19 @@ with its one spelling.
 A package of dmipy-sim that names dmipy-replay's code (``dmipy_sim``, ``dmipy_sim.replay``, ``dmipy_sim.sequences``,
 ``dmipy_sim.math``, ``dmipy_sim.spec``) defines ``__getattr__`` through
 :func:`refuse`, so ``dmipy_sim.ReplayPack`` raises an ``AttributeError`` that says ``from dmipy_replay import
-ReplayPack``; a name that was never one is the ordinary ``AttributeError``. A module that moved whole
+ReplayPack``, and ``from dmipy_sim import ReplayPack`` raises an ``ImportError`` that says it too (CPython drops the
+``AttributeError`` of a module's ``__getattr__`` inside a ``from`` import and reports only that the name cannot be
+imported); a name that was never one is the ordinary ``AttributeError``. A module that moved whole
 (``dmipy_sim.replay.so3``) is a ``ModuleNotFoundError``: there is no module stub."""
+import dis
+import sys
 
 MOVED = {
     "dmipy_sim": {
         "ReplayPack": "dmipy_replay", "read_rpk": "dmipy_replay", "FOD": "dmipy_replay", "Distribution": "dmipy_replay",
         "replay_signal_jax": "dmipy_replay.replay.jax_routes", "cap_cpu_threads": "dmipy_replay",
         **{n: "dmipy_replay" for n in ("ScannerSequence", "Encoding", "Protocol", "Prescription", "B1Pulse", "RFEvent",
-                                       "RFSchedule", "SequenceTiming", "ScannerLimits", "set_b", "calc_b", "calc_btensor",
+                                       "RFSchedule", "SequenceTiming", "ScannerLimits", "set_b",
                                        "btensor_invariants", "rotate_waveform", "tile_waveform", "pgse", "pgste", "ogse",
                                        "cpmg", "splice", "gre", "ste", "pte", "GAMMA", "compile_scheme")},
         "SCANNERS": "dmipy_replay.acquisition.scanners", "bloch_simulate": "dmipy_replay.acquisition.rf",
@@ -31,7 +35,7 @@ MOVED = {
     "dmipy_sim.math": {n: "dmipy_replay.math.gradient_conversions" for n in ("q_from_b", "b_from_q", "q_from_g", "g_from_q",
                                                                             "b_from_g", "g_from_b")},
     "dmipy_sim.spec": {
-        **{n: "dmipy_replay.spec.substrate" for n in ("SubstrateSpec", "Domain", "Frame", "Pool", "Susceptibility", "Surface",
+        **{n: "dmipy_replay.spec.substrate" for n in ("SubstrateSpec", "Domain", "Frame", "Susceptibility", "Surface",
                                                       "Wall", "Directional", "Sided", "Seeding", "Validity", "SpecError",
                                                       "validate", "load_spec", "susceptibility_field_of", "SCHEMA_PATH",
                                                       "SPEC_VERSION")},
@@ -46,10 +50,36 @@ MOVED = {
 }
 """``{package: {name: the module that defines it}}``."""
 
+SPELLINGS = {
+    "dmipy_sim": {"calc_b": "seq.b()", "calc_btensor": "seq.btensor()"},
+    "dmipy_sim.spec": {"Pool": "PoolSpec (from dmipy_replay.spec.substrate import PoolSpec)"},
+}
+"""``{package: {refused name: its one spelling}}``: a name no package defines, spelled another way (a sequence's b and
+B-tensor are its methods)."""
+
+
+def _from_import():
+    """Whether the lookup that ``refuse`` answers is the one of a ``from package import name`` statement: the
+    statement's frame is three frames up (``refuse`` is called by a package's ``__getattr__``, which the statement
+    runs), standing at its ``IMPORT_FROM`` instruction."""
+    try:
+        frame = sys._getframe(3)
+    except ValueError:
+        return False
+    return frame.f_code.co_code[frame.f_lasti] == dis.opmap["IMPORT_FROM"]
+
 
 def refuse(package, name):
-    """The ``AttributeError`` of ``package.name``: naming the import of a name that moved, plain otherwise."""
+    """The exception of ``package.name``: the refusal that says the spelling of a name that moved or has another
+    spelling (an ``ImportError`` in a ``from package import name`` statement, an ``AttributeError`` otherwise, so
+    ``hasattr`` stays false), the ordinary ``AttributeError`` of any other name. Called as ``raise refuse(__name__,
+    name)`` by a package's ``__getattr__``."""
     where = MOVED.get(package, {}).get(name)
-    if where is None:
+    spelling = SPELLINGS.get(package, {}).get(name)
+    if where is None and spelling is None:
         return AttributeError(f"module {package!r} has no attribute {name!r}")
-    return AttributeError(f"{package}.{name} is not dmipy-sim's: it is {where}.{name} (from {where} import {name})")
+    if spelling is not None:
+        message = f"{package}.{name} does not exist: use {spelling}"
+    else:
+        message = f"{package}.{name} is not dmipy-sim's: it is {where}.{name} (from {where} import {name})"
+    return ImportError(message, name=package) if _from_import() else AttributeError(message)
