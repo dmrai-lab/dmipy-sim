@@ -13,9 +13,9 @@ env:
   # imported from dmipy-analytic), which its merge keeps reachable on main. The GPU tier installs the same commit, read
   # from here (tools/gpu_tier.py).
   DMIPY_REPLAY_REF: fa2274ffeb8cf5a4e7608582dda9f67d5e350662
-  # dmipy-analytic 3.0 is not on PyPI yet: the commit the suite was tested with, the head of dmrai-lab/dmipy-analytic#3
+  # dmipy-analytic 3.0 is not on PyPI yet: the commit the suite was tested with, the merge of dmrai-lab/dmipy-analytic#3 on main
   # (the forms from dmipy-replay and dmipy-sim). The GPU tier installs the same commit, read from here.
-  DMIPY_ANALYTIC_REF: a6aa6a1e82ad275a482e39c57db89421a41d3a0a
+  DMIPY_ANALYTIC_REF: 784830d26e4ec15a5dae4a03f2d01000b73bed1b
 
 jobs:
   test:
