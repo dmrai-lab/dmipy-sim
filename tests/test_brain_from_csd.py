@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from dmipy_sim.io.mrtrix import read_mif
-from dmipy_replay.replay.so3 import real_sh, rotate_sh
+from dmipy_analytic.harmonics import real_sh
+from dmipy_replay.replay.so3 import rotate_sh
 from dmipy_replay.phantom import Pose
 
 ROOT = Path(__file__).resolve().parents[1]

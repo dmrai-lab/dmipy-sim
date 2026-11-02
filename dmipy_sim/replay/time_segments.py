@@ -238,7 +238,7 @@ def segment_vectors(pack, partition):
     """``(n_w, n_term, 3)`` float64: every walker's term vectors ``gamma int psi_s(t) (r(t) - r(0)) dt`` (rad per T/m;
     ``psi_s = 1`` on a segment) of ``partition`` from the pack's coefficients, each window's bands against
     :func:`~dmipy_sim.replay.compression.segment_projection` (a window that opens after the last term adds nothing)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import read_position_coeffs, segment_projection
     S = np.asarray(partition.segments, np.float64).reshape(-1, 2)
     shapes = partition.projection_shapes()
@@ -282,7 +282,7 @@ def quantisation_term(pack, partition, env):
     rad^2: the bands' rounding (a step ``scale_k`` is a variance ``scale_k^2 / 12``, the largest over the scale tables)
     moves an encoding's phase by ``l^T A l`` with ``A_st = gamma^2 sum_k W_sk W_tk scale_k^2 / 12`` per axis, at its
     largest over the envelope's levels (:func:`level_bound`). Zero for the float container."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import position_container, segment_projection
     if position_container(pack.arrays) != "bands":
         return 0.0
@@ -326,7 +326,7 @@ def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
     layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
     walker holds no step (its scale is a placeholder). Zero for a float container. The live bands and modes are read a
     walker range at a time (``slice_bytes``, :func:`~dmipy_sim.replay.compression.slice_walkers`)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from . import compression as cx
     from dmipy_replay.replay.field import susc_path_coeffs
     from dmipy_replay.replay.replay import surface_logweight

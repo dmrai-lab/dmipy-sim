@@ -22,7 +22,8 @@ from brain_from_csd import acquisition  # noqa: E402
 
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_replay.phantom import Grid, PackSubstrate
-from dmipy_replay.replay.so3 import real_sh, rotate_sh
+from dmipy_analytic.harmonics import real_sh
+from dmipy_replay.replay.so3 import rotate_sh
 
 
 def fibonacci_sphere(n=724):

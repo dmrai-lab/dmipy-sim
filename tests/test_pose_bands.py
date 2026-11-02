@@ -17,7 +17,7 @@ import numpy as np
 from dmipy_replay import Encoding, ScannerSequence
 import pytest
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.geometry import FreeDiffusion
 from dmipy_sim.coefficient_walk import CoefficientWalk
 from dmipy_replay.replay import so3

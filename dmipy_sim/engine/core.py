@@ -1542,7 +1542,8 @@ def _walk_geometry(
             _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
             if _mode == "fast":                 # seed f_b walkers bound with a residual dwell (a known S/V)
                 S_V = _mt.surface_to_volume(geometry)
-                P_eq = _mt.bound_fraction(kappa_MT, dwell_time, S_V)
+                from dmipy_analytic.relaxation import bound_fraction
+                P_eq = bound_fraction(kappa_MT, dwell_time, S_V)
                 ek = jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E)
                 u_state, u_dwell = jax.random.uniform(ek, (2, n_walkers), dtype=jnp.float32)
                 brem0_all = jnp.where(u_state < jnp.float32(P_eq),

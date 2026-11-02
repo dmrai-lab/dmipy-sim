@@ -1,5 +1,6 @@
 """The names dmipy-sim does not define because dmipy-replay does (the pack's reader and everything a replay reads: the
-acquisitions, the sequence builders, the scanner catalogue, the substrate spec, the tissue): each is refused by name
+acquisitions, the sequence builders, the scanner catalogue, the substrate spec, the tissue) or dmipy-analytic does (the
+forms: the physical constants, the matrix method, the two-pool MT forms, the field forms): each is refused by name
 with its one spelling.
 
 A package of dmipy-sim that names dmipy-replay's code (``dmipy_sim``, ``dmipy_sim.replay``, ``dmipy_sim.sequences``,
@@ -19,7 +20,8 @@ MOVED = {
         **{n: "dmipy_replay" for n in ("ScannerSequence", "Encoding", "Protocol", "Prescription", "B1Pulse", "RFEvent",
                                        "RFSchedule", "SequenceTiming", "ScannerLimits", "set_b",
                                        "btensor_invariants", "rotate_waveform", "tile_waveform", "pgse", "pgste", "ogse",
-                                       "cpmg", "splice", "gre", "ste", "pte", "GAMMA", "compile_scheme")},
+                                       "cpmg", "splice", "gre", "ste", "pte", "compile_scheme")},
+        "GAMMA": "dmipy_analytic.constants",
         "SCANNERS": "dmipy_replay.acquisition.scanners", "bloch_simulate": "dmipy_replay.acquisition.rf",
         "slice_profile": "dmipy_replay.acquisition.rf", "replay_signal": "dmipy_replay.replay.replay",
         "surface_logweight": "dmipy_replay.replay.replay", "frame_from_axis": "dmipy_replay.replay.field",
@@ -32,8 +34,17 @@ MOVED = {
                                                  "to_gradient_array")},
         "from_pulseq": "dmipy_replay.sequences.pulseq",
     },
-    "dmipy_sim.math": {n: "dmipy_replay.math.gradient_conversions" for n in ("q_from_b", "b_from_q", "q_from_g", "g_from_q",
-                                                                            "b_from_g", "g_from_b")},
+    "dmipy_sim.math": {**{n: "dmipy_replay.math.gradient_conversions" for n in ("q_from_b", "b_from_q", "q_from_g",
+                                                                               "g_from_q", "b_from_g", "g_from_b")},
+                       "matrix_method": "dmipy_analytic.restricted"},
+    "dmipy_sim.engine.mt": {n: "dmipy_analytic.relaxation" for n in (
+        "forward_rate", "backward_rate", "bound_fraction", "kappa_MT_from_forward_rate", "dwell_time_from_fraction",
+        "two_pool_generator", "evolve_two_pool", "bloch_mcconnell_transverse", "bloch_mcconnell_longitudinal",
+        "mt_z_spectrum")},
+    "dmipy_sim.fields.hollow_cylinder": {"hollow_cylinder_basis": "dmipy_analytic.jax.fields",
+                                         "segment_basis": "dmipy_analytic.jax.fields",
+                                         "annulus_mean_log": "dmipy_analytic.fields"},
+    "dmipy_sim.acquisition.coil": {"MU0": "dmipy_analytic.constants", "segment_field": "dmipy_analytic.fields"},
     "dmipy_sim.spec": {
         **{n: "dmipy_replay.spec.substrate" for n in ("SubstrateSpec", "Domain", "Frame", "Susceptibility", "Surface",
                                                       "Wall", "Directional", "Sided", "Seeding", "Validity", "SpecError",

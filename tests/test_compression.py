@@ -12,7 +12,7 @@ import pytest
 
 from dmipy_sim.replay import compression as cx
 from dmipy_replay.replay.events import EventList, events_at_instants
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from tests.conftest import dense_relaxation_logweight
 
 

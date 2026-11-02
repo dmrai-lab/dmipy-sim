@@ -11,7 +11,7 @@ import pytest
 import dmipy_sim as d
 
 import dmipy_replay as dr
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.replay.compression import container_eps
 from dmipy_sim.replay.time_segments import FIELD_BITS_MAX, field_code, pack_words, rounding_eps, word_layout
 from dmipy_replay.replay.time_segments import Partition, _decode, unpack_words

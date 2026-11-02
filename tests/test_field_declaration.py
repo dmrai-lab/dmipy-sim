@@ -22,7 +22,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay import Encoding, ScannerSequence
 from dmipy_replay.acquisition.scanners import ScannerLimits
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
 from dmipy_replay import ReplayPack
