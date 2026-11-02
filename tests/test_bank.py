@@ -25,7 +25,7 @@ from dmipy_replay import read_rpk
 from dmipy_sim.replay import bank, compression as cx_
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue
-from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Susceptibility, Validity
+from dmipy_replay.spec.substrate import Domain, PoolSpec, Seeding, SubstrateSpec, Susceptibility, Validity
 from tests.replay_frames import field_along
 
 N_W, N_T, DT, D0, L = 600, 41, 5e-4, 2e-9, 6e-6
@@ -37,7 +37,7 @@ def _slab_spec(magnetic=False, length=L, D=D0):
     test relabels some into pool 1); pool 0 magnetic, with the field tier, for a walk that carries a field basis."""
     chi = Susceptibility(None, None, "none") if magnetic else None
     return SubstrateSpec("test/slab", Domain([0.0, -1e-3, -1e-3], [length, 1e-3, 1e-3], ["reflect", "open", "open"]),
-                         [Pool(0, "extra", D, susceptibility=chi), Pool(1, "intra", D)], [], Seeding([0]),
+                         [PoolSpec(0, "extra", D, susceptibility=chi), PoolSpec(1, "intra", D)], [], Seeding([0]),
                          Validity(length, ["gradient", "relaxation"] + (["field"] if magnetic else []))).validate().to_dict()
 
 

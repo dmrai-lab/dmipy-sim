@@ -10,7 +10,7 @@ matplotlib = pytest.importorskip("matplotlib")
 matplotlib.use("Agg")
 
 from dmipy_sim import Cylinder, FreeDiffusion
-from dmipy_replay import pgse, cpmg, set_b, calc_b
+from dmipy_replay import pgse, cpmg, set_b
 from dmipy_sim.viz import pedagogy as ped
 
 NW = 5000
@@ -29,7 +29,7 @@ def test_free_diffusion_echo_matches_analytic():
     seeds, so the walk's discretisation adds nothing the tolerance has to carry."""
     D, T2 = 1e-9, 80e-3
     wf = set_b(pgse([[1, 0, 0]], 4e-3, 20e-3, gradient_strengths=0.05, n_t=160), 1.0e9)
-    b = float(np.asarray(calc_b(wf)).ravel()[0])
+    b = float(np.asarray(wf.b()).ravel()[0])
     h = ped.replay_with_history(FreeDiffusion(), wf, diffusivity=D, T2=T2, n_walkers=NW, seed=0)
     Mc = h["M_comp"]
     net = np.abs((Mc[:, 0, :].sum(1) + 1j * Mc[:, 1, :].sum(1)) / Mc.shape[2])

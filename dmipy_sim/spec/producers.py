@@ -20,7 +20,7 @@ from dmipy_replay.spec.substrate import (
     SubstrateSpec,
     Domain,
     Frame,
-    Pool,
+    PoolSpec,
     Susceptibility,
     Surface,
     Wall,
@@ -49,10 +49,10 @@ def wm_pools(field_T=3.0, *, myelin_chi_iso=None, myelin_chi_aniso=None, D_myeli
     if myelin_chi_aniso is None:
         myelin_chi_aniso = p["delta_chi_a"]
     wf_m = float(get_default_value("myelin_water_proton_density"))
-    return [Pool(0, "extra", float(p["D_extra"]), water_fraction=1.0, T2=float(p["T2_extra"]), T1=float(p["T1_extra"])),
-            Pool(1, "intra", float(p["D_intra"]), water_fraction=1.0, T2=float(p["T2_intra"]), T1=float(p["T1_intra"])),
-            Pool(2, "myelin", float(D_myelin), water_fraction=wf_m, T2=float(p["T2_myelin"]), T1=float(p["T1_myelin"]),
-                 susceptibility=Susceptibility(float(myelin_chi_iso), float(myelin_chi_aniso), "radial"))]
+    return [PoolSpec(0, "extra", float(p["D_extra"]), water_fraction=1.0, T2=float(p["T2_extra"]), T1=float(p["T1_extra"])),
+            PoolSpec(1, "intra", float(p["D_intra"]), water_fraction=1.0, T2=float(p["T2_intra"]), T1=float(p["T1_intra"])),
+            PoolSpec(2, "myelin", float(D_myelin), water_fraction=wf_m, T2=float(p["T2_myelin"]), T1=float(p["T1_myelin"]),
+                     susceptibility=Susceptibility(float(myelin_chi_iso), float(myelin_chi_aniso), "radial"))]
 
 
 def _volume(V, F):
@@ -345,7 +345,7 @@ def winther_spec(inner_ply, outer_ply, *, scale=_UM, pad=1.0e-6, field_T=3.0, rh
     lo = (Vo.min(0) - pad).tolist(); hi = (Vo.max(0) + pad).tolist()
     rho2 = float(rho2 if rho2 is not None else canonical_white_matter(field_T=field_T)["rho2"])
     pools = wm_pools(field_T, myelin_chi_iso=1.06e-6, myelin_chi_aniso=0.0)       # the dataset's own convention
-    pools[0] = Pool(0, "extra", pools[0].D, water_fraction=0.0, T2=pools[0].T2, T1=pools[0].T1)     # free water, not substrate
+    pools[0] = PoolSpec(0, "extra", pools[0].D, water_fraction=0.0, T2=pools[0].T2, T1=pools[0].T1)     # free water, not substrate
     walls = _walls({0: (inner_ply, outer_ply)}, scale, rho2, rho2)
     spec = SubstrateSpec(
         id or f"winther/{os.path.splitext(os.path.basename(inner_ply))[0]}",
@@ -399,7 +399,7 @@ def caterpillar_spec(path, *, scale=_UM, box=None, glia=True, field_T=3.0, rho2=
                            f"direction dyadic, {np.degrees(np.arccos(min(1.0, abs(float(axis[2]))))):.1f} deg from stored z")
     if gl.any():
         pi = pools[1]
-        pools.append(Pool(3, "glia", pi.D, water_fraction=1.0, T2=pi.T2, T1=pi.T1))
+        pools.append(PoolSpec(3, "glia", pi.D, water_fraction=1.0, T2=pi.T2, T1=pi.T1))
         walls.append(Wall("glia", surf("outer_radius", "glial_cell"), 3, 0, Directional(), Sided(rho2, rho2)))
         transformations.append("glial cells: a fourth pool 'glia' (3) inside their spheres, with the intra pool's D / T2 / T1")
         smallest = min(smallest, float(t["r_out"][gl].min()))
@@ -470,8 +470,8 @@ def label_volume_spec(path, *, pools=None, voxel_size=None, origin=None, crop=No
     t2 = dict(T2_pools or {})
     if T2 is not None:
         t2[walking] = float(T2)
-    spec_pools = [Pool(i, n, (float(D) if (D is not None and i == wid) else None),
-                       water_fraction=(1.0 if i == wid else 0.0), T2=t2.get(n))
+    spec_pools = [PoolSpec(i, n, (float(D) if (D is not None and i == wid) else None),
+                           water_fraction=(1.0 if i == wid else 0.0), T2=t2.get(n))
                   for i, n in enumerate(names)]
 
     ids = np.full(256, -1, np.int32)
@@ -750,8 +750,8 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
                           f"{(V.max(0) * 1e6).round(2).tolist()} um; the domain is the surface's bounding box "
                           f"padded by {pad} m instead")
     D = 0.6e-9 if D is None else float(D)
-    pools = [Pool(0, "extra", D, water_fraction=0.0, T2=0.08, T1=1.0),
-             Pool(1, "intra", D, water_fraction=1.0, T2=0.08, T1=1.0)]
+    pools = [PoolSpec(0, "extra", D, water_fraction=0.0, T2=0.08, T1=1.0),
+             PoolSpec(1, "intra", D, water_fraction=1.0, T2=0.08, T1=1.0)]
     cite = cite_ply_as or os.path.basename(ply)
     wall = Wall("axolemma", Surface("mesh", file=cite, format=ply.rsplit(".", 1)[-1].lower(), scale=float(scale),
                                     sha256=_sha(ply)), 1, 0, Directional(), Sided(float(rho2), float(rho2)))

@@ -366,7 +366,7 @@ def _shell_union_spec(magnetic):
     from dmipy_replay.spec.substrate import (
         Directional,
         Domain,
-        Pool,
+        PoolSpec,
         Seeding,
         Sided,
         Surface,
@@ -379,8 +379,8 @@ def _shell_union_spec(magnetic):
                   Directional(), Sided()),
              Wall("outer", Surface("sphere_union", instances={"centers": c, "radii": [1.2e-6, 1.2e-6]}), 2, 0,
                   Directional(), Sided())]
-    pools = [Pool(0, "extra", D0), Pool(1, "intra", D0),
-             Pool(2, "shell", 0.0, water_fraction=0.0, susceptibility=(Susceptibility(None, None, "none") if magnetic else None))]
+    pools = [PoolSpec(0, "extra", D0), PoolSpec(1, "intra", D0),
+             PoolSpec(2, "shell", 0.0, water_fraction=0.0, susceptibility=(Susceptibility(None, None, "none") if magnetic else None))]
     return SubstrateSpec("test/shell-union", Domain([-4e-6] * 3, [4e-6] * 3, ["reflect"] * 3), pools, walls,
                          Seeding([0, 1]), Validity(0.4e-6, ["gradient", "relaxation", "surface"] + (["field"] if magnetic else []),
                                                    thinnest_shell=0.4e-6)).validate()

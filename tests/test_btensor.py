@@ -1,4 +1,4 @@
-"""B-tensor encoding: calc_btensor, btensor_invariants, ste(), pte().
+"""B-tensor encoding: ``seq.btensor()``, btensor_invariants, ste(), pte().
 
 Tests are ordered from cheapest (analytical only) to most expensive (MC).
 All MC tests are skipped when no GPU is present so the suite stays fast on CI.
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import dmipy_sim as ds
-from dmipy_replay import pgse, ogse, ste, pte, calc_b, calc_btensor, btensor_invariants, set_b
+from dmipy_replay import pgse, ogse, ste, pte, btensor_invariants, set_b
 from dmipy_sim import simulate, FreeDiffusion
 
 try:
@@ -26,15 +26,15 @@ G       = 0.06    # T/m
 N_T     = 1000
 
 
-# ── trace(B) == calc_b ─────────────────────────────────────────────
+# ── trace(B) == b ──────────────────────────────────────────────────
 
 @pytest.mark.parametrize("waveform_fn, kwargs", [
     ("pgse",  {}),
     ("ogse",  {"frequency": 2.0 / (DELTA + BIGDEL), "T_total": DELTA + BIGDEL}),     # one period per block
     ("trap",  {"N": 2}),
 ])
-def test_trace_equals_calc_b(waveform_fn, kwargs):
-    """trace(calc_btensor(wf)) must equal calc_b(wf) to float64 precision."""
+def test_trace_equals_b(waveform_fn, kwargs):
+    """trace(wf.btensor()) must equal wf.b() to float64 precision."""
     bvecs = np.array([[1., 0., 0.]])
 
     if waveform_fn == "pgse":
@@ -44,14 +44,14 @@ def test_trace_equals_calc_b(waveform_fn, kwargs):
     elif waveform_fn == "trap":
         wf = ogse(bvecs, kwargs["N"] / (2 * DELTA), DELTA, gradient_strengths=G, shape="trapezoid", Delta=BIGDEL, slew_rate=200e3, n_t=N_T)
 
-    B    = calc_btensor(wf)       # (1, 3, 3)
+    B    = wf.btensor()       # (1, 3, 3)
     b_tr = np.trace(B[0])
-    b_cb = calc_b(wf)[0]
+    b_cb = wf.b()[0]
 
     # Same trapezoid integration over float32 G, but different reduction order
     # (sum-then-integrate vs integrate-then-sum) introduces ~1e-6 relative error.
     np.testing.assert_allclose(b_tr, b_cb, rtol=1e-5,
-        err_msg=f"trace(B)={b_tr:.6e} != calc_b={b_cb:.6e} for {waveform_fn}")
+        err_msg=f"trace(B)={b_tr:.6e} != b={b_cb:.6e} for {waveform_fn}")
 
 
 # ── LTE b_delta = 1 ────────────────────────────────────────────────
@@ -67,7 +67,7 @@ def test_lte_b_delta(bvec):
     bv = np.array([bvec], dtype=np.float32)
     bv /= np.linalg.norm(bv)
     wf = pgse(bv, DELTA, BIGDEL, gradient_strengths=G, n_t=N_T)
-    B  = calc_btensor(wf)
+    B  = wf.btensor()
     b, b_delta, b_eta = btensor_invariants(B)
     assert abs(b_delta[0] - 1.0) < 1e-3, f"LTE b_delta={b_delta[0]:.6f}, expected 1.0"
     assert abs(b_eta[0])         < 1e-3, f"LTE b_eta={b_eta[0]:.6f}, expected 0.0"
@@ -78,7 +78,7 @@ def test_lte_b_delta(bvec):
 def test_ste_b_delta():
     """STE waveform must have b_delta=0 (isotropic B-tensor)."""
     wf = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
-    B  = calc_btensor(wf)
+    B  = wf.btensor()
     b, b_delta, b_eta = btensor_invariants(B)
     assert abs(b_delta[0]) < 1e-3, f"STE b_delta={b_delta[0]:.6f}, expected 0.0"
     assert abs(b_eta[0])   < 1e-3, f"STE b_eta={b_eta[0]:.6f}, expected 0.0"
@@ -87,7 +87,7 @@ def test_ste_b_delta():
 def test_ste_btensor_diagonal():
     """B-tensor for STE must have equal diagonal and near-zero off-diagonal."""
     wf = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
-    B  = calc_btensor(wf)[0]          # (3, 3)
+    B  = wf.btensor()[0]          # (3, 3)
     b  = np.trace(B)
     # Each diagonal element should be b/3 (float32 G: ~1e-5 relative error)
     np.testing.assert_allclose(np.diag(B), b / 3, rtol=1e-5,
@@ -101,7 +101,7 @@ def test_ste_btensor_diagonal():
 def test_ste_total_b():
     """STE total b-value must equal 3 × b per axis (by symmetry)."""
     wf_ste = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
-    B      = calc_btensor(wf_ste)[0]
+    B      = wf_ste.btensor()[0]
     b_total = np.trace(B)
     # Each diagonal entry should be b_total/3 (float32: ~1e-5 relative)
     np.testing.assert_allclose(np.diag(B), b_total / 3, rtol=1e-5)
@@ -119,7 +119,7 @@ def test_pte_b_delta(normal):
     n = np.array(normal, dtype=np.float64)
     n /= np.linalg.norm(n)
     wf = pte(n, DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
-    B  = calc_btensor(wf)
+    B  = wf.btensor()
     b, b_delta, b_eta = btensor_invariants(B)
     assert abs(b_delta[0] - (-0.5)) < 1e-3, \
         f"PTE b_delta={b_delta[0]:.6f}, expected -0.5 (normal={normal})"
@@ -129,7 +129,7 @@ def test_pte_zero_eigenvalue():
     """PTE B-tensor must have one zero eigenvalue along the normal axis."""
     n = np.array([0., 0., 1.])
     wf = pte(n, DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
-    B  = calc_btensor(wf)[0]
+    B  = wf.btensor()[0]
     eigvals = np.sort(np.linalg.eigvalsh(B))[::-1]  # descending
     # λ_1 ≈ λ_2 ≈ b/2 (float32: ~1e-5 relative off-diagonal residuals)
     # λ_3 = 0 exactly (no z-gradient ever played)
@@ -142,7 +142,7 @@ def test_pte_zero_eigenvalue():
 def test_pte_total_b():
     """PTE total b-value must equal 2 × b per in-plane axis (by symmetry)."""
     wf_pte = pte(np.array([0., 0., 1.]), DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
-    B      = calc_btensor(wf_pte)[0]
+    B      = wf_pte.btensor()[0]
     eigs   = np.sort(np.linalg.eigvalsh(B))[::-1]  # descending
     # Two equal non-zero eigenvalues (float32: ~1e-5 relative)
     np.testing.assert_allclose(eigs[0], eigs[1], rtol=1e-5)
@@ -157,7 +157,7 @@ def test_set_b_ste():
     wf   = ste(DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     b_target = 1e9
     wf2  = set_b(wf, b_target)
-    b_out, b_delta, _ = btensor_invariants(calc_btensor(wf2))
+    b_out, b_delta, _ = btensor_invariants(wf2.btensor())
     np.testing.assert_allclose(b_out[0], b_target, rtol=1e-6)
     assert abs(b_delta[0]) < 1e-3, f"b_delta after set_b={b_delta[0]:.6f}"
 
@@ -167,7 +167,7 @@ def test_set_b_pte():
     wf   = pte(np.array([0., 0., 1.]), DELTA + BIGDEL, gradient_strengths=G, n_t=N_T)
     b_target = 1e9
     wf2  = set_b(wf, b_target)
-    b_out, b_delta, _ = btensor_invariants(calc_btensor(wf2))
+    b_out, b_delta, _ = btensor_invariants(wf2.btensor())
     np.testing.assert_allclose(b_out[0], b_target, rtol=1e-4)
     assert abs(b_delta[0] - (-0.5)) < 1e-3, f"b_delta after set_b={b_delta[0]:.6f}"
 
