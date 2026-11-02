@@ -206,7 +206,7 @@ def to_pulseq(waveform, m=0, *, system=None, filename=None,
     prev = 0
     n_inserted = 0          # samples of extra time the pulses cost
     inserted_before_echo = 0
-    echo0 = int(getattr(waveform, 'echo_idx', len(Ghz) - 1) or 0)
+    echo0 = int(waveform.echo_idx)
     for e, k in zip(ev, ks):
         k = int(np.clip(k, 0, len(Ghz) - 1))
         _grad_block(prev, k)

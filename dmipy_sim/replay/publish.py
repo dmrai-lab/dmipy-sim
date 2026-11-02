@@ -174,7 +174,7 @@ def manifest_row(meta, path, sha256, nbytes, *, local=None, published_commit=Non
             row["pack_license_url"] = meta["pack_license_url"]
     if wp.get("windows"):
         row["windows"] = wp["windows"]
-        n = int(wp["windows"].get("n") or 1)
+        n = int(wp["windows"]["n"])
         if n > 1 and local is not None:
             sb = _window_bytes(local, n)
             if sb is not None:
@@ -212,6 +212,8 @@ def _fmt(x, spec):
 
 
 def _size(nbytes):
+    if nbytes is None:
+        return "—"
     for unit, div in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
         if nbytes >= div:
             return f"{nbytes / div:.1f} {unit}"
@@ -222,7 +224,7 @@ def _duration(row):
     T = row.get("T_max")
     s = "—" if T is None else f"{T * 1e3:g} ms"
     seg = row.get("windows")
-    if seg and int(seg.get("n") or 1) > 1:                       # a walk in several windows: how many of what length
+    if seg and int(seg["n"]) > 1:                       # a walk in several windows: how many of what length
         s += f" ({seg.get('n')} × {_fmt(None if seg.get('T') is None else seg['T'] * 1e3, 'g')} ms"
         if row.get("window_bytes"):                             # what one windows=range(k) read costs
             s += f", {_size(row['window_bytes'])}/window"
@@ -275,7 +277,7 @@ def render_readme(manifest, repo):
     lines += ["## Packs", "", "| id | duration | walkers | bands | channels | floor | size | commit | path |", "|---|---|---|---|---|---|---|---|---|"]
     for r in packs:
         lines.append(f"| `{r.get('id')}` | {_duration(r)} | {_fmt(r.get('n_walkers'), 'd')} | {_fmt(r.get('K'), 'd')} | "
-                     f"{', '.join(r.get('channels') or [])} | {_fmt(r.get('floor_max'), '.3g')} | {_size(r.get('bytes') or 0)} | "
+                     f"{', '.join(r.get('channels') or [])} | {_fmt(r.get('floor_max'), '.3g')} | {_size(r.get('bytes'))} | "
                      f"{_commit_cell(r.get('built_commit'), r.get('published_commit'))} | `{r.get('path')}` |")
     cites = sorted({r["citation"] for r in packs if r.get("citation")})
     if cites:

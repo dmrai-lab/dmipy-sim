@@ -194,9 +194,12 @@ class HollowCylinderField:
         position (traceable, float32, elementwise: no matmul touches a position), and the key a compiled walk is
         cached on."""
         import jax.numpy as jnp
-        ims = np.arange(-self.n_images, self.n_images + 1) * (self.L or 0.0)
-        ox, oy = np.meshgrid(ims, ims)
-        offs = np.stack([ox.ravel(), oy.ravel()], axis=1) if self.L is not None else np.zeros((1, 2))
+        if self.L is not None:                                    # the cell's periodic images
+            ims = np.arange(-self.n_images, self.n_images + 1) * self.L
+            ox, oy = np.meshgrid(ims, ims)
+            offs = np.stack([ox.ravel(), oy.ravel()], axis=1)
+        else:                                                     # an isolated cylinder: itself alone
+            offs = np.zeros((1, 2))
         arrays = (jnp.asarray(self.centers, jnp.float32), jnp.asarray(self.inner_radii, jnp.float32),
                   jnp.asarray(self.outer_radii, jnp.float32), jnp.asarray(offs, jnp.float32),
                   jnp.float32(self.L if self.L is not None else 0.0))

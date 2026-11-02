@@ -37,6 +37,13 @@ def _f(x):
     return None if x is None else float(x)
 
 
+def file_unit_scale(scale):
+    """The metres per unit of a file a spec cites (a surface's ``scale``, the explicit seeding positions' ``scale``): the
+    stated scale, and 1 where the spec states none -- a cited file's coordinates are in metres unless ``scale`` says
+    otherwise, the reading :meth:`dmipy_replay.spec.substrate.SubstrateSpec.scaled` makes too."""
+    return 1.0 if scale is None else float(scale)
+
+
 def _rho2(g):
     return _f(getattr(g, "surface_relaxivity_t2", None)) or 0.0
 
@@ -326,11 +333,11 @@ def _spec_of_mesh(g, sid, prov, surface_dir):
         src = {"file": path, "cite": cite, "scale": 1.0}
         g.source = dict(src, recenter=False)          # from now on the mesh knows its file
     cite_file = src.get("cite", src["file"])
-    if getattr(g, "n_faces_reoriented", 0):
+    if g.n_faces_reoriented:
         prov.setdefault("transformations", []).append(
             f"{g.n_faces_reoriented} face(s) reoriented so the surface's normals agree and face outward "
             f"(enclosed volume {g.winding['volume']:.4g} -> {g.winding['volume_after']:.4g} m^3)")
-    surf = Surface("mesh", file=cite_file, format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src.get("scale", 1.0)),
+    surf = Surface("mesh", file=cite_file, format=str(src["file"]).rsplit(".", 1)[-1].lower(), scale=float(src["scale"]),
                    sha256=_sha256(src["file"]))
     comps = g.compartments
     # A `Mesh` walks ONE side of its surface (`pool=`), so in THIS walk the other side holds no water. Writing
@@ -474,7 +481,7 @@ def sphere_union_arrays(surface):
     s = surface
     if s.file:
         from ..io.caterpillar import read_caterpillar
-        t = read_caterpillar(s.file, scale=(s.scale or 1.0), cell_types=(s.cell_type,) if s.cell_type else ("axon", "glial_cell"))
+        t = read_caterpillar(s.file, scale=file_unit_scale(s.scale), cell_types=(s.cell_type,) if s.cell_type else ("axon", "glial_cell"))
         r = t["r_in"] if s.column == "inner_radius" else t["r_out"]
         return t["centers"], r
     return np.asarray(s.instances["centers"], float), np.asarray(s.instances["radii"], float)
@@ -527,14 +534,14 @@ def polyline_arrays(surface):
             from ..io.strands import read_tck
             if not s.instances or "radii" not in s.instances:
                 raise SpecError("a swept_polyline from a track file carries its radii as instances.radii")
-            cls_ = read_tck(path, coordinate_unit_m=float(s.scale or 1.0))
+            cls_ = read_tck(path, coordinate_unit_m=file_unit_scale(s.scale))
             radii = np.asarray(s.instances["radii"], float)
             if len(cls_) != len(radii):
                 raise SpecError(f"{path} holds {len(cls_)} tracks but the spec lists {len(radii)} radii")
             return cls_, radii
         if fmt == "strands":
             from ..io.strands import read_strands
-            t = read_strands(path, scale=float(s.scale or 1.0))
+            t = read_strands(path, scale=file_unit_scale(s.scale))
             return [np.asarray(c, float) for c in t["centerlines"]], np.asarray(t["radii"], float)
         raise SpecError(f"a swept_polyline file is a 'tck' track file or a 'strands' list, not {s.format!r}")
     if s.instances:
@@ -719,7 +726,7 @@ def _geometry_from_spec(spec):
         if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
             perm = ({"intra_to_extra": w.permeability.in_to_out, "extra_to_intra": w.permeability.out_to_in}
                     if w.permeability.in_to_out != w.permeability.out_to_in else w.permeability.in_to_out)
-        m = Mesh.from_ply(mesh_surface_file(s), scale=(s.scale or 1.0), periodic=[b == "periodic" for b in dom.boundary],
+        m = Mesh.from_ply(mesh_surface_file(s), scale=file_unit_scale(s.scale), periodic=[b == "periodic" for b in dom.boundary],
                           voxel_min=dom.box_min, voxel_max=dom.box_max, feature_radius=spec.validity.smallest_feature,
                           permeability=perm, compartments=(Compartments(**comps) if comps else None),
                           pool={1: "intra", 0: "extra"}[spec.seeding.pools[0]],
@@ -801,9 +808,10 @@ def _geometry_from_spec(spec):
                 intra_p, myelin_p, extra_p = by_id[intra_id], by_id[myelin_id], by_id[extra_id]
                 # the pack reads pool NAMES and water_fraction off `.compartments` -- built always, straight
                 # from the spec's three pools (D and water fraction); T2/T1 are replay knobs (SUBSTRATE.md 4.6, #540) and never go in.
-                comps = Compartments(extra=CPool(D=extra_p.D or 0.0, water_fraction=extra_p.water_fraction),
-                                     intra=CPool(D=intra_p.D or 0.0, water_fraction=intra_p.water_fraction),
-                                     myelin=CPool(D=myelin_p.D or 0.0, water_fraction=myelin_p.water_fraction))
+                # a pool's D is the spec's: an unstated one is refused by the geometry by name, never read as frozen
+                comps = Compartments(extra=CPool(D=extra_p.D, water_fraction=extra_p.water_fraction),
+                                     intra=CPool(D=intra_p.D, water_fraction=intra_p.water_fraction),
+                                     myelin=CPool(D=myelin_p.D, water_fraction=myelin_p.water_fraction))
                 if inner.surface.kind == "swept_polyline":
                     if (inner.permeability.in_to_out > 0 or inner.permeability.out_to_in > 0
                             or outer.permeability.in_to_out > 0 or outer.permeability.out_to_in > 0):

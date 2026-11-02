@@ -49,9 +49,9 @@ def wm_pools(field_T=3.0, *, myelin_chi_iso=None, myelin_chi_aniso=None, D_myeli
     if myelin_chi_aniso is None:
         myelin_chi_aniso = p["delta_chi_a"]
     wf_m = float(get_default_value("myelin_water_proton_density"))
-    return [Pool(0, "extra", float(p["D_extra"]), water_fraction=1.0, T2=float(p["T2_extra"]), T1=float(p.get("T1_extra", 1.0))),
-            Pool(1, "intra", float(p["D_intra"]), water_fraction=1.0, T2=float(p["T2_intra"]), T1=float(p.get("T1_intra", 1.2))),
-            Pool(2, "myelin", float(D_myelin), water_fraction=wf_m, T2=float(p["T2_myelin"]), T1=float(p.get("T1_myelin", 0.44)),
+    return [Pool(0, "extra", float(p["D_extra"]), water_fraction=1.0, T2=float(p["T2_extra"]), T1=float(p["T1_extra"])),
+            Pool(1, "intra", float(p["D_intra"]), water_fraction=1.0, T2=float(p["T2_intra"]), T1=float(p["T1_intra"])),
+            Pool(2, "myelin", float(D_myelin), water_fraction=wf_m, T2=float(p["T2_myelin"]), T1=float(p["T1_myelin"]),
                  susceptibility=Susceptibility(float(myelin_chi_iso), float(myelin_chi_aniso), "radial"))]
 
 
@@ -827,8 +827,12 @@ def _radii_from_law(radius_law, n, seed):
     if family != "gamma":
         raise ValueError(f"radius_law family {family!r} is not supported; only 'gamma' is, as "
                          f"{{'family': 'gamma', 'shape': ..., 'scale': ..., 'r_min': ...}}")
+    missing = [k for k in ("shape", "scale", "r_min") if k not in radius_law]
+    if missing:
+        raise ValueError(f"radius_law states no {missing}: it is {{'family': 'gamma', 'shape': ..., 'scale': ..., "
+                         f"'r_min': ...}}, every value stated (r_min 0 for no floor)")
     shape, scale = float(radius_law["shape"]), float(radius_law["scale"])
-    r_min = float(radius_law.get("r_min", 0.0))
+    r_min = float(radius_law["r_min"])
     rng = np.random.default_rng(int(seed))
     return np.maximum(rng.gamma(shape, scale, int(n)), r_min)
 
@@ -878,7 +882,7 @@ def packed_request(kind, n_objects, radius_law, target_fraction, *, seed=0, min_
     request = dict(generator={"name": "dmipy_sim.spec.producers.packed_request", "version": _version()},
                    seed=int(seed), n_objects=int(n_objects), packing_fraction=f,
                    radius_law={"family": radius_law["family"], "shape": float(radius_law["shape"]),
-                               "scale": float(radius_law["scale"]), "r_min": float(radius_law.get("r_min", 0.0))},
+                               "scale": float(radius_law["scale"]), "r_min": float(radius_law["r_min"])},
                    min_gap=(None if min_gap is None else float(min_gap)))
     realisation = dict(n_objects=int(len(radii)), packing_fraction=float(achieved), cell_side=float(L),
                        min_gap=realised_gap, smallest_feature=float(spec.validity.smallest_feature))

@@ -1511,35 +1511,30 @@ class Mesh(Geometry):
     def _surface_is_closed(self):
         """Does every edge have two faces? Cached -- it is a property of the mesh, not of a call.
 
-        A missing ``trimesh`` raises as the ``ImportError`` it is -- it says nothing about this
-        mesh's topology -- rather than being read as "open": that swallowed a closed icosphere into
-        the contradictory ``init_positions`` error "cannot seed this OPEN surface: 0 boundary
-        edge(s)", where the 0 itself proves closedness and the exception was the real cause."""
+        A check that cannot run raises what stopped it -- a missing ``trimesh`` its ``ImportError``, any other failure
+        its own exception -- since neither says anything about this mesh's topology: read as "open", it turns into
+        the contradictory ``init_positions`` error "cannot seed this OPEN surface: 0 boundary edge(s)"."""
         if getattr(self, "_closed", None) is None:
-            try:
-                import trimesh
-                m = trimesh.Trimesh(vertices=np.asarray(self.vertices, float),
-                                    faces=np.asarray(self.faces, np.int64), process=False)
-                n_open = len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1))
-                self._closed = bool(n_open == 0)
-            except ImportError:
-                raise
-            except Exception:
-                self._closed = False
+            import trimesh
+            m = trimesh.Trimesh(vertices=np.asarray(self.vertices, float),
+                                faces=np.asarray(self.faces, np.int64), process=False)
+            n_open = len(trimesh.grouping.group_rows(m.edges_sorted, require_count=1))
+            self._closed = bool(n_open == 0)
         return self._closed
 
     def _prism_route(self):
         """``(axis, loops)`` once, cached -- a property of the mesh, not of a call -- if this surface is
         open only because it is a periodic extrusion (see :meth:`init_positions`); ``None`` otherwise,
         including when trimesh cannot be imported to check (the surface then falls through to the explicit
-        refusal, which names the condition rather than raising an unrelated import error).
+        refusal, which names the condition rather than raising an unrelated import error). Any other failure of
+        the check raises: it says nothing about the surface's shape.
         """
         if getattr(self, "_prism", "unset") == "unset":
             try:
                 axis = prism_open_axis(self.vertices, self.faces, self.periodic, self.vmin, self.vmax)
                 loops = (prism_cross_section_loops(self.vertices, self.faces, axis, self.vmin, self.vmax)
                          if axis is not None else None)
-            except Exception:
+            except ImportError:
                 axis, loops = None, None
             self._prism = (axis, loops) if loops is not None else None
         return self._prism

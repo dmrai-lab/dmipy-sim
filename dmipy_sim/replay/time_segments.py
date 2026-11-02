@@ -117,6 +117,7 @@ import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+from ..coefficient_walk import _window_t0
 from dmipy_replay.replay.time_segments import Delivered, FORMAT, MANIFEST, Partition, TILE, WORD_BITS, _AXES, _RTOL, _decode, _group_key, _layout_of, _phase, _row_terms
 
 ROWS = "rows.json"
@@ -376,7 +377,7 @@ def _walk_view(walk, weights=None):
     for i in range(n):
         cw = walk.window(i)
         p = "" if i == 0 else f"s{i}/"
-        t0 = float((cw.block.get("window") or {}).get("t0", cw.block.get("t_start", 0.0)))
+        t0 = _window_t0(cw.block)
         a = dict(cx.pack_position_arrays(np.asarray(cw.position_coeffs)[:, 0], np.float32))
         if cw.boundary_bands is not None:
             a_, cm = cx.encode_boundary_bands(np.zeros(cw.n_walkers, np.float32), np.asarray(cw.boundary_endpoint)[:, 0],
@@ -835,7 +836,7 @@ def _source_tier_terms(recs, g, eps):
     from a walk). A floor target a caller STATED (``segment_rows(floor_target=)``) whose budget ``eps^2`` is below it is
     refused by name, since no width meets it; the pack's own declared target is taken as it is and the certificate
     states the error."""
-    out = {k: max(float((r["groups"][g].get("quantisation") or {}).get(k, 0.0)) for r in recs) for k in ("contact", "field")}
+    out = {k: max(float(r["groups"][g]["quantisation"][k]) for r in recs) for k in ("contact", "field")}
     stated = any(r["source"].get("floor_target_stated") for r in recs)
     for k, q in out.items():
         if stated and q >= eps ** 2:

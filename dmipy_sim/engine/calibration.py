@@ -81,7 +81,10 @@ class FieldCalibration:
         if checked["status"] != "passed":
             raise ValueError(f"field calibration accuracy is {checked['status']}; required evidence cannot be skipped")
         step = data["step"]
-        reassessed = assess_step_certificate(step, z=step.get("z", 3.0))
+        if "z" not in step:
+            raise ValueError("field calibration's step assessment states no z (its confidence multiplier); assess the step "
+                             "with math.step_law.assess_step_certificate, which records it")
+        reassessed = assess_step_certificate(step, z=step["z"])
         if (step.get("status") != "passed" or reassessed["status"] != "passed" or
                 step.get("metric") != STEP_METRIC or
                 reassessed["confidence"] < accuracy["confidence"]):
@@ -147,7 +150,7 @@ def adaptive_scope(*, geometry, diffusivity, field_basis, spec, plan, T, K, m, h
     """Exact immutable-input scope for the adaptive strand calibration; counts and seeds are absent."""
     if (not isinstance(query, dict) or not query.get("identity") or query.get("metric") != SIGNAL_METRIC or
             not np.isfinite(query.get("target", np.nan)) or query["target"] <= 0 or
-            not 0 < query.get("confidence", 0) < 1):
+            "confidence" not in query or not 0 < query["confidence"] < 1):
         raise ValueError("query scope states protocol/tissue identity, absolute signal target and confidence")
     import jax
     physics = dict(geometry=type(geometry).__qualname__,

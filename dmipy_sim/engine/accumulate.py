@@ -81,7 +81,7 @@ def spec_chi_scale(spec):
     vals = []
     for p in (getattr(spec, "field_source_pools", None) or []) if spec is not None else []:
         s = p.susceptibility
-        vals.append(abs(float(s.chi_iso or 0.0)) + abs(float(s.chi_aniso or 0.0)))
+        vals.append(sum(abs(float(c)) for c in (s.chi_iso, s.chi_aniso) if c is not None))   # an unstated chi is a replay knob
     return float(max(vals)) if vals and max(vals) > 0.0 else float(FIELD_RULE_CHI)
 
 
