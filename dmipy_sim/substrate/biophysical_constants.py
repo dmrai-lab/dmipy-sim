@@ -14,6 +14,8 @@ where the value can be found (or 'NEEDS VERIFICATION' if not yet pinpointed).
 
 import warnings
 
+from dmipy_replay.constants import GAMMA
+
 # Shared citation dicts referenced by multiple constants
 _CITATION_MILLS1973 = {
     'key': 'mills1973',
@@ -281,7 +283,7 @@ BIOPHYSICAL_CONSTANTS = {
     },
     'gamma_proton': {
         'default': {
-            'value': 267.513e6,
+            'value': GAMMA,                                     # the ecosystem's one gyromagnetic ratio
             'unit': 'rad/s/T',
             'field_T': None,
             'species': None,
