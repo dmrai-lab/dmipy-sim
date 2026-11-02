@@ -105,8 +105,8 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
 
     Claim: an extra-axonal walker of the dense pack ends inside a cylinder with probability below 0.23 %: of N = 2,000
     walkers none inside miss a leak of that rate with probability ``(1 - 0.0023)^2000`` = 1 %. A leak is one step across a
-    gap narrower than the step, not an accumulation, so the walk is one 50 us block (115 sub-steps of 72 nm; a walker
-    travels 0.45 um of the 0.7 um between the cylinders) instead of the 20 ms PGSE (230 sub-steps per 100 us)."""
+    gap narrower than the step, not an accumulation, so the walk is one 50 us block (115 sub-steps of 72 nm, 0.45 um of
+    diffusion per axis) instead of the 20 ms PGSE (230 sub-steps per 100 us)."""
     radii, c, L = _dense_pack()
     pc = d.PackedCylinders(radii, c, L, pool="extra")
     r0 = np.asarray(pc.init_positions(N_DENSE, jax.random.PRNGKey(4)))
