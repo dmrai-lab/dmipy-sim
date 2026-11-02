@@ -8,7 +8,7 @@ device and walks nothing.
     python tools/build_pose_fixtures.py             # writes the two files under tests/data/ and prints their sizes
     python tools/build_pose_fixtures.py --out DIR   # writes them under DIR instead
 
-Run from the repository root. The packs are synthetic (no third-party data), 74 KiB in all, and are rebuilt, and committed
+Run from the repository root. The packs are synthetic (no third-party data), 74 KB in all, and are rebuilt, and committed
 again, when the pack format or the walk's certificate changes."""
 import argparse
 import os
