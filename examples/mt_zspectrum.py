@@ -4,7 +4,7 @@
 Runs :func:`dmipy_sim.emergent_z_spectrum` (a real forward vector-Bloch Monte-Carlo walk:
 spins bind to the wall, the short-T2 bound pool saturates off-resonance) over a set of
 saturation offsets on ONE substrate, and overlays the analytic two-pool Bloch--McConnell
-Z-spectrum (:func:`dmipy_sim.mt.mt_z_spectrum`) it is validated against. No super-Lorentzian
+Z-spectrum (:func:`dmipy_analytic.relaxation.mt_z_spectrum`) it is validated against. No super-Lorentzian
 lineshape is assumed on either side — the MT dip emerges from real short-T2b spins.
 
 Heavy Monte-Carlo -> GPU-recommended.  Reduce ``N_WALKERS`` / ``OFFSETS`` for a quick look,
@@ -17,7 +17,7 @@ import argparse
 import numpy as np
 
 from dmipy_sim import Sphere, emergent_z_spectrum
-from dmipy_sim.engine import mt
+from dmipy_analytic import relaxation
 
 # well-mixed sphere (R^2/D mixing time << 1/k_f), broad bound pool (T2b ~ 10 us)
 R, D = 2e-6, 2e-9
@@ -25,7 +25,7 @@ K_F, K_R = 40.0, 80.0                         # forward / backward exchange (s^-
 T2A, T1A, T2B, T1B = 80e-3, 1.0, 1e-5, 1.0
 W1_HZ, T_SAT, DT = 200.0, 0.025, 2e-5
 S_OVER_V = 3.0 / R                            # sphere
-KAPPA_MT = mt.kappa_MT_from_forward_rate(K_F, S_OVER_V)   # k_f = kappa*(S/V)
+KAPPA_MT = relaxation.kappa_MT_from_forward_rate(K_F, S_OVER_V)   # k_f = kappa*(S/V)
 DWELL = 1.0 / K_R
 OFFSETS = np.array([0.0, 500.0, 1000.0, 3000.0, 8000.0])
 
@@ -34,8 +34,8 @@ def oracle_total(offsets):
     """Two-pool oracle TOTAL longitudinal (free + bound), the quantity the walker-mean Mz
     reports; normalised to equilibrium."""
     kw = dict(w1_hz=W1_HZ, t_sat=T_SAT, T1a=T1A, T2a=T2A, T1b=T1B, T2b=T2B, k_f=K_F, k_r=K_R)
-    za = np.atleast_1d(mt.mt_z_spectrum(offsets, read_pool="a", **kw))
-    zb = np.atleast_1d(mt.mt_z_spectrum(offsets, read_pool="b", **kw))
+    za = np.atleast_1d(relaxation.mt_z_spectrum(offsets, read_pool="a", **kw))
+    zb = np.atleast_1d(relaxation.mt_z_spectrum(offsets, read_pool="b", **kw))
     m0b = K_F / K_R
     return (za + m0b * zb) / (1.0 + m0b)
 
@@ -50,7 +50,7 @@ def main():
                if args.offsets else OFFSETS)
 
     print(f"emergent MT Z-spectrum: sphere R={R*1e6:.1f} um, k_f={K_F:.0f}/s, k_r={K_R:.0f}/s, "
-          f"f_b={mt.bound_fraction(KAPPA_MT, DWELL, S_OVER_V):.3f}")
+          f"f_b={relaxation.bound_fraction(KAPPA_MT, DWELL, S_OVER_V):.3f}")
     mc = emergent_z_spectrum(offsets, Sphere(radius=R), n_walkers=args.walkers,
                              diffusivity=D, w1_hz=W1_HZ, t_sat=T_SAT, dt=DT,
                              T2=T2A, T1=T1A, kappa_MT=KAPPA_MT, dwell_time=DWELL,

@@ -9,7 +9,7 @@ import pytest
 import dmipy_sim as d
 
 import dmipy_replay as dr
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.foreign import (band_limit, interpolation_variance, interpolation_variance_bound, walk_from_positions)

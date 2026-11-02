@@ -38,7 +38,7 @@ import jax.numpy as jnp
 from dmipy_replay.replay.bloch import _rf_increment
 from ..geometry._boundary import bind_probability
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
 from .gpu import gpu_available
 from ..run import Run

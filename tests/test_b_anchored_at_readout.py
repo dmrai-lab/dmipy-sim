@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from dmipy_replay.acquisition.waveforms import b_from_gradient, btensor_from_gradient
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay import sequences
 
 

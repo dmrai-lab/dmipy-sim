@@ -643,7 +643,7 @@ def derive_field_band_per_pool(series, pools, names, h, env=None, *, K_max, B0=N
 def _gate_battery(f_raw, f_dec, gates, w, A, B, dt):
     """The worst gated-phase replay error between two per-walker field series over ``gates``, and the split-half
     floor of the reference: ``(err, floor)``."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     wmean = lambda c, idx: float(np.sum(w[idx] * c[idx]) / np.sum(w[idx]))
     err = floor = 0.0
     dt = np.broadcast_to(np.asarray(dt, np.float64), (f_raw.shape[1],))                # a sample's interval (s)
@@ -732,7 +732,7 @@ class DerivedFieldContainer:
         """``[{"modes": [k0, k1], "bits": b}, ...]`` for the stored channels' per-mode maxima ``amax`` ``(n_ch, K)``."""
         if self.floor is None or self.B0 is None or self.chi_iso is None:
             raise ValueError("a derived field container needs the pack's floor and the field's B0 and chi; the builder supplies them")
-        from dmipy_replay.constants import GAMMA
+        from dmipy_analytic.constants import GAMMA
         W = field_channel_weights(stored, B0=self.B0, chi_iso=self.chi_iso, chi_aniso=self.chi_aniso)
         a = _contracted_modes(amax, W).max(axis=0)
         r = _cx.derive_container(a, a.shape[0], max(float(self.floor), 1e-300), phase=GAMMA ** 2 * float(T), budget=self.budget)
@@ -781,7 +781,7 @@ def field_quantisation(arrays, pm, env, *, T, h, B0, chi_iso, chi_aniso=0.0):
     (:func:`field_channel_weights`), weighted by the battery's gates (:func:`_battery_gates` at the depth the pack
     advertises, their cosine projections on the window) -- the worst gate of the worst direction. 0 for the float
     container."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     if "susc_path_scale" not in arrays:
         return 0.0
     K = int(pm["K"])
@@ -1511,7 +1511,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     interpolation variance a walk of saves leaves in every band (:mod:`dmipy_sim.foreign`, ``D h^2 / 6``), bounded from the
     diffusivity and the save interval alone, since the quadratic variation of saves does not measure the roughness
     between them."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     T, h, K = float(T), float(h), int(K)
     n_t = int(round(T / h)) + 1
     G, meta = _cx.acquisition_battery(n_t, h, env)
@@ -1797,7 +1797,7 @@ def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi
     ``replay_bloch`` (no gradient: the positions do not enter) on the walk's read intervals (``h``, ``series_raw`` as
     :func:`_susc_path_fidelity` takes it) with the STORED channel decoded there against the walk's own reads, at spin
     echo and at the CPMG train the pack advertises, against the split-half floor OF THAT SUBSAMPLE."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from .trajectories import replay_bloch
     series_raw = np.asarray(series_raw, np.float64)
     k = int(min(n_sub, series_raw.shape[0]))
@@ -1928,7 +1928,7 @@ def _field_terms(T, h, m, K_c3, qv_field, env, read):
     ``{dt_f, qv_increments, constants, B0, chi}``: the walk's read interval, its read series' quadratic variation per
     channel (the walkers' mean), the trapezoid's constants and the envelope's ``B0`` and the rule's ``chi``
     (:func:`~dmipy_sim.engine.accumulate.field_rule_scale`)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     n_t = int(round(float(T) / float(h))) + 1
     gates = np.stack(_battery_gates(n_t, max(1, int(K_c3) // 2)))                       # (n_g, n_t) on the block grid
     g = _r_compression.cosine_projection(gates[:, :, None], float(h), float(T), int(K_c3))[:, :, 0]     # (n_g, K_c3)
@@ -2473,7 +2473,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``. ``envelope`` is
     what it is certified under, the parent's (:meth:`~dmipy_replay.replay.replay.ReplayPack.stated_envelope`) by
     default."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import (
         read_position_coeffs,
         cosine_projection,

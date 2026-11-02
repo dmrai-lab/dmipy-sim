@@ -343,7 +343,7 @@ def coefficient_signal(walk, G, dt_wf):
     their own grid ``dt_wf``, read from the bands alone (the replay's own reading of a pack of the walk,
     :func:`~dmipy_sim.replay.compression.band_projection`): ``(signal (n_meas,), standard error (n_meas,))`` of the
     walkers' ``cos(gamma sum C W)`` at float32 coefficients, what the pack stores."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from ..replay import compression as _cx
     C = np.asarray(walk.position_coeffs, np.float32).astype(np.float64)[:, 0]              # (n, K + 2, 3)
     W = _r_compression.band_projection(np.asarray(G, np.float64), float(dt_wf), float(walk.T_window), int(C.shape[1]) - 2)

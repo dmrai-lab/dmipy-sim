@@ -22,7 +22,7 @@ from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay import trajectories as T
 from dmipy_sim.replay import compression as cx
 from dmipy_replay.replay._replay_kernel import effective_gradient, waveform_moments, gradient_phase, field_gate
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.replay.replay import compile_scheme, replay_signal
 from dmipy_replay.replay.jax_routes import replay_signal_jax
 

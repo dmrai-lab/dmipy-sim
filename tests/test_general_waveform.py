@@ -90,7 +90,7 @@ def test_arbitrary_waveform_zero_net_gradient_gives_free():
 
 def test_the_sequences_b_is_the_analytical_pgse_b():
     """``seq.b()`` matches the analytical PGSE b-value: (gamma*G*delta)^2*(Delta-delta/3)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     delta = 10e-3
     DELTA = 40e-3
     G_mag = 0.05  # T/m

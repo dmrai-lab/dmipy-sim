@@ -154,7 +154,7 @@ def phase_variance_bound(position_coeffs, T, *, G_max, axes=(0, 1, 2), margin_se
     truncation). ``S`` is the pilot's, centred over the walkers, each eigenvalue the largest of the whole pilot's and
     its two halves' times ``1 + margin_se sqrt(2 / (n / 2 - 1))``. Returns a dict with the bound ``var_phi`` and its
     parts."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     C = np.asarray(position_coeffs, np.float64)
     if C.ndim == 4:
         if C.shape[1] != 1:

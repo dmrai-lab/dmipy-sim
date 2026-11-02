@@ -15,7 +15,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay import sequences
-from dmipy_replay.acquisition import epg
+from dmipy_analytic import epg
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_sim.replay.bank import build_replay_pack

@@ -6,6 +6,7 @@ law over an explicit wire, so agreement with the scanner model is evidence rathe
 import numpy as np
 import pytest
 
+from dmipy_analytic.constants import MU0
 from dmipy_sim.acquisition import coil
 from dmipy_replay.acquisition import maxwell, solid_harmonics as sh
 
@@ -18,7 +19,7 @@ def test_the_oracle_reproduces_the_analytic_loop_it_has_no_business_knowing():
     a = 0.3
     P = np.stack([np.zeros(9), np.zeros(9), np.linspace(-0.2, 0.2, 9)], -1)
     num = coil.polyline_field(coil.circular_loop(a, 0.0), P)[:, 2]
-    ana = coil.MU0 * a ** 2 / (2.0 * (a ** 2 + P[:, 2] ** 2) ** 1.5)
+    ana = MU0 * a ** 2 / (2.0 * (a ** 2 + P[:, 2] ** 2) ** 1.5)
     assert np.abs(num / ana - 1.0).max() < 1e-5
 
 

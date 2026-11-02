@@ -133,7 +133,7 @@ def test_the_projected_gram_is_the_quadrature_of_its_functions(fr):
 
 
 def test_no_feasible_waveform_or_toggle_exceeds_the_pilot_bound(fr):
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_replay.replay.compression import band_projection
     walk, _ = _pilot(2e-6)
     C = np.asarray(walk.position_coeffs, np.float64)[:, 0]

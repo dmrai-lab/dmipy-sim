@@ -12,7 +12,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay import sequences
-from dmipy_replay.acquisition import epg
+from dmipy_analytic import epg
+from dmipy_replay.acquisition.epg import pathway_weight
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_replay.spec.tissue import Tissue
@@ -41,9 +42,9 @@ def _closed_form(seq, flips=(90.0, 90.0, 90.0)):
 
 
 def test_the_weight_comes_from_the_schedule_not_a_constant():
-    assert epg.pathway_weight(_pgste()) == pytest.approx(0.5, abs=1e-12)
-    assert epg.pathway_weight(_pgste(flips=(90.0, 60.0, 90.0))) == pytest.approx(0.5 * np.sin(np.radians(60)), abs=1e-12)
-    assert epg.pathway_weight(sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[1e9], n_t=400, slew_rate=np.inf)) == 1.0
+    assert pathway_weight(_pgste()) == pytest.approx(0.5, abs=1e-12)
+    assert pathway_weight(_pgste(flips=(90.0, 60.0, 90.0))) == pytest.approx(0.5 * np.sin(np.radians(60)), abs=1e-12)
+    assert pathway_weight(sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[1e9], n_t=400, slew_rate=np.inf)) == 1.0
 
 
 def test_a_stimulated_echo_replays_to_its_closed_form(pack):
@@ -105,16 +106,16 @@ def test_a_single_reduced_flip_echo_is_one_pathway_and_has_a_closed_form():
         seq = sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600, slew_rate=np.inf)
         seq = seq.__class__(G=seq.G, dt=seq.dt, readout=seq.readout,
                             rf=type(seq.rf)((seq.rf[0], seq.rf[1].__class__(seq.rf[1].t_s, beta, "refocus", 90.0))))
-        assert epg.pathway_weight(seq) == pytest.approx(np.sin(np.radians(beta) / 2) ** 2, abs=1e-9)
+        assert pathway_weight(seq) == pytest.approx(np.sin(np.radians(beta) / 2) ** 2, abs=1e-9)
 
 
 def test_a_train_it_cannot_describe_is_refused_not_guessed():
     """A six-echo train at 120 degrees runs 0.75, 0.94, 0.84, ... -- different at every echo and each a sum
     over pathways, so no single amplitude describes the readout. Returning 1 would be wrong by a quarter on
     the first echo; the refusal names what is needed instead."""
-    assert epg.pathway_weight(sequences.cpmg(6, 0.02, beta_deg=180.0, n_t_per_echo=60)) == 1.0
+    assert pathway_weight(sequences.cpmg(6, 0.02, beta_deg=180.0, n_t_per_echo=60)) == 1.0
     with pytest.raises(ValueError, match="SUM over several coherence pathways"):
-        epg.pathway_weight(sequences.cpmg(6, 0.02, beta_deg=120.0, n_t_per_echo=60))
+        pathway_weight(sequences.cpmg(6, 0.02, beta_deg=120.0, n_t_per_echo=60))
 
 
 def _scaled(seq, kappa, both):
@@ -131,10 +132,10 @@ def test_a_transmit_scale_on_both_pulses_scales_the_excitation_too():
     seq = sequences.pgse([[1.0, 0, 0]], 5e-3, 0.02, bvalues=[0.0], TE=0.045, n_t=600, slew_rate=np.inf)
     for kappa in (0.7, 0.85, 1.0, 1.15, 1.3):
         a, b = np.radians(90.0 * kappa), np.radians(180.0 * kappa)
-        assert epg.pathway_weight(_scaled(seq, kappa, both=True)) == pytest.approx(abs(np.sin(a)) * np.sin(b / 2) ** 2, abs=1e-9)
-        assert epg.pathway_weight(_scaled(seq, kappa, both=False)) == pytest.approx(np.sin(b / 2) ** 2, abs=1e-9)
+        assert pathway_weight(_scaled(seq, kappa, both=True)) == pytest.approx(abs(np.sin(a)) * np.sin(b / 2) ** 2, abs=1e-9)
+        assert pathway_weight(_scaled(seq, kappa, both=False)) == pytest.approx(np.sin(b / 2) ** 2, abs=1e-9)
         sch = epg.Schedule((epg.Pulse(90.0 * kappa), epg.Winding(+1, 1.0), epg.Pulse(180.0 * kappa, 90.0), epg.Winding(+1, 1.0, readout=True)))
-        assert epg.pathway_weight(_scaled(seq, kappa, both=True)) == pytest.approx(
+        assert pathway_weight(_scaled(seq, kappa, both=True)) == pytest.approx(
             abs(sum(p.eta for p in epg.enumerate_pathways(sch, threshold=1e-12))), abs=1e-12)
 
 
@@ -142,10 +143,10 @@ def test_a_gradient_echo_and_a_perfect_train_carry_the_excitation_sine():
     gre = sequences.gre(0.02, n_t=200)
     ex = gre.rf[0]
     gre60 = gre.__class__(G=gre.G, dt=gre.dt, readout=gre.readout, rf=type(gre.rf)((ex.__class__(ex.t_s, 60.0, ex.label, ex.axis_deg),)))
-    assert epg.pathway_weight(gre) == pytest.approx(1.0, abs=1e-12)
-    assert epg.pathway_weight(gre60) == pytest.approx(np.sin(np.radians(60.0)), abs=1e-12)
+    assert pathway_weight(gre) == pytest.approx(1.0, abs=1e-12)
+    assert pathway_weight(gre60) == pytest.approx(np.sin(np.radians(60.0)), abs=1e-12)
     train = sequences.cpmg(6, 0.02, beta_deg=180.0, n_t_per_echo=60)
     ex = train.rf[0]
     train60 = train.__class__(G=train.G, dt=train.dt, readout=train.readout,
                               rf=type(train.rf)((ex.__class__(ex.t_s, 60.0, ex.label, ex.axis_deg),) + tuple(train.rf[1:])))
-    assert epg.pathway_weight(train60) == pytest.approx(np.sin(np.radians(60.0)), abs=1e-12)
+    assert pathway_weight(train60) == pytest.approx(np.sin(np.radians(60.0)), abs=1e-12)

@@ -311,7 +311,7 @@ def test_a_field_range_stores_the_registrys_bit_layout_at_every_depth(bits):
 def test_the_field_container_is_one_common_step_in_the_contracted_field():
     """Bits follow the contracted amplitude of the modes (one step across them), gain a bit per quartered floor, stay in
     3..16, and the realised phase noise of the stored steps is within the budget the floor allows."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_sim.replay import bank
     from dmipy_replay.replay.field import CHANNEL_NAMES
     rng = np.random.default_rng(1); n_w, K, T = 4000, 32, 0.1

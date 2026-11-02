@@ -108,7 +108,7 @@ def test_the_phase_gemm_equals_the_einsum():
     pos = rng.normal(size=(50, 41, 3)) * 1e-6
     G = rng.normal(size=(7, 41, 3)) * 0.1
     from dmipy_replay.replay._replay_kernel import effective_gradient
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     dt = 5e-4
     ref = (GAMMA * dt) * np.einsum("mtd,ntd->nm", effective_gradient(G, dt, 41, dt), pos)
     np.testing.assert_allclose(cx._walker_phases(pos, dt, G), ref, rtol=1e-12, atol=1e-9)

@@ -38,7 +38,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 #: blocks per ring: the projection's inner sum and the stride of the level-2 chain
 RING = 16
