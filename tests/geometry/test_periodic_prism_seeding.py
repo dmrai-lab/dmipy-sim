@@ -23,6 +23,7 @@ trimesh = pytest.importorskip("trimesh")
 pytest.importorskip("shapely")
 
 from dmipy_sim import Mesh
+from tests.geometry._meshes import icosphere, open_tube
 
 
 def _prism(n_sides, r, c, L, n_ax=4):
@@ -64,20 +65,6 @@ def _in_regular_polygon(pts_xy, centers, radii, n_sides, L):
     return (rho * np.cos(th) <= radii[None] * np.cos(np.pi / n_sides)).any(1)
 
 
-def _open_tube(r=4e-6, L=12e-6, nt=32, nz=24):
-    """A genuinely open (non-periodic) circular tube: no axis closes its rims by identification."""
-    th = np.linspace(0, 2 * np.pi, nt, endpoint=False)
-    zs = np.linspace(0, L, nz)
-    V = np.array([[r * np.cos(t), r * np.sin(t), z] for z in zs for t in th])
-    F = []
-    for iz in range(nz - 1):
-        for j in range(nt):
-            a = iz * nt + j; b = iz * nt + (j + 1) % nt
-            c = (iz + 1) * nt + j; d = (iz + 1) * nt + (j + 1) % nt
-            F.append([a, b, d]); F.append([a, d, c])
-    return V, np.array(F)
-
-
 def _barrel_tube(r0=3e-6, bulge=1.5e-6, L=12e-6, nt=24, nz=25):
     """A periodic-along-z tube whose two end rims match (both at radius ``r0``, so its boundary still
     sits entirely on the z faces) but whose cross-section bulges in between -- open along z for a reason
@@ -96,11 +83,6 @@ def _barrel_tube(r0=3e-6, bulge=1.5e-6, L=12e-6, nt=24, nz=25):
             c = (iz + 1) * nt + j; d = (iz + 1) * nt + (j + 1) % nt
             F.append([a, b, d]); F.append([a, d, c])
     return V, np.array(F)
-
-
-def _icosphere(sub=2, r=5e-6):
-    m = trimesh.creation.icosphere(subdivisions=sub, radius=r)
-    return np.asarray(m.vertices, float), np.asarray(m.faces, int)
 
 
 # ------------------------------------------------------------------ the fix: periodic + prismatic
@@ -155,7 +137,7 @@ def test_periodic_tube_confinement_uses_the_exact_route():
     """A single circular periodic tube (the simplest prismatic case) also goes through the exact route,
     not the old warning fallback, and stays radially confined."""
     r, L = 4e-6, 12e-6
-    V, F = _open_tube(r=r, L=L)
+    V, F = open_tube(r=r, L=L)
     g = Mesh(V, F, periodic=(False, False, True), voxel_min=[-6e-6, -6e-6, 0.0],
              voxel_max=[6e-6, 6e-6, L], feature_radius=r)
     assert g._prism_route() is not None and g._prism_route()[0] == 2
@@ -171,7 +153,7 @@ def test_periodic_tube_confinement_uses_the_exact_route():
 def test_open_non_periodic_surface_is_refused_by_name():
     """A surface open for a reason periodicity cannot explain (here: not periodic at all) is refused, by
     name, rather than silently misseeded by the old cell-gather fallback."""
-    V, F = _open_tube()
+    V, F = open_tube()
     g = Mesh(V, F)                                    # periodic=False default
     assert g._prism_route() is None
     with pytest.raises(ValueError, match=r"\d+ boundary edge"):
@@ -195,7 +177,7 @@ def test_closed_mesh_seeding_does_not_touch_the_prism_route():
     """The closed-surface branch of ``init_positions`` is decided by :meth:`Mesh._surface_is_closed`
     before the prism machinery is ever consulted (dmipy-sim#400 only replaced the OPEN-surface fallback),
     and its output is exactly reproducible."""
-    V, F = _icosphere(2)
+    V, F = icosphere(2)
     g = Mesh(V, F)
     assert g._surface_is_closed() is True
     assert g._prism_route() is None

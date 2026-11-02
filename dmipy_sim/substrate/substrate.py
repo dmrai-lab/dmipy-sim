@@ -24,10 +24,10 @@ from ..compartments import Compartments, Pool
 
 
 def mean_inv_diameter_4(alpha, scale_diameter, volume_weighted=True):
-    """<4/d> for the (volume- or number-weighted) Gamma distribution.
+    """<4/d> for the (volume- or number-weighted) Gamma distribution of shape ``alpha`` and scale
+    ``scale_diameter`` (m), with ``beta = 1 / scale_diameter``.
 
-    number:  4 beta/(alpha-1);   volume (d^2 P): 4 beta/(alpha+1).
-    Vendored from dmipy_fit.white_matter.surface.mean_inv_diameter_4.
+    number:  4 beta/(alpha-1);   volume (d^2 P): 4 beta/(alpha+1). The ecosystem's one copy of it.
     """
     a = alpha + 2.0 if volume_weighted else alpha
     beta = 1.0 / scale_diameter

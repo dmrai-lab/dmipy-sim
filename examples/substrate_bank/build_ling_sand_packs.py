@@ -38,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
 from dmipy_replay import envelope_of
+from examples.substrate_bank import common
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference,
                                         ReferenceFamily, ReferenceQuantity, Publication, Source, SourceFile,
                                         Systematic, Tier, Tolerance, pack_seed)
@@ -170,56 +171,15 @@ def spec_of(sample, data_dir, work_dir):
 
 
 def walk(spec, n, *, T, K, seed, sub_steps=None):
-    """The walk the pilot runs and every pack is built from: no relaxivity, C2 stored as a channel, ``K`` bands per
-    100 ms storage window over ``T`` in the band's own blocks; ``sub_steps`` is the step pilot's coarse count, None
-    the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
-    import dmipy_sim as d
-    from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.spec import geometry_from_spec
-    return _walk_geometry(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
-                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps)
-
-
-# ----------------------------------------------------------------- the quantity
-def t2_grid(grid):
-    return np.logspace(np.log10(grid["from_s"]), np.log10(grid["to_s"]), int(grid["n"]))
-
-
-def decay_and_log_mean(pack, rho2, grid, *, chunk=4000):
-    """``(t, S, T2 log-mean, its relative delta-method standard error)`` from the pack's stored C2 channel.
-
-    ``S(t) = <exp((rho2/D) L(t) - t/T2B)>`` on the recorded sampling; the standard error is the log-mean's
-    gradient with respect to the decay it is inverted from, projected on each walker's own decay -- the same
-    estimator the Imperial rocks family uses, and the reason it is analytic rather than a fold spread.
-    """
-    from examples.validation.talabi_micro_ct_rocks import log_mean_gradient
-    ell = pack.contact()
-    if ell is None:
-        raise ValueError(f"{pack.meta['id']} carries no C2 channel, so it cannot serve a relaxation decay")
-    n_w, n_t = ell.shape
-    every = max(1, int(round(grid["sample_ms"] * 1e-3 / pack.dt)))
-    t = np.arange(n_t)[every::every] * pack.dt
-
-    def per_walker(lo):
-        L = np.cumsum(np.asarray(ell[lo:lo + chunk], np.float64), axis=1)[:, every::every]
-        return np.exp(float(rho2) / D0 * L - t / T2B)
-
-    acc = np.zeros(len(t))
-    for lo in range(0, n_w, chunk):
-        acc += per_walker(lo).sum(axis=0)
-    S = acc / n_w
-    lm, g = log_mean_gradient(t, S, t2_grid(grid))
-    proj = np.empty(n_w)
-    for lo in range(0, n_w, chunk):
-        s = per_walker(lo)
-        proj[lo:lo + s.shape[0]] = s @ g
-    return t, S, lm, float(np.std(proj, ddof=1) / np.sqrt(n_w) / lm)
+    """The protocol's walk hook: :func:`examples.substrate_bank.common.walk` at this family's ``D0``, in the storage
+    rule's 100 ms windows (C2 stored as a channel: no relaxivity in the walk)."""
+    return common.walk(spec, n, D=D0, T=T, K=K, seed=seed, sub_steps=sub_steps)
 
 
 def reproduce(pack, quantity, grid):
     """The T2 log-mean this pack serves, on the grid the reference record states."""
     rho2 = float(pack.nominal.rho2)
-    _t, _S, lm, se = decay_and_log_mean(pack, rho2, grid)
+    _t, _S, lm, se = common.decay_and_log_mean(pack, rho2, grid, D=D0, T2B=T2B)
     return dict(value=lm * 1e3, se=se, se_kind="delta_method", solver=grid["solver"],
                 se_derivation="the delta method over walkers on the log-mean: its gradient with respect to the "
                               "decay it is inverted from (talabi_micro_ct_rocks.log_mean_gradient, the active "
@@ -273,18 +233,6 @@ print("T2 log-mean %.1f ms" % (1e3 * log_mean_T2(g, t2_distribution(t[every::eve
 
 
 # ----------------------------------------------------------------- the family
-def licence_text(cache_dir):
-    import urllib.request
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, "cc-by-4.0-legalcode.txt")
-    if not os.path.exists(cache):
-        req = urllib.request.Request("https://creativecommons.org/licenses/by/4.0/legalcode.txt",
-                                     headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
-        with urllib.request.urlopen(req, timeout=60) as fh, open(cache, "wb") as out:
-            out.write(fh.read())
-    return open(cache, encoding="utf-8").read()
-
-
 def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
     """The DIRECT walk's relative delta-method standard error on the log-mean, measured on a walk of ``n``
     walkers of this family's own (the same substrate, window and band, packed in memory, read at the same rho2 on
@@ -308,7 +256,7 @@ def measured_se(sample, data_dir, work_dir, grid, *, T, n=SE_N):
         w = walk(spec_of(sample, data_dir, work_dir), int(n), T=T, K=K_BANDS, seed=seed)
         pack = build_replay_pack(w, id=f"ling-sand-packs/{sample.lower()}/direct-se", license=LICENCE,
                                  citation=CITATION, envelope=ENVELOPE, battery=BATTERY, K=K_BANDS)
-        _t, _S, _lm, se_walk = decay_and_log_mean(pack, rho_of(sample), grid)
+        _t, _S, _lm, se_walk = common.decay_and_log_mean(pack, rho_of(sample), grid, D=D0, T2B=T2B)
         scale = (int(n) / float(d["n_walkers"])) ** 0.5
         cache[sample] = dict(key=key, value=dict(se=se_walk * scale, se_walk=se_walk, n_walk=int(n),
                                                  n_direct=int(d["n_walkers"]), scale=scale,
@@ -358,7 +306,7 @@ def family(data_dir, work_dir, *, samples, dry, create_dataset):
     rep = reproduction(work_dir)
     window = max(SAMPLES[s]["window_s"] for s in samples)
     grid = dict(T2_GRID, sample_ms=INVERT_MS, solver=SOLVER)
-    text = licence_text(os.path.join(work_dir, ".licence-cache"))
+    text = common.cc_by_4_legal_code(os.path.join(work_dir, ".licence-cache"))
 
     sources = [Source(
         key="figshare-ling2022", url=DATA_URL,

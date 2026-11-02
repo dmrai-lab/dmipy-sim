@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
 
 from dmipy_replay import envelope_of
+from examples.substrate_bank import common
 from dmipy_sim.replay.reference import (Build, Design, Direct, FreeParameter, Published, Reference, ReferenceFamily,
                                         pack_seed, ReferenceQuantity, Publication, Source, SourceFile, Systematic,
                                         Tier, Tolerance)
@@ -125,15 +126,9 @@ def spec_of(shape, d_um):
 
 
 def walk(spec, n, *, T, K, seed, sub_steps=None):
-    """The walk the pilot runs and every pack is built from: no relaxivity, every tier stored, ``K`` bands over the
-    window ``T`` in the band's own blocks, at the pack's own ``seed`` (``pack_seed`` of its id); ``sub_steps`` is the
-    step pilot's coarse count, None the rule's. A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`."""
-    import dmipy_sim as d
-    from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.spec import geometry_from_spec
-    return _walk_geometry(int(n), D0, geometry_from_spec(spec), T_max=float(T), K=int(K), seed=int(seed),
-                                   tiers="all", require_gpu=False, walker_batch_size=2000, sub_steps=sub_steps,
-                                   window_T=float(T))
+    """The protocol's walk hook: :func:`examples.substrate_bank.common.walk` at this family's ``D0``, in ONE storage
+    window spanning ``T``."""
+    return common.walk(spec, n, D=D0, T=T, K=K, seed=seed, sub_steps=sub_steps, window_T=T)
 
 
 # ----------------------------------------------------------------- the envelope and the declared waveforms
@@ -256,20 +251,6 @@ print("S = %.6f" % float(np.abs(np.asarray(pk.replay(seq))).ravel()[0]))
 
 
 # ----------------------------------------------------------------- the family
-def licence_text(cache_dir):
-    """The CC BY 4.0 legal code, fetched once and cached: the licence THIS family's packs carry, and the one
-    dmipy-sim itself is the source under."""
-    import urllib.request
-    os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, "cc-by-4.0-legalcode.txt")
-    if not os.path.exists(cache):
-        req = urllib.request.Request("https://creativecommons.org/licenses/by/4.0/legalcode.txt",
-                                     headers={"User-Agent": "dmipy-sim (https://github.com/dmrai-lab/dmipy-sim)"})
-        with urllib.request.urlopen(req, timeout=60) as fh, open(cache, "wb") as out:
-            out.write(fh.read())
-    return open(cache, encoding="utf-8").read()
-
-
 def measured_quantities(work_dir, rows, grid):
     """The reference's quantities, every number in them MEASURED here at record time and cached on the inputs
     it was measured from: the closed form at two mode counts (its own truncation is the reference's
@@ -325,7 +306,7 @@ def measured_quantities(work_dir, rows, grid):
 def family(work_dir, *, dry, create_dataset, rows=None):
     rows = rows if rows is not None else grid_rows()
     grid = dict(QUANTITY_GRID)
-    text = licence_text(os.path.join(work_dir, ".licence-cache"))
+    text = common.cc_by_4_legal_code(os.path.join(work_dir, ".licence-cache"))   # the licence this family's packs carry
     import dmipy_sim
     from dmipy_sim.replay.reference import code_commit
     sources = [Source(
