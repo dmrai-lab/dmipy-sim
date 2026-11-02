@@ -180,9 +180,19 @@ K=16 fails CPMG-16 outright.
 **The band is fixed before the walk.** `bank.derive_field_band` walks a pilot of `PILOT_WALKERS` = 1024
 walkers that keeps its block means (`raw_subset`), tries the rungs of `SUSC_PATH_LADDER` (16, 32, 64, …) in
 ascending band, and takes the first `K_c3` whose codec error — the
-truncated modes, held in the container derived for the rung's own scales at its floor, contracted for each field strength and direction of the envelope's battery,
-decoded on the block grid and gated by GRE, spin echo, the CPMG train the rung serves and a stimulated echo
-— is within the split-half floor of the pilot's own series. A refocusing depth the envelope declares
+truncated modes, held in the container derived for the rung's own scales, contracted for each field strength and direction of the envelope's battery
+and decoded on the block grid — is within its floor on **the query domain the envelope promises**
+(`bank._echo_times`, `bank._echo_errors`): a gradient echo and a spin echo (its 180 at `TE/2`) read at every echo
+time the position band resolves, every `T / K` on the block grid and the window's end, each held to twice the
+production walk's standard error at that acquisition (the pilot's `se` times `sqrt(n_pilot / n_walkers)`; an
+explicit `target_floor` replaces it), and the CPMG train the rung serves and a stimulated echo over the window, held
+to the split-half floor of the pilot's own series. An early echo, whose signal is nearly certain because few walkers
+have dephased yet, holds the band to the error it leaves there: a band that smears a late jump of the field (a
+membrane crossing) over the window fails it, where the window's own echoes accept it (a two-mode band of a permeable
+slab of 4 um, two modes keep 16 % of a 20 ms spin echo's dephasing). The record names the domain (`domain`: the echo times, the gates
+and settings read per rung) and, per rung, its worst acquisition (`worst`: the error over its floor). The cost is
+rungs x gates x settings evaluations of a cumulative sum over the pilot: measured on an 8000-walker slab's pilot
+(1024 walkers, 785 blocks), 3 rungs x 395 gates x 2 settings in 0.84 s. A refocusing depth the envelope declares
 (`max_refocus_pulses`) puts a floor of `2×` that depth under the ladder; the position band is the point past
 which the tier costs more than the walk it rides on, and the record says when the ladder went beyond it. The
 production walk accumulates `K_c3` modes and nothing is re-derived on its reads afterwards; a fill's shards
@@ -297,9 +307,11 @@ the spec's strands), so the pack carries no field grid: only the channel, whose 
 ## Fidelity gate
 
 The channel is certified the way every other tier is: the stored (truncated, quantised) modes decoded
-against the walk's own reads, over a battery that **includes a CPMG train** at the declared depth (the
-binding case), under the envelope's field strengths and directions, with the error required to sit below
-the split-half Monte-Carlo floor.
+against the walk's own reads, on the query domain the band is derived on (a gradient echo and a spin echo at
+every echo time the band resolves, each against twice its standard error) and over a CPMG train at the declared
+depth and a stimulated echo, under the envelope's field strengths and directions. `err_susc_path` is the largest
+error on that domain, `floor_susc_path` the largest floor, and `susc_path_worst` the acquisition whose error is
+the largest fraction of its own floor.
 
 * The default certificate (`fidelity="derived"`) carries the **pilot's** measurement of the pair it chose
   (`err_susc_path`, `floor_susc_path`, `susc_path_measured_on: "pilot"`) and the read's term

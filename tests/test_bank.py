@@ -358,9 +358,10 @@ def test_builder_takes_a_coefficient_walk_and_assembles_the_tiers_it_carries():
 
 
 def test_the_field_tiers_band_is_derived_on_the_walk():
-    """The band is fixed BEFORE the walk by the producer's pilot: the first rung, in ascending band, whose codec error on
-    the certificate's battery -- in the container derived for the rung's mode scales at its floor -- is within the
-    pilot's floor, and the record of every rung read travels with the channel; the pack takes the walk's band."""
+    """The band is fixed BEFORE the walk by the producer's pilot: the first rung, in ascending band, whose codec error --
+    in the container derived for the rung's mode scales -- is within its floor at every acquisition of the query domain
+    (each echo of the domain, the train and the stimulated echo), and the record of every rung read travels with the
+    channel; the pack takes the walk's band."""
     from dmipy_sim.replay.bank import SUSC_PATH_LADDER
     w = _susc_walk(300, seed=8, envelope=_env7(theta_deg=[0, 90]))
     band = w.block["field_band"]
@@ -376,12 +377,12 @@ def test_the_field_tiers_band_is_derived_on_the_walk():
     assert all(3 <= r["bits"] <= 16 for r in chosen["container"])
     assert chosen["err_truncation"] >= 0.0                                           # the band alone, modes in float
     if band["within_floor"]:
-        assert chosen["err"] <= chosen["floor"]
-        assert all(rungs[k]["err"] > rungs[k]["floor"] for k in order[:order.index(pm["K"])])      # the first rung within the floor
+        assert chosen["within_floor"] and chosen["err"] <= chosen["floor"] and chosen["worst"]["ratio"] <= 1.0
+        assert not any(rungs[k]["within_floor"] for k in order[:order.index(pm["K"])])   # the first rung within its floors
         assert order[-1] == pm["K"]                                                  # and the ladder stopped there
     else:
-        best = min(r["err"] for r in rungs.values())
-        assert chosen["err"] <= 1.03 * best
+        best = min(r["worst"]["ratio"] for r in rungs.values())
+        assert chosen["worst"]["ratio"] <= 1.03 * best
     assert band["above_position_band"] == (pm["K"] > w.K)
     assert pm["max_refocus_pulses"] == pm["K"] // 2
     # the pilot's reading is the pack's certificate of the channel: what the band drops, with the container's

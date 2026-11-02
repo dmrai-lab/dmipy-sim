@@ -32,7 +32,7 @@ def capped_walk():
 
 def test_without_a_budget_the_band_is_held_to_the_scaled_split_half_floor(default_walk):
     band = default_walk.block["field_band"]
-    assert default_walk.K_c3 == band["K"] == 16
+    assert default_walk.K_c3 == band["K"] == 32
     assert band["target_floor"] is None and "split-half" in band["floor_is"]
     assert band["floor"] > 100 * BUDGET and band["floor_scale"] == pytest.approx(np.sqrt(band["pilot_walkers"] / band["production_walkers"]))
     assert _pack_fidelity(default_walk)["err_susc_path"] > BUDGET                      # the band the budget is for
