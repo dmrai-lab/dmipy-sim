@@ -610,7 +610,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                             "for its mode scales at its floor, is within the pilot's floor; failing every rung, the narrowest among the least errors",
                   ladder=[dict(K=int(k), err=float(err[k]), err_truncation=float(trunc[k]), floor=float(floor[k]),
                                container=[dict(r) for r in cont[k]]) for k in order],
-                  K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) or None), above_position_band=bool(K > int(K_max)),
+                  K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) if depth else None), above_position_band=bool(K > int(K_max)),
                   within_floor=bool(err[K] <= floor[K]), err=float(err[K]), err_truncation=float(trunc[K]), floor=float(floor[K]),
                   container=[dict(r) for r in cont[K]],
                   floor_is=("the explicit numerical field error budget" if target_floor is not None else
