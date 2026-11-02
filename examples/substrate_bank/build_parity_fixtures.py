@@ -510,7 +510,7 @@ def _derived_surface(disimpy_data):
 
 
 def _sha(path):
-    from dmipy_sim.replay.hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     return sha256_of(path)
 
 

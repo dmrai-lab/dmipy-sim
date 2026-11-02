@@ -7,7 +7,8 @@ import pytest
 
 from dmipy_replay.constants import GAMMA
 from dmipy_replay.replay._replay_kernel import effective_gradient, gate_weights, bin_gate, piece_moments
-from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax
+from dmipy_sim.replay.trajectories import replay, replay_bloch
+from dmipy_replay.replay.bloch_jax import replay_bloch_jax
 
 N_W, N_T, DT = 300, 80, 1e-4
 T = (N_T - 1) * DT

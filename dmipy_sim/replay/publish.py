@@ -25,7 +25,9 @@ import tempfile
 
 import numpy as np
 
-from .hub import is_not_found, sha256_of
+from dmipy_replay.replay.hub import sha256_of
+
+from .hub import is_not_found
 
 SCHEMA = "substratecommons/1"
 log = logging.getLogger("dmipy_sim.replay")
@@ -312,7 +314,7 @@ def _hub_sha256(hub, path):
 def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_commit=None):
     """Put a pack in the dataset ``repo`` (``owner/name``) and return its URI ``hf://owner/name/<path>``.
 
-    ``pack_or_path`` is a ``.rpk`` file or a :class:`~dmipy_sim.replay.ReplayPack` (written to a temporary
+    ``pack_or_path`` is a ``.rpk`` file or a :class:`~dmipy_replay.ReplayPack` (written to a temporary
     file first: the bytes uploaded are the bytes hashed). ``path`` defaults to ``packs/<id>.rpk`` with the id's
     slashes replaced. The file, the manifest row (replacing the row at the same path) and the regenerated card go
     up in ONE commit through ``hub`` (default :class:`~dmipy_sim.replay.hub.Hub`); afterwards the sha256 the hub
@@ -324,7 +326,7 @@ def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_
     it; left out, this reads one itself with :func:`code_commit`'s lenient form (no clean-tree or pushed-branch
     requirement -- a plain ``publish()`` call is not that protocol)."""
     from .container import save_pack
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     if isinstance(pack_or_path, ReplayPack):
         _check_contract(pack_or_path.meta)
         source = pack_or_path.source

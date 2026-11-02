@@ -63,6 +63,8 @@ import numpy as np
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from dmipy_replay.replay.hub import sha256_of
+
 from .container import save_pack
 
 log = logging.getLogger("dmipy_sim.replay")
@@ -599,16 +601,8 @@ def _sha256_bytes(b):
     return hashlib.sha256(b).hexdigest()
 
 
-def _sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 24), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _digest(path):
-    return dict(path=os.path.basename(path), sha256=_sha256_file(path), bytes=os.path.getsize(path))
+    return dict(path=os.path.basename(path), sha256=sha256_of(path), bytes=os.path.getsize(path))
 
 
 class Records:
@@ -638,7 +632,7 @@ class Records:
             return json.load(fh)
 
     def digest(self, stage):
-        return _sha256_file(self.path(stage))
+        return sha256_of(self.path(stage))
 
     def check_chain(self, stage):
         """Verify that every earlier record is still the one its successor was written against."""
@@ -1056,7 +1050,7 @@ def _walk_from_pack(name, recorded, budget, design_n, family_dir):
     pack_path = rel_pack if not rel_pack.startswith("..") else os.path.basename(abs_pack)
     return dict(from_pack=True, design_n_walkers=int(design_n), design_note=note,
                 pack_path=pack_path,
-                pack_sha256=_sha256_file(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
+                pack_sha256=sha256_of(recorded.pack_path), n_walkers=int(wp["n_walkers"]),
                 block=wp.get("block"), windows=wp.get("windows"), qv=wp.get("qv"),
                 sub_steps=None if recorded.sub_steps is None else int(recorded.sub_steps),
                 illegal_crossings=(None if recorded.illegal_crossings is None
@@ -1614,7 +1608,7 @@ class ReferenceFamily:
                 f"{projected / 1e9:.2f} GB; the budget is a hard cap and the measurement, not the projection, "
                 f"is what it is held against")
         block, windows, qv = _walk_params(walk)
-        return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=_sha256_file(path),
+        return dict(from_pack=False, walk_path=os.path.relpath(path, self.dir), walk_sha256=sha256_of(path),
                     n_walkers=int(n), K=int(walk.K), block=block, windows=windows, qv=qv,
                     sub_steps=int(walk.sub_steps), illegal_crossings=int(walk.illegal_crossings or 0),
                     seconds=round(seconds, 1), peak_rss_bytes=int(peak), rss_bytes_before=int(rss0),
@@ -1635,7 +1629,7 @@ class ReferenceFamily:
         held = self.records.reuse("pack", inputs, prev_sha)
         if held is not None:                                  # unchanged inputs: nothing is re-measured
             return held
-        from .replay import ReplayPack
+        from dmipy_replay import ReplayPack
         out = {}
         for name in sorted(wlk["substrates"]):
             w = wlk["substrates"][name]

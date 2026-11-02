@@ -7,8 +7,8 @@ codec (``bridge_dst``), the tier channels the certified envelope needs are carri
 (bulk relaxation via the compartment map, surface relaxivity via the boundary-local-time channel,
 magnetization transfer via the bound-fraction channel), and the pack MEASURES its own replay
 fidelity against the split-half Monte-Carlo floor before it is written. The result is a single
-``safetensors`` file readable by :func:`dmipy_sim.replay.replay.read_rpk` and replayable by the
-:mod:`dmipy_sim.replay.replay` / :mod:`dmipy_sim.replay.trajectories` operators.
+``safetensors`` file readable by :func:`dmipy_replay.replay.replay.read_rpk` and replayable by the
+:mod:`dmipy_replay.replay.replay` / :mod:`dmipy_sim.replay.trajectories` operators.
 
 :func:`build_to_floor` is the bank's default generation policy: size the walker count so the
 Monte-Carlo floor meets a target ``sigma_star``, then build a pack whose codec error meets it too.
@@ -37,7 +37,7 @@ from . import compression as _cx
 from dmipy_replay.acquisition.rf import RFEvent
 from .container import write_rpk
 from .reencode import stated_envelope
-from .replay import ReplayPack, read_rpk
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_replay.replay.field import CHANNEL_NAMES as _PATH_CHANNELS, ISO_CHANNEL_NAMES as _ISO_PATH_CHANNELS
 from dmipy_replay.spec.substrate import susceptibility_field_of
 
@@ -383,7 +383,7 @@ def voxel_certificate(pack, grid, *, envelope=None, device="auto"):
     measures no floor (the grid is the recipe's, not the shard's). The walkers are binned on ``grid`` by where they
     start and by pool and the split-half floor of each (voxel, pool) is read from the coefficients
     (:func:`voxel_floor_coded`, under the certificate settings ``envelope``, default the pack's own,
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.stated_envelope`, as its build measured them), the
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.stated_envelope`, as its build measured them), the
     codec-error column ``nan``: the pack's error is ``fidelity.err_max`` and its terms. Returns
     ``({"voxel_ijk": ..., "voxel_certificate": ...}, per_voxel)``, the pair a pack built with ``voxel_grid=``
     carries."""
@@ -1333,10 +1333,10 @@ def _write_run_sidecar(out_path, run, walk):
     of a bank's packs -- the small or fast ones, this module's own tests among them -- would have no such
     directory to hold a sidecar. A file written next to the pack it describes exists exactly when the pack does.
 
-    Names the pack's own sha256 (:func:`dmipy_sim.replay.hub.sha256_of`, what a consumer pins --
+    Names the pack's own sha256 (:func:`dmipy_replay.replay.hub.sha256_of`, what a consumer pins --
     :func:`dmipy_sim.replay.publish.manifest_row`), so the sidecar for a pack found by its hash is the one its
     bytes point to. Returns the sidecar's path."""
-    from .hub import sha256_of
+    from dmipy_replay.replay.hub import sha256_of
     w = getattr(walk, "run", None)
     sha = sha256_of(out_path)
     sidecar = dict(pack_sha256=sha, pack=run.summary,
@@ -1485,7 +1485,7 @@ def _derived_certificate(scales, *, T, h, K, m, D, env, floor, qv_pos=None, qv_c
     the battery's at K = 256 on Connectome 2.0). The truncation guarantee is per waveform: the replay's band check
     (:meth:`ReplayPack._check_band`) refuses every actual waveform whose truncation, bounded by half the free bridge's
     phase variance beyond ``K``, exceeds the pack's ``fidelity.target_floor`` less the other rows of this certificate
-    (:func:`~dmipy_sim.replay.replay.truncation_budget`).
+    (:func:`~dmipy_replay.replay.replay.truncation_budget`).
 
     ``band_var`` (m^2, per band and axis) states the positions' quadrature directly, in place of ``rel(m, h) x QV``: the
     interpolation variance a walk of saves leaves in every band (:mod:`dmipy_sim.foreign`, ``D h^2 / 6``), bounded from the
@@ -1967,7 +1967,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     scalar gates and on the vector-Bloch path (:func:`_susc_path_bloch_fidelity`) -- and is refused by name on a walk
     that kept none. ``voxel_grid`` (a :class:`~dmipy_replay.phantom.Grid`, substrate-attached) adds the per-voxel
     certificate a partition needs (:func:`voxel_floor_coded`). ``device`` runs the coded floors on the JAX device
-    (``"auto"``: when it is a GPU). Returns a :class:`~dmipy_sim.replay.replay.ReplayPack`; writes it to
+    (``"auto"``: when it is a GPU). Returns a :class:`~dmipy_replay.replay.replay.ReplayPack`; writes it to
     ``out_path`` if given.
     """
     from ..coefficient_walk import CoefficientWalk
@@ -2438,7 +2438,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     containers (None: the parent's own ranges; ``"derived"``: derived for the window's floor). Its certificate: the walk-free terms at the parent's block, plus the RE-PROJECTION's
     truncation measured on the battery -- the parent's exact replay of the window (its bands with the waveform at
     ``t0``) against the child's, per channel -- recorded as ``err_reprojection`` and in ``err_max``. ``envelope`` is
-    what it is certified under, the parent's (:meth:`~dmipy_sim.replay.replay.ReplayPack.stated_envelope`) by
+    what it is certified under, the parent's (:meth:`~dmipy_replay.replay.replay.ReplayPack.stated_envelope`) by
     default."""
     from dmipy_replay.constants import GAMMA
     from dmipy_replay.replay.compression import (

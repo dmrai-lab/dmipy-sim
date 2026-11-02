@@ -14,7 +14,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 from tests._envelope import TEST_BAND_HZ, TEST_G_MAX, battery_reach, stated, walk_envelope
@@ -134,7 +134,7 @@ def test_the_view_is_the_walk_of_the_scaled_substrate(packs):
 
 
 def test_nothing_is_decoded_on_the_way(packs, monkeypatch):
-    from dmipy_sim.replay import compression, replay as rp
+    from dmipy_replay import ReplayPack
     pk, _, _ = packs
     seq = _seq(T / 2)
 
@@ -143,7 +143,7 @@ def test_nothing_is_decoded_on_the_way(packs, monkeypatch):
     monkeypatch.setattr(_r_compression, "local_time_at", boom)
     monkeypatch.setattr(_r_compression, "positions_at", boom)
     monkeypatch.setattr(_r_compression, "decode_occupancy", boom)
-    monkeypatch.setattr(rp.ReplayPack, "positions", boom)
+    monkeypatch.setattr(ReplayPack, "positions", boom)
     view = pk.at_length_scale(0.5)
     view.replay(seq, tissue=Tissue(rho2=2e-5))
     view.walker_signals(seq)

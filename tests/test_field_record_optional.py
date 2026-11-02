@@ -5,7 +5,7 @@ import copy
 import numpy as np
 
 from dmipy_sim import sequences
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.spec.tissue import Tissue
 
 TISSUE = Tissue(chi_iso=-1e-7, chi_aniso=-5e-8)

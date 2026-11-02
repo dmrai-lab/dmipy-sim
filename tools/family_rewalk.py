@@ -969,7 +969,7 @@ def stage_check(args):
     """Every pack under ``DIR``: it loads, states the campaign's envelope (refused when ``--require-stated``), its
     certificate against its floor, and the replay of a PGSE at b = 1000 s/mm^2 across x is a signal in (0, 1]."""
     from dmipy_sim import pgse
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     rows, bad = [], []
     for dirpath, _, files in os.walk(os.path.abspath(args.out)):
         for f in sorted(files):

@@ -26,7 +26,7 @@ The integer band containers (:func:`quantise_bands`, :func:`derive_container`) a
 """
 from __future__ import annotations
 import logging
-from dmipy_replay.replay.compression import CHUNK_BYTES, DEVICES, MIN_BITS, OCCUPANCY_COLUMNS, POSITION_AXES, _EXCLUSIVE_COLUMN, _PACK_ROWS, _RANGE_RE, _band_ranges, band_projection, position_shape, range_name, read_position_coeffs, require_position_method
+from dmipy_replay.replay.compression import CHUNK_BYTES, DEVICES, resolve_device, MIN_BITS, OCCUPANCY_COLUMNS, POSITION_AXES, _EXCLUSIVE_COLUMN, _PACK_ROWS, _RANGE_RE, _band_ranges, band_projection, position_shape, range_name, read_position_coeffs, require_position_method
 
 log = logging.getLogger(__name__)
 
@@ -323,24 +323,6 @@ def quantise_bands(B, container, key, scale_key):
         cont.append({"bands": [int(k0), int(k1)], "bits": int(bits)})
     arrays[scale_key] = np.ascontiguousarray((scale.T if scale.ndim == 2 else scale)[None]).astype(np.float32)
     return arrays, {"container": cont}
-
-
-def _jax_has_gpu():
-    try:
-        import jax
-        return any(d.platform == "gpu" for d in jax.devices())
-    except Exception:                                                # no jax, or no backend
-        return False
-
-
-def resolve_device(device):
-    """``"numpy"`` or ``"jax"`` from a device word: ``"auto"`` is the JAX device when one is a GPU, else numpy
-    (a CPU JAX transform is no faster than scipy's)."""
-    if device not in DEVICES:
-        raise ValueError(f"device must be one of {DEVICES}, not {device!r}")
-    if device == "auto":
-        return "jax" if _jax_has_gpu() else "numpy"
-    return device
 
 
 SLICE_BYTES = 1 << 28

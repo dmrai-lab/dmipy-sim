@@ -47,7 +47,7 @@ def test_the_merged_pack_replays_as_the_weight_combined_shards(shards):
     expect = combined()
     np.testing.assert_allclose(m.replay(seq), expect, rtol=1e-6)
     np.testing.assert_allclose(m.replay(seq, tissue=Tissue(rho2=1e-5)), combined(tissue=Tissue(rho2=1e-5)), rtol=1e-6)
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     back = read_rpk(str(tmp / "merged.rpk"))
     np.testing.assert_allclose(back.replay(seq), expect, rtol=1e-6)
     # the certificate: the union of the two blocks, each voxel from its shard
@@ -109,7 +109,7 @@ def test_shards_agree_to_rounding_and_differ_for_real(shards, tmp_path):
     """Two shards of one spec computed on two machines differ in the substrate frame by an ulp (BLAS rounding); the
     merge takes them as the same spec. A real difference in the walk parameters is still refused, naming it."""
     import copy
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     packs, grid, tmp = shards
     a, b = packs
     meta = copy.deepcopy(b.meta)

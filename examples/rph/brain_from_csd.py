@@ -25,7 +25,7 @@ import numpy as np
 from dmipy_sim import Prescription, sequences
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_replay.phantom import FreeWater, Grid, Inert, ODF, PackSubstrate, Phantom
-from dmipy_sim.replay.so3 import rotate_sh
+from dmipy_replay.replay.so3 import rotate_sh
 from dmipy_sim.spec import Tissue
 from dmipy_replay.phantom import Pose
 
@@ -42,7 +42,7 @@ def wm_tissue(pack_path):
     """The white matter's tissue: the pack's nominal values (the CACTUS pack's pools carry their T2), with the
     table's compartment values by the pack's pool names where they carry none -- a phantom is refused when one
     tissue relaxes and another would not."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     spec = read_rpk(pack_path).substrate
     nominal = Tissue.from_spec(spec)
     if all(p.T2 is not None for p in spec.pools):
@@ -53,7 +53,7 @@ def wm_tissue(pack_path):
 
 def gm_tissue(pack_path):
     """The grey matter's tissue: the table's one value for every pool of the spheres pack, by the pack's names."""
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     return Tissue(T2={p.name: T2["gm"] for p in read_rpk(pack_path).substrate.pools})
 
 
@@ -98,7 +98,7 @@ def build(batman, wm_pack, gm_pack=None, slab=None):
     csf = FreeWater(m0=M0["csf"], tissue=Tissue(D=3.0e-9, T2=T2["csf"]))
     orientation = {wm: ODF(c, basis="mrtrix3")}
     if gm_pack:
-        from dmipy_sim.replay.fod import FOD
+        from dmipy_replay.replay.fod import FOD
         iso = np.broadcast_to(FOD.isotropic(lmax=8).coeffs, grid.shape + (45,)).copy()
         orientation[gm] = ODF(iso, basis="mrtrix3")                                         # a cortex has no fibre axis
     ph = Phantom.compose(grid, fractions={wm: f_wm, gm: f_gm, csf: f_csf}, remainder=Inert(), orientation=orientation)

@@ -72,7 +72,7 @@ def test_the_battery_waveforms_of_a_walked_pack_are_within_its_band(pack):
 def _with_cap(pk, cap, **terms):
     """``pk`` with its certificate stating ``cap`` as its numerical cap and ``terms`` as its other certified rows."""
     import copy
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     meta = copy.deepcopy(pk.meta)
     meta["fidelity"].update(target_floor=cap, **terms)
     return ReplayPack(pk.arrays, meta)

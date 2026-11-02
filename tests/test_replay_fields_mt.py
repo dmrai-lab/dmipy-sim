@@ -23,7 +23,8 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim import simulate_mt_trajectories, SusceptibilitySources, mt
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.trajectories import replay, replay_bloch, replay_bloch_jax
+from dmipy_sim.replay.trajectories import replay, replay_bloch
+from dmipy_replay.replay.bloch_jax import replay_bloch_jax
 from dmipy_replay.replay.bloch import finite_180_longitudinal_dwell
 
 

@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 import dmipy_sim.replay.compression as cx
-from dmipy_sim.replay.replay import ReplayPack, read_rpk, write_rpk
+from dmipy_replay import ReplayPack, read_rpk
+from dmipy_sim.replay.container import write_rpk
 
 CONTAINER = [{"bands": [0, 2], "bits": 12}, {"bands": [2, 5], "bits": 8}, {"bands": [5, 9], "bits": 7}, {"bands": [9, 12], "bits": 4}]
 

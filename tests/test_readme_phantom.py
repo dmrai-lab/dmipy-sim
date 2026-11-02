@@ -36,7 +36,7 @@ def test_the_readme_phantom_snippets_run(stand_in_pack, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     spec = importlib.util.spec_from_file_location("ring", ROOT / "examples" / "rph" / "circular_wm_phantom.py")
     ring = importlib.util.module_from_spec(spec); spec.loader.exec_module(ring)
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     ns = {"annulus": ring.annulus, "frames": ring.frames,                       # the volumes the prose points at
           "dirs": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
           "rotation": _r_so3.rotation_of((0.3, 0.5, 0.81)),

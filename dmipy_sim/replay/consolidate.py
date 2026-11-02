@@ -763,7 +763,7 @@ def consolidate(shards, out_dir, *, blocks, id, pass_=1, repo=None, upload=None,
     ``repo``) into the layout under ``out_dir``, published under ``upload`` on ``repo`` when given. ``grid`` is the
     recipe's voxel grid (:func:`manifest_grid`): the per-voxel certificate of every shard that
     carries none is measured on it. Returns ``(manifest, index)``."""
-    from .replay import read_rpk
+    from dmipy_replay import read_rpk
     sh = Shards(shards, repo); up = Uploader(repo, upload)
     con = Consolidator(out_dir, cap_bytes, up, grid=grid)
     if resume:
@@ -794,7 +794,7 @@ def append(shards_dir, out_dir, *, id, pass_, repo=None, upload=None, cap_bytes=
     ``block-NNNN.p<pass>.<pool>.r<r>.rpk``, merged) appended to the layout under
     ``out_dir`` (its checkpoint resumed): the union weights on both sides, the old rows patched in their weights
     part, the repaired pools' certificate rows the union's. Returns ``(manifest, index)``."""
-    from .replay import read_rpk
+    from dmipy_replay import read_rpk
     up = Uploader(repo, upload); con = Consolidator(out_dir, cap_bytes, up); con.resume()
     n_before = len(con.done); boundary = con.n_rows
     old_ranges = {}

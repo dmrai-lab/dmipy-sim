@@ -125,7 +125,7 @@ import os, tempfile
 from dmipy_sim.replay.container import save_pack
 tmp = tempfile.mkdtemp()
 save_pack(pack, os.path.join(tmp, "cylinder.rpk"))
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 same = ReplayPack.load(os.path.join(tmp, "cylinder.rpk"))
 assert same.n_walkers == pack.n_walkers
 

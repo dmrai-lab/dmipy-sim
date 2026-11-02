@@ -39,7 +39,7 @@ named), or leaves a net moment, is refused by name (:meth:`Partition.levels`).
 built from the same walk (``pack=``, its sibling: the floor target and the envelope are the pack's, and the rows'
 provenance names the walk and the pack): two artefacts of one walk, each with its own certificate, the segments'
 carrying the walk's terms (truncation, quadrature, field read, the accumulator's rounding) and its own rounding, and no
-band quantisation. Given a quantised :class:`~dmipy_sim.replay.replay.ReplayPack` instead (``source: "pack"``) it
+band quantisation. Given a quantised :class:`~dmipy_replay.replay.replay.ReplayPack` instead (``source: "pack"``) it
 contracts the pack's bands: the certificate then carries the pack's band quantisation contracted through the partition
 (:func:`quantisation_term`), and the vectors are held to what the floor's budget leaves of it, so their words are wider.
 
@@ -320,7 +320,7 @@ def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
     worst over the envelope, rad^2 of phase (the contact's relative weight error counted as a phase, as its width is).
     Each contraction is linear in the stored bands / modes, so a step ``s_k`` (the largest over the scale tables) is a
     variance ``w_k^2 s_k^2 / 12`` with ``w_k`` the contraction's weight on it: the contact's ``(rho2 / D)_max`` times the
-    gated bridge's weights (:func:`~dmipy_sim.replay.replay.surface_logweight` of unit bands), each field component's
+    gated bridge's weights (:func:`~dmipy_replay.replay.replay.surface_logweight` of unit bands), each field component's
     ``B0 chi_max alpha_c gamma g_k`` with ``g_k`` the gate's cosine projection (``alpha`` 2 on ``iso_local``, which the
     layout forms ``iso_P_zz`` from; a pack's stored ``iso_P_zz`` is not read). A band or mode that is zero on every
     walker holds no step (its scale is a placeholder). Zero for a float container. The live bands and modes are read a
@@ -363,12 +363,12 @@ def tier_quantisation_terms(pack, gate_seq, env, *, slice_bytes=None):
 
 
 def _walk_view(walk, weights=None):
-    """The walk's float coefficients as an uncertified in-memory :class:`~dmipy_sim.replay.replay.ReplayPack`: per
+    """The walk's float coefficients as an uncertified in-memory :class:`~dmipy_replay.replay.replay.ReplayPack`: per
     window the positions, the contact and the field modes in the float containers and the occupancy's events, exactly
     the walk's own numbers, so that every reader of a pack contracts the walk before any quantiser."""
     from .bank import _coefficient_weights
     from . import compression as cx
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     w = _coefficient_weights(walk, weights)
     n, T_w = int(walk.n_windows), float(walk.T_window)
     arrays, channels = {}, {}
@@ -519,7 +519,7 @@ def _positions_decoded(pack):
     range's readers -- each partition's vectors, each group's tiers and background -- decode none again."""
     from dmipy_replay.replay.compression import POSITION_AXES, read_position_coeffs
     from .compression import pack_position_arrays
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     arrays = dict(pack.arrays)
     shared = {k: v for k, v in arrays.items() if k == "band_block"}
     for p in sorted({k[:len(k) - len(k.split("/")[-1])] for k in arrays if k.split("/")[-1].startswith(POSITION_AXES)}):
@@ -602,10 +602,10 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
 
     ``source`` is the walk (:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`), read in its float coefficients, with
     ``pack`` the pack built from it (its sibling; refused when its walkers' starts are not the walk's), or a quantised
-    :class:`~dmipy_sim.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
+    :class:`~dmipy_replay.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
     its median per-voxel floor; the envelope the pack's (``g_max`` at most its ``G_max``). Returns the record.
 
-    The source is read a walker range at a time (:meth:`~dmipy_sim.replay.replay.ReplayPack.walkers`, ranges of
+    The source is read a walker range at a time (:meth:`~dmipy_replay.replay.replay.ReplayPack.walkers`, ranges of
     :func:`~dmipy_sim.replay.compression.slice_walkers` at ``slice_bytes``), every column spilled to ``out_dir`` in
     walker order and gathered into (voxel, pool) order by one sort over all rows at the end; a record's largest
     values are those of the stored float32 rows, the largest over the ranges. The rows and the record do not depend on the ranges: memory is bounded
@@ -613,7 +613,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     from ..coefficient_walk import CoefficientWalk
     from .compression import slice_walkers
     from dmipy_replay.phantom.grid import Grid
-    from .replay import ReplayPack
+    from dmipy_replay import ReplayPack
     parts = _partitions(partitions)
     if isinstance(source, CoefficientWalk):
         if not isinstance(pack, ReplayPack):
@@ -736,7 +736,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
 def _check_band(view, partition, env):
     """Refuse a partition whose template at the envelope's b_max (a class's: at ``G_max`` on its peak axis) needs more
     temporal band than the source stores (the
-    replay's own check, :meth:`~dmipy_sim.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
+    replay's own check, :meth:`~dmipy_replay.replay.replay.ReplayPack._check_band`): a segment's sharp edges are the
     waveform's, and the bands beyond the pack's would carry phase the vectors do not."""
     from dmipy_replay.acquisition.waveforms import calc_b
     seq = partition.template

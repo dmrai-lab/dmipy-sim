@@ -18,7 +18,8 @@ from scipy.fft import dst
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import ReplayPack, so3
+from dmipy_replay import ReplayPack
+from dmipy_replay.replay import so3
 from dmipy_sim.replay import compression as cx
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.reencode import prefix_pack

@@ -6,7 +6,7 @@ downloaded whole; the pack is opened by reference and read by range.
 
 ```python
 # docs: skip -- reads from the hub over the network
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_sim import sequences
 from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_sim.spec import Tissue

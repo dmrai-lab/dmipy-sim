@@ -23,7 +23,7 @@ from dmipy_replay.constants import GAMMA
 from dmipy_sim.replay import compression as cx
 from dmipy_replay.replay.columnar import ColumnarPack
 from dmipy_replay.replay.planning import PLAN_TOL, Planned, ReadPlan, band_tail, fewest, floor_of
-from dmipy_sim.replay.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_replay.replay.replay import _signal_factor
 from dmipy_replay.sequences.builders import gre, ogse, pgse
 from dmipy_replay.spec.tissue import Tissue
@@ -187,7 +187,7 @@ def test_the_planned_error_bounds_the_signal_it_costs(pack):
 
 @pytest.mark.skipif(not (PORES and os.path.exists(PORES)), reason="the canonical-pores pack is not on this machine")
 def test_the_planned_error_bounds_the_signal_on_a_pores_pack_including_ogse_400():
-    from dmipy_sim.replay.replay import read_rpk
+    from dmipy_replay import read_rpk
     pk = read_rpk(PORES)
     n_t, T = 1001, 0.1
     axis = [[1.0, 0.0, 0.0]]

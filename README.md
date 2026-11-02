@@ -83,7 +83,7 @@ without a raw path; it is what the substrate bank distributes and what dmipy-fit
 from dmipy_sim.substrate import Substrate
 from dmipy_replay import envelope_of
 from dmipy_sim import walk
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import ReplayPack
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.container import save_pack
 from dmipy_sim import sequences

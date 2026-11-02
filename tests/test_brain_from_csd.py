@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_sim.io.mrtrix import read_mif
-from dmipy_sim.replay.so3 import real_sh, rotate_sh
+from dmipy_replay.replay.so3 import real_sh, rotate_sh
 from dmipy_replay.phantom import Pose
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,7 +84,7 @@ def test_csd_on_the_synthetic_dwi_recovers_the_fod_that_built_it(example, wm_pac
         pytest.skip("needs a dmipy-fit whose AcquisitionScheme takes a ScannerSequence (fit >= #27)")
     spec = importlib.util.spec_from_file_location("check", ROOT / "examples" / "rph" / "brain_from_csd_check.py")
     check = importlib.util.module_from_spec(spec); spec.loader.exec_module(check)
-    from dmipy_sim.replay import read_rpk
+    from dmipy_replay import read_rpk
     ph, fod, R = example.build(str(CROP), wm_pack)
     seq, g = example.acquisition(str(CROP), ph.grid, TE=0.030, delta=0.006, Delta=0.015)
     S = ph.replay(seq, pose=Pose(R))

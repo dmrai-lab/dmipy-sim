@@ -12,7 +12,7 @@ import pytest
 
 from dmipy_sim import sequences
 from dmipy_replay.constants import GAMMA
-from dmipy_sim.replay import so3
+from dmipy_replay.replay import so3
 from dmipy_replay.replay._replay_kernel import field_gate, gate_weights
 from dmipy_replay.spec.tissue import Tissue
 from tests.replay_frames import field_along

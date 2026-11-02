@@ -83,7 +83,7 @@ def _served(pack):
 def _snippet(uri):
     return (f"import numpy as np\n"
             f"import dmipy_sim as d\n"
-            f"from dmipy_sim.replay import ReplayPack\n"
+            f"from dmipy_replay import ReplayPack\n"
             f"pk = ReplayPack.load({uri!r})\n"
             f"seq = d.pgse([[1, 0, 0]], {DELTA!r}, {BIGDELTA!r}, bvalues=[{B!r}], n_t=64, slew_rate=np.inf)\n"
             f"print('S = %.5f' % float(np.asarray(pk.replay(seq)).ravel()[-1]))\n")

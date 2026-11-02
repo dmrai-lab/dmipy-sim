@@ -165,9 +165,9 @@ def test_stimulated_echo_matches_the_sphere_robin_series(sphere_pack):
 # --------------------------------------------------------------------------- acceptance: replay vs the pose closed form
 def test_replay_and_the_pose_closed_form_agree(sphere_pack):
     """The pose expansion at the identity pose composes back to the plain replay (#197): since
-    :meth:`~dmipy_sim.replay.replay.ReplayPack.pose_response` reads the SAME ``_prepare`` weights
+    :meth:`~dmipy_replay.replay.replay.ReplayPack.pose_response` reads the SAME ``_prepare`` weights
     (``ew``), this is a structural check that rho1 reaches the closed form too, not a new route."""
-    from dmipy_sim.replay.so3 import Distribution
+    from dmipy_replay.replay.so3 import Distribution
     pk = sphere_pack
     wf = seq.pgste([[1, 0, 0]], 1e-3, 0.02, bvalues=[3e8], n_t=pk.n_t, slew_rate=np.inf)
     tissue = Tissue(rho2=2e-6, rho1=8e-6)
@@ -186,7 +186,7 @@ def test_the_columnar_device_route_applies_rho1(tmp_path):
     from dmipy_sim.io.strands import write_tck, concat_centerlines
     from dmipy_replay.phantom import Grid
     from dmipy_sim.replay.bank import merge_packs
-    from dmipy_sim.replay.replay import ReplayPack
+    from dmipy_replay import ReplayPack
     from dmipy_sim.replay.consolidate import consolidate
     from dmipy_sim.spec import disco_spec, StratifiedByVoxel
     from dmipy_sim import walk

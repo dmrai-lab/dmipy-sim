@@ -12,7 +12,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
-from dmipy_sim.replay import ReplayPack, read_rpk
+from dmipy_replay import ReplayPack, read_rpk
 from dmipy_replay.spec.tissue import Tissue
 from tests.test_bank import _lean_env
 from tests.test_storage_windows import DT, N_T, T, _kw, _walk, _float_pack

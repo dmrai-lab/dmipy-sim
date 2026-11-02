@@ -12,7 +12,7 @@ import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim import sequences
 from dmipy_replay.phantom import Grid, Inert, ODF, PackSubstrate, Phantom
-from dmipy_sim.replay import read_rpk
+from dmipy_replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 
 SH = (6, 6, 2)
@@ -130,7 +130,7 @@ def test_a_spin_echo_refocuses_a_drifting_magnet_exactly(brain):
     """One pathway survives a perfect 180, its signed transverse time is zero, so a UNIFORM offset leaves
     both magnitude and phase untouched however far the magnet has drifted."""
     from dmipy_replay.replay.pathways import train_response
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     _ph, pack, _g = brain
     se = _train(n_echo=1, beta=180.0)
     tr = train_response(pack, se, keep=(8, 0))
@@ -161,7 +161,7 @@ def test_a_refocusing_train_is_exactly_insensitive_to_a_uniform_offset(brain):
     under HARD pulses. Finite pulses excite about a tilted effective field when off-resonant, so the flip
     angle itself becomes offset-dependent -- a channel this route does not model."""
     from dmipy_replay.replay.pathways import train_response
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     _ph, pack, _g = brain
     tr = train_response(pack, _train(n_echo=4, beta=150.0), keep=(8, 0))
     A = so3.so3_design(8, np.eye(3)[None], 0)
@@ -270,7 +270,7 @@ def test_a_band_is_read_wider_by_zeros_and_narrower_by_truncation():
     """Two packs whose responses were projected at different bands compose at one: the narrower is zero-extended
     (exact, since a projection at the band a response needs has nothing above it), the wider truncated; a band
     narrower in one index and wider in the other is refused."""
-    from dmipy_sim.replay.so3 import rebanded, so3_index, extend_coeffs, truncate_coeffs
+    from dmipy_replay.replay.so3 import rebanded, so3_index, extend_coeffs, truncate_coeffs
     rng = np.random.default_rng(0)
     c2 = rng.normal(size=(3, len(so3_index(2, 0))))
     wide = rebanded(c2, 2, 0, 8, 0)

@@ -14,9 +14,10 @@ import json
 import os
 
 import numpy as np
+from dmipy_replay.replay.hub import sha256_of
 
 __all__ = ["EDGES_M", "WALK_LENGTHS_S", "HALO_FREE_DIFFUSIVITY_M2_S", "HALO_MARGIN_CELLS", "TILE_EDGE_M",
-           "SpectrumHaloError", "halo_m", "check_halo", "sha256_of", "write_index", "verify_index", "tile_seed",
+           "SpectrumHaloError", "halo_m", "check_halo", "write_index", "verify_index", "tile_seed",
            "derive_seed", "n_tiles_per_axis", "git_commit", "write_manifest", "pilot_n_and_floor", "pool_census"]
 
 #: the four edges of the spectrum (#697): one voxel, DiSCo's own two sizes, and the "100x" tiled case.
@@ -86,15 +87,6 @@ def derive_seed(seed, *indices):
 def tile_seed(seed, ix, iy):
     """The RNG seed of tile column ``(ix, iy)`` of a generator run with ``seed`` (:func:`derive_seed`)."""
     return derive_seed(seed, "tile", ix, iy)
-
-
-def sha256_of(path):
-    """The sha256 of a file's bytes, read in chunks (never the whole file in one allocation)."""
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 24), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def write_index(out_dir, *, extra=None):

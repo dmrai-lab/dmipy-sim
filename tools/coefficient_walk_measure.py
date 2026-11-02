@@ -346,7 +346,7 @@ def surface(*, n=20000, D=2e-9, T=0.02, K=64, R=4e-6, rho=1e-4, seed=3):
 # ------------------------------------------------------------------------------- the multiphysics admission (#742)
 def _pose_with_field_along(d_sub):
     """The rotation ``R`` (substrate -> lab) whose pose puts the bore's field along ``d_sub`` in the substrate frame."""
-    from dmipy_sim.replay import so3
+    from dmipy_replay.replay import so3
     d_sub = np.asarray(d_sub, np.float64); d_sub = d_sub / np.linalg.norm(d_sub)
     return np.asarray(_r_so3.rotation_of(d_sub), np.float64).T
 

@@ -25,7 +25,8 @@ from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.constants import GAMMA
 from dmipy_sim.fields.susceptibility_field import field_grid_of
 from dmipy_replay.phantom import FreeWater, Grid, Inert, PackSubstrate, Peaks, Phantom
-from dmipy_sim.replay import ReplayPack, so3
+from dmipy_replay import ReplayPack
+from dmipy_replay.replay import so3
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.replay.study import Acquisition, StudyProtocol, Study
 from dmipy_replay.spec.substrate import SpecError, SubstrateSpec, load_spec, susceptibility_field_of

@@ -6,8 +6,8 @@ import pytest
 
 from dmipy_sim.io.mrtrix import read_mif
 from dmipy_replay.phantom import Grid
-from dmipy_sim.replay import so3
-from dmipy_sim.replay.fod import FOD
+from dmipy_replay.replay import so3
+from dmipy_replay.replay.fod import FOD
 
 
 def _write_mif(path, data, transform, vox, layout, datatype="Float32LE", scaling=None):
