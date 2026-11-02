@@ -635,7 +635,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                 e_echo, s_echo = np.where(worse, ee, e_echo), np.where(worse, ss, s_echo)
         return e_max, f_max, e_echo, s_echo
 
-    err, train, floor, trunc, cont, worst, order = {}, {}, {}, {}, {}, {}, []
+    err, train, floor, floor_train, trunc, cont, worst, order = {}, {}, {}, {}, {}, {}, {}, []
     chosen = None
     for k in rungs:
         n_p = _depth(k, depth)
@@ -655,7 +655,9 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         kind, te = _echo_name(i, gre, se_t, float(h))
         worst[k] = dict(acquisition=kind, TE=te, err=float(ee[i]), floor=float(fl_e[i]), ratio=float(ratio[i]),
                         err_truncation=float(ee_tr[i]))
-        err[k], train[k], floor[k], trunc[k], cont[k] = max(e_max, float(ee.max())), e_max, fl, max(e_tr, float(ee_tr.max())), ranges
+        err[k], train[k], floor[k], trunc[k], cont[k] = (max(e_max, float(ee.max())), e_max, max(fl, float(fl_e.max())),
+                                                        max(e_tr, float(ee_tr.max())), ranges)
+        floor_train[k] = fl
         order.append(k)
         if e_max <= fl and np.all(ee <= fl_e):
             chosen = k; break
@@ -677,7 +679,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                   ladder=[dict(K=int(k), err=float(err[k]), err_truncation=float(trunc[k]), floor=float(floor[k]),
                                worst=dict(worst[k]), container=[dict(r) for r in cont[k]]) for k in order],
                   K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) if depth else None), above_position_band=bool(K > int(K_max)),
-                  within_floor=bool(train[K] <= floor[K] and worst[K]["ratio"] <= 1.0),
+                  within_floor=bool(train[K] <= floor_train[K] and worst[K]["ratio"] <= 1.0),
                   err=float(err[K]), err_truncation=float(trunc[K]), floor=float(floor[K]), worst=dict(worst[K]),
                   container=[dict(r) for r in cont[K]],
                   floor_is=("the explicit numerical field error budget" if target_floor is not None else

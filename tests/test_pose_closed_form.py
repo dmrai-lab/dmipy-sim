@@ -267,15 +267,18 @@ def test_the_background_turns_with_the_specimen(pack, seq):
 def test_the_background_and_the_field_compose_in_closed_form(myelin_pack):
     """Field on: the field factor and the background factor are coupled walker by walker into one factor, then
     with the gradient -- three Wigner blocks, two couplings. Exact against the direct posed replay with the field
-    to the field route's own precision (2e-6, as without a background)."""
+    to the field route's own precision, as without a background: 2e-6, or the float32 rounding of the two routes'
+    phases where that is larger."""
     pk = myelin_pack
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1], [0.6, 0.8, 0.0]], 6e-3, 15e-3, bvalues=[1.5e9] * 3, TE=30e-3)
     kw = dict(scanner=7.0, tissue=Tissue(chi_iso=-1e-7, chi_aniso=-1e-7))
     played, R_y = field_along(seq.with_background_gradient(_g0(0.005)), (0.0, 1.0, 0.0))
     pc = pk.pose_response(played, method="closed", pose=Pose(R_y), **kw)
     assert pc.route == "closed" and pc.field_lmax >= 2 and pc.background_lmax >= 2
+    f32 = 4 * float(np.finfo(np.float32).eps) * max(1.0, float(pc.phase_amplitude))
     for R in so3.haar_rotations(12, 2):
-        np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw, tol=None), atol=2e-6)
+        np.testing.assert_allclose(pc.at(R), pk.replay(played, orientation=R_y @ R, complex_signal=True, **kw, tol=None),
+                                   atol=max(2e-6, f32))
 
 
 @pytest.fixture(scope="module")

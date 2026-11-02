@@ -139,9 +139,12 @@ def test_the_field_grid_of_a_packed_cell_is_read_periodically(pm, cwalk):
     assert np.abs(clamped.channels(p + np.array([L, 0, 0])) - base).max() > 0.1 * np.abs(base).max()
 
     # the walk reads the grid at every step (one step per block: the reads are the block ends of its raw subset); its
-    # modes are the trapezoid projection of the reads at the FOLDED positions, which are the images' reads
+    # modes are the trapezoid projection of the reads at the FOLDED positions, which are the images' reads. The band is
+    # stated, not derived: the walk's in-block quadrature departs from the trapezoid projection by an amount that grows
+    # with the mode (0.25 % of the largest mode at 16 modes of the 40 blocks, 0.55 % at 32), which is the certificate's
+    # quadrature term and not the period this test reads
     w = _walk_geometry(300, D0, pm, 8e-3, 2e-4, seed=0, require_gpu=False, raw_subset=300, K=K_BANDS,
-                                sub_steps=1, field_basis=fg)
+                                sub_steps=1, field_basis=fg, K_c3=16)
     pos = np.asarray(w.raw_positions, np.float64)
     assert _jumps(pos) == 0 and _jumps(_fold(pos)) > 50                         # the walkers do leave the cell
     modes = np.asarray(w.field_coeffs, np.float64)[:, 0]
