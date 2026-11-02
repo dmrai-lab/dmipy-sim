@@ -31,12 +31,18 @@ pack into a signal or an image.
   scanner catalogue and the substrate specification are dmipy-replay's. dmipy-sim re-exports none of them, and a name
   that moved is refused by name with its new spelling: `dmipy_sim.pgse` raises an `AttributeError` that says
   `from dmipy_replay import pgse`. dmipy-sim keeps the Pulseq writer (`to_pulseq`).
+- **The forms are dmipy-analytic's.** The physical constants (`GAMMA`, `MU0`), the matrix method (`MatrixPore`, the
+  Neumann roots), the field forms of the hollow cylinder and of a current segment, and the two-pool magnetization-transfer
+  forms are [dmipy-analytic](https://github.com/dmrai-lab/dmipy-analytic)'s, and dmipy-sim imports them. The moved names
+  are refused by name with their new spelling (`dmipy_sim.GAMMA`, the magnetization-transfer forms of `engine.mt`, the field forms of
+  `fields.hollow_cylinder` and `acquisition.coil`), and `dmipy_sim.math.matrix_method`, which moved whole, is gone:
+  `from dmipy_sim.math import matrix_method` says where it went.
 - **Names.** `dmipy_sim.Pool` is the physics of one pool of a geometry's `Compartments`; the pool of a substrate spec is
   dmipy-replay's `PoolSpec`. A sequence's b-value is `seq.b()` and its b-tensor `seq.btensor()`; `calc_b` and
   `calc_btensor` are refused by name.
 - **Runs on** JAX, on CPU or CUDA 12. Python >= 3.10, NumPy >= 2.0, JAX >= 0.6.2. The replay guide
   ([docs/replay-guide](docs/replay-guide/README.md)) is the manual for the replay side, and every code block on its
   pages runs in the test suite.
-- **Pairs with** [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) `>=0.2,<0.3`, and with dmipy-fit and
-  dmipy-design `>=3,<4`.
+- **Pairs with** [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) `>=0.2,<0.3` and dmipy-analytic
+  (`[special,jax]`) `>=3,<4`, and with dmipy-fit and dmipy-design `>=3,<4`.
 - **Licence** AGPL-3.0-only or commercial ([LICENSING.md](LICENSING.md)).
