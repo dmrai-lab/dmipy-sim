@@ -16,19 +16,19 @@ later page starts from it the same way.
 ```python
 import numpy as np
 import dmipy_sim as d
-from dmipy_sim.engine.core import _walk_geometry
-from dmipy_sim.replay.bank import build_replay_pack
-
 from dmipy_replay import Envelope
-walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
-               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
-pack = build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide", envelope=env)
+
+env = Envelope(name="guide", band_hz=400.0, G_max=50.0, B0_list=(3.0, 7.0), chi_max=None, rho2_max=1e-4,
+               max_refocusing_pulses=None)          # the guide's: a 400 Hz band, its short lobes' amplitude
+walk = d.walk(d.Cylinder(2e-6, (0, 0, 1)), 300, T_max=0.01, envelope=env, diffusivity=2e-9, seed=0, require_gpu=False)
+pack = d.build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")
 print(pack.n_walkers, pack.K, pack.fidelity["certified"], pack.block["m"])   # 300 walkers, 8 bands, measured (walk-free terms), 3
 ```
 
-The walk keeps the bands, not the path: `_walk_geometry` accumulates them while it runs,
-block by block (`block_h`, the fifth argument; by default the band's own block `h = 0.8 T / (pi K)`, `omega_K h = 0.8`
+`walk(spec, n_walkers, T_max=, envelope=)` is the one producer: it takes a `SubstrateSpec` or a geometry (reduced
+to its spec), and the `Envelope` the walk is walked for and a pack built from it is certified for, here one stated
+directly; `envelope_of("prisma")` is a scanner class's. The walk keeps the bands, not the path: it accumulates them
+while it runs, block by block (`block_h`; by default the band's own block `h = 0.8 T / (pi K)`, `omega_K h = 0.8`
 at the top band, `pack.block["h"]`), and returns a `CoefficientWalk` whose memory
 does not grow with the block count. The bands are the projections of each walker's bridge on `sqrt(2 / T) sin(pi k t /
 T)`, and the pack is certified without a raw walk: the truncation from the free band variances, the block quadrature
@@ -40,13 +40,13 @@ picture of the paths.
 
 `K` is the number of sine bands kept per axis (per window, below): the pack's temporal band, `K / (2 T)` in hertz with `T` a window's duration, which is what an
 acquisition's gradient content is checked against (`pack.waveform_band(seq)` says which band a sequence needs, and a
-replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk's `K` is the storage band by
-default (256 bands per 100 ms); `walk(spec, ..., envelope=)` walks the envelope's band (`envelope_of("prisma")`: the
-class's certified band times the storage margin), and `build_replay_pack(walk, envelope=envelope_of("prisma"))` or
-`K=` stores a smaller band of a walk; the pack states the band it stores. The walk's length `T` is the longest echo time the pack can
+replay beyond the pack's band is refused; see [the sequence](sequence.md)). The walk walks the envelope's band, `K =
+ceil(2 band_hz T)` per window (`Envelope.mode_count`; 400 Hz over 10 ms is the 8 bands above; `envelope_of("prisma")`
+is the class's certified band times the storage margin), and `build_replay_pack(walk, envelope=envelope_of("prisma"))`
+or `K=` stores a smaller band of a walk; the pack states the band it stores. The walk's length `T` is the longest echo time the pack can
 replay; a shorter one is a prefix (`prefix_pack(pack, TE)`, below).
 
-A walk is accumulated in **storage windows** of one duration, 100 ms by default (`_walk_geometry(window_T=)`),
+A walk is accumulated in **storage windows** of one duration, 100 ms by default (`walk(window_T=)`),
 consecutive windows sharing their boundary instant: a walk within one window is one, a longer walk a whole number of
 them, each with its own bands at the same `K`, stored and certified on its own. Window 0's tensors sit under the channel names and window
 `i` under `s{i}/`, so `pack.window(i)` is a pack of that window, `truncate_pack(pack, k)` the first `k` windows without

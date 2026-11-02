@@ -31,15 +31,12 @@ outside the certificate.
 ```python
 import numpy as np
 import dmipy_sim as d
-from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay import sequences
-from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_replay import Envelope, sequences
 
-from dmipy_replay import Envelope
-walk = _walk_geometry(300, 2e-9, d.Cylinder(2e-6, (0, 0, 1)), 0.01, seed=0, require_gpu=False, K=8)
-env = Envelope(name="guide", band_hz=walk.K / (2 * walk.T_window), G_max=50.0, B0_list=(3.0, 7.0), chi_max=None,
-               rho2_max=1e-4, max_refocusing_pulses=None)   # the guide's: its stored band, its short lobes' amplitude
-pack = build_replay_pack(walk, id="guide/cylinder", K=8, license="CC-BY-4.0", citation="the guide", envelope=env)
+env = Envelope(name="guide", band_hz=400.0, G_max=50.0, B0_list=(3.0, 7.0), chi_max=None, rho2_max=1e-4,
+               max_refocusing_pulses=None)          # the guide's: a 400 Hz band, its short lobes' amplitude
+walk = d.walk(d.Cylinder(2e-6, (0, 0, 1)), 300, T_max=0.01, envelope=env, diffusivity=2e-9, seed=0, require_gpu=False)
+pack = d.build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")
 seq = sequences.pgse([[1, 0, 0]], 0.001, 0.003, bvalues=[0.0], TE=0.006, slew_rate=np.inf)   # a b = 0: the relaxation alone
 
 S_bare = pack.replay(seq)                                     # 1. none: bare diffusion, the default

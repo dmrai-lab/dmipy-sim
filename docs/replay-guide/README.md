@@ -21,7 +21,8 @@ encodes as it goes. The envelope gives the band, the band gives the block, and a
 | **study** (`Study`) | a protocol on some tissues on some scanners, replayed in one pass | `Study(Protocol([...]), tissues=[...], scanners=[...])` |
 
 Pages: [pack](pack.md) · [sequence](sequence.md) · [tissue](tissue.md) · [scanner](scanner.md) ·
-[orientation](orientation.md) · [replay](replay.md) · [views](views.md) · [images from the hub](images.md) · [phantoms](phantoms.md) ·
+[orientation](orientation.md) · [replay](replay.md) · [the vector-Bloch route](bloch.md) · [views](views.md) ·
+[images from the hub](images.md) · [phantoms](phantoms.md) ·
 recipes: [a canonical pore](recipes/canonical_pore.md), [DiSCo from the hub](recipes/disco.md).
 
 ## What this guide is not
@@ -53,6 +54,8 @@ where its nominal value lives, and which channel of the pack it needs.
 | `chi_iso`, `chi_aniso` | tissue | a phase per walker, linear in the scanner's field | no field | `pack.nominal` | a pack whose field is present (C3) and a scanner; refused on a pack whose field is absent |
 | field strength | scanner | the same phase, linear in `B0` | no field | `pack.nominal_field_T` | path (C3); on a pack whose field is absent, accepted and inert |
 | `compartment` | replay call | restricts the ensemble mean to one pool | every pool | — | C1 |
+| `b1_scale` | vector-Bloch call | every flip angle of the sequence, one scale or one per walker | the nominal flips | — | C0 |
+| `off_resonance_T` | vector-Bloch call | a uniform static field offset every walker precesses in through the pulses | none | — | C0 |
 | `tol`, `K`, `modes` | replay call | how many position bands and field modes are decoded: the fewest whose dropped tail costs `tol` x the pack's floor, or the counts stated; the plan is on the result | `tol = 0.25` | — | — |
 
 Three rules follow from the table and hold everywhere:
