@@ -384,6 +384,13 @@ rules, the replay invariant, and how to add physics. `docs/replay-guide/` is the
 ## Install
 
 ```bash
+pip install dmipy-sim                 # CPU, any platform (installs dmipy-replay)
+pip install "dmipy-sim[cuda12]"       # NVIDIA GPU, CUDA 12
+```
+
+From a checkout:
+
+```bash
 pip install -e ".[dev]" && pip install "jax[cpu]>=0.6.2"     # CPU, any platform (installs dmipy-replay)
 pip install -e ".[cuda12,dev]"                                # NVIDIA GPU, CUDA 12
 ```

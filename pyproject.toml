@@ -12,7 +12,7 @@ authors = [
     { name = "Rutger Fick", email = "fick.rutger@gmail.com" }
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: GNU Affero General Public License v3",
     "Operating System :: OS Independent",
@@ -87,7 +87,7 @@ images = [
 # dmipy-sim); so do the Karger and brain-from-CSD tests, which skip without it. It is an OPTIONAL example dependency
 # only -- the dmipy-sim package itself never imports dmipy-fit (the fit -> sim dependency is one-directional).
 examples = [
-    "dmipy-fit>2.3,<4",
+    "dmipy-fit>=3,<4",
 ]
 # Pulseq (.seq) interoperability: from_pulseq / to_pulseq (dmipy_sim.sequences.pulseq).
 # Install isolated from the numpy/jax stack:  pip install --no-deps pypulseq
