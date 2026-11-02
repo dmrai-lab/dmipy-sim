@@ -241,9 +241,12 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
         # with walls -- and it fails silently, at one sub-step, with the boundary channel garbled. That is how
         # a dropped `length` clause went unnoticed for a whole release (see `_geometry_radius`). A confined
         # geometry advertises finite volume and surface area, so say so rather than guessing.
-        sa, vol = getattr(geometry, "surface_area", None), getattr(geometry, "volume", None)
+        try:
+            sa, vol = geometry.surface_area, geometry.volume
+        except AttributeError:                               # a geometry that states no walls
+            sa = vol = None
         confined = False
-        if sa is not None and vol is not None:               # a geometry that states its walls; a failure to read them raises
+        if sa is not None and vol is not None:               # one that states them is read; a failure to read them raises
             sa = sa() if callable(sa) else sa
             vol = vol() if callable(vol) else vol
             confined = float(sa) > 0 and 0 < float(vol) < float('inf')
