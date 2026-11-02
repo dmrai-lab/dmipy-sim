@@ -14,7 +14,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
 from dmipy_replay.replay._replay_kernel import (
     effective_gradient,

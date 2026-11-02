@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from dmipy_replay.sequences import ogse
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 BVECS = np.array([[1.0, 0.0, 0.0]])
 

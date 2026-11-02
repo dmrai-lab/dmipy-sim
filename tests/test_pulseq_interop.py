@@ -20,7 +20,7 @@ from dmipy_replay.sequences import ogse, pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 from dmipy_replay.sequences.pulseq import from_pulseq
 from dmipy_sim.sequences import to_pulseq, make_system, PULSEQ_SYSTEMS
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 import jax.numpy as jnp
 
 BVEC = np.array([[1., 0., 0.]], dtype=np.float32)

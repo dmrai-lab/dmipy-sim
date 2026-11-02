@@ -170,7 +170,7 @@ def quadrature(geometry, *, D=2.95e-9, T=0.02, dt_sim=1e-6, K=64, cases=((0, 2e-
     import dmipy_sim as d
     import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_sim.replay import compression as cx
     h_max = max(h for _, h in cases)
     n_t = int(round(T / h_max)) + 1
@@ -273,12 +273,12 @@ def oracle(*, n=20000, D=2e-9, T=0.04, K=80, f=400.0, block_h=None, seed=1):
     """A sphere (radius 4 um) and a cylinder (radius 3 um) walked (the band's own block and order unless ``block_h``
     gives the block), packed, and replayed under a cosine OGSE at ``f`` -- a band the pack's ``K`` only just holds --
     against the matrix method
-    (``dmipy_sim.math.matrix_method``) on the same waveform. Per pore and measurement: both signals, the difference and
+    (``dmipy_analytic.restricted.matrix_method``) on the same waveform. Per pore and measurement: both signals, the difference and
     the standard error of the replay's ensemble mean."""
     import dmipy_sim as d
     import dmipy_replay as dr
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.math.matrix_method import MatrixPore
+    from dmipy_analytic.restricted.matrix_method import MatrixPore
     from dmipy_sim.replay.bank import build_replay_pack
     seq = dr.ogse([[1, 0, 0], [1, 0, 0]], f, 0.015, shape="cosine", bvalues=[1e9, 2e9], TE=T, n_t=4001, slew_rate=np.inf)
     out = {}
@@ -405,7 +405,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     ``K`` bands over ``T`` at block order 3 with the derived block, packed walk-free and with the measured certificate
     on its raw subset, and replayed against three oracles:
 
-    * C0 -- the lumen pool against the matrix method (``math.matrix_method``) on a PGSE (0.1 T / 0.4 T, b = 1, 2 ms/um^2)
+    * C0 -- the lumen pool against the matrix method (``dmipy_analytic.restricted.matrix_method``) on a PGSE (0.1 T / 0.4 T, b = 1, 2 ms/um^2)
       and a cosine OGSE at half the band (``0.5 K / (2 T)``: the highest a cosine block's spread spectrum fits in it);
     * C2 -- the lumen pool with ``rho2 = rho`` (the envelope's largest) against the fused engine on the reflecting
       cylinder of the lumen's radius with ``surface_relaxivity_t2 = rho`` (the lumen's physics behind an impermeable
@@ -426,7 +426,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     from dmipy_sim.engine.pulse_sequence import bare_gradient_echo, bare_spin_echo
     from dmipy_sim.fields.susceptibility import MyelinSusceptibility
     from dmipy_sim.fields.susceptibility_field import field_grid_of
-    from dmipy_sim.math.matrix_method import MatrixPore
+    from dmipy_analytic.restricted.matrix_method import MatrixPore
     from dmipy_sim.replay import compression as cx
     from dmipy_sim.replay.bank import build_replay_pack
     from dmipy_replay.spec.tissue import Tissue
@@ -570,7 +570,7 @@ def _read_compare(fine, other, *, B0, chi, names, pools=None):
     standard error of the difference (the walkers' own spread of it: its first-order, zero-mean part), ``z`` the
     excess of the difference over the term in those errors (within the term when ``z <= 2``).
     ``pools`` is ``{name: (label, dt_f)}`` (a bundle's pools read at their own intervals)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_sim.engine.accumulate import read_constants
     from dmipy_replay.replay.compression import cosine_projection
     if not np.array_equal(np.asarray(other.position_coeffs), np.asarray(fine.position_coeffs)):
@@ -829,7 +829,8 @@ def mt(*, n=4000, D=2e-9, T=0.05, R=3e-6, seed=3, kappa_MT=2e-5, dwell=2e-3, req
     idx = np.rint(times / dt).astype(int)
     bf_fused = bf_f[np.minimum(idx, bf_f.shape[0] - 1)]
     S_over_V = mtmod.surface_to_volume(g)
-    f_b = mtmod.bound_fraction(kappa_MT, dwell, S_over_V)
+    from dmipy_analytic.relaxation import bound_fraction
+    f_b = bound_fraction(kappa_MT, dwell, S_over_V)
     se = np.sqrt(np.maximum(bf_ev * (1 - bf_ev), 1e-12) / n)
     return dict(kappa_MT=kappa_MT, dwell=dwell, S_over_V=float(S_over_V), f_b_equilibrium=(None if f_b is None else float(f_b)),
                 events=dict(n=int(w.bound_events.n_events), capacity=w.block.get("events")),

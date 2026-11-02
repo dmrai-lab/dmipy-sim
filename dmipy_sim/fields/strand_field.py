@@ -1,7 +1,7 @@
 """The susceptibility field basis of a strand substrate (sheathed swept polylines: DiSCo, the EPFL strand lists)
 evaluated at points, without a grid: every segment within a cutoff of the point contributes its exact field as a
 finite segment of the sheathed cylinder seen from outside the sheath -- the dipole kernel integrated in closed form
-along the segment (:func:`~dmipy_sim.fields.hollow_cylinder.segment_basis`), which is the Wharton-Bowtell outside
+along the segment (:func:`~dmipy_analytic.fields.segment_basis`), which is the Wharton-Bowtell outside
 formula for an infinite line, the point dipole of the segment's moment far away, and sums along a straight strand
 to the line however it is cut -- and the contributions are summed; within a strand's outer tube and one outer
 radius beyond it, that strand's own term is its nearest segment's infinite cylinder instead
@@ -51,7 +51,8 @@ from ..geometry._grid import NEIGHBOUR_OFFSETS, bucket_by_bbox, gather
 import jax
 import jax.numpy as jnp
 
-from .hollow_cylinder import hollow_cylinder_basis, segment_basis, annulus_mean_log
+from dmipy_analytic.fields import annulus_mean_log
+from dmipy_analytic.jax.fields import hollow_cylinder_basis, segment_basis
 from dmipy_replay.replay.field import contract, CHANNEL_NAMES
 from ..engine.tables import jit_with_tables
 from ..run import Run

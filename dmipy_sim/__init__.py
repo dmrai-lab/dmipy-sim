@@ -72,7 +72,7 @@ __all__ = [
     "dipole_field", "myelin_susceptibility_tensor", "radial_from_sdf", "sample_grid",
     "mesh_shapes",
     "add_rician_noise", "add_rician_noise_batch", "add_nc_chi_noise", "estimate_sigma",
-    # magnetization transfer (physics + analytic oracle)
+    # magnetization transfer: the walk's bound-pool physics (its closed forms are dmipy_analytic.relaxation's)
     "mt",
     # the pack's container on the producer's side
     "write_rpk",

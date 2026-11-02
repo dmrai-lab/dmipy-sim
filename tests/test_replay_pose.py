@@ -64,7 +64,7 @@ def _Acq(G, dt, bvalues=None):
 
 
 def _pgse(pk, dirs, bvals, delta=1e-3, Delta=3e-3):
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))

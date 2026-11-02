@@ -42,7 +42,7 @@ def pack_paths(walk, tmp_path_factory):
 
 def _acq(pk, dirs, bvals, delta=6e-4, Delta=2e-3, rf=None):
     """A PGSE on the pack's block grid, as a bare gradient echo (rf None) or with a physical spin-echo schedule."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     n_t, dt = pk.n_t, pk.dt
     nd, ng = int(round(delta / dt)), int(round(Delta / dt))
     G = np.zeros((len(dirs), n_t, 3))
@@ -216,7 +216,7 @@ def test_transmit_on_a_partition_is_the_per_walker_scale(pack_paths):
 
 
 def test_off_resonance_and_proton_density_on_a_partition(pack_paths):
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     pk = read_rpk(pack_paths[8])
     grid = _grid(pk)
     ph = Phantom.partition(PackSubstrate(pk, m0=1.0), grid)

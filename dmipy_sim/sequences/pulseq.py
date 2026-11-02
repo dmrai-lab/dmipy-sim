@@ -36,7 +36,7 @@ import warnings
 
 import numpy as np
 
-from dmipy_replay.constants import GAMMA, GAMMA_BAR
+from dmipy_analytic.constants import GAMMA, GAMMA_BAR
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 from dmipy_replay.acquisition.timing import SequenceTiming

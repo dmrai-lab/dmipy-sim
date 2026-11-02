@@ -66,25 +66,28 @@ try:
 except ImportError:                                   # `budget` needs no Modal
     modal = None
 
-def replay_ref():
-    """The dmipy-replay commit the CPU suite runs against: ``DMIPY_REPLAY_REF`` in ``.github/workflows/tests.yml``, the one
-    place it is stated, so both tiers test the same reader. Refused by name when the workflow states none."""
+def pinned_ref(variable):
+    """The commit of a dmrai-lab package the CPU suite runs against: ``variable`` (``DMIPY_REPLAY_REF``,
+    ``DMIPY_ANALYTIC_REF``) in ``.github/workflows/tests.yml``, the one place it is stated, so both tiers test the same
+    packages. Refused by name when the workflow states none."""
     import re
-    m = re.search(r"^\s*DMIPY_REPLAY_REF:\s*([0-9a-f]{7,40})\s*$", (ROOT / ".github/workflows/tests.yml").read_text(), re.M)
+    m = re.search(rf"^\s*{variable}:\s*([0-9a-f]{{7,40}})\s*$", (ROOT / ".github/workflows/tests.yml").read_text(), re.M)
     if not m:
-        raise SystemExit("tests.yml states no DMIPY_REPLAY_REF: the GPU tier installs the reader the CPU suite tests")
+        raise SystemExit(f"tests.yml states no {variable}: the GPU tier installs the packages the CPU suite tests")
     return m.group(1)
 
 
 if modal is not None:
     # the checkout exists on the client only; inside the container this module is imported again from /root, where the
     # image is already built, so the pin is read where the image is defined and nowhere else
-    REPLAY_REF = replay_ref() if modal.is_local() else None
+    REPLAY_REF = pinned_ref("DMIPY_REPLAY_REF") if modal.is_local() else None
+    ANALYTIC_REF = pinned_ref("DMIPY_ANALYTIC_REF") if modal.is_local() else None
     app = modal.App("dmipy-sim-gpu-tier")
     image = (modal.Image.debian_slim(python_version="3.12")
              .apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
-             .run_commands(f'pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{REPLAY_REF}"')
+             .run_commands(f'pip install "dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@{ANALYTIC_REF}"',
+                           f'pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{REPLAY_REF}"')
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 

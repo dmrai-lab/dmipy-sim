@@ -53,7 +53,7 @@ def _dst(x, **kw):
 def _idst(x, **kw):
     return _scipy_idst(x, workers=FFT_WORKERS, **kw)
 
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 
 
 _F16, _F32 = 2, 4

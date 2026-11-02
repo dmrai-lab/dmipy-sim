@@ -23,7 +23,7 @@ from dmipy_replay import compile_scheme
 from dmipy_replay.replay.replay import replay_signal
 from dmipy_replay import read_rpk
 from dmipy_sim.replay import bank, compression as cx_
-from dmipy_replay.constants import GAMMA
+from dmipy_analytic.constants import GAMMA
 from dmipy_replay.spec.tissue import Tissue
 from dmipy_replay.spec.substrate import Domain, PoolSpec, Seeding, SubstrateSpec, Susceptibility, Validity
 from tests.replay_frames import field_along

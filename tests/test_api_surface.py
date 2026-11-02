@@ -769,7 +769,7 @@ def test_the_read_term_folds_the_channels_as_the_square_of_their_summed_roots():
     """The channels are linear functionals of one path: ``v_read = (gamma B0 chi dt_f)^2 (sum_c sqrt(kappa_c QV_c))^2``,
     ``kappa_c = 1/12`` unless a larger one is given; the rule and the envelope's ``B0 chi`` hold the same term at the
     floor (RPK.md 9.5.5: the term, ``v_read / 2``, never ``v_read`` against the floor's square)."""
-    from dmipy_replay.constants import GAMMA
+    from dmipy_analytic.constants import GAMMA
     from dmipy_sim.engine.accumulate import field_read_term, field_read_rule, field_read_limit_B0_chi
     qv, dt, B0, chi = np.array([4.0, 1.0, 0.0]), 2e-6, 7.0, 1e-6
     v = (GAMMA * B0 * chi * dt) ** 2 * (2.0 + 1.0) ** 2 / 12.0
@@ -866,10 +866,13 @@ def test_the_public_surface_is_the_replay_surface():
                  "walk_cost", "walk", "CoefficientWalk", "build_replay_pack", "write_rpk"):
         assert name in dmipy_sim.__all__ and hasattr(dmipy_sim, name), name
     for name in ("ReplayPack", "read_rpk", "FOD", "Distribution", "Phantom", "Pose", "Grid", "ScannerSequence",
-                 "ScannerLimits", "pgse", "GAMMA", "compile_scheme"):
+                 "ScannerLimits", "pgse", "compile_scheme"):
         assert name not in dmipy_sim.__all__
         with pytest.raises(AttributeError, match=rf"from dmipy_replay(\.\w+)* import {name}"):
             getattr(dmipy_sim, name)
+    assert "GAMMA" not in dmipy_sim.__all__
+    with pytest.raises(AttributeError, match=r"from dmipy_analytic\.constants import GAMMA"):
+        dmipy_sim.GAMMA
     gone = ("simulate_bloch", "simulate_fused", "unwrap_periodic", "replay_jax", "replay_bloch",
             "replay_bloch_jax", "finite_180_longitudinal_dwell", "pre_pulse_gradient_phase", "pathway_sign_se")
     for name in gone:
@@ -898,6 +901,23 @@ def test_a_refused_name_says_its_spelling_accessed_or_imported(module, name, spe
     with pytest.raises(ImportError, match=message):
         exec(f"from {module} import {name}", {})
     assert not hasattr(importlib.import_module(module), name)
+
+
+def test_a_form_that_moved_to_dmipy_analytic_says_where_it_went_accessed_or_imported():
+    """The forms are dmipy-analytic's: each name of ``_moved.MOVED`` that dmipy-analytic defines is refused by its old
+    module, accessed or imported, with its one spelling, and that spelling exists (a module, for a module that moved
+    whole: ``from dmipy_sim.math import matrix_method``)."""
+    import importlib.util
+    from dmipy_sim._moved import MOVED
+    moved = [(pkg, name, where) for pkg, names in MOVED.items() for name, where in names.items()
+             if where.startswith("dmipy_analytic")]
+    assert len(moved) >= 16, moved
+    for pkg, name, where in moved:
+        assert hasattr(importlib.import_module(where), name) or importlib.util.find_spec(f"{where}.{name}"), (where, name)
+        with pytest.raises(AttributeError, match=re.escape(f"it is {where}.{name} (from {where} import {name})")):
+            getattr(importlib.import_module(pkg), name)
+        with pytest.raises(ImportError, match=re.escape(f"from {where} import {name}")):
+            exec(f"from {pkg} import {name}", {})
 
 
 def test_a_name_that_moved_to_dmipy_replay_says_where_it_went_when_imported():
