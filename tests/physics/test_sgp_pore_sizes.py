@@ -24,13 +24,26 @@ in the Bessel arguments.
 
 SGP conditions enforced per test:
   δ = 0.001 × R²/D  (0.1% of the characteristic time — strong SGP)
-  Δ = 5 × R²/D      (mean displacement ≈ √(10)·R ≫ R — long time limit)
-  n_t chosen so dt = δ/2 (ensures at least 2 time steps per pulse,
-  step size ≈ 5% of pore size).
+  Δ = 2.5 × R²/D    (the slowest non-uniform mode of the pore, e^{-μ²DΔ/R²} with μ = 1.84 (cylinder), 2.08
+                     (sphere), has decayed to 2e-4 and 2e-5, a tenth of the Monte Carlo error or less, so the two
+                     pulses see independent uniform positions)
+  dt = δ            (one sample per pulse; the walk keeps a uniform density at any step, the pulse width is what
+                     the sampling resolves)
 
-N_walkers = 250_000 (MC noise floor 1/√N = 0.002). The problem is scale-free in R²/D, so one pore size per geometry.
+The problem is scale-free in R²/D, so one pore size per geometry.
 
-All tests are marked @pytest.mark.gpu.
+Size: the 32 q-points share the walkers, so they are correlated; their covariance is known in closed form
+(``_form_factor_covariance``). The unweighted least-squares radius then has the standard deviation
+``_fit_sd / sqrt(N)`` (0.84 and 0.87 for the cylinder and the sphere; a simulation of the closed-form walkers gives
+0.84 and 0.85), and N is the walker count at which a 4 % error in R fails the 2 % tolerance with the margin the noise
+passes it: ``n_resolving(0.04, sd)``, 19,200 and 20,600 walkers. Every q-point must also lie within the Bonferroni
+quantile of its own standard error. The return probabilities RTAP = 1/(πR²) and RTOP = 3/(4πR³) are functions of the
+fitted radius alone and are not asserted separately.
+
+Both tests run the oracle ``simulate_fused`` (the full-resolution walk): the waveform's gradient is two pulses of
+0.1 % of the diffusion time, far above the temporal band of a replay pack.
+
+Each is 5e7 walker-steps, about 40 s on four CPU cores.
 """
 
 import numpy as np
@@ -42,15 +55,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from dmipy_sim import simulate, Box1D, Cylinder, Sphere
+from dmipy_sim import Cylinder, Sphere
+from dmipy_sim.engine._fused import simulate_fused
 from dmipy_replay import pgse
 from dmipy_replay.acquisition.scanner_sequence import ScannerSequence
 import jax.numpy as jnp
 
+from tests.conftest import n_resolving, se_tol, z_family
+
 # ── Constants ────────────────────────────────────────────────────────────────
 D = 2e-9          # m²/s — intrinsic diffusivity (standard dmipy-sim value)
-N_WALKERS = 250_000
 SEED = 42
+R_ERROR_RESOLVED = 0.04     # the pore-size error that must fail the 2 % tolerance
 N_Q = 32          # q-points per sweep
 FIGURES_DIR = Path(__file__).parent / "figures"
 FIGURES_DIR.mkdir(exist_ok=True)
@@ -61,15 +77,14 @@ def _sgp_params(pore_size_m):
     """Return (delta, DELTA, n_t) that satisfy SGP + long-time conditions.
 
     δ = 0.001 × τ   where τ = pore_size² / D   (strong SGP condition)
-    Δ = 5 × τ                                   (long-time limit)
-    n_t: dt = δ/2 → at least 2 steps per pulse, step size ≈ 5% of pore.
+    Δ = 2.5 × τ                                (long-time limit, see the module docstring)
+    n_t: dt = δ, one sample per pulse.
     """
     tau = pore_size_m ** 2 / D
     delta = 0.001 * tau
-    DELTA = 5.0 * tau
+    DELTA = 2.5 * tau
     T_total = DELTA + delta
-    dt_max = delta / 2.0
-    n_t = int(T_total / dt_max) + 2
+    n_t = int(T_total / delta) + 2
     return delta, DELTA, n_t
 
 
@@ -147,20 +162,40 @@ def e_sphere(q, R):
     return np.where(qR < 1e-12, 1.0, (3 * j1v / qR) ** 2)
 
 
+# ── Statistics of the q-sweep ─────────────────────────────────────────────────
+
+def _form_factor_covariance(e_fn, R, q):
+    """The covariance of one walker's cos(q_i X) and cos(q_j X), X the displacement between the two pulses.
+
+    At long time X is the difference of two independent uniform positions, so ``<cos(q X)> = E(q)`` and the product
+    of cosines is ``(cos((q_i - q_j) X) + cos((q_i + q_j) X)) / 2``: the covariance is
+    ``(E(|q_i - q_j|) + E(q_i + q_j)) / 2 - E(q_i) E(q_j)``. The mean over N walkers has 1/N of it."""
+    with np.errstate(all="ignore"):
+        e = e_fn(q, R)
+        qi, qj = q[:, None], q[None, :]
+        return (e_fn(np.abs(qi - qj), R) + e_fn(qi + qj, R)) / 2.0 - np.outer(e, e)
+
+
+def _fit_sd(e_fn, R, q):
+    """``sqrt(N) sigma(R_fit) / R``: the standard deviation of the unweighted least-squares radius from N walkers,
+    ``a^T C a`` with the weights ``a = g / (g . g)`` of the linearised fit (``g = dE/dR``) and C the covariance of the
+    q-points."""
+    h = 1e-6 * R
+    with np.errstate(all="ignore"):
+        g = (e_fn(q, R + h) - e_fn(q, R - h)) / (2.0 * h)
+    a = g / (g @ g)
+    return float(np.sqrt(a @ _form_factor_covariance(e_fn, R, q) @ a)) / R
+
+
 # ── Diagnostic figure ─────────────────────────────────────────────────────────
 
-def _save_figure(q_values, E_mc, E_theory_fn, q_min_true,
-                 rt_mc, rt_theory, rt_label,
-                 geometry_name, size_um, size_fit_um, chi2_dof):
-    """Save a two-panel diagnostic figure (even if the test passes)."""
-    sigma_mc = 1.0 / np.sqrt(N_WALKERS)
+def _save_figure(q_values, E_mc, sigma_q, E_theory_fn, q_min_true,
+                 geometry_name, size_um, size_fit_um, z_max):
+    """Save a diagnostic figure (even if the test passes)."""
     q_units = q_values / q_min_true   # normalised to first zero
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-
-    # ── Left: E(q) vs theory ──
-    ax = axes[0]
-    ax.errorbar(q_units, E_mc, yerr=sigma_mc, fmt="o", ms=2,
+    fig, ax = plt.subplots(1, 1, figsize=(6, 5))
+    ax.errorbar(q_units[1:], E_mc[1:], yerr=sigma_q, fmt="o", ms=2,
                 alpha=0.6, label="MC", color="steelblue")
     q_fine = np.linspace(0, q_units[-1] * 1.02, 500)
     ax.plot(q_fine, E_theory_fn(q_fine * q_min_true), "r-", lw=2, label="Theory")
@@ -169,23 +204,43 @@ def _save_figure(q_values, E_mc, E_theory_fn, q_min_true,
     ax.set_ylabel("E(q)")
     ax.set_title(
         f"{geometry_name} {size_um:.0f} μm\n"
-        f"fit = {size_fit_um:.2f} μm   χ²/dof = {chi2_dof:.2f}"
+        f"fit = {size_fit_um:.2f} μm   max |z| = {z_max:.2f}"
     )
     ax.legend(fontsize=8)
     ax.set_ylim(-0.05, 1.1)
-
-    # ── Right: RT metric bar chart ──
-    ax2 = axes[1]
-    bars = ax2.bar(["MC", "Theory"], [rt_mc, rt_theory],
-                   color=["steelblue", "salmon"], width=0.4)
-    ax2.bar_label(bars, fmt="%.3e", padding=3, fontsize=9)
-    ax2.set_title(rt_label)
-    ax2.set_ylabel(f"{rt_label} value")
 
     fig.tight_layout()
     fname = FIGURES_DIR / f"sgp_{geometry_name.lower()}_{size_um:.0f}um.png"
     fig.savefig(fname, dpi=100)
     plt.close(fig)
+
+
+def _recover_pore_size(e_fn, geometry, R, q_first_zero, name):
+    """Walk the pore, sweep q, and assert (1) every q-point is within the Bonferroni quantile of its own standard error
+    of the closed form and (2) the least-squares radius is within ``se_tol`` of the true one."""
+    delta, DELTA, n_t = _sgp_params(R)
+    q_values = np.linspace(0.0, 2.0 * q_first_zero, N_Q)
+    q = q_values[1:]                                     # q = 0 is exactly 1, with no spread
+    sd_R = _fit_sd(e_fn, R, q)
+    n = n_resolving(R_ERROR_RESOLVED, sd_R)
+    wf = _build_sgp_waveform(q_values, np.array([1.0, 0.0, 0.0]), delta, DELTA, n_t)
+    E_mc = np.array(simulate_fused(n, D, wf, geometry, seed=SEED), dtype=np.float64)
+    with np.errstate(all="ignore"):                      # q = 0 is the removable 0/0 of the form factor
+        E_theory = e_fn(q_values, R)
+
+    sigma_q = np.sqrt(np.diag(_form_factor_covariance(e_fn, R, q)) / n)
+    z = np.abs(E_mc[1:] - E_theory[1:]) / sigma_q
+    popt, _ = curve_fit(e_fn, q, E_mc[1:], p0=[R], bounds=(R * 0.5, R * 2.0))
+    R_fit = float(popt[0])
+    _save_figure(q_values, E_mc, sigma_q, lambda x: e_fn(x, R), q_first_zero, name, R * 1e6, R_fit * 1e6, z.max())
+
+    assert z.max() < z_family(len(q)), (
+        f"{name} R={R * 1e6} μm: E(q) at q/q_min = {q[z.argmax()] / q_first_zero:.2f} is {z.max():.2f} standard errors "
+        f"from the closed form (limit {z_family(len(q)):.2f}) — systematic physics error. Check units, gradient direction.")
+    err_R = abs(R_fit - R) / R
+    assert err_R < se_tol(n, sd_R), (
+        f"{name} R={R * 1e6} μm: fit recovered R = {R_fit * 1e6:.3f} μm, relative error = {err_R:.4f} "
+        f"> {se_tol(n, sd_R):.4f} (N = {n})")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -201,69 +256,10 @@ class TestCylinderSGP:
     RTAP = (1/2π) ∫₀^∞ E(q)·q dq = 1/(πR²).
     """
 
-    @pytest.mark.gpu
     @pytest.mark.parametrize("R_um", [5.0])
     def test_pore_size_recovery(self, R_um):
         R = R_um * 1e-6  # metres
-        delta, DELTA, n_t = _sgp_params(R)
-
-        q_first_zero = 3.8317 / R
-        q_max = 2.0 * q_first_zero
-        q_values = np.linspace(0.0, q_max, N_Q)
-        bvec = np.array([1.0, 0.0, 0.0])  # perpendicular to cylinder axis (z)
-
-        wf = _build_sgp_waveform(q_values, bvec, delta, DELTA, n_t)
-        E_mc = np.array(
-            simulate(N_WALKERS, D, wf,
-                     Cylinder(radius=R, orientation=[0, 0, 1.0]),
-                     seed=SEED),
-            dtype=np.float64,
-        )
-        E_theory_vals = e_cylinder(q_values, R)
-
-        # ── 1. χ² / dof < 2.0 ────────────────────────────────────────────────
-        sigma_mc = 1.0 / np.sqrt(N_WALKERS)
-        chi2 = float(np.sum((E_mc - E_theory_vals) ** 2 / sigma_mc ** 2))
-        dof = len(q_values)
-        chi2_dof = chi2 / dof
-        assert chi2_dof < 2.0, (
-            f"Cylinder R={R_um} μm: χ²/dof = {chi2_dof:.3f} > 2.0 — "
-            f"systematic physics error. Check units, gradient direction."
-        )
-
-        # ── 2. Curve fit → pore size within 2% ───────────────────────────────
-        mask = q_values > 0
-        popt, _ = curve_fit(
-            e_cylinder, q_values[mask], E_mc[mask],
-            p0=[R], bounds=(R * 0.5, R * 2.0),
-        )
-        R_fit = float(popt[0])
-        err_R = abs(R_fit - R) / R
-        assert err_R < 0.02, (
-            f"Cylinder R={R_um} μm: fit recovered R = {R_fit * 1e6:.3f} μm, "
-            f"relative error = {err_R:.4f} > 2%"
-        )
-
-        # ── 3. RTAP = 1/(πR_fit²)  (derived from fitted pore size) ─────────────
-        # Integrating the truncated signal to q_max biases RTAP by ~8%.
-        # Use the fit-derived value instead.
-        rtap_fit = 1.0 / (np.pi * R_fit ** 2)
-        rtap_theory = 1.0 / (np.pi * R ** 2)
-        err_rtap = abs(rtap_fit - rtap_theory) / rtap_theory
-        assert err_rtap < 0.02, (
-            f"Cylinder R={R_um} μm: RTAP(fit) = {rtap_fit:.4e}, "
-            f"RTAP_theory = {rtap_theory:.4e}, "
-            f"relative error = {err_rtap:.4f} > 2% "
-            f"(via R_fit = {R_fit*1e6:.3f} μm)"
-        )
-        rtap_mc_truncated = np.trapezoid(E_mc * q_values, q_values) / (2.0 * np.pi)
-
-        # ── Diagnostic figure ─────────────────────────────────────────────────
-        _save_figure(
-            q_values, E_mc, lambda q: e_cylinder(q, R),
-            q_first_zero, rtap_mc_truncated, rtap_theory, "RTAP (trunc.)",
-            "Cylinder", R_um, R_fit * 1e6, chi2_dof,
-        )
+        _recover_pore_size(e_cylinder, Cylinder(radius=R, orientation=[0, 0, 1.0]), R, 3.8317 / R, "Cylinder")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -278,64 +274,7 @@ class TestSphereSGP:
     RTOP = (1/2π²) ∫₀^∞ E(q)·q² dq = 3/(4πR³).
     """
 
-    @pytest.mark.gpu
     @pytest.mark.parametrize("R_um", [6.0])
     def test_pore_size_recovery(self, R_um):
         R = R_um * 1e-6  # metres
-        delta, DELTA, n_t = _sgp_params(R)
-
-        q_first_zero = 4.4934 / R
-        q_max = 2.0 * q_first_zero
-        q_values = np.linspace(0.0, q_max, N_Q)
-        bvec = np.array([1.0, 0.0, 0.0])
-
-        wf = _build_sgp_waveform(q_values, bvec, delta, DELTA, n_t)
-        E_mc = np.array(
-            simulate(N_WALKERS, D, wf, Sphere(radius=R), seed=SEED),
-            dtype=np.float64,
-        )
-        E_theory_vals = e_sphere(q_values, R)
-
-        # ── 1. χ² / dof < 2.0 ────────────────────────────────────────────────
-        sigma_mc = 1.0 / np.sqrt(N_WALKERS)
-        chi2 = float(np.sum((E_mc - E_theory_vals) ** 2 / sigma_mc ** 2))
-        dof = len(q_values)
-        chi2_dof = chi2 / dof
-        assert chi2_dof < 2.0, (
-            f"Sphere R={R_um} μm: χ²/dof = {chi2_dof:.3f} > 2.0 — "
-            f"systematic physics error. Check units, gradient direction."
-        )
-
-        # ── 2. Curve fit → pore size within 2% ───────────────────────────────
-        mask = q_values > 0
-        popt, _ = curve_fit(
-            e_sphere, q_values[mask], E_mc[mask],
-            p0=[R], bounds=(R * 0.5, R * 2.0),
-        )
-        R_fit = float(popt[0])
-        err_R = abs(R_fit - R) / R
-        assert err_R < 0.02, (
-            f"Sphere R={R_um} μm: fit recovered R = {R_fit * 1e6:.3f} μm, "
-            f"relative error = {err_R:.4f} > 2%"
-        )
-
-        # ── 3. RTOP = 3/(4π·R_fit³)  (derived from fitted pore size) ────────────
-        # Integrating the truncated signal to q_max biases RTOP by ~11%.
-        # Use the fit-derived value instead.
-        rtop_fit = 3.0 / (4.0 * np.pi * R_fit ** 3)
-        rtop_theory = 3.0 / (4.0 * np.pi * R ** 3)
-        err_rtop = abs(rtop_fit - rtop_theory) / rtop_theory
-        assert err_rtop < 0.02, (
-            f"Sphere R={R_um} μm: RTOP(fit) = {rtop_fit:.4e}, "
-            f"RTOP_theory = {rtop_theory:.4e}, "
-            f"relative error = {err_rtop:.4f} > 2% "
-            f"(via R_fit = {R_fit*1e6:.3f} μm)"
-        )
-        rtop_mc_truncated = np.trapezoid(E_mc * q_values ** 2, q_values) / (2.0 * np.pi ** 2)
-
-        # ── Diagnostic figure ─────────────────────────────────────────────────
-        _save_figure(
-            q_values, E_mc, lambda q: e_sphere(q, R),
-            q_first_zero, rtop_mc_truncated, rtop_theory, "RTOP (trunc.)",
-            "Sphere", R_um, R_fit * 1e6, chi2_dof,
-        )
+        _recover_pore_size(e_sphere, Sphere(radius=R), R, 4.4934 / R, "Sphere")

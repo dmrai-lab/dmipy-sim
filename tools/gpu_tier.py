@@ -66,28 +66,10 @@ try:
 except ImportError:                                   # `budget` needs no Modal
     modal = None
 
-def pinned_ref(variable):
-    """The commit of a dmrai-lab package the CPU suite runs against: ``variable`` (``DMIPY_REPLAY_REF``,
-    ``DMIPY_ANALYTIC_REF``) in ``.github/workflows/tests.yml``, the one place it is stated, so both tiers test the same
-    packages. Refused by name when the workflow states none."""
-    import re
-    m = re.search(rf"^\s*{variable}:\s*([0-9a-f]{{7,40}})\s*$", (ROOT / ".github/workflows/tests.yml").read_text(), re.M)
-    if not m:
-        raise SystemExit(f"tests.yml states no {variable}: the GPU tier installs the packages the CPU suite tests")
-    return m.group(1)
-
-
 if modal is not None:
-    # the checkout exists on the client only; inside the container this module is imported again from /root, where the
-    # image is already built, so the pin is read where the image is defined and nowhere else
-    REPLAY_REF = pinned_ref("DMIPY_REPLAY_REF") if modal.is_local() else None
-    ANALYTIC_REF = pinned_ref("DMIPY_ANALYTIC_REF") if modal.is_local() else None
     app = modal.App("dmipy-sim-gpu-tier")
     image = (modal.Image.debian_slim(python_version="3.12")
-             .apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
-             .run_commands(f'pip install "dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@{ANALYTIC_REF}"',
-                           f'pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@{REPLAY_REF}"')
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 

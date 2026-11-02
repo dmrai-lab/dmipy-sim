@@ -4,8 +4,10 @@ encoding class of a machine an evaluation of its Chebyshev series in (amplitude,
 Held here on CI-sized packs: each class's response equals its per-class closed form within the two misfits (the
 coefficients' difference is a function on SO(3) bounded pointwise by their sum, so its L2 norm per measurement is
 too), the series' misfit bounds the direct posed replay at every rotation, torch is numpy, the truncation bound of
-the series is a bound, and a class outside the series is refused by name. The same comparisons on the brain's packs
-are the `gpu` tests at the end."""
+the series is a bound, and a class outside the series is refused by name. The same comparisons under torch on a CUDA
+device, on two committed fixture packs (``tools/build_pose_fixtures.py``), are the `gpu` test at the end."""
+from pathlib import Path
+
 from tests._envelope import stated
 import numpy as np
 import pytest
@@ -13,7 +15,7 @@ from scipy.special import spherical_jn
 
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
-from dmipy_replay import sequences
+from dmipy_replay import read_rpk, sequences
 from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_replay.acquisition.waveforms import rotate_waveform
 from dmipy_replay.phantom.bore import encoding_classes
@@ -62,11 +64,6 @@ def _classes(machine, kind, T, g, R=None):
 
 CLOSED_ROUNDING = 1e-12
 """The numpy closed form's misfit bounds its whole residual (#617/#619), so the comparison carries rounding only."""
-
-
-TORCH_ROUNDING = 1e-7
-"""The torch route's float32 products (its bodies, as the closed form's torch route takes them, #608): measured at
-most 5e-8 beyond the series' misfit on the brain's GM pack on the Prisma, whose misfit there is itself ~5e-8."""
 
 
 def _within(series, closed, slack=CLOSED_ROUNDING):
@@ -197,66 +194,78 @@ def test_the_series_bound_bounds_the_chebyshev_interpolant():
         assert per_walker.mean() <= I * (1 + 1e-6) + 1e-15 and per_walker.max() <= I_max * (1 + 1e-6) + 1e-15
 
 
-# ---- the brain's packs (the page's WM and GM packs, the Swoop / Prisma / Terra at a head's voxels) ------------------
+# ---- the torch route on a CUDA device, on the committed fixture packs -----------------------------------------------
 
-BRAIN_WM = "hf://SubstrateCommons/cactus-axons/packs/single_bundle_1s_c3_seg125ms.rpk"
-BRAIN_GM = "hf://SubstrateCommons/grey-matter-spheres/packs/packed_spheres_leaky_250ms_c2_seg125ms.rpk"
+FIXTURES = Path(__file__).parent / "data"
+"""The two packs ``tools/build_pose_fixtures.py`` writes: ``cylinder_k12.rpk`` (400 walkers of a cylinder, K = 12, no field
+channel) and ``strands_field_k4.rpk`` (90 walkers among three sheathed strands, K = 4, the susceptibility path channel)."""
+
+FLOAT32 = 1e-5
+"""What the torch route's float32 products add to a measurement beyond the misfits that bound it, in the L2 norm of its
+coefficients or in a replayed signal: the atol of the coefficient comparisons of ``tests/test_pose_torch.py``."""
 
 
-CLOSED_TORCH_BRAIN = 3e-6
-"""The torch closed form's float32 products at the brain's phases (dmrai-lab/dmipy-sim#620): measured up to 1.2e-6
-beyond its misfit on the GM pack on the Prisma. The series is held to the direct replay below by its own misfit."""
+def _same_closed_form(got, ref, slack):
+    """``got``, the closed form on another backend, within the two misfits and ``slack`` of ``ref`` in each measurement's
+    coefficients; the largest share of that bound used."""
+    assert got.route == ref.route == "closed" and got.coeffs.shape == ref.coeffs.shape
+    diff = np.linalg.norm(got.coeffs - ref.coeffs, axis=1)
+    bound = got.misfit + ref.misfit + slack
+    assert (diff <= bound).all(), (np.flatnonzero(diff > bound), diff[diff > bound], got.misfit, ref.misfit)
+    return float(np.max(diff / bound))
 
 
-def _brain_classes(machine, kind):
-    """The brain page's default timing (delta 25 / Delta 55 / TE 100 ms; a stimulated echo of the same delta storing
-    for TM = 30 ms), a b = 0 row and 30 directions at b = 1000 and 3000 s/mm^2 at the machine's slew, over 24 voxels
-    of a head up to 5.4 cm off isocentre, each its own class."""
-    rng = np.random.default_rng(5)
-    dirs = rng.normal(size=(30, 3)); dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
-    dirs = np.vstack([[0.0, 0.0, 1.0], dirs, dirs])
-    b = np.array([0.0] + [1e9] * 30 + [3e9] * 30)
-    slew = float(ScannerLimits.of(machine).slew_max)
-    if kind == "spin echo":
-        seq = sequences.pgse(dirs, 0.025, 0.055, bvalues=b, TE=0.100, n_t=1000, slew_rate=slew)
-    else:
-        seq = sequences.pgste(dirs, 0.025, 0.030, bvalues=b, n_t=1000, slew_rate=slew, ste_flip_angles=(90.0, 90.0, 90.0))
-    grid = Grid(shape=(4, 3, 2), voxel_size_m=(2e-2,) * 3, origin_m=(-0.03, -0.02, -0.01), isocenter_m=(0.0, 0.0, 0.0))
-    idx = np.array([[i, j, k] for i in range(4) for j in range(3) for k in range(2)])
-    _cls, played = encoding_classes(ScannerLimits.of(machine), grid, seq, idx, tolerance=None)
-    return played
+def _torch_route_vs_closed_form(pack, played, k, *, device, keep, **kw):
+    """The class ``played[k]`` at replay setting ``kw`` (``scanner=``, ``tissue=``, ``pose=``) read at band ``keep``, under
+    torch on ``device``: its closed form and its series (built over all of ``played``) each within the two misfits and
+    ``FLOAT32`` of the numpy closed form, and the series' misfit below a tenth of the pack's floor. Returns the largest
+    share of each bound used."""
+    ref = pack.pose_responses([played[k]], method="closed", keep=keep, **kw)[0]                  # numpy: the float64 route
+    closed = pack.pose_responses([played[k]], method="closed", keep=keep, backend="torch", device=device, **kw)[0]
+    series = pack.pose_series(played, keep=keep, backend="torch", device=device, **kw)
+    assert max(r.misfit.max() for r in series.responses()) < 0.1 * series.floor
+    return dict(closed=_same_closed_form(closed, ref, FLOAT32),
+                series=_within(series.responses(select=[k])[0], ref, slack=FLOAT32))
+
+
+def _series_vs_direct_replay(pack, played, k, *, device, R=None, **kw):
+    """The whole-band series of the class ``played[k]``, under torch on ``device``, at three rotations ``Q`` within its misfit
+    and ``FLOAT32`` of the pack replayed there (the specimen at ``R @ Q`` where ``R`` poses it). Returns the largest share
+    of that bound used."""
+    got = pack.pose_series(played, backend="torch", device=device, **kw).responses(select=[k])[0]
+    replay_kw = {key: v for key, v in kw.items() if key != "pose"}
+    used = 0.0
+    for Q in so3.haar_rotations(3, seed=1):
+        direct = pack.replay(played[k], orientation=Q if R is None else R @ Q, complex_signal=True, tol=None, **replay_kw)
+        err = np.abs(got.at(Q) - direct)
+        assert (err <= got.misfit + FLOAT32).all(), (err, got.misfit)
+        used = max(used, float(np.max(err / (got.misfit + FLOAT32))))
+    return used
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("tissue,kind", [("wm", "spin echo")])
-@pytest.mark.parametrize("machine", ["siemens_magnetom_prisma_3T"])
-def test_the_brain_packs(machine, kind, tissue):
-    """On the brain page's packs (WM window 0 with its field at the machine's own B0, GM), each machine's classes over
-    a head: every class within the two misfits of its closed form (torch on the GPU, both), the series' misfit below
-    a tenth of the pack's floor, and over the whole band the series against the direct posed replay within its
-    misfit."""
+@pytest.mark.parametrize("kind", ["spin echo", "stimulated echo"])
+@pytest.mark.parametrize("field", [False, True], ids=["field off", "field on"])
+def test_the_torch_route_on_a_cuda_device_is_the_closed_form_within_the_misfits(field, kind):
+    """The torch route on a CUDA device, on the committed fixture packs, one class per kind: the Prisma's class at the last
+    of twelve voxels, a spin echo and a stimulated echo, the field off (the cylinder pack) and on (the strand pack at the
+    Prisma's 3 T, the field along an oblique direction of the specimen). The closed form and the series are each within the
+    two misfits of the numpy closed form, at the full band and an ODF's; the series' misfit is below a tenth of the pack's
+    floor; the series at three rotations is within its misfit of the direct posed replay. This is the comparison the CPU tests
+    make with torch on the host, made on the device that runs the production route."""
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("no CUDA device")
-    from dmipy_replay import ReplayPack
-    pack = ReplayPack.load(BRAIN_WM if tissue == "wm" else BRAIN_GM, windows=range(1))
-    keep = (8, 0) if tissue == "wm" else (0, 0)
-    L = ScannerLimits.of(machine)
-    kw = dict(scanner=float(L.field_T), tissue=pack.nominal) if tissue == "wm" else dict(tissue=pack.nominal)
-    played = _brain_classes(machine, kind)
-    series = pack.pose_series(played, keep=keep, backend="torch", **kw)
-    got = series.responses()
-    compared = 0
-    for k in (0, len(played) // 2, len(played) - 1):
-        try:                                                       # a class the closed form holds as one direction
-            ref = pack.pose_responses([played[k]], keep=keep, backend="torch", method="closed", **kw)[0]
-        except ValueError:
-            continue
-        _within(got[k], ref, slack=CLOSED_TORCH_BRAIN)
-        compared += 1
-    assert compared >= 1
-    assert max(r.misfit.max() for r in got) < 0.1 * series.floor
-    full = pack.pose_series(played, backend="torch", **kw).responses(select=[len(played) - 1])[0]
-    for Q in so3.haar_rotations(3, seed=1):
-        direct = pack.replay(played[-1], orientation=Q, complex_signal=True, **kw, tol=None)
-        assert np.all(np.abs(full.at(Q) - direct) <= full.misfit + TORCH_ROUNDING)
+    machine = "siemens_magnetom_prisma_3T"
+    if field:
+        pack = read_rpk(FIXTURES / "strands_field_k4.rpk")
+        R = pose_with_field_along((0.6, 0.0, 0.8))
+        played = _classes(machine, kind, 8e-4, 0.3, R)
+        kw = dict(scanner=float(ScannerLimits.of(machine).field_T), tissue=TISSUE, pose=Pose(R))
+    else:
+        pack, R, kw = read_rpk(FIXTURES / "cylinder_k12.rpk"), None, {}
+        played = _classes(machine, kind, 10e-3, 0.08)
+    k = len(played) - 1
+    for keep in (None, (6, 0)):
+        _torch_route_vs_closed_form(pack, played, k, device="cuda", keep=keep, **kw)
+    _series_vs_direct_replay(pack, played, k, device="cuda", R=R, **kw)
