@@ -40,7 +40,7 @@ pack into a signal or an image.
 - **Names.** `dmipy_sim.Pool` is the physics of one pool of a geometry's `Compartments`; the pool of a substrate spec is
   dmipy-replay's `PoolSpec`. A sequence's b-value is `seq.b()` and its b-tensor `seq.btensor()`; `calc_b` and
   `calc_btensor` are refused by name.
-- **Runs on** JAX, on CPU or CUDA 12. Python >= 3.10, NumPy >= 2.0, JAX >= 0.6.2. The replay guide
+- **Runs on** JAX, on CPU or CUDA 12. Python >= 3.10, NumPy >= 2.0, SciPy >= 1.11, JAX >= 0.6.2. The replay guide
   ([docs/replay-guide](docs/replay-guide/README.md)) is the manual for the replay side, and every code block on its
   pages runs in the test suite.
 - **Pairs with** [dmipy-replay](https://github.com/dmrai-lab/dmipy-replay) `>=0.2,<0.3` and dmipy-analytic
