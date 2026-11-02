@@ -36,7 +36,7 @@ Size: the 32 q-points share the walkers, so they are correlated; their covarianc
 (``_form_factor_covariance``). The unweighted least-squares radius then has the standard deviation
 ``_fit_sd / sqrt(N)`` (0.84 and 0.87 for the cylinder and the sphere; a simulation of the closed-form walkers gives
 0.84 and 0.85), and N is the walker count at which a 4 % error in R fails the 2 % tolerance with the margin the noise
-passes it: ``n_resolving(0.04, sd)``, 19,000 to 20,000 walkers. Every q-point must also lie within the Bonferroni
+passes it: ``n_resolving(0.04, sd)``, 19,200 and 20,600 walkers. Every q-point must also lie within the Bonferroni
 quantile of its own standard error. The return probabilities RTAP = 1/(πR²) and RTOP = 3/(4πR³) are functions of the
 fitted radius alone and are not asserted separately.
 

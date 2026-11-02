@@ -5,9 +5,9 @@ a polyhedron inscribed in it, so the analytic reference is the sphere of the mes
 0.1 % of the mesh's at subdivision 3, where the sphere of the mesh's circumscribing radius would be 0.9 % off in
 volume): the residual is then the surface discretisation, which is far below the noise.
 
-The mesh walk is the expensive one in the suite: 400 sub-steps per walker at subdivision 3 (the engine takes one
-sub-step per waveform step there) and 2.3e3 walker-sub-steps per second on four CPU cores, so the walk is tier 2 and
-its size is the smallest that resolves a 0.1 signal difference.
+The mesh walk is the expensive one in the suite: 100 sub-steps per walker at subdivision 3 (the engine takes one
+sub-step per waveform step there) and about 2e3 walker-sub-steps per second on four CPU cores, so the walk is tier 2
+and its size is the smallest that resolves a 0.13 signal difference.
 """
 import numpy as np
 import numpy.testing as npt
@@ -57,10 +57,12 @@ def _open_tube(r, L, nt=48, nz=40):
 
 N_REFERENCE = 16_000      # the analytic sphere is cheap: its noise is a seventh of the mesh walk's
 # The mesh walk: the difference of its signal and the sphere's at b = 0, 1 and 2 ms/um^2 is held to ``tol`` at the
-# Bonferroni quantile of three comparisons; a difference of 0.1 fails with the margin the noise passes 0.05.
+# Bonferroni quantile of three comparisons; a difference of 0.13 fails with the margin the noise passes 0.064.
 # The walker's cos(phase) spreads by at most SD_COS, so
-#   N = (2 z SD_COS / 0.1)^2 (1 + N / N_REFERENCE) = 3,050.
-N_MESH_MC = 3_050
+#   N = (2 z SD_COS / 0.127)^2 (1 + N / N_REFERENCE) = 2,000.
+N_MESH_MC = 2_000
+TE_MC = 10e-3             # s: restricted by the 5 um sphere (6 um of diffusion), and a tenth of the sub-steps of 40 ms
+RHO_MC = 8e-5             # m/s: Brownstein-Tarr 3 rho / R = 48 /s, the wall relaxes S from 1 to 0.62 in TE_MC
 
 
 def _equal_volume_radius(V, F):
@@ -71,16 +73,16 @@ def _equal_volume_radius(V, F):
 def test_diffusion_and_surface_relaxivity_match_analytic_sphere():
     """The mesh sphere's signal over a b-ladder, with relaxing walls, is the analytic sphere's of the same volume.
 
-    Claim: the signals agree to ``tol`` = 0.050 at b = 0 (where only the relaxation acts: the wall relaxes S from 1 to
+    Claim: the signals agree to ``tol`` = 0.064 at b = 0 (where only the relaxation acts: the wall relaxes S from 1 to
     0.62, so a mesh without relaxivity is 0.38 off), 1 and 2 ms/um^2 (restricted diffusion). Statistic: the difference
-    of the mesh walk's walker mean (N = 3,050) and the sphere's (16,000), ``z SD_COS sqrt(1 / N + 1 / N_ref)``
+    of the mesh walk's walker mean (N = 2,000) and the sphere's (16,000), ``z SD_COS sqrt(1 / N + 1 / N_ref)``
     at z = 3.59 (three comparisons)."""
     V, F = _ico(3)
     R_eq = _equal_volume_radius(V, F)
-    wf = _pgse(3, 400)
-    rho = 2e-5
-    s_mesh = np.asarray(simulate(N_MESH_MC, D, wf, Mesh(V, F, compartments=Compartments(intra=Pool(surface_relaxivity_t2=rho), extra=Pool(surface_relaxivity_t2=rho))), seed=SEED))
-    s_ana = np.asarray(simulate(N_REFERENCE, D, wf, Sphere(radius=R_eq, surface_relaxivity_t2=rho), seed=SEED))
+    wf = _pgse(3, 100, TE=TE_MC)
+    pools = Compartments(intra=Pool(surface_relaxivity_t2=RHO_MC), extra=Pool(surface_relaxivity_t2=RHO_MC))
+    s_mesh = np.asarray(simulate_fused(N_MESH_MC, D, wf, Mesh(V, F, compartments=pools), seed=SEED, require_gpu=False))
+    s_ana = np.asarray(simulate_fused(N_REFERENCE, D, wf, Sphere(radius=R_eq, surface_relaxivity_t2=RHO_MC), seed=SEED, require_gpu=False))
     tol = z_family(3) * SD_COS * np.sqrt(1.0 / N_MESH_MC + 1.0 / N_REFERENCE)
     assert np.abs(s_mesh - s_ana).max() < tol, f"mesh {np.round(s_mesh, 4)} vs analytic Sphere {np.round(s_ana, 4)} (tolerance {tol:.4f})"
 

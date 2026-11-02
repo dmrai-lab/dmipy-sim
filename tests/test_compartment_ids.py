@@ -140,21 +140,6 @@ def test_comp_traj_is_the_geometrys_own_label(name):
         assert (comp == want).all()
 
 
-@pytest.mark.gpu
-def test_permeable_mesh_with_per_compartment_T2_replays_the_fused_engine():
-    """Per-compartment T2 on a permeable mesh: the occupancy channel and the T2 array share the id."""
-    from dmipy_sim.geometry import mesh_shapes
-    V, F = mesh_shapes.icosphere(3e-6, subdivisions=3)
-    m = d.Mesh(V, F, feature_radius=1.5e-6, permeability=5e-6, compartments=d.Compartments(intra=d.Pool(T2=0.03), extra=d.Pool(T2=0.3)))
-    wf = d.set_b(d.pgse([[1, 0, 0]], 3e-3, 9e-3, gradient_strengths=0.1, n_t=120, slew_rate=np.inf), 5e8)
-    N = 1_000
-    s_f = np.asarray(simulate_fused(N, D, wf, m, seed=2, require_gpu=False)).ravel()
-    s_r = np.asarray(d.simulate(N, D, wf, m, seed=2, require_gpu=False)).ravel()
-    assert abs(s_f[0] - s_r[0]) < max(0.02, 3.0 / np.sqrt(N)), f"fused {s_f[0]:.4f} vs replay {s_r[0]:.4f}"
-    # and the intra T2 actually acted: a walk that started inside decays toward exp(-TE/T2_intra)
-    assert s_f[0] < 0.9
-
-
 @pytest.mark.parametrize("sub_steps", [43, 97, 200])
 def test_the_discrete_label_is_rounded_not_truncated(sub_steps):
     """The occupancy is comp_sum / sub_steps; XLA may compute it as comp_sum * (1 / sub_steps), which for

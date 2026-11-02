@@ -214,6 +214,11 @@ def _pool_signals(pm, wf, N, seed):
     return float(w[origin == 1].mean()), float(w[origin == 0].mean()), int((origin == 1).sum()), int((origin == 0).sum())
 
 
+def _sem(v):
+    """The standard error of the mean of ``v``, one row per independent walker."""
+    return float(np.std(v.mean(axis=1), ddof=1) / np.sqrt(len(v)))
+
+
 def test_lumen_boundary_local_time_is_brownstein_tarr():
     """The unit boundary local time recorded on the lumen wall (`rho/D = 1`) accrues at
     `2 D / R` per unit time -- Brownstein-Tarr `rho S/V` for a cylinder -- and at the same rate the

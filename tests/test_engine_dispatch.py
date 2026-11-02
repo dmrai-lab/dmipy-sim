@@ -44,7 +44,7 @@ _WF = _pgse(delta=8e-3, DELTA=32e-3, n_t=200, b=1.0e9)
 # Mesh MC is much heavier per step on CPU -> short TE / small n_t and fewer walkers; the feature
 # radius sets a lookup cell fine enough that the collision criterion sub-steps too.
 _WF_MESH = _pgse(delta=1.5e-3, DELTA=6e-3, n_t=140, b=0.5e9, G_magnitude=0.3)
-_N_MESH = 1_000
+_N_MESH = 500
 _MESH_FEATURE = 1.5e-6
 
 

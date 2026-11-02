@@ -1,48 +1,40 @@
 [
  {
-  "name": "curved+sgp",
+  "name": "mesh-walks-final",
   "spec": [
    {
-    "file": "tests/geometry/test_curved_step_rule.py",
-    "mark": "",
-    "k": "hairpin or contact",
-    "budget": "1500"
+    "file": "tests/geometry/test_mesh_mc.py",
+    "mark": "gpu",
+    "budget": "3000"
    },
    {
-    "file": "tests/physics/test_sgp_pore_sizes.py",
-    "mark": "",
-    "budget": "1500"
+    "file": "tests/test_engine_dispatch.py",
+    "mark": "gpu",
+    "budget": "3000"
+   },
+   {
+    "file": "tests/test_replay_parity.py",
+    "mark": "gpu",
+    "budget": "3000"
    }
   ]
  },
  {
-  "name": "myelin",
+  "name": "tier1-recheck",
   "spec": [
    {
     "file": "tests/geometry/test_myelin_walls.py",
     "mark": "",
-    "k": "membrane_exchange or lumen_boundary or per_axon",
-    "budget": "2400"
-   }
-  ]
- },
- {
-  "name": "mt+bloch",
-  "spec": [
-   {
-    "file": "tests/test_bloch_permeation.py",
-    "mark": "",
-    "k": "high_permeability",
+    "k": "lumen_boundary or per_axon",
     "budget": "1500"
    },
    {
-    "file": "tests/test_mt_binding.py",
-    "mark": "",
-    "k": "timestep or transverse",
-    "budget": "2400"
+    "file": "tests/validation/test_surface_relaxivity_ladder.py",
+    "mark": "gpu",
+    "budget": "1500"
    },
    {
-    "file": "tests/test_mt_zspectrum.py",
+    "file": "tests/test_compression.py",
     "mark": "gpu",
     "budget": "2400"
    }
