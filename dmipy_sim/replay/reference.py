@@ -399,7 +399,7 @@ class Build:
     """How stages 3, 5 and 6 are performed for this family.
 
     ``specs`` maps a substrate name to a zero-argument callable returning its
-    :class:`~dmipy_sim.spec.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
+    :class:`~dmipy_replay.spec.substrate.SubstrateSpec`; ``pack_id`` names the pack built from it. ``walk`` walks a spec at
     a count and a seed over the design's window at its band (``walk(spec, n, *, T, K, seed, sub_steps) ->
     CoefficientWalk``: ``T`` the window in seconds, ``K`` the bands per storage window, ``sub_steps`` None for the
     engine's own rule and a count for the step pilot's coarse walk; the producer is called with keywords and no block,

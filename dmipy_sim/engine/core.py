@@ -226,7 +226,7 @@ def simulate(
         :class:`~dmipy_replay.acquisition.scanner_sequence.Protocol` (one walk per echo time, the signals placed at
         their rows) or anything with a ``.waveform``. Its effective gradient has shape (n_measurements, n_t, 3).
     geometry : Geometry
-        The substrate: a geometry or a :class:`~dmipy_sim.spec.SubstrateSpec`.
+        The substrate: a geometry or a :class:`~dmipy_replay.spec.substrate.SubstrateSpec`.
     seed : int
         Master PRNG seed (split into per-walker keys internally).
     T2 : float, optional
@@ -325,7 +325,7 @@ def simulate_cpmg(n_walkers, diffusivity, waveform, geometry, *,
 
     One coefficient walk over the whole train, one replay per echo: the signal at echo ``k`` is the replay of the
     train up to that echo (its gradient and its refocusing pulses to the echo time), so the relaxation each echo
-    has seen is the time elapsed to it. Build ``waveform`` with :func:`dmipy_sim.cpmg` (whose ``readout`` is
+    has seen is the time elapsed to it. Build ``waveform`` with :func:`dmipy_replay.cpmg` (whose ``readout`` is
     every echo). A geometry the coefficient walk cannot serve (:func:`_replay_gap`) is refused: the multi-echo
     readout has no fused counterpart.
 
@@ -1061,7 +1061,7 @@ def _walk_geometry(
     diffusivity : float
         Diffusion coefficient in m²/s.
     geometry : Geometry
-        Boundary geometry (a :class:`~dmipy_sim.spec.SubstrateSpec` too).
+        Boundary geometry (a :class:`~dmipy_replay.spec.substrate.SubstrateSpec` too).
     T_max : float
         Total simulation duration in seconds.
     block_h : float, optional

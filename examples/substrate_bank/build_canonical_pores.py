@@ -245,8 +245,8 @@ def snippet(uri):
     """One call that reproduces one signal of the reproduction table, at its own grid."""
     g = QUANTITY_GRID
     return f'''import numpy as np
-from dmipy_sim import pgse
-from dmipy_sim.replay import ReplayPack
+from dmipy_replay import pgse
+from dmipy_replay import ReplayPack
 
 pk = ReplayPack.load("{uri}")
 seq = pgse([{g["direction"]!r}], {g["delta_s"]!r}, {g["Delta_s"]!r}, bvalues=[{g["b_s_per_m2"]!r}],

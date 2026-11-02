@@ -43,4 +43,4 @@ not a contraction, while two tissues or two scanners on one pose share both.
 A voxel is rarely one pose. `pack.pose_response(seq)` expands the pack's response over every pose in the real
 Wigner basis, and a distribution of poses composes against it: a Watson or Bingham distribution, a single axis, or a
 fibre orientation distribution in a named basis. That is the machinery of a composed phantom, and it is described
-with the phantoms in [phantoms](phantoms.md) and in `dmipy_sim.replay.so3`.
+with the phantoms in [phantoms](phantoms.md) and in `dmipy_replay.replay.so3`.

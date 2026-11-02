@@ -1,19 +1,15 @@
-"""The sequence builders and the Pulseq bridge.
+"""The Pulseq writer: :func:`~dmipy_sim.sequences.pulseq.to_pulseq` writes a
+:class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence` as a ``.seq`` file for a scanner's system
+(:func:`~dmipy_sim.sequences.pulseq.make_system`, :data:`~dmipy_sim.sequences.pulseq.PULSEQ_SYSTEMS`).
 
-Every builder returns a :class:`~dmipy_replay.acquisition.scanner_sequence.ScannerSequence` -- the physical
-gradient, the RF schedule, the readout, the per-measurement encoding an analytical layer reads::
+The builders and the Pulseq reader are dmipy-replay's (``dmipy_replay.sequences``, ``dmipy_replay.sequences.pulseq``)::
 
-    seq = dmipy_sim.sequences.pgse(gdirs, delta, Delta, bvalues=bvalues, slew_rate=200.)
-    seq.G, seq.G_eff, seq.dt, seq.encoding.bvalues, seq.btensor()
-    dmipy_sim.sequences.instantaneous(seq)          # the square / infinite-slew limit
-
-dmipy-fit's AcquisitionScheme consumes one (fit eats sim's real builders) and adds the analytical shell / SH /
-rotational-harmonics layer.
+    seq = dmipy_replay.pgse(gdirs, delta, Delta, bvalues=bvalues, slew_rate=200.)
+    to_pulseq(seq, filename="pgse.seq")
 """
 from .pulseq import to_pulseq, make_system, PULSEQ_SYSTEMS
 
-__all__ = [ 'to_pulseq', 'make_system', 'PULSEQ_SYSTEMS',
-]
+__all__ = ['to_pulseq', 'make_system', 'PULSEQ_SYSTEMS']
 
 
 def __getattr__(name):

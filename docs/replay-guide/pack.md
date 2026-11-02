@@ -86,7 +86,7 @@ carries a `susceptibility` block (it is magnetic), `"absent"` when none does and
 things say the same and must agree -- a magnetic pool, the `"field"` tier in the spec's `validity.tiers`, and the
 field channel (`susc_path_*`) stored in the pack -- and a pack, layout or spec in which they
 disagree is refused by name when it is written and when it is read
-(`dmipy_sim.spec.susceptibility_field_of`), as is a pack that embeds no spec. What a tissue's chi and a scanner may
+(`dmipy_replay.spec.substrate.susceptibility_field_of`), as is a pack that embeds no spec. What a tissue's chi and a scanner may
 then do is the [scanner](scanner.md) page's rule.
 - `voxel_ijk`, `voxel_certificate`, when the pack was built on a voxel grid: a floor per voxel and pool.
 

@@ -716,20 +716,22 @@ def test_no_reader_indexes_a_band_by_a_save_count():
     assert not bad, f"a band reader is given a duration rebuilt from a save count: {bad}"
     assert not hasattr(ReplayPack, "_window_n_t") and not hasattr(ReplayPack, "_decoded_channels")
     reads = []
-    for f in sorted(_SRC.rglob("*.py")):
-        for i, line in enumerate(f.read_text().splitlines(), 1):
-            if re.search(r"""(?:\[|get\()\s*["']basis["']""", line) and "REFUSED" not in line:
-                reads.append(f"{f.relative_to(_SRC)}:{i}")
+    for root in (_SRC, _REPLAY_SRC):                        # the moved readers are held to it in dmipy-replay
+        for f in sorted(root.rglob("*.py")):
+            for i, line in enumerate(f.read_text().splitlines(), 1):
+                if re.search(r"""(?:\[|get\()\s*["']basis["']""", line) and "REFUSED" not in line:
+                    reads.append(f"{root.name}/{f.relative_to(root)}:{i}")
     assert not reads, f"compression.basis is read in {reads}"
 
 
 def test_no_spelling_of_the_save_grid_survives_in_the_package():
     pat = re.compile(r"\b(?:" + "|".join(_SAVE_GRID_NAMES) + r")\b")
     hits = {}
-    for f in sorted(_SRC.rglob("*.py")):
-        found = sorted({m.group(0) for m in pat.finditer(f.read_text())})
-        if found:
-            hits[str(f.relative_to(_SRC))] = found
+    for root in (_SRC, _REPLAY_SRC):                        # the moved readers are held to it in dmipy-replay
+        for f in sorted(root.rglob("*.py")):
+            found = sorted({m.group(0) for m in pat.finditer(f.read_text())})
+            if found:
+                hits[f"{root.name}/{f.relative_to(root)}"] = found
     assert not hits, f"the save grid is spelled in {hits}"
 
 
