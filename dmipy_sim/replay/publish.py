@@ -323,13 +323,14 @@ def publish(pack_or_path, repo, *, path=None, hub=None, message=None, published_
     reference-pack protocol's stricter, clean-and-pushed :func:`~dmipy_sim.replay.reference.code_commit`) passes
     it; left out, this reads one itself with :func:`code_commit`'s lenient form (no clean-tree or pushed-branch
     requirement -- a plain ``publish()`` call is not that protocol)."""
+    from .container import save_pack
     from .replay import ReplayPack
     if isinstance(pack_or_path, ReplayPack):
         _check_contract(pack_or_path.meta)
         source = pack_or_path.source
         with tempfile.TemporaryDirectory(prefix="dmipy-publish-") as tmp:
             local = os.path.join(tmp, "pack.rpk")
-            pack_or_path.save(local)
+            save_pack(pack_or_path, local)
             pack_or_path.source = source                          # the temporary file is not where the pack lives
             return _publish_file(local, pack_or_path.meta, repo, path=path, hub=hub, message=message,
                                  published_commit=published_commit)

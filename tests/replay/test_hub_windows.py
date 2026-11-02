@@ -26,6 +26,7 @@ from dmipy_sim.replay.replay import ReplayPack, read_rpk
 from dmipy_sim.replay import publish as pub
 from dmipy_replay.spec.substrate import Domain, Pool, Seeding, SubstrateSpec, Validity
 from tests.test_bank import _lean_env, D0, L
+from dmipy_sim.replay.container import save_pack
 
 
 N_T, DT, N_W = 61, 5e-4, 300          # 30 ms of walk, three windows of 10 ms each
@@ -122,7 +123,7 @@ def served(pack, tmp_path, monkeypatch):
     (``$DMIPY_REPLAY_CACHE``) redirected under ``tmp_path``, so that no test reads a window file an earlier run cached."""
     monkeypatch.setenv("DMIPY_REPLAY_CACHE", str(tmp_path / "cache"))
     local = tmp_path / "src.rpk"
-    pack.save(str(local))
+    save_pack(pack, str(local))
     data = local.read_bytes()
     with _serve(data) as url:
         yield url, data

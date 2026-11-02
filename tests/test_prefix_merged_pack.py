@@ -8,6 +8,7 @@ from dmipy_sim import Cylinder
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.bank import build_replay_pack, merge_packs, seed_value
 from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.reencode import prefix_pack
 
 
 def _pack(seed, id):
@@ -30,7 +31,7 @@ def test_a_merged_pack_can_be_prefixed():
     merged = merge_packs([_pack(0, "test/a"), _pack(1, "test/b")], id="test/merged")
     assert merged.meta["walk_params"]["seed"] == [0, 1]
 
-    short = merged.prefix(0.01)
+    short = prefix_pack(merged, 0.01)
     assert short.n_t == int(round(0.01 / merged.dt)) + 1
     assert short.meta["walk_params"]["seed"] == [0, 1]
     assert short.n_walkers == merged.n_walkers

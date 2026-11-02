@@ -61,7 +61,8 @@ from .engine import mt
 from dmipy_replay.acquisition.rf import B1Pulse, RFEvent, RFSchedule, bloch_simulate, slice_profile
 from dmipy_replay.acquisition.timing import SequenceTiming
 from dmipy_replay.acquisition.scanners import ScannerLimits, SCANNERS
-from .replay.replay import ReplayPack, read_rpk, write_rpk, replay_signal_jax
+from .replay.replay import ReplayPack, read_rpk, replay_signal_jax
+from .replay.container import write_rpk
 from dmipy_replay.replay.replay import compile_scheme, replay_signal, surface_logweight
 from .replay import bank
 from .replay.bank import build_replay_pack, build_to_floor, frame_from_bundles

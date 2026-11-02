@@ -10,6 +10,7 @@ from dmipy_sim.replay import read_rpk
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_replay.spec.tissue import Tissue
 from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.reencode import prefix_pack
 
 
 @pytest.fixture(scope="module")
@@ -31,7 +32,7 @@ def test_the_band_is_a_frequency(parent, tmp_path):
 
 
 def test_a_prefix_keeps_the_bands_per_second_and_replays_like_the_parent(parent, tmp_path):
-    half = parent.prefix(10e-3, out_path=tmp_path / "half.rpk")
+    half = prefix_pack(parent, 10e-3, out_path=tmp_path / "half.rpk")
     prov = half.meta["provenance"]["prefix"]
     assert half.n_t == 41 and prov["K_tried"][0] == 8 and half.K in (8, 16)      # the parent's bands per second first, doubled if the window needs it
     assert prov["parent_digest"] == parent.digest and prov["TE_s"] == pytest.approx(10e-3)
@@ -54,14 +55,14 @@ def test_a_prefix_keeps_the_bands_per_second_and_replays_like_the_parent(parent,
 
 def test_a_prefix_outside_the_walk_or_below_the_floor_is_refused(parent):
     with pytest.raises(ValueError, match="not a prefix"):
-        parent.prefix(30e-3)
+        prefix_pack(parent, 30e-3)
     with pytest.raises(ValueError, match="not a prefix"):
-        parent.prefix(1e-4)
+        prefix_pack(parent, 1e-4)
     # forcing far too few bands fails the certificate rather than writing a pack
     with pytest.raises(ValueError, match="Monte-Carlo floor"):
-        parent.prefix(10e-3, K=2, tol=0.01)
+        prefix_pack(parent, 10e-3, K=2, tol=0.01)
     # left to itself the band starts at the parent's bands per second and doubles until the certificate passes
-    tight = parent.prefix(5e-3, tol=0.5)
+    tight = prefix_pack(parent, 5e-3, tol=0.5)
     tried = tight.meta["provenance"]["prefix"]["K_tried"]
     assert tried[0] == 4 and tight.K == tried[-1] and tight.meta["fidelity"]["err_reprojection"] <= 0.5 * tight.meta["fidelity"]["floor_max"]
 
@@ -84,7 +85,7 @@ def test_a_prefix_of_a_field_pack_re_projects_the_path_channel_and_certifies_it(
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     parent = _float_pack(_susc_walk(300), id="test/slab-susc", envelope=env, K=16, susc_path_K=16, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
-    half = parent.prefix(T / 2)
+    half = prefix_pack(parent, T / 2)
     pm = half.meta["compression"]["channels"]["susc_field_basis"]
     K_half = int(np.ceil(16 * (half.n_t - 1) / (parent.n_t - 1)))                # the same modes per second
     assert pm["K"] == K_half and pm["T"] == pytest.approx(T / 2) and pm["max_refocus_pulses"] == K_half // 2 and half.meta["replay_envelope"]["field"]
@@ -110,7 +111,7 @@ def test_a_short_acquisition_dephases_in_the_field_to_its_own_echo(tmp_path):
     env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0, 90])
     parent = _float_pack(_susc_walk(300), id="test/slab-susc", envelope=env, K=16, susc_path_K=16, license="CC-BY-4.0", citation="test")
     T = (parent.n_t - 1) * parent.dt
-    half = parent.prefix(T / 2)
+    half = prefix_pack(parent, T / 2)
     TE = (half.n_t - 1) * half.dt
     se = sequences.pgse([[0, 0, 1]], 0.15 * TE, 0.5 * TE, gradient_strengths=[0.01], TE=TE, n_t=4000)
     gre = sequences.gre(TE, n_t=4000)
@@ -141,7 +142,7 @@ def test_a_prefix_is_one_window_whatever_the_parents_save_grid(tmp_path):
     _float_pack(walk, id="test/one-window", license="x", citation="x", K=16, out_path=str(p), window_T=T)
     parent = read_rpk(str(p))
     assert parent.n_windows == 1
-    pre = parent.prefix(0.15, out_path=str(tmp_path / "prefix.rpk"))
+    pre = prefix_pack(parent, 0.15, out_path=str(tmp_path / "prefix.rpk"))
     assert pre.n_windows == 1 and abs((pre.n_t - 1) * pre.dt - 0.15) < pre.dt
 
 
@@ -170,8 +171,8 @@ def test_a_prefix_inside_a_later_window_is_refused_by_name(tmp_path):
     parent = read_rpk(str(p))
     assert parent.n_windows == 3
     with pytest.raises(ValueError, match="window"):
-        parent.prefix(0.25, out_path=str(tmp_path / "prefix.rpk"))
-    pre = parent.prefix(0.2, out_path=str(tmp_path / "prefix.rpk"))
+        prefix_pack(parent, 0.25, out_path=str(tmp_path / "prefix.rpk"))
+    pre = prefix_pack(parent, 0.2, out_path=str(tmp_path / "prefix.rpk"))
     assert pre.n_windows == 2 and abs((pre.n_t - 1) * pre.dt - 0.2) < 1e-9
     seq = sequences.pgse([[1, 0, 0], [0, 0, 1]], 20e-3, 60e-3, gradient_strengths=[0.05, 0.05], TE=0.2)
     np.testing.assert_array_equal(pre.replay(seq), parent.replay(seq))

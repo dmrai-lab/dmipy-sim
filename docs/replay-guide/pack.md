@@ -44,22 +44,22 @@ replay beyond the pack's band is refused; see [the sequence](sequence.md)). The 
 default (256 bands per 100 ms); `walk(spec, ..., envelope=)` walks the envelope's band (`envelope_of("prisma")`: the
 class's certified band times the storage margin), and `build_replay_pack(walk, envelope=envelope_of("prisma"))` or
 `K=` stores a smaller band of a walk; the pack states the band it stores. The walk's length `T` is the longest echo time the pack can
-replay; a shorter one is a prefix (`pack.prefix(TE)`, below).
+replay; a shorter one is a prefix (`prefix_pack(pack, TE)`, below).
 
 A walk is accumulated in **storage windows** of one duration, 100 ms by default (`_walk_geometry(window_T=)`),
 consecutive windows sharing their boundary instant: a walk within one window is one, a longer walk a whole number of
 them, each with its own bands at the same `K`, stored and certified on its own. Window 0's tensors sit under the channel names and window
-`i` under `s{i}/`, so `pack.window(i)` is a pack of that window, `pack.truncate(k)` the first `k` windows without
+`i` under `s{i}/`, so `pack.window(i)` is a pack of that window, `truncate_pack(pack, k)` the first `k` windows without
 re-encoding, and an acquisition reads only the windows it reaches; a replay across windows is the sum of their
-contractions. `pack.windows` is the table. A walk is continued rather than re-walked: `pack.extend(0.1, seed=17)`
+contractions. `pack.windows` is the table. A walk is continued rather than re-walked: `extend_pack(pack, 0.1, seed=17)`
 resumes every walker from the last window's exact endpoint in the pool it is in, walks one more window on the
-pack's own substrate with the fresh seed, and appends it with its own certificate (`pack.end_state()` is where the
+pack's own substrate with the fresh seed, and appends it with its own certificate (`end_state(pack)` is where the
 walkers are; `replay.continuation` holds the two steps). A pack written as one long window is stored in shorter ones
-by `pack.rewindow(0.1, out_path=...)`: every window is the parent's stored bands and field modes cut to it and
+by `rewindow_pack(pack, 0.1, out_path=...)`: every window is the parent's stored bands and field modes cut to it and
 re-projected on the window's own basis in closed form (`bank.window_of_pack`; nothing is decoded to block ends) at
 the parent's bands per second, and its certificate carries `err_reprojection`, the window's replay of the battery
 against the parent's own reading of it. A trailing remainder of at most `max_dropped_fraction` of the walk that no
-whole window covers is dropped and recorded (`provenance.rewindowed`). `pack.prefix(TE)` is the same re-projection
+whole window covers is dropped and recorded (`provenance.rewindowed`). `prefix_pack(pack, TE)` is the same re-projection
 onto `[0, TE]`, one window, certified the same way.
 
 ## What it holds
@@ -122,8 +122,9 @@ and defaults to one range at the depth its band pilot chose (8 bit without one).
 
 ```python
 import os, tempfile
+from dmipy_sim.replay.container import save_pack
 tmp = tempfile.mkdtemp()
-pack.save(os.path.join(tmp, "cylinder.rpk"))
+save_pack(pack, os.path.join(tmp, "cylinder.rpk"))
 from dmipy_sim.replay import ReplayPack
 same = ReplayPack.load(os.path.join(tmp, "cylinder.rpk"))
 assert same.n_walkers == pack.n_walkers

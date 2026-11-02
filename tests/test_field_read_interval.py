@@ -23,6 +23,7 @@ from tests.replay_frames import field_along
 
 from tests.conftest import READ_BLOCK as BLOCK, READ_FINE as FINE, read_walk as _walk   # noqa: E402  (shared across modules)
 from tests._envelope import TEST_BAND_HZ, battery_reach, stated, walk_envelope
+from dmipy_sim.replay.reencode import prefix_pack
 
 
 @pytest.fixture(scope="module")
@@ -114,7 +115,7 @@ def test_the_pack_records_the_read_and_the_replay_gates_on_it(walks, tmp_path):
     Psi, _ = path_field_integral(pk.arrays, pm, seq, pk.T_window, n_w=pk.n_walkers)
     expect = contract(Psi, (1, 0, 0), B0=7.0, chi_iso=-0.1e-6, chi_aniso=-0.1e-6)
     np.testing.assert_allclose(np.angle(np.exp(1j * (phase - expect))), 0.0, atol=1e-6)
-    child = pk.prefix(4e-4, K=4)
+    child = prefix_pack(pk, 4e-4, K=4)
     assert child.meta["compression"]["channels"]["susc_field_basis"]["read"] == pm["read"]
     assert child.meta["replay_envelope"]["field_read"] == pk.meta["replay_envelope"]["field_read"]
     # half the window, half the reads: the read series' QV and the term at the same interval halve
