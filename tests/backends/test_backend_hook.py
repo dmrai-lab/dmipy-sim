@@ -390,3 +390,18 @@ def test_the_parity_harness_admits_what_is_installed():
         report = backends.parity_report(name)
         bad = [r for r in report if r["ok"] is False]
         assert not bad, f"{name}: {bad}"
+
+
+def test_the_parity_statistics_read_the_references_own_spread():
+    """The counts are judged against the reference's measured spread (Student t on the sweep's dof) and rare events
+    against its rate (binomial); a percent's deficit every case shares passes each case and fails the pooled bias."""
+    from dmipy_sim.engine.backends import _spread_p, _rate_p, pooled_bias
+    sweep = [95000, 94000, 96500, 93800, 95600, 94200, 96100, 95100, 94700]          # sd ~ 0.9 %
+    assert _spread_p(94400, sweep)[1] > 0.5 and _spread_p(80000, sweep)[1] < 1e-6
+    assert _spread_p(0, [0, 0, 0]) == (0.0, 1.0, 0.0) and _spread_p(3, [0, 0, 0])[1] == 0.0  # no spread: its value alone
+    assert _rate_p(0, 10, 0, 90) == 1.0 and _rate_p(1, 10, 9, 90) > 0.5 and _rate_p(30, 10, 3, 90) < 1e-10
+    shared = [(f"c{i}", -1.5, 8, -0.012) for i in range(15)]                          # each p = 0.17: passes alone
+    got = pooled_bias(shared, 1e-2)
+    assert got["ok"] is False and got["Z"] < -got["z_crit"] and got["sign_test"]["below"] == 15
+    mixed = [(f"c{i}", (-1.0) ** i * 1.2, 8, 0.0) for i in range(15)]
+    assert pooled_bias(mixed, 1e-2)["ok"] is True
