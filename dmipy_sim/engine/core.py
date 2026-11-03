@@ -441,9 +441,9 @@ DEFAULT_WALKER_BATCH = 50_000
 """Walkers per batch of :func:`_walk_geometry` unless the caller says otherwise."""
 
 #: the length each sub-step rule divides, as the :class:`~dmipy_sim.geometry.base.LengthScales` field it reads;
-#: ``None`` where the rule's scale is not a length (the crossing rule reads the permeability, the binding rule the dwell time)
+#: ``None`` where the rule's scale is not a length (the binding rule reads the dwell time)
 _RULE_LENGTH = {"step law": "min_feature", "regime": "min_feature", "collision lookup": "lookup_cell",
-                "surface local time": "surface_pore", "crossing": None, "binding": None}
+                "surface local time": "surface_pore", "binding": None}
 
 
 class WalkResolution(NamedTuple):
@@ -568,11 +568,26 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         (f"in-walk field sampling of a {type(field_basis).__name__}", field_basis is not None and not raster),
         ("several storage windows (a backend accumulates one window per walk)", n_windows > 1),
         ("the compartment guard", bool(enforce_compartment))) if on]
-    # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the crossing rule's bound
-    # (backends.event_capacity); the walk's batches carry the pilot's capacity (or the caller's), an impermeable
-    # walk records none
-    events = (int(events_capacity) if events_capacity is not None
-              else event_capacity(int(n_blocks) * int(n_sub)) if (crossing or binding_mt) else 0)
+    # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the binomial bound at the
+    # largest probability a hit of the walk's step changes a pool (backends.event_capacity, physics.crossing_p_max,
+    # the binding probability of a hit as deep for MT); the walk's batches carry the pilot's capacity (or the
+    # caller's), an impermeable walk records none
+    if events_capacity is not None:
+        events = int(events_capacity)
+    elif crossing or binding_mt:
+        from .physics import crossing_p_max
+        from .mt import stick_probability
+        from ..math.step_law import LONGEST_STEP
+        D_pools = np.asarray(geometry._D_comp_jax) if geometry._D_comp_jax is not None else np.array([float(diffusivity)])
+        D_min = float(np.min(D_pools[D_pools > 0])) if np.any(D_pools > 0) else float(diffusivity)   # a frozen pool has no hits
+        p_max = crossing_p_max(geometry, D_min, dt_sim) if crossing else 0.0
+        if binding_mt:                                 # a free walker binds at a hit, a bound one unbinds at dt / dwell
+            d_max = LONGEST_STEP * float(np.sqrt(6.0 * float(diffusivity) * dt_sim))
+            p_max = max(p_max, float(stick_probability(d_max, kappa_MT, float(diffusivity))),
+                        min(1.0, dt_sim / float(dwell_time)))
+        events = event_capacity(int(n_blocks) * int(n_sub), p_max)
+    else:
+        events = 0
     request = WalkRequest(
         geometry=geometry, block_h=float(dt_actual), n_blocks=int(n_blocks), sub_steps=int(n_sub), dt_sim=float(dt_sim),
         K=int(K), m=int(block_order), K_c3=(0 if K_c3 is None else int(K_c3)),

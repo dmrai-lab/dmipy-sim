@@ -105,14 +105,14 @@ The two-walk certificate on a 2 um sphere read to 1000 Hz over 40 ms (the rule's
 
 Sub-steps per 100 us sample that each rule asks for at `eps_D = 1e-3` and a 200 Hz band, the rule that binds, and the walk's throughput on this device. `R/6` is the retired reflection rule (`delta_0 = min_feature / 6`), shown for the pores it applied to. On a mesh the collision lookup bounds the LONGEST step by the cell: `fixed` is that count for a fixed step, `atom` for the pair's long atom, the price of the bounded law where this rule binds.
 
-| substrate | step law | regime | lookup (fixed -> atom) | crossing | binds | sub-steps | R/6 | walker-steps / s | walkers |
-|---|---|---|---|---|---|---|---|---|---|
-| sphere 2 um | 148 | 5 | - | 1 | step law | 148 | 44 | 1.45e+08 | 100,000 |
-| cylinder 20 um | 1 | 1 | - | 1 | step law | 1 | 1 | 7.81e+06 | 100,000 |
-| plane 8.5 um | 1 | 1 | - | 1 | step law | 1 | 1 | 9.35e+06 | 100,000 |
-| packed spheres 2.5 um (both pools) | 24 | 1 | - | 1 | step law | 24 | 7 | 3.02e+07 | 100,000 |
-| icosphere mesh 4 um | 2 | 1 | 1 -> 2 | 1 | step law | 2 | 3 | 6.49e+05 | 100,000 |
-| mesh 100_100_dsp_10_alpha_1.5_beta_0.5_target | 145 | 1 | 53 -> 145 | 1 | step law | 145 | 43 | not walked: init_positions cannot seed this OPEN surface: 5057 boundary edge(s), and no periodic axis closes them by ident | - |
+| substrate | step law | regime | lookup (fixed -> atom) | binds | sub-steps | R/6 | walker-steps / s | walkers |
+|---|---|---|---|---|---|---|---|---|
+| sphere 2 um | 148 | 5 | - | step law | 148 | 44 | 1.45e+08 | 100,000 |
+| cylinder 20 um | 1 | 1 | - | step law | 1 | 1 | 7.81e+06 | 100,000 |
+| plane 8.5 um | 1 | 1 | - | step law | 1 | 1 | 9.35e+06 | 100,000 |
+| packed spheres 2.5 um (both pools) | 24 | 1 | - | step law | 24 | 7 | 3.02e+07 | 100,000 |
+| icosphere mesh 4 um | 2 | 1 | 1 -> 2 | step law | 2 | 3 | 6.49e+05 | 100,000 |
+| mesh 100_100_dsp_10_alpha_1.5_beta_0.5_target | 145 | 1 | 53 -> 145 | step law | 145 | 43 | not walked: init_positions cannot seed this OPEN surface: 5057 boundary edge(s), and no periodic axis closes them by ident | - |
 
 ## 6. What the certificate does not see
 

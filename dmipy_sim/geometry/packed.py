@@ -40,8 +40,9 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     at the end (:mod:`._boundary`). A walker's side -- outside every object, or inside one -- is
     carried state that changes only where a crossing is granted.
 
-    Every wall encounter is its own Powles trial, ``p = 2 (kappa/D) d_perp``, with an independent
-    uniform. Summed over the encounters of a step this is ``(kappa/D)`` times the boundary local
+    Every wall encounter is its own trial, ``p = x / (1 + x)`` with ``x = 2 (kappa/D) d_perp``
+    (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), with an independent uniform. To first order
+    in ``x`` the trials summed over the encounters of a step are ``(kappa/D)`` times the boundary local
     time the reflections record, the same estimator the surface-relaxivity channel is validated
     on (Brownstein-Tarr), so the transmission does not depend on how many walls a step happens
     to meet. Deciding only at the first encounter would under-permeate by the number of
@@ -424,8 +425,8 @@ class PackedSpheres(Geometry):
         Surface relaxivity ρ₂ in m/s.  Brownstein-Tarr weight on each
         reflection.  Default None (no surface relaxation).
     permeability : float, optional
-        Membrane permeability κ in m/s.  Bidirectional exchange via Powles
-        (2004): p = min(1, 2κ·d_perp/D).  Default None (fully reflecting).
+        Membrane permeability κ in m/s.  Bidirectional exchange: p = x/(1+x),
+        x = 2κ·d_perp/D, per encounter.  Default None (fully reflecting).
 
     Attributes
     ----------

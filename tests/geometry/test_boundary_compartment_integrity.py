@@ -198,7 +198,9 @@ def test_the_sentinel_does_not_seal_the_membrane():
     """The other failure mode of the compartment sentinel: rejecting the legal crossings too, which at kappa = 0 a
     sealed wall and a correct wall cannot distinguish. One walker fired at the slab's membrane from a nudge, a
     thousandth and a tenth of the width inside it, for one, three and ten times that offset: at kappa = 0 none
-    crosses; with ``2 kappa/D d_perp = 1`` for the shortest crossing every crossing impact does, whatever its key.
+    crosses; with ``2 kappa/D d_perp = 1e6`` for the shortest crossing (a transmission ``x / (1 + x)`` within 1e-6 of
+    one) every crossing impact does, and a walker changes compartment exactly where a crossing was granted (a step
+    landing on the membrane to a float32 ulp crosses when its draw grants it).
     The rate against the two-compartment law is `test_permeable_crossings`, marked slow."""
     xm = 2.5e-6
     cases = []
@@ -214,10 +216,10 @@ def test_the_sentinel_does_not_seal_the_membrane():
 
     def side(kappa):
         g = PermeableSlab1D(length=5e-6, permeability=kappa)
-        f = jax.jit(jax.vmap(lambda p, s, k: g.permeate(p, s, jnp.float32(kappa / D), jnp.float32(0.0), k)[0]))
-        return np.asarray(jax.vmap(g.classify_position)(f(starts, steps, keys)))
+        hit = jax.jit(jax.vmap(lambda p, s, k: g.permeate(p, s, jnp.float32(kappa / D), jnp.float32(0.0), k)))(starts, steps, keys)
+        return np.asarray(jax.vmap(g.classify_position)(hit.r)), np.asarray(hit.crossed)
 
-    assert (side(0.0) == 1).all(), "a walker crossed an impermeable membrane"
-    lab = side(D / (2.0 * d_min))
+    assert (side(0.0)[0] == 1).all(), "a walker crossed an impermeable membrane"
+    lab, granted = side(D * 1e6 / (2.0 * d_min))
     assert (lab[crossing] == 0).all(), "a crossing the membrane must grant was refused: the sentinel has sealed the wall"
-    assert (lab[~crossing] == 1).all()
+    assert ((lab == 0) == granted).all(), "a walker changed compartment where no crossing was granted"

@@ -719,9 +719,8 @@ def test_a_permeable_face_equilibrates_the_two_pools_by_volume():
     (0.125 s, six exchange times ``V / (kappa S)``): 0.49890 of 20,000 walkers in the far pool against
     the exact 0.5, floor 3.5e-3; at 1000 and 2500 steps 0.49585 and 0.50570.
 
-    The per-hit transmission here is 0.1, far above the ``CROSSING_P_MAX`` a RATE measurement needs --
-    the equilibrium partition is a statement about detailed balance and holds at any probability, which
-    is what makes it the cheap check.
+    The per-hit transmission here is near 0.1 -- the equilibrium partition is a statement about detailed
+    balance and holds at any probability, which is what makes it the cheap check.
     """
     h = 1e-6
     lab = np.ones((16, 6, 6), np.uint8)

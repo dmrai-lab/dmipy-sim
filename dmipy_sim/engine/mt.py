@@ -13,8 +13,8 @@ penetration depth ``d_perp`` of that hit:
 
     p_stick = min(1, 2 * (kappa_MT / D) * d_perp)                         (1)
 
-exactly the structural form the engine already uses for permeability
-(``p_transmit = min(1, 2 (kappa/D) d_perp)``) and surface relaxivity
+the penetration-depth form the engine uses for permeability
+(``p_transmit = x / (1 + x)``, ``x = 2 (kappa/D) d_perp``) and surface relaxivity
 (``dlog_w = -2 (rho/D) d_perp``).  ``kappa_MT`` (m/s) is therefore a *surface
 reactivity* -- a third member of the (rho, kappa, kappa_MT) reactive-velocity
 family -- and it is consumed through the SAME per-hit ``d_perp`` channel, so it
@@ -72,8 +72,7 @@ def stick_probability(d_perp, kappa_MT, D):
     kappa_MT : float          MT surface reactivity (m/s), >= 0.
     D : float                 local diffusivity (m^2/s), > 0.
     """
-    # identical to `_boundary.transmit_probability`; kept as a host-side (numpy) entry
-    # point for the analytic oracles, which run off-device.
+    # a host-side (numpy) entry point for the analytic oracles, which run off-device.
     return np.minimum(1.0, 2.0 * (kappa_MT / D) * np.asarray(d_perp, dtype=float))
 
 

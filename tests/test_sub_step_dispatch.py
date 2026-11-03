@@ -11,7 +11,7 @@ import pytest
 import dmipy_sim as d
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.engine.physics import (resolve_sub_steps, tolerance_sub_steps, surface_sub_steps,
-                               permeable_sub_steps, collision_sub_steps, mt_sub_steps,
+                               collision_sub_steps, mt_sub_steps,
                                make_step_fn, make_packed_myelin_step_fn)
 from dmipy_sim.engine._fused import simulate_fused
 
@@ -46,7 +46,8 @@ def test_resolve_is_the_maximum_of_the_applicable_criteria():
     assert resolve_sub_steps(b, D, DT, surface=True, f_band=100.0) > resolve_sub_steps(b, D, DT, f_band=100.0)
 
     k = d.Cylinder(radius=2e-6, orientation=(0, 0, 1), permeability=1e-5)
-    assert resolve_sub_steps(k, D, DT) == permeable_sub_steps(k, D, DT)
+    assert resolve_sub_steps(k, D, DT) == tolerance_sub_steps(k, D, DT) > tolerance_sub_steps(
+        d.Cylinder(radius=2e-6, orientation=(0, 0, 1)), D, DT)
 
     m = _mesh_rho()
     assert resolve_sub_steps(m, D, DT, surface=True) == collision_sub_steps(m, D, DT)

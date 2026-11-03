@@ -90,32 +90,43 @@ def pair_step(key):
     return noise * (length / jnp.linalg.norm(noise))
 
 
-CROSSING_P_MAX = 3e-3
-"""The largest per-hit crossing probability a permeable walk steps at: ``p = 2 (kappa / D) d_perp`` is the
-first-order transmission of a step ending ``d_perp`` past a membrane of permeability ``kappa``, exact as
-``p -> 0``. Measured on a periodic packing of 300 cylinders (radii 1-3 um, D = 2e-9 m^2/s, kappa = 30 um/s,
-0.2 ms blocks, 100k walkers): the fraction of walkers exchanged by 5 ms is 0.2332, 0.2287, 0.2324 and 0.2313
-(each +/- 0.0013) at p = 3.7e-3, 2.3e-3, 1.2e-3 and 6.0e-4, flat within the 1 % resolution of the count over
-the whole range, and the PGSE signals move within their split-half errors; the constant sits just under the
-largest probability measured."""
+MEMBRANE_COEFFICIENT = 0.33
+"""The membrane's first-order coefficient of a permeable walk's exchange, in the step law's units: with the
+transmission :func:`~dmipy_sim.geometry._boundary.transmit_probability` the slowest exchange mode of a permeable pore
+decays at a rate within ``MEMBRANE_COEFFICIENT * lambda_1 * dt / 5`` of the exact one, ``lambda_1`` the pore's slowest
+Neumann rate (``LengthScales.pore_rate``) and ``dt`` the physics step, at EVERY permeability. In ``h = sqrt(6 D dt)``
+that is second order, and it vanishes both as ``kappa -> 0`` (no exchange) and as ``kappa -> inf`` (no membrane).
+
+Computed, not fitted: the walk's normal component on a lattice of ``h / 32`` (the pair's two lengths, the membrane on
+a cell edge, so reflection maps the lattice to itself) is an exact Markov matrix, and its slowest exchange mode on the
+two-compartment slab of half-width ``R`` is compared with the root of ``k tan(k R) = 2 kappa R / D``. Over
+``kappa R / D`` from 0.01 to 50 at ``h / R`` = 0.18, 0.09, 0.045 the relative error is negative (the walk exchanges
+slightly slower) and largest at ``kappa R / D`` near 1: 0.292, 0.308, 0.317 of ``lambda_1 dt / 5`` (``lambda_1 =
+pi^2 D / R^2``), 0.33 at zero step. A permeable wall's step is the step law's pore term with this added to the wall's
+own coefficient (:func:`tolerance_sub_steps`)."""
 
 
-def crossing_sub_steps(geometry, diffusivity: float, dt: float) -> int:
-    """Sub-steps so a step's transmission stays at first order: ``d_perp <= CROSSING_P_MAX * D / (2 kappa)``,
-    ``d_perp`` the longest step the law draws (``LONGEST_STEP * sqrt(6 D dt_sub)``); 1 for an impermeable geometry
-    (``permeability`` None; a zero is stored as None)."""
-    kappa = getattr(geometry, 'permeability', None)
-    if kappa is None:
-        return 1
-    step_max = CROSSING_P_MAX * float(diffusivity) / (2.0 * float(kappa)) / LONGEST_STEP
-    return max(1, int(np.ceil(dt / (step_max ** 2 / (6.0 * float(diffusivity))))))
+def has_membrane(geometry) -> bool:
+    """Whether a walker on ``geometry`` can cross a wall: a permeability on the geometry, or on a myelinated
+    substrate's inner or outer boundary."""
+    if geometry.permeability is not None and float(geometry.permeability) > 0.0:
+        return True
+    if geometry._is_myelinated or geometry._is_packed_myelinated:
+        return bool(np.any(np.asarray(geometry._kappa_inner_jax) > 0) or np.any(np.asarray(geometry._kappa_outer_jax) > 0))
+    return False
 
 
-def permeable_sub_steps(geometry, diffusivity: float, dt: float) -> int:
-    """Sub-steps of a permeable walk: the step law's rule of :func:`tolerance_sub_steps` and the crossing rule of
-    :func:`crossing_sub_steps`, whichever is finer -- the count scales with ``kappa``, and an impermeable
-    geometry gets the step law's rule alone."""
-    return max(tolerance_sub_steps(geometry, diffusivity, dt), crossing_sub_steps(geometry, diffusivity, dt))
+def crossing_p_max(geometry, diffusivity: float, dt_sim: float) -> float:
+    """The largest probability that one wall hit of a physics step ``dt_sim`` changes a walker's pool: the
+    transmission of a hit as deep as the longest step the law draws, ``LONGEST_STEP * sqrt(6 D dt_sim)``, at the
+    geometry's largest permeability; 0 without a membrane."""
+    if not has_membrane(geometry):
+        return 0.0
+    kappas = [] if geometry.permeability is None else [float(geometry.permeability)]
+    if geometry._is_myelinated or geometry._is_packed_myelinated:
+        kappas += [float(np.max(np.asarray(geometry._kappa_inner_jax))), float(np.max(np.asarray(geometry._kappa_outer_jax)))]
+    x = 2.0 * max(kappas) / float(diffusivity) * LONGEST_STEP * float(np.sqrt(6.0 * float(diffusivity) * float(dt_sim)))
+    return x / (1.0 + x)
 
 
 def _surface_char_radius(geometry):
@@ -166,7 +177,7 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
     MT's free->bound rate is not imposed; it emerges from the boundary local time accumulated at wall
     encounters, and the per-encounter probability is ``min(1, (kappa_MT/D) * local_time)``. So what the
     step size has to resolve is *the local time*, and -- on a mesh -- the *encounters themselves*. It does
-    NOT have to resolve a crossing, which is what permeability's much finer rule is for.
+    NOT have to resolve a crossing.
 
     The geometry criterion is therefore not a pore-size rule (``R/25`` binds the step to a length the physics does
     not set): the linearisation needs ``p_stick << 1`` (``p_stick ~ 1e-5`` at canonical parameters), a mesh's
@@ -231,6 +242,8 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
     * the curved wall, ``dt_p = 5 eps_D / (c lambda_1)`` (:func:`~dmipy_sim.math.step_law.pore_step`), ``lambda_1``
       the pore's slowest rate and ``c`` its wall coefficient, both declared by the geometry (``LengthScales.pore_rate``
       and ``wall_coefficient``; exact for the analytic pores, the envelope of a sphere of ``min_feature`` and 0.85 otherwise);
+      a wall a walker can cross (:func:`has_membrane`) adds the membrane's coefficient, :data:`MEMBRANE_COEFFICIENT`,
+      the two first-order errors of one mode adding;
     * the band, the largest step at which the pair's bulk error on the mode a band of ``f_band`` reads stays within
       ``eps_D`` (:func:`~dmipy_sim.math.step_law.band_step`); ``f_band`` is the Nyquist frequency of the step ``dt``,
       ``1 / (2 dt)``, when a driver states none (the fused drivers state the waveform's band, the band accumulation
@@ -293,6 +306,8 @@ def tolerance_sub_steps(geometry, diffusivity: float, dt: float, *, eps_D: float
     R = float(R)
     rate = ls.pore_rate if ls.pore_rate is not None else PORE_RATE_ENVELOPE / R ** 2
     c = ls.wall_coefficient if ls.wall_coefficient is not None else WALL_COEFFICIENT_ENVELOPE
+    if has_membrane(geometry):
+        c = c + MEMBRANE_COEFFICIENT
     pore = pore_step(rate, D, eps_D, c)                      # infinite at a declared rate of 0: no confining mode
     if f_band is None:
         f_band = 0.5 / float(dt)
@@ -386,8 +401,7 @@ def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = F
     :func:`resolve_sub_steps` takes the maximum of, and what a walk records as its ``step_rule``."""
     rules = {"step law": tolerance_sub_steps(geometry, diffusivity, dt, eps_D=eps_D, f_band=f_band),
              "regime": regime_sub_steps(geometry, diffusivity, dt),
-             "collision lookup": collision_sub_steps(geometry, diffusivity, dt),
-             "crossing": crossing_sub_steps(geometry, diffusivity, dt)}
+             "collision lookup": collision_sub_steps(geometry, diffusivity, dt)}
     if surface:
         rules["surface local time"] = surface_sub_steps(geometry, diffusivity, dt)
     if mt_dwell_time is not None:
@@ -406,11 +420,10 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
     (:func:`sub_step_rules`):
 
     * the step law, the walk's diffusion spectrum within ``eps_D`` up to the band ``f_band``
-      (:func:`tolerance_sub_steps`: the curved-wall term on the pore's slowest mode, the pair's bulk term on
-      the band's mode, the first-order regime); ``f_band`` is the step's Nyquist frequency when a driver states
-      none; not applied when ``min_feature`` is a meshing parameter;
-    * crossing, ``step_l <= CROSSING_P_MAX D / (2 kappa)`` (:func:`crossing_sub_steps`), when the wall is
-      permeable: the per-hit transmission stays at first order, and the count scales with ``kappa``;
+      (:func:`tolerance_sub_steps`: the curved-wall term on the pore's slowest mode, with the membrane's
+      coefficient added when a wall is permeable, the pair's bulk term on the band's mode, the first-order regime);
+      ``f_band`` is the step's Nyquist frequency when a driver states none; not applied when ``min_feature`` is a
+      meshing parameter;
     * collision lookup, ``LONGEST_STEP * step_l <= 0.9 * lookup_cell`` (:func:`collision_sub_steps`), for a
       spatially indexed geometry;
     * surface local time, ``step_l <= surface_pore / 8`` (:func:`surface_sub_steps`), when

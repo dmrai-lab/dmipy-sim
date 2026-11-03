@@ -149,11 +149,14 @@ def test_specular_is_an_involution():
     np.testing.assert_allclose(np.asarray(twice), d, atol=1e-6)
 
 
-def test_transmit_probability_is_clamped_and_linear():
+def test_transmit_probability_is_x_over_one_plus_x():
+    """``p = x / (1 + x)``, ``x = 2 (kappa/D) d_perp``: linear as ``x -> 0``, a half at ``x = 1``, one only at an
+    infinite permeability."""
     kod = jnp.float32(1.0e4)
-    assert float(transmit_probability(kod, jnp.float32(1e-8))) == pytest.approx(2e-4, rel=1e-5)
-    assert float(transmit_probability(kod, jnp.float32(1.0))) == 1.0     # clamped
+    for d, x in ((1e-8, 2e-4), (5e-5, 1.0), (1.5e-4, 3.0)):
+        assert float(transmit_probability(kod, jnp.float32(d))) == pytest.approx(x / (1 + x), rel=1e-6)
     assert float(transmit_probability(jnp.float32(0.0), jnp.float32(1.0))) == 0.0
+    assert float(transmit_probability(jnp.float32(np.inf), jnp.float32(1e-9))) == 1.0
 
 
 # ── nudge off the wall ──────────────────────────────────────────────────────

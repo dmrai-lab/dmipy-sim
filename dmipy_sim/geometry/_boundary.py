@@ -184,9 +184,22 @@ def specular(d, n):
 
 
 def transmit_probability(kappa_over_D, d_perp):
-    """Powles membrane transmission probability, ``min(1, 2 kappa/D * d_perp)``."""
-    return jnp.minimum(jnp.float32(1.0),
-                       jnp.float32(2.0) * kappa_over_D * d_perp)
+    """The probability that a step meeting a membrane of permeability ``kappa`` crosses it, ``x / (1 + x)`` with
+    ``x = 2 (kappa / D) d_perp`` and ``d_perp`` the normal depth the step's straight path would reach past the
+    membrane (Fieremans et al. 2010, NMR Biomed 23:711, eq. [43]; Lee et al. 2021, J Neurosci Methods 350:109018,
+    eq. (C.1): ``P / (1 - P) = 2 kappa h / D``). A walker that does not cross reflects specularly.
+
+    Why this form and not its linearisation ``2 (kappa / D) d_perp``: a crossing leaves the walker ``d_perp`` past
+    the membrane, where the exact process puts a crossed walker anywhere between the membrane and that depth.
+    For the membrane condition ``D c' = kappa [c]`` the walk's one-step operator must satisfy, at every starting
+    distance ``x0``, ``E[p (1 + 2 (kappa/D) y)] = 2 (kappa/D) E[d_perp]`` (``y`` the distance at the end of the
+    step, the depth ``d_perp`` itself for a crossing step); the exact propagator of the membrane satisfies it, and
+    ``p = x / (1 + x)`` is the one probability of ``d_perp`` alone that does. The linear rule leaves the term
+    ``-2 (kappa/D)^2 E[d_perp^2]``, an effective permeability too large by ``1.2 kappa h / D`` at the step
+    ``h = sqrt(6 D dt)``: a first-order error that sub-stepping alone removes, at a cost growing as ``kappa^2``.
+    With ``x / (1 + x)`` the error of the walk's exchange is second order in ``h`` (:data:`~dmipy_sim.engine.physics.MEMBRANE_COEFFICIENT`)."""
+    x = jnp.minimum(jnp.float32(2.0) * kappa_over_D * d_perp, jnp.float32(1e30))   # an infinite kappa transmits: 1
+    return x / (jnp.float32(1.0) + x)
 
 
 def off_wall(r_hit, n_out, stay_inside, nudge):

@@ -41,7 +41,7 @@ from dmipy_analytic.restricted.matrix_method import cylinder_neumann_roots, sphe
 __all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",
            "FIXED_LENGTHS", "FIXED_WEIGHTS", "WALL_COEFFICIENT_ENVELOPE", "PORE_RATE_ENVELOPE",
            "SPHERE_K1", "SPHERE_WALL_COEFFICIENT", "CYLINDER_K1", "CYLINDER_WALL_COEFFICIENT",
-           "PILOT_STEP_RATIO", "diffusion_spectrum", "step_certificate", "step_moments", "bulk_multiplier",
+           "PILOT_STEP_RATIO", "membrane_rate_error", "diffusion_spectrum", "step_certificate", "step_moments", "bulk_multiplier",
            "pore_step", "band_step", "band_reach", "SteppedPore"]
 
 #: The pair's lengths in units of ``sqrt(6 D dt)`` and the probability of the long one.
@@ -120,6 +120,57 @@ def band_step(f_band, eps, lengths=PAIR_LENGTHS, weights=PAIR_WEIGHTS):
     if f_band is None or f_band <= 0.0:
         return float("inf")
     return band_reach(float(eps), tuple(lengths), tuple(weights)) ** 2 / (12.0 * np.pi * float(f_band))
+
+
+def membrane_rate_error(kappa_star, h_over_R, *, transmission=None, cells_per_step=32, lengths=PAIR_LENGTHS,
+                        weights=PAIR_WEIGHTS):
+    """The relative error of the slowest exchange rate of a permeable walk on the two-compartment slab: half-widths
+    ``R`` on either side of a membrane of permeability ``kappa = kappa_star D / R``, reflecting outer walls, walked at
+    the step ``h = h_over_R R`` (``h = sqrt(6 D dt)``) with ``transmission(kappa_over_D, d_perp)`` (default the
+    engine's :func:`~dmipy_sim.geometry._boundary.transmit_probability`, in numpy).
+
+    The walk's normal component -- a step of the law's lengths in a direction uniform over the sphere has a normal
+    component uniform on ``[-delta, delta]`` -- lives on a lattice of ``h / cells_per_step`` with the membrane and the
+    outer walls on cell edges, so the specular reflection maps the lattice to itself and the walk is an exact Markov
+    matrix; its second eigenvalue ``mu`` gives the walk's rate ``-ln(mu) / dt`` (``dt`` from the lattice law's own
+    variance), against the exact ``D k^2`` of ``k tan(k R) = 2 kappa / D``. No Monte Carlo: the number is computed.
+    Returns ``rate_walk / rate_exact - 1``."""
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as spla
+    from scipy.optimize import brentq
+    if transmission is None:
+        def transmission(kod, d):
+            x = np.minimum(2.0 * kod * d, 1e30)
+            return x / (1.0 + x)
+    K = float(kappa_star)                                   # kappa / D in units of 1 / R (R = D = 1)
+    N = 2 * int(round(float(cells_per_step) / float(h_over_R)))
+    dx = 2.0 / N
+    M = float(h_over_R) / dx
+    kmax = int(np.ceil(max(lengths) * M + 0.5))
+    k = np.arange(-kmax, kmax + 1)
+    w = np.zeros(len(k))
+    for ell, wt in zip(lengths, weights):
+        lo, hi = np.maximum(k - 0.5, -ell * M), np.minimum(k + 0.5, ell * M)
+        w += wt * np.clip(hi - lo, 0.0, None) / (2.0 * ell * M)
+    w /= w.sum()
+    dt = float(np.sum(w * (k * dx) ** 2)) / 2.0
+    m = N // 2
+    i = np.arange(N)[:, None]
+    y = i + k[None, :]
+    cross = (y < m) != (i < m)
+    p = np.where(cross, transmission(K, np.abs((y + 0.5) - m) * dx), 0.0)
+    rows, cols, vals = [], [], []
+    for tgt, wt in ((y, w[None, :] * np.where(cross, p, 1.0)), (2 * m - 1 - y, w[None, :] * np.where(cross, 1.0 - p, 0.0))):
+        t = tgt.copy()
+        for _ in range(3):                                  # fold at the outer walls
+            t = np.where(t < 0, -1 - t, t)
+            t = np.where(t > N - 1, 2 * N - 1 - t, t)
+        rows.append(np.broadcast_to(i, t.shape).ravel()); cols.append(t.ravel()); vals.append(np.broadcast_to(wt, t.shape).ravel())
+    P = sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(N, N))
+    mu = np.sort(np.real(spla.eigs(P.T.tocsr(), k=3, which="LM", return_eigenvectors=False, tol=1e-13)))[::-1]
+    rate = -np.log(mu[1]) / dt
+    kk = brentq(lambda z: z * np.tan(z) - 2.0 * K, 1e-12, np.pi / 2 - 1e-12)
+    return float(rate / kk ** 2 - 1.0)
 
 
 def _trapz_weights(x):

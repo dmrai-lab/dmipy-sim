@@ -87,7 +87,7 @@ def test_permeability_none_matches_impermeable():
 
 
 # ---------------------------------------------------------------------------
-# 3. kappa > 0 reduces the signal at high b (tier 2: the crossing rule's sub-steps cost ~10^3 per waveform step)
+# 3. kappa > 0 reduces the signal at high b (tier 2)
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +98,8 @@ def test_permeability_none_matches_impermeable():
 # ---------------------------------------------------------------------------
 
 def test_a_transmitted_walker_is_placed_on_the_side_its_label_reports():
-    """The sphere's membrane at its two limits: with the transmit probability at one every impact that crosses ends
+    """The sphere's membrane at its two limits: with the transmit probability at one (``x / (1 + x)`` past
+    ``x = 2^24`` in float32) every impact that crosses ends
     outside and is labelled extra, and every one that does not stays inside; at kappa = 0 every impact ends inside and is
     labelled intra, whatever its key. The labels agree with the positions exactly, which a random walk with a live membrane
     could only show for the crossings it happened to draw.
@@ -121,7 +122,7 @@ def test_a_transmitted_walker_is_placed_on_the_side_its_label_reports():
     crossing = bare > R * (1 + 1e-9)
     assert (np.abs(bare - R) > 1e-9 * R).all(), "a case lands on the wall to rounding: undecidable, not a table row"
     d_min = float((bare[crossing] - R).min())
-    kod = 1.0 / (2.0 * d_min)
+    kod = 2.0 ** 40 / (2.0 * d_min)
     keys = jax.random.split(jax.random.PRNGKey(3), len(cases))
     for kappa, crossed_label in ((0.0, 1), (kod * D, 0)):
         geom = Sphere(radius=R, permeability=kappa)

@@ -102,8 +102,8 @@ def test_a_granted_crossing_deposits_no_surface_weight():
     step = jnp.asarray(np.array([[3 * reach, 0.0, 0.0]] * 64, np.float32))
     keys = jax.random.split(jax.random.PRNGKey(0), 64)
 
-    # p_transmit = 2 (kappa/D) d_perp; with d_perp ~ 2e-7 m, kappa = 2.5e-3 puts it near
-    # 0.5 so one sweep of 64 draws contains both branches.
+    # p_transmit = x / (1 + x), x = 2 (kappa/D) d_perp; with d_perp ~ 2e-7 m, kappa = 2.5e-3 puts x near 0.5 and
+    # p near 1/3, so one sweep of 64 draws contains both branches.
     kappa = 2.5e-3
     geom = PermeableSlab1D(length=L, permeability=kappa)
     kod = jnp.float32(kappa / D)

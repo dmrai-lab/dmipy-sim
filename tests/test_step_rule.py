@@ -93,7 +93,7 @@ def test_the_drivers_resolve_the_band_they_serve():
     rule = w.work["step_rule"]
     assert rule["eps_D"] == STEP_TOLERANCE and rule["f_band_hz"] == pytest.approx(w.K / (2 * w.T)) and rule["override"] is None
     assert rule["sub_steps"] == w.sub_steps == max(rule["rules"].values()) and rule["dt_p"] == pytest.approx(w.dt_sim)
-    assert set(rule["rules"]) >= {"step law", "collision lookup", "crossing", "surface local time"}
+    assert set(rule["rules"]) >= {"step law", "collision lookup", "surface local time"}
     w2 = _walk_geometry(16, D0, g, 2e-3, 2e-4, seed=1, require_gpu=False, f_band=100.0)
     assert w2.sub_steps <= w.sub_steps and w2.work["step_rule"]["f_band_hz"] == 100.0
     from dmipy_sim.coefficient_walk import merge_work

@@ -14,7 +14,7 @@ import pytest
 from tests.conftest import N_EXACT, se_tol
 
 from dmipy_sim import Cylinder, FreeDiffusion
-from dmipy_sim.engine.physics import CROSSING_P_MAX, resolve_sub_steps
+from dmipy_sim.engine.physics import resolve_sub_steps
 from dmipy_sim.engine.pulse_sequence import bare_spin_echo
 
 GAMMA = 2.675e8
@@ -47,38 +47,16 @@ def _S(kappa, seq, D=2e-9, n=4000, seed=0):
 
 
 
-# ── a feasible "near free diffusion" regime, derived from the engine's own sub-step budget ──────
+# ── a "near free diffusion" regime ───────────────────────────────────────────────────────────
 #
-# The original kappa=1e-2 at TE=30ms asks `resolve_sub_steps` for 13.3M sub-steps per waveform
-# step (133x `MAX_SUB_STEPS`, #626) -- not searchable down, since the crossing rule's cost is
-# INDEPENDENT of how TE is chopped into n_t. Derived instead, the same way PR #652 derived its
-# scalar-engine sibling (tests/geometry/test_permeability_crossing.py), from
-# `dmipy_sim.engine.physics`:
-#
-#   * the crossing rule (`crossing_sub_steps`, CROSSING_P_MAX = C = 3e-3) bounds the per-hit
-#     transmission probability: the largest step is step_max = C D / (2 kappa), so a waveform
-#     step of dt needs n_cross = ceil(6 D dt / step_max**2) sub-steps -- a RATE (sub-steps per
-#     second) of 24 kappa**2 / (C**2 D), independent of dt.
-#   * the reflection rule (`walk_sub_steps`, R/6) needs a rate of 216 D / R**2, independent of
-#     kappa.
-#   * neither rate wastes budget against the other at kappa* = 3 C D / R (where the two match);
-#     there the total sub-steps over the whole walk (n_t * n_sub, exactly the rate times TE,
-#     independent of how finely n_t chops it) is TE * 216 D / R**2.
-#   * tau = R / (2 kappa*) = R**2 / (6 C D) is the cylinder's exchange time at kappa*. For a
-#     target exchange ratio K = TE / tau (near-complete exchange; the residual against free
-#     diffusion is of order exp(-K)), TE = K tau = K R**2 / (6 C D), and the per-walker total
-#     sub-steps (independent of N, R, D -- a pure function of K and C) is
-#     B = TE * 216 D / R**2 = 36 K / C.
-#
-# R = 3e-6 m, D = 2e-9 m^2/s, C = 3e-3 (this file's substrate), K = 10 (exp(-10) = 4.5e-5 of the
-# restricted/free gap -- the SAME K tests/geometry/test_permeability_crossing.py uses, there
-# against a 10% RELATIVE tolerance; here against this test's ORIGINAL 0.12 ABSOLUTE one,
-# unchanged below) gives kappa* = 3 C D / R = 6e-6 m/s, tau = 0.25 s, TE = 2.5 s,
-# B = 36 K / C = 120,000 sub-steps per walker (`resolve_sub_steps` confirms 101 per save at
-# n_t=1,200, dt=2.09 ms -- 0.1% of the cap). At N=4,000 walkers that is 4.85e8 total sub-steps.
+# The walk's step is the step law's (the pore term with the membrane's coefficient added), the same at every
+# kappa, so the regime is set by the exchange alone: kappa* = 6e-6 m/s on R = 3 um gives tau = R / (2 kappa*) =
+# 0.25 s, and K = TE / tau = 10 (exp(-10) = 4.5e-5 of the restricted/free gap -- the SAME K
+# tests/geometry/test_permeability_crossing.py uses, there against a 10% RELATIVE tolerance; here against this
+# test's 0.12 ABSOLUTE one) gives TE = 2.5 s, at the step law's count per save of n_t = 1,200 (dt = 2.09 ms).
 K_FREE = 10.0        # target TE / tau
-KAPPA_FREE = 3 * CROSSING_P_MAX * D / R                           # kappa* -- 6e-6 m/s
-TAU_FREE = R / (2 * KAPPA_FREE)                                   # = R**2 / (6 C D) -- 0.25 s
+KAPPA_FREE = 6e-6                                                 # kappa*, m/s
+TAU_FREE = R / (2 * KAPPA_FREE)                                   # -- 0.25 s
 TE_FREE = K_FREE * TAU_FREE                                       # -- 2.5 s
 N_T_FREE = 1_200
 B_FREE = 5e8         # s/m^2 -- an arbitrary, comfortably-restricted b (500 s/mm^2)
@@ -106,7 +84,7 @@ def test_high_permeability_approaches_free_diffusion():
     walkers, where the restricted signal is 0.58 higher. Statistic: the difference of two walker means of cos(phase) at
     ``S = exp(-1)``, whose per-walker standard deviation is ``sqrt((1 + S^4) / 2 - S^2) = 0.61``; a restricted cylinder
     fails it by 6 standard errors of the difference, and ``n_resolving(0.4, 0.61, runs=2)`` = 202 walkers is where the
-    margin to 0.4 is the noise's. Each walker takes the 1.2e5 sub-steps above."""
+    margin to 0.4 is the noise's."""
     wf = _free_diffusion_regime_wf()
     geom = Cylinder(radius=R, orientation=(0, 0, 1), permeability=KAPPA_FREE)
     n_sub = resolve_sub_steps(geom, D, float(wf.dt))

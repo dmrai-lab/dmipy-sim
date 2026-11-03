@@ -76,17 +76,15 @@ def test_an_analytic_pore_takes_the_step_law_s_rule():
     assert tolerance_sub_steps(sph, D, dt, eps_D=5.6e-3, f_band=1e3) < _old_rule(sph, dt) <= tolerance_sub_steps(sph, D, dt)
 
 
-def test_a_permeable_mesh_takes_the_crossing_rule_beside_the_collision_rule():
-    """A permeable mesh steps at the finer of the collision rule (the wall must be found) and the crossing rule
-    (the transmission stays at first order, ``p = 2 (kappa/D) d_perp <= CROSSING_P_MAX``); the fixed R/25 of a
-    meshing parameter is not a rule of either."""
-    from dmipy_sim.engine.physics import crossing_sub_steps, resolve_sub_steps, CROSSING_P_MAX
+def test_a_permeable_mesh_takes_the_collision_rule():
+    """A permeable mesh steps at the collision rule (the wall must be found), as an impermeable one does: its pore
+    is unknown, so neither the wall's nor the membrane's term of the step law is written on it, and the pilot of its
+    build measures the step's error; the fixed R/25 of a meshing parameter is not a rule of either."""
+    from dmipy_sim.engine.physics import resolve_sub_steps
     mesh = _mesh_sphere(permeability=1e-5)
     dt = 2e-5
     assert tolerance_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt)
-    n = resolve_sub_steps(mesh, D, dt)
-    assert n == max(collision_sub_steps(mesh, D, dt), crossing_sub_steps(mesh, D, dt))
-    assert 2 * 1e-5 / D * np.sqrt(6 * D * dt / n) <= CROSSING_P_MAX + 1e-12
+    assert resolve_sub_steps(mesh, D, dt) == collision_sub_steps(mesh, D, dt) == resolve_sub_steps(_mesh_sphere(), D, dt)
 
 
 
@@ -146,7 +144,7 @@ def test_the_step_cell_assertion_actually_guards():
     """
     import trimesh as _tm
     from dmipy_sim.geometry.mesh import Mesh, mesh_feature_radius as _min_radius
-    from dmipy_sim.engine.physics import permeable_sub_steps
+    from dmipy_sim.engine.physics import resolve_sub_steps
     from tests.conftest import assert_step_resolves_the_collision_lookup
 
     UM = 1e-6
@@ -158,7 +156,7 @@ def test_the_step_cell_assertion_actually_guards():
 
     # what the engine itself picks must pass
     dt = 1e-4
-    n = permeable_sub_steps(mesh, 2e-9, dt)
+    n = resolve_sub_steps(mesh, 2e-9, dt)
     step_engine = float(np.sqrt(6 * 2e-9 * dt / n))
     assert step_engine < float(mesh.cell_size), "the engine's own step should be under one cell"
     assert_step_resolves_the_collision_lookup(mesh, step_engine)
