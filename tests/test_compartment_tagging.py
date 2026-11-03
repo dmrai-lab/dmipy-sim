@@ -170,20 +170,22 @@ class TestVolumefractionConsistency:
         assert int((np.asarray(comp_orig) != 1).sum()) == 0
 
     def test_myelinated_cylinder_volume_fractions(self):
-        """MyelinatedCylinder: each pool holds ``round(n vf)`` walkers (the extra pool the rest), so its fraction is
-        the volume fraction to one walker, ``1 / n``."""
+        """MyelinatedCylinder: each placement block holds ``round(P vf)`` walkers of each pool (the extra pool the rest,
+        ``P`` = ``PLACEMENT_BLOCK``), so a walk of whole blocks holds each pool's volume fraction to half a walker a
+        block, ``0.5 / P`` (and one walker of the count)."""
+        from dmipy_sim.geometry.base import PLACEMENT_BLOCK
         mc = MyelinatedCylinder(
             inner_radius=3e-6,
             outer_radius=5e-6,
             orientation=[0, 0, 1],
             compartments=Compartments(intra=Pool(D=1e-9, water_fraction=1.0), myelin=Pool(water_fraction=1.0, D=0.0), extra=Pool(D=2e-9, water_fraction=1.0)),
         )
-        n = 20_000
+        n = 5 * PLACEMENT_BLOCK
         comp_orig, _ = _run_final(mc, n_walkers=n, diffusivity=None)
         for comp_id, label in [(1, 'intra'), (2, 'myelin'), (0, 'extra')]:   # pool ids
             vf_mc = (comp_orig == comp_id).mean()
             vf_analytical = mc.volume_fraction(label)
-            npt.assert_allclose(vf_mc, vf_analytical, atol=1.0 / n,
+            npt.assert_allclose(vf_mc, vf_analytical, atol=0.5 / PLACEMENT_BLOCK + 1.0 / n,
                                 err_msg=f"volume_fraction mismatch for {label}")
 
 

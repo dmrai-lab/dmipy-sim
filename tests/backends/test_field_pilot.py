@@ -33,7 +33,7 @@ class _JaxProbe(backends.Backend):
             return b
         self.probes.append(request)
         assert request.field is None and request.K_c3 == 0
-        _, _, k = seed_walkers(request.geometry, n, int(request.seed), r0)
+        _, _, k, _ = seed_walkers(request.geometry, n, int(request.seed), r0)
         assert np.array_equal(np.asarray(k, np.uint32), keys), "the stand-in reproduces the JAX keys of a whole-walk pilot only"
         w = _walk_geometry(n, float(request.diffusivity), request.geometry, float(request.T), float(request.block_h),
                                   seed=int(request.seed), sub_steps=1, r0=r0, raw_subset=n, K=int(request.K), window_T=float(request.T),
