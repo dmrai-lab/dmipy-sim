@@ -19,7 +19,8 @@ def _sha(path):
 @pytest.mark.parametrize("geometry", [
     lambda: d.Cylinder(radius=3e-6, orientation=(0, 0, 1)),
     lambda: d.PackedSpheres([1.5e-6, 2e-6], [[0.0, 0.0, 0.0], [4e-6, 4e-6, 4e-6]], 10e-6),
-    lambda: d.MyelinatedCylinder(inner_radius=2e-6, outer_radius=3e-6),
+    lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), compartments=d.Compartments(
+        intra=d.Pool(D=1.7e-9), extra=d.Pool(D=1.7e-9), myelin=d.Pool(D=0.0))),
 ])
 def test_a_walker_is_its_seed_and_index(geometry):
     """The starts, the step keys and the seeding labels of any range are the whole's rows, across placement blocks."""
