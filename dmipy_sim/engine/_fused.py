@@ -226,7 +226,7 @@ def simulate_fused(
         scan_inputs = (G_scan, chi_perp_scan)
 
         _r0_user_supplied = r0 is not None
-        _, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
+        _, r0, walker_keys, _ = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
 
         # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
         is_myelin = geometry._is_myelinated

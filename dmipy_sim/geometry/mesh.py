@@ -46,7 +46,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
-from ._boundary import BounceLoop, wall_hit, specular, transmit_probability, off_wall, nudge_push
+from ._boundary import vdot, BounceLoop, wall_hit, specular, transmit_probability, off_wall, nudge_push
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -625,7 +625,7 @@ def _label_arr(A, r):
     d2, c = _closest_on_triangles(A.TRIS[ci], r_w)
     d2 = jnp.where(valid, d2, jnp.inf)
     idx = jnp.argmin(d2)
-    side = jnp.dot(r_w - c[idx], A.NRM[ci][idx])
+    side = vdot(r_w - c[idx], A.NRM[ci][idx])
     base = jnp.clip(jnp.floor((r_w - A.GMIN) / A.CS).astype(jnp.int32), 0, A.dims_arr - 1)
     lo = jnp.where(base >= 1, r_w - (A.GMIN + (base - 1) * A.CS), jnp.inf)
     hi = jnp.where(base + 2 <= A.dims_arr - 1, A.GMIN + (base + 2) * A.CS - r_w, jnp.inf)
@@ -687,7 +687,7 @@ def _classify_arr(A, r):
     ci, valid = _gather_arr(A, r_w)
     d2, c = _closest_on_triangles(A.TRIS[ci], r_w)
     idx = jnp.argmin(jnp.where(valid, d2, jnp.inf))
-    side = jnp.dot(r_w - c[idx], A.NRM[ci][idx])
+    side = vdot(r_w - c[idx], A.NRM[ci][idx])
     inside = (side < 0) & valid.any()          # no nearby wall => not enclosed => exterior
     return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
@@ -1262,7 +1262,7 @@ class Mesh(Geometry):
         bu, bv = u[idx], v[idx]
         ns = (1 - bu - bv) * vnf[idx, 0] + bu * vnf[idx, 1] + bv * vnf[idx, 2]
         ns = ns / jnp.linalg.norm(ns)
-        n = jnp.where(jnp.dot(d_hat, nrmf[idx]) > 0, -ns, ns)  # side by face, dir by smooth
+        n = jnp.where(vdot(d_hat, nrmf[idx]) > 0, -ns, ns)  # side by face, dir by smooth
         return n
 
     # ------------------------------------------------------------------
@@ -1288,11 +1288,11 @@ class Mesh(Geometry):
         off the geometric normal alone scores the same, i.e. the correction removes the whole effect.
         """
         n = self._smooth_normal(vnf, nrmf, u, v, idx, dh)
-        nf = jnp.where(jnp.dot(dh, nrmf[idx]) > 0, -nrmf[idx], nrmf[idx])
+        nf = jnp.where(vdot(dh, nrmf[idx]) > 0, -nrmf[idx], nrmf[idx])
         n_ref = nf if self.reflect_mode == "geometric" else n
         d_ref = specular(dh, n_ref)
         d_ref /= jnp.linalg.norm(d_ref)
-        c = jnp.dot(d_ref, nf)
+        c = vdot(d_ref, nf)
         d_ref = jnp.where(c < self._GRAZE, d_ref + (self._GRAZE - c) * nf, d_ref)
         d_ref /= jnp.linalg.norm(d_ref)
         if self.edge_backscatter:
@@ -1346,7 +1346,7 @@ class Mesh(Geometry):
             # nudged off rather than left on a plane whose side float32 cannot tell (a correction, #630)
             # a walker whose path is spent (rem <= 0 after a hit at its end) meets nothing more, as the CUDA loop
             # stops there
-            reach = ((ts < rem) | ((ts - rem) * jnp.abs(nrmf @ dh) < self._TIE)) & (rem > 0)
+            reach = ((ts < rem) | ((ts - rem) * jnp.abs(vdot(nrmf, dh)) < self._TIE)) & (rem > 0)
             vm = (ts > self._hit_floor(i > 0)) & reach
             if self.rest_facet_exclusion:
                 # ignore ONLY the facet just bounced off, and only at grazing range
@@ -1362,7 +1362,7 @@ class Mesh(Geometry):
             d_ref, n, nf = self._bounce(vnf, nrmf, u, v, idx, dh)
 
             # side of the collision: dh . (outward face normal) > 0 -> leaving a cell
-            outward = jnp.dot(dh, nrmf[idx]) > 0
+            outward = vdot(dh, nrmf[idx]) > 0
             kappa_mult = jnp.where(outward, self._kappa_mult_out, self._kappa_mult_in)
             rho_mult = jnp.where(outward, self._rho_mult_intra, self._rho_mult_extra)
 
@@ -1382,7 +1382,7 @@ class Mesh(Geometry):
 
             # the contact is the push of the reflection, along the normal the walker is reflected about (the facet's
             # under 'geometric'): the local time is then the walked surface's own, E l(t) = D t S/V of the mesh
-            cos_a = -jnp.dot(dh, nf if self.reflect_mode == "geometric" else n)
+            cos_a = -vdot(dh, nf if self.reflect_mode == "geometric" else n)
             d_perp = jnp.maximum(rem - d, 0.0) * cos_a           # a tie-band hit lies up to the band beyond the path
             first_hit = hit & (~decided) & jnp.logical_not(use_box)
             p_t = transmit_probability(jnp.float32(kappa_over_D) * kappa_mult, d_perp)
@@ -1406,7 +1406,7 @@ class Mesh(Geometry):
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
             # the wall's push: the ideal reflection's 2 d_perp and the displacement the nudge adds along the facet normal
-            push = 2.0 * d_perp + nudge_push(nudge, jnp.maximum(jnp.dot(d_ref, nf), 0.0), rem - d)
+            push = 2.0 * d_perp + nudge_push(nudge, jnp.maximum(vdot(d_ref, nf), 0.0), rem - d)
             dperp_refl = jnp.where(do_reflect & jnp.logical_not(use_box), rho_mult * push,
                                    jnp.float32(0.0))
             return (r_new, d_new, rem_new, (decided | first_hit, idx),

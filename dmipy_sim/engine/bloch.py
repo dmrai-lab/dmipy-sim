@@ -311,7 +311,7 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
                        jnp.asarray(crush_rate, dtype=jnp.float32))
 
         # the crusher's per-walker macro coordinate is an independent stream off the master key
-        master_key, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
+        master_key, r0, walker_keys, _ = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
         if has_crush:
             uw = jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
                                     dtype=jnp.float32)
@@ -562,7 +562,7 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
                    jnp.asarray(carrier, dtype=jnp.float32),
                    jnp.asarray(crush_rate, dtype=jnp.float32))
 
-    master_key, r0, walker_keys = seed_walkers(geometry, n_walkers, seed, r0)
+    master_key, r0, walker_keys, _ = seed_walkers(geometry, n_walkers, seed, r0)
     uw = (jax.random.uniform(jax.random.fold_in(master_key, 0xC0FFEE), (n_walkers,),
                              dtype=jnp.float32) if has_crush
           else jnp.zeros((n_walkers,), dtype=jnp.float32))

@@ -34,7 +34,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from ._boundary import BounceLoop, WallHit, nudge_push
+from ._boundary import vdot, BounceLoop, WallHit, nudge_push
 import numpy as np
 
 from ._grid import NEIGHBOUR_OFFSETS, gather
@@ -146,11 +146,11 @@ def _walk_step(levels, r, step, interior, loop, nudge, eps):
         hit = jnp.isfinite(t)
         t_safe = jnp.where(hit, t, 0.0)
         n = _normal(r0, u, t_safe, cen, rad, interior)
-        u_ref = u - 2.0 * jnp.dot(u, n) * n
+        u_ref = u - 2.0 * vdot(u, n) * n
         u_ref = u_ref / jnp.maximum(jnp.linalg.norm(u_ref), 1e-30)
         r_hit = r0 + t_safe * u + nudge * n
         # Brownstein-Tarr: the path that would have crossed the wall, projected on the normal.
-        cos_a = jnp.abs(jnp.dot(u, n))
+        cos_a = jnp.abs(vdot(u, n))
         # ... and, as half a push, the displacement the nudge adds (_boundary.nudge_push)
         d_perp = jnp.where(hit, (rem - t_safe) * cos_a + 0.5 * nudge_push(nudge, cos_a, rem - t_safe), 0.0)
         # the rule leaves a missed ray as it is: the loop flies the leftover when the last iteration met nothing

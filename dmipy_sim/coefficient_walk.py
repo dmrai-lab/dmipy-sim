@@ -126,6 +126,8 @@ class CoefficientWalk:
     pool_changed: Optional[np.ndarray] = None   #: (n,) bool the walkers whose label changed in an impermeable walk walked
                                                 #: with ``drop_pool_changes``; None when the walk was not asked for them
     seed: Optional[int] = None
+    first_walker: int = 0      #: the index of the walk's first walker in its seed: the walk is the seed's walkers
+                               #: ``first_walker .. first_walker + n_walkers - 1``
     diffusivity: Optional[float] = None
     geometry: object = field(default=None, compare=False, repr=False)
     spec: object = field(default=None, compare=False, repr=False)
@@ -287,7 +289,7 @@ class CoefficientWalk:
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
                     "qv_boundary", "weights")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
-                     "illegal_crossings", "seed", "diffusivity", "work", "stepping")
+                     "illegal_crossings", "seed", "first_walker", "diffusivity", "work", "stepping")
 
     def save(self, path):
         """The walk as one safetensors file: its arrays as tensors (an event list as ``<column>_events_offsets`` /
@@ -352,8 +354,110 @@ class CoefficientWalk:
             kw["envelope"] = Envelope.from_dict(h["envelope"])
         kw.update(K=int(h["K"]), m=int(h["m"]), n_windows=int(h["n_windows"]), sub_steps=int(h["sub_steps"]),
                   T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h["illegal_crossings"]),
+                  first_walker=int(h["first_walker"]),
                   K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)
         return cls(**kw)
+
+
+#: the entries of a walk's block record that are statistics of its walkers (:func:`ensemble_block_stats`)
+ENSEMBLE_BLOCK_KEYS = ("k0_residual_m", "k0_residual_relative", "quadratic_variation")
+
+#: the counts of a walk's work record, summed over the walks :func:`join_walks` joins
+WORK_COUNTS = ("walker_steps", "n_hits", "n_crossings", "exhausted_steps", "label_deviations")
+
+
+def ensemble_block_stats(position_coeffs, qv_positions, qv_boundary, k0_residual_m, diffusivity, T):
+    """The entries of a block record that are statistics of the walk's walkers, from the arrays the walk stores: the
+    float32 chain's largest residual on the ``k = 0`` mode (``k0_residual_m``, given: the walk keeps no residual per
+    walker), that residual over the displacements' rms, and each channel's quadratic variation summed over the
+    windows and averaged over the walkers. A function of the stored arrays in walker order, so a walk and the
+    pieces of it joined in order (:func:`join_walks`) state the same record."""
+    disp = np.asarray(position_coeffs)[:, :, 1, :]
+    qv_p = np.asarray(qv_positions).sum(axis=1).mean(axis=0)
+    rms = float(np.sqrt(np.mean(disp ** 2))) if disp.size else 0.0
+    return dict(k0_residual_m=(None if k0_residual_m is None else float(k0_residual_m)),
+                k0_residual_relative=(None if k0_residual_m is None else
+                                      (float(k0_residual_m) / max(rms, 1e-300) if disp.size else 0.0)),
+                quadratic_variation=dict(
+                    positions_mean_m2=[float(x) for x in qv_p],
+                    positions_over_2DT=([float(x) / (2.0 * float(diffusivity) * float(T)) for x in qv_p] if diffusivity else None),
+                    boundary_mean_m2=(None if qv_boundary is None else float(np.asarray(qv_boundary).sum(axis=1).mean()))))
+
+
+def join_walks(walks):
+    """One walk from walks of contiguous walker ranges of one seed, in order: walk ``j + 1``'s ``first_walker`` is walk
+    ``j``'s plus its walkers. The per-walker arrays are concatenated, the events joined, the counts summed and the
+    block's walker statistics recomputed on the union (:func:`ensemble_block_stats`), so with walker-indexed seeding
+    the result is the walk of the union walked at once: what a producer that commits a walk batch by batch
+    assembles. Everything else -- the walk's parameters, the block's rules and pilots, the work record's rules, the
+    envelope, the spec -- must agree and is refused by name where it does not; a raw subset is kept from the first
+    walk and refused on any other."""
+    import dataclasses
+    walks = list(walks)
+    if not walks:
+        raise ValueError("join_walks takes at least one walk")
+    w0 = walks[0]
+    if not all(isinstance(w, CoefficientWalk) for w in walks):
+        raise TypeError("join_walks takes CoefficientWalk objects")
+    nxt = int(w0.first_walker)
+    for j, w in enumerate(walks):
+        if int(w.first_walker) != nxt:
+            raise ValueError(f"walk {j} starts at walker {w.first_walker}, not {nxt}: join_walks joins contiguous ranges in order")
+        nxt += w.n_walkers
+        if j and w.raw_positions is not None:
+            raise ValueError(f"walk {j} keeps a raw subset: a joined walk's raw subset leads it, so only the first walk keeps one")
+    for key in ("T", "K", "m", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval", "seed", "diffusivity"):
+        vals = [getattr(w, key) for w in walks]
+        if any(v != vals[0] for v in vals[1:]):
+            raise ValueError(f"the walks differ in {key}: {vals}")
+    for key in ("envelope", "spec"):
+        vals = [getattr(w, key) for w in walks]
+        dicts = [None if v is None else v.to_dict() for v in vals]
+        if any(d != dicts[0] for d in dicts[1:]):
+            raise ValueError(f"the walks differ in their {key}")
+    rules = [{k: v for k, v in w.block.items() if k not in ENSEMBLE_BLOCK_KEYS} for w in walks]
+    for j, r in enumerate(rules[1:], 1):
+        if r != rules[0]:
+            diff = sorted(k for k in set(r) | set(rules[0]) if r.get(k) != rules[0].get(k))
+            raise ValueError(f"walk {j}'s block record differs from walk 0's in {diff}: a walk joined from pieces states what "
+                             f"its pilots derive (events_capacity, K_c3, field_read_interval) rather than deriving it per piece")
+    for key, how in (("comp_events", None), ("bound_events", None)):
+        present = [getattr(w, key) is not None for w in walks]
+        if any(present) and not all(present):
+            raise ValueError(f"some walks carry {key} and some do not")
+    for key in CoefficientWalk._WALKER_ARRAYS:
+        present = [getattr(w, key) is not None for w in walks]
+        if any(present) and not all(present):
+            raise ValueError(f"some walks carry {key} and some do not")
+    works = [w.work for w in walks]
+    if any(x is None for x in works) and not all(x is None for x in works):
+        raise ValueError("some walks carry a work record and some do not")
+    work = None
+    if works[0] is not None:
+        same = [{k: v for k, v in x.items() if k not in WORK_COUNTS and k != "block"} for x in works]
+        for j, r in enumerate(same[1:], 1):
+            if r != same[0]:
+                diff = sorted(k for k in set(r) | set(same[0]) if r.get(k) != same[0].get(k))
+                raise ValueError(f"walk {j}'s work record differs from walk 0's in {diff}")
+        work = dict(works[0])
+        for k in WORK_COUNTS:
+            if k in work:
+                vals = [x.get(k) for x in works]
+                work[k] = None if any(v is None for v in vals) else int(sum(vals))
+    if len(walks) == 1:
+        return w0
+    out = {k: (None if getattr(w0, k) is None else np.concatenate([np.asarray(getattr(w, k)) for w in walks]))
+           for k in CoefficientWalk._WALKER_ARRAYS}
+    for key in ("comp_events", "bound_events"):
+        out[key] = None if getattr(w0, key) is None else EventList.concatenate([getattr(w, key) for w in walks])
+    k0 = [w.block.get("k0_residual_m") for w in walks]
+    block = dict(rules[0], **ensemble_block_stats(out["position_coeffs"], out["qv_positions"], out["qv_boundary"],
+                                                  None if any(v is None for v in k0) else max(k0), w0.diffusivity, w0.T))
+    block = {k: block[k] for k in w0.block}                                   # the walk's own key order
+    if work is not None and "block" in work:
+        work["block"] = block
+    return dataclasses.replace(w0, **out, block=block, work=work,
+                               illegal_crossings=int(sum(int(w.illegal_crossings) for w in walks)), run=None)
 
 
 def merge_work(works):

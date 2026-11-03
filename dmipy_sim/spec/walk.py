@@ -40,7 +40,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
-              field_pilot=None):
+              field_pilot=None, first_walker=0):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -135,13 +135,23 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``field_pilot`` is the engine a fixed-step walk's field pilot walks on (:func:`~dmipy_sim.engine.core._walk_geometry`
     ``field_pilot``: None the walk's backend, ``"jax"`` the JAX kernels); the adaptive walk has its own and refuses it.
 
+    ``first_walker`` is the index of the walk's first walker in its ``seed``: the walk of a single geometry is the
+    seed's walkers ``first_walker .. first_walker + n_walkers - 1``, each a function of the seed and its index alone
+    (:func:`~dmipy_sim.engine.physics.seed_walkers`), so the walks of contiguous ranges joined in order
+    (:func:`~dmipy_sim.coefficient_walk.join_walks`) are the walk of their union, bit for bit. What a walk derives
+    from its own walkers (the events buffer's and the field's pilots) a walk in pieces states instead
+    (``K_c3``, ``field_read_interval``); the pool-by-pool walk of a multi-surface spec seeds its pools from the walk's
+    count and is refused with ``first_walker`` > 0. With ``context`` the single geometry is the context's
+    (:meth:`WalkContext.geometry`: built and compiled once) and its walkers may be placed ahead
+    (:meth:`WalkContext.place`).
+
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
     in progress, not the walk.
     """
     with Run("walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
-                                      adaptive_steps=adaptive_steps, seed=seed), run_dir=run_dir) as run:
+                                      adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir) as run:
         import logging
         from ..engine.core import _walk_geometry
         from dmipy_replay.replay.envelope import Envelope
@@ -152,6 +162,10 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
         settings = certificate_settings(envelope, battery)
         spec = _spec_of_door(spec)
         spec.validate()
+        if int(first_walker) and _needs_bundle_walk(spec):
+            raise SpecError("first_walker is a range of a single geometry's walk; the pool-by-pool walk of a multi-surface "
+                            "spec deals its walkers to the pools from the walk's own count, so a range of it is not a "
+                            "range of one walk")
         if T_max is None:
             raise TypeError("walk needs T_max (seconds)")
         kind = field_source_kind(spec)
@@ -227,7 +241,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
             if drop_pool_changes is not None:
                 raise SpecError("drop_pool_changes excludes the walkers of a multi-surface bundle walk; this spec walks one "
                                 "geometry, which refuses a walker that changes pool")
-            g = geometry_from_spec(spec)
+            g = context.geometry() if context is not None else geometry_from_spec(spec)
             gap = g.trajectory_walk_gap()
             if gap is not None:
                 raise SpecError(f"walk cannot walk spec {getattr(spec, 'id', None)!r}: its "
@@ -247,6 +261,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
             w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
+                               first_walker=int(first_walker),
                                       field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
                                                                                    field_target_floor=field_target_floor)),
                                       **walk_kw)
@@ -673,6 +688,25 @@ class WalkContext:
         self.key = self.key_of(spec, self.far)
         self.tests = _PoolTests(spec)
         self._basis = None
+        self._geometry = None
+
+    def geometry(self):
+        """The single geometry a spec without a multi-surface bundle is walked as, built once
+        (:func:`~dmipy_sim.spec.geometry_from_spec`): its device tables and compiled kernels serve every walk of the
+        context. A bundle spec has no single geometry and is refused."""
+        if _needs_bundle_walk(self.spec):
+            raise SpecError("a multi-surface spec is walked pool by pool and has no single geometry")
+        if self._geometry is None:
+            self._geometry = geometry_from_spec(self.spec)
+        return self._geometry
+
+    def place(self, n_walkers, seed, first_walker=0):
+        """Place the walkers ``first_walker .. first_walker + n_walkers - 1`` of ``seed`` on the context's geometry
+        (:func:`~dmipy_sim.geometry.base.placement`), which keeps them for the walk of exactly that range: a producer
+        calls this in a thread for its next walk while the device walks the current one. Returns the starts."""
+        from ..engine.physics import seed_keys
+        from ..geometry.base import placement
+        return placement(self.geometry(), int(n_walkers), seed_keys(seed)[1], int(first_walker))[0]
 
     @staticmethod
     def key_of(spec, far):

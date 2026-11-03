@@ -412,6 +412,12 @@ class _Rows:
         return self.array_ if self.filled == self.n_rows else self.array_[:self.filled]
 
 
+WALKER_LANES = 32
+"""A JAX batch's walkers are padded to a whole number of this many lanes (the padding walked and dropped). The compiler
+vectorises a batch across its walkers, and a batch narrower than the vector width is compiled to scalar code whose
+transcendentals round differently: padded, every walker is computed by the same vector code whatever batch it falls
+in, so a walk's bytes do not depend on how its walkers were batched or partitioned."""
+
 DEFAULT_WALKER_BATCH = 50_000
 """Walkers per batch of :func:`_walk_geometry` unless the caller says otherwise."""
 
@@ -1024,6 +1030,7 @@ def _walk_geometry(
     field_target_floor: float = None,
     drop_pool_changes: bool = False,
     field_pilot: str = None,
+    first_walker: int = 0,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1069,7 +1076,15 @@ def _walk_geometry(
     block_h : float, optional
         The block length (s) in place of the band's own.
     seed : int
-        Master PRNG seed.
+        The seed whose walkers are walked: walker ``i`` of a seed is a function of the seed and ``i`` alone
+        (:func:`~dmipy_sim.engine.physics.seed_walkers`).
+    first_walker : int
+        The index of the walk's first walker in its seed (0): the walk is the walkers ``first_walker ..
+        first_walker + n_walkers - 1``, so walks of contiguous ranges joined in order
+        (:func:`~dmipy_sim.coefficient_walk.join_walks`) are the walk of their union. What a walk derives from its own
+        walkers -- the events buffer's and the field's pilots, the MT burn-in's length -- is the walk's: a walk
+        partitioned into pieces states them (``events_capacity``, ``K_c3``, ``field_read_interval``), and an MT
+        burn-in is refused for a walk that does not start at the seed's first walker.
     walker_batch_size : int
         Number of walkers per batch.  Reduce if OOM (the batch loop also auto-halves on an OOM exception).
     tiers : {"all", ()}
@@ -1523,13 +1538,13 @@ def _walk_geometry(
             def _side0(r_b):
                 return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
 
-        _, r0_all, walker_keys_all = seed_walkers(geometry, n_walkers, seed, r0)   # r0_all (n_walkers, 3)
+        _, r0_all, walker_keys_all, labels0 = seed_walkers(geometry, n_walkers, seed, r0, first_walker=first_walker)
 
         # the myelinated kernels' start compartments: the seeding's own, or the given starts' classified (the seeding
         # leaves its labels on the geometry, which describe the seeding's positions, not a caller's)
         comp0_all = None
         if record and uses_myelin_traj:
-            comp0_all = (jnp.asarray(geometry._init_compartments) if r0 is None
+            comp0_all = (jnp.asarray(labels0) if r0 is None
                          else jax.vmap(geometry.classify_position)(jnp.asarray(r0_all)).astype(jnp.int32))
 
         # ── MT bound-pool equilibration (kappa_MT > 0) ──
@@ -1544,12 +1559,17 @@ def _walk_geometry(
                 S_V = _mt.surface_to_volume(geometry)
                 from dmipy_analytic.relaxation import bound_fraction
                 P_eq = bound_fraction(kappa_MT, dwell_time, S_V)
-                ek = jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E)
-                u_state, u_dwell = jax.random.uniform(ek, (2, n_walkers), dtype=jnp.float32)
+                from .physics import walker_keys as _walker_keys    # each walker's own draw: a function of its index
+                ek = _walker_keys(jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E), first_walker, n_walkers)
+                u_state, u_dwell = jax.vmap(lambda k: jax.random.uniform(k, (2,), dtype=jnp.float32))(ek).T
                 brem0_all = jnp.where(u_state < jnp.float32(P_eq),
                                       -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * jnp.float32(float(dwell_time) / dt_sim),
                                       jnp.float32(0.0))
             elif _mode == "burnin":
+                if int(first_walker):
+                    raise ValueError("equilibrate_binding='burnin' decides the burn-in's length on the walk's own walkers, "
+                                     "so a walk from first_walker > 0 is not a range of one walk; equilibrate 'fast' (each "
+                                     "walker's own draw) for a walk partitioned into pieces")
                 _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
                 if _mt_walls:
                     def _burn_walker(r_w, key_w, comp_w, brem_w):
@@ -1757,8 +1777,12 @@ def _walk_geometry(
             comp0_b = (comp0_all[sel] if kind_name == "pm" else
                        jnp.asarray(geometry.classify_positions_exact(r0_b), jnp.int32) if kind_name in ("relax", "mt")
                        else jnp.zeros((r0_b.shape[0],), jnp.int32))
-            out = _batch_fn(raw, cap, K_c3, _rd[0] if rd is None else rd)(r0_b, walker_keys_all[sel], _side0(r0_b), comp0_b,
-                                                                       brem0_all[sel], _f_arrays)
+            n_b = int(r0_b.shape[0])
+            pad = (lambda x: x) if n_b % WALKER_LANES == 0 else \
+                (lambda x: jnp.concatenate([x, jnp.repeat(x[-1:], WALKER_LANES - n_b % WALKER_LANES, axis=0)]))
+            out = _batch_fn(raw, cap, K_c3, _rd[0] if rd is None else rd)(pad(r0_b), pad(walker_keys_all[sel]), pad(_side0(r0_b)),
+                                                                       pad(comp0_b), pad(brem0_all[sel]), _f_arrays)
+            out = jax.tree_util.tree_map(lambda x: x[:n_b], out)          # the lanes the batch was padded with dropped
             *arrs, ev_c, ev_b, n_dev, bad_f, work_f = out
             got = {k: np.asarray(v) for k, v in zip(names, arrs)}
             for key, ev in (("c", ev_c), ("b", ev_b)):                      # the events compacted per batch: (counts, t, label)
@@ -1983,7 +2007,6 @@ def _walk_geometry(
                                  f"(the pilot of {n_pilot} walkers saw at most {events_record.get('pilot_max_changes', '?')})")
         illegal, work = _work_record()
         resid = rows["resid"].array()
-        disp = rows["C"].array()[:, :, 1, :]
         n_dev = int(dev[0])
         if n_dev:
             import warnings
@@ -1998,16 +2021,14 @@ def _walk_geometry(
             precision = _backend_block.get("precision", "?"); ring = _backend_block.get("ring")
             accumulation = _backend_block.get("accumulation") or f"accumulated by the {_backend_name} backend"
             resid_known = bool(_backend_block.get("resid_known", False))
+        from ..coefficient_walk import ensemble_block_stats
+        pos_c32 = np.asarray(rows["C"].array(), np.float32)          # the stats of the arrays the walk stores
+        qv_b32 = rows["qv_blt"].array().astype(np.float32) if records_surface else None
         block = dict(h=float(dt_actual), m=m, precision=precision, n_blocks=n_blocks, rule=res.block_rule, ring=ring,
                      accumulation=accumulation,
-                     k0_residual_m=((float(np.abs(resid).max()) if resid.size else 0.0) if resid_known else None),
-                     k0_residual_relative=((float(np.abs(resid).max() / max(np.sqrt(np.mean(disp ** 2)), 1e-300))
-                                            if resid.size else 0.0) if resid_known else None),
-                     quadratic_variation=dict(
-                         positions_mean_m2=[float(x) for x in qv_p.sum(axis=1).mean(axis=0)],
-                         positions_over_2DT=([float(x) / (2.0 * float(diffusivity) * float(T_max)) for x in qv_p.sum(axis=1).mean(axis=0)]
-                                             if diffusivity else None),
-                         boundary_mean_m2=(float(rows["qv_blt"].array().sum(axis=1).mean()) if records_surface else None)))
+                     **ensemble_block_stats(pos_c32, qv_p.astype(np.float32), qv_b32,
+                                            ((float(np.abs(resid).max()) if resid.size else 0.0) if resid_known else None),
+                                            diffusivity, T_max))
         if _sampling:
             block["field_read"] = dict(res.field_read)
             block["field_band"] = dict(field_band) if field_band is not None else dict(rule="given", K=int(K_c3_))
@@ -2031,7 +2052,7 @@ def _walk_geometry(
             raw_bound = raw_rows["bound"].array() if ev_bound_on else None
             raw_field = raw_rows["fs"].array() if _sampling else None
         cw = CoefficientWalk(
-            position_coeffs=np.asarray(rows["C"].array(), np.float32), T=float(T_max), K=K, m=m, block=block,
+            position_coeffs=pos_c32, T=float(T_max), K=K, m=m, block=block,
             n_windows=n_win, dt_sim=float(dt_sim), sub_steps=int(sub_steps),
             boundary_endpoint=(rows["blt_end"].array().astype(np.float32) if records_surface else None),
             boundary_bands=(rows["blt_bands"].array().astype(np.float32) if records_surface else None),
@@ -2045,8 +2066,8 @@ def _walk_geometry(
             raw_boundary=(None if not (n_raw and records_surface) else raw_rows["dlog"].array()),
             raw_compartment=raw_comp, raw_bound=raw_bound, raw_field=raw_field,
             qv_positions=qv_p.astype(np.float32),
-            qv_boundary=(rows["qv_blt"].array().astype(np.float32) if records_surface else None),
-            illegal_crossings=illegal, seed=int(seed), diffusivity=(None if diffusivity is None else float(diffusivity)),
+            qv_boundary=qv_b32,
+            illegal_crossings=illegal, seed=int(seed), first_walker=int(first_walker), diffusivity=(None if diffusivity is None else float(diffusivity)),
             pool_changed=(np.concatenate(pc_parts) if drop_pool_changes else None),
             geometry=geometry, work=work)
         object.__setattr__(cw, "run", run)

@@ -589,6 +589,20 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     return (phys, b_prev, ev_c, ev_b), (mp, mb, qp, qb, mf, qf, qd, ec, reads)
 
 
+def ring_projection(tab, mom):
+    """``sum_q sum_j tab[q, :, j] mom[q, j]``: a ring's moments ``mom (R, m + 1, ...)`` projected on its table ``tab (R,
+    K + 1, m + 1)``, summed elementwise in one fixed order (blocks outer, moment orders inner, the order the CUDA
+    accumulator sums in). A contraction would be a matrix product over the walkers of the batch, whose summation order
+    the compiler chooses from the batch's shape; this sum is a walker's own, so a walker's bands do not depend on which
+    batch it was walked in."""
+    acc = None
+    for q in range(int(tab.shape[0])):
+        for j in range(int(tab.shape[2])):
+            t = tab[q, :, j].reshape((-1,) + (1,) * (mom.ndim - 2)) * mom[q, j]
+            acc = t if acc is None else acc + t
+    return acc
+
+
 def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, emit=None, count=None, offset=0, n_checks=0):
     """The ``n_blocks`` blocks of one walker (one window): ``interval(carry, b) -> (carry, ys, (M, B, Q, Qb, F, Qf, Qd,
     E, reads))`` walks block ``b`` (its moments from :func:`moment_scan`; ``b + offset`` is the walk-wide block index).
@@ -600,7 +614,6 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
     ``count``), each channel's quadratic variation over the window (the field's of its trapezoid increments and of its
     read series) and the trapezoid's checks, summed per ring like the projections."""
     from ..replay.compression import block_table
-    hi = jax.lax.Precision.HIGHEST
     n_blocks, K, m = int(n_blocks), int(K), int(m)
     reads_f = int(n_ch) > 0                                                            # the field is read: its QVs
     has_f = K_c3 is not None and reads_f                                               # and its modes accumulated
@@ -614,14 +627,14 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
         c, ap, ab, af, n, qp, qb, qf, qd, ec = state
         c, (mom, e, k) = jax.lax.scan(block, c, idx)
         tab = block_table(1.0, n_blocks, K, m, blocks=idx, xp=jnp)                    # (R, K+1, m+1), no walker in it
-        ap = ap + jnp.einsum("bkj,bjd->kd", tab, mom[0], precision=hi)
+        ap = ap + ring_projection(tab, mom[0])
         qp = qp + mom[2].sum(axis=0)
         if has_blt:
-            ab = ab + jnp.einsum("bkj,bj->k", tab, mom[1], precision=hi)
+            ab = ab + ring_projection(tab, mom[1])
             qb = qb + mom[3].sum()
         if has_f:
             tab_f = tab if K_c3 == K + 1 else block_table(1.0, n_blocks, K_c3 - 1, m, blocks=idx, xp=jnp)
-            af = af + jnp.einsum("bkj,bjc->kc", tab_f, mom[4], precision=hi)
+            af = af + ring_projection(tab_f, mom[4])
         if reads_f:
             qf = qf + mom[5].sum(axis=0)
             qd = qd + mom[6].sum(axis=0)

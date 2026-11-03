@@ -401,7 +401,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         def _project_b(acc_b, B, row):
             return acc_b + jnp.einsum("kj,wj->wk", row, B, precision=hi)
 
-        _, r0_all, keys_all = seed_walkers(geometry, n_walkers, seed, r0)      # the fused producer's own draws
+        _, r0_all, keys_all, _ = seed_walkers(geometry, n_walkers, seed, r0)      # the fused producer's own draws
         r0_all = np.asarray(r0_all, np.float32)
         classify = getattr(_backend, "classify", None)
         labels0 = (classify(geometry, r0_all) if callable(classify) and int(raw_subset) == 0 else
