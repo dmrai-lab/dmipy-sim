@@ -296,8 +296,9 @@ def test_shards_of_a_windowed_walk_merge(packs):
     merged = merge_packs([two, b], id="t/merged")
     assert merged.n_windows == 2 and merged.n_walkers == 2 * N_W and merged.arrays["s1/susc_path_scale"].shape[0] == 2
     seq = _seq()
-    Sa, Sb = two.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), b.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True)
-    npt.assert_allclose(merged.replay(seq, tissue=TIS, scanner=3.0, complex_signal=True), (Sa + Sb) / 2.0, atol=1e-6)
+    kw = dict(tissue=TIS, scanner=3.0, complex_signal=True, tol=None)         # the full read: a union's smaller floor plans more bands than a shard's
+    Sa, Sb = two.replay(seq, **kw), b.replay(seq, **kw)
+    npt.assert_allclose(merged.replay(seq, **kw), (Sa + Sb) / 2.0, atol=1e-6)
 
 
 def _float_pack(*a, **k):

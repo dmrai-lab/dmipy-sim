@@ -281,6 +281,56 @@ def restate_maxima(fid):
     return fid
 
 
+def pool_standard_errors(floors, weights):
+    """The standard error of the weighted mean over several independent shards of one walk's walkers, from the
+    shards' own: ``sqrt(sum_i (W_i / W)^2 se_i^2)`` with ``se_i`` the shard's standard error (a pack's ``floor_max``,
+    ``noise_floor``, ...), ``W_i`` its total walker weight (its walker count when unweighted) and ``W = sum_i W_i``.
+    Per measurement this is the standard error of the pooled mean, so the pooled battery maximum bounds the union's
+    from above and equals it when the shards share one walker law. ``floors`` and ``weights`` are equally long."""
+    f, w = np.asarray(floors, np.float64).reshape(-1), np.asarray(weights, np.float64).reshape(-1)
+    if f.shape != w.shape or f.size == 0 or not (w > 0).all():
+        raise ValueError("pool_standard_errors takes one positive weight per floor")
+    return float(np.sqrt(np.sum((w / w.sum()) ** 2 * f ** 2)))
+
+
+#: The floors of a merged fidelity that are standard errors of the weighted mean, and so pool.
+_POOLED_FLOORS = ("floor_max", "noise_floor", "floor_surface", "floor_susc_path", "floor_susc_bloch", "floor_quantisation")
+FLOOR_COMBINED_POOLED = "pooled_shards"                  #: ``fidelity.floor_combined`` of shards that partition one walk's walkers
+FLOOR_COMBINED_BLOCKS = "max_over_voxel_blocks"          #: ``fidelity.floor_combined`` of disjoint voxel blocks
+
+
+def _walker_ranges(pk):
+    """``[(seed, first, stop), ...]`` of the walker ranges a pack holds, or ``None`` when its provenance does not state them."""
+    wp = pk.meta["walk_params"]
+    seed, first = wp.get("seed"), wp.get("first_walker")
+    if not isinstance(seed, (list, tuple)) and not isinstance(first, (list, tuple)):
+        return [(int(seed or 0), int(first or 0), int(first or 0) + int(wp["n_walkers"]))]
+    sh = (pk.meta.get("provenance") or {}).get("shards")
+    seeds, firsts = (list(seed) if isinstance(seed, (list, tuple)) else None), (list(first) if isinstance(first, (list, tuple)) else None)
+    if seeds is None or firsts is None or sh is None or not (len(seeds) == len(firsts) == len(sh)):
+        return None
+    return [(int(a), int(b), int(b) + int(s["n_walkers"])) for a, b, s in zip(seeds, firsts, sh)]
+
+
+def _shard_combination(pks, has_certificate, overlap):
+    """How the floors of shards combine, derived from what they are: ``"max_over_voxel_blocks"`` for shards that hold
+    disjoint voxels under a per-voxel certificate (``overlap="refuse"``; every voxel's floor is one shard's), else
+    ``"pooled_shards"``: the shards are walkers of one population -- ranges of one seed's walkers, passes of a block,
+    independent seeds -- and the union's floor is the pooled standard error. Two shards that hold the same walker of the
+    same seed are refused: they would count it twice."""
+    if has_certificate and overlap == "refuse":
+        return FLOOR_COMBINED_BLOCKS
+    ranges = [_walker_ranges(pk) for pk in pks]
+    for i in range(len(pks)):
+        for j in range(i):
+            for a in ranges[i] or []:
+                for b in ranges[j] or []:
+                    if a[0] == b[0] and a[1] < b[2] and b[1] < a[2]:
+                        raise ValueError(f"shards {j} and {i} both hold walkers {max(a[1], b[1])}..{min(a[2], b[2]) - 1} of seed {a[0]}; "
+                                         "a merge counts each walker once")
+    return FLOOR_COMBINED_POOLED
+
+
 def _census_rows(ijk_all, inside):
     """The occupied voxels (unique rows of ``ijk_all[inside]``) and every walker's row into them, ``-1`` outside:
     the per-(voxel, pool) census as one vectorised ``np.unique`` inverse lookup -- no per-walker Python dict probe
@@ -1145,8 +1195,12 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     renormalised to the union (:func:`union_weights`) and the per-voxel floor
     of the union is read afresh from the merged coefficients (:func:`voxel_floor_coded`, over ``envelope``'s
     battery, default the envelope every pack is built against), the codec-error column ``nan`` as in an
-    inherited certificate. The fidelity summary is the conservative one over the shards (the largest error and
-    floor, every family within its floor only when every shard was); the precision tiers are recomputed and
+    inherited certificate. The fidelity summary: the error is the largest over the shards (a bias bound); the floor, a
+    standard error, combines by what the shards are (:func:`_shard_combination`, stated as ``fidelity.floor_combined``):
+    shards of disjoint voxels under a per-voxel certificate take the largest (``"max_over_voxel_blocks"``), shards that
+    partition one walk's walkers (ranges of one seed, passes of a block, independent seeds) take the pooled standard
+    error of the union (:func:`pool_standard_errors`, ``"pooled_shards"``), which falls as ``1 / sqrt(N)`` with the
+    union's walkers. ``within_2x_floor`` and the target statements are restated from the merged values; the precision tiers are recomputed and
     declared unshuffled (the walkers are ordered by shard). Provenance lists the shards and the field read interval
     of each. The shards of a pool bundle read the field at the intervals of their own rounds, so the interval is not
     an identity key: the merged pack states the coarsest and the term charged at it (:func:`charge_field_read`).
@@ -1219,12 +1273,33 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                 raise ValueError(f"array {k!r} is not walker-leading in every shard; it cannot be concatenated")
             arrays[k] = parts
         fid = dict(pks[0].meta.get("fidelity") or {})
-        for key, agg in (("err_max", max), ("floor_max", max), ("noise_floor", max), ("err_surface", max), ("floor_surface", max)):
-            vals = [(pk.meta.get("fidelity") or {}).get(key) for pk in pks]
+        combined = _shard_combination(pks, pv0 is not None, overlap)
+        fids = [pk.meta.get("fidelity") or {} for pk in pks]
+        if combined == FLOOR_COMBINED_POOLED:                              # errors are bias bounds (the largest holds), floors standard errors
+            wsum = [float(np.asarray(pk.arrays["spin_weights"], np.float64).sum()) if "spin_weights" in pk.arrays else float(m)
+                    for pk, m in zip(pks, n)]
+            for key in _POOLED_FLOORS:
+                vals = [f.get(key) for f in fids]
+                if all(v is not None for v in vals):
+                    fid[key] = pool_standard_errors(vals, wsum)
+            if "floor_total_max" in fid and "floor_quantisation" in fid:
+                fid["floor_total_max"] = float(fid["floor_max"]) + float(fid["floor_quantisation"])
+            maxed = ("err_max", "err_surface")
+        else:
+            maxed = ("err_max", "floor_max", "noise_floor", "err_surface", "floor_surface")
+        for key in maxed:
+            vals = [f.get(key) for f in fids]
             if all(v is not None for v in vals):
-                fid[key] = float(agg(vals))
-        if all("within_2x_floor" in (pk.meta.get("fidelity") or {}) for pk in pks):
-            fid["within_2x_floor"] = bool(all((pk.meta["fidelity"]["within_2x_floor"]) for pk in pks))
+                fid[key] = float(max(vals))
+        fid["floor_combined"] = combined
+        if "err_max" in fid and "floor_max" in fid:                         # restated from the merged values
+            fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+        if "planned_floor" in fid:
+            fid["meets_planned_floor"] = bool(fid["floor_max"] <= float(fid["planned_floor"]))
+            if "target_floor" in fid:
+                fid["meets_numerical_cap"] = bool(fid["err_max"] <= float(fid["target_floor"]))
+            if "meets_numerical_cap" in fid:
+                fid["meets_target"] = bool(fid["meets_numerical_cap"] and fid["meets_planned_floor"])
         fid.pop("per_family", None)
         if pv0 is not None:
             ijk = np.concatenate([np.asarray(pk.arrays["voxel_ijk"], np.int64) for pk in pks])
