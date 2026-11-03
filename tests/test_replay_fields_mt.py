@@ -69,12 +69,14 @@ def test_susceptibility_replay_gre_and_se():
     rf_gre = [RFEvent(0.0, 90.0, axis_deg=90.0, duration_s=0.0)]
     rf_se = rf_gre + [RFEvent(TE / 2, 180.0, axis_deg=0.0, duration_s=0.0)]
 
-    f_gre = _simulate_bloch(N, D, replace(wf0, rf=rf_gre), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
+    # the oracle steps at the walk's one sub-step per dt, so the two walk the same paths (to float32 rounding): left to
+    # its own step law it takes 6, and the comparison is of two unpaired walks, whose difference has an se of 0.015 here
+    f_gre = _simulate_bloch(N, D, replace(wf0, rf=rf_gre), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False, sub_steps=subs)
     r_gre = replay_bloch(traj, dt_tr, Z, dt, rf_gre, T2=T2, susceptibility=prov)
-    f_se = _simulate_bloch(N, D, replace(wf0, rf=rf_se), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False)
+    f_se = _simulate_bloch(N, D, replace(wf0, rf=rf_se), geom, T2=T2, seed=seed, susceptibility=prov, require_gpu=False, sub_steps=subs)
     r_se = replay_bloch(traj, dt_tr, Z, dt, rf_se, T2=T2, susceptibility=prov)
 
-    # forward vs replay parity (same provider, bit-identical walk)
+    # forward vs replay parity (same provider, the same paths)
     assert abs(abs(f_gre[0]) - abs(r_gre[0])) < 8e-3
     assert abs(abs(f_se[0]) - abs(r_se[0])) < 8e-3
     # the static susceptibility field dephases the GRE; the SE 180 refocuses it
