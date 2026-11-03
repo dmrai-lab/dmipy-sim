@@ -322,7 +322,7 @@ def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
     n_near = int((np.asarray(d_wall).reshape(n, n_t).min(axis=1) < wall_margin_m).sum())
     return dict(
         contained=dict(n_inside=n_inside, ok=n_inside == 0),
-        illegal=dict(n_illegal=illegal, walker_steps=int((w.work or {}).get("walker_steps") or 0)),
+        illegal=dict(n_illegal=illegal, walker_steps=int(w.work["walker_steps"])),
         reaches_wall=dict(n_near=n_near, fraction=n_near / n, ok=n_near > near_wall_fraction * n),
     )
 
@@ -486,7 +486,7 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
                              f"{(ref.K, ref.m, ref.sub_steps, ref.n_blocks)}, backend {(w.K, w.m, w.sub_steps, w.n_blocks)}")
         # the work record against the reference's own spread at the same starts: sweep further streams
         def counts_of(walk):
-            c = {key: int(walk.work[key] or 0) for key in ("n_hits", "n_crossings", "exhausted_steps")}
+            c = {key: int(walk.work[key]) for key in ("n_hits", "n_crossings", "exhausted_steps")}
             c["illegal"] = int(np.asarray(walk.illegal_crossings).sum())
             return c
         gs = case(); gs.count_walls = True
