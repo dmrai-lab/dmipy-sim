@@ -300,11 +300,14 @@ FLOOR_COMBINED_BLOCKS = "max_over_voxel_blocks"          #: ``fidelity.floor_com
 
 
 def _walker_ranges(pk):
-    """``[(seed, first, stop), ...]`` of the walker ranges a pack holds, or ``None`` when its provenance does not state them."""
+    """``[(seed, first, stop), ...]`` of the walker ranges a pack holds, or ``None`` when its provenance does not state them (such a
+    shard is not checked for shared walkers)."""
     wp = pk.meta["walk_params"]
     seed, first = wp.get("seed"), wp.get("first_walker")
+    if seed is None or first is None:
+        return None
     if not isinstance(seed, (list, tuple)) and not isinstance(first, (list, tuple)):
-        return [(int(seed or 0), int(first or 0), int(first or 0) + int(wp["n_walkers"]))]
+        return [(int(seed), int(first), int(first) + int(wp["n_walkers"]))]
     sh = (pk.meta.get("provenance") or {}).get("shards")
     seeds, firsts = (list(seed) if isinstance(seed, (list, tuple)) else None), (list(first) if isinstance(first, (list, tuple)) else None)
     if seeds is None or firsts is None or sh is None or not (len(seeds) == len(firsts) == len(sh)):
