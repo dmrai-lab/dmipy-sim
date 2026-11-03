@@ -90,17 +90,19 @@ class WalkRequest(NamedTuple):
         return float(self.block_h) * int(self.n_blocks)
 
 
-def event_capacity(n_steps, *, p_max=None, sigma=6.0, floor=16):
-    """The C1 event list's capacity per walker for a permeable walk of ``n_steps`` physics steps: a crossing needs a
-    hit and no hit crosses with a probability above ``p_max`` (the crossing rule's
-    :data:`~dmipy_sim.engine.physics.CROSSING_P_MAX` by default, which sizes the step so), so the crossings per
-    walker are bounded by Binomial(``n_steps``, ``p_max``); the capacity is its mean plus ``sigma`` standard
-    deviations, at least ``floor``. A backend refuses by name a walker that exceeds it (the count returned), so the
-    bound costs memory only: 9 bytes per entry on a GPU backend."""
-    if p_max is None:
-        from .physics import CROSSING_P_MAX as p_max
-    mu = float(p_max) * int(n_steps)
-    return int(max(int(floor), math.ceil(mu + float(sigma) * math.sqrt(mu * (1.0 - float(p_max))))))
+def event_capacity(n_steps, p_max, *, sigma=6.0, floor=16):
+    """The C1 event list's capacity per walker for a walk of ``n_steps`` physics steps on which no wall hit changes a
+    walker's pool with a probability above ``p_max`` (:func:`~dmipy_sim.engine.physics.crossing_p_max` of the walk's
+    step): the changes per walker are bounded by Binomial(``n_steps``, ``p_max``), and the capacity is its mean plus
+    ``sigma`` standard deviations, at least ``floor``, and never more than ``n_steps``. A backend refuses by name a
+    walker that exceeds it (the count returned), so the bound costs memory only: 9 bytes per entry on a GPU
+    backend."""
+    p = float(p_max)
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f"p_max is a probability in [0, 1]; got {p_max!r}")
+    mu = p * int(n_steps)
+    cap = math.ceil(mu + float(sigma) * math.sqrt(mu * (1.0 - p)))
+    return int(max(int(floor), min(int(n_steps), cap)))
 
 
 class ParityCase(NamedTuple):
@@ -278,20 +280,27 @@ def parity_cases():
                                 rng.uniform(VOID_YT - 5e-6, VOID_YT + 5e-6, n),
                                 rng.uniform(20e-6, 180e-6, n)]).astype(np.float32)
 
+    # kappa R / D = 2 at D = 2e-9: a membrane crossed at a quarter to a half of the hits, where the transmission's form
+    # (x / (1 + x) against its linearisation) moves the crossing count by a tenth
+    FAST = 2e-3
     return {
         "sphere": ParityCase(lambda: d.Sphere(R)),
         "sphere_perm": ParityCase(lambda: d.Sphere(R, permeability=1e-5)),
+        "sphere_perm_fast": ParityCase(lambda: d.Sphere(R, permeability=FAST)),
         "cylinder": ParityCase(lambda: d.Cylinder(R, (0, 0, 1))),
         "cylinder_perm": ParityCase(lambda: d.Cylinder(R, (0, 0, 1), permeability=1e-5)),
         "ellipsoid": ParityCase(lambda: d.Ellipsoid((R, 0.7 * R, 0.5 * R))),
         "packed_cyl": ParityCase(lambda: packed(d.PackedCylinders)),
         "packed_cyl_perm": ParityCase(lambda: packed(d.PackedCylinders, permeability=2e-5)),
+        "packed_cyl_perm_fast": ParityCase(lambda: packed(d.PackedCylinders, permeability=FAST)),
         "packed_sph": ParityCase(lambda: packed(d.PackedSpheres)),
         "packed_sph_perm": ParityCase(lambda: packed(d.PackedSpheres, permeability=2e-5)),
         "label_slab": ParityCase(lambda: label()),
         "label_slab_perm": ParityCase(lambda: label(permeability=1e-5, pools={0: "free", 1: "grain"})),
+        "label_slab_perm_fast": ParityCase(lambda: label(permeability=FAST, pools={0: "free", 1: "grain"})),
         "mesh": ParityCase(lambda: mesh()),
         "mesh_perm": ParityCase(lambda: mesh(permeability=1e-5)),
+        "mesh_perm_fast": ParityCase(lambda: mesh(permeability=FAST)),
         "strands_intra": ParityCase(lambda: strands(True)),
         "strands_extra": ParityCase(lambda: strands(False)),
         # a rate comparison at parity_report's default scale would barely move these walkers, so the case pins

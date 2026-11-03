@@ -133,12 +133,16 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     _walk(d.Sphere(R, permeability=1e-5), backend=perm)
     r = perm.requests[0]
     assert r.kappa_over_D == pytest.approx(1e-5 / D)
-    assert r.events == backends.event_capacity(r.n_blocks * r.sub_steps) > 0
-    # the capacity is the crossing rule's bound: Binomial(n_steps, CROSSING_P_MAX)'s mean plus six sigma, at least 16
-    from dmipy_sim.engine.physics import CROSSING_P_MAX
-    mu = CROSSING_P_MAX * 10000
-    assert backends.event_capacity(10000) == int(np.ceil(mu + 6 * np.sqrt(mu * (1 - CROSSING_P_MAX)))) == 63
-    assert backends.event_capacity(1) == 16
+    # the capacity is the binomial bound at the largest probability a hit of the walk's step crosses: its mean plus
+    # six sigma, at least 16 and at most the step count
+    from dmipy_sim.engine.physics import crossing_p_max
+    p = crossing_p_max(d.Sphere(R, permeability=1e-5), D, r.dt_sim)
+    assert r.events == backends.event_capacity(r.n_blocks * r.sub_steps, p) > 0
+    mu = 3e-3 * 10000
+    assert backends.event_capacity(10000, 3e-3) == int(np.ceil(mu + 6 * np.sqrt(mu * (1 - 3e-3)))) == 63
+    assert backends.event_capacity(1, 3e-3) == 16 and backends.event_capacity(40, 1.0) == 40
+    with pytest.raises(ValueError, match="probability"):
+        backends.event_capacity(10, 1.5)
 
 
 def test_the_walk_is_the_backends_coefficient_form_as_it_came():

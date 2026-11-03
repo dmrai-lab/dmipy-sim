@@ -121,7 +121,7 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
 def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     """Intra-seeded walkers leave through the membrane at the same rate whether the wall is the
     pack kernel's (a trial at every encounter) or `Cylinder.permeate`'s (one trial per step):
-    on a single convex object at the R/25 step a second encounter is a grazing rarity.
+    on a single convex object at the R/25 step (pinned) a second encounter is a grazing rarity.
 
     Claim: the fraction still inside after TE is the same to 0.03 (a 10 % difference of the exchanged third). The two
     walks start from the same walkers with the same seed, so their outcomes agree walker by walker except where a
@@ -135,8 +135,10 @@ def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     pk = d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=kappa)
     wf = dr.set_b(dr.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
     r0 = cyl.init_positions(N, jax.random.PRNGKey(0))                # inside the lumen
-    _, o_c, f_c = simulate_fused(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False)
-    _, o_p, f_p = simulate_fused(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False)
+    n_sub = int(np.ceil(6 * D * float(wf.dt) / (R / 25) ** 2))      # the R/25 step: few transmissions per walker,
+    # so the two walks' draws diverge for few walkers (the discordant pairs the count is sized for)
+    _, o_c, f_c = simulate_fused(N, D, wf, cyl, seed=6, r0=r0, return_compartments="final", require_gpu=False, sub_steps=n_sub)
+    _, o_p, f_p = simulate_fused(N, D, wf, pk, seed=6, r0=r0, return_compartments="final", require_gpu=False, sub_steps=n_sub)
     assert (o_c == 1).all() and (o_p == 1).all()
     in_c, in_p = f_c == 1, f_p == 1
     assert in_c.mean() < 0.95, "no exchange happened"

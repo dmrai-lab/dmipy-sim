@@ -291,9 +291,10 @@ default seeding happens to do.
 mt_dwell_time=, override=, eps_D=, f_band=)` — the maximum of the step law's tolerance rule
 (`tolerance_sub_steps`, #714/#715: the walk's diffusion spectrum within `STEP_TOLERANCE` = 1e-3 up to the band
 `f_band`, from the curved-wall term on the pore's slowest mode, `5 eps / (c lambda_1)` with the geometry's declared
-`LengthScales.pore_rate` and `wall_coefficient` or the envelope of a sphere of `min_feature` (rate `4.33 D / min_feature^2`) and 0.85, the pair's bulk term
+`LengthScales.pore_rate` and `wall_coefficient` or the envelope of a sphere of `min_feature` (rate `4.33 D / min_feature^2`) and 0.85,
+plus `MEMBRANE_COEFFICIENT` when a wall is permeable, the pair's bulk term
 on the band's mode, `band_step`, and the first-order regime `delta_0 <= min_feature / 2`; a mesh takes the
-collision rule instead, its pore being unknown), the crossing (R/25-like, on the longest atom), collision-lookup
+collision rule instead, its pore being unknown), the collision-lookup
 (on the longest atom), surface-local-time (pore/8) and binding criteria that apply. The band is the waveform's own
 (`acquisition.waveforms.band_hz`: the frequency holding all but `eps` of every row's b) for `simulate` and the oracle, the
 scanner class's for `walk`, the walk's own `K / (2 T)` for `_walk_geometry`, the block's Nyquist frequency `1 / (2 h)` for the adaptive producer; the walk
@@ -334,7 +335,8 @@ execution of the same physics -- `"jax"` (the default, the kernels in `core`), t
 keys) -> CoefficientBatch`. The producer resolves the geometry, the band `K`, the blocks, the sub-step, the seeds and
 the budget, hands a backend a `WalkRequest` per batch (`block_h`, `n_blocks`, `sub_steps`, `K`, `m`, `K_c3`,
 `field_read_interval`, `events` -- the C1 / bound event capacity: the pilot's (`accumulate.EVENTS_MARGIN`) on the walk's
-batches, the crossing rule's bound `backends.event_capacity` on the pilot's own batch and in the resolved request --
+batches, the binomial bound `backends.event_capacity` at the largest per-hit pool change of the walk's step
+(`physics.crossing_p_max`) on the pilot's own batch and in the resolved request --
 `raw_subset`) and takes back the coefficient form: the bands per channel as the backend accumulated and
 finished them (so a pack of the walk is bit for bit the backend's own writer's), the quadratic variation, the C1 events
 (`CoefficientWalk.comp_events`, written by `build_replay_pack` as the `comp_events_*` tensors), the field's modes

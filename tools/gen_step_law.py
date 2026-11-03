@@ -595,14 +595,14 @@ def render(R, meta):
                  "LONGEST step by the cell: `fixed` is that count for a fixed step, `atom` for the pair's long atom, the "
                  "price of the bounded law where this rule binds.")
         L.append("")
-        L.append("| substrate | step law | regime | lookup (fixed -> atom) | crossing | binds | sub-steps | R/6 | walker-steps / s | walkers |")
-        L.append("|---|---|---|---|---|---|---|---|---|---|")
+        L.append("| substrate | step law | regime | lookup (fixed -> atom) | binds | sub-steps | R/6 | walker-steps / s | walkers |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
         for name, r in s.items():
             ru = r["rules"]
             lk = f"{r['lookup_fixed_step']} -> {r['lookup_longest_atom']}" if "lookup_longest_atom" in r else "-"
             rate = f"{r['walker_steps_per_s']:.2e}" if "walker_steps_per_s" in r else f"not walked: {r['not_walked'][:110]}"
             walkers = f"{r['n_walkers']:,}" if "n_walkers" in r else "-"
-            L.append(f"| {name} | {ru.get('step law', '-')} | {ru.get('regime', '-')} | {lk} | {ru.get('crossing', '-')} | "
+            L.append(f"| {name} | {ru.get('step law', '-')} | {ru.get('regime', '-')} | {lk} | "
                      f"{r['binds']} | {r['sub_steps']} | {r.get('retired_R6', '-')} | {rate} | {walkers} |")
         L.append("")
     # 6 outside

@@ -74,7 +74,8 @@ class Sphere(Geometry):
         T2_surface = R / (3·ρ) for a sphere (S/V = 3/R).  Default None.
     permeability : float, optional
         Membrane permeability κ in m/s.  When set, each boundary crossing is
-        probabilistic: the walker transmits with p = min(1, 2κ·d_perp/D) and
+        probabilistic: the walker transmits with p = x/(1+x), x = 2κ·d_perp/D
+        (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), and
         reflects otherwise.  Enables bidirectional exchange — walkers may be
         inside or outside the sphere at any time.  Default None (fully
         reflecting wall).  Exchange time τ = R / (3κ).
@@ -182,7 +183,7 @@ class Cylinder(Geometry):
     permeability : float, optional
         Membrane permeability κ in m/s.  When set, each boundary crossing
         is probabilistic: the walker transmits through the wall with
-        probability p = min(1, 2κ·d_perp/D) and reflects otherwise.
+        probability p = x/(1+x), x = 2κ·d_perp/D, and reflects otherwise.
         Enables bidirectional exchange — walkers may be inside or outside
         the cylinder at any time.  Default None (fully reflecting wall).
     """
@@ -319,7 +320,7 @@ class Ellipsoid(Geometry):
             walker magnetisation by exp(-2·ρ₂·d_perp/D). Default None.
         permeability : float, optional
             Membrane permeability κ in m/s.  When set, each boundary crossing
-            is probabilistic: p = min(1, 2κ·d_perp/D).  Bidirectional.
+            is probabilistic: p = x/(1+x), x = 2κ·d_perp/D.  Bidirectional.
             Default None (fully reflecting wall).
         """
         self.semiaxes = np.asarray(semiaxes, dtype=np.float64)
@@ -451,7 +452,7 @@ class PermeableSlab1D(Geometry):
         f_A(t) = 1/2 + 1/2 exp(-4 kappa t / L)   (closed two-compartment exchange).
 
     The membrane transmission is the SAME rule as the curved geometries
-    (p = min(1, 2 kappa/D * d_perp)), so this isolates the planar prefactor from curvature.
+    (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), so this isolates the planar membrane from curvature.
 
     Parameters
     ----------

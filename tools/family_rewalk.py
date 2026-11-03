@@ -458,7 +458,7 @@ class Slab(Family):
         """The slab as a two-voxel label volume (``--slab-geometry label``, the default: A the first voxel, B the
         second, the x faces reflecting, y and z periodic, every face between them the membrane; an engine class the
         an accelerated backend walks) or as ``PermeableSlab1D`` (``analytic``). Both are the same closed slab under the same
-        Powles rule, ``p = min(1, 2 kappa d_perp / D)`` per encounter, and resolve the same step."""
+        transmission rule, ``p = x / (1 + x)`` with ``x = 2 kappa d_perp / D`` per encounter, and resolve the same step."""
         kappa = self.substrates()[name]["kappa"]
         if self.args.slab_geometry == "analytic":
             import dmipy_sim as d

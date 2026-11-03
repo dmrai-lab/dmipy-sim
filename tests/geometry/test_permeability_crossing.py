@@ -18,13 +18,9 @@ Analytical limits validated here
 2. κ=0  (zero permeability)       → identical signal to impermeable Cylinder.
 3. κ>0 at high b                  → signal strictly above impermeable (walkers
                                     that escape are less restricted → higher S).
-4. Very high κ (TE >> τ)          → the transmit probability saturates at one:
-                                    every impact that crosses is granted
-                                    (tests/geometry/test_permeable_crossings.py).
-                                    The walk to complete exchange costs 3e8
-                                    walker-sub-steps (the crossing rule keeps
-                                    the probability per hit at 3e-3) and is not
-                                    run.
+4. Very high κ (TE >> τ)          → the transmit probability x/(1+x) tends
+                                    to one: every impact that crosses is
+                                    granted (tests/geometry/test_permeable_crossings.py).
 
 Combination with surface relaxivity
 -------------------------------------

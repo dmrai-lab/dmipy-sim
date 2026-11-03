@@ -169,25 +169,37 @@ def test_the_impermeable_membrane_reflects_every_impact():
 
 
 def test_a_membrane_that_must_transmit_transmits_every_impact():
-    """The other end of the same rule: with ``2 kappa/D d_perp >= 1`` for every crossing step of the table the transmit
-    probability is one, so every crossing impact ends in B whatever its key, and every non-crossing one stays in A.
-    The probability itself rises linearly in kappa up to that cap."""
+    """The other end of the same rule: with ``x = 2 kappa/D d_perp >= 1e6`` for every crossing step of the table the
+    transmit probability ``x / (1 + x)`` is within 1e-6 of one, so every crossing impact is granted and ends in B, and a
+    walker changes compartment exactly where a crossing was granted: the half steps stay in A, and a step that lands
+    on the membrane to a float32 ulp crosses only when its draw grants it (a step of one and a half slabs, folded at
+    both outer walls, ends in A). Below that the probability is ``x / (1 + x)``: a half at ``x = 1``."""
     from dmipy_sim.geometry._boundary import transmit_probability
     cases = _slab_impacts()
     d_min = min(abs(st[0] + sp[0] - L / 2) for n, st, sp in cases if n.endswith(("three", "ten")))
-    kod = 1.0 / (2.0 * d_min)
+    kod = 1e6 / (2.0 * d_min)
     geom = PermeableSlab1D(length=L, permeability=kod * D)
-    r, lab = _fire(geom, cases, kod)
+    starts = jnp.asarray(np.stack([c[1] for c in cases]), jnp.float32)
+    steps = jnp.asarray(np.stack([c[2] for c in cases]), jnp.float32)
+    keys = jax.random.split(jax.random.PRNGKey(11), len(cases))
+    hit = jax.jit(jax.vmap(lambda p, s, k: geom.permeate(p, s, jnp.float32(kod), jnp.float32(0.0), k)))(starts, steps, keys)
+    lab = np.asarray(jax.vmap(geom.classify_position)(hit.r))
+    granted = np.asarray(hit.crossed)
     crossing = np.array([n.endswith(("three", "ten")) for n, _, _ in cases])
-    assert (lab[crossing] == 0).all(), f"{(lab[crossing] != 0).sum()} crossing impacts were refused at p = 1"
-    assert (lab[~crossing] == 1).all(), "a non-crossing impact changed compartment"
-    p = np.asarray(transmit_probability(jnp.asarray([0.0, 0.25, 0.5, 1.0, 2.0]) * kod, jnp.float32(d_min)))
-    assert np.allclose(p, [0.0, 0.25, 0.5, 1.0, 1.0], atol=1e-6)                 # linear in kappa, capped at one
+    half = np.array([n.endswith("half") for n, _, _ in cases])
+    fold = np.array([n.endswith("fold") for n, _, _ in cases])
+    assert granted[crossing].all(), f"{(~granted[crossing]).sum()} crossing impacts were refused at p = 1 - 1e-6"
+    assert ((lab == 0) == granted)[~fold].all(), "a walker changed compartment where no crossing was granted, or the reverse"
+    assert not granted[half].any(), "a step that ends short of the membrane crossed it"
+    assert (lab[fold] == 1).all()
+    x = np.array([0.0, 0.25, 0.5, 1.0, 2.0])
+    p = np.asarray(transmit_probability(jnp.asarray(x / (2.0 * d_min), jnp.float32), jnp.float32(d_min)))
+    assert np.allclose(p, x / (1.0 + x), atol=1e-6)
 
 
 def test_a_transmitted_walker_is_placed_on_the_side_its_label_reports():
     """After a granted crossing of the cylinder's membrane the walker sits where its label says: fired at the wall
-    with the transmit probability at one, every impact ends outside and is labelled extra; at kappa = 0 every one
+    with the transmit probability at one (``x / (1 + x)`` past ``x = 2^24`` in float32), every impact ends outside and is labelled extra; at kappa = 0 every one
     ends inside and is labelled intra. The labels of the membrane's two verdicts agree with the positions exactly,
     which a random walk with a live membrane could only show for the crossings it happened to draw."""
     R = 5e-6
@@ -202,7 +214,7 @@ def test_a_transmitted_walker_is_placed_on_the_side_its_label_reports():
     crossing = bare > R * (1 + 1e-9)
     assert (np.abs(bare - R) > 1e-9 * R).all(), "a case lands on the wall to rounding: undecidable, not a table row"
     d_min = float((bare[crossing] - R).min())
-    kod = 1.0 / (2.0 * d_min)
+    kod = 2.0 ** 40 / (2.0 * d_min)
     for kappa, want in ((0.0, 1), (kod * D, 0)):
         geom = Cylinder(radius=R, orientation=[0, 0, 1.0], permeability=kappa)
         r, lab = _fire(geom, cases, kappa / D)

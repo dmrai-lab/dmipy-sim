@@ -94,11 +94,11 @@ def test_directional_permeability():
 
     The membrane's verdict is deterministic where the transmit probability is one, so the claim is held on the wall
     interaction itself: from points inside and outside a mesh sphere, radial steps across the wall with
-    ``2 kappa/D d_perp >= 1`` end on the far side when that direction's kappa is the nominal and on the near side
+    ``2 kappa/D d_perp`` beyond ``2^24`` (a transmission ``x / (1 + x)`` of one in float32) end on the far side when that direction's kappa is the nominal and on the near side
     (reflected) when it is zero, for the 320 directions through the facets' centres; the symmetric dict is the scalar to
     the bit at a probability below one."""
     V, F = _ico(2)
-    kod = 1e9                                        # 2 kappa/D d_perp >= 1 for every step of the table (d_perp >= 1 um)
+    kod = 1e14                                       # 2 kappa/D d_perp >= 2e8 for every step of the table (d_perp >= 1 um)
     centroids = np.asarray(V, float)[np.asarray(F)].mean(axis=1)                  # through the middle of every facet, never an edge
     n = centroids / np.linalg.norm(centroids, axis=1)[:, None]
     inside, outside = 0.8 * R * n, 1.2 * R * n                                       # 0.4 R radial steps cross the wall

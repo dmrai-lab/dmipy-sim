@@ -20,7 +20,7 @@ Analytical limits validated here
 2. κ>0 at high b → signal below impermeable (escaped walkers diffuse
    more freely along the long axis → greater signal decay). The high-κ limit, the
    relaxivity combination and the κ ordering are checked on the sphere and the cylinder
-   (test_sphere_permeability.py, test_permeability_crossing.py), whose crossing rule is the same.
+   (test_sphere_permeability.py, test_permeability_crossing.py), whose transmission rule is the same.
 
 Parameters: a=3 µm, c=9 µm (prolate, aspect ratio 3), D=2e-9 m²/s
     σ = √(6D·dt) with dt = TE/n_t; n_t=500, TE=100ms → σ ≈ 1.55 µm
