@@ -65,10 +65,13 @@ extraction error, not an engine error).
 ---
 
 ## Conclusions
-1. **The transmission rule `p = min(1, 2κ d⊥/D)` is correct** — it delivers exactly permeability
-   κ. Validated to −0.56% against the exact 1D eigenvalue, and the t→0 flux equals κS/V.
-2. **It works in any regime and at any step size** (step-independent; no fast/slow-exchange
-   caveat on the crossing itself).
+1. **The transmission rule `p = 2κ d⊥/D` is correct to first order** — at the per-hit probability
+   of these runs (≤ 3e-3) it delivers permeability κ: −0.56% against the exact 1D eigenvalue, and the
+   t→0 flux equals κS/V. At a finite step it is not: its effective permeability is too large by
+   `1.2 κ h / D` at `h = sqrt(6 D dt)`, and the engine transmits with `x / (1 + x)`,
+   `x = 2κ d⊥/D`, whose error is second order in the step (dmipy-sim#890,
+   `tests/test_membrane_coefficient.py`, `tests/geometry/test_permeable_slab_exchange.py`).
+2. **No fast/slow-exchange caveat on the crossing itself**: the rule holds at any κ.
 3. **Deviations from well-mixed / open-domain-exponential idealisations are CORRECT physics:**
    diffusion-limited near-membrane depletion (√t short-time, finite-κL/D exchange slowdown) and
    exterior re-entry for open domains (stronger in lower-dimensional exteriors).
@@ -127,14 +130,14 @@ found a real bug in the validation scaffold, which is the far better outcome tha
 (not the core transmission): (1) missing reflection **nudge** → detailed-balance violation
 (sphere −3% → −0.08%); (2) the radial-intersection quadratic assumed `|d|=1`, wrong for the
 cylinder's perpendicular projection → add `|perp(d)|²` (cylinder +574% → −0.28%). The
-transmission rule `p=2κd⊥/D` (flat-tangent `d⊥`) was correct throughout.
+transmission (flat-tangent `d⊥`) was correct throughout at these probabilities.
 
 ## How this ships (docs and the runnable example)
 - **Documentation / demo:** `examples/validation/permeability_1d_to_3d.py` — runnable; prints
   the ladder (each rung MC vs exact eigenvalue + detailed balance). This write-up is its prose.
 - **Regression:** none in the suite. Each rung needs about 1.6e5 walkers (the exchange fraction of a closed shell is a
-  Bernoulli outcome: the fit of its decay has the relative standard deviation 2.4 / sqrt(N)) of about 1e6 sub-steps (the
-  crossing rule keeps the transmit probability per hit at 3e-3), 1e11 walker-sub-steps for 0.6 %. The short-time exchange
+  Bernoulli outcome: the fit of its decay has the relative standard deviation 2.4 / sqrt(N)), 1.6e5 walkers at the
+  step law's count for 0.6 %. The short-time exchange
   law of the slab, which the same membrane rule must satisfy, is asserted in `tests/geometry/test_permeable_crossings.py`.
 
 ## Mesh — NOT in the public v1 (deferred, WIP)
