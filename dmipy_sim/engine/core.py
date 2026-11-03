@@ -412,6 +412,25 @@ class _Rows:
         return self.array_ if self.filled == self.n_rows else self.array_[:self.filled]
 
 
+def walk_compiler_options():
+    """The compiler options of the walk's batch programs: the CPU compiler's YNNPACK fusions off. Those fusions take over
+    a batch's elementwise work above a size the compiler picks and round differently from its own loops (a cylinder's
+    walkers moved by two float32 ulps between batches of 1024 and 4096), so with them a walk's bytes would depend on
+    how its walkers were batched. ``{}`` for a compiler that has no such fusions (the option unknown to it). Decided
+    once per process."""
+    global _WALK_COMPILER_OPTIONS
+    if _WALK_COMPILER_OPTIONS is None:
+        opts = {"xla_cpu_experimental_ynn_fusion_type": ""}
+        try:
+            jax.jit(lambda x: x + 1.0, compiler_options=opts).lower(jnp.float32(0.0)).compile()
+            _WALK_COMPILER_OPTIONS = opts
+        except Exception:                    # an older compiler: no such option, and no such fusions to turn off
+            _WALK_COMPILER_OPTIONS = {}
+    return dict(_WALK_COMPILER_OPTIONS)
+
+
+_WALK_COMPILER_OPTIONS = None
+
 WALKER_LANES = 32
 """A JAX batch's walkers are padded to a whole number of this many lanes (the padding walked and dropped). The compiler
 vectorises a batch across its walkers, and a batch narrower than the vector width is compiled to scalar code whose
@@ -1764,7 +1783,8 @@ def _walk_geometry(
             return cached_batch(geometry, ("coefficient walk", kind_name, raw, cap, K_c3, crossing, binding, n_blocks, n_win,
                                            sub_steps, float(dt_sim), diffusivity, K, m, kappa_MT, dwell_time, _counting,
                                            _f_key, rd),
-                                lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd), in_axes=(0, 0, 0, 0, 0, None))))
+                                lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd), in_axes=(0, 0, 0, 0, 0, None)),
+                                                    compiler_options=walk_compiler_options()))
 
         names = ("C", "resid", "blt_end", "blt_bands", "lab", "bnd", "fc", "qv_f", "qv_d", "chk", "occ", "bound", "fs", "pos", "dlog",
                  "qv_pos", "qv_blt")

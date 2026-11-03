@@ -591,8 +591,7 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
 
 def ring_projection(tab, mom):
     """``sum_q sum_j tab[q, :, j] mom[q, j]``: a ring's moments ``mom (R, m + 1, ...)`` projected on its table ``tab (R,
-    K + 1, m + 1)``, summed elementwise in one fixed order (blocks outer, moment orders inner, the order the CUDA
-    accumulator sums in). A contraction would be a matrix product over the walkers of the batch, whose summation order
+    K + 1, m + 1)``, summed elementwise in one fixed order (blocks outer, moment orders inner). A contraction would be a matrix product over the walkers of the batch, whose summation order
     the compiler chooses from the batch's shape; this sum is a walker's own, so a walker's bands do not depend on which
     batch it was walked in."""
     acc = None
