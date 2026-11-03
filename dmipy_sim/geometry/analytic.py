@@ -12,7 +12,7 @@ from ..math.step_law import LONGEST_STEP, SPHERE_K1, SPHERE_WALL_COEFFICIENT, CY
 #: The slowest mode of each pore, ``k_1 * R``: the first root of ``j_1'`` (sphere) and ``J_1'`` (cylinder), and the
 #: wall coefficient of its specular reflection measured with the stepped matrix method (step_law: the sphere's
 #: 0.65 to 0.83 over ``delta_0 / a`` 0.1 to 0.5, the cylinder's 0.41 to 0.51).
-from ._boundary import (bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
+from ._boundary import (vdot, bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall, nudge_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
@@ -28,7 +28,7 @@ def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
     def rule(rr, dd, remaining, decided, i):
         t_entry, t_exit, disc = ray_sphere_t(rr, dd, R)
         disc_s = jnp.maximum(disc, jnp.float32(0.0))
-        inside = jnp.dot(rr, rr) < R * R
+        inside = vdot(rr, rr) < R * R
         t_hit  = jnp.where(inside, t_exit, t_entry)
         any_hit = ((disc > 0) & (t_hit > EPS) & (t_hit < remaining) & (remaining > 0))
         t_safe = jnp.where(any_hit, t_hit, jnp.float32(0.0))
@@ -108,7 +108,7 @@ class Sphere(Geometry):
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id: 1 intra (|r| < R), 0 extra (|r| >= R)."""
         R = jnp.float32(self.radius)
-        inside = jnp.dot(r, r) < R * R
+        inside = vdot(r, r) < R * R
         return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
     def init_positions(self, n_walkers, key):
@@ -153,7 +153,7 @@ class Sphere(Geometry):
         # kept and float32 can round the endpoint onto |r| = R, where the strict test reads
         # the OTHER compartment. The side that matters is the one at the START of the whole
         # step, not per bounce, and a granted crossing is the only thing that may change it.
-        inside0 = jnp.dot(r, r) < R * R
+        inside0 = vdot(r, r) < R * R
         r_out, _ = keep_side_radial(r_out, r_out, R, inside0, NUDGE, active=~crossed)
         return wall_hit(b, r=r_out)
 
@@ -250,7 +250,7 @@ class Cylinder(Geometry):
         xy_final, crossed = b.r, b.crossed
         # Final-position sentinel (#86) -- see Sphere.permeate. The side is the one at the
         # START of the whole step; only a granted crossing may change it.
-        inside0 = jnp.dot(r_c[:2], r_c[:2]) < R * R
+        inside0 = vdot(r_c[:2], r_c[:2]) < R * R
         xy_final, _ = keep_side_radial(xy_final, xy_final, R, inside0, NUDGE,
                                        active=~crossed)
         r_c_new = jnp.stack([xy_final[0], xy_final[1], r_c[2] + step_z])
@@ -260,7 +260,7 @@ class Cylinder(Geometry):
         """Compartment id: 1 intra (|r_xy| < R), 0 extra (|r_xy| >= R), with r_xy the component
         perpendicular to the cylinder axis."""
         R = jnp.float32(self.radius)
-        r_xy_sq = jnp.dot(r[:2], r[:2])
+        r_xy_sq = vdot(r[:2], r[:2])
         inside = r_xy_sq < R * R
         return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
@@ -380,11 +380,11 @@ class Ellipsoid(Geometry):
         u = jax.random.uniform(perm_key, dtype=jnp.float32)
 
         def _Q(x):
-            return jnp.dot(x * inv_semi_sq, x)
+            return vdot(x * inv_semi_sq, x)
 
         def rule(rr, dd, remaining, decided, i):
-            A = jnp.dot(dd * inv_semi_sq, dd)
-            B = jnp.dot(rr * inv_semi_sq, dd)
+            A = vdot(dd * inv_semi_sq, dd)
+            B = vdot(rr * inv_semi_sq, dd)
             C = _Q(rr) - jnp.float32(1.0)
             t_entry, t_exit, disc = ray_quadric_t(A, B, C)
             inside = C < jnp.float32(0.0)
@@ -395,7 +395,7 @@ class Ellipsoid(Geometry):
             n_raw  = r_hit * inv_semi_sq
             n_out  = n_raw / jnp.maximum(jnp.linalg.norm(n_raw), jnp.float32(1e-30))
             rem    = remaining - t_safe
-            cos_a  = jnp.abs(jnp.dot(dd, n_out))
+            cos_a  = jnp.abs(vdot(dd, n_out))
             d_perp = jnp.where(any_hit, rem * cos_a, jnp.float32(0.0))
             first    = any_hit & (~decided)
             transmit = first & (u < transmit_probability(kappa_over_D, d_perp))
@@ -421,7 +421,7 @@ class Ellipsoid(Geometry):
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Compartment id: 1 intra (x²/a² + y²/b² + z²/c² < 1), 0 extra."""
         inv_semi_sq = jnp.float32(1.0) / (self._semi_f32 * self._semi_f32)
-        inside = jnp.dot(r * inv_semi_sq, r) < jnp.float32(1.0)
+        inside = vdot(r * inv_semi_sq, r) < jnp.float32(1.0)
         return jnp.where(inside, jnp.int32(1), jnp.int32(0))
 
     def volume(self) -> float:
@@ -559,7 +559,7 @@ class PermeableShell(Geometry):
         """Radial vector used for the membranes (full r for sphere, perpendicular for cyl)."""
         if self.kind == 'sphere':
             return r
-        return r - jnp.dot(r, self._axis) * self._axis     # component perpendicular to axis
+        return r - vdot(r, self._axis) * self._axis     # component perpendicular to axis
 
     def volume(self):
         if self.kind == 'sphere':
@@ -598,8 +598,8 @@ class PermeableShell(Geometry):
         d = step / jnp.maximum(step_l, EPS)
         # work in the radial subspace (sphere: full; cylinder: perpendicular)
         rr = self._radial(r); dd = self._radial(d)
-        b = jnp.dot(dd, rr); r2 = jnp.dot(rr, rr)
-        dd2 = jnp.maximum(jnp.dot(dd, dd), EPS)      # |perp(d)|^2: 1 for sphere, sin^2(theta) for cylinder
+        b = vdot(dd, rr); r2 = vdot(rr, rr)
+        dd2 = jnp.maximum(vdot(dd, dd), EPS)      # |perp(d)|^2: 1 for sphere, sin^2(theta) for cylinder
 
         def first_t(Rk):
             # perpendicular trajectory rr + t*dd hits radius Rk: dd2*t^2 + 2b*t + (r2-Rk^2)=0
@@ -618,7 +618,7 @@ class PermeableShell(Geometry):
         rad_hit = self._radial(r_hit)
         n = rad_hit / jnp.maximum(jnp.linalg.norm(rad_hit), EPS)   # outward radial normal
         remaining = step_l - t_hit
-        cos_a = jnp.abs(jnp.dot(d, n))
+        cos_a = jnp.abs(vdot(d, n))
         d_perp = remaining * cos_a                     # the one penetration-depth estimator
 
         p = transmit_probability(kappa_over_D, d_perp)

@@ -34,7 +34,7 @@ import jax
 import jax.numpy as jnp
 
 from ..engine.tables import jit_with_tables
-from ._boundary import WallHit, keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
+from ._boundary import vdot, WallHit, keep_side_radial, ray_quadric_t, specular, off_wall, representable_nudge
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather
 import numpy as np
 
@@ -51,10 +51,10 @@ def _capsule_spans(r, step, A, AB, AB2, rr, valid):
     the segment's span, and the ball at either end -- each from the shared quadric."""
     L = jnp.sqrt(AB2 + jnp.float32(1e-30)); u = AB / L[:, None]
     rA = r[None, :] - A
-    rp = rA - (rA * u).sum(1)[:, None] * u; sp = step[None, :] - (step @ u.T)[:, None] * u
+    rp = rA - vdot(rA, u)[:, None] * u; sp = step[None, :] - vdot(step, u)[:, None] * u
     aa = (sp * sp).sum(1) + jnp.float32(1e-30); bb = (rp * sp).sum(1); cc = (rp * rp).sum(1) - rr * rr
     c_in, c_out, c_disc = ray_quadric_t(aa, bb, cc)
-    t0 = (rA * AB).sum(1) / AB2; t1 = (step @ AB.T) / AB2                 # the span coordinate along the ray
+    t0 = vdot(rA, AB) / AB2; t1 = vdot(step, AB) / AB2                 # the span coordinate along the ray
     t1s = jnp.where(jnp.abs(t1) > 1e-30, t1, 1e-30)
     s_lo = jnp.minimum(-t0 / t1s, (1.0 - t0) / t1s); s_hi = jnp.maximum(-t0 / t1s, (1.0 - t0) / t1s)
     flat = jnp.abs(t1) <= 1e-30                                          # the ray runs across the axis
@@ -62,10 +62,10 @@ def _capsule_spans(r, step, A, AB, AB2, rr, valid):
     s_hi = jnp.where(flat, jnp.where((t0 >= 0) & (t0 <= 1), _BIG, -_BIG), s_hi)
     cyl_in = jnp.maximum(c_in, s_lo); cyl_out = jnp.minimum(c_out, s_hi)
     cyl_hit = (c_disc >= 0) & (cyl_in <= cyl_out)
-    ss = step @ step + jnp.float32(1e-30)
-    a_in, a_out, a_disc = ray_quadric_t(ss, rA @ step, (rA * rA).sum(1) - rr * rr)
+    ss = vdot(step, step) + jnp.float32(1e-30)
+    a_in, a_out, a_disc = ray_quadric_t(ss, vdot(rA, step), vdot(rA, rA) - rr * rr)
     rB = rA - AB
-    b_in, b_out, b_disc = ray_quadric_t(ss, rB @ step, (rB * rB).sum(1) - rr * rr)
+    b_in, b_out, b_disc = ray_quadric_t(ss, vdot(rB, step), vdot(rB, rB) - rr * rr)
     a_hit = a_disc >= 0; b_hit = b_disc >= 0
     tau_in = jnp.minimum(jnp.where(cyl_hit, cyl_in, _BIG), jnp.minimum(jnp.where(a_hit, a_in, _BIG), jnp.where(b_hit, b_in, _BIG)))
     tau_out = jnp.maximum(jnp.where(cyl_hit, cyl_out, -_BIG), jnp.maximum(jnp.where(a_hit, a_out, -_BIG), jnp.where(b_hit, b_out, -_BIG)))
@@ -98,13 +98,13 @@ def _interior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
     tau, j, leaves = _union_exit(r, step, A, AB, AB2, rr, valid)
     exit_ = r + tau * step
     Aj = A[j]; ABj = AB[j]
-    t = jnp.clip(((exit_ - Aj) @ ABj) / AB2[j], 0.0, 1.0); Q = Aj + t * ABj
+    t = jnp.clip(vdot(exit_ - Aj, ABj) / AB2[j], 0.0, 1.0); Q = Aj + t * ABj
     ne = exit_ - Q
     n = ne / (jnp.linalg.norm(ne) + jnp.float32(1e-30))
     rem = specular((1.0 - tau) * step, n)
     r_start = off_wall(exit_, n, True, NUDGE)
     r_end = r_start + rem
-    d_perp = jnp.abs(((1.0 - tau) * step) @ n) + jnp.float32(0.5) * NUDGE     # the contact and, as half a push, the nudge
+    d_perp = jnp.abs(vdot((1.0 - tau) * step, n)) + jnp.float32(0.5) * NUDGE     # the contact and, as half a push, the nudge
     return r_start, rem, r_end, jnp.where(leaves, d_perp, jnp.float32(0.0)), leaves
 
 
@@ -149,22 +149,22 @@ def _exterior_bounce(r, step, A, AB, AB2, rr, valid, NUDGE):
     i = jnp.argmax(jnp.where(inside, rr - d, -jnp.inf))              # the entered (deepest) tube
     Ai = A[i]; ABi = AB[i]; rh = rr[i]
     u = ABi / jnp.sqrt(AB2[i] + jnp.float32(1e-30))                  # segment axis (unit)
-    rp = (r - Ai) - ((r - Ai) @ u) * u                               # start, radial to axis
-    sp = step - (step @ u) * u                                       # step, radial to axis
-    aa = sp @ sp + jnp.float32(1e-30); bb = 2.0 * (rp @ sp); cc = rp @ rp - rh * rh
+    rp = (r - Ai) - vdot(r - Ai, u) * u                               # start, radial to axis
+    sp = step - vdot(step, u) * u                                       # step, radial to axis
+    aa = vdot(sp, sp) + jnp.float32(1e-30); bb = 2.0 * vdot(rp, sp); cc = vdot(rp, rp) - rh * rh
     tau, _, _ = ray_quadric_t(aa, jnp.float32(0.5) * bb, cc)
     tau = jnp.clip(tau, 0.0, 1.0)                                    # first surface crossing
     entry = r + tau * step
     rem = (1.0 - tau) * step
-    rem_ax = (rem @ u) * u
+    rem_ax = vdot(rem, u) * u
     rem_p = rem - rem_ax
-    ne = (entry - Ai) - ((entry - Ai) @ u) * u
+    ne = (entry - Ai) - vdot(entry - Ai, u) * u
     nhat = ne / (jnp.linalg.norm(ne) + jnp.float32(1e-30))          # outward radial normal
     r_start = off_wall(entry, nhat, False, NUDGE)
     rem_ref = rem_ax + specular(rem_p, nhat)
     hit = inside.any()
     # the contact and, as half a push, the nudge (the path is not shortened by it)
-    return r_start, rem_ref, r_start + rem_ref, jnp.where(hit, jnp.abs(rem_p @ nhat) + jnp.float32(0.5) * NUDGE, jnp.float32(0.0)), hit
+    return r_start, rem_ref, r_start + rem_ref, jnp.where(hit, jnp.abs(vdot(rem_p, nhat)) + jnp.float32(0.5) * NUDGE, jnp.float32(0.0)), hit
 
 
 def _reflect_exterior(r, step, A, AB, AB2, rr, valid, NUDGE):

@@ -49,6 +49,18 @@ _TINY = 1e-30
 _SURF_EPS = 1e-6
 
 
+
+def vdot(a, b):
+    """``sum_i a[..., i] b[..., i]`` over the last axis, as elementwise products added in index order. A contraction
+    (``jnp.dot``, ``@``) of a walker's vectors becomes, under the batch's ``vmap``, a matrix product whose kernel the
+    compiler picks from the batch's shape (a fused multiply-add kernel for a large batch, plain loops for a small
+    one); this sum is the walker's own, so the walk's arithmetic does not depend on how its walkers are batched."""
+    a, b = jnp.asarray(a), jnp.asarray(b)
+    acc = a[..., 0] * b[..., 0]
+    for i in range(1, int(a.shape[-1])):
+        acc = acc + a[..., i] * b[..., i]
+    return acc
+
 def representable_nudge(nudge, extent):
     """The larger of ``nudge`` and eight float32 ulps at ``extent`` (the largest coordinate magnitude a walker
     can have): a nudge a float32 coordinate can carry. A geometry's nudge is a fraction of its smallest feature
@@ -168,7 +180,7 @@ def ray_quadric_t(A, B, C):
 
 def specular(d, n):
     """Mirror direction ``d`` about the surface whose unit normal is ``n``."""
-    return d - jnp.float32(2.0) * jnp.dot(d, n) * n
+    return d - jnp.float32(2.0) * vdot(d, n) * n
 
 
 def transmit_probability(kappa_over_D, d_perp):

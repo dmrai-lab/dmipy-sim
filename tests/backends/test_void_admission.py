@@ -107,8 +107,8 @@ def test_a_walk_that_leaks_one_walker_into_the_tube_is_refused_by_the_invariant(
     # alone does not see it -- the per-block containment invariant is what catches it
     assert checks["illegal"]["n_illegal"] == int(np.asarray(cw.illegal_crossings).sum())    # moving a block end adds none
     cases = {"strands_void": _void_case()._replace(n_walkers=N_VOID)}
-    report = backends.parity_report(_LeakyVoid(cw, pos[0, -1]), cases=cases)
+    report = backends.parity_report(_LeakyVoid(cw, pos[0, -1]), cases=cases, sweep=2)
     assert report[0]["ok"] is False and report[0]["checks"]["contained"]["n_inside"] == 1
     assert report[0]["checks"]["illegal"]["ok"] and report[0]["checks"]["reaches_wall"]["ok"]
-    honest = backends.parity_report(_LeakyVoid(cw, cw.raw_positions[0, -1]), cases=cases)    # the true block ends handed back
+    honest = backends.parity_report(_LeakyVoid(cw, cw.raw_positions[0, -1]), cases=cases, sweep=2)    # the true block ends handed back
     assert honest[0]["ok"] is True

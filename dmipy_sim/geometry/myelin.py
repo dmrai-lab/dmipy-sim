@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
+from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
                         BounceLoop, nudge_push)
 
 from .base import Geometry, LengthScales, acquisition_rotation
@@ -430,7 +430,7 @@ class MyelinatedCylinder(Geometry):
         (|r_xy| < R_inner), 2 myelin (R_inner <= |r_xy| < R_outer), 0 extra."""
         R_in  = jnp.float32(self.inner_radius)
         R_out = jnp.float32(self.outer_radius)
-        r_xy_sq = jnp.dot(r[:2], r[:2])
+        r_xy_sq = vdot(r[:2], r[:2])
         in_intra  = r_xy_sq < R_in  * R_in
         in_myelin = (r_xy_sq >= R_in * R_in) & (r_xy_sq < R_out * R_out)
         return jnp.where(in_intra, jnp.int32(1),

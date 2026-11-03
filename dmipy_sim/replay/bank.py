@@ -1009,10 +1009,10 @@ def union_weights(w, shard, voxel, pool):
 
 
 def _walk_identity(wp):
-    """The walk parameters that shards of one walk share: everything but the walker count, the seeds and the
-    field read interval (each pool reads the field at its own, :func:`charge_field_read`), the window table's
-    walks compared without theirs."""
-    out = {k: v for k, v in wp.items() if k not in ("n_walkers", "seed", "qv", "field_read_interval")}      # qv: each shard's own measure
+    """The walk parameters that shards of one walk share: everything but the walker count, the seeds and first
+    walkers, and the field read interval (each pool reads the field at its own, :func:`charge_field_read`), the
+    window table's walks compared without theirs."""
+    out = {k: v for k, v in wp.items() if k not in ("n_walkers", "seed", "first_walker", "qv", "field_read_interval")}      # qv: each shard's own measure
     if isinstance(out.get("block"), dict):                  # the block's definition, not what each shard measured on it
         out["block"] = {k: out["block"].get(k) for k in ("h", "m", "n_blocks", "rule")}
     seg = out.get("windows")
@@ -1296,9 +1296,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
             comp_meta["precision_tiers"] = _precision_tiers(arrays, n_all, fid.get("floor_max"), False)
         meta = dict(pks[0].meta)
         seeds = [pk.meta["walk_params"]["seed"] for pk in pks]
+        firsts = [pk.meta["walk_params"]["first_walker"] for pk in pks]      # a merged shard states its shards' lists
         seg0 = pks[0].meta["walk_params"].get("windows") or {}
         meta.update(id=id, compression=comp_meta, fidelity=fid,
-                    walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds,
+                    walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds, first_walker=firsts,
                                      windows=dict(seg0, walks=[dict(w, seed=seeds) for w in seg0.get("walks", [])]),
                                      **_merged_qv([pk.meta["walk_params"].get("qv") for pk in pks], n)),
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[
@@ -2439,7 +2440,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
                                         term_at=dict(B0=rd["B0"], chi=rd["chi"], floor=fr.get("floor")))
     meta = dict(
         rpk_schema_version=RPK_SCHEMA_VERSION, id=id, compression=comp_meta,
-        walk_params=dict(n_walkers=cw.n_walkers, T_max=T, diffusivity=D, seed=seed,
+        walk_params=dict(n_walkers=cw.n_walkers, T_max=T, diffusivity=D, seed=seed, first_walker=int(cw.first_walker),
                          windows=dict(n=1, T=T, walks=[dict(first=0, last=0, seed=seed)]),
                          block=block, qv=qv, **wp_field, **({} if source is None else dict(producer=source)),
                          substrate_frame=(None if substrate_frame is None else np.asarray(substrate_frame, float).tolist())),

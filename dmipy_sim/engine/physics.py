@@ -31,19 +31,50 @@ def _geometry_radius(geometry):
     return length_scales_of(geometry).min_feature
 
 
-def seed_walkers(geometry, n_walkers, seed, r0=None):
-    """The walk's random state from its seed: ``(master_key, r0, walker_keys)``.
+WALKER_INDEX_LIMIT = 2 ** 32
+"""Walkers a seed indexes: walker ``i``'s key folds ``i`` in as one 32-bit word."""
 
-    The master key splits once into the position key and the walker key. The position key places the walkers
-    (:func:`~dmipy_sim.geometry.initial_positions`; unused when ``r0`` is given) and the walker key splits into one
-    step stream per walker. Every engine entry point draws its state here, which is what makes their walks one
-    walk; a driver that needs a further independent stream folds it off the master key."""
-    from ..geometry import initial_positions
+
+def walker_keys(walker_key, first_walker, n_walkers):
+    """The step streams of the walkers ``first_walker .. first_walker + n_walkers - 1``: ``fold_in(walker_key, i)``
+    for walker ``i``, a function of the key and the index alone (counter-based threefry: the same key words as
+    ``split(walker_key, n)[i]``)."""
+    first, n = int(first_walker), int(n_walkers)
+    if first < 0 or n < 0 or first + n > WALKER_INDEX_LIMIT:
+        raise ValueError(f"the walkers {first} .. {first + n - 1} are not within the {WALKER_INDEX_LIMIT} a seed indexes")
+    idx = jnp.asarray(np.arange(first, first + n, dtype=np.uint32))
+    return jax.vmap(jax.random.fold_in, in_axes=(None, 0))(walker_key, idx)
+
+
+def seed_keys(seed):
+    """``(master_key, position_key, walker_key)`` of a seed: the master key split once into the key the placement
+    folds its blocks off and the key the walkers' step streams fold their indices off."""
     master_key = jax.random.PRNGKey(int(seed))
     pos_key, walker_key = jax.random.split(master_key)
-    r0 = initial_positions(geometry, n_walkers, pos_key, r0)
-    walker_keys = jax.random.split(walker_key, n_walkers)
-    return master_key, r0, walker_keys
+    return master_key, pos_key, walker_key
+
+
+def seed_walkers(geometry, n_walkers, seed, r0=None, *, first_walker=0):
+    """The walk's random state from its seed: ``(master_key, r0, walker_keys, labels)`` of the walkers
+    ``first_walker .. first_walker + n_walkers - 1`` of the seed.
+
+    The master key splits once into the position key and the walker key. Walker ``i``'s step stream is
+    :func:`walker_keys`' and its start the placement's (:func:`~dmipy_sim.geometry.base.placement`; unused when ``r0``
+    is given), each a function of the seed and ``i`` alone, so the walkers of a seed are the same walkers however
+    they are partitioned into walks. ``labels`` are the placement's seeding labels (a myelinated geometry's), ``None``
+    otherwise or when ``r0`` is given. Every engine entry point draws its state here, which is what makes their walks
+    one walk; a driver that needs a further independent stream folds it off the master key."""
+    from ..geometry.base import initial_positions, placement
+    master_key, pos_key, walker_key = seed_keys(seed)
+    keys = walker_keys(walker_key, first_walker, n_walkers)
+    labels = None
+    if r0 is None:
+        r0, labels = placement(geometry, n_walkers, pos_key, first_walker)
+        if labels is not None:
+            geometry._init_compartments = labels
+    else:
+        r0 = initial_positions(geometry, n_walkers, pos_key, r0)
+    return master_key, r0, keys, labels
 
 
 def pair_step(key):

@@ -110,9 +110,21 @@ def test_the_in_walk_read_is_the_grid_at_the_sub_steps(case):
     assert w.field_coeffs.shape == (120, w.n_windows, w.K_c3, n_ch)
     ref = _reads(fg, fine.raw_positions)
     scale = np.abs(ref).max()
-    # the device reads in float32 at the kernel's position (in-cell on a packed cell, against the unwrapped position
-    # wrapped on the host here): within 2e-5 of the channel scale, which changes by 0.34-0.74 of it between saves
-    assert np.abs(w.raw_field - ref).max() <= 2e-5 * scale
+    # the device reads in float32 at the kernel's position, the host in float64 at the recorded one: the position is
+    # held to eps32 |r| (on a periodic cell the kernel's in-cell wrap of a float32 position, against the unwrapped one
+    # wrapped exactly here) and the cell coordinate (r - origin) / voxel - 1/2 (mod n) is computed to 2 eps32 n_cells,
+    # each moving the read by at most the steepest step between neighbouring voxels; the trilinear sum of eight
+    # weighted values (three weight products each) rounds to 11 eps32 of the scale. Measured: the packed cell 1.7e-5
+    # to 2.6e-5 of the scale (two CPUs) against its bound 4.9e-5, the dipole 3.6e-7 against 2.8e-6; a read of the
+    # wrong voxel moves it by about the steepest step, ~1 scale.
+    eps = float(np.finfo(np.float32).eps)
+    g = fg.grids(np.float64)
+    vs = float(np.min(np.asarray(fg.basis["voxel_size"], float)))
+    step = max(float(np.abs(np.diff(g, axis=a)).max()) for a in (1, 2, 3))
+    if any(fg.periodic):
+        step = max(step, max(float(np.abs(np.take(g, [0], axis=a) - np.take(g, [-1], axis=a)).max()) for a in (1, 2, 3)))
+    bound = step * (eps * float(np.abs(fine.raw_positions).max()) / vs + 2 * eps * max(g.shape[1:])) + 11 * eps * scale
+    assert np.abs(w.raw_field - ref).max() <= bound
     qv = (np.diff(np.asarray(w.raw_field, np.float64), axis=1) ** 2).sum(1)              # the read series' QV per walker
     np.testing.assert_allclose(np.asarray(w.qv_field_increments, np.float64)[:, 0], qv, rtol=1e-3, atol=1e-6 * qv.max())
     # the modes: c_k = int e_k b dt of the window, against the exact projection of the dense reads' trapezoids; the

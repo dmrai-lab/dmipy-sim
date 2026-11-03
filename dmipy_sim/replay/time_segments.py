@@ -401,7 +401,7 @@ def _walk_view(walk, weights=None):
         arrays["spin_weights"] = np.asarray(w, np.float32)
     meta = dict(id=None, compression=dict(method=_r_compression.POSITION_METHOD, K=int(walk.K), T=T_w, channels=channels),
                 walk_params=dict(n_walkers=int(walk.n_walkers), T_max=float(walk.T), diffusivity=walk.diffusivity, seed=walk.seed,
-                                 windows=dict(n=n, T=T_w, walks=[dict(first=0, last=n - 1, seed=walk.seed)]), block=dict(walk.block)),
+                                 first_walker=int(walk.first_walker), windows=dict(n=n, T=T_w, walks=[dict(first=0, last=n - 1, seed=walk.seed)]), block=dict(walk.block)),
                 substrate=walk.spec.to_dict(), fidelity={}, view=dict(of="walk", containers="float"))
     if walk.envelope is not None:                                     # the envelope the walk was walked for
         meta["replay_envelope"] = dict(acquisition=walk.envelope.header_acquisition())

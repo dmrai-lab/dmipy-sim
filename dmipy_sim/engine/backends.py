@@ -305,11 +305,14 @@ def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
     """The void case's invariant (dmrai-lab/dmipy-sim#675): every block end of every walker of ``w``'s raw subset lies
     outside every tube of ``g`` -- tested by the geometry's own exact classifier
     (:meth:`~dmipy_sim.geometry.base.Geometry.classify_positions_exact` / :meth:`~dmipy_sim.geometry.base.Geometry.pool_of`),
-    never a hand-rolled radial formula -- no walker was granted an illegal crossing, and more than
-    ``near_wall_fraction`` of the walkers come within ``wall_margin_m`` of a wall at some block end (the geometry's own
+    never a hand-rolled radial formula -- and more than ``near_wall_fraction`` of the walkers come within
+    ``wall_margin_m`` of a wall at some block end (the geometry's own
     :meth:`~dmipy_sim.geometry.curved_cylinder.PackedCurvedCylinders.wall_scales`; the premise -- enough walkers
-    reach the wall for the first two checks to mean something). Returns ``{check: {..., ok}}``; a failure here is
-    a hard violation of the backend under test, never a rate comparison."""
+    reach the wall for the containment to mean something). Returns ``{check: {..., ok}}``; a failure of either is a
+    hard violation of the backend under test. ``illegal`` is the count of refused steps (a step the engine held
+    rather than let end in another pool) and the walker-steps they are of, with no verdict here: the reference's
+    own kernels refuse such a step now and then too (a float32 tie at a wall), so :func:`parity_report` judges the
+    count against the reference's measured rate."""
     n, n_t, _ = w.raw_positions.shape
     flat = np.asarray(w.raw_positions, np.float64).reshape(-1, 3)
     pool = np.asarray(g.pool_of(g.classify_positions_exact(flat))).reshape(n, n_t)
@@ -319,7 +322,7 @@ def void_invariant(g, w, *, wall_margin_m=0.5e-6, near_wall_fraction=0.02):
     n_near = int((np.asarray(d_wall).reshape(n, n_t).min(axis=1) < wall_margin_m).sum())
     return dict(
         contained=dict(n_inside=n_inside, ok=n_inside == 0),
-        illegal=dict(n_illegal=illegal, ok=illegal == 0),
+        illegal=dict(n_illegal=illegal, walker_steps=int(w.work["walker_steps"])),
         reaches_wall=dict(n_near=n_near, fraction=n_near / n, ok=n_near > near_wall_fraction * n),
     )
 
@@ -351,30 +354,96 @@ def coefficient_signal(walk, G, dt_wf):
     return _mean_se(np.cos(phi))
 
 
-def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.5e-3, seed=11, sigma=4.0, overdispersion=2.5):
+#: the counts of a walk's work record a parity report compares as rates of rare events (a refused step, an exhausted
+#: bounce budget): binomial against the reference's pooled count, since a few seeds' counts of 0-5 give no spread
+RARE_COUNTS = ("exhausted_steps", "illegal")
+#: the counts it compares against the reference's measured stream-to-stream spread (Student t, the sweep's dof)
+SPREAD_COUNTS = ("n_hits", "n_crossings")
+
+
+def _rate_p(k_b, n_b, k_a, n_a):
+    """Two-sided p of ``k_b`` events in ``n_b`` trials against the reference's ``k_a`` in ``n_a`` at one rate: the
+    conditional binomial ``k_b | k_a + k_b ~ Bin(k_a + k_b, n_b / (n_a + n_b))`` (1 when neither side has an event)."""
+    from scipy.stats import binomtest
+    k = int(k_a) + int(k_b)
+    if k == 0:
+        return 1.0
+    return float(binomtest(int(k_b), k, float(n_b) / float(n_a + n_b)).pvalue)
+
+
+def _spread_p(b, sweep):
+    """``(t, p, sd)``: the backend's count ``b`` as a new draw of the reference's, from the sweep's counts at the same
+    starts: ``t = (b - mean) / (sd sqrt(1 + 1/m))`` on ``m - 1`` degrees of freedom (the prediction interval of one more
+    stream), two-sided. A sweep with no spread (an impermeable walk's crossings, all 0) admits its value alone."""
+    from scipy.stats import t as student
+    x = np.asarray(sweep, np.float64); m = x.size
+    sd = float(x.std(ddof=1))
+    if sd == 0.0:
+        return (0.0, 1.0, 0.0) if float(b) == float(x[0]) else (float("inf"), 0.0, 0.0)
+    tv = (float(b) - float(x.mean())) / (sd * np.sqrt(1.0 + 1.0 / m))
+    return float(tv), float(2.0 * student.sf(abs(tv), m - 1)), sd
+
+
+def pooled_bias(hits, false_failure):
+    """The pooled bias of a report's hit counts over its cases, ``hits`` ``[(case, t, dof, relative)]``: each ``t``
+    (:func:`_spread_p`) turned into a normal score through its own Student CDF, ``Z = sum z / sqrt(C)`` (Stouffer),
+    ``ok`` when ``|Z|`` is within the two-sided normal threshold of ``false_failure`` (one test); the sign test of the
+    same differences and the mean relative bias ``(backend - mean) / mean`` with its standard error beside it."""
+    from scipy.stats import norm, t as student, binomtest
+    zs = np.array([norm.ppf(student.cdf(tv, dof)) for _, tv, dof, _ in hits])
+    Z = float(zs.sum() / np.sqrt(zs.size))
+    z_crit = float(norm.isf(float(false_failure) / 2.0))
+    below = int(sum(1 for _, tv, _, _ in hits if tv < 0))
+    rel = np.array([r for _, _, _, r in hits])
+    return dict(Z=Z, z_crit=z_crit, cases=len(hits), ok=bool(abs(Z) <= z_crit),
+                sign_test=dict(below=below, of=len(hits), p=float(binomtest(below, len(hits), 0.5).pvalue)),
+                relative_bias_mean=float(rel.mean()), relative_bias_se=float(rel.std(ddof=1) / np.sqrt(rel.size)),
+                per_case={n: dict(t=float(tv), relative=float(r)) for n, tv, _, r in hits})
+
+
+def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.5e-3, seed=11, sweep=8, false_failure=1e-2):
     """Compare ``backend`` with the JAX kernels on ``cases`` (default :func:`parity_cases`) on the coefficient form:
     the same starts, the same sub-step and blocks, counting on, every walker's block ends kept as the positional
-    oracle (``raw_subset``). Per case: the hit and crossing counts within ``sigma`` standard deviations, where the
-    standard deviation is ``overdispersion * sqrt(a + b)``: a walker near a wall hits it on consecutive steps, so the
-    per-walker counts are clustered and the total's spread is wider than Poisson (measured on the sphere and the
-    ellipsoid at 20k walkers: seed-to-seed swings of 0.1-0.4 % against a Poisson 0.12 %, i.e. 2-3x); the exhausted
-    walker-steps and the refused ones (``illegal_crossings``) compared the same way, since both are rates of the
-    geometry at its budget and not of the backend (a permeable icosphere mesh of 320 facets exhausts 0-5 of 1.07 M
-    walker-steps per seed on the JAX kernels themselves -- the wedge between a facet and the voxel face it touches);
-    the bands at the band level -- each channel's measured quadratic variation (``qv_positions`` per axis,
-    ``qv_boundary``) and each band's mean square per axis, every one within ``sigma`` of the two walks' combined
-    standard errors; every walker on its side (the classifier at the last block end agrees with the start's pool
-    unless a crossing was granted); and the perpendicular PGSE signal replayed from each side's bands
-    (:func:`coefficient_signal`, what a pack of the walk stores) within ``sigma`` of their combined standard errors.
+    oracle (``raw_subset``).
+
+    **The reference's own spread, measured.** Per case the JAX kernels walk the backend's starts again with ``sweep``
+    further streams (seeds ``seed + 1 ..``): the counts' stream-to-stream spread is the case's own, never a typed
+    overdispersion (a walker near a wall hits it on consecutive steps, so the counts are clustered; measured 2.4x
+    Poisson on the sphere and 5.5x on the extra-axonal strands at 20k walkers). The hit and crossing counts are each
+    a new draw of the reference's (:func:`_spread_p`: Student t on ``sweep`` degrees of freedom, the prediction
+    interval of one more stream); the exhausted and the refused walker-steps are rare events, judged as a rate against
+    the reference's pooled count over the sweep (:func:`_rate_p`, binomial). The bands at the band level -- each
+    channel's quadratic variation (``qv_positions`` per axis, ``qv_boundary``) and each band's mean square per axis --
+    and the perpendicular PGSE signal replayed from each side's bands (:func:`coefficient_signal`, what a pack of the
+    walk stores) against the two walks' combined standard errors of many walkers (normal); every walker on its side
+    (the classifier at the last block end agrees with the start's pool unless a crossing was granted), a hard check.
+
+    **One threshold, from the number of comparisons.** Every comparison has a two-sided p, and each fails below
+    ``false_failure / M``, ``M`` the comparisons the report makes (Bonferroni): the chance that a correct backend fails
+    the whole report is at most ``false_failure``. A check records its statistic, its p and the threshold.
+
+    **The pooled bias.** A per-case test at the report's threshold cannot see a deficit of a percent that every case
+    shares, so with two or more rate cases the report ends with a ``pooled`` record: each case's hit-count ``t``
+    turned into a normal score (its ``t`` CDF), summed over the cases as ``Z = sum z / sqrt(C)`` (Stouffer), failed
+    when ``|Z|`` is beyond the normal threshold of ``false_failure`` (one test), with the sign test of the same
+    differences and the mean relative bias ``(backend - mean) / mean`` beside it.
+
     A case is a rate comparison unless it declares its own starts (:attr:`ParityCase.starts`, e.g.
-    ``strands_void``): there the backend under test walks those starts alone, at the case's own scale (its
+    ``strands_void``): there the backend under test walks those starts at the case's own scale (its
     ``n_walkers``/``T_max``/``block_h``/``seed``, each falling back to this function's keyword of the same name when
-    the case leaves it ``None``), and is held to :func:`void_invariant` on its block ends, a hard pass/fail with no
-    JAX side to compare against. A case the backend refuses is recorded with its reason and not failed: refusal is
-    the contract. Returns ``[{case, ok, ...}]``; the list is what a backend's tests assert on."""
+    the case leaves it ``None``) and is held to :func:`void_invariant` on its block ends (containment and the premise:
+    hard), its refused steps judged against the JAX kernels' rate on the same case over ``sweep + 1`` seeds. A case
+    the backend refuses is recorded with its reason and not failed: refusal is the contract. Returns ``[{case, ok,
+    ...}]`` (and the pooled record last); the list is what a backend's tests assert on."""
     from .core import _walk_geometry
     from dmipy_replay.sequences import pgse
-    out = []
+    from scipy.stats import norm
+    out, pending, hits = [], [], []          # pending: (record, check name, p) judged once M is known
+
+    def judge(rec, key, p, **fields):
+        rec["checks"][key] = dict(fields, p=float(p))
+        pending.append((rec, key))
+
     for name, case in (cases or parity_cases()).items():
         g = case(); g.count_walls = True
         if case.starts is not None:
@@ -389,8 +458,16 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
                 if "refuses" in str(e) or "does not" in str(e):
                     out.append(dict(case=name, ok=None, refused=str(e))); continue
                 raise
-            checks = void_invariant(g, w)
-            out.append(dict(case=name, ok=all(c["ok"] for c in checks.values()), checks=checks))
+            rec = dict(case=name, ok=True, checks=void_invariant(g, w))
+            gs = case(); gs.count_walls = True
+            k_a = n_a = 0
+            for s in range(sd + 1, sd + 2 + int(sweep)):                    # the reference's rate, sweep + 1 seeds
+                ws = _walk_geometry(nw, 2e-9, gs, Tm, bh, seed=s, tiers="all", walker_batch_size=nw, r0=case.starts(nw, s))
+                k_a += int(np.asarray(ws.illegal_crossings).sum()); n_a += int(ws.work["walker_steps"])
+            il = rec["checks"]["illegal"]
+            judge(rec, "illegal", _rate_p(il["n_illegal"], il["walker_steps"], k_a, n_a), n_illegal=il["n_illegal"],
+                  walker_steps=il["walker_steps"], reference=dict(n_illegal=k_a, walker_steps=n_a, seeds=int(sweep) + 1))
+            out.append(rec)
             continue
         ref = _walk_geometry(n_walkers, 2e-9, g, T_max, block_h, seed=seed, tiers="all", walker_batch_size=n_walkers,
                                     raw_subset=n_walkers)
@@ -407,27 +484,41 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
         if (w.K, w.m, w.sub_steps, w.n_blocks) != (ref.K, ref.m, ref.sub_steps, ref.n_blocks):
             raise ValueError(f"the two walks of {name!r} are not one resolution: jax (K, m, sub_steps, n_blocks) = "
                              f"{(ref.K, ref.m, ref.sub_steps, ref.n_blocks)}, backend {(w.K, w.m, w.sub_steps, w.n_blocks)}")
-        # the work record
-        counts = {key: (ref.work[key], w.work[key]) for key in ("n_hits", "n_crossings", "exhausted_steps")}
-        counts["illegal"] = (int(np.asarray(ref.illegal_crossings).sum()), int(np.asarray(w.illegal_crossings).sum()))
-        for key, (a, b) in counts.items():
-            z = abs(a - b) / (overdispersion * max(np.sqrt(a + b), 1.0))
-            rec["checks"][key] = dict(jax=int(a), backend=int(b), z=float(z), ok=bool(z <= sigma))
+        # the work record against the reference's own spread at the same starts: sweep further streams
+        def counts_of(walk):
+            c = {key: int(walk.work[key]) for key in ("n_hits", "n_crossings", "exhausted_steps")}
+            c["illegal"] = int(np.asarray(walk.illegal_crossings).sum())
+            return c
+        gs = case(); gs.count_walls = True
+        runs = [counts_of(ref)] + [counts_of(_walk_geometry(n_walkers, 2e-9, gs, T_max, block_h, seed=s, tiers="all",
+                                                            walker_batch_size=n_walkers, r0=x0))
+                                   for s in range(seed + 1, seed + 1 + int(sweep))]
+        mine, steps = counts_of(w), int(w.work["walker_steps"])
+        for key in SPREAD_COUNTS:
+            tv, p, sdv = _spread_p(mine[key], [r[key] for r in runs])
+            judge(rec, key, p, jax=runs[0][key], backend=mine[key], t=tv, dof=len(runs) - 1,
+                  sweep=dict(mean=float(np.mean([r[key] for r in runs])), sd=sdv, streams=len(runs)))
+            if key == "n_hits" and sdv > 0:
+                hits.append((name, tv, len(runs) - 1, (mine[key] - float(np.mean([r[key] for r in runs]))) / max(np.mean([r[key] for r in runs]), 1.0)))
+        for key in RARE_COUNTS:
+            k_a = sum(r[key] for r in runs)
+            judge(rec, key, _rate_p(mine[key], steps, k_a, steps * len(runs)), jax=runs[0][key], backend=mine[key],
+                  reference=dict(count=k_a, streams=len(runs)))
         # the bands: each channel's quadratic variation and each band's mean square, walker means against their errors
         qa, ea = _mean_se(np.asarray(ref.qv_positions, np.float64).sum(axis=1))
         qb, eb = _mean_se(np.asarray(w.qv_positions, np.float64).sum(axis=1))
         z = _z(qa, ea, qb, eb)
-        rec["checks"]["qv_positions"] = dict(jax=qa.tolist(), backend=qb.tolist(), z=z.tolist(), ok=bool((z <= sigma).all()))
+        judge(rec, "qv_positions", min(1.0, 2.0 * norm.sf(z.max()) * z.size), jax=qa.tolist(), backend=qb.tolist(), z=z.tolist())
         if ref.qv_boundary is not None and w.qv_boundary is not None:
             qa, ea = _mean_se(np.asarray(ref.qv_boundary, np.float64).sum(axis=1))
             qb, eb = _mean_se(np.asarray(w.qv_boundary, np.float64).sum(axis=1))
             z = float(_z(qa, ea, qb, eb))
-            rec["checks"]["qv_boundary"] = dict(jax=float(qa), backend=float(qb), z=z, ok=bool(z <= sigma))
+            judge(rec, "qv_boundary", 2.0 * norm.sf(z), jax=float(qa), backend=float(qb), z=z)
         ba, ea = _mean_se(np.asarray(ref.position_coeffs, np.float64)[:, 0, 2:, :] ** 2)      # (K, 3)
         bb, eb = _mean_se(np.asarray(w.position_coeffs, np.float64)[:, 0, 2:, :] ** 2)
         z = _z(ba, ea, bb, eb)
-        rec["checks"]["bands"] = dict(z_max=float(z.max()), ok=bool((z <= sigma).all()))
-        # confinement: the last block end's pool against the start's, where no crossing was granted
+        judge(rec, "bands", min(1.0, 2.0 * norm.sf(z.max()) * z.size), z_max=float(z.max()))
+        # confinement: the last block end's pool against the start's, where no crossing was granted (hard)
         pool0 = np.asarray(g2.classify_positions_exact(x0))
         poolT = np.asarray(g2.classify_positions_exact(np.asarray(w.raw_positions[:, -1])))
         crossings_allowed = g2.permeability is not None and float(g2.permeability) > 0
@@ -437,7 +528,19 @@ def parity_report(backend, cases=None, *, n_walkers=4000, T_max=2e-3, block_h=0.
         seq = pgse([[1, 0, 0], [0, 1, 0], [0, 0, 1]], 0.3e-3, 1.0e-3, bvalues=[2e9] * 3, TE=T_max, n_t=400, slew_rate=np.inf)
         sa, ea = coefficient_signal(ref, seq.G_eff, seq.dt); sb, eb = coefficient_signal(w, seq.G_eff, seq.dt)
         z = _z(sa, ea, sb, eb)
-        rec["checks"]["pgse"] = dict(jax=sa.tolist(), backend=sb.tolist(), z=z.tolist(), ok=bool((z <= sigma).all()))
-        rec["ok"] = all(c["ok"] for c in rec["checks"].values())
+        judge(rec, "pgse", min(1.0, 2.0 * norm.sf(z.max()) * z.size), jax=sa.tolist(), backend=sb.tolist(), z=z.tolist())
         out.append(rec)
+    # one threshold for every comparison: the report's false-failure rate over the number of comparisons
+    M = max(len(pending), 1)
+    alpha = float(false_failure) / M
+    for rec, key in pending:
+        c = rec["checks"][key]
+        c["threshold"] = alpha
+        c["ok"] = bool(c["p"] >= alpha)
+    for rec in out:
+        if rec.get("ok") is not None:
+            rec["ok"] = all(c["ok"] for c in rec["checks"].values())
+    if len(hits) >= 2:                                   # the pooled bias of the hit counts over the cases
+        out.append(dict(case="pooled", checks=dict(n_hits_bias=pooled_bias(hits, false_failure))))
+        out[-1]["ok"] = out[-1]["checks"]["n_hits_bias"]["ok"]
     return out
