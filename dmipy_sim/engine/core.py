@@ -578,8 +578,8 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         from .physics import crossing_p_max
         from .mt import stick_probability
         from ..math.step_law import LONGEST_STEP
-        D_min = (float(np.min(np.asarray(geometry._D_comp_jax))) if geometry._D_comp_jax is not None
-                 else float(diffusivity))
+        D_pools = np.asarray(geometry._D_comp_jax) if geometry._D_comp_jax is not None else np.array([float(diffusivity)])
+        D_min = float(np.min(D_pools[D_pools > 0])) if np.any(D_pools > 0) else float(diffusivity)   # a frozen pool has no hits
         p_max = crossing_p_max(geometry, D_min, dt_sim) if crossing else 0.0
         if binding_mt:                                 # a free walker binds at a hit, a bound one unbinds at dt / dwell
             d_max = LONGEST_STEP * float(np.sqrt(6.0 * float(diffusivity) * dt_sim))

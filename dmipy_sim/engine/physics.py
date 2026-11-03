@@ -122,7 +122,7 @@ def crossing_p_max(geometry, diffusivity: float, dt_sim: float) -> float:
     geometry's largest permeability; 0 without a membrane."""
     if not has_membrane(geometry):
         return 0.0
-    kappas = [float(geometry.permeability or 0.0)]
+    kappas = [] if geometry.permeability is None else [float(geometry.permeability)]
     if geometry._is_myelinated or geometry._is_packed_myelinated:
         kappas += [float(np.max(np.asarray(geometry._kappa_inner_jax))), float(np.max(np.asarray(geometry._kappa_outer_jax)))]
     x = 2.0 * max(kappas) / float(diffusivity) * LONGEST_STEP * float(np.sqrt(6.0 * float(diffusivity) * float(dt_sim)))
