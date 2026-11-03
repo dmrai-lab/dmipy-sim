@@ -1601,7 +1601,7 @@ def _walk_geometry(
                             _inner_pm, (r_w, r_w, key_w, jnp.float32(0.0), comp_w, brem_w,
                                         jnp.float32(0.0), _work0()), None, length=_n_chunk)
                         return r_f, key_f, comp_f, brem_f, bacc / jnp.float32(_n_chunk)
-                _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)))
+                _burn = jax.jit(jax.vmap(_burn_walker, in_axes=(0, 0, 0, 0)), compiler_options=walk_compiler_options())
 
                 _comp = [comp0_all if comp0_all is not None else jnp.zeros((n_walkers,), jnp.int32)]   # the compartment state rides along the chunks
 

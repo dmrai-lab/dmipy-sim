@@ -47,6 +47,7 @@ from dmipy_replay.replay.bloch import _build_crusher
 _log = logging.getLogger("dmipy_sim.engine.bloch")
 from dmipy_replay.acquisition.waveforms import band_hz
 from .physics import resolve_sub_steps, _warn_if_step_outruns_the_lookup, seed_walkers, pair_step
+from .core import walk_compiler_options
 
 
 # ── per-step RF rotation (Rodrigues about the in-plane B1 axis) ──────────────────
@@ -336,12 +337,14 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
             return (M_f, xy_seq, work_w) if want_echo else (M_f, work_w)
 
         if want_echo:
-            M_final, xy_seq, work_w = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)
+            M_final, xy_seq, work_w = jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0)),
+                                              compiler_options=walk_compiler_options())(r0, walker_keys, uw)
             # xy_seq: (n_walkers, n_t, n_meas) complex -> walker-mean at the echo steps
             echoes = jnp.mean(xy_seq, axis=0)[jnp.asarray(echo_steps, dtype=int)]   # (n_echo,n_meas)
             signals = np.asarray(echoes.T)                     # (n_meas, n_echo)
         else:
-            M_final, work_w = jax.vmap(simulate_walker, in_axes=(0, 0, 0))(r0, walker_keys, uw)  # (n_w,n_meas,3)
+            M_final, work_w = jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0)),
+                                      compiler_options=walk_compiler_options())(r0, walker_keys, uw)  # (n_w,n_meas,3)
             signals = np.asarray(jnp.mean(M_final[:, :, 0] + 1j * M_final[:, :, 1], axis=0))
         # the forward engine has no walk object to carry the record: it goes to the run and the log
         hits, cross, exh = (None if w is None else int(np.asarray(w, np.int64).sum()) for w in work_w)
@@ -379,7 +382,7 @@ def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_
             step_fn, (r_w, M_init, key_w, uw_w, brem_w), burn_inputs)
         return r_f, key_f, brem_f, jnp.mean(bf_seq)
 
-    chunk = jax.jit(jax.vmap(chunk_walker, in_axes=(0, 0, 0, 0)))
+    chunk = jax.jit(jax.vmap(chunk_walker, in_axes=(0, 0, 0, 0)), compiler_options=walk_compiler_options())
 
     def chunk_fn(r, keys, brem):
         r, keys, brem, bf = chunk(r, keys, uw, brem)

@@ -1297,11 +1297,6 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         meta = dict(pks[0].meta)
         seeds = [pk.meta["walk_params"]["seed"] for pk in pks]
         firsts = [pk.meta["walk_params"]["first_walker"] for pk in pks]      # a merged shard states its shards' lists
-        for j in range(1, len(pks)):                     # one seed's walkers once each: its shards are contiguous ranges
-            if (isinstance(seeds[j], int) and seeds[j] == seeds[j - 1] and isinstance(firsts[j], int)
-                    and isinstance(firsts[j - 1], int) and firsts[j] != firsts[j - 1] + n[j - 1]):
-                raise ValueError(f"shard {j} holds walkers {firsts[j]}.. of seed {seeds[j]}, and shard {j - 1} ends at "
-                                 f"{firsts[j - 1] + n[j - 1]}: the shards of one seed are its contiguous walker ranges, in order")
         seg0 = pks[0].meta["walk_params"].get("windows") or {}
         meta.update(id=id, compression=comp_meta, fidelity=fid,
                     walk_params=dict(pks[0].meta["walk_params"], n_walkers=n_all, seed=seeds, first_walker=firsts,

@@ -15,6 +15,7 @@ from dmipy_replay.acquisition.waveforms import band_hz
 from ..run import Run, current
 from .core import cached_batch
 from .physics import (make_step_fn, make_myelin_step_fn, make_packed_myelin_step_fn, seed_walkers)
+from .core import walk_compiler_options
 
 
 def _ensemble_signal(spin_w, phi, log_w=None):
@@ -264,7 +265,7 @@ def simulate_fused(
                     (r_final, phi_all, log_w, comp_final, _), comp_seq = jax.lax.scan(
                         body, (r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
                     return r_final, phi_all, log_w, geometry.pool_of(comp_final), comp_seq
-                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
+                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)), compiler_options=walk_compiler_options())
 
             simulate_batch = cached_batch(
                 geometry, ("myelin", n_measurements, n_t, float(dt), T1, sub_steps, emit_comp), _build_myelin)
@@ -296,7 +297,7 @@ def simulate_fused(
                     (r_ic_f, _r_uw_f, phi_all, log_w, comp_f, _), comp_seq_w = jax.lax.scan(
                         emit, (r0_w, r0_w, phi0, jnp.float32(0.0), comp0, key_w), (G_s, chi_s))
                     return r_ic_f, phi_all, log_w, comp_f, comp_seq_w
-                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
+                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)), compiler_options=walk_compiler_options())
 
             simulate_batch = cached_batch(
                 geometry, ("packed_myelin", n_measurements, n_t, float(dt), T1), _build_packed)
@@ -337,7 +338,7 @@ def simulate_fused(
                     (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
                         body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
                     return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
-                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)))
+                return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)), compiler_options=walk_compiler_options())
 
             simulate_batch = cached_batch(
                 geometry, ("standard", n_measurements, n_t, float(dt), diffusivity, T2, T1, sub_steps,
