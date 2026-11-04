@@ -137,6 +137,24 @@ def replay_check(seq, geom, n, seed, path):
                 max_abs_diff_planned=float(np.max(np.abs(np.real(np.asarray(planned)) - S_direct))))
 
 
+def verdict(runs, alpha=1e-3):
+    """Monotone in kappa over the permeable runs (each step up by more than the family-wise band of its two standard
+    errors; the ``kappa = 0`` recovery is the geometry's and is reported, not ranked) and agreeing with the
+    two-site prediction where the exchange is barrier-limited (``kappa R / D <= 1e-2``): ``|AXR - AXR_pred| <= z SE`` with
+    ``z`` the two-sided Bonferroni normal quantile of the comparisons at the family-wise false-alarm ``alpha``."""
+    from scipy.stats import norm
+    perm = [r for r in runs if r["kappa"] > 0]
+    z_mono = float(norm.isf(alpha / (2.0 * max(1, len(perm)))))
+    steps = [(b["axr"] - a["axr"], z_mono * np.hypot(a["axr_se"], b["axr_se"])) for a, b in zip(perm[:-1], perm[1:])]
+    limited = [r for r in perm if r["kappa_R_over_D"] <= 1e-2]
+    z = float(norm.isf(alpha / (2.0 * max(1, len(limited)))))
+    agree = [dict(kappa=r["kappa"], axr=r["axr"], axr_predicted=r["axr_predicted"], two_site_rate=r["two_site_rate"],
+                  z_score=(r["axr"] - r["axr_predicted"]) / r["axr_se"], within=bool(abs(r["axr"] - r["axr_predicted"])
+                                                                                 <= z * r["axr_se"])) for r in limited]
+    return dict(monotone=bool(all(d > band for d, band in steps)), steps=[dict(rise=d, band=band) for d, band in steps],
+                z_family=z, agreement=agree, all_within=bool(all(a["within"] for a in agree)))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--n-walkers", type=int, default=50_000)
@@ -169,6 +187,8 @@ def main(argv=None):
             run.update(axr_predicted=pred[2], sigma_predicted=pred[1], adc_eq_predicted=pred[0], two_site_rate=rate)
         rec["runs"].append(run)
         print(json.dumps({k: v for k, v in run.items() if not isinstance(v, list)}), flush=True)
+    rec["verdict"] = verdict(rec["runs"])
+    print(json.dumps(rec["verdict"]), flush=True)
     i_c = min(2, len(kappas) - 1)
     geom, _ = substrate(kappas[i_c])
     rec["replay"] = dict(kappa=kappas[i_c], t_m=t_m[-1],
