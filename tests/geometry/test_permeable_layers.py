@@ -32,6 +32,8 @@ EDGES = (0.0, 1.0, 2.5, 3.5)                 # in R: layers of R, 1.5 R and R; p
 KAPPA = (2.0, 0.25)                          # kappa R / D of each membrane
 START = (1.0, 0.0, 1.0)                      # every walker in pool 1, uniform over its layers
 TIMES = (0.03, 0.1, 0.3, 1.0)                # in R^2 / D
+T_BREAK = 0.1                                # the schedule's breakpoint, in R^2 / D
+TIMES_STEP = (0.03, 0.1, 0.15, 0.3, 1.0)     # and half a breakpoint's time after it
 PGSE_DELTA, PGSE_BIG_DELTA, QR = 0.05, 0.25, (2.0, 4.0)
 DT = (H * R) ** 2 / (6.0 * D)
 MAX_WALKERS = 200_000
@@ -130,11 +132,12 @@ def test_two_membranes_of_their_own_permeability_exchange_as_the_layered_equatio
 
 def test_a_step_change_of_each_membranes_permeability_is_the_restarted_equation():
     """The two membranes swap their permeabilities at ``t_b = 0.1 R^2 / D`` (on a step boundary): occupancy at
-    ``TIMES`` and PGSE (whose ``Delta`` spans the breakpoint) against the reference restarted at ``t_b``. The walk that
-    keeps the start's permeabilities misses it by twice the tolerance at every time after the breakpoint."""
+    ``TIMES_STEP`` and PGSE (whose ``Delta`` spans the breakpoint) against the reference restarted at ``t_b``. The walk
+    that keeps the start's permeabilities misses it by twice the tolerance at every time after the breakpoint, the first
+    of them half the breakpoint's time after it."""
     from dmipy_sim.geometry import PermeableSlab1D, PermeabilitySchedule
-    steps = _steps(TIMES)
-    t_b = _steps((0.1,))[0] * DT
+    steps = _steps(TIMES_STEP)
+    t_b = _steps((T_BREAK,))[0] * DT
     sched = (_kappa(KAPPA), _kappa(KAPPA[::-1]))
     want, e_ref = _occupancy(sched, steps, breaks=(t_b,))
     stuck = _occupancy(_kappa(KAPPA), steps)[0]
@@ -150,7 +153,7 @@ def test_a_step_change_of_each_membranes_permeability_is_the_restarted_equation(
     rec = w.work["permeability"]
     assert rec["rule"] == "midpoint" and rec["taken_at_s"] == pytest.approx([t_b], rel=1e-12)
     assert rec["shift_s"][0] == pytest.approx(0.0, abs=1e-9 * DT)
-    for t, s, ref, e in zip(TIMES, steps, want, e_ref):
+    for t, s, ref, e in zip(TIMES_STEP, steps, want, e_ref):
         got = _layers(x[:, s])
         assert np.all(np.abs(got - ref) < tol + e), f"t = {t} R^2/D: layers {got} against {ref} (tolerance {tol:.4f})"
     z = z_family(comparisons)
@@ -169,7 +172,7 @@ def test_the_scalar_walk_of_simulate_reads_the_schedule():
     from dmipy_sim import simulate
     from dmipy_sim.geometry import PermeableSlab1D, PermeabilitySchedule
     from dmipy_replay.sequences.builders import from_waveform
-    t_b = _steps((0.1,))[0] * DT
+    t_b = _steps((T_BREAK,))[0] * DT
     sched = ((0.0, 0.0), _kappa(KAPPA))
     wf = _pgse(3.0)
     S_ref, e_S = _signal_reference(sched, wf, breaks=(t_b,))
