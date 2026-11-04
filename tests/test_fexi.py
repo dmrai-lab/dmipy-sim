@@ -1,51 +1,86 @@
-"""FEXI (filter-exchange) stimulated-echo sequence constructor.
+"""FEXI on the forward engines: the acquisition layer's one filter-exchange sequence (``dmipy_replay.fexi``) read by
+the vector-Bloch oracle, which plays its pulses and its declared crushers, and by the effective-gradient walk, which
+contracts its ``G_eff`` at the stimulated echo's amplitude.
 
-Fast mechanics checks on free diffusion (no substrate, so no exchange): the detection block
-must read the true diffusivity, the two encodings are self-refocused, and the measured ADC is
-independent of the mixing time (there are no pools to exchange). The AXR exchange recovery itself
-needs a permeable packed substrate and is a heavier GPU demo, not a unit test.
+On free diffusion both are held to the closed form ``ste_amplitude(90, 90, 90) exp(-(b_f + b_d) D)``: the crushers
+before the store and after the recall keep the one pathway the recall conjugates, the mixing-time spoiler removes
+what the store leaves transverse, and the magnetisation that relaxes back along B0 is crushed, so a ``T1`` acts on the
+stored pathway alone. The tolerances are ``z_family`` standard errors of the walker count, the per-walker spread of a
+transverse magnetisation of unit magnitude at most 1 and of ``ste_amplitude * cos`` at most ``ste_amplitude``. The
+exchange recovery itself is a permeable substrate's: ``tests/validation/test_fexi_axr.py``.
 """
 import numpy as np
-from dmipy_sim.engine.bloch import _simulate_bloch
 import pytest
 
-from dmipy_sim import FreeDiffusion
-from dmipy_sim.engine.pulse_sequence import fexi, fexi_b_detect
+import dmipy_replay as dr
+from dmipy_analytic.epg import ste_amplitude
+from dmipy_sim import FreeDiffusion, simulate
+from dmipy_sim.engine.bloch import _simulate_bloch
+from tests.conftest import se_tol
+
+D = 2e-9
+N = 20_000
+A = ste_amplitude(90.0, 90.0, 90.0)
+B = 0.5e9
 
 
-def _adc(seq, D=2e-9, n=6000):
-    S = _simulate_bloch(n, D, seq, FreeDiffusion(), seed=1, require_gpu=False)  # (n_meas,)
-    S = np.abs(np.asarray(S))
-    return -np.log(S[1] / S[0]) / fexi_b_detect(seq)[1]
+def _seq(t_m=0.03, b_f=(0.0, 0.0, B, B), b_d=(0.0, B, 0.0, B), **kw):
+    return dr.fexi([1.0, 0.0, 0.0], 4e-3, 10e-3, t_m, b_f=list(b_f), bvalues=list(b_d), dt=1e-4, slew_rate=np.inf, **kw)
 
 
-def test_fexi_builds_and_carries_b_detect():
-    seq = fexi(delta=5e-3, t_mix=30e-3, dt=2e-4, g_filter=0.15, g_detect=[0.0, 0.4], Delta=12e-3)
-    assert seq.family == "fexi"
-    flips = sorted(e.flip_deg for e in seq.rf)
-    assert flips == [90.0, 90.0, 90.0]                            # 3×90 (STE); bipolar blocks, no 180
-    assert seq.crusher is not None and fexi_b_detect(seq).shape == (2,)
-    assert fexi_b_detect(seq)[0] == 0.0 and fexi_b_detect(seq)[1] > 1e8       # a real detection weighting
+def _bloch(seq, **kw):
+    return np.abs(np.asarray(_simulate_bloch(N, D, seq, FreeDiffusion(), seed=1, require_gpu=False, **kw)))
 
 
-def test_detection_reads_true_diffusivity():
-    seq = fexi(delta=5e-3, t_mix=30e-3, dt=2e-4, g_filter=0.0, g_detect=[0.0, 0.45])
-    adc = _adc(seq)
-    assert adc == pytest.approx(2e-9, rel=0.1)                    # free ADC ≈ D
+def test_both_engines_read_the_stimulated_echo_of_one_sequence():
+    seq = _seq()
+    want = A * np.exp(-seq.b() * D)
+    tol_bloch = se_tol(N, 1.0, comparisons=8)
+    tol_walk = se_tol(N, A, comparisons=8)
+    assert np.all(np.abs(_bloch(seq) - want) <= tol_bloch), (_bloch(seq), want)
+    S = np.asarray(simulate(N, D, seq, FreeDiffusion(), seed=1, require_gpu=False))
+    assert S[0] == pytest.approx(A, rel=1e-6)                         # no weighting: every phase is zero
+    assert np.all(np.abs(S - want) <= tol_walk), (S, want)
 
 
-def test_adc_independent_of_mixing_time_in_free_diffusion():
-    """No pools to exchange ⇒ the filtered ADC must not drift with t_mix (the correct null)."""
-    a_short = _adc(fexi(delta=5e-3, t_mix=20e-3, dt=2e-4, g_filter=0.15, g_detect=[0.0, 0.45]))
-    a_long = _adc(fexi(delta=5e-3, t_mix=120e-3, dt=2e-4, g_filter=0.15, g_detect=[0.0, 0.45]))
-    assert a_short == pytest.approx(2e-9, rel=0.12)
-    assert a_long == pytest.approx(a_short, rel=0.12)
+def test_the_crushers_are_what_selects_the_stimulated_echo():
+    """Without the mixing-time spoiler the store and the recall turn back what the store left transverse (the two acting
+    on it as one refocusing pulse) and the unweighted echo is the whole magnetisation, not the stimulated echo's half."""
+    seq = _seq(b_f=(0.0,), b_d=(0.0,))
+    assert _bloch(seq)[0] == pytest.approx(A, abs=se_tol(N, 1.0, comparisons=2))
+    pair = dict(windows_s=[seq.crusher["windows_s"][0], seq.crusher["windows_s"][2]],
+                n_cycles=[seq.crusher["n_cycles"][0], seq.crusher["n_cycles"][2]])
+    from dataclasses import replace
+    assert _bloch(replace(seq, crusher=pair))[0] > A + 2 * se_tol(N, 1.0, comparisons=2)
 
 
-def test_filter_attenuates_stored_signal():
-    """Turning the diffusion filter on must reduce the stored b=0 signal."""
-    off = fexi(delta=6e-3, t_mix=30e-3, dt=2e-4, g_filter=0.0, g_detect=[0.0])
-    on = fexi(delta=6e-3, t_mix=30e-3, dt=2e-4, g_filter=0.5, g_detect=[0.0])
-    S_off = abs(complex(_simulate_bloch(6000, 2e-9, off, FreeDiffusion(), seed=1, require_gpu=False)[0]))
-    S_on = abs(complex(_simulate_bloch(6000, 2e-9, on, FreeDiffusion(), seed=1, require_gpu=False)[0]))
-    assert S_on < 0.7 * S_off
+def test_t1_acts_on_the_stored_pathway_alone():
+    """``T1`` over the mixing time multiplies the stimulated echo by ``exp(-t_m / T1)``: what relaxes back along B0
+    while stored carries no crusher winding from before the store and is wound away by the one after the recall."""
+    seq = _seq(t_m=0.1, b_f=(0.0,), b_d=(0.0,))
+    T1 = 0.3
+    want = A * np.exp(-seq.TM / T1)
+    assert _bloch(seq, T1=T1)[0] == pytest.approx(want, abs=se_tol(N, 1.0, comparisons=2))
+    S = np.asarray(simulate(N, D, seq, FreeDiffusion(), seed=1, T1=T1, require_gpu=False))
+    assert S[0] == pytest.approx(want, rel=1e-5)
+
+
+def test_the_detection_reads_the_free_diffusivity_and_does_not_drift_with_the_mixing_time():
+    """The filter-off rows read ``D``; the filtered rows read it too at a short and a long mixing time (nothing to
+    exchange). ``ADC = -ln(S_b / S_0) / b_d`` with ``S_0`` the exact unweighted ``A`` and ``S_b``'s error
+    ``se_tol(N, A)``, so the ADC's error is that over ``S_b b_d``."""
+    for t_m in (0.02, 0.12):
+        seq = _seq(t_m=t_m, b_f=(0.0, 0.0, B, B), b_d=(0.0, 1e9, 0.0, 1e9))
+        S = np.asarray(simulate(N, D, seq, FreeDiffusion(), seed=3, require_gpu=False))
+        b_f, b_d = dr.fexi_bvalues(seq)
+        for i0, i1 in ((0, 1), (2, 3)):
+            adc = -np.log(S[i1] / S[i0]) / b_d[i1]
+            tol = se_tol(N, A, comparisons=8) * (1.0 / S[i1] + 1.0 / S[i0]) / b_d[i1]
+            assert abs(adc - D) <= tol, (t_m, i0, adc)
+
+
+def test_the_constructor_lives_in_the_acquisition_layer():
+    with pytest.raises(ImportError, match="dmipy_replay"):
+        from dmipy_sim import fexi  # noqa: F401
+    with pytest.raises(ImportError, match="fexi_bvalues"):
+        from dmipy_sim import fexi_b_detect  # noqa: F401

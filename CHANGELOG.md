@@ -3,6 +3,16 @@
 All notable changes are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- **FEXI is the acquisition layer's** (`dmipy_replay.fexi`, `fexi_protocol`, `fexi_bvalues`): the vector-Bloch
+  constructor `engine.pulse_sequence.fexi` and `fexi_b_detect` are removed and refused by name; the one filter-exchange
+  sequence is read by both engines -- the vector-Bloch oracle plays its pulses and its declared crushers, the walk
+  contracts its effective gradient at the stimulated echo's amplitude -- and both hold the free-diffusion closed form
+  (`tests/test_fexi.py`). `examples/validation/fexi_axr.py` walks the protocol on permeable packed cylinders across a
+  permeability sweep, fits it with dmipy-fit's AXR analysis against the barrier-limited two-site prediction, and
+  replays one walk from its written pack (`examples/validation/fexi_axr_findings.md`).
+
 ## [3.0.0] - 2026-11-02
 
 dmipy-sim is the Monte-Carlo replay engine of the dmipy ecosystem. It walks a declared tissue substrate once and keeps

@@ -120,12 +120,12 @@ def test_events_round_trip_through_plain_data():
 def test_a_bloch_sequence_now_carries_coherence_labels_so_it_un_folds():
     """The finite-pulse builders emitted flips without labels; now their 180 says 'refocus', so the same
     RFSchedule.sign un-folds a ScannerSequence."""
-    from dmipy_sim.engine.pulse_sequence import bare_spin_echo, fexi
+    from dmipy_sim.engine.pulse_sequence import bare_spin_echo
     se = bare_spin_echo(20e-3, 1e-4)
     assert [e.label for e in se.rf] == ['Mz→Mxy', 'refocus']
     s = se.rf.sign(np.arange(se.n_t) * se.dt)
     assert s[:se.n_t // 2].min() == 1.0 and s[se.n_t // 2 + 1:].max() == -1.0
-    fx = fexi(4e-3, 20e-3, 1e-4, g_filter=0.05, g_detect=0.05)
+    fx = dr.fexi([1.0, 0.0, 0.0], 4e-3, 10e-3, 20e-3, b_f=1e8, bvalues=1e8, dt=1e-4, slew_rate=np.inf)
     assert [e.label for e in fx.rf] == ['Mz→Mxy', 'store', 'recall']
 
 
