@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
 
-from .backends import JAX, WalkRequest, CoefficientBatch, event_capacity, resolve as resolve_backend
+from .backends import JAX, PERMEABILITY_TABLE, WalkRequest, CoefficientBatch, event_capacity, resolve as resolve_backend
 import logging
 
 log = logging.getLogger(__name__)
@@ -567,7 +567,6 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         ("MT binding", kappa_MT > 0.0),
         (f"in-walk field sampling of a {type(field_basis).__name__}", field_basis is not None and not raster),
         ("several storage windows (a backend accumulates one window per walk)", n_windows > 1),
-        ("a permeability per object or over time", geometry.permeability_table is not None),
         ("the compartment guard", bool(enforce_compartment))) if on]
     # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the binomial bound at the
     # largest probability a hit of the walk's step changes a pool (backends.event_capacity, physics.crossing_p_max,
@@ -606,10 +605,14 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
 def _backend_refusal(backend, name, res, geometry):
     """Why ``backend`` (named ``name``) does not walk the resolved request ``res``, or None: the paths only the JAX
     kernels implement are refused for any other backend rather than fallen back from, and the backend may refuse
-    the walk itself."""
+    the walk itself. A permeability per object or over time is walked by a backend that declares
+    :data:`~dmipy_sim.engine.backends.PERMEABILITY_TABLE` among its ``capabilities``."""
     if res.jax_only:
         return (f"backend {name!r}: this walk uses {', '.join(res.jax_only)}, which only the jax kernels "
                 f"implement; it does not fall back")
+    if geometry.permeability_table is not None and PERMEABILITY_TABLE not in getattr(backend, "capabilities", ()):
+        return (f"backend {name!r}: this walk uses a permeability per object or over time, which the backend does not "
+                f"declare it walks (capability {PERMEABILITY_TABLE!r})")
     reason = backend.refuses(res.request)
     if reason:
         return f"backend {name!r} refuses this walk of {type(geometry).__name__}: {reason}"
