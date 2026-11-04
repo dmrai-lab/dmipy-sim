@@ -2477,10 +2477,10 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
         fid.update(_target_statements(fid, sigma_star, planned_floor))
     comp_meta = dict(method=_r_compression.POSITION_METHOD, K=K, walker_preserving=True, container=pos_meta.get("container"),
                      temporal_bandwidth_hz=float(K) / (2.0 * T))
+    fid = _round_certificate(fid)                                       # the tiers read the floor the pack states
     comp_meta["precision_tiers"] = _precision_tiers(arrays, cw.n_walkers, fid.get("floor_max"), True)
     if chan_meta:
         comp_meta["channels"] = chan_meta
-    fid = _round_certificate(fid)
     seed = seed_value(cw.seed)
     block = {k: v for k, v in dict(cw.block).items() if k not in ("source", "window", "quadratic_variation", "field_read", "field_band", "calibration_scope", "calibration_pools", "events", "t_start")}
     qv = dict(positions=[float(x) for x in np.asarray(cw.qv_positions, np.float64)[:, 0].mean(axis=0)])
@@ -2800,10 +2800,10 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     _cover_terms(fid)
     comp_meta = dict(method=_r_compression.POSITION_METHOD, K=K_new, walker_preserving=True, container=pos_meta.get("container"),
                      temporal_bandwidth_hz=float(K_new) / (2.0 * T_new))
+    fid = _round_certificate(fid)                                       # the tiers read the floor the pack states
     comp_meta["precision_tiers"] = _precision_tiers(arrays, pack.n_walkers, fid.get("floor_max"),
                                                     bool(pack.meta["compression"].get("precision_tiers", {}).get("walkers_shuffled", True)))
     comp_meta["channels"] = chan_meta
-    fid = _round_certificate(fid)
     env_out = dict(pack.meta.get("replay_envelope") or {})
     env_out.update(bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"], field=channels["susceptibility"],
                    magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition")
