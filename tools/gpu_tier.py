@@ -85,7 +85,9 @@ if modal is not None:
     image = (modal.Image.debian_slim(python_version="3.12")
              .apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
-             .pip_install(*pinned_stack())                       # the commits tests.yml pins, never the released packages
+             # the commits tests.yml pins, never the released packages; read where the app is launched, since the
+             # container imports its own copy of this file, beside no workflows
+             .pip_install(*(pinned_stack() if modal.is_local() else ()))
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
