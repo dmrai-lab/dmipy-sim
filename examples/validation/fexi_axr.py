@@ -4,19 +4,23 @@ One acquisition object throughout: the filter-exchange protocol of the acquisiti
 the filter off and on, every mixing time, two detection b-values), walked by dmipy-sim's ``simulate`` and fitted by
 dmipy-fit's AXR analysis (``FEXIApparentExchange``). Nothing here builds a waveform or fits a curve of its own.
 
-* **(B) the walks.** Packed cylinders of radius ``R`` (``pack_cylinders``, area fraction ``f``), the gradient across
-  them, a membrane permeability ``kappa`` swept so the two-site rate ``2 kappa / (R (1 - f))`` spans about 1 to 15 s^-1,
-  and ``kappa = 0``, whose recovery is the geometry's alone (water moving between regions of the extra-cellular space
-  that the filter weights differently). Each sequence of the protocol is one walk (``simulate``'s own: the coefficient
-  walk of the sequence's span, contracted with it); its walkers give each signal's standard error and, through the
-  fit's sensitivities, the AXR's.
+* **(B) the walks.** Cylinders of radius ``R`` on a square lattice (one per periodic cell, area fraction ``f``), the
+  gradient across them, a membrane permeability ``kappa`` swept so the two-site rate ``2 kappa / (R (1 - f))`` spans 1 to
+  15 s^-1, and ``kappa = 0``, whose recovery is the geometry's alone (water moving between regions of the interstitium
+  that the filter weights differently). Per ``kappa`` one walk of the longest sequence's span, in storage windows, at
+  the band the sequences read, and every sequence contracted with it: ``simulate``'s walk and contraction, one walk
+  serving every mixing time. Its walkers give the signals' covariance and, through the fit's sensitivities, the AXR's
+  standard error.
 * **The barrier-limited prediction.** With ``kappa R / D << 1`` the exchange is limited by the membrane, so the pools
   are the lumens (``f``) and the interstitium, exchanging at ``k_12 = 2 kappa / R`` (the surface over the volume of a
   lumen) and ``k_21 = k_12 f / (1 - f)``; their diffusivities are the ``kappa = 0`` walk's own, pool by pool, at this
   protocol's blocks. The two-site Karger signal of those pools on the same protocol, fitted by the same AXR analysis, is
-  the prediction (it carries the analysis' own finite-b reading); the two-site rate ``k_12 + k_21`` is beside it.
-* **(C) the replay.** One walk of the sweep is written as a replay pack (``.rpk``), read back and replayed on the same
-  ``ScannerSequence``: it equals ``simulate``'s signal of that walk within the pack's certificate (``fidelity.err_max``).
+  the prediction (it carries the analysis' own finite-b reading); the two-site rate ``k_12 + k_21`` is beside it. The
+  lumen's own diffusion lowers the rate by ``kappa R / (4 D)`` to first order (the slowest Robin mode of a disc,
+  ``D alpha^2 = (2 kappa / R)(1 - kappa R / (4 D) + ...)``), which the agreement's band includes.
+* **(C) the replay.** ``simulate``'s walk of one sequence (its own span, one window) is written as a replay pack
+  (``.rpk``), read back and replayed on the same ``ScannerSequence``: it equals ``simulate``'s signal of that walk within
+  the pack's certificate (``fidelity.err_max``).
 
 Run on a GPU (``JAX_PLATFORMS=cuda``); ``--pilot`` sizes a short run. Writes a JSON record of every number.
 """
@@ -33,23 +37,26 @@ from dmipy_fit.signal_models.exchange_models import X0GeneralizedKarger
 from dmipy_fit.signal_models.filter_exchange import FEXIApparentExchange, fexi_measurements
 from dmipy_fit.signal_models.gaussian_models import G1Ball
 from dmipy_sim.engine.core import _walk_band, _walk_geometry, _replay_signal
-from dmipy_sim.geometry import PackedCylinders, pack_cylinders
+from dmipy_sim.geometry import PackedCylinders
 from dmipy_sim.replay.bank import build_replay_pack
 from dmipy_sim.replay.compression import acquisition_envelope
 
-D = 2e-9                     # m^2/s, both pools
-R = 1.5e-6                   # m
-N_CYL, VF, PACK_SEED = 16, 0.5, 0
+D = 1e-9                     # m^2/s, both pools
+R = 2e-6                     # m
+VF = 0.5                     # the lumens' area fraction: one cylinder per periodic square cell of side R sqrt(pi / VF)
 DELTA, BIG_DELTA, DT = 4e-3, 10e-3, 2e-5
-B_F, B_D = 1.2e9, 0.3e9      # s/m^2: the filter (b_f D ~ 1-2 for the interstitium) and the detection
+B_F, B_D = 2.5e9, 0.5e9      # s/m^2: the filter (b_f D_interstitium ~ 1.5) and the detection
 T_M = (0.01, 0.025, 0.05, 0.1, 0.2, 0.35, 0.6, 1.0)
 AXR_TARGETS = (1.0, 2.0, 4.0, 8.0, 15.0)
+WINDOW_T = 0.1               # s: the storage window a long walk is accumulated in
 
 
 def substrate(kappa):
-    centers, L, vf = pack_cylinders(np.full(N_CYL, R), target_vf=VF, seed=PACK_SEED)
-    return PackedCylinders(np.full(N_CYL, R), centers, L, orientation=(0.0, 0.0, 1.0),
-                           permeability=float(kappa)), float(vf)
+    """Cylinders of radius ``R`` on a square lattice (one per periodic cell) of area fraction ``VF``: the gap between
+    neighbours is ``(sqrt(pi / VF) - 2) R``, so the walls' bounce budget stays small."""
+    L = R * np.sqrt(np.pi / VF)
+    return PackedCylinders([R], [[L / 2.0, L / 2.0]], L, orientation=(0.0, 0.0, 1.0),
+                           permeability=float(kappa)), float(np.pi * R ** 2 / L ** 2)
 
 
 def protocol(t_m):
@@ -67,22 +74,32 @@ def walk_of(seq, geom, n, seed, tiers=()):
     return walk, envelope
 
 
-def walk_protocol(P, geom, n, seed0, compartments=False):
-    """Every sequence of ``P`` walked on its own (seed ``seed0 + i``): the signal (``simulate``'s), its covariance from
-    the walkers, and with ``compartments`` the signal of each pool (lumens 1, interstitium 0)."""
-    S, C, pools = np.empty(P.n_meas), np.zeros((P.n_meas, P.n_meas)), {0: np.empty(P.n_meas), 1: np.empty(P.n_meas)}
-    for i, (seq, rows) in enumerate(zip(P, P.rows)):
-        walk, env = walk_of(seq, geom, n, seed0 + i, tiers=("all" if compartments else ()))
-        pack = build_replay_pack(walk, id="fexi-axr", license="in-memory", citation="fexi-axr", envelope=env)
+def walk_protocol(P, geom, n, seed, compartments=False):
+    """One walk of the protocol's longest span (a whole number of storage windows, at the band its sequences read),
+    every sequence of ``P`` contracted with it -- ``simulate``'s walk and contraction, one walk serving every mixing
+    time: the signal, its covariance from the walkers (one walk, so across the whole protocol), and with
+    ``compartments`` the signal of each pool (lumens 1, interstitium 0)."""
+    longest = max(P, key=lambda q: q.n_t)
+    G = np.asarray(longest.G_eff, np.float64)
+    T = longest.dt * (G.shape[1] - 1)
+    n_win = int(np.ceil(T / WINDOW_T - 1e-9))
+    f_band = max(_walk_band(np.asarray(q.G_eff, np.float64), q.dt, q.dt * (q.n_t - 1))[1] for q in P)
+    K = int(np.ceil(2.0 * f_band * WINDOW_T - 1e-9))
+    walk = _walk_geometry(n, D, geom, n_win * WINDOW_T, seed=seed, tiers=("all" if compartments else ()), K=K,
+                          f_band=f_band, window_T=WINDOW_T, require_gpu=None)
+    env = acquisition_envelope(longest, band_hz=float(walk.K) / (2.0 * float(walk.T_window)))
+    pack = build_replay_pack(walk, id="fexi-axr", license="in-memory", citation="fexi-axr", envelope=env)
+    S, X, pools = np.empty(P.n_meas), np.empty((n, P.n_meas)), {0: np.empty(P.n_meas), 1: np.empty(P.n_meas)}
+    for seq, rows in zip(P, P.rows):
         S[rows] = _replay_signal(pack, seq, None, geom._orient_R)
         w, ew, E = pack.walker_signals(seq, orientation=geom._orient_R, tol=None)
-        x = np.real(np.asarray(ew)[:, None] * np.asarray(E)) * (len(w) / float(np.sum(w)))
-        C[np.ix_(rows, rows)] = np.cov(x, rowvar=False) / x.shape[0]
+        X[:, rows] = np.real(np.asarray(ew)[:, None] * np.asarray(E)) * (len(w) / float(np.sum(w)))
         if compartments:
             for c in (0, 1):
                 pools[c][rows] = np.real(np.asarray(pack.replay(seq, orientation=geom._orient_R, compartment=c,
                                                                 tol=None, complex_signal=True)))
-    return S, C, pools
+    return S, np.cov(X, rowvar=False) / n, pools, dict(T=n_win * WINDOW_T, K=int(walk.K), windows=n_win,
+                                                       work=walk.work if hasattr(walk, "work") else None)
 
 
 def fit_axr(scheme, S, C=None):
@@ -139,25 +156,28 @@ def replay_check(seq, geom, n, seed, path):
 
 def verdict(runs, alpha=1e-3):
     """Monotone in kappa over the permeable runs (each step up by more than the family-wise band of its two standard
-    errors; the ``kappa = 0`` recovery is the geometry's and is reported, not ranked) and agreeing with the
-    two-site prediction where the exchange is barrier-limited (``kappa R / D <= 1e-2``): ``|AXR - AXR_pred| <= z SE`` with
-    ``z`` the two-sided Bonferroni normal quantile of the comparisons at the family-wise false-alarm ``alpha``."""
+    errors; the ``kappa = 0`` recovery is the geometry's and is reported, not ranked), and agreeing with the
+    barrier-limited prediction: ``|AXR - AXR_pred| <= z SE + (kappa R / (4 D)) AXR_pred``, ``z`` the two-sided
+    Bonferroni normal quantile of the comparisons at the family-wise false-alarm ``alpha`` and the second term the
+    barrier-limited rate's own first correction."""
     from scipy.stats import norm
     perm = [r for r in runs if r["kappa"] > 0]
-    z_mono = float(norm.isf(alpha / (2.0 * max(1, len(perm)))))
+    z_mono = float(norm.isf(alpha / (2.0 * max(1, len(perm) - 1))))
     steps = [(b["axr"] - a["axr"], z_mono * np.hypot(a["axr_se"], b["axr_se"])) for a, b in zip(perm[:-1], perm[1:])]
-    limited = [r for r in perm if r["kappa_R_over_D"] <= 1e-2]
-    z = float(norm.isf(alpha / (2.0 * max(1, len(limited)))))
-    agree = [dict(kappa=r["kappa"], axr=r["axr"], axr_predicted=r["axr_predicted"], two_site_rate=r["two_site_rate"],
-                  z_score=(r["axr"] - r["axr_predicted"]) / r["axr_se"], within=bool(abs(r["axr"] - r["axr_predicted"])
-                                                                                 <= z * r["axr_se"])) for r in limited]
-    return dict(monotone=bool(all(d > band for d, band in steps)), steps=[dict(rise=d, band=band) for d, band in steps],
-                z_family=z, agreement=agree, all_within=bool(all(a["within"] for a in agree)))
+    z = float(norm.isf(alpha / (2.0 * max(1, len(perm)))))
+    agree = []
+    for r in perm:
+        band = z * r["axr_se"] + r["kappa_R_over_D"] / 4.0 * r["axr_predicted"]
+        agree.append(dict(kappa=r["kappa"], axr=r["axr"], axr_se=r["axr_se"], axr_predicted=r["axr_predicted"],
+                          two_site_rate=r["two_site_rate"], band=band, z_score=(r["axr"] - r["axr_predicted"]) / r["axr_se"],
+                          within=bool(abs(r["axr"] - r["axr_predicted"]) <= band)))
+    return dict(monotone=bool(all(d > b for d, b in steps)), steps=[dict(rise=d, band=b) for d, b in steps],
+                z_monotone=z_mono, z_agreement=z, agreement=agree, all_within=bool(all(a["within"] for a in agree)))
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--n-walkers", type=int, default=50_000)
+    ap.add_argument("--n-walkers", type=int, default=10_000)
     ap.add_argument("--out", default="fexi_axr.json")
     ap.add_argument("--pilot", action="store_true", help="two mixing times and two permeabilities")
     a = ap.parse_args(argv)
@@ -167,18 +187,19 @@ def main(argv=None):
     scheme = AcquisitionScheme(P)
     _, f = substrate(0.0)
     kappas = [0.0] + [axr * R * (1.0 - f) / 2.0 for axr in (AXR_TARGETS[:1] if a.pilot else AXR_TARGETS)]
-    rec = dict(D=D, R=R, f=f, n_cylinders=N_CYL, delta=DELTA, Delta=BIG_DELTA, dt=DT, b_f=B_F, b_d=B_D, t_m=list(t_m),
+    rec = dict(D=D, R=R, f=f, lattice="square, one cylinder per cell", delta=DELTA, Delta=BIG_DELTA, dt=DT, b_f=B_F, b_d=B_D, t_m=list(t_m),
                n_walkers=n, runs=[])
     t0 = time.time()
     pools = None
     for i, kappa in enumerate(kappas):
         geom, _ = substrate(kappa)
         t1 = time.time()
-        S, C, pl = walk_protocol(P, geom, n, seed0=1000 * i, compartments=(kappa == 0.0))
+        S, C, pl, walked = walk_protocol(P, geom, n, seed=1000 + i, compartments=(kappa == 0.0))
         theta, se = fit_axr(scheme, S, C)
         run = dict(kappa=kappa, kappa_R_over_D=kappa * R / D, signal=S.tolist(), signal_se=np.sqrt(np.diag(C)).tolist(),
                    adc_eq=theta[0], sigma=theta[1], axr=theta[2], adc_eq_se=se[0], sigma_se=se[1], axr_se=se[2],
-                   seconds=time.time() - t1)
+                   walk=dict(T=walked["T"], K=walked["K"], windows=walked["windows"],
+                             exhausted_steps=(walked["work"] or {}).get("exhausted_steps")), seconds=time.time() - t1)
         if kappa == 0.0:
             pools = pool_diffusivities(scheme, pl)
             rec["D_interstitium"], rec["D_lumen"] = pools
@@ -186,13 +207,14 @@ def main(argv=None):
             pred, rate = two_site(scheme, f, pools[1], pools[0], kappa)
             run.update(axr_predicted=pred[2], sigma_predicted=pred[1], adc_eq_predicted=pred[0], two_site_rate=rate)
         rec["runs"].append(run)
+        Path(a.out).write_text(json.dumps(rec, indent=1))                 # every finished run kept as it lands
         print(json.dumps({k: v for k, v in run.items() if not isinstance(v, list)}), flush=True)
     rec["verdict"] = verdict(rec["runs"])
     print(json.dumps(rec["verdict"]), flush=True)
     i_c = min(2, len(kappas) - 1)
     geom, _ = substrate(kappas[i_c])
-    rec["replay"] = dict(kappa=kappas[i_c], t_m=t_m[-1],
-                         **replay_check(P[-1], geom, n, 1000 * i_c + len(P) - 1, Path(a.out).with_suffix(".rpk")))
+    rec["replay"] = dict(kappa=kappas[i_c], t_m=t_m[min(3, len(t_m) - 1)],
+                         **replay_check(P[min(3, len(P) - 1)], geom, n, 7, Path(a.out).with_suffix(".rpk")))
     print(json.dumps({k: v for k, v in rec["replay"].items() if not isinstance(v, list)}), flush=True)
     rec["seconds"] = time.time() - t0
     Path(a.out).write_text(json.dumps(rec, indent=1))
