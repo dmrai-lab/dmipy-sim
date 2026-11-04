@@ -567,6 +567,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         ("MT binding", kappa_MT > 0.0),
         (f"in-walk field sampling of a {type(field_basis).__name__}", field_basis is not None and not raster),
         ("several storage windows (a backend accumulates one window per walk)", n_windows > 1),
+        ("a permeability per object or over time", geometry.permeability_table is not None),
         ("the compartment guard", bool(enforce_compartment))) if on]
     # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the binomial bound at the
     # largest probability a hit of the walk's step changes a pool (backends.event_capacity, physics.crossing_p_max,
@@ -1324,8 +1325,11 @@ def _walk_geometry(
 
         # ── Standard path (position-only) ─────────────────────────────────────────
         _carries_side = False   # set below only where the geometry accepts a carried side
+        # the permeability each step reads: one number, one per object, or the schedule's at the step's midpoint
+        # (physics.membrane_kappa); the walk records a stated table in its work record
+        from .physics import membrane_kappa
+        kappa_at, _perm_record = membrane_kappa(geometry, diffusivity, dt_sim)
         if has_permeability:
-            kappa_over_D = jnp.float32(float(permeability) / diffusivity)
             permeate = geometry.permeate
 
             # Does this geometry support carried-compartment bookkeeping? If so the walker OWNS its
@@ -1339,8 +1343,9 @@ def _walk_geometry(
             _carries_side = geometry.carries_side
             interact = geometry.interact
 
-            def inner_step(carry, _):
+            def inner_step(carry, step_index):
                 r, key, side, bad, work = carry
+                kappa_over_D = kappa_at(step_index)
                 key, step_key, perm_key = jax.random.split(key, 3)
                 unit_noise = pair_step(step_key)
                 step = unit_noise * step_l_sim
@@ -1459,12 +1464,12 @@ def _walk_geometry(
 
         if record and not uses_myelin_traj and not _mt_walls:
             if has_permeability:
-                kappa_over_D_relax = jnp.float32(float(permeability) / diffusivity)
                 permeate_relax = geometry.permeate
                 interact_relax = geometry.interact
 
-                def inner_step_relax(carry, _):
+                def inner_step_relax(carry, step_index):
                     r, key, dlog_cum, side, bad, comp, work = carry
+                    kappa_over_D_relax = kappa_at(step_index)
                     key, step_key, perm_key = jax.random.split(key, 3)
                     unit_noise = pair_step(step_key)
                     step = unit_noise * step_l_sim
@@ -1663,6 +1668,7 @@ def _walk_geometry(
             _counted = _counting and _work[3]
             work = dict(walker_steps=int(n_walkers) * int(n_blocks) * int(sub_steps),
                         backend=_backend_name,
+                        permeability=_perm_record,
                         step_rule=dict(step_rule, dt_p=float(dt_sim), sub_steps=int(sub_steps)),
                         bounce_budget=(None if _loop is None else int(_loop.budget)),
                         n_hits=(int(_work[0]) if _counted else None),

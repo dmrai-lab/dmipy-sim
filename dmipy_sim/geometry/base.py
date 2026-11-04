@@ -58,15 +58,111 @@ class LengthScales(NamedTuple):
     wall_coefficient: Optional[float] = None
 
 
-def permeability_of(value):
-    """A geometry's stored permeability: ``None`` for a reflecting wall, which a zero is (the reflect path,
-    the impermeable step rule, the compartment guard); a positive float otherwise; a negative one is refused."""
+class PermeabilitySchedule:
+    """A membrane permeability that is piecewise constant over the walk's time: ``values[0]`` from the start of the
+    walk to ``breakpoints[0]``, ``values[j]`` from ``breakpoints[j - 1]`` to ``breakpoints[j]``, the last value from the
+    last breakpoint to the end. Each value is one permeability (m/s) for every object of the geometry, or one per
+    object (the objects' order: a packed cell's ``radii``, a slab's ``membranes``).
+
+    A step of the walk takes the permeability at its MIDPOINT (:func:`~dmipy_sim.engine.physics.membrane_kappa`): a
+    breakpoint on a step boundary is taken exactly, half a step from every time the walk reads, and one inside a step
+    takes effect at the step boundary nearest to it. The walk records the stated schedule and where each breakpoint
+    took effect (``CoefficientWalk.work["permeability"]``).
+
+    Parameters
+    ----------
+    breakpoints : sequence of float
+        The times (s from the start of the walk) at which the permeability takes its next value: positive, finite,
+        strictly increasing; empty for a permeability constant in time.
+    values : sequence
+        ``len(breakpoints) + 1`` entries, each a non-negative number or a sequence of one per object.
+    """
+
+    def __init__(self, breakpoints, values):
+        b = np.asarray(breakpoints, dtype=np.float64)
+        if b.ndim != 1 or not np.all(np.isfinite(b)) or np.any(b <= 0.0) or np.any(np.diff(b) <= 0.0):
+            raise ValueError(f"PermeabilitySchedule.breakpoints are positive, finite, strictly increasing times in "
+                             f"seconds; got {breakpoints!r}")
+        if isinstance(values, (str, bytes)) or not hasattr(values, "__len__") or len(values) != b.size + 1:
+            raise ValueError(f"PermeabilitySchedule.values holds one entry per interval of time, "
+                             f"len(breakpoints) + 1 = {b.size + 1}; got {values!r}")
+        vals = []
+        for j, v in enumerate(values):
+            a = np.asarray(v, dtype=np.float64)
+            if a.ndim > 1 or a.size == 0 or not np.all(np.isfinite(a)) or np.any(a < 0.0):
+                raise ValueError(f"PermeabilitySchedule.values[{j}] is a non-negative permeability (m/s) or one per "
+                                 f"object; got {v!r}")
+            vals.append(float(a) if a.ndim == 0 else a.copy())
+        shapes = {np.shape(v) for v in vals if np.ndim(v) == 1}
+        if len(shapes) > 1:
+            raise ValueError(f"PermeabilitySchedule.values give per-object arrays of different lengths: {sorted(shapes)}")
+        self.breakpoints = tuple(float(x) for x in b)
+        self.values = tuple(vals)
+
+    def table(self, n_objects, owner):
+        """The :class:`PermeabilityTable` of this schedule on ``n_objects`` objects of ``owner``: one column when every
+        value is one number, else one per object (a number repeated)."""
+        per_object = any(np.ndim(v) == 1 for v in self.values)
+        n = int(n_objects) if per_object else 1
+        rows = []
+        for j, v in enumerate(self.values):
+            a = np.asarray(v, dtype=np.float64)
+            if a.ndim == 1 and a.shape != (int(n_objects),):
+                raise ValueError(f"{owner} has {int(n_objects)} objects; PermeabilitySchedule.values[{j}] gives "
+                                 f"{a.shape[0]} permeabilities")
+            rows.append(np.broadcast_to(a, (n,)))
+        return PermeabilityTable(np.asarray(self.breakpoints, np.float64), np.stack(rows))
+
+    def __eq__(self, other):
+        return (isinstance(other, PermeabilitySchedule) and self.breakpoints == other.breakpoints
+                and len(self.values) == len(other.values)
+                and all(np.array_equal(np.asarray(a), np.asarray(b)) and np.ndim(a) == np.ndim(b)
+                        for a, b in zip(self.values, other.values)))
+
+    def __repr__(self):
+        vals = [v if np.ndim(v) == 0 else np.asarray(v).tolist() for v in self.values]
+        return f"PermeabilitySchedule(breakpoints={list(self.breakpoints)}, values={vals})"
+
+
+class PermeabilityTable(NamedTuple):
+    """A geometry's membrane permeability per object and over the walk's time, as the walk reads it."""
+    breakpoints: np.ndarray   #: (n_intervals - 1,) s, the times at which the next row holds
+    values: np.ndarray        #: (n_intervals, n) m/s; n = 1 (every object) or the geometry's object count
+
+
+def permeability_of(value, n_objects=1, owner="this geometry"):
+    """``(kappa_max, table)``: a geometry's membrane permeability as it stores it.
+
+    ``kappa_max`` is the largest permeability over the objects and over the walk's time -- the worst case that sizes
+    the walk (the step law's membrane term, the event capacity) -- or ``None`` when no wall is ever permeable (the
+    reflect path, the impermeable step rule, the compartment guard). ``table`` is ``None`` for one permeability of every
+    object at every time, else the :class:`PermeabilityTable` the walk reads per object and per step.
+
+    ``value`` is ``None``, one number, a sequence of one number per object (a geometry with ``n_objects > 1``), or a
+    :class:`PermeabilitySchedule`. A negative permeability is refused, and so is a per-object sequence of the wrong
+    length."""
     if value is None:
-        return None
-    k = float(value)
-    if k < 0.0:
-        raise ValueError(f"a permeability is a rate of crossing, non-negative; got {k}")
-    return k if k > 0.0 else None
+        return None, None
+    if isinstance(value, PermeabilitySchedule):
+        table = value.table(n_objects, owner)
+    elif np.ndim(value) == 0:
+        k = float(value)
+        if not np.isfinite(k) or k < 0.0:
+            raise ValueError(f"a permeability is a rate of crossing, finite and non-negative; got {k}")
+        return (k if k > 0.0 else None), None
+    else:
+        a = np.asarray(value, dtype=np.float64)
+        if int(n_objects) == 1:
+            raise ValueError(f"{owner} has one wall: its permeability is one number (m/s) or a PermeabilitySchedule "
+                             f"of numbers, not a sequence {value!r}")
+        if a.shape != (int(n_objects),) or not np.all(np.isfinite(a)) or np.any(a < 0.0):
+            raise ValueError(f"{owner} has {int(n_objects)} objects: a permeability per object is {int(n_objects)} "
+                             f"finite non-negative numbers (m/s); got shape {a.shape}")
+        table = PermeabilityTable(np.zeros(0, np.float64), a[None].copy())
+    k_max = float(np.max(table.values))
+    if k_max <= 0.0:
+        return None, None
+    return k_max, table
 
 
 PLACEMENT_BLOCK = 4096
@@ -236,8 +332,12 @@ class Geometry(ABC):
 
     # ---- wall / bulk properties (instance attributes; None = not set) ----
 
-    #: Membrane permeability kappa (m/s), or None for a reflecting wall.
+    #: Membrane permeability kappa (m/s): the largest over the geometry's objects and the walk's time, or None for
+    #: walls that never let a walker cross.
     permeability = None
+    #: The permeability per object and over time (:class:`PermeabilityTable`), or None when it is the one number
+    #: ``permeability`` for every object at every time.
+    permeability_table = None
     #: Transverse surface relaxivity rho (m/s), or None.
     surface_relaxivity_t2 = None
     #: Per-geometry override of the surface-relaxivity sub-step target `pore / frac`;

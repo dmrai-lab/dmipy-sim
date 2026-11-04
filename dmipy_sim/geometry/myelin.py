@@ -32,6 +32,16 @@ class ConcentricHit(NamedTuple):
     exhausted: jnp.ndarray #: bool -- the bounce budget ran out with path untested
 
 
+
+def _refuse_schedule(owner, **kappas):
+    """Refuse a :class:`~dmipy_sim.geometry.PermeabilitySchedule` on a myelinated substrate by name: its walls are
+    stepped by its own three-compartment kernel, whose permeability per axon is constant in time."""
+    from .base import PermeabilitySchedule
+    for name, k in kappas.items():
+        if isinstance(k, PermeabilitySchedule):
+            raise NotImplementedError(f"{owner}({name}=) takes a permeability per axon constant in time; its walls are "
+                                      f"stepped by the myelinated kernel, which does not read a PermeabilitySchedule")
+
 def pin_to_pool(xy, q, R_in, R_out, pool, nudge):
     """``xy`` pulled strictly onto the side of the concentric walls (radii ``R_in < R_out``) that ``pool`` (0 extra,
     1 lumen, 2 sheath) occupies, ``q`` its offset from the axon's centre: the side rule the fused step kernel applies
@@ -294,6 +304,7 @@ class MyelinatedCylinder(Geometry):
         self.D_intra = float(D_intra)
         self.D_myelin = float(D_myelin)
         self.D_extra = float(D_extra)
+        _refuse_schedule("MyelinatedCylinder", kappa_inner=kappa_inner, kappa_outer=kappa_outer)
         self.kappa_inner = float(kappa_inner) if kappa_inner is not None else None
         self.kappa_outer = float(kappa_outer) if kappa_outer is not None else None
         self.T2_intra = float(T2_intra) if T2_intra is not None else None
@@ -651,6 +662,7 @@ class PackedMyelinatedCylinders(Geometry):
         def _bcast_kappa(x, name):
             if x is None:
                 x = 0.0
+            _refuse_schedule("PackedMyelinatedCylinders", **{name: x})
             return _bcast(x, name)
 
         def _bcast_opt(x, name):

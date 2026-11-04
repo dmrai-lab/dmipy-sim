@@ -70,21 +70,22 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     step_l = jnp.float32(np.sqrt(6.0 * diffusivity * dt))
     reflect = geometry.reflect
     has_perm = geometry.permeability is not None
+    if has_perm:
+        from ..engine.physics import membrane_kappa
+        kappa_at, _ = membrane_kappa(geometry, diffusivity, dt)       # the step's, at its midpoint
 
-    def step(carry, _):
+    def step(carry, k):
         r, key = carry
         key, sk = jax.random.split(key)
         if has_perm:
             key, pk = jax.random.split(key)
-            r2 = geometry.interact(r, pair_step(sk) * step_l,
-                                   kappa_over_D=jnp.float32(geometry.permeability / diffusivity),
-                                   key=pk).r
+            r2 = geometry.interact(r, pair_step(sk) * step_l, kappa_over_D=kappa_at(k), key=pk).r
         else:
             r2 = reflect(r, pair_step(sk) * step_l)
         return (r2, key), r2
 
     def one(r0, key):
-        (_, _), pos = jax.lax.scan(step, (r0, key), None, length=n_t)
+        (_, _), pos = jax.lax.scan(step, (r0, key), jnp.arange(n_t, dtype=jnp.int32))
         return pos
 
     mk = jax.random.PRNGKey(seed)

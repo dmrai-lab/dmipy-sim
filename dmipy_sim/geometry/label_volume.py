@@ -147,7 +147,7 @@ class LabelVolume(Geometry):
         self.pool_index = names.index(self.pool)
 
         self.surface_relaxivity_t2 = None if surface_relaxivity_t2 is None else float(surface_relaxivity_t2)
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, 1, "LabelVolume")
 
         # label -> pool id, -1 for a label no pool claims (never reached: the constructor refused it)
         pool_of = np.full(256, -1, np.int8)

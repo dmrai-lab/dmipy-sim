@@ -205,13 +205,14 @@ def test_permeability_on_curved_myelinated_is_refused():
         geometry_from_spec(spec)
 
 
-def test_a_plane_off_the_x_mid_slab_is_refused():
+def test_a_plane_that_is_not_across_x_is_refused():
+    """A slab's membrane is a plane ``x = const`` (point ``[x, 0, 0]``, normal along x); one off that axis is refused."""
     g = FAMILIES["permeable_slab"]()
     spec = spec_of(g)
     w0 = spec.walls[0]
     moved = dataclasses.replace(w0.surface, point=[0.0, 1e-6, 0.0])
     spec = dataclasses.replace(spec, walls=[dataclasses.replace(w0, surface=moved)])
-    with pytest.raises(SpecError, match="plane|x-mid-slab"):
+    with pytest.raises(SpecError, match="not a plane across x"):
         geometry_from_spec(spec)
 
 

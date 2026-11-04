@@ -63,7 +63,9 @@ class WalkRequest(NamedTuple):
     dt_sim: float             #: the step's duration; the step length is ``sqrt(6 D dt_sim)`` times the law's atom (:mod:`dmipy_sim.math.step_law`)
     diffusivity: float        #: m^2/s
     record: bool              #: record the boundary local time and the compartment beside the positions
-    kappa_over_D: float       #: the membrane's permeability over D; 0 for an impermeable walk
+    kappa_over_D: float       #: the membrane's permeability over D (the largest over the objects and the walk's time); 0
+                              #: for an impermeable walk. A permeability per object or over time is walked by the JAX
+                              #: kernels alone (the producer refuses another backend for it)
     count_walls: bool         #: count hits and crossings (exhaustion is always reported)
     bounce_budget: Optional[int]   #: the budget the geometry's loop runs at for this walk
     seed: int                 #: the producer's master seed (the per-walker keys derive from it)

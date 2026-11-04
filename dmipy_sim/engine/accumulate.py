@@ -453,7 +453,7 @@ def field_read_of_pilot(pools, *, B0, chi, step_s, steps, T_e, floor=FIELD_READ_
 # ------------------------------------------------------------------------------------------------------ the kinds
 class Kind(NamedTuple):
     """What the accumulation reads off one physics step: the step itself and the channels in its carry."""
-    inner: object             #: ``(carry, None) -> (carry, None)``, one physics step
+    inner: object             #: ``(carry, step) -> (carry, None)``, one physics step; ``step`` its walk-wide index (int32)
     pos_of: object            #: the recorded (continuous) position ``(3,)`` in the carry
     read_pos_of: object       #: the position the field is read at (the in-cell one of a periodic kernel)
     blt_of: object = None     #: the cumulative local time in the carry, or None
@@ -525,7 +525,7 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
         cc, mp, mb, qp, qb, evc, evb = c
         r0 = kind.pos_of(cc)
         b0 = kind.blt_of(cc) if has_b else None
-        cc, _ = kind.inner(cc, None)
+        cc, _ = kind.inner(cc, s0 + i)                      # the walk-wide index of the step taken
         tau = (i.astype(jnp.float32) + 0.5) * inv_len - 0.5
         pw = tau ** js
         dx = kind.pos_of(cc) - r0

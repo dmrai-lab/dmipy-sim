@@ -29,6 +29,20 @@ def _packed_sph():
     return d.PackedSpheres([1e-6, 0.8e-6], c, L)
 
 
+def _packed_cyl_per_object(schedule=False):
+    c, L, _ = d.pack_cylinders([1e-6, 0.8e-6, 1.2e-6], target_vf=0.3, seed=1)
+    k = [1e-5, 0.0, 3e-5]
+    perm = d.PermeabilitySchedule([2e-4], [k, 2e-5]) if schedule else k
+    return d.PackedCylinders([1e-6, 0.8e-6, 1.2e-6], c, L, permeability=perm)
+
+
+def _packed_myelin_per_axon():
+    L = float(np.sqrt(np.pi * 3 * (1e-6 / 0.7) ** 2 / 0.5))
+    _, _, c = d.pack_myelinated_cylinders([1e-6] * 3, 0.7, None, cell_size=L, seed=0)
+    return d.PackedMyelinatedCylinders([1e-6] * 3, 0.7, c, L, N_max=4, kappa_inner=[1e-5, 0.0, 2e-5],
+                                       compartments=d.Compartments(extra=d.Pool(D=2e-9), intra=d.Pool(D=2e-9), myelin=d.Pool(D=0.0)))
+
+
 CL = np.stack([np.zeros(6), np.linspace(0, 8e-6, 6) ** 2 / 8e-6, np.linspace(0, 8e-6, 6)], axis=1)
 GEOMETRIES = {
     "free": lambda: d.FreeDiffusion(),
@@ -37,9 +51,17 @@ GEOMETRIES = {
     "cylinder_permeable": lambda: d.Cylinder(3e-6, (0, 0, 1), permeability=2e-5),
     "ellipsoid": lambda: d.Ellipsoid((2e-6, 3e-6, 4e-6)),
     "slab": lambda: PermeableSlab1D(6e-6, 1e-5, surface_relaxivity_t2=1e-6),
+    "slab_layers": lambda: PermeableSlab1D(7e-6, [2e-5, 2.5e-6], membranes=[2e-6, 5e-6]),
+    "slab_layers_schedule": lambda: PermeableSlab1D(7e-6, d.PermeabilitySchedule([2e-4], [[2e-5, 2.5e-6], [2.5e-6, 0.0]]),
+                                                    membranes=[2e-6, 5e-6]),
+    "slab_schedule": lambda: PermeableSlab1D(6e-6, d.PermeabilitySchedule([2e-4], [1e-5, 0.0])),
+    "sphere_schedule": lambda: d.Sphere(3e-6, permeability=d.PermeabilitySchedule([2e-4], [2e-5, 1e-5])),
     "shell_cyl": lambda: PermeableShell(2e-6, 4e-6, 1e-5, kind="cylinder"),
     "packed_cyl": _packed_cyl,
     "packed_sph": _packed_sph,
+    "packed_cyl_per_object": _packed_cyl_per_object,
+    "packed_cyl_schedule": lambda: _packed_cyl_per_object(schedule=True),
+    "packed_myelin_per_axon": _packed_myelin_per_axon,
     "myelinated": lambda: d.MyelinatedCylinder(2e-6, 3e-6, (0, 0, 1), kappa_inner=1e-5,
                                                compartments=d.Compartments(intra=d.Pool(D=D, T2=0.05), myelin=d.Pool(T2=0.01, D=0.0), extra=d.Pool(D=D, T2=0.08))),
     "packed_myelin": _packed_myelin,
@@ -92,6 +114,27 @@ def test_the_published_examples_build_geometries(tmp_path):
     assert isinstance(pm, d.PackedMyelinatedCylinders) and pm.N_actual == 3
     with pytest.raises(SpecError, match="pool by pool"):                 # a multi-surface bundle: walk's job
         geometry_from_spec(load_spec(fix / "mesh_bundle.sub.json"))
+
+
+def test_a_permeability_per_object_and_over_time_is_the_walls_table():
+    """A packed cell's permeability per object is its wall's table, one row per interval and one value per instance, and
+    the wall's permeability its largest; a slab's membranes are a wall each, a constant one stating its permeability
+    alone; a myelinated pack's per-axon permeability is the axolemma's table; a schedule's breakpoints are the table's."""
+    from dmipy_replay.spec.substrate import Directional
+    w = _packed_cyl_per_object().spec.wall("objects")
+    assert w.permeability_table.breakpoints == [] and w.permeability_table.in_to_out == [[1e-5, 0.0, 3e-5]]
+    assert w.permeability == Directional(3e-5, 3e-5)
+    w = _packed_cyl_per_object(schedule=True).spec.wall("objects")
+    assert w.permeability_table.breakpoints == [2e-4] and w.permeability_table.in_to_out == [[1e-5, 0.0, 3e-5], [2e-5] * 3]
+    s = GEOMETRIES["slab_layers"]().spec
+    assert [x.permeability.in_to_out for x in s.walls] == [2e-5, 2.5e-6] and all(x.permeability_table is None for x in s.walls)
+    assert [x.surface.normal[0] for x in s.walls] == [1.0, -1.0] and [x.surface.point[0] for x in s.walls] == [2e-6, 5e-6]
+    s = GEOMETRIES["slab_layers_schedule"]().spec
+    assert [x.permeability_table.in_to_out for x in s.walls] == [[[2e-5], [2.5e-6]], [[2.5e-6], [0.0]]]
+    pm = _packed_myelin_per_axon().spec
+    assert pm.wall("axolemma").permeability_table.in_to_out == [pytest.approx([1e-5, 0.0, 2e-5], rel=1e-6)]   # float32 per axon
+    assert pm.wall("sheath").permeability_table is None
+    assert d.Cylinder(3e-6, (0, 0, 1), permeability=d.PermeabilitySchedule([], [2e-5])).spec.wall("membrane").permeability_table is None
 
 
 def test_per_instance_wall_properties_are_refused_honestly():

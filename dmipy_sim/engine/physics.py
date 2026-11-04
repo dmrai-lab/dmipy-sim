@@ -103,7 +103,83 @@ two-compartment slab of half-width ``R`` is compared with the root of ``k tan(k 
 ``kappa R / D`` from 0.01 to 50 at ``h / R`` = 0.18, 0.09, 0.045 the relative error is negative (the walk exchanges
 slightly slower) and largest at ``kappa R / D`` near 1: 0.292, 0.308, 0.317 of ``lambda_1 dt / 5`` (``lambda_1 =
 pi^2 D / R^2``), 0.33 at zero step. A permeable wall's step is the step law's pore term with this added to the wall's
-own coefficient (:func:`tolerance_sub_steps`)."""
+own coefficient (:func:`tolerance_sub_steps`).
+
+It bounds every permeability a geometry states, so the step depends on the largest permeability over the objects and
+over the walk's time only through whether it is positive. Several membranes of their own permeability: the walk's
+error is local to each membrane, its first-order terms add over the membranes, each weighted by the mode's share at
+it, with one sign (the walk exchanges slower), and the sum stays under the one-membrane bound -- on three layers
+(:class:`~dmipy_sim.math.step_law.LayeredLattice`, widths up to 2:1, each ``kappa w_min / D`` from 0.03 to 30) at most
+0.14 of ``lambda_1 dt / 5`` with ``lambda_1 = pi^2 D / w_min^2`` the narrowest layer's, its declared ``pore_rate``;
+the bound is reached only as the other membranes seal and one membrane between two layers is left. A permeability
+piecewise constant in time: each interval is walked as a constant permeability, and a breakpoint on a step boundary
+composes the intervals' one-step operators as the exact propagators compose, so the error is the intervals' own; a
+breakpoint inside a step is taken at the nearest step boundary (:func:`membrane_kappa`), an error first order in the
+step's duration, second in its length."""
+
+
+def membrane_kappa(geometry, diffusivity, dt_step):
+    """``(kappa_at, record)``: the membrane permeability over ``D`` that each step of a walk reads, from the geometry's
+    ``permeability`` and ``permeability_table`` (:func:`~dmipy_sim.geometry.base.permeability_of`); ``(None, None)``
+    for walls that never let a walker cross.
+
+    ``kappa_at(step)`` is the float32 ``kappa / D`` of the walk's step ``step`` (the walk-wide index from 0, an int32):
+    one number, or one per object when the geometry states a permeability per object. A step of ``dt_step`` seconds
+    reads the permeability at its MIDPOINT, ``(step + 1/2) dt_step``: the interval of the schedule that holds that
+    time. For a schedule whose breakpoints lie on step boundaries this is the stated schedule exactly, and every
+    breakpoint is half a step from every time read, so the rounding of a time cannot move it. A breakpoint inside a
+    step takes effect at the step boundary nearest to it (the start rule would take it at the next boundary, a shift
+    of up to a whole step, always late): the walk then exchanges ``|Delta kappa| |delta|`` more or less per unit membrane
+    area and unit concentration jump than the stated schedule, ``|delta| <= dt_step / 2``, which is first order in the
+    step's duration and so second order in its length ``h = sqrt(6 D dt)`` -- the order of the walk's own exchange error
+    (:data:`MEMBRANE_COEFFICIENT`) -- and it is warned of and recorded. ``kappa_at`` of a permeability constant in time
+    ignores ``step`` (``None`` is then allowed); one that varies refuses ``None``.
+
+    ``record`` is ``None`` for one permeability of every object at every time (the walk is the scalar one), else the
+    walk's record of the permeability it walked: ``rule`` (``"midpoint"``), ``breakpoints_s`` and ``values_m_per_s``
+    as stated (``(n_intervals, n)``, ``n`` one or the object count), ``step_s``, and ``taken_at_s`` / ``shift_s``:
+    the step boundary at which each breakpoint took effect and its distance from the stated time."""
+    k = geometry.permeability
+    if k is None or not float(k) > 0.0:
+        return None, None
+    D = float(diffusivity)
+    table = geometry.permeability_table
+    if table is None:
+        c = jnp.float32(float(k) / D)
+        return (lambda step: c), None
+    vals = np.asarray(table.values, np.float64)
+    n = int(vals.shape[1])
+    rows = jnp.asarray(vals / D if n > 1 else vals[:, 0] / D, jnp.float32)          # (P, n) or (P,)
+    brk = np.asarray(table.breakpoints, np.float64)
+    dt = float(dt_step)
+    first = np.ceil(brk / dt - 0.5).astype(np.int64)        # the first step whose midpoint is at or past the breakpoint
+    taken = first * dt
+    shift = taken - brk
+    record = dict(rule="midpoint", breakpoints_s=brk.tolist(), values_m_per_s=vals.tolist(), step_s=dt,
+                  taken_at_s=taken.tolist(), shift_s=shift.tolist())
+    off = np.abs(shift) > 1e-9 * dt
+    if np.any(off):
+        import warnings
+        j = int(np.argmax(np.abs(shift)))
+        warnings.warn(
+            f"the permeability breakpoint at {brk[j]!r} s falls inside a step of {dt!r} s; the walk takes it at the "
+            f"nearest step boundary, {taken[j]!r} s (a shift of {shift[j]:+.3g} s, at most half a step), and so "
+            f"exchanges |Delta kappa| |shift| more or less per unit membrane area and unit concentration jump than the "
+            f"stated schedule -- second order in the step, the order of the walk's own error. A breakpoint on a step "
+            f"boundary (a whole number of the walk's blocks) is taken exactly. See CoefficientWalk.work['permeability'].",
+            UserWarning, stacklevel=3)
+    if brk.size == 0:
+        c = rows[0]
+        return (lambda step: c), record
+    first_j = jnp.asarray(first, jnp.int32)
+
+    def kappa_at(step):
+        if step is None:
+            raise ValueError("this permeability varies in time: a step of the walk reads it at the step's index, and "
+                             "this caller passed none")
+        piece = jnp.sum((jnp.asarray(step, jnp.int32) >= first_j).astype(jnp.int32))
+        return rows[piece]
+    return kappa_at, record
 
 
 def has_membrane(geometry) -> bool:
@@ -457,14 +533,16 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                  T1: float = None, sub_steps: int = None, track_compartment: bool = False, f_band: float = None):
     """Return ``(step_fn, has_weight)``: the fused scan body for one waveform timestep.
 
-    Each step consumes ``(g_t, chi_t)``: the gradient sample and a binary transverse-coherence
-    flag. When ``chi_t == 1`` the magnetisation is transverse (T2 decay and surface relaxivity
-    act); when ``chi_t == 0`` it is stored longitudinally (only T1 acts). A plain spin echo
-    passes ``chi_t == 1`` throughout.
+    Each step consumes ``(g_t, chi_t)`` or ``(g_t, chi_t, k_t)``: the gradient sample, a binary
+    transverse-coherence flag and the sample's index from 0. When ``chi_t == 1`` the magnetisation is
+    transverse (T2 decay and surface relaxivity act); when ``chi_t == 0`` it is stored longitudinally
+    (only T1 acts). A plain spin echo passes ``chi_t == 1`` throughout. A permeability that varies in
+    time needs ``k_t``: sub-step ``j`` of sample ``k_t`` is the walk's step ``k_t n_sub + j``, which
+    reads the permeability at its midpoint (:func:`membrane_kappa`).
 
     The carry is ``(r, phi, log_w, key, comp)`` for every geometry and effect::
 
-        step_fn(carry, (g_t, chi_t)) -> (carry, None)
+        step_fn(carry, (g_t, chi_t[, k_t])) -> (carry, None)
 
     ``comp`` is the walker's compartment id (see ``Geometry.classify_position``). It is advanced
     with ``geometry.classify_position_carry`` when the geometry has per-compartment bulk
@@ -532,35 +610,36 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
 
     if has_perm:
         # D is single across a permeable wall (unequal D is rejected at construction), so κ/D and
-        # ρ/D use the single diffusivity.
-        kappa_over_D = jnp.float32(geometry.permeability / float(_D0))
+        # ρ/D use the single diffusivity; the permeability of a step is the one membrane_kappa reads.
+        kappa_at, _ = membrane_kappa(geometry, float(_D0), dt / n_sub)
         rho_over_D   = (jnp.float32(geometry.surface_relaxivity_t2 / float(_D0))
                         if has_surf else jnp.float32(0.0))
         interact = geometry.interact               # absorbs a geometry that also reports crossing / refusal
 
-        def _move(r, step, comp, key):
-            hit = interact(r, step, kappa_over_D=kappa_over_D, rho_over_D=rho_over_D, key=key)
+        def _move(r, step, comp, key, step_index):
+            hit = interact(r, step, kappa_over_D=kappa_at(step_index), rho_over_D=rho_over_D, key=key)
             return hit.r, hit.dlog_w
 
     elif has_surf:
         rho_nom = jnp.float32(geometry.surface_relaxivity_t2)
         reflect_with_log_weight = geometry.reflect_with_log_weight
 
-        def _move(r, step, comp, key):
+        def _move(r, step, comp, key, step_index):
             return reflect_with_log_weight(r, step, rho_nom / _D_at(comp))
 
     else:
         reflect = geometry.reflect
 
-        def _move(r, step, comp, key):
+        def _move(r, step, comp, key, step_index):
             return reflect(r, step), jnp.float32(0.0)
 
     carry_fn = geometry.classify_position_carry
 
     def step_fn(carry, inputs):
-        g_t, chi_t = inputs
+        g_t, chi_t = inputs[0], inputs[1]
+        k_t = inputs[2] if len(inputs) > 2 else None
 
-        def _sub(c, _):
+        def _sub(c, j):
             r, phi, log_w, key, comp = c
             if has_perm:
                 key, k_step, k_wall = jax.random.split(key, 3)
@@ -569,7 +648,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
                 k_wall = None
             step = pair_step(k_step) * jnp.sqrt(6.0 * _D_at(comp) * dt_sub_f32)
 
-            r_new, dlog_w = _move(r, step, comp, k_wall)
+            r_new, dlog_w = _move(r, step, comp, k_wall, None if k_t is None else k_t * n_sub + j)
             comp_new = carry_fn(r_new, comp) if carry_comp else comp
 
             # surface relaxivity accrues only while transverse
@@ -582,7 +661,7 @@ def make_step_fn(geometry, diffusivity: float, dt: float, T2: float = None,
             phi_new = phi + gamma_dt_sub * jnp.dot(g_t, r_new)
             return (r_new, phi_new, log_w + dlog_w, key, comp_new), None
 
-        carry_out, _ = jax.lax.scan(_sub, carry, None, length=n_sub)
+        carry_out, _ = jax.lax.scan(_sub, carry, jnp.arange(n_sub, dtype=jnp.int32))
         return carry_out, None
 
     step_fn.n_sub = n_sub
