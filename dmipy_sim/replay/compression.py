@@ -432,27 +432,55 @@ def _device_matmul():
 FLOOR_ESTIMATOR = "standard_error"
 
 
-def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
-    """The Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
-    (:func:`coded_phases`, computed once, no path decoded): per measurement the standard error of the weighted mean
-    signal, ``SE_m = sqrt(sum_w w^2 |s_wm - S_m|^2) / sum_w w`` with ``s_wm = exp(logw + i phi_wm)`` the walker's
-    complex term, ``S_m`` the mean (:func:`_mean_signal`) and the deviation taken as a complex modulus. It is
-    deterministic. Returns ``floor_max`` (the battery maximum of ``SE_m``), ``per_family`` (the same per family),
-    ``floor_estimator``, ``noise_floor`` ``1 / sqrt(N_w)`` and the walkers' effective count
-    ``n_eff = (sum w)^2 / sum w^2``."""
-    env = env or default_battery()
-    G, meta = acquisition_battery(int(n_t), float(dt), env)
-    phi = coded_phases(C, dt, G, n_t, device=device)
+def floor_sums(phi, w=None, logw=None):
+    """The additive sums the Monte-Carlo floor is a function of, over the walkers whose phases are ``phi``
+    ``(N_w, n_meas)`` (:func:`coded_phases`), weighted ``w`` (ones when None) with the log-amplitude ``logw`` (zeros when
+    None): with ``s = exp(logw + i phi)`` the walker's complex term, per measurement ``W = sum w``, ``A = sum w s``,
+    ``Qs = sum w^2 |s|^2``, ``B = sum w^2 s``, and ``Q = sum w^2``, with the walker count ``n``. The sums of disjoint walker
+    sets add (:func:`add_floor_sums`), and :func:`floor_from_sums` reads the floor of their union from the total
+    alone."""
     nw = phi.shape[0]
     ww = np.ones(nw) if w is None else np.asarray(w, float)
     lw = np.zeros(nw) if logw is None else np.asarray(logw, float)
     s = np.exp(lw[:, None] + 1j * phi)
-    S = (s * ww[:, None]).sum(0) / ww.sum()
-    se = np.sqrt(((np.abs(s - S) ** 2) * (ww ** 2)[:, None]).sum(0)) / ww.sum()
+    w2 = ww ** 2
+    return dict(n=int(nw), W=float(ww.sum()), Q=float(w2.sum()), A=(s * ww[:, None]).sum(0), B=(s * w2[:, None]).sum(0),
+                Qs=((np.abs(s) ** 2) * w2[:, None]).sum(0))
+
+
+def add_floor_sums(a, b):
+    """The :func:`floor_sums` of the union of two disjoint walker sets: the sums of the two."""
+    return {k: a[k] + b[k] for k in a}
+
+
+def floor_from_sums(sums, meta):
+    """The floor of the walkers whose :func:`floor_sums` are ``sums``, over the battery measurements ``meta``
+    (:func:`acquisition_battery`): per measurement the standard error of the weighted mean signal,
+    ``SE_m = sqrt(sum w^2 |s_m - S_m|^2) / sum w`` with ``S_m = sum w s_m / sum w`` and the deviation taken as a complex
+    modulus, which the five sums give exactly: ``sum w^2 |s - S|^2 = Qs - 2 Re(conj(S) B) + |S|^2 Q``. Returns
+    ``floor_max`` (the battery maximum of ``SE_m``), ``per_family`` (the same per family), ``floor_estimator``,
+    ``noise_floor`` ``1 / sqrt(N_w)`` and the walkers' effective count ``n_eff = (sum w)^2 / sum w^2``."""
+    S = sums["A"] / sums["W"]
+    var = sums["Qs"] - 2.0 * np.real(np.conj(S) * sums["B"]) + (np.abs(S) ** 2) * sums["Q"]
+    se = np.sqrt(np.clip(var, 0.0, None)) / sums["W"]
     fams = sorted({m["fam"] for m in meta})
     per_fam = {f: float(se[[i for i, m in enumerate(meta) if m["fam"] == f]].max()) for f in fams}
-    return dict(floor_max=float(se.max()), floor_estimator=FLOOR_ESTIMATOR, noise_floor=float(1 / np.sqrt(nw)),
-                per_family=per_fam, n_eff=float(ww.sum() ** 2 / (ww ** 2).sum()))
+    return dict(floor_max=float(se.max()), floor_estimator=FLOOR_ESTIMATOR, noise_floor=float(1 / np.sqrt(sums["n"])),
+                per_family=per_fam, n_eff=float(sums["W"] ** 2 / sums["Q"]))
+
+
+def measure_floor_coded(C, dt, n_t, env=None, *, w=None, logw=None, device="auto"):
+    """The Monte-Carlo floor of a walk over the envelope's battery, read from its bridge coefficients
+    (:func:`coded_phases`, computed once, no path decoded): per measurement the standard error of the weighted mean
+    signal, ``SE_m = sqrt(sum_w w^2 |s_wm - S_m|^2) / sum_w w`` with ``s_wm = exp(logw + i phi_wm)`` the walker's
+    complex term, ``S_m`` the mean and the deviation taken as a complex modulus (:func:`floor_sums`,
+    :func:`floor_from_sums`). It is deterministic. Returns ``floor_max`` (the battery maximum of ``SE_m``),
+    ``per_family`` (the same per family), ``floor_estimator``, ``noise_floor`` ``1 / sqrt(N_w)`` and the walkers'
+    effective count ``n_eff = (sum w)^2 / sum w^2``."""
+    env = env or default_battery()
+    G, meta = acquisition_battery(int(n_t), float(dt), env)
+    phi = coded_phases(C, dt, G, n_t, device=device)
+    return floor_from_sums(floor_sums(phi, w, logw), meta)
 
 
 # ------------------------------------------- per-walker physics-channel codecs
