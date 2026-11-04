@@ -180,13 +180,24 @@ def main(argv=None):
     ap.add_argument("--n-walkers", type=int, default=10_000)
     ap.add_argument("--out", default="fexi_axr.json")
     ap.add_argument("--pilot", action="store_true", help="two mixing times and two permeabilities")
+    ap.add_argument("--targets", type=float, nargs="+", default=list(AXR_TARGETS), help="the two-site rates swept, s^-1")
+    ap.add_argument("--scaled", action="store_true",
+                    help="each permeability on mixing times scaled to its own rate (0.1 to 2.5 over it); kappa = 0 on T_M")
     a = ap.parse_args(argv)
     t_m = (T_M[0], T_M[3]) if a.pilot else T_M
     n = a.n_walkers
     P = protocol(t_m)
     scheme = AcquisitionScheme(P)
     _, f = substrate(0.0)
-    kappas = [0.0] + [axr * R * (1.0 - f) / 2.0 for axr in (AXR_TARGETS[:1] if a.pilot else AXR_TARGETS)]
+    targets = a.targets[:1] if a.pilot else a.targets
+    kappas = [0.0] + [axr * R * (1.0 - f) / 2.0 for axr in targets]
+    schemes = {0.0: (P, scheme)}
+    for axr, kappa in zip(targets, kappas[1:]):
+        if a.scaled:
+            Pk = protocol(tuple(np.round(np.geomspace(0.1, 2.5, 8) / axr / DT) * DT))
+            schemes[kappa] = (Pk, AcquisitionScheme(Pk))
+        else:
+            schemes[kappa] = (P, scheme)
     rec = dict(D=D, R=R, f=f, lattice="square, one cylinder per cell", delta=DELTA, Delta=BIG_DELTA, dt=DT, b_f=B_F, b_d=B_D, t_m=list(t_m),
                n_walkers=n, runs=[])
     t0 = time.time()
@@ -194,9 +205,11 @@ def main(argv=None):
     for i, kappa in enumerate(kappas):
         geom, _ = substrate(kappa)
         t1 = time.time()
-        S, C, pl, walked = walk_protocol(P, geom, n, seed=1000 + i, compartments=(kappa == 0.0))
-        theta, se = fit_axr(scheme, S, C)
-        run = dict(kappa=kappa, kappa_R_over_D=kappa * R / D, signal=S.tolist(), signal_se=np.sqrt(np.diag(C)).tolist(),
+        Pk, sk = schemes[kappa]
+        S, C, pl, walked = walk_protocol(Pk, geom, n, seed=1000 + i + (100 if a.scaled else 0), compartments=(kappa == 0.0))
+        theta, se = fit_axr(sk, S, C)
+        run = dict(kappa=kappa, kappa_R_over_D=kappa * R / D, t_m=[float(q.TM) for q in Pk], signal=S.tolist(),
+                   signal_se=np.sqrt(np.diag(C)).tolist(),
                    adc_eq=theta[0], sigma=theta[1], axr=theta[2], adc_eq_se=se[0], sigma_se=se[1], axr_se=se[2],
                    walk=dict(T=walked["T"], K=walked["K"], windows=walked["windows"],
                              exhausted_steps=(walked["work"] or {}).get("exhausted_steps")), seconds=time.time() - t1)
@@ -204,7 +217,7 @@ def main(argv=None):
             pools = pool_diffusivities(scheme, pl)
             rec["D_interstitium"], rec["D_lumen"] = pools
         else:
-            pred, rate = two_site(scheme, f, pools[1], pools[0], kappa)
+            pred, rate = two_site(sk, f, pools[1], pools[0], kappa)
             run.update(axr_predicted=pred[2], sigma_predicted=pred[1], adc_eq_predicted=pred[0], two_site_rate=rate)
         rec["runs"].append(run)
         Path(a.out).write_text(json.dumps(rec, indent=1))                 # every finished run kept as it lands
