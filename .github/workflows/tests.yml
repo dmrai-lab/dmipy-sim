@@ -11,8 +11,8 @@ env:
   # the forms and the reader at the commits this revision was tested against: the heads of the FEXI pull requests of
   # dmipy-analytic (karger_waveform and the FEXI forms) and dmipy-replay (fexi, fexi_protocol, fexi_bvalues), on their
   # mains at the merges of dmrai-lab/dmipy-analytic#15 and dmrai-lab/dmipy-replay#31
-  DMIPY_ANALYTIC_REF: 3611a9f0be3ea843f3f83a66a016437ad9083658
-  DMIPY_REPLAY_REF: 92c9218c06b65fedf39aaf6a580fd882f8287397
+  DMIPY_ANALYTIC_REF: f115d52e1529617d5f86dd0c2b504400bac21087
+  DMIPY_REPLAY_REF: 9a217c8e5e39b699e5b9d6f6d5a7fb751be13319
 
 jobs:
   test:

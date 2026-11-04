@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import re
 import time
 import zipfile
 from pathlib import Path
@@ -61,6 +62,19 @@ def cmd_budget(a):
     return 0 if spent < LIMIT_USD else 3
 
 
+def pinned_stack():
+    """The dmipy-analytic and dmipy-replay requirements at the commits ``.github/workflows/tests.yml`` pins
+    (``DMIPY_ANALYTIC_REF``, ``DMIPY_REPLAY_REF``): the one place the stack's commits are stated, so the GPU tier tests
+    the same stack as the CPU tier. Refused when tests.yml states either ref no more."""
+    wf = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    refs = {k: re.search(rf"^\s*{k}:\s*([0-9a-f]{{40}})\s*$", wf, re.M) for k in ("DMIPY_ANALYTIC_REF", "DMIPY_REPLAY_REF")}
+    missing = [k for k, m in refs.items() if m is None]
+    if missing:
+        raise SystemExit(f"gpu tier: tests.yml states no {', '.join(missing)}")
+    return [f"dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@{refs['DMIPY_ANALYTIC_REF'].group(1)}",
+            f"dmipy-replay[torch] @ git+https://github.com/dmrai-lab/dmipy-replay@{refs['DMIPY_REPLAY_REF'].group(1)}"]
+
+
 try:
     import modal
 except ImportError:                                   # `budget` needs no Modal
@@ -68,8 +82,9 @@ except ImportError:                                   # `budget` needs no Modal
 
 if modal is not None:
     app = modal.App("dmipy-sim-gpu-tier")
-    image = (modal.Image.debian_slim(python_version="3.12")
+    image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
+             .pip_install(*pinned_stack())                       # the commits tests.yml pins, never the released packages
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
