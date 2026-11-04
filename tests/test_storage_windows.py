@@ -42,10 +42,10 @@ def _magnetic(spec):
                         validity=dataclasses.replace(spec.validity, tiers=list(spec.validity.tiers) + ["field"]))
 
 
-def _walk(window_T, K, *, n_w=N_W, seed=0, T_max=T):
+def _walk(window_T, K, *, n_w=N_W, seed=0, T_max=T, first_walker=0):
     """The cell walked with C1 (events), C2 and C3 (the slab grid read in the walk, 16 modes), every walker's
     block ends kept, in windows of ``window_T`` at ``K`` bands each."""
-    w = _walk_geometry(n_w, 2e-9, _geometry(), T_max, DT, seed=seed, require_gpu=False, K=K, window_T=window_T,
+    w = _walk_geometry(n_w, 2e-9, _geometry(), T_max, DT, seed=seed, first_walker=first_walker, require_gpu=False, K=K, window_T=window_T,
                                 field_basis=_slab_grid(), K_c3=16, raw_subset=n_w)
     return dataclasses.replace(w, spec=_magnetic(w.spec))
 
@@ -299,6 +299,29 @@ def test_shards_of_a_windowed_walk_merge(packs):
     kw = dict(tissue=TIS, scanner=3.0, complex_signal=True, tol=None)         # the full read: a union's smaller floor plans more bands than a shard's
     Sa, Sb = two.replay(seq, **kw), b.replay(seq, **kw)
     npt.assert_allclose(merged.replay(seq, **kw), (Sa + Sb) / 2.0, atol=1e-6)
+
+
+def test_windowed_shards_state_the_certificate_of_the_whole_windowed_build():
+    """Walker ranges of one seed, each stored in two windows, merge to the floors a whole windowed build of the same
+    walkers states: every window's, and the bound over the windows (``floor_max``, ``per_family``, ``noise_floor``)."""
+    from dmipy_sim.replay.bank import merge_packs
+    kw = dict(K=19, blt_temporal_K=19, susc_path_K=16, window_T=0.01, **_kw())
+    whole = _float_pack(_walk(0.01, 19, n_w=N_W, seed=5), id="t/whole", **kw)
+    half = N_W // 2
+    shards = [_float_pack(_walk(0.01, 19, n_w=half, seed=5, first_walker=i * half), id=f"t/h{i}", **kw) for i in range(2)]
+    fw, fm = whole.meta["fidelity"], merge_packs(shards, id="t/merged").meta["fidelity"]
+    assert fm["combined"] == "bound_over_windows" and fm["floor_combined"] == "exact_union" and len(fm["windows"]) == 2
+    print(f"windowed floor_max whole={fw['floor_max']:.10g} merged={fm['floor_max']:.10g} "
+          f"windows={[(a['floor_max'], b['floor_max']) for a, b in zip(fw['windows'], fm['windows'])]}")
+    for key in ("floor_max", "noise_floor"):
+        assert fm[key] == pytest.approx(fw[key], rel=2e-5), key
+    for fam, v in fw["per_family"].items():
+        assert fm["per_family"][fam]["floor_max"] == pytest.approx(v["floor_max"], rel=2e-5), fam
+    for a, b in zip(fw["windows"], fm["windows"]):
+        for key in ("floor_max", "noise_floor"):
+            assert b[key] == pytest.approx(a[key], rel=2e-5), key
+        for fam, v in a["per_family"].items():
+            assert b["per_family"][fam]["floor_max"] == pytest.approx(v["floor_max"], rel=2e-5), fam
 
 
 def _float_pack(*a, **k):

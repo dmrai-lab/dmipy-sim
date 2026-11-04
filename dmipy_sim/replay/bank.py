@@ -22,6 +22,8 @@ from __future__ import annotations
 import dmipy_replay.replay.compression as _r_compression
 import functools
 import json
+import re
+import types
 import logging
 from dmipy_replay.replay.field import _refuse_trace_component, frame_from_axis, susc_path_coeffs, susc_path_decode, susc_path_field
 from dmipy_replay.replay.storage import mode_count
@@ -282,21 +284,19 @@ def restate_maxima(fid):
 
 
 def pool_standard_errors(floors, weights):
-    """The standard error of the weighted mean over several independent shards of one walk's walkers, from the
-    shards' own: ``sqrt(sum_i (W_i / W)^2 se_i^2)`` with ``se_i`` the shard's standard error (a pack's ``floor_max``,
-    ``noise_floor``, ...), ``W_i`` its total walker weight (its walker count when unweighted) and ``W = sum_i W_i``.
-    Per measurement this is the standard error of the pooled mean, so the pooled battery maximum bounds the union's
-    from above and equals it when the shards share one walker law. ``floors`` and ``weights`` are equally long."""
+    """The planner's PREDICTION of the standard error of the weighted mean over several independent shards of one walk's
+    walkers, before anything is walked, from the shards' own: ``sqrt(sum_i (W_i / W)^2 se_i^2)`` with ``se_i`` the
+    shard's standard error (a planned floor, ``1 / sqrt(N)``, ...), ``W_i`` its total walker weight (its walker count when
+    unweighted) and ``W = sum_i W_i``. Per measurement this is the standard error of the pooled mean when the shards
+    share one walker law. A walked union is read exactly instead (:func:`merge_packs`, :func:`_union_floor`).
+    ``floors`` and ``weights`` are equally long."""
     f, w = np.asarray(floors, np.float64).reshape(-1), np.asarray(weights, np.float64).reshape(-1)
     if f.shape != w.shape or f.size == 0 or not (w > 0).all():
         raise ValueError("pool_standard_errors takes one positive weight per floor")
     return float(np.sqrt(np.sum((w / w.sum()) ** 2 * f ** 2)))
 
 
-#: The floors of a merged fidelity that are standard errors of the weighted mean, and so pool.
-_POOLED_FLOORS = ("floor_max", "noise_floor", "floor_surface", "floor_susc_path", "floor_susc_bloch", "floor_quantisation")
-FLOOR_COMBINED_POOLED = "pooled_shards"                  #: ``fidelity.floor_combined`` of shards that partition one walk's walkers
-FLOOR_COMBINED_BLOCKS = "max_over_voxel_blocks"          #: ``fidelity.floor_combined`` of disjoint voxel blocks
+FLOOR_COMBINED_EXACT = "exact_union"        #: ``fidelity.floor_combined`` of a merged pack: the floor of the union's own walkers
 
 
 def _walker_ranges(pk):
@@ -315,14 +315,9 @@ def _walker_ranges(pk):
     return [(int(a), int(b), int(b) + int(s["n_walkers"])) for a, b, s in zip(seeds, firsts, sh)]
 
 
-def _shard_combination(pks, has_certificate, overlap):
-    """How the floors of shards combine, derived from what they are: ``"max_over_voxel_blocks"`` for shards that hold
-    disjoint voxels under a per-voxel certificate (``overlap="refuse"``; every voxel's floor is one shard's), else
-    ``"pooled_shards"``: the shards are walkers of one population -- ranges of one seed's walkers, passes of a block,
-    independent seeds -- and the union's floor is the pooled standard error. Two shards that hold the same walker of the
-    same seed are refused: they would count it twice."""
-    if has_certificate and overlap == "refuse":
-        return FLOOR_COMBINED_BLOCKS
+def _refuse_shared_walkers(pks):
+    """Refuse two shards that hold the same walker of the same seed (ranges of one seed's walkers; a shard whose
+    provenance states no ranges is not checked): a merge counts each walker once."""
     ranges = [_walker_ranges(pk) for pk in pks]
     for i in range(len(pks)):
         for j in range(i):
@@ -331,7 +326,27 @@ def _shard_combination(pks, has_certificate, overlap):
                     if a[0] == b[0] and a[1] < b[2] and b[1] < a[2]:
                         raise ValueError(f"shards {j} and {i} both hold walkers {max(a[1], b[1])}..{min(a[2], b[2]) - 1} of seed {a[0]}; "
                                          "a merge counts each walker once")
-    return FLOOR_COMBINED_POOLED
+
+
+def _union_floor(pks, w, env, *, device="auto"):
+    """The floor of the walkers of shards ``pks`` (in walker order) as one population with the weights ``w``: the sums
+    :func:`compression.floor_sums` of each walker range at a time from the shards' own tensors (the union is never
+    decoded whole), added, and read by :func:`compression.floor_from_sums` -- the pack-level floor
+    (:func:`compression.measure_floor_coded`) of the union, exactly, over the battery of ``env``."""
+    pieces = [pk.arrays for pk in pks]
+    bounds = np.cumsum([0] + [_r_compression.position_shape(p)[0] for p in pieces]); n_w = int(bounds[-1])
+    dt, n_t = float(pks[0].dt), int(pks[0].n_t)
+    G, meta = _cx.acquisition_battery(n_t, dt, env)
+    W2 = _cx.coded_projection(dt, G, n_t, _r_compression.position_shape(pieces[0])[1] - 2)
+    chunk = _cx.slice_walkers(pieces[0])
+    w = np.asarray(w, np.float64)
+    sums = None
+    for i in range(0, n_w, chunk):
+        j = min(i + chunk, n_w)
+        phi = _cx.coded_phases(_walker_coeffs(pieces, bounds, i, j), dt, G, n_t, device=device, projection=W2)
+        part = _cx.floor_sums(phi, w[i:j])
+        sums = part if sums is None else _cx.add_floor_sums(sums, part)
+    return _cx.floor_from_sums(sums, meta)
 
 
 def _census_rows(ijk_all, inside):
@@ -1198,12 +1213,19 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     renormalised to the union (:func:`union_weights`) and the per-voxel floor
     of the union is read afresh from the merged coefficients (:func:`voxel_floor_coded`, over ``envelope``'s
     battery, default the envelope every pack is built against), the codec-error column ``nan`` as in an
-    inherited certificate. The fidelity summary: the error is the largest over the shards (a bias bound); the floor, a
-    standard error, combines by what the shards are (:func:`_shard_combination`, stated as ``fidelity.floor_combined``):
-    shards of disjoint voxels under a per-voxel certificate take the largest (``"max_over_voxel_blocks"``), shards that
-    partition one walk's walkers (ranges of one seed, passes of a block, independent seeds) take the pooled standard
-    error of the union (:func:`pool_standard_errors`, ``"pooled_shards"``), which falls as ``1 / sqrt(N)`` with the
-    union's walkers. ``within_2x_floor`` and the target statements are restated from the merged values; the precision tiers are recomputed and
+    inherited certificate. The fidelity summary: the error is the largest over the shards (a bias bound); the floor is
+    the union's own, read exactly (``fidelity.floor_combined = "exact_union"``) in every mode -- voxel blocks, walker
+    ranges of one seed, passes of a block, independent seeds -- with the merged pack's final weights (the union's, after
+    :func:`union_weights` in a recertifying merge): :func:`compression.floor_sums` of each shard's walkers
+    (:func:`_union_floor`, a walker range at a time), added and read by :func:`compression.floor_from_sums`, the same
+    estimator :func:`build_replay_pack` states. ``floor_max``, ``per_family`` (floor exact, error the largest shard's),
+    ``noise_floor`` and ``floor_quantisation`` (the codec's ``eps`` at the union's ``n_eff``) mean what they mean in a built
+    pack; the contact tier's walk-free ``floor_surface`` is read from the union's stored reading (:func:`_union_surface_floor`);
+    the floors a build reads off a raw subset (a measured ``floor_surface``, ``floor_susc_path``, ``floor_susc_bloch``) are
+    not functions of the shards' coefficients and keep the largest shard's. ``floor_max`` is the maximum of these with the
+    union's coefficient floor. The floor is read on the battery the shards state (``fidelity.battery``); a shard that states none is
+    refused by name, unless the caller states the settings (``envelope``). The stated floors are rounded as a built pack's are (:func:`_round_certificate`). The
+    ``within_2x_floor`` and the target statements are restated from the merged values; the precision tiers are recomputed and
     declared unshuffled (the walkers are ordered by shard). Provenance lists the shards and the field read interval
     of each. The shards of a pool bundle read the field at the intervals of their own rounds, so the interval is not
     an identity key: the merged pack states the coarsest and the term charged at it (:func:`charge_field_read`).
@@ -1276,34 +1298,10 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                 raise ValueError(f"array {k!r} is not walker-leading in every shard; it cannot be concatenated")
             arrays[k] = parts
         fid = dict(pks[0].meta.get("fidelity") or {})
-        combined = _shard_combination(pks, pv0 is not None, overlap)
+        if not (pv0 is not None and overlap == "refuse"):                  # disjoint voxel blocks may share a seed's walker indices
+            _refuse_shared_walkers(pks)
         fids = [pk.meta.get("fidelity") or {} for pk in pks]
-        if combined == FLOOR_COMBINED_POOLED:                              # errors are bias bounds (the largest holds), floors standard errors
-            wsum = [float(np.asarray(pk.arrays["spin_weights"], np.float64).sum()) if "spin_weights" in pk.arrays else float(m)
-                    for pk, m in zip(pks, n)]
-            for key in _POOLED_FLOORS:
-                vals = [f.get(key) for f in fids]
-                if all(v is not None for v in vals):
-                    fid[key] = pool_standard_errors(vals, wsum)
-            if "floor_total_max" in fid and "floor_quantisation" in fid:
-                fid["floor_total_max"] = float(fid["floor_max"]) + float(fid["floor_quantisation"])
-            maxed = ("err_max", "err_surface")
-        else:
-            maxed = ("err_max", "floor_max", "noise_floor", "err_surface", "floor_surface")
-        for key in maxed:
-            vals = [f.get(key) for f in fids]
-            if all(v is not None for v in vals):
-                fid[key] = float(max(vals))
-        fid["floor_combined"] = combined
-        if "err_max" in fid and "floor_max" in fid:                         # restated from the merged values
-            fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
-        if "planned_floor" in fid:
-            fid["meets_planned_floor"] = bool(fid["floor_max"] <= float(fid["planned_floor"]))
-            if "target_floor" in fid:
-                fid["meets_numerical_cap"] = bool(fid["err_max"] <= float(fid["target_floor"]))
-            if "meets_numerical_cap" in fid:
-                fid["meets_target"] = bool(fid["meets_numerical_cap"] and fid["meets_planned_floor"])
-        fid.pop("per_family", None)
+        fid["floor_combined"] = FLOOR_COMBINED_EXACT
         if pv0 is not None:
             ijk = np.concatenate([np.asarray(pk.arrays["voxel_ijk"], np.int64) for pk in pks])
             # the certificate's pool axis is the union of the shards' pools (a round of a pass may hold none of a
@@ -1359,6 +1357,24 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
             _pid = np.asarray(comp)[:, 0].astype(np.int64) if comp is not None else np.zeros(len(_key), np.int64)
             arrays["spin_weights"] = union_weights(np.concatenate(arrays["spin_weights"]).astype(np.float64), np.repeat(np.arange(len(pks)), n),
                                                    _key.reshape(-1), _pid).astype(np.float32)
+        # the union's floor, read exactly from the shards' coefficients with the merged pack's final weights
+        w_final = (np.concatenate(arrays["spin_weights"]) if isinstance(arrays["spin_weights"], list) else np.asarray(arrays["spin_weights"])
+                   ).astype(np.float64) if "spin_weights" in arrays else np.ones(int(sum(n)))
+        env_ = stated_envelope(pks[0]) if envelope is None else envelope
+        n_win = int(pks[0].meta["walk_params"]["windows"]["n"])          # every replay pack states its window table
+        ids_ = [pk.meta.get("id") for pk in pks]
+        if n_win > 1:                                                       # a windowed walk: each window certifies itself, the whole is their bound
+            views = [[_window_view(pk, i, n_win) for pk in pks] for i in range(n_win)]
+            fid.update(_round_certificate(combine_window_fidelity([
+                _union_window_fidelity([(pk.meta["fidelity"])["windows"][i] for pk in pks], views[i], w_final, n, env_, device, ids=ids_, stated=envelope is not None) for i in range(n_win)])))
+        else:
+            fid.update({k: v for k, v in _union_window_fidelity(fids, pks, w_final, n, env_, device, ids=ids_, stated=envelope is not None).items() if k != "per_voxel"})   # (the merged pack's own, above)
+        if "planned_floor" in fid:
+            fid["meets_planned_floor"] = bool(fid["floor_max"] <= float(fid["planned_floor"]))
+            if "target_floor" in fid:
+                fid["meets_numerical_cap"] = bool(fid["err_max"] <= float(fid["target_floor"]))
+            if "meets_numerical_cap" in fid:
+                fid["meets_target"] = bool(fid["meets_numerical_cap"] and fid["meets_planned_floor"])
         n_all = int(sum(n))
         comp_meta = dict(pks[0].meta["compression"])
         if "channels" in comp_meta:                                      # the measured numbers: the worst over the shards
@@ -2007,6 +2023,20 @@ def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi
     return dict(err=float(err), floor=float(floor), n_pulses=n_p, n_walkers=k)
 
 
+def _split_halves(n):
+    """The two halves of ``n`` walkers the contact tier's split-half floor compares: a fixed permutation (seed 0)
+    cut at ``n // 2``."""
+    perm = np.random.RandomState(0).permutation(n)
+    return perm[:n // 2], perm[n // 2:]
+
+
+def _split_half_spread(s, w, A, B):
+    """``|<s>_A - <s>_B|``: the spread of the ``w``-weighted mean of the per-walker reading ``s`` between the halves ``A``
+    and ``B``."""
+    wmean = lambda idx: float(np.sum(w[idx] * s[idx]) / np.sum(w[idx]))
+    return abs(wmean(A) - wmean(B))
+
+
 def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=None, quadrature=0.0, gates=None):
     """The contact tier's WALK-FREE certificate (RPK.md 9.4 rule 4, 9.5.5): the surface-weighted signal ``<exp((rho2 /
     D) int chi dB)>`` at every ``rho2`` of the envelope's ``rho2_list`` under the transverse on-time gates ``gates``
@@ -2030,7 +2060,7 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
                                                    T=float(T), dtype=np.float64, container=None)
     exact, meta_x = float_of(bands[:, :K_s])
     full = float_of(bands) if K_s < bands.shape[1] else None
-    perm = np.random.RandomState(0).permutation(n); A, B = perm[:n // 2], perm[n // 2:]
+    A, B = _split_halves(n)
     wmean = lambda x, idx: float(np.sum(w[idx] * x[idx]) / np.sum(w[idx]))
     quant = trunc = floor = 0.0
     for rho in rhos:
@@ -2042,9 +2072,89 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
             if full is not None:
                 s_f = np.exp(np.asarray(_r_compression.surface_logweight_bridge(full[0], full[1], r, gate, h), np.float64))
                 trunc = max(trunc, abs(wmean(s_x, slice(None)) - wmean(s_f, slice(None))))
-            floor = max(floor, abs(wmean(s_dec, A) - wmean(s_dec, B)))
+            floor = max(floor, _split_half_spread(s_dec, w, A, B))
     return dict(err=float(quant + trunc + float(quadrature)), floor=float(floor), quantisation=float(quant),
                 truncation=float(trunc), quadrature=float(quadrature), n_walkers=n, rho2_list=rhos)
+
+
+def _floor_envelope(fids, env, ids, *, stated):
+    """The settings the floor of shards with fidelity records ``fids`` (their pack ``ids``) is read under. ``stated``
+    are the caller's own (``merge_packs(envelope=...)``), which are ``env`` as given. Otherwise ``env`` with the
+    battery the shards state (``fidelity.battery``, which all of them state alike): a shard that states none is refused
+    by name, since its floor was measured on a battery the pack does not name."""
+    if stated:
+        return env
+    for i, (f, id_) in enumerate(zip(fids, ids)):
+        if f.get("battery") is None:
+            raise ValueError(f"shard {i} ({id_!r}) does not state the battery its floor was measured on (fidelity.battery); the floor of a union is "
+                             "read on one stated battery. Rebuild the shard with the current build_replay_pack, or pass the battery in merge_packs(envelope=...)")
+    if any(f["battery"] != fids[0]["battery"] for f in fids[1:]):
+        raise ValueError("the shards state different batteries (fidelity.battery): the floor of their union is read on one")
+    return dict(env, **fids[0]["battery"])
+
+
+def _window_view(pk, i, n_windows):
+    """Window ``i`` of the windowed pack ``pk`` as the one-window pack it was built as, for the readers of a shard's
+    coefficients (:func:`_union_floor`, :func:`_union_surface_floor`): its tensors (window 0's under the channel names, window
+    ``i``'s under ``s{i}/``, the walk's shared tensors once), its block grid and its metadata."""
+    base = {k: v for k, v in pk.arrays.items() if not re.match(r"s\d+/", k)}
+    own = {k.split("/", 1)[1]: v for k, v in pk.arrays.items() if k.startswith(f"s{i}/")}
+    return types.SimpleNamespace(arrays=dict(base, **own), meta=pk.meta, dt=pk.dt, n_t=(int(pk.n_t) - 1) // int(n_windows) + 1)
+
+
+def _union_window_fidelity(fids, pks, w, n, env, device, *, ids, stated):
+    """The certificate of the union of shards ``pks`` (one window of each, or whole packs; in walker order; ``fids`` their
+    fidelity records, ``n`` their walker counts) as one pack, under the weights ``w``: the errors the largest over
+    the shards (bias bounds); the floor the union's own (:func:`_union_floor`), with the contact tier's walk-free
+    ``floor_surface`` re-read from the union's stored reading (:func:`_union_surface_floor`) and the floors a build measures
+    on a raw subset (a measured ``floor_surface``, ``floor_susc_path``, ``floor_susc_bloch``) the largest shard's;
+    ``floor_max`` the maximum of them, ``per_family`` (floor exact, error the largest shard's), ``noise_floor`` and
+    ``floor_quantisation`` (the codec's ``eps`` at the union's ``n_eff``), the floors rounded as a built pack's are
+    (:func:`_round_certificate`). ``ids`` are the shards' pack ids and ``stated`` whether the caller stated the settings
+    (:func:`_floor_envelope`)."""
+    fid = dict(fids[0])
+    for key in ("err_max", "err_surface", "floor_surface", "floor_susc_path", "floor_susc_bloch"):
+        vals = [f.get(key) for f in fids]
+        if all(v is not None for v in vals):
+            fid[key] = float(max(vals))
+    fx = _union_floor(pks, w, _floor_envelope(fids, env, ids, stated=stated), device=device)
+    if all(f.get("surface_certified") == "walk_free" for f in fids) and all(f.get("surface_rho2_list") for f in fids):
+        fid["floor_surface"] = _union_surface_floor(pks, w, fids[0]["surface_rho2_list"], fids[0]["bounds_diffusivity"])
+    fid["floor_max"] = float(max([fx["floor_max"]] + [fid[k] for k in ("floor_surface", "floor_susc_path", "floor_susc_bloch") if fid.get(k) is not None]))
+    fid["noise_floor"] = fx["noise_floor"]
+    if all(f.get("per_family") for f in fids):
+        fid["per_family"] = {fam: dict(err_max=float(max(f["per_family"][fam]["err_max"] for f in fids)), floor_max=fx["per_family"][fam])
+                             for fam in fx["per_family"]}
+    else:
+        fid.pop("per_family", None)
+    if all(f.get("floor_quantisation") is not None for f in fids):         # eps / sqrt(n_eff): the codec's eps (the worst shard's) at the union's n_eff
+        eps = max(float(f["floor_quantisation"]) * np.sqrt(float(w_.sum() ** 2 / (w_ ** 2).sum()))
+                  for f, w_ in zip(fids, np.split(w, np.cumsum(n)[:-1])))
+        fid["floor_quantisation"] = float(eps / np.sqrt(fx["n_eff"]))
+        fid["floor_total_max"] = float(fid["floor_max"]) + fid["floor_quantisation"]
+    fid.update(_round_certificate({k: fid[k] for k in ("floor_max", "noise_floor", "floor_surface", "floor_quantisation", "floor_total_max", "per_family")
+                                   if k in fid}))
+    if "err_max" in fid:
+        fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
+    return fid
+
+
+def _union_surface_floor(pks, w, rhos, D):
+    """The coded split-half floor of the contact tier (``floor_surface`` of :func:`_surface_terms_walk_free`) of the
+    walkers of shards ``pks`` (in walker order) as one population with the weights ``w``: each shard's stored reading
+    at every ``rho2 / D`` and gate, joined, then the spread between the halves of the union."""
+    n_s = int(pks[0].n_t); h = float(pks[0].dt)
+    n = sum(int(pk.meta["walk_params"]["n_walkers"]) for pk in pks)
+    A, B = _split_halves(n)
+    w = np.asarray(w, np.float64)
+    floor = 0.0
+    for rho in rhos:
+        r = float(rho) / float(D)
+        for gate in [None] + _surface_gates(n_s):
+            s_ = np.concatenate([np.exp(np.asarray(_r_compression.surface_logweight_bridge(
+                pk.arrays, pk.meta["compression"]["channels"]["boundary_local_time"], r, gate, h), np.float64)) for pk in pks])
+            floor = max(floor, _split_half_spread(s_, w, A, B))
+    return float(floor)
 
 
 def _contact_floor(endpoint, bands, env, *, T, h, D, w=None):
@@ -2477,6 +2587,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
         fid.update(_target_statements(fid, sigma_star, planned_floor))
     comp_meta = dict(method=_r_compression.POSITION_METHOD, K=K, walker_preserving=True, container=pos_meta.get("container"),
                      temporal_bandwidth_hz=float(K) / (2.0 * T))
+    fid["battery"] = {k: np.asarray(env[k]).tolist() for k in _cx.default_battery()}      # the battery the floor was read on
     fid = _round_certificate(fid)                                       # the tiers read the floor the pack states
     comp_meta["precision_tiers"] = _precision_tiers(arrays, cw.n_walkers, fid.get("floor_max"), True)
     if chan_meta:
