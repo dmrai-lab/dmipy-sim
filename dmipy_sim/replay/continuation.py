@@ -66,6 +66,10 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
     field_kw = dict(K_c3=int(pm["K"]), field_read_interval=pm.get("read_interval")) if pm else {}
     if not _needs_bundle_walk(spec):
         g = geometry_from_spec(spec)
+        if g.permeability_table is not None and len(g.permeability_table.breakpoints):
+            raise NotImplementedError(
+                "this pack's walls state a permeability that varies in time; a continued walk starts its clock at "
+                "zero and would read the schedule from its start. Walk the whole duration instead")
         D = pack.diffusivity
         if D is None:
             raise ValueError("the pack records no diffusivity to continue the walk at")

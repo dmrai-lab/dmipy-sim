@@ -11,7 +11,7 @@ env:
   # the forms and the reader at the commits this revision was tested against: dmrai-lab/dmipy-analytic#15 (a
   # permeability piecewise constant in time in bloch_torrey, the reference of tests/geometry/test_permeable_layers.py)
   # and dmrai-lab/dmipy-replay#31 (Wall.permeability_table, the spec of a permeability per object and over time)
-  DMIPY_ANALYTIC_REF: afe41f9f52d2517139c6af507a3a2e0f26852dff
+  DMIPY_ANALYTIC_REF: 349bfc761193bc96da2e3eb039f7c0543cc69ae3
   DMIPY_REPLAY_REF: cc342915e2fcc45a2d440fe8d3e58334adedc36e
 
 jobs:

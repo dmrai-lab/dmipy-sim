@@ -49,8 +49,8 @@ def _model(kappa, breaks=(), n_cells=400):
 def _occupancy(kappa, steps, breaks=()):
     """The reference occupancy of each layer after each number of steps of ``DT``, and its error (twice the Richardson
     estimate: four thirds of the change from 400 to 800 cells)."""
-    occ = [np.array([_model(kappa, breaks, n).signal(np.zeros(s), DT, by_layer=True).real for s in steps])
-           for n in (400, 800)]
+    models = [_model(kappa, breaks, n) for n in (400, 800)]
+    occ = [np.array([m.signal(np.zeros(s), DT, by_layer=True).real for s in steps]) for m in models]
     return occ[0], 2.0 * np.abs(occ[0] - occ[1]) * 4.0 / 3.0
 
 
@@ -69,8 +69,8 @@ def _pgse(qR):
 def _signal_reference(kappa, g, breaks=()):
     """The reference signal of the waveform ``g`` (one value per step of ``DT``) and its error: twice the Richardson
     estimate of the cells (400 to 800) and of the Strang sub-steps (4 to 8)."""
-    run = lambda n, sub: _model(kappa, breaks, n).signal(g, DT, sub_steps=sub)
-    S, S_cells, S_steps = run(400, 4), run(800, 4), run(400, 8)
+    coarse, fine = _model(kappa, breaks, 400), _model(kappa, breaks, 800)
+    S, S_cells, S_steps = coarse.signal(g, DT, sub_steps=4), fine.signal(g, DT, sub_steps=4), coarse.signal(g, DT, sub_steps=8)
     return S, 2.0 * (abs(abs(S) - abs(S_cells)) + abs(abs(S) - abs(S_steps))) * 4.0 / 3.0
 
 
