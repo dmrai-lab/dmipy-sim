@@ -41,7 +41,7 @@ from dmipy_analytic.restricted.matrix_method import cylinder_neumann_roots, sphe
 __all__ = ["PAIR_SHORT", "PAIR_LONG", "PAIR_P_LONG", "PAIR_LENGTHS", "PAIR_WEIGHTS", "LONGEST_STEP", "MEAN_STEP",
            "FIXED_LENGTHS", "FIXED_WEIGHTS", "WALL_COEFFICIENT_ENVELOPE", "PORE_RATE_ENVELOPE",
            "SPHERE_K1", "SPHERE_WALL_COEFFICIENT", "CYLINDER_K1", "CYLINDER_WALL_COEFFICIENT",
-           "PILOT_STEP_RATIO", "membrane_rate_error", "diffusion_spectrum", "step_certificate", "step_moments", "bulk_multiplier",
+           "PILOT_STEP_RATIO", "membrane_rate_error", "LayeredLattice", "layered_exchange_root", "diffusion_spectrum", "step_certificate", "step_moments", "bulk_multiplier",
            "pore_step", "band_step", "band_reach", "SteppedPore"]
 
 #: The pair's lengths in units of ``sqrt(6 D dt)`` and the probability of the long one.
@@ -171,6 +171,133 @@ def membrane_rate_error(kappa_star, h_over_R, *, transmission=None, cells_per_st
     rate = -np.log(mu[1]) / dt
     kk = brentq(lambda z: z * np.tan(z) - 2.0 * K, 1e-12, np.pi / 2 - 1e-12)
     return float(rate / kk ** 2 - 1.0)
+
+
+class LayeredLattice:
+    """The engine's walk normal to a stack of layers, as an exact Markov matrix: layers of ``widths`` between two
+    reflecting walls, a membrane between consecutive layers with ``kappa_over_D`` (one number, or one per membrane),
+    walked at the step ``h = sqrt(6 D dt)`` with ``transmission(kappa_over_D, d_perp)`` (default the engine's
+    :func:`~dmipy_sim.geometry._boundary.transmit_probability`, in numpy). Units: ``D = 1``, lengths as given.
+
+    The construction of :func:`membrane_rate_error`, for several membranes: the step's normal component (uniform on
+    ``[-delta, delta]`` for each of the law's lengths) on a lattice of ``h / cells_per_step``, each layer a whole
+    number of cells (its width rounded to the lattice: :attr:`widths` are the lattice's own), the membranes and the walls
+    on cell edges, so the specular reflection maps the lattice to itself. A step meets at most one membrane (every layer
+    is wider than the longest step; a narrower one is refused), crosses it with the transmission of its overshoot past
+    it, else is mirrored at it, then folded at the outer walls.
+
+    :meth:`matrix` is the one-step matrix ``P`` (row: from) at a permeability; :meth:`occupancy` propagates a start
+    through a schedule of permeabilities; :meth:`slowest_rate` is the matrix's slowest decay rate ``-ln(mu_2) / dt``."""
+
+    def __init__(self, widths, h, *, transmission=None, cells_per_step=32, lengths=PAIR_LENGTHS, weights=PAIR_WEIGHTS):
+        if transmission is None:
+            def transmission(kod, d):
+                x = np.minimum(2.0 * kod * d, 1e30)
+                return x / (1.0 + x)
+        self.transmission = transmission
+        self.h = float(h)
+        self.dx = self.h / float(cells_per_step)
+        cells = np.maximum(1, np.rint(np.asarray(widths, np.float64) / self.dx).astype(int))
+        M = float(cells_per_step)
+        self.kmax = int(np.ceil(max(lengths) * M + 0.5))
+        if np.any(cells <= self.kmax):
+            raise ValueError(f"every layer is wider than the longest step ({self.kmax} cells); the layers have {cells}")
+        self.cells = cells
+        self.widths = cells * self.dx
+        self.edges = np.concatenate([[0], np.cumsum(cells)])          # in cells; membranes at edges[1:-1]
+        self.N = int(self.edges[-1])
+        self.layer = np.repeat(np.arange(len(cells)), cells)
+        k = np.arange(-self.kmax, self.kmax + 1)
+        w = np.zeros(len(k))
+        for ell, wt in zip(lengths, weights):
+            lo, hi = np.maximum(k - 0.5, -ell * M), np.minimum(k + 0.5, ell * M)
+            w += wt * np.clip(hi - lo, 0.0, None) / (2.0 * ell * M)
+        self.k, self.w = k, w / w.sum()
+        self.dt = float(np.sum(self.w * (k * self.dx) ** 2)) / 2.0
+        self._cache = {}
+
+    def matrix(self, kappa_over_D):
+        """The one-step Markov matrix (``scipy.sparse`` CSR, row: from) at ``kappa_over_D`` (one number or one per
+        membrane)."""
+        import scipy.sparse as sp
+        kod = np.broadcast_to(np.asarray(kappa_over_D, np.float64), (len(self.cells) - 1,))
+        key = tuple(kod.tolist())
+        if key in self._cache:
+            return self._cache[key]
+        N, k, w = self.N, self.k, self.w
+        i = np.arange(N)[:, None]
+        y = i + k[None, :]
+        m_edges = self.edges[1:-1]
+        cross = np.zeros(y.shape, bool)
+        m_of = np.zeros(y.shape, int)
+        for j, m in enumerate(m_edges):                               # at most one membrane between i and y
+            c = (y < m) != (i < m)
+            cross |= c
+            m_of = np.where(c, j, m_of)
+        m_at = m_edges[m_of]
+        p = np.where(cross, self.transmission(kod[m_of], np.abs((y + 0.5) - m_at) * self.dx), 0.0)
+        rows, cols, vals = [], [], []
+        for tgt, wt in ((y, w[None, :] * np.where(cross, p, 1.0)),
+                        (np.where(cross, 2 * m_at - 1 - y, y), w[None, :] * np.where(cross, 1.0 - p, 0.0))):
+            t = tgt.copy()
+            for _ in range(3):                                        # fold at the outer walls
+                t = np.where(t < 0, -1 - t, t)
+                t = np.where(t > N - 1, 2 * N - 1 - t, t)
+            rows.append(np.broadcast_to(i, t.shape).ravel()); cols.append(t.ravel())
+            vals.append(np.broadcast_to(wt, t.shape).ravel())
+        P = sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(N, N))
+        self._cache[key] = P
+        return P
+
+    def occupancy(self, start, schedule, n_steps):
+        """The fraction of the walkers in each layer after ``n_steps`` steps, from ``start`` (one weight per layer,
+        uniform within it), the step ``n`` taken at ``schedule(n)`` (the permeability over D of that step: one number or
+        one per membrane). Returns ``(len(n_steps), n_layers)`` for a sequence of step counts."""
+        counts = np.atleast_1d(np.asarray(n_steps, int))
+        v = (np.asarray(start, np.float64) / self.cells)[self.layer]
+        v = v / v.sum()
+        out, n = [], 0
+        for target in counts:
+            while n < target:
+                v = self.matrix(schedule(n)).T @ v
+                n += 1
+            out.append(np.bincount(self.layer, weights=v, minlength=len(self.cells)))
+        return np.array(out)
+
+    def slowest_rate(self, kappa_over_D):
+        """The walk's slowest decay rate at ``kappa_over_D``: ``-ln(mu_2) / dt``, ``mu_2`` the matrix's second
+        eigenvalue."""
+        import scipy.sparse.linalg as spla
+        P = self.matrix(kappa_over_D)
+        mu = np.sort(np.real(spla.eigs(P.T.tocsr(), k=3, which="LM", return_eigenvectors=False, tol=1e-13)))[::-1]
+        return float(-np.log(mu[1]) / self.dt)
+
+
+def layered_exchange_root(widths, kappa_over_D):
+    """The exact slowest decay rate (``D = 1``) of a stack of layers between reflecting walls, membranes of
+    ``kappa_over_D`` between them: ``k^2`` for the smallest ``k > 0`` at which the cosine mode started at the left wall,
+    carried through each layer (``psi(u) = psi_0 cos(k u) + psi_0' sin(k u) / k``) and across each membrane (``psi' ``
+    continuous, ``psi_+ = psi_- + psi' / (kappa / D)``, Tanner's ``D psi' = kappa [psi]``), has zero slope at the
+    right wall."""
+    from scipy.optimize import brentq
+    w = np.asarray(widths, np.float64)
+    kod = np.broadcast_to(np.asarray(kappa_over_D, np.float64), (len(w) - 1,))
+
+    def slope(k):
+        psi, dpsi = 1.0, 0.0
+        for j, wj in enumerate(w):
+            c, s_ = np.cos(k * wj), np.sin(k * wj)
+            psi, dpsi = psi * c + dpsi * s_ / k, -psi * k * s_ + dpsi * c
+            if j < len(kod):
+                psi = psi + dpsi / kod[j]
+        return dpsi / k
+
+    hi = np.pi / float(np.max(w)) * 1.000001             # below the widest layer's first Neumann mode
+    ks = np.linspace(hi * 1e-4, hi, 4000)
+    f = np.array([slope(k) for k in ks])
+    j = int(np.flatnonzero(np.sign(f[1:]) != np.sign(f[:-1]))[0])
+    k1 = brentq(slope, ks[j], ks[j + 1], xtol=1e-15, rtol=1e-15)
+    return float(k1 * k1)
 
 
 def _trapz_weights(x):

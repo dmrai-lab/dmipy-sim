@@ -72,8 +72,9 @@ class Sphere(Geometry):
         Surface relaxivity ρ₂ in m/s.  When set, boundary collisions reduce
         the walker magnetisation weight by exp(-2·ρ₂·d_perp/D).
         T2_surface = R / (3·ρ) for a sphere (S/V = 3/R).  Default None.
-    permeability : float, optional
-        Membrane permeability κ in m/s.  When set, each boundary crossing is
+    permeability : float or PermeabilitySchedule, optional
+        Membrane permeability κ in m/s, or a :class:`~dmipy_sim.geometry.PermeabilitySchedule` of numbers (κ
+        piecewise constant in time).  When set, each boundary crossing is
         probabilistic: the walker transmits with p = x/(1+x), x = 2κ·d_perp/D
         (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), and
         reflects otherwise.  Enables bidirectional exchange — walkers may be
@@ -92,7 +93,7 @@ class Sphere(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, 1, "Sphere")
 
     @property
     def length_scales(self):
@@ -180,8 +181,9 @@ class Cylinder(Geometry):
         where d_out is the step length that would have exited the cylinder.
         This implements the surface-T2 model: 1/T2_eff = 1/T2_bulk + ρ₂·S/V
         with S/V = 2/R for a cylinder.  Default None (no surface relaxation).
-    permeability : float, optional
-        Membrane permeability κ in m/s.  When set, each boundary crossing
+    permeability : float or PermeabilitySchedule, optional
+        Membrane permeability κ in m/s, or a :class:`~dmipy_sim.geometry.PermeabilitySchedule` of numbers.
+        When set, each boundary crossing
         is probabilistic: the walker transmits through the wall with
         probability p = x/(1+x), x = 2κ·d_perp/D, and reflects otherwise.
         Enables bidirectional exchange — walkers may be inside or outside
@@ -202,7 +204,7 @@ class Cylinder(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, 1, "Cylinder")
 
     @property
     def length_scales(self):
@@ -318,8 +320,9 @@ class Ellipsoid(Geometry):
         surface_relaxivity_t2 : float, optional
             Surface relaxivity ρ₂ in m/s. When set, boundary collisions reduce
             walker magnetisation by exp(-2·ρ₂·d_perp/D). Default None.
-        permeability : float, optional
-            Membrane permeability κ in m/s.  When set, each boundary crossing
+        permeability : float or PermeabilitySchedule, optional
+            Membrane permeability κ in m/s, or a :class:`~dmipy_sim.geometry.PermeabilitySchedule` of numbers.
+            When set, each boundary crossing
             is probabilistic: p = x/(1+x), x = 2κ·d_perp/D.  Bidirectional.
             Default None (fully reflecting wall).
         """
@@ -328,7 +331,7 @@ class Ellipsoid(Geometry):
         self.surface_relaxivity_t2 = (
             float(surface_relaxivity_t2) if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, 1, "Ellipsoid")
 
     @property
     def length_scales(self):
@@ -444,12 +447,17 @@ class Ellipsoid(Geometry):
 
 
 class PermeableSlab1D(Geometry):
-    """Closed 1-D two-compartment slab: a permeable membrane at x=L/2 with reflecting
-    outer walls at x=0 and x=L (y, z free).  The cleanest first-principles benchmark for
-    membrane permeability -- no curvature and no exterior re-entry (a closed reservoir):
+    """Closed 1-D slab of compartments separated by permeable membranes, reflecting outer walls at x=0 and x=L
+    (y, z free). The cleanest first-principles benchmark for membrane permeability -- no curvature and no exterior
+    re-entry (a closed reservoir). With one membrane at x=L/2 (the default):
 
         compartment A = {x < L/2} (id 1), B = {x > L/2} (id 0); start all walkers in A ->
         f_A(t) = 1/2 + 1/2 exp(-4 kappa t / L)   (closed two-compartment exchange).
+
+    With several membranes at ``membranes`` the layers between them alternate between the pools, the first (from
+    x=0) pool 1 as A is: layer ``k`` is pool 1 for even ``k`` and pool 0 for odd ``k``. Each membrane is an object of
+    the slab with its own permeability; a walk seeds pool 1, uniformly over its layers. The 1-D Bloch-Torrey
+    equation on the same layers (``dmipy_analytic.bloch_torrey.BlochTorrey1D``) is its exact reference.
 
     The membrane transmission is the SAME rule as the curved geometries
     (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), so this isolates the planar membrane from curvature.
@@ -457,41 +465,99 @@ class PermeableSlab1D(Geometry):
     Parameters
     ----------
     length : float
-        Slab length L (m); each compartment has width L/2.
-    permeability : float
-        Membrane permeability kappa (m/s) at x=L/2.
+        Slab length L (m).
+    permeability : float, array-like (n_membranes,) or PermeabilitySchedule
+        Membrane permeability kappa (m/s): one for every membrane, one per membrane (the order of ``membranes``), or a
+        :class:`~dmipy_sim.geometry.PermeabilitySchedule` (piecewise constant in time, each value one number or one per
+        membrane). A step meeting a membrane is a trial at that membrane's kappa.
+    membranes : sequence of float, optional
+        The membranes' positions in (0, L), strictly increasing. Default one membrane at L/2: two compartments of
+        width L/2.
     surface_relaxivity_t2 : float, optional
         Surface relaxivity applied on membrane reflection (m/s).
     """
 
     supports_permeability = True   #: has a membrane a walker can cross
 
-    def __init__(self, length, permeability, surface_relaxivity_t2=None):
+    def __init__(self, length, permeability, surface_relaxivity_t2=None, membranes=None):
         self.length = float(length)
-        self.permeability = permeability_of(permeability)
+        xs = np.asarray([self.length / 2.0] if membranes is None else membranes, dtype=np.float64).ravel()
+        if xs.size == 0 or not np.all(np.isfinite(xs)) or np.any(xs <= 0.0) or np.any(xs >= self.length) \
+                or np.any(np.diff(xs) <= 0.0):
+            raise ValueError(f"PermeableSlab1D.membranes are positions strictly inside (0, {self.length}) and strictly "
+                             f"increasing; got {membranes!r}")
+        self.membranes = tuple(float(x) for x in xs)
+        self.permeability, self.permeability_table = permeability_of(permeability, len(self.membranes), "PermeableSlab1D")
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)
-        self.radius = float(length) / 2.0     # one compartment's width
+        edges = np.concatenate([[0.0], xs, [self.length]])
+        self._widths = np.diff(edges)
+        self._pool_of_layer = np.array([1 if k % 2 == 0 else 0 for k in range(len(self._widths))], np.int32)
+        self.radius = float(np.min(self._widths))     # the narrowest compartment's width
+        self._xs_f32 = jnp.asarray(xs, jnp.float32)
+        if len(self.membranes) > 1:
+            # the events one step can meet: the longest step the step law's first-order regime allows,
+            # LONGEST_STEP times half the narrowest layer, meets at most floor(LONGEST_STEP / 2) + 1 boundaries, and
+            # the loop's last iteration is the miss that flies the rest
+            self._layer_loop_budget = int(np.floor(LONGEST_STEP / 2.0)) + 2
 
     @property
     def length_scales(self):
-        return LengthScales(min_feature=self.length / 2.0, pore_rate=(2.0 * np.pi / self.length) ** 2, wall_coefficient=0.0)     # one compartment's width; flat walls
+        # the narrowest compartment's width; flat walls
+        w = float(np.min(self._widths))
+        return LengthScales(min_feature=w, pore_rate=(np.pi / w) ** 2, wall_coefficient=0.0)
+
+    @property
+    def bounce_loop(self):
+        if len(self.membranes) == 1:
+            return None                       # the one-membrane rule resolves one event per step
+        return BounceLoop(self.bounce_budget or self._layer_loop_budget, count=self.count_walls)
 
     def volume(self) -> float:
-        return self.length / 2.0          # per compartment (V/S -> tau = L/(2 kappa) one-sided)
+        return float(np.sum(self._widths[self._pool_of_layer == 1]))   # pool 1, per unit membrane area
 
     def surface_area(self) -> float:
-        return 1.0                         # unit membrane area
+        return float(len(self.membranes))      # unit membrane area, one face of each membrane in pool 1
 
     def init_positions(self, n_walkers, key):
-        x = jax.random.uniform(key, (n_walkers,), dtype=jnp.float32,
-                               minval=0.0, maxval=jnp.float32(self.length / 2.0))  # start in A
+        if len(self.membranes) == 1:
+            x = jax.random.uniform(key, (n_walkers,), dtype=jnp.float32,
+                                   minval=0.0, maxval=jnp.float32(self.membranes[0]))  # start in A
+        else:
+            # uniform over pool 1's layers: a uniform draw over their summed width, laid out layer by layer
+            edges = np.concatenate([[0.0], np.asarray(self.membranes), [self.length]])
+            lo = edges[:-1][self._pool_of_layer == 1]
+            w = self._widths[self._pool_of_layer == 1]
+            cum = np.concatenate([[0.0], np.cumsum(w)])
+            u = np.asarray(jax.random.uniform(key, (n_walkers,), dtype=jnp.float32), np.float64) * cum[-1]
+            j = np.clip(np.searchsorted(cum, u, side="right") - 1, 0, len(w) - 1)
+            x = jnp.asarray(lo[j] + (u - cum[j]), jnp.float32)
+            x = self._inside_layer(x, jnp.asarray(np.flatnonzero(self._pool_of_layer == 1)[j], jnp.int32))
         z = jnp.zeros((n_walkers,), dtype=jnp.float32)
         return jnp.stack([x, z, z], axis=1)
 
+    def _layer(self, x):
+        """The layer of ``x``: the membranes at or below it (a point on a membrane is in the layer above it)."""
+        return jnp.sum((x >= self._xs_f32).astype(jnp.int32))
+
+    def _inside_layer(self, x, k):
+        """``x`` set strictly inside layer ``k``'s membranes (a nudge of 1e-4 of the narrowest layer off the one it
+        sits on or past): a float32 coordinate on a membrane belongs to the layer above it."""
+        M = len(self.membranes)
+        nudge = jnp.float32(1e-4 * float(np.min(self._widths)))
+        xs = self._xs_f32
+        right = xs[jnp.minimum(k, M - 1)]
+        left = xs[jnp.maximum(k - 1, 0)]
+        over = (k < M) & (x >= right)
+        under = (k > 0) & (x < left)
+        return jnp.where(over, right - nudge, jnp.where(under, left + nudge, x))
+
     def classify_position(self, r):
-        """Compartment id: 1 for A (x < L/2, the seeded pool), 0 for B."""
-        return jnp.int32(jnp.where(r[0] < jnp.float32(self.length / 2.0), 1, 0))
+        """Compartment id: the pool of the layer ``r`` is in -- 1 for A (below the membrane, the seeded pool) and 0
+        for B with one membrane; 1 for the even layers and 0 for the odd ones with several."""
+        if len(self.membranes) == 1:
+            return jnp.int32(jnp.where(r[0] < jnp.float32(self.membranes[0]), 1, 0))
+        return jnp.asarray(self._pool_of_layer)[self._layer(r[0])]
 
     def _fold(self, x):
         """Reflect x into [0, L] at the outer walls (modular mirror)."""
@@ -500,7 +566,70 @@ class PermeableSlab1D(Geometry):
         return jnp.where(xf > L, 2.0 * L - xf, xf)
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
-        xm = jnp.float32(self.length / 2.0)
+        """The slab's wall: a membrane met is a trial at its own kappa (``kappa_over_D`` one number, or one per
+        membrane), reflecting specularly otherwise; the outer walls reflect."""
+        if len(self.membranes) == 1:
+            k = kappa_over_D[0] if jnp.ndim(kappa_over_D) == 1 else kappa_over_D
+            return self._wall_one(r, step, k, rho_over_D, perm_key)
+        return self._wall_layers(r, step, kappa_over_D, rho_over_D, perm_key)
+
+    def _wall_layers(self, r, step, kappa_over_D, rho_over_D, perm_key):
+        """Several membranes: the step's normal path ray-traced through the layers by :class:`BounceLoop`, one event
+        per iteration -- the boundary ahead of the walker in its layer, reached within the path left, is a reflection
+        at an outer wall, or a trial at a membrane (``d_perp`` the path left beyond it, one uniform per event) that
+        crosses into the next layer or reflects. The layer is the loop's state, changed only by a granted crossing;
+        the end is set strictly inside it (the sentinel)."""
+        M = len(self.membranes)
+        loop = self.bounce_loop
+        xs = self._xs_f32
+        L = jnp.float32(self.length)
+        f0 = jnp.float32(0.0)
+        per_membrane = jnp.ndim(kappa_over_D) == 1
+        us = jax.random.uniform(perm_key, (loop.budget,), dtype=jnp.float32)   # one draw per event
+        x0 = r[0]
+        k0 = self._layer(x0)
+
+        def rule(xx, dd, rem, k, i):
+            x, sgn = xx[0], dd[0]
+            up = sgn > 0
+            right = jnp.where(k < M, xs[jnp.minimum(k, M - 1)], L)
+            left = jnp.where(k > 0, xs[jnp.maximum(k - 1, 0)], f0)
+            b = jnp.where(up, right, left)
+            t = jnp.abs(b - x)
+            hit = (rem > t) & (rem > 0)
+            outer = jnp.where(up, k == M, k == 0)
+            m = jnp.clip(jnp.where(up, k, k - 1), 0, M - 1)
+            d_perp = jnp.where(hit, rem - t, f0)
+            kap = kappa_over_D[m] if per_membrane else kappa_over_D
+            transmit = hit & (~outer) & (us[i] < transmit_probability(kap, d_perp))
+            reflecting = hit & (~transmit)
+            x_new = jnp.where(hit, b, x + sgn * rem)
+            rem_new = jnp.where(hit, rem - t, f0)
+            d_new = jnp.where(reflecting, -sgn, sgn)
+            k_new = jnp.where(transmit, k + jnp.where(up, 1, -1), k)
+            dlw = jnp.stack([jnp.where(reflecting & (~outer), -jnp.float32(2.0) * rho_over_D * d_perp, f0),
+                             transmit.astype(jnp.float32)])
+            return x_new[None], d_new[None], rem_new, k_new, dlw, transmit, reflecting & (~outer)
+
+        dx = step[0]
+        b = loop(rule, x0[None], jnp.where(dx >= 0, jnp.float32(1.0), jnp.float32(-1.0))[None], jnp.abs(dx),
+                 dlog_init=jnp.zeros(2, jnp.float32), state_init=k0)
+        k_f = b.state
+        x_f = jnp.clip(b.r[0], f0, L)
+        x_set = self._inside_layer(x_f, k_f)
+        illegal = x_set != x_f
+        crossed = (self._pool_of_layer_jnp(k_f) != self._pool_of_layer_jnp(k0))
+        n_hits = None if b.n_reflections is None else b.n_reflections + jnp.round(b.dlog_w[1]).astype(jnp.int32)
+        r_out = jnp.stack([x_set, r[1] + step[1], r[2] + step[2]])
+        return WallHit(r_out, b.dlog_w[0], crossed, illegal, n_hits, b.exhausted)
+
+    def _pool_of_layer_jnp(self, k):
+        return jnp.asarray(self._pool_of_layer)[k]
+
+    def _wall_one(self, r, step, kappa_over_D, rho_over_D, perm_key):
+        """The one-membrane slab's rule: at most one membrane event per step (a step shorter than a compartment),
+        the outer walls folded."""
+        xm = jnp.float32(self.membranes[0])
         x = r[0]; x_new = x + step[0]
         crossed = (x - xm) * (x_new - xm) < 0.0
         d_perp = jnp.where(crossed, jnp.abs(x_new - xm), jnp.float32(0.0))
@@ -544,7 +673,7 @@ class PermeableShell(Geometry):
                  orientation=(0.0, 0.0, 1.0), surface_relaxivity_t2=None):
         assert kind in ('sphere', 'cylinder')
         self.r_inner = float(r_inner); self.r_outer = float(r_outer)
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, 1, "PermeableShell")
         self.kind = kind
         self.surface_relaxivity_t2 = (float(surface_relaxivity_t2)
                                       if surface_relaxivity_t2 is not None else None)

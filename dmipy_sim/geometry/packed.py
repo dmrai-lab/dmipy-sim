@@ -54,6 +54,9 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     The bounce budget and the candidate count come from the worst case a step of ``step_max``
     can meet (:func:`bounce_budget`, :func:`packed_candidate_count`).
 
+    ``kappa_over_D`` is one number for every object or an array of one per object (``(N,)``, the order of
+    ``centers``): the trial of an encounter reads the permeability of the object the ray meets.
+
     Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving a
     :class:`~dmipy_sim.geometry._boundary.WallHit` in ``centers``' space: the end position, the surface
     log-weight increment ``-2 (rho/D) d_perp`` summed over the reflections, whether the side changed (an odd
@@ -79,6 +82,8 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
         else:
             idx = ar
         c_c, R_c = centers[idx], radii[idx]
+        per_object = jnp.ndim(kappa_over_D) == 1                               # static: one kappa per object
+        k_c = kappa_over_D[idx] if per_object else kappa_over_D
 
         def rule(pp, d, rem, state, i):
             q = _wrap(pp[None, :] - c_c)                                       # (n_cand, dim)
@@ -99,7 +104,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             cos_a = jnp.sqrt(jnp.maximum(disc[kh], f32(0.0))) / R_hit
             d_perp = jnp.where(any_hit, rem_a * cos_a, f32(0.0))
             stay_in = in_own & (kh == kc)
-            transmit = any_hit & (us[i] < transmit_probability(kappa_over_D, d_perp))
+            transmit = any_hit & (us[i] < transmit_probability(k_c[kh] if per_object else k_c, d_perp))
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)
@@ -206,6 +211,10 @@ class PackedCylinders(Geometry):
         Must come from ``pack_cylinders()`` (or otherwise be non-overlapping).
     L : float
         Side-length of the periodic square domain in metres.
+    permeability : float, array-like (N,) or PermeabilitySchedule, optional
+        Membrane permeability κ (m/s) of every cylinder's wall, one per cylinder (the order of ``radii``), or a
+        :class:`~dmipy_sim.geometry.PermeabilitySchedule` (κ piecewise constant in time, each value one number or one
+        per cylinder). A wall encounter's trial reads the κ of the cylinder met. Default None (reflecting).
     orientation : array-like, shape (3,), optional
         The axis's direction in the lab: the POSE of the substrate for :func:`~dmipy_sim.simulate`. The walk runs
         in the substrate's own frame (the axis along +z) and the engine rotates the acquisition into it
@@ -262,7 +271,7 @@ class PackedCylinders(Geometry):
             float(surface_relaxivity_t2)
             if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, len(radii), "PackedCylinders")
 
         self._L_float  = float(L)
         self._radii_np = radii.copy()
@@ -424,9 +433,11 @@ class PackedSpheres(Geometry):
     surface_relaxivity_t2 : float, optional
         Surface relaxivity ρ₂ in m/s.  Brownstein-Tarr weight on each
         reflection.  Default None (no surface relaxation).
-    permeability : float, optional
-        Membrane permeability κ in m/s.  Bidirectional exchange: p = x/(1+x),
-        x = 2κ·d_perp/D, per encounter.  Default None (fully reflecting).
+    permeability : float, array-like (N,) or PermeabilitySchedule, optional
+        Membrane permeability κ in m/s, one per sphere (the order of ``radii``), or a
+        :class:`~dmipy_sim.geometry.PermeabilitySchedule` (piecewise constant in time, each value one number or one
+        per sphere).  Bidirectional exchange: p = x/(1+x), x = 2κ·d_perp/D, per encounter, with the κ of the sphere
+        met.  Default None (fully reflecting).
 
     Attributes
     ----------
@@ -460,7 +471,7 @@ class PackedSpheres(Geometry):
             float(surface_relaxivity_t2)
             if surface_relaxivity_t2 is not None else None
         )
-        self.permeability = permeability_of(permeability)
+        self.permeability, self.permeability_table = permeability_of(permeability, len(radii), "PackedSpheres")
 
         self._L_float   = float(L)
         self._radii_np  = radii.copy()

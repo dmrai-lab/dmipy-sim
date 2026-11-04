@@ -2523,7 +2523,11 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
                          block=block, qv=qv, **wp_field, **({} if source is None else dict(producer=source)),
                          substrate_frame=(None if substrate_frame is None else np.asarray(substrate_frame, float).tolist())),
         replay_envelope=replay_env,
-        fidelity=fid, provenance=dict(provenance or {}, code=_code(), walk=dict(kind="coefficient", stepping=cw.stepping)),
+        fidelity=fid, provenance=dict(provenance or {}, code=_code(), walk=dict(
+            kind="coefficient", stepping=cw.stepping,
+            # the permeability per object and over time the walk read (physics.membrane_kappa), when it states one
+            **({} if cw.work is None or cw.work.get("permeability") is None
+               else dict(permeability=cw.work["permeability"])))),
         license=license, citation=citation, substrate=sub)
     if pack_license:
         meta["pack_license"] = str(pack_license)

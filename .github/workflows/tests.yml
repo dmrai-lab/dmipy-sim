@@ -7,6 +7,13 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+env:
+  # the forms and the reader at the commits this revision was tested against: dmrai-lab/dmipy-analytic#15 (a
+  # permeability piecewise constant in time in bloch_torrey, the reference of tests/geometry/test_permeable_layers.py)
+  # and dmrai-lab/dmipy-replay#31 (Wall.permeability_table, the spec of a permeability per object and over time)
+  DMIPY_ANALYTIC_REF: afe41f9f52d2517139c6af507a3a2e0f26852dff
+  DMIPY_REPLAY_REF: cc342915e2fcc45a2d440fe8d3e58334adedc36e
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,6 +39,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov
+          pip install "dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@${DMIPY_ANALYTIC_REF}"
+          pip install "dmipy-replay[torch] @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           # Base install pulls plain (CPU) jax; the [cuda12] extra is NOT installed,
           # so GitHub's CPU runners resolve JAX's CPU backend. [interop] adds dipy, which
           # nothing in the package imports -- it is the ORACLE the normative SH basis is

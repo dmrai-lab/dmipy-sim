@@ -971,6 +971,12 @@ class Mesh(Geometry):
             k_out = float(permeability["intra_to_extra"])   # leaving a cell
             k_in = float(permeability["extra_to_intra"])    # entering a cell
         elif permeability is not None:
+            from .base import PermeabilitySchedule
+            if isinstance(permeability, PermeabilitySchedule) or np.ndim(permeability) != 0:
+                raise NotImplementedError(
+                    "Mesh(permeability=) is one number or the mapping of the two crossing directions: the mesh's walk "
+                    "carries no label of which surface a facet belongs to, so a permeability per surface has nothing to "
+                    "be read at, and a permeability over time is not walked on a mesh")
             k_out = k_in = float(permeability)
         else:
             k_out = k_in = 0.0

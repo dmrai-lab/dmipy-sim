@@ -16,7 +16,7 @@ frame helper, and *nothing else* crosses these boundaries.
 
 Import from here rather than the submodules: ``from dmipy_sim.geometry import Cylinder``.
 """
-from .base import Geometry, LengthScales, FreeDiffusion, Box1D, initial_positions
+from .base import Geometry, LengthScales, FreeDiffusion, Box1D, initial_positions, PermeabilitySchedule
 from .analytic import Sphere, Cylinder, Ellipsoid, PermeableSlab1D, PermeableShell
 from .packed import PackedCylinders, PackedSpheres
 from .myelin import MyelinatedCylinder, PackedMyelinatedCylinders
@@ -27,7 +27,7 @@ from .sphere_union import SphereUnion
 from .label_volume import LabelVolume
 
 __all__ = [
-    "Geometry", "LengthScales", "FreeDiffusion", "Box1D", "initial_positions",
+    "Geometry", "LengthScales", "FreeDiffusion", "Box1D", "initial_positions", "PermeabilitySchedule",
     "Sphere", "Cylinder", "Ellipsoid", "PermeableSlab1D", "PermeableShell",
     "PackedCylinders", "PackedSpheres",
     "MyelinatedCylinder", "PackedMyelinatedCylinders",

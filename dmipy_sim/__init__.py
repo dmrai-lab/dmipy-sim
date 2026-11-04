@@ -35,7 +35,7 @@ from .geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, MyelinatedCylinde
                          PackedSpheres, pack_spheres,
                          PackedMyelinatedCylinders,
                          pack_myelinated_cylinders,
-                         PermeableSlab1D)
+                         PermeableSlab1D, PermeabilitySchedule)
 from .geometry.curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder, PackedCurvedCylinders
 from .geometry.sphere_union import SphereUnion
 from .geometry.label_volume import LabelVolume
@@ -64,7 +64,7 @@ __all__ = [
     "PackedCylinders", "pack_cylinders",
     "PackedSpheres", "pack_spheres",
     "PackedMyelinatedCylinders", "pack_myelinated_cylinders",
-    "PermeableSlab1D",
+    "PermeableSlab1D", "PermeabilitySchedule",
     "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion", "LabelVolume",
     "Mesh", "load_ply",
     # susceptibility off-resonance fields (forward Bloch)

@@ -24,6 +24,7 @@ from dmipy_replay.spec.substrate import (
     Surface,
     Wall,
     Directional,
+    PermeabilityTable,
     Sided,
     Seeding,
     Validity,
@@ -50,6 +51,31 @@ def _rho2(g):
 
 def _kappa(g):
     return _f(getattr(g, "permeability", None)) or 0.0
+
+
+def _kappa_table(g, n_instances, column=None):
+    """The :class:`PermeabilityTable` of ``g``'s permeability per object and over time on a wall of ``n_instances``
+    instances (the geometry's table, one value per instance in each row), or ``None`` where the wall's
+    ``permeability`` says it all: one permeability of every object at every time, or one constant value on a wall of
+    one instance. ``column`` takes one object's column of the geometry's table (a slab's membrane, each its own wall)."""
+    t = g.permeability_table
+    if t is None:
+        return None
+    vals = np.asarray(t.values, float)
+    if column is not None:
+        vals = vals[:, [column if vals.shape[1] > 1 else 0]]
+    if vals.shape[0] == 1 and int(n_instances) == 1:
+        return None
+    rows = np.broadcast_to(vals, (vals.shape[0], int(n_instances))).tolist()
+    return PermeabilityTable(np.asarray(t.breakpoints, float).tolist(), rows, [list(r) for r in rows])
+
+
+def _directional_of(table, kappa):
+    """The wall's ``permeability``: the largest value of its table, or ``kappa`` without one."""
+    if table is None:
+        return Directional(float(kappa), float(kappa))
+    k = float(max(max(r) for r in table.in_to_out))
+    return Directional(k, k)
 
 
 def _box(half, axis_open=None):
@@ -159,11 +185,26 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
     if isinstance(g, PermeableSlab1D):
         L = g.length
         pools = [PoolSpec(0, "extra", None, water_fraction=1.0), PoolSpec(1, "intra", None, water_fraction=1.0)]
-        wall = Wall("membrane", Surface("plane", point=[L / 2, 0.0, 0.0], normal=[1.0, 0.0, 0.0]), 1, 0,
-                    Directional(_kappa(g), _kappa(g)), Sided(_rho2(g), _rho2(g)))
+        M = len(g.membranes)
+        walls = []
+        for k, x in enumerate(g.membranes):
+            # pool 1 is the layer left of an even membrane and right of an odd one: inside, the half-space the
+            # normal points away from
+            table = _kappa_table(g, 1, column=k)
+            t = g.permeability_table
+            own = (_kappa(g) if t is None else
+                   float(np.asarray(t.values)[0, k if t.values.shape[1] > 1 else 0]))   # constant: this membrane's
+            walls.append(Wall("membrane" if M == 1 else f"membrane_{k}",
+                              Surface("plane", point=[float(x), 0.0, 0.0], normal=[1.0 if k % 2 == 0 else -1.0, 0.0, 0.0]),
+                              1, 0, _directional_of(table, own), Sided(_rho2(g), _rho2(g)), permeability_table=table))
         dom = Domain([0.0, -MARGIN * L, -MARGIN * L], [L, MARGIN * L, MARGIN * L], ["reflect", "open", "open"], _rho2(g))
-        return SubstrateSpec(sid, dom, pools, [wall], Seeding([1]), Validity(L / 2, _tiers([wall], pools)),
-                             description="closed 1-D two-compartment slab; A = x < L/2 is pool 1", provenance=prov)
+        if M == 1 and g.membranes[0] == L / 2:
+            what = "closed 1-D two-compartment slab; A = x < L/2 is pool 1"
+        else:
+            what = (f"closed 1-D slab of {M + 1} layers between membranes at {list(g.membranes)}; the layers alternate "
+                    f"pools 1 and 0 from x = 0, pool 1 seeded")
+        return SubstrateSpec(sid, dom, pools, walls, Seeding([1]), Validity(float(np.min(g._widths)), _tiers(walls, pools)),
+                             description=what, provenance=prov)
     if isinstance(g, Box1D):
         L = g.length
         pools = [extra0, PoolSpec(1, "intra", None, water_fraction=1.0)]
@@ -176,8 +217,9 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         pools = [PoolSpec(0, "extra", None, water_fraction=1.0), PoolSpec(1, "intra", None, water_fraction=1.0)]
         kind = "sphere" if g.kind == "sphere" else "cylinder"
         ax = {} if kind == "sphere" else {"axis": np.asarray(g._o, float).tolist()}
+        table = _kappa_table(g, 1)
         inner = Wall("membrane", Surface(kind, center=[0.0] * 3, radius=ri, **ax), 1, 0,
-                     Directional(_kappa(g), _kappa(g)), Sided(_rho2(g), _rho2(g)))
+                     _directional_of(table, _kappa(g)), Sided(_rho2(g), _rho2(g)), permeability_table=table)
         outer = Wall("outer", Surface(kind, center=[0.0] * 3, radius=ro, **ax), 0, None, Directional(),
                      Sided(_rho2(g), 0.0))
         dom = Domain(*_box(MARGIN * ro), ["open"] * 3)
@@ -192,7 +234,9 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
             surf, R = Surface("cylinder", center=[0.0] * 3, axis=[0.0, 0.0, 1.0], radius=g.radius), g.radius
         else:
             surf, R = Surface("ellipsoid", center=[0.0] * 3, semiaxes=np.asarray(g.semiaxes, float).tolist()), float(np.min(g.semiaxes))
-        wall = Wall("membrane", surf, 1, (0 if kappa > 0 else None), Directional(kappa, kappa), Sided(_rho2(g), _rho2(g)))
+        table = _kappa_table(g, 1)
+        wall = Wall("membrane", surf, 1, (0 if kappa > 0 else None), _directional_of(table, kappa), Sided(_rho2(g), _rho2(g)),
+                    permeability_table=table)
         Rmax = float(np.max(g.semiaxes)) if isinstance(g, Ellipsoid) else R
         return SubstrateSpec(sid, Domain(*_box(MARGIN * Rmax), ["open"] * 3), pools, [wall], Seeding([1]),
                              Validity(R, _tiers([wall], pools)),
@@ -208,7 +252,8 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
         kind = "cylinder" if isinstance(g, PackedCylinders) else "sphere"
         surf = Surface(kind, **({"axis": [0.0, 0.0, 1.0]} if kind == "cylinder" else {}),
                        instances={"centers": centers.tolist(), "radii": np.asarray(g._radii_np, float).tolist()})
-        wall = Wall("objects", surf, 1, 0, Directional(kappa, kappa), Sided(_rho2(g), _rho2(g)))
+        table = _kappa_table(g, len(centers))
+        wall = Wall("objects", surf, 1, 0, _directional_of(table, kappa), Sided(_rho2(g), _rho2(g)), permeability_table=table)
         bc = ["periodic", "periodic", "open"] if kind == "cylinder" else ["periodic"] * 3
         dom = Domain([-L / 2] * 3, [L / 2] * 3, bc)
         return SubstrateSpec(sid, dom, pools, [wall], Seeding(seeded),
@@ -241,16 +286,24 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
             if not np.allclose(a, a[0]):
                 raise SpecError(f"{what} varies per axon; spec 0.1 wall properties are per wall, not per instance")
             return float(a[0])
-        ki, ko = scalar(g._kappa_inner_jax, "kappa_inner"), scalar(g._kappa_outer_jax, "kappa_outer")
+        def per_axon(arr):
+            """``(permeability, table)`` of a per-axon permeability: one number when every axon has it, else the
+            largest and a table of one row with a value per axon."""
+            a = np.asarray(arr, float)[:N]
+            if np.all(a == a[0]):
+                return Directional(float(a[0]), float(a[0])), None
+            row = a.tolist()
+            return Directional(float(a.max()), float(a.max())), PermeabilityTable([], [row], [list(row)])
+        (ki, ti), (ko, to) = per_axon(g._kappa_inner_jax), per_axon(g._kappa_outer_jax)
         ri, ro = scalar(g._rho_inner_jax, "rho_inner"), scalar(g._rho_outer_jax, "rho_outer")
         pools = _pools_from_compartments(g, ["extra", "intra", "myelin"],
                                          {"extra": scalar(g._D_extra_jax, "D_extra"), "intra": scalar(g._D_intra_jax, "D_intra"),
                                           "myelin": scalar(g._D_myelin_jax, "D_myelin")})
         L = float(g._L_float)
         w_in = Wall("axolemma", Surface("cylinder", axis=ax, instances={"centers": centers.tolist(), "radii": inner.tolist()}),
-                    1, 2, Directional(ki, ki), Sided(ri, ri))
+                    1, 2, ki, Sided(ri, ri), permeability_table=ti)
         w_out = Wall("sheath", Surface("cylinder", axis=ax, instances={"centers": centers.tolist(), "radii": outer.tolist()}),
-                     2, 0, Directional(ko, ko), Sided(ro, ro))
+                     2, 0, ko, Sided(ro, ro), permeability_table=to)
         dom = Domain([-L / 2, -L / 2, -L / 2], [L / 2, L / 2, L / 2], ["periodic", "periodic", "open"])
         return SubstrateSpec(sid, dom, pools, [w_in, w_out], Seeding(_seeded(pools)),
                              Validity(float(min(inner.min(), (outer - inner).min())), _tiers([w_in, w_out], pools),
@@ -416,8 +469,9 @@ def _spec_of_label_volume(g, id, prov, surface_dir=None):
                    labels={str(v): n for v, n in g.pools.items()},
                    crop=(list(int(x) for x in src["crop"]) if src.get("crop") is not None else None))
     rho2, kappa = _rho2(g), _kappa(g)
+    table = _kappa_table(g, 1)
     walls = [Wall(f"{names[j]}|{names[i]}", Surface("label_volume", **surf_kw), j, i,
-                  Directional(kappa, kappa), Sided(rho2, rho2))
+                  _directional_of(table, kappa), Sided(rho2, rho2), permeability_table=table)
              for (i, j) in sorted(g.interfaces())]
     bc = ["periodic" if p else "reflect" for p in g.periodic]
     dom = Domain(np.asarray(g.box_min, float).tolist(), np.asarray(g.box_max, float).tolist(), bc)
@@ -601,6 +655,56 @@ def geometry_from_spec(spec):
     return g
 
 
+def _slab_from_planes(walls, dom, ksym, rho2):
+    """The :class:`~dmipy_sim.geometry.analytic.PermeableSlab1D` of plane walls: membranes across ``x`` at the walls'
+    points, inside ``[box_min, box_max]``. One plane is the two-compartment slab (its normal along ``+-x``); several
+    alternate the pools from ``x = box_min``, so the ``k``-th membrane from the left has pool 1 on its left for even
+    ``k`` (normal ``+x``) and on its right for odd ``k`` (normal ``-x``); each membrane's permeability is its wall's."""
+    from ..geometry.analytic import PermeableSlab1D
+    x0 = float(dom.box_min[0])
+    L = float(dom.box_max[0]) - x0
+    tol = 1e-6 * max(L, 1e-30)
+    for w in walls:
+        s = w.surface
+        if s.point is None or s.normal is None or not np.allclose(np.abs(s.normal), [1.0, 0.0, 0.0], atol=1e-9) \
+                or abs(float(s.point[1])) > tol or abs(float(s.point[2])) > tol:
+            raise SpecError(f"wall {w.name!r}: surface.point={s.point} / normal={s.normal} is not a plane across x "
+                            f"(point [x, 0, 0], normal +-[1, 0, 0]), the membrane PermeableSlab1D builds")
+        if (w.inside_pool, w.outside_pool) != (1, 0):
+            raise SpecError(f"wall {w.name!r} separates pools {w.inside_pool} (inside) and {w.outside_pool}; a "
+                            f"PermeableSlab1D membrane has pool 1 inside and pool 0 outside")
+    order = sorted(range(len(walls)), key=lambda i: float(walls[i].surface.point[0]))
+    walls = [walls[i] for i in order]
+    xs = [float(w.surface.point[0]) - x0 for w in walls]
+    if len(walls) > 1:
+        for k, w in enumerate(walls):
+            want = 1.0 if k % 2 == 0 else -1.0
+            if float(w.surface.normal[0]) != want:
+                raise SpecError(f"wall {w.name!r} is membrane {k} from x = {x0} with normal {w.surface.normal}; "
+                                f"PermeableSlab1D's layers alternate pools 1 and 0 from the left, so membrane {k}'s "
+                                f"normal is [{want}, 0, 0]")
+    if len({rho2(w) for w in walls}) > 1:
+        raise SpecError("PermeableSlab1D takes one surface relaxivity for every membrane; the walls give "
+                        f"{[rho2(w) for w in walls]}")
+    kappas = [ksym(w, "PermeableSlab1D") for w in walls]
+    from ..geometry import PermeabilitySchedule
+    if len(walls) == 1:
+        kappa = kappas[0]
+    elif any(isinstance(k, PermeabilitySchedule) for k in kappas):
+        if not all(isinstance(k, PermeabilitySchedule) for k in kappas) or \
+                len({k.breakpoints for k in kappas}) > 1:
+            raise SpecError("PermeableSlab1D's membranes share one schedule's breakpoints: every wall's permeability "
+                            "table gives the same breakpoints")
+        kappa = PermeabilitySchedule(list(kappas[0].breakpoints),
+                                     [[float(k.values[j]) for k in kappas] for j in range(len(kappas[0].values))])
+    elif len({float(k) for k in kappas}) == 1:
+        kappa = float(kappas[0])                           # one permeability of every membrane
+    else:
+        kappa = [float(k) for k in kappas]
+    return PermeableSlab1D(L, kappa, surface_relaxivity_t2=rho2(walls[0]),
+                           membranes=(None if len(walls) == 1 and abs(xs[0] - L / 2.0) <= tol else xs))
+
+
 def _geometry_from_spec(spec):
     from ..geometry import (FreeDiffusion, Box1D, Sphere, Cylinder, Ellipsoid, PackedCylinders, PackedSpheres,
                             MyelinatedCylinder, PackedMyelinatedCylinders, CurvedCylinder, CurvedMyelinatedCylinder,
@@ -616,25 +720,49 @@ def _geometry_from_spec(spec):
         r = w.surface_relaxivity.inside or w.surface_relaxivity.outside
         return r or None
 
+    def table_value(w, family, *, in_time=True):
+        """``w``'s permeability table as the value ``family``'s constructor takes: a
+        :class:`~dmipy_sim.geometry.PermeabilitySchedule` (one number per interval for a surface without instances,
+        else one per instance), or, for a family whose permeability per object is constant in time (``in_time``
+        False), the one row of values per instance; refused when the two directions differ, and when ``family``
+        walks no permeability over time and the table has breakpoints."""
+        from ..geometry import PermeabilitySchedule
+        t = w.permeability_table
+        if t.in_to_out != t.out_to_in:
+            raise SpecError(f"wall {w.name!r} has an asymmetric permeability table but {family} takes one kappa for "
+                            f"both directions")
+        if not in_time:
+            if t.breakpoints:
+                raise SpecError(f"wall {w.name!r} has a permeability that varies in time (breakpoints {t.breakpoints}) "
+                                f"but {family} walks a permeability per object constant in time")
+            return list(t.in_to_out[0])
+        rows = [r[0] if len(r) == 1 else list(r) for r in t.in_to_out]
+        return PermeabilitySchedule(list(t.breakpoints), rows)
+
     def kappa(w, family):
         """``w``'s crossing permeability as the ONE kappa ``family``'s constructor takes (``None`` when
-        impermeable); refuses when ``out_to_in`` differs from ``in_to_out``, since only a Mesh wall walks
-        both crossing directions."""
+        impermeable), or its permeability table as a schedule; refuses when ``out_to_in`` differs from
+        ``in_to_out``, since only a Mesh wall walks both crossing directions."""
         k_out, k_in = w.permeability.in_to_out, w.permeability.out_to_in
         if k_out != k_in:
             raise SpecError(f"wall {w.name!r} has asymmetric permeability (in_to_out={k_out}, out_to_in={k_in}) "
                             f"but {family} takes one kappa for both directions; geometry_from_spec would have "
                             f"walked both directions at kappa={k_out}")
+        if w.permeability_table is not None:
+            return table_value(w, family)
         return k_out if k_out > 0 else None
 
-    def ksym(w, family):
+    def ksym(w, family, *, in_time=True):
         """``w.permeability.in_to_out`` as a plain float (0.0 = impermeable), for a constructor that takes a
-        required float rather than ``None``; the same asymmetry refusal as :func:`kappa`."""
+        required float rather than ``None``, or its permeability table (:func:`table_value`); the same asymmetry
+        refusal as :func:`kappa`."""
         k_out, k_in = w.permeability.in_to_out, w.permeability.out_to_in
         if k_out != k_in:
             raise SpecError(f"wall {w.name!r} has asymmetric permeability (in_to_out={k_out}, out_to_in={k_in}) "
                             f"but {family} takes one kappa for both directions; geometry_from_spec would have "
                             f"walked both directions at kappa={k_out}")
+        if w.permeability_table is not None:
+            return table_value(w, family, in_time=in_time)
         return k_out
 
     def refuse_pose(s, family, *, length=False, rotation=False):
@@ -679,6 +807,9 @@ def _geometry_from_spec(spec):
             raise SpecError(f"a label_volume walks ONE surface relaxivity at every voxel face, but the walls give "
                             f"(inside, outside) {rho_of}; the pool-id convention is that 'inside' is the wall's "
                             f"inside_pool (the higher pool id of the pair). Give every wall and side the same value")
+        if len({(repr(x.permeability), repr(x.permeability_table)) for x in walls}) > 1:
+            raise SpecError("a label_volume walks ONE permeability at every voxel face, but its walls give different "
+                            "permeabilities or permeability tables")
         labels, vox, origin, pool_map = label_volume_arrays(w.surface)
         by_id = {p.id: p.name for p in spec.pools}
         order = {p.name: p.id for p in spec.pools}
@@ -722,6 +853,9 @@ def _geometry_from_spec(spec):
             if w.surface_relaxivity.inside > 0 and n == "intra": kw["surface_relaxivity_t2"] = w.surface_relaxivity.inside
             if w.surface_relaxivity.outside > 0 and n == "extra": kw["surface_relaxivity_t2"] = w.surface_relaxivity.outside
             if kw: comps[n] = CPool(**kw)
+        if w.permeability_table is not None:
+            raise SpecError(f"wall {w.name!r} has a permeability table, but a Mesh's walk carries no label of the "
+                            f"surface a facet belongs to and walks one permeability per crossing direction")
         perm = None
         if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
             perm = ({"intra_to_extra": w.permeability.in_to_out, "extra_to_intra": w.permeability.out_to_in}
@@ -735,18 +869,10 @@ def _geometry_from_spec(spec):
         # rule above) kept beside the resolved path this process actually read the bytes from
         m.source = dict(m.source, cite=s.file)
         return m
+    if walls and all(w.surface.kind == "plane" for w in walls):
+        return _slab_from_planes(walls, dom, ksym, rho2)
     if len(walls) == 1:
         w = walls[0]; s = w.surface
-        if s.kind == "plane":
-            L = dom.box_max[0] - dom.box_min[0]
-            expect_point = [dom.box_min[0] + L / 2.0, 0.0, 0.0]
-            tol = 1e-6 * max(L, 1e-30)
-            if (s.point is not None and not np.allclose(s.point, expect_point, atol=tol)) or \
-               (s.normal is not None and not np.allclose(np.abs(s.normal), [1.0, 0.0, 0.0], atol=1e-9)):
-                raise SpecError(f"surface.point={s.point} / normal={s.normal} is not the x-mid-slab "
-                                f"(point {expect_point}, normal +-[1, 0, 0]) that PermeableSlab1D builds; "
-                                f"geometry_from_spec has no other plane constructor")
-            return PermeableSlab1D(L, ksym(w, "PermeableSlab1D"), surface_relaxivity_t2=rho2(w))
         if s.instances:
             if s.kind == "swept_polyline":
                 if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
@@ -830,13 +956,17 @@ def _geometry_from_spec(spec):
                     return PackedMyelinatedCylinders(ri, ri / ro, centers, L,
                                                      N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
                                                      orientation=tuple(inner.surface.axis or (0, 0, 1)),
-                                                     kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma"),
-                                                     kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath"),
+                                                     kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma", in_time=False),
+                                                     kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath", in_time=False),
                                                      rho_inner=inner.surface_relaxivity.inside,
                                                      rho_outer=outer.surface_relaxivity.inside,
                                                      compartments=comps)
                 refuse_pose(inner.surface, "MyelinatedCylinder", length=True)
                 refuse_pose(outer.surface, "MyelinatedCylinder", length=True)
+                for x in (inner, outer):
+                    if x.permeability_table is not None:
+                        raise SpecError(f"wall {x.name!r} has a permeability table but MyelinatedCylinder walks one "
+                                        f"permeability per wall, constant in time")
                 return MyelinatedCylinder(inner.surface.radius, outer.surface.radius,
                                           tuple(inner.surface.axis or (0, 0, 1)),
                                           kappa_inner=kappa(inner, "MyelinatedCylinder axolemma"),

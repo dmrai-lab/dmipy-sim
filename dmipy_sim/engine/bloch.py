@@ -154,9 +154,16 @@ def _make_bloch_step_fn(geometry, D, dt, T2, T1, M0, off_resonance_hz, rho=0.0,
         # per fine sub-step. Same crossing physics as the scalar core.simulate walk, now
         # carried on the vector-Bloch M -- so a longitudinally-stored pool that EXCHANGES
         # across membranes during a mixing time is modelled correctly (e.g. FEXI).
-        kappa_over_D = jnp.float32(geometry.permeability / D)
         interact = geometry.interact               # absorbs a geometry that also reports crossing / refusal
         n_sub = resolve_sub_steps(geometry, float(D), dt, surface=rho > 0.0, override=sub_steps, f_band=f_band)
+        table = geometry.permeability_table
+        if table is not None and len(table.breakpoints):
+            raise NotImplementedError(
+                f"the vector-Bloch walk takes a permeability constant in time; {type(geometry).__name__}'s varies at "
+                f"{list(np.asarray(table.breakpoints))} s. A permeability over time is walked by walk / _walk_geometry "
+                f"and simulate's scalar walk")
+        from .physics import membrane_kappa
+        kappa_over_D = membrane_kappa(geometry, float(D), dt / n_sub)[0](None)    # one number, or one per object
         _warn_if_step_outruns_the_lookup(geometry, float(D), dt, n_sub, 'Bloch walk')
         step_len_sub = jnp.float32(np.sqrt(6.0 * D * dt / n_sub))
         gamma_dt_sub = jnp.float32(GAMMA * dt / n_sub)

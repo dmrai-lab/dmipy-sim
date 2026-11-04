@@ -336,7 +336,8 @@ def simulate_fused(
                         return new_carry, (rn if emit_pos else None, cn if emit_comp else None)
 
                     (r_final, phi_all, log_w, _, comp_final), (pos_ys, comp_ys) = jax.lax.scan(
-                        body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w), (G_s, chi_s))
+                        body, (r0_w, phi0, jnp.float32(0.0), key_w, comp0_w),
+                        (G_s, chi_s, jnp.arange(chi_s.shape[0], dtype=jnp.int32)))   # the sample's index: the step's time
                     return r_final, phi_all, log_w, comp_final, pos_ys, comp_ys
                 return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)), compiler_options=walk_compiler_options())
 
