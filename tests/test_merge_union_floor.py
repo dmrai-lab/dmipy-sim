@@ -67,3 +67,21 @@ def test_one_walker_counted_twice_is_refused(whole):
         merge_packs([_pack(0, n, "t/a"), _pack(n - 10, n, "t/b")], id="t/dup")
 
 
+
+
+def test_a_pack_of_one_shard_assembles_as_that_shard(whole):
+    """A pack walked as a single shard is assembled by the same merge: the union of one shard is that shard, its
+    walkers' tensors unchanged, its floor and error as the shard states them, under the pack's own id."""
+    m = merge_packs([whole], id="t/one")
+    assert m.meta["id"] == "t/one"
+    assert sorted(m.arrays) == sorted(whole.arrays)
+    for k in whole.arrays:
+        a, b = m.arrays[k], whole.arrays[k]
+        a = np.concatenate(a) if isinstance(a, list) else np.asarray(a)
+        b = np.concatenate(b) if isinstance(b, list) else np.asarray(b)
+        assert np.array_equal(a, b), k
+    f, f0 = m.meta["fidelity"], whole.meta["fidelity"]
+    assert f["floor_max"] == pytest.approx(f0["floor_max"], rel=1e-12) and f["err_max"] == f0["err_max"]
+    assert f["floor_combined"] == "pooled_shards"
+    with pytest.raises(ValueError, match="at least one shard"):
+        merge_packs([], id="t/none")
