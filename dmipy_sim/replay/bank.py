@@ -1361,7 +1361,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         w_final = (np.concatenate(arrays["spin_weights"]) if isinstance(arrays["spin_weights"], list) else np.asarray(arrays["spin_weights"])
                    ).astype(np.float64) if "spin_weights" in arrays else np.ones(int(sum(n)))
         env_ = stated_envelope(pks[0]) if envelope is None else envelope
-        n_win = int((pks[0].meta["walk_params"].get("windows") or {}).get("n", 1))
+        n_win = int(pks[0].meta["walk_params"]["windows"]["n"])          # every replay pack states its window table
         ids_ = [pk.meta.get("id") for pk in pks]
         if n_win > 1:                                                       # a windowed walk: each window certifies itself, the whole is their bound
             views = [[_window_view(pk, i, n_win) for pk in pks] for i in range(n_win)]
