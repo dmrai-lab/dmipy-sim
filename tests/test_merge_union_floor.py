@@ -178,3 +178,14 @@ def test_a_recertified_16_84_pass_pair_merges_to_the_floor_of_the_whole_pack_at_
         assert fm["per_family"][fam]["floor_max"] == pytest.approx(v, rel=RTOL), fam
     assert abs(asis["floor_max"] / ref["floor_max"] - 1) > 1e-3                        # the as-is weights are a different (worse) population
     assert fm["noise_floor"] == pytest.approx(ref["noise_floor"], rel=RTOL)
+
+
+def test_a_shard_that_states_no_battery_is_refused_by_name():
+    """The floor of a union is read on the battery the shards state; a shard built without that statement is refused,
+    naming it, unless the caller states the settings."""
+    import copy
+    from dmipy_replay import ReplayPack
+    a, b = _pack(0, N // 2, "t/a"), _pack(N // 2, N // 2, "t/old")
+    meta = copy.deepcopy(b.meta); del meta["fidelity"]["battery"]
+    with pytest.raises(ValueError, match=r"shard 1 \('t/old'\).*fidelity.battery.*Rebuild"):
+        merge_packs([a, ReplayPack(dict(b.arrays), meta)], id="t/refused")

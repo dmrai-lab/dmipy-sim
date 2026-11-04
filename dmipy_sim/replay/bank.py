@@ -1223,7 +1223,8 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
     pack; the contact tier's walk-free ``floor_surface`` is read from the union's stored reading (:func:`_union_surface_floor`);
     the floors a build reads off a raw subset (a measured ``floor_surface``, ``floor_susc_path``, ``floor_susc_bloch``) are
     not functions of the shards' coefficients and keep the largest shard's. ``floor_max`` is the maximum of these with the
-    union's coefficient floor. The stated floors are rounded as a built pack's are (:func:`_round_certificate`). The
+    union's coefficient floor. The floor is read on the battery the shards state (``fidelity.battery``); a shard that states none is
+    refused by name, unless the caller states the settings (``envelope``). The stated floors are rounded as a built pack's are (:func:`_round_certificate`). The
     ``within_2x_floor`` and the target statements are restated from the merged values; the precision tiers are recomputed and
     declared unshuffled (the walkers are ordered by shard). Provenance lists the shards and the field read interval
     of each. The shards of a pool bundle read the field at the intervals of their own rounds, so the interval is not
@@ -1361,12 +1362,13 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                    ).astype(np.float64) if "spin_weights" in arrays else np.ones(int(sum(n)))
         env_ = stated_envelope(pks[0]) if envelope is None else envelope
         n_win = int((pks[0].meta["walk_params"].get("windows") or {}).get("n", 1))
+        ids_ = [pk.meta.get("id") for pk in pks]
         if n_win > 1:                                                       # a windowed walk: each window certifies itself, the whole is their bound
             views = [[_window_view(pk, i, n_win) for pk in pks] for i in range(n_win)]
             fid.update(_round_certificate(combine_window_fidelity([
-                _union_window_fidelity([(pk.meta["fidelity"])["windows"][i] for pk in pks], views[i], w_final, n, env_, device) for i in range(n_win)])))
+                _union_window_fidelity([(pk.meta["fidelity"])["windows"][i] for pk in pks], views[i], w_final, n, env_, device, ids=ids_, stated=envelope is not None) for i in range(n_win)])))
         else:
-            fid.update({k: v for k, v in _union_window_fidelity(fids, pks, w_final, n, env_, device).items() if k != "per_voxel"})   # (the merged pack's own, above)
+            fid.update({k: v for k, v in _union_window_fidelity(fids, pks, w_final, n, env_, device, ids=ids_, stated=envelope is not None).items() if k != "per_voxel"})   # (the merged pack's own, above)
         if "planned_floor" in fid:
             fid["meets_planned_floor"] = bool(fid["floor_max"] <= float(fid["planned_floor"]))
             if "target_floor" in fid:
@@ -2075,15 +2077,20 @@ def _surface_terms_walk_free(endpoint, bands, arrays, meta, env, *, T, h, D, w=N
                 truncation=float(trunc), quadrature=float(quadrature), n_walkers=n, rho2_list=rhos)
 
 
-def _floor_envelope(fids, env):
-    """The settings the floor of shards with fidelity records ``fids`` is read under: ``env`` with the battery the
-    shards state (``fidelity.battery``, which all of them state alike), or ``env`` as it stands when none states one."""
-    stated = [f.get("battery") for f in fids]
-    if all(b is None for b in stated):
+def _floor_envelope(fids, env, ids, *, stated):
+    """The settings the floor of shards with fidelity records ``fids`` (their pack ``ids``) is read under. ``stated``
+    are the caller's own (``merge_packs(envelope=...)``), which are ``env`` as given. Otherwise ``env`` with the
+    battery the shards state (``fidelity.battery``, which all of them state alike): a shard that states none is refused
+    by name, since its floor was measured on a battery the pack does not name."""
+    if stated:
         return env
-    if any(b is None for b in stated) or any(b != stated[0] for b in stated[1:]):
-        raise ValueError("the shards do not state one battery (fidelity.battery): the floor of their union is read on one")
-    return dict(env, **stated[0])
+    for i, (f, id_) in enumerate(zip(fids, ids)):
+        if f.get("battery") is None:
+            raise ValueError(f"shard {i} ({id_!r}) does not state the battery its floor was measured on (fidelity.battery); the floor of a union is "
+                             "read on one stated battery. Rebuild the shard with the current build_replay_pack, or pass the battery in merge_packs(envelope=...)")
+    if any(f["battery"] != fids[0]["battery"] for f in fids[1:]):
+        raise ValueError("the shards state different batteries (fidelity.battery): the floor of their union is read on one")
+    return dict(env, **fids[0]["battery"])
 
 
 def _window_view(pk, i, n_windows):
@@ -2095,7 +2102,7 @@ def _window_view(pk, i, n_windows):
     return types.SimpleNamespace(arrays=dict(base, **own), meta=pk.meta, dt=pk.dt, n_t=(int(pk.n_t) - 1) // int(n_windows) + 1)
 
 
-def _union_window_fidelity(fids, pks, w, n, env, device):
+def _union_window_fidelity(fids, pks, w, n, env, device, *, ids, stated):
     """The certificate of the union of shards ``pks`` (one window of each, or whole packs; in walker order; ``fids`` their
     fidelity records, ``n`` their walker counts) as one pack, under the weights ``w``: the errors the largest over
     the shards (bias bounds); the floor the union's own (:func:`_union_floor`), with the contact tier's walk-free
@@ -2103,13 +2110,14 @@ def _union_window_fidelity(fids, pks, w, n, env, device):
     on a raw subset (a measured ``floor_surface``, ``floor_susc_path``, ``floor_susc_bloch``) the largest shard's;
     ``floor_max`` the maximum of them, ``per_family`` (floor exact, error the largest shard's), ``noise_floor`` and
     ``floor_quantisation`` (the codec's ``eps`` at the union's ``n_eff``), the floors rounded as a built pack's are
-    (:func:`_round_certificate`)."""
+    (:func:`_round_certificate`). ``ids`` are the shards' pack ids and ``stated`` whether the caller stated the settings
+    (:func:`_floor_envelope`)."""
     fid = dict(fids[0])
     for key in ("err_max", "err_surface", "floor_surface", "floor_susc_path", "floor_susc_bloch"):
         vals = [f.get(key) for f in fids]
         if all(v is not None for v in vals):
             fid[key] = float(max(vals))
-    fx = _union_floor(pks, w, _floor_envelope(fids, env), device=device)
+    fx = _union_floor(pks, w, _floor_envelope(fids, env, ids, stated=stated), device=device)
     if all(f.get("surface_certified") == "walk_free" for f in fids) and all(f.get("surface_rho2_list") for f in fids):
         fid["floor_surface"] = _union_surface_floor(pks, w, fids[0]["surface_rho2_list"], fids[0]["bounds_diffusivity"])
     fid["floor_max"] = float(max([fx["floor_max"]] + [fid[k] for k in ("floor_surface", "floor_susc_path", "floor_susc_bloch") if fid.get(k) is not None]))
