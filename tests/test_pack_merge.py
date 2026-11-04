@@ -63,6 +63,17 @@ def test_the_merged_pack_replays_as_the_weight_combined_shards(shards):
     assert not m.meta["compression"]["precision_tiers"]["usable"]                 # ordered by shard, not shuffled
 
 
+def test_voxel_blocks_keep_the_largest_shard_floor(shards):
+    """Disjoint voxels under a per-voxel certificate: each voxel's floor is one shard's, the summary the largest,
+    stated as such; the restated ``within_2x_floor`` follows the merged values."""
+    (a, b), grid, tmp = shards
+    fid = merge_packs([a, b], id="t/blocks").meta["fidelity"]
+    fa, fb = a.meta["fidelity"], b.meta["fidelity"]
+    assert fid["floor_combined"] == "max_over_voxel_blocks"
+    assert fid["floor_max"] == max(fa["floor_max"], fb["floor_max"]) and fid["err_max"] == max(fa["err_max"], fb["err_max"])
+    assert fid["within_2x_floor"] == bool(fid["err_max"] <= 2 * fid["floor_max"])
+
+
 def test_two_shards_of_the_same_block_are_refused(shards):
     (a, b), grid, tmp = shards
     with pytest.raises(ValueError, match="same voxel"):

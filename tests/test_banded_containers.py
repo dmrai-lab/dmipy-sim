@@ -97,7 +97,10 @@ def test_a_pack_in_the_integer_containers_replays_every_knob_like_the_float_one(
     back = read_rpk(str(tmp / "bands.rpk"))
     np.testing.assert_allclose(back.replay(seq), b.replay(seq), rtol=1e-12)
     assert back.arrays["pos_x_b1"].dtype == np.int8
-    m = merge_packs([b, back], id="t/merged")                                              # two blocks, each with its scales
+    from dmipy_replay import ReplayPack
+    wp = back.meta["walk_params"]                                                           # the same walkers under another seed: two walks to count once each
+    other = ReplayPack(dict(back.arrays), dict(back.meta, walk_params=dict(wp, seed=int(wp["seed"]) + 1)))
+    m = merge_packs([b, other], id="t/merged")                                             # two blocks, each with its scales
     assert m.n_walkers == 2 * b.n_walkers and m.arrays["pos_band_scale"].shape[0] == 2 and m.arrays["band_block"][-1] == 1
     np.testing.assert_allclose(m.positions()[b.n_walkers:], Xb, rtol=0, atol=1e-15)
 

@@ -145,7 +145,11 @@ def test_shards_with_the_path_channel_merge(walks, tmp_path):
     pks = [_float_pack(w, id=f"t/shard-{i}", license="x", citation="x", K=4, susc_path_K=4, device="numpy",
                        field_container=((None, 8),), out_path=str(tmp_path / f"s{i}.rpk"))
            for i, w in enumerate(walks)]
-    m = merge_packs([str(tmp_path / "s0.rpk"), str(tmp_path / "s1.rpk")], id="t/merged")
+    from dmipy_replay import ReplayPack, read_rpk
+    s0, s1 = read_rpk(str(tmp_path / "s0.rpk")), read_rpk(str(tmp_path / "s1.rpk"))
+    wp = s1.meta["walk_params"]                                      # the same walkers read twice: counted once each under another seed
+    s1 = ReplayPack(dict(s1.arrays), dict(s1.meta, walk_params=dict(wp, seed=int(wp["seed"]) + 1)))
+    m = merge_packs([s0, s1], id="t/merged")
     pm = m.meta["compression"]["channels"]["susc_field_basis"]
     assert m.arrays["susc_path_scale"].shape[0] == 2 and "band_block" in m.arrays
     C_m, names = susc_path_coeffs(m.arrays, pm)
