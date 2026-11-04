@@ -82,7 +82,8 @@ except ImportError:                                   # `budget` needs no Modal
 
 if modal is not None:
     app = modal.App("dmipy-sim-gpu-tier")
-    image = (modal.Image.debian_slim(python_version="3.12").apt_install("git")
+    image = (modal.Image.debian_slim(python_version="3.12")
+             .apt_install("git")
              .pip_install("jax[cuda12]", "torch", "pytest", "pytest-timeout")      # torch: the pose-series tests on a CUDA device
              .pip_install(*pinned_stack())                       # the commits tests.yml pins, never the released packages
              .add_local_dir(str(ROOT), "/repo", copy=True, ignore=[".git", "**/__pycache__", ".jax_cache", "docs"])
