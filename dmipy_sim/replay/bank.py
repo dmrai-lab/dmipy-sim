@@ -1220,8 +1220,8 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
         pks = [pk if isinstance(pk, ReplayPack) else read_rpk(pk) for pk in packs]
         for pk in pks:
             pk.susceptibility_field                                      # every shard holds the equivalence
-        if len(pks) < 2:
-            raise ValueError("merge_packs takes at least two shards")
+        if not pks:
+            raise ValueError("merge_packs takes at least one shard")
         def same(key, get):
             """The shards' value of ``key``, which must agree; floats agree to rounding (two shards of one spec
             computed the substrate frame on different machines and differ by an ulp), everything else exactly."""
