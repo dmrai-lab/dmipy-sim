@@ -42,6 +42,13 @@ import numpy as np
 JAX = "jax"
 ENTRY_POINT_GROUP = "dmipy_sim.backends"
 
+#: A capability a backend declares in :attr:`Backend.capabilities`: it walks a permeability per object or over the
+#: walk's time (the geometry's ``permeability_table``), reading the row of the step and the column of the object met.
+PERMEABILITY_TABLE = "permeability_table"
+
+#: What the JAX kernels declare: they walk a permeability table.
+JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE})
+
 
 class FieldSampling(NamedTuple):
     """In-walk sampling of a strand field (the paper's C3): what a backend evaluates along each walker's path."""
@@ -64,8 +71,8 @@ class WalkRequest(NamedTuple):
     diffusivity: float        #: m^2/s
     record: bool              #: record the boundary local time and the compartment beside the positions
     kappa_over_D: float       #: the membrane's permeability over D (the largest over the objects and the walk's time); 0
-                              #: for an impermeable walk. A permeability per object or over time is walked by the JAX
-                              #: kernels alone (the producer refuses another backend for it)
+                              #: for an impermeable walk. A permeability per object or over time is walked by a backend
+                              #: that declares :data:`PERMEABILITY_TABLE`
     count_walls: bool         #: count hits and crossings (exhaustion is always reported)
     bounce_budget: Optional[int]   #: the budget the geometry's loop runs at for this walk
     seed: int                 #: the producer's master seed (the per-walker keys derive from it)
@@ -181,8 +188,13 @@ class CoefficientBatch(NamedTuple):
 
 
 class Backend:
-    """The protocol. A backend subclasses or duck-types this: ``name``, :meth:`refuses`, :meth:`walk_batch`."""
+    """The protocol. A backend subclasses or duck-types this: ``name``, :meth:`refuses`, :meth:`walk_batch`, and
+    optionally :attr:`capabilities`."""
     name = "?"
+    #: What this backend states it walks beyond the common path (a frozenset of the module's capability names, e.g.
+    #: :data:`PERMEABILITY_TABLE`). A walk that needs a capability the backend does not state is refused by name; a
+    #: backend that defines no ``capabilities`` states none.
+    capabilities = frozenset()
 
     def refuses(self, request: WalkRequest) -> Optional[str]:
         """Why this backend cannot walk ``request`` (an engine class, a tier, a wall it does not implement), or

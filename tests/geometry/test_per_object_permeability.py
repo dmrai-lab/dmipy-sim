@@ -161,8 +161,50 @@ def test_a_permeability_per_object_is_refused_where_there_is_one_object_or_no_la
                            compartments=Compartments(intra=Pool(D=D), extra=Pool(D=D), myelin=Pool(D=0.0)))
 
 
-def test_another_backend_is_refused_a_permeability_per_object():
-    from dmipy_sim.engine.core import _resolve_walk
-    res = _resolve_walk(_cylinders([KAPPA, 0.0, KAPPA, KAPPA]), D, N_STEPS * DT, DT, sub_steps=1)
-    assert "a permeability per object or over time" in res.jax_only
+def test_a_backend_that_does_not_declare_a_permeability_table_is_refused_by_name():
+    """The backend states which permeability inputs it walks: one that declares no capability (a duck-typed backend, or
+    the protocol's default) is refused a permeability per object or over time before it is asked, one that declares
+    :data:`~dmipy_sim.engine.backends.PERMEABILITY_TABLE` is handed the walk, and a walk at one number is no one's table."""
+    from dmipy_sim.engine import backends
+    from dmipy_sim.engine.core import _backend_refusal, _resolve_walk
+
+    class Plain(backends.Backend):
+        name = "plain"
+
+    class Declares(Plain):
+        name = "declares"
+        capabilities = frozenset({backends.PERMEABILITY_TABLE})
+
+    class Duck:
+        name = "duck"
+
+        def refuses(self, request):
+            return None
+
+    g = _cylinders([KAPPA, 0.0, KAPPA, KAPPA])
+    res = _resolve_walk(g, D, N_STEPS * DT, DT, sub_steps=1)
+    assert res.jax_only == []
     assert res.request.kappa_over_D == pytest.approx(KAPPA / D)          # the largest, which sizes the events
+    for b in (Plain(), Duck()):
+        assert "does not declare it walks (capability 'permeability_table')" in _backend_refusal(b, b.name, res, g)
+        assert f"backend {b.name!r}: this walk uses a permeability per object or over time" in _backend_refusal(b, b.name, res, g)
+    assert _backend_refusal(Declares(), "declares", res, g) is None
+    assert backends.PERMEABILITY_TABLE in backends.JAX_CAPABILITIES
+    one = _cylinders(KAPPA)
+    assert _backend_refusal(Plain(), "plain", _resolve_walk(one, D, N_STEPS * DT, DT, sub_steps=1), one) is None
+
+
+def test_a_backend_that_declares_a_table_still_refuses_what_it_refuses():
+    from dmipy_sim.engine import backends
+    from dmipy_sim.engine.core import _backend_refusal, _resolve_walk
+
+    class Declares(backends.Backend):
+        name = "declares"
+        capabilities = frozenset({backends.PERMEABILITY_TABLE})
+
+        def refuses(self, request):
+            return "no tables on Tuesday"
+
+    g = _cylinders([KAPPA, 0.0, KAPPA, KAPPA])
+    res = _resolve_walk(g, D, N_STEPS * DT, DT, sub_steps=1)
+    assert "backend 'declares' refuses this walk of PackedCylinders: no tables on Tuesday" == _backend_refusal(Declares(), "declares", res, g)
