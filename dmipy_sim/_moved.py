@@ -19,8 +19,8 @@ MOVED = {
         "replay_signal_jax": "dmipy_replay.replay.jax_routes", "cap_cpu_threads": "dmipy_replay",
         **{n: "dmipy_replay" for n in ("ScannerSequence", "Encoding", "Protocol", "Prescription", "B1Pulse", "RFEvent",
                                        "RFSchedule", "SequenceTiming", "ScannerLimits", "set_b",
-                                       "btensor_invariants", "rotate_waveform", "tile_waveform", "pgse", "pgste", "ogse",
-                                       "cpmg", "splice", "gre", "ste", "pte", "compile_scheme")},
+                                       "btensor_invariants", "rotate_waveform", "tile_waveform", "pgse", "pgste", "fexi",
+                                       "ogse", "cpmg", "splice", "gre", "ste", "pte", "compile_scheme")},
         "GAMMA": "dmipy_analytic.constants",
         "SCANNERS": "dmipy_replay.acquisition.scanners", "bloch_simulate": "dmipy_replay.acquisition.rf",
         "slice_profile": "dmipy_replay.acquisition.rf", "replay_signal": "dmipy_replay.replay.replay",
@@ -62,7 +62,8 @@ MOVED = {
 """``{package: {name: the module that defines it}}``."""
 
 SPELLINGS = {
-    "dmipy_sim": {"calc_b": "seq.b()", "calc_btensor": "seq.btensor()"},
+    "dmipy_sim": {"calc_b": "seq.b()", "calc_btensor": "seq.btensor()",
+                  "fexi_b_detect": "dmipy_replay.fexi_bvalues(seq) (the filter's and the detection's b-values)"},
     "dmipy_sim.spec": {"Pool": "PoolSpec (from dmipy_replay.spec.substrate import PoolSpec)"},
 }
 """``{package: {refused name: its one spelling}}``: a name no package defines, spelled another way (a sequence's b and

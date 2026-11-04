@@ -22,8 +22,8 @@ from .spec.walk import walk
 from .engine.mt_walk import simulate_mt_trajectories
 from .coefficient_walk import CoefficientWalk
 from .compartments import Compartments, Pool, pool_id
-from .engine.pulse_sequence import (bare_gradient_echo, bare_spin_echo, fexi, fexi_b_detect,
-                             saturation_pulse, prepend_mt_prep, emergent_z_spectrum)
+from .engine.pulse_sequence import (bare_gradient_echo, bare_spin_echo, saturation_pulse, prepend_mt_prep,
+                                    emergent_z_spectrum)
 from .engine.gpu import (gpu_available, check_gpu, free_gpu_memory, gpu_session,
                   list_gpu_processes)
 from .viz.viz import (plot_waveform, plot_sequence_comparison,
@@ -56,7 +56,7 @@ __all__ = [
     # replay pack assembler (producer side of the substrate bank)
     "build_replay_pack", "build_to_floor", "frame_from_bundles",
     "Compartments", "Pool", "pool_id",
-    "bare_gradient_echo", "bare_spin_echo", "fexi", "fexi_b_detect", "saturation_pulse", "prepend_mt_prep",
+    "bare_gradient_echo", "bare_spin_echo", "saturation_pulse", "prepend_mt_prep",
     "emergent_z_spectrum",
     "gpu_available", "check_gpu", "free_gpu_memory", "gpu_session", "list_gpu_processes",
     "FreeDiffusion", "Box1D", "Sphere", "Cylinder", "MyelinatedCylinder",

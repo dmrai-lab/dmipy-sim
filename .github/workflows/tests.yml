@@ -8,11 +8,11 @@ on:
   workflow_dispatch: {}
 
 env:
-  # the forms and the reader at the commits this revision was tested against: dmrai-lab/dmipy-analytic#15 (a
-  # permeability piecewise constant in time in bloch_torrey, the reference of tests/geometry/test_permeable_layers.py)
-  # and dmrai-lab/dmipy-replay#31 (Wall.permeability_table, the spec of a permeability per object and over time)
-  DMIPY_ANALYTIC_REF: 10495eb114cec4dbf04ecb84f88a08e39b456523
-  DMIPY_REPLAY_REF: 9ebe16de867bb17d51685cdcc2aa51bacda86755
+  # the forms and the reader at the commits this revision was tested against: the heads of the FEXI pull requests of
+  # dmipy-analytic (karger_waveform and the FEXI forms) and dmipy-replay (fexi, fexi_protocol, fexi_bvalues), on their
+  # mains at the merges of dmrai-lab/dmipy-analytic#15 and dmrai-lab/dmipy-replay#31
+  DMIPY_ANALYTIC_REF: 3611a9f0be3ea843f3f83a66a016437ad9083658
+  DMIPY_REPLAY_REF: 92c9218c06b65fedf39aaf6a580fd882f8287397
 
 jobs:
   test:
