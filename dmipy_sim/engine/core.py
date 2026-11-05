@@ -486,6 +486,9 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     returns and :func:`walk_cost` reports it, so a cost and a walk state one count."""
     from .accumulate import (block_length, BLOCK_ORDER, default_K, window_count, field_rule_scale, field_read_of_pilot,
                              FIELD_READ_FLOOR)
+    if kappa_MT > 0.0:
+        from .mt import refuse_permeable_mt
+        refuse_permeable_mt(geometry, "_walk_geometry")
     record = _record_channels(tiers)
     n_windows, T_win = window_count(T_max, window_T)
     K = default_K(T_win) if K is None else int(K)

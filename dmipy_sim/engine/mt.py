@@ -76,6 +76,34 @@ def stick_probability(d_perp, kappa_MT, D):
     return np.minimum(1.0, 2.0 * (kappa_MT / D) * np.asarray(d_perp, dtype=float))
 
 
+def refuse_permeable_mt(geometry, where):
+    """Refuse a magnetization-transfer walk on a geometry whose walls ever let a walker cross.
+
+    The walk that binds water at a wall (the impact-angle rule of :func:`stick_probability`) treats every wall as
+    impermeable: it has no accounting of how binding and membrane transmission share one encounter. A geometry with
+    a nonzero permeability -- one number, one per object, a :class:`~dmipy_sim.geometry.base.PermeabilitySchedule`, a
+    Mesh's mapping of crossing directions -- is therefore refused by name (dmrai-lab/dmipy-sim#909, #910), never
+    walked as an impermeable one. ``geometry.permeability`` is the largest permeability over objects, directions and
+    time (``None`` for walls that never let a walker cross), so one test covers every form. The packed myelinated
+    cylinders carry binding and membrane transmission in one step of their own and are not tested here.
+
+    Raises
+    ------
+    NotImplementedError
+        When ``geometry.permeability`` is not ``None``; ``where`` names the entry point refusing.
+    """
+    if getattr(geometry, "_is_packed_myelinated", False):
+        return
+    k = getattr(geometry, "permeability", None)
+    if k is not None and float(k) > 0.0:
+        raise NotImplementedError(
+            f"{where}: magnetization transfer (kappa_MT > 0) on a permeable {type(geometry).__name__} "
+            f"(permeability up to {float(k):.3g} m/s) is not supported: the MT walk binds water at a wall as if the "
+            f"wall were impermeable and has no accounting of how binding and membrane transmission share an "
+            f"encounter. Walk it impermeable (permeability=None) or with kappa_MT=0.0. "
+            f"See dmrai-lab/dmipy-sim#909 and #910.")
+
+
 # ── bound-pool equilibration for the MT walk generator ──────────────────────────
 # Shared by ``mt_walk.simulate_mt_trajectories`` (and the packed-myelin MT walk in
 # ``core._walk_geometry``).  The saved walk carries no RF/gradient (those are
