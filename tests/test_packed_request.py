@@ -84,22 +84,26 @@ def test_a_hand_drawn_pack_still_works_and_has_no_request():
 
 # ── random sequential addition below its limit is what it was ─────────────────────────────────────────────────────
 def _digests(spec):
+    """sha256 of the radii and centres, and of the whole spec but the package version it records (which every release
+    moves)."""
     import hashlib
     import json
     inst = spec.wall("objects").surface.instances
     geometry = (np.asarray(inst["radii"], np.float64).tobytes() + np.asarray(inst["centers"], np.float64).tobytes())
+    record = spec.to_dict()
+    record["request"]["generator"]["version"] = None
     return (hashlib.sha256(geometry).hexdigest(),
-            hashlib.sha256(json.dumps(spec.to_dict(), sort_keys=True, default=str).encode()).hexdigest())
+            hashlib.sha256(json.dumps(record, sort_keys=True, default=str).encode()).hexdigest())
 
 
-# the radii, centres and whole spec of three RSA requests, recorded on main before the densification path existed
+# the radii, centres and spec of three RSA requests, recorded on main (48c4fe2) before the densification path existed
 RSA_RECORDED = [
     ("sphere", 20, 0.3, 0, "1ac9a4c952db5d575d5df0429f77a2ba337e514d67fd7eef9c36177e1a08e147",
-     "edc8f599d3ed4dcae6efe54af26cc0286adf7239c51df1f509176ca0e3f7e4ff"),
+     "f89cfc2cbd7f0b9c1ccd400575d89fa7acecb888d6ed268ded9206638ec5df5f"),
     ("cylinder", 200, 0.55, 3, "9f4b152022b7e583e49fc7ff04d1f7ecddf06d40392ee79435df98c7d6884ea2",
-     "71906378f1977888b8ebb0574830eba38e37c819020f1f4eda19ee8a6d1d4fc3"),
+     "952aa94b9d522d94f8886df4a3d75f537b20c6f97a02ee50308a703a1e4fa061"),
     ("sphere", 300, 0.38, 5, "0ff4e13d65a8cf0bef6145b8061199e0f8329415a91f412327268e82c173b370",
-     "edb7bf857d73a7b4dd3613ec8ddea1cfb6d276743fdab2ecdde1d3c8c55b64ac"),
+     "3b2be0750ff6e1fede656d2468567166e4e257ca1b0fb3b6ed7e07dfdfb8635a"),
 ]
 
 
