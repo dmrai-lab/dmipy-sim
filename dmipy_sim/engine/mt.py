@@ -92,7 +92,7 @@ def refuse_permeable_mt(geometry, where):
     NotImplementedError
         When ``geometry.permeability`` is not ``None``; ``where`` names the entry point refusing.
     """
-    if getattr(geometry, "_is_packed_myelinated", False):
+    if geometry._is_packed_myelinated:
         return
     k = getattr(geometry, "permeability", None)
     if k is not None and float(k) > 0.0:
