@@ -2221,7 +2221,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
                       sigma_star=None, planned_floor=None, provenance=None, blt_temporal_K=None, blt_dtype=np.float32,
                       susc_path_K=None, field_container="derived", voxel_grid=None, position_container="derived", blt_container="derived",
                       diffusivity=None, substrate_frame=None, out_path=None, verbose=False, fidelity=None, device="auto",
-                      window_T=None, pack_license=None, pack_license_url=None):
+                      window_T=None, pack_license=None, pack_license_url=None, codec=None, chunk_walkers=None):
     """Assemble a self-certifying replay pack from a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`: the bands
     stored as the walk accumulated them, at its ``K`` or a stated smaller band, window by window (RPK.md 4.3), in
     the builder's containers; the contact (C2) in the same form; the occupancy (C1) as the static label or the
@@ -2267,10 +2267,25 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     battery on the walk's raw subset against its own coefficients -- the positions, and the field channel on the
     scalar gates and on the vector-Bloch path (:func:`_susc_path_bloch_fidelity`) -- and is refused by name on a walk
     that kept none. ``voxel_grid`` (a :class:`~dmipy_replay.phantom.Grid`, substrate-attached) adds the per-voxel
-    certificate a partition needs (:func:`voxel_floor_coded`). ``device`` runs the coded floors on the JAX device
+    certificate a partition needs (:func:`voxel_floor_coded`). ``codec`` is how the band ranges of the integer containers
+    are stored: ``None`` (the default), the fixed-width container, or ``"bitshuffle-zlib"``, every range as zigzag integers
+    bit-transposed in blocks and deflated per chunk of ``chunk_walkers`` walkers (a power of two, REQUIRED with a codec and
+    refused without one; 4096 is the registry's recommendation), the codec and the chunk size recorded in each range's
+    ``container`` entry (:func:`dmipy_replay.replay.codec.encode_ranges`). The decoded integers, the scales and the certificate are
+    the fixed-width container's. ``device`` runs the coded floors on the JAX device
     (``"auto"``: when it is a GPU). Returns a :class:`~dmipy_replay.replay.replay.ReplayPack`; writes it to
     ``out_path`` if given.
     """
+    from dmipy_replay.replay import codec as _codec
+    if codec is None and chunk_walkers is not None:
+        raise ValueError("chunk_walkers belongs to a codec: state codec= as well, or leave chunk_walkers out")
+    if codec is not None:
+        if codec not in _codec.CODECS:
+            raise ValueError(f"codec must be None or one of {_codec.CODECS}, got {codec!r}")
+        if chunk_walkers is None:
+            raise ValueError(f"codec={codec!r} needs chunk_walkers= (a power of two; 4096 is recommended)")
+        if int(chunk_walkers) < 1 or int(chunk_walkers) & (int(chunk_walkers) - 1):
+            raise ValueError(f"chunk_walkers must be a power of two, got {chunk_walkers}")
     from ..coefficient_walk import CoefficientWalk
     if (sigma_star is None) != (planned_floor is None):
         raise ValueError("sigma_star (the numerical cap the codec is built for) and planned_floor (the Monte-Carlo floor "
@@ -2353,9 +2368,15 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
         dropped = (_work or {}).get("dropped_pool_change")
         if dropped is not None:                       # the walkers the walk excluded, stated in the certificate
             pack.meta["fidelity"]["dropped_pool_change"] = dropped
+        stored = {k: v for k, v in pack.arrays.items() if v is not None}
+        stored_meta = pack.meta
+        if codec is not None:
+            run.phase(f"codec {codec}")
+            stored, stored_meta = _codec.encode_ranges(stored, pack.meta, codec=codec, chunk_walkers=int(chunk_walkers))
+            pack = ReplayPack(stored, stored_meta, source=out_path)
         if out_path is not None:
             run.phase("write")
-            write_rpk(out_path, {k: v for k, v in pack.arrays.items() if v is not None}, pack.meta)
+            write_rpk(out_path, stored, stored_meta)
             run.artifact(out_path)
             _write_run_sidecar(out_path, run, cw)
         if verbose:
