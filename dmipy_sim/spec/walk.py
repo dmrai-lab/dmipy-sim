@@ -40,7 +40,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
-              field_pilot=None, first_walker=0):
+              field_pilot=None, first_walker=0, sub_steps=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -145,6 +145,13 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     (:meth:`WalkContext.geometry`: built and compiled once) and its walkers may be placed ahead
     (:meth:`WalkContext.place`).
 
+    ``sub_steps`` (None: the step law's count) pins the physics steps per block, so the walk steps at
+    ``dt_sim = block / sub_steps`` seconds (:func:`~dmipy_sim.engine.core.walk_cost` states the step law's own count and
+    the bound a pinned one is held to, ``sub_step_rules``). It is the lever of a walk matched to another walk's step: a
+    pinned count may be finer than the step law's, never coarser (refused by name, so the walk's step certificate
+    holds). The adaptive producer sizes its own steps and refuses it; a multi-surface bundle, which steps each pool
+    at its own D, refuses it too.
+
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
@@ -232,6 +239,12 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
             K = envelope.mode_count(window_count(T_max, window_T)[1])
         walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=settings, bounce_budget=bounce_budget,
                        backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz))
+        if sub_steps is not None:
+            if adaptive_steps:
+                raise SpecError("sub_steps pins the fixed-step walk's physics step; the adaptive producer sizes its own steps")
+            if not (isinstance(sub_steps, (int, np.integer)) and not isinstance(sub_steps, bool) and sub_steps >= 1):
+                raise SpecError(f"sub_steps is a whole number of physics steps per block, at least 1; got {sub_steps!r}")
+            walk_kw["sub_steps"] = int(sub_steps)
         if field_pilot is not None:
             if adaptive_steps:
                 raise SpecError("field_pilot is the engine the fixed-step walk's field pilot walks on; the adaptive walk "
@@ -260,6 +273,15 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
             if adaptive_steps:
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
+            if sub_steps is not None:
+                from ..engine.core import walk_cost
+                field_kw = {} if fb is None else dict(field_basis=fb, K_c3=K_c3, field_read_interval=field_read_interval,
+                                                      field_target_floor=field_target_floor)
+                law = walk_cost(1, float(D), g, T_max, block_h, tiers=tiers,
+                                **field_kw, **{k: v for k, v in walk_kw.items() if k != "sub_steps"}).sub_steps
+                if int(sub_steps) < int(law):
+                    raise SpecError(f"sub_steps={int(sub_steps)} is coarser than the step law's {int(law)} physics steps per "
+                                    f"block for this walk; a pinned step may be finer, never coarser")
             w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
                                first_walker=int(first_walker),
                                       field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
@@ -267,6 +289,8 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                                       **walk_kw)
             import dataclasses
             return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope)
+        if sub_steps is not None:
+            raise SpecError("sub_steps pins one geometry's physics step; a multi-surface bundle steps each pool at its own D")
         return _walk_bundle(spec, int(n_walkers), float(T_max), (None if block_h is None else float(block_h)), seed, n_probe, field_res,
                             field_budget=field_budget, envelope=envelope, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
                             field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
