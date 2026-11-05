@@ -33,6 +33,7 @@ SECONDS = {
     "test_family_rewalk.py": 129,
     "test_time_segments.py": 127,
     "geometry/test_packed_myelinated_cylinders.py": 121,
+    "geometry/test_densify.py": 150,
     "test_walk_cost.py": 116,
     "test_coefficient_walk.py": 115,
     "test_concomitant_oracle.py": 107,

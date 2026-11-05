@@ -43,13 +43,14 @@ def periodic_min_gap(centers, radii, L):
     replaces, dmrai-lab/dmipy-sim#697), but exact regardless of how the objects are arranged: a
     pair outside a search radius ``R`` has gap >= ``R - 2 * r_max``, so once the smallest gap
     found WITHIN ``R`` is no larger than that bound, no uncaptured pair can beat it and growing
-    ``R`` further is pointless; otherwise ``R`` grows to exactly the radius that bound requires
-    and the tree is re-queried. ``R`` starts at ``2 * r_max`` (the closest two of these objects'
-    surfaces could possibly be at the tightest, so the first pass is never searched for nothing)
-    and the loop usually proves itself on the first or second pass for an RSA packing, which
-    always places some pair close to touching; a configuration sparse enough to need ``R`` past
-    half the box falls back to the exhaustive pairwise matrix, correct by construction, over
-    whatever's left (this only ever triggers on a handful of objects in practice).
+    ``R`` further is pointless; otherwise ``R`` grows toward the radius that bound requires, at most
+    doubling per pass, and the tree is re-queried. ``R`` starts at ``2 * r_max``; a pass that
+    finds no pair within it (equal radii that do not overlap: every centre distance exceeds
+    ``2 r_max``) knows only the self-image gap, and growing ``R`` to that bound would search half the
+    box, every pair of the packing, so ``R`` doubles instead and meets the nearest neighbours on the
+    next pass. A configuration sparse enough to need ``R`` past half the box falls back to the
+    exhaustive pairwise matrix, correct by construction, over whatever's left (this only ever
+    triggers on a handful of objects in practice).
     """
     c = np.asarray(centers, np.float64)
     r = np.asarray(radii, np.float64)
@@ -81,7 +82,8 @@ def periodic_min_gap(centers, radii, L):
                 iu = np.triu_indices(n, 1)
                 gap = min(gap, float(dist[iu].min()))
                 break
-            R = (gap + 2.0 * r_max) * (1.0 + 1e-9)   # the margin keeps the bound test above from landing a rounding error short
+            # the margin keeps the bound test above from landing a rounding error short
+            R = min((gap + 2.0 * r_max) * (1.0 + 1e-9), 2.0 * R_eff)
     return gap
 
 

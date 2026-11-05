@@ -16,6 +16,7 @@ from datetime import date
 
 import numpy as np
 
+from ..geometry import densify as _densify
 from dmipy_replay.spec.substrate import (
     SubstrateSpec,
     Domain,
@@ -802,6 +803,14 @@ def mcdc_axon_spec(ply, *, scale=_UM, D=None, voxel=None, pad=1.0e-6, boundary="
 #: returned as a smaller substrate.
 RSA_LIMIT = {"cylinder": 0.60, "sphere": 0.40}
 
+#: The cap of a ``method="densify"`` request per packed shape: :data:`dmipy_sim.geometry.densify.DENSIFY_LIMIT`
+#: by kind (a cylinder pack is the 2-D packing of its cross-section), bounding the fraction of the contact radii the
+#: compression holds apart.
+DENSIFY_LIMIT = {"cylinder": _densify.DENSIFY_LIMIT[2], "sphere": _densify.DENSIFY_LIMIT[3]}
+
+#: The placement methods of :func:`packed_request`.
+_METHODS = ("rsa", "densify")
+
 #: What :func:`packed_request` packs, per ``kind``: the placement routine (largest radius first, periodic
 #: images) and the walkable :class:`~dmipy_sim.geometry.Geometry`. Cylinders differ from spheres only here
 #: and in the fraction's dimension (area vs volume), which ``pack_fn``'s own ``target_vf`` already is.
@@ -817,38 +826,101 @@ def _packers():
     return _PACKERS
 
 
-def _radii_from_law(radius_law, n, seed):
-    """``n`` radii (m) drawn from ``radius_law`` with ``seed``, floored at ``r_min``.
+#: The radius laws of :func:`packed_request`, each with the values it states.
+_RADIUS_LAWS = {"gamma": ("shape", "scale", "r_min"), "gamma_quantile": ("cv", "r_mean", "water_floor")}
 
-    The same vocabulary as the myelinated ``diameter_law`` (SUBSTRATE.md §3.7) but for a radius: only the
-    ``"gamma"`` family is implemented, ``{family: "gamma", shape, scale, r_min}``, ``rng.gamma(shape, scale, n)``.
-    """
+
+def _law_record(radius_law):
+    """``radius_law`` as the request records it: its family and every value it states, as floats."""
     family = radius_law.get("family")
-    if family != "gamma":
-        raise ValueError(f"radius_law family {family!r} is not supported; only 'gamma' is, as "
-                         f"{{'family': 'gamma', 'shape': ..., 'scale': ..., 'r_min': ...}}")
-    missing = [k for k in ("shape", "scale", "r_min") if k not in radius_law]
+    if family not in _RADIUS_LAWS:
+        raise ValueError(f"radius_law family {family!r} is not supported; the families are "
+                         f"{{'family': 'gamma', 'shape': ..., 'scale': ..., 'r_min': ...}} (drawn) and "
+                         f"{{'family': 'gamma_quantile', 'cv': ..., 'r_mean': ..., 'water_floor': ...}} (by quantile)")
+    keys = _RADIUS_LAWS[family]
+    missing = [k for k in keys if k not in radius_law]
     if missing:
-        raise ValueError(f"radius_law states no {missing}: it is {{'family': 'gamma', 'shape': ..., 'scale': ..., "
-                         f"'r_min': ...}}, every value stated (r_min 0 for no floor)")
-    shape, scale = float(radius_law["shape"]), float(radius_law["scale"])
-    r_min = float(radius_law["r_min"])
+        raise ValueError(f"radius_law states no {missing}: the {family!r} law is {{'family': {family!r}, "
+                         + ", ".join(f"'{k}': ..." for k in keys) + "}, every value stated")
+    return {"family": family, **{k: float(radius_law[k]) for k in keys}}
+
+
+def _gamma_quantile_radii(cv, r_mean, water_floor, n, seed, dim):
+    """The ``n`` radii (m) of the truncated Gamma law by quantile: object ``i``'s radius is ``r_mean Q(u_i)``.
+
+    ``Q`` is the quantile function of the unit-mean Gamma law of coefficient of variation ``cv`` (shape ``1 / cv^2``)
+    truncated below at its water floor: the radius under which the objects hold the fraction ``water_floor`` of the
+    water, weighted by ``r^dim`` (``dim`` 2 for cylinders, 3 for spheres). The ``r^dim``-weighted Gamma(k) law is
+    Gamma(k + dim), so the floor is ``P^-1(k + dim, water_floor) / k`` (``P`` the regularised lower incomplete gamma
+    function) and ``Q(u) = P^-1(k, P_f + u (1 - P_f)) / k`` with ``P_f = P(k, k x_floor)``. ``cv = 0`` is every
+    radius ``r_mean``. ``r_mean`` is the untruncated law's mean.
+
+    ``u_i`` is ``numpy.random.default_rng((seed, 1)).random(n)``: one uniform per object, a stream of the seed apart
+    from the one the placement draws. So for one ``(n, seed)`` every ``cv`` and ``water_floor`` gives every object a
+    radius of the same rank, each moving continuously with the law.
+    """
+    from scipy.special import gammainc, gammaincinv
+    cv, r_mean, water_floor = float(cv), float(r_mean), float(water_floor)
+    if not (cv >= 0.0 and r_mean > 0.0 and 0.0 <= water_floor < 1.0):
+        raise ValueError(f"the gamma_quantile law needs cv >= 0, r_mean > 0 and 0 <= water_floor < 1; got cv {cv}, "
+                         f"r_mean {r_mean}, water_floor {water_floor}")
+    u = np.random.default_rng((int(seed), 1)).random(int(n))
+    if cv == 0.0:
+        return np.full(int(n), r_mean)
+    k = 1.0 / cv ** 2
+    p_floor = gammainc(k, gammaincinv(k + dim, water_floor))
+    return r_mean * gammaincinv(k, p_floor + u * (1.0 - p_floor)) / k
+
+
+def _radii_from_law(radius_law, n, seed, dim):
+    """``n`` radii (m) of ``radius_law`` with ``seed``, for objects of dimension ``dim`` (2 cylinders, 3 spheres).
+
+    The same vocabulary as the myelinated ``diameter_law`` (SUBSTRATE.md §3.7) but for a radius, two families:
+    ``{family: "gamma", shape, scale, r_min}`` draws ``rng.gamma(shape, scale, n)`` and floors it at ``r_min`` (0 for
+    no floor); ``{family: "gamma_quantile", cv, r_mean, water_floor}`` is :func:`_gamma_quantile_radii`.
+    """
+    law = _law_record(radius_law)
+    if law["family"] == "gamma_quantile":
+        return _gamma_quantile_radii(law["cv"], law["r_mean"], law["water_floor"], n, seed, dim)
     rng = np.random.default_rng(int(seed))
-    return np.maximum(rng.gamma(shape, scale, int(n)), r_min)
+    return np.maximum(rng.gamma(law["shape"], law["scale"], int(n)), law["r_min"])
 
 
-def packed_request(kind, n_objects, radius_law, target_fraction, *, seed=0, min_gap=None, max_attempts=100_000,
-                   orientation=(0.0, 0.0, 1.0), surface_relaxivity_t2=None, permeability=None, pool=None, id=None):
-    """Realise a periodic RSA packing of ``kind`` (``"sphere"`` or ``"cylinder"``) objects and return its
+def _law_transformation(law):
+    """What :func:`_radii_from_law` did, as the provenance states it."""
+    if law["family"] == "gamma":
+        return "radii drawn from the gamma law and floored at r_min"
+    return ("radii by quantile: r_mean times the gamma law's quantile (coefficient of variation cv, truncated below "
+            "at its water floor) of one uniform per object, numpy default_rng((seed, 1))")
+
+
+def packed_request(kind, n_objects, radius_law, target_fraction, *, method="rsa", seed=0, min_gap=None,
+                   max_attempts=100_000, orientation=(0.0, 0.0, 1.0), surface_relaxivity_t2=None, permeability=None,
+                   pool=None, id=None):
+    """Realise a periodic packing of ``kind`` (``"sphere"`` or ``"cylinder"``) objects and return its
     :class:`~dmipy_replay.spec.substrate.SubstrateSpec`, the one producer for both (SUBSTRATE.md §5, §7).
 
-    What was asked -- ``n_objects`` radii from ``radius_law`` (the same ``{family, shape, scale, r_min}``
-    vocabulary as the myelinated ``diameter_law``), the periodic cell sized for ``target_fraction``, objects
-    packed by radius (largest first, random sequential addition, periodic images), an optional ``min_gap`` --
-    is recorded in ``spec.request``; what came out (objects placed, fraction, cell side, minimum gap, smallest
-    feature) in ``spec.realisation``. A fraction above :data:`RSA_LIMIT` for this ``kind`` is refused by name
-    before anything is placed; a packing that fails, or that violates ``min_gap``, is refused naming the value,
-    never returned as a smaller substrate. ``orientation`` (the pack axis's pose) applies to cylinders only.
+    What was asked -- ``n_objects`` radii from ``radius_law`` (``{family: "gamma", shape, scale, r_min}``, the
+    vocabulary of the myelinated ``diameter_law``, or ``{family: "gamma_quantile", cv, r_mean, water_floor}``, radii
+    by quantile: :func:`_radii_from_law`), the periodic cell sized for ``target_fraction``, the placement ``method``,
+    an optional ``min_gap`` -- is recorded in ``spec.request``; what came out (objects placed, fraction, cell side,
+    minimum gap, smallest feature) in ``spec.realisation``. ``orientation`` (the pack axis's pose) applies to
+    cylinders only.
+
+    ``method`` is the placement:
+
+    - ``"rsa"``: random sequential addition, largest first, periodic images. A fraction above :data:`RSA_LIMIT` is
+      refused by name before anything is placed; a packing that fails, or that violates ``min_gap``, is refused
+      naming the value, never returned as a smaller substrate.
+    - ``"densify"``: one compression path (:func:`dmipy_sim.geometry.densify.densify_packing`: a random sequential
+      addition start at ``DENSIFY_START``, compressed in steps of ``DENSIFY_STEP`` with every overlap relaxed away).
+      ``min_gap`` (metres, positive) is required: the path holds every clear gap at it. ``target_fraction`` is one
+      fraction, returning one spec, or a sequence of them, returning a tuple of specs in its order: the snapshots of
+      ONE path, the same objects (object ``i`` keeps its radius) ever more compressed. A snapshot does not depend on
+      which others are asked for, so a single fraction gives that path's snapshot. A fraction below
+      ``DENSIFY_START``, or whose contact radii pack beyond :data:`DENSIFY_LIMIT`, is refused by name before
+      anything is placed. ``id`` is one string for one fraction, one per fraction for a sequence, or None
+      (``substrate/densified-<kind>-<n>-<seed>-phi<fraction>``).
 
     A hand-built :class:`~dmipy_sim.geometry.PackedSpheres` / :class:`~dmipy_sim.geometry.PackedCylinders` (radii
     drawn by the caller, not through this producer) still has a spec -- ``geometry.spec`` -- it simply carries no
@@ -858,21 +930,32 @@ def packed_request(kind, n_objects, radius_law, target_fraction, *, seed=0, min_
     packers = _packers()
     if kind not in packers:
         raise ValueError(f"kind must be 'sphere' or 'cylinder', got {kind!r}")
+    if method not in _METHODS:
+        raise ValueError(f"method must be one of {_METHODS} (random sequential addition, or one compression path), "
+                         f"got {method!r}")
     pack_fn, Geom = packers[kind]
+    geom_kw = dict(surface_relaxivity_t2=surface_relaxivity_t2, permeability=permeability, pool=pool)
+    if kind == "cylinder":
+        geom_kw["orientation"] = orientation
+    if method == "densify":
+        return _densified_request(kind, Geom, geom_kw, n_objects, radius_law, target_fraction, seed=seed,
+                                  min_gap=min_gap, max_attempts=max_attempts, id=id)
+    if np.ndim(target_fraction) != 0:
+        raise ValueError("a sequence of packing fractions is the snapshots of one compression path: "
+                         "method='densify'; random sequential addition places one fraction at a time")
     limit = RSA_LIMIT[kind]
     f = float(target_fraction)
     if not 0.0 < f <= limit:
         raise ValueError(f"packing_fraction {f:.3f} is above the random-sequential-addition saturation for "
-                         f"packed {kind}s (RSA_LIMIT = {limit}); a denser packing needs a different placement method")
-    radii = _radii_from_law(radius_law, n_objects, seed)
+                         f"packed {kind}s (RSA_LIMIT = {limit}); a denser packing is method='densify' "
+                         f"(up to DENSIFY_LIMIT = {DENSIFY_LIMIT[kind]})")
+    law = _law_record(radius_law)
+    radii = _radii_from_law(law, n_objects, seed, _DIM[kind])
     try:
         centers, L, achieved = pack_fn(radii, target_vf=f, seed=seed, max_attempts=max_attempts)
     except RuntimeError as e:
         raise ValueError(f"could not place {n_objects} {kind}s at packing fraction {f:.3f} in {max_attempts} "
                          f"attempts each ({e}); lower the fraction or the count") from e
-    geom_kw = dict(surface_relaxivity_t2=surface_relaxivity_t2, permeability=permeability, pool=pool)
-    if kind == "cylinder":
-        geom_kw["orientation"] = orientation
     geom = Geom(radii, centers, L, **geom_kw)
     spec = spec_of(geom, id=id or f"substrate/packed-{kind}-{int(n_objects)}-{int(seed)}")
     realised_gap = float(spec.validity.min_gap)
@@ -880,14 +963,77 @@ def packed_request(kind, n_objects, radius_law, target_fraction, *, seed=0, min_
         raise ValueError(f"the packing's narrowest gap is {realised_gap:.3e} m, below the requested min_gap "
                          f"{float(min_gap):.3e} m; lower the fraction or the count, or change the seed")
     request = dict(generator={"name": "dmipy_sim.spec.producers.packed_request", "version": _version()},
-                   seed=int(seed), n_objects=int(n_objects), packing_fraction=f,
-                   radius_law={"family": radius_law["family"], "shape": float(radius_law["shape"]),
-                               "scale": float(radius_law["scale"]), "r_min": float(radius_law["r_min"])},
+                   seed=int(seed), n_objects=int(n_objects), packing_fraction=f, radius_law=law,
                    min_gap=(None if min_gap is None else float(min_gap)))
     realisation = dict(n_objects=int(len(radii)), packing_fraction=float(achieved), cell_side=float(L),
                        min_gap=realised_gap, smallest_feature=float(spec.validity.smallest_feature))
     prov = dict(spec.provenance or {}, source="generated",
-               transformations=[f"radii drawn from the {radius_law['family']} law and floored at r_min",
+               transformations=[_law_transformation(law),
                                  "periodic cell sized for the requested packing fraction",
                                  f"{kind}s packed by radius (random sequential addition, largest first)"])
     return dataclasses.replace(spec, request=request, realisation=realisation, provenance=prov).validate()
+
+
+#: The dimension of a packed shape's packing: a cylinder pack is the 2-D packing of its cross-section.
+_DIM = {"cylinder": 2, "sphere": 3}
+
+
+def _densified_request(kind, Geom, geom_kw, n_objects, radius_law, target_fraction, *, seed, min_gap, max_attempts,
+                       id):
+    """:func:`packed_request` with ``method="densify"``: the snapshots of one compression path, as specs."""
+    from .build import spec_of
+    single = np.ndim(target_fraction) == 0
+    fractions = [float(target_fraction)] if single else [float(f) for f in target_fraction]
+    if not fractions:
+        raise ValueError("target_fraction is an empty sequence: name at least one packing fraction")
+    if len(set(fractions)) != len(fractions):
+        raise ValueError(f"target_fraction repeats a fraction: {fractions}")
+    if min_gap is None:
+        raise ValueError("method='densify' needs min_gap (metres, positive): the compression path holds every clear "
+                         "gap at it, and the walk's float32 centres need a gap they can resolve")
+    if id is None:
+        ids = [f"substrate/densified-{kind}-{int(n_objects)}-{int(seed)}-phi{f:.4f}" for f in fractions]
+    elif isinstance(id, str):
+        if not single:
+            raise ValueError("id is one string but target_fraction names several snapshots: give one id per "
+                             "fraction, or None")
+        ids = [id]
+    else:
+        ids = list(id)
+        if single or len(ids) != len(fractions):
+            raise ValueError(f"id names {len(ids)} specs for {len(fractions)} packing fraction(s): one per fraction")
+    g = float(min_gap)
+    law = _law_record(radius_law)
+    dim = _DIM[kind]
+    radii = _radii_from_law(law, n_objects, seed, dim)
+    try:
+        snapshots = _densify.densify_packing(radii, fractions, dim, seed=seed, min_gap=g, max_attempts=max_attempts)
+    except RuntimeError as e:
+        raise ValueError(f"the densification path of {n_objects} {kind}s did not reach {max(fractions):.4f}: {e}; "
+                         f"lower the fraction or min_gap") from e
+    path = {"start_fraction": _densify.DENSIFY_START, "step": _densify.DENSIFY_STEP,
+            "start": "random sequential addition, largest first",
+            "relaxation": "FIRE on the harmonic overlap energy (Xu, Blawzdziewicz & O'Hern 2005; Bitzek et al. 2006)",
+            "fire": dict(_densify.FIRE), "gap_pad": _densify._GAP_PAD, "gap_hold": _densify._GAP_HOLD}
+    specs = []
+    for f, (centers, L), sid in zip(fractions, snapshots, ids):
+        geom = Geom(radii, centers, L, **geom_kw)
+        spec = spec_of(geom, id=sid)
+        realised_gap = float(spec.validity.min_gap)
+        if realised_gap < g:
+            raise AssertionError(f"the densified snapshot at {f:.4f} has a gap {realised_gap:.3e} m below min_gap")
+        achieved = float(_densify._cell_volume_factor(dim) * np.sum(radii ** dim) / L ** dim)
+        request = dict(generator={"name": "dmipy_sim.spec.producers.packed_request", "version": _version()},
+                       method="densify", seed=int(seed), n_objects=int(n_objects), packing_fraction=f,
+                       radius_law=law, min_gap=g, path=path)
+        realisation = dict(n_objects=int(len(radii)), packing_fraction=achieved, cell_side=float(L),
+                           min_gap=realised_gap, smallest_feature=float(spec.validity.smallest_feature))
+        prov = dict(spec.provenance or {}, source="generated",
+                    transformations=[_law_transformation(law),
+                                     "periodic cell sized for the requested packing fraction",
+                                     f"{kind}s placed by random sequential addition (largest first) at packing "
+                                     f"fraction {_densify.DENSIFY_START}, then compressed in steps of "
+                                     f"{_densify.DENSIFY_STEP} with every overlap relaxed away (FIRE on the harmonic "
+                                     f"overlap energy, every clear gap held at min_gap) to {f:.4f}"])
+        specs.append(dataclasses.replace(spec, request=request, realisation=realisation, provenance=prov).validate())
+    return specs[0] if single else tuple(specs)
