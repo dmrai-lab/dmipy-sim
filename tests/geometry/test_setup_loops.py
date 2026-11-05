@@ -118,6 +118,27 @@ def test_min_gap_cell_grid_equals_the_pairwise_loop_at_scale(dim):
     assert periodic_min_gap(c, radii, L) == pytest.approx(_gap_reference(c, radii, L), rel=1e-12)
 
 
+def test_min_gap_of_equal_radii_searches_the_neighbours_not_the_box(monkeypatch):
+    """Equal radii that do not overlap have no centre pair within ``2 r``: the first pass finds nothing, and the
+    search doubles to the neighbours instead of growing to half the box, which holds every pair of the packing. The
+    minimum is the lattice's gap."""
+    import scipy.spatial
+    radii_asked = []
+
+    class Spy(scipy.spatial.cKDTree):              # the tree periodic_min_gap imports, recording each search radius
+        def query_pairs(self, r, *args, **kwargs):
+            radii_asked.append(r)
+            return super().query_pairs(r, *args, **kwargs)
+
+    monkeypatch.setattr(scipy.spatial, "cKDTree", Spy)
+    n, r, g = 100, 1e-6, 1e-9
+    L = n * (2 * r + g)
+    xs = (np.arange(n) + 0.5) * (2 * r + g) - L / 2
+    c = np.stack(np.meshgrid(xs, xs), -1).reshape(-1, 2)
+    assert periodic_min_gap(c, np.full(n * n, r), L) == pytest.approx(g, rel=1e-6)
+    assert max(radii_asked) <= 4 * r
+
+
 @pytest.mark.parametrize("cap", [None, 3])
 def test_grid_bucketing_equals_the_triple_loop(cap):
     rng = np.random.default_rng(4)

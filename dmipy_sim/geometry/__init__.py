@@ -8,7 +8,8 @@ frame helper, and *nothing else* crosses these boundaries.
     analytic    one closed surface with a closed-form ray intersection
     packed      periodic packings of many objects (minimum-image)
     myelin      concentric multi-compartment (carried state, fused kernels)
-    packing     position generators for the packed geometries
+    packing     position generators for the packed geometries (random sequential addition)
+    densify     one compression path of a periodic packing, snapshotted at packing fractions
     curved_cylinder sphere-swept polylines
     label_volume a segmented image: the wall is the faces between voxels of different pools
     mesh        arbitrary triangular meshes, grid-accelerated
@@ -21,6 +22,7 @@ from .analytic import Sphere, Cylinder, Ellipsoid, PermeableSlab1D, PermeableShe
 from .packed import PackedCylinders, PackedSpheres
 from .myelin import MyelinatedCylinder, PackedMyelinatedCylinders
 from .packing import pack_cylinders, pack_spheres, pack_myelinated_cylinders
+from .densify import densify_packing
 from .curved_cylinder import CurvedCylinder, CurvedMyelinatedCylinder, PackedCurvedCylinders
 from .mesh import Mesh
 from .sphere_union import SphereUnion
@@ -31,6 +33,6 @@ __all__ = [
     "Sphere", "Cylinder", "Ellipsoid", "PermeableSlab1D", "PermeableShell",
     "PackedCylinders", "PackedSpheres",
     "MyelinatedCylinder", "PackedMyelinatedCylinders",
-    "pack_cylinders", "pack_spheres", "pack_myelinated_cylinders",
+    "pack_cylinders", "pack_spheres", "pack_myelinated_cylinders", "densify_packing",
     "CurvedCylinder", "CurvedMyelinatedCylinder", "PackedCurvedCylinders", "SphereUnion", "LabelVolume", "Mesh",
 ]

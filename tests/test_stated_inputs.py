@@ -69,8 +69,8 @@ def test_a_radius_law_states_its_floor():
     from dmipy_sim.spec.producers import _radii_from_law
     law = {"family": "gamma", "shape": 4.0, "scale": 0.5e-6}
     with pytest.raises(ValueError, match="r_min"):
-        _radii_from_law(law, 10, 0)
-    assert _radii_from_law(dict(law, r_min=0.2e-6), 10, 0).min() >= 0.2e-6
+        _radii_from_law(law, 10, 0, 3)
+    assert _radii_from_law(dict(law, r_min=0.2e-6), 10, 0, 3).min() >= 0.2e-6
 
 
 def test_the_white_matter_pools_carry_the_catalogue_T1():
