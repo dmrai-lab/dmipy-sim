@@ -13,7 +13,7 @@ env:
   # mains at the merges of dmrai-lab/dmipy-analytic#15 and dmrai-lab/dmipy-replay#31
   DMIPY_ANALYTIC_REF: f115d52e1529617d5f86dd0c2b504400bac21087
   # TODO: the head of dmrai-lab/dmipy-replay#34 (the reader of the bitshuffle-zlib codec); move it to that pull request's merge commit once merged
-  DMIPY_REPLAY_REF: fbe765b561351885104b5523fc4fde83e7bead59
+  DMIPY_REPLAY_REF: d75d2ef04fcc745a183f90a8bfc08953ef2a933a
 
 jobs:
   test:
