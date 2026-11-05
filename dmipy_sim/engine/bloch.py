@@ -552,6 +552,8 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     (if ``return_bound_frac``)."""
     if dwell_time <= 0.0:
         raise ValueError("dwell_time must be > 0 when kappa_MT > 0 (MT on).")
+    from .mt import refuse_permeable_mt
+    refuse_permeable_mt(geometry, "_simulate_bloch")
     if not geometry.has_walls:
         raise TypeError(f"{type(geometry).__name__} has no walls; MT "
                         "binding needs the boundary-local-time channel "

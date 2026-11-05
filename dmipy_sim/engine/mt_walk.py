@@ -48,6 +48,9 @@ def simulate_mt_trajectories(
     :func:`~dmipy_sim.engine.core._walk_geometry` -- same random stream, same bands to the bit -- so an MT pack and a
     plain pack of one substrate differ only by what binding did.
 
+    A geometry with a permeable wall (a number, a number per object, a schedule, a Mesh's crossing directions) is
+    refused by name (:func:`~dmipy_sim.engine.mt.refuse_permeable_mt`, #909, #910).
+
     Parameters
     ----------
     n_walkers, diffusivity, geometry, T_max, block_h, seed, r0, walker_batch_size, sub_steps, require_gpu :
