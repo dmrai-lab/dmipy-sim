@@ -5,6 +5,12 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`walk` walks a permeable spec of one geometry**, with and without a `WalkContext`: a packed cell or an analytic
+  pore whose walls carry a permeability per object and over time (`permeability_table`) is walked as its geometry is,
+  bit for bit, on the JAX kernels and on a backend that declares it walks a permeability table. A walker keeps the
+  pool it was seeded in as its label, a crossing is an event of its occupancy and no walker is excluded for it; every
+  walk states the rule its pools followed (`work["pool_rule"]`, a pack's `provenance.walk.pool_rule`). A permeable
+  multi-surface bundle, whose pools are walked one by one with no exchange, is refused by name.
 - **FEXI is the acquisition layer's** (`dmipy_replay.fexi`, `fexi_protocol`, `fexi_bvalues`): the vector-Bloch
   constructor `engine.pulse_sequence.fexi` and `fexi_b_detect` are removed and refused by name; the one filter-exchange
   sequence is read by both engines -- the vector-Bloch oracle plays its pulses and its declared crushers, the walk
