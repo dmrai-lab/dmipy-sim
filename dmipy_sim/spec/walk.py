@@ -1,12 +1,15 @@
 """``walk``: the producer that reads a spec and nothing else.
 
 A spec with a single geometry (any analytic family, one mesh surface) is walked by
-``_walk_geometry`` on ``geometry_from_spec``. A multi-surface mesh spec -- a bundle of fibres,
-each an inner and an outer closed surface -- is walked pool by pool: the intra pool inside the inner
+``_walk_geometry`` on ``geometry_from_spec``, permeable walls included: the geometry carries the walls'
+permeability per object and over time (``permeability_table``), a walker's label is the pool it was seeded in and
+a granted crossing is an event of its occupancy (:data:`PERMEABLE_POOL_RULE`). A multi-surface mesh spec -- a bundle
+of fibres, each an inner and an outer closed surface -- is walked pool by pool: the intra pool inside the inner
 surfaces, the extra pool outside the outer ones with the domain's faces as walls, a stuck myelin
 pool (``D = 0``) frozen where it was seeded; seeding follows the spec's rule (uniform density by
 measured volume, weights by water fraction or thinning) and the pools are joined into one
-:class:`~dmipy_sim.coefficient_walk.CoefficientWalk` whose compartment channel carries the spec's ids. The field
+:class:`~dmipy_sim.coefficient_walk.CoefficientWalk` whose compartment channel carries the spec's ids. Its pools do
+not exchange, so a bundle with a permeable wall is refused (:func:`_refuse_permeable_bundle`). The field
 basis of a field-source pool is computed on the domain grid (or the strands' closed form) and READ by the walk.
 """
 import logging
@@ -131,6 +134,14 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     pool's remaining weights renormalised to its total, and the walk's ``work["dropped_pool_change"]`` records the
     rule (:data:`DROP_POOL_CHANGE_RULE`), the bound, the count and fraction, per pool -- which the pack's certificate
     carries (``fidelity["dropped_pool_change"]``). A pool past the bound, or a raw walker among the excluded, is refused.
+    A single-geometry walk refuses it: an impermeable one keeps every walker in its pool, and in a permeable one a
+    pool change is a granted crossing, an event of the walker's occupancy, which excludes no walker.
+
+    Every walk states the rule its walkers' pools followed, ``work["pool_rule"]`` (and a pack's
+    ``provenance.walk.pool_rule``): :data:`PERMEABLE_POOL_RULE` for a spec with a permeable wall (walked as a
+    single geometry; a permeable multi-surface bundle is refused, :func:`_refuse_permeable_bundle`),
+    :data:`DROP_POOL_CHANGE_RULE` for a bundle walked with ``drop_pool_changes``, :data:`IMPERMEABLE_POOL_RULE`
+    otherwise.
 
     ``field_pilot`` is the engine a fixed-step walk's field pilot walks on (:func:`~dmipy_sim.engine.core._walk_geometry`
     ``field_pilot``: None the walk's backend, ``"jax"`` the JAX kernels); the adaptive walk has its own and refuses it.
@@ -149,8 +160,9 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``dt_sim = block / sub_steps`` seconds (:func:`~dmipy_sim.engine.core.walk_cost` states the step law's own count and
     the bound a pinned one is held to, ``sub_step_rules``). It is the lever of a walk matched to another walk's step: a
     pinned count may be finer than the step law's, never coarser (refused by name, so the walk's step certificate
-    holds). The adaptive producer sizes its own steps and refuses it; a multi-surface bundle, which steps each pool
-    at its own D, refuses it too.
+    holds); the law is the walked geometry's, a permeable wall's membrane term included
+    (:data:`~dmipy_sim.engine.physics.MEMBRANE_COEFFICIENT`). The adaptive producer sizes its own steps and refuses
+    it; a multi-surface bundle, which steps each pool at its own D, refuses it too.
 
     ``run_dir`` is where the walk's record goes (:mod:`dmipy_sim.run`; the default root otherwise); with ``spool``
     every finished walker batch is written into it at once, and a call with the same arguments and the same
@@ -169,6 +181,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
         settings = certificate_settings(envelope, battery)
         spec = _spec_of_door(spec)
         spec.validate()
+        _refuse_permeable_bundle(spec)
         if int(first_walker) and _needs_bundle_walk(spec):
             raise SpecError("first_walker is a range of a single geometry's walk; the pool-by-pool walk of a multi-surface "
                             "spec deals its walkers to the pools from the walk's own count, so a range of it is not a "
@@ -251,9 +264,12 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                                 "calibrates its field reads on its own backend")
             walk_kw["field_pilot"] = field_pilot
         if not _needs_bundle_walk(spec):
+            permeable = bool(_permeable_walls(spec))
             if drop_pool_changes is not None:
                 raise SpecError("drop_pool_changes excludes the walkers of a multi-surface bundle walk; this spec walks one "
-                                "geometry, which refuses a walker that changes pool")
+                                "geometry, " + ("whose walkers cross its permeable walls: a pool change is an event of "
+                                                "the walker's occupancy and excludes no walker" if permeable else
+                                                "which refuses a walker that changes pool"))
             g = context.geometry() if context is not None else geometry_from_spec(spec)
             gap = g.trajectory_walk_gap()
             if gap is not None:
@@ -288,7 +304,9 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                                                                                    field_target_floor=field_target_floor)),
                                       **walk_kw)
             import dataclasses
-            return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope)
+            rule = PERMEABLE_POOL_RULE if permeable else IMPERMEABLE_POOL_RULE
+            return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope,
+                                       work=dict(w.work or {}, pool_rule=rule))
         if sub_steps is not None:
             raise SpecError("sub_steps pins one geometry's physics step; a multi-surface bundle steps each pool at its own D")
         return _walk_bundle(spec, int(n_walkers), float(T_max), (None if block_h is None else float(block_h)), seed, n_probe, field_res,
@@ -303,6 +321,34 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
 #: The rule a walk states when it excludes the walkers that changed pool (``walk(drop_pool_changes=)``).
 DROP_POOL_CHANGE_RULE = ("walkers whose label changed in an impermeable walk are excluded; the substrate's geometry is "
                          "contradictory where they crossed")
+
+#: The rule a walk of a spec with a permeable wall states (``work["pool_rule"]``): no walker is excluded.
+PERMEABLE_POOL_RULE = ("a walker's label is the pool it was seeded in; a change of pool is a granted crossing of a "
+                       "permeable wall, recorded as an event of the walker's occupancy, and excludes no walker")
+
+#: The rule a walk of a spec with no permeable wall states (``work["pool_rule"]``) when it excludes no walker.
+IMPERMEABLE_POOL_RULE = "a walker's label is the pool it was seeded in; no wall is permeable, and a walker keeps its pool"
+
+
+def _permeable_walls(spec):
+    """The names of ``spec``'s walls a walker can cross: a permeability above zero in either direction (a wall's
+    ``permeability`` is the largest of its ``permeability_table``)."""
+    return [w.name for w in spec.walls if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0]
+
+
+def _refuse_permeable_bundle(spec):
+    """Refuse, by name, a spec walked pool by pool (:func:`_needs_bundle_walk`) with a permeable wall. Each pool of
+    that walk is walked on a geometry of its own, the interior of its inside-walls or the exterior of its
+    outside-walls, so no walker can pass into another pool: the walls would be walked as reflecting ones. A
+    permeable spec is walked as a single geometry (:func:`~dmipy_sim.spec.build.geometry_from_spec`)."""
+    names = _permeable_walls(spec)
+    if names and _needs_bundle_walk(spec):
+        n = len(spec.walls)
+        raise SpecError(
+            f"spec {spec.id!r}: wall{'s' if len(names) > 1 else ''} {names} {'are' if len(names) > 1 else 'is'} "
+            f"permeable, and the spec is walked pool by pool (closed surfaces -- meshes, sphere unions, strand packs "
+            f"-- in {n} wall{'s' if n > 1 else ''}, seeded pools {list(spec.seeding.pools)}), each pool on a geometry "
+            f"of its own with no exchange between them; a permeable multi-surface walk is not implemented")
 
 
 #: The surface kinds a field raster is made from (:func:`field_grid_of_spec`): their membership tests are exact.
@@ -648,13 +694,11 @@ def _strand_field(outer_b, inner_b, lo, hi, traj, cutoff_m, tol, seed, segments_
 
 class _PoolTests:
     """A spec's pools as membership tests: the walls each pool is inside and outside, their boundaries built once,
-    the domain box, the water fractions -- what seeding and walking share."""
+    the domain box, the water fractions -- what seeding and walking share. Membership is the walls' surfaces alone,
+    whatever their permeability."""
 
     def __init__(self, spec, backend="jax"):
         self.pools = {p.id: p for p in spec.pools}
-        for w in spec.walls:
-            if w.permeability.in_to_out > 0 or w.permeability.out_to_in > 0:
-                raise SpecError(f"wall {w.name!r} is permeable; a permeable multi-surface walk is not implemented")
         self.inside_w = {p: [w for w in spec.walls if w.inside_pool == p] for p in self.pools}
         self.outside_w = {p: [w for w in spec.walls if w.outside_pool == p] for p in self.pools}
         self._bounds = {}
@@ -703,10 +747,13 @@ class WalkContext:
     each pool's walking geometry once it is built (its segment tables on the device, its kernels compiled), and
     the strand-field basis with its far grid (the grid on the device once). Keyed by what determines it -- the
     spec's dict and the far grid's sha256 -- so a producer keeps one across blocks and builds another only when
-    the key changes; :func:`walk` and :func:`draw_seeds` refuse a context of another key."""
+    the key changes; :func:`walk` and :func:`draw_seeds` refuse a context of another key. A spec walked as one
+    geometry may have permeable walls; a permeable multi-surface bundle has no walk and is refused
+    (:func:`_refuse_permeable_bundle`)."""
 
     def __init__(self, spec, *, field_far=None):
         from ..fields.strand_field import FarGrid
+        _refuse_permeable_bundle(spec)
         self.spec = spec
         self.far = None if field_far is None else (field_far if isinstance(field_far, FarGrid) else FarGrid.load(field_far))
         self.key = self.key_of(spec, self.far)
@@ -1225,13 +1272,15 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         raise SpecError("no seeded pool diffuses; nothing to walk")
     current().phase("finalize")
     walk = _join_pool_walks(parts, weights_of, seed, spec, sf if sf is not None else fg, works, envelope, raw_counts)
+    import dataclasses
     if drop_pool_changes is not None:
         n_drop = sum(r["n_dropped"] for r in dropped.values()); n_all = sum(r["n_walked"] for r in dropped.values())
         record = dict(rule=DROP_POOL_CHANGE_RULE, max_fraction=float(drop_pool_changes), n_dropped_pool_change=int(n_drop),
                       fraction=(n_drop / n_all if n_all else 0.0), pools=dropped)
-        import dataclasses
         walk = dataclasses.replace(walk, work=dict(walk.work or {}, dropped_pool_change=record))
         log.info("walk: %d of %d diffusing walkers changed pool and are excluded (%s)", n_drop, n_all, dropped)
+    walk = dataclasses.replace(walk, work=dict(walk.work or {}, pool_rule=(
+        DROP_POOL_CHANGE_RULE if drop_pool_changes is not None else IMPERMEABLE_POOL_RULE)))
     object.__setattr__(walk, "run", current())
     return walk
 

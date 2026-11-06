@@ -36,7 +36,11 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   public producer of a walk. `envelope` (required) is a `dmipy_replay.Envelope` -- the pack's guarantee in physical
   terms: `band_hz`, `G_max` per axis, `B0_list`, `chi_max`, `rho2_max`, `max_refocusing_pulses`; a scanner name is a
   preset, `envelope_of("connectom", ...)` -- which the walk carries and `build_replay_pack` states. It reads the spec (pools and walls, a multi-surface bundle walked pool by pool, the field
-  basis, the seeding, the run record) and returns a `CoefficientWalk`. The engine primitive under it is
+  basis, the seeding, the run record) and returns a `CoefficientWalk`. A spec of one geometry is walked with its walls'
+  permeability per object and over time (`permeability_table`, on every backend that declares it walks one), a walker
+  keeping its seeded pool as its label and a crossing an event of its occupancy; a permeable pool-by-pool bundle is
+  refused by name; the walk states the rule its pools followed (`work["pool_rule"]`, a pack's
+  `provenance.walk.pool_rule`). The engine primitive under it is
   `engine.core._walk_geometry(n, D, geometry, T_max, block_h=None, *, ...)`: one resolved geometry, exported nowhere;
   `simulate_mt_trajectories` and `simulate_trajectories_adaptive` return a `CoefficientWalk` too. `raw_subset=n` keeps the first `n` walkers' block ends (`walk.raw_positions`, `raw_boundary`,
   `raw_compartment`, `raw_bound`, `raw_field`): the dense reference of a certificate measured on them
