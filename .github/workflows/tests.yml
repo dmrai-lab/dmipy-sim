@@ -12,7 +12,7 @@ env:
   # pull request (karger_waveform and the FEXI forms), on its main at the merge of dmrai-lab/dmipy-analytic#15, and
   # dmipy-replay at the head of dmrai-lab/dmipy-replay#35 (a time view at any diffusivity), on its main at that merge
   DMIPY_ANALYTIC_REF: f115d52e1529617d5f86dd0c2b504400bac21087
-  DMIPY_REPLAY_REF: 720664f7a89708eefa004369b5e99ecd8f4a1401
+  DMIPY_REPLAY_REF: 116ee0de7ab22bdaf2c1a0994dcf0915286c8372
 
 jobs:
   test:
