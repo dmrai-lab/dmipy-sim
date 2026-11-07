@@ -488,8 +488,8 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     from .accumulate import (block_length, BLOCK_ORDER, default_K, window_count, field_rule_scale, field_read_of_pilot,
                              FIELD_READ_FLOOR)
     if kappa_MT > 0.0:
-        from .mt import refuse_permeable_mt
-        refuse_permeable_mt(geometry, "_walk_geometry")
+        from .mt import refuse_unsupported_permeable_mt
+        refuse_unsupported_permeable_mt(geometry, "_walk_geometry")
     record = _record_channels(tiers)
     n_windows, T_win = window_count(T_max, window_T)
     K = default_K(T_win) if K is None else int(K)
@@ -1547,16 +1547,27 @@ def _walk_geometry(
             else:
                 _interact_mt = geometry.interact
 
-                def _move_mt(r, step):
-                    hit = _interact_mt(r, step, rho_over_D=jnp.float32(1.0))
+                def _move_mt(r, step, kappa_over_D=None, perm_key=None):
+                    if kappa_over_D is None:
+                        hit = _interact_mt(r, step, rho_over_D=jnp.float32(1.0))
+                    else:                  # a permeable wall: the crossing is decided here, before the binding is
+                        hit = _interact_mt(r, step, kappa_over_D=kappa_over_D, rho_over_D=jnp.float32(1.0), key=perm_key)
                     return hit.r, hit.dlog_w, -hit.dlog_w, hit          # symmetric: the binding local time is -dlog
 
-            def inner_step_mt(carry, _):
+            _mt_perm = (not hasattr(geometry, "reflect_with_binding")) and has_permeability
+
+            def inner_step_mt(carry, step_index):
                 r, key, bound_rem, dlog_cum, bad, work = carry
-                key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+                if _mt_perm:
+                    key, step_key, stick_key, dwell_key, perm_key = jax.random.split(key, 5)
+                    r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim,
+                                                                  kappa_at(step_index), perm_key)
+                else:
+                    key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+                    r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim)
                 is_bound = bound_rem > jnp.float32(0.0)
-                step = pair_step(step_key) * step_l_sim
-                r_free, dlog_free, local_time, hit = _move_mt(r, step)
+                # cross first, bind second: the binding draw is on the encounter's local time after the crossing is
+                # decided, for a transmitted and a reflected encounter alike, and the walker freezes at the step's end
                 p_stick = bind_probability(_kappa_over_D_mt, local_time)
                 newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
                 u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)

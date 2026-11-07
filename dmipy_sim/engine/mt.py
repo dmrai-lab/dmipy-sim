@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["stick_probability", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau"]
+__all__ = ["stick_probability", "refuse_permeable_mt", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau"]
 
 
 # ── per-hit binding probability (the impact-angle rule) ─────────────────────────
@@ -102,6 +102,43 @@ def refuse_permeable_mt(geometry, where):
             f"wall were impermeable and has no accounting of how binding and membrane transmission share an "
             f"encounter. Walk it impermeable (permeability=None) or with kappa_MT=0.0. "
             f"See dmrai-lab/dmipy-sim#909 and #910.")
+
+
+def refuse_unsupported_permeable_mt(geometry, where):
+    """Refuse the permeable geometries the MT walk does not yet walk, by name; walk the rest.
+
+    The MT walk binds at a permeable wall by the cross-first rule: at each encounter that touches a wall the crossing
+    is decided first (the transmission rule ``p = x / (1 + x)``), then the walker, on the face it ends on, binds with
+    ``p = min(1, kappa_MT / D * l)`` for the encounter's local time ``l = 2 d_perp``, whether it crossed or was
+    reflected, and freezes at the step's end (dmrai-lab/dmipy-sim#909). It walks a permeability constant in time, one
+    number or one per object, on every geometry that does not carry a side. Refused by name: a
+    :class:`~dmipy_sim.geometry.base.PermeabilitySchedule` (the burn-in that equilibrates the bound pool has no time to
+    read it at), a geometry that carries the walker's side (the packed cylinders and spheres) and a Mesh's crossing
+    directions.
+
+    Raises
+    ------
+    NotImplementedError
+        When the geometry is permeable in a way the walk does not carry; ``where`` names the entry point refusing.
+    """
+    if geometry._is_packed_myelinated:
+        return
+    k = getattr(geometry, "permeability", None)
+    if k is None or not float(k) > 0.0:
+        return
+    table = geometry.permeability_table
+    why = None
+    if table is not None and np.asarray(table.breakpoints).size:
+        why = "its permeability varies in time (a PermeabilitySchedule)"
+    elif geometry.carries_side:
+        why = "it carries the walker's side, which the MT walk does not yet carry"
+    elif type(geometry).__name__ == "Mesh":
+        why = "a Mesh's crossing directions are not yet walked with binding"
+    if why is not None:
+        raise NotImplementedError(
+            f"{where}: magnetization transfer (kappa_MT > 0) on a permeable {type(geometry).__name__} (permeability "
+            f"up to {float(k):.3g} m/s) is not supported: {why}. Walk it impermeable (permeability=None) or with "
+            f"kappa_MT=0.0. See dmrai-lab/dmipy-sim#909.")
 
 
 # ── bound-pool equilibration for the MT walk generator ──────────────────────────
