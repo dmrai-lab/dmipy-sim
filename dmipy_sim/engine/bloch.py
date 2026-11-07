@@ -36,7 +36,7 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_replay.replay.bloch import _rf_increment
-from ..geometry._boundary import bind_probability
+from ..geometry._boundary import bind_probability, dwell_left
 
 from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
@@ -476,11 +476,18 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             local_time = -dlog
             p_stick = bind_probability(kappa_over_D, local_time)
             newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
-            u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+            u_dwell, u_when = jax.random.uniform(dwell_key, (2,), dtype=jnp.float32)
             dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+            # the encounter falls uniformly in the sub-step: the dwell left at its end is the draw less the time from
+            # the encounter to the end (a dwell shorter than that is over within the sub-step)
+            dwell_left_ = dwell_left(dwell_draw, jnp.float32(1.0), u_when)
             r_next = jnp.where(is_bound, r, r_free)             # frozen while bound
             bound_rem_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
-                                       jnp.where(newly, dwell_draw, jnp.float32(0.0)))
+                                       jnp.where(newly, dwell_left_, jnp.float32(0.0)))
+            # the share of this sub-step the spin spends bound: the dwell left (up to the sub-step) of a bound spin,
+            # from the encounter on for one that binds
+            phi = jnp.where(is_bound, jnp.minimum(bound_rem, jnp.float32(1.0)),
+                            jnp.where(newly, jnp.minimum(dwell_draw, u_when), jnp.float32(0.0)))
             # --- spin evolution for THIS sub-step, resolved by state ---
             # Strang split (symmetric, O(dt_sub^2)): half relaxation, one EXACT rotation
             # about the effective field, half relaxation.  The rotation solves
@@ -488,14 +495,14 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             # (rotation vector k = omega_eff*dt_sub), fusing RF nutation and off-resonance
             # precession; symmetrising the relaxation removes the rotation/relaxation split
             # error that matters for the fast bound pool (dt_sub*R2_bound ~ O(0.05)).
-            invT2 = jnp.where(is_bound, invT2_bound, invT2_free)
-            invT1 = jnp.where(is_bound, invT1_bound, invT1_free)
+            invT2 = phi * invT2_bound + (_F(1.0) - phi) * invT2_free
+            invT1 = phi * invT1_bound + (_F(1.0) - phi) * invT1_free
             E2h = jnp.exp(-0.5 * dt_sub_f * invT2)
             E1h = jnp.exp(-0.5 * dt_sub_f * invT1)
             mx = M[:, 0] * E2h                                   # first half-relaxation
             my = M[:, 1] * E2h
             mz = M0f + (M[:, 2] - M0f) * E1h
-            dphi = carr_free_sub + jnp.where(is_bound, carr_bound_sub, _F(0.0))
+            dphi = carr_free_sub + phi * carr_bound_sub
             if field_fn is not None:                            # susceptibility off-resonance
                 dphi = dphi + gamma_dt_sub * field_fn(r_next).astype(_F)  # at the spin's position
             kx = flip_sub * jnp.cos(rf_axis).astype(_F)
@@ -526,7 +533,7 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             My = Ry * E2h * surf
             Mz = M0f + (Rz - M0f) * E1h
             return (r_next, jnp.stack([Mx, My, Mz], axis=1), key, bound_rem_next), \
-                   jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
+                   phi
 
         (r_new, M_sub, key, bound_rem_new), bacc = jax.lax.scan(
             inner, (r, M, key, bound_rem), None, length=n_sub)

@@ -1535,7 +1535,7 @@ def _walk_geometry(
             # walker freezes for an exponential dwell of mean dwell_time and is released. A binding encounter
             # contributes nothing to the free pool's local time (the spin left the free pool), so rho stays a pure
             # replay knob. Carry (r, key, bound_rem, dlog_cum, bad, work).
-            from ..geometry._boundary import bind_probability
+            from ..geometry._boundary import bind_probability, dwell_left
             _kappa_over_D_mt = jnp.float32(float(kappa_MT) / float(diffusivity))
             _dwell_steps_mean = jnp.float32(float(dwell_time) / dt_sim)
             if hasattr(geometry, "reflect_with_binding"):
@@ -1558,23 +1558,32 @@ def _walk_geometry(
 
             def inner_step_mt(carry, step_index):
                 r, key, bound_rem, dlog_cum, bad, work = carry
+                # ``bound_rem`` is the dwell left at the step's start, in steps: a walker with at least a step left is
+                # frozen through it; one with less is released ``bound_rem`` into it and walks the rest of the step
+                # (its Gaussian step scaled by the root of that fraction)
+                still = bound_rem >= jnp.float32(1.0)
+                moving = jnp.where(bound_rem > jnp.float32(0.0), jnp.float32(1.0) - bound_rem, jnp.float32(1.0))
+                scale = jnp.where(still, jnp.float32(1.0), jnp.sqrt(jnp.maximum(moving, jnp.float32(0.0))))
                 if _mt_perm:
                     key, step_key, stick_key, dwell_key, perm_key = jax.random.split(key, 5)
-                    r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim,
+                    r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim * scale,
                                                                   kappa_at(step_index), perm_key)
                 else:
                     key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
-                    r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim)
-                is_bound = bound_rem > jnp.float32(0.0)
+                    r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim * scale)
                 # cross first, bind second: the binding draw is on the encounter's local time after the crossing is
                 # decided, for a transmitted and a reflected encounter alike, and the walker freezes at the step's end
                 p_stick = bind_probability(_kappa_over_D_mt, local_time)
-                newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
-                u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+                newly = (~still) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
+                u_dwell, u_when = jax.random.uniform(dwell_key, (2,), dtype=jnp.float32)
                 dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * _dwell_steps_mean
-                r_next = jnp.where(is_bound, r, r_free)
-                bound_next = jnp.where(is_bound, bound_rem - jnp.float32(1.0), jnp.where(newly, dwell_draw, jnp.float32(0.0)))
-                dlog_cum = dlog_cum + jnp.where(is_bound | newly, jnp.float32(0.0), dlog_free)
+                # the encounter falls uniformly in the part of the step the walker moves, so the dwell left at the
+                # step's end is the draw less the time from the encounter to the end; a dwell shorter than that
+                # is over within the step
+                left = dwell_left(dwell_draw, moving, u_when)
+                r_next = jnp.where(still, r, r_free)
+                bound_next = jnp.where(still, bound_rem - jnp.float32(1.0), jnp.where(newly, left, jnp.float32(0.0)))
+                dlog_cum = dlog_cum + jnp.where(still | newly, jnp.float32(0.0), dlog_free)
                 if hit is not None:
                     bad = bad + hit.illegal.astype(jnp.int32)
                     work = _work_add(work, hit)

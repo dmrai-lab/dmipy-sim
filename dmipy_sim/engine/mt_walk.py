@@ -9,8 +9,10 @@ the impact-angle rule of :func:`dmipy_sim.engine.mt.stick_probability`, consumin
 surface relaxivity uses (so it is timestep-independent by construction, no Cottaar ``sqrt(dt)`` factor). Because
 relaxivity gives ``-d ln S/dt = rho * (S/V)`` from that channel, the emergent free->bound rate is ``k_f = kappa_MT *
 (S/V)`` -- validated in ``tests/test_mt_binding.py``. A stuck walker FREEZES (stops diffusing) for an
-exponentially-distributed dwell of mean ``dwell_time`` (drawn as ``-log(u) * dwell_time / dt`` sub-steps, matching
-the continuum residence time), then is released. The bound state is carried in the walker like a compartment id, and
+exponentially-distributed dwell of mean ``dwell_time`` (drawn as ``-log(u) * dwell_time / dt`` steps and counted
+continuously: the encounter falls uniformly in its step, a walker released inside a step walks the rest of it, so the
+bound time read at the block ends is the continuum's, :func:`~dmipy_sim.geometry._boundary.dwell_left`), then is
+released. The bound state is carried in the walker like a compartment id, and
 the walk records every bind and unbind as an EVENT exact in time (``CoefficientWalk.bound_events``, RPK.md 9.5.7)
 beside the free pool's boundary local time (for surface relaxivity of the free pool at replay).
 
