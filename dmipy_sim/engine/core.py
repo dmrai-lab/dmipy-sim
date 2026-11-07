@@ -1547,17 +1547,24 @@ def _walk_geometry(
             else:
                 _interact_mt = geometry.interact
 
-                def _move_mt(r, step, kappa_over_D=None, perm_key=None):
+                def _move_mt(r, step, kappa_over_D=None, perm_key=None, side=None):
                     if kappa_over_D is None:
                         hit = _interact_mt(r, step, rho_over_D=jnp.float32(1.0))
-                    else:                  # a permeable wall: the crossing is decided here, before the binding is
+                    elif side is None:     # a permeable wall: the crossing is decided here, before the binding is
                         hit = _interact_mt(r, step, kappa_over_D=kappa_over_D, rho_over_D=jnp.float32(1.0), key=perm_key)
+                    else:                  # a geometry that carries the walker's side: only a granted crossing flips it
+                        hit = _interact_mt(r, step, kappa_over_D=kappa_over_D, rho_over_D=jnp.float32(1.0), key=perm_key,
+                                           side=side)
                     return hit.r, hit.dlog_w, -hit.dlog_w, hit          # symmetric: the binding local time is -dlog
 
             _mt_perm = (not hasattr(geometry, "reflect_with_binding")) and has_permeability
+            _mt_side = _mt_perm and _carries_side         # the carry holds the walker's side before its work record
 
             def inner_step_mt(carry, step_index):
-                r, key, bound_rem, dlog_cum, bad, work = carry
+                if _mt_side:
+                    r, key, bound_rem, dlog_cum, bad, side, work = carry
+                else:
+                    r, key, bound_rem, dlog_cum, bad, work = carry
                 # ``bound_rem`` is the dwell left at the step's start, in steps: a walker with at least a step left is
                 # frozen through it; one with less is released ``bound_rem`` into it and walks the rest of the step
                 # (its Gaussian step scaled by the root of that fraction)
@@ -1567,7 +1574,8 @@ def _walk_geometry(
                 if _mt_perm:
                     key, step_key, stick_key, dwell_key, perm_key = jax.random.split(key, 5)
                     r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim * scale,
-                                                                  kappa_at(step_index), perm_key)
+                                                                  kappa_at(step_index), perm_key,
+                                                                  side if _mt_side else None)
                 else:
                     key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
                     r_free, dlog_free, local_time, hit = _move_mt(r, pair_step(step_key) * step_l_sim * scale)
@@ -1587,6 +1595,11 @@ def _walk_geometry(
                 if hit is not None:
                     bad = bad + hit.illegal.astype(jnp.int32)
                     work = _work_add(work, hit)
+                if _mt_side:
+                    # the side follows the crossing that was decided, whether or not the walker is then held at the end
+                    # of its step: a held walker has not moved, so only a walker that moved can have crossed
+                    side = jnp.where(hit.crossed & ~still, -side, side)
+                    return (r_next, key, bound_next, dlog_cum, bad, side, work), None
                 return (r_next, key, bound_next, dlog_cum, bad, work), None
 
         # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
@@ -1639,8 +1652,15 @@ def _walk_geometry(
                 _n_chunk = max(4, int(round(float(dwell_time) / float(dt_sim))))
                 if _mt_walls:
                     def _burn_walker(r_w, key_w, comp_w, brem_w):
-                        (r_f, key_f, brem_f, _d, _b, _w), _ = jax.lax.scan(
-                            inner_step_mt, (r_w, key_w, brem_w, jnp.float32(0.0), jnp.int32(0), _work0()), None, length=_n_chunk)
+                        # the steps are indexed 0: a permeability over time is read at the first interval's value
+                        # (the burn-in equilibrates the bound pool before t = 0); a side, if carried, is the position's
+                        if _mt_side:
+                            side0 = jnp.where(geometry.classify_position(r_w) > 0, jnp.int8(-1), jnp.int8(1))
+                            init = (r_w, key_w, brem_w, jnp.float32(0.0), jnp.int32(0), side0, _work0())
+                        else:
+                            init = (r_w, key_w, brem_w, jnp.float32(0.0), jnp.int32(0), _work0())
+                        fin, _ = jax.lax.scan(inner_step_mt, init, jnp.zeros((_n_chunk,), jnp.int32))
+                        r_f, key_f, brem_f = fin[0], fin[1], fin[2]
                         return r_f, key_f, comp_w, brem_f, (brem_f > 0).astype(jnp.float32)
                 else:
                     def _burn_walker(r_w, key_w, comp_w, brem_w):
@@ -1770,7 +1790,8 @@ def _walk_geometry(
                     phys0 = (r0_w, key_w, jnp.float32(0.0), side_w, jnp.int32(0), comp0_w, _work0())
                     lab0 = _pool2(comp0_w)
                 elif kind_name == "mt":
-                    phys0 = (r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), _work0())
+                    phys0 = ((r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), side_w, _work0()) if _mt_side
+                             else (r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), _work0()))
                     lab0 = _pool2(comp0_w)
                 else:
                     phys0 = ((r0_w, r0_w, key_w, jnp.float32(0.0), comp0_w, brem0_w, jnp.float32(0.0), _work0()) if _mt_on

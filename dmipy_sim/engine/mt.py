@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["stick_probability", "refuse_permeable_mt", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau"]
+__all__ = ["stick_probability", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau"]
 
 
 # ── per-hit binding probability (the impact-angle rule) ─────────────────────────
@@ -76,50 +76,23 @@ def stick_probability(d_perp, kappa_MT, D):
     return np.minimum(1.0, 2.0 * (kappa_MT / D) * np.asarray(d_perp, dtype=float))
 
 
-def refuse_permeable_mt(geometry, where):
-    """Refuse a magnetization-transfer walk on a geometry whose walls ever let a walker cross.
-
-    The walk that binds water at a wall (the impact-angle rule of :func:`stick_probability`) treats every wall as
-    impermeable: it has no accounting of how binding and membrane transmission share one encounter. A geometry with
-    a nonzero permeability -- one number, one per object, a :class:`~dmipy_sim.geometry.base.PermeabilitySchedule`, a
-    Mesh's mapping of crossing directions -- is therefore refused by name (dmrai-lab/dmipy-sim#909, #910), never
-    walked as an impermeable one. ``geometry.permeability`` is the largest permeability over objects, directions and
-    time (``None`` for walls that never let a walker cross), so one test covers every form. The packed myelinated
-    cylinders carry binding and membrane transmission in one step of their own and are not tested here.
-
-    Raises
-    ------
-    NotImplementedError
-        When ``geometry.permeability`` is not ``None``; ``where`` names the entry point refusing.
-    """
-    if geometry._is_packed_myelinated:
-        return
-    k = getattr(geometry, "permeability", None)
-    if k is not None and float(k) > 0.0:
-        raise NotImplementedError(
-            f"{where}: magnetization transfer (kappa_MT > 0) on a permeable {type(geometry).__name__} "
-            f"(permeability up to {float(k):.3g} m/s) is not supported: the MT walk binds water at a wall as if the "
-            f"wall were impermeable and has no accounting of how binding and membrane transmission share an "
-            f"encounter. Walk it impermeable (permeability=None) or with kappa_MT=0.0. "
-            f"See dmrai-lab/dmipy-sim#909 and #910.")
-
-
-def refuse_unsupported_permeable_mt(geometry, where):
-    """Refuse the permeable geometries the MT walk does not yet walk, by name; walk the rest.
+def refuse_unsupported_permeable_mt(geometry, where, *, schedule=True):
+    """Refuse the permeable geometries the MT walk does not walk, by name; walk the rest.
 
     The MT walk binds at a permeable wall by the cross-first rule: at each encounter that touches a wall the crossing
     is decided first (the transmission rule ``p = x / (1 + x)``), then the walker, on the face it ends on, binds with
     ``p = min(1, kappa_MT / D * l)`` for the encounter's local time ``l = 2 d_perp``, whether it crossed or was
-    reflected, and freezes at the step's end (dmrai-lab/dmipy-sim#909). It walks a permeability constant in time, one
-    number or one per object, on every geometry that does not carry a side. Refused by name: a
-    :class:`~dmipy_sim.geometry.base.PermeabilitySchedule` (the burn-in that equilibrates the bound pool has no time to
-    read it at), a geometry that carries the walker's side (the packed cylinders and spheres) and a Mesh's crossing
-    directions.
+    reflected, and freezes at the step's end (dmrai-lab/dmipy-sim#909). It walks every geometry with walls and a
+    permeability of one number, one per object, or a :class:`~dmipy_sim.geometry.base.PermeabilitySchedule` (a
+    geometry that carries the walker's side carries it through the walk, and the burn-in that equilibrates the bound
+    pool before t = 0 reads the first interval of a schedule). The forward vector-Bloch walk takes a permeability
+    constant in time, as its walk without binding does (``schedule=False``).
 
     Raises
     ------
     NotImplementedError
-        When the geometry is permeable in a way the walk does not carry; ``where`` names the entry point refusing.
+        For a Mesh with a permeable wall (its crossing directions are not walked with binding), and, with
+        ``schedule=False``, for a permeability that varies in time; ``where`` names the entry point refusing.
     """
     if geometry._is_packed_myelinated:
         return
@@ -128,10 +101,8 @@ def refuse_unsupported_permeable_mt(geometry, where):
         return
     table = geometry.permeability_table
     why = None
-    if table is not None and np.asarray(table.breakpoints).size:
-        why = "its permeability varies in time (a PermeabilitySchedule)"
-    elif geometry.carries_side:
-        why = "it carries the walker's side, which the MT walk does not yet carry"
+    if not schedule and table is not None and np.asarray(table.breakpoints).size:
+        why = "its permeability varies in time (a PermeabilitySchedule), which the vector-Bloch walk does not take"
     elif type(geometry).__name__ == "Mesh":
         why = "a Mesh's crossing directions are not yet walked with binding"
     if why is not None:
