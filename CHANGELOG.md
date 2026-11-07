@@ -5,6 +5,13 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The MT walk binds at every permeable wall it can walk** (#909): geometries that carry the walker's side (packed
+  cylinders and spheres, with a permeability per object, the side following the granted crossing), a permeability
+  over time (the burn-in that equilibrates the bound pool reads the first interval), and the forward vector-Bloch
+  oracle (a permeability constant in time, as its walk without binding takes it). Against `BlochTorrey1D` with binding
+  on the slab (constant, over time, and the forward oracle) and, for the packed cylinder, against the isolated
+  `Cylinder`. A Mesh with a permeable wall and a schedule in the forward oracle are still refused by name. Impermeable
+  MT walks and the forward oracle are unchanged to the bit.
 - **The MT dwell is counted continuously** (#918), not in whole steps: the encounter falls uniformly in its step, the
   dwell left at the step's end is the draw less the time from the encounter to the end, and a walker released inside a
   step walks the rest of it (the packed myelinated walk and the forward vector-Bloch oracle take the encounter's

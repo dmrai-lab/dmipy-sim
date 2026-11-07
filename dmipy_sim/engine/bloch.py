@@ -457,6 +457,13 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
     bound_carrier = _F(2.0 * np.pi * float(off_res_bound) * dt)
     rho_over_D = _F(rho / D)
     reflect_lw = geometry.reflect_with_log_weight
+    has_perm = geometry.permeability is not None and float(geometry.permeability) > 0.0
+    if has_perm:
+        # a permeable wall, as the vector-Bloch walk without binding takes it: a permeability constant in time, one
+        # number or one per object, the crossing decided before the binding is
+        from .physics import membrane_kappa
+        interact = geometry.interact
+        kappa_perm = membrane_kappa(geometry, float(D), dt_sub)[0](None)
 
     def step_fn(carry, inputs):
         r, M, key, uc, bound_rem = carry
@@ -468,11 +475,18 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
 
         def inner(c, _):
             r, M, key, bound_rem = c
-            key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
+            if has_perm:
+                key, step_key, stick_key, dwell_key, perm_key = jax.random.split(key, 5)
+            else:
+                key, step_key, stick_key, dwell_key = jax.random.split(key, 4)
             is_bound = bound_rem > jnp.float32(0.0)
             unit = pair_step(step_key)
             # rho_over_D = 1 -> dlog = -2 Sum d_perp; the binding local time is -dlog
-            r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
+            if has_perm:
+                hit = interact(r, unit * step_len, kappa_over_D=kappa_perm, rho_over_D=jnp.float32(1.0), key=perm_key)
+                r_free, dlog = hit.r, hit.dlog_w
+            else:
+                r_free, dlog = reflect_lw(r, unit * step_len, jnp.float32(1.0))
             local_time = -dlog
             p_stick = bind_probability(kappa_over_D, local_time)
             newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
@@ -559,8 +573,8 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     (if ``return_bound_frac``)."""
     if dwell_time <= 0.0:
         raise ValueError("dwell_time must be > 0 when kappa_MT > 0 (MT on).")
-    from .mt import refuse_permeable_mt
-    refuse_permeable_mt(geometry, "_simulate_bloch")
+    from .mt import refuse_unsupported_permeable_mt
+    refuse_unsupported_permeable_mt(geometry, "_simulate_bloch", schedule=False)
     if not geometry.has_walls:
         raise TypeError(f"{type(geometry).__name__} has no walls; MT "
                         "binding needs the boundary-local-time channel "
