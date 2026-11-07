@@ -24,7 +24,7 @@ why a view is exact: it is not an approximation of another walk, it IS that walk
 
 | view | what you ask for | what moves with it | what stays | direction |
 |---|---|---|---|---|
-| `at_diffusivity(D)`, `a = D / D_walk` | a faster diffusivity | the block (`h / a`, `T / a`), the band in hertz (`x a`), every permeability and MT reactivity (`x a`) | positions, every wall, every length | `a >= 1` only |
+| `at_diffusivity(D)`, `a = D / D_walk` | another diffusivity | the block (`h / a`, `T / a`), the band in hertz and `G_max` (`x a`), every permeability and MT reactivity (`x a`), a slower view's field scale (`chi_max x a`) | positions, every wall, every length | both, the envelope moved by `a` |
 | `at_length_scale(s)` | another size | every length (`x s`: positions, walls, box, contact), the diffusivity (`x s^2`), every wall rate (`x s`), the certificate's battery (`b_max / s^2`, `rho2_over_D_max / s`) | the block, the duration, the band in hertz, the field values, T2 and T1 | both, bounded by the battery |
 
 ## In time: `at_diffusivity`
@@ -48,19 +48,27 @@ pack = d.build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citat
 fast = pack.at_diffusivity(4e-9)                                  # a = 2: the same walk, twice as fast
 print(fast.diffusivity, fast.permeability, fast.dt, fast.n_t)    # 4e-9, 2e-5 (the pair), h / 2, the same blocks
 print(fast.meta["provenance"]["diffusivity_scaled"]["a"])        # 2.0, with walked and replayed values beside it
+slow = pack.at_diffusivity(0.5e-9)                                # a = 1/4: the same walk over four times the time
+print(pack.temporal_bandwidth_hz, slow.temporal_bandwidth_hz)    # the same bands over 4 T: a quarter of the band
+print(pack.envelope.G_max, slow.envelope.G_max)                  # and a quarter of the amplitude
+lobes = sequences.pgse([[1, 0, 0]], 0.001, 0.003, bvalues=[1e9], TE=0.009, slew_rate=np.inf)
+pack.replay(lobes)                                                # inside the walk's 400 Hz
 try:
-    pack.at_diffusivity(1e-9)                                     # a < 1 stretches the block: refused
+    slow.replay(lobes)                                            # beyond the slower view's 100 Hz: refused by name
 except ValueError as e:
     print(str(e)[:60])
 ```
 
-Why only faster. The certificate was measured at the walked block. Dividing the block keeps the codec error and the
-floor what they were, but the in-step integration bias goes as `D dt^2`, which is `D_walk dt_walk^2 / a`: it falls
-for `a > 1` and grows for `a < 1` past what the walk's block was chosen to keep below the floor. A published
-pack does not carry what would re-certify a stretched block, so a slower replay is refused rather than returned
-uncertified. The view is also shorter, `T / a`, and an acquisition must fit it. `Tissue(D=...)` on any replay route
-takes this view; `Tissue(kappa=...)` takes it by the permeability, and the two stated together must sit on the
-walk's line `kappa / D`.
+Why both directions, and what each gives up. With `t' = a t` the walk's clock, a waveform `G(t)` on the view is the
+waveform `G(t' / a) / a` on the walk, a field scale `B0 chi` on the view the walk's `B0 chi / a`, and a surface
+relaxivity `rho2` the walk's `rho2 / a`. So the view's envelope is the walk's moved by `a` -- its band in hertz and its
+`G_max` times `a`, and a slower view's `chi_max` times `a` -- and a request inside it IS a request inside the walk's:
+every term of the certificate is the walk's own, at the walk's request. A faster view serves a wider band and a
+stronger gradient over a shorter walk, `T / a`, which an acquisition must fit. A slower view serves a longer walk at a
+narrower band: the walk stored `K` bands over `T` and the view spreads them over `T / a`, so a waveform beyond `a`
+times the walked band, or beyond `a` times its `G_max`, is refused by name, the refusal naming the view.
+`Tissue(D=...)` on any replay route takes this view; `Tissue(kappa=...)` takes it by the permeability, and the two
+stated together must sit on the walk's line `kappa / D`.
 
 ## In space: `at_length_scale`
 
@@ -104,15 +112,16 @@ except ValueError as e:
 ## Together: one walk per shape
 
 A target `(L, D, T)` is reached from a walk `(L0, D0, T0)` by the size view `s = L / L0` and then the time view
-`a = D / (s^2 D0)`, which needs `a >= 1` and `T <= T0 / a`:
+`a = D / (s^2 D0)`, which needs `T <= T0 / a`, and serves the band `a` times the walk's:
 
 ```
-D / L^2  >=  D0 / L0^2        and        D T / L^2  <=  D0 T0 / L0^2
+D T / L^2  <=  D0 T0 / L0^2        band(L, D)  =  (D / L^2) / (D0 / L0^2)  x  band(L0, D0)
 ```
 
-So one walk per shape, at the slowest `D / L^2` the study needs and over the longest `D T / L^2`, serves every size
-and every faster diffusivity, read with `pack.prefix` where it is longer than needed. It saves walks, not steps: the
-walk must be as long in blocks as the smallest target's walk would be.
+So one walk per shape over the longest `D T / L^2` serves every size and every diffusivity, read with `pack.prefix`
+where it is longer than needed. A walk at the slowest `D / L^2` the study needs (`a >= 1` at every target) holds its
+band at every target; a target slower than the walk holds `a` times it. It saves walks, not steps: the walk must be
+as long in blocks as the smallest target's walk would be.
 
 ```python
 one_um_at_2e9 = pack.at_length_scale(0.5).at_diffusivity(2e-9)   # the 1 um cylinder at 2e-9, over 2.5 ms
@@ -124,7 +133,8 @@ print(one_um_at_2e9.diffusivity, one_um_at_2e9.permeability, one_um_at_2e9.dt, (
 * **It does not change the material.** T2, T1 and chi are not lengths and are not touched; a size view at the same
   tissue is the same water in a bigger structure. A permeability off the walk's line, or a wall made permeable, needs
   a walk: a crossing is a per-event draw and only its rate scales.
-* **It does not re-certify.** The time view refuses `a < 1`; the size view moves the battery and refuses beyond it.
+* **It does not re-certify.** Each view moves the envelope the walk was certified over and holds every replay to the
+  moved one: the time view's band and `G_max` by `a`, the size view's battery by `s`; beyond either it refuses.
   An unscaled pack replayed beyond its own `b_max` is not refused today (dmipy-sim#706 tracks that gap against the
   format's §11), so the view's refusal is the stricter rule, not a weaker one.
 * **It does not extend the walk.** The time view shortens it to `T / a`; the size view keeps it; neither reaches

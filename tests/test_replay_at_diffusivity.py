@@ -117,16 +117,36 @@ def test_the_surface_term_changes_with_the_diffusivity_and_the_replay_is_still_e
     assert not np.allclose(at_2d, at_d, rtol=1e-3)                       # and the signal moved
 
 
-def test_slower_than_walked_is_refused_and_the_walk_must_cover_the_acquisition(free):
+def test_the_slower_view_is_the_walk_at_the_slower_diffusivity_to_the_bit(free):
+    """The same identity the other way: the walk at ``2 D`` read on a clock twice as long (``a = 1/2``) is the walk at
+    ``D`` from the same seed, to the float32 its bands are stored in. Its band and its ``G_max`` are half the walk's:
+    the 12 bands spread over twice the time."""
+    pk_d, pk_2d = free
+    view = pk_2d.at_diffusivity(D0)
+    assert view.diffusivity == D0 and view.dt == pytest.approx(DT) and view.n_t == pk_2d.n_t
+    assert view.temporal_bandwidth_hz == pytest.approx(0.5 * pk_2d.temporal_bandwidth_hz)
+    assert view.temporal_bandwidth_hz == pytest.approx(pk_d.temporal_bandwidth_hz)
+    assert view.envelope.G_max == pytest.approx(0.5 * pk_2d.envelope.G_max)
+    seq = _seq(T / 2)
+    np.testing.assert_allclose(view.replay(seq, complex_signal=True), pk_d.replay(seq, complex_signal=True), rtol=RTOL)
+    np.testing.assert_allclose(pk_2d.replay(seq, tissue=Tissue(D=D0), complex_signal=True), pk_d.replay(seq, complex_signal=True),
+                               rtol=RTOL)
+    assert view.meta["provenance"]["diffusivity_scaled"]["a"] == 0.5
+
+
+def test_a_slower_view_holds_its_band_and_the_walk_must_cover_the_acquisition(free):
     pk_d, _ = free
-    with pytest.raises(ValueError, match="slower than the walk"):
-        pk_d.at_diffusivity(0.5 * D0)
-    with pytest.raises(ValueError, match="slower than the walk"):
-        pk_d.replay(_seq(T / 2), tissue=Tissue(D=0.5 * D0))
+    quarter = pk_d.at_diffusivity(0.25 * D0)                            # the 12 bands over 160 ms
+    assert quarter.temporal_bandwidth_hz == pytest.approx(0.25 * pk_d.temporal_bandwidth_hz)
+    pk_d.replay(_seq(T / 2))
+    with pytest.raises(ValueError, match=r"beyond this pack's temporal band: it needs .*time-scaled view, a = 0\.25"):
+        quarter.replay(_seq(T / 2))                                      # the walk's band, not the view's
+    with pytest.raises(ValueError, match=r"beyond this pack's temporal band: it needs .*time-scaled view, a = 0\.25"):
+        pk_d.replay(_seq(T / 2), tissue=Tissue(D=0.25 * D0))
     with pytest.raises(ValueError, match="positive"):
         pk_d.at_diffusivity(-1.0)
     assert pk_d.at_diffusivity(D0) is pk_d
-    # the view's walk is half as long, and an acquisition that fit the walk need not fit the view
+    # the faster view's walk is half as long, and an acquisition that fit the walk need not fit the view
     with pytest.raises(ValueError, match="beyond the pack"):
         pk_d.replay(_seq(0.8 * T), tissue=Tissue(D=2 * D0))
 
@@ -174,8 +194,8 @@ def test_a_study_refuses_a_tissue_at_another_diffusivity_and_takes_the_view(free
 
 
 def test_the_walk_serves_its_line_of_diffusivity_and_permeability_pairs_and_no_other(permeable):
-    """The compute optimisation. One walk at the slowest diffusivity over the longest time serves every faster
-    setting on its line -- the same ratio kappa / D -- as a view; a pair off the line needs its own walk."""
+    """The compute optimisation. One walk serves every setting on its line -- the same ratio kappa / D -- as a view,
+    faster and slower; a pair off the line needs its own walk."""
     pk_d, pk_2d, K = permeable
     seq = _seq(T / 2)
     assert pk_d.permeability == K and pk_2d.permeability == 2 * K
@@ -191,8 +211,9 @@ def test_the_walk_serves_its_line_of_diffusivity_and_permeability_pairs_and_no_o
     assert view.meta["provenance"]["diffusivity_scaled"]["permeability"]["wall_0.in_to_out"]["replayed"] == pytest.approx(2 * K)
     with pytest.raises(ValueError, match="not on this walk's line"):
         pk_d.replay(seq, tissue=Tissue(D=2 * D0, kappa=K))
-    with pytest.raises(ValueError, match="slower than the walk"):
-        pk_d.replay(seq, tissue=Tissue(kappa=0.5 * K))
+    # and slower on the line: the walk at (2 D, 2 kappa) read at kappa is the walk at (D, kappa)
+    np.testing.assert_allclose(pk_2d.replay(seq, tissue=Tissue(kappa=K), complex_signal=True),
+                               pk_d.replay(seq, complex_signal=True), rtol=RTOL)
 
 
 def test_a_permeability_needs_a_permeable_wall(free):
@@ -268,6 +289,32 @@ def test_the_field_and_the_relaxation_channels_follow_the_rescale(sheathed):
     own = pk_2d.replay(seq, tissue=both, scanner=3.0, orientation=R, complex_signal=True)
     view = pk_d.replay(seq, tissue=both.replace(D=2 * D0), scanner=3.0, orientation=R, complex_signal=True)
     np.testing.assert_allclose(view, own, rtol=RTOL)
+
+
+def test_the_slower_view_follows_every_channel_within_its_field_scale(sheathed):
+    """The other direction on every tier: the walk at 2D read at D replays as the walk at D under a field, T2 per pool
+    and both. B0 chi on the view is B0 chi / a on the walk, so the slower view (a = 1/2) holds half the walk's field
+    scale, and a susceptibility the walk at 2D serves at the full scale is refused on it by name."""
+    pk_d, pk_2d = sheathed
+    slow = pk_2d.at_diffusivity(D0)
+    assert slow.envelope.chi_max == pytest.approx(0.5 * pk_2d.envelope.chi_max)
+    n_t, dt = pk_d.n_t, pk_d.dt
+    seq = sequences.pgse([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]], 0.8e-3, 2.4e-3, bvalues=[2e8, 2e8],
+                         TE=(n_t - 1) * dt, n_t=n_t, slew_rate=np.inf)
+    c = 0.25 * pk_2d.envelope.chi_max                                   # |chi_iso| + |chi_aniso| at half the view's scale
+    chi = Tissue(chi_iso=-c, chi_aniso=-c)
+    t2 = Tissue(T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01})
+    both = Tissue(chi_iso=-c, chi_aniso=-c, T2={"extra": 0.08, "intra": 0.03, "myelin": 0.01})
+    bare = pk_d.replay(seq, complex_signal=True, tol=None)
+    for tissue, kw, live in ((chi, dict(scanner=3.0), 1e-7), (t2, {}, 1e-3), (both, dict(scanner=7.0), 1e-3)):
+        own = pk_d.replay(seq, tissue=tissue, complex_signal=True, tol=None, **kw)
+        view = pk_2d.replay(seq, tissue=tissue.replace(D=D0), complex_signal=True, tol=None, **kw)
+        np.testing.assert_allclose(view, own, rtol=RTOL, err_msg=repr(tissue))
+        assert np.abs(view - bare).max() > live * np.abs(bare).max(), repr(tissue)
+    full = Tissue(chi_iso=-pk_2d.envelope.chi_max)
+    pk_2d.replay(sequences.gre(0.5 * (n_t - 1) * dt), tissue=full, scanner=7.0)  # the walk at 2D at its own scale
+    with pytest.raises(ValueError, match="certified field scale"):
+        slow.replay(sequences.gre((n_t - 1) * dt), tissue=full, scanner=7.0)     # twice its scale on that walk
 
 
 def so3_rotation(a, b, c):
