@@ -36,7 +36,7 @@ import jax
 import jax.numpy as jnp
 
 from dmipy_replay.replay.bloch import _rf_increment
-from ..geometry._boundary import bind_probability, dwell_left
+from ..geometry._boundary import bind_probability, dwell_left, dwell_scale
 
 from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
@@ -491,7 +491,8 @@ def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
             p_stick = bind_probability(kappa_over_D, local_time)
             newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
             u_dwell, u_when = jax.random.uniform(dwell_key, (2,), dtype=jnp.float32)
-            dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+            dwell_draw = (-jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+                          * dwell_scale(kappa_over_D, local_time))         # with the encounter's geminate rebinds
             # the encounter falls uniformly in the sub-step: the dwell left at its end is the draw less the time from
             # the encounter to the end (a dwell shorter than that is over within the sub-step)
             dwell_left_ = dwell_left(dwell_draw, jnp.float32(1.0), u_when)
@@ -584,7 +585,8 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     n_meas, n_t, _ = G.shape
 
     sub_steps = resolve_sub_steps(geometry, D, dt, surface=float(surface_relaxivity) > 0.0,
-                                  mt_dwell_time=dwell_time, override=sub_steps, f_band=band_hz(G, dt))
+                                  mt_dwell_time=dwell_time, mt_kappa=float(kappa_MT), override=sub_steps,
+                                  f_band=band_hz(G, dt))
 
     dflip, axis, carrier = _build_rf_schedule(seq.rf, dt, n_t)
     crush_rate, has_crush = _build_crusher(seq.crusher, dt, n_t)

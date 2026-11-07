@@ -1,8 +1,10 @@
 """The MT walk on a permeable wall: cross first, then bind, against the exact 1-D answer (dmrai-lab/dmipy-sim#909).
 
 At an encounter that touches a permeable wall the walk decides the crossing first (the transmission rule), then the
-binding on the face the walker ends on, from the encounter's local time, whether it crossed or was reflected; a bound
-walker freezes at the step's end, dwells for an exponential time and is released to the same face.
+binding on the face the walker ends on, from the encounter's local time, whether it crossed or was reflected: the
+binding clock ``1 - exp(-kappa_MT l / D)``. A bound walker freezes at the step's end for an exponential dwell that
+carries the encounter's geminate rebinds (mean ``tau exp(kappa_MT l / (2 D))``) and is released to the same face
+(#921).
 
 The substrate is a slab of two layers of ``R`` between reflecting walls with one membrane, a bound pool on each face of
 it (:class:`~dmipy_sim.geometry.PermeableSlab1D`), walkers uniform over the slab, free water at no relaxation and no
@@ -14,12 +16,9 @@ to its cells. The step is ``h = 0.09 R`` (one step per block, the step law's reg
 A walker's transverse magnetisation is ``exp(-(R2_b + i omega_b) t_b)`` with ``t_b`` its time bound, one step for each
 block end it is found bound at. The dwell is a continuous exponential read at the block ends without bias
 (``test_the_dwell_is_unbiased_at_the_block_ends``). What separates the walk from the reference is the step's own
-first-order error: a walker is released where its step ended, not at the face, so it rebinds in fewer bursts than the
-continuum's. The late signal sits below the reference by 0.008 (0.006 to 0.012 over dwells of 17 to 67 steps,
-60 000 walkers each, 3 to 6 se) at ``kappa h / D = 0.5`` and ``h = 0.09 R``, by half of it at ``h = 0.045 R`` and
-within noise at ``h = 0.0225 R``, whatever the dwell, and by more where the wall is nearly closed (0.017 at
-``kappa h / D = 0.3``). The table allows ``STEP_ERROR`` for it on the signal, on top of the sampling tolerance and the
-reference's cells.
+error, second order in it; the step law states it (:func:`~dmipy_sim.engine.physics.binding_error`: the pool's
+binding reactivity and dwell each within ``MT_COEFFICIENT (kappa_MT h / D)^2``), and each comparison allows it through
+the reference's own sensitivities to those two, on top of the sampling tolerance and the reference's cells.
 """
 import numpy as np
 import pytest
@@ -41,22 +40,41 @@ R2B, OMEGA_B = 1500.0, 2500.0
 TIMES = (0.1, 0.3)                            # in R^2 / D
 STEPS = [int(round(t * R * R / D / DT)) for t in TIMES]
 N = 10_000
-STEP_ERROR = 0.012                            # the signal's first-order error in the step at h = 0.09 R
+SENS_STEP = 0.02                              # the relative step of the reference's sensitivities
+
+
+def _binding_eps():
+    """The step law's bound on the walk's binding at the test's step (:func:`~dmipy_sim.engine.physics.binding_error`)."""
+    from dmipy_sim.engine.physics import binding_error
+    return binding_error(D, K_ON, DT, R)                      # the pore: a layer of width R
+
+
+def _reference(kappa, step, breakpoints=(), *, relax=True, pool="total", n_cells=800, k_on=K_ON, tau=TAU):
+    perm = (kappa,) if not breakpoints else tuple((k,) for k in kappa)
+    kw = dict(permeability=perm, permeability_breakpoints=breakpoints, density=(1.0, 1.0), binding_reactivity=k_on,
+              dwell_time=tau)
+    if relax:
+        kw.update(bound_R2=R2B, bound_omega=OMEGA_B)
+    m = bt.BlochTorrey1D(np.array([0.0, 1.0, 2.0]) * R, D, n_cells=n_cells, **kw)
+    return complex(m.signal(np.zeros(step), DT, pool=pool))
+
+
+def _with_bound(value_of):
+    """``(value, error)``: the reference at 800 cells, twice its Richardson error over 400 / 800 cells, plus the step
+    law's binding bound, ``eps (|dX/d ln k_on| + |dX/d ln tau_b|)`` on the reference's own sensitivities."""
+    v = [value_of(n_cells=n) for n in (400, 800)]
+    sens = sum(abs(value_of(**{name: val * (1.0 + SENS_STEP)}) - v[1]) / SENS_STEP
+               for name, val in (("k_on", K_ON), ("tau", TAU)))
+    return v[1], 2.0 * abs(v[0] - v[1]) * 4.0 / 3.0 + _binding_eps() * sens
 
 
 def _signals(kappa, step, breakpoints=()):
-    """``((signal, error), (bound fraction, error))`` of the slab after ``step`` steps; ``kappa`` one value, or with
-    ``breakpoints`` (s) one per interval of time."""
-    perm = (kappa,) if not breakpoints else tuple((k,) for k in kappa)
-    kw = dict(permeability=perm, permeability_breakpoints=breakpoints, density=(1.0, 1.0), binding_reactivity=K_ON,
-              dwell_time=TAU)
-    ms = [bt.BlochTorrey1D(np.array([0.0, 1.0, 2.0]) * R, D, n_cells=n, bound_R2=R2B, bound_omega=OMEGA_B, **kw)
-          for n in (400, 800)]
-    mb = [bt.BlochTorrey1D(np.array([0.0, 1.0, 2.0]) * R, D, n_cells=n, **kw) for n in (400, 800)]
-    G = np.zeros(step)
-    s = [complex(m.signal(G, DT)).real for m in ms]
-    b = [complex(m.signal(G, DT, pool="bound")).real for m in mb]
-    return (s[1], 2.0 * abs(s[0] - s[1]) * 4.0 / 3.0), (b[1], 2.0 * abs(b[0] - b[1]) * 4.0 / 3.0)
+    """``((signal, error), (bound fraction, error))`` of the slab after ``step`` steps (:func:`_with_bound`); ``kappa``
+    one value, or with ``breakpoints`` (s) one per interval of time. The signal's sensitivities are the complex
+    signal's moduli, which bound its real part's."""
+    s, e_s = _with_bound(lambda **kw: _reference(kappa, step, breakpoints, **kw))
+    b, e_b = _with_bound(lambda **kw: _reference(kappa, step, breakpoints, relax=False, pool="bound", **kw).real)
+    return (s.real, e_s), (b, e_b)
 
 
 def _walk(kappa, seed):
@@ -85,7 +103,7 @@ def test_the_permeable_mt_walk_is_the_continuum_slab_with_bound_pools():
             sig = np.exp(-R2B * t_b) * np.cos(OMEGA_B * t_b)
             frac = bound[:, step]
             (ref_s, e_s), (ref_b, e_b) = _signals(kappa, step)
-            for name, x, ref, e in (("signal", sig, ref_s, e_s + STEP_ERROR), ("bound fraction", frac, ref_b, e_b)):
+            for name, x, ref, e in (("signal", sig, ref_s, e_s), ("bound fraction", frac, ref_b, e_b)):
                 tol = se_tol(N, x.std(), comparisons=comparisons) + e
                 rows.append((ks, step, name, x.mean(), ref, (x.mean() - ref) / (x.std() / np.sqrt(N)), tol))
                 assert abs(x.mean() - ref) < tol, (
@@ -177,7 +195,7 @@ def test_a_permeability_over_time_is_the_continuum_slab_with_bound_pools():
         t_b = bound[:, 1:step + 1].sum(1) * DT
         sig = np.exp(-R2B * t_b) * np.cos(OMEGA_B * t_b)
         (ref_s, e_s), (ref_b, e_b) = _signals(k, step, breakpoints=(cut * DT,))
-        for name, x, ref, e in (("signal", sig, ref_s, e_s + STEP_ERROR), ("bound fraction", bound[:, step], ref_b, e_b)):
+        for name, x, ref, e in (("signal", sig, ref_s, e_s), ("bound fraction", bound[:, step], ref_b, e_b)):
             tol = se_tol(N, x.std(), comparisons=comparisons) + e
             assert abs(x.mean() - ref) < tol, f"step {step}: {name} {x.mean():.5f} against {ref:.5f} (tolerance {tol:.5f})"
     # the schedule is the walk's, not the first interval's: the membrane opens, so the layers' mixing differs
@@ -207,13 +225,9 @@ def test_the_forward_vector_bloch_oracle_is_the_continuum_slab_with_bound_pools(
                                   T1_bound=1e3, off_resonance_bound=OMEGA_B / (2.0 * np.pi), sub_steps=1,
                                   return_bound_frac=True)
         sig = np.conj(complex(np.asarray(sig).ravel()[-1]))
-        ms = [bt.BlochTorrey1D(np.array([0.0, 1.0, 2.0]) * R, D, permeability=(kappa,), density=(1.0, 1.0),
-                               binding_reactivity=K_ON, dwell_time=TAU, bound_R2=R2B, bound_omega=OMEGA_B, n_cells=c)
-              for c in (400, 800)]
-        ref = [complex(m.signal(np.zeros(step), DT)) for m in ms]
+        ref, e_ref = _with_bound(lambda **kw: _reference(kappa, step, **kw))     # complex; e bounds Re and Im alike
         (_, _), (ref_b, e_b) = _signals(kappa, step)
-        for name, got, want, e in (("Re", sig.real, ref[1].real, abs(ref[0].real - ref[1].real) * 8.0 / 3.0 + STEP_ERROR),
-                                   ("Im", sig.imag, ref[1].imag, abs(ref[0].imag - ref[1].imag) * 8.0 / 3.0 + STEP_ERROR),
+        for name, got, want, e in (("Re", sig.real, ref.real, e_ref), ("Im", sig.imag, ref.imag, e_ref),
                                    ("bound fraction", float(np.asarray(bf)[-1]), ref_b, e_b)):
             tol = se_tol(n, 0.3 if name == "bound fraction" else sd, comparisons=comparisons) + e
             assert abs(got - want) < tol, f"step {step}: {name} {got:.5f} against {want:.5f} (tolerance {tol:.5f})"

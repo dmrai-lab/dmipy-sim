@@ -3,13 +3,15 @@
 The walker physics MT needs is the binding at a wall: the engine's per-hit boundary-local-time channel
 (``interact(r, step, rho_over_D=1)`` returns ``dlog = -2 * Sum d_perp``) gives the stick decision at each step,
 
-    p_stick = min(1, (kappa_MT / D) * (-dlog)) = min(1, 2 (kappa_MT/D) Sum d_perp)
+    p_stick = 1 - exp(-(kappa_MT / D) * (-dlog)) = 1 - exp(-2 (kappa_MT/D) Sum d_perp)
 
-the impact-angle rule of :func:`dmipy_sim.engine.mt.stick_probability`, consuming the SAME local-time quantity the
+the binding clock on the boundary local time (:func:`dmipy_sim.engine.mt.stick_probability`), consuming the SAME
+local-time quantity the
 surface relaxivity uses (so it is timestep-independent by construction, no Cottaar ``sqrt(dt)`` factor). Because
 relaxivity gives ``-d ln S/dt = rho * (S/V)`` from that channel, the emergent free->bound rate is ``k_f = kappa_MT *
 (S/V)`` -- validated in ``tests/test_mt_binding.py``. A stuck walker FREEZES (stops diffusing) for an
-exponentially-distributed dwell of mean ``dwell_time`` (drawn as ``-log(u) * dwell_time / dt`` steps and counted
+exponentially-distributed dwell of mean ``dwell_time exp(x / 2)``, ``x`` the bind's ``(kappa_MT / D) l``: the
+encounter's geminate rebinds join it (:func:`~dmipy_sim.geometry._boundary.dwell_scale`; drawn in steps and counted
 continuously: the encounter falls uniformly in its step, a walker released inside a step walks the rest of it, so the
 bound time read at the block ends is the continuum's, :func:`~dmipy_sim.geometry._boundary.dwell_left`), then is
 released. The bound state is carried in the walker like a compartment id, and
