@@ -371,13 +371,13 @@ def _simulate_bloch(n_walkers, diffusivity, waveform, geometry, *,
 
 
 # ── magnetization transfer: fused forward walk + binding + Bloch ────────────────
-def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time,
-                        tol=0.01, max_chunks=40):
+def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time, criterion):
     """RF-off / gradient-off burn-in of the fused MT walk through
-    :func:`dmipy_sim.engine.mt.equilibrate_burnin_plateau`: one chunk is ~one dwell of this engine's
+    :func:`dmipy_sim.engine.mt.equilibrate_burnin_plateau` under ``criterion``
+    (:func:`dmipy_sim.engine.mt.burnin_criterion`): one chunk is ~one dwell of this engine's
     step function with every sequence input zeroed. Returns equilibrated positions, per-walker
-    residual bound counter (sub-steps), advanced keys, the plateau occupancy, and a converged
-    flag."""
+    residual bound counter (sub-steps), advanced keys, and the burn-in's record (criterion, chunks, occupancy,
+    ``converged``)."""
     from .mt import equilibrate_burnin_plateau
     n_walkers = r0.shape[0]
     n_chunk = int(max(4, round(float(dwell_time) / dt)))       # ~one dwell (turnover unit)
@@ -387,18 +387,16 @@ def _equilibrate_burnin(step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_
     def chunk_walker(r_w, key_w, uw_w, brem_w):
         (r_f, _, key_f, _, brem_f), (_, bf_seq) = jax.lax.scan(
             step_fn, (r_w, M_init, key_w, uw_w, brem_w), burn_inputs)
-        return r_f, key_f, brem_f, jnp.mean(bf_seq)
+        return r_f, key_f, brem_f, jnp.mean(bf_seq)         # the walker's chunk-mean bound fraction
 
     chunk = jax.jit(jax.vmap(chunk_walker, in_axes=(0, 0, 0, 0)), compiler_options=walk_compiler_options())
 
     def chunk_fn(r, keys, brem):
-        r, keys, brem, bf = chunk(r, keys, uw, brem)
-        return r, keys, brem, jnp.mean(bf)
+        return chunk(r, keys, uw, brem)
 
-    r, keys, brem, occ, converged = equilibrate_burnin_plateau(
-        chunk_fn, r0, walker_keys, jnp.zeros((n_walkers,), dtype=jnp.float32),
-        tol=tol, max_chunks=max_chunks)
-    return r, brem, keys, occ, converged
+    r, keys, brem, record = equilibrate_burnin_plateau(
+        chunk_fn, r0, walker_keys, jnp.zeros((n_walkers,), dtype=jnp.float32), criterion)
+    return r, brem, keys, record
 
 
 def _make_bloch_mt_step_fn(geometry, D, dt, n_sub, T2, T1, M0, off_res_global,
@@ -628,8 +626,12 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
                                * jnp.float32(dwell_steps_mean), jnp.float32(0.0))
         run_keys = walker_keys
     elif mode == 'burnin':
-        r0, bound_rem0, run_keys, occ_burn, converged = _equilibrate_burnin(
-            step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time)
+        from .mt import burnin_criterion
+        criterion = burnin_criterion(geometry, kappa_MT, dwell_time, D,
+                                     max(4, int(round(float(dwell_time) / dt))) * dt)
+        r0, bound_rem0, run_keys, burn_record = _equilibrate_burnin(
+            step_fn, r0, walker_keys, uw, M_init, n_meas, dt, dwell_time, criterion)
+        converged = burn_record["converged"]
     else:                                                   # 'off': every walker starts free
         bound_rem0 = jnp.zeros((n_walkers,), dtype=jnp.float32)
         run_keys = walker_keys
@@ -647,8 +649,8 @@ def _simulate_bloch_mt(n_walkers, diffusivity, waveform, geometry, *,
     if mode != 'off':
         occ_run = float(jnp.mean(bf_seq))
         if mode == 'burnin' and not converged:
-            warnings.warn("equilibrate_binding: bound-pool occupancy did not plateau within "
-                          "the burn-in cap (long-dwell / heterogeneous substrate?); the MT "
+            warnings.warn(f"equilibrate_binding: the burn-in's {burn_record['kind']} criterion did not hold within "
+                          f"the cap of {burn_record['max_chunks']} chunks (long-dwell / heterogeneous substrate?); the MT "
                           "signal may be under-equilibrated.", stacklevel=2)
         if P_eq is not None and abs(occ_run - P_eq) > max(0.05 * P_eq, 0.01):
             warnings.warn(f"equilibrate_binding='{mode}': bound occupancy during the sequence "

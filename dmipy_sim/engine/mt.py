@@ -51,9 +51,12 @@ Cottaar M et al. Imaging Neuroscience 2026, DOI 10.1162/IMAG.a.1177 (MCMRSimulat
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 
-__all__ = ["stick_probability", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau"]
+__all__ = ["stick_probability", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau",
+           "equilibrium_bound_fraction", "burnin_criterion", "BurnInCriterion"]
 
 
 # ── per-hit binding probability (the binding clock on the local time) ─────────────
@@ -166,24 +169,151 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, 
     return eb
 
 
-def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, tol=0.01, max_chunks=40):
-    """Adaptive occupancy-plateau burn-in (geometry-agnostic).
+BURNIN_TOLERANCE = 0.01
+"""The burn-in's relative tolerance: the bound fraction is at equilibrium when it is within ``0.01 P_eq`` plus two
+standard errors of the ensemble's mean (never less than the binomial error of ``P_eq`` in the ensemble's walkers); with no known equilibrium the occupancy has plateaued when the two halves of the
+window differ by no more than ``0.01`` of the occupancy plus two standard errors of their difference."""
 
-    ``chunk_fn(r, keys, brem)`` advances the whole ensemble one chunk (~one dwell) and
-    returns ``(r, keys, brem, mean_occupancy)``; iterate until the ensemble bound
-    occupancy stops changing (relative change < ``tol``), then DISCARD the preamble and
-    return the equilibrated ``(r, keys, brem, occupancy, converged)``.
+BURNIN_RELAXATIONS = 5.0
+"""Relaxation times a burn-in with a known equilibrium runs at least: ``exp(-5) = 0.7 %`` of the all-free start's
+deficit is left, below the standard error of any ensemble that resolves the bound fraction."""
+
+BURNIN_WINDOW = 8
+"""Chunks (one dwell each) of the plateau window when no equilibrium is known: at least eight exchange times, the
+exchange time ``1 / (k_f + k_r)`` being at most the dwell."""
+
+BURNIN_MIN_CHUNKS = 40
+"""The burn-in's cap in chunks, raised to the minimum plus twenty where the relaxation time asks for more."""
+
+
+def _first_permeabilities(geometry, n_objects):
+    """The permeability (m/s) of each of the geometry's ``n_objects`` walls at the first interval of time."""
+    table = getattr(geometry, "permeability_table", None)
+    if table is not None:
+        return np.broadcast_to(np.asarray(table.values[0], float), (n_objects,))
+    k = getattr(geometry, "permeability", None)
+    return np.full(n_objects, 0.0 if k is None else float(k))
+
+
+def equilibrium_bound_fraction(geometry, kappa_MT, dwell_time):
+    """The bound fraction of the walkers a geometry seeds once the walk has equilibrated, or ``None`` where the
+    geometry has no closed form here.
+
+    A free spin binds at a wall at the rate ``k_f = kappa_MT S / V`` per unit free time and a bound one leaves at
+    ``k_r = 1 / dwell_time``, so the stationary bound fraction of a closed domain of surface ``S`` (every face a
+    walker reaches, counted once per face) and volume ``V`` is ``P_eq = x / (1 + x)``, ``x = kappa_MT dwell_time S / V``
+    (``dmipy_analytic.relaxation.bound_fraction``; with the bound pool on each face of area density
+    ``kappa_MT dwell_time`` times the free water's, the continuum slab of ``BlochTorrey1D``). ``S`` and ``V`` are the
+    geometry's own:
+
+    * a sealed :class:`~dmipy_sim.geometry.Sphere` or :class:`~dmipy_sim.geometry.Cylinder`: ``S / V = 3 / R``, ``2 / R``;
+    * a :class:`~dmipy_sim.geometry.PermeableSlab1D` whose membranes all let water through: both faces of each of its
+      ``n`` membranes in the length ``L``, ``S / V = 2 n / L``;
+    * :class:`~dmipy_sim.geometry.PackedCylinders` / :class:`~dmipy_sim.geometry.PackedSpheres` seeded over the whole
+      cell, all walls permeable: both faces of every object in the cell, ``S / V = 2 surface_area() / L^d``
+      (``d = 2`` per unit length, ``3``); all walls sealed: each pool at its own ``S / V`` (an object's interior, the
+      interstitial space with its one face of every object) weighted by the walkers it is seeded with, its volume
+      fraction.
+
+    Mixed sealed and permeable walls, a pool seeded alone in a permeable pack, a Mesh and the rest: ``None``.
     """
+    from ..geometry import PackedCylinders, PackedSpheres, PermeableSlab1D
+    from ..geometry.analytic import Cylinder, Sphere
+    kappa, tau = float(kappa_MT), float(dwell_time)
+    p = lambda sv: (kappa * tau * sv) / (1.0 + kappa * tau * sv)
+    if isinstance(geometry, (Sphere, Cylinder)):
+        if _first_permeabilities(geometry, 1)[0] > 0.0:
+            return None
+        return p((3.0 if isinstance(geometry, Sphere) else 2.0) / float(geometry.radius))
+    if isinstance(geometry, PermeableSlab1D):
+        if np.all(_first_permeabilities(geometry, len(geometry.membranes)) > 0.0):
+            return p(2.0 * len(geometry.membranes) / geometry.length)
+        return None
+    if isinstance(geometry, (PackedCylinders, PackedSpheres)) and geometry.pool is None:
+        spheres = isinstance(geometry, PackedSpheres)
+        radii = np.asarray(geometry._radii_np, float)
+        cell = geometry._L_float ** (3 if spheres else 2)
+        volume = geometry.volume()                                # per unit length for cylinders: the cell's area is L^2
+        k = _first_permeabilities(geometry, radii.size)
+        if np.all(k > 0.0):
+            return p(2.0 * geometry.surface_area() / cell)
+        if np.all(k == 0.0):
+            inside = (3.0 if spheres else 2.0) / radii
+            v_k = ((4.0 / 3.0) * np.pi * radii ** 3) if spheres else (np.pi * radii ** 2)
+            outside = geometry.surface_area() / (cell - volume)
+            return float(np.sum(v_k / cell * p(inside)) + (cell - volume) / cell * p(outside))
+        return None
+    return None
+
+
+class BurnInCriterion(NamedTuple):
+    """The stopping rule of the MT burn-in, as the walk records it (``CoefficientWalk.work["mt_equilibration"]``).
+
+    ``kind`` is ``"equilibrium"`` (``p_eq`` known: stop when the ensemble's bound fraction is within ``tolerance
+    * p_eq`` plus two standard errors of it, after at least ``min_chunks`` chunks of the relaxation time) or
+    ``"plateau"`` (stop when the two halves of the last ``window`` chunks differ by no more than ``tolerance`` of the
+    occupancy plus two standard errors of the difference). ``chunk_s`` is a chunk's duration, ``max_chunks`` the cap."""
+    kind: str
+    p_eq: float | None
+    tolerance: float
+    window: int
+    min_chunks: int
+    max_chunks: int
+    chunk_s: float
+
+
+def burnin_criterion(geometry, kappa_MT, dwell_time, diffusivity, chunk_s):
+    """The :class:`BurnInCriterion` of a walk: the equilibrium of :func:`equilibrium_bound_fraction` where it exists,
+    else the plateau. The relaxation time is the larger of the dwell (the exchange time is at most it) and the pore's
+    slowest diffusive time ``1 / (D pore_rate)`` (``LengthScales.pore_rate``, a sphere of the smallest feature when the
+    geometry declares none)."""
+    from .physics import length_scales_of
+    p_eq = equilibrium_bound_fraction(geometry, kappa_MT, dwell_time)
+    if p_eq is None:
+        return BurnInCriterion("plateau", None, BURNIN_TOLERANCE, BURNIN_WINDOW, BURNIN_WINDOW,
+                               BURNIN_MIN_CHUNKS, float(chunk_s))
+    ls = length_scales_of(geometry)
+    rate = ls.pore_rate if ls.pore_rate is not None else (
+        (2.0816 / ls.min_feature) ** 2 if ls.min_feature else 0.0)
+    t_relax = max(float(dwell_time), 1.0 / (float(diffusivity) * rate) if rate > 0.0 else 0.0)
+    n_min = max(1, int(np.ceil(BURNIN_RELAXATIONS * t_relax / float(chunk_s))))
+    return BurnInCriterion("equilibrium", float(p_eq), BURNIN_TOLERANCE, 1, n_min,
+                           max(BURNIN_MIN_CHUNKS, n_min + 20), float(chunk_s))
+
+
+def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, criterion):
+    """Adaptive burn-in of the bound pool (geometry-agnostic), stopped by a stated :class:`BurnInCriterion`.
+
+    ``chunk_fn(r, keys, brem)`` advances the whole ensemble one chunk (~one dwell) and returns ``(r, keys, brem,
+    occupancy)``, ``occupancy`` the walkers' chunk-mean bound fractions. The preamble is discarded and the equilibrated
+    ``(r, keys, brem, record)`` returned; ``record`` is the criterion, the chunks run, the occupancy and whether it
+    held (``converged``)."""
     r, k, brem = r0, keys, brem0
-    occ_prev, converged = -1.0, False
-    for _ in range(int(max_chunks)):
-        r, k, brem, occ = chunk_fn(r, k, brem)
-        occ = float(occ)
-        if occ_prev >= 0.0 and abs(occ - occ_prev) <= tol * max(occ, 1e-6):
-            occ_prev, converged = occ, True
-            break
-        occ_prev = occ
-    return r, k, brem, occ_prev, converged
+    history, converged, occ, n_run = [], False, float("nan"), 0
+    for n_run in range(1, int(criterion.max_chunks) + 1):
+        r, k, brem, bf = chunk_fn(r, k, brem)
+        bf = np.asarray(bf, np.float64)
+        history.append(bf)
+        occ = float(bf.mean())
+        se = float(bf.std() / np.sqrt(bf.size))
+        if criterion.kind == "equilibrium":
+            # the ensemble of n walkers resolves P_eq to the binomial error at best, however few of them are bound
+            se = max(se, float(np.sqrt(criterion.p_eq * (1.0 - criterion.p_eq) / bf.size)))
+            if n_run >= criterion.min_chunks and abs(occ - criterion.p_eq) <= criterion.tolerance * criterion.p_eq + 2.0 * se:
+                converged = True
+                break
+        elif n_run >= 2 * (criterion.window // 2):
+            a = np.mean(history[-criterion.window:-criterion.window // 2], axis=0)
+            b = np.mean(history[-criterion.window // 2:], axis=0)
+            diff = float(b.mean() - a.mean())
+            se_diff = float(np.hypot(a.std(), b.std()) / np.sqrt(bf.size))
+            if abs(diff) <= criterion.tolerance * occ + 2.0 * se_diff:
+                converged = True
+                break
+    record = dict(kind=criterion.kind, p_eq=criterion.p_eq, tolerance=criterion.tolerance, window=criterion.window,
+                  min_chunks=criterion.min_chunks, max_chunks=criterion.max_chunks, chunk_s=criterion.chunk_s,
+                  chunks_run=n_run, occupancy=occ, converged=converged)
+    return r, k, brem, record
 
 
 def __getattr__(name):

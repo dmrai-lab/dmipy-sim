@@ -5,6 +5,16 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The MT burn-in stops at the bound pool's equilibrium** (#925): its plateau test (the occupancy changing by under 1 %
+  between two chunks of one dwell) ended while the bound fraction was still climbing (0.088 against 0.091 at `0.3
+  R^2/D` on the permeable slab), so an MT walk started out of equilibrium. Where the geometry gives the equilibrium,
+  `P_eq = x / (1 + x)`, `x = kappa_MT tau S / V` with the geometry's own `S` and `V` (`mt.equilibrium_bound_fraction`:
+  sealed sphere and cylinder, permeable slab, packed cylinders and spheres seeded over the cell, sealed pool by pool),
+  the burn-in runs at least five relaxation times (the larger of the dwell and the pore's `1 / (D pore_rate)`) and stops
+  with the ensemble's bound fraction within `0.01 P_eq` plus two standard errors; elsewhere it stops when the two halves
+  of a window of eight dwells differ by under 1 % plus two standard errors of their difference. The criterion and where
+  it stopped are `work["mt_equilibration"]`; one that does not hold within its cap warns. Walks without MT and walks
+  with `equilibrate_binding` `'fast'` or `'off'` are unchanged; MT walks start nearer their equilibrium.
 - **MT binding is second order in the step** (#921): a walker binds at an encounter with the binding clock's
   probability `1 - exp(-kappa_MT l / D)` (was `min(1, kappa_MT l / D)`), and the bind's dwell has the mean `tau
   exp(kappa_MT l / (2 D))` (`geometry._boundary.dwell_scale`): a released walker resumes the unspent half of the
