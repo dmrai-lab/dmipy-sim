@@ -7,7 +7,7 @@ on first call via jax.jit applied in core.py.
 
 import jax
 import jax.numpy as jnp
-from ..geometry._boundary import bind_probability
+from ..geometry._boundary import bind_probability, dwell_left
 import warnings
 
 import numpy as np
@@ -850,7 +850,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
 
     Magnetization transfer (``kappa_MT > 0``): free water that reflects off a myelin wall binds
     with probability ``min(1, (kappa_MT/D) * local_time)``, freezes for an exponential dwell of
-    mean ``dwell_time`` and is released; ``bound_acc`` counts frozen sub-steps. An intra walker
+    mean ``dwell_time`` and is released; ``bound_acc`` is the time bound, in steps. An intra walker
     only ever meets the inner wall and an extra walker the outer one, so the walker's pool selects
     the side reactivity (``mt_side_intra`` / ``mt_side_extra``); myelin water cannot bind. A bound
     or binding encounter contributes nothing to ``dlog_accum``.
@@ -887,15 +887,21 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
                                jnp.where(is_extra, kappa_extra_f, jnp.float32(0.0)))
         p_stick = bind_probability(kappa_bind / jnp.maximum(D_bind, jnp.float32(1e-30)), local_time)
         newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
-        u_dwell = jax.random.uniform(dwell_key, dtype=jnp.float32)
+        u_dwell, u_when = jax.random.uniform(dwell_key, (2,), dtype=jnp.float32)
         dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+        # the encounter falls uniformly in the step: the dwell left at its end is the draw less the time from the
+        # encounter to the end (a dwell shorter than that is over within the step)
+        dwell_left_ = dwell_left(dwell_draw, jnp.float32(1.0), u_when)
         r_out = jnp.where(is_bound, r, r_new)
         r_uw_out = jnp.where(is_bound, r_uw, r_uw_new)
         comp_out = jnp.where(is_bound, comp_id, comp_new)
         dlog_contrib = jnp.where(is_bound | newly, jnp.float32(0.0), dlog_boundary)
         bound_rem_out = jnp.where(is_bound, bound_rem - jnp.float32(1.0),
-                                  jnp.where(newly, dwell_draw, jnp.float32(0.0)))
-        bound_acc_out = bound_acc + jnp.where(is_bound, jnp.float32(1.0), jnp.float32(0.0))
+                                  jnp.where(newly, dwell_left_, jnp.float32(0.0)))
+        # the time bound within the step: the dwell left, up to the step, of a bound walker; from the encounter on,
+        # for one that binds
+        bound_acc_out = bound_acc + jnp.where(is_bound, jnp.minimum(bound_rem, jnp.float32(1.0)),
+                                              jnp.where(newly, jnp.minimum(dwell_draw, u_when), jnp.float32(0.0)))
         return (r_out, r_uw_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out,
                 _add_work(work, w, keep=~is_bound)), None
 

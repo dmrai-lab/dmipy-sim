@@ -256,6 +256,16 @@ def step_off_wall(r_hit, n_out, stay_inside, d_refl, remaining, nudge):
             + d_refl * jnp.maximum(remaining - nudge, jnp.float32(0.0)))
 
 
+def dwell_left(dwell_draw, moving, u_when):
+    """The dwell left, in steps, at the end of the step a walker binds in.
+
+    ``dwell_draw`` is the exponential dwell in steps; the encounter falls uniformly in the ``moving`` part of the step
+    (``u_when`` a uniform draw), so the walker has been bound for ``moving * u_when`` of the step already; a dwell
+    shorter than that is over within the step (0). Counted at the block ends the bound time is then the draw, without
+    bias: the number of ends it is found bound at has the dwell's mean."""
+    return jnp.maximum(dwell_draw - moving * u_when, jnp.float32(0.0))
+
+
 def bind_probability(kappa_over_D, local_time):
     """Probability a spin binds at a wall, from boundary LOCAL TIME: ``min(1, kappa/D * l)``.
 

@@ -5,6 +5,13 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The MT dwell is counted continuously** (#918), not in whole steps: the encounter falls uniformly in its step, the
+  dwell left at the step's end is the draw less the time from the encounter to the end, and a walker released inside a
+  step walks the rest of it (the packed myelinated walk and the forward vector-Bloch oracle take the encounter's
+  fraction of the step the same way, the Bloch spin evolving at the bound share of each sub-step). The bound time read
+  at the block ends was too long by about `2 dt / tau` of itself (a late signal 0.018 low at a 17-step dwell, 5 se on
+  30 000 walkers); it is unbiased now. MT walks are no longer bit-identical to before: an impermeable sphere's bound
+  fraction moves by -1.4 % at a 33-step dwell, -1.5 % at 17, 0 % at 67 (inside the standard error, 1 %).
 - **The MT walk binds at permeable walls, cross first** (#909): at each encounter that touches a permeable wall the
   crossing is decided by the transmission rule, then the walker, on the face it ends on, binds with the probability of
   the encounter's local time (crossed or reflected), freezes at the step's end and is released to the same face after
