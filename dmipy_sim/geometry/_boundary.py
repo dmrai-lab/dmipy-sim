@@ -230,6 +230,23 @@ def nudge_push(nudge, cos_a, rem_a):
     return nudge - cos_a * jnp.minimum(nudge, jnp.maximum(rem_a, jnp.float32(0.0)))
 
 
+#: The rule the boundary local time follows, stated by a walk (``work["local_time_rule"]``): every encounter that
+#: touches a wall adds its own geometric increment, reflected or transmitted (:func:`wall_push`).
+LOCAL_TIME_RULE = "every_touching_encounter"
+
+
+def wall_push(transmit, d_perp, nudge, cos_a, rem_a):
+    """The local time of one wall encounter, ``2 d_perp`` plus the nudge's push when the walker is reflected.
+
+    Every encounter that touches the wall adds its own geometric increment, reflected or transmitted: the walker that
+    crosses has met the membrane exactly as the one that bounces has, and the surface relaxation of the continuum acts
+    on the contact, not on its outcome. A reflection adds the displacement its nudge gives (:func:`nudge_push`); a
+    transmission is not nudged and adds ``2 d_perp`` alone. Counting the reflections only leaves the local time low by
+    the transmitted share of the contacts, about 5 % at ``kappa* = 0.5``.
+    """
+    return jnp.float32(2.0) * d_perp + jnp.where(transmit, jnp.float32(0.0), nudge_push(nudge, cos_a, rem_a))
+
+
 def step_off_wall(r_hit, n_out, stay_inside, d_refl, remaining, nudge):
     """``off_wall`` then travel the remaining path along ``d_refl``.
 

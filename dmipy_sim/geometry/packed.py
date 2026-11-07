@@ -10,7 +10,7 @@ import numpy as np
 
 from ..math.step_law import LONGEST_STEP
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
-                        BounceLoop, WallHit, bounce_budget, nudge_push)
+                        BounceLoop, WallHit, bounce_budget, wall_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
@@ -59,7 +59,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
 
     Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving a
     :class:`~dmipy_sim.geometry._boundary.WallHit` in ``centers``' space: the end position, the surface
-    log-weight increment ``-2 (rho/D) d_perp`` summed over the reflections, whether the side changed (an odd
+    log-weight increment ``-2 (rho/D) d_perp`` summed over every encounter that touches a wall, reflected or crossed (plus the nudge's push on a reflection), whether the side changed (an odd
     number of crossings), whether the end sentinel had to correct the side, the encounters when ``count``
     (reflections and every crossing granted), and whether the budget ran out.
     """
@@ -113,7 +113,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             p_new = jnp.where(reflecting, pp + (q_off - q[kh]), pp + rem * d)
             d_new = jnp.where(reflecting, d_refl, d)
             rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
-            dlw = jnp.stack([jnp.where(reflecting, -rho_over_D * (f32(2.0) * d_perp + nudge_push(nudge, cos_a, rem_a)), f32(0.0)),
+            dlw = jnp.stack([jnp.where(any_hit, -rho_over_D * wall_push(transmit, d_perp, nudge, cos_a, rem_a), f32(0.0)),
                              transmit.astype(f32)])
             return p_new, d_new, rem_new, state, dlw, transmit, reflecting
 

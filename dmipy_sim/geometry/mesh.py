@@ -46,7 +46,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
-from ._boundary import vdot, BounceLoop, wall_hit, specular, transmit_probability, off_wall, nudge_push
+from ._boundary import vdot, BounceLoop, wall_hit, specular, transmit_probability, off_wall, wall_push
 import numpy as np
 
 from .base import Geometry, LengthScales
@@ -1412,8 +1412,8 @@ class Mesh(Geometry):
             d_new = jnp.where(do_reflect, d_ref, dh)
             rem_new = jnp.where(do_reflect, rem - d - nudge, jnp.float32(0.0))
             # the wall's push: the ideal reflection's 2 d_perp and the displacement the nudge adds along the facet normal
-            push = 2.0 * d_perp + nudge_push(nudge, jnp.maximum(vdot(d_ref, nf), 0.0), rem - d)
-            dperp_refl = jnp.where(do_reflect & jnp.logical_not(use_box), rho_mult * push,
+            push = wall_push(transmit, d_perp, nudge, jnp.maximum(vdot(d_ref, nf), 0.0), rem - d)
+            dperp_refl = jnp.where((do_reflect | transmit) & jnp.logical_not(use_box), rho_mult * push,
                                    jnp.float32(0.0))
             return (r_new, d_new, rem_new, (decided | first_hit, idx),
                     -jnp.float32(rho_over_D) * dperp_refl, transmit, do_reflect)
