@@ -48,8 +48,11 @@ def simulate_mt_trajectories(
     :func:`~dmipy_sim.engine.core._walk_geometry` -- same random stream, same bands to the bit -- so an MT pack and a
     plain pack of one substrate differ only by what binding did.
 
-    A geometry with a permeable wall (a number, a number per object, a schedule, a Mesh's crossing directions) is
-    refused by name (:func:`~dmipy_sim.engine.mt.refuse_permeable_mt`, #909, #910).
+    A permeable wall (a permeability constant in time, one number or one per object) is walked cross first, then bind:
+    at each encounter that touches the wall the crossing is decided by the transmission rule, then the walker, on the
+    face it ends on, binds with the probability of the encounter's local time, crossed or reflected, and freezes at
+    the step's end (#909). A permeability over time, a geometry that carries the walker's side and a Mesh's crossing
+    directions are refused by name (:func:`~dmipy_sim.engine.mt.refuse_unsupported_permeable_mt`).
 
     Parameters
     ----------

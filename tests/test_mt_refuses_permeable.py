@@ -1,7 +1,9 @@
-"""The magnetization-transfer walk refuses a geometry with a permeable wall, by name, at every entry point.
+"""The magnetization-transfer walk refuses the permeable geometries it does not walk, by name, at every entry point.
 
-The MT walk binds water at a wall as if the wall were impermeable; a permeable geometry would be walked as an
-impermeable one. It is refused (dmrai-lab/dmipy-sim#909, #910), and an impermeable MT walk is unchanged.
+The walk binds at a permeable wall after deciding the crossing (dmrai-lab/dmipy-sim#909; ``test_mt_permeable_walk``)
+for a permeability constant in time on a geometry that carries no side. A permeability over time, a geometry that
+carries the walker's side (packed cylinders) and a Mesh are refused; the forward vector-Bloch MT path refuses every
+permeable wall; an impermeable MT walk is unchanged.
 """
 import numpy as np
 import pytest
@@ -22,16 +24,13 @@ def _packed(permeability):
     return d.PackedCylinders(radii, centers, 12e-6, permeability=permeability)
 
 
-# geometry factory per permeability form: a scalar, a per-object table, a schedule
+# geometry factory per permeability form the walk refuses: a schedule, a geometry that carries the walker's side
 FORMS = {
-    "cylinder-scalar": lambda: d.Cylinder(radius=2e-6, orientation=(0, 0, 1), permeability=1e-5),
     "cylinder-schedule": lambda: d.Cylinder(radius=2e-6, orientation=(0, 0, 1),
                                             permeability=PermeabilitySchedule([1e-3], [0.0, 1e-5])),
     "packed-scalar": lambda: _packed(1e-5),
     "packed-per-object": lambda: _packed([1e-5, 0.0]),
     "packed-schedule": lambda: _packed(PermeabilitySchedule([1e-3], [[1e-5, 0.0], [0.0, 1e-5]])),
-    "slab-scalar": lambda: d.PermeableSlab1D(6e-6, 1e-5),
-    "slab-per-object": lambda: d.PermeableSlab1D(7e-6, [2e-5, 2.5e-6], membranes=[2e-6, 5e-6]),
     "slab-schedule": lambda: d.PermeableSlab1D(6e-6, PermeabilitySchedule([1e-3], [0.0, 1e-5])),
 }
 
@@ -39,7 +38,7 @@ FORMS = {
 @pytest.mark.parametrize("form", sorted(FORMS))
 def test_every_entry_point_refuses_a_permeable_mt_walk(form):
     g = FORMS[form]()
-    named = pytest.raises(NotImplementedError, match=r"permeable .*#909.*#910|#909 and #910")
+    named = pytest.raises(NotImplementedError, match=r"permeable .*#909")
     with named:
         _walk_geometry(16, D, g, **WALK, **MT)
     with named:
@@ -49,11 +48,11 @@ def test_every_entry_point_refuses_a_permeable_mt_walk(form):
 
 
 def test_the_message_names_the_combination():
-    g = FORMS["cylinder-scalar"]()
+    g = FORMS["packed-scalar"]()
     with pytest.raises(NotImplementedError) as e:
         _walk_geometry(16, D, g, **WALK, **MT)
     msg = str(e.value)
-    assert "Cylinder" in msg and "kappa_MT" in msg and "#909" in msg and "#910" in msg
+    assert "PackedCylinders" in msg and "kappa_MT" in msg and "carries the walker's side" in msg and "#909" in msg
 
 
 def test_the_forward_vector_bloch_oracle_refuses_too():
@@ -61,7 +60,7 @@ def test_the_forward_vector_bloch_oracle_refuses_too():
     from dmipy_sim.engine.bloch import _simulate_bloch
     wf = ScannerSequence(G=np.zeros((1, 11, 3)), dt=1e-4)
     with pytest.raises(NotImplementedError, match="#909"):
-        _simulate_bloch(8, D, wf, FORMS["cylinder-scalar"](), seed=1, **MT)
+        _simulate_bloch(8, D, wf, d.Cylinder(radius=2e-6, orientation=(0, 0, 1), permeability=1e-5), seed=1, **MT)
 
 
 def test_mesh_permeability_is_refused():
@@ -83,10 +82,13 @@ def test_mesh_permeability_is_refused():
 
 
 @pytest.mark.parametrize("make", [
+    lambda: d.Cylinder(radius=2e-6, orientation=(0, 0, 1), permeability=1e-5),
+    lambda: d.PermeableSlab1D(6e-6, 1e-5),
+    lambda: d.PermeableSlab1D(7e-6, [2e-5, 2.5e-6], membranes=[2e-6, 5e-6]),
     lambda: d.Cylinder(radius=2e-6, orientation=(0, 0, 1)),
     lambda: _packed(None),
     lambda: d.PermeableSlab1D(6e-6, 0.0),
 ])
-def test_an_impermeable_mt_walk_still_walks(make):
+def test_an_mt_walk_that_is_impermeable_or_permeable_in_time_constant_walks(make):
     w = _walk_geometry(16, D, make(), **WALK, **MT)
     assert w.bound_events is not None

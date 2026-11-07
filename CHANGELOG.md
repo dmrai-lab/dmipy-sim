@@ -5,6 +5,12 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The MT walk binds at permeable walls, cross first** (#909): at each encounter that touches a permeable wall the
+  crossing is decided by the transmission rule, then the walker, on the face it ends on, binds with the probability of
+  the encounter's local time (crossed or reflected), freezes at the step's end and is released to the same face after
+  its dwell. A permeability constant in time on a geometry that carries no side is walked, against
+  `BlochTorrey1D(binding_reactivity=...)` within the standard error; a permeability over time, packed cylinders and a
+  Mesh are still refused by name. Impermeable MT walks are unchanged to the bit.
 - **The boundary local time counts every encounter that touches a wall**, a transmitted one as well as a reflected one,
   each by its own `2 d_perp` (a reflection also by its nudge's push): surface relaxivity on a permeable wall follows the
   continuum (a permeable slab at `kappa* = 0.5` against `BlochTorrey1D` with membrane relaxivity, where counting
