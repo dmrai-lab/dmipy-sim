@@ -56,15 +56,15 @@ import numpy as np
 __all__ = ["stick_probability", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau"]
 
 
-# ── per-hit binding probability (the impact-angle rule) ─────────────────────────
+# ── per-hit binding probability (the binding clock on the local time) ─────────────
 def stick_probability(d_perp, kappa_MT, D):
     """Probability a free spin sticks at a wall hit of penetration ``d_perp``.
 
-    ``p = min(1, 2 * (kappa_MT / D) * d_perp)`` -- eq. (1).  ``d_perp`` (m) is the
-    perpendicular penetration of the residual step past the surface (``remaining *
-    cos_alpha`` in the engine), so a grazing hit sticks less than a normal one.
-    Works on scalars or numpy arrays; the geometry step functions inline the same
-    expression in pure JAX.
+    ``p = 1 - exp(-2 (kappa_MT / D) d_perp)``: the binding clock, of rate ``kappa_MT / D`` per unit boundary local
+    time, ringing within the hit's local time ``2 d_perp`` (:func:`~dmipy_sim.geometry._boundary.bind_probability`,
+    the walk's own, whose bind carries its geminate rebinds in the dwell, ``dwell_scale``). ``d_perp`` (m) is the
+    perpendicular penetration of the residual step past the surface (``remaining * cos_alpha`` in the engine), so a
+    grazing hit sticks less than a normal one. Works on scalars or numpy arrays.
 
     Parameters
     ----------
@@ -73,7 +73,7 @@ def stick_probability(d_perp, kappa_MT, D):
     D : float                 local diffusivity (m^2/s), > 0.
     """
     # a host-side (numpy) entry point for the analytic oracles, which run off-device.
-    return np.minimum(1.0, 2.0 * (kappa_MT / D) * np.asarray(d_perp, dtype=float))
+    return -np.expm1(-2.0 * (kappa_MT / D) * np.asarray(d_perp, dtype=float))
 
 
 def refuse_unsupported_permeable_mt(geometry, where, *, schedule=True):
@@ -81,8 +81,9 @@ def refuse_unsupported_permeable_mt(geometry, where, *, schedule=True):
 
     The MT walk binds at a permeable wall by the cross-first rule: at each encounter that touches a wall the crossing
     is decided first (the transmission rule ``p = x / (1 + x)``), then the walker, on the face it ends on, binds with
-    ``p = min(1, kappa_MT / D * l)`` for the encounter's local time ``l = 2 d_perp``, whether it crossed or was
-    reflected, and freezes at the step's end (dmrai-lab/dmipy-sim#909). It walks every geometry with walls and a
+    ``p = 1 - exp(-kappa_MT / D * l)`` for the encounter's local time ``l = 2 d_perp``, whether it crossed or was
+    reflected, and freezes at the step's end for a dwell that carries the encounter's geminate rebinds
+    (dmrai-lab/dmipy-sim#909, #921). It walks every geometry with walls and a
     permeability of one number, one per object, or a :class:`~dmipy_sim.geometry.base.PermeabilitySchedule` (a
     geometry that carries the walker's side carries it through the walk, and the burn-in that equilibrates the bound
     pool before t = 0 reads the first interval of a schedule). The forward vector-Bloch walk takes a permeability

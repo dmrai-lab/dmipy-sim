@@ -267,15 +267,32 @@ def dwell_left(dwell_draw, moving, u_when):
 
 
 def bind_probability(kappa_over_D, local_time):
-    """Probability a spin binds at a wall, from boundary LOCAL TIME: ``min(1, kappa/D * l)``.
+    """Probability a spin binds at a wall encounter of boundary local time ``l``: ``1 - exp(-kappa/D * l)``.
 
-    Distinct from :func:`transmit_probability`, which is driven by the penetration depth of
-    a single hit and carries the Powles factor of 2. This is the local-time formulation used
-    by the vector-Bloch and MT walkers, where the wall contact is accumulated rather than
-    resolved hit-by-hit. Three identical copies of it existed (physics, bloch, mt_walk); the
-    two rules are easy to conflate, which is reason to name both rather than neither.
+    Binding is a Poisson clock on the boundary local time, of rate ``kappa_MT / D`` per unit of it (the continuum's
+    binding flux ``kappa_MT c`` at the face); this is the probability that the clock rings within the encounter's
+    ``l``. Distinct from :func:`transmit_probability`, which is driven by the penetration depth of a single hit and
+    carries the Powles factor of 2. With :func:`dwell_scale` on the dwell of the bind it makes, the walk's binding is
+    second order in the step: the bound fraction, the bound pool's signal and the exchange through the wall
+    (dmrai-lab/dmipy-sim#921).
     """
-    return jnp.minimum(jnp.float32(1.0), kappa_over_D * local_time)
+    return -jnp.expm1(-kappa_over_D * local_time)
+
+
+def dwell_scale(kappa_over_D, local_time):
+    """The factor on the mean dwell of a bind made at an encounter of local time ``l``: ``exp(kappa/D * l / 2)``.
+
+    A walker released after a bind resumes the encounter it bound in: half of the encounter's local time is still to
+    come on average, and the binding clock may ring again in it before the walker moves on (a geminate rebind, at the
+    same place). Each release retries with ``p = 1 - exp(-kappa/D * l / 2)``, so the dwells of one bind and its
+    rebinds are a geometric number of exponential dwells, whose sum is exponential with the mean scaled by
+    ``1 / (1 - p)``. The bound time a contact makes is then ``tau (1 - exp(-x)) exp(x / 2) = 2 tau sinh(x / 2)``, ``x =
+    kappa/D * l``: the linear law's ``tau x`` to third order, now carried in bursts as the continuum's rebinding
+    carries it. On the walk's exact chain against the continuum (two layers, one membrane, a bound pool on each face)
+    the bound fraction, the bound pool's signal and the exchange are second order in the step with it, and the bound
+    pool's signal first order without it (dmrai-lab/dmipy-sim#921). The exponent is held below 80 (float32's range;
+    ``x`` that large binds a walker for good either way)."""
+    return jnp.exp(jnp.minimum(jnp.float32(0.5) * kappa_over_D * local_time, jnp.float32(80.0)))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

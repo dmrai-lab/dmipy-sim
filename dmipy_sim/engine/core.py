@@ -519,10 +519,12 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     # the band the step law resolves: the caller's (walk passes its envelope's), else the walk's own K / (2 T)
     f_band = float(K / (2.0 * float(T_win)) if f_band is None else f_band)
     mt_dwell = dwell_time if kappa_MT > 0.0 else None
-    rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell, f_band=f_band)
+    mt_kappa = float(kappa_MT) if kappa_MT > 0.0 else None
+    rules = _sub_step_rules(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell,
+                            mt_kappa=mt_kappa, f_band=f_band)
     override = None if sub_steps is None else int(sub_steps)
     n_sub = _resolve_sub_steps(geometry, diffusivity, dt_actual, surface=bool(record), mt_dwell_time=mt_dwell,
-                               override=sub_steps, f_band=f_band)
+                               mt_kappa=mt_kappa, override=sub_steps, f_band=f_band)
     binding = "override" if override else max(rules.items(), key=lambda kv: kv[1])[0]
     # what sized the step (CoefficientWalk.work["step_rule"]): the count each rule asked for, the tolerance, the
     # band, and the caller's override when there was one
@@ -1530,12 +1532,12 @@ def _walk_geometry(
                     return (r_new, key, dlog_cum, side, bad, comp, work), None
 
         if _mt_walls:
-            # ── MT binding at a walled geometry's wall (the former mt_walk producer): the impact-angle stick rule,
-            # p = min(1, (kappa_MT / D) local_time), on the same local time the surface channel records; a stuck
+            # ── MT binding at a walled geometry's wall (the former mt_walk producer): the binding clock on the local time,
+            # p = 1 - exp(-(kappa_MT / D) local_time), on the same local time the surface channel records; a stuck
             # walker freezes for an exponential dwell of mean dwell_time and is released. A binding encounter
             # contributes nothing to the free pool's local time (the spin left the free pool), so rho stays a pure
             # replay knob. Carry (r, key, bound_rem, dlog_cum, bad, work).
-            from ..geometry._boundary import bind_probability, dwell_left
+            from ..geometry._boundary import bind_probability, dwell_left, dwell_scale
             _kappa_over_D_mt = jnp.float32(float(kappa_MT) / float(diffusivity))
             _dwell_steps_mean = jnp.float32(float(dwell_time) / dt_sim)
             if hasattr(geometry, "reflect_with_binding"):
@@ -1584,7 +1586,9 @@ def _walk_geometry(
                 p_stick = bind_probability(_kappa_over_D_mt, local_time)
                 newly = (~still) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
                 u_dwell, u_when = jax.random.uniform(dwell_key, (2,), dtype=jnp.float32)
-                dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * _dwell_steps_mean
+                # the dwell carries the encounter's geminate rebinds (``dwell_scale``)
+                dwell_draw = (-jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * _dwell_steps_mean
+                              * dwell_scale(_kappa_over_D_mt, local_time))
                 # the encounter falls uniformly in the part of the step the walker moves, so the dwell left at the
                 # step's end is the draw less the time from the encounter to the end; a dwell shorter than that
                 # is over within the step

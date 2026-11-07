@@ -7,7 +7,7 @@ on first call via jax.jit applied in core.py.
 
 import jax
 import jax.numpy as jnp
-from ..geometry._boundary import bind_probability, dwell_left
+from ..geometry._boundary import bind_probability, dwell_left, dwell_scale
 import warnings
 
 import numpy as np
@@ -246,12 +246,64 @@ def collision_sub_steps(geometry, diffusivity: float, dt: float, frac: float = 0
     return int(max(1, np.ceil(ratio ** 2))) if ratio > 1.0 else 1
 
 
+MT_COEFFICIENT = 0.06
+"""The binding's coefficient in the step law: with the binding clock and its geminate dwell
+(:func:`~dmipy_sim.geometry._boundary.bind_probability`, :func:`~dmipy_sim.geometry._boundary.dwell_scale`), the walk's
+bound pool is that of a continuum whose binding reactivity and dwell are each within ``MT_COEFFICIENT (kappa_MT h / D +
+h / l)^2`` (relative) of the stated ones, ``h = sqrt(6 D dt)`` and ``l`` the pore's length (:func:`binding_length`).
+Second order in the step, as the walk's exchange is (:data:`MEMBRANE_COEFFICIENT`); the ``h / l`` part is the
+diffusion's own wall term seen through the rebinding, the ``kappa_MT h / D`` part the binding's.
+
+Computed, not fitted: the walk's normal component on a lattice of ``h / 32`` with a bound copy of each cell near the
+membrane is an exact Markov chain of the MT walk (cross first, the binding clock, the dwell counted continuously and
+carrying the geminate rebinds, a released walker walking the rest of its step), compared with
+``dmipy_analytic.bloch_torrey.BlochTorrey1D`` with bound pools on two layers and one membrane. For each case the error
+of the bound pool's complex signal ``E[exp(-(R2_b + i omega_b) t_b)]`` (at two times) and of its stationary fraction
+is divided by ``|dX/d ln k_on| + |dX/d ln tau_b|`` (the reference's sensitivities): the largest ratio to ``(kappa_MT h
+/ D + h / l)^2`` over 63 cases is 0.056 -- ``kappa h / D`` from 0.1 to 1, ``kappa_MT h / D`` from 0.0125 to 0.4,
+dwells of 17 to 66 steps, ``l / h`` from 11 to 44, two steps a factor 2 apart, a walker released inside a step walking
+the rest of it or held to the step's end (the fixed-length kernels). The linear law ``min(1, x)`` with a plain dwell,
+which this replaces, is first order in the bound pool's signal: its ratio at ``h = 0.09 l`` and ``kappa_MT h / D =
+0.0125`` is 9x this one's and halves, rather than quarters, with the step (dmrai-lab/dmipy-sim#921)."""
+
+
+def binding_length(geometry):
+    """The length the binding term of the step law reads (:data:`MT_COEFFICIENT`): ``pi / sqrt(pore_rate)``, the width
+    of the slab whose slowest rate is the pore's (a slab's layer itself; 1.51 R for a sphere, 1.70 R for a cylinder),
+    else the geometry's ``min_feature``; None for a geometry without either."""
+    ls = length_scales_of(geometry)
+    if ls.pore_rate:
+        return float(np.pi / np.sqrt(float(ls.pore_rate)))
+    return None if ls.min_feature is None else float(ls.min_feature)
+
+
+def binding_error(diffusivity: float, kappa_MT: float, dt: float, length) -> float:
+    """The relative error the step law states for the walk's binding at the physics step ``dt``: ``MT_COEFFICIENT
+    (kappa_MT h / D + h / l)^2``, ``h = sqrt(6 D dt)``, ``l`` the pore's length (:func:`binding_length`; None drops its
+    term). The bound pool's binding reactivity and its dwell are each within it, so an observable ``X`` of the pool is
+    within ``eps (|dX/d ln k_on| + |dX/d ln tau_b|)``."""
+    h = float(np.sqrt(6.0 * float(diffusivity) * float(dt)))
+    a = float(kappa_MT) * h / float(diffusivity) + (h / float(length) if length else 0.0)
+    return MT_COEFFICIENT * a * a
+
+
+def binding_step(diffusivity: float, kappa_MT: float, eps_D: float, length) -> float:
+    """The largest physics step (s) at which :func:`binding_error` stays within ``eps_D``: ``h (kappa_MT / D + 1 / l) =
+    sqrt(eps_D / MT_COEFFICIENT)``; infinite without binding."""
+    if not kappa_MT or kappa_MT <= 0:
+        return float("inf")
+    D = float(diffusivity)
+    per_h = float(kappa_MT) / D + (1.0 / float(length) if length else 0.0)
+    h = float(np.sqrt(float(eps_D) / MT_COEFFICIENT)) / per_h
+    return h * h / (6.0 * D)
+
+
 def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
-                 frac: float = 8.0, dwell_frac: float = 20.0) -> int:
+                 frac: float = 8.0, dwell_frac: float = 20.0, kappa_MT: float = None, eps_D: float = None) -> int:
     """Sub-steps for an emergent-MT (surface-binding) walk.
 
     MT's free->bound rate is not imposed; it emerges from the boundary local time accumulated at wall
-    encounters, and the per-encounter probability is ``min(1, (kappa_MT/D) * local_time)``. So what the
+    encounters, and the per-encounter probability is ``1 - exp(-(kappa_MT/D) * local_time)``. So what the
     step size has to resolve is *the local time*, and -- on a mesh -- the *encounters themselves*. It does
     NOT have to resolve a crossing.
 
@@ -282,10 +334,8 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
     sub-step, so the dwell must span ``dwell_frac`` of them. It does not bind at realistic parameters
     (~15,000 sub-steps per dwell for a CACTUS-scale mesh) and costs nothing when it does not.
 
-    Residual known bias, deliberately not chased: a fractional dwell remainder is rounded up to a whole
-    sub-step, biasing ``bound_frac`` high by ~``0.5*dt_sim/dwell_time`` per binding event -- 0.002% to
-    0.02% at realistic parameters, 0.33% with a 0.1 ms dwell. MCMRSimulator avoids it by releasing on a
-    continuous fraction of a step; not worth the complexity here at that magnitude.
+    And the step law's binding term (:data:`MT_COEFFICIENT`, :func:`binding_step`) when ``kappa_MT`` is given: the
+    binding's own error, second order in the step, held within ``eps_D`` (default :data:`STEP_TOLERANCE`).
     """
     if length_scales_of(geometry).lookup_cell:
         n = collision_sub_steps(geometry, diffusivity, dt)
@@ -298,6 +348,9 @@ def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
             n = max(1, int(np.ceil(dt / dt_phys_max)))
     if dwell_time and dwell_time > 0:
         n = max(n, int(np.ceil(dt * float(dwell_frac) / float(dwell_time))))
+    if kappa_MT:
+        dt_b = binding_step(diffusivity, kappa_MT, STEP_TOLERANCE if eps_D is None else eps_D, binding_length(geometry))
+        n = max(n, int(np.ceil(float(dt) / dt_b * (1.0 - 1e-12))))
     return max(1, int(n))
 
 
@@ -472,7 +525,7 @@ def _warn_if_step_outruns_the_lookup(geometry, diffusivity, dt, n_sub, what):
 MAX_SUB_STEPS = 100_000
 
 def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = False, mt_dwell_time=None,
-                   eps_D: float = STEP_TOLERANCE, f_band: float = None) -> dict:
+                   mt_kappa=None, eps_D: float = STEP_TOLERANCE, f_band: float = None) -> dict:
     """The sub-step count each criterion that applies to a walk on ``geometry`` asks for, by name -- what
     :func:`resolve_sub_steps` takes the maximum of, and what a walk records as its ``step_rule``."""
     rules = {"step law": tolerance_sub_steps(geometry, diffusivity, dt, eps_D=eps_D, f_band=f_band),
@@ -481,12 +534,13 @@ def sub_step_rules(geometry, diffusivity: float, dt: float, *, surface: bool = F
     if surface:
         rules["surface local time"] = surface_sub_steps(geometry, diffusivity, dt)
     if mt_dwell_time is not None:
-        rules["binding"] = mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time)
+        rules["binding"] = mt_sub_steps(geometry, diffusivity, dt, mt_dwell_time, kappa_MT=mt_kappa, eps_D=eps_D)
     return rules
 
 
 def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool = False,
-                      mt_dwell_time=None, override=None, eps_D: float = STEP_TOLERANCE, f_band: float = None) -> int:
+                      mt_dwell_time=None, mt_kappa=None, override=None, eps_D: float = STEP_TOLERANCE,
+                      f_band: float = None) -> int:
     """Fine sub-steps per waveform step (a walk's block) for a walk on ``geometry``.
 
     Every driver -- the fused scan (:func:`make_step_fn`, :func:`make_packed_myelin_step_fn`),
@@ -504,13 +558,15 @@ def resolve_sub_steps(geometry, diffusivity: float, dt: float, *, surface: bool 
       spatially indexed geometry;
     * surface local time, ``step_l <= surface_pore / 8`` (:func:`surface_sub_steps`), when
       ``surface`` -- the walk records or applies a boundary local time;
-    * binding, :func:`mt_sub_steps`, when ``mt_dwell_time`` is given.
+    * binding, :func:`mt_sub_steps`, when ``mt_dwell_time`` is given, with the step law's binding term when
+      ``mt_kappa`` (the binding reactivity, m/s) is.
 
     ``override`` pins the count. An unbounded walk resolves to 1.
     """
     if override:
         return int(override)
-    rules = sub_step_rules(geometry, diffusivity, dt, surface=surface, mt_dwell_time=mt_dwell_time, eps_D=eps_D, f_band=f_band)
+    rules = sub_step_rules(geometry, diffusivity, dt, surface=surface, mt_dwell_time=mt_dwell_time, mt_kappa=mt_kappa,
+                           eps_D=eps_D, f_band=f_band)
     name, n = max(rules.items(), key=lambda kv: kv[1])
     n = max(1, int(n))
     if n > MAX_SUB_STEPS:
@@ -849,7 +905,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
     ``1..N_max`` lumen of axon k, ``N_max+1..2N_max`` its sheath).
 
     Magnetization transfer (``kappa_MT > 0``): free water that reflects off a myelin wall binds
-    with probability ``min(1, (kappa_MT/D) * local_time)``, freezes for an exponential dwell of
+    with probability ``1 - exp(-(kappa_MT/D) * local_time)``, freezes for an exponential dwell of
     mean ``dwell_time`` and is released; ``bound_acc`` is the time bound, in steps. An intra walker
     only ever meets the inner wall and an extra walker the outer one, so the walker's pool selects
     the side reactivity (``mt_side_intra`` / ``mt_side_extra``); myelin water cannot bind. A bound
@@ -885,10 +941,12 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         D_bind = jnp.where(is_intra, D_intra[k], jnp.where(is_extra, D_extra[k], jnp.float32(1.0)))
         kappa_bind = jnp.where(is_intra, kappa_intra_f,
                                jnp.where(is_extra, kappa_extra_f, jnp.float32(0.0)))
-        p_stick = bind_probability(kappa_bind / jnp.maximum(D_bind, jnp.float32(1e-30)), local_time)
+        kod_bind = kappa_bind / jnp.maximum(D_bind, jnp.float32(1e-30))
+        p_stick = bind_probability(kod_bind, local_time)
         newly = (~is_bound) & (jax.random.uniform(stick_key, dtype=jnp.float32) < p_stick)
         u_dwell, u_when = jax.random.uniform(dwell_key, (2,), dtype=jnp.float32)
-        dwell_draw = -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+        dwell_draw = (-jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * dwell_steps_mean
+                      * dwell_scale(kod_bind, local_time))             # with the encounter's geminate rebinds
         # the encounter falls uniformly in the step: the dwell left at its end is the draw less the time from the
         # encounter to the end (a dwell shorter than that is over within the step)
         dwell_left_ = dwell_left(dwell_draw, jnp.float32(1.0), u_when)

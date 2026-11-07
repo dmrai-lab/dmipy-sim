@@ -5,6 +5,21 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **MT binding is second order in the step** (#921): a walker binds at an encounter with the binding clock's
+  probability `1 - exp(-kappa_MT l / D)` (was `min(1, kappa_MT l / D)`), and the bind's dwell has the mean `tau
+  exp(kappa_MT l / (2 D))` (`geometry._boundary.dwell_scale`): a released walker resumes the unspent half of the
+  encounter it bound in and may rebind there, and those geminate rebinds join the dwell. The walker is still held, and
+  released, at its step's end -- of the release positions compared (the step's end, the face, the face plus a
+  reflected step, a uniform point of the step) it is the only one whose bound fraction is second order, and moving it
+  cannot restore the rebinding bursts without unbalancing the bound fraction. On the walk's exact chain against
+  `BlochTorrey1D` with bound pools: the bound pool's signal was first order (late signal -0.011 at `kappa_MT h/D =
+  0.2`, `h = 0.09 R`, halving with `h`, the same at every permeability) and is now second order (+0.001, quartering),
+  with the bound fraction and the exchange second order as before. The step law gains the binding's term,
+  `physics.MT_COEFFICIENT = 0.06` (the bound pool's binding reactivity and dwell within `MT_COEFFICIENT (kappa_MT h / D
+  + h / l)^2`; `binding_error`, `binding_step`, `binding_length`), applied with the binding rule when a walk binds; it
+  asks nothing at qMT reactivities. The packed myelinated walk and the forward vector-Bloch oracle take the same law
+  and dwell; their release step, held to its end, is second order (measured on the chain). MT walks are not
+  bit-identical to before.
 - **The MT walk binds at every permeable wall it can walk** (#909): geometries that carry the walker's side (packed
   cylinders and spheres, with a permeability per object, the side following the granted crossing), a permeability
   over time (the burn-in that equilibrates the bound pool reads the first interval), and the forward vector-Bloch
