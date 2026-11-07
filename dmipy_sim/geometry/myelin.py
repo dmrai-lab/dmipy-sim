@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
-                        BounceLoop, nudge_push)
+                        BounceLoop, wall_push)
 
 from .base import Geometry, LengthScales, acquisition_rotation
 from ..compartments import Compartments, Pool
@@ -183,10 +183,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             p_new = jnp.where(reflecting, p + (q_off - q[kh]), p + rem * d)
             d_new = jnp.where(reflecting, d_refl, d)
             rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
-            sel = jnp.stack([reflecting & hit_in & (pool_c == 1), reflecting & hit_in & (pool_c == 2),
-                             reflecting & (~hit_in) & (pool_c == 2),
-                             reflecting & (~hit_in) & (pool_c == 0)]).astype(f32)
-            chan = -(f32(2.0) * d_perp + nudge_push(nudge, cos_a, rem_a)) * sel      # the wall's push: the reflection's and the nudge's
+            sel = jnp.stack([any_hit & hit_in & (pool_c == 1), any_hit & hit_in & (pool_c == 2),
+                             any_hit & (~hit_in) & (pool_c == 2),
+                             any_hit & (~hit_in) & (pool_c == 0)]).astype(f32)
+            chan = -wall_push(transmit, d_perp, nudge, cos_a, rem_a) * sel      # the encounter's local time, reflected or transmitted
             dlog_rho = jnp.sum(chan * w_c[kh])
             code = jnp.where(transmit, jnp.where(hit_in, jnp.where(in_lum, f32(1.0), f32(2.0)),
                                                  jnp.where(pool_c == 2, f32(3.0), f32(4.0))), f32(0.0))

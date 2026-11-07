@@ -282,9 +282,13 @@ diffusivity of the pool the walker is in.
 objects within reach of the step (`packed_candidate_count`), with the budget
 `bounce_budget` (`geometry._boundary`) derived from the narrowest passage (`min_gap` or the nudged grazing
 chord). **Every wall encounter is its own Powles trial** with an independent uniform: summed over
-a step that is `κ/D` times the boundary local time the reflections record, so transmission does
+a step that is `κ/D` times the boundary local time the encounters record, so transmission does
 not depend on how many walls a sub-step meets and no gap-based sub-step rule is needed. A
 single-hit rule at outer packing 0.45 ended 90% of extra-axonal walkers inside a cylinder.
+**The boundary local time counts every encounter that touches a wall**, reflected or transmitted, each by its own
+`2 d_perp` (`_boundary.wall_push`; a reflection adds the nudge's push too); a walk states it as
+`work["local_time_rule"] = "every_touching_encounter"` (a pack's `provenance.walk.local_time_rule`). An impermeable walk has
+no transmissions and is unchanged.
 **Both pools hold water and both are seeded by default** (#301): a packed cell's spec gives its lumens and its
 interstitial space `water_fraction` 1.0 each, `init_positions` covers the whole cell so the objects hold their volume
 fraction of the walkers, and `pool="extra"` / `"intra"` seeds one pool alone (the spec's `seeding.pools` records

@@ -5,6 +5,11 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The boundary local time counts every encounter that touches a wall**, a transmitted one as well as a reflected one,
+  each by its own `2 d_perp` (a reflection also by its nudge's push): surface relaxivity on a permeable wall follows the
+  continuum (a permeable slab at `kappa* = 0.5` against `BlochTorrey1D` with membrane relaxivity, where counting
+  reflections only was ~5 % low). Impermeable walks are unchanged to the bit. A walk states the rule
+  (`work["local_time_rule"]`, a pack's `provenance.walk.local_time_rule`: `every_touching_encounter`).
 - **`walk` walks a permeable spec of one geometry**, with and without a `WalkContext`: a packed cell or an analytic
   pore whose walls carry a permeability per object and over time (`permeability_table`) is walked as its geometry is,
   bit for bit, on the JAX kernels and on a backend that declares it walks a permeability table. A walker keeps the

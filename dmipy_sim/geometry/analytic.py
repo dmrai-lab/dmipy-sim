@@ -14,7 +14,7 @@ from ..math.step_law import LONGEST_STEP, SPHERE_K1, SPHERE_WALL_COEFFICIENT, CY
 #: 0.65 to 0.83 over ``delta_0 / a`` 0.1 to 0.5, the cylinder's 0.41 to 0.51).
 from ._boundary import (vdot, bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
-                        transmit_probability, off_wall, step_off_wall, nudge_push)
+                        transmit_probability, off_wall, step_off_wall, wall_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 
 
@@ -48,8 +48,8 @@ def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
         r_new  = jnp.where(reflecting, r_off, rr + remaining * dd)
         d_new  = jnp.where(reflecting, d_refl, dd)
         rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)), jnp.float32(0.0))
-        # the wall's push: the ideal reflection's 2 d_perp and the displacement the nudge adds (_boundary.nudge_push)
-        dlw = jnp.where(reflecting, -rho_over_D * (jnp.float32(2.0) * d_perp + nudge_push(NUDGE, cos_a, rem)), jnp.float32(0.0))
+        # the encounter's local time, reflected or transmitted (_boundary.wall_push)
+        dlw = jnp.where(any_hit, -rho_over_D * wall_push(transmit, d_perp, NUDGE, cos_a, rem), jnp.float32(0.0))
         return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
     return rule
 
@@ -412,7 +412,7 @@ class Ellipsoid(Geometry):
             d_new  = jnp.where(reflecting, d_refl, dd)
             rem_n  = jnp.where(reflecting, jnp.maximum(rem - NUDGE, jnp.float32(0.0)),
                                jnp.float32(0.0))
-            dlw = jnp.where(reflecting, -rho_over_D * (jnp.float32(2.0) * d_perp + nudge_push(NUDGE, cos_a, rem)), jnp.float32(0.0))
+            dlw = jnp.where(any_hit, -rho_over_D * wall_push(transmit, d_perp, NUDGE, cos_a, rem), jnp.float32(0.0))
             return r_new, d_new, rem_n, decided | first, dlw, transmit, reflecting
 
         b = self.bounce_loop(rule, r, d_hat, step_l)
@@ -474,7 +474,7 @@ class PermeableSlab1D(Geometry):
         The membranes' positions in (0, L), strictly increasing. Default one membrane at L/2: two compartments of
         width L/2.
     surface_relaxivity_t2 : float, optional
-        Surface relaxivity applied on membrane reflection (m/s).
+        Surface relaxivity (m/s), applied at every encounter that touches a membrane, reflected or transmitted.
     """
 
     supports_permeability = True   #: has a membrane a walker can cross
@@ -607,7 +607,7 @@ class PermeableSlab1D(Geometry):
             rem_new = jnp.where(hit, rem - t, f0)
             d_new = jnp.where(reflecting, -sgn, sgn)
             k_new = jnp.where(transmit, k + jnp.where(up, 1, -1), k)
-            dlw = jnp.stack([jnp.where(reflecting & (~outer), -jnp.float32(2.0) * rho_over_D * d_perp, f0),
+            dlw = jnp.stack([jnp.where(hit & (~outer), -jnp.float32(2.0) * rho_over_D * d_perp, f0),
                              transmit.astype(jnp.float32)])
             return x_new[None], d_new[None], rem_new, k_new, dlw, transmit, reflecting & (~outer)
 
@@ -650,8 +650,7 @@ class PermeableSlab1D(Geometry):
                                  active=~transmit)
 
         r_out = jnp.array([x1, r[1] + step[1], r[2] + step[2]])
-        dlog_w = jnp.where(crossed & ~transmit,
-                           -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
+        dlog_w = jnp.where(crossed, -jnp.float32(2.0) * rho_over_D * d_perp, jnp.float32(0.0))
         zero_b = jnp.zeros((), bool)
         # one event per step: the membrane met is the one hit, reflected or crossed
         return WallHit(r_out, dlog_w, transmit, zero_b, crossed.astype(jnp.int32) if self.count_walls else None, zero_b)
@@ -782,8 +781,8 @@ class PermeableShell(Geometry):
         r_out, _ = keep_side_radial(r_out, self._radial(r_out), Rin, _side0, NUDGE,
                                     active=~transmit)
 
-        dlog_w = jnp.where(hit_in & any_hit & (~transmit),
-                           -rho_over_D * (jnp.float32(2.0) * d_perp + nudge_push(NUDGE, cos_a, remaining)), jnp.float32(0.0))
+        dlog_w = jnp.where(hit_in & any_hit,
+                           -rho_over_D * wall_push(transmit, d_perp, NUDGE, cos_a, remaining), jnp.float32(0.0))
         zero_b = jnp.zeros((), bool)
         # one event per step: the wall met is the one hit, reflected or crossed
         return WallHit(r_out, dlog_w, transmit, zero_b, any_hit.astype(jnp.int32) if self.count_walls else None, zero_b)

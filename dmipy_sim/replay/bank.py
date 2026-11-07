@@ -2660,7 +2660,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
             # the permeability per object and over time the walk read (physics.membrane_kappa), and the rule its walkers'
             # pools followed (spec.walk: PERMEABLE_POOL_RULE, IMPERMEABLE_POOL_RULE, DROP_POOL_CHANGE_RULE), when it
             # states them
-            **{k: cw.work[k] for k in ("permeability", "pool_rule") if cw.work is not None and cw.work.get(k) is not None})),
+            **{k: cw.work[k] for k in ("permeability", "pool_rule", "local_time_rule") if cw.work is not None and cw.work.get(k) is not None})),
         license=license, citation=citation, substrate=sub)
     if pack_license:
         meta["pack_license"] = str(pack_license)

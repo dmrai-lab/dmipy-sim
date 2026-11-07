@@ -89,12 +89,13 @@ def test_surface_log_weight_is_linear_in_rho_and_in_path_length():
     assert c == pytest.approx(2.0 * a, rel=1e-3), f"not linear in path length: {a} -> {c}"
 
 
-def test_a_granted_crossing_deposits_no_surface_weight():
-    """Reflection deposits; transmission does not. One event, both branches.
+def test_a_granted_crossing_deposits_its_own_surface_weight():
+    """Reflection and transmission deposit alike. One event, both branches.
 
-    `dlog_w` is a REFLECTION weight -- a walker that crosses did not linger at the wall. An
-    aggregate signal cannot separate "transmitted" from "reflected with small deposit"; a
-    single designed event can, because `crossed` says which happened.
+    `dlog_w` is the weight of every encounter that touches the wall: a walker that crosses has met the membrane as
+    the one that bounces has, and both deposit ``-2 (rho/D) d_perp``. An aggregate signal cannot separate the two
+    branches; a single designed event can, because `crossed` says which happened and `d_perp` is the step's reach
+    past the membrane.
     """
     L = 5.0e-6
     reach = 0.02 * L
@@ -105,18 +106,19 @@ def test_a_granted_crossing_deposits_no_surface_weight():
     # p_transmit = x / (1 + x), x = 2 (kappa/D) d_perp; with d_perp ~ 2e-7 m, kappa = 2.5e-3 puts x near 0.5 and
     # p near 1/3, so one sweep of 64 draws contains both branches.
     kappa = 2.5e-3
+    rho_over_D = 1.0e3
     geom = PermeableSlab1D(length=L, permeability=kappa)
     kod = jnp.float32(kappa / D)
     hits = jax.jit(jax.vmap(lambda p, s, k: geom.interact(
-        p, s, kappa_over_D=kod, rho_over_D=jnp.float32(1.0e3), key=k)))(start, step, keys)
+        p, s, kappa_over_D=kod, rho_over_D=jnp.float32(rho_over_D), key=k)))(start, step, keys)
 
     crossed = np.asarray(hits.crossed)
-    dlw = np.asarray(hits.dlog_w)
+    dlw = np.asarray(hits.dlog_w, np.float64)
     assert crossed.any() and (~crossed).any(), (
         f"need both branches in one sweep; got crossed={crossed.sum()}/64")
-    assert np.all(dlw[crossed] == 0.0), (
-        f"{int((dlw[crossed] != 0).sum())} transmitted walkers deposited surface weight")
-    assert np.all(dlw[~crossed] < 0.0), "reflected walkers deposited nothing"
+    d_perp = float(np.float32(L / 2 - reach) + np.float32(3 * reach) - np.float32(L / 2))
+    assert dlw[crossed] == pytest.approx(-2.0 * rho_over_D * d_perp, rel=1e-4), "a transmitted walker deposited its own weight"
+    assert dlw[~crossed] == pytest.approx(-2.0 * rho_over_D * d_perp, rel=1e-4), "a reflected walker deposited its own weight"
 
 
 def test_a_designed_crossing_lands_on_the_far_side_and_stays_there():

@@ -24,6 +24,7 @@ from dmipy_replay.acquisition.waveforms import band_hz
 from .accumulate import default_K
 from .physics import (make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
                       seed_walkers, pair_step)
+from ..geometry._boundary import LOCAL_TIME_RULE
 from ..run import Run
 from dmipy_replay.acquisition.rf import RFSchedule
 from dmipy_replay.acquisition.scanner_sequence import Protocol
@@ -1675,6 +1676,7 @@ def _walk_geometry(
             work = dict(walker_steps=int(n_walkers) * int(n_blocks) * int(sub_steps),
                         backend=_backend_name,
                         permeability=_perm_record,
+                        local_time_rule=LOCAL_TIME_RULE,
                         step_rule=dict(step_rule, dt_p=float(dt_sim), sub_steps=int(sub_steps)),
                         bounce_budget=(None if _loop is None else int(_loop.budget)),
                         n_hits=(int(_work[0]) if _counted else None),
