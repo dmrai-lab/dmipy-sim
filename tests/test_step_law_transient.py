@@ -124,7 +124,7 @@ def test_one_sided_face_local_time_is_within_first_order_term(h, near):
 
 @pytest.mark.parametrize("equilibrium", [False, None, True])
 def test_per_face_local_time_read_flag(equilibrium):
-    start = dict(spatial_equilibrium=equilibrium, transient_coefficient=physics.TRANSIENT_COEFFICIENT)
+    start = dict(spatial_equilibrium=equilibrium, transient_coefficient=physics.TRANSIENT_COEFFICIENT, kappa_over_D_max=0.0)
     read = physics.start_error(start, 2e-9, 1e-5, 1e-3, per_face_local_time=True)
     if equilibrium is True:
         assert read == dict(relative_error=0.0, flag=None)
@@ -160,3 +160,9 @@ def test_start_records_largest_permeability_over_D(permeability, geometry_kind):
     read = physics.start_error(start, 2e-9, 1e-5, 1e-3, per_face_local_time=True)
     assert read["relative_error"] == pytest.approx(
         physics.per_face_local_time_error(2e-9, 1e-5, 1e-3, 4e-5 / 2e-9))
+
+
+def test_a_per_face_read_without_a_recorded_kappa_max_is_unknown_not_zero():
+    start = dict(spatial_equilibrium=False, transient_coefficient=physics.TRANSIENT_COEFFICIENT)
+    read = physics.start_error(start, 2e-9, 1e-5, 1e-3, per_face_local_time=True)
+    assert read == dict(relative_error=None, flag=physics.PER_FACE_LOCAL_TIME_UNKNOWN)

@@ -237,6 +237,9 @@ def start_record(geometry, r0_given: bool, diffusivity: float, dt_step: float) -
 
 
 PER_FACE_LOCAL_TIME_START = "per_face_local_time_start_out_of_equilibrium"
+PER_FACE_LOCAL_TIME_UNKNOWN = "per_face_local_time_error_unknown"
+"""The flag for a direct per-face local-time read out of spatial equilibrium whose start record states no
+``kappa_over_D_max``: the error is unknown (``relative_error`` None), not zero."""
 """The flag for a direct per-face local-time read whose spatial equilibrium is false or unestablished."""
 
 
@@ -249,13 +252,18 @@ def start_error(start, diffusivity: float, dt: float, t: float, *, per_face_loca
       :data:`START_NOT_ESTABLISHED`.
     - With ``per_face_local_time=True``, a direct read of one face's local time instead carries
       :func:`per_face_local_time_error` and :data:`PER_FACE_LOCAL_TIME_START`. Exchange and bound pools use the default.
+    - A per-face read whose record states no ``kappa_over_D_max``: ``relative_error`` None,
+      :data:`PER_FACE_LOCAL_TIME_UNKNOWN`.
     - A walk with no start record: ``relative_error`` None, flag ``"start_unrecorded"``."""
     if not start:
         return dict(relative_error=None, flag="start_unrecorded")
     if start.get("transient_coefficient") is None or start.get("spatial_equilibrium") is True:
         return dict(relative_error=0.0, flag=None)
     if per_face_local_time:
-        return dict(relative_error=per_face_local_time_error(diffusivity, dt, t, start.get("kappa_over_D_max", 0.0)), flag=PER_FACE_LOCAL_TIME_START)
+        kappa_max = start.get("kappa_over_D_max")
+        if kappa_max is None:      # a record from before kappa_max was recorded: the near face's term is unknown
+            return dict(relative_error=None, flag=PER_FACE_LOCAL_TIME_UNKNOWN)
+        return dict(relative_error=per_face_local_time_error(diffusivity, dt, t, kappa_max), flag=PER_FACE_LOCAL_TIME_START)
     flag = START_OUT_OF_EQUILIBRIUM if start.get("spatial_equilibrium") is False else START_NOT_ESTABLISHED
     return dict(relative_error=transient_error(diffusivity, dt, t), flag=flag)
 

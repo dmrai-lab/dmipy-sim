@@ -504,4 +504,5 @@ def merge_starts(starts):
     coeffs = [s["transient_coefficient"] for s in starts if s.get("transient_coefficient") is not None]
     return dict(spatial_equilibrium=eq, reason="the parts' starts differ: " + "; ".join(sorted({str(s.get("reason")) for s in starts})),
                 transient_coefficient=(max(coeffs) if coeffs else None),
-                kappa_over_D_max=max(s.get("kappa_over_D_max", 0.0) for s in starts))
+                kappa_over_D_max=(max(s["kappa_over_D_max"] for s in starts)
+                                  if all(s.get("kappa_over_D_max") is not None for s in starts) else None))
