@@ -201,7 +201,7 @@ START_NOT_ESTABLISHED = "start_not_established"
 """The flag of a read whose walk was handed its starts, so it cannot tell whether they are at equilibrium."""
 
 
-def start_record(geometry, r0_given: bool) -> dict:
+def start_record(geometry, r0_given: bool, diffusivity: float, dt_step: float) -> dict:
     """What a walk records of its start (``work["start"]``).
 
     - ``spatial_equilibrium``:
@@ -211,8 +211,11 @@ def start_record(geometry, r0_given: bool) -> dict:
       - False when a permeable wall separates a pool the placement fills from one it leaves empty.
       - None when the walk was handed its starts (``r0``) and cannot tell.
     - ``reason``: why.
+    - ``kappa_over_D_max``: the largest permeability over ``diffusivity``, over every object and schedule interval.
     - ``transient_coefficient``: the term a start out of it adds (:data:`TRANSIENT_COEFFICIENT`) when a wall is
-      permeable. None without one: no pool exchanges, and the term has nothing to read."""
+      permeable. None without one: no pool exchanges, and the term has nothing to read.
+
+    The walk supplies ``dt_step`` for the permeability schedule record from :func:`membrane_kappa`."""
     membrane = has_membrane(geometry)
     if r0_given:
         eq, why = None, "the walk was handed its starts (r0), whose density it cannot tell"
@@ -222,21 +225,45 @@ def start_record(geometry, r0_given: bool) -> dict:
         eq, why = True, "the placement is uniform over every pool a walker can reach"
     else:
         eq, why = False, "the placement leaves a pool empty that a walker reaches across a permeable wall"
-    return dict(spatial_equilibrium=eq, reason=why, transient_coefficient=(TRANSIENT_COEFFICIENT if membrane else None))
+    kappa_at, permeability_record = membrane_kappa(geometry, diffusivity, dt_step)
+    if kappa_at is None:
+        kappa_over_D_max = 0.0
+    elif permeability_record is None:
+        kappa_over_D_max = float(np.max(np.asarray(kappa_at(None))))
+    else:
+        kappa_over_D_max = float(np.max(permeability_record["values_m_per_s"])) / float(diffusivity)
+    return dict(spatial_equilibrium=eq, reason=why, kappa_over_D_max=kappa_over_D_max,
+                transient_coefficient=(TRANSIENT_COEFFICIENT if membrane else None))
 
 
-def start_error(start, diffusivity: float, dt: float, t: float) -> dict:
+PER_FACE_LOCAL_TIME_START = "per_face_local_time_start_out_of_equilibrium"
+PER_FACE_LOCAL_TIME_UNKNOWN = "per_face_local_time_error_unknown"
+"""The flag for a direct per-face local-time read out of spatial equilibrium whose start record states no
+``kappa_over_D_max``: the error is unknown (``relative_error`` None), not zero."""
+"""The flag for a direct per-face local-time read whose spatial equilibrium is false or unestablished."""
+
+
+def start_error(start, diffusivity: float, dt: float, t: float, *, per_face_local_time: bool = False) -> dict:
     """The start's term of a read at time ``t`` (s since the walkers were placed) of a walk at the physics step ``dt``
     whose start record is ``start`` (:func:`start_record`): ``{"relative_error", "flag"}``.
 
     - 0 and no flag when the start is at spatial equilibrium, or no wall is permeable.
     - Otherwise :func:`transient_error`, flagged :data:`START_OUT_OF_EQUILIBRIUM` or (a walk handed its starts)
       :data:`START_NOT_ESTABLISHED`.
+    - With ``per_face_local_time=True``, a direct read of one face's local time instead carries
+      :func:`per_face_local_time_error` and :data:`PER_FACE_LOCAL_TIME_START`. Exchange and bound pools use the default.
+    - A per-face read whose record states no ``kappa_over_D_max``: ``relative_error`` None,
+      :data:`PER_FACE_LOCAL_TIME_UNKNOWN`.
     - A walk with no start record: ``relative_error`` None, flag ``"start_unrecorded"``."""
     if not start:
         return dict(relative_error=None, flag="start_unrecorded")
     if start.get("transient_coefficient") is None or start.get("spatial_equilibrium") is True:
         return dict(relative_error=0.0, flag=None)
+    if per_face_local_time:
+        kappa_max = start.get("kappa_over_D_max")
+        if kappa_max is None:      # a record from before kappa_max was recorded: the near face's term is unknown
+            return dict(relative_error=None, flag=PER_FACE_LOCAL_TIME_UNKNOWN)
+        return dict(relative_error=per_face_local_time_error(diffusivity, dt, t, kappa_max), flag=PER_FACE_LOCAL_TIME_START)
     flag = START_OUT_OF_EQUILIBRIUM if start.get("spatial_equilibrium") is False else START_NOT_ESTABLISHED
     return dict(relative_error=transient_error(diffusivity, dt, t), flag=flag)
 
@@ -419,6 +446,29 @@ def transient_error(diffusivity: float, dt: float, t: float) -> float:
     del diffusivity                                 # h^2 / (D t) = 6 dt / t
     t = float(t)
     return float("inf") if t <= 0.0 else TRANSIENT_COEFFICIENT * 6.0 * float(dt) / t
+
+
+PER_FACE_LOCAL_TIME_COEFFICIENT = 0.5
+"""The first-order relative error coefficient for a direct per-face boundary-local-time read from a start out of
+spatial equilibrium: ``0.5 h (1 / sqrt(D t) + kappa_max / D)``, with ``h = sqrt(6 D dt)``. The measured origin is the exact two-layer
+walk chain from a uniform one-sided start: the far face's local-time rate is low by about ``0.48 h / sqrt(D t)``,
+converged at lattice spacings ``h/32`` and ``h/64``. The near face's rate is high by about ``0.5 kappa h / D``.
+The density sampled over a step's reach gives a relative shift of about ``0.5 h gradient/density``.
+This transient estimate covers direct local-time reads; exchange and per-face bound pools retain
+:data:`TRANSIENT_COEFFICIENT`'s second-order term. At spatial equilibrium or an impermeable wall the gradient term
+vanishes. The term is stated per read, without refusing the read or resizing the walk's step."""
+
+
+def per_face_local_time_error(diffusivity: float, dt: float, t: float, kappa_over_D_max: float = 0.0) -> float:
+    """The direct per-face local-time relative error ``0.5 h (1 / sqrt(D t) + kappa_max / D)``;
+    infinite at ``t <= 0``. Here ``h = sqrt(6 D dt)`` and ``kappa_over_D_max`` is the largest
+    permeability over D across every object and every schedule interval. The two terms cover
+    the far face's deficit and the near face's excess from a non-equilibrium start."""
+    t = float(t)
+    if t <= 0.0:
+        return float("inf")
+    h = float(np.sqrt(6.0 * float(diffusivity) * float(dt)))
+    return PER_FACE_LOCAL_TIME_COEFFICIENT * h * (1.0 / np.sqrt(float(diffusivity) * t) + float(kappa_over_D_max))
 
 
 def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
