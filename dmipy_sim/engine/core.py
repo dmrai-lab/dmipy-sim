@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
 
-from .backends import JAX, PERMEABILITY_TABLE, WalkRequest, CoefficientBatch, event_capacity, resolve as resolve_backend
+from .backends import JAX, WalkRequest, CoefficientBatch, capability_refusal, event_capacity, resolve as resolve_backend
 import logging
 
 log = logging.getLogger(__name__)
@@ -572,7 +572,6 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         ("the myelinated substrates", geometry._is_packed_myelinated or geometry._is_myelinated),
         ("MT binding", kappa_MT > 0.0),
         (f"in-walk field sampling of a {type(field_basis).__name__}", field_basis is not None and not raster),
-        ("several storage windows (a backend accumulates one window per walk)", n_windows > 1),
         ("the compartment guard", bool(enforce_compartment))) if on]
     # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the binomial bound at the
     # largest probability a hit of the walk's step changes a pool (backends.event_capacity, physics.crossing_p_max,
@@ -601,7 +600,7 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         events=int(events), raw_subset=int(raw_subset), field=(field_basis if raster else None),
         diffusivity=float(diffusivity), record=bool(record),
         kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
-        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed))
+        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed), n_windows=int(n_windows))
     return WalkResolution(record, n_blocks, dt_actual, f_band, dict(rules), override, int(n_sub), dt_sim, step_rule, binding,
                           ls, request, jax_only, K, block_order, block_rule, n_windows,
                           (None if K_c3 is None else int(K_c3)), field_read, crossing, binding_mt,
@@ -612,13 +611,14 @@ def _backend_refusal(backend, name, res, geometry):
     """Why ``backend`` (named ``name``) does not walk the resolved request ``res``, or None: the paths only the JAX
     kernels implement are refused for any other backend rather than fallen back from, and the backend may refuse
     the walk itself. A permeability per object or over time is walked by a backend that declares
-    :data:`~dmipy_sim.engine.backends.PERMEABILITY_TABLE` among its ``capabilities``."""
+    :data:`~dmipy_sim.engine.backends.PERMEABILITY_TABLE` among its ``capabilities``, several storage windows by one
+    that declares :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`."""
     if res.jax_only:
         return (f"backend {name!r}: this walk uses {', '.join(res.jax_only)}, which only the jax kernels "
                 f"implement; it does not fall back")
-    if geometry.permeability_table is not None and PERMEABILITY_TABLE not in getattr(backend, "capabilities", ()):
-        return (f"backend {name!r}: this walk uses a permeability per object or over time, which the backend does not "
-                f"declare it walks (capability {PERMEABILITY_TABLE!r})")
+    reason = capability_refusal(backend, name, res.request, permeability_table=geometry.permeability_table is not None)
+    if reason:
+        return reason
     reason = backend.refuses(res.request)
     if reason:
         return f"backend {name!r} refuses this walk of {type(geometry).__name__}: {reason}"
@@ -1233,8 +1233,9 @@ def _walk_geometry(
         an installed backend (the ``dmipy_sim.backends`` entry point), or a backend object. An unknown name is
         refused naming what is installed; a backend that does not implement this walk (an engine class, a
         tier, a wall) refuses by name, and the paths only the JAX kernels implement (the myelinated substrates,
-        MT binding, in-walk field sampling, several storage windows, the compartment guard) are refused for any
-        other backend rather than fallen back from. A backend walks each batch in the coefficient form
+        MT binding, in-walk field sampling, the compartment guard) are refused for any other backend rather than
+        fallen back from, as is a walk of several storage windows on a backend that does not declare
+        :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`. A backend walks each batch in the coefficient form
         (:class:`~dmipy_sim.engine.backends.CoefficientBatch`: the bands it accumulated, its events, the raw
         subset's block ends) and the walk takes it as it takes its own, converting nothing; a backend that returns
         a walk of saves is refused by name. ``work["backend"]`` and the run record say which backend walked. See
@@ -1946,34 +1947,37 @@ def _walk_geometry(
             if (int(batch.K), int(batch.m), int(batch.sub_steps)) != (K, m, int(sub_steps)):
                 raise ValueError(f"backend {_backend_name!r} accumulated (K, m, sub_steps) = {(batch.K, batch.m, batch.sub_steps)} "
                                  f"for a request of {(K, m, int(sub_steps))}")
+            if int(batch.n_windows) != n_win:
+                raise ValueError(f"backend {_backend_name!r} accumulated {batch.n_windows} storage windows for a walk of {n_win}")
             C = np.asarray(batch.position_coeffs, np.float64)
-            if C.shape != (n_b, K + 2, 3):
+            if C.shape != (n_b, n_win, K + 2, 3):
                 raise ValueError(f"backend {_backend_name!r} returned position coefficients of shape {C.shape}; "
-                                 f"the batch of {n_b} walkers at K = {K} has {(n_b, K + 2, 3)}")
+                                 f"the batch of {n_b} walkers in {n_win} windows at K = {K} has {(n_b, n_win, K + 2, 3)}")
             _backend_block.update(precision=str(batch.precision), ring=batch.ring, accumulation=batch.accumulation,
                                   resid_known=batch.k0_residual is not None)
-            if req.K_c3 and (batch.field_bands is None or np.asarray(batch.field_bands).shape != (n_b, _n_ch, int(req.K_c3))):
+            if req.K_c3 and (batch.field_bands is None or np.asarray(batch.field_bands).shape != (n_b, n_win, _n_ch, int(req.K_c3))):
                 raise ValueError(f"backend {_backend_name!r} returned field modes of shape "
                                  f"{None if batch.field_bands is None else np.asarray(batch.field_bands).shape} for a walk that reads "
-                                 f"the {_n_ch} channels of its FieldGrid at K_c3 = {req.K_c3}: {(n_b, _n_ch, int(req.K_c3))}")
+                                 f"the {_n_ch} channels of its FieldGrid at K_c3 = {req.K_c3} in {n_win} windows: "
+                                 f"{(n_b, n_win, _n_ch, int(req.K_c3))}")
             if req.K_c3 and not (batch.dt_f is not None and abs(float(batch.dt_f) - float(req.field_read_interval)) <= 1e-9 * float(req.field_read_interval)):
                 raise ValueError(f"backend {_backend_name!r} read the field every {batch.dt_f!r} s; the walk reads it every "
                                  f"{req.field_read_interval!r} s")
-            z1 = np.zeros((n_b, 1), np.float32)
-            got = {"C": C[:, None].astype(np.float32),
-                   "resid": (np.zeros((n_b, 3), np.float32) if batch.k0_residual is None else np.asarray(batch.k0_residual, np.float32)),
-                   "blt_end": (z1 if batch.boundary_endpoint is None else np.asarray(batch.boundary_endpoint, np.float32)[:, None]),
-                   "blt_bands": (np.zeros((n_b, 1, K), np.float32) if batch.boundary_bands is None else np.asarray(batch.boundary_bands, np.float32)[:, None]),
+            zw = np.zeros((n_b, n_win), np.float32)
+            got = {"C": C.astype(np.float32),
+                   "resid": (np.zeros((n_b, n_win, 3), np.float32) if batch.k0_residual is None else np.asarray(batch.k0_residual, np.float32)),
+                   "blt_end": (zw if batch.boundary_endpoint is None else np.asarray(batch.boundary_endpoint, np.float32)),
+                   "blt_bands": (np.zeros((n_b, n_win, K), np.float32) if batch.boundary_bands is None else np.asarray(batch.boundary_bands, np.float32)),
                    "lab": (np.zeros((n_b,), np.int8) if batch.compartment is None else np.asarray(batch.compartment, np.int8)),
                    "bnd": np.zeros((n_b,), np.int8),
-                   "fc": (np.zeros((n_b, 1, 0, 0), np.float32) if batch.field_bands is None
-                          else np.transpose(np.asarray(batch.field_bands, np.float32), (0, 2, 1))[:, None]),
-                   "qv_f": (np.zeros((n_b, 1, 0), np.float32) if batch.field_qv is None else np.asarray(batch.field_qv, np.float32)[:, None]),
-                   "qv_d": (np.zeros((n_b, 1, 0), np.float32) if batch.field_qv_increments is None
-                            else np.asarray(batch.field_qv_increments, np.float32)[:, None]),
-                   "chk": np.zeros((n_b, 1, 2, 0, 0), np.float32),
-                   "qv_pos": (np.zeros((n_b, 1, 3), np.float32) if batch.qv_positions is None else np.asarray(batch.qv_positions, np.float32)[:, None]),
-                   "qv_blt": (z1 if batch.qv_boundary is None else np.asarray(batch.qv_boundary, np.float32)[:, None])}
+                   "fc": (np.zeros((n_b, n_win, 0, 0), np.float32) if batch.field_bands is None
+                          else np.transpose(np.asarray(batch.field_bands, np.float32), (0, 1, 3, 2))),
+                   "qv_f": (np.zeros((n_b, n_win, 0), np.float32) if batch.field_qv is None else np.asarray(batch.field_qv, np.float32)),
+                   "qv_d": (np.zeros((n_b, n_win, 0), np.float32) if batch.field_qv_increments is None
+                            else np.asarray(batch.field_qv_increments, np.float32)),
+                   "chk": np.zeros((n_b, n_win, 2, 0, 0), np.float32),
+                   "qv_pos": (np.zeros((n_b, n_win, 3), np.float32) if batch.qv_positions is None else np.asarray(batch.qv_positions, np.float32)),
+                   "qv_blt": (zw if batch.qv_boundary is None else np.asarray(batch.qv_boundary, np.float32))}
             sv = batch.saves
             got["pos"] = np.zeros((0,), np.float32) if sv is None else np.asarray(sv.positions, np.float32)
             got["dlog"] = np.zeros((0,), np.float32) if (sv is None or sv.boundary_local_time is None) else np.asarray(sv.boundary_local_time, np.float32)

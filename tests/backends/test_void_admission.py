@@ -30,14 +30,14 @@ class _LeakyVoid(backends.Backend):
         w = self._walk
         n = r0.shape[0]
         assert request.raw_subset == n == w.n_walkers
-        b = coefficient_batch(request, r0, precision="float32", bands=w.position_coeffs[:, 0, 2:],
-                              blt_bands=w.boundary_bands[:, 0], comp=w.compartment,
-                              qv=w.qv_positions[:, 0])
+        b = coefficient_batch(request, r0, precision="float32", bands=w.position_coeffs[:, :, 2:],
+                              blt_bands=w.boundary_bands, comp=w.compartment,
+                              qv=w.qv_positions)
         zero = np.zeros((n,), np.int32)
         work = (zero.copy(), zero.copy(), zero.copy()) if request.count_walls else (None, None, zero.copy())
         saves = backends.WalkBatch(self._positions, w.raw_boundary, np.asarray(w.raw_compartment, np.float32), zero.copy(), work)
-        return b._replace(position_coeffs=np.concatenate([w.position_coeffs[:, 0, :2], b.position_coeffs[:, 2:]], axis=1).astype(np.float64),
-                          boundary_endpoint=np.asarray(w.boundary_endpoint[:, 0], np.float64), saves=saves)
+        return b._replace(position_coeffs=np.concatenate([w.position_coeffs[:, :, :2], b.position_coeffs[:, :, 2:]], axis=2).astype(np.float64),
+                          boundary_endpoint=np.asarray(w.boundary_endpoint, np.float64), saves=saves)
 
 
 def _void_case():

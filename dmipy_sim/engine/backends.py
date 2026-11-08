@@ -46,8 +46,13 @@ ENTRY_POINT_GROUP = "dmipy_sim.backends"
 #: walk's time (the geometry's ``permeability_table``), reading the row of the step and the column of the object met.
 PERMEABILITY_TABLE = "permeability_table"
 
-#: What the JAX kernels declare: they walk a permeability table.
-JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE})
+#: A capability a backend declares in :attr:`Backend.capabilities`: it accumulates a walk of several storage windows
+#: (:attr:`WalkRequest.n_windows`), each window's coefficient form its own -- the window's exact start and endpoint, its
+#: bands on the window's own basis and the local time's form starting at 0 at the window's start (RPK.md 4.3).
+STORAGE_WINDOWS = "storage_windows"
+
+#: What the JAX kernels declare: they walk a permeability table and several storage windows.
+JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS})
 
 
 class FieldSampling(NamedTuple):
@@ -92,11 +97,39 @@ class WalkRequest(NamedTuple):
                               #: reads a raster (``K_c3`` modes every ``field_read_interval``); None otherwise
     drop_pool_changes: bool = False   #: an impermeable walk returns its walkers that changed pool as
                                       #: :attr:`CoefficientBatch.pool_changed` instead of being refused
+    n_windows: int = 1        #: the storage windows the walk accumulates separately: ``n_blocks`` is ``n_windows`` times
+                              #: the blocks of a window, and each window's coefficient form is its own (RPK.md 4.3). A
+                              #: walk of more than one is walked by a backend that declares :data:`STORAGE_WINDOWS`
 
     @property
     def T(self):
         """The walk's duration (s)."""
         return float(self.block_h) * int(self.n_blocks)
+
+    @property
+    def blocks_per_window(self):
+        """The blocks of one storage window, ``n_blocks / n_windows``."""
+        return int(self.n_blocks) // int(self.n_windows)
+
+    @property
+    def T_window(self):
+        """One storage window's duration (s), the length of the basis its bands are on."""
+        return float(self.block_h) * self.blocks_per_window
+
+
+def capability_refusal(backend, name, request, *, permeability_table=False):
+    """Why ``backend`` (named ``name``) does not walk ``request`` for want of a capability it does not declare in its
+    ``capabilities``, by the capability's name, or None: a permeability per object or over time
+    (``permeability_table``) needs :data:`PERMEABILITY_TABLE`, a walk of several storage windows
+    :data:`STORAGE_WINDOWS`."""
+    have = getattr(backend, "capabilities", ())
+    if permeability_table and PERMEABILITY_TABLE not in have:
+        return (f"backend {name!r}: this walk uses a permeability per object or over time, which the backend does not "
+                f"declare it walks (capability {PERMEABILITY_TABLE!r})")
+    if int(request.n_windows) > 1 and STORAGE_WINDOWS not in have:
+        return (f"backend {name!r}: this walk accumulates {int(request.n_windows)} storage windows, which the backend does "
+                f"not declare it walks (capability {STORAGE_WINDOWS!r})")
+    return None
 
 
 def event_capacity(n_steps, p_max, *, sigma=6.0, floor=16):
@@ -153,38 +186,45 @@ class CoefficientBatch(NamedTuple):
     batches into one walk and converts nothing. The bands are the walk's own accumulation finished by the backend
     (the cosine projections of each channel's increments against :func:`~dmipy_sim.replay.compression.block_table`,
     turned into the bridge's bands on the continuous sine basis, :func:`~dmipy_sim.replay.compression.cosine_band_scale`),
-    so a pack built from the walk is bit for bit the pack the backend's own writer builds from the same walk."""
-    position_coeffs: np.ndarray       #: (n, K + 2, 3) float64: per axis x(0), x(T) - x(0) (exact) and the K bands
-    boundary_start: object            #: (n,) float64 the cumulative local time at the start (0), or None
-    boundary_endpoint: object         #: (n,) float64 at the end, exact, or None
-    boundary_bands: object            #: (n, K) float64 its bridge's bands at rho/D = 1, or None
+    so a pack built from the walk is bit for bit the pack the backend's own writer builds from the same walk.
+
+    Every array of the form carries the request's storage windows on its second axis (``n_windows``, 1 for a walk of
+    one): window ``w`` is the walk over ``[w T_w, (w + 1) T_w]`` (``T_w`` = :attr:`WalkRequest.T_window`), its start and
+    endpoint exact, its bands on the window's own basis, its local time starting at 0 at the window's start, its
+    quadratic variations the window's own steps' (RPK.md 4.3). The walker's start pool, its events (on the walk's own
+    clock), its counters and its saves are the walk's."""
+    position_coeffs: np.ndarray       #: (n, n_windows, K + 2, 3) float64: per axis x(start), x(end) - x(start) (exact) and the K bands
+    boundary_start: object            #: (n, n_windows) float64 the local time at each window's start (0), or None
+    boundary_endpoint: object         #: (n, n_windows) float64 at its end, exact, or None
+    boundary_bands: object            #: (n, n_windows, K) float64 its bridge's bands at rho/D = 1, or None
     compartment: object               #: (n,) int8 the walker's pool at the start (1 inside; a label volume's label), or None
     illegal: np.ndarray               #: (n,) int32 refused walker-steps per walker
     work: tuple                       #: (hits | None, crossings | None, exhausted) per walker, int32 arrays
-    K: int                            #: bands per channel
+    K: int                            #: bands per channel and window
     m: int                            #: the order of the block table
     sub_steps: int                    #: physics steps per block (h = sub_steps * dt_sim)
     precision: str                    #: the floating-point type the bands were accumulated in across blocks
     saves: object = None              #: the block ends of the batch's first ``request.raw_subset`` walkers as a
                                       #: :class:`WalkBatch` (save 0 the start), or None when none were asked for
-    qv_positions: object = None       #: (n, 3) float64 each walker's sum dx^2 per axis over every step
-    qv_boundary: object = None        #: (n,) float64 its sum dlog^2 (each step's contact squared), or None
+    qv_positions: object = None       #: (n, n_windows, 3) float64 each walker's sum dx^2 per axis over each window's steps
+    qv_boundary: object = None        #: (n, n_windows) float64 its sum dlog^2 (each step's contact squared), or None
     events: object = None             #: C1's event list ``(offsets (n + 1,) int64, times (n_ev,) float64 s, labels
                                       #: (n_ev,) int8)``: walker w's pool changes are entries offsets[w] .. offsets[w+1],
                                       #: each the start of the step that ended in the pool entered; None unrecorded
     bound_events: object = None       #: an MT walk's bind / unbind events in the same form, or None
-    field_bands: object = None        #: (n, n_ch, K_c3) float64 the field's channels (less the domain mean) on the
-                                      #: cosine basis of [0, T], or None
-    field_qv: object = None           #: (n, n_ch) float64 each channel's sum (b dt_f)^2 over its reads, or None
-    field_qv_increments: object = None  #: (n, n_ch) float64 each channel's read series' quadratic variation, the sum
-                                        #: of (b_{i+1} - b_i)^2 over its reads (RPK.md 9.5.5), or None
+    field_bands: object = None        #: (n, n_windows, n_ch, K_c3) float64 the field's channels (less the domain mean)
+                                      #: on the cosine basis of each window, or None
+    field_qv: object = None           #: (n, n_windows, n_ch) float64 each channel's sum (b dt_f)^2 over its reads, or None
+    field_qv_increments: object = None  #: (n, n_windows, n_ch) float64 each channel's read series' quadratic variation,
+                                        #: the sum of (b_{i+1} - b_i)^2 over its reads (RPK.md 9.5.5), or None
     dt_f: object = None               #: the field's read interval (s); 0.0 a read after every step; None no field
-    k0_residual: object = None        #: (n, 3) float64 ``c_0 - (x(T) - x(0))``, the accumulation's measured residual
-                                      #: on the k = 0 mode, when the backend reports it; None otherwise
+    k0_residual: object = None        #: (n, n_windows, 3) float64 ``c_0 - (x(end) - x(start))``, the accumulation's
+                                      #: measured residual on the k = 0 mode, when the backend reports it; None otherwise
     ring: object = None               #: blocks per projection window, when the backend projects in windows
     accumulation: object = None       #: how the backend summed the blocks (the header's ``block.accumulation``)
     pool_changed: object = None       #: (n,) bool the walkers of an impermeable walk whose label changed, when the request
                                       #: asked for them (``drop_pool_changes``); None otherwise
+    n_windows: int = 1                #: the storage windows on the form's second axis: the request's
 
 
 class Backend:
@@ -203,8 +243,9 @@ class Backend:
 
     def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, *, out=None) -> CoefficientBatch:
         """Walk the ``(n, 3)`` float32 starts ``r0`` from their ``(n, 2)`` uint32 keys in the coefficient form
-        ``request`` names (``K`` bands at order ``m`` over ``n_blocks`` blocks of ``sub_steps`` steps): a
-        :class:`CoefficientBatch`, with the block ends of the first ``request.raw_subset`` walkers as its ``saves``.
+        ``request`` names (``K`` bands at order ``m`` per storage window, ``request.n_windows`` windows over
+        ``n_blocks`` blocks of ``sub_steps`` steps): a :class:`CoefficientBatch`, with the block ends of the first
+        ``request.raw_subset`` walkers as its ``saves``.
         A request with ``K = 0`` is the adaptive producer's walk of saves (a :class:`WalkBatch`; ``out``, when given,
         is a dict of that producer's own contiguous float32 arrays -- ``positions`` (n, n_t, 3),
         ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, n_ch) -- a backend may write
