@@ -38,7 +38,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .backends import JAX, WalkRequest, FieldSampling, resolve as resolve_backend
+from .backends import JAX, WalkRequest, FieldSampling, capability_refusal, resolve as resolve_backend
 from .tables import jit_with_tables
 from .physics import seed_walkers, pair_step, start_record
 from ..math.step_law import LONGEST_STEP
@@ -456,9 +456,6 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                         for i in range(0, r.shape[0], f_chunk)]) - f_mean
 
         if _backend is not None:
-            if n_win > 1:
-                raise ValueError(f"backend {_backend_name!r}: a walk of several storage windows is walked by the jax kernels only "
-                                 "(a backend accumulates one window per walk; dmipy-sim#748 follow-up 1)")
             plan = plan._replace(candidate_k=int(k_cand))
             # the request a backend walks (#747's names): the field read every dt_f seconds (its K_c3 modes, the pilot's
             # or the given), the raw subset's block ends and the field's block means (sample_every = 1) beside them
@@ -467,7 +464,11 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                               field_read_interval=(0.0 if field_read is None else float(field_read["dt_f"])), events=0,
                               raw_subset=int(raw_subset), diffusivity=D, record=True, kappa_over_D=0.0, count_walls=bool(geometry.count_walls),
                               bounce_budget=geometry.bounce_budget, seed=int(seed), stepping=plan,
-                              field=(FieldSampling(field_basis, 1, f_reuse, float(f_radius), int(field_list_k)) if sampling else None))
+                              field=(FieldSampling(field_basis, 1, f_reuse, float(f_radius), int(field_list_k)) if sampling else None),
+                              n_windows=int(n_win))
+            _reason = capability_refusal(_backend, _backend_name, req)
+            if _reason:
+                raise ValueError(_reason)
             _reason = _backend.refuses(req)
             if _reason:
                 raise ValueError(f"backend {_backend_name!r} refuses this walk of {type(geometry).__name__}: {_reason}")
@@ -624,18 +625,20 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             if (int(batch.K), int(batch.m), int(batch.sub_steps)) != (K, m, int(n_min)):
                 raise ValueError(f"backend {_backend_name!r} accumulated (K, m, sub_steps) = {(batch.K, batch.m, batch.sub_steps)} "
                                  f"for a request of {(K, m, int(n_min))}")
+            if int(batch.n_windows) != n_win:
+                raise ValueError(f"backend {_backend_name!r} accumulated {batch.n_windows} storage windows for a walk of {n_win}")
             C = np.asarray(batch.position_coeffs, np.float32)
-            if C.shape != (nb, K + 2, 3):
+            if C.shape != (nb, n_win, K + 2, 3):
                 raise ValueError(f"backend {_backend_name!r} returned position coefficients of shape {C.shape}; "
-                                 f"the batch of {nb} walkers at K = {K} has {(nb, K + 2, 3)}")
+                                 f"the batch of {nb} walkers in {n_win} windows at K = {K} has {(nb, n_win, K + 2, 3)}")
             if batch.boundary_endpoint is None or batch.boundary_bands is None or batch.compartment is None or batch.qv_boundary is None:
                 raise ValueError(f"backend {_backend_name!r} returned no contact or compartment channel for the adaptive walk")
             comp_all[sel] = np.minimum(np.asarray(batch.compartment, np.int32), 1).astype(np.int8)
-            out = dict(C=C[:, None], resid=(np.zeros((nb, 1, 3), np.float32) if batch.k0_residual is None
-                                           else np.asarray(batch.k0_residual, np.float32)[:, None]),
-                       blt_end=np.asarray(batch.boundary_endpoint, np.float32)[:, None],
-                       blt_bands=np.asarray(batch.boundary_bands, np.float32)[:, None],
-                       qv_pos=np.asarray(batch.qv_positions, np.float32)[:, None], qv_blt=np.asarray(batch.qv_boundary, np.float32)[:, None])
+            out = dict(C=C, resid=(np.zeros((nb, n_win, 3), np.float32) if batch.k0_residual is None
+                                   else np.asarray(batch.k0_residual, np.float32)),
+                       blt_end=np.asarray(batch.boundary_endpoint, np.float32),
+                       blt_bands=np.asarray(batch.boundary_bands, np.float32),
+                       qv_pos=np.asarray(batch.qv_positions, np.float32), qv_blt=np.asarray(batch.qv_boundary, np.float32))
             if sampling:
                 if batch.field_qv is None:
                     raise ValueError(f"backend {_backend_name!r} returned no field quadratic variation for a walk that reads the field")
@@ -643,14 +646,14 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     raise ValueError(f"backend {_backend_name!r}: the backend does not return the field increments (the read "
                                      f"series' quadratic variation, CoefficientBatch.field_qv_increments), which the field read's "
                                      f"rule and term are measured on (RPK.md 9.5.5); a walk that reads the field is refused")
-                out["qv_f"] = np.asarray(batch.field_qv, np.float32)[:, None]
-                out["qv_d"] = np.asarray(batch.field_qv_increments, np.float32)[:, None]
+                out["qv_f"] = np.asarray(batch.field_qv, np.float32)
+                out["qv_d"] = np.asarray(batch.field_qv_increments, np.float32)
                 if K_f:
                     fb = np.asarray(batch.field_bands, np.float32) if batch.field_bands is not None else None
-                    if fb is None or fb.shape != (nb, n_ch, int(K_f)):
+                    if fb is None or fb.shape != (nb, n_win, n_ch, int(K_f)):
                         raise ValueError(f"backend {_backend_name!r} returned field modes of shape {None if fb is None else fb.shape}; "
-                                         f"the batch of {nb} walkers at K_c3 = {K_f} has {(nb, n_ch, int(K_f))}")
-                    out["fc"] = np.transpose(fb, (0, 2, 1))[:, None]
+                                         f"the batch of {nb} walkers in {n_win} windows at K_c3 = {K_f} has {(nb, n_win, n_ch, int(K_f))}")
+                    out["fc"] = np.transpose(fb, (0, 1, 3, 2))
             if raw:
                 sv = batch.saves
                 if sv is None or sv.positions is None:

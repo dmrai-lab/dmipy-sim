@@ -20,14 +20,15 @@ R = 2e-6
 
 def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=None, comp=None, events=None,
                       qv=None, k0_residual=None, field_increments=True, field_modes=True):
-    """A :class:`~dmipy_sim.engine.backends.CoefficientBatch` of walkers that never move (their start exact, every band
-    0 unless ``bands`` / ``blt_bands`` give them), with the block ends of the request's ``raw_subset`` as saves."""
+    """A :class:`~dmipy_sim.engine.backends.CoefficientBatch` of walkers that never move, in the request's storage
+    windows (every window's start the walker's start, every band 0 unless ``bands`` / ``blt_bands`` give them, each
+    ``(n, n_windows, ...)``), with the block ends of the request's ``raw_subset`` as saves."""
     r0 = np.asarray(r0, np.float32)
-    n, K = r0.shape[0], int(request.K)
-    C = np.zeros((n, K + 2, 3))
-    C[:, 0] = r0
+    n, K, W = r0.shape[0], int(request.K), int(request.n_windows)
+    C = np.zeros((n, W, K + 2, 3))
+    C[:, :, 0] = r0[:, None]
     if bands is not None:
-        C[:, 2:] = bands
+        C[:, :, 2:] = bands
     zero = np.zeros((n,), np.int32)
     work = (zero.copy(), zero.copy(), zero.copy()) if request.count_walls else (None, None, zero.copy())
     rec = bool(request.record)
@@ -46,21 +47,21 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
     if request.field is not None:                                     # the field: every mode 0, the start's bare channels at every block end
         grid = request.field if isinstance(request.field, FieldGrid) else request.field.basis
         n_ch = len(grid.channel_names)
-        field_qv = np.zeros((n, n_ch))
-        field_qv_increments = np.zeros((n, n_ch)) if field_increments else None
+        field_qv = np.zeros((n, W, n_ch))
+        field_qv_increments = np.zeros((n, W, n_ch)) if field_increments else None
         if request.K_c3 and field_modes:
-            field_bands = np.zeros((n, n_ch, int(request.K_c3)))
+            field_bands = np.zeros((n, W, n_ch, int(request.K_c3)))
         if saves is not None:
             fs = np.repeat(np.asarray(grid.channels(r0), np.float32)[:, None, :], int(request.n_blocks) + 1, axis=1)
             saves = saves._replace(field_samples=fs)
     return backends.CoefficientBatch(
-        C, np.zeros(n) if rec else None, np.zeros(n) if rec else None,
-        (np.zeros((n, K)) if blt_bands is None else np.asarray(blt_bands, np.float64)) if rec else None,
+        C, np.zeros((n, W)) if rec else None, np.zeros((n, W)) if rec else None,
+        (np.zeros((n, W, K)) if blt_bands is None else np.asarray(blt_bands, np.float64)) if rec else None,
         comp if rec else None, zero.copy(), work, K, int(request.m), int(request.sub_steps), precision, saves=saves,
-        qv_positions=(np.zeros((n, 3)) if qv is None else qv), qv_boundary=(np.zeros(n) if rec else None),
+        qv_positions=(np.zeros((n, W, 3)) if qv is None else qv), qv_boundary=(np.zeros((n, W)) if rec else None),
         events=(events if rec else None), k0_residual=k0_residual, field_bands=field_bands, field_qv=field_qv,
         field_qv_increments=field_qv_increments,
-        dt_f=(float(request.field_read_interval) if request.field is not None else None))
+        dt_f=(float(request.field_read_interval) if request.field is not None else None), n_windows=W)
 
 
 class _Still(backends.Backend):
@@ -80,6 +81,12 @@ class _Still(backends.Backend):
         self.requests.append(request)
         kw = {k: (v(request, r0) if callable(v) else v) for k, v in self.kw.items()}
         return coefficient_batch(request, r0, **kw)
+
+
+class _Windows(_Still):
+    """A still backend that declares :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`."""
+    name = "windows"
+    capabilities = frozenset({backends.STORAGE_WINDOWS})
 
 
 class _Saves(backends.Backend):
@@ -120,7 +127,7 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     assert backends.WalkRequest._fields == ("geometry", "block_h", "n_blocks", "sub_steps", "dt_sim", "diffusivity", "record",
                                             "kappa_over_D", "count_walls", "bounce_budget", "seed", "K", "m", "K_c3",
                                             "field_read_interval", "events", "raw_subset", "stepping", "field",
-                                            "drop_pool_changes")
+                                            "drop_pool_changes", "n_windows")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests
@@ -129,6 +136,7 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     assert r.K == 8 and r.m == 2 and r.n_blocks == 4 and r.block_h == pytest.approx(0.5e-3) and r.T == pytest.approx(2e-3)
     assert r.sub_steps == w.sub_steps and r.dt_sim == pytest.approx(w.dt_sim) and r.record and r.kappa_over_D == 0.0
     assert r.events == 0 and r.K_c3 == 0 and r.field_read_interval == 0.0 and r.stepping is None and r.field is None
+    assert r.n_windows == 1 and r.blocks_per_window == 4 and r.T_window == pytest.approx(2e-3)
     perm = _Still()
     _walk(d.Sphere(R, permeability=1e-5), backend=perm)
     r = perm.requests[0]
@@ -153,17 +161,17 @@ def test_the_walk_is_the_backends_coefficient_form_as_it_came():
 
     def make(request, r0):
         n, K = r0.shape[0], request.K
-        made.append((rng.standard_normal((n, K, 3)) * 1e-6, rng.standard_normal((n, K)) * 1e-7))
+        made.append((rng.standard_normal((n, 1, K, 3)) * 1e-6, rng.standard_normal((n, 1, K)) * 1e-7))
         return made[-1][0]
 
     still = _Still(bands=make, blt_bands=lambda req, r0: made[-1][1],
-                   qv=lambda req, r0: np.full((r0.shape[0], 3), 2 * D * req.T))
+                   qv=lambda req, r0: np.full((r0.shape[0], 1, 3), 2 * D * req.T))
     w = _walk(d.Sphere(R), backend=still, K=6, walker_batch_size=32)
     assert w.work["backend"] == "still" and w.K == 6 and w.m == 3 and w.n_windows == 1 and w.n_blocks == 4
     assert len(made) == 2
     assert w.position_coeffs.shape == (64, 1, 8, 3) and w.position_coeffs.dtype == np.float32
-    np.testing.assert_array_equal(w.position_coeffs[:, 0, 2:], np.concatenate([b for b, _ in made]).astype(np.float32))
-    np.testing.assert_array_equal(w.boundary_bands[:, 0], np.concatenate([c for _, c in made]).astype(np.float32))
+    np.testing.assert_array_equal(w.position_coeffs[:, 0, 2:], np.concatenate([b for b, _ in made])[:, 0].astype(np.float32))
+    np.testing.assert_array_equal(w.boundary_bands[:, 0], np.concatenate([c for _, c in made])[:, 0].astype(np.float32))
     np.testing.assert_array_equal(w.position_coeffs[:, 0, 1], 0.0)
     np.testing.assert_allclose(w.qv_positions[:, 0], 2 * D * 2e-3, rtol=1e-6)
     np.testing.assert_array_equal(w.boundary_endpoint, 0.0)
@@ -173,7 +181,7 @@ def test_the_walk_is_the_backends_coefficient_form_as_it_came():
     assert blk["ring"] is None and "still" in blk["accumulation"] and blk["n_blocks"] == 4 and blk["m"] == 3
     assert w.work["n_hits"] is None and w.work["exhausted_steps"] == 0 and w.illegal_crossings == 0
     # a reported residual is recorded
-    w2 = _walk(d.Sphere(R), backend=_Still(k0_residual=lambda req, r0: np.full((r0.shape[0], 3), 1e-9)), K=6)
+    w2 = _walk(d.Sphere(R), backend=_Still(k0_residual=lambda req, r0: np.full((r0.shape[0], 1, 3), 1e-9)), K=6)
     assert w2.block["k0_residual_m"] == pytest.approx(1e-9)
 
 
@@ -221,9 +229,42 @@ def test_a_batch_of_another_resolution_or_shape_is_refused():
     class _Short(_Still):
         def walk_batch(self, request, r0, keys, *, out=None):
             b = coefficient_batch(request, r0)
-            return b._replace(position_coeffs=b.position_coeffs[:, :-1])
+            return b._replace(position_coeffs=b.position_coeffs[:, :, :-1])
     with pytest.raises(ValueError, match="position coefficients of shape"):
         _walk(d.Sphere(R), backend=_Short())
+
+
+def test_several_storage_windows_go_to_a_backend_that_declares_them():
+    """A walk of several storage windows is refused by the capability's name on a backend that does not declare
+    :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`; on one that does, each window's form is the batch's own, on its
+    second axis, as it came (the producer converts nothing), and a batch of another window count is refused."""
+    args = (16, D, d.Sphere(R), 0.2, 2e-3)
+    kw = dict(seed=1, require_gpu=False, K=4, sub_steps=2, walker_batch_size=8, tiers="all")
+    with pytest.raises(ValueError, match="2 storage windows, which the backend does not declare it walks .capability 'storage_windows'"):
+        _walk_geometry(*args, backend=_Still(), **kw)
+    rng = np.random.default_rng(3)
+    made = []
+
+    def per_window(request, r0):
+        made.append(rng.standard_normal((r0.shape[0], int(request.n_windows), int(request.K), 3)) * 1e-6)
+        return made[-1]
+
+    win = _Windows(bands=per_window, blt_bands=lambda req, r0: np.arange(2.0)[None, :, None] * np.ones((r0.shape[0], 1, req.K)),
+                   qv=lambda req, r0: np.arange(1.0, 3.0)[None, :, None] * np.ones((r0.shape[0], 1, 3)))
+    w = _walk_geometry(*args, backend=win, **kw)
+    assert w.n_windows == 2 and w.position_coeffs.shape == (16, 2, 6, 3)
+    r = win.requests[0]
+    assert r.n_windows == 2 and r.n_blocks == 100 and r.blocks_per_window == 50 and r.T_window == pytest.approx(0.1)
+    np.testing.assert_array_equal(w.position_coeffs[:, :, 2:], np.concatenate(made).astype(np.float32))
+    np.testing.assert_array_equal(w.boundary_bands[:, 1], 1.0)
+    np.testing.assert_array_equal(w.boundary_bands[:, 0], 0.0)
+    np.testing.assert_array_equal(w.qv_positions[:, 1], 2.0)
+
+    class _OneWindow(_Windows):
+        def walk_batch(self, request, r0, keys, *, out=None):
+            return coefficient_batch(request._replace(n_windows=1), r0)
+    with pytest.raises(ValueError, match="accumulated 1 storage windows for a walk of 2"):
+        _walk_geometry(*args, backend=_OneWindow(), **kw)
 
 
 def test_the_jax_only_paths_are_refused_for_another_backend():
@@ -238,8 +279,6 @@ def test_the_jax_only_paths_are_refused_for_another_backend():
         _walk(g, backend=_Still())
     with pytest.raises(ValueError, match="the compartment guard"):
         _walk(d.Sphere(R), backend=_Still(), enforce_compartment=True)
-    with pytest.raises(ValueError, match="several storage windows"):
-        _walk_geometry(16, D, d.Sphere(R), 0.2, 2e-3, seed=1, require_gpu=False, K=4, sub_steps=2, backend=_Still())
     still = _Still(refuse="no spheres here")
     with pytest.raises(ValueError, match="backend 'still' refuses this walk of Sphere: no spheres here"):
         _walk(d.Sphere(R), backend=still)
@@ -314,9 +353,14 @@ def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():
                                        backend=_Still(refuse="no strands"))
     with pytest.raises(ValueError, match="a walk of saves is refused"):
         simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=_Saves())
-    with pytest.raises(ValueError, match="several storage windows"):
+    with pytest.raises(ValueError, match="2 storage windows, which the backend does not declare it walks .capability 'storage_windows'"):
         simulate_trajectories_adaptive(64, D, g, 2e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=_Still(),
                                        window_T=1e-3)
+    win = _Windows()                                                   # declared: each window's form on the batch's second axis
+    w = simulate_trajectories_adaptive(64, D, g, 2e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64, backend=win,
+                                       window_T=1e-3)
+    assert w.n_windows == 2 and w.position_coeffs.shape == (64, 2, w.K + 2, 3)
+    assert all(r.n_windows == 2 and r.n_blocks == w.n_blocks == 8 and r.T_window == pytest.approx(1e-3) for r in win.requests)
 
 
 def test_the_adaptive_producer_takes_the_start_pool_from_the_batch():
@@ -380,7 +424,7 @@ def test_the_parity_harness_compares_the_coefficient_form():
     assert ch["n_hits"]["jax"] == ch["n_hits"]["backend"] > 0 and ch["bands"]["z_max"] == 0.0
     assert ch["pgse"]["jax"] == ch["pgse"]["backend"] and max(ch["qv_positions"]["z"]) == 0.0
     # a backend whose bands are not the walk's is caught at the band level
-    bad = _Still(qv=lambda req, r0: np.full((r0.shape[0], 3), 2 * D * req.T))
+    bad = _Still(qv=lambda req, r0: np.full((r0.shape[0], 1, 3), 2 * D * req.T))
     report = backends.parity_report(bad, cases={"sphere": backends.parity_cases()["sphere"]}, n_walkers=200)
     assert report[0]["ok"] is False and report[0]["checks"]["bands"]["ok"] is False and report[0]["checks"]["pgse"]["ok"] is False
     assert report[0]["checks"]["confinement"]["ok"] is True

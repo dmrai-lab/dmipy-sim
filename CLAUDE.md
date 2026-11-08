@@ -351,8 +351,10 @@ finished them (so a pack of the walk is bit for bit the backend's own writer's),
 (`field_bands`, `field_qv`), the raw subset's block ends, refusals and the work record; it converts nothing (a backend
 returning a `WalkBatch` of saves is refused by name) and reads nothing else from a backend
 (`tests/backends/` locks it). An unknown name is refused naming what is installed; the paths only the JAX kernels
-implement (the myelinated substrates, MT binding, in-walk field sampling, several storage windows, the compartment
-guard) are refused for another backend, never fallen back from. `work["backend"]` and the run record say which backend
+implement (the myelinated substrates, MT binding, in-walk field sampling, the compartment guard) are refused for
+another backend, never fallen back from; a walk of several storage windows goes to a backend that declares
+`backends.STORAGE_WINDOWS` (each window's form its own, on the batch's second axis) and is refused by the capability's
+name otherwise. `work["backend"]` and the run record say which backend
 walked; `walk_cost` warns when an installed backend accepts a walk run on the jax kernels. A backend is admitted per
 engine class by `backends.parity_report` on the coefficient form (the same starts and sub-step, counting on: hit and
 crossing rates within Poisson noise, exhaustion and refusal rates compared the same way, each channel's quadratic
