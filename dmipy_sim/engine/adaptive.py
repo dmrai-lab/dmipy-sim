@@ -40,7 +40,7 @@ import jax.numpy as jnp
 
 from .backends import JAX, WalkRequest, FieldSampling, resolve as resolve_backend
 from .tables import jit_with_tables
-from .physics import seed_walkers, pair_step
+from .physics import seed_walkers, pair_step, start_record
 from ..math.step_law import LONGEST_STEP
 from ..run import Run
 
@@ -799,7 +799,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         work = dict(walker_steps=(int(n_kernel_steps) if counted else None), n_hits=None, n_crossings=None, exhausted_steps=None, backend=_backend_name,
                     bounce_budget=(None if geometry.bounce_loop is None else int(geometry.bounce_loop.budget)),
                     step_rule=dict(eps_D=float(plan.eps_D), f_band_hz=float(plan.f_band_hz), dt_p=float(dt_min), sub_steps=int(n_min)),
-                    block=block)
+                    start=start_record(geometry, r0 is not None), block=block)
         walk = CoefficientWalk(
             position_coeffs=cat("C"), T=float(T_max), K=K, m=m, block=block, n_windows=n_win, dt_sim=float(dt_min), sub_steps=int(n_min),
             boundary_endpoint=cat("blt_end"), boundary_bands=cat("blt_bands"), compartment=comp_all,

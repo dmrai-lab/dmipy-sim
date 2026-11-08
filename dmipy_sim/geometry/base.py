@@ -273,6 +273,11 @@ class Geometry(ABC):
     #: were indistinguishable and a silent `reflect` fallback was the failure mode.
     supports_permeability = False
 
+    #: Is this geometry's own placement (`init_positions`) uniform over every pool a walker can reach -- the walk's
+    #: stationary density? A walk with a permeable wall records its start as at spatial equilibrium only then
+    #: (`engine.physics.start_record`); a placement that fills one pool behind a membrane is a start out of it.
+    seeds_every_pool = False
+
     #: Does `_wall` accept a carried `side` (the walker's own compartment)? Only the
     #: geometries where a position alone cannot decide sidedness need it -- see #86.
     carries_side = False

@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 from dmipy_replay.acquisition.waveforms import band_hz
 from .accumulate import default_K
 from .physics import (make_myelin_traj_step_fn, make_packed_myelin_traj_step_fn,
-                      seed_walkers, pair_step)
+                      seed_walkers, pair_step, start_record as _start_record, transient_error as _transient_error)
 from ..geometry._boundary import LOCAL_TIME_RULE
 from ..run import Run
 from dmipy_replay.acquisition.rf import RFSchedule
@@ -1651,6 +1651,19 @@ def _walk_geometry(
                 return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
 
         _, r0_all, walker_keys_all, labels0 = seed_walkers(geometry, n_walkers, seed, r0, first_walker=first_walker)
+        # whether the walkers start at spatial equilibrium (work["start"]); a start out of it across a permeable wall is
+        # served with the step law's transient term and a flag, and said so now
+        _start_rec = _start_record(geometry, r0 is not None)
+        if _start_rec["transient_coefficient"] is not None and _start_rec["spatial_equilibrium"] is not True:
+            import warnings
+            _tail = [(f, _transient_error(diffusivity, dt_sim, f * float(T_max))) for f in (0.1, 1.0)]
+            warnings.warn(f"the walkers do not start at spatial equilibrium across the permeable walls "
+                          f"({_start_rec['reason']}): a read at t s after the start carries, beyond the step law, up to "
+                          f"{_start_rec['transient_coefficient']} h^2 / (D t) on its exchange and each face's pool "
+                          f"(h = sqrt(6 D dt) = {float(np.sqrt(6.0 * float(diffusivity) * dt_sim)):.3g} m: "
+                          + ", ".join(f"{e:.2g} at {f:g} T_max" for f, e in _tail)
+                          + "). The walk records it (work['start']); CoefficientWalk.start_error states it per read.",
+                          UserWarning, stacklevel=3)
 
         # the myelinated kernels' start compartments: the seeding's own, or the given starts' classified (the seeding
         # leaves its labels on the geometry, which describe the seeding's positions, not a caller's)
@@ -1756,6 +1769,7 @@ def _walk_geometry(
                         local_time_rule=LOCAL_TIME_RULE,
                         step_rule=dict(step_rule, dt_p=float(dt_sim), sub_steps=int(sub_steps)),
                         bounce_budget=(None if _loop is None else int(_loop.budget)),
+                        start=dict(_start_rec),
                         n_hits=(int(_work[0]) if _counted else None),
                         n_crossings=(int(_work[1]) if _counted else None),
                         exhausted_steps=(int(_work[2]) if _work[3] else None))
