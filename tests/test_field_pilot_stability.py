@@ -83,12 +83,14 @@ def test_raster_bounds_cover_an_independent_longer_reference(certified_resamples
 
 
 def test_constant_exact_signals_have_a_zero_bound():
-    # A zero field has an exact ratio of zero even when its MC threshold is zero.
+    # A zero field certifies at the minimum rung against absolute precision.
     data = np.zeros((32, 16, 6))
     from dmipy_replay.replay.field import ISO_CHANNEL_NAMES
     k, record = derive_field_band(data, ISO_CHANNEL_NAMES, .001, K_max=8, B0=7, chi=1e-6,
                                   env=dict(B0_list=[7], theta_deg=[0], max_refocus_pulses=1))
     assert k == 2 and record['upper_bound'] == 0
+    assert record['threshold_term'] == 'absolute'
+    assert record['floor'] == np.finfo(np.float32).resolution
 
 
 @pytest.mark.parametrize('bad', [np.nan, -1., 0.])

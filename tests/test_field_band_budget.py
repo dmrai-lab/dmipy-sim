@@ -39,8 +39,13 @@ def test_a_missing_bound_is_refused_by_name():
         derive_field_band(series()[:1], CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6)
 
 
-def test_a_nonfinite_upper_bound_is_refused_by_name():
+def test_a_zero_spread_pilot_certifies_against_absolute_precision():
     values = np.repeat(series()[:1], 2, axis=0)
-    with pytest.raises(ValueError, match="field simultaneous upper bound cannot be computed: non-finite upper_bound"):
-        derive_field_band(values, CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6,
-                          env=dict(B0_list=[3], theta_deg=[90], max_refocus_pulses=1))
+    k, record = derive_field_band(values, CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6,
+                                  env=dict(B0_list=[3], theta_deg=[90], max_refocus_pulses=1))
+    assert k == record["K"] == 32
+    assert all(r["upper_bound"] > 1 for r in record["ladder"][:-1])
+    assert np.isfinite(record["upper_bound"]) and record["upper_bound"] <= 1
+    assert record["threshold_term"] == "absolute"
+    assert record["floor"] == np.finfo(np.float32).resolution
+    assert all(r["threshold_term"] == "absolute" for r in record["ladder"])

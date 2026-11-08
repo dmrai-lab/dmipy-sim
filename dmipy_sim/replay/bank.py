@@ -615,7 +615,7 @@ def _echo_name(i, gre, se, dt_s):
 SUSC_PATH_LADDER = (16, 32, 64, 128, 256, 512, 1024, 2048)
 
 
-def _field_signal_bound(raw, decoded, weights, scale, target_floor, z):
+def _field_signal_bound(raw, decoded, weights, scale, target_floor, absolute_floor, z):
     """Simultaneous normal-approximation ratio bounds from paired walker signals."""
     if not np.all(np.isfinite(raw)) or not np.all(np.isfinite(decoded)):
         raise ValueError("field confidence signals must be finite")
@@ -635,13 +635,17 @@ def _field_signal_bound(raw, decoded, weights, scale, target_floor, z):
     if target_floor is None:
         threshold = 2 * scale * np.sqrt((W ** 2) @ residual)
         lower = 2 * scale * np.sqrt(lower_variance * np.sum(W ** 2))
+        terms = np.where(threshold > absolute_floor, "mc", "absolute")
+        threshold = np.maximum(threshold, absolute_floor)
+        lower = np.maximum(lower, absolute_floor)
     else:
         threshold = np.full(error.shape, target_floor)
         lower = threshold
+        terms = np.full(error.shape, "absolute")
     upper_error = error + z * error_se
     bound = np.divide(upper_error, lower, out=np.full(error.shape, np.inf), where=lower > 0)
     bound[(upper_error == 0) & (lower == 0)] = 0.0
-    return error, threshold, bound
+    return error, threshold, bound, terms
 
 
 def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w=None, ladder=SUSC_PATH_LADDER,
@@ -658,7 +662,8 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     The error bound is the paired mean difference plus a normal standard-error
     margin. The denominator is a log-delta-method lower bound on twice the raw
     signal's standard error, scaled by ``floor_scale = sqrt(n_pilot/n_production)``.
-    This standard-error floor replaces the noisy single split-half train floor.
+    Both the threshold and its lower bound are floored at the float32 resolution
+    of the codec scales. This replaces the noisy single split-half train floor.
     ``target_floor`` instead supplies a fixed numerical budget, with no denominator
     uncertainty. Bonferroni covers real/imaginary components, variance, every gate,
     setting, rung and both codec candidates before selection. It therefore bounds
@@ -720,7 +725,9 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     z = float(ndtri(1 - (1 - confidence_level) / (5 * comparisons)))
     if not np.isfinite(z):
         raise ValueError("field confidence level is too close to one for this battery")
-    bounds, point_ratios = {}, {}
+    # Integer field codecs store their scales in float32, including on the NumPy path.
+    absolute_floor = float(np.finfo(np.float32).resolution)
+    bounds, point_ratios, threshold_terms = {}, {}, {}
 
     def signal_bounds(f, decoded, gates):
         """Paired walker errors across the complete acquisition battery."""
@@ -730,7 +737,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                                    2 * phase[:, se_t // 2 - 1] - phase[:, se_t - 1]], axis=1)
             train = np.stack([np.cos(GAMMA * (values * g).sum(1) * float(h)) for g in gates], axis=1)
             return np.concatenate([np.exp(1j * echo), train], axis=1)
-        return _field_signal_bound(signals(f), signals(decoded), w, scale, target_floor, z)
+        return _field_signal_bound(signals(f), signals(decoded), w, scale, target_floor, absolute_floor, z)
 
     def read(a_k, m_k, k, gates):
         """Worst paired replay statistics and simultaneous bounds over all settings."""
@@ -738,18 +745,22 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         e_max = f_max = 0.0
         e_echo = s_echo = None
         upper = point_ratio = 0.0
+        threshold_term = None
         for b0, th in settings:
             t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
             cd = susc_path_field(C, d, B0=b0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)       # (n_w, k)
             f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
-            errors, thresholds, ub = signal_bounds(raw[(b0, th)], f_dec, gates)
+            errors, thresholds, ub, terms = signal_bounds(raw[(b0, th)], f_dec, gates)
             if np.any(np.isnan(ub)):
                 raise ValueError("field simultaneous upper bound cannot be computed: NaN upper_bound")
             ratios = np.divide(errors, thresholds, out=np.full(errors.shape, np.inf), where=thresholds > 0)
             ratios[(errors == 0) & (thresholds == 0)] = 0.0
             point_ratio = max(point_ratio, float(np.max(ratios)))
             e = float(np.max(errors[-2:]))
-            upper = max(upper, float(np.max(ub)))
+            binding = int(np.argmax(ub))
+            if threshold_term is None or ub[binding] > upper:
+                threshold_term = str(terms[binding])
+            upper = max(upper, float(ub[binding]))
             f = float(np.max(thresholds[-2:]))
             e_max, f_max = max(e_max, e), max(f_max, f)
             ee, ss = _echo_errors(raw[(b0, th)], f_dec, float(h), gre, se_t, w)
@@ -758,7 +769,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
             else:                                          # each echo held at its worst setting: the largest err / se
                 worse = ee * np.maximum(s_echo, 1e-300) > e_echo * np.maximum(ss, 1e-300)
                 e_echo, s_echo = np.where(worse, ee, e_echo), np.where(worse, ss, s_echo)
-        bounds[k], point_ratios[k] = upper, point_ratio
+        bounds[k], point_ratios[k], threshold_terms[k] = upper, point_ratio, threshold_term
         return e_max, f_max, e_echo, s_echo
 
     err, floor, trunc, cont, worst, order = {}, {}, {}, {}, {}, []
@@ -770,7 +781,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         c_k = np.asarray(coeffs[:, :, :k], np.float64)
         e_tr, f_max, ee_tr, se_e = read({"susc_path_dct": c_k}, dict(meta_k, bits=None, dtype="float64"), k, gates)   # the band alone, modes in float
         fl = f_max if target_floor is None else target_floor
-        fl_e = 2.0 * se_e * scale if target_floor is None else np.full(len(se_e), target_floor)
+        fl_e = np.maximum(2.0 * se_e * scale, absolute_floor) if target_floor is None else np.full(len(se_e), target_floor)
         ends = [len(gre) - 1, len(gre) + len(se_t) - 1]                                    # the window's own echoes
         ranges = DerivedFieldContainer(floor=min([fl] + [float(fl_e[i]) for i in ends]), B0=max(B0s), chi_iso=chi_i,
                                        chi_aniso=ca).ranges(np.abs(c_k).max(axis=0), stored, float(h) * n_t)
@@ -807,6 +818,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     K = chosen
     record = dict(rule="pilot", field_band_uncertified=uncertified,
                   confidence_level=confidence_level, upper_bound=float(bounds[K]),
+                  threshold_term=threshold_terms[K], absolute_floor=absolute_floor,
                   confidence_method="paired-walker normal approximation; Bonferroni over all rungs, settings, gates, both codec candidates, "
                                     "complex error components and log-variance lower bounds; ratio uses upper error / lower threshold",
                   confidence_comparisons=int(comparisons), confidence_tails_per_comparison=5,
@@ -814,14 +826,13 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                   worst_ratio=float(point_ratios[K]), confidence_is_approximate=True,
                   pilot_walkers=int(n_w), codec_refinement="derived container, then 16-bit if uncertified",
                   criterion="the first rung in ascending band whose codec error, in the container derived for its mode scales, is "
-                            "within twice the production walk's standard error at every gradient and spin echo of the domain and "
-                            "within the per-walker standard-error floor on the train and stimulated echo, "
+                            "within max(twice the production standard error, float32 resolution) at every acquisition, "
                             "with simultaneous upper confidence ratio at most one",
                   domain=dict(echo_times_s=dict(gradient_echo=[float(k * h) for k in gre], spin_echo=[float(k * h) for k in se_t]),
                               resolution_s=float(h) * n_t / int(K_max), gates_per_setting=len(gre) + len(se_t) + 2,
                               settings=len(settings), rungs_read=len(order)),
                   ladder=[dict(K=int(k), err=float(err[k]), err_truncation=float(trunc[k]), floor=float(floor[k]),
-                               upper_bound=float(bounds[k]), confidence_level=confidence_level,
+                               upper_bound=float(bounds[k]), confidence_level=confidence_level, threshold_term=threshold_terms[k],
                                worst_ratio=float(point_ratios[k]), within_floor=bool(bounds[k] <= 1.0),
                                worst=dict(worst[k]), container=[dict(r) for r in cont[k]]) for k in order],
                   K=int(K), K_max=int(K_max), min_K=int(min_K), depth=(int(depth) if depth else None), above_position_band=bool(K > int(K_max)),
@@ -829,7 +840,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                   err=float(err[K]), err_truncation=float(trunc[K]), floor=float(floor[K]), worst=dict(worst[K]),
                   container=[dict(r) for r in cont[K]],
                   floor_is=("the explicit numerical field error budget" if target_floor is not None else
-                            "twice the per-walker standard error scaled to the production count (x floor_scale)"),
+                            "max(twice the per-walker standard error scaled to the production count (x floor_scale), float32 resolution)"),
                   floor_scale=float(floor_scale), target_floor=(None if target_floor is None else float(target_floor)), B0_list=[float(b) for b in B0s], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
     return int(K), record
 
