@@ -124,6 +124,20 @@ def test_a_declared_frame_the_walk_contradicts_is_refused_at_build():
     assert check_frame_against_walk(iso, np.eye(3)) == 0.0
 
 
+def test_a_walker_held_still_says_nothing_about_the_frame():
+    """Walkers that did not move (held still over the window, as branches before their start) are not read: the check
+    of the moving walkers with any number of held ones beside them is the check of the moving walkers alone. Read as
+    samples, 50 held walkers per moving one shrink the principal axis's sampling allowance to the 5 deg floor, and
+    this realisation's 50 moving walkers, 13.1 deg off z by their own noise, would be refused."""
+    from dmipy_sim.replay.bank import check_frame_against_walk
+    rng = np.random.default_rng(4)
+    moving = rng.normal(size=(50, 3)) * np.array([0.55, 0.55, 1.0]) * 1e-6
+    ends = np.stack([np.zeros_like(moving), moving], axis=1)                 # (n, 2, 3): start and end
+    held = np.repeat(rng.normal(size=(2500, 1, 3)) * 1e-6, 2, axis=1)     # start == end
+    alone = check_frame_against_walk(ends, np.eye(3))
+    assert check_frame_against_walk(np.concatenate([ends, held]), np.eye(3)) == alone > 5.0
+
+
 def test_a_user_declared_frame_10deg_off_is_still_refused_after_the_walk():
     """A hand-declared frame carries no ``frame.source`` (#538): it is checked by name, against the walk's own
     principal displacement axis, exactly as #194 requires -- 10 deg off a straight cylinder's axis is refused."""
