@@ -587,6 +587,7 @@ class PackedMyelinatedCylinders(Geometry):
     """
 
     _is_packed_myelinated = True
+    seeds_every_pool = True           #: the placement is by area over every compartment of the periodic cell
     has_walls = False                 #: stepped by its own kernel, never by `_wall`
 
     @property

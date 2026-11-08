@@ -249,6 +249,11 @@ class PackedCylinders(Geometry):
     supports_permeability = True   #: has a membrane a walker can cross
     carries_side = True            #: `permeate` accepts the walker's own side
 
+    @property
+    def seeds_every_pool(self):
+        """The placement is uniform over the whole cell when it names no pool (``pool=None``)."""
+        return self.pool is None
+
     # `classify_position` returns 0=extra and 1..N = the cylinder the walker is in,
     # i.e. an OBJECT id, not a pool id. core._walk_geometry collapses it to a
     # two-pool label for `comp_traj` (0=extra, 1=intra) -- both because relaxation is
@@ -448,6 +453,11 @@ class PackedSpheres(Geometry):
     replay_parity = True
 
     supports_permeability = True   #: has a membrane a walker can cross
+
+    @property
+    def seeds_every_pool(self):
+        """The placement is uniform over the whole cell when it names no pool (``pool=None``)."""
+        return self.pool is None
 
     # `classify_position` returns 0=extra and 1..N = the sphere the walker is in,
     # i.e. an OBJECT id, not a pool id. core._walk_geometry collapses it to a

@@ -5,6 +5,29 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A walk states whether it starts at spatial equilibrium, and the step law's term for a start that does not**
+  (#930). `physics.TRANSIENT_COEFFICIENT` = 0.3: a read at time `t` after walkers were placed out of spatial
+  equilibrium carries up to `0.3 h^2 / (D t)` beyond the law's other terms, on the exchange across a membrane and on
+  each face's bound pool (`physics.transient_error`). It is the non-smooth-data error of a first-order step: the law's
+  wall and membrane terms hold each mode's rate to first order in that rate, and a start out of equilibrium puts weight
+  on the fast modes, whose contributions sum to `O(dt / t)`. It is computed on the walk's exact chains from a one-sided
+  start:
+  - the exchanged fraction, at most `0.084 h^2 / (D t)` over `kappa l / D` from 0.05 to 50;
+  - the far face's bound pool, `0.17` to `0.24 h^2 / (D t)` at `kappa h / D = 0.045`, the same at two binding
+    reactivities.
+
+  A face's local time read on its own is first order out of equilibrium (about `0.5 h` times the density's normal
+  gradient over the density), which the transmission rule and the crossing share take out of the exchange and the
+  pools. A walk records its start as `work["start"]`, from `physics.start_record`:
+  - at equilibrium on a geometry with no permeable wall, or when its placement is uniform over every pool
+    (`Geometry.seeds_every_pool`: packed cells seeded over the cell, the packed myelinated cell);
+  - out of it when a permeable wall separates a seeded pool from an empty one;
+  - not established for starts it was handed.
+
+  A start that is not at equilibrium on a walk with a permeable wall is said at the walk (a `UserWarning` stating the
+  term). `CoefficientWalk.start_error(t)` gives a read's term and flag, and a pack carries the record in
+  `provenance.walk.start`. `MT_COEFFICIENT` stays 0.06: the per-face excess #926 measured from a one-sided start is
+  this start term, together with the share's remainder, which is absent from a uniform start. The step is not changed.
 - **Each face's MT bound pool is second order in the step** (#926): a walker that binds at an encounter it crossed
   binds on the near face or the far face, half each (`geometry._boundary.NEAR_FACE_SHARE`), where it bound on the far
   face (the face it ends on) every time. The crossing and the bind share the encounter's local time, the near face's

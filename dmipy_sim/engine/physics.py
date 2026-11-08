@@ -115,7 +115,10 @@ the bound is reached only as the other membranes seal and one membrane between t
 piecewise constant in time: each interval is walked as a constant permeability, and a breakpoint on a step boundary
 composes the intervals' one-step operators as the exact propagators compose, so the error is the intervals' own; a
 breakpoint inside a step is taken at the nearest step boundary (:func:`membrane_kappa`), an error first order in the
-step's duration, second in its length."""
+step's duration, second in its length.
+
+The term bounds the slowest mode, which is all the exchange of a walk whose walkers start at spatial equilibrium reads.
+From a start out of it the fast modes add :data:`TRANSIENT_COEFFICIENT`'s term while they decay."""
 
 
 def membrane_kappa(geometry, diffusivity, dt_step):
@@ -190,6 +193,52 @@ def has_membrane(geometry) -> bool:
     if geometry._is_myelinated or geometry._is_packed_myelinated:
         return bool(np.any(np.asarray(geometry._kappa_inner_jax) > 0) or np.any(np.asarray(geometry._kappa_outer_jax) > 0))
     return False
+
+
+START_OUT_OF_EQUILIBRIUM = "start_out_of_spatial_equilibrium"
+"""The flag of a read whose walk started out of spatial equilibrium (:func:`start_record`)."""
+START_NOT_ESTABLISHED = "start_not_established"
+"""The flag of a read whose walk was handed its starts, so it cannot tell whether they are at equilibrium."""
+
+
+def start_record(geometry, r0_given: bool) -> dict:
+    """What a walk records of its start (``work["start"]``).
+
+    - ``spatial_equilibrium``:
+      - True when the walkers start at the walk's stationary density, uniform over every pool they can reach. That holds
+        for a placement on a geometry with no permeable wall (each pool it seeds is uniform and keeps its walkers), and
+        on one whose placement is uniform over every pool (``Geometry.seeds_every_pool``).
+      - False when a permeable wall separates a pool the placement fills from one it leaves empty.
+      - None when the walk was handed its starts (``r0``) and cannot tell.
+    - ``reason``: why.
+    - ``transient_coefficient``: the term a start out of it adds (:data:`TRANSIENT_COEFFICIENT`) when a wall is
+      permeable. None without one: no pool exchanges, and the term has nothing to read."""
+    membrane = has_membrane(geometry)
+    if r0_given:
+        eq, why = None, "the walk was handed its starts (r0), whose density it cannot tell"
+    elif not membrane:
+        eq, why = True, "no wall is permeable: each pool the placement seeds is uniform and keeps its walkers"
+    elif bool(geometry.seeds_every_pool):
+        eq, why = True, "the placement is uniform over every pool a walker can reach"
+    else:
+        eq, why = False, "the placement leaves a pool empty that a walker reaches across a permeable wall"
+    return dict(spatial_equilibrium=eq, reason=why, transient_coefficient=(TRANSIENT_COEFFICIENT if membrane else None))
+
+
+def start_error(start, diffusivity: float, dt: float, t: float) -> dict:
+    """The start's term of a read at time ``t`` (s since the walkers were placed) of a walk at the physics step ``dt``
+    whose start record is ``start`` (:func:`start_record`): ``{"relative_error", "flag"}``.
+
+    - 0 and no flag when the start is at spatial equilibrium, or no wall is permeable.
+    - Otherwise :func:`transient_error`, flagged :data:`START_OUT_OF_EQUILIBRIUM` or (a walk handed its starts)
+      :data:`START_NOT_ESTABLISHED`.
+    - A walk with no start record: ``relative_error`` None, flag ``"start_unrecorded"``."""
+    if not start:
+        return dict(relative_error=None, flag="start_unrecorded")
+    if start.get("transient_coefficient") is None or start.get("spatial_equilibrium") is True:
+        return dict(relative_error=0.0, flag=None)
+    flag = START_OUT_OF_EQUILIBRIUM if start.get("spatial_equilibrium") is False else START_NOT_ESTABLISHED
+    return dict(relative_error=transient_error(diffusivity, dt, t), flag=flag)
 
 
 def crossing_p_max(geometry, diffusivity: float, dt_sim: float) -> float:
@@ -271,12 +320,14 @@ Each face's pool (#926), a crossing's bind on either face half each
 membrane, the far face filled only through it, ``kappa_MT h / D = 0.2``, at ``h`` and ``h / 2`` (``h = 0.09 l``) and
 ``t`` of 0.1 and 0.3 ``l^2 / D``: at ``kappa h / D`` of 0.5, 5 and 50 each face is within this term (a coefficient of
 0.04 would do; from 5 on each face carries half the total's error). At ``kappa h / D = 0.045`` the far face's pool needs
-up to 0.18 at ``0.1 l^2 / D`` and 0.06 at ``0.3 l^2 / D``, from two parts. One is the exchange's own transient at the
-membrane, a relative error of about ``0.2 h^2 / (D t)`` that does not depend on ``kappa_MT`` and that no term of the law
-states (:data:`MEMBRANE_COEFFICIENT` bounds the slowest mode). The other is the share's second-order remainder -- at a
-low permeability the binding clock, ringing early in the encounter, tilts a crossing's binds towards the near face --
-about 1.5 times this term at ``0.1 l^2 / D``. From a start out of spatial equilibrium a face's pool at a low
-permeability is within this term once that transient has passed, ``t`` of a few tenths of ``l^2 / D``."""
+up to 0.18 at ``0.1 l^2 / D`` and 0.06 at ``0.3 l^2 / D``, from two parts. One is the start's transient, a relative
+error of about ``0.2 h^2 / (D t)`` that does not depend on ``kappa_MT``: :data:`TRANSIENT_COEFFICIENT`'s term, which a
+walk states for a start out of spatial equilibrium. The other is the share's second-order remainder -- at a low
+permeability the binding clock, ringing early in the encounter, tilts a crossing's binds towards the near face --
+about 1.5 times this term at ``0.1 l^2 / D`` and within it by ``0.3 l^2 / D``. It too is a start effect. From walkers
+uniform over both layers the crossings each way are as many and alike, and the two faces' pools are the same: at
+``0.1 l^2 / D`` they need 0.008. The coefficient covers a walk that starts at equilibrium, spatially and in its pools
+(the burn-in's); a start out of spatial equilibrium adds the transient term."""
 
 
 def binding_length(geometry):
@@ -308,6 +359,66 @@ def binding_step(diffusivity: float, kappa_MT: float, eps_D: float, length) -> f
     per_h = float(kappa_MT) / D + (1.0 / float(length) if length else 0.0)
     h = float(np.sqrt(float(eps_D) / MT_COEFFICIENT)) / per_h
     return h * h / (6.0 * D)
+
+
+TRANSIENT_COEFFICIENT = 0.3
+"""The step law's term for a start out of spatial equilibrium: a read at time ``t`` after the walkers were placed carries,
+beyond the law's other terms, a relative error of up to ``TRANSIENT_COEFFICIENT h^2 / (D t)`` (:func:`transient_error`) on
+the exchange across a membrane and on each face's bound pool, ``h = sqrt(6 D dt)``.
+
+**Where it comes from.** The law's wall and membrane terms hold a mode's rate to first order in that rate: mode ``n``
+decays at a rate within ``c lambda_n dt / 5`` of the exact ``lambda_n``, and the step is sized for the slowest mode
+(:data:`MEMBRANE_COEFFICIENT`, the pore term) and the band. A start at spatial equilibrium -- walkers uniform over every
+pool they can reach -- puts no weight on the fast modes of the occupancy, and the law's terms are the whole error. A start
+out of it, walkers on one side of a membrane, puts a weight ``a_n`` on each mode. At time ``t`` mode ``n`` then contributes
+``a_n lambda_n t delta_n exp(-lambda_n t) <= a_n (c dt / (5 t)) (lambda_n t)^2 exp(-lambda_n t)``. Each mode's share is
+at most ``4 / e^2`` of ``a_n c dt / (5 t)``, so the sum over the fast modes is ``O(dt / t)``: the non-smooth-data error of
+a first-order one-step scheme. In the step's length it is ``C h^2 / (D t)``, second order, and it decays as the transient
+does.
+
+**Computed, not fitted.** On the walk's exact chains, from walkers placed uniformly on one side of a membrane between two
+layers of width ``l`` with reflecting outer walls, at ``t`` from 0.005 to 0.3 ``l^2 / D``:
+
+- **The exchanged fraction** (:class:`~dmipy_sim.math.step_law.LayeredLattice` against the two-layer eigenfunction series):
+  ``|error| D t / h^2`` is at most 0.084 over ``kappa l / D`` from 0.05 to 50 at ``h / l`` of 0.09, 0.045 and 0.0225. That
+  includes the slowest mode's own term.
+- **Each face's bound pool** (the binding term's chain, :data:`MT_COEFFICIENT`, against
+  ``dmipy_analytic.bloch_torrey.BlochTorrey1D``). At ``kappa h / D = 0.045`` the far face's is 0.17 at ``h = 0.09 l``
+  and 0.24 at ``h = 0.011 l`` for ``t <= 0.1 l^2 / D``, the same at ``kappa_MT h / D`` of 0.05 and 0.2. It is at most 0.10
+  at ``kappa h / D = 0.5`` and 0.04 at 5. The near face's and the free pool's are at most 0.06.
+
+The coefficient is their envelope.
+
+**A face's local time on its own is first order out of equilibrium.** The walk's local time samples the density over a
+step's reach. A density gradient ``g`` normal to a face therefore moves the face's local-time rate by about
+``0.5 h g / c`` (on the same lattice, at ``h / 64`` as at ``h / 32``). At a membrane the exchange sets
+``g = kappa [c] / D``. From a one-sided start:
+
+- the far face's rate is low by about ``0.48 h / sqrt(D t)``;
+- the near face's is high by about ``0.5 kappa h / D``.
+
+At an impermeable wall, and at equilibrium, ``g = 0``. Two rules take this term out of the observables above:
+
+- the exchange's transmission ``x / (1 + x)``;
+- each face's binding: a crossing binds on either face half each (:data:`~dmipy_sim.geometry._boundary.NEAR_FACE_SHARE`),
+  which makes up the far face's local-time deficit.
+
+So a read of one face's local time from a start out of equilibrium is not covered by this term.
+
+**The regime.** The step is sized when a walk starts, before any read's time is known, so this term is stated, not
+stepped for. A walk records whether its start is at spatial equilibrium (:func:`start_record`, its ``work["start"]``).
+A read of a walk whose start is not carries this term and a flag
+(:meth:`~dmipy_sim.coefficient_walk.CoefficientWalk.start_error`). ``t`` is the time since the walkers were placed: a
+binding walk's burn-in precedes its ``t = 0``, so a ``t`` counted from 0 overstates the term."""
+
+
+def transient_error(diffusivity: float, dt: float, t: float) -> float:
+    """The relative error :data:`TRANSIENT_COEFFICIENT` states for a read at time ``t`` (s since the walkers were placed)
+    of a walk at the physics step ``dt`` from a start out of spatial equilibrium: ``TRANSIENT_COEFFICIENT h^2 / (D t)``,
+    ``h^2 = 6 D dt``; infinite at ``t <= 0``."""
+    del diffusivity                                 # h^2 / (D t) = 6 dt / t
+    t = float(t)
+    return float("inf") if t <= 0.0 else TRANSIENT_COEFFICIENT * 6.0 * float(dt) / t
 
 
 def mt_sub_steps(geometry, diffusivity: float, dt: float, dwell_time: float,
