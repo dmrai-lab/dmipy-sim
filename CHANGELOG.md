@@ -5,6 +5,21 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Each face's MT bound pool is second order in the step** (#926): a walker that binds at an encounter it crossed
+  binds on the near face or the far face, half each (`geometry._boundary.NEAR_FACE_SHARE`), where it bound on the far
+  face (the face it ends on) every time. The crossing and the bind share the encounter's local time, the near face's
+  before the crossing and the far face's after it, so given both the bind falls on either face with probability 1/2 to
+  first order. A walker bound on the near face is seen at its step's start, on that face's side, so a bound walker's
+  recorded position tells its face; it resumes from its step's end as before, and the face has a draw of its own, so
+  the walk itself -- every free walker, the total bound pool, the exchange -- is unchanged to the bit. On the walk's
+  exact chain against `BlochTorrey1D` from free walkers on one side of the membrane: each face's bound fraction was
+  first order (4.7e-3 too much on the far face at `kappa h / D = 0.5`, `h = 0.09 R`, `t = 0.1 R^2/D`, halving with `h`)
+  and is now second order (1e-5, falling by three to four with `h`); at `kappa h / D` of 5 and 50 each face carries
+  half the total's error. A test holds each face's bound fraction and bound signal to the continuum's. A walker the
+  burn-in leaves bound on the near face of a crossing is seen where it resumes until released (the burn-in ends at
+  equilibrium, where as many are seen across either way). The packed myelinated walk and the forward vector-Bloch
+  oracle are unchanged. An MT walk across a permeable wall records different positions (and so bands) for the walkers
+  bound on a near face, and nothing else.
 - **The MT burn-in stops at the bound pool's equilibrium** (#925): its plateau test (the occupancy changing by under 1 %
   between two chunks of one dwell) ended while the bound fraction was still climbing (0.088 against 0.091 at `0.3
   R^2/D` on the permeable slab), so an MT walk started out of equilibrium. Where the geometry gives the equilibrium,
