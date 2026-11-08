@@ -1654,7 +1654,7 @@ def _walk_geometry(
         _, r0_all, walker_keys_all, labels0 = seed_walkers(geometry, n_walkers, seed, r0, first_walker=first_walker)
         # whether the walkers start at spatial equilibrium (work["start"]); a start out of it across a permeable wall is
         # served with the step law's transient term and a flag, and said so now
-        _start_rec = _start_record(geometry, r0 is not None)
+        _start_rec = _start_record(geometry, r0 is not None, diffusivity, dt_sim)
         if _start_rec["transient_coefficient"] is not None and _start_rec["spatial_equilibrium"] is not True:
             import warnings
             _tail = [(f, _transient_error(diffusivity, dt_sim, f * float(T_max))) for f in (0.1, 1.0)]

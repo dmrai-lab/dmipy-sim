@@ -225,13 +225,16 @@ class CoefficientWalk:
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                       "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed")
 
-    def start_error(self, t):
+    def start_error(self, t, *, per_face_local_time=False):
         """The start's term of a read at time ``t`` (s after the walk's start): ``{"relative_error", "flag"}``
         (:func:`~dmipy_sim.engine.physics.start_error`). It is 0 with no flag for a walk whose walkers started at
         spatial equilibrium (``work["start"]``) or that has no permeable wall. A walk out of it states
-        :data:`~dmipy_sim.engine.physics.TRANSIENT_COEFFICIENT`'s ``h^2 / (D t)`` and a flag."""
+        :data:`~dmipy_sim.engine.physics.TRANSIENT_COEFFICIENT`'s ``h^2 / (D t)`` and a flag.
+        With ``per_face_local_time=True``, a direct read of one face's local time instead states
+        ``0.5 h (1 / sqrt(D t) + kappa_max / D)`` (maximum over objects and schedule intervals) with the distinct per-face local-time flag."""
         from .engine.physics import start_error
-        return start_error((self.work or {}).get("start"), self.diffusivity, self.dt_sim, t)
+        return start_error((self.work or {}).get("start"), self.diffusivity, self.dt_sim, t,
+                           per_face_local_time=per_face_local_time)
 
     def take(self, idx):
         """The walk of the walkers ``idx`` (an index array), in that order; the raw subset is kept only when ``idx``
@@ -493,11 +496,12 @@ def merge_work(works):
 def merge_starts(starts):
     """The start record (:func:`~dmipy_sim.engine.physics.start_record`) of a walk assembled from parts: the parts' one
     record when they share it. Otherwise it is out of spatial equilibrium when a part's is, not established when a part's
-    is and none is out of it, else at equilibrium, with the largest transient coefficient a part states."""
+    is and none is out of it, else at equilibrium, with the largest transient coefficient and permeability over D a part states."""
     if all(s == starts[0] for s in starts):
         return dict(starts[0])
     eqs = [s.get("spatial_equilibrium") for s in starts]
     eq = False if any(e is False for e in eqs) else (None if any(e is None for e in eqs) else True)
     coeffs = [s["transient_coefficient"] for s in starts if s.get("transient_coefficient") is not None]
     return dict(spatial_equilibrium=eq, reason="the parts' starts differ: " + "; ".join(sorted({str(s.get("reason")) for s in starts})),
-                transient_coefficient=(max(coeffs) if coeffs else None))
+                transient_coefficient=(max(coeffs) if coeffs else None),
+                kappa_over_D_max=max(s.get("kappa_over_D_max", 0.0) for s in starts))
