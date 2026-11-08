@@ -1635,6 +1635,7 @@ def _walk_geometry(
         # equilibrate the bound occupancy (and spatial state) to f_b BEFORE t=0 and discard
         # the preamble.  kappa_MT == 0 leaves brem0_all at zero and skips this entirely.
         brem0_all = jnp.zeros((n_walkers,), dtype=jnp.float32)
+        _eq_record = None                       # the burn-in's criterion and outcome (work["mt_equilibration"])
         if _mt_on:
             from . import mt as _mt
             _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
@@ -1678,16 +1679,19 @@ def _walk_geometry(
 
                 def _chunk(r, k, brem):
                     r, k, _comp[0], brem, bf = _burn(r, k, _comp[0], brem)
-                    return r, k, brem, jnp.mean(bf)
-                r0_all, walker_keys_all, brem0_all, _occ_prev, _converged = _mt.equilibrate_burnin_plateau(
-                    _chunk, r0_all, walker_keys_all, brem0_all)
+                    return r, k, brem, bf
+                _criterion = _mt.burnin_criterion(geometry, kappa_MT, dwell_time, diffusivity, _n_chunk * float(dt_sim))
+                r0_all, walker_keys_all, brem0_all, _eq_record = _mt.equilibrate_burnin_plateau(
+                    _chunk, r0_all, walker_keys_all, brem0_all, _criterion)
                 if comp0_all is not None:
                     comp0_all = _comp[0]
-                log.info(f"  [mt] equilibrate 'burnin': <bound>={_occ_prev:.4f}")
-                if not _converged:
+                log.info(f"  [mt] equilibrate 'burnin' ({_criterion.kind}): <bound>={_eq_record['occupancy']:.4f}"
+                         f" after {_eq_record['chunks_run']} chunks")
+                if not _eq_record["converged"]:
                     import warnings
-                    warnings.warn("equilibrate_binding: bound occupancy did not plateau within "
-                                  "the burn-in cap; the saved walk may be under-equilibrated.",
+                    warnings.warn(f"equilibrate_binding: the burn-in's {_criterion.kind} criterion did not hold within "
+                                  f"the cap of {_criterion.max_chunks} chunks (bound fraction {_eq_record['occupancy']:.4f}, "
+                                  f"equilibrium {_criterion.p_eq}); the saved walk may be under-equilibrated.",
                                   stacklevel=2)
 
         def _work_record():
@@ -1726,6 +1730,8 @@ def _walk_geometry(
                         n_hits=(int(_work[0]) if _counted else None),
                         n_crossings=(int(_work[1]) if _counted else None),
                         exhausted_steps=(int(_work[2]) if _work[3] else None))
+            if _mt_on:                            # the MT burn-in's stopping rule and where it stopped
+                work["mt_equilibration"] = _eq_record if _eq_record is not None else dict(kind=_mode)
             if _work[3] and _work[2]:
                 import warnings
                 warnings.warn(
