@@ -295,6 +295,23 @@ def dwell_scale(kappa_over_D, local_time):
     return jnp.exp(jnp.minimum(jnp.float32(0.5) * kappa_over_D * local_time, jnp.float32(80.0)))
 
 
+NEAR_FACE_SHARE = 0.5
+"""The share of the binds made at a transmitted encounter that are on the face the walker came from.
+
+A walker that crosses a membrane meets it from both faces within the one encounter: in the continuum its local time
+there is on the near face until it crosses and on the far face after, and a bind falls on the face it is on when the
+binding clock rings. Given that the encounter crosses and binds, the bind is on the near face with probability 1/2 to
+first order in the step (the crossing falls uniformly in the encounter's local time), so this share leaves each face's
+bound pool second order in the step. The far face alone (the face the walker ends on) puts every such bind on the far
+face, a first-order error in each face's pool from any start out of equilibrium (the total is unchanged); a near face
+alone, the same error the other way. Measured on the walk's exact chain against
+``dmipy_analytic.bloch_torrey.BlochTorrey1D`` (two layers, one membrane, a bound pool on each face, free walkers on one
+side at the start): the far face's error halves with the step under the far-face rule and falls by three to four with
+this share, which is the only one whose first-order term vanishes; at ``kappa h / D`` of 5 and 50 each face's error is
+then half the total's. The second-order remainder is largest at a low permeability, where the binding clock's ringing
+early in the encounter tilts the share towards the near face (dmrai-lab/dmipy-sim#926)."""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # The wall-interaction contract.
 #

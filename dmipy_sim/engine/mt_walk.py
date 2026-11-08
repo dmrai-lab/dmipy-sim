@@ -53,9 +53,11 @@ def simulate_mt_trajectories(
     plain pack of one substrate differ only by what binding did.
 
     A permeable wall (one number, one per object, or a schedule over time) is walked cross first, then bind:
-    at each encounter that touches the wall the crossing is decided by the transmission rule, then the walker, on the
-    face it ends on, binds with the probability of the encounter's local time, crossed or reflected, and freezes at
-    the step's end (#909); a geometry that carries the walker's side carries it through the walk. A Mesh's crossing
+    at each encounter that touches the wall the crossing is decided by the transmission rule, then the walker binds
+    with the probability of the encounter's local time, crossed or reflected, and freezes at the step's end (#909): on
+    its own face at a reflected encounter, on the near or the far face, half each, at one it crossed
+    (:data:`~dmipy_sim.geometry._boundary.NEAR_FACE_SHARE`, #926), seen on its face's side while bound and resuming from
+    the step's end; a geometry that carries the walker's side carries it through the walk. A Mesh's crossing
     directions are refused by name (:func:`~dmipy_sim.engine.mt.refuse_unsupported_permeable_mt`).
 
     Parameters

@@ -83,10 +83,11 @@ def refuse_unsupported_permeable_mt(geometry, where, *, schedule=True):
     """Refuse the permeable geometries the MT walk does not walk, by name; walk the rest.
 
     The MT walk binds at a permeable wall by the cross-first rule: at each encounter that touches a wall the crossing
-    is decided first (the transmission rule ``p = x / (1 + x)``), then the walker, on the face it ends on, binds with
-    ``p = 1 - exp(-kappa_MT / D * l)`` for the encounter's local time ``l = 2 d_perp``, whether it crossed or was
-    reflected, and freezes at the step's end for a dwell that carries the encounter's geminate rebinds
-    (dmrai-lab/dmipy-sim#909, #921). It walks every geometry with walls and a
+    is decided first (the transmission rule ``p = x / (1 + x)``), then the walker binds with ``p = 1 - exp(-kappa_MT /
+    D * l)`` for the encounter's local time ``l = 2 d_perp``, whether it crossed or was reflected (on the near or the
+    far face, half each, when it crossed: :data:`~dmipy_sim.geometry._boundary.NEAR_FACE_SHARE`), and freezes at the
+    step's end for a dwell that carries the encounter's geminate rebinds (dmrai-lab/dmipy-sim#909, #921, #926). It
+    walks every geometry with walls and a
     permeability of one number, one per object, or a :class:`~dmipy_sim.geometry.base.PermeabilitySchedule` (a
     geometry that carries the walker's side carries it through the walk, and the burn-in that equilibrates the bound
     pool before t = 0 reads the first interval of a schedule). The forward vector-Bloch walk takes a permeability

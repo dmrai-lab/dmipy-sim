@@ -1,17 +1,19 @@
 """The MT walk on a permeable wall: cross first, then bind, against the exact 1-D answer (dmrai-lab/dmipy-sim#909).
 
 At an encounter that touches a permeable wall the walk decides the crossing first (the transmission rule), then the
-binding on the face the walker ends on, from the encounter's local time, whether it crossed or was reflected: the
-binding clock ``1 - exp(-kappa_MT l / D)``. A bound walker freezes at the step's end for an exponential dwell that
-carries the encounter's geminate rebinds (mean ``tau exp(kappa_MT l / (2 D))``) and is released to the same face
-(#921).
+binding, from the encounter's local time, whether it crossed or was reflected: the binding clock ``1 - exp(-kappa_MT l
+/ D)``. A reflected encounter binds on the walker's own face; a crossing one on the near or the far face, half each
+(:data:`~dmipy_sim.geometry._boundary.NEAR_FACE_SHARE`, #926). A bound walker freezes at the step's end for an
+exponential dwell that carries the encounter's geminate rebinds (mean ``tau exp(kappa_MT l / (2 D))``, #921), seen on
+its face's side, and resumes from the step's end.
 
 The substrate is a slab of two layers of ``R`` between reflecting walls with one membrane, a bound pool on each face of
-it (:class:`~dmipy_sim.geometry.PermeableSlab1D`), walkers uniform over the slab, free water at no relaxation and no
-off-resonance, the bound pool at ``R2_b`` and ``omega_b``. The reference is the 1-D Bloch-Torrey equation on the same
-layers with the same pools (:class:`dmipy_analytic.bloch_torrey.BlochTorrey1D` with ``binding_reactivity``), exact up
-to its cells. The step is ``h = 0.09 R`` (one step per block, the step law's regime of #915); the membrane is at
-``kappa h / D`` of 0.5 and 1.0, the binding at ``kappa_MT h / D = 0.2`` with a dwell of 33 steps.
+it (:class:`~dmipy_sim.geometry.PermeableSlab1D`), walkers uniform over the slab (or, for each face's pool, free in one
+layer), free water at no relaxation and no off-resonance, the bound pool at ``R2_b`` and ``omega_b``. The reference is
+the 1-D Bloch-Torrey equation on the same layers with the same pools (:class:`dmipy_analytic.bloch_torrey.BlochTorrey1D`
+with ``binding_reactivity``), exact up to its cells. The step is ``h = 0.09 R`` (one step per block, the step law's
+regime of #915); the membrane is at ``kappa h / D`` of 0.5 and 1.0, the binding at ``kappa_MT h / D = 0.2`` with a dwell
+of 33 steps.
 
 A walker's transverse magnetisation is ``exp(-(R2_b + i omega_b) t_b)`` with ``t_b`` its time bound, one step for each
 block end it is found bound at. The dwell is a continuous exponential read at the block ends without bias
@@ -49,14 +51,20 @@ def _binding_eps():
     return binding_error(D, K_ON, DT, R)                      # the pore: a layer of width R
 
 
-def _reference(kappa, step, breakpoints=(), *, relax=True, pool="total", n_cells=800, k_on=K_ON, tau=TAU):
+def _reference(kappa, step, breakpoints=(), *, relax=True, pool="total", n_cells=800, k_on=K_ON, tau=TAU, face=None):
+    """The slab's signal after ``step`` steps; ``face`` (0 the face of layer A, 1 of layer B): that face's pool, from
+    free walkers in layer A alone and empty bound pools."""
     perm = (kappa,) if not breakpoints else tuple((k,) for k in kappa)
     kw = dict(permeability=perm, permeability_breakpoints=breakpoints, density=(1.0, 1.0), binding_reactivity=k_on,
               dwell_time=tau)
+    if face is not None:
+        kw.update(density=(1.0, 0.0), bound_start="empty")
     if relax:
         kw.update(bound_R2=R2B, bound_omega=OMEGA_B)
     m = bt.BlochTorrey1D(np.array([0.0, 1.0, 2.0]) * R, D, n_cells=n_cells, **kw)
-    return complex(m.signal(np.zeros(step), DT, pool=pool))
+    if face is None:
+        return complex(m.signal(np.zeros(step), DT, pool=pool))
+    return complex(np.asarray(m.signal(np.zeros(step), DT, pool=pool, by_layer=True))[face])
 
 
 def _with_bound(value_of):
@@ -112,54 +120,112 @@ def test_the_permeable_mt_walk_is_the_continuum_slab_with_bound_pools():
         f"{a} {b} {c} {d:.5f} {e:.5f} {z:+.1f} {t:.5f}" for a, b, c, d, e, z, t in rows))
 
 
-# ── the order at one contact ────────────────────────────────────────────────────────────────────────────────────
-def test_a_crossing_is_decided_before_the_binding_and_binding_never_vetoes_it():
-    """Walkers one step from a strongly binding, strongly permeable membrane, bound pool empty (no burn-in). The
-    fraction that cross is the same with and without binding (cross first: binding is decided after, on the face
-    reached); bind-first would take from it the crossings that bind, ``P(cross and bound)``, which the same walk
-    counts and which is many standard errors."""
+N_FACE = 100_000                              # each face's tolerance at 0.1 R^2/D is about 0.0027: two thirds of the
+                                              # far-face rule's 0.004
+
+
+def test_each_faces_bound_pool_is_the_continuum_slabs_from_a_one_sided_start():
+    """Free walkers in layer A alone and empty bound pools (no burn-in): the face of layer B fills only through the
+    membrane, so each face's pool depends on the face a walker that crosses binds on (:data:`NEAR_FACE_SHARE`). Each
+    face's bound fraction and its bound pool's signal (a walker bound on a face is seen on that face's side) at the two
+    times against ``BlochTorrey1D``'s pool on that face, with the step law's binding bound on each. Every bind at a
+    crossing on the far face, the walk's rule before #926, is first order: at ``t = 0.1 R^2 / D`` it puts about 0.004
+    too much in the far face's pool and as much too little in the near face's, at both permeabilities -- about seven
+    standard errors here, against a tolerance of four."""
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.geometry import PermeableSlab1D
-    n, kappa, kon, seed = 40_000, 1.5 * D / (H * R), 3.0 * D / (H * R), 5
+    comparisons = len(KAPPA_STAR) * len(STEPS) * 2 * 2
+    rows = []
+    for i, ks in enumerate(KAPPA_STAR):
+        kappa = ks * D / (H * R)
+        r0 = np.zeros((N_FACE, 3), np.float32)
+        r0[:, 0] = np.random.default_rng(41 + i).uniform(0.0, R, N_FACE)
+        w = _walk_geometry(N_FACE, D, PermeableSlab1D(length=2 * R, permeability=kappa), max(STEPS) * DT, DT,
+                           sub_steps=1, seed=41 + i, raw_subset=N_FACE, require_gpu=False, r0=r0, kappa_MT=K_ON,
+                           dwell_time=TAU, equilibrate_binding="off")
+        assert w.work["exhausted_steps"] == 0
+        bound = np.asarray(w.raw_bound, np.float64)
+        x = np.asarray(w.raw_positions, np.float64)[:, :, 0]
+        for step in STEPS:
+            t_b = bound[:, 1:step + 1].sum(1) * DT
+            sig = np.exp(-R2B * t_b) * np.cos(OMEGA_B * t_b)
+            for face in (0, 1):
+                on = bound[:, step] * ((x[:, step] > R) if face else (x[:, step] < R))
+                ref_b, e_b = _with_bound(lambda **kw: _reference(kappa, step, relax=False, pool="bound", face=face,
+                                                                 **kw).real)
+                ref_s, e_s = _with_bound(lambda **kw: _reference(kappa, step, pool="bound", face=face, **kw))
+                for name, v, ref, e in (("bound fraction", on, ref_b, e_b),
+                                        ("bound signal", on * sig, ref_s.real, e_s)):
+                    tol = se_tol(N_FACE, v.std(), comparisons=comparisons) + e
+                    z = (v.mean() - ref) / (v.std() / np.sqrt(N_FACE))
+                    rows.append((ks, step, "AB"[face], name, v.mean(), ref, z, tol))
+                    assert abs(v.mean() - ref) < tol, (f"kappa h/D = {ks}, step {step}, face {'AB'[face]}: {name} "
+                                                       f"{v.mean():.5f} against {ref:.5f} (tolerance {tol:.5f})")
+    print("\nkappa* step face quantity walk reference z tol\n" + "\n".join(
+        f"{a} {b} {c} {d} {e:.5f} {f:.5f} {z:+.1f} {t:.5f}" for a, b, c, d, e, f, z, t in rows))
+
+
+# ── the order at one contact ────────────────────────────────────────────────────────────────────────────────────
+def _one_step_from_the_membrane(n, kappa, kmt, dwell, seed, steps=1):
+    """``n`` walkers ``0.3 h`` below a permeable membrane, bound pool empty (no burn-in), walked ``steps`` steps:
+    ``(start, seen positions (n, steps + 1), bound (n, steps + 1))``."""
+    from dmipy_sim.engine.core import _walk_geometry
+    from dmipy_sim.geometry import PermeableSlab1D
     g = PermeableSlab1D(length=2 * R, permeability=kappa)
     r0 = np.zeros((n, 3), np.float32)
     r0[:, 0] = R - 0.3 * H * R
+    kw = dict(kappa_MT=kmt, dwell_time=dwell, equilibrate_binding="off") if kmt else {}
+    w = _walk_geometry(n, D, g, steps * DT, DT, sub_steps=1, seed=seed, raw_subset=n, require_gpu=False, r0=r0, **kw)
+    x = np.asarray(w.raw_positions, np.float64)[:, :, 0]
+    b = np.asarray(w.raw_bound) > 0 if kmt else np.zeros(x.shape, bool)
+    return float(r0[0, 0]), x, b
 
-    def one(kmt, s):
-        kw = dict(kappa_MT=kmt, dwell_time=10 * DT, equilibrate_binding="off") if kmt else {}
-        w = _walk_geometry(n, D, g, DT, DT, sub_steps=1, seed=s, raw_subset=n, require_gpu=False, r0=r0, **kw)
-        crossed = np.asarray(w.raw_positions)[:, 1, 0] > R
-        bound = np.asarray(w.raw_bound)[:, 1] > 0 if kmt else np.zeros(n, bool)
-        return crossed, bound
 
-    c_mt, b_mt = one(kon, seed)
-    c_0, _ = one(0.0, seed + 1)
+def test_a_crossing_is_decided_before_the_binding_and_binding_never_vetoes_it():
+    """Walkers one step from a strongly binding, strongly permeable membrane. The fraction that cross is the same with
+    and without binding (cross first: binding is decided after, and never undoes the crossing); bind-first would take
+    from it the crossings that bind, ``P(cross and bound)``, which the same walk counts and which is many standard
+    errors. A walker that crossed and bound is seen on the face it bound on (:data:`NEAR_FACE_SHARE`): past the
+    membrane on the far face, at its step's start on the near face."""
+    from dmipy_sim.geometry._boundary import NEAR_FACE_SHARE
+    n, kappa, kon, seed = 40_000, 1.5 * D / (H * R), 3.0 * D / (H * R), 5
+    x0, x, b = _one_step_from_the_membrane(n, kappa, kon, 10 * DT, seed)
+    _, x_0, _ = _one_step_from_the_membrane(n, kappa, 0.0, 0.0, seed + 1)
+    far, near = b[:, 1] & (x[:, 1] > R), b[:, 1] & (x[:, 1] == x0)
+    c_mt, c_0 = (x[:, 1] > R) | near, x_0[:, 1] > R
     p_mt, p_0 = c_mt.mean(), c_0.mean()
     se = np.sqrt(p_mt * (1 - p_mt) / n + p_0 * (1 - p_0) / n)
-    vetoed = (c_mt & b_mt).mean()                              # what bind-first would remove from the crossings
+    vetoed = (c_mt & b[:, 1]).mean()                          # what bind-first would remove from the crossings
     assert vetoed > 10 * se, f"the control does not resolve the order: crossings that bind {vetoed:.4f}, se {se:.4f}"
     assert abs(p_mt - p_0) < se_tol(n, 1.0, runs=2) * np.sqrt(p_0 * (1 - p_0)), (
         f"crossing {p_mt:.4f} with binding against {p_0:.4f} without (se {se:.4f}); bind-first would be {p_0 - vetoed:.4f}")
-    assert b_mt[c_mt].any() and b_mt[~c_mt].any()             # a walker binds on either side of a contact
+    # the crossings that bind, shared between the faces
+    k, m = int(near.sum()), int((near | far).sum())
+    assert m > 1000 and abs(k / m - NEAR_FACE_SHARE) < se_tol(m, 0.5), f"{k} of {m} crossing binds on the near face"
+    assert (b[:, 1] & (x[:, 1] < R) & ~near).any()            # and a reflected encounter binds on its own face
 
 
-def test_a_bound_walker_freezes_at_the_steps_end_not_at_the_face():
-    """The walker that binds at the encounter that crossed rests where its step ended, on the face's far side."""
-    from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.geometry import PermeableSlab1D
+def test_a_bound_walker_is_seen_on_its_face_and_resumes_from_its_steps_end():
+    """A walker that binds rests through its dwell: one bound on the far face of the encounter it crossed rests where
+    its step ended, past the face (not on it); one bound on the near face is seen at the step's start, on the near
+    side. Released, either resumes from where its step ended: the crossing stands, so a near-face walker released
+    early in a step mostly ends it past the membrane, which from its step's start few walkers reach."""
     n = 20_000
-    g = PermeableSlab1D(length=2 * R, permeability=2.0 * D / (H * R))
-    r0 = np.zeros((n, 3), np.float32)
-    r0[:, 0] = R - 0.3 * H * R
-    w = _walk_geometry(n, D, g, 3 * DT, DT, sub_steps=1, seed=7, raw_subset=n, require_gpu=False, r0=r0,
-                       kappa_MT=3.0 * D / (H * R), dwell_time=1e6 * DT, equilibrate_binding="off")
-    x = np.asarray(w.raw_positions, np.float64)[:, :, 0]
-    b = np.asarray(w.raw_bound)
-    frozen = (b[:, 1] > 0) & (b[:, 2] > 0) & (b[:, 3] > 0)
+    x0, x, b = _one_step_from_the_membrane(n, 2.0 * D / (H * R), 3.0 * D / (H * R), 1e6 * DT, 7, steps=3)
+    frozen = b[:, 1] & b[:, 2] & b[:, 3]
     assert frozen.sum() > 1000
     assert np.all(x[frozen, 2] == x[frozen, 1]) and np.all(x[frozen, 3] == x[frozen, 1])   # it does not move
-    crossed = frozen & (x[:, 1] > R)
-    assert crossed.sum() > 100 and np.all(np.abs(x[crossed, 1] - R) > 0.0)                # past the face, not on it
+    far, near = frozen & (x[:, 1] > R), frozen & (x[:, 1] == x0)
+    assert far.sum() > 100 and np.all(np.abs(x[far, 1] - R) > 0.0)                         # past the face, not on it
+    assert near.sum() > 100
+    # released within the next step: dwells of a step on average
+    x0, x, b = _one_step_from_the_membrane(200_000, 2.0 * D / (H * R), 3.0 * D / (H * R), DT, 8, steps=2)
+    near_out = b[:, 1] & (x[:, 1] == x0) & ~b[:, 2]
+    free_past = (~b[:, 1]) & (x[:, 1] > R)
+    assert near_out.sum() > 200
+    past = (x[near_out, 2] > R).mean()
+    assert past > 0.5 and past > 2.0 * free_past.mean(), (
+        f"{past:.3f} of the released near-face walkers past the membrane; {free_past.mean():.3f} of all cross a step")
 
 
 def test_the_dwell_is_unbiased_at_the_block_ends():

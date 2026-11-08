@@ -264,7 +264,19 @@ is divided by ``|dX/d ln k_on| + |dX/d ln tau_b|`` (the reference's sensitivitie
 dwells of 17 to 66 steps, ``l / h`` from 11 to 44, two steps a factor 2 apart, a walker released inside a step walking
 the rest of it or held to the step's end (the fixed-length kernels). The linear law ``min(1, x)`` with a plain dwell,
 which this replaces, is first order in the bound pool's signal: its ratio at ``h = 0.09 l`` and ``kappa_MT h / D =
-0.0125`` is 9x this one's and halves, rather than quarters, with the step (dmrai-lab/dmipy-sim#921)."""
+0.0125`` is 9x this one's and halves, rather than quarters, with the step (dmrai-lab/dmipy-sim#921).
+
+Each face's pool (#926), a crossing's bind on either face half each
+(:data:`~dmipy_sim.geometry._boundary.NEAR_FACE_SHARE`), measured on the same chain from free walkers on one side of the
+membrane, the far face filled only through it, ``kappa_MT h / D = 0.2``, at ``h`` and ``h / 2`` (``h = 0.09 l``) and
+``t`` of 0.1 and 0.3 ``l^2 / D``: at ``kappa h / D`` of 0.5, 5 and 50 each face is within this term (a coefficient of
+0.04 would do; from 5 on each face carries half the total's error). At ``kappa h / D = 0.045`` the far face's pool needs
+up to 0.18 at ``0.1 l^2 / D`` and 0.06 at ``0.3 l^2 / D``, from two parts. One is the exchange's own transient at the
+membrane, a relative error of about ``0.2 h^2 / (D t)`` that does not depend on ``kappa_MT`` and that no term of the law
+states (:data:`MEMBRANE_COEFFICIENT` bounds the slowest mode). The other is the share's second-order remainder -- at a
+low permeability the binding clock, ringing early in the encounter, tilts a crossing's binds towards the near face --
+about 1.5 times this term at ``0.1 l^2 / D``. From a start out of spatial equilibrium a face's pool at a low
+permeability is within this term once that transient has passed, ``t`` of a few tenths of ``l^2 / D``."""
 
 
 def binding_length(geometry):

@@ -1536,8 +1536,9 @@ def _walk_geometry(
             # p = 1 - exp(-(kappa_MT / D) local_time), on the same local time the surface channel records; a stuck
             # walker freezes for an exponential dwell of mean dwell_time and is released. A binding encounter
             # contributes nothing to the free pool's local time (the spin left the free pool), so rho stays a pure
-            # replay knob. Carry (r, key, bound_rem, dlog_cum, bad, work).
-            from ..geometry._boundary import bind_probability, dwell_left, dwell_scale
+            # replay knob. Carry (r, key, bound_rem, dlog_cum, bad, work); the walk's carry adds the position it is
+            # seen at (``inner_step_mt_seen``).
+            from ..geometry._boundary import NEAR_FACE_SHARE, bind_probability, dwell_left, dwell_scale
             _kappa_over_D_mt = jnp.float32(float(kappa_MT) / float(diffusivity))
             _dwell_steps_mean = jnp.float32(float(dwell_time) / dt_sim)
             if hasattr(geometry, "reflect_with_binding"):
@@ -1562,7 +1563,9 @@ def _walk_geometry(
             _mt_perm = (not hasattr(geometry, "reflect_with_binding")) and has_permeability
             _mt_side = _mt_perm and _carries_side         # the carry holds the walker's side before its work record
 
-            def inner_step_mt(carry, step_index):
+            def _mt_step(carry, step_index):
+                """One step of the MT walk: the carry after it, and whether the walker bound in it on the face it came
+                from (a bind at an encounter it crossed, on the near face: :data:`NEAR_FACE_SHARE`)."""
                 if _mt_side:
                     r, key, bound_rem, dlog_cum, bad, side, work = carry
                 else:
@@ -1593,6 +1596,16 @@ def _walk_geometry(
                 # step's end is the draw less the time from the encounter to the end; a dwell shorter than that
                 # is over within the step
                 left = dwell_left(dwell_draw, moving, u_when)
+                # the face: a reflected encounter's bind is on the face the walker stays on; a transmitted one shares
+                # its local time between the two faces, so its bind is on the near face (before the crossing) or the
+                # far face (after it) with NEAR_FACE_SHARE. Either way the crossing stands and the walker resumes from
+                # the step's end: the rest of the encounter is spent after the release. ``near``: bound on the near
+                # face at the step's end
+                if _mt_perm:                # the face's draw of its own: the walk's other draws are as without it
+                    u_face = jax.random.uniform(jax.random.fold_in(dwell_key, 1), dtype=jnp.float32)
+                    near = newly & hit.crossed & (u_face < jnp.float32(NEAR_FACE_SHARE)) & (left > jnp.float32(0.0))
+                else:
+                    near = jnp.zeros((), bool)
                 r_next = jnp.where(still, r, r_free)
                 bound_next = jnp.where(still, bound_rem - jnp.float32(1.0), jnp.where(newly, left, jnp.float32(0.0)))
                 dlog_cum = dlog_cum + jnp.where(still | newly, jnp.float32(0.0), dlog_free)
@@ -1603,8 +1616,24 @@ def _walk_geometry(
                     # the side follows the crossing that was decided, whether or not the walker is then held at the end
                     # of its step: a held walker has not moved, so only a walker that moved can have crossed
                     side = jnp.where(hit.crossed & ~still, -side, side)
-                    return (r_next, key, bound_next, dlog_cum, bad, side, work), None
-                return (r_next, key, bound_next, dlog_cum, bad, work), None
+                    return (r_next, key, bound_next, dlog_cum, bad, side, work), near
+                return (r_next, key, bound_next, dlog_cum, bad, work), near
+
+            def inner_step_mt(carry, step_index):
+                """The MT walk's step on its own carry (the burn-in's): where the walker is and resumes from."""
+                return _mt_step(carry, step_index)[0], None
+
+            def inner_step_mt_seen(carry, step_index):
+                """The MT walk's step on the walk's carry, which adds the position the walker is seen at: where it is,
+                except while it is bound on the near face of an encounter it crossed, when it is seen at the start of
+                the step it bound in -- on that face's side, so a bound walker's position tells its face. Released, it
+                is seen where it resumes."""
+                r_seen = carry[-1]
+                r, bound_rem = carry[0], carry[2]
+                still = bound_rem >= jnp.float32(1.0)
+                nxt, near = _mt_step(carry[:-1], step_index)
+                r_seen = jnp.where(still, r_seen, jnp.where(near, r, nxt[0]))
+                return nxt + (r_seen,), None
 
         # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
         # granted crossing change it thereafter (MC/DC's `initial_location`).
@@ -1768,8 +1797,9 @@ def _walk_geometry(
                         bound_of=((lambda c: (c[5] > 0).astype(jnp.int8)) if _mt_on else None))
         elif _mt_walls:
             kind_name = "mt"
-            kind = Kind(inner=inner_step_mt, pos_of=(lambda c: c[0]), read_pos_of=(lambda c: c[0]), blt_of=(lambda c: c[3]),
-                        label_of=None, bound_of=(lambda c: (c[2] > 0).astype(jnp.int8)))
+            # the walk records the position a walker is seen at, its bound face's side while it is bound
+            kind = Kind(inner=inner_step_mt_seen, pos_of=(lambda c: c[-1]), read_pos_of=(lambda c: c[-1]),
+                        blt_of=(lambda c: c[3]), label_of=None, bound_of=(lambda c: (c[2] > 0).astype(jnp.int8)))
         elif record:
             kind_name = "relax"
             kind = Kind(inner=inner_step_relax, pos_of=(lambda c: c[0]), read_pos_of=(lambda c: c[0]), blt_of=(lambda c: c[2]),
@@ -1800,8 +1830,11 @@ def _walk_geometry(
                     phys0 = (r0_w, key_w, jnp.float32(0.0), side_w, jnp.int32(0), comp0_w, _work0())
                     lab0 = _pool2(comp0_w)
                 elif kind_name == "mt":
-                    phys0 = ((r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), side_w, _work0()) if _mt_side
-                             else (r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), _work0()))
+                    # a walker bound at the start is seen where it is: one the burn-in leaves bound on the near face
+                    # of a crossing is seen on the far side until its release; the burn-in ends at equilibrium, where
+                    # the crossings each way are as many and alike, so as many are seen across the other way
+                    phys0 = ((r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), side_w, _work0(), r0_w) if _mt_side
+                             else (r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), _work0(), r0_w))
                     lab0 = _pool2(comp0_w)
                 else:
                     phys0 = ((r0_w, r0_w, key_w, jnp.float32(0.0), comp0_w, brem0_w, jnp.float32(0.0), _work0()) if _mt_on
