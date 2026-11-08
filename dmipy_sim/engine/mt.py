@@ -188,10 +188,10 @@ BURNIN_MIN_CHUNKS = 40
 
 def _first_permeabilities(geometry, n_objects):
     """The permeability (m/s) of each of the geometry's ``n_objects`` walls at the first interval of time."""
-    table = getattr(geometry, "permeability_table", None)
+    table = geometry.permeability_table
     if table is not None:
         return np.broadcast_to(np.asarray(table.values[0], float), (n_objects,))
-    k = getattr(geometry, "permeability", None)
+    k = geometry.permeability
     return np.full(n_objects, 0.0 if k is None else float(k))
 
 
