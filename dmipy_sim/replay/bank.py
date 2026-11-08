@@ -652,7 +652,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     Each rung's truncated DCT and derived quantisation container are replayed against
     every GRE/SE echo at the position band's resolution, a CPMG train and a stimulated
     echo, at every envelope setting. An uncertified codec is retried at 16 bits.
-    An all-failing ladder raises ValueError; no least-worst fallback is admitted.
+    An all-failing ladder selects its top rung, records an uncertified bound and warns.
     ``confidence_level`` is the family level (0.99 by default).
 
     The error bound is the paired mean difference plus a normal standard-error
@@ -667,7 +667,8 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
     log-variance approximations are asymptotic, not finite-sample guarantees.
 
     ``evaluate_all`` records later rungs too without changing the first passing choice.
-    The record includes each visited rung's point ratio, upper ratio bound, level,
+    The record flags an all-failing ladder with ``field_band_uncertified`` and
+    includes each visited rung's point ratio, upper ratio bound, level,
     method, codec and binding echo, and whether the band exceeds ``K_max``.
     The pack's codec is derived again on the production modes; this certificate
     describes the pilot codec and the block-grid query domain only.
@@ -742,6 +743,8 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
             cd = susc_path_field(C, d, B0=b0, chi_iso=chi_i, chi_aniso=ca, has_aniso=has_aniso)       # (n_w, k)
             f_dec = idct(np.pad(cd, ((0, 0), (0, n_t - k))), type=2, norm="ortho", axis=1)
             errors, thresholds, ub = signal_bounds(raw[(b0, th)], f_dec, gates)
+            if np.any(np.isnan(ub)):
+                raise ValueError("field simultaneous upper bound cannot be computed: NaN upper_bound")
             ratios = np.divide(errors, thresholds, out=np.full(errors.shape, np.inf), where=thresholds > 0)
             ratios[(errors == 0) & (thresholds == 0)] = 0.0
             point_ratio = max(point_ratio, float(np.max(ratios)))
@@ -790,10 +793,19 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                 chosen = k
             if not evaluate_all:
                 break
-    if chosen is None:
-        raise ValueError("no field band/container meets the confidence bound on the requested error budget")
+    uncertified = chosen is None
+    if uncertified:
+        chosen = top
+        if not np.isfinite(bounds[chosen]):
+            raise ValueError("field simultaneous upper bound cannot be computed: non-finite upper_bound at top rung")
+        import warnings
+        warnings.warn(
+            f"field band uncertified: top rung K={chosen} has simultaneous upper bound "
+            f"{bounds[chosen]:.17g} > 1 at confidence level {confidence_level:.17g}",
+            UserWarning, stacklevel=2)
+
     K = chosen
-    record = dict(rule="pilot",
+    record = dict(rule="pilot", field_band_uncertified=uncertified,
                   confidence_level=confidence_level, upper_bound=float(bounds[K]),
                   confidence_method="paired-walker normal approximation; Bonferroni over all rungs, settings, gates, both codec candidates, "
                                     "complex error components and log-variance lower bounds; ratio uses upper error / lower threshold",
