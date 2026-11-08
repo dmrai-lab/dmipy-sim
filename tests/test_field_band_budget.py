@@ -23,7 +23,29 @@ def test_explicit_field_budget_does_not_depend_on_pilot_noise_or_request_count()
     assert record["within_floor"] and "explicit" in record["floor_is"]
 
 
-def test_an_unachievable_budget_is_refused_instead_of_selecting_a_failing_rung():
-    with pytest.raises(ValueError, match="no field band"):
-        derive_field_band(series(), CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6, target_floor=1e-30,
-                          env=dict(B0_list=[3],theta_deg=[90],max_refocus_pulses=1))
+def test_an_unachievable_budget_records_the_top_rung_and_warns():
+    with pytest.warns(UserWarning, match="field band uncertified:.*simultaneous upper bound"):
+        k, record = derive_field_band(series()[:2], CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6,
+                                      target_floor=1e-30,
+                                      env=dict(B0_list=[3],theta_deg=[90],max_refocus_pulses=1))
+    assert k == record["K"] == 32
+    assert record["field_band_uncertified"] and not record["within_floor"]
+    assert record["upper_bound"] == record["ladder"][-1]["upper_bound"] > 1
+    assert record["confidence_level"] == .99
+
+
+def test_a_missing_bound_is_refused_by_name():
+    with pytest.raises(ValueError, match="field confidence bounds require at least two finite walker series"):
+        derive_field_band(series()[:1], CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6)
+
+
+def test_a_zero_spread_pilot_certifies_against_absolute_precision():
+    values = np.repeat(series()[:1], 2, axis=0)
+    k, record = derive_field_band(values, CHANNEL_NAMES, .001, K_max=16, B0=3, chi=1e-6,
+                                  env=dict(B0_list=[3], theta_deg=[90], max_refocus_pulses=1))
+    assert k == record["K"] == 32
+    assert all(r["upper_bound"] > 1 for r in record["ladder"][:-1])
+    assert np.isfinite(record["upper_bound"]) and record["upper_bound"] <= 1
+    assert record["threshold_term"] == "absolute"
+    assert record["floor"] == np.finfo(np.float32).resolution
+    assert all(r["threshold_term"] == "absolute" for r in record["ladder"])

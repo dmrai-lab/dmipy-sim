@@ -1,6 +1,6 @@
 """The field band is held to the numerical budget the walk is given (``field_target_floor``), not to the statistical
 floor of its pilot scaled to the walk's walker count: the band is the first whose codec error is within the budget,
-the walk records the budget, and a budget no band reaches is refused by name."""
+the walk records the budget, and a budget no band reaches is quantified with an uncertified flag and warning."""
 from tests._envelope import stated, walk_envelope
 import numpy as np
 import pytest
@@ -30,26 +30,32 @@ def capped_walk():
     return _susc_walk(300, seed=2, field_target_floor=BUDGET)
 
 
-def test_without_a_budget_the_band_is_held_to_the_scaled_split_half_floor(default_walk):
+def test_without_a_budget_the_band_is_held_to_the_scaled_standard_error_floor(default_walk):
     band = default_walk.block["field_band"]
-    assert default_walk.K_c3 == band["K"] == 32
-    assert band["target_floor"] is None and "split-half" in band["floor_is"]
+    assert default_walk.K_c3 == band["K"] == 40
+    assert band["upper_bound"] <= 1 and not band["field_band_uncertified"]
+    assert band["target_floor"] is None and "standard error" in band["floor_is"]
     assert band["floor"] > 100 * BUDGET and band["floor_scale"] == pytest.approx(np.sqrt(band["pilot_walkers"] / band["production_walkers"]))
     assert _pack_fidelity(default_walk)["err_susc_path"] > BUDGET                      # the band the budget is for
 
 
 def test_the_band_meets_the_budget_whatever_the_walker_count(default_walk, capped_walk):
     band = capped_walk.block["field_band"]
-    assert capped_walk.K_c3 == band["K"] > default_walk.K_c3
+    assert capped_walk.K_c3 == band["K"] == default_walk.K_c3 == 40
+    assert band["upper_bound"] <= 1 and not band["field_band_uncertified"]
     assert band["target_floor"] == BUDGET and band["floor"] == BUDGET and "explicit" in band["floor_is"]
     assert band["within_floor"] and band["err"] <= BUDGET
     fid = _pack_fidelity(capped_walk, sigma_star=BUDGET, planned_floor=BUDGET)
     assert fid["err_susc_path"] <= BUDGET and fid["floor_susc_path"] == BUDGET
 
 
-def test_a_budget_no_band_reaches_is_refused_by_name():
-    with pytest.raises(ValueError, match="no field band/container meets the requested error budget"):
-        _susc_walk(300, seed=2, field_target_floor=1e-30)
+def test_a_budget_no_band_reaches_is_recorded_with_a_warning():
+    with pytest.warns(UserWarning, match="field band uncertified:.*simultaneous upper bound"):
+        w = _susc_walk(300, seed=2, field_target_floor=1e-30)
+    band = w.block["field_band"]
+    assert w.K_c3 == band["K"] == 40
+    assert band["field_band_uncertified"] and not band["within_floor"]
+    assert band["upper_bound"] > 1 and band["confidence_level"] == .99
 
 
 def test_the_budget_goes_with_a_derived_field_band():
