@@ -24,6 +24,9 @@ study = Study(StudyProtocol([Acquisition(seq, name="two directions")]), tissues=
 S, floor, plan = pack.image(study)                                       # (3, 40, 40, 40, 2): one pass, a floor per volume
 ```
 
+The example's `chi_aniso=-1e-7` is in the [package convention](../tissue.md)
+(-0.1 ppm, equivalent to W&B's -0.0667 ppm).
+
 What the study reads is decided by its most demanding pair: the field at 7 T needs the path channel's modes and
 the relaxivity needs the contact channel, and the bare pair rides along on the same rows. The measured costs of
 the full 364-measurement protocol on the whole grid, from the hub:

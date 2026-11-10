@@ -5,6 +5,11 @@ so a sheath the grid does not resolve rings into the lumen where the intra pool 
 derived -- ``FIELD_NODES_ACROSS`` nodes across the thinnest shell the spec records -- and the number of nodes
 across is MEASURED here against the Wharton-Bowtell hollow cylinder, not assumed. A basis the host cannot afford
 is refused naming the shell, never coarsened.
+
+The susceptibility parameters use dmipy-analytic's convention defined in
+:mod:`dmipy_sim.fields.susceptibility_field`: chi_I is the tensor mean and chi_A
+is the radial-minus-tangential eigenvalue difference. Thus chi_A = (3/2) chi_A_WB,
+with identical chi_I (Wharton & Bowtell 2012, Table 1 and Fig. 3C).
 """
 import dataclasses
 import os
@@ -27,7 +32,7 @@ trimesh = pytest.importorskip("trimesh")
 def _lumen_field_errors(res, a=0.40e-6, b=0.52e-6):
     """The hollow cylinder with the CACTUS bundle's thinnest sheath (0.120 um) rasterised at ``res``, B0 across the
     axis: the lumen's anisotropic term against Wharton-Bowtell's closed form (relative), and the isotropic lumen
-    null as a fraction of chi (the exact answer is 0)."""
+    null as a fraction of chi (the exact answer is 0), in this module's package convention."""
     dchi, chi, B0 = -1e-7, -1e-7, 3.0
     direction = (1.0, 0.0, 0.0)
     expect = 0.5 * dchi * np.log(b / a)

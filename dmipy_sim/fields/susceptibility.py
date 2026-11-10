@@ -19,7 +19,19 @@ that plugs straight into the Bloch step:
   tensor, solve, sample).
 
 Units: lengths m, ``voxel_size`` m, ``B0`` tesla, susceptibilities dimensionless (SI
-volume susceptibility, e.g. ``chi_aniso = -0.1e-6``).  ``ΔBz`` is returned in tesla.
+volume susceptibility).  ``ΔBz`` is returned in tesla.
+
+The susceptibility convention is shared with dmipy-analytic:
+``chi = chi_I * I + chi_A * (n n^T - I/3)``, with radial unit director ``n``.
+Here ``chi_I = chi_iso = tr(chi)/3`` is the mean susceptibility and
+``chi_A = chi_aniso = chi_radial - chi_tangential`` is the eigenvalue difference
+(also named ``delta_chi_a``). Both use the same susceptibility reference.
+Wharton & Bowtell (2012), Table 1 and Fig. 3C, use
+``chi = chi_I * I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)`` in the radial frame.
+Thus ``chi_A = (3/2) * chi_A_WB``, while ``chi_I`` is identical: W&B's
+``chi_A_WB = -0.1 ppm`` corresponds to this package's
+``chi_aniso = -0.15e-6`` (``-0.15 ppm``).
+Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/ (Table 1 and Fig. 3C).
 """
 from __future__ import annotations
 
@@ -108,7 +120,8 @@ class MyelinSusceptibility:
     with ``H`` the B0 direction given by ``theta`` (fibre-to-B0 angle) and ``alpha`` (its azimuth in the
     cross-section): the lumen field ``(1/2) delta_chi_a B0 sin^2 theta ln(1/g)``, uniform and zero with B0 along
     the fibre, the sheath's and the outside's per the module docstring. Closed form (no grid); one value
-    ``delta_chi_a`` (the anisotropic susceptibility, the isotropic one being a replay knob on a pack).
+    ``delta_chi_a = chi_A = chi_radial - chi_tangential`` in the module's
+    dmipy-analytic convention (the isotropic mean ``chi_I`` is a replay knob on a pack).
     """
     centers: np.ndarray
     inner_radii: np.ndarray

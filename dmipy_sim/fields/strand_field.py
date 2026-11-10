@@ -25,8 +25,8 @@ the largest the far field's whole rms), which no far grid can read and which the
 (each segment's term is continuous in the point). Why the exact segment field and not the infinite cylinder's
 scaled by the line-dipole integral: that scaling keeps the two-dimensional angular pattern at every distance,
 where the field of a segment one or two lengths away is the three-dimensional dipole of its moment -- a factor
-two across, zero along the axis -- and on DiSCo's tangle the far part was 50 % off an independent k-space sum
-of the tract until the exact kernel replaced it. What the sum costs at a joint, against the rasterised k-space field
+two across, zero along the axis. On DiSCo's tangle, the scaled infinite-cylinder approximation's far part
+has a 50 % discrepancy against an independent k-space sum of the tract. What the sum costs at a joint, against the rasterised k-space field
 (the two arms' half-cylinders overlap inside the bend and leave a wedge outside it, where the swept tube is
 round): a 54-degree joint, the sharpest on DiSCo, reproduces the field to 9 % of the component's maximum in the
 lumen and the sheath at the joint, 3.6 % outside within three radii, 0.6 % beyond; a 20-degree joint (DiSCo's
@@ -36,6 +36,18 @@ rasterised mask takes their union: a second-order difference confined to the ove
 Every channel is relative to the domain mean of the bare superposition, computed in closed form from the strands'
 lengths inside the domain (the Lorentz reference the k-space route imposes by zeroing k = 0; a uniform offset a
 magnitude signal cannot see).
+
+The susceptibility convention is shared with dmipy-analytic:
+``chi = chi_I * I + chi_A * (n n^T - I/3)``, with radial unit director ``n``.
+Here ``chi_I = chi_iso = tr(chi)/3`` is the mean susceptibility and
+``chi_A = chi_aniso = chi_radial - chi_tangential`` is the eigenvalue difference
+(also named ``delta_chi_a``). Both use the same susceptibility reference.
+Wharton & Bowtell (2012), Table 1 and Fig. 3C, use
+``chi = chi_I * I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)`` in the radial frame.
+Thus ``chi_A = (3/2) * chi_A_WB``, while ``chi_I`` is identical: W&B's
+``chi_A_WB = -0.1 ppm`` corresponds to this package's
+``chi_aniso = -0.15e-6`` (``-0.15 ppm``).
+Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/ (Table 1 and Fig. 3C).
 """
 from __future__ import annotations
 

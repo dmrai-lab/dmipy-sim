@@ -100,11 +100,13 @@ def test_coaxial_annulus_matches_analytic_amplitude_and_structure():
 @pytest.mark.parametrize("theta_deg", [45.0, 90.0])
 def test_anisotropic_lumen_field_matches_wharton_bowtell_on_every_route(theta_deg):
     """The ANISOTROPIC term has a closed form in the lumen of a hollow cylinder (Wharton & Bowtell 2012):
-    dB/B0 = (1/2) dchi_a sin^2(theta) ln(1/g), uniform, zero with B0 along the fibre. Every route that builds a
-    field basis must reproduce it: the analytic cylinder (field_grid_of), the meshed cylinder (mesh_field_basis,
+    dB/B0 = (1/2) dchi_a sin^2(theta) ln(1/g), uniform, zero with B0 along the fibre.
+    Here dchi_a = chi_radial - chi_tangential = (3/2) chi_A_WB in the package's
+    convention; W&B's Table 1 and Fig. 3C give (3/4) chi_A_WB instead.
+    Every route that builds a field basis must reproduce it: the analytic cylinder (field_grid_of), the meshed cylinder (mesh_field_basis,
     closest-point director) and the straight strand (predicate_field_basis with the pack's radial director).
     The mask-gradient director (dmipy-sim#213) is what this oracle catches, and the tolerance is what the k-space
-    solver's periodic images leave at this box (12 um in-plane: 1.4 % at 45 deg, 0.01 % at 90; a 6 um box gave
+    solver's periodic images leave at this box (12 um in-plane: 1.4 % at 45 deg, 0.01 % at 90; a 6 um box yields
     6.5 % at 45, identically on all three routes -- the routes agree with each other to 0.01 %)."""
     import dmipy_sim as d
     from dmipy_sim.fields.susceptibility_field import (field_grid_of, mesh_field_basis, predicate_field_basis,

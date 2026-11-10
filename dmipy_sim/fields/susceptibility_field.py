@@ -32,7 +32,7 @@ Sampling the basis along a stored trajectory (:func:`sample_grid`) therefore let
 single mesh walk replay an entire ``(B0-direction, B0, chi_I, chi_A, g)`` sweep.
 
 Units: lengths m, ``voxel_size`` m, ``B0`` Tesla, susceptibilities dimensionless
-(SI volume susceptibility; e.g. ``chi_A = -0.1e-6``).  ``dB`` is returned in Tesla.
+(SI volume susceptibility).  ``dB`` is returned in Tesla.
 The phase accrued by a spin is ``phi = GAMMA * integral eps(t) dB(r(t)) dt`` with
 ``GAMMA`` from :mod:`dmipy_replay.constants`, exactly as the analytic path.
 
@@ -43,6 +43,18 @@ QSM forward models and by the analytic maps here.  The spatial *structure* (and
 hence every intra/extra difference and the diffusion dephasing) is independent of
 this global offset, and a spatially uniform offset is exactly refocused by a spin
 echo, so this choice is physically inert for SE/STE signals.
+
+The susceptibility convention is shared with dmipy-analytic:
+``chi = chi_I * I + chi_A * (n n^T - I/3)``, with radial unit director ``n``.
+Here ``chi_I = chi_iso = tr(chi)/3`` is the mean susceptibility and
+``chi_A = chi_aniso = chi_radial - chi_tangential`` is the eigenvalue difference
+(also named ``delta_chi_a``). Both use the same susceptibility reference.
+Wharton & Bowtell (2012), Table 1 and Fig. 3C, use
+``chi = chi_I * I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)`` in the radial frame.
+Thus ``chi_A = (3/2) * chi_A_WB``, while ``chi_I`` is identical: W&B's
+``chi_A_WB = -0.1 ppm`` corresponds to this package's
+``chi_aniso = -0.15e-6`` (``-0.15 ppm``).
+Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/ (Table 1 and Fig. 3C).
 """
 
 from __future__ import annotations
@@ -389,7 +401,11 @@ def myelin_susceptibility_tensor(myelin_mask, radial_dir, chi_iso=0.0, chi_aniso
         Local radial (membrane-normal / lipid-director) unit vectors.  Only used
         where ``myelin_mask > 0``; need not be normalised (it is re-normalised).
     chi_iso, chi_aniso : float
-        Isotropic and anisotropic susceptibility (SI, dimensionless).
+        Mean ``chi_I = tr(chi)/3`` and eigenvalue difference
+        ``chi_A = chi_radial - chi_tangential`` (SI, dimensionless), respectively,
+        in the dmipy-analytic convention defined in this module. W&B (2012),
+        Table 1 and Fig. 3C, use ``chi_A_WB = (2/3) * chi_A`` with identical
+        ``chi_I``; W&B's -0.1 ppm is ``chi_aniso = -0.15e-6`` here.
 
     Returns
     -------
