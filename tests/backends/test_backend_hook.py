@@ -127,7 +127,7 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     assert backends.WalkRequest._fields == ("geometry", "block_h", "n_blocks", "sub_steps", "dt_sim", "diffusivity", "record",
                                             "kappa_over_D", "count_walls", "bounce_budget", "seed", "K", "m", "K_c3",
                                             "field_read_interval", "events", "raw_subset", "stepping", "field",
-                                            "drop_pool_changes", "n_windows")
+                                            "drop_pool_changes", "n_windows", "kappa_MT_over_D", "dwell_time")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests
@@ -137,6 +137,7 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     assert r.sub_steps == w.sub_steps and r.dt_sim == pytest.approx(w.dt_sim) and r.record and r.kappa_over_D == 0.0
     assert r.events == 0 and r.K_c3 == 0 and r.field_read_interval == 0.0 and r.stepping is None and r.field is None
     assert r.n_windows == 1 and r.blocks_per_window == 4 and r.T_window == pytest.approx(2e-3)
+    assert r.kappa_MT_over_D == 0.0 and r.dwell_time == 0.0                # a walk that binds nothing
     perm = _Still()
     _walk(d.Sphere(R, permeability=1e-5), backend=perm)
     r = perm.requests[0]

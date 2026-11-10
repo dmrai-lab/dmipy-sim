@@ -5,6 +5,16 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The MT walk records a pool label, and a backend may walk MT binding** (dmrai-lab/dmrai#72). The `"mt"` kind of
+  `_walk_geometry` (`simulate_mt_trajectories`) carries, beside the position a walker is seen at, the compartment of
+  the position it resumes from and the `_pool2` label of the seen position: the near face's pool while it is bound on
+  the near face of an encounter it crossed, the resume position's otherwise. So every recorded time has the pool of
+  the recorded position, bound, at the release and free; a permeable MT walk records the label's changes as C1 events
+  (`comp_events`) and every MT walk its start labels (`compartment`). The MT walk's work record is its own (it read the
+  seen position, so it reported 0 hits, crossings and exhausted steps), and a walker held through its dwell counts no
+  encounter of the move it discards. `WalkRequest` gains `kappa_MT_over_D` and `dwell_time`; a backend that declares
+  `backends.MT_BINDING` walks the `"mt"` kind, is handed each walker's dwell at the start (`walk_batch(dwell0=)`) and
+  returns `bound_events`; the JAX burn-in is refused for a backend (`equilibrate_binding='fast'` or `'off'`).
 - **A walk states whether it starts at spatial equilibrium, and the step law's term for a start that does not**
   (#930). `physics.TRANSIENT_COEFFICIENT` = 0.3: a read at time `t` after walkers were placed out of spatial
   equilibrium carries up to `0.3 h^2 / (D t)` beyond the law's other terms, on the exchange across a membrane and on
