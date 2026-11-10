@@ -51,8 +51,15 @@ PERMEABILITY_TABLE = "permeability_table"
 #: bands on the window's own basis and the local time's form starting at 0 at the window's start (RPK.md 4.3).
 STORAGE_WINDOWS = "storage_windows"
 
-#: What the JAX kernels declare: they walk a permeability table and several storage windows.
-JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS})
+#: A capability a backend declares in :attr:`Backend.capabilities`: it walks MT binding at a walled geometry's walls
+#: (:attr:`WalkRequest.kappa_MT_over_D` > 0, the ``"mt"`` kind of :func:`~dmipy_sim.engine.core._walk_geometry`): cross
+#: first, then bind on the encounter's local time, the walker held through its dwell, its channels those of the position
+#: it is seen at and that position's pool label, its bind / unbind events the batch's ``bound_events``. Its
+#: :meth:`Backend.walk_batch` takes each walker's dwell at the start (``dwell0=``).
+MT_BINDING = "mt_binding"
+
+#: What the JAX kernels declare: they walk a permeability table, several storage windows and MT binding.
+JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS, MT_BINDING})
 
 
 class FieldSampling(NamedTuple):
@@ -100,6 +107,12 @@ class WalkRequest(NamedTuple):
     n_windows: int = 1        #: the storage windows the walk accumulates separately: ``n_blocks`` is ``n_windows`` times
                               #: the blocks of a window, and each window's coefficient form is its own (RPK.md 4.3). A
                               #: walk of more than one is walked by a backend that declares :data:`STORAGE_WINDOWS`
+    kappa_MT_over_D: float = 0.0  #: the MT binding reactivity over D (1/m): an encounter of local time ``l`` binds with
+                                  #: ``1 - exp(-kappa_MT_over_D l)`` (:func:`~dmipy_sim.geometry._boundary.bind_probability`);
+                                  #: 0 for a walk that binds nothing. A walk that binds is walked by a backend that
+                                  #: declares :data:`MT_BINDING`
+    dwell_time: float = 0.0   #: the bound pool's mean dwell (s) of a walk that binds (the geminate rebinds scale it per
+                              #: bind, :func:`~dmipy_sim.geometry._boundary.dwell_scale`); 0 for a walk that binds nothing
 
     @property
     def T(self):
@@ -121,8 +134,11 @@ def capability_refusal(backend, name, request, *, permeability_table=False):
     """Why ``backend`` (named ``name``) does not walk ``request`` for want of a capability it does not declare in its
     ``capabilities``, by the capability's name, or None: a permeability per object or over time
     (``permeability_table``) needs :data:`PERMEABILITY_TABLE`, a walk of several storage windows
-    :data:`STORAGE_WINDOWS`."""
+    :data:`STORAGE_WINDOWS`, a walk that binds (``request.kappa_MT_over_D > 0``) :data:`MT_BINDING`."""
     have = getattr(backend, "capabilities", ())
+    if float(request.kappa_MT_over_D) > 0.0 and MT_BINDING not in have:
+        return (f"backend {name!r}: this walk binds at the walls (MT, kappa_MT/D = {float(request.kappa_MT_over_D):.4g} 1/m), "
+                f"which the backend does not declare it walks (capability {MT_BINDING!r})")
     if permeability_table and PERMEABILITY_TABLE not in have:
         return (f"backend {name!r}: this walk uses a permeability per object or over time, which the backend does not "
                 f"declare it walks (capability {PERMEABILITY_TABLE!r})")
@@ -241,7 +257,7 @@ class Backend:
         None. The producer raises with the reason; it never falls back."""
         return None
 
-    def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, *, out=None) -> CoefficientBatch:
+    def walk_batch(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, *, out=None, dwell0=None) -> CoefficientBatch:
         """Walk the ``(n, 3)`` float32 starts ``r0`` from their ``(n, 2)`` uint32 keys in the coefficient form
         ``request`` names (``K`` bands at order ``m`` per storage window, ``request.n_windows`` windows over
         ``n_blocks`` blocks of ``sub_steps`` steps): a :class:`CoefficientBatch`, with the block ends of the first
@@ -249,7 +265,9 @@ class Backend:
         A request with ``K = 0`` is the adaptive producer's walk of saves (a :class:`WalkBatch`; ``out``, when given,
         is a dict of that producer's own contiguous float32 arrays -- ``positions`` (n, n_t, 3),
         ``boundary_local_time`` and ``compartment`` (n, n_t), ``field_samples`` (n, n_tf, n_ch) -- a backend may write
-        into instead of allocating its own)."""
+        into instead of allocating its own). A walk that binds (``request.kappa_MT_over_D > 0``, a backend that declares
+        :data:`MT_BINDING`) is handed ``dwell0``, ``(n,)`` float32 each walker's dwell left at the start in physics steps
+        (0 free: the producer's equilibration), and returns ``bound_events``; every other walk is handed none."""
         raise NotImplementedError
 
 

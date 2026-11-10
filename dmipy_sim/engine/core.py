@@ -568,9 +568,12 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
     # JAX kernels alone
     from ..fields.susceptibility_field import FieldGrid
     raster = isinstance(field_basis, FieldGrid)
+    # MT binding at a walled geometry's walls (the "mt" kind) is a request a backend that declares MT_BINDING walks; the
+    # myelinated substrates' binding is their own kernel's, and a mesh's binds through its own reflect_with_binding
     jax_only = [what for what, on in (
         ("the myelinated substrates", geometry._is_packed_myelinated or geometry._is_myelinated),
-        ("MT binding", kappa_MT > 0.0),
+        ("MT binding on a mesh's binding side (reflect_with_binding)", kappa_MT > 0.0 and hasattr(geometry, "reflect_with_binding")),
+        ("MT binding without the recorded channels (tiers=())", kappa_MT > 0.0 and not record),
         (f"in-walk field sampling of a {type(field_basis).__name__}", field_basis is not None and not raster),
         ("the compartment guard", bool(enforce_compartment))) if on]
     # the C1 / bound event capacity a backend is handed before the pilot sized the buffer: the binomial bound at the
@@ -600,7 +603,9 @@ def _resolve_walk(geometry, diffusivity, T_max, block_h=None, *, tiers="all", su
         events=int(events), raw_subset=int(raw_subset), field=(field_basis if raster else None),
         diffusivity=float(diffusivity), record=bool(record),
         kappa_over_D=(float(permeability) / float(diffusivity) if permeability is not None else 0.0),
-        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed), n_windows=int(n_windows))
+        count_walls=bool(geometry.count_walls), bounce_budget=geometry.bounce_budget, seed=int(seed), n_windows=int(n_windows),
+        kappa_MT_over_D=(float(kappa_MT) / float(diffusivity) if binding_mt else 0.0),
+        dwell_time=(float(dwell_time) if binding_mt else 0.0))
     return WalkResolution(record, n_blocks, dt_actual, f_band, dict(rules), override, int(n_sub), dt_sim, step_rule, binding,
                           ls, request, jax_only, K, block_order, block_rule, n_windows,
                           (None if K_c3 is None else int(K_c3)), field_read, crossing, binding_mt,
@@ -1266,6 +1271,10 @@ def _walk_geometry(
         if drop_pool_changes and (res.crossing or res.binding_mt):
             raise ValueError("drop_pool_changes is for an impermeable walk; this walk's walkers may change pool, and every "
                              "change is an event of its occupancy (RPK.md 9.5.7)")
+        if _backend is not None and res.binding_mt and equilibrate_binding == "burnin":
+            raise ValueError(f"equilibrate_binding='burnin' walks the burn-in on the JAX kernels before the walk; a walk on "
+                             f"the backend {_backend_name!r} takes its walkers' bound state at the start from 'fast' (each "
+                             f"walker's equilibrium draw, a known S/V) or 'off' (every walker free)")
         record, n_blocks, dt_actual, sub_steps, dt_sim, step_rule = res.record, res.n_blocks, res.block_h, res.sub_steps, res.dt_sim, res.step_rule
         R_geom = res.length_scales.min_feature
         step_l_sim = jnp.float32(jnp.sqrt(6.0 * diffusivity * dt_sim))
@@ -1973,7 +1982,9 @@ def _walk_geometry(
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
             keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
-            batch = _backend.walk_batch(req, r0_b, keys_b)
+            brem_b = np.ascontiguousarray(np.asarray(brem0_all[sel]), np.float32) if binding else None
+            batch = (_backend.walk_batch(req, r0_b, keys_b, dwell0=brem_b) if binding
+                     else _backend.walk_batch(req, r0_b, keys_b))
             if not isinstance(batch, CoefficientBatch):
                 raise ValueError(f"backend {_backend_name!r} returned a {type(batch).__name__} for the coefficient walk; the "
                                  f"producer takes a CoefficientBatch (the bands accumulated in the walk) and converts "
@@ -2003,7 +2014,7 @@ def _walk_geometry(
                    "blt_end": (zw if batch.boundary_endpoint is None else np.asarray(batch.boundary_endpoint, np.float32)),
                    "blt_bands": (np.zeros((n_b, n_win, K), np.float32) if batch.boundary_bands is None else np.asarray(batch.boundary_bands, np.float32)),
                    "lab": (np.zeros((n_b,), np.int8) if batch.compartment is None else np.asarray(batch.compartment, np.int8)),
-                   "bnd": np.zeros((n_b,), np.int8),
+                   "bnd": ((brem_b > 0.0).astype(np.int8) if binding else np.zeros((n_b,), np.int8)),
                    "fc": (np.zeros((n_b, n_win, 0, 0), np.float32) if batch.field_bands is None
                           else np.transpose(np.asarray(batch.field_bands, np.float32), (0, 1, 3, 2))),
                    "qv_f": (np.zeros((n_b, n_win, 0), np.float32) if batch.field_qv is None else np.asarray(batch.field_qv, np.float32)),
@@ -2022,6 +2033,9 @@ def _walk_geometry(
                     if on and key == "c":
                         raise ValueError(f"backend {_backend_name!r} returned no C1 event list for a walk whose walkers can change "
                                          f"pool; the event list is the walk's occupancy (RPK.md 9.5.7) and nothing is derived in its place")
+                    if on and key == "b":
+                        raise ValueError(f"backend {_backend_name!r} returned no bound events for a walk that binds; the event "
+                                         f"list is the walk's bound column (RPK.md 9.5.7) and nothing is derived in its place")
                     got["ev_" + key] = (np.zeros((n_b,), np.int64), np.zeros((0,), np.float64), np.zeros((0,), np.int8))
                     got["ev_max_" + key] = 0
                     continue
@@ -2029,6 +2043,21 @@ def _walk_geometry(
                 counts = np.diff(off.astype(np.int64))
                 got["ev_" + key] = (counts, np.asarray(t, np.float64), np.asarray(lab, np.int8))
                 got["ev_max_" + key] = int(counts.max()) if counts.size else 0
+            if kind_name == "mt" and raw:
+                # the MT walk's raw subset keeps the label and the bound state AT each block end, as its JAX kernel does:
+                # read off the exact event lists at the block ends (the label a step ends on holds from the step's end)
+                n_t = int(n_blocks) + 1
+                t_b = np.arange(n_t) * float(dt_actual)
+                def _at_block_ends(start, ev_c):
+                    out = np.repeat(np.asarray(start, np.int8)[:, None], n_t, axis=1)
+                    counts, t_ev, lab_ev = ev_c
+                    off = np.concatenate([[0], np.cumsum(counts)])
+                    for i in range(n_b):
+                        for k in range(off[i], off[i + 1]):
+                            out[i, t_b >= t_ev[k] - 0.5 * float(dt_sim)] = lab_ev[k]
+                    return out
+                got["occ"] = _at_block_ends(got["lab"], got["ev_c"]) if ev_comp_on else np.repeat(got["lab"][:, None], n_t, axis=1)
+                got["bound"] = _at_block_ends(got["bnd"], got["ev_b"])
             work_b = tuple(None if w is None else np.asarray(w) for w in batch.work)
             if drop_pool_changes:
                 if batch.pool_changed is None or np.asarray(batch.pool_changed).shape != (n_b,):
