@@ -21,7 +21,7 @@ from dmipy_sim.engine.core import _walk_geometry
 
 D = 2e-9
 R = 2e-6
-L_CYL = 4.4 * R                            # the splice tests' four cylinders (a 0.4 um gap)
+L_CYL = 4.4 * R                            # four packed cylinders with a 0.4 um gap
 L_SPH = 4.0 * R
 T = 4e-3
 H = 5e-5                                   # the block
