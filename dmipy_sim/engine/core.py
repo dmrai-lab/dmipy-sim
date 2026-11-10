@@ -1610,9 +1610,9 @@ def _walk_geometry(
                 r_next = jnp.where(still, r, r_free)
                 bound_next = jnp.where(still, bound_rem - jnp.float32(1.0), jnp.where(newly, left, jnp.float32(0.0)))
                 dlog_cum = dlog_cum + jnp.where(still | newly, jnp.float32(0.0), dlog_free)
-                if hit is not None:
-                    bad = bad + hit.illegal.astype(jnp.int32)
-                    work = _work_add(work, hit)
+                if hit is not None:         # a held walker's move is discarded: its encounters are not walked
+                    bad = bad + (hit.illegal & ~still).astype(jnp.int32)
+                    work = jax.tree_util.tree_map(lambda a, b: jnp.where(still, a, b), work, _work_add(work, hit))
                 if _mt_side:
                     # the side follows the crossing that was decided, whether or not the walker is then held at the end
                     # of its step: a held walker has not moved, so only a walker that moved can have crossed
@@ -1624,17 +1624,32 @@ def _walk_geometry(
                 """The MT walk's step on its own carry (the burn-in's): where the walker is and resumes from."""
                 return _mt_step(carry, step_index)[0], None
 
+            def _mt_resume_pool(nxt, comp):
+                """The compartment of the position a walker resumes from after its step (``nxt``, the MT carry after
+                it), from its compartment before the step ``comp``: the carried side's where the geometry carries one
+                (only a granted crossing flips it), else the geometry's carried classification of the position."""
+                if _mt_side:
+                    return jnp.where(nxt[5] < 0, jnp.int32(1), jnp.int32(0))
+                return geometry.classify_position_carry(nxt[0], comp)
+
             def inner_step_mt_seen(carry, step_index):
-                """The MT walk's step on the walk's carry, which adds the position the walker is seen at: where it is,
-                except while it is bound on the near face of an encounter it crossed, when it is seen at the start of
-                the step it bound in -- on that face's side, so a bound walker's position tells its face. Released, it
-                is seen where it resumes."""
-                r_seen = carry[-1]
+                """The MT walk's step on the walk's carry, which adds what the walker is seen as, ``(r_seen, comp,
+                label)``: the position it is seen at -- where it is, except while it is bound on the near face of an
+                encounter it crossed, when it is seen at the start of the step it bound in, on that face's side, so a
+                bound walker's position tells its face; released, it is seen where it resumes -- the compartment of the
+                position it resumes from, and the pool label of the position it is seen at (``_pool2``: 0 extra, 1
+                enclosed). The label is carried with the seen position, never classified from it: it is the near
+                face's pool (the compartment at the start of the step) while the walker is bound there and the resume
+                position's pool otherwise, so it holds the seen position's pool at every step, bound, at the release
+                and free."""
+                r_seen, comp, label = carry[-1]
                 r, bound_rem = carry[0], carry[2]
                 still = bound_rem >= jnp.float32(1.0)
                 nxt, near = _mt_step(carry[:-1], step_index)
+                comp_next = jnp.where(still, comp, _mt_resume_pool(nxt, comp))      # a held walker has not moved
                 r_seen = jnp.where(still, r_seen, jnp.where(near, r, nxt[0]))
-                return nxt + (r_seen,), None
+                label = jnp.where(still, label, jnp.where(near, _pool2(comp), _pool2(comp_next)))
+                return nxt + ((r_seen, comp_next, label),), None
 
         # Seed each walker's carried compartment ONCE, from its t=0 position, and let only a
         # granted crossing change it thereafter (MC/DC's `initial_location`).
@@ -1812,9 +1827,10 @@ def _walk_geometry(
                         bound_of=((lambda c: (c[5] > 0).astype(jnp.int8)) if _mt_on else None))
         elif _mt_walls:
             kind_name = "mt"
-            # the walk records the position a walker is seen at, its bound face's side while it is bound
-            kind = Kind(inner=inner_step_mt_seen, pos_of=(lambda c: c[-1]), read_pos_of=(lambda c: c[-1]),
-                        blt_of=(lambda c: c[3]), label_of=None, bound_of=(lambda c: (c[2] > 0).astype(jnp.int8)))
+            # the walk records the position a walker is seen at, its bound face's side while it is bound, and the pool
+            # label carried with it (inner_step_mt_seen)
+            kind = Kind(inner=inner_step_mt_seen, pos_of=(lambda c: c[-1][0]), read_pos_of=(lambda c: c[-1][0]),
+                        blt_of=(lambda c: c[3]), label_of=(lambda c: c[-1][2]), bound_of=(lambda c: (c[2] > 0).astype(jnp.int8)))
         elif record:
             kind_name = "relax"
             kind = Kind(inner=inner_step_relax, pos_of=(lambda c: c[0]), read_pos_of=(lambda c: c[0]), blt_of=(lambda c: c[2]),
@@ -1847,10 +1863,14 @@ def _walk_geometry(
                 elif kind_name == "mt":
                     # a walker bound at the start is seen where it is: one the burn-in leaves bound on the near face
                     # of a crossing is seen on the far side until its release; the burn-in ends at equilibrium, where
-                    # the crossings each way are as many and alike, so as many are seen across the other way
-                    phys0 = ((r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), side_w, _work0(), r0_w) if _mt_side
-                             else (r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), _work0(), r0_w))
-                    lab0 = _pool2(comp0_w)
+                    # the crossings each way are as many and alike, so as many are seen across the other way. Its
+                    # compartment is its carried side's where the geometry carries one (the side the walk flips), else
+                    # the exact classification of its start
+                    comp0_mt = jnp.where(side_w < 0, jnp.int32(1), jnp.int32(0)) if _mt_side else comp0_w
+                    lab0 = _pool2(comp0_mt)
+                    seen0 = (r0_w, comp0_mt, lab0)
+                    phys0 = ((r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), side_w, _work0(), seen0) if _mt_side
+                             else (r0_w, key_w, brem0_w, jnp.float32(0.0), jnp.int32(0), _work0(), seen0))
                 else:
                     phys0 = ((r0_w, r0_w, key_w, jnp.float32(0.0), comp0_w, brem0_w, jnp.float32(0.0), _work0()) if _mt_on
                              else (r0_w, r0_w, key_w, jnp.float32(0.0), comp0_w, _work0()))
@@ -1901,7 +1921,7 @@ def _walk_geometry(
                 evz = (jnp.int32(0), jnp.zeros((0,), jnp.int32), jnp.zeros((0,), jnp.int8))
                 ev_c_out = evz if ev_c is None else (ev_c.n, ev_c.steps, ev_c.labels)
                 ev_b_out = evz if ev_b is None else (ev_b.n, ev_b.steps, ev_b.labels)
-                work_f = phys[-1]
+                work_f = phys[-2] if kind_name == "mt" else phys[-1]          # the MT carry ends in what the walker is seen as
                 bad = phys[3] if kind_name == "gen" else (phys[4] if kind_name in ("relax", "mt") else jnp.int32(0))
                 return (C, resid, blt[1], blt[0], lab0, bnd0, fc, qf, qd, ec, occ, bnd, fs, pos, dlog, qp, qb,
                         ev_c_out, ev_b_out, n.sum(), bad, work_f)
