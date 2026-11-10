@@ -113,6 +113,14 @@ E2   = pack.replay(seq, tissue=pack.nominal.replace(T2={"intra": 0.08}), scanner
                                                     # every value is a knob: same walk, one T2 changed, another scanner, another pose
 ```
 
+The susceptibility convention shared with dmipy-analytic is
+`chi = chi_I*I + chi_A*(n n^T - I/3)`, where `n` is the radial unit director,
+`chi_I = chi_iso = tr(chi)/3` and `chi_A = chi_aniso = chi_radial - chi_tangential`.
+[Wharton & Bowtell (2012), Table 1 and Fig. 3C](https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/)
+use `chi_I*I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)` in the radial frame:
+`chi_A = (3/2)*chi_A_WB`, with identical `chi_I` for the same reference.
+W&B's `chi_A_WB = -0.1 ppm` is `chi_aniso = -0.15e-6` (`-0.15 ppm`) here.
+
 Three things describe a replay setting, each stated once. `tissue=` is **what the material is**: a `Tissue`
 (T2 / T1 as `{"intra": 0.05, ...}` over every pool of the pack's spec, `rho2`, `D`, `chi_iso`, `chi_aniso`) or
 `None`, the bare diffusion signal; the spec the pack embeds carries the substrate's nominal values as

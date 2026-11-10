@@ -75,7 +75,10 @@ def _aniso_intra(a, b, bdir, N=128, L=24.0, chi_A=1.0):
 
 
 def test_aniso_hollow_cylinder_intra_ln_g():
-    """Anisotropic intra field uniform and = (chi_A/2) ln(1/g) at perpendicular B0."""
+    """Anisotropic intra field uniform and = (chi_A/2) ln(1/g) at perpendicular B0.
+
+    Here chi_A is the package's radial-minus-tangential susceptibility;
+    chi_A = (3/2) chi_A_WB (Wharton & Bowtell 2012, Table 1 and Fig. 3C)."""
     a, b = 3.0, 4.0
     m, s = _aniso_intra(a, b, [1, 0, 0])
     assert abs(s / m) < 0.05
@@ -157,7 +160,8 @@ def test_myelin_field_vanishes_at_parallel_fibre():
 
 def test_myelin_intra_matches_closed_form():
     """Analytic provider intra field = 1/2 Δχ_a B0 sin^2 th ln(1/g), matching the grid
-    dipole solver (the corrected Wharton-Bowtell convention; zero at parallel)."""
+    dipole solver, zero at parallel. Here Δχ_a is the package's eigenvalue
+    difference, (3/2) times W&B's chi_A (2012, Table 1 and Fig. 3C)."""
     a, b, dchi, B0 = 3e-6, 4e-6, -0.1e-6, 7.0
     pred_perp = 0.5 * dchi * B0 * np.log(b / a)          # sin^2 = 1
     prov = MyelinSusceptibility(centers=[[0., 0.]], inner_radii=[a], outer_radii=[b],

@@ -4,6 +4,18 @@ twin :func:`dmipy_analytic.jax.fields.hollow_cylinder_basis`) over the cylinders
 walker's own position. It is the analytic myelin provider of the forward Bloch engine
 (:class:`dmipy_sim.fields.susceptibility.MyelinSusceptibility`) and, per segment, of a strand substrate's field
 (:mod:`dmipy_sim.fields.strand_field`).
+
+The susceptibility convention is shared with dmipy-analytic:
+``chi = chi_I * I + chi_A * (n n^T - I/3)``, with radial unit director ``n``.
+Here ``chi_I = chi_iso = tr(chi)/3`` is the mean susceptibility and
+``chi_A = chi_aniso = chi_radial - chi_tangential`` is the eigenvalue difference
+(also named ``delta_chi_a``). Both use the same susceptibility reference.
+Wharton & Bowtell (2012), Table 1 and Fig. 3C, use
+``chi = chi_I * I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)`` in the radial frame.
+Thus ``chi_A = (3/2) * chi_A_WB``, while ``chi_I`` is identical: W&B's
+``chi_A_WB = -0.1 ppm`` corresponds to this package's
+``chi_aniso = -0.15e-6`` (``-0.15 ppm``).
+Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/ (Table 1 and Fig. 3C).
 """
 from __future__ import annotations
 

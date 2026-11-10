@@ -61,7 +61,9 @@ def test_the_contraction_is_the_grid_assembly(kspace):
 @pytest.mark.parametrize("theta_deg,alpha_deg", [(90.0, 0.0), (60.0, 30.0), (30.0, 120.0)])
 def test_the_bloch_myelin_provider_is_the_closed_form_everywhere(theta_deg, alpha_deg):
     """`MyelinSusceptibility.delta_bz_fn` (the forward Bloch engine's analytic myelin field) equals
-    chi_A B0 H.M_A.H in the lumen, the sheath and outside, at any B0 angle."""
+    chi_A B0 H.M_A.H in the lumen, the sheath and outside, at any B0 angle.
+    Here chi_A is the package's radial-minus-tangential eigenvalue difference,
+    (3/2) times W&B's chi_A (2012, Table 1 and Fig. 3C)."""
     th, al = np.deg2rad(theta_deg), np.deg2rad(alpha_deg)
     dchi, B0 = -1e-7, 3.0
     prov = MyelinSusceptibility(centers=[[0.0, 0.0]], inner_radii=[A], outer_radii=[B], L=1.0, delta_chi_a=dchi,

@@ -9,6 +9,17 @@ wm = Tissue(T2={"intra": 0.05, "extra": 0.055}, T1={"intra": 1.2, "extra": 1.0},
 print(wm)
 ```
 
+The susceptibility convention shared with dmipy-analytic is
+`chi = chi_I*I + chi_A*(n n^T - I/3)`, where `n` is the radial unit director,
+`chi_I = chi_iso = tr(chi)/3` and `chi_A = chi_aniso = chi_radial - chi_tangential`.
+[Wharton & Bowtell (2012), Table 1 and Fig. 3C](https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/)
+use `chi_I*I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)` in the radial frame:
+`chi_A = (3/2)*chi_A_WB`, with identical `chi_I` for the same reference.
+W&B's `chi_A_WB = -0.1 ppm` is `chi_aniso = -0.15e-6` (`-0.15 ppm`) here.
+
+The example's `chi_aniso=-1e-7` is in this package's convention (-0.1 ppm,
+equivalent to W&B's -0.0667 ppm).
+
 | field | unit | what it switches on | needs |
 |---|---|---|---|
 | `T2`, `T1` | s, per pool | the bulk relaxation tier: a weight per walker from its transverse and longitudinal exposure in each pool | the occupancy channel (C1) |
