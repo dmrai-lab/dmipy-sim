@@ -322,6 +322,8 @@ class LabelVolume(Geometry):
         taken: a 450^3 rock's pore holds 33 million voxels, and their index list is larger than the
         image.
         """
+        # Keep placement's fold_in(key, 1) permutation stream separate from these draws.
+        key = jax.random.fold_in(key, 0)
         need, out = int(n_walkers), []
         lo, hi = self.box_min, self.box_max
         while need > 0:

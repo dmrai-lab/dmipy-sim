@@ -702,16 +702,17 @@ class PermeableShell(Geometry):
 
     def init_positions(self, n_walkers, key):
         # uniform inside compartment A (r < R_in)
-        k1, k2 = jax.random.split(key)
-        v = jax.random.normal(k1, (n_walkers, 3), dtype=jnp.float32)
+        # Keep placement's fold_in(key, 1) permutation stream separate from these draws.
+        keys = jax.random.split(jax.random.fold_in(key, 0), 3 if self.kind == 'cylinder' else 2)
+        v = jax.random.normal(keys[0], (n_walkers, 3), dtype=jnp.float32)
         if self.kind == 'cylinder':
             v = v - (v @ self._axis)[:, None] * self._axis[None, :]
         vhat = v / jnp.linalg.norm(v, axis=1, keepdims=True)
         dim = 3.0 if self.kind == 'sphere' else 2.0
-        u = jax.random.uniform(key, (n_walkers,), dtype=jnp.float32) ** (1.0 / dim)
+        u = jax.random.uniform(keys[1], (n_walkers,), dtype=jnp.float32) ** (1.0 / dim)
         pos = vhat * (u * jnp.float32(self.r_inner))[:, None]
         if self.kind == 'cylinder':
-            zc = jax.random.uniform(k2, (n_walkers,), dtype=jnp.float32) * jnp.float32(self.r_inner)
+            zc = jax.random.uniform(keys[2], (n_walkers,), dtype=jnp.float32) * jnp.float32(self.r_inner)
             pos = pos + zc[:, None] * self._axis[None, :]
         return pos
 

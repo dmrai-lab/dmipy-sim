@@ -388,6 +388,8 @@ class SphereUnion(Geometry):
     def init_positions(self, n_walkers, key, bounds=None, oversample=6):
         """Uniform positions on the legal side of the union (rejection sampling) within ``bounds``, the box,
         or the union's bounding box."""
+        # Keep placement's fold_in(key, 1) permutation stream separate from these draws.
+        key = jax.random.fold_in(key, 0)
         if bounds is None and self.box is not None:
             bounds = self.box
         if bounds is None:
