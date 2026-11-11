@@ -12,13 +12,14 @@ print(wm)
 The susceptibility convention shared with dmipy-analytic is
 `chi = chi_I*I + chi_A*(n n^T - I/3)`, where `n` is the radial unit director,
 `chi_I = chi_iso = tr(chi)/3` and `chi_A = chi_aniso = chi_radial - chi_tangential`.
-[Wharton & Bowtell (2012), Table 1 and Fig. 3C](https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/)
+[Wharton & Bowtell (2012), Fig. 3C](https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/)
 use `chi_I*I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2)` in the radial frame:
 `chi_A = (3/2)*chi_A_WB`, with identical `chi_I` for the same reference.
-W&B's `chi_A_WB = -0.1 ppm` is `chi_aniso = -0.15e-6` (`-0.15 ppm`) here.
+W&B's `chi_A_WB = -0.1 ppm` (Table 2, row chi_I + E + chi_A) is `chi_aniso = -0.15e-6` (`-0.15 ppm`) here, the
+catalogue's `delta_chi_a_myelin`.
 
 The example's `chi_aniso=-1e-7` is in this package's convention (-0.1 ppm,
-equivalent to W&B's -0.0667 ppm).
+equivalent to W&B's -0.0667 ppm); the catalogue's `canonical_white_matter()["delta_chi_a"]` is `-0.15e-6`.
 
 | field | unit | what it switches on | needs |
 |---|---|---|---|
