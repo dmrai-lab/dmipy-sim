@@ -5,7 +5,9 @@
 
 ``run`` builds an image from this checkout (CUDA JAX + the package + pytest), runs ``pytest -m gpu`` inside a single
 Modal function whose ``timeout`` is the cost ceiling (``TIMEOUT_S`` of card time), and writes ``gpu-ledger.txt`` with
-one line ``<UTC date> <card> <seconds> <usd>`` for the workflow to upload as an artifact and print in the job summary.
+one line ``<UTC date> <card> <seconds> <usd> <basis>`` (``seconds`` are the card seconds the function measured; ``basis``
+says what they are: ``card``, ``upper-bound`` when the function never returned, ``none`` when no container started)
+for the workflow to upload as an artifact and print in the job summary.
 ``budget`` sums the ledger artifacts of the workflow's runs in the current month through ``gh api`` and refuses past
 ``LIMIT_USD``. With no Modal credentials the tier states so and exits 0 (``skip``); the workflow reports it as a notice.
 """
@@ -19,6 +21,7 @@ import os
 import subprocess
 import sys
 import re
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -29,6 +32,9 @@ TIMEOUT_S = 15 * 60                                   # a run costs at most this
 PER_TEST_S = 120                                       # a tier-2 test is failed once past this, at its next return to Python
 BUILD_ALLOWANCE_S = 10 * 60                            # the client waits at most this much longer, for the image build
 USD_PER_S = {"T4": 0.000164, "L4": 0.000222}          # Modal's list price per second of the card
+STALL_S = 300                                          # a run whose pytest prints nothing for this long is killed and reported
+START_S = 300                                          # no container this long after the call is spawned: cancelled and reported
+POLL_S = 15
 LEDGER = "gpu-ledger.txt"
 WORKFLOW = "gpu-tier.yml"
 
@@ -54,12 +60,77 @@ def month_spend(repo, month):
     return total
 
 
+def modal_month_to_date(month):
+    """Modal's own bill for ``month`` so far (every app of the workspace), from its billing report; information only:
+    returns the sentence to print, and says so when the report cannot be read."""
+    first = _dt.date.fromisoformat(month + "-01")
+    end = _dt.datetime.now(_dt.timezone.utc).date() + _dt.timedelta(days=1)
+    try:
+        out = subprocess.run(["modal", "billing", "report", "--start", str(first), "--end", str(end), "--json"],
+                             capture_output=True, text=True, timeout=120)
+        if out.returncode:
+            return f"modal billing report unavailable: {out.stderr.strip()[:200]}"
+        return f"modal workspace: ${sum(float(r['cost']) for r in json.loads(out.stdout)):.2f} billed in {month} to date"
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:
+        return f"modal billing report unavailable: {type(exc).__name__}"
+
+
 def cmd_budget(a):
     repo = os.environ.get("GITHUB_REPOSITORY", "dmrai-lab/dmipy-sim")
     month = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m")
     spent = month_spend(repo, month)
     print(f"gpu tier: ${spent:.2f} recorded in {month} of ${LIMIT_USD:.2f}")
+    print(modal_month_to_date(month))
     return 0 if spent < LIMIT_USD else 3
+
+
+def run_streamed(command, cwd, stall_s):
+    """Run ``command`` with its output streamed to this process's stdout; kill it when it prints nothing for
+    ``stall_s`` seconds. Returns ``(returncode, stalled)``; a stalled run has returncode 1."""
+    process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                               start_new_session=True)
+    last = [time.monotonic()]
+
+    def pump():
+        for line in process.stdout:
+            last[0] = time.monotonic()
+            print(line, end="", flush=True)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    stalled = False
+    while process.poll() is None:
+        time.sleep(min(1.0, stall_s / 5))
+        if time.monotonic() - last[0] >= stall_s:
+            stalled = True
+            os.killpg(process.pid, 9)
+            process.wait()
+    reader.join(timeout=10)
+    return (1 if stalled else process.returncode), stalled
+
+
+def wait_for_result(call, beacon, *, start_s, total_s, poll_s, timeout_error, clock=time.monotonic):
+    """Wait for ``call``'s result. ``beacon`` (a mapping the function writes ``started`` into when its container is up)
+    ends the wait early: no ``started`` within ``start_s`` of the spawn means the card was never allocated, so the
+    call is cancelled at once instead of at ``total_s``. Returns ``(result, card_seconds, basis)``; result is a dict
+    with ``rc`` and ``tail``."""
+    spawned = clock()
+    while True:
+        try:
+            res = call.get(timeout=poll_s)
+            return res, res["seconds"], "card"
+        except timeout_error:
+            pass
+        waited = clock() - spawned
+        started = beacon.get("started")
+        if started is None and waited >= start_s:
+            call.cancel()
+            return dict(rc=1, tail=f"no container started within {start_s} s of the call: cancelled, no card time used"), 0.0, "none"
+        if waited >= total_s:
+            call.cancel()
+            held = 0.0 if started is None else max(0.0, time.time() - started)
+            return (dict(rc=1, tail=f"no result within {total_s} s: the call was cancelled"), held,
+                    "none" if started is None else "upper-bound")
 
 
 def pinned_stack():
@@ -92,14 +163,16 @@ if modal is not None:
              .run_commands('pip install -e "/repo[dev,interop]"'))
 
     @app.function(image=image, gpu="T4", timeout=TIMEOUT_S, retries=0)
-    def gpu_tests():
+    def gpu_tests(beacon):
         t0 = time.time()
+        beacon["started"] = t0
         # streamed (not captured), each test on its own line with its outcome: a run cut by the timeout still shows which
         # tests finished and which one was running. PER_TEST_S fires when a test returns to Python; a single device call
         # can outlast it, so the function timeout is the hard bound of the run
-        p = subprocess.run([sys.executable, "-m", "pytest", "-m", "gpu", "-v", "--tb=short", "-p", "no:cacheprovider",
-                            f"--timeout={PER_TEST_S}", "--durations=0", "tests"], cwd="/repo")
-        return dict(rc=p.returncode, tail="(pytest output streamed above)", seconds=time.time() - t0)
+        rc, stalled = run_streamed([sys.executable, "-u", "-m", "pytest", "-m", "gpu", "-v", "--tb=short", "-p", "no:cacheprovider",
+                                    f"--timeout={PER_TEST_S}", "--durations=0", "tests"], "/repo", STALL_S)
+        tail = f"pytest printed nothing for {STALL_S} s: killed" if stalled else "(pytest output streamed above)"
+        return dict(rc=rc, tail=tail, seconds=time.time() - t0)
 
 
 def cmd_run(a):
@@ -107,22 +180,20 @@ def cmd_run(a):
         print("no Modal credentials: GPU tier skipped")
         return 0
     t0 = time.time()
-    res = dict(rc=1, tail=f"no result within {TIMEOUT_S + BUILD_ALLOWANCE_S} s: the call was cancelled and the app stopped")
+    res, card_s, basis = dict(rc=1, tail="the run did not start"), 0.0, "none"
     try:
-        with modal.enable_output(), app.run():                 # leaving this block stops the app, on every path
-            call = gpu_tests.with_options(gpu=a.gpu).spawn()
+        with modal.enable_output(), modal.Dict.ephemeral() as beacon, app.run():      # leaving the blocks stops the app, on every path
+            call = gpu_tests.with_options(gpu=a.gpu).spawn(beacon)
             try:
-                res = call.get(timeout=TIMEOUT_S + BUILD_ALLOWANCE_S)
-            except TimeoutError:                       # e.g. a container that fails at startup and is restarted
-                call.cancel()
+                res, card_s, basis = wait_for_result(call, beacon, start_s=START_S, total_s=TIMEOUT_S + BUILD_ALLOWANCE_S,
+                                                     poll_s=POLL_S, timeout_error=TimeoutError)
             except modal.exception.FunctionTimeoutError:  # the function's own timeout: the run used its whole budget
-                res = dict(rc=1, tail=f"the run hit its {TIMEOUT_S} s timeout; the tests that finished are listed above")
+                res, card_s, basis = dict(rc=1, tail=f"the run hit its {TIMEOUT_S} s timeout; the tests that finished are listed above"), TIMEOUT_S, "card"
     finally:
-        seconds = time.time() - t0                    # wall time on the client: an upper bound of the card time
-        usd = min(seconds, TIMEOUT_S) * USD_PER_S[a.gpu]
-        line = f"{_dt.datetime.now(_dt.timezone.utc):%Y-%m-%d} {a.gpu} {seconds:.0f} {usd:.4f}"
+        usd = min(card_s, TIMEOUT_S) * USD_PER_S[a.gpu]
+        line = f"{_dt.datetime.now(_dt.timezone.utc):%Y-%m-%d} {a.gpu} {card_s:.0f} {usd:.4f} {basis}"
         Path(LEDGER).write_text(line + "\n")           # written on every path: the monthly budget sums these lines
-        print("ledger:", line)
+        print(f"ledger: {line} (client wall time {time.time() - t0:.0f} s, including the image build and the wait for a card)")
     print(res["tail"])
     return res["rc"]
 
