@@ -332,7 +332,7 @@ def test_the_field_container_is_one_common_step_in_the_contracted_field():
         depth[f] = np.concatenate([[r["bits"]] * (r["modes"][1] - r["modes"][0]) for r in cont])
         assert depth[f][0] >= depth[f][-1]                                       # the redder modes hold more bits
         # the realised noise of the stored steps against the unit-modulus bound the derivation holds to the budget
-        eps = bank.field_quantisation(a, m, _cx.default_battery(), T=T, h=T / 200, **kw)
+        eps = bank.field_quantisation(a, m, _cx.default_battery(), T=T, h=T / 200, **kw).eps
         assert 0.0 < eps <= _cx.container_eps(f) * 1.0001
     assert 0.5 < depth[5e-3].mean() - depth[2e-2].mean() < 1.5 and 0.5 < depth[1.25e-3].mean() - depth[5e-3].mean() < 1.5
     # the measured phase error of the stored modes under the gradient echo (all the weight on mode 0) and a spin echo
@@ -345,7 +345,7 @@ def test_the_field_container_is_one_common_step_in_the_contracted_field():
         g = _r_compression.cosine_projection(gate.reshape(1, -1, 1), h, T, K)[0, :, 0]
         for dvec in ([0, 0, 1], [1, 0, 0], [1, 1, 1]):
             phi = lambda X: GAMMA * _r_field.susc_path_field(X, np.asarray(dvec, float), B0=7.0, chi_iso=1e-7, chi_aniso=1e-8, has_aniso=True) @ g
-            assert np.std(phi(Cq) - phi(ref)) <= bank.field_quantisation(a, m, _cx.default_battery(), T=T, h=h, **kw) * 1.05
+            assert np.std(phi(Cq) - phi(ref)) <= bank.field_quantisation(a, m, _cx.default_battery(), T=T, h=h, **kw).eps * 1.05
 
 
 def test_the_default_field_container_is_derived_and_the_quantisation_term_carries_it(tmp_path):

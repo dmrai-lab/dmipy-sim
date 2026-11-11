@@ -25,6 +25,7 @@ import json
 import re
 import types
 import logging
+from typing import NamedTuple
 from dmipy_replay.replay.field import _refuse_trace_component, frame_from_axis, susc_path_coeffs, susc_path_decode, susc_path_field
 from dmipy_replay.replay.storage import mode_count
 
@@ -1004,24 +1005,50 @@ def _field_container(spec):
     return path_codec(spec)
 
 
+class FieldContainerTerm(NamedTuple):
+    """The field container's term of a pack: ``eps`` the rms phase (rad) of the worst block's own steps and ``block``
+    the index of that block (0 for a pack of one block)."""
+    eps: float
+    block: int
+
+
 def field_quantisation(arrays, pm, env, *, T, h, B0, chi_iso, chi_aniso=0.0):
-    """The rms phase (rad) the stored field container adds: the realised steps of ``susc_path_scale`` (a step is
-    its own width, noise ``step^2 / 12``), contracted at the field strength ``B0`` and the worst direction
-    (:func:`field_channel_weights`), weighted by the battery's gates (:func:`_battery_gates` at the depth the pack
-    advertises, their cosine projections on the window) -- the worst gate of the worst direction. 0 for the float
-    container."""
+    """The rms phase (rad) the stored field container adds, as a :class:`FieldContainerTerm`. A block's own term is its
+    realised steps of ``susc_path_scale`` (a step is its own width, noise ``step^2 / 12``), contracted at the field
+    strength ``B0`` and the worst direction (:func:`field_channel_weights`), weighted by the battery's gates
+    (:func:`_battery_gates` at the depth the pack advertises, their cosine projections on the window) -- the worst
+    gate of the worst direction. A merged pack's table has one ``(n_ch, K)`` slab per block, each block's coefficients
+    are decoded with its own steps, and the pack's term is the largest block's. 0 for the float container."""
     from dmipy_analytic.constants import GAMMA
     if "susc_path_scale" not in arrays:
-        return 0.0
+        return FieldContainerTerm(0.0, 0)
     K = int(pm["K"])
-    step = np.asarray(arrays["susc_path_scale"], np.float64)
-    step = step.max(axis=0) if step.ndim == 3 else step                   # a merged pack: the widest block's
+    table = np.asarray(arrays["susc_path_scale"], np.float64)
+    table = table[None] if table.ndim == 2 else table
     W = field_channel_weights(pm["channels"], B0=B0, chi_iso=chi_iso, chi_aniso=chi_aniso)
     n_t = int(round(float(T) / float(h))) + 1
     gates = np.stack(_battery_gates(n_t, max(1, int(pm.get("max_refocus_pulses") or K // 2))))
     g = _r_compression.cosine_projection(gates[:, :, None], float(h), float(T), K)[:, :, 0]               # (n_g, K)
-    var = _contracted_modes(step, W) ** 2 / 12.0                                              # (n_dir, K)
-    return float(GAMMA * np.sqrt(np.einsum("gk,dk->gd", g ** 2, var).max()))
+    g2 = g ** 2
+    eps = np.array([GAMMA * np.sqrt(np.einsum("gk,dk->gd", g2, _contracted_modes(step, W) ** 2 / 12.0).max()) for step in table])
+    block = int(np.argmax(eps))
+    return FieldContainerTerm(float(eps[block]), block)
+
+
+def _merged_field_term(fids, pks, env):
+    """The field container's bias ``eps^2 / 2`` (and ``eps``) of the union of shards ``pks`` (one window of each): the
+    worst block's own term over the shards' blocks, read from the shards' own scale tables, or None where a shard
+    has no field container."""
+    if any("err_quantisation_field" not in f or "susc_path_scale" not in pk.arrays for f, pk in zip(fids, pks)):
+        return None
+    spec = pks[0].substrate
+    pm = pks[0].meta["compression"]["channels"]["susc_field_basis"]
+    B0, _ = field_rule_scale(spec, env)
+    chi_i, chi_a = _field_scale(env, spec)
+    table = np.concatenate([np.asarray(pk.arrays["susc_path_scale"], np.float64)[None] if np.asarray(pk.arrays["susc_path_scale"]).ndim == 2
+                            else np.asarray(pk.arrays["susc_path_scale"], np.float64) for pk in pks])
+    eps = field_quantisation({"susc_path_scale": table}, pm, env, T=float(pm["T"]), h=float(pks[0].dt), B0=B0, chi_iso=chi_i, chi_aniso=chi_a).eps
+    return eps, 0.5 * eps ** 2
 
 
 _ZERO_STEP = float(np.finfo(np.float32).tiny)
@@ -2190,7 +2217,7 @@ def _window_view(pk, i, n_windows):
     ``i``'s under ``s{i}/``, the walk's shared tensors once), its block grid and its metadata."""
     base = {k: v for k, v in pk.arrays.items() if not re.match(r"s\d+/", k)}
     own = {k.split("/", 1)[1]: v for k, v in pk.arrays.items() if k.startswith(f"s{i}/")}
-    return types.SimpleNamespace(arrays=dict(base, **own), meta=pk.meta, dt=pk.dt, n_t=(int(pk.n_t) - 1) // int(n_windows) + 1)
+    return types.SimpleNamespace(arrays=dict(base, **own), meta=pk.meta, substrate=pk.substrate, dt=pk.dt, n_t=(int(pk.n_t) - 1) // int(n_windows) + 1)
 
 
 def _union_window_fidelity(fids, pks, w, n, env, device, *, ids, stated):
@@ -2208,7 +2235,9 @@ def _union_window_fidelity(fids, pks, w, n, env, device, *, ids, stated):
         vals = [f.get(key) for f in fids]
         if all(v is not None for v in vals):
             fid[key] = float(max(vals))
-    fx = _union_floor(pks, w, _floor_envelope(fids, env, ids, stated=stated), device=device)
+    fenv = _floor_envelope(fids, env, ids, stated=stated)
+    term = _merged_field_term(fids, pks, fenv)
+    fx = _union_floor(pks, w, fenv, device=device)
     if all(f.get("surface_certified") == "walk_free" for f in fids) and all(f.get("surface_rho2_list") for f in fids):
         fid["floor_surface"] = _union_surface_floor(pks, w, fids[0]["surface_rho2_list"], fids[0]["bounds_diffusivity"])
     fid["floor_max"] = float(max([fx["floor_max"]] + [fid[k] for k in ("floor_surface", "floor_susc_path", "floor_susc_bloch") if fid.get(k) is not None]))
@@ -2218,9 +2247,13 @@ def _union_window_fidelity(fids, pks, w, n, env, device, *, ids, stated):
                              for fam in fx["per_family"]}
     else:
         fid.pop("per_family", None)
+    if term is not None:           # the field container term is the worst block's own (a bias of the merged table, never the first shard's)
+        _restate_field_container(fid, fids, term, w, n)
     if all(f.get("floor_quantisation") is not None for f in fids):         # eps / sqrt(n_eff): the codec's eps (the worst shard's) at the union's n_eff
-        eps = max(float(f["floor_quantisation"]) * np.sqrt(float(w_.sum() ** 2 / (w_ ** 2).sum()))
-                  for f, w_ in zip(fids, np.split(w, np.cumsum(n)[:-1])))
+        eps = max(float(f["floor_quantisation"]) * np.sqrt(float(w_.sum() ** 2 / (w_ ** 2).sum())) for f, w_ in zip(fids, np.split(w, np.cumsum(n)[:-1])))
+        if term is not None:                                                # the field's phase in each shard's eps is replaced by the worst block's
+            eps = max(np.sqrt(max(float(f["floor_quantisation"]) ** 2 * float(w_.sum() ** 2 / (w_ ** 2).sum()) - 2.0 * float(f["err_quantisation_field"]), 0.0)
+                              + 2.0 * term[1]) for f, w_ in zip(fids, np.split(w, np.cumsum(n)[:-1])))
         fid["floor_quantisation"] = float(eps / np.sqrt(fx["n_eff"]))
         fid["floor_total_max"] = float(fid["floor_max"]) + fid["floor_quantisation"]
     fid.update(_round_certificate({k: fid[k] for k in ("floor_max", "noise_floor", "floor_surface", "floor_quantisation", "floor_total_max", "per_family")
@@ -2228,6 +2261,21 @@ def _union_window_fidelity(fids, pks, w, n, env, device, *, ids, stated):
     if "err_max" in fid:
         fid["within_2x_floor"] = bool(fid["err_max"] <= 2.0 * fid["floor_max"])
     return fid
+
+
+def _restate_field_container(fid, fids, term, w, n):
+    """Write the field container term ``term = (eps, bias)`` of a merged pack into ``fid`` and move every certificate row
+    that carries it: a shard's row is its field-free part (``row - err_quantisation_field``, the field's term being a
+    constant added to every measurement) plus the union's term, the largest over the shards."""
+    qf = float(term[1])
+    for key in ("err_max", "err_quantisation", "err_susc_path"):
+        if all(f.get(key) is not None for f in fids):
+            fid[key] = float(max(float(f[key]) - float(f["err_quantisation_field"]) for f in fids) + qf)
+    if all(f.get("per_family") for f in fids):
+        fid["per_family"] = {fam: dict(fid["per_family"][fam] if fid.get("per_family") else {},
+                                       err_max=float(max(float(f["per_family"][fam]["err_max"]) - float(f["err_quantisation_field"]) for f in fids) + qf))
+                             for fam in fids[0]["per_family"]}
+    fid["err_quantisation_field"] = qf
 
 
 def _union_surface_floor(pks, w, rhos, D):
@@ -2573,7 +2621,7 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
                                    dict(dt_f=float(cw.field_read_interval), B0=B0_r, chi=chi_r, floor=float(fr["floor"]),
                                         qv_increments=np.asarray(cw.qv_field_increments, np.float64)[:, 0].mean(axis=0),
                                         constants=fr.get("constants")))
-        field_terms["quantisation_eps"] = field_quantisation(_a, _pm, env, T=T, h=h, B0=B0_r, chi_iso=chi_scale[0], chi_aniso=chi_scale[1])
+        field_terms["quantisation_eps"] = field_quantisation(_a, _pm, env, T=T, h=h, B0=B0_r, chi_iso=chi_scale[0], chi_aniso=chi_scale[1]).eps
     source = cw.block.get("source")                            # a walk of another engine's saves (dmipy_sim.foreign)
     fid = _derived_certificate(scales, T=T, h=h, K=K, m=cw.m, D=D, env=env, floor=floor,
                                band_var=(None if source is None else float(source["interpolation_variance_bound_value_m2"])),
@@ -2999,7 +3047,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
                                    dict(dt_f=float(wp["field_read_interval"]), B0=B0_r, chi=chi_r, floor=float(at["floor"]),
                                         qv_increments=np.asarray(qv["field_increments"], np.float64) * (T_new / T),
                                         constants=read.get("constants")))
-        field_terms["quantisation_eps"] = field_quantisation(a_, pm_new, env, T=T_new, h=h_new, B0=B0_r, chi_iso=chi_i, chi_aniso=ca)
+        field_terms["quantisation_eps"] = field_quantisation(a_, pm_new, env, T=T_new, h=h_new, B0=B0_r, chi_iso=chi_i, chi_aniso=ca).eps
     # the occupancy: events sliced to the window
     if "compartment" in ch:
         from dmipy_replay.replay.events import events_within
