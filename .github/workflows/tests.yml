@@ -8,10 +8,10 @@ on:
   workflow_dispatch: {}
 
 env:
-  # the forms and the reader at the commits this revision was tested against: dmipy-analytic at the head of its FEXI
-  # pull request (karger_waveform and the FEXI forms), on its main at the merge of dmrai-lab/dmipy-analytic#15, and
+  # the forms and the reader at the commits this revision was tested against: dmipy-analytic main
+  # through dmrai-lab/dmipy-analytic#23 (permeable_shell, its convention and surface tests), and
   # dmipy-replay at the head of dmrai-lab/dmipy-replay#35 (a time view at any diffusivity), on its main at that merge
-  DMIPY_ANALYTIC_REF: c9e02fd6c2e46e0f10f749d7c3c87a8ad066b613
+  DMIPY_ANALYTIC_REF: be8ece558451389fbf9303981b78cfc1dade3aea
   DMIPY_REPLAY_REF: 116ee0de7ab22bdaf2c1a0994dcf0915286c8372
 
 jobs:
