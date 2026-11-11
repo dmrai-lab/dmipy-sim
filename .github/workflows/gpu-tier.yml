@@ -60,7 +60,10 @@ jobs:
           else
             echo "run=yes" >> "$GITHUB_OUTPUT"
           fi
-      - name: Monthly budget
+      - name: Modal client
+        if: steps.creds.outputs.run == 'yes'
+        run: pip install modal
+      - name: Monthly budget (the recorded GPU-tier spend and the workspace's Modal bill so far; the bill is information only)
         id: budget
         if: steps.creds.outputs.run == 'yes'
         run: |
@@ -78,7 +81,6 @@ jobs:
       - name: Run the gpu tests on Modal
         if: steps.creds.outputs.run == 'yes' && steps.budget.outputs.run == 'yes'
         run: |
-          pip install modal
           python tools/gpu_tier.py run --gpu T4
           cat gpu-ledger.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Ledger
