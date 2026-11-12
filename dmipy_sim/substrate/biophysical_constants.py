@@ -1009,36 +1009,35 @@ BIOPHYSICAL_CONSTANTS = {
             'species': 'human',
             'method': 'GRE phase + hollow-cylinder model',
             'source_key': 'wharton2012',
-            'location': 'isotropic myelin susceptibility chi_I relative to water, fitted alongside chi_A',
+            'location': 'Table 2, row chi_I + E + chi_A: chi_I = -100 +/- 20 ppb (Fig. 3C defines chi_I as the isotropic part of '
+                        'the tensor); Table 3 refits give chi_I = -60 +/- 20 ppb',
         },
         'alternatives': [],
         'citation': _CITATION_WHARTON2012,
         'description': 'Isotropic (orientation-independent) volume susceptibility of myelin relative to water: '
                        'the chi_iso replay knob of the field tier. The Winther meshes were built and published '
                        'with chi_myelin - chi_water = +1.06e-6 (their own convention), which winther_spec keeps.',
-        'note': 'Pairs with delta_chi_a_myelin (chi_A). TO VERIFY against Wharton & Bowtell 2012 Table 1.',
+        'note': 'Pairs with delta_chi_a_myelin (chi_A). The isotropic part is the same in both conventions, so '
+                'the value is Wharton & Bowtell 2012\'s as printed (Table 2, row chi_I + E + chi_A).',
     },
     'delta_chi_a_myelin': {
         'default': {
-            'value': -0.1e-6,
+            # chi_A in THIS package's tensor, chi = chi_I I + chi_A (n n^T - I/3), chi_A = chi_radial - chi_tangential.
+            # Wharton & Bowtell's tensor (their Fig. 3C) is chi_I I + diag(chi_A_WB, -chi_A_WB/2, -chi_A_WB/2) in the
+            # radial frame, whose radial - tangential difference is (3/2) chi_A_WB, so chi_A = (3/2) chi_A_WB.
+            'value': -0.15e-6,
             'unit': 'SI (dimensionless)',
             'field_T': None,   # susceptibility is field-independent
             'species': 'human',
-            'method': 'GRE phase imaging + susceptibility tensor model',
-            'source_key': 'liu2010',
-            'location': 'Table 1 / Eq. 12: Δχ_a ≈ −0.1 ppm relative to water',
+            'method': 'GRE phase + hollow-cylinder model, converted to the radial - tangential convention',
+            'source_key': 'wharton2012',
+            'location': 'Table 2, row chi_I + E + chi_A: chi_A_WB = -100 +/- 20 ppb (tensor defined in Fig. 3C); Table 3 refits '
+                        'give chi_A_WB = -120 +/- 20 ppb. NOT Table 1, which lists the frequency-perturbation expressions',
+            'reported_value': -0.1e-6,
+            'reported_convention': 'diag(chi_A, -chi_A/2, -chi_A/2) in the radial frame (Wharton & Bowtell Fig. 3C)',
+            'conversion': 'chi_A (radial - tangential) = (3/2) chi_A_WB',
         },
         'alternatives': [
-            {
-                'value': -0.1e-6,
-                'unit': 'SI (dimensionless)',
-                'field_T': 3.0,
-                'species': 'human',
-                'method': 'GRE phase + hollow-cylinder model',
-                'source_key': 'wharton2012',
-                'location': 'Table 1: Δχ_a = −0.1 ppm used in model fits',
-                'citation': _CITATION_WHARTON2012,
-            },
             {
                 'value': -0.08e-6,
                 'unit': 'SI (dimensionless)',
@@ -1075,19 +1074,12 @@ BIOPHYSICAL_CONSTANTS = {
                 },
             },
         ],
-        'citation': {
-            'key': 'liu2010',
-            'authors': 'Liu C',
-            'title': 'Susceptibility tensor imaging',
-            'journal': 'Magnetic Resonance in Medicine',
-            'year': 2010,
-            'doi': '10.1002/mrm.22391',
-        },
+        'citation': _CITATION_WHARTON2012,
         'description': (
-            'Susceptibility anisotropy of myelinated white matter: difference '
-            'between susceptibility parallel and perpendicular to the fibre axis, '
-            'Δχ_a = χ_∥ − χ_⊥.  Negative because myelin is more diamagnetic along '
-            'the axon than perpendicular to it (phospholipid bilayer geometry).  '
+            'Susceptibility anisotropy of myelinated white matter: '
+            'Δχ_a = χ_radial − χ_tangential of the sheath tensor χ = χ_I·I + Δχ_a(n nᵀ − I/3), n the radial '
+            'unit vector (Wharton & Bowtell\'s χ_A is two thirds of it).  Negative because the lipid chains '
+            'are radially aligned (phospholipid bilayer geometry).  '
             'In SI units (dimensionless); 1 ppm = 1×10⁻⁶.  '
             'Enters the hollow-cylinder dipolar field as: '
             'ΔB_ea = (Δχ_a·B₀·sin²θ/2)·b²(1−g²)/r²·cos(2φ).'
@@ -1095,8 +1087,8 @@ BIOPHYSICAL_CONSTANTS = {
         'note': (
             'Sign convention: negative Δχ_a means fibres parallel to B₀ are '
             'slightly less diamagnetic than fibres perpendicular to B₀.  '
-            'The range −0.08 to −0.12 ppm spans most published estimates; '
-            '−0.1 ppm is the community default.  '
+            'Wharton & Bowtell report χ_A = −0.1 ppm in their tensor, which is −0.15 ppm here; the '
+            'alternatives below are other studies\' estimates, quoted as printed and not converted.  '
             'Value is field-strength independent (susceptibility is a static '
             'tissue property); the field strength B₀ appears explicitly in the '
             'field formula, not here.'

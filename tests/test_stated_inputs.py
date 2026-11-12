@@ -119,3 +119,14 @@ def test_a_geometry_whose_walls_cannot_be_read_raises_rather_than_reading_unconf
     assert tolerance_sub_steps(FreeDiffusion(), 2e-9, 1e-4) == 1
     with pytest.raises(RuntimeError, match="no surface area"):
         tolerance_sub_steps(Walled(), 2e-9, 1e-4)
+
+
+def test_the_catalogue_states_chi_A_in_the_package_convention_with_its_source_value():
+    """Wharton & Bowtell's tensor is chi_I I + diag(chi_A, -chi_A/2, -chi_A/2); the package's is
+    chi_I I + chi_A (n n^T - I/3), so its chi_A is (3/2) of theirs. The entry carries both numbers."""
+    from dmipy_sim.substrate.biophysical_constants import canonical_white_matter, get_constant
+    default = get_constant("delta_chi_a_myelin")["default"]
+    assert default["source_key"] == "wharton2012" and default["location"].startswith("Table 2")
+    assert default["value"] == pytest.approx(1.5 * default["reported_value"], rel=1e-12)
+    assert canonical_white_matter(field_T=3.0)["delta_chi_a"] == default["value"]
+    assert canonical_white_matter(field_T=3.0)["chi_iso_myelin"] == -0.1e-6      # chi_I is the same in both conventions

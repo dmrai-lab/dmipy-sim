@@ -57,11 +57,11 @@ def test_the_walk_keeps_its_geometry_and_the_builder_needs_nothing_else():
     assert 0 < e[0] < 1
     nominal = Tissue.from_spec(g.spec)                                            # the spec's nominal values
     assert nominal.T2 == {"extra": sub.T2_extra, "intra": sub.T2_intra, "myelin": sub.T2_myelin} and nominal.rho2 == pytest.approx(sub.rho2)
-    assert nominal.chi_iso == -0.1e-6 and nominal.chi_aniso == -0.1e-6           # the field is the scanner's, not tissue
+    assert nominal.chi_iso == -0.1e-6 and nominal.chi_aniso == -0.15e-6           # the field is the scanner's, not tissue
     assert g.spec.nominal_field_T == sub.field_T == 3.0 == pk.nominal_field_T
     # the NOMINAL replay is the explicit one: the spec's values and its calibration field, every tier
     e_nom = pk.replay(G0, tissue=pk.nominal, scanner=pk.nominal_field_T)
-    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=Tissue(T2=nominal.T2, T1=nominal.T1, rho2=nominal.rho2, chi_iso=-0.1e-6, chi_aniso=-0.1e-6), scanner=3.0))
+    np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=Tissue(T2=nominal.T2, T1=nominal.T1, rho2=nominal.rho2, chi_iso=-0.1e-6, chi_aniso=-0.15e-6), scanner=3.0))
     np.testing.assert_allclose(e_nom, pk.replay(G0, tissue=pk.nominal, scanner=pk.nominal_field_T))
     assert e_nom[0] < 1.0 and pk.replay(G0)[0] == pytest.approx(1.0)  # bare diffusion at b = 0
     e_7T = pk.replay(G_lab, orientation=R, tissue=pk.nominal, scanner=7.0)            # the scanner changed, the field turned
