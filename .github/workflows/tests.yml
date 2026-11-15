@@ -74,7 +74,7 @@ jobs:
           # A test that is merely expensive is slimmed or deleted, not marked (tests/test_no_tiers.py).
           python tools/ci_groups.py 8 --check
           PATHS=$(python tools/ci_groups.py 8 ${{ matrix.group }})
-          JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not gpu" --durations=0 --durations-min=5
+          JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not gpu"
 
       - name: Collect the whole suite
         run: |
