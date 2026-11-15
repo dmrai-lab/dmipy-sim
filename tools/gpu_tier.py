@@ -170,7 +170,7 @@ if modal is not None:
         # tests finished and which one was running. PER_TEST_S fires when a test returns to Python; a single device call
         # can outlast it, so the function timeout is the hard bound of the run
         rc, stalled = run_streamed([sys.executable, "-u", "-m", "pytest", "-m", "gpu", "-v", "--tb=short", "-p", "no:cacheprovider",
-                                    f"--timeout={PER_TEST_S}", "--durations=0", "tests"], "/repo", STALL_S)
+                                    f"--timeout={PER_TEST_S}", "--durations=25", "--durations-min=1.0", "tests"], "/repo", STALL_S)
         tail = f"pytest printed nothing for {STALL_S} s: killed" if stalled else "(pytest output streamed above)"
         return dict(rc=rc, tail=tail, seconds=time.time() - t0)
 
