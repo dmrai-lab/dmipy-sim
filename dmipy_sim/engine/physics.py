@@ -933,8 +933,13 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     :func:`dmipy_sim.geometry.myelin.concentric_wall_kernel`. Each pool steps with its own
     diffusivity (the axon's, indexed by the carried compartment); the axial coordinate is free.
 
-    Returns ``sub(r, step_key, u, comp_id) -> (r_new, comp_id_new, chan, dlog_rho, work)`` where
-    ``chan`` holds the four unit boundary local-time channels of the wall kernel, ``dlog_rho``
+    Returns ``sub(r, step_key, u, comp_id, perm_key) -> (r_new, comp_id_new, chan, dlog_rho, work)``, and
+    ``sub.move(r, s, comp_id, u, us)`` the same for a given step vector ``s`` and the plain walls' uniforms ``us``
+    (``None`` when the cell has no plain cylinder), where
+    ``u`` is the uniform of a sheathed cylinder's one trial per step and ``perm_key`` the key of the plain
+    cylinders' trials (``uniform(perm_key, (budget,))``, one per encounter, the plain packing's draw, made only when the
+    cell holds a plain cylinder; its first is ``u``, and the first encounter of a step meets one wall), ``chan``
+    holds the four unit boundary local-time channels of the wall kernel, ``dlog_rho``
     the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None), and ``work``
     the step's ``(hits, crossings, exhausted)`` as int32 -- the first two None unless the geometry counts
     (``count_walls``), the exhaustion always.
@@ -948,6 +953,9 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     step_e = jnp.sqrt(jnp.float32(6.0) * D_e * dt_f32)
     D_max = float(max(np.max(np.asarray(D_i)), np.max(np.asarray(D_m)), np.max(np.asarray(D_e))))
     step_max = float(np.sqrt(6.0 * D_max * dt))
+    if geometry._is_packed_myelinated and geometry.has_plain:
+        # a cell with plain walls sizes its loop for the longest step the law draws, as the plain packing does
+        step_max = float(LONGEST_STEP) * step_max
     if rho_weights is None:
         rho_weights = jnp.zeros((N_max, 4), jnp.float32)
     from ..geometry.myelin import concentric_wall_kernel
@@ -956,16 +964,17 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
         geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls,
         budget=geometry.bounce_budget)
-    def sub(r, step_key, u, comp_id):
+    budget = wall.bounce_loop.budget
+
+    def move(r, s_c, comp_id, u, us):
+        """The step ``s_c`` (a 3-vector) of the walker at ``r`` in the encoded compartment ``comp_id``, through the
+        walls: the in-plane part meets the walls, the axial part is free."""
         pool, k = _pool_and_axon(geometry, comp_id)
-        unit = pair_step(step_key)
-        step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
         r_c = r
-        s_c = unit * step_l
         l_xy = jnp.linalg.norm(s_c[:2])
         d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
                           jnp.zeros(2, jnp.float32))
-        h = wall(r_c[:2], d_hat, l_xy, pool, k, u)
+        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, us)
         xy_new = h.xy
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
@@ -974,8 +983,17 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         work = (h.n_hits, h.crossed.astype(jnp.int32) if counting else None, h.exhausted.astype(jnp.int32))
         return r_new, _encode_compartment(geometry, h.pool, h.k), h.chan, h.dlog_rho, work
 
+    def sub(r, step_key, u, comp_id, perm_key):
+        pool, k = _pool_and_axon(geometry, comp_id)
+        unit = pair_step(step_key)
+        step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
+        us = (jax.random.uniform(perm_key, (budget,), dtype=jnp.float32)
+              if wall.has_plain else None)
+        return move(r, unit * step_l, comp_id, u, us)
+
     sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand
+    sub.move = move
     return sub
 
 
@@ -998,7 +1016,7 @@ def make_myelin_traj_step_fn(geometry, dt: float):
         r, r_uw, key, dlog_accum, comp_id, work = carry
         key, k_step, k_perm = jax.random.split(key, 3)
         u = jax.random.uniform(k_perm, dtype=jnp.float32)
-        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id)
+        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id, k_perm)
         dlog_boundary = jnp.sum(chan)
         return (r_new, r_new, key, dlog_accum + dlog_boundary, comp_new, _add_work(work, w)), None
 
@@ -1036,7 +1054,7 @@ def make_myelin_step_fn(geometry, dt: float, T1: float = None, sub_steps: int = 
             r, phi, log_w, comp, key = c
             key, k_step, k_perm = jax.random.split(key, 3)
             u = jax.random.uniform(k_perm, dtype=jnp.float32)
-            r_new, comp_new, _, _, _w = sub(r, k_step, u, comp)
+            r_new, comp_new, _, _, _w = sub(r, k_step, u, comp, k_perm)
             dlog = jnp.float32(0.0)
             if has_t2:
                 dlog = dlog - dt_sub_f32 * inv_t2_by_pool[comp_new] * chi_t
@@ -1101,7 +1119,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
             r, r_uw, key, dlog_accum, comp_id, work = carry
             key, k_step, k_perm = jax.random.split(key, 3)
         u = jax.random.uniform(k_perm, dtype=jnp.float32)
-        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id)
+        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id, k_perm)
         r_uw_new = _unwrapped_step(r_uw, r, r_new, L)
         dlog_boundary = jnp.sum(chan)
         if not mt_on:
@@ -1140,7 +1158,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
     return step_fn
 
 
-def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: float = None):
+def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: float = None, sub_steps: int = None):
     """Fused forward signal step for PackedMyelinatedCylinders.
 
     The walk of :func:`make_packed_myelin_traj_step_fn` with, in the same scan, the gradient
@@ -1148,7 +1166,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: fl
     relaxivity from the per-axon inner / outer wall values, and T1 on the stored intervals.
 
     Carry ``(r_incell, r_unwrapped, phi, log_w, compartment_id, key)``; inputs ``(g_t, chi_t)``.
-    Sub-stepped by :func:`resolve_sub_steps`; the count is ``step_fn.n_sub``.
+    Sub-stepped by :func:`resolve_sub_steps` (``sub_steps`` pins the count); the count is ``step_fn.n_sub``.
     """
     L = jnp.float32(geometry._cell_size)
     D_i, D_m, D_e = geometry._D_intra_jax, geometry._D_myelin_jax, geometry._D_extra_jax
@@ -1157,7 +1175,9 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: fl
 
     def _over(rho, D):
         return jnp.where(D > 0, rho / jnp.maximum(D, jnp.float32(1e-30)), jnp.float32(0.0))
-    rho_weights = (jnp.stack([_over(rho_i, D_i), _over(rho_i, D_m), _over(rho_o, D_m), _over(rho_o, D_e)],
+    # a plain cylinder's one wall is its outer wall: met from its lumen it is the first channel, at its own rho
+    rho_lumen = jnp.where(jnp.asarray(geometry.plain_mask), rho_o, rho_i) if geometry.has_plain else rho_i
+    rho_weights = (jnp.stack([_over(rho_lumen, D_i), _over(rho_i, D_m), _over(rho_o, D_m), _over(rho_o, D_e)],
                              axis=1) if has_rho else None)                       # (N_max, 4)
 
     has_t2 = geometry._has_t2
@@ -1168,7 +1188,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: fl
     inv_T1 = jnp.float32(1.0 / T1) if has_t1 else jnp.float32(0.0)
 
     D_ref = float(max(np.max(np.asarray(D_i)), np.max(np.asarray(D_e))))
-    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=has_rho, f_band=f_band)
+    n_sub = resolve_sub_steps(geometry, D_ref, dt, surface=has_rho, override=sub_steps, f_band=f_band)
     dt_sub = dt / n_sub
     sub = make_myelin_substep(geometry, dt_sub, rho_weights=rho_weights)
     gamma_dt_sub = jnp.float32(GAMMA * dt_sub)
@@ -1181,7 +1201,7 @@ def make_packed_myelin_step_fn(geometry, dt: float, T1: float = None, f_band: fl
             r_ic, r_uw, phi, log_w, cid, key = c
             key, k_step, k_perm = jax.random.split(key, 3)
             u = jax.random.uniform(k_perm, dtype=jnp.float32)
-            r_ic_new, cid_new, _, dlog_rho, _w = sub(r_ic, k_step, u, cid)
+            r_ic_new, cid_new, _, dlog_rho, _w = sub(r_ic, k_step, u, cid, k_perm)
             r_uw_new = _unwrapped_step(r_uw, r_ic, r_ic_new, L)
             phi_new = phi + gamma_dt_sub * (g_t @ r_uw_new)
 

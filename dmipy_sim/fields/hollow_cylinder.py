@@ -56,15 +56,19 @@ class HollowCylinderField:
     @classmethod
     def of(cls, geometry, *, n_images=CELL_IMAGES):
         """The closed-form field of a :class:`~dmipy_sim.geometry.MyelinatedCylinder` (one cylinder at the origin)
-        or a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` (its periodic cell with ``n_images`` images),
-        in the geometry's frame (axis = z)."""
+        or a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` (the sheaths of its myelinated cylinders in its
+        periodic cell, with ``n_images`` images; a plain cylinder has no sheath and is no source), in the geometry's
+        frame (axis = z). A cell without a myelinated cylinder has no field and is refused by name."""
         from ..geometry.myelin import MyelinatedCylinder, PackedMyelinatedCylinders
         if isinstance(geometry, MyelinatedCylinder):
             return cls(np.zeros((1, 2)), [geometry.inner_radius], [geometry.outer_radius])
         if isinstance(geometry, PackedMyelinatedCylinders):
-            N = geometry.N_actual
-            return cls(np.asarray(geometry._centers_np[:N], float), np.asarray(geometry._inner_radii_np[:N], float),
-                       np.asarray(geometry._outer_radii_np[:N], float), L=float(geometry._L_float), n_images=n_images)
+            N, sh = geometry.N_actual, geometry.sheathed
+            if not sh.any():
+                raise ValueError("HollowCylinderField.of: this PackedMyelinatedCylinders cell has no myelinated cylinder "
+                                 "(every g-ratio is 1), so no sheath is a field source")
+            return cls(np.asarray(geometry._centers_np[:N], float)[sh], np.asarray(geometry._inner_radii_np[:N], float)[sh],
+                       np.asarray(geometry._outer_radii_np[:N], float)[sh], L=float(geometry._L_float), n_images=n_images)
         raise TypeError(f"HollowCylinderField.of takes a MyelinatedCylinder or PackedMyelinatedCylinders, got "
                         f"{type(geometry).__name__}")
 

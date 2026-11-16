@@ -10,13 +10,16 @@ import jax.numpy as jnp
 import numpy as np
 
 from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
-                        BounceLoop, wall_push)
+                        BounceLoop, wall_push, bounce_budget)
 
 from .base import Geometry, LengthScales, acquisition_rotation
 from ..compartments import Compartments, Pool
 
 _TINY = 1e-30
-_POOL_AFTER_CROSSING = (0, 2, 1, 0, 2)   #: pool after crossing code 1..4 (index 0 unused)
+#: The pool after a crossing of code 1..6 (index 0 unused): 1 lumen -> sheath and 2 sheath -> lumen at an axolemma,
+#: 3 sheath -> extra and 4 extra -> sheath at a sheath's outer wall, 5 lumen -> extra and 6 extra -> lumen at a plain
+#: cylinder's wall.
+_POOL_AFTER_CROSSING = (0, 2, 1, 0, 2, 0, 1)
 
 
 class ConcentricHit(NamedTuple):
@@ -27,8 +30,8 @@ class ConcentricHit(NamedTuple):
     k: jnp.ndarray         #: int32 owning / nearest axon after the step
     chan: jnp.ndarray      #: (4,) unit boundary local-time channels, ``-2 d_perp`` per wall and side met
     dlog_rho: jnp.ndarray  #: surface log-weight increment under the per-axon rho weights
-    crossed: jnp.ndarray   #: bool -- a crossing was granted (one decision per step)
-    n_hits: object         #: int32 reflections plus the granted crossing; None unless the kernel counts
+    crossed: jnp.ndarray   #: bool -- a crossing was granted
+    n_hits: object         #: int32 reflections plus the granted crossings; None unless the kernel counts
     exhausted: jnp.ndarray #: bool -- the bounce budget ran out with path untested
 
 
@@ -75,45 +78,65 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
                            kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
 
-    Axon ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
+    Cylinder ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
     ``|q - c_k| = outer_k`` (the myelin / extra-axonal boundary); ``outer_k == 0`` marks a padding
-    slot. A walker's pool -- 0 extra, 1 intra (lumen), 2 myelin (annulus) -- is carried state that
-    changes only where a crossing is granted. The rule is the one every other geometry uses
-    (:mod:`._boundary`): ray-traced hits, ``d_perp = remaining * |cos alpha|`` at the hit, one
-    Powles crossing decision per step, specular multi-bounce reflection off the wall the ray
+    slot. A cylinder with ``inner_k == outer_k`` is PLAIN (g-ratio 1): it has no sheath, and its one wall, at
+    ``outer_k``, separates its lumen from the extra pool with permeability ``kappa_outer_k``. A walker's pool --
+    0 extra, 1 intra (lumen), 2 myelin (annulus) -- is carried state that changes only where a crossing is
+    granted. The rule is the one every other geometry uses (:mod:`._boundary`): ray-traced hits,
+    ``d_perp = remaining * |cos alpha|`` at the hit, specular multi-bounce reflection off the wall the ray
     actually meets, and a strict side sentinel at the start and end of the step.
 
-    The bounce budget and the candidate count are derived from the worst case a walker can meet:
-    a step ``step_max`` zig-zagging across the narrowest passage -- the smallest gap between two
-    outer walls, the thinnest sheath, or the shortest chord a nudged grazing ray can make on the
-    smallest lumen (``2 sqrt(2 nudge R)``) -- needs ``step_max / passage + 1`` reflections, and the
-    walls within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint
-    disks. The budget has no upper cap: a packing whose outer walls nearly touch (``min_gap`` near
-    zero) is a narrower passage than a typical one, and capping the count at a fixed value would
-    silently leave some walker-steps' paths untested instead of raising the budget to the case at
-    hand (``budget=`` overrides this derivation for one walk).
+    The transmission trials, per kind of wall: a SHEATHED cylinder's two interfaces make one Powles trial per
+    step, at the step's first encounter with any wall, with the step's scalar uniform ``u``; a PLAIN cylinder's
+    wall makes a trial at every encounter of the step, encounter ``i`` with ``us[i]``, as
+    :func:`~dmipy_sim.geometry.packed.packed_wall_kernel` does, whatever walls the step met before.
 
-    Returns ``wall(xy, d_hat, step_l, pool, k, u)`` giving a :class:`ConcentricHit`: the end position, the pool
-    and owning / nearest axon after the step, the four boundary local-time channels ``-2 d_perp`` (inner wall met
-    from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall met from outside),
+    The bounce budget and the candidate count are derived from the worst case a walker can meet. For the sheathed
+    cylinders: a step ``step_max`` zig-zagging across the narrowest passage -- the smallest gap between two
+    outer walls, the thinnest sheath, or the shortest chord a nudged grazing ray can make on the
+    smallest lumen (``2 sqrt(2 nudge R)``) -- needs ``step_max / passage + 1`` reflections, with no upper cap: a
+    packing whose outer walls nearly touch (``min_gap`` near zero) is a narrower passage than a typical one, and
+    capping the count at a fixed value would silently leave some walker-steps' paths untested instead of raising
+    the budget to the case at hand. For the plain cylinders: :func:`~dmipy_sim.geometry._boundary.bounce_budget`
+    of the smallest radius, the plain packing's own. A cell holding both kinds takes the larger. The walls
+    within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint disks, ``R_min`` the
+    smallest lumen. ``budget=`` overrides the derived budget for one walk.
+
+    Returns ``wall(xy, d_hat, step_l, pool, k, u, us=None)`` giving a :class:`ConcentricHit`: the end position,
+    the pool and owning / nearest cylinder after the step, the four boundary local-time channels ``-2 d_perp``
+    (inner wall met from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall
+    met from outside; a plain cylinder's wall met from its lumen is the first channel, from outside the fourth),
     the surface log-weight increment with ``rho_weights[k] = (rho_in/D_in, rho_in/D_my, rho_out/D_my,
-    rho_out/D_ex)`` applied per hit, whether a crossing was granted, the encounters when ``count``, and whether
-    the budget ran out.
+    rho_out/D_ex)`` applied per hit (a plain cylinder's first weight is its wall's ``rho/D_in``), whether a
+    crossing was granted, the encounters when ``count``, and whether the budget ran out. ``us``, the ``(budget,)``
+    uniforms of the plain walls' trials, is required when the cell holds a plain cylinder and is not read
+    otherwise; ``wall.bounce_loop.budget`` is its length.
     """
     N = int(inner.shape[0])
     outer_np = np.asarray(outer, np.float64); inner_np = np.asarray(inner, np.float64)
     real_np = outer_np > 0
+    plain_np = real_np & (inner_np >= outer_np)
+    sheath_np = real_np & ~plain_np
+    any_plain = bool(np.any(plain_np))
     R_in_min = float(np.min(inner_np[real_np]))
-    thick_min = float(np.min((outer_np - inner_np)[real_np]))
     chord_floor = 2.0 * np.sqrt(2.0 * float(nudge) * R_in_min)
-    passage = min(float(min_gap), thick_min, chord_floor)
-    loop = BounceLoop(budget or int(max(2.0, np.ceil(float(step_max) / passage) + 1)), count=count)
+    derived = 0
+    if np.any(sheath_np):
+        thick_min = float(np.min((outer_np - inner_np)[sheath_np]))
+        passage = min(float(min_gap), thick_min, chord_floor)
+        derived = int(max(2.0, np.ceil(float(step_max) / passage) + 1))
+    if any_plain:
+        derived = max(derived, bounce_budget(float(np.min(outer_np[real_np])), nudge, min_gap, step_max))
+    loop = BounceLoop(budget or derived, count=count)
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
     real = outer > 0
+    plain = jnp.asarray(plain_np)
     ar = jnp.arange(n_cand)
     f32 = jnp.float32
     nudge = f32(nudge); eps = f32(eps)
+    pool_after = jnp.asarray(_POOL_AFTER_CROSSING, jnp.int32)
 
     def _wrap(q):
         return q if L is None else q - L * jnp.floor(q / L + f32(0.5))
@@ -121,7 +144,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     def _pin(xy, q, R_in, R_out, pool):
         return pin_to_pool(xy, q, R_in, R_out, pool, nudge)
 
-    def wall(xy, d_hat, step_l, pool, k, u):
+    def wall(xy, d_hat, step_l, pool, k, u, us=None):
+        if any_plain and us is None:
+            raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the uniforms of its plain walls' trials, "
+                             f"us of shape ({loop.budget},)")
         q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
         dist_wall = jnp.where(real, jnp.sqrt(jnp.sum(q_all * q_all, -1)) - outer, jnp.inf)
         k0 = jnp.where(pool == 0, jnp.argmin(dist_wall).astype(jnp.int32), k)
@@ -133,11 +159,13 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             idx = ar
         c_c, in_c, out_c = centers[idx], inner[idx], outer[idx]
         real_c = out_c > 0
+        plain_c = plain[idx]
         ki_c, ko_c = kappa_inner[idx], kappa_outer[idx]
         Di_c, Dm_c, De_c = D_intra[idx], D_myelin[idx], D_extra[idx]
         w_c = rho_weights[idx]                                                 # (n_cand, 4)
 
-        def rule(p, d, rem, decided, i):
+        def rule(p, d, rem, state, i):
+            decided, last = state if any_plain else (state, None)
             q = _wrap(p[None, :] - c_c)
             d2 = jnp.sum(q * q, -1)
             pen = jnp.where(real_c, d2 / jnp.maximum(out_c * out_c, _TINY), jnp.inf)
@@ -145,6 +173,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             in_out = pen[kc] < f32(1.0)                                        # inside an outer wall
             R_in = in_c[kc]
             in_lum = in_out & (d2[kc] < R_in * R_in)
+            if any_plain:                                                      # a plain cylinder: all lumen
+                pk = plain_c[kc]
+                in_out = jnp.where(pk, d2[kc] < out_c[kc] * out_c[kc], in_out)
+                in_lum = jnp.where(pk, in_out, in_lum)
             pool_c = jnp.where(in_lum, 1, jnp.where(in_out, 2, 0))
             # outer walls: the owner's from inside (exit root), every other from outside (entry)
             t_en, t_ex, disc_o = ray_sphere_t(q, d, out_c)
@@ -153,11 +185,13 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             t_o = jnp.where(real_c & (disc_o > 0) & (t_o > eps) & (t_o < rem), t_o, jnp.inf)
             ko = jnp.argmin(t_o)
             t_o_min = t_o[ko]
-            # the owner's inner wall: exit root from the lumen, entry root from the sheath
+            # the owner's inner wall: exit root from the lumen, entry root from the sheath (a plain cylinder has none)
             t_en_i, t_ex_i, disc_i = ray_sphere_t(q[kc], d, R_in)
             t_i = jnp.where(in_lum, t_ex_i, t_en_i)
-            t_i = jnp.where(in_out & (R_in > 0) & (disc_i > 0) & (t_i > eps) & (t_i < rem),
-                            t_i, jnp.inf)
+            has_inner = in_out & (R_in > 0) & (disc_i > 0) & (t_i > eps) & (t_i < rem)
+            if any_plain:
+                has_inner = has_inner & (~pk)
+            t_i = jnp.where(has_inner, t_i, jnp.inf)
             hit_in = t_i < t_o_min
             t_hit = jnp.minimum(t_i, t_o_min)
             any_hit = jnp.isfinite(t_hit) & (rem > 0)
@@ -174,7 +208,11 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             kap = jnp.where(hit_in, ki_c[kh], ko_c[kh])
             D_leave = jnp.where(pool_c == 1, Di_c[kc], jnp.where(pool_c == 2, Dm_c[kc], De_c[kh]))
             first = any_hit & (~decided)
-            transmit = first & (u < transmit_probability(kap / jnp.maximum(D_leave, _TINY), d_perp))
+            p_cross = transmit_probability(kap / jnp.maximum(D_leave, _TINY), d_perp)
+            transmit = first & (u < p_cross)
+            if any_plain:                                                      # a plain wall: a trial at every encounter
+                plain_hit = (~hit_in) & plain_c[kh]
+                transmit = jnp.where(plain_hit, any_hit & (us[i] < p_cross), transmit)
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)
@@ -183,29 +221,43 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             p_new = jnp.where(reflecting, p + (q_off - q[kh]), p + rem * d)
             d_new = jnp.where(reflecting, d_refl, d)
             rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
-            sel = jnp.stack([any_hit & hit_in & (pool_c == 1), any_hit & hit_in & (pool_c == 2),
+            from_lumen = any_hit & hit_in & (pool_c == 1)
+            if any_plain:
+                from_lumen = any_hit & (hit_in | plain_hit) & (pool_c == 1)
+            sel = jnp.stack([from_lumen, any_hit & hit_in & (pool_c == 2),
                              any_hit & (~hit_in) & (pool_c == 2),
                              any_hit & (~hit_in) & (pool_c == 0)]).astype(f32)
             chan = -wall_push(transmit, d_perp, nudge, cos_a, rem_a) * sel      # the encounter's local time, reflected or transmitted
             dlog_rho = jnp.sum(chan * w_c[kh])
             code = jnp.where(transmit, jnp.where(hit_in, jnp.where(in_lum, f32(1.0), f32(2.0)),
                                                  jnp.where(pool_c == 2, f32(3.0), f32(4.0))), f32(0.0))
-            dlw = jnp.concatenate([chan, dlog_rho[None], code[None]])
-            return p_new, d_new, rem_new, decided | first, dlw, transmit, reflecting
+            if not any_plain:
+                dlw = jnp.concatenate([chan, dlog_rho[None], code[None]])
+                return p_new, d_new, rem_new, decided | first, dlw, transmit, reflecting
+            code = jnp.where(plain_hit, jnp.where(pool_c == 1, f32(5.0), f32(6.0)), code)
+            last = jnp.where(transmit, jnp.round(code).astype(jnp.int32), last)   # the pool follows the last crossing
+            dlw = jnp.concatenate([chan, dlog_rho[None], transmit.astype(f32)[None]])
+            return p_new, d_new, rem_new, (decided | first, last), dlw, transmit, reflecting
 
-        b = loop(rule, xy, d_hat, step_l, dlog_init=jnp.zeros(6, f32))
+        if any_plain:
+            b = loop(rule, xy, d_hat, step_l, dlog_init=jnp.zeros(6, f32),
+                     state_init=(jnp.zeros((), bool), jnp.zeros((), jnp.int32)))
+            code, n_cross = b.state[1], jnp.round(b.dlog_w[5]).astype(jnp.int32)
+        else:
+            b = loop(rule, xy, d_hat, step_l, dlog_init=jnp.zeros(6, f32))
+            code, n_cross = jnp.round(b.dlog_w[5]).astype(jnp.int32), b.crossed.astype(jnp.int32)
         xy_f, dlw, crossed = b.r, b.dlog_w, b.crossed
-        code = jnp.round(dlw[5]).astype(jnp.int32)
-        pool_new = jnp.where(crossed, jnp.asarray(_POOL_AFTER_CROSSING, jnp.int32)[code], pool)
+        pool_new = jnp.where(crossed, pool_after[code], pool)
         q_all_f = _wrap(xy_f[None, :] - centers)
         dist_f = jnp.where(real, jnp.sqrt(jnp.sum(q_all_f * q_all_f, -1)) - outer, jnp.inf)
         k_new = jnp.argmin(dist_f).astype(jnp.int32)                         # owner, or nearest
         xy_f = _pin(xy_f, q_all_f[k_new], inner[k_new], outer[k_new], pool_new)
-        n_hits = None if b.n_reflections is None else b.n_reflections + crossed.astype(jnp.int32)
+        n_hits = None if b.n_reflections is None else b.n_reflections + n_cross
         return ConcentricHit(xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed, n_hits, b.exhausted)
 
     wall.bounce_loop = loop
     wall.n_cand = n_cand
+    wall.has_plain = any_plain
     return wall
 
 
@@ -214,6 +266,21 @@ def _pool_t2(compartments):
     """``(Compartments, {pool: T2})`` of the ``compartments`` argument, ``None`` where a pool or its T2 is not given."""
     comps = Compartments.coerce(compartments)
     return comps, {n: (comps[n].T2 if n in comps else None) for n in ("extra", "intra", "myelin")}
+
+
+_POOL_NAMES = ("extra", "intra", "myelin")
+
+
+def _seed_pools(seed_pools):
+    """The pools a packed cell seeds: ``None`` (every pool, by area) or a tuple / list of distinct names of
+    :data:`_POOL_NAMES`, returned in that order; anything else is a ValueError naming the spelling."""
+    if seed_pools is None:
+        return None
+    names = list(seed_pools) if isinstance(seed_pools, (tuple, list)) else None
+    if not names or any(n not in _POOL_NAMES for n in names) or len(set(names)) != len(names):
+        raise ValueError(f"seed_pools is None (every pool, by area) or distinct names among {_POOL_NAMES}; "
+                         f"got {seed_pools!r}")
+    return tuple(n for n in _POOL_NAMES if n in names)
 
 
 def _pool_D(comps, who):
@@ -530,22 +597,37 @@ class MyelinatedCylinder(Geometry):
 
 
 class PackedMyelinatedCylinders(Geometry):
-    """Periodic RVE with N_actual myelinated cylinders — three-compartment.
+    """A periodic square cell of parallel cylinders, each myelinated or plain: one packing of axons.
 
-    Combines ``PackedCylinders`` (periodic, multi-cylinder substrate) with
-    ``MyelinatedCylinder`` (myelin sheath, per-compartment D/T2/permeability)
-    into a single JIT-stable geometry.
+    Each cylinder k (k = 0..N_actual-1) is placed by its OUTER radius ``R_outer_k = R_inner_k / g_k`` at the centre
+    ``(cx_k, cy_k)`` of the periodic cell ``[-L/2, L/2)^2`` and is one of two kinds, set by its g-ratio ``g_k``:
 
-    Each axon k (k=0..N_actual-1) has:
-      - Inner radius  R_inner_k  (axon boundary)
-      - Outer radius  R_outer_k = R_inner_k / g_ratio_k  (myelin/extra boundary)
-      - Center        (cx_k, cy_k) in the periodic cell [-L/2, L/2)
+    - **myelinated** (``0 < g_k < 1``): a lumen (``r < R_inner_k``), a sheath (``R_inner_k <= r < R_outer_k``) and
+      two walls, the axolemma at ``R_inner_k`` (``kappa_inner``, ``rho_inner``) and the sheath's outer wall at
+      ``R_outer_k`` (``kappa_outer``, ``rho_outer``); its sheath is a source of the hollow-cylinder field;
+    - **plain** (``g_k = 1``): a lumen and ONE wall at ``R_outer_k = R_inner_k`` between the lumen and the extra
+      pool, with permeability ``kappa_outer`` and relaxivity ``rho_outer``; no sheath and no field.
+
+    The extra-axonal pool is the rest of the cell. Every wall reflects specularly or, where permeable, is crossed by
+    the Powles rule: a sheathed cylinder's two walls make one trial per step, at the step's first encounter with
+    any wall; a plain cylinder's wall makes a trial at every encounter, as the plain packing's walls do
+    (:func:`concentric_wall_kernel`). A cell of plain cylinders only is a packing of permeable cylinders; a cell of
+    myelinated cylinders only is a packing of myelinated axons; a cell of both is a white-matter packing with
+    myelinated and unmyelinated axons.
+
+    Example: a cell of two myelinated axons (impermeable) and two unmyelinated ones (permeable)::
+
+        g = [0.7, 1.0, 0.7, 1.0]
+        cell = PackedMyelinatedCylinders(outer * g, g, centers, L, N_max=4,
+                                         compartments=Compartments(intra=Pool(D=2e-9), myelin=Pool(D=0.0),
+                                                                   extra=Pool(D=2e-9)),
+                                         kappa_outer=[0.0, 4e-5, 0.0, 4e-5])
 
     Compartment numbering
     ~~~~~~~~~~~~~~~~~~~~~
     - 0              : extra-axonal
-    - 1 .. N_max     : intra_k  (axon k, k+1-th slot)
-    - N_max+1 .. 2*N_max : myelin_k  (myelin sheath of axon k, k+1-th slot)
+    - 1 .. N_max     : intra_k  (cylinder k, k+1-th slot)
+    - N_max+1 .. 2*N_max : myelin_k  (sheath of cylinder k, k+1-th slot; empty for a plain cylinder)
 
     Zero-radius padding
     ~~~~~~~~~~~~~~~~~~~
@@ -557,9 +639,11 @@ class PackedMyelinatedCylinders(Geometry):
     Parameters
     ----------
     inner_radii : array-like, shape (N_actual,)
-        Axon radii in metres.
+        Lumen radii in metres.
     g_ratios : array-like, shape (N_actual,) or scalar
-        g-ratio per cylinder.
+        g-ratio per cylinder, finite and in ``(0, 1]``: below 1 a myelinated cylinder, 1 a plain one. A g-ratio
+        outside that range, and a myelinated cylinder whose sheath has no positive thickness in float32, are
+        refused by name.
     centers : np.ndarray, shape (N_actual, 2)
         Cylinder centre positions in metres, [-L/2, L/2) convention.
     cell_size : float
@@ -580,10 +664,14 @@ class PackedMyelinatedCylinders(Geometry):
         Per-cylinder T2 relaxation times in seconds, a per-object property. A pool-wide T2 is a pool
         property and is given through ``compartments=``; a scalar here is refused. None = no T2.
     kappa_inner, kappa_outer : float or array-like (N_actual,) or None
-        Inner/outer wall permeabilities in m/s.  None / 0.0 = impermeable.
+        Inner/outer wall permeabilities in m/s.  None / 0.0 = impermeable. ``kappa_inner`` is the axolemma of the
+        myelinated cylinders: a scalar applies to them, and an array holds 0 at every plain cylinder (a plain
+        cylinder's one wall is its outer wall, ``kappa_outer``; a nonzero entry there is refused).
     rho_inner, rho_outer : float or array-like (N_actual,) or None
-        Surface relaxivity at inner/outer myelin walls in m/s.  0.0 = no
-        relaxivity.
+        Surface relaxivity at inner/outer walls in m/s.  0.0 = no relaxivity; ``rho_inner`` as ``kappa_inner``.
+    seed_pools : sequence of str or None
+        The pools the walkers start in, by area among them: ``None`` (every pool of the cell, by area) or names
+        among ``"extra"``, ``"intra"``, ``"myelin"`` (``("extra", "intra")``: no walker starts in a sheath).
     """
 
     _is_packed_myelinated = True
@@ -620,7 +708,9 @@ class PackedMyelinatedCylinders(Geometry):
         rho_inner=0.0,
         rho_outer=0.0,
         compartments=None,
+        seed_pools=None,
     ):
+        self.seed_pools = _seed_pools(seed_pools)
         self.compartments, t2 = _pool_t2(compartments)
         for name, arr in (("extra", T2_extra), ("intra", T2_intra), ("myelin", T2_myelin)):
             if arr is not None and np.ndim(arr) == 0:
@@ -643,7 +733,19 @@ class PackedMyelinatedCylinders(Geometry):
         if N_max < N_actual:
             raise ValueError(f"N_max={N_max} < N_actual={N_actual}")
 
+        bad = ~(np.isfinite(g_ratios) & (g_ratios > 0.0) & (g_ratios <= 1.0))
+        if np.any(bad):
+            raise ValueError(f"PackedMyelinatedCylinders: every g-ratio is finite and in (0, 1] (below 1 a myelinated "
+                             f"cylinder, 1 a plain one); cylinders {np.flatnonzero(bad).tolist()} have "
+                             f"{g_ratios[bad].tolist()}")
         outer_radii = inner_radii / g_ratios
+        plain = g_ratios == 1.0
+        thin = (~plain) & ~(np.float32(outer_radii) > np.float32(inner_radii))
+        if np.any(thin):
+            raise ValueError(f"PackedMyelinatedCylinders: a myelinated cylinder (g-ratio below 1) has a sheath of positive "
+                             f"thickness; cylinders {np.flatnonzero(thin).tolist()} have inner radii "
+                             f"{inner_radii[thin].tolist()} m and outer radii {outer_radii[thin].tolist()} m, which do not "
+                             f"differ in float32 (a cylinder without a sheath has g-ratio 1)")
         self.N_actual = N_actual
         self.N_max = N_max
         self._cell_size = float(cell_size)
@@ -666,6 +768,16 @@ class PackedMyelinatedCylinders(Geometry):
             _refuse_schedule("PackedMyelinatedCylinders", **{name: x})
             return _bcast(x, name)
 
+        def _axolemma(x, name):
+            """A property of the myelinated cylinders' axolemma, 0 at every plain cylinder (which has none)."""
+            per_cylinder = np.ndim(x) > 0 and np.asarray(x).size > 1
+            arr = _bcast_kappa(x, name)
+            if per_cylinder and np.any(arr[plain] != 0.0):
+                raise ValueError(f"{name} is the axolemma of a myelinated cylinder; cylinders "
+                                 f"{np.flatnonzero(plain & (arr != 0.0)).tolist()} are plain (g-ratio 1), whose one wall "
+                                 f"is the outer wall: give their value in {name.replace('inner', 'outer')} and 0 here")
+            return np.where(plain, 0.0, arr)
+
         def _bcast_opt(x, name):
             if x is None:
                 return None
@@ -674,9 +786,9 @@ class PackedMyelinatedCylinders(Geometry):
         D_intra_arr   = _bcast(D_intra,  'D_intra')
         D_myelin_arr  = _bcast(D_myelin, 'D_myelin')
         D_extra_arr   = _bcast(D_extra,  'D_extra')
-        kappa_inner_arr = _bcast_kappa(kappa_inner, 'kappa_inner')
+        kappa_inner_arr = _axolemma(kappa_inner, 'kappa_inner') if plain.any() else _bcast_kappa(kappa_inner, 'kappa_inner')
         kappa_outer_arr = _bcast_kappa(kappa_outer, 'kappa_outer')
-        rho_inner_arr   = _bcast_kappa(rho_inner,   'rho_inner')
+        rho_inner_arr   = _axolemma(rho_inner, 'rho_inner') if plain.any() else _bcast_kappa(rho_inner, 'rho_inner')
         rho_outer_arr   = _bcast_kappa(rho_outer,   'rho_outer')
         T2_intra_arr  = _bcast_opt(T2_intra,  'T2_intra')
         T2_myelin_arr = _bcast_opt(T2_myelin, 'T2_myelin')
@@ -709,6 +821,10 @@ class PackedMyelinatedCylinders(Geometry):
         kappa_outer_p = _pad(kappa_outer_arr)
         rho_inner_p   = _pad(rho_inner_arr)
         rho_outer_p   = _pad(rho_outer_arr)
+
+        #: (N_max,) bool: the plain cylinders (g-ratio 1, no sheath); padding slots are False
+        self.plain_mask = np.zeros(N_max, dtype=bool)
+        self.plain_mask[:N_actual] = plain
 
         # Store numpy arrays for init_positions
         self._inner_radii_np = inner_p
@@ -764,6 +880,16 @@ class PackedMyelinatedCylinders(Geometry):
                 "inside each other). Place the axons with pack_myelinated_cylinders(inner_radii, g_ratios, "
                 "...), which packs the OUTER radii, rather than pack_cylinders on the inner radii.")
 
+    @property
+    def has_plain(self):
+        """Whether the cell holds a plain cylinder (g-ratio 1)."""
+        return bool(self.plain_mask.any())
+
+    @property
+    def sheathed(self):
+        """``(N_actual,)`` bool: the myelinated cylinders (g-ratio below 1), the sources of the sheath's field."""
+        return ~self.plain_mask[:self.N_actual]
+
     def _compute_min_gap(self):
         """Minimum clear gap between outer boundaries (actual cylinders only)."""
         from .packing import periodic_min_gap
@@ -802,7 +928,8 @@ class PackedMyelinatedCylinders(Geometry):
           - Intra_k      : area = pi*R_inner_k^2  (zero for dummy cylinders)
           - Myelin_k     : area = pi*(R_outer_k^2 - R_inner_k^2)
 
-        Dummy cylinders (R=0) automatically receive zero walkers.
+        Dummy cylinders (R=0) and the sheaths of plain cylinders (zero area) receive zero walkers. With
+        ``seed_pools`` the walkers are placed by area among the named pools only.
         """
         L = self._L_float
         N = self.N_actual
@@ -816,15 +943,27 @@ class PackedMyelinatedCylinders(Geometry):
         area_myelin = np.pi * (outer ** 2 - inner ** 2)   # (N,)
         area_extra  = cell_area - np.pi * np.sum(outer ** 2)
 
+        if self.seed_pools is not None:                    # the pools not named hold no walker at the start
+            area_intra = area_intra * ("intra" in self.seed_pools)
+            area_myelin = area_myelin * ("myelin" in self.seed_pools)
+            area_extra = area_extra * ("extra" in self.seed_pools)
         total_area = area_extra + np.sum(area_intra) + np.sum(area_myelin)
+        if not total_area > 0.0:
+            raise ValueError(f"seed_pools={self.seed_pools!r} names no pool of positive area in this cell")
 
         n_intra  = np.array([int(round(n_walkers * a / total_area))
                              for a in area_intra], dtype=int)
         n_myelin = np.array([int(round(n_walkers * a / total_area))
                              for a in area_myelin], dtype=int)
 
-        # Extra fills remainder (handles rounding)
+        # Extra fills remainder (handles rounding); without an extra pool to seed, the largest seeded lumen or sheath does
         n_extra = n_walkers - int(np.sum(n_intra)) - int(np.sum(n_myelin))
+        if not area_extra > 0.0 and n_extra != 0:
+            counts = np.concatenate([n_intra, n_myelin]); areas = np.concatenate([area_intra, area_myelin])
+            j = int(np.argmax(areas))
+            counts[j] += n_extra
+            n_intra, n_myelin = counts[:N].copy(), counts[N:].copy()
+            n_extra = 0
         if n_extra < 0:
             excess = -n_extra
             for k in range(N):
@@ -911,13 +1050,15 @@ class PackedMyelinatedCylinders(Geometry):
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:
         """Encoded compartment id from position: 0 = extra, ``k+1`` = lumen of axon ``k``,
-        ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell).
+        ``N_max+k+1`` = sheath of axon ``k`` (minimum image in the periodic cell); ``k`` is the cylinder of the
+        smallest ``|q|^2 / R_outer^2``, the one whose outer wall holds the point, as the wall kernel reads it.
         :meth:`pool_of` collapses it to the pool id."""
         L = self._L_jax
         q = r[None, :2] - self._centers_jax                          # (N_max, 2)
         q = q - L * jnp.floor(q / L + jnp.float32(0.5))
         d2 = jnp.sum(q * q, axis=1)
-        k = jnp.argmin(jnp.where(self._outer_radii_jax > 0, d2, jnp.inf)).astype(jnp.int32)
+        out2 = self._outer_radii_jax * self._outer_radii_jax                  # the cylinder whose outer wall holds r
+        k = jnp.argmin(jnp.where(self._outer_radii_jax > 0, d2 / jnp.maximum(out2, _TINY), jnp.inf)).astype(jnp.int32)
         in_lumen = d2[k] < self._inner_radii_jax[k] ** 2
         in_sheath = (~in_lumen) & (d2[k] < self._outer_radii_jax[k] ** 2)
         return jnp.where(in_lumen, k + jnp.int32(1),

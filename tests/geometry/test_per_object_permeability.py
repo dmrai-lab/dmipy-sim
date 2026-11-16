@@ -24,6 +24,20 @@ def _cylinders(permeability):
     return PackedCylinders(radii, c, L, permeability=permeability)
 
 
+def _plain_cell(permeability):
+    """The cylinders of :func:`_cylinders` as a cell of plain cylinders (g-ratio 1) of `PackedMyelinatedCylinders`."""
+    from dmipy_sim import Compartments, Pool
+    from dmipy_sim.geometry import PackedMyelinatedCylinders, pack_cylinders
+    radii = [1.0e-6, 0.8e-6, 1.2e-6, 0.9e-6]
+    c, L, _ = pack_cylinders(radii, target_vf=0.45, seed=3)
+    return PackedMyelinatedCylinders(radii, 1.0, c, L, N_max=len(radii), kappa_outer=permeability,
+                                     compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D)))
+
+
+def _n_objects(g):
+    return g.N_actual if g._is_packed_myelinated else len(g._radii_np)
+
+
 def _spheres(permeability):
     from dmipy_sim.geometry import PackedSpheres, pack_spheres
     radii = [1.0e-6, 0.8e-6, 1.1e-6]
@@ -53,9 +67,9 @@ def test_every_object_at_one_permeability_is_the_scalar_walk_to_the_bit(make):
     assert a.work["permeability"] is None and b.work["permeability"]["values_m_per_s"] == [[KAPPA] * len(make(KAPPA)._radii_np)]
 
 
-@pytest.mark.parametrize("make", [_cylinders, _spheres])
+@pytest.mark.parametrize("make", [_cylinders, _spheres, _plain_cell])
 def test_an_object_at_zero_permeability_is_impermeable_and_the_others_exchange(make):
-    n_obj = len(make(KAPPA)._radii_np)
+    n_obj = _n_objects(make(KAPPA))
     sealed = 2
     kappa = [KAPPA] * n_obj
     kappa[sealed] = 0.0
@@ -73,16 +87,36 @@ def test_an_object_at_zero_permeability_is_impermeable_and_the_others_exchange(m
     assert others.sum() > 50, "the other objects did not exchange"
 
 
-def test_a_trial_reading_another_objects_permeability_would_open_the_sealed_one():
+@pytest.mark.parametrize("make", [_cylinders, _plain_cell])
+def test_a_trial_reading_another_objects_permeability_would_open_the_sealed_one(make):
     """The comparison above resolves the object: with the sealed object's neighbours' permeability on every wall the
     same walk changes the sealed object's walkers at once (the variant the test fails on)."""
-    g = _cylinders(KAPPA)
+    g = make(KAPPA)
     n = 2048
     w = _walk(g, n=n, raw=n)
     pos = np.asarray(w.raw_positions)
     obj = np.asarray(g.classify_positions_exact(pos.reshape(-1, 3))).reshape(pos.shape[:2])
     started = obj[:, 0] == 3
     assert (obj[started] != 3).any(axis=1).mean() > 0.5
+
+
+def test_every_cylinder_of_a_plain_cell_at_one_permeability_is_the_scalar_walk_to_the_bit():
+    """The test above on a cell of plain cylinders of `PackedMyelinatedCylinders`, whose walk states no permeability
+    record (its permeability per cylinder is constant in time and is the geometry's)."""
+    a = _walk(_plain_cell(KAPPA))
+    b = _walk(_plain_cell([KAPPA] * 4))
+    np.testing.assert_array_equal(a.position_coeffs, b.position_coeffs)
+    np.testing.assert_array_equal(a.boundary_bands, b.boundary_bands)
+    np.testing.assert_array_equal(a.comp_events.t, b.comp_events.t)
+    np.testing.assert_array_equal(a.comp_events.label, b.comp_events.label)
+    assert a.comp_events.n_events > 0
+
+
+def test_a_schedule_is_refused_by_name_on_a_plain_cell():
+    """A permeability over time is not walked by the myelinated kernel: refused by name, never read as constant."""
+    from dmipy_sim.geometry import PermeabilitySchedule
+    with pytest.raises(NotImplementedError, match="does not read a PermeabilitySchedule"):
+        _plain_cell(PermeabilitySchedule([150 * DT], [[KAPPA] * 4, [0.0] * 4]))
 
 
 def test_a_schedule_that_seals_every_wall_stops_the_exchange_at_its_breakpoint():
