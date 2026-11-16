@@ -413,6 +413,11 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     wr = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=raw, raw_subset=4, **kw)
     assert wr.raw_field.shape == (4, wr.n_blocks * wr.reads_per_block + 1, 12) and wr.stepping["raw_subset_backend"] == "jax"
     assert all(int(r.raw_subset) == 0 for r in raw.requests if r.K_c3 == 2)      # the backend walks no raw subset in the walk
+    # a walker the JAX kernels walked was projected in their float32, whatever the backend declares for its own
+    wa = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=_Still(projection_precision="float64"), raw_subset=16, **kw)
+    assert wa.block["projection_precision"] == "float32"
+    wm = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=_Still(projection_precision="float64"), raw_subset=4, **kw)
+    assert wm.block["projection_precision"] in ("float32", "mixed")
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():

@@ -608,7 +608,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     out["fs"] = fs_raw
             return out, dict(n_free=n_free_0, n_kernel_steps=n_kernel_0, n_illegal=n_illegal)
 
-        backend_projection = set()                  # what the backend states for each batch (None: it states none)
+        jax_projection = jax.eval_shape(lambda r, M: jnp.einsum("kj,wjd->wkd", r, M, precision=jax.lax.Precision.HIGHEST),
+                                        table[0], jax.ShapeDtypeStruct((1, m + 1, 3), jnp.float32)).dtype.name
+        backend_projection = set()                  # what each batch's coefficients were projected in (a backend's own statement)
 
         def _backend_batch(s, e, *, raw, K_f, rd=None):
             """The walk of walkers ``s:e`` through the backend (#747, #742): its
@@ -765,6 +767,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                 if got is None:
                     # a field walk's raw subset is walked by the JAX kernels: it keeps the reads at the read instants
                     got, cnt = (_walk_batch if (raw and sampling) else _batch)(a, b_, raw=raw, K_f=K_f)
+                    if _backend is not None and raw and sampling:
+                        backend_projection.add(jax_projection)                 # this batch was walked by the JAX kernels
                     k_cand = nonlocal_k[0]
                     n_illegal += cnt["n_illegal"]
                     if _backend is None:
@@ -796,8 +800,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")
         block = dict(h=float(dt_actual), m=m, precision=np.dtype(resid.dtype).name, n_blocks=int(n_blocks), rule=block_rule, ring=1,
                      projection_precision=(
-                         jax.eval_shape(lambda r, M: jnp.einsum("kj,wjd->wkd", r, M, precision=jax.lax.Precision.HIGHEST), table[0],
-                                        jax.ShapeDtypeStruct((1, m + 1, 3), jnp.float32)).dtype.name if _backend is None
+                         jax_projection if _backend is None
                          else (next(iter(backend_projection)) if len(backend_projection) == 1 else "mixed")),
                      accumulation="the moments of each block summed per step for the kernel-stepped walkers and per ROUND for the "
                                   "free-stepping ones (a round's displacement at its midpoint), every block projected in one float32 "
