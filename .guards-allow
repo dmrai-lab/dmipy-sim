@@ -1,5 +1,5 @@
 dmipy_sim/engine/_gpu_config.py:b12a06686c the device memory where nvidia-smi reports none: it sizes the allocator cap DMIPY_GPU_MEM_GB is read against, no stated or certified quantity
-dmipy_sim/engine/core.py:5b11bb416c the cost model's bytes: a field band the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
+dmipy_sim/engine/core.py:4eb9931bf4 the cost model's bytes: a field band the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
 dmipy_sim/engine/core.py:9ee688e1f4 the cost model's bytes: an event buffer the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
 dmipy_sim/engine/core.py:e2cc7824c1 a device that reports no bytes in use has none in use (its memory statistics), no quantity
 dmipy_sim/engine/core.py:e5ca662182 the cost model's bytes: a field band the walk's pilot has yet to size costs nothing here, and walk_cost reports it as None
