@@ -179,8 +179,10 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                                       adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir) as run:
         import logging
         from ..engine.core import _walk_geometry
+        from ..engine.accumulate import accumulation_dtype as _accumulation_dtype
         from dmipy_replay.replay.envelope import Envelope
         from ..replay.compression import certificate_settings
+        _accumulation_dtype(accumulation_dtype)            # refused by name before anything is walked or read back
         if not isinstance(envelope, Envelope):
             raise TypeError(f"walk(spec, ..., envelope=) takes an Envelope: dmipy_replay.envelope_of(scanner, ...) for a "
                             f"scanner class, or dmipy_replay.Envelope(...); got {type(envelope).__name__}")
@@ -1098,7 +1100,8 @@ class _PoolCheckpoint:
     pool's :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, after its pool-change exclusion) and
     ``pool-<name>.json`` (its weights, its exclusion record and the key it was walked under: the sha256 of the spec
     without its provenance or local paths (the raster cache's identity), the pool's seed, walker count, duration and exclusion bound). A later run of the same walk reads the pool back instead
-    of walking it; a file whose key differs is refused by name, never reused."""
+    of walking it; a file whose key differs, or whose pool was accumulated in another dtype than the walk asks for, is
+    refused by name, never reused."""
 
     def __init__(self, directory, name, spec, seed, n, T_max, drop_bound):
         import hashlib, json, os
@@ -1238,6 +1241,10 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         held = None if ck is None else ck.load()
         if held is not None:                                       # this pool was walked by an earlier run of the same walk
             w, weights_of[pid], kept_drop = held
+            if w.block.get("precision") != walk_kw["accumulation_dtype"]:
+                raise SpecError(f"pool {pool.name!r}: the checkpoint {ck.path} was accumulated in "
+                                f"{w.block.get('precision')!r}, not this walk's accumulation_dtype="
+                                f"{walk_kw['accumulation_dtype']!r}; move it aside to walk the pool again")
             if drop_pool_changes is not None:
                 dropped[pool.name] = kept_drop
             current().phase(f"walk {pool.name}", n_walkers=int(n), resumed=ck.path)

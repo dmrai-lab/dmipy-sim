@@ -711,13 +711,15 @@ def field_mode_form(acc_field, T):
     return jnp.asarray(cosine_mode_scale(acc_field.shape[0] - 1, T), acc_field.dtype)[:, None] * acc_field
 
 
-def accumulator_bytes(K, m, record, K_c3=0, n_ch=0, events_cap=0):
+def accumulator_bytes(K, m, record, K_c3=0, n_ch=0, events_cap=0, *, itemsize):
     """Device bytes one walker's accumulation holds through a batch: the level-2 accumulators (``(K+1)`` modes x 3
     axes, + the local time's ``K+1`` when recorded, + the field's ``(K_c3+1) n_ch``), a ring's moments and the block's
-    running moments, the last field read, and an events buffer of ``events_cap`` entries (five bytes each), float32."""
+    running moments, the last field read, each of ``itemsize`` bytes (the accumulation dtype's: 4 for float32, 8 for
+    float64), and an events buffer of ``events_cap`` entries (five bytes each)."""
     ch = 3 + (1 if record else 0)
-    out = 4 * ch * ((int(K) + 1) + (RING + 1) * (int(m) + 1))
+    w = int(itemsize)
+    out = w * ch * ((int(K) + 1) + (RING + 1) * (int(m) + 1))
     if n_ch:
-        out += 4 * int(n_ch) * (int(K_c3) + (RING + 1) * (int(m) + 1) + 1)
+        out += w * int(n_ch) * (int(K_c3) + (RING + 1) * (int(m) + 1) + 1)
     out += 5 * int(events_cap)
     return out

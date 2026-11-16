@@ -157,6 +157,37 @@ def test_the_level2_accumulator_is_summed_in_the_dtype(precision):
     assert float(ap[0, 0]) == (BIG + ONES if precision == "float64" else BIG)
 
 
+def test_a_bundle_joins_its_pools_in_the_dtype_and_refuses_a_pool_kept_in_another(tmp_path, x64):
+    """A multi-surface spec's pools, each walked by the geometry walk, joined in their dtype (the frozen sheath's
+    zeros and field modes too); a pool checkpoint accumulated in float32 is refused by name for a float64 walk."""
+    from dmipy_replay.spec.substrate import SpecError
+    from dmipy_sim.engine.accumulate import FIELD_RULE_CHI
+    from tests.test_bundle_raw_subset import H, K, N_PROBE, T_MAX, _spec
+    spec = _spec(tmp_path)
+    kw = dict(T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, n_probe=N_PROBE,
+              envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
+    kept = str(tmp_path / "pools")
+    w32 = walk(spec, 12, pool_checkpoint=kept, **kw)
+    w64 = walk(spec, 12, accumulation_dtype="float64", **kw)
+    for w, dt in ((w32, np.float32), (w64, np.float64)):
+        for name in ("position_coeffs", "qv_positions", "field_coeffs", "qv_field", "qv_field_increments"):
+            assert np.asarray(getattr(w, name)).dtype == dt, name
+        assert w.block["precision"] == np.dtype(dt).name
+    np.testing.assert_array_equal(w32.position_coeffs[:, :, 0, :], w64.position_coeffs[:, :, 0, :])
+    np.testing.assert_array_equal(w32.compartment, w64.compartment)
+    with pytest.raises(SpecError, match="accumulated in 'float32', not this walk's accumulation_dtype='float64'"):
+        walk(spec, 12, pool_checkpoint=kept, accumulation_dtype="float64", **kw)
+
+
+def test_the_cost_counts_the_accumulators_in_their_dtype(x64):
+    """walk_cost's accumulator and device bytes are the dtype's: twice the float32 count in float64 for a walk with
+    no events buffer (whose entries are bytes of their own)."""
+    c32 = walk_cost(8, D, Box1D(length=10e-6), 0.1, K=60, tiers=())
+    c64 = walk_cost(8, D, Box1D(length=10e-6), 0.1, K=60, tiers=(), accumulation_dtype="float64")
+    assert c64.accumulator_bytes_per_walker == 2 * c32.accumulator_bytes_per_walker
+    assert c64.bytes_per_walker - 20 == 2 * (c32.bytes_per_walker - 20)          # the start and key stay float32
+
+
 # -------------------------------------------------------------------------------------------------- refusals
 @pytest.mark.parametrize("bad", ["float16", "f64", "Float64", None, np.float64])
 def test_an_unknown_dtype_is_refused_by_name(bad):
