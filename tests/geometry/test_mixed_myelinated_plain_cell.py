@@ -119,6 +119,9 @@ def test_the_spec_of_a_mixed_cell_walks_back_to_the_same_cell():
     for name in ("_kappa_inner_jax", "_kappa_outer_jax", "_rho_inner_jax", "_rho_outer_jax", "plain_mask"):
         np.testing.assert_array_equal(np.asarray(getattr(back, name))[:4], np.asarray(getattr(g, name))[:4])
     assert back.seed_pools == g.seed_pools
+    dry = _cell([0.7, 1.0, 0.7, 1.0], compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, water_fraction=0.0),
+                                                                 extra=Pool(D=D)), seed_pools=("extra", "intra"))
+    assert geometry_from_spec(dry.spec).seed_pools == ("extra", "intra")      # a dry sheath stays unseeded
     assert back.spec.to_dict() == spec.to_dict()
     a = _walk_geometry(64, D, g, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)
     b = _walk_geometry(64, D, back, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)
@@ -251,7 +254,7 @@ def _owner(pts, radii, centres, Lc):
     return inside.any(1), np.argmax(inside, 1)
 
 
-def _pair(radii, centres, Lc, kappa, plain, n, seed, *, budget=None, sheath=None):
+def _pair(radii, centres, Lc, kappa, plain, n, seed, *, budget=None, sheath=None, coins=None):
     """Feed ``n`` steps to the plain packing's kernel and to the cell's kernel; return both results and the inputs.
     ``plain`` marks the cylinders that are plain in the cell (the others are myelinated with inner radius
     ``sheath * radius`` and impermeable, so the plain kernel sees their outer wall as a reflecting disk)."""
@@ -271,7 +274,7 @@ def _pair(radii, centres, Lc, kappa, plain, n, seed, *, budget=None, sheath=None
     w_p = packed_wall_kernel(cj, rj, f32(Lc), eps, nudge, step_max, min_gap, count=True, budget=budget)
     w_u = concentric_wall_kernel(cj, jnp.asarray(inner, f32), rj, f32(Lc), Dj, Dj, Dj, jnp.zeros(N, f32), jnp.asarray(kap),
                                  jnp.full((N, 4), rho_over_D), eps, nudge, step_max, min_gap, count=True, budget=budget)
-    B = w_p.bounce_loop.budget
+    B = w_p.bounce_loop.budget if coins is None else coins          # ``coins``: the length the uniforms are drawn at
     sides = [1.0, -1.0] if sheath is None else [1.0]
     pts, dirs, ls = _starts(rng, radii, centres, Lc, step_max, n, sides)
     inside, own = _owner(pts, radii, centres, Lc)
@@ -283,7 +286,7 @@ def _pair(radii, centres, Lc, kappa, plain, n, seed, *, budget=None, sheath=None
     hp = jax.jit(jax.vmap(lambda p, d, l, s, key: w_p(p, d, l, s, kod, rho_over_D, key)))(
         jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
     hu = jax.jit(jax.vmap(lambda p, d, l, pl, k, u: w_u(p, d, l, pl, k, f32(0.5), u)))(
-        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), pool, k0, us)
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), pool, k0, us[:, :w_u.bounce_loop.budget])
     return w_p, w_u, hp, hu, pool
 
 
@@ -322,11 +325,14 @@ def test_a_plain_wall_is_the_plain_packings_wall_step_for_step(kappa):
                 _, _, hp_b, hu_b, pool_b = _pair(radii, centres, Lc, kappa, plain, 2000, seed=10 + i, budget=b)
             # one iteration compiled whole lets the compiler fuse the two kernels' arithmetic differently (1 ulp)
             _assert_pairs_equal(hp_b, hu_b, pool_b, f"{name}, budget {b}")
-            if b == 1:                                                   # the first encounter's own decision
-                hit1 = np.asarray(hu_b.n_hits) > 0
-                first_in = np.asarray(hu_b.pool != pool_b)
-                n_reject += int((hit1 & ~first_in).sum())
-                n_later += int((hit1 & ~first_in & crossed).sum())
+        # the first encounter's own decision, on the full walk's first uniform: the loop stopped after one encounter
+        with jax.disable_jit():
+            _, _, _, hu_1, pool_1 = _pair(radii, centres, Lc, kappa, plain, 2000, seed=10 + i, budget=1,
+                                          coins=w_p.bounce_loop.budget)
+        hit1 = np.asarray(hu_1.n_hits) > 0
+        first_in = np.asarray(hu_1.pool != pool_1)
+        n_reject += int((hit1 & ~first_in).sum())
+        n_later += int((hit1 & ~first_in & crossed).sum())          # rejected first, crossed after it
     assert n_steps >= 6000
     assert n_cross > 0 and n_reject > 0
     if kappa == 4e-2:
@@ -458,6 +464,11 @@ def test_no_walker_starts_in_a_sheath_when_the_sheath_is_not_seeded():
     wf = pgse([[1, 0, 0]], 2e-3, 8e-3, bvalues=[1e9], n_t=50, slew_rate=np.inf)
     out = simulate_fused(500, waveform=wf, geometry=geo, seed=3, require_gpu=False, return_compartments="full")
     assert (np.asarray(out[-1]) != 2).all() and (np.asarray(out[-2]) != 2).all()
+    many = PackedMyelinatedCylinders(np.full(300, 0.1e-6), 1.0, np.stack(np.meshgrid(np.arange(15), np.arange(20)), -1)
+                                     .reshape(-1, 2) * 0.5e-6 - 4.75e-6, 10e-6, N_max=300, compartments=COMPS,
+                                     seed_pools=("intra",))
+    many.init_positions(4096, jax.random.PRNGKey(1))                     # 300 equal lumens: whole counts, none negative
+    assert (np.asarray(many.pool_of(many._init_compartments)) == 1).all() and len(many._init_compartments) == 4096
     default = _cell([0.7, 1.0, 0.7, 1.0])                                # the default seeds every pool by area
     default.init_positions(4000, jax.random.PRNGKey(0))
     assert (np.asarray(default.pool_of(default._init_compartments)) == 2).sum() > 100

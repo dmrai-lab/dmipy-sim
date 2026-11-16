@@ -958,10 +958,11 @@ class PackedMyelinatedCylinders(Geometry):
 
         # Extra fills remainder (handles rounding); without an extra pool to seed, the largest seeded lumen or sheath does
         n_extra = n_walkers - int(np.sum(n_intra)) - int(np.sum(n_myelin))
-        if not area_extra > 0.0 and n_extra != 0:
-            counts = np.concatenate([n_intra, n_myelin]); areas = np.concatenate([area_intra, area_myelin])
-            j = int(np.argmax(areas))
-            counts[j] += n_extra
+        if not area_extra > 0.0 and n_extra != 0:            # largest remainders: whole counts summing to n_walkers
+            share = n_walkers * np.concatenate([area_intra, area_myelin]) / total_area
+            counts = np.floor(share).astype(int)
+            short = n_walkers - int(counts.sum())
+            counts[np.argsort(-(share - counts), kind="stable")[:short]] += 1
             n_intra, n_myelin = counts[:N].copy(), counts[N:].copy()
             n_extra = 0
         if n_extra < 0:
