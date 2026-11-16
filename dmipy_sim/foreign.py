@@ -183,7 +183,7 @@ def walk_from_positions(positions, *, sample_interval, K, pool, spec, D, produce
                   interpolation_variance_bound_value_m2=interpolation_variance_bound(D, h),
                   position_dtype=str(pos.dtype), position_resolution_m=res, channels=["positions", "compartment"],
                   channels_absent=["boundary_local_time", "susceptibility_field", "pool_changes"])
-    block = dict(h=h, m=0, n_blocks=N, rule="given", precision="float32", k0_residual_m=cast_err,
+    block = dict(h=h, m=0, n_blocks=N, rule="given", precision="float32", projection_precision=None, k0_residual_m=cast_err,
                  k0_residual_relative=float(np.finfo(np.float32).eps) / 2.0, source=source,
                  quadratic_variation=dict(positions_mean_m2=[float(v) for v in qv_mean],
                                           positions_over_2DT=[float(v / (2.0 * D * T)) for v in qv_mean]))

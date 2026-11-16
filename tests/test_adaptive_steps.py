@@ -24,6 +24,7 @@ def test_the_finest_class_alone_is_the_fused_walk():
                                               raw_subset=300, K=8)
     assert adaptive.sub_steps == fixed.sub_steps == 64
     assert adaptive.block["round_s"] == pytest.approx(adaptive.block["h"])      # one round per block: the finest class's
+    assert adaptive.block["projection_precision"] == "float32" == adaptive.block["precision"]
     # the same noise sequence and the same wall rule; the gathered kernel compiles to a different op order, so
     # float32 rounding differs by ulps (1e-11 m on 1e-5 m coordinates), not by a step
     np.testing.assert_allclose(adaptive.raw_positions, fixed.raw_positions, rtol=0, atol=1e-10)

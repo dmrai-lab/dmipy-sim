@@ -65,6 +65,72 @@ def test_the_accumulators_hold_the_dtype_asked_for_and_the_record_says_so(precis
     assert f"a {precision} level-2 accumulator" in w.block["accumulation"]
 
 
+def _spy_on_the_projection(monkeypatch):
+    """Record the dtype name of every ring projection the walk's program traces."""
+    import dmipy_sim.engine.accumulate as acc
+    seen, real = [], acc.ring_projection
+
+    def spy(tab, mom):
+        out = real(tab, mom)
+        seen.append(out.dtype.name)
+        return out
+    monkeypatch.setattr(acc, "ring_projection", spy)
+    return seen
+
+
+@pytest.mark.parametrize("make", [_cell, _slab], ids=["cell", "slab"])
+def test_the_block_states_the_dtype_of_the_projection_product(make, precision, monkeypatch):
+    seen = _spy_on_the_projection(monkeypatch)
+    w = make(precision)                                          # a fresh geometry: the compiled program is cached on it
+    assert seen and set(seen) == {w.block["projection_precision"]} == {precision}
+
+
+def test_projection_precision_follows_the_product(x64, monkeypatch):
+    """The field reads the dtype of what ``ring_projection`` returns, not the dtype it was asked for."""
+    import jax.numpy as jnp
+    import dmipy_sim.engine.accumulate as acc
+    assert acc.projection_precision("float64", 4, 3) == "float64"
+    real = acc.ring_projection
+    monkeypatch.setattr(acc, "ring_projection", lambda tab, mom: real(tab, mom).astype(jnp.float32))
+    assert acc.projection_precision("float64", 4, 3) == "float32"
+
+
+def test_a_joined_walk_refuses_pieces_that_differ_in_the_projection_precision():
+    from dataclasses import replace
+    from dmipy_sim.coefficient_walk import join_walks
+    g = Box1D(length=10e-6)
+    a = _walk_geometry(32, D, g, 0.01, K=6, seed=1, require_gpu=False, tiers=())
+    b = _walk_geometry(32, D, g, 0.01, K=6, seed=1, require_gpu=False, tiers=(), first_walker=32)
+    assert join_walks([a, b]).block["projection_precision"] == "float32"
+    other = replace(b, block=dict(b.block, projection_precision="float64"))
+    with pytest.raises(ValueError, match="projection_precision"):
+        join_walks([a, other])
+
+
+@pytest.mark.parametrize("states, joined", [(("float32", "float32"), "float32"), (("float32", "float64"), "mixed")],
+                         ids=["agree", "differ"])
+def test_a_bundle_states_the_projection_precision_its_pools_agree_on_else_mixed(states, joined, tmp_path, monkeypatch):
+    """Pool walks with equal array dtypes and given ``projection_precision`` metadata: the joined block states their
+    common value, ``"mixed"`` when they differ, never the first pool's."""
+    from dataclasses import replace
+    import dmipy_sim.spec.walk as spec_walk
+    from dmipy_sim.engine.accumulate import FIELD_RULE_CHI
+    from tests.test_bundle_raw_subset import H, K, N_PROBE, T_MAX, _spec
+    real, kept = spec_walk._join_pool_walks, []
+
+    def join(parts, *a, **k):
+        it = iter(states)
+        parts = [(pid, w if isinstance(w, np.ndarray) else replace(w, block=dict(w.block, projection_precision=next(it))))
+                 for pid, w in parts]
+        kept.append(parts)
+        return real(parts, *a, **k)
+    monkeypatch.setattr(spec_walk, "_join_pool_walks", join)
+    w = walk(_spec(tmp_path), 12, T_max=T_MAX, block_h=H, K=K, seed=3, require_gpu=False, n_probe=N_PROBE,
+             envelope=walk_envelope(chi_max=FIELD_RULE_CHI))
+    assert w.block["projection_precision"] == joined
+    assert w.block["precision"] == "float32"
+
+
 def test_the_default_is_the_float32_accumulation():
     a = _walk_geometry(64, D, Box1D(length=10e-6), 0.01, seed=7, K=12, tiers=(), require_gpu=False)
     b = _walk_geometry(64, D, Box1D(length=10e-6), 0.01, seed=7, K=12, tiers=(), require_gpu=False,
