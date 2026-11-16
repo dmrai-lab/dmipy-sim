@@ -43,7 +43,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
-              field_pilot=None, first_walker=0, sub_steps=None):
+              field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32"):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -156,6 +156,12 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     (:meth:`WalkContext.geometry`: built and compiled once) and its walkers may be placed ahead
     (:meth:`WalkContext.place`).
 
+    ``accumulation_dtype`` (``"float32"``, the production precision, or ``"float64"``, the reference precision) is the
+    dtype the walk accumulates its coefficients and quadratic variations in, for the same float32 walk
+    (:func:`~dmipy_sim.engine.core._walk_geometry`; ``"float64"`` needs JAX's x64 mode on in the calling process); a
+    multi-surface spec's pools are each accumulated in it and joined in it, and the adaptive walk refuses
+    ``"float64"`` by name.
+
     ``sub_steps`` (None: the step law's count) pins the physics steps per block, so the walk steps at
     ``dt_sim = block / sub_steps`` seconds (:func:`~dmipy_sim.engine.core.walk_cost` states the step law's own count and
     the bound a pinned one is held to, ``sub_step_rules``). It is the lever of a walk matched to another walk's step: a
@@ -173,8 +179,10 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                                       adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir) as run:
         import logging
         from ..engine.core import _walk_geometry
+        from ..engine.accumulate import accumulation_dtype as _accumulation_dtype
         from dmipy_replay.replay.envelope import Envelope
         from ..replay.compression import certificate_settings
+        _accumulation_dtype(accumulation_dtype)            # refused by name before anything is walked or read back
         if not isinstance(envelope, Envelope):
             raise TypeError(f"walk(spec, ..., envelope=) takes an Envelope: dmipy_replay.envelope_of(scanner, ...) for a "
                             f"scanner class, or dmipy_replay.Envelope(...); got {type(envelope).__name__}")
@@ -251,7 +259,8 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
             from ..engine.accumulate import window_count
             K = envelope.mode_count(window_count(T_max, window_T)[1])
         walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=settings, bounce_budget=bounce_budget,
-                       backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz))
+                       backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz),
+                       accumulation_dtype=accumulation_dtype)
         if sub_steps is not None:
             if adaptive_steps:
                 raise SpecError("sub_steps pins the fixed-step walk's physics step; the adaptive producer sizes its own steps")
@@ -942,11 +951,17 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, envelope, raw_
     ``n_raw`` walkers are the walk's raw subset, as on a single-pool walk. ``raw_counts`` is ``{pool id: raw walkers}``
     (:func:`_raw_allocation`): a pool's raw walkers are its first ``raw_counts[pid]`` walkers, its walk's own raw
     subset, or for a frozen pool its seats held at every block end (the seat as position, contact 0, the field read
-    at the seat); the raw compartment is the pool id. A pool walk that lacks a raw array it was asked for is refused."""
+    at the seat); the raw compartment is the pool id. A pool walk that lacks a raw array it was asked for is refused.
+    The coefficients and quadratic variations are joined in the pools' accumulation dtype (``block["precision"]``,
+    one for every pool, else refused); the raw arrays are the walk's float32."""
     import dataclasses
     from ..coefficient_walk import merge_work
     walks = [w for _, w in parts if not isinstance(w, np.ndarray)]
     w0 = walks[0]
+    acc = {np.asarray(w.position_coeffs).dtype for w in walks}
+    if len(acc) != 1:
+        raise SpecError(f"the pools of a bundle are accumulated in one dtype; their walks hold {sorted(a.name for a in acc)}")
+    acc = acc.pop()
     for w in walks[1:]:
         if (w.K, w.m, w.n_windows, w.n_blocks) != (w0.K, w0.m, w0.n_windows, w0.n_blocks) or abs(w.h - w0.h) > 1e-12 * w0.h:
             raise SpecError("the pools of a bundle are walked on one band and block; two walks disagree")
@@ -976,16 +991,16 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, envelope, raw_
         name = spec.pool(pid).name
         if isinstance(w, np.ndarray):                                  # a frozen shell: held at its seat
             n = len(w)
-            c = np.zeros((n, n_win, Kc, 3), np.float32); c[:, :, 0, :] = w[:, None, :]
-            pc.append(c); qp.append(np.zeros((n, n_win, 3), np.float32))
+            c = np.zeros((n, n_win, Kc, 3), acc); c[:, :, 0, :] = w[:, None, :]
+            pc.append(c); qp.append(np.zeros((n, n_win, 3), acc))
             if surface:
-                be.append(np.zeros((n, n_win), np.float32)); bb.append(np.zeros((n, n_win, w0.boundary_bands.shape[2]), np.float32))
-                qb.append(np.zeros((n, n_win), np.float32))
+                be.append(np.zeros((n, n_win), acc)); bb.append(np.zeros((n, n_win, w0.boundary_bands.shape[2]), acc))
+                qb.append(np.zeros((n, n_win), acc))
             if sampled:
-                modes = np.zeros((n, n_win, K_f, n_ch), np.float32)
+                modes = np.zeros((n, n_win, K_f, n_ch), acc)
                 modes[:, :, 0, :] = (np.sqrt(T_w) * _frozen_channels(field, w))[:, None, :]
-                fc.append(modes); qf.append(np.zeros((n, n_win, n_ch), np.float32))
-                qd.append(np.zeros((n, n_win, n_ch), np.float32))            # a frozen walker reads one value
+                fc.append(modes); qf.append(np.zeros((n, n_win, n_ch), acc))
+                qd.append(np.zeros((n, n_win, n_ch), acc))                  # a frozen walker reads one value
             if n_r:
                 rp.append(np.broadcast_to(w[:n_r, None, :], (n_r, nb1, 3)).astype(np.float32))
                 if surface:
@@ -1011,12 +1026,12 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, envelope, raw_
                         raise SpecError(f"pool {name!r} reads the field at instants other than the bundle's ({gap}); the pools' raw "
                                         f"field reads cannot be joined on one series")
                     rf.append(np.asarray(w.raw_field, np.float32))
-            pc.append(np.asarray(w.position_coeffs, np.float32)); qp.append(np.asarray(w.qv_positions, np.float32))
+            pc.append(np.asarray(w.position_coeffs, acc)); qp.append(np.asarray(w.qv_positions, acc))
             if surface:
                 be.append(np.asarray(w.boundary_endpoint)); bb.append(np.asarray(w.boundary_bands)); qb.append(np.asarray(w.qv_boundary))
             if sampled:
-                fc.append(np.asarray(w.field_coeffs, np.float32)); qf.append(np.asarray(w.qv_field, np.float32))
-                qd.append(np.asarray(w.qv_field_increments, np.float32))
+                fc.append(np.asarray(w.field_coeffs, acc)); qf.append(np.asarray(w.qv_field, acc))
+                qd.append(np.asarray(w.qv_field_increments, acc))
         ids.append(np.full(n, pid, np.int8))
         wts.append(np.asarray(weights_of[pid], float))
         rc.append(np.full((n_r, nb1), pid, np.int8))
@@ -1085,7 +1100,8 @@ class _PoolCheckpoint:
     pool's :class:`~dmipy_sim.coefficient_walk.CoefficientWalk`, after its pool-change exclusion) and
     ``pool-<name>.json`` (its weights, its exclusion record and the key it was walked under: the sha256 of the spec
     without its provenance or local paths (the raster cache's identity), the pool's seed, walker count, duration and exclusion bound). A later run of the same walk reads the pool back instead
-    of walking it; a file whose key differs is refused by name, never reused."""
+    of walking it; a file whose key differs, or whose pool was accumulated in another dtype than the walk asks for, is
+    refused by name, never reused."""
 
     def __init__(self, directory, name, spec, seed, n, T_max, drop_bound):
         import hashlib, json, os
@@ -1225,6 +1241,10 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
         held = None if ck is None else ck.load()
         if held is not None:                                       # this pool was walked by an earlier run of the same walk
             w, weights_of[pid], kept_drop = held
+            if w.block.get("precision") != walk_kw["accumulation_dtype"]:
+                raise SpecError(f"pool {pool.name!r}: the checkpoint {ck.path} was accumulated in "
+                                f"{w.block.get('precision')!r}, not this walk's accumulation_dtype="
+                                f"{walk_kw['accumulation_dtype']!r}; move it aside to walk the pool again")
             if drop_pool_changes is not None:
                 dropped[pool.name] = kept_drop
             current().phase(f"walk {pool.name}", n_walkers=int(n), resumed=ck.path)

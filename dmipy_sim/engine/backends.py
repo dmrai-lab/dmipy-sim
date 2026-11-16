@@ -209,10 +209,11 @@ class CoefficientBatch(NamedTuple):
     endpoint exact, its bands on the window's own basis, its local time starting at 0 at the window's start, its
     quadratic variations the window's own steps' (RPK.md 4.3). The walker's start pool, its events (on the walk's own
     clock), its counters and its saves are the walk's."""
-    position_coeffs: np.ndarray       #: (n, n_windows, K + 2, 3) float64: per axis x(start), x(end) - x(start) (exact) and the K bands
-    boundary_start: object            #: (n, n_windows) float64 the local time at each window's start (0), or None
-    boundary_endpoint: object         #: (n, n_windows) float64 at its end, exact, or None
-    boundary_bands: object            #: (n, n_windows, K) float64 its bridge's bands at rho/D = 1, or None
+    position_coeffs: np.ndarray       #: (n, n_windows, K + 2, 3) floats in the batch's ``precision``: per axis x(start),
+                                      #: x(end) - x(start) (exact) and the K bands; the walk stores them float32
+    boundary_start: object            #: (n, n_windows) the local time at each window's start (0), or None
+    boundary_endpoint: object         #: (n, n_windows) at its end, exact, or None
+    boundary_bands: object            #: (n, n_windows, K) its bridge's bands at rho/D = 1, or None
     compartment: object               #: (n,) int8 the walker's pool at the start (1 inside; a label volume's label), or None
     illegal: np.ndarray               #: (n,) int32 refused walker-steps per walker
     work: tuple                       #: (hits | None, crossings | None, exhausted) per walker, int32 arrays
@@ -222,8 +223,10 @@ class CoefficientBatch(NamedTuple):
     precision: str                    #: the floating-point type the bands were accumulated in across blocks
     saves: object = None              #: the block ends of the batch's first ``request.raw_subset`` walkers as a
                                       #: :class:`WalkBatch` (save 0 the start), or None when none were asked for
-    qv_positions: object = None       #: (n, n_windows, 3) float64 each walker's sum dx^2 per axis over each window's steps
-    qv_boundary: object = None        #: (n, n_windows) float64 its sum dlog^2 (each step's contact squared), or None
+    qv_positions: object = None       #: (n, n_windows, 3) each walker's sum dx^2 per axis over each window's steps
+    qv_boundary: object = None        #: (n, n_windows) its sum dlog^2 (each step's contact squared), or None
+                                      #: (the contact and the quadratic variations in the batch's ``precision`` too, stored
+                                      #: float32 by the walk)
     events: object = None             #: C1's event list ``(offsets (n + 1,) int64, times (n_ev,) float64 s, labels
                                       #: (n_ev,) int8)``: walker w's pool changes are entries offsets[w] .. offsets[w+1],
                                       #: each the start of the step that ended in the pool entered; None unrecorded

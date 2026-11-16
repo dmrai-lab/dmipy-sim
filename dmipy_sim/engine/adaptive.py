@@ -121,7 +121,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                    field_basis=None, field_reuse_intervals=4, field_read_interval=None, K_c3=None,
                                    field_list_k=256, spec=None, spool=None, backend=JAX, f_band=None, K=None, block_order=None,
                                    window_T=None, raw_subset=0, envelope=None, field_calibration=None, calibration_floor=None, query_scope=None,
-                                   step_refinement=1, calibration_reference=False):
+                                   step_refinement=1, calibration_reference=False, accumulation_dtype="float32"):
     """A :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` of ``geometry`` with adaptive stepping (module
     docstring). ``geometry`` must offer ``wall_scales``, ``reflect_with_log_weight`` and ``classify_positions_exact``
     and be impermeable (so the occupancy is one static label per walker).
@@ -141,6 +141,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
     round gathers, per walker, the segments whose surface lies within the round's deterministic excursion once
     (``candidate_k_start`` entries, widened when a walker has more in reach) and steps against those instead of
     the 27-cell gather at every step.
+
+    ``accumulation_dtype`` is the fused producer's argument (:func:`~dmipy_sim.engine.core._walk_geometry`); the
+    adaptive walk accumulates in float32 and refuses any other value by name.
 
     step_refinement uniformly shortens all adaptive steps and rounds for refinement comparisons.
     calibration_reference requires explicit field band/read settings and skips the implicit
@@ -171,12 +174,15 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
     with Run("simulate_trajectories_adaptive", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__,
                                                             T_max=T_max, block_h=block_h, walker_batch_size=walker_batch_size)) as run:
         from .gpu import check_gpu
-        from .accumulate import (block_length, default_K, window_count, BLOCK_ORDER, PRECISION, PILOT_WALKERS,
+        from .accumulate import (block_length, default_K, window_count, BLOCK_ORDER, PILOT_WALKERS, accumulation_dtype as _acc_dtype,
                                  coefficient_form, field_mode_form, field_rule_scale, read_checks, pilot_walkers, FIELD_READ_FLOOR,
                                  calibrate_field_reads)
         from ..replay.compression import block_table
         from dmipy_replay.replay.compression import cosine_band_scale
         from ..coefficient_walk import CoefficientWalk
+        if _acc_dtype(accumulation_dtype).name != "float32":
+            raise ValueError(f"accumulation_dtype={accumulation_dtype!r}: the adaptive walk accumulates in float32 only; a "
+                             f"float64 accumulation is the fused producer's (_walk_geometry, walk without adaptive_steps)")
         if not hasattr(geometry, "wall_scales"):
             raise TypeError(f"{type(geometry).__name__} offers no wall_scales; adaptive stepping needs the distance to the "
                             "nearest wall and its curvature scale")
@@ -785,7 +791,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         field_pilot_backend=(None if saved_settings is not None else field_read.get("pilot_backend", JAX) if sampling else None),
                         raw_subset_backend=(None if not n_raw else JAX if sampling else _backend_name))
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")
-        block = dict(h=float(dt_actual), m=m, precision=PRECISION, n_blocks=int(n_blocks), rule=block_rule, ring=1,
+        block = dict(h=float(dt_actual), m=m, precision=np.dtype(resid.dtype).name, n_blocks=int(n_blocks), rule=block_rule, ring=1,
                      accumulation="the moments of each block summed per step for the kernel-stepped walkers and per ROUND for the "
                                   "free-stepping ones (a round's displacement at its midpoint), every block projected in one float32 "
                                   "product and chained into a float32 level-2 accumulator",

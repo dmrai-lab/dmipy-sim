@@ -9,8 +9,10 @@ h`` (each step at its midpoint): ``M_j += tau^j dx`` for the positions, ``B_j +=
 every ``n_read`` steps (:func:`field_read_steps`) and each interval's increment the TRAPEZOID of its two reads. At the
 end of every :data:`RING` blocks the ring's moments are projected onto the ``K + 1`` cosine modes (``K_c3 + 1`` for the
 field) as one product against the ring's rows of :func:`~dmipy_sim.replay.compression.block_table` and added to the
-walker's level-2 accumulator (:func:`ring_scan`): the sum over a ring runs inside one float32 product of ``RING (m +
-1)`` terms and the chain over the walk has ``n_blocks / RING`` links. A walk whose walkers can change pool keeps, per
+walker's level-2 accumulator (:func:`ring_scan`): the sum over a ring runs inside one product of ``RING (m + 1)``
+terms and the chain over the walk has ``n_blocks / RING`` links, all in the accumulation's dtype
+(:func:`accumulation_dtype`: float32, the production precision, by default; float64, the reference precision, for the
+same float32 walk). A walk whose walkers can change pool keeps, per
 walker, the EVENTS ``(step, label)`` of every change in a buffer of declared capacity (:func:`events_init`, exact in
 the walk's own time; overflow is counted and refused by the producer), the start label held beside it. Nothing is
 emitted per block but the raw block ends of a declared subset, so a walker's working set is the accumulators, the
@@ -136,11 +138,34 @@ def block_length(T, K):
     return float(T) / max(int(round(float(T) / h)), 1)
 
 
-#: the floating-point type the block contributions are accumulated in across blocks (``walk_params.block.precision``,
-#: RPK.md 9.5.5), and how (``walk_params.block.accumulation``)
-PRECISION = "float32"
-ACCUMULATION = (f"the moments of each block summed per step, a ring of {RING} blocks projected in one float32 product, "
-                "the rings chained into a float32 level-2 accumulator")
+#: the floating-point types the walk's accumulators may hold (``accumulation_dtype``): float32 is the production
+#: precision, float64 the reference precision of the same walk
+ACCUMULATION_DTYPES = ("float32", "float64")
+
+
+def accumulation_dtype(name):
+    """The JAX dtype of the walk's accumulators for ``name``, one of :data:`ACCUMULATION_DTYPES`.
+
+    The walk itself (the draws, the steps, the positions, the wall interaction) is float32 in either; the accumulators
+    -- the moments of each block, the ring projection against :func:`~dmipy_sim.replay.compression.block_table`, the
+    level-2 accumulator, the quadratic variation and the increments they sum, each formed from the walk's float32
+    values -- are ``name``. ``"float64"`` needs JAX's x64 mode on in the calling process (JAX holds a float64 array as
+    float32 otherwise) and is refused by name when it is off; the walk does not turn it on. Any other value is
+    refused by name."""
+    if not isinstance(name, str) or name not in ACCUMULATION_DTYPES:
+        raise ValueError(f"accumulation_dtype is one of {ACCUMULATION_DTYPES}; got {name!r}")
+    if name == "float64" and not bool(jax.config.read("jax_enable_x64")):
+        raise ValueError("accumulation_dtype='float64' needs JAX's x64 mode, which is off in this process: a float64 "
+                         "accumulator would be held as float32. Turn it on before the walk with "
+                         "jax.config.update('jax_enable_x64', True) (or JAX_ENABLE_X64=1 before JAX is imported)")
+    return jnp.dtype(name)
+
+
+def accumulation_record(dtype):
+    """How a walk accumulated in ``dtype`` (``walk_params.block.accumulation``)."""
+    name = jnp.dtype(dtype).name
+    return (f"the moments of each block summed per step, a ring of {RING} blocks projected in one {name} product, "
+            f"the rings chained into a {name} level-2 accumulator")
 
 
 # ------------------------------------------------------------------------------------------- the field read's rule
@@ -488,7 +513,7 @@ def _events_step(ev, lab, gstep):
 
 
 # ---------------------------------------------------------------------------------------------------- the block
-def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0, step0=None, checks=(), keep_reads=False):
+def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, dt_f=0.0, step0=None, checks=(), keep_reads=False):
     """One block of ``length`` steps of ``kind`` from ``carry = (phys, b_prev, ev_comp, ev_bound)``: the physics carry
     stepped ``length`` times, with the moments of the increments ``M_j = sum_i tau_i^j (pos(c_i+1) - pos(c_i))`` (m+1,
     3) and the same ``B_j`` of the cumulative local time, ``tau_i = (i + 1/2) / length - 1/2``; each channel's
@@ -503,8 +528,10 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
     over the block, and the quadratic variation of the series of those reads (the pilot's measurement of the
     trapezoid's constant, :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch)
     at the ends of the block's read intervals; with an events buffer the label after every step recorded on change at
-    the global step ``step0 + i + 1``. Returns ``(carry, (M, B, Q, Qb, F, Qf, Qd, E, reads))`` (None where a channel
-    is not recorded)."""
+    the global step ``step0 + i + 1``. Every moment, quadratic variation and check is held in ``dtype`` (float32 or
+    float64, :func:`accumulation_dtype`), each increment formed in ``dtype`` from the carry's float32 values; the
+    carry and the reads stay as the physics step holds them. Returns ``(carry, (M, B, Q, Qb, F, Qf, Qd, E, reads))``
+    (None where a channel is not recorded)."""
     phys, b_prev, ev_c, ev_b = carry
     length, n_read, m = int(length), int(n_read), int(m)
     if not 1 <= n_read <= length:
@@ -514,25 +541,25 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
         raise ValueError(f"the trapezoid's checks {checks} need a read at every step and reads of 2 .. {length} steps")
     n_full, rem = divmod(length, n_read)
     has_b = kind.blt_of is not None
-    js = jnp.arange(m + 1, dtype=jnp.float32)
-    inv_len = jnp.float32(1.0 / length)
+    js = jnp.arange(m + 1, dtype=dtype)
+    inv_len = jnp.asarray(1.0 / length, dtype)
     dt_step = float(dt_f) / n_read
     s0 = jnp.int32(0) if step0 is None else jnp.asarray(step0).astype(jnp.int32)
     ds = jnp.asarray(checks, jnp.int32) if checks else None
-    half_dt = jnp.float32(0.5 * dt_step)
+    half_dt = jnp.asarray(0.5 * dt_step, dtype)
 
     def step(c, i):
         cc, mp, mb, qp, qb, evc, evb = c
         r0 = kind.pos_of(cc)
         b0 = kind.blt_of(cc) if has_b else None
         cc, _ = kind.inner(cc, s0 + i)                      # the walk-wide index of the step taken
-        tau = (i.astype(jnp.float32) + 0.5) * inv_len - 0.5
+        tau = (i.astype(dtype) + 0.5) * inv_len - 0.5
         pw = tau ** js
-        dx = kind.pos_of(cc) - r0
+        dx = kind.pos_of(cc).astype(dtype) - r0.astype(dtype)
         mp = mp + pw[:, None] * dx[None, :]
         qp = qp + dx * dx
         if has_b:
-            db = kind.blt_of(cc) - b0
+            db = kind.blt_of(cc).astype(dtype) - b0.astype(dtype)
             mb = mb + pw * db
             qb = qb + db * db
         if evc is not None:
@@ -543,8 +570,8 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
 
     def group_of(L):
         """A read interval of ``L`` steps starting at step ``start`` of the block (``L`` static)."""
-        half = jnp.float32(0.5 * L * dt_step)
-        wq = jnp.float32(L / n_read)                       # a shorter interval enters the QV as (db dt_i / dt_f)^2
+        half = jnp.asarray(0.5 * L * dt_step, dtype)
+        wq = jnp.asarray(L / n_read, dtype)                      # a shorter interval enters the QV as (db dt_i / dt_f)^2
 
         def group(c, start):
             cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec = c
@@ -553,33 +580,34 @@ def moment_scan(kind, carry, length, m, *, read=None, n_ch=0, n_read=1, dt_f=0.0
             b = None
             if read is not None:
                 b = read(kind.read_pos_of(cc))
-                inc = (bp + b) * half                                            # the trapezoid over the read interval
-                tau = (start.astype(jnp.float32) + 0.5 * L) * inv_len - 0.5        # the interval's midpoint
+                inc = (bp.astype(dtype) + b.astype(dtype)) * half                # the trapezoid over the read interval
+                tau = (start.astype(dtype) + 0.5 * L) * inv_len - 0.5              # the interval's midpoint
                 mf = mf + (tau ** js)[:, None] * inc[None, :]
                 qf = qf + inc * inc
-                db = (b - bp) * wq
+                db = (b.astype(dtype) - bp.astype(dtype)) * wq
                 qd = qd + db * db                                                # the read series' quadratic variation
                 if checks:                                                       # the d-th reads and the block's end
                     k = start + 1
                     hit = (k % ds == 0) | (k == length)
-                    span = jnp.where(k % ds == 0, ds, k % ds).astype(jnp.float32)[:, None]
-                    e_d = ec[0] - inc[None, :] + jnp.where(hit[:, None], (bpd + b[None, :]) * span * half_dt, 0.0)
-                    q_d = ec[1] + jnp.where(hit[:, None], ((b[None, :] - bpd) * span / ds.astype(jnp.float32)[:, None]) ** 2, 0.0)
+                    span = jnp.where(k % ds == 0, ds, k % ds).astype(dtype)[:, None]
+                    bd = b.astype(dtype)[None, :]
+                    e_d = ec[0] - inc[None, :] + jnp.where(hit[:, None], (bpd.astype(dtype) + bd) * span * half_dt, 0.0)
+                    q_d = ec[1] + jnp.where(hit[:, None], ((bd - bpd.astype(dtype)) * span / ds.astype(dtype)[:, None]) ** 2, 0.0)
                     ec = jnp.stack([e_d, q_d])
                     bpd = jnp.where(hit[:, None], b[None, :], bpd)
                 bp = b
             return (cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec), (b if keep_reads else None)
         return group
 
-    m0 = jnp.zeros((m + 1, 3), jnp.float32)
-    b0 = jnp.zeros((m + 1,), jnp.float32) if has_b else None
-    q0 = jnp.zeros((3,), jnp.float32)
-    qb0 = jnp.float32(0.0) if has_b else None
-    f0 = jnp.zeros((m + 1, int(n_ch)), jnp.float32) if read is not None else None
-    qf0 = jnp.zeros((int(n_ch),), jnp.float32) if read is not None else None
-    qd0 = jnp.zeros((int(n_ch),), jnp.float32) if read is not None else None
+    m0 = jnp.zeros((m + 1, 3), dtype)
+    b0 = jnp.zeros((m + 1,), dtype) if has_b else None
+    q0 = jnp.zeros((3,), dtype)
+    qb0 = jnp.zeros((), dtype) if has_b else None
+    f0 = jnp.zeros((m + 1, int(n_ch)), dtype) if read is not None else None
+    qf0 = jnp.zeros((int(n_ch),), dtype) if read is not None else None
+    qd0 = jnp.zeros((int(n_ch),), dtype) if read is not None else None
     bpd0 = jnp.broadcast_to(b_prev[None, :], (len(checks), int(n_ch))) if (read is not None and checks) else None
-    ec0 = jnp.zeros((2, len(checks), int(n_ch)), jnp.float32) if (read is not None and checks) else None
+    ec0 = jnp.zeros((2, len(checks), int(n_ch)), dtype) if (read is not None and checks) else None
     c = (phys, m0, b0, q0, qb0, ev_c, ev_b, b_prev, f0, qf0, qd0, bpd0, ec0)
     c, reads = jax.lax.scan(group_of(n_read), c, jnp.arange(n_full, dtype=jnp.int32) * n_read)
     if rem:                                                                      # the block's end: the shorter interval
@@ -602,7 +630,7 @@ def ring_projection(tab, mom):
     return acc
 
 
-def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, emit=None, count=None, offset=0, n_checks=0):
+def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, dtype, K_c3=None, n_ch=0, emit=None, count=None, offset=0, n_checks=0):
     """The ``n_blocks`` blocks of one walker (one window): ``interval(carry, b) -> (carry, ys, (M, B, Q, Qb, F, Qf, Qd,
     E, reads))`` walks block ``b`` (its moments from :func:`moment_scan`; ``b + offset`` is the walk-wide block index).
     Returns ``(carry, acc_pos (K+1, 3), acc_blt (K+1,) or None, acc_field (K_c3, n_ch) or None, emitted, counted,
@@ -611,7 +639,8 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
     (:func:`~dmipy_sim.replay.compression.block_table` evaluated per ring, the field's ``K_c3`` modes ``k = 0 .. K_c3 - 1`` at its own band),
     ``emit(ys)`` stacked over the blocks (None without ``emit``), ``count(ys)`` summed over them (int32; None without
     ``count``), each channel's quadratic variation over the window (the field's of its trapezoid increments and of its
-    read series) and the trapezoid's checks, summed per ring like the projections."""
+    read series) and the trapezoid's checks, summed per ring like the projections. The accumulators, the table and
+    the ring's product are ``dtype`` (:func:`accumulation_dtype`), the dtype ``interval``'s moments are held in."""
     from ..replay.compression import block_table
     n_blocks, K, m = int(n_blocks), int(K), int(m)
     reads_f = int(n_ch) > 0                                                            # the field is read: its QVs
@@ -625,14 +654,14 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
     def ring(state, idx):
         c, ap, ab, af, n, qp, qb, qf, qd, ec = state
         c, (mom, e, k) = jax.lax.scan(block, c, idx)
-        tab = block_table(1.0, n_blocks, K, m, blocks=idx, xp=jnp)                    # (R, K+1, m+1), no walker in it
+        tab = block_table(1.0, n_blocks, K, m, blocks=idx, xp=jnp, dtype=dtype)       # (R, K+1, m+1), no walker in it
         ap = ap + ring_projection(tab, mom[0])
         qp = qp + mom[2].sum(axis=0)
         if has_blt:
             ab = ab + ring_projection(tab, mom[1])
             qb = qb + mom[3].sum()
         if has_f:
-            tab_f = tab if K_c3 == K + 1 else block_table(1.0, n_blocks, K_c3 - 1, m, blocks=idx, xp=jnp)
+            tab_f = tab if K_c3 == K + 1 else block_table(1.0, n_blocks, K_c3 - 1, m, blocks=idx, xp=jnp, dtype=dtype)
             af = af + ring_projection(tab_f, mom[4])
         if reads_f:
             qf = qf + mom[5].sum(axis=0)
@@ -643,12 +672,12 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
             n = n + k.sum().astype(jnp.int32)
         return (c, ap, ab, af, n, qp, qb, qf, qd, ec), e
 
-    state = (carry, jnp.zeros((K + 1, 3), jnp.float32), jnp.zeros((K + 1,), jnp.float32) if has_blt else None,
-             jnp.zeros((K_c3, int(n_ch)), jnp.float32) if has_f else None,
-             jnp.int32(0) if count is not None else None, jnp.zeros((3,), jnp.float32),
-             jnp.float32(0.0) if has_blt else None, jnp.zeros((int(n_ch),), jnp.float32) if reads_f else None,
-             jnp.zeros((int(n_ch),), jnp.float32) if reads_f else None,
-             jnp.zeros((2, int(n_checks), int(n_ch)), jnp.float32) if (reads_f and n_checks) else None)
+    state = (carry, jnp.zeros((K + 1, 3), dtype), jnp.zeros((K + 1,), dtype) if has_blt else None,
+             jnp.zeros((K_c3, int(n_ch)), dtype) if has_f else None,
+             jnp.int32(0) if count is not None else None, jnp.zeros((3,), dtype),
+             jnp.zeros((), dtype) if has_blt else None, jnp.zeros((int(n_ch),), dtype) if reads_f else None,
+             jnp.zeros((int(n_ch),), dtype) if reads_f else None,
+             jnp.zeros((2, int(n_checks), int(n_ch)), dtype) if (reads_f and n_checks) else None)
     n_full, rem = divmod(n_blocks, RING)
     parts = []
     if n_full:
@@ -666,9 +695,10 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, K_c3=None, n_ch=0, em
 def coefficient_form(r0, r_end, acc_pos, scale):
     """A walker's position coefficients ``(K+2, 3)`` from its exact start and end and its cosine accumulators:
     ``[x(0), x(T) - x(0), scale_k c_k]`` (:func:`~dmipy_sim.replay.compression.cosine_band_scale`), and the
-    float32 chain's residual on the ``k = 0`` mode, ``c_0 - (x(T) - x(0))`` (3,), which the walk records as the
-    measured precision of its accumulation."""
-    d = r_end - r0
+    accumulation chain's residual on the ``k = 0`` mode, ``c_0 - (x(T) - x(0))`` (3,), which the walk records as the
+    measured precision of its accumulation; the displacement is formed, and every entry held, in the accumulator's
+    dtype."""
+    d = r_end.astype(acc_pos.dtype) - r0.astype(acc_pos.dtype)
     C = jnp.concatenate([r0[None, :], d[None, :], scale[:, None] * acc_pos[1:]], axis=0)
     return C, acc_pos[0] - d
 
@@ -678,16 +708,18 @@ def field_mode_form(acc_field, T):
     with ``e_0 = T^-1/2`` and ``e_k = sqrt(2 / T) cos(pi k t / T)`` (RPK.md 9.5.3), from the accumulated projections
     ``sum cos(pi k t / T) b dt`` (:func:`~dmipy_sim.replay.compression.cosine_mode_scale`)."""
     from dmipy_replay.replay.compression import cosine_mode_scale
-    return jnp.asarray(cosine_mode_scale(acc_field.shape[0] - 1, T), jnp.float32)[:, None] * acc_field
+    return jnp.asarray(cosine_mode_scale(acc_field.shape[0] - 1, T), acc_field.dtype)[:, None] * acc_field
 
 
-def accumulator_bytes(K, m, record, K_c3=0, n_ch=0, events_cap=0):
+def accumulator_bytes(K, m, record, K_c3=0, n_ch=0, events_cap=0, *, itemsize):
     """Device bytes one walker's accumulation holds through a batch: the level-2 accumulators (``(K+1)`` modes x 3
     axes, + the local time's ``K+1`` when recorded, + the field's ``(K_c3+1) n_ch``), a ring's moments and the block's
-    running moments, the last field read, and an events buffer of ``events_cap`` entries (five bytes each), float32."""
+    running moments, the last field read, each of ``itemsize`` bytes (the accumulation dtype's: 4 for float32, 8 for
+    float64), and an events buffer of ``events_cap`` entries (five bytes each)."""
     ch = 3 + (1 if record else 0)
-    out = 4 * ch * ((int(K) + 1) + (RING + 1) * (int(m) + 1))
+    w = int(itemsize)
+    out = w * ch * ((int(K) + 1) + (RING + 1) * (int(m) + 1))
     if n_ch:
-        out += 4 * int(n_ch) * (int(K_c3) + (RING + 1) * (int(m) + 1) + 1)
+        out += w * int(n_ch) * (int(K_c3) + (RING + 1) * (int(m) + 1) + 1)
     out += 5 * int(events_cap)
     return out

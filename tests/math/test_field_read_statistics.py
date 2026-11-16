@@ -47,7 +47,7 @@ def _jax_pilot(path, read, sub_steps, n_bw, n_win, checks, dt):
     h = jnp.float32(sub_steps * dt)
 
     def interval(c, b):
-        c, mom = moment_scan(kind, c, sub_steps, 1, read=read, n_ch=n_ch, n_read=1, dt_f=dt, step0=b * sub_steps,
+        c, mom = moment_scan(kind, c, sub_steps, 1, dtype=jnp.float32, read=read, n_ch=n_ch, n_read=1, dt_f=dt, step0=b * sub_steps,
                              checks=checks, keep_reads=False)
         return c, mom[4][0] / h, mom
 
@@ -56,7 +56,7 @@ def _jax_pilot(path, read, sub_steps, n_bw, n_win, checks, dt):
         c = ((jnp.int32(0),), read(P[0]), None, None)
         means, qds, chks = [], [], []
         for w in range(n_win):
-            c, _, _, _, e, _, (_, _, _, qd, ec) = ring_scan(interval, c, n_bw, 4, 1, has_blt=False, n_ch=n_ch,
+            c, _, _, _, e, _, (_, _, _, qd, ec) = ring_scan(interval, c, n_bw, 4, 1, has_blt=False, dtype=jnp.float32, n_ch=n_ch,
                                                             emit=lambda ys: ys, offset=w * n_bw, n_checks=len(checks))
             means.append(e); qds.append(qd); chks.append(ec)
         return jnp.concatenate(means), jnp.stack(qds), jnp.stack(chks)

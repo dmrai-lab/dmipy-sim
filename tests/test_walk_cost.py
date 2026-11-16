@@ -167,7 +167,7 @@ def test_profile_times_the_pilot_at_several_batches(monkeypatch):
     want = "under-filled" if s.seconds_per_block[400] < core.UNDERFILLED_DOUBLING * s.seconds_per_block[200] else "saturated"
     assert s.verdict == want
     # a device that holds 1.5 batches: 2B does not fit
-    per = core._device_bytes_per_walker(core._resolve_walk(g, D, 8e-3, 1e-3))
+    per = core._device_bytes_per_walker(core._resolve_walk(g, D, 8e-3, 1e-3), itemsize=4)
     monkeypatch.setattr(core, "_free_device_bytes", lambda: int(1.5 * 200 * per))
     q = cost(g, 8e-3, 1e-3, 400, walker_batch_size=200, measure="profile").profile
     assert sorted(q.walker_steps_per_s) == [100, 200] and q.verdict == "memory-bound"
@@ -222,10 +222,10 @@ def test_the_verdict_is_the_doubling_at_the_recommended_batch(monkeypatch):
     g = d.Sphere(radius=2e-6)
     res = core._resolve_walk(g, D, 2e-3, 1e-3)
     # nearly free doubling -> under-filled; a proportional one -> saturated; 2B beyond the device -> memory-bound
-    assert core._profile({100: 1.0, 200: 1.1}, 100, res, None, "given").verdict == "under-filled"
-    assert core._profile({100: 1.0, 200: 1.2}, 100, res, None, "given").verdict == "saturated"
-    assert core._profile({100: 1.0}, 100, res, 150, "given").verdict == "memory-bound"
-    assert core._profile({100: 1.0}, 100, res, None, "given").verdict == "unresolved"
+    assert core._profile({100: 1.0, 200: 1.1}, 100, res, None, "given", itemsize=4).verdict == "under-filled"
+    assert core._profile({100: 1.0, 200: 1.2}, 100, res, None, "given", itemsize=4).verdict == "saturated"
+    assert core._profile({100: 1.0}, 100, res, 150, "given", itemsize=4).verdict == "memory-bound"
+    assert core._profile({100: 1.0}, 100, res, None, "given", itemsize=4).verdict == "unresolved"
 
 
 def test_no_batch_given_is_n_walkers_capped_by_memory(monkeypatch):
@@ -245,7 +245,7 @@ def test_no_batch_given_is_n_walkers_capped_by_memory(monkeypatch):
 def test_profile_finds_the_batch_within_the_memory_cap(monkeypatch):
     from dmipy_sim.engine import core
     g = d.Sphere(radius=2e-6)
-    per = core._device_bytes_per_walker(core._resolve_walk(g, D, 2e-3, 1e-3))
+    per = core._device_bytes_per_walker(core._resolve_walk(g, D, 2e-3, 1e-3), itemsize=4)
     monkeypatch.setattr(core, "_free_device_bytes", lambda: int(9000.5 * per))
     c = cost(g, 2e-3, 1e-3, 20000, walker_batch_size=None, measure="profile")
     s = c.profile
