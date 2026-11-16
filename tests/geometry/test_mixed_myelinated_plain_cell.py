@@ -515,3 +515,26 @@ def test_a_position_is_classified_into_the_cylinder_whose_wall_holds_it():
         lumen_or_sheath = np.where(got > 4, got - 4, got)                   # the cylinder, either pool
         near_wall = (np.abs(np.hypot(q[..., 0], q[..., 1]) - radii) < 1e-12).any(1)
         assert (lumen_or_sheath[~near_wall] == truth[~near_wall]).all()
+
+
+# ── a spec states the seeded pools ──────────────────────────────────────────────────────────────────────────────────
+
+DRY = Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, water_fraction=0.0), extra=Pool(D=D))
+
+
+def _start_pools(geo, n=4000, key=0):
+    """The start pool of each of ``n`` walkers placed with ``PRNGKey(key)``, and the start positions."""
+    r0 = np.asarray(geo.init_positions(n, jax.random.PRNGKey(key)))
+    return np.asarray(geo.pool_of(geo._init_compartments)), r0     # the start labels: private, read on purpose
+
+
+@pytest.mark.xfail(strict=True, reason="a cell rebuilt from its spec seeds a sheath that holds no water")
+def test_a_cell_with_a_dry_sheath_and_its_spec_seed_no_sheath():
+    """Exact counts of the walkers that start in a sheath (pool 2), ``init_positions(4000, PRNGKey(0))``: the cell
+    seeded without its sheaths, the same cell rebuilt from its spec and the default cell, each with a dry sheath."""
+    from dmipy_sim.spec import geometry_from_spec
+    a = _cell([0.7, 1.0, 0.7, 1.0], compartments=DRY, seed_pools=("extra", "intra"))
+    b = geometry_from_spec(a.spec)
+    c = _cell([0.7, 1.0, 0.7, 1.0], compartments=DRY)
+    assert [int((_start_pools(g)[0] == 2).sum()) for g in (a, b, c)] == [0, 0, 0]
+    assert a.spec.seeding.pools == b.spec.seeding.pools == c.spec.seeding.pools == [0, 1]
