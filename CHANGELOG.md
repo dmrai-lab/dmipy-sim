@@ -5,6 +5,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The walk states the precision of its projection** (`block["projection_precision"]`): the dtype name of the product a ring's moments are projected with, read from `accumulate.projection_precision(dtype, K, m)` (the output of `ring_projection` itself), so a consumer reads the precision of the projection as data. `None` for a producer that states none (a backend that does not, a walk read from stored positions); a bundle walk joined from pools that differ states `"mixed"`. No array changes.
 - **The walk's accumulation dtype is an argument** (`accumulation_dtype`, `"float32"` by default, or `"float64"`).
   `_walk_geometry`, `walk`, `simulate` (and `walk_cost`, `certify_bounce_budget`, `simulate_mt_trajectories` through
   their keywords) take it: the moments of each block, the ring projection against `block_table`, the level-2

@@ -1282,7 +1282,10 @@ def _walk_geometry(
         float64 from two float32 values, so the difference of the two calls is the float32 accumulation's rounding.
         ``"float64"`` needs JAX's x64 mode on in the calling process and is refused by name when it is off
         (:func:`~dmipy_sim.engine.accumulate.accumulation_dtype`), and on any backend but the JAX kernels.
-        ``block["precision"]`` is the accumulators' dtype as the walk returned them.
+        ``block["precision"]`` is the accumulators' dtype as the walk returned them; ``block["projection_precision"]`` is
+        the dtype the projection product of a ring is formed in
+        (:func:`~dmipy_sim.engine.accumulate.projection_precision`); a consumer reads the precision of the projection
+        from it, not from ``accumulation``.
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
@@ -1354,7 +1357,7 @@ def _walk_geometry(
         has_permeability = permeability is not None
         has_reflect_with_log_weight = geometry.has_walls
         from .accumulate import (Kind, Events, events_init, moment_scan as _moment_scan, ring_scan, coefficient_form,
-                                 field_mode_form, accumulation_record, RING, PILOT_WALKERS, EVENTS_MARGIN)
+                                 field_mode_form, accumulation_record, projection_precision, RING, PILOT_WALKERS, EVENTS_MARGIN)
 
         # ── The walk's work: wall encounters, crossings and budget exhaustions, summed per walker in the
         # carry and over the batches on the host, only when the geometry counts (`Geometry.count_walls`);
@@ -2039,6 +2042,7 @@ def _walk_geometry(
                 raise ValueError(f"backend {_backend_name!r} returned position coefficients of shape {C.shape}; "
                                  f"the batch of {n_b} walkers in {n_win} windows at K = {K} has {(n_b, n_win, K + 2, 3)}")
             _backend_block.update(precision=str(batch.precision), ring=batch.ring, accumulation=batch.accumulation,
+                                  projection_precision=batch.projection_precision,
                                   resid_known=batch.k0_residual is not None)
             if req.K_c3 and (batch.field_bands is None or np.asarray(batch.field_bands).shape != (n_b, n_win, _n_ch, int(req.K_c3))):
                 raise ValueError(f"backend {_backend_name!r} returned field modes of shape "
@@ -2258,14 +2262,17 @@ def _walk_geometry(
         if _backend is None:                          # the accumulators' own dtype, as the walk returned them
             acc_dtype = np.dtype(resid.dtype)
             precision, ring, accumulation, resid_known = acc_dtype.name, int(RING), accumulation_record(acc_dtype), True
+            projection = projection_precision(acc_dtype, int(K), int(m))
         else:                                         # the backend's own accumulation, as it reported it
             precision = _backend_block.get("precision", "?"); ring = _backend_block.get("ring")
             accumulation = _backend_block.get("accumulation") or f"accumulated by the {_backend_name} backend"
             resid_known = bool(_backend_block.get("resid_known", False))
+            projection = _backend_block.get("projection_precision")
         from ..coefficient_walk import ensemble_block_stats
         pos_c = rows["C"].array()                                     # the stats of the arrays the walk stores
         qv_b = rows["qv_blt"].array() if records_surface else None
-        block = dict(h=float(dt_actual), m=m, precision=precision, n_blocks=n_blocks, rule=res.block_rule, ring=ring,
+        block = dict(h=float(dt_actual), m=m, precision=precision, projection_precision=projection, n_blocks=n_blocks,
+                     rule=res.block_rule, ring=ring,
                      accumulation=accumulation,
                      **ensemble_block_stats(pos_c, qv_p, qv_b,
                                             ((float(np.abs(resid).max()) if resid.size else 0.0) if resid_known else None),

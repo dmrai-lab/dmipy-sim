@@ -792,6 +792,9 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         raw_subset_backend=(None if not n_raw else JAX if sampling else _backend_name))
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")
         block = dict(h=float(dt_actual), m=m, precision=np.dtype(resid.dtype).name, n_blocks=int(n_blocks), rule=block_rule, ring=1,
+                     projection_precision=jax.eval_shape(
+                         lambda r, M: jnp.einsum("kj,wjd->wkd", r, M, precision=jax.lax.Precision.HIGHEST), table[0],
+                         jax.ShapeDtypeStruct((1, m + 1, 3), jnp.float32)).dtype.name,
                      accumulation="the moments of each block summed per step for the kernel-stepped walkers and per ROUND for the "
                                   "free-stepping ones (a round's displacement at its midpoint), every block projected in one float32 "
                                   "product and chained into a float32 level-2 accumulator",

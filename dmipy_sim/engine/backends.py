@@ -241,6 +241,7 @@ class CoefficientBatch(NamedTuple):
                                       #: measured residual on the k = 0 mode, when the backend reports it; None otherwise
     ring: object = None               #: blocks per projection window, when the backend projects in windows
     accumulation: object = None       #: how the backend summed the blocks (the header's ``block.accumulation``)
+    projection_precision: object = None  #: the dtype name the backend forms its projection product in, or None when it states none
     pool_changed: object = None       #: (n,) bool the walkers of an impermeable walk whose label changed, when the request
                                       #: asked for them (``drop_pool_changes``); None otherwise
     n_windows: int = 1                #: the storage windows on the form's second axis: the request's

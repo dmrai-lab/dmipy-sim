@@ -91,6 +91,7 @@ def test_a_cylinder_walk_re_encoded_from_its_saves_replays_within_its_certificat
                G_max=10.0)                                                  # the test's ideal lobes: limits of its own
     pf = build_replay_pack(fw, id="t/foreign", license="x", citation="x", **stated(env, of=fw))
     pn = build_replay_pack(nat, id="t/native", license="x", citation="x", **stated(env, of=nat), K=20)
+    assert fw.block["projection_precision"] is None                                    # no projection is formed
     fid = pf.fidelity
     assert fid["source"]["engine"] == "synthetic" and fid["source"]["limited_by"] == "save grid" and fid["source"]["sample_interval"] == h
     assert fid["terms"]["quadrature"]["positions"] == pytest.approx(fid["err_quadrature"], rel=1e-5) and fid["err_quadrature"] > 0

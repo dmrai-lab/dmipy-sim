@@ -19,7 +19,7 @@ R = 2e-6
 
 
 def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=None, comp=None, events=None,
-                      qv=None, k0_residual=None, field_increments=True, field_modes=True):
+                      qv=None, k0_residual=None, field_increments=True, field_modes=True, projection_precision=None):
     """A :class:`~dmipy_sim.engine.backends.CoefficientBatch` of walkers that never move, in the request's storage
     windows (every window's start the walker's start, every band 0 unless ``bands`` / ``blt_bands`` give them, each
     ``(n, n_windows, ...)``), with the block ends of the request's ``raw_subset`` as saves."""
@@ -60,7 +60,7 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         comp if rec else None, zero.copy(), work, K, int(request.m), int(request.sub_steps), precision, saves=saves,
         qv_positions=(np.zeros((n, W, 3)) if qv is None else qv), qv_boundary=(np.zeros((n, W)) if rec else None),
         events=(events if rec else None), k0_residual=k0_residual, field_bands=field_bands, field_qv=field_qv,
-        field_qv_increments=field_qv_increments,
+        field_qv_increments=field_qv_increments, projection_precision=projection_precision,
         dt_f=(float(request.field_read_interval) if request.field is not None else None), n_windows=W)
 
 
@@ -179,8 +179,11 @@ def test_the_walk_is_the_backends_coefficient_form_as_it_came():
     assert w.compartment.shape == (64,) and w.compartment.dtype == np.int8 and w.comp_events is None
     blk = w.block
     assert blk["precision"] == "fake64" and blk["k0_residual_m"] is None and blk["k0_residual_relative"] is None
+    assert blk["projection_precision"] is None                       # a backend that states none
     assert blk["ring"] is None and "still" in blk["accumulation"] and blk["n_blocks"] == 4 and blk["m"] == 3
     assert w.work["n_hits"] is None and w.work["exhausted_steps"] == 0 and w.illegal_crossings == 0
+    w3 = _walk(d.Sphere(R), backend=_Still(projection_precision="float64"), K=6)
+    assert w3.block["projection_precision"] == "float64"
     # a reported residual is recorded
     w2 = _walk(d.Sphere(R), backend=_Still(k0_residual=lambda req, r0: np.full((r0.shape[0], 1, 3), 1e-9)), K=6)
     assert w2.block["k0_residual_m"] == pytest.approx(1e-9)

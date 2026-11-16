@@ -161,6 +161,15 @@ def accumulation_dtype(name):
     return jnp.dtype(name)
 
 
+def projection_precision(dtype, K, m):
+    """The dtype name of the projection product of a ring (:func:`ring_projection`) for an accumulation in ``dtype``,
+    with ``K`` bands and block order ``m``: the dtype of what the function returns, read from its own output."""
+    from ..replay.compression import block_table
+    tab = jax.eval_shape(lambda: block_table(1.0, 1, int(K), int(m), blocks=jnp.zeros((1,), jnp.int32), xp=jnp, dtype=dtype))
+    mom = jax.ShapeDtypeStruct((1, int(m) + 1, 3), jnp.dtype(dtype))
+    return jax.eval_shape(ring_projection, tab, mom).dtype.name
+
+
 def accumulation_record(dtype):
     """How a walk accumulated in ``dtype`` (``walk_params.block.accumulation``)."""
     name = jnp.dtype(dtype).name
