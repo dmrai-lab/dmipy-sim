@@ -344,6 +344,10 @@ def test_the_adaptive_producer_hands_a_backend_the_plan_and_signs_the_record():
     assert w.work["backend"] == "still" and w.stepping["backend"] == "still"
     assert w.stepping["kernel_steps"] is None and w.work["walker_steps"] is None      # the batch counted nothing
     assert w.raw_positions is None and w.comp_events is None and w.compartment.shape == (64,)
+    assert w.block["projection_precision"] is None                    # the backend stated none: the walk states none
+    w64 = simulate_trajectories_adaptive(64, D, g, 1e-3, 2.5e-4, seed=3, require_gpu=False, walker_batch_size=64,
+                                         backend=_Still(projection_precision="float64"), K=6)
+    assert w64.block["projection_precision"] == "float64"             # the backend's declaration, not the local kernels'
     req = still.requests[0]
     assert isinstance(req, backends.WalkRequest) and isinstance(req.stepping, AdaptivePlan)
     assert req.K == 6 and req.m == 3 and req.n_blocks == 4 and req.block_h == pytest.approx(2.5e-4) and req.raw_subset == 0

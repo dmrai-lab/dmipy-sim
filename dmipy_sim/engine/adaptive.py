@@ -608,6 +608,8 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     out["fs"] = fs_raw
             return out, dict(n_free=n_free_0, n_kernel_steps=n_kernel_0, n_illegal=n_illegal)
 
+        backend_projection = set()                  # what the backend states for each batch (None: it states none)
+
         def _backend_batch(s, e, *, raw, K_f, rd=None):
             """The walk of walkers ``s:e`` through the backend (#747, #742): its
             :class:`~dmipy_sim.engine.backends.CoefficientBatch` under the names of the JAX batch -- the bands as the
@@ -633,6 +635,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                  f"for a request of {(K, m, int(n_min))}")
             if int(batch.n_windows) != n_win:
                 raise ValueError(f"backend {_backend_name!r} accumulated {batch.n_windows} storage windows for a walk of {n_win}")
+            backend_projection.add(batch.projection_precision)
             C = np.asarray(batch.position_coeffs, np.float32)
             if C.shape != (nb, n_win, K + 2, 3):
                 raise ValueError(f"backend {_backend_name!r} returned position coefficients of shape {C.shape}; "
@@ -792,9 +795,10 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         raw_subset_backend=(None if not n_raw else JAX if sampling else _backend_name))
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")
         block = dict(h=float(dt_actual), m=m, precision=np.dtype(resid.dtype).name, n_blocks=int(n_blocks), rule=block_rule, ring=1,
-                     projection_precision=jax.eval_shape(
-                         lambda r, M: jnp.einsum("kj,wjd->wkd", r, M, precision=jax.lax.Precision.HIGHEST), table[0],
-                         jax.ShapeDtypeStruct((1, m + 1, 3), jnp.float32)).dtype.name,
+                     projection_precision=(
+                         jax.eval_shape(lambda r, M: jnp.einsum("kj,wjd->wkd", r, M, precision=jax.lax.Precision.HIGHEST), table[0],
+                                        jax.ShapeDtypeStruct((1, m + 1, 3), jnp.float32)).dtype.name if _backend is None
+                         else (next(iter(backend_projection)) if len(backend_projection) == 1 else "mixed")),
                      accumulation="the moments of each block summed per step for the kernel-stepped walkers and per ROUND for the "
                                   "free-stepping ones (a round's displacement at its midpoint), every block projected in one float32 "
                                   "product and chained into a float32 level-2 accumulator",
