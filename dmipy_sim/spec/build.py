@@ -117,15 +117,49 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
     return out
 
 
-def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
+class UnstatedSeedingError(SpecError):
+    """A geometry whose seeding a spec cannot state: reduced to its spec, it would be read back with another seeding.
+    Such a geometry is walked as itself (``simulate(geometry=...)``), never through its spec (``walk``)."""
+
+
+def _unstated_seeding(g, spec):
+    """Why ``spec`` cannot state ``g``'s seeding, or ``None``: a packed myelinated cell whose ``seed_pools`` leave out a
+    pool of positive area, while the spec's seeded list is the spelling of the default seeding (the pools that hold
+    water), which ``geometry_from_spec`` reads back as every pool by area."""
+    from ..geometry import PackedMyelinatedCylinders
+    if not isinstance(g, PackedMyelinatedCylinders) or g.seed_pools is None:
+        return None
+    if sorted(spec.seeding.pools) != sorted(_seeded(spec.pools)):
+        return None                                                    # the spec states the seeded pools itself
+    N = g.N_actual
+    inner, outer = g._inner_radii_np[:N], g._outer_radii_np[:N]
+    area = {"extra": g._L_float ** 2 - float(np.sum(np.pi * outer ** 2)), "intra": float(np.sum(np.pi * inner ** 2)),
+            "myelin": float(np.sum(np.pi * (outer ** 2 - inner ** 2)))}
+    left_out = [n for n in ("extra", "intra", "myelin") if n not in g.seed_pools and area[n] > 0.0]
+    if not left_out:
+        return None
+    return (f"this PackedMyelinatedCylinders seeds {list(g.seed_pools)} and leaves out {left_out}, and its spec cannot yet "
+            f"state which pools are seeded: it would write {sorted(spec.seeding.pools)}, the spelling of the default "
+            f"seeding (every pool by area), and be walked back with walkers in {left_out}. Walk the geometry itself "
+            f"(simulate(geometry=...)), not through its spec (walk, geometry.spec)")
+
+
+def spec_of(geometry, *, id=None, provenance=None, surface_dir=None, seeding_stated=True):
     """The spec of an analytic geometry, its ``frame`` the geometry's own axis in the frame it is walked in
     (RPK.md 4.2): ``z`` for the cylinder kinds, which are walked in their own frame (their ``orientation`` is the
     pose :func:`~dmipy_sim.simulate` applies to the acquisition, not a property of the substrate, and is recorded
     in the provenance), the chord of a curved one; an object with no axis keeps the default ``z``. A frame
     :func:`_axis_of` derived is marked ``frame.source = "structural"`` (dmipy-sim#538): the bank checks it
     against the geometry it came from, not a walk's own principal displacement axis, which in a curved tube
-    depends on the walk duration and need not agree with the structural axis at all."""
+    depends on the walk duration and need not agree with the structural axis at all.
+
+    A geometry whose seeding the spec cannot state is refused by name (:class:`UnstatedSeedingError`);
+    ``seeding_stated=False`` is the door's own check of a geometry walked as itself, which reads no seeding from the
+    spec."""
     spec = _spec_without_frame(geometry, id=id, provenance=provenance, surface_dir=surface_dir)
+    why = _unstated_seeding(geometry, spec) if seeding_stated else None
+    if why is not None:
+        raise UnstatedSeedingError(why)
     axis = _axis_of(geometry)
     if axis is None:
         return spec
@@ -277,41 +311,62 @@ def _spec_without_frame(geometry, *, id=None, provenance=None, surface_dir=None)
                                                           thinnest_shell=g.outer_radius - g.inner_radius),
                              description="isolated myelinated cylinder: lumen, sheath, extra", provenance=prov)
     if isinstance(g, PackedMyelinatedCylinders):
+        # the myelinated cylinders are two walls (axolemma: lumen | sheath, sheath: sheath | extra) over their own
+        # instances; the plain cylinders (g-ratio 1) one wall (membrane: lumen | extra) over theirs
         N = g.N_actual
         ax = [0.0, 0.0, 1.0]
+        sh = np.asarray(g.sheathed, bool); pl = ~sh
         inner = np.asarray(g._inner_radii_np[:N], float); outer = np.asarray(g._outer_radii_np[:N], float)
         centers = np.column_stack([np.asarray(g._centers_np[:N], float), np.zeros(N)])
-        def scalar(arr, what):
+        def scalar(arr, what, sel=None):
             a = np.asarray(arr)[:N]
+            a = a if sel is None else a[sel]
             if not np.allclose(a, a[0]):
                 raise SpecError(f"{what} varies per axon; spec 0.1 wall properties are per wall, not per instance")
             return float(a[0])
-        def per_axon(arr):
-            """``(permeability, table)`` of a per-axon permeability: one number when every axon has it, else the
-            largest and a table of one row with a value per axon."""
-            a = np.asarray(arr, float)[:N]
+        def per_axon(arr, sel):
+            """``(permeability, table)`` of a per-axon permeability over the cylinders ``sel``: one number when every
+            one of them has it, else the largest and a table of one row with a value per cylinder."""
+            a = np.asarray(arr, float)[:N][sel]
             if np.all(a == a[0]):
                 return Directional(float(a[0]), float(a[0])), None
             row = a.tolist()
             return Directional(float(a.max()), float(a.max())), PermeabilityTable([], [row], [list(row)])
-        (ki, ti), (ko, to) = per_axon(g._kappa_inner_jax), per_axon(g._kappa_outer_jax)
-        ri, ro = scalar(g._rho_inner_jax, "rho_inner"), scalar(g._rho_outer_jax, "rho_outer")
+        def instances(sel, radii):
+            return {"centers": centers[sel].tolist(), "radii": radii[sel].tolist()}
         pools = _pools_from_compartments(g, ["extra", "intra", "myelin"],
                                          {"extra": scalar(g._D_extra_jax, "D_extra"), "intra": scalar(g._D_intra_jax, "D_intra"),
                                           "myelin": scalar(g._D_myelin_jax, "D_myelin")})
+        if not sh.any():                            # no sheath: the (empty) myelin pool is no field source
+            import dataclasses
+            pools = [dataclasses.replace(p, susceptibility=None) if p.name == "myelin" else p for p in pools]
         L = float(g._L_float)
-        w_in = Wall("axolemma", Surface("cylinder", axis=ax, instances={"centers": centers.tolist(), "radii": inner.tolist()}),
-                    1, 2, ki, Sided(ri, ri), permeability_table=ti)
-        w_out = Wall("sheath", Surface("cylinder", axis=ax, instances={"centers": centers.tolist(), "radii": outer.tolist()}),
-                     2, 0, ko, Sided(ro, ro), permeability_table=to)
+        walls = []
+        if sh.any():
+            (ki, ti), (ko, to) = per_axon(g._kappa_inner_jax, sh), per_axon(g._kappa_outer_jax, sh)
+            ri, ro = scalar(g._rho_inner_jax, "rho_inner", sh), scalar(g._rho_outer_jax, "rho_outer", sh)
+            walls += [Wall("axolemma", Surface("cylinder", axis=ax, instances=instances(sh, inner)),
+                           1, 2, ki, Sided(ri, ri), permeability_table=ti),
+                      Wall("sheath", Surface("cylinder", axis=ax, instances=instances(sh, outer)),
+                           2, 0, ko, Sided(ro, ro), permeability_table=to)]
+        if pl.any():
+            kp, tp = per_axon(g._kappa_outer_jax, pl)
+            rp = scalar(g._rho_outer_jax, "rho_outer", pl)
+            walls.append(Wall("membrane", Surface("cylinder", axis=ax, instances=instances(pl, outer)),
+                              1, 0, kp, Sided(rp, rp), permeability_table=tp))
+        thick = (outer - inner)[sh]
+        seeded = (_seeded(pools) if g.seed_pools is None
+                  else [p.id for p in pools if p.name in g.seed_pools])
         dom = Domain([-L / 2, -L / 2, -L / 2], [L / 2, L / 2, L / 2], ["periodic", "periodic", "open"])
-        return SubstrateSpec(sid, dom, pools, [w_in, w_out], Seeding(_seeded(pools)),
-                             Validity(float(min(inner.min(), (outer - inner).min())), _tiers([w_in, w_out], pools),
+        what = (f"periodic cell of {N} myelinated cylinders" if not pl.any() else
+                f"periodic cell of {int(sh.sum())} myelinated and {int(pl.sum())} plain cylinders")
+        return SubstrateSpec(sid, dom, pools, walls, Seeding(seeded),
+                             Validity(float(min([inner.min()] + ([thick.min()] if sh.any() else []))), _tiers(walls, pools),
                                       min_gap=float(periodic_min_gap(centers[:, :2], outer, L)),
-                                      thinnest_shell=float((outer - inner).min())),
+                                      thinnest_shell=(float(thick.min()) if sh.any() else None)),
                              realisation={"n_objects": int(N), "packing_fraction": float(np.pi * np.sum(outer ** 2) / L ** 2),
                                           "cell_side": L, "g_ratio": float(np.mean(inner / outer))},
-                             description=f"periodic cell of {N} myelinated cylinders", provenance=prov)
+                             description=what, provenance=prov)
     if isinstance(g, CurvedMyelinatedCylinder):
         cl = np.asarray(g.centerline, float)
         pools = [PoolSpec(0, "extra", None), PoolSpec(1, "intra", None), PoolSpec(2, "myelin", None, susceptibility=Susceptibility(None, None, "radial"))]
@@ -630,12 +685,18 @@ def as_geometry(substrate):
                         f"(an object that carries a .spec is not a substrate)")
     # the door: a driver walks what a spec can describe. The geometry's spec is computed once and kept on it.
     if getattr(substrate, "_spec_source", None) is None:
+        unstated = False
         try:
-            spec = substrate.spec
+            try:
+                spec = substrate.spec
+            except UnstatedSeedingError:              # walked as itself: its spec is checked, never kept or read back
+                spec, unstated = spec_of(substrate, seeding_stated=False), True
             spec.validate()
         except (AttributeError, SpecError, TypeError, ValueError) as e:
             raise SpecError(f"{type(substrate).__name__} has no spec spelling ({e}); a driver walks only a substrate a "
                             f"SubstrateSpec can describe -- give a spec, or a geometry spec_of knows") from e
+        if unstated:
+            return substrate
         try:
             substrate._spec_source = spec
         except Exception:                              # a slotted or frozen object: recomputed next time
@@ -780,6 +841,56 @@ def _geometry_from_spec(spec):
             raise SpecError(f"surface.rotation={s.rotation} is set but {family} does not rotate its surface; "
                             f"only its axis is read")
 
+    def packed_cell(axolemma, sheath, membrane):
+        """The :class:`PackedMyelinatedCylinders` cell of a myelinated pair of walls (``axolemma``: lumen | sheath,
+        ``sheath``: sheath | extra; ``None`` when the cell has no myelinated cylinder) and a plain wall (``membrane``:
+        lumen | extra; ``None`` when it has no plain cylinder), each over its own cylinder instances: the myelinated
+        cylinders first, the plain ones (g-ratio 1) after them. The pools' roles are read off the walls; the third
+        pool of a cell without a myelinated cylinder is its (empty) sheath pool."""
+        if sheath is not None:
+            intra_id, myelin_id, extra_id = axolemma.inside_pool, axolemma.outside_pool, sheath.outside_pool
+        else:
+            intra_id, extra_id = membrane.inside_pool, membrane.outside_pool
+            (myelin_id,) = [p.id for p in spec.pools if p.id not in (intra_id, extra_id)]
+        if membrane is not None and (membrane.inside_pool, membrane.outside_pool) != (intra_id, extra_id):
+            raise SpecError(f"wall {membrane.name!r} separates pools {membrane.inside_pool} | {membrane.outside_pool}; a plain "
+                            f"cylinder's wall separates the lumens ({intra_id}) from the extra pool ({extra_id})")
+        by_id = {p.id: p for p in spec.pools}
+        comps = Compartments(**{role: CPool(D=by_id[i].D, water_fraction=by_id[i].water_fraction)
+                                for role, i in (("extra", extra_id), ("intra", intra_id), ("myelin", myelin_id))})
+        role_of = {intra_id: "intra", myelin_id: "myelin", extra_id: "extra"}
+        # the pools the spec seeds, by role; the default seeding's spelling (the pools that hold water) is the
+        # cell's default seeding (None, every pool by area), as the spec of a default cell writes it
+        default = [p.id for p in spec.pools if p.water_fraction > 0] or [p.id for p in spec.pools]
+        seed_pools = (None if sorted(spec.seeding.pools) == sorted(default)
+                      else tuple(role_of[i] for i in spec.seeding.pools))
+        surfaces = [w.surface for w in (axolemma, sheath, membrane) if w is not None]
+        L = float(dom.box_max[0] - dom.box_min[0])
+        ri, g, cs, k_in, k_out, r_in, r_out = [], [], [], [], [], [], []
+        def per_instance(v, n):
+            return list(v) if isinstance(v, list) else [float(v)] * n
+        if sheath is not None:
+            a = np.asarray(axolemma.surface.instances["radii"], float); o = np.asarray(sheath.surface.instances["radii"], float)
+            n = len(a)
+            ri += a.tolist(); g += (a / o).tolist(); cs += np.asarray(axolemma.surface.instances["centers"], float)[:, :2].tolist()
+            k_in += per_instance(ksym(axolemma, "PackedMyelinatedCylinders axolemma", in_time=False), n)
+            k_out += per_instance(ksym(sheath, "PackedMyelinatedCylinders sheath", in_time=False), n)
+            r_in += [axolemma.surface_relaxivity.inside] * n; r_out += [sheath.surface_relaxivity.inside] * n
+        if membrane is not None:
+            m = np.asarray(membrane.surface.instances["radii"], float)
+            n = len(m)
+            ri += m.tolist(); g += [1.0] * n; cs += np.asarray(membrane.surface.instances["centers"], float)[:, :2].tolist()
+            k_in += [0.0] * n
+            k_out += per_instance(ksym(membrane, "PackedMyelinatedCylinders membrane", in_time=False), n)
+            r_in += [0.0] * n; r_out += [membrane.surface_relaxivity.inside] * n
+        uniform = lambda v: v[0] if all(x == v[0] for x in v) else v          # one number when every cylinder has it
+        return PackedMyelinatedCylinders(np.asarray(ri), np.asarray(g), np.asarray(cs), L,
+                                         N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
+                                         orientation=tuple(surfaces[0].axis or (0, 0, 1)),
+                                         kappa_inner=uniform(k_in), kappa_outer=uniform(k_out),
+                                         rho_inner=uniform(r_in), rho_outer=uniform(r_out),
+                                         compartments=comps, seed_pools=seed_pools)
+
     for w in walls:
         if w.mt_reactivity.inside > 0 or w.mt_reactivity.outside > 0:
             raise SpecError(f"wall {w.name!r} has mt_reactivity (inside={w.mt_reactivity.inside}, "
@@ -882,6 +993,8 @@ def _geometry_from_spec(spec):
                 return PackedCurvedCylinders(cls_, radii, interior=(spec.seeding.pools[0] == w.inside_pool),
                                          box=((dom.box_min, dom.box_max) if "reflect" in dom.boundary else None),
                                          surface_relaxivity_t2=rho2(w))
+            if s.kind == "cylinder" and len(spec.pools) == 3:
+                return packed_cell(None, None, w)                  # plain cylinders with a (empty) sheath pool
             centers = np.asarray(s.instances["centers"], float)
             L = float(dom.box_max[0] - dom.box_min[0])
             pool = {(0, 1): None, (0,): "extra", (1,): "intra"}.get(tuple(sorted(spec.seeding.pools)))
@@ -949,18 +1062,7 @@ def _geometry_from_spec(spec):
                                                     outer.surface.radius, pool=seeded_role,
                                                     surface_relaxivity_t2=rho2(inner))
                 if inner.surface.instances:
-                    centers = np.asarray(inner.surface.instances["centers"], float)[:, :2]
-                    ri = np.asarray(inner.surface.instances["radii"], float)
-                    ro = np.asarray(outer.surface.instances["radii"], float)
-                    L = float(dom.box_max[0] - dom.box_min[0])
-                    return PackedMyelinatedCylinders(ri, ri / ro, centers, L,
-                                                     N_max=int(2 ** np.ceil(np.log2(max(len(ri), 2)))),
-                                                     orientation=tuple(inner.surface.axis or (0, 0, 1)),
-                                                     kappa_inner=ksym(inner, "PackedMyelinatedCylinders axolemma", in_time=False),
-                                                     kappa_outer=ksym(outer, "PackedMyelinatedCylinders sheath", in_time=False),
-                                                     rho_inner=inner.surface_relaxivity.inside,
-                                                     rho_outer=outer.surface_relaxivity.inside,
-                                                     compartments=comps)
+                    return packed_cell(inner, outer, None)
                 refuse_pose(inner.surface, "MyelinatedCylinder", length=True)
                 refuse_pose(outer.surface, "MyelinatedCylinder", length=True)
                 for x in (inner, outer):
@@ -972,4 +1074,11 @@ def _geometry_from_spec(spec):
                                           kappa_inner=kappa(inner, "MyelinatedCylinder axolemma"),
                                           kappa_outer=kappa(outer, "MyelinatedCylinder sheath"),
                                           compartments=comps)
+    if len(walls) == 3 and len(spec.pools) == 3 and kinds == ["cylinder"] * 3 and all(w.surface.instances for w in walls):
+        for x in walls:
+            for y in walls:
+                rest = [w for w in walls if w is not x and w is not y]
+                if (x is not y and x.outside_pool is not None and x.outside_pool == y.inside_pool
+                        and y.outside_pool is not None and len(rest) == 1):
+                    return packed_cell(x, y, rest[0])
     raise SpecError(f"no geometry matches walls {kinds}")

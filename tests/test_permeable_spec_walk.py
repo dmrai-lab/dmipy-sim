@@ -149,6 +149,69 @@ def test_the_pinned_step_is_held_to_the_permeable_law():
         _spec_walk(perm.spec, sub_steps=int(law_imp))
 
 
+def _plain_cell(permeability):
+    """The cell of :func:`_cell` as plain cylinders (g-ratio 1) of `PackedMyelinatedCylinders`: a permeability per
+    cylinder constant in time (a schedule is refused by that class by name)."""
+    from dmipy_sim import Compartments, Pool
+    from dmipy_sim.geometry import PackedMyelinatedCylinders
+    c, L, _ = pack_cylinders(RADII, target_vf=0.45, seed=3)
+    return PackedMyelinatedCylinders(RADII, 1.0, c, L, N_max=len(RADII), kappa_outer=permeability,
+                                     compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D)))
+
+
+@pytest.mark.parametrize("kappa, rule", [(PER_OBJECT, PERMEABLE_POOL_RULE), (0.0, IMPERMEABLE_POOL_RULE)],
+                         ids=["per_object", "impermeable"])
+def test_the_spec_walk_of_a_plain_cell_is_the_geometry_walk_to_the_bit(kappa, rule, precision):
+    g = _plain_cell(kappa)
+    spec = g.spec
+    plain = _spec_walk(spec)
+    reference = _geometry_walk(g, plain)
+    _assert_same_walk(plain, reference)
+    _assert_same_walk(_spec_walk(spec, context=WalkContext(spec)), reference)
+    assert plain.work["pool_rule"] == rule and "pool_rule" not in reference.work
+    if rule == PERMEABLE_POOL_RULE:
+        assert plain.comp_events.n_events > 0
+    else:
+        assert plain.comp_events is None
+
+
+def test_the_permeability_per_cylinder_of_a_plain_cell_round_trips_through_the_spec():
+    g = _plain_cell(PER_OBJECT)
+    spec = SubstrateSpec.from_json(g.spec.to_json())
+    (wall,) = spec.walls
+    assert wall.permeability_table.breakpoints == [] and wall.permeability_table.in_to_out == [pytest.approx(PER_OBJECT, rel=1e-7)]
+    assert wall.permeability.in_to_out == wall.permeability.out_to_in == pytest.approx(KAPPA, rel=1e-7)   # the largest (float32)
+    back = geometry_from_spec(spec)
+    np.testing.assert_array_equal(np.asarray(back._kappa_outer_jax), np.asarray(g._kappa_outer_jax))
+    assert back.plain_mask.all()
+
+
+def test_a_walker_of_a_plain_cell_keeps_its_seeded_pool_and_none_is_excluded_for_crossing():
+    g = _plain_cell(PER_OBJECT)
+    spec = g.spec
+    w = _spec_walk(spec, context=WalkContext(spec))
+    assert w.n_walkers == N and "dropped_pool_change" not in w.work and w.pool_changed is None
+    start = np.asarray(w.position_coeffs[:, 0, 0, :])
+    seeded = np.asarray(g.pool_of(g.classify_positions_exact(start)))
+    np.testing.assert_array_equal(w.compartment, seeded)
+    assert 0 < (seeded == 1).sum() < N                                 # both pools seeded
+    assert (np.diff(w.comp_events.offsets) > 0).sum() > 0, "no walker crossed a permeable wall"
+    assert w.work["pool_rule"] == PERMEABLE_POOL_RULE != DROP_POOL_CHANGE_RULE
+    with pytest.raises(SpecError, match="a pool change is an event of the walker's occupancy and excludes no walker"):
+        _spec_walk(spec, drop_pool_changes=0.01)
+
+
+def test_the_pinned_step_of_a_plain_cell_is_held_to_the_permeable_law():
+    from dmipy_sim.engine.core import walk_cost
+    perm, imp = _plain_cell(PER_OBJECT), _plain_cell(0.0)
+    env = walk_envelope(of=perm.spec)
+    kw = dict(K=env.mode_count(T_MAX), f_band=float(env.band_hz))
+    law_perm, law_imp = (walk_cost(1, D, g, T_MAX, **kw).sub_steps for g in (perm, imp))
+    assert law_perm > law_imp
+    with pytest.raises(SpecError, match="coarser than the step law"):
+        _spec_walk(perm.spec, sub_steps=int(law_imp))
+
+
 class _Recording(backends.Backend):
     """A backend that keeps every request it is handed and whose walkers never move; it declares it walks a
     permeability table."""

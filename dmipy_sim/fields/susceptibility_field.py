@@ -309,9 +309,12 @@ def field_grid_of(geometry, *, res=None, include_aniso=True, box=None, margin=No
             box = (np.array([-half, -half]), np.array([half, half]))
         lo, hi = (np.asarray(box[0], float), np.asarray(box[1], float))
     elif isinstance(geometry, PackedMyelinatedCylinders):
-        N = geometry.N_actual
-        centers = np.asarray(geometry._centers_np[:N], float)
-        inner = np.asarray(geometry._inner_radii_np[:N], float); outer = np.asarray(geometry._outer_radii_np[:N], float)
+        N, sh = geometry.N_actual, geometry.sheathed                  # the sheaths of the myelinated cylinders
+        if not sh.any():
+            raise ValueError("field_grid_of: this PackedMyelinatedCylinders cell has no myelinated cylinder (every "
+                             "g-ratio is 1), so it has no sheath to rasterise")
+        centers = np.asarray(geometry._centers_np[:N], float)[sh]
+        inner = np.asarray(geometry._inner_radii_np[:N], float)[sh]; outer = np.asarray(geometry._outer_radii_np[:N], float)[sh]
         periodic = True
         L = float(geometry._L_float)
         if box is not None:

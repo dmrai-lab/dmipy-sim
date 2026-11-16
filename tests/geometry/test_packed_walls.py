@@ -1,7 +1,7 @@
 """The packed geometries walk the same wall physics as every other geometry, at any packing.
 
 `geometry.packed.packed_wall_kernel` is the one wall interaction behind `PackedCylinders` and
-`PackedSpheres`. The fast tests are the adversarial impacts a pack adds to the single-object
+`PackedSpheres`; a cell of plain cylinders of `PackedMyelinatedCylinders` (g-ratio 1) walks the same tests. The fast tests are the adversarial impacts a pack adds to the single-object
 table: a step spanning the gap between two objects, at every angle, up to ten gap widths. The
 consequences on signals are the next two tests: a dense pack keeps every extra-axonal walker outside where the
 single-hit rule let nine in ten through, and a pack of one permeable cylinder is `Cylinder(permeability=)`.
@@ -27,13 +27,39 @@ ANGLES = [0.0, 20.0, 45.0, 70.0, 89.0, 90.0, 135.0, 180.0]
 SPANS = [0.5, 1.0, 3.0, 10.0]
 
 
+def _plain_cell(radii, centres, L, permeability=0.0, pool=None):
+    """The same cylinders as a cell of plain cylinders (g-ratio 1) of `PackedMyelinatedCylinders`."""
+    radii = np.asarray(radii, float)
+    seed_pools = None if pool is None else (pool,)
+    return d.PackedMyelinatedCylinders(radii, np.ones(len(radii)), np.asarray(centres, float), L, N_max=len(radii),
+                                       compartments=d.Compartments(intra=d.Pool(D=D), myelin=d.Pool(D=0.0),
+                                                                   extra=d.Pool(D=D)),
+                                       kappa_outer=permeability, seed_pools=seed_pools)
+
+
 def _two(kind, gap):
     """Two objects of radius R, `gap` apart along x, in a cell large enough to be irrelevant."""
-    if kind == "cylinders":
+    if kind in ("cylinders", "plain_cell"):
         c = np.array([[0.0, 0.0], [2 * R + gap, 0.0]])
-        return d.PackedCylinders([R, R], c, 20 * R), c
+        return (d.PackedCylinders([R, R], c, 20 * R) if kind == "cylinders" else _plain_cell([R, R], c, 20 * R)), c
     c = np.array([[0.0, 0.0, 0.0], [2 * R + gap, 0.0, 0.0]])
     return d.PackedSpheres([R, R], c, 20 * R), c
+
+
+def _wall_step(geom):
+    """``(budget, step)`` of a packed geometry: the bounce budget its wall kernel was built with for the longest step
+    of its sub-step rule (the long atom of the R_min / 6 step), and ``step(p, s) -> end`` through its wall. A plain cell is
+    stepped by its own kernel (`physics.make_myelin_substep`), built for that step."""
+    if not geom._is_packed_myelinated:
+        return geom.bounce_loop.budget, lambda p, s: geom.interact(p, s).r
+    from dmipy_sim.engine.physics import make_myelin_substep
+    h = float(np.min(geom._inner_radii_np[geom._inner_radii_np > 0])) / 6     # the kernel sizes for LONGEST_STEP * h
+    sub = make_myelin_substep(geom, h * h / (6 * D))
+    ones = jnp.ones(sub.bounce_loop.budget, jnp.float32)                # no plain wall here is permeable
+
+    def step(p, s):
+        return sub.move(p, s, geom.classify_position(p), jnp.float32(1.0), ones)[0]
+    return sub.bounce_loop.budget, step
 
 
 def _gap_cases(gap, dim):
@@ -47,7 +73,7 @@ def _gap_cases(gap, dim):
     return out
 
 
-@pytest.mark.parametrize("kind", ["cylinders", "spheres"])
+@pytest.mark.parametrize("kind", ["cylinders", "spheres", "plain_cell"])
 def test_a_step_spanning_the_gap_between_two_objects_stays_in_the_gap(kind):
     """A walker in a gap of 0.05 R, steps up to ten gap widths at every angle: it must end
     outside both objects with its path length conserved. A single-hit rule ends it inside the
@@ -55,11 +81,12 @@ def test_a_step_spanning_the_gap_between_two_objects_stays_in_the_gap(kind):
     gap = 0.05 * R
     geom, centers = _two(kind, gap)
     dim = centers.shape[1]
-    assert geom.bounce_loop.budget >= 2 + int(np.ceil((LONGEST_STEP * R / 6) / gap)), "budget must cover the longest step across the gap"
+    budget, step = _wall_step(geom)
+    assert budget >= 2 + int(np.ceil((LONGEST_STEP * R / 6) / gap)), "budget must cover the longest step across the gap"
     cases = _gap_cases(gap, dim)
     starts = np.stack([np.r_[c[1], np.zeros(3 - dim)] for c in cases]).astype(np.float32)
     steps = np.stack([np.r_[c[2], np.zeros(3 - dim)] for c in cases]).astype(np.float32)
-    out = np.asarray(jax.jit(jax.vmap(lambda p, s: geom.interact(p, s).r))(jnp.asarray(starts), jnp.asarray(steps)))
+    out = np.asarray(jax.jit(jax.vmap(step))(jnp.asarray(starts), jnp.asarray(steps)))
     dist = [np.linalg.norm(out[:, :dim] - c, axis=1) for c in centers]
     entered = (dist[0] <= R * (1 - 1e-6)) | (dist[1] <= R * (1 - 1e-6))
     rows = "\n".join(f"      {cases[i][0]:16} -> d0={dist[0][i] / R:.4f} R  d1={dist[1][i] / R:.4f} R"
@@ -81,8 +108,9 @@ def test_bounce_budget_and_candidate_count_follow_the_worst_case():
     assert packed_candidate_count(100, R, 3 * R, 2) == int(np.ceil(np.pi * 4) + 2)
     assert 8 <= packed_candidate_count(100, R, R / 6, 3) <= 100
     # the geometry builds its kernel at the longest step the sub-step rule allows (the pair's long atom at R_min / 6)
-    geom, _ = _two("cylinders", 0.02 * R)
-    assert geom.bounce_loop.budget == bounce_budget(R, nudge, geom.min_gap, LONGEST_STEP * R / 6)
+    for kind in ("cylinders", "plain_cell"):
+        geom, _ = _two(kind, 0.02 * R)
+        assert _wall_step(geom)[0] == bounce_budget(R, nudge, geom.min_gap, LONGEST_STEP * R / 6)
 
 
 def _dense_pack(seed=1):
@@ -100,7 +128,9 @@ def _final_object(geom, pos):
     return np.asarray(jax.vmap(geom.classify_position)(jnp.asarray(pos, jnp.float32)))
 
 
-def test_dense_pack_keeps_every_extra_axonal_walker_outside():
+@pytest.mark.parametrize("make", [lambda r, c, L: d.PackedCylinders(r, c, L, pool="extra"),
+                                  lambda r, c, L: _plain_cell(r, c, L, pool="extra")], ids=["cylinders", "plain_cell"])
+def test_dense_pack_keeps_every_extra_axonal_walker_outside(make):
     """At outer packing 0.45 the single-hit rule ended 18033 of 20000 extra-axonal walkers inside
     a cylinder over one PGSE (they reflect off one wall into the neighbour, and the neighbour's
     sentinel then keeps them). None may end inside.
@@ -110,7 +140,7 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     gap narrower than the step, not an accumulation, so the walk is one 50 us block (115 sub-steps of 72 nm, 0.45 um of
     diffusion per axis) instead of the 20 ms PGSE (230 sub-steps per 100 us)."""
     radii, c, L = _dense_pack()
-    pc = d.PackedCylinders(radii, c, L, pool="extra")
+    pc = make(radii, c, L)
     r0 = np.asarray(pc.init_positions(N_DENSE, jax.random.PRNGKey(4)))
     assert (_final_object(pc, r0) == 0).all(), "a walker was seeded inside a cylinder"
     out = _walk_geometry(N_DENSE, D, pc, BLOCK_DENSE, BLOCK_DENSE, seed=4, r0=r0, raw_subset=N_DENSE, require_gpu=False)
@@ -118,7 +148,10 @@ def test_dense_pack_keeps_every_extra_axonal_walker_outside():
     assert (final == 0).all(), f"{(final > 0).sum()} walkers ended inside a cylinder"
 
 
-def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
+@pytest.mark.parametrize("make", [lambda k: d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=k),
+                                  lambda k: _plain_cell([R], np.zeros((1, 2)), 40 * R, permeability=k)],
+                         ids=["cylinders", "plain_cell"])
+def test_a_pack_of_one_permeable_cylinder_is_the_cylinder(make):
     """Intra-seeded walkers leave through the membrane at the same rate whether the wall is the
     pack kernel's (a trial at every encounter) or `Cylinder.permeate`'s (one trial per step):
     on a single convex object at the R/25 step (pinned) a second encounter is a grazing rarity.
@@ -132,7 +165,7 @@ def test_a_pack_of_one_permeable_cylinder_is_the_cylinder():
     (``(2 z)^2 q / delta^2``)."""
     kappa, N = 2e-5, 1_500
     cyl = d.Cylinder(R, (0, 0, 1), permeability=kappa)
-    pk = d.PackedCylinders([R], np.zeros((1, 2)), 40 * R, permeability=kappa)
+    pk = make(kappa)
     wf = dr.set_b(dr.pgse([[0, 0, 1]], 2e-3, 8e-3, gradient_strengths=0.01, n_t=100, slew_rate=np.inf), 1e6)
     r0 = cyl.init_positions(N, jax.random.PRNGKey(0))                # inside the lumen
     n_sub = int(np.ceil(6 * D * float(wf.dt) / (R / 25) ** 2))      # the R/25 step: few transmissions per walker,

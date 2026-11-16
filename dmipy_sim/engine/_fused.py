@@ -277,12 +277,10 @@ def simulate_fused(
             # Fused forward: the SAME per-compartment walk as the trajectory step fn, with
             # gradient phase (on the periodic-unwrapped position) + per-compartment T2 + surface
             # relaxivity accumulated in-scan. No trajectory storage / replay.
-            if _r0_user_supplied:
-                raise NotImplementedError(
-                    "simulate(r0=...) is unsupported for PackedMyelinatedCylinders; it "
-                    "initialises walkers (and their compartments) from `seed` via init_positions.")
-            step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1, f_band=f_band)
-            compartments0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
+            step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1, f_band=f_band, sub_steps=sub_steps)
+            # encoded: 0=extra, 1..N=intra, >N=myelin -- the seeding's own, or the given starts' by position
+            compartments0 = (jax.vmap(geometry.classify_position)(jnp.asarray(r0, jnp.float32)).astype(jnp.int32)
+                             if _r0_user_supplied else geometry._init_compartments)
             _to3 = geometry.pool_of                            # -> 0 extra, 1 intra, 2 myelin
             spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
                                jnp.float32(geometry._myelin_proton_density), jnp.float32(1.0))
@@ -300,7 +298,7 @@ def simulate_fused(
                 return jax.jit(jax.vmap(simulate_walker, in_axes=(0, 0, 0, None, None)), compiler_options=walk_compiler_options())
 
             simulate_batch = cached_batch(
-                geometry, ("packed_myelin", n_measurements, n_t, float(dt), T1), _build_packed)
+                geometry, ("packed_myelin", n_measurements, n_t, float(dt), T1, sub_steps), _build_packed)
             final_r, all_phi, all_log_w, _comp_final_enc, _comp_seq = simulate_batch(
                 r0, walker_keys, compartments0, *scan_inputs)
             signals = _ensemble_signal(spin_w, all_phi, all_log_w)

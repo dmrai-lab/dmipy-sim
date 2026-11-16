@@ -1,7 +1,8 @@
 """The MT walk on permeable packed cylinders, a permeability over time, and the forward vector-Bloch oracle (#909).
 
 * A cylinder in a periodic cell, with the walker's side carried, walks the same MT physics as the isolated
-  :class:`~dmipy_sim.geometry.Cylinder`: the bound fraction and the fraction inside at the end agree to the sampling.
+  :class:`~dmipy_sim.geometry.Cylinder`, in a :class:`~dmipy_sim.geometry.PackedCylinders` cell and in a cell of
+  plain cylinders (g-ratio 1) of :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders`: the bound fraction and the fraction inside at the end agree to the sampling.
 * A permeability per object: the sealed cylinder keeps every walker inside and binds as the sealed isolated cylinder
   does; the permeable one is the permeable isolated cylinder.
 * A permeability over time on the slab: the walk against ``BlochTorrey1D`` with the same breakpoints, with bound pools.
@@ -27,6 +28,21 @@ KON = 4e-5                                  # the binding reactivity, m/s
 TAU = 2e-3                                  # the dwell, s
 N = 4000
 CENTRES = np.array([[10e-6, 20e-6], [30e-6, 20e-6]])
+
+
+def _packed_cylinders(radii, centres, permeability):
+    return d.PackedCylinders(np.asarray(radii), centres, L, permeability=permeability)
+
+
+def _plain_cell(radii, centres, permeability):
+    """The same cylinders as a cell of plain cylinders (g-ratio 1) of `PackedMyelinatedCylinders`."""
+    return d.PackedMyelinatedCylinders(np.asarray(radii), np.ones(len(radii)), centres, L, N_max=len(radii),
+                                       compartments=d.Compartments(intra=d.Pool(D=D), myelin=d.Pool(D=0.0),
+                                                                   extra=d.Pool(D=D)),
+                                       kappa_outer=permeability)
+
+
+PACKS = pytest.mark.parametrize("pack_of", [_packed_cylinders, _plain_cell], ids=["cylinders", "plain_cell"])
 
 
 def _inside_start(rng, n, centre):
@@ -60,9 +76,10 @@ def _agree(a, b, comparisons, what):
     assert abs(a.mean() - b.mean()) < tol, f"{what}: {a.mean():.4f} against {b.mean():.4f} (tolerance {tol:.4f})"
 
 
-def test_a_packed_cylinder_with_its_side_carried_is_the_isolated_cylinder():
+@PACKS
+def test_a_packed_cylinder_with_its_side_carried_is_the_isolated_cylinder(pack_of):
     rng = np.random.default_rng(1)
-    pack = d.PackedCylinders(np.array([R]), CENTRES[:1], L, permeability=KAPPA)
+    pack = pack_of([R], CENTRES[:1], KAPPA)
     iso = d.Cylinder(radius=R, orientation=(0, 0, 1), permeability=KAPPA)
     w_pack = _walk(pack, _inside_start(rng, N, CENTRES[0]), 2)
     w_iso = _walk(iso, _inside_start(rng, N, (0.0, 0.0)), 3)
@@ -74,9 +91,10 @@ def test_a_packed_cylinder_with_its_side_carried_is_the_isolated_cylinder():
     assert w_pack.work["exhausted_steps"] == 0
 
 
-def test_a_permeability_per_object_is_each_cylinders_own():
+@PACKS
+def test_a_permeability_per_object_is_each_cylinders_own(pack_of):
     rng = np.random.default_rng(4)
-    pack = d.PackedCylinders(np.array([R, R]), CENTRES, L, permeability=[KAPPA, 0.0])
+    pack = pack_of([R, R], CENTRES, [KAPPA, 0.0])
     r0 = np.concatenate([_inside_start(rng, N, CENTRES[0]), _inside_start(rng, N, CENTRES[1])])
     w = _walk(pack, r0, 5)
     leaky = slice(0, N)
