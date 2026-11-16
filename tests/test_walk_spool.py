@@ -83,3 +83,35 @@ def test_a_spooled_walk_resumes_from_its_batches(spec, spooled):
     with pytest.raises(ValueError, match="another run"):
         walk(spec, 31, 4e-4, 5e-5, seed=3, n_probe=2000, require_gpu=False, adaptive_steps=True,
                   field_cutoff_max_m=25e-6, K=8, K_c3=4, walker_batch_size=10, run_dir=d, spool=True, envelope=walk_envelope(of=spec))
+
+
+def test_the_projection_precision_of_a_walk_states_only_what_every_piece_knows(spec, spooled, tmp_path):
+    """Three states kept apart: every piece's value known and equal is that value, known and different is "mixed", any
+    piece unknown (spooled without a value, or a backend that states none) is None. A spooled piece stores its value, so a
+    resumed walk keeps its statement; a piece written without one reads as unknown."""
+    import shutil
+    from safetensors.numpy import load_file, save_file
+    from safetensors import safe_open
+    from dmipy_sim.engine.adaptive import joined_projection_precision as join
+    assert join(["float32", "float32"]) == "float32"
+    assert join(["float32", "float64"]) == "mixed"
+    assert join(["float32", None]) is None and join([None, None]) is None and join([]) is None
+    assert join(["float32", "float64", None]) is None
+    d0, w0 = spooled
+    d = str(tmp_path / "rec")
+    shutil.copytree(d0, d)
+    assert _walk(spec, run_dir=d, spool=True).block["projection_precision"] == "float32"       # all resumed: the stored value
+    files = sorted(os.path.join(d, "spool", f) for f in os.listdir(os.path.join(d, "spool")))
+
+    def strip(path):
+        import json
+        with safe_open(path, "np") as f:
+            meta = json.loads(f.metadata()["spool"])
+        meta.pop("projection_precision", None)
+        save_file(load_file(path), path, metadata={"spool": json.dumps(meta)})
+    strip(files[0])                                                       # one resumed piece without a value ...
+    os.remove(files[-1])                                                  # ... beside one walked
+    assert _walk(spec, run_dir=d, spool=True).block["projection_precision"] is None
+    for f in os.listdir(os.path.join(d, "spool")):
+        strip(os.path.join(d, "spool", f))
+    assert _walk(spec, run_dir=d, spool=True).block["projection_precision"] is None            # all resumed, none with a value

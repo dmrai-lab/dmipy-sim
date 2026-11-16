@@ -953,8 +953,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, envelope, raw_
     subset, or for a frozen pool its seats held at every block end (the seat as position, contact 0, the field read
     at the seat); the raw compartment is the pool id. A pool walk that lacks a raw array it was asked for is refused.
     The coefficients and quadratic variations are joined in the pools' accumulation dtype (``block["precision"]``,
-    one for every pool, else refused); ``block["projection_precision"]`` is the pools' common value when they agree and
-    ``"mixed"`` when they differ; the raw arrays are the walk's float32."""
+    one for every pool, else refused); ``block["projection_precision"]`` is the pools' common value when every pool states one and they
+    agree, ``"mixed"`` when every pool states one and they differ, ``None`` when any pool states none; the raw arrays are the walk's float32."""
     import dataclasses
     from ..coefficient_walk import merge_work
     walks = [w for _, w in parts if not isinstance(w, np.ndarray)]
@@ -1050,8 +1050,8 @@ def _join_pool_walks(parts, weights_of, seed, spec, field, works, envelope, raw_
     by_name = {p.name: p for p in spec.pools}
     D_ref = by_name["intra"].D if ("intra" in by_name and by_name["intra"].D) else float(w0.diffusivity)
     block = dict(w0.block)
-    projections = {w.block.get("projection_precision") for w in walks}               # the pools' own, never the first's
-    block["projection_precision"] = projections.pop() if len(projections) == 1 else "mixed"
+    from ..engine.adaptive import joined_projection_precision
+    block["projection_precision"] = joined_projection_precision(w.block.get("projection_precision") for w in walks)
     # A joined walk is not the first pool's calibration. Preserve each pool's
     # provenance separately, including its own read and band measurements.
     block.pop("calibration_scope", None)

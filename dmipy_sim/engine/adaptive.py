@@ -610,7 +610,10 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
 
         jax_projection = jax.eval_shape(lambda r, M: jnp.einsum("kj,wjd->wkd", r, M, precision=jax.lax.Precision.HIGHEST),
                                         table[0], jax.ShapeDtypeStruct((1, m + 1, 3), jnp.float32)).dtype.name
-        backend_projection = set()                  # what each batch's coefficients were projected in (a backend's own statement)
+        piece_projection = []                       # per walked or resumed piece: the dtype name its projection product was formed
+                                                    # in, None where that is unknown (a backend that states none, a spooled piece
+                                                    # written without it)
+        batch_projection = [None]                   # the last backend batch's own statement
 
         def _backend_batch(s, e, *, raw, K_f, rd=None):
             """The walk of walkers ``s:e`` through the backend (#747, #742): its
@@ -637,7 +640,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                                  f"for a request of {(K, m, int(n_min))}")
             if int(batch.n_windows) != n_win:
                 raise ValueError(f"backend {_backend_name!r} accumulated {batch.n_windows} storage windows for a walk of {n_win}")
-            backend_projection.add(batch.projection_precision)
+            batch_projection[0] = batch.projection_precision
             C = np.asarray(batch.position_coeffs, np.float32)
             if C.shape != (nb, n_win, K + 2, 3):
                 raise ValueError(f"backend {_backend_name!r} returned position coefficients of shape {C.shape}; "
@@ -763,18 +766,20 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                     if found is not None:
                         got, hdr = found
                         n_free += int(hdr["n_free"]); n_kernel_steps += int(hdr["n_kernel_steps"])
+                        piece_projection.append(hdr.get("projection_precision"))   # absent in a piece spooled before the field: unknown
                         log.info("  adaptive: batch %d read from the spool (%d walkers)", bi, b_ - a)
                 if got is None:
                     # a field walk's raw subset is walked by the JAX kernels: it keeps the reads at the read instants
                     got, cnt = (_walk_batch if (raw and sampling) else _batch)(a, b_, raw=raw, K_f=K_f)
-                    if _backend is not None and raw and sampling:
-                        backend_projection.add(jax_projection)                 # this batch was walked by the JAX kernels
+                    walked_by_jax = _backend is None or (raw and sampling)      # else by the backend, which states its own
+                    piece_projection.append(jax_projection if walked_by_jax else batch_projection[0])
                     k_cand = nonlocal_k[0]
                     n_illegal += cnt["n_illegal"]
                     if _backend is None:
                         n_free += cnt["n_free"]; n_kernel_steps += cnt["n_kernel_steps"]
                     if spool is not None and not cnt["n_illegal"]:
-                        run.spool(name, got, dict(batch=bi, start=a, end=b_, raw=bool(raw), n_free=cnt["n_free"], n_kernel_steps=cnt["n_kernel_steps"]))
+                        run.spool(name, got, dict(batch=bi, start=a, end=b_, raw=bool(raw), n_free=cnt["n_free"], n_kernel_steps=cnt["n_kernel_steps"],
+                                                             projection_precision=piece_projection[-1]))
                 for k, v in got.items():
                     rows.setdefault(k, []).append(np.asarray(v))
         if n_illegal:
@@ -799,9 +804,7 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
                         raw_subset_backend=(None if not n_raw else JAX if sampling else _backend_name))
         resid = cat("resid"); disp = cat("C")[:, :, 1, :]; qv_p = cat("qv_pos")
         block = dict(h=float(dt_actual), m=m, precision=np.dtype(resid.dtype).name, n_blocks=int(n_blocks), rule=block_rule, ring=1,
-                     projection_precision=(
-                         jax_projection if _backend is None
-                         else (next(iter(backend_projection)) if len(backend_projection) == 1 else "mixed")),
+                     projection_precision=joined_projection_precision(piece_projection),
                      accumulation="the moments of each block summed per step for the kernel-stepped walkers and per ROUND for the "
                                   "free-stepping ones (a round's displacement at its midpoint), every block projected in one float32 "
                                   "product and chained into a float32 level-2 accumulator",
@@ -829,6 +832,16 @@ def simulate_trajectories_adaptive(n_walkers, diffusivity, geometry, T_max, bloc
             geometry=geometry, spec=spec, stepping=stepping, work=work)
         object.__setattr__(walk, "run", run)
         return walk
+
+
+def joined_projection_precision(pieces):
+    """The projection precision a walk states from its pieces' (``None`` for a piece whose value is unknown): the common
+    value when every piece's is known and equal, ``"mixed"`` when every piece's is known and they differ, ``None`` when any
+    piece's is unknown or there is no piece."""
+    pieces = list(pieces)
+    if not pieces or any(p is None for p in pieces):
+        return None
+    return pieces[0] if len(set(pieces)) == 1 else "mixed"
 
 
 def field_read_of(spec_holder, envelope, T_win, plan, *, given=None, pools=None, checks=None, err_sq=None, qv_checks=None,
