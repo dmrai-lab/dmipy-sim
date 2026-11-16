@@ -121,9 +121,19 @@ def test_the_spec_of_a_mixed_cell_walks_back_to_the_same_cell():
     assert back.seed_pools == g.seed_pools
     dry = _cell([0.7, 1.0, 0.7, 1.0], compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, water_fraction=0.0),
                                                                  extra=Pool(D=D)), seed_pools=("extra", "intra"))
-    # the spec cannot tell these starts from a default cell's with a dry sheath (it writes the pools that hold water):
-    # it comes back as the default seeding, as a default cell's spec always has
-    assert dry.spec.seeding.pools == [0, 1] and geometry_from_spec(dry.spec).seed_pools is None
+    # the spec cannot tell these starts from a default cell's with a dry sheath (it would write the pools that hold
+    # water, which reads back as every pool by area): it is refused by name, on the geometry and through walk
+    from dmipy_sim import walk
+    from dmipy_sim.spec.build import UnstatedSeedingError
+    from tests._envelope import walk_envelope
+    with pytest.raises(UnstatedSeedingError, match="cannot yet state which pools are seeded"):
+        dry.spec
+    with pytest.raises(UnstatedSeedingError, match=r"Walk the geometry itself"):
+        walk(dry, 64, 1e-3, envelope=walk_envelope(), diffusivity=D, seed=1, require_gpu=False)
+    w = _walk_geometry(300, D, dry, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False, raw_subset=300)
+    assert (np.asarray(w.raw_compartment) != 2).all()                   # walked as itself: no walker in a sheath
+    default_dry = _cell([0.7, 1.0, 0.7, 1.0], compartments=dry.compartments)
+    assert default_dry.spec.seeding.pools == [0, 1] and geometry_from_spec(default_dry.spec).seed_pools is None
     assert back.spec.to_dict() == spec.to_dict()
     a = _walk_geometry(64, D, g, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)
     b = _walk_geometry(64, D, back, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)

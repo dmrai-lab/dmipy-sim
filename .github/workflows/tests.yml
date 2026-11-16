@@ -89,3 +89,26 @@ jobs:
           name: coverage-report-${{ matrix.group }}
           path: .coverage
           if-no-files-found: ignore
+
+  recorded-bits:
+    # The all-myelinated walks hashed before plain cylinders existed are bits of one JAX build (jax / jaxlib 0.10.2,
+    # tests/geometry/test_mixed_myelinated_plain_cell.py RECORDED_WITH): this job installs that build and runs those
+    # three tests alone, so the bit-identity holds in CI whatever the matrix above resolves.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies (the recording JAX build, CPU)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install "dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@${DMIPY_ANALYTIC_REF}"
+          pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
+          pip install -e . "jax==0.10.2" "jaxlib==0.10.2"
+      - name: Run the recorded-bits tests
+        run: |
+          python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
+          JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py -k "recorded" -q -rs --tb=short | tee out.txt
+          grep -q "3 passed" out.txt && ! grep -q "skipped" out.txt

@@ -117,15 +117,49 @@ def _pools_from_compartments(g, names, D_by_name, wf_by_name=None):
     return out
 
 
-def spec_of(geometry, *, id=None, provenance=None, surface_dir=None):
+class UnstatedSeedingError(SpecError):
+    """A geometry whose seeding a spec cannot state: reduced to its spec, it would be read back with another seeding.
+    Such a geometry is walked as itself (``simulate(geometry=...)``), never through its spec (``walk``)."""
+
+
+def _unstated_seeding(g, spec):
+    """Why ``spec`` cannot state ``g``'s seeding, or ``None``: a packed myelinated cell whose ``seed_pools`` leave out a
+    pool of positive area, while the spec's seeded list is the spelling of the default seeding (the pools that hold
+    water), which ``geometry_from_spec`` reads back as every pool by area."""
+    from ..geometry import PackedMyelinatedCylinders
+    if not isinstance(g, PackedMyelinatedCylinders) or g.seed_pools is None:
+        return None
+    if sorted(spec.seeding.pools) != sorted(_seeded(spec.pools)):
+        return None                                                    # the spec states the seeded pools itself
+    N = g.N_actual
+    inner, outer = g._inner_radii_np[:N], g._outer_radii_np[:N]
+    area = {"extra": g._L_float ** 2 - float(np.sum(np.pi * outer ** 2)), "intra": float(np.sum(np.pi * inner ** 2)),
+            "myelin": float(np.sum(np.pi * (outer ** 2 - inner ** 2)))}
+    left_out = [n for n in ("extra", "intra", "myelin") if n not in g.seed_pools and area[n] > 0.0]
+    if not left_out:
+        return None
+    return (f"this PackedMyelinatedCylinders seeds {list(g.seed_pools)} and leaves out {left_out}, and its spec cannot yet "
+            f"state which pools are seeded: it would write {sorted(spec.seeding.pools)}, the spelling of the default "
+            f"seeding (every pool by area), and be walked back with walkers in {left_out}. Walk the geometry itself "
+            f"(simulate(geometry=...)), not through its spec (walk, geometry.spec)")
+
+
+def spec_of(geometry, *, id=None, provenance=None, surface_dir=None, seeding_stated=True):
     """The spec of an analytic geometry, its ``frame`` the geometry's own axis in the frame it is walked in
     (RPK.md 4.2): ``z`` for the cylinder kinds, which are walked in their own frame (their ``orientation`` is the
     pose :func:`~dmipy_sim.simulate` applies to the acquisition, not a property of the substrate, and is recorded
     in the provenance), the chord of a curved one; an object with no axis keeps the default ``z``. A frame
     :func:`_axis_of` derived is marked ``frame.source = "structural"`` (dmipy-sim#538): the bank checks it
     against the geometry it came from, not a walk's own principal displacement axis, which in a curved tube
-    depends on the walk duration and need not agree with the structural axis at all."""
+    depends on the walk duration and need not agree with the structural axis at all.
+
+    A geometry whose seeding the spec cannot state is refused by name (:class:`UnstatedSeedingError`);
+    ``seeding_stated=False`` is the door's own check of a geometry walked as itself, which reads no seeding from the
+    spec."""
     spec = _spec_without_frame(geometry, id=id, provenance=provenance, surface_dir=surface_dir)
+    why = _unstated_seeding(geometry, spec) if seeding_stated else None
+    if why is not None:
+        raise UnstatedSeedingError(why)
     axis = _axis_of(geometry)
     if axis is None:
         return spec
@@ -651,12 +685,18 @@ def as_geometry(substrate):
                         f"(an object that carries a .spec is not a substrate)")
     # the door: a driver walks what a spec can describe. The geometry's spec is computed once and kept on it.
     if getattr(substrate, "_spec_source", None) is None:
+        unstated = False
         try:
-            spec = substrate.spec
+            try:
+                spec = substrate.spec
+            except UnstatedSeedingError:              # walked as itself: its spec is checked, never kept or read back
+                spec, unstated = spec_of(substrate, seeding_stated=False), True
             spec.validate()
         except (AttributeError, SpecError, TypeError, ValueError) as e:
             raise SpecError(f"{type(substrate).__name__} has no spec spelling ({e}); a driver walks only a substrate a "
                             f"SubstrateSpec can describe -- give a spec, or a geometry spec_of knows") from e
+        if unstated:
+            return substrate
         try:
             substrate._spec_source = spec
         except Exception:                              # a slotted or frozen object: recomputed next time

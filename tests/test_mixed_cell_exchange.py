@@ -68,11 +68,16 @@ def _start_cylinder(w):
     return np.argmin(np.hypot(x[..., 0], x[..., 1]), axis=1)
 
 
+class Disagree(AssertionError):
+    """The exchange check's own failure: the two fractions differ by more than the tolerance."""
+
+
 def _agree(a, b, what):
-    """Two samples of one statistic agree to ``se_tol`` of their pooled spread."""
+    """Two samples of one statistic agree to ``se_tol`` of their pooled spread; :class:`Disagree` when they do not."""
     sd = np.sqrt(0.5 * (a.var() + b.var()))
     tol = se_tol(len(a), sd, comparisons=COMPARISONS, runs=2)
-    assert abs(a.mean() - b.mean()) < tol, f"{what}: {a.mean():.4f} against {b.mean():.4f} (tolerance {tol:.4f})"
+    if not abs(a.mean() - b.mean()) < tol:
+        raise Disagree(f"{what}: {a.mean():.4f} against {b.mean():.4f} (tolerance {tol:.4f})")
 
 
 _ISOLATED = {}
@@ -120,7 +125,8 @@ def test_the_myelinated_cylinder_opened_lets_its_walkers_out():
     assert left.mean() > 0.5, f"only {left.mean():.3f} of the myelinated cylinder's walkers left its lumen"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="the power of the exchange check: a sealed plain wall must fail it")
+@pytest.mark.xfail(strict=True, raises=Disagree,
+                   reason="the power of the exchange check: a sealed plain wall fails the comparison itself (Disagree)")
 def test_a_sealed_plain_wall_fails_the_exchange_check():
     w, comp, plain = _populations(0, seed=2, kappa_plain=0.0)
     ip = _inside(w, CENTRES[1], True)[plain]
