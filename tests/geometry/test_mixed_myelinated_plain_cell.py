@@ -13,7 +13,9 @@ Exact, not statistical:
   axial displacement; a step whose in-plane part is sheared by its axial part is the control that fails it;
 * the walk accumulates the continuous position: a walker that crosses the cell's boundary has the displacement its
   steps add up to, not the difference of the folded positions;
-* the spec of a mixed cell walks back to the same cell; refusals are by name.
+* the spec of a mixed cell walks back to the same cell; refusals are by name;
+* a spec states the pools a cell seeds, literally: by default every pool that holds water, so no walker starts in a
+  dry sheath; the cell built from its spec seeds exactly those pools, start for start.
 """
 import hashlib
 
@@ -119,21 +121,6 @@ def test_the_spec_of_a_mixed_cell_walks_back_to_the_same_cell():
     for name in ("_kappa_inner_jax", "_kappa_outer_jax", "_rho_inner_jax", "_rho_outer_jax", "plain_mask"):
         np.testing.assert_array_equal(np.asarray(getattr(back, name))[:4], np.asarray(getattr(g, name))[:4])
     assert back.seed_pools == g.seed_pools
-    dry = _cell([0.7, 1.0, 0.7, 1.0], compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, water_fraction=0.0),
-                                                                 extra=Pool(D=D)), seed_pools=("extra", "intra"))
-    # the spec cannot tell these starts from a default cell's with a dry sheath (it would write the pools that hold
-    # water, which reads back as every pool by area): it is refused by name, on the geometry and through walk
-    from dmipy_sim import walk
-    from dmipy_sim.spec.build import UnstatedSeedingError
-    from tests._envelope import walk_envelope
-    with pytest.raises(UnstatedSeedingError, match="cannot yet state which pools are seeded"):
-        dry.spec
-    with pytest.raises(UnstatedSeedingError, match=r"Walk the geometry itself"):
-        walk(dry, 64, 1e-3, envelope=walk_envelope(), diffusivity=D, seed=1, require_gpu=False)
-    w = _walk_geometry(300, D, dry, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False, raw_subset=300)
-    assert (np.asarray(w.raw_compartment) != 2).all()                   # walked as itself: no walker in a sheath
-    default_dry = _cell([0.7, 1.0, 0.7, 1.0], compartments=dry.compartments)
-    assert default_dry.spec.seeding.pools == [0, 1] and geometry_from_spec(default_dry.spec).seed_pools is None
     assert back.spec.to_dict() == spec.to_dict()
     a = _walk_geometry(64, D, g, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)
     b = _walk_geometry(64, D, back, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)
@@ -493,7 +480,7 @@ def test_no_walker_starts_in_a_sheath_when_the_sheath_is_not_seeded():
                                      seed_pools=("intra",))
     many.init_positions(4096, jax.random.PRNGKey(1))                     # 300 equal lumens: whole counts, none negative
     assert (np.asarray(many.pool_of(many._init_compartments)) == 1).all() and len(many._init_compartments) == 4096
-    default = _cell([0.7, 1.0, 0.7, 1.0])                                # the default seeds every pool by area
+    default = _cell([0.7, 1.0, 0.7, 1.0])                  # the default seeds every pool that holds water, by area
     default.init_positions(4000, jax.random.PRNGKey(0))
     assert (np.asarray(default.pool_of(default._init_compartments)) == 2).sum() > 100
 
@@ -520,21 +507,114 @@ def test_a_position_is_classified_into_the_cylinder_whose_wall_holds_it():
 # ── a spec states the seeded pools ──────────────────────────────────────────────────────────────────────────────────
 
 DRY = Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, water_fraction=0.0), extra=Pool(D=D))
+MIXED, PLAIN = [0.7, 1.0, 0.7, 1.0], [1.0] * 4
 
 
 def _start_pools(geo, n=4000, key=0):
-    """The start pool of each of ``n`` walkers placed with ``PRNGKey(key)``, and the start positions."""
+    """The start pool of each of ``n`` walkers placed with ``PRNGKey(key)``, and the start positions. The start labels
+    are the cell's private ``_init_compartments``, read here on purpose: they are what ``init_positions`` placed."""
     r0 = np.asarray(geo.init_positions(n, jax.random.PRNGKey(key)))
-    return np.asarray(geo.pool_of(geo._init_compartments)), r0     # the start labels: private, read on purpose
+    return np.asarray(geo.pool_of(geo._init_compartments)), r0
 
 
-@pytest.mark.xfail(strict=True, reason="a cell rebuilt from its spec seeds a sheath that holds no water")
 def test_a_cell_with_a_dry_sheath_and_its_spec_seed_no_sheath():
     """Exact counts of the walkers that start in a sheath (pool 2), ``init_positions(4000, PRNGKey(0))``: the cell
-    seeded without its sheaths, the same cell rebuilt from its spec and the default cell, each with a dry sheath."""
+    seeded without its sheaths, the same cell rebuilt from its spec and the default cell, each with a dry sheath; and
+    the default cell with a sheath that holds water, which seeds it by area."""
     from dmipy_sim.spec import geometry_from_spec
-    a = _cell([0.7, 1.0, 0.7, 1.0], compartments=DRY, seed_pools=("extra", "intra"))
+    a = _cell(MIXED, compartments=DRY, seed_pools=("extra", "intra"))
     b = geometry_from_spec(a.spec)
-    c = _cell([0.7, 1.0, 0.7, 1.0], compartments=DRY)
+    c = _cell(MIXED, compartments=DRY)
     assert [int((_start_pools(g)[0] == 2).sum()) for g in (a, b, c)] == [0, 0, 0]
     assert a.spec.seeding.pools == b.spec.seeding.pools == c.spec.seeding.pools == [0, 1]
+    assert np.bincount(_start_pools(c)[0], minlength=3).tolist() == [2110, 1890, 0]
+    wet = _cell(MIXED)
+    assert np.bincount(_start_pools(wet)[0], minlength=3).tolist() == [1761, 1577, 662]
+    assert wet.spec.seeding.pools == [0, 1, 2]
+
+
+#: (g-ratios, compartments, seed_pools): the cells whose spec must build them back, start for start
+ROUND_TRIP = [
+    (MIXED, COMPS, None), (MIXED, DRY, None), (PLAIN, COMPS, None), (PLAIN, DRY, None), (G_ALL, COMPS, None),
+    (G_ALL, DRY, None),
+    (MIXED, COMPS, ("extra",)), (MIXED, COMPS, ("intra",)), (MIXED, COMPS, ("extra", "intra")),
+    (MIXED, COMPS, ("myelin",)), (MIXED, COMPS, ("extra", "intra", "myelin")),
+    (MIXED, DRY, ("extra",)), (MIXED, DRY, ("intra",)), (MIXED, DRY, ("extra", "intra")),
+    (G_ALL, DRY, ("intra",)), (PLAIN, COMPS, ("extra",)),
+]
+
+
+@pytest.mark.parametrize("g, comps, seed_pools", ROUND_TRIP)
+def test_a_cell_built_from_its_spec_seeds_the_pools_the_cell_seeds(g, comps, seed_pools):
+    from dmipy_sim.spec import geometry_from_spec
+    cell = _cell(g, compartments=comps, seed_pools=seed_pools)
+    spec = cell.spec
+    assert spec.seeding.pools == [i for i, n in enumerate(("extra", "intra", "myelin")) if n in cell.seeded_pools]
+    back = geometry_from_spec(spec)
+    assert back.seed_pools == cell.seed_pools and back.seeded_pools == cell.seeded_pools
+    assert back.spec.to_dict() == spec.to_dict()
+    order = np.argsort(np.asarray(g) == 1.0, kind="stable")             # the spec's order: myelinated cylinders first
+    ordered = _cell(np.asarray(g)[order], order=order, compartments=comps, seed_pools=seed_pools)
+    pools, r0 = _start_pools(ordered)
+    pools_back, r0_back = _start_pools(back)
+    np.testing.assert_array_equal(pools_back, pools)
+    np.testing.assert_array_equal(r0_back, r0)
+    assert set(np.unique(pools)) <= {("extra", "intra", "myelin").index(n) for n in cell.seeded_pools}
+
+
+def test_naming_every_pool_that_holds_water_is_the_default_seeding():
+    assert _cell(MIXED, seed_pools=("myelin", "extra", "intra")).seed_pools is None
+    assert _cell(MIXED, compartments=DRY, seed_pools=("intra", "extra")).seed_pools is None
+    assert _cell(MIXED, compartments=DRY).seeded_pools == ("extra", "intra")
+
+
+def test_a_seeded_pool_that_holds_no_water_is_refused_by_name():
+    with pytest.raises(ValueError, match="pool 'myelin' is seeded but has water_fraction 0"):
+        _cell(MIXED, compartments=DRY, seed_pools=("extra", "myelin"))
+
+
+def test_a_spec_seeding_a_pool_the_cell_cannot_seed_is_refused_by_name():
+    """The refusals of a spec's seeding that remain: a pool that holds no water and an empty or out-of-range list (the
+    format's validation), and seeded pools of no area in the cell (the class's)."""
+    import dataclasses
+    from dmipy_sim.spec import geometry_from_spec
+    from dmipy_replay.spec.substrate import SpecError
+    spec = _cell(MIXED, compartments=DRY).spec
+    for pools, what in (([0, 1, 2], "is seeded but has water_fraction 0"), ([], "must be non-empty pool ids"),
+                        ([0, 3], "must be non-empty pool ids")):
+        bad = dataclasses.replace(spec, seeding=dataclasses.replace(spec.seeding, pools=pools))
+        with pytest.raises(SpecError, match=what):
+            geometry_from_spec(bad)
+    four = dataclasses.replace(spec, pools=list(spec.pools) + [dataclasses.replace(spec.pools[1], id=3, name="glia")],
+                               seeding=dataclasses.replace(spec.seeding, pools=[0, 3]))
+    with pytest.raises(SpecError, match="no geometry matches walls"):  # a pool that is not one of the cell's
+        geometry_from_spec(four)
+    plain = _cell(PLAIN, seed_pools=("myelin",))                        # the sheaths of plain cylinders have no area
+    with pytest.raises(ValueError, match="hold no pool of positive area"):
+        plain.init_positions(64, jax.random.PRNGKey(0))
+
+
+@pytest.mark.parametrize("comps, seed_pools", [(DRY, ("extra", "intra")), (DRY, None), (COMPS, ("intra",))])
+def test_a_walk_through_the_spec_seeds_the_pools_the_cell_seeds(comps, seed_pools):
+    """``walk(cell)`` reduces the cell to its spec and walks the cell built from it, with the field of its sheaths (the
+    myelin pool is a field source): its walkers start in the pools the cell seeds, as many in each as the walk's
+    placement (``seed_walkers``) puts there on the cell itself; so does the cell walked as itself with the field read in
+    the walk. No walker starts in a sheath: it holds no water, or ``seed_pools`` leaves it out."""
+    from dmipy_sim import walk
+    from dmipy_sim.engine.core import _walk_geometry
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+    from tests._envelope import walk_envelope
+    cell = _cell(MIXED, compartments=comps, seed_pools=seed_pools)
+    from dmipy_sim.engine.physics import seed_walkers
+    labels = seed_walkers(cell, 64, 1)[3]                                 # the walk's own placement on the cell itself
+    want = np.bincount(np.asarray(cell.pool_of(labels)), minlength=3).tolist()
+    seeded = {("extra", "intra", "myelin").index(n) for n in cell.seeded_pools}
+    assert {i for i, c in enumerate(want) if c} <= seeded and want[2] == 0
+    assert cell.spec.field_source_pools                                   # the walk reads the sheaths' field
+    w = walk(cell, 64, 1e-3, envelope=walk_envelope(of=cell), seed=1, require_gpu=False, raw_subset=64)
+    assert w.field_coeffs is not None
+    assert np.bincount(np.asarray(w.compartment), minlength=3).tolist() == want
+    assert np.bincount(np.asarray(w.raw_compartment)[:, 0], minlength=3).tolist() == want
+    f = _walk_geometry(64, D, cell, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False, raw_subset=64,
+                       field_basis=HollowCylinderField.of(cell), K_c3=4, field_read_interval=1.25e-4)
+    assert np.bincount(np.asarray(f.compartment), minlength=3).tolist() == want

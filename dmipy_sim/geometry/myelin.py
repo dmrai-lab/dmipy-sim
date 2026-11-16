@@ -271,16 +271,28 @@ def _pool_t2(compartments):
 _POOL_NAMES = ("extra", "intra", "myelin")
 
 
-def _seed_pools(seed_pools):
-    """The pools a packed cell seeds: ``None`` (every pool, by area) or a tuple / list of distinct names of
-    :data:`_POOL_NAMES`, returned in that order; anything else is a ValueError naming the spelling."""
+def _wet_pools(comps):
+    """The pools of ``comps`` that hold water, in :data:`_POOL_NAMES` order: every pool whose ``water_fraction`` is not
+    0 (a pool that states none holds water, as its spec writes it, 1.0)."""
+    return tuple(n for n in _POOL_NAMES if not (n in comps and comps[n].water_fraction == 0.0))
+
+
+def _seed_pools(seed_pools, wet):
+    """The pools a packed cell seeds as given: ``None`` (every pool that holds water, ``wet``) or a tuple / list of
+    distinct names of :data:`_POOL_NAMES`, returned in that order, and ``None`` when they are exactly the pools that
+    hold water (one spelling of the default). A name outside :data:`_POOL_NAMES`, a repeated name or another type is a
+    ValueError naming the spelling; a pool that holds no water is a ValueError naming the pool."""
     if seed_pools is None:
         return None
     names = list(seed_pools) if isinstance(seed_pools, (tuple, list)) else None
     if not names or any(n not in _POOL_NAMES for n in names) or len(set(names)) != len(names):
-        raise ValueError(f"seed_pools is None (every pool, by area) or distinct names among {_POOL_NAMES}; "
-                         f"got {seed_pools!r}")
-    return tuple(n for n in _POOL_NAMES if n in names)
+        raise ValueError(f"seed_pools is None (every pool that holds water, by area) or distinct names among "
+                         f"{_POOL_NAMES}; got {seed_pools!r}")
+    dry = [n for n in _POOL_NAMES if n in names and n not in wet]
+    if dry:
+        raise ValueError(f"seed_pools={tuple(seed_pools)!r}: pool {dry[0]!r} is seeded but has water_fraction 0")
+    names = tuple(n for n in _POOL_NAMES if n in names)
+    return None if names == wet else names
 
 
 def _pool_D(comps, who):
@@ -670,13 +682,30 @@ class PackedMyelinatedCylinders(Geometry):
     rho_inner, rho_outer : float or array-like (N_actual,) or None
         Surface relaxivity at inner/outer walls in m/s.  0.0 = no relaxivity; ``rho_inner`` as ``kappa_inner``.
     seed_pools : sequence of str or None
-        The pools the walkers start in, by area among them: ``None`` (every pool of the cell, by area) or names
-        among ``"extra"``, ``"intra"``, ``"myelin"`` (``("extra", "intra")``: no walker starts in a sheath).
+        The pools the walkers start in, by area among them: ``None`` (every pool that holds water, i.e. whose
+        ``Pool.water_fraction`` is not 0) or names among ``"extra"``, ``"intra"``, ``"myelin"`` (``("extra",
+        "intra")``: no walker starts in a sheath). A pool of water fraction 0 holds no walker: naming one is a
+        ValueError. Naming exactly the pools that hold water is the default, kept as ``None``. The spec states the
+        seeded pools (:attr:`seeded_pools`) as its ``seeding.pools``.
     """
 
     _is_packed_myelinated = True
-    seeds_every_pool = True           #: the placement is by area over every compartment of the periodic cell
     has_walls = False                 #: stepped by its own kernel, never by `_wall`
+
+    @property
+    def seeded_pools(self):
+        """The pools the walkers start in, in ``("extra", "intra", "myelin")`` order: ``seed_pools`` when given, else
+        every pool that holds water."""
+        return self.seed_pools if self.seed_pools is not None else _wet_pools(self.compartments)
+
+    @property
+    def seeds_every_pool(self):
+        """The placement is uniform over every pool of positive area: each such pool is seeded, by area."""
+        N = self.N_actual
+        inner = self._inner_radii_np[:N]; outer = self._outer_radii_np[:N]
+        area = {"extra": self._L_float ** 2 - float(np.sum(np.pi * outer ** 2)),
+                "intra": float(np.sum(np.pi * inner ** 2)), "myelin": float(np.sum(np.pi * (outer ** 2 - inner ** 2)))}
+        return all(n in self.seeded_pools for n in _POOL_NAMES if area[n] > 0.0)
 
     @property
     def length_scales(self):
@@ -710,8 +739,8 @@ class PackedMyelinatedCylinders(Geometry):
         compartments=None,
         seed_pools=None,
     ):
-        self.seed_pools = _seed_pools(seed_pools)
         self.compartments, t2 = _pool_t2(compartments)
+        self.seed_pools = _seed_pools(seed_pools, _wet_pools(self.compartments))
         for name, arr in (("extra", T2_extra), ("intra", T2_intra), ("myelin", T2_myelin)):
             if arr is not None and np.ndim(arr) == 0:
                 raise ValueError(f"T2_{name}= is per cylinder (an array over the objects); a pool-wide T2 is spelled "
@@ -928,8 +957,9 @@ class PackedMyelinatedCylinders(Geometry):
           - Intra_k      : area = pi*R_inner_k^2  (zero for dummy cylinders)
           - Myelin_k     : area = pi*(R_outer_k^2 - R_inner_k^2)
 
-        Dummy cylinders (R=0) and the sheaths of plain cylinders (zero area) receive zero walkers. With
-        ``seed_pools`` the walkers are placed by area among the named pools only.
+        Dummy cylinders (R=0) and the sheaths of plain cylinders (zero area) receive zero walkers. The walkers are
+        placed by area among the seeded pools (:attr:`seeded_pools`) only: a pool that holds no water, or one that
+        ``seed_pools`` does not name, holds no walker at the start.
         """
         L = self._L_float
         N = self.N_actual
@@ -943,13 +973,15 @@ class PackedMyelinatedCylinders(Geometry):
         area_myelin = np.pi * (outer ** 2 - inner ** 2)   # (N,)
         area_extra  = cell_area - np.pi * np.sum(outer ** 2)
 
-        if self.seed_pools is not None:                    # the pools not named hold no walker at the start
-            area_intra = area_intra * ("intra" in self.seed_pools)
-            area_myelin = area_myelin * ("myelin" in self.seed_pools)
-            area_extra = area_extra * ("extra" in self.seed_pools)
+        seeded = self.seeded_pools
+        if seeded != _POOL_NAMES:                          # the pools not seeded hold no walker at the start
+            area_intra = area_intra * ("intra" in seeded)
+            area_myelin = area_myelin * ("myelin" in seeded)
+            area_extra = area_extra * ("extra" in seeded)
         total_area = area_extra + np.sum(area_intra) + np.sum(area_myelin)
         if not total_area > 0.0:
-            raise ValueError(f"seed_pools={self.seed_pools!r} names no pool of positive area in this cell")
+            raise ValueError(f"the seeded pools {seeded!r} (seed_pools={self.seed_pools!r}) hold no pool of positive "
+                             f"area in this cell")
 
         n_intra  = np.array([int(round(n_walkers * a / total_area))
                              for a in area_intra], dtype=int)
