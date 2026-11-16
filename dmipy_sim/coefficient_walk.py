@@ -43,7 +43,7 @@ class CoefficientWalk:
 
     Attributes
     ----------
-    position_coeffs : (n_walkers, n_windows, K + 2, 3) float32
+    position_coeffs : (n_walkers, n_windows, K + 2, 3) in the accumulation's dtype (``block["precision"]``)
         Per window and axis ``[x(t0), x(t0 + T_w) - x(t0), beta_1..beta_K]``: the window's exact start and
         displacement and its bands on ``s_k = sqrt(2 / T_w) sin(pi k (t - t0) / T_w)``.
     T : float
@@ -55,7 +55,8 @@ class CoefficientWalk:
     block : dict
         ``{h, m, n_blocks, rule, precision, k0_residual_m, quadratic_variation, field_read?, field_band?, events?,
         ...}``: the block length (s), the order, the block count over the walk, whether the block was derived from
-        the band or given, how the accumulation was summed, the float32 chain's measured residual on the ``k = 0``
+        the band or given, the accumulators' dtype (float32, or float64 for the reference accumulation of the same
+        walk), how the accumulation was summed, the accumulation chain's measured residual on the ``k = 0``
         mode against the exact displacement (the largest over the walkers and windows, metres), the channels' mean
         quadratic variation, the field read's rule and the field band's pilot ladder, the events buffers' pilot.
     n_windows : int
@@ -64,9 +65,9 @@ class CoefficientWalk:
         The physics step (s).
     sub_steps : int
         Steps per block.
-    boundary_endpoint : (n_walkers, n_windows) float32 or None
+    boundary_endpoint : (n_walkers, n_windows) in the accumulation's dtype, or None
         Each window's total boundary local time at ``rho2 / D = 1`` (its start is 0), exact.
-    boundary_bands : (n_walkers, n_windows, K) float32 or None
+    boundary_bands : (n_walkers, n_windows, K) in the accumulation's dtype, or None
         Its bridge bands.
     compartment : (n_walkers,) int8 or None
         The pool label every walker starts in (the ``.rpk`` convention: 0 extra, positive enclosed pools); None when
@@ -89,10 +90,10 @@ class CoefficientWalk:
         Their positions ``(n_raw, n_blocks + 1, 3)``, contact per block, pool label and bound state at every block
         end (int8), and the field's reads at the walk's read instants ``(n_raw, n_blocks * reads_per_block + 1,
         n_ch)``, read ``i`` at ``i * field_read_interval`` (read 0 the start's), kept with ``raw_subset=``.
-    qv_positions : (n_walkers, n_windows, 3) float32
+    qv_positions : (n_walkers, n_windows, 3) in the accumulation's dtype
         Each walker's quadratic variation per window and axis, ``sum (dx)^2`` over every step (``2 D T_w`` per axis
         for a free walk): what the block table's error is proportional to.
-    qv_boundary : (n_walkers, n_windows) float32 or None
+    qv_boundary : (n_walkers, n_windows) in the accumulation's dtype, or None
         The cumulative local time's quadratic variation per window, ``sum (dlog)^2`` (each hit's contact squared).
     """
     position_coeffs: np.ndarray
@@ -379,7 +380,7 @@ WORK_COUNTS = ("walker_steps", "n_hits", "n_crossings", "exhausted_steps", "labe
 
 def ensemble_block_stats(position_coeffs, qv_positions, qv_boundary, k0_residual_m, diffusivity, T):
     """The entries of a block record that are statistics of the walk's walkers, from the arrays the walk stores: the
-    float32 chain's largest residual on the ``k = 0`` mode (``k0_residual_m``, given: the walk keeps no residual per
+    accumulation chain's largest residual on the ``k = 0`` mode (``k0_residual_m``, given: the walk keeps no residual per
     walker), that residual over the displacements' rms, and each channel's quadratic variation summed over the
     windows and averaged over the walkers. A function of the stored arrays in walker order, so a walk and the
     pieces of it joined in order (:func:`join_walks`) state the same record."""

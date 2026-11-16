@@ -5,6 +5,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The walk's accumulation dtype is an argument** (`accumulation_dtype`, `"float32"` by default, or `"float64"`).
+  `_walk_geometry`, `walk`, `simulate` (and `walk_cost`, `certify_bounce_budget`, `simulate_mt_trajectories` through
+  their keywords) take it: the moments of each block, the ring projection against `block_table`, the level-2
+  accumulator and every channel's quadratic variation are held in it, and `position_coeffs`, `qv_positions`, the
+  contact and the field modes are returned in it. The walk itself (draws, steps, positions, walls) stays float32, so a
+  float64 accumulation walks the same walkers as the float32 one and the difference of the two calls is the float32
+  accumulation's rounding; `tools/accumulation_dtype.py` measures it. The float32 default returns the same bytes as
+  before. `"float64"` needs JAX's x64 mode on in the calling process and is refused by name when it is off, on a
+  backend other than the JAX kernels, on the adaptive walk and on the fused oracle; any other value is refused by name.
+  `block["precision"]` is the dtype of the accumulators the walk returned; the module constant
+  `accumulate.PRECISION`, which the arithmetic never read, is removed (`accumulate.ACCUMULATION` became
+  `accumulate.accumulation_record(dtype)`). `block_table(xp=jax.numpy)` takes the table's `dtype`, required.
 - **The MT walk records a pool label, and a backend may walk MT binding** (dmrai-lab/dmrai#72). The `"mt"` kind of
   `_walk_geometry` (`simulate_mt_trajectories`) carries, beside the position a walker is seen at, the compartment of
   the position it resumes from and the `_pool2` label of the seen position: the near face's pool while it is bound on

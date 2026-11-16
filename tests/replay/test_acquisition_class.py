@@ -28,7 +28,7 @@ def test_the_envelope_states_the_acquisitions_own_limits():
 def test_simulates_pack_replays_its_acquisition_and_refuses_a_stronger_one():
     seq = _seq(0.04)
     pack, tissue, pose = _walk_pack(200, 2e-9, seq, d.Sphere(radius=4e-6), seed=1, T2=None, T1=None, r0=None,
-                                    require_gpu=False, walker_batch_size=None)
+                                    require_gpu=False, walker_batch_size=None, accumulation_dtype="float32")
     acq = pack.replay_envelope["acquisition"]
     assert acq["bound"] == "envelope" and acq["name"] == "acquisition"
     assert acq["G_max"] == pytest.approx(np.abs(np.asarray(seq.played_gradient)).max())

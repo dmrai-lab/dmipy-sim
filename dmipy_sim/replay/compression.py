@@ -59,7 +59,7 @@ from dmipy_analytic.constants import GAMMA
 _F16, _F32 = 2, 4
 
 
-def block_table(T, n_blocks, K, m, *, blocks=None, xp=np):
+def block_table(T, n_blocks, K, m, *, blocks=None, xp=np, dtype=None):
     """The basis table of an accumulated walk, ``(n, K + 1, m + 1)``: for each block ``b`` of ``blocks`` (default every
     one of the ``n_blocks`` blocks of length ``h = T / n_blocks`` the window ``T`` is cut into) and each mode
     ``k = 0..K``, the Taylor coefficients of ``cos(pi k t / T)`` about the block's centre ``t_b = (b + 1/2) h`` in
@@ -73,16 +73,22 @@ def block_table(T, n_blocks, K, m, *, blocks=None, xp=np):
     :func:`cosine_band_scale` turns the projections into the bridge's bands. The table is the same for every
     walker, it depends on ``T`` only through the block count, and the phase ``omega_k t_b = pi r / (2 n_blocks)``
     is reduced exactly in integers, ``r = k (2 b + 1) mod 4 n_blocks``, so a float32 table is as accurate at the
-    last block as at the first. ``xp`` is ``numpy`` (float64) or ``jax.numpy`` (float32, ``blocks`` traced): the
-    one definition the JAX kernels evaluate in the walk and every other reader evaluates on the host."""
+    last block as at the first. ``xp`` is ``numpy`` (float64; ``dtype`` None) or ``jax.numpy`` (``blocks`` traced,
+    ``dtype`` the walk's accumulation dtype, float32 or float64, required): the one definition the JAX kernels
+    evaluate in the walk and every other reader evaluates on the host."""
     if not float(T) > 0.0 or int(n_blocks) < 1 or int(K) < 0 or int(m) < 0:
         raise ValueError(f"block_table needs T > 0, n_blocks >= 1, K >= 0 and m >= 0; got {T!r}, {n_blocks!r}, {K!r}, {m!r}")
     N, K, m = int(n_blocks), int(K), int(m)
     host = xp is np
+    if host and dtype is not None:
+        raise ValueError(f"the host table is float64; dtype is the device table's (xp=jax.numpy), got {dtype!r}")
+    if not host and (dtype is None or np.dtype(dtype).name not in ("float32", "float64")):
+        raise ValueError(f"the device table (xp=jax.numpy) is evaluated in the walk's accumulation dtype, float32 or "
+                         f"float64; got dtype={dtype!r}")
     if not host and K * (2 * N) >= 2 ** 31:
         raise ValueError(f"block_table's integer phase K (2 n_blocks) = {K * 2 * N} exceeds int32; fewer blocks or bands")
     it = np.int64 if host else xp.int32
-    ft = np.float64 if host else xp.float32
+    ft = np.float64 if host else getattr(xp, np.dtype(dtype).name)
     b = xp.arange(N, dtype=it) if blocks is None else xp.asarray(blocks).astype(it)
     k = xp.arange(K + 1, dtype=it)
     r = (k[None, :] * (2 * b[:, None] + 1)) % (4 * N)
