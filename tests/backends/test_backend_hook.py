@@ -417,7 +417,7 @@ def test_the_adaptive_producer_hands_a_backend_the_field_sampling_and_the_pilots
     wa = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=_Still(projection_precision="float64"), raw_subset=16, **kw)
     assert wa.block["projection_precision"] == "float32"
     wm = simulate_trajectories_adaptive(16, D, g, 5e-4, 2.5e-4, backend=_Still(projection_precision="float64"), raw_subset=4, **kw)
-    assert wm.block["projection_precision"] in ("float32", "mixed")
+    assert wm.block["projection_precision"] == "mixed"                  # four walkers the JAX kernels walked, twelve the backend
 
 
 def test_the_producer_reads_nothing_from_a_backend_but_the_interface():
