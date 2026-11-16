@@ -819,8 +819,10 @@ def _geometry_from_spec(spec):
         comps = Compartments(**{role: CPool(D=by_id[i].D, water_fraction=by_id[i].water_fraction)
                                 for role, i in (("extra", extra_id), ("intra", intra_id), ("myelin", myelin_id))})
         role_of = {intra_id: "intra", myelin_id: "myelin", extra_id: "extra"}
-        # the pools the spec seeds, by role; every pool of the cell is the default seeding (None)
-        seed_pools = (None if sorted(spec.seeding.pools) == sorted(role_of)
+        # the pools the spec seeds, by role; the default seeding's spelling (the pools that hold water) is the
+        # cell's default seeding (None, every pool by area), as the spec of a default cell writes it
+        default = [p.id for p in spec.pools if p.water_fraction > 0] or [p.id for p in spec.pools]
+        seed_pools = (None if sorted(spec.seeding.pools) == sorted(default)
                       else tuple(role_of[i] for i in spec.seeding.pools))
         surfaces = [w.surface for w in (axolemma, sheath, membrane) if w is not None]
         L = float(dom.box_max[0] - dom.box_min[0])

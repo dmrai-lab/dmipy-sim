@@ -121,7 +121,9 @@ def test_the_spec_of_a_mixed_cell_walks_back_to_the_same_cell():
     assert back.seed_pools == g.seed_pools
     dry = _cell([0.7, 1.0, 0.7, 1.0], compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0, water_fraction=0.0),
                                                                  extra=Pool(D=D)), seed_pools=("extra", "intra"))
-    assert geometry_from_spec(dry.spec).seed_pools == ("extra", "intra")      # a dry sheath stays unseeded
+    # the spec cannot tell these starts from a default cell's with a dry sheath (it writes the pools that hold water):
+    # it comes back as the default seeding, as a default cell's spec always has
+    assert dry.spec.seeding.pools == [0, 1] and geometry_from_spec(dry.spec).seed_pools is None
     assert back.spec.to_dict() == spec.to_dict()
     a = _walk_geometry(64, D, g, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)
     b = _walk_geometry(64, D, back, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False)

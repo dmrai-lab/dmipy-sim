@@ -120,7 +120,7 @@ def test_the_myelinated_cylinder_opened_lets_its_walkers_out():
     assert left.mean() > 0.5, f"only {left.mean():.3f} of the myelinated cylinder's walkers left its lumen"
 
 
-@pytest.mark.xfail(strict=True, reason="the power of the exchange check: a sealed plain wall must fail it")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="the power of the exchange check: a sealed plain wall must fail it")
 def test_a_sealed_plain_wall_fails_the_exchange_check():
     w, comp, plain = _populations(0, seed=2, kappa_plain=0.0)
     ip = _inside(w, CENTRES[1], True)[plain]
