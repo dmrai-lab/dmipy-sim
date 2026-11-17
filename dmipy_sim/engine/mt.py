@@ -56,7 +56,8 @@ from typing import NamedTuple
 import numpy as np
 
 __all__ = ["stick_probability", "refuse_unsupported_permeable_mt", "surface_to_volume", "resolve_equilibrate_mode", "equilibrate_burnin_plateau",
-           "equilibrium_bound_fraction", "burnin_criterion", "BurnInCriterion"]
+           "equilibrium_bound_fraction", "equilibrium_domains", "EquilibriumDomains", "burnin_criterion",
+           "BurnInCriterion"]
 
 
 # ── per-hit binding probability (the binding clock on the local time) ─────────────
@@ -147,7 +148,9 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, 
 
     Exactly ``'burnin'`` (the default when MT is on: safe, geometry-agnostic), ``'fast'`` or ``'off'``; every other
     value (``'auto'``, ``True``, ``False``, ``None``) is a ValueError naming the three. 'fast' seeds the equilibrium
-    occupancy mid-air, so it needs a known S/V and is a ValueError without one. A driver with a readout passes
+    occupancy mid-air, so it needs a known S/V (:func:`surface_to_volume`) or, for a
+    :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell, its water domains (:func:`equilibrium_domains`), and
+    is a ValueError without them, naming the reason the cell's domains are not derived. A driver with a readout passes
     ``G``, ``T2`` and ``T2_bound``: mid-air bound positions are position-invariant only when no gradient is on
     (``G == 0``) or the bound pool is MR-dark (``T2_bound << T2``), and 'fast' is a ValueError otherwise. A driver
     that only records positions (the MT trajectory producer) has no readout and passes none.
@@ -158,8 +161,15 @@ def resolve_equilibrate_mode(equilibrate_binding, geometry, *, G=None, T2=None, 
                          f"'burnin' is the default, 'off' is spelled 'off' (not False or None), and 'auto' is 'burnin'")
     if eb == "fast":
         if surface_to_volume(geometry) is None:
-            raise ValueError("equilibrate_binding='fast' needs a known surface-to-volume (an analytic Sphere or "
-                             "Cylinder); this geometry has none: use 'burnin'")
+            from ..geometry import PackedMyelinatedCylinders
+            if isinstance(geometry, PackedMyelinatedCylinders):
+                reason = _domains_refusal(geometry)
+                if reason is not None:
+                    raise ValueError(f"equilibrate_binding='fast' seeds each walker with its water domain's equilibrium "
+                                     f"bound fraction, which this cell does not have: {reason}: use 'burnin'")
+            else:
+                raise ValueError("equilibrate_binding='fast' needs a known surface-to-volume (an analytic Sphere or "
+                                 "Cylinder); this geometry has none: use 'burnin'")
         if G is not None:
             no_gradient = not bool(np.any(np.asarray(G)))
             dark = (T2 is None) or (T2_bound is not None and float(T2_bound) <= 0.02 * float(T2))
@@ -196,6 +206,89 @@ def _first_permeabilities(geometry, n_objects):
     return np.full(n_objects, 0.0 if k is None else float(k))
 
 
+_DOMAINS_REFUSAL = ("only a sheath that is unseeded and sealed from every seeded pool (the reach of "
+                    "placement_is_stationary) has a closed form")
+
+
+def _domains_refusal(geometry):
+    """Why a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell has no water domains of its own here, or None."""
+    if not geometry.sheath_in_reach:
+        return None
+    if "myelin" in geometry.seeded_pools:
+        return f"the myelin pool is seeded: {_DOMAINS_REFUSAL}"
+    return f"the myelin pool is reachable from a seeded pool through an open face: {_DOMAINS_REFUSAL}"
+
+
+class EquilibriumDomains(NamedTuple):
+    """The equilibrium bound fraction of a cell, per water domain (:func:`equilibrium_domains`): ``domains`` the
+    records, or None with ``reason`` stating why the cell has none."""
+    domains: tuple | None
+    reason: str | None
+
+    @property
+    def p_eq(self):
+        """The seeded ensemble's equilibrium bound fraction, ``sum_d weight_d p_eq_d``; None with no domains."""
+        if self.domains is None:
+            return None
+        return float(sum(d["weight"] * d["p_eq"] for d in self.domains))
+
+
+def equilibrium_domains(geometry, kappa_MT, dwell_time):
+    """The equilibrium bound fraction of a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell, per water domain.
+
+    The two-pool model of the bound pool (Henkelman et al. 1993): a free spin binds at a wall at the rate
+    ``k_f = kappa_MT S / V`` per unit free time and a bound one leaves at ``k_r = 1 / dwell_time``, so a closed domain
+    of surface ``S`` and volume ``V`` holds the stationary bound fraction ``P = x / (1 + x)``,
+    ``x = kappa_MT dwell_time S / V`` (``dmipy_analytic.relaxation.bound_fraction``). The walk binds at every
+    encounter with a wall, from whichever side the walker comes and whether it crosses or is reflected, so ``S``
+    counts every face a walker of the domain meets, once per face and side. The domains are the cell's
+    (:meth:`~dmipy_sim.geometry.PackedMyelinatedCylinders.water_domains`): the lumen of each myelinated cylinder,
+    whose sealed axolemma is its own wall (``S / V = 2 / a_k``); the lumen of each sealed plain cylinder, its own
+    wall (``2 / b_k``); the exterior, the extra pool and the lumina of the open plain cylinders, whose ``S`` holds
+    the outer face of each myelinated and each sealed plain cylinder once and both faces of each open plain wall.
+
+    A walker starts in the domain of its start position, and the placement is uniform by area over the seeded
+    pools, so domain ``d`` holds the share ``weight_d`` = its seeded area over the seeded area of the cell; the seeded
+    ensemble's equilibrium is ``sum_d weight_d P_d`` (:attr:`EquilibriumDomains.p_eq`).
+
+    Parameters
+    ----------
+    geometry : PackedMyelinatedCylinders
+    kappa_MT : float          MT surface reactivity (m/s).
+    dwell_time : float        mean dwell of a bound spin (s).
+
+    Returns
+    -------
+    EquilibriumDomains
+        ``domains``: one record per domain holding seeded water, lumina first in the cylinders' order and the
+        exterior last, each ``{pools, cylinders, volume (m^2), surface (m), surface_to_volume (1/m), weight, p_eq}``
+        (per unit length; ``pools`` the pools whose water it holds, ``cylinders`` the cylinders whose lumen it
+        holds). Or ``domains`` None and ``reason`` the reason, when a sheath is seeded or reachable from a seeded
+        pool through an open face (:attr:`~dmipy_sim.geometry.PackedMyelinatedCylinders.reachable_pools`, the
+        predicate of ``placement_is_stationary``): the sheath's water then joins a domain this form does not count.
+
+    Raises
+    ------
+    TypeError
+        For any other geometry (:func:`equilibrium_bound_fraction` states theirs).
+    """
+    from ..geometry import PackedMyelinatedCylinders
+    if not isinstance(geometry, PackedMyelinatedCylinders):
+        raise TypeError(f"equilibrium_domains takes a PackedMyelinatedCylinders cell, got {type(geometry).__name__}; "
+                        f"equilibrium_bound_fraction states the equilibrium of the other geometries")
+    reason = _domains_refusal(geometry)
+    if reason is not None:
+        return EquilibriumDomains(None, reason)
+    kappa, tau = float(kappa_MT), float(dwell_time)
+    p = lambda sv: (kappa * tau * sv) / (1.0 + kappa * tau * sv)
+    cells = geometry.water_domains()
+    total = sum(c.seeded_area for c in cells)
+    domains = tuple(dict(pools=list(c.pools), cylinders=list(c.cylinders), volume=c.volume, surface=c.surface,
+                         surface_to_volume=c.surface_to_volume, weight=c.seeded_area / total,
+                         p_eq=p(c.surface_to_volume)) for c in cells)
+    return EquilibriumDomains(domains, None)
+
+
 def equilibrium_bound_fraction(geometry, kappa_MT, dwell_time):
     """The bound fraction of the walkers a geometry seeds once the walk has equilibrated, or ``None`` where the
     geometry has no closed form here.
@@ -216,9 +309,16 @@ def equilibrium_bound_fraction(geometry, kappa_MT, dwell_time):
       interstitial space with its one face of every object) weighted by the walkers it is seeded with, its volume
       fraction.
 
-    Mixed sealed and permeable walls, a pool seeded alone in a permeable pack, a Mesh and the rest: ``None``.
+    * :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` whose sheaths are unseeded and sealed from every seeded
+      pool: the sum over its water domains of each domain's equilibrium weighted by its seeded share
+      (:func:`equilibrium_domains`), ``None`` where the cell has no domains.
+
+    Mixed sealed and permeable walls of a plain packing, a pool seeded alone in a permeable pack, a Mesh and the rest:
+    ``None``.
     """
-    from ..geometry import PackedCylinders, PackedSpheres, PermeableSlab1D
+    from ..geometry import PackedCylinders, PackedMyelinatedCylinders, PackedSpheres, PermeableSlab1D
+    if isinstance(geometry, PackedMyelinatedCylinders):
+        return equilibrium_domains(geometry, kappa_MT, dwell_time).p_eq
     from ..geometry.analytic import Cylinder, Sphere
     kappa, tau = float(kappa_MT), float(dwell_time)
     p = lambda sv: (kappa * tau * sv) / (1.0 + kappa * tau * sv)
@@ -253,7 +353,10 @@ class BurnInCriterion(NamedTuple):
     ``kind`` is ``"equilibrium"`` (``p_eq`` known: stop when the ensemble's bound fraction is within ``tolerance
     * p_eq`` plus two standard errors of it, after at least ``min_chunks`` chunks of the relaxation time) or
     ``"plateau"`` (stop when the two halves of the last ``window`` chunks differ by no more than ``tolerance`` of the
-    occupancy plus two standard errors of the difference). ``chunk_s`` is a chunk's duration, ``max_chunks`` the cap."""
+    occupancy plus two standard errors of the difference). ``chunk_s`` is a chunk's duration, ``max_chunks`` the cap.
+    For a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell, ``equilibrium_domains`` holds the records of
+    :func:`equilibrium_domains` (``p_eq`` their seeded-weight sum) or ``p_eq_reason`` the reason it has none; both are
+    None for every other geometry and the record then carries neither."""
     kind: str
     p_eq: float | None
     tolerance: float
@@ -261,25 +364,34 @@ class BurnInCriterion(NamedTuple):
     min_chunks: int
     max_chunks: int
     chunk_s: float
+    equilibrium_domains: tuple | None = None
+    p_eq_reason: str | None = None
 
 
 def burnin_criterion(geometry, kappa_MT, dwell_time, diffusivity, chunk_s):
     """The :class:`BurnInCriterion` of a walk: the equilibrium of :func:`equilibrium_bound_fraction` where it exists,
     else the plateau. The relaxation time is the larger of the dwell (the exchange time is at most it) and the pore's
     slowest diffusive time ``1 / (D pore_rate)`` (``LengthScales.pore_rate``, a sphere of the smallest feature when the
-    geometry declares none)."""
+    geometry declares none). A :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell's criterion carries its
+    water domains (:func:`equilibrium_domains`) or the reason it has none."""
+    from ..geometry import PackedMyelinatedCylinders
     from .physics import length_scales_of
-    p_eq = equilibrium_bound_fraction(geometry, kappa_MT, dwell_time)
+    domains = reason = None
+    if isinstance(geometry, PackedMyelinatedCylinders):
+        table = equilibrium_domains(geometry, kappa_MT, dwell_time)
+        domains, reason, p_eq = table.domains, table.reason, table.p_eq
+    else:
+        p_eq = equilibrium_bound_fraction(geometry, kappa_MT, dwell_time)
     if p_eq is None:
         return BurnInCriterion("plateau", None, BURNIN_TOLERANCE, BURNIN_WINDOW, BURNIN_WINDOW,
-                               BURNIN_MIN_CHUNKS, float(chunk_s))
+                               BURNIN_MIN_CHUNKS, float(chunk_s), None, reason)
     ls = length_scales_of(geometry)
     rate = ls.pore_rate if ls.pore_rate is not None else (
         (2.0816 / ls.min_feature) ** 2 if ls.min_feature else 0.0)
     t_relax = max(float(dwell_time), 1.0 / (float(diffusivity) * rate) if rate > 0.0 else 0.0)
     n_min = max(1, int(np.ceil(BURNIN_RELAXATIONS * t_relax / float(chunk_s))))
     return BurnInCriterion("equilibrium", float(p_eq), BURNIN_TOLERANCE, 1, n_min,
-                           max(BURNIN_MIN_CHUNKS, n_min + 20), float(chunk_s))
+                           max(BURNIN_MIN_CHUNKS, n_min + 20), float(chunk_s), domains, None)
 
 
 def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, criterion):
@@ -288,7 +400,7 @@ def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, criterion):
     ``chunk_fn(r, keys, brem)`` advances the whole ensemble one chunk (~one dwell) and returns ``(r, keys, brem,
     occupancy)``, ``occupancy`` the walkers' chunk-mean bound fractions. The preamble is discarded and the equilibrated
     ``(r, keys, brem, record)`` returned; ``record`` is the criterion, the chunks run, the occupancy and whether it
-    held (``converged``)."""
+    held (``converged``), and the criterion's ``equilibrium_domains`` or ``p_eq_reason`` where it states one."""
     r, k, brem = r0, keys, brem0
     history, converged, occ, n_run = [], False, float("nan"), 0
     for n_run in range(1, int(criterion.max_chunks) + 1):
@@ -314,6 +426,10 @@ def equilibrate_burnin_plateau(chunk_fn, r0, keys, brem0, criterion):
     record = dict(kind=criterion.kind, p_eq=criterion.p_eq, tolerance=criterion.tolerance, window=criterion.window,
                   min_chunks=criterion.min_chunks, max_chunks=criterion.max_chunks, chunk_s=criterion.chunk_s,
                   chunks_run=n_run, occupancy=occ, converged=converged)
+    if criterion.equilibrium_domains is not None:
+        record["equilibrium_domains"] = [dict(d) for d in criterion.equilibrium_domains]
+    if criterion.p_eq_reason is not None:
+        record["p_eq_reason"] = criterion.p_eq_reason
     return r, k, brem, record
 
 
