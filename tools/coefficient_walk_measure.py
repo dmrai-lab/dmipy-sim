@@ -413,11 +413,13 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     * C3 -- the whole ensemble under a gradient echo and a spin echo at ``B0`` with the field at ``theta_deg`` to the
       axis, ``chi_aniso = dchi_a``: the scalar route against the pack's vector-Bloch route beside the pack's own
       ``_susc_path_bloch_fidelity`` (``err_susc_bloch``); and, since the forward vector-Bloch engine does not step
-      the myelinated substrates, the cross-engine oracle on the SAME hollow-cylinder field: the one-axon periodic
-      cell's extra-axonal pool walked with the exactly periodic closed form, against ``_simulate_bloch`` with
-      ``MyelinSusceptibility`` (the same closed form summed over six images per side, which differs from the periodic
-      field by the window's truncation, up to 4.4e-4 of the field) on that pool (and, with ``field="raster"``, the
-      cell's periodic grid against the forward engine on that grid).
+      the myelinated substrates, a cross-engine comparison on the one-axon periodic cell's extra-axonal pool. With
+      ``field="closed"`` the walk reads the cell's exactly periodic lattice sum and ``_simulate_bloch`` reads
+      ``MyelinSusceptibility``, the same closed form summed over a window of six images per side: two fields that
+      differ by the window's truncation (8.6e-5 of the basis channels' 0.80 maximum on a 32 x 32 lattice of the
+      default cell, ``r_in`` 2 um, ``r_out`` 3 um, ``L`` 18 um), so ``z_grid`` holds that difference beside the
+      accumulation and the replay. With ``field="raster"`` the walk and the forward engine read one field, the
+      cell's periodic grid.
 
     Every row carries both signals, their difference and the replay's standard error."""
     import dmipy_sim as d
@@ -492,8 +494,10 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     # myelinated substrates (their kernel is physics.make_myelin_step_fn), so the myelinated cylinder's field tier is
     # held to the pack's own Bloch-route certificate on its raw subset (err_susc_bloch above) and to the scalar route
     # against the pack's vector-Bloch route; the cross-engine oracle is the SAME hollow-cylinder field on the one-axon
-    # periodic cell's extra-axonal pool (PackedCylinders, which the forward engine steps), walked with the exact periodic
-    # field grid and replayed against _simulate_bloch with MyelinSusceptibility (its images: n_images=2).
+    # periodic cell's extra-axonal pool (PackedCylinders, which the forward engine steps): walked with the field
+    # `field` names and replayed, against _simulate_bloch with MyelinSusceptibility summed over six images per side
+    # (field="closed": the walk's lattice sum and the provider's truncated sum differ by the window's truncation) or
+    # with the walk's own grid (field="raster").
     th = np.deg2rad(float(theta_deg))
     d_sub = (np.sin(th), 0.0, np.cos(th))
     R = _pose_with_field_along(d_sub)
@@ -526,12 +530,13 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
         pk2 = build_replay_pack(w2, id="admission/cell-extra", license="x", citation="x", **stated(env, w2.spec), fidelity="measured")
     prov = MyelinSusceptibility(centers=[[0.0, 0.0]], inner_radii=[r_in], outer_radii=[r_out], L=L, delta_chi_a=dchi_a, B0=B0,
                                 theta=th, alpha=0.0, periodic=True, n_images=6)
-    # the forward engine on the SAME grid the walk read (the 13 channels contracted at this (B0, chi, H)), so the two
-    # engines read one field and the comparison is the accumulation and the replay alone; the provider's closed form
-    # over six images per side beside it is the independent physics (the window's truncation apart)
+    # field="raster": the forward engine on the SAME grid the walk read (the 13 channels contracted at this (B0, chi,
+    # H)), so the two engines read one field and the comparison is the accumulation and the replay alone, with the
+    # provider's closed form over six images per side beside it; field="closed": the forward engine reads the provider
+    # (six images per side) and the walk the lattice sum
     from dmipy_replay.replay.field import contract
     from dmipy_sim.fields.susceptibility import GridSusceptibility
-    prov_grid = prov                                                     # the closed form: the walk read the provider's field
+    prov_grid = prov                                                     # field="closed": the provider's truncated sum
     if field == "raster":
         dB = contract(np.moveaxis(fg2.grids(), 0, -1), d_sub, B0=B0, chi_iso=0.0, chi_aniso=dchi_a)
         prov_grid = GridSusceptibility(dB=dB, origin=np.asarray(fg2.origin, float), voxel_size=np.asarray(fg2.basis["voxel_size"], float), periodic=True)

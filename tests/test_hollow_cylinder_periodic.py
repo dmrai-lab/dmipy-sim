@@ -97,16 +97,30 @@ def _image_sum(f, P, n):
     return out
 
 
-def _g_series(x, terms=12):
-    """``csc^2 x - 1 / x^2`` by its Taylor series to ``terms`` terms (exact rationals from the Bernoulli numbers)."""
+def _series_coefficients(terms):
+    """The Taylor coefficients of ``csc^2 x - 1 / x^2`` in powers of ``x^2``, exact rationals from the Bernoulli
+    numbers: ``c_i = (2n - 1) (-1)^(n+1) 2^(2n) B_(2n) / (2n)!``, ``n = i + 1``."""
     from fractions import Fraction
     B = [Fraction(1)]
     for m in range(1, 2 * terms + 3):
         B.append(-sum(math.comb(m + 1, k) * B[k] for k in range(m)) / Fraction(m + 1))
-    c = [float(Fraction((2 * n - 1) * (-1) ** (n + 1) * 2 ** (2 * n)) * B[2 * n] / math.factorial(2 * n))
-         for n in range(1, terms + 1)]
+    return [Fraction((2 * n - 1) * (-1) ** (n + 1) * 2 ** (2 * n)) * B[2 * n] / math.factorial(2 * n)
+            for n in range(1, terms + 1)]
+
+
+def _g_series(x, terms=12):
+    """``csc^2 x - 1 / x^2`` by its Taylor series to ``terms`` terms."""
     s = x * x
-    return sum(cn * s ** i for i, cn in enumerate(c))
+    return sum(float(cn) * s ** i for i, cn in enumerate(_series_coefficients(terms)))
+
+
+def _series_tail(absx):
+    """The series' omitted terms (``i >= 6``) at ``|x|``, from above: the first, ``c_6 |x|^12``, times ``1 / (1 - rho
+    |x|^2)`` with ``rho`` the largest ratio ``c_(i+1) / c_i`` for ``i >= 6`` (the ratios fall towards ``1 / pi^2``)."""
+    c = _series_coefficients(16)
+    assert [float(v) for v in c[:6]] == list(SERIES)
+    rho = max(float(c[i + 1] / c[i]) for i in range(6, 15))
+    return float(c[6]) * absx ** 12 / (1.0 - rho * absx ** 2)
 
 
 def _W_fourier(z, Lc):
@@ -202,6 +216,27 @@ def _gradient_bound(f):
     return float(np.sum(2.0 / f.inner_radii) + np.sum(0.5 * w) * _Wp_bound(2 ** -0.5) / f.L ** 3)
 
 
+def _gradient_at(f, P):
+    """``(n, N)``: per point and source, a bound on the gradient (1/m) of that source's term in the point's region
+    (a perturbation of the point far below the margin stays in it). The closed form per channel is ``c(rho)`` times
+    ``S`` (or a constant), and ``|grad(c cos 2 phi)| <= |c'| + 2 |c| / rho``: none in the lumen (constants), ``2 a^2 /
+    rho^3`` on the isotropic channels and ``1 / (2 rho) + (2 a^2 / rho^3 + 2 (1 + a^2 / rho^2) / rho) / 12`` on the
+    anisotropic ones in the sheath, ``2 (b^2 - a^2) / rho^3`` outside; plus the tail's ``|alpha_P| |W'|``
+    (:func:`_Wp_bound` at ``|z|``)."""
+    P = np.asarray(P, np.float64)
+    out = np.zeros((len(P), len(f.centers)))
+    for k in range(len(f.centers)):
+        a, b = f.inner_radii[k], f.outer_radii[k]
+        d = ((P - f.centers[k] + 0.5 * f.L) % f.L) - 0.5 * f.L
+        rho = np.hypot(d[:, 0], d[:, 1])
+        sheath = (rho >= a) & (rho < b)
+        r = np.maximum(rho, a)
+        g_sh = np.maximum(2 * a * a / r ** 3, 1 / (2 * r) + (2 * a * a / r ** 3 + 2 * (1 + a * a / r ** 2) / r) / 12)
+        g = np.where(rho < a, 0.0, np.where(sheath, g_sh, 2 * (b * b - a * a) / np.maximum(rho, b) ** 3))
+        out[:, k] = g + 0.5 * (b * b - a * a) * np.vectorize(_Wp_bound)(rho / f.L) / f.L ** 3
+    return out
+
+
 def _A_W(x, u, rows=LATTICE_ROWS, switch=None, x_roundings=3):
     """The first-order rounding bound of :func:`lattice_regular_part` at ``x = pi z / L``, in units of ``u (pi /
     L)^2`` (the rounding model of the module docstring); ``x`` carries ``x_roundings`` relative roundings."""
@@ -251,8 +286,8 @@ def _B_mag(f, P):
 def _rounding_bound(f, P, u, *, M=None):
     """Per point, the first-order bound of a periodic read's rounding at ``P`` in a format of unit roundoff ``u``: the
     closed form (``20 u`` of its coefficients), each source's lattice term (``|alpha| (pi / L)^2 u A_W`` plus the
-    rounding of ``alpha``), the final sums, and the wrapped offset's four roundings of values below ``M + max|c| + L``
-    (``M = max |r|`` by default) through the gradient."""
+    rounding of ``alpha``), the final sums, and each source's wrapped offset's four roundings of values below ``M +
+    |c_k| + L`` (``M = max |r|`` by default) through that source's gradient at the point (:func:`_gradient_at`)."""
     P = np.asarray(P, np.float64)
     M = float(np.abs(P).max()) if M is None else M
     lat = np.zeros(len(P))
@@ -263,7 +298,7 @@ def _rounding_bound(f, P, u, *, M=None):
         W = np.abs(_W_fourier(d[:, 0] + 1j * d[:, 1], f.L))
         lat += alpha * ((np.pi / f.L) ** 2 * u * _A_W(x, u) + 2.0 * u * W)
     B = _B_mag(f, P)
-    wrap = 4.0 * u * (M + np.abs(f.centers).max() + f.L) * math.sqrt(2.0) * _gradient_bound(f)
+    wrap = 4.0 * u * math.sqrt(2.0) * np.sum((M + np.abs(f.centers).max(1)[None] + f.L) * _gradient_at(f, P), axis=1)
     return 20.0 * u * B + lat + 3.0 * u * (B + lat) + wrap
 
 
@@ -295,10 +330,9 @@ def test_the_image_sum_converges_to_the_periodic_field(which):
         errs.append(err.max())
     # the remainder falls as n^-2: each halving of 1 / n divides the largest error by close to four
     assert errs[0] > errs[1] > errs[2] > errs[3] > errs[4]
-    if which == "smoke_cell":
-        # the specification's limit on the smoke cell: the remainder's constant, max |F_n - F| n^2 <= 0.02 (the
-        # pointwise bound above is the proof that the limit is the periodic field; this holds its constant)
-        assert all(e * n * n <= 0.02 for e, n in zip(errs, (6, 12, 24, 48, 64))), [e * n * n for e, n in zip(errs, (6, 12, 24, 48, 64))]
+    # the specification's limit at both cells: the remainder's constant, max |F_n - F| n^2 <= 0.02 (the pointwise
+    # bound above is the proof that the limit is the periodic field; this holds its constant)
+    assert all(e * n * n <= 0.02 for e, n in zip(errs, (6, 12, 24, 48, 64))), [e * n * n for e, n in zip(errs, (6, 12, 24, 48, 64))]
 
 
 def test_the_float64_read_is_an_independent_coding_of_the_same_field():
@@ -336,7 +370,10 @@ def test_the_periodic_field_does_not_jump_at_the_cells_faces():
     bound = _gradient_bound(f) * 2 * eps * f.L + 2.0 * float(_rounding_bound(f, edge, U64).max())
     jump = _edge_jump(lambda P: _read(f, P, np.float64), f, eps)
     assert jump <= bound, (jump, bound)
-    assert _edge_jump(lambda P: _image_sum(f, P, 6), f, eps) > bound
+    # the specification's limit: (2 / a) 2 eps L with the smallest inner radius (2.5e-8 here)
+    limit = 2.0 / f.inner_radii.min() * 2 * eps * f.L
+    assert jump <= limit, (jump, limit)
+    assert _edge_jump(lambda P: _image_sum(f, P, 6), f, eps) > max(bound, limit)
 
 
 def test_the_periodic_field_is_periodic_under_lattice_shifts():
@@ -350,6 +387,10 @@ def test_the_periodic_field_is_periodic_under_lattice_shifts():
         err = np.abs(_read(f, Q, np.float64) - F)
         bound = _rounding_bound(f, P, U64) + _rounding_bound(f, Q, U64)
         assert np.all(err <= bound[:, None]), (s, float((err - bound[:, None]).max()))
+        # the specification's limit: two float64 spacings of the largest shifted coordinate through 2 / a, plus 8 eps
+        # of the field's maximum
+        limit = 2 * np.spacing(np.abs(Q).max()) * 2.0 / f.inner_radii.min() + 8 * U64 * 2 * np.abs(F).max()
+        assert err.max() <= limit, (s, float(err.max()), limit)
 
 
 def test_the_lattice_sum_is_periodic_and_its_rows_are_converged(x64):
@@ -378,20 +419,29 @@ def test_the_lattice_sum_is_periodic_and_its_rows_are_converged(x64):
 
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
 def test_the_series_and_the_difference_meet_at_the_switch(dtype, x64):
-    """At ``|x| =`` the switch, on 64 directions: the series and the difference agree within the series' first omitted
-    term (``<= u / 3`` by the switch's definition) plus both roundings."""
+    """At this module's switch ``|x| = SERIES_SWITCH`` (0.6 in float32, 0.12 in float64), on 64 directions, just
+    inside (the series) and just outside (the difference): each side against the independent float64 coding of DLMF
+    23.8.1 within its rounding bound (and, inside, the series' omitted terms, :func:`_series_tail`, below ``u / 3`` by
+    the switch's definition); and the two sides meet: ``|W_in - W_out|`` within both bounds plus the reference's own
+    change across the switch."""
     u = U32 if dtype == "float32" else U64
     sw = SERIES_SWITCH[dtype]
+    assert _series_tail(sw) <= u / 3.0
     ph = 2 * np.pi * (np.arange(64) + 0.5) / 64
     ct = jnp.complex64 if dtype == "float32" else jnp.complex128
     Lc = 1.0
-    for r in (sw * (1 - 4 * u), sw * (1 + 4 * u)):
+    k2 = (np.pi / Lc) ** 2
+    sides = []
+    for r, tail in ((sw * (1 - 4 * u), _series_tail(sw)), (sw * (1 + 4 * u), 0.0)):
         x = r * np.exp(1j * ph)
         z = x * Lc / np.pi
         got = np.asarray(lattice_regular_part(jnp.asarray(z, ct), Lc), np.complex128)
         ref = _W_fourier(z.astype(np.complex128), Lc)
-        bound = (np.pi / Lc) ** 2 * (u * _A_W(x, u) + u / 3.0 * 1.1) + 2 * U64 * (np.pi / Lc) ** 2 * _A_W(x, U64)
+        bound = k2 * (u * _A_W(x, u) + tail) + 2 * U64 * k2 * _A_W(x, U64)
         assert np.all(np.abs(got - ref) <= bound), (dtype, r, float((np.abs(got - ref) / bound).max()))
+        sides.append((got, ref, bound))
+    (g_in, r_in, b_in), (g_out, r_out, b_out) = sides
+    assert np.all(np.abs(g_in - g_out) <= b_in + b_out + np.abs(r_in - r_out))
 
 
 # ── 3. harmonic across the face ─────────────────────────────────────────────────────────────────────────────────────
@@ -418,7 +468,8 @@ def test_the_periodic_field_is_harmonic_across_the_cells_face(angle):
             return H[0] ** 2 * C[:, 1] + H[1] ** 2 * C[:, 2] + 2 * H[0] * H[1] * C[:, 3]
         return field
     assert harmonic_residual(value(lambda X: _read(f, X, np.float64)), pts, h=2e-8) <= HARMONIC_TOL
-    assert not harmonic_residual(value(lambda X: _image_sum(f, X, 6)), pts, h=2e-8) <= HARMONIC_TOL
+    control = harmonic_residual(value(lambda X: _image_sum(f, X, 6)), pts, h=2e-8)
+    assert np.isfinite(control) and control > HARMONIC_TOL, control
 
 
 # ── 4. the isolated limit ───────────────────────────────────────────────────────────────────────────────────────────
@@ -541,6 +592,11 @@ def test_the_cell_mean_is_the_docstrings_closed_form():
     mean = total / f.L ** 2
     bound = 2 * 256 * U64 * scale / f.L ** 2
     assert np.all(np.abs(mean - _docstring_mean(f)) <= bound), (mean, _docstring_mean(f), bound)
+    # the specification's limits: each piece to 1e-14 of the channel scale (the largest |mean| over the channels;
+    # int W in units of L^2 (pi / L)^2 / 3, the j = 0 row's value at the origin times the cell's area)
+    scale_ch = np.abs(_docstring_mean(f)).max()
+    assert np.all(np.abs(mean - _docstring_mean(f)) <= 1e-14 * scale_ch), np.abs(mean - _docstring_mean(f)) / scale_ch
+    assert abs(intW) <= 1e-14 * f.L ** 2 * (np.pi / f.L) ** 2 / 3.0, abs(intW) / (f.L ** 2 * (np.pi / f.L) ** 2 / 3.0)
     assert _docstring_mean(f)[1] > 0.0 and np.all(_docstring_mean(f)[[3, 4, 5, 9, 10, 11]] == 0.0)
 
 
@@ -703,33 +759,57 @@ def _assert_an_image_sum_record_is_refused_on_load(path, old_path):
 
 
 def test_a_walk_of_a_cell_reads_the_periodic_field(tmp_path):
-    """A walk of the cell with the field and its raw subset: the field modes are finite, the record states the lattice
-    sum and no image count (and a walk file of it loads), and every raw walker's read at every block end is the
-    float32 read of the same function at its recorded position, within a derived bound. The walk reads the field at
-    the walker's position in the cell (the kernel's ``r_incell``) and records the continuous position (``r_unwrapped``,
-    advanced by the minimum-image step), which it does not read: the two differ by a lattice vector and by the
-    rounding of the continuous position's sums, at most ``u (M + 3 L)`` per coordinate per step (the step's minimum
-    image ``r_new - r - L round(.)`` and its addition to a position below ``M``), through the gradient bound, plus both
-    reads' float32 rounding."""
+    """A walk of the cell with the field and its raw subset (its lumens seeded): the field modes are finite, the record
+    states the lattice sum and no image count (and a walk file of it loads; an image-sum record is refused), and the
+    raw reads at the block ends are the float32 read of the same function at the recorded positions, within a derived
+    bound that the truncated image sum's field violates.
+
+    The walk reads the field at the walker's position in the cell (the kernel's ``r_incell``) and records the
+    continuous position (``r_unwrapped``, advanced by the step's minimum image), which it does not read. A walker in
+    the lumen of the sheath at the cell's centre never meets a face of the cell, so the minimum image subtracts
+    nothing and per sub-step the two positions drift apart by at most the roundings of the step ``r_new - r`` (``u
+    2a``) and of its addition to a position within ``a`` (``u a``): ``3 u a sqrt 2`` per sub-step, through the
+    sources' gradients at the point (:func:`_gradient_at`), plus both reads' float32 rounding. The comparison is on
+    those walkers (21 of 96), at recorded positions farther than the drift from the lumen's wall: the bound is at
+    most 4.3e-6 at the start and 3.7e-5 at the last block end (measured 1.5e-8 at most), and the image sum of six
+    images per side differs from the periodic field by 4.3e-5 to 1.4e-4 at the same samples: beyond the bound at
+    every one."""
     from dmipy_sim.coefficient_walk import CoefficientWalk
-    cell = _smoke_cell()
+    D = 2e-9
+    g = np.array([0.7, 1.0, 0.7, 1.0])
+    cell = PackedMyelinatedCylinders(OUTER * g, g, CENTRES, L, N_max=4, seed_pools=("intra",),
+                                     compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D)))
     f = HollowCylinderField.of(cell)
-    w = _walk(cell, f)
+    w = _walk(cell, f, n=96, T_max=5e-4)
     assert np.all(np.isfinite(w.field_coeffs))
     meta = w.field_basis.meta
     assert meta["summation"] == "lattice" and "n_images" not in meta and meta["mean_subtracted"] is False
     w.save(tmp_path / "w.safetensors")
     assert CoefficientWalk.load(tmp_path / "w.safetensors").field_basis.meta == meta
     _assert_an_image_sum_record_is_refused_on_load(tmp_path / "w.safetensors", tmp_path / "old.safetensors")
-    F = _block_reads(w)
+    F = _block_reads(w).astype(np.float64)
     pos = w.raw_positions.astype(np.float64)
-    direct = f.channels(pos.reshape(-1, 3), np.float32).reshape(F.shape)
+    a0 = f.inner_radii[0]
+    assert np.all(f.centers[0] == 0.0)
+    rho = np.hypot(pos[..., 0], pos[..., 1])
+    centre = np.all(rho < a0, axis=1)                                   # the walkers of the central lumen
+    assert centre.sum() >= 16                                          # 21 with this seed
     steps = np.arange(pos.shape[1]) * round(w.block["h"] / w.dt_sim)
-    M = float(np.abs(pos).max())
-    drift = steps * U32 * (M + 3 * f.L) * math.sqrt(2.0) * _gradient_bound(f)
-    rnd = 2.0 * _rounding_bound(f, pos.reshape(-1, 3)[:, :2], U32, M=M).reshape(pos.shape[:2])
-    err = np.abs(F.astype(np.float64) - direct)
-    assert np.all(err <= (drift[None, :] + rnd)[..., None]), float((err - (drift[None, :] + rnd)[..., None]).max())
+    drift = steps * 3 * U32 * a0 * math.sqrt(2.0)                          # (n_blocks + 1,) metres
+    P = pos[centre]
+    keep = rho[centre] < a0 - drift[None, :]                               # farther than the drift from the wall
+    flat = P.reshape(-1, 3)
+    G = _gradient_at(f, flat[:, :2]).sum(1).reshape(P.shape[:2])
+    rnd = 2.0 * _rounding_bound(f, flat[:, :2], U32, M=a0).reshape(P.shape[:2])
+    bound = drift[None, :] * G + rnd
+    direct = f.channels(flat, np.float32).reshape(F[centre].shape)
+    err = np.abs(F[centre] - direct).max(-1)
+    assert keep[:, 1:].all(axis=0).any()
+    assert np.all(err[keep] <= bound[keep]), float((err - bound)[keep].max())
+    # the neighbour: the truncated image sum's field at the same samples is beyond the bound
+    old = _image_sum(f, flat[:, :2], 6).reshape(F[centre].shape)
+    old_err = np.abs(old - direct).max(-1)
+    assert np.all(old_err[keep] > bound[keep]), float((old_err - bound)[keep].min())
 
 
 def test_a_walk_of_an_isolated_cylinder_reads_the_closed_form_at_its_recorded_position():
