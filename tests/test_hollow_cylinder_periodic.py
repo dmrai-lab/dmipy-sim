@@ -295,6 +295,10 @@ def test_the_image_sum_converges_to_the_periodic_field(which):
         errs.append(err.max())
     # the remainder falls as n^-2: each halving of 1 / n divides the largest error by close to four
     assert errs[0] > errs[1] > errs[2] > errs[3] > errs[4]
+    if which == "smoke_cell":
+        # the specification's limit on the smoke cell: the remainder's constant, max |F_n - F| n^2 <= 0.02 (the
+        # pointwise bound above is the proof that the limit is the periodic field; this holds its constant)
+        assert all(e * n * n <= 0.02 for e, n in zip(errs, (6, 12, 24, 48, 64))), [e * n * n for e, n in zip(errs, (6, 12, 24, 48, 64))]
 
 
 def test_the_float64_read_is_an_independent_coding_of_the_same_field():
@@ -556,6 +560,10 @@ def test_the_float32_read_is_within_its_rounding_bound_of_the_float64_read():
     err_true = np.abs(F32 - _read(f, P, np.float64))
     bound_true = bound + U32 * np.abs(P).max() * math.sqrt(2.0) * _gradient_bound(f)
     assert np.all(err_true <= bound_true[:, None])
+    # the specification's limits on this grid: 1.3e-6 at the same float32-rounded inputs (the formula's conditioning)
+    # and 7.7e-6 at the true positions (with the inputs' rounding through the gradient); the per-point bounds above
+    # charge every wrapped offset's rounding at its worst and are looser
+    assert err.max() <= 1.3e-6 and err_true.max() <= 7.7e-6, (err.max(), err_true.max())
 
 
 # ── 7. cost ─────────────────────────────────────────────────────────────────────────────────────────────────────────
