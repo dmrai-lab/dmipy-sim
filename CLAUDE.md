@@ -74,8 +74,8 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   a plain wall is a trial (later encounters of a step and sealed objects included), a step belongs to the band whose
   interval `(edge_k, edge_k+1]` contains its end time (an end on an edge to the earlier band, so a window's bands hold
   exactly its steps), a step a bound walker discards records none. Off
-  by default and the same program then; on, it forces `count_walls` and changes no discrete outcome of the walk, and no bit on the recording build and
-  host (the `test_recorded_bits_*` tests; the geometry's
+  by default and the same program then; on, it forces `count_walls` and enters none of the walk's arithmetic (one kernel step is the same bits; the whole
+  walk is the same bits on the recording build, the `test_recorded_bits_*` tests; the geometry's
   `log_trials` makes its kernel return `WallHit.trials`, carried as the work's fourth entry). Refused by name: no plain
   wall, a backend, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
   missing a window boundary, more than 64 bands or 64 KiB per walker, a trial beyond `u_max`.
@@ -112,8 +112,9 @@ JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
   `tests/conftest.py::_SLOW_MC_MODULES`) — runs weekly / `workflow_dispatch`.
   Add a new heavy MC module's name to that set. `--heavy` bumps `N_WALKERS` to 1e6.
 - `test_recorded_bits_*` (fixture `recorded_bits`; `gpu` stays the only marker): bits of one JAX build (`conftest.RECORDED_WITH`) and one host's
-  kernels, asserted only by the pinned `recorded-bits` job (`DMIPY_SIM_RECORDED_BITS=1`, after its host canary
-  `tools/recorded_bits_canary.py`) and skipped by name everywhere else; in that job a skip is a failure.
+  kernels, asserted only by the pinned `recorded-bits` job (`DMIPY_SIM_RECORDED_BITS=1`; on a failure it runs the host canary
+  `tools/recorded_bits_canary.py` to say whether the runner's kernels are the recording host's) and skipped by name
+  everywhere else; in that job a skip is a failure.
 
 Tests mirror the package where a module has a home: `tests/geometry/` holds the substrate tests (walls, bounces,
 packings, meshes, myelin, compartments, the per-geometry MC validations) — the test for `dmipy_sim/geometry/X` is under

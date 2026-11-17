@@ -16,9 +16,11 @@ the project follows [Semantic Versioning](https://semver.org/).
   whose left-open, right-closed interval `(edge_k, edge_k+1]` contains its end time (an end on an edge in the earlier
   band, so `window(i)` holds exactly its own steps); a step a bound walker discards
   records none. The record turns `count_walls` on (`sum n` over an all-plain cell is `work["n_hits"]`, `sum N` is
-  `work["n_crossings"]`), draws nothing and rounds nothing, and the walk with it has every discrete outcome of the walk without it
-  (bit for bit on the recording build and host; another JAX build may round the two compiled programs' positions
-  differently in the last bits); a walk without it is the same program as before (the same optimised HLO). It is carried by `window`, `take`, `join_walks`, `save` / `load` and
+  `work["n_crossings"]`), draws nothing and rounds nothing, and enters none of the walk's arithmetic: one step of a wall kernel is the same
+  bits with and without it, and the whole walk with and without it is the same bits on the recording build (another
+  JAX build may compile the two programs to positions that differ in the last bits, which reflections can grow into
+  another encounter: two valid walks of one law); a walk without it is the same program as before (the same optimised
+  HLO, instruction for instruction). It is carried by `window`, `take`, `join_walks`, `save` / `load` and
   `nbytes`, and holds `n_objects * n_bands * (8 + M * itemsize)` bytes per walker. Refused by name: a geometry with no
   plain wall, a backend other than the JAX kernels, `equilibrate_binding='burnin'`, a field channel without a stated
   `K_c3` and `field_read_interval`, malformed edges, more than 65536 bytes per walker, and a walk with a trial beyond

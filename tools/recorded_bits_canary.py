@@ -3,10 +3,9 @@
 Recorded bits (the all-myelinated walks' hashes in ``tests/geometry/test_mixed_myelinated_plain_cell.py``, the record's
 bit identity in ``tests/test_trial_record.py``) are bits of one JAX build and of the kernels the compiler emits for one
 host's CPU. This script walks a small fixed all-myelinated cell (16 walkers, 0.5 ms) through the same concentric wall
-kernel and compares the hash of its coefficients with the value recorded on the recording host. A mismatch fails the job
-with the CPU named, before any recorded-bits test runs, so a runner whose kernels differ is reported as that and not as a
-hash mismatch of the code under test (a change to the wall kernel's arithmetic moves this value too: then compare on
-the recording host).
+kernel and compares the hash of its coefficients with the value recorded on the recording host. The job runs it only
+after a recorded-bits test failed, to say in the failure whether this runner's kernels differ from the recording host's
+(the canary may be more host-sensitive than the recorded tests, so a mismatch alone is no failure). A change to the wall kernel's arithmetic moves this value too: then compare on the recording host.
 
 Run: ``JAX_PLATFORMS=cpu python tools/recorded_bits_canary.py``; exit 0 on the recording host's kernels.
 """
@@ -48,6 +47,6 @@ if __name__ == "__main__":
     got = canary()
     if got != RECORDED:
         print(f"this runner's kernels are not the recording host's: the canary walk hashes to {got}, the recording host's "
-              f"to {RECORDED}; CPU {_cpu()}. Re-run the job to draw another runner.")
+              f"to {RECORDED}; CPU {_cpu()}")
         sys.exit(1)
     print(f"recording host's kernels: canary {got}; CPU {_cpu()}")

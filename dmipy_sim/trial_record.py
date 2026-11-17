@@ -21,11 +21,11 @@ The rules, each a condition a consumer's arithmetic relies on:
   own steps; a scheduled permeability is read at the step's midpoint (:func:`~dmipy_sim.engine.physics.membrane_kappa`);
 * the counts are integers and the sums are held in the walk's accumulation dtype; nothing is rounded or dithered, and
   the record draws nothing (the walk's random stream is the walk's without the record);
-* the record changes nothing else: at the same counting the walk with it has every discrete outcome of the walk
-  without it (encounters, crossings, events, exhaustion), and its float32 positions are the same bits on a build and
-  host where the two compiled programs round alike (the recording build's; another build may round a step's last bits
-  differently in one of them, a few ulp per block, grown by the reflections); the record reads the walk and never
-  enters its arithmetic (the record turns ``Geometry.count_walls`` on, of which it is the cell-resolved form: ``sum n`` over the cells of an
+* the record reads the walk and enters none of its arithmetic: one step of a wall kernel is the same bits with and
+  without it. The whole walk with it and without it are two compiled programs: the same bits on the recording build
+  and host, while another JAX build may arrange them so that a position's last bits differ, which the reflections can
+  grow into another encounter -- two valid walks of one law. The record is exactly consistent with its own walk (the
+  record turns ``Geometry.count_walls`` on, of which it is the cell-resolved form: ``sum n`` over the cells of an
   all-plain cell is ``work["n_hits"]`` and ``sum N`` is ``work["n_crossings"]``).
 
 Its memory is ``n_objects * n_bands * (2 * 4 + M * itemsize)`` bytes per walker (:func:`bytes_per_walker`), refused

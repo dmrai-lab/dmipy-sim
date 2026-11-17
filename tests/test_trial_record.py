@@ -7,8 +7,9 @@ tests that compare sums accumulate in float64, under the ``x64`` fixture). The r
 2. only the trials of steps the walk keeps are recorded (a walker held bound records none);
 3. every encounter of a plain wall is a trial, later encounters of a step and sealed objects included, and the counts
    are the walk's work counts on an all-plain cell;
-4. the record changes nothing: the walk with it has every discrete outcome of the walk without it at the same counting,
-   its positions within a stated tolerance, and bit for bit on the recording build and host (the ``test_recorded_bits_*`` tests);
+4. the record changes nothing: one step of each wall kernel is the same bits with and without it, over every branch;
+   the record is exactly consistent with its own walk's counts and events; and the whole walk with and without it is
+   the same bits on the recording build and host (the ``test_recorded_bits_*`` tests of the pinned job);
 5. a trial's overshoot is within its object's a priori bound, and a walk that exceeds it is refused;
 6. a scheduled permeability is read at the step's midpoint and the band is the step's end;
 8. the trial count is stored beside the granted count;
@@ -253,46 +254,149 @@ def test_a_mixed_cells_record_is_its_plain_walls_encounters():
 
 
 # ── 4. the record changes nothing ───────────────────────────────────────────────────────────────────────────────────
+#
+# The record reads the walk and enters none of its arithmetic: one step of each wall kernel is the same bits with and
+# without it, over states that reach every branch (below, on every host and build). The whole walk with and without it
+# is two compiled programs; on the recording build and host they are the same bits (the test_recorded_bits_* tests,
+# run by the pinned job), and another build may arrange the programs so that a position's last bits differ, which the
+# reflections can grow into another encounter: two valid walks of one law. What a reweighted read needs is the record
+# consistent with its own walk, which is asserted exactly on every host (``test_the_record_is_exactly_its_own_walks_count``).
 
-#: The walk with the record and without it are two compiled programs. Bit for bit they are equal on the recording
-#: build and host (the pinned recorded-bits job asserts it); another JAX build may compile them to float32 arithmetic
-#: that rounds differently (measured on jax 0.12: a few ulp of a position per block of ~360 steps, grown by the
-#: reflections to at most 2.9e-4 of the cell over the 4 ms walk, every discrete outcome equal). Everywhere the discrete
-#: outcomes are asserted exactly, which a walk whose history diverged could not meet, and each walker's start and
-#: displacement within this fraction of the cell: 3.5 times the largest measured, a tenth of the mixed cell's step.
-POSITION_TOLERANCE = 1e-3
-
-
-def _assert_same_outcomes(a, b, cell):
-    """Every discrete outcome of two walks equal exactly, positions within :data:`POSITION_TOLERANCE` of ``cell``."""
-    for name in ("compartment", "bound_start"):
-        x, y = getattr(a, name), getattr(b, name)
-        assert (x is None) == (y is None), name
-        if x is not None:
-            np.testing.assert_array_equal(np.asarray(x), np.asarray(y), err_msg=name)
-    for name in ("comp_events", "bound_events"):
-        x, y = getattr(a, name), getattr(b, name)
-        assert (x is None) == (y is None), name
-        if x is not None:
-            for f in ("offsets", "t", "label"):
-                np.testing.assert_array_equal(getattr(x, f), getattr(y, f), err_msg=f"{name}.{f}")
-    keys = ("n_hits", "n_crossings", "exhausted_steps", "label_deviations", "walker_steps")
-    assert {k: a.work[k] for k in keys} == {k: b.work[k] for k in keys}
-    assert a.illegal_crossings == b.illegal_crossings
-    ends = lambda w: np.asarray(w.position_coeffs, np.float64)[:, :, :2, :]       # start and displacement per window
-    np.testing.assert_allclose(ends(a), ends(b), rtol=0.0, atol=POSITION_TOLERANCE * cell)
+def _branch_states(radii, centres, Lc, plain, step_max, n, seed):
+    """Starts and steps reaching every branch of a step: no wall met, a trial granted, a trial refused, a sealed
+    face, several encounters, and steps up to eight times the longest so that a small budget runs out."""
+    pts, dirs, ls, inside, own = _kernel_steps(radii, centres, Lc, n, seed, step_max)
+    keep = ~inside | plain[own]
+    long = np.random.default_rng(seed + 1).uniform(0.0, 8.0, keep.sum()).astype(np.float32)
+    ls = np.where(np.arange(keep.sum()) % 4 == 0, ls[keep] * long, ls[keep])
+    return pts[keep], dirs[keep], ls, inside[keep], own[keep]
 
 
-def test_the_record_changes_no_outcome_of_a_plain_cells_walk(plain_walks):
-    _assert_same_outcomes(*plain_walks, cell=pack_cylinders(RADII, target_vf=0.45, seed=1)[1])
-    assert plain_walks[0].trial_record is None
+def _assert_tree_equal(a, b, what):
+    for i, (x, y) in enumerate(zip(jax.tree_util.tree_leaves(a), jax.tree_util.tree_leaves(b))):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y), err_msg=f"{what}: output {i}")
 
 
-def test_the_record_changes_no_outcome_of_a_mixed_cells_walk(mixed_walks):
-    _assert_same_outcomes(*mixed_walks, cell=L_CELL)
-    r = mixed_walks[1].trial_record
-    assert r.n.shape == (32, 4, 3)
-    assert int(r.n[:, [0, 2]].sum()) == 0 and int(r.n[:, [1, 3]].sum()) > 0       # the myelinated cylinders' cells empty
+@pytest.mark.parametrize("budget", [None, 1], ids=["derived_budget", "budget_1"])
+def test_one_step_of_the_plain_kernel_is_the_same_with_and_without_the_record(budget):
+    """The packed wall kernel with and without its trial log, the same starts, steps and words: every output bit for
+    bit (end position, contact, crossing, sentinel, encounters, exhaustion), over steps that meet no wall, grant and
+    refuse trials, meet a sealed object, meet several walls and exhaust the budget."""
+    c, Lc, _ = pack_cylinders(RADII, target_vf=0.45, seed=1)
+    f32 = np.float32
+    step_max = LONGEST_STEP * RADII.min() / 6
+    args = (jnp.asarray(c, f32), jnp.asarray(RADII, f32), f32(Lc), f32(1e-7 * RADII.min()), f32(1e-4 * RADII.min()),
+            step_max, periodic_min_gap(c, RADII, Lc))
+    w0 = packed_wall_kernel(*args, count=True, budget=budget)
+    w1 = packed_wall_kernel(*args, count=True, budget=budget, trials=True)
+    pts, dirs, ls, inside, _ = _branch_states(RADII, c, Lc, np.ones(6, bool), step_max, 6000, 21)
+    keys = jax.random.split(jax.random.PRNGKey(21), len(pts))
+    kod = jnp.asarray(np.where(np.arange(6) == 1, 0.0, 4e-1 / D), jnp.float32)          # object 1 sealed
+    run = lambda w: jax.jit(jax.vmap(lambda p, d, l, s, k: w(p, d, l, s, kod, f32(1e5), k)))(
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
+    h0, h1 = run(w0), run(w1)
+    assert h0.trials is None
+    _assert_tree_equal(h0._replace(trials=None), h1._replace(trials=None), "packed kernel")
+    v, g, o = (np.asarray(x) for x in (h1.trials.valid, h1.trials.granted, h1.trials.obj))
+    n_hits = np.asarray(h1.n_hits)
+    assert (n_hits == 0).sum() > 0 and (v & g).sum() > 0 and (v & ~g).sum() > 0 and (v & (o == 1)).sum() > 0
+    if budget == 1:
+        assert np.asarray(h1.exhausted).sum() > 0
+    else:
+        assert (n_hits >= 3).sum() > 0
+
+
+@pytest.mark.parametrize("budget", [None, 1], ids=["derived_budget", "budget_1"])
+def test_one_step_of_the_mixed_kernel_is_the_same_with_and_without_the_record(budget):
+    """The concentric wall kernel of a cell of plain and myelinated cylinders with and without its trial log: every
+    output bit for bit, over steps that meet no wall, a plain wall (granted, refused, sealed) and a sheath, and that
+    exhaust the budget."""
+    c, Lc, _ = pack_cylinders(RADII, target_vf=0.45, seed=1)
+    radii = RADII / 0.999
+    plain = np.array([True, False, True, False, True, False])
+    N, f32 = len(radii), np.float32
+    inner = np.where(plain, radii, 0.7 * radii)
+    step_max = LONGEST_STEP * inner.min() / 6
+    Dj = jnp.full((N,), f32(D))
+    kap = np.where(plain, np.where(np.arange(N) == 2, 0.0, 4e-1), 4e-3).astype(f32)    # plain cylinder 2 sealed
+    args = (jnp.asarray(c, f32), jnp.asarray(inner, f32), jnp.asarray(radii, f32), f32(Lc), Dj, Dj, Dj,
+            jnp.full(N, f32(4e-3)), jnp.asarray(kap), jnp.full((N, 4), f32(1e5)), f32(1e-7 * inner.min()),
+            f32(1e-4 * inner.min()), step_max, periodic_min_gap(c, radii, Lc))
+    w0 = concentric_wall_kernel(*args, count=True, budget=budget)
+    w1 = concentric_wall_kernel(*args, count=True, budget=budget, trials=True)
+    pts, dirs, ls, inside, own = _branch_states(radii, c, Lc, plain, step_max, 6000, 23)
+    keys = jax.random.split(jax.random.PRNGKey(23), len(pts))
+    words = jax.vmap(lambda k: jax.random.bits(k, (w0.bounce_loop.budget,), dtype=jnp.uint32))(keys)
+    us = jax.vmap(lambda k: jax.random.uniform(k, dtype=jnp.float32))(keys)
+    run = lambda w: jax.jit(jax.vmap(lambda p, d, l, pl, k, u, ws: w(p, d, l, pl, k, u, ws)))(
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside.astype(np.int32)),
+        jnp.asarray(own.astype(np.int32)), us, words)
+    h0, h1 = run(w0), run(w1)
+    assert h0.trials is None
+    _assert_tree_equal(h0._replace(trials=None), h1._replace(trials=None), "concentric kernel")
+    v, g, o = (np.asarray(x) for x in (h1.trials.valid, h1.trials.granted, h1.trials.obj))
+    n_hits = np.asarray(h1.n_hits)
+    assert (n_hits == 0).sum() > 0 and (v & g).sum() > 0 and (v & ~g).sum() > 0 and (v & (o == 2)).sum() > 0
+    assert (n_hits > v.sum(1)).sum() > 0                                                  # a sheath met too
+    if budget == 1:
+        assert np.asarray(h1.exhausted).sum() > 0
+
+
+def _event_counts(w, pools):
+    """Per walker and band of the walk's record: the C1 events that change the label between the two pools ``pools``
+    (a plain wall's two sides), read off the event stream alone. An event at step end ``j dt`` is in the band whose
+    ``(edge_k, edge_k+1]`` holds it, the edges here on step ends (block multiples)."""
+    r = w.trial_record
+    q = np.asarray(r.band_edges) / w.dt_sim
+    steps = np.rint(q).astype(np.int64)
+    assert np.allclose(q, steps, rtol=0.0, atol=1e-6)
+    ev = w.comp_events
+    out = np.zeros((w.n_walkers, len(r.band_edges) - 1), np.int64)
+    off = np.asarray(ev.offsets)
+    for i in range(w.n_walkers):
+        prev = int(w.compartment[i])
+        for k in range(off[i], off[i + 1]):
+            lab = int(ev.label[k])
+            if {prev, lab} == set(pools):
+                j = int(np.rint(float(ev.t[k]) / w.dt_sim))
+                out[i, int(np.sum(steps[1:-1] < j))] += 1
+            prev = lab
+    return out
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("cell", ["plain", "mixed"])
+def test_the_record_is_exactly_its_own_walks_count(cell, dtype, request):
+    """The record against what its own walk reports, on every host: the encounters are the walk's (an all-plain cell:
+    ``sum n == work["n_hits"]``), a myelinated cylinder's cells are empty, ``N <= n`` per cell, and per walker and band
+    the granted trials less the walk's own crossings of a plain wall (its C1 events between lumen and extra) are even
+    and not negative -- a step changes the label exactly when it grants an odd number of crossings -- and on the
+    all-plain cell the walk's crossing steps (``work["n_crossings"]``) are its events, one each. In two storage windows, each window's record holds
+    the same for its own events, and in either accumulation dtype."""
+    if dtype == "float64":
+        request.getfixturevalue("x64")
+    spec = TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3, 3e-3, T))
+    geo = _dense() if cell == "plain" else _mixed()
+    w = _walk(geo, record_trials=spec, window_T=2e-3, K=4, accumulation_dtype=dtype)
+    r = w.trial_record
+    assert r.S.dtype == np.dtype(dtype) and w.n_windows == 2
+    assert np.all(r.N <= r.n)
+    ev = _event_counts(w, (0, 1))
+    granted = r.N.sum(axis=1)                                                        # (walkers, bands)
+    assert np.all(granted >= ev) and np.all((granted - ev) % 2 == 0)
+    if cell == "plain":
+        assert int(np.asarray(w.comp_events.t).size) == w.work["n_crossings"]   # a crossing step changes the label
+        assert int(r.n.sum()) == w.work["n_hits"]
+    else:                          # a mixed cell's step counts as crossing when it grants any, an even number included
+        assert int(np.asarray(w.comp_events.t).size) <= w.work["n_crossings"]
+        assert int(r.n[:, [0, 2]].sum()) == 0 and int(r.n[:, [1, 3]].sum()) > 0
+        assert int(r.n.sum()) <= w.work["n_hits"]
+    assert int(ev.sum()) > 0
+    for i in range(2):
+        wi = w.window(i)
+        evi = _event_counts(wi, (0, 1))
+        np.testing.assert_array_equal(evi, ev[:, 2 * i:2 * i + 2])
+        np.testing.assert_array_equal(wi.trial_record.N, r.N[:, :, 2 * i:2 * i + 2])
 
 
 def test_recorded_bits_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_bits, plain_walks):
