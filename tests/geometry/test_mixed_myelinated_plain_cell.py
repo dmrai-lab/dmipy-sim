@@ -146,42 +146,13 @@ def test_a_cell_of_plain_cylinders_is_one_wall_and_walks_back_to_the_same_class(
 
 # ── the all-myelinated cell is today's walk ─────────────────────────────────────────────────────────────────────────
 
-#: The arrays of the all-myelinated reference walks, recorded on the class before plain cylinders existed (CPU,
-#: ``JAX_PLATFORMS=cpu``, the build ``RECORDED_WITH`` of ``tests/conftest.py``, on a host whose kernels the pinned
-#: recorded-bits job checks). A walk of the same cell, seed and settings returns these bytes. The three arrays that
-#: carry the field (``field_coeffs``, ``qv_field``, ``qv_field_increments``) are the walk's with the cell's exactly
-#: periodic field (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`); every other array is the walk's
-#: own and does not depend on the field.
-REFERENCE = {
-    "field": {
-        "position_coeffs": "cf784afe6f1372399844bcab7cb93f574ba8a88c778f5d7fd0f2bcaaa1c43351",
-        "boundary_endpoint": "d3cc0706df8367d39925c199520600e49f0fc0fcb20553b454fd1f2ca2e34d76",
-        "boundary_bands": "5e8da891248e713afa01dfd0cb836a41b84b5337bf47eaa2f64714e8ebed68d9",
-        "compartment": "9d97d188917dec920eabca932dad8e76680a4634394776226c1896b470ca47ab",
-        "comp_events": "8e63dde602a3ea9378abbb8dd463aaebc6238cc6e953d967d2966ef2ae3ec8d6",
-        "bound_start": "d13d4a8b3b8add19b5970157f09d00c12cbda4fed4d74d8493156523f7069b66",
-        "bound_events": "5fceeabde86a91a42fdcd3e4387e8ad12dc05e256ba127dcdead4e397e1b86ef",
-        "field_coeffs": "7e198220810f6fd9b2bf128a32656745e769c5099bc22f1f3fa6b4fdbd9a0457",
-        "qv_positions": "24b73a3becd1be85e234e41d7e3499964c0ac3281be51779a953841ff6065480",
-        "qv_boundary": "35896dec343b87e45003e85c66e66c4dfe8f236a58904f8b1b39a2059f978dd8",
-        "qv_field": "2d9b600a293a5c74a0e592a4daa93f1c3e4fc3d72288f15ff2bba037c0c692b9",
-        "qv_field_increments": "42fecf9fcbb90733b3deddb8b79bd8915920e662ebf8d9639c4f0a4372dbbcfa",
-    },
-    "no_field": {
-        "position_coeffs": "a0b73bfba5cf61b8a45af3b108f1dbdf14218e8f381f33259ad75ef8bd3f6735",
-        "boundary_endpoint": "4fb5140ff86c9562da177c02646822b49bdf944854ba7604d8634a9c934d8123",
-        "boundary_bands": "e5e86fd4ab9d6972470ba4e0c93adbc6d1b1567b257c76136c1f86b11c8e6882",
-        "compartment": "9d97d188917dec920eabca932dad8e76680a4634394776226c1896b470ca47ab",
-        "comp_events": "2f56bc4c3598c6f0629ca864e727aa46b27c10d550146be5795ae23bc25caea0",
-        "qv_positions": "85c42a002f7dffe5e7961621d7893c417ffb0636759eaf93e39594a867b59db3",
-        "qv_boundary": "63b3a85e00fba12436b9bda927206485a1adb4c454f996cf76813d3b6a897fc7",
-    },
-    "forward": ["97145e59d848907a4f0c22bafa96a722fb6b91d609ef3dcfabaf79c75d613caf",
-                "af197e46ba0cfc590830fd5cae9f874da496969454db10331188111b7a2c07a7",
-                "b43b8c74066db5a8cfb4c87116414e3dab2f8e7ea1fae1a62645aae9d4a1b0ea",
-                "7ac4047d43a83524622f202a99027af4df10ebcbf607c8079b8401c0a0405ac4",
-                "e5f307e5bd533a68a1eabbe7c01d8f203f188f40e5d1b7fe51245d446cd12b2d"],
-}
+#: The arrays of the all-myelinated reference walks whose hashes are recorded per CPU family
+#: (``tests/recorded_bits.py``): a walk of the same cell, seed and settings returns those bytes on its family's hosts.
+FIELD_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "comp_events", "bound_start",
+                "bound_events", "field_coeffs", "qv_positions", "qv_boundary", "qv_field", "qv_field_increments")
+NO_FIELD_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "comp_events",
+                   "qv_positions", "qv_boundary")
+RECORDED_WALKS = ("field", "no_field", "forward")
 G_ALL = [0.7, 0.8, 0.7, 0.75]
 
 
@@ -189,33 +160,46 @@ def _hashes(w, names):
     return {n: (_events_sha(getattr(w, n)) if n.endswith("events") else _sha(getattr(w, n))) for n in names}
 
 
-def test_recorded_bits_the_all_myelinated_walk_with_the_field(recorded_bits):
+def recorded_hashes(which):
+    """The hashes of the all-myelinated reference walk ``which`` (one of :data:`RECORDED_WALKS`): per array of the walk
+    for ``"field"`` and ``"no_field"``, per output for ``"forward"``, in the form of a family's values in
+    ``tests/recorded_bits.py``; ``tools/record_recorded_bits.py`` prints them, the ``test_recorded_bits_*`` tests
+    assert them."""
     from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
-    geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
-    w = _walk_geometry(300, D, geo, 4e-3, 5e-5, tiers="all", seed=3, require_gpu=False, K=8, kappa_MT=4e-5,
-                       dwell_time=1e-3, equilibrate_binding="off", field_basis=HollowCylinderField.of(geo), K_c3=8,
-                       field_read_interval=1.25e-5)
-    assert _hashes(w, REFERENCE["field"]) == REFERENCE["field"]
+    if which == "field":
+        from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+        geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
+        w = _walk_geometry(300, D, geo, 4e-3, 5e-5, tiers="all", seed=3, require_gpu=False, K=8, kappa_MT=4e-5,
+                           dwell_time=1e-3, equilibrate_binding="off", field_basis=HollowCylinderField.of(geo), K_c3=8,
+                           field_read_interval=1.25e-5)
+        return _hashes(w, FIELD_ARRAYS)
+    if which == "no_field":
+        geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
+        w = _walk_geometry(300, D, geo, 4e-3, 5e-5, tiers="all", seed=3, require_gpu=False, K=8)
+        return _hashes(w, NO_FIELD_ARRAYS)
+    if which == "forward":
+        from dmipy_replay import pgse
+        from dmipy_sim.engine._fused import simulate_fused
+        geo = _cell(G_ALL, compartments=Compartments(intra=Pool(D=D, T2=0.08), myelin=Pool(D=0.0, T2=0.015),
+                                                     extra=Pool(D=D, T2=0.06)),
+                    kappa_inner=4e-5, kappa_outer=4e-5, rho_inner=1e-5, rho_outer=2e-5)
+        wf = pgse([[1, 0, 0], [0, 1, 0]], 2e-3, 8e-3, bvalues=[1e9, 1e9], n_t=100, slew_rate=np.inf)
+        out = simulate_fused(300, waveform=wf, geometry=geo, seed=3, require_gpu=False, return_walker_signals=True,
+                             return_compartments="full")
+        return [_sha(a) for a in out]
+    raise ValueError(f"no recorded walk {which!r}; the recorded walks are {RECORDED_WALKS}")
+
+
+def test_recorded_bits_the_all_myelinated_walk_with_the_field(recorded_bits):
+    assert recorded_hashes("field") == recorded_bits["field"]
 
 
 def test_recorded_bits_the_all_myelinated_walk_without_the_field(recorded_bits):
-    from dmipy_sim.engine.core import _walk_geometry
-    geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
-    w = _walk_geometry(300, D, geo, 4e-3, 5e-5, tiers="all", seed=3, require_gpu=False, K=8)
-    assert _hashes(w, REFERENCE["no_field"]) == REFERENCE["no_field"]
+    assert recorded_hashes("no_field") == recorded_bits["no_field"]
 
 
 def test_recorded_bits_the_all_myelinated_forward_signal(recorded_bits):
-    from dmipy_replay import pgse
-    from dmipy_sim.engine._fused import simulate_fused
-    geo = _cell(G_ALL, compartments=Compartments(intra=Pool(D=D, T2=0.08), myelin=Pool(D=0.0, T2=0.015),
-                                                 extra=Pool(D=D, T2=0.06)),
-                kappa_inner=4e-5, kappa_outer=4e-5, rho_inner=1e-5, rho_outer=2e-5)
-    wf = pgse([[1, 0, 0], [0, 1, 0]], 2e-3, 8e-3, bvalues=[1e9, 1e9], n_t=100, slew_rate=np.inf)
-    out = simulate_fused(300, waveform=wf, geometry=geo, seed=3, require_gpu=False, return_walker_signals=True,
-                         return_compartments="full")
-    assert [_sha(a) for a in out] == REFERENCE["forward"]
+    assert recorded_hashes("forward") == recorded_bits["forward"]
 
 
 # ── a plain wall is the plain packing's wall, step for step ─────────────────────────────────────────────────────────

@@ -111,10 +111,13 @@ JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
 - `@pytest.mark.slow`: heavy statistical MC validation (auto-marked per module in
   `tests/conftest.py::_SLOW_MC_MODULES`) — runs weekly / `workflow_dispatch`.
   Add a new heavy MC module's name to that set. `--heavy` bumps `N_WALKERS` to 1e6.
-- `test_recorded_bits_*` (fixture `recorded_bits`; `gpu` stays the only marker): bits of one JAX build (`conftest.RECORDED_WITH`) and one host's
-  kernels, asserted only by the pinned `recorded-bits` job (`DMIPY_SIM_RECORDED_BITS=1`; on a failure it runs the host canary
-  `tools/recorded_bits_canary.py` to say whether the runner's kernels are the recording host's) and skipped by name
-  everywhere else; in that job a skip is a failure.
+- `test_recorded_bits_*` (fixture `recorded_bits`; `gpu` stays the only marker): bits of one JAX build
+  (`tests/recorded_bits.py` `RECORDED_WITH`) and of one family of CPUs, recorded per family in `FAMILIES` and selected
+  by the canary (a small fixed walk; it selects the family and is no evidence that the bits match). They run where the
+  build is the recorded one and the canary names a recorded family; in the pinned `recorded-bits` job
+  (`DMIPY_SIM_RECORDED_BITS=1`, which prints the runner's CPU and canary) another build is an error and an unrecorded
+  family a failure naming its canary, elsewhere both skip with that reason. `tools/record_recorded_bits.py` prints a
+  host's family entry.
 
 Tests mirror the package where a module has a home: `tests/geometry/` holds the substrate tests (walls, bounces,
 packings, meshes, myelin, compartments, the per-geometry MC validations) — the test for `dmipy_sim/geometry/X` is under
