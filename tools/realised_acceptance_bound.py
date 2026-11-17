@@ -1,6 +1,6 @@
 """The distance of a membrane trial's realised acceptance from ``x / (1 + x)``, checked over every float32 ``x``.
 
-    python tools/realised_acceptance_bound.py --range application --out FILE.json      # x in [2^-34, 0.1124]
+    python tools/realised_acceptance_bound.py --range small --out FILE.json      # x in [2^-34, 0.1124]
     python tools/realised_acceptance_bound.py --range full --out FILE.json             # x in [2^-34, 2^26]
     python tools/realised_acceptance_bound.py --check FILE.json                        # the record's verdicts
 
@@ -16,8 +16,8 @@ with, per way of forming the probability,
   ``u = 2^-24``. The product ``2 kappa_over_D d_perp``, the sum ``1 + x`` and the quotient round once each (relative
   ``|d_i| <= u``), so ``p32 / p = (1 + d0) / (1 + d0 x / (1 + x)) (1 + d2) / (1 + d1)``, which lies in
   ``[(1 - u)^2 / (1 + u), (1 + u)^2 / (1 - u)]``: ``|p32 - p| <= eps p``. Where ``p32 = 1`` (first at ``x = 2^24``,
-  where ``1 + x`` rounds to ``x``; between ``2^24`` and ``2^25`` the sum rounds to the even neighbour, so ``p32 = 1``
-  and ``p32 = 1 - 2^-23`` alternate, and from ``2^25`` on ``p32 = 1``) the realised probability is ``p32`` itself and
+  where ``1 + x`` rounds to ``x``; between ``2^24`` and ``2^25`` the sum rounds to the even neighbour, ``x`` or
+  ``x + 2``, so ``p32`` is ``1``, ``1 - 2^-24`` or ``1 - 2^-23``, and from ``2^25`` on ``p32 = 1``) the realised probability is ``p32`` itself and
   the distance ``1 / (1 + x)``, at most ``1 / (1 + 2^24)``, is inside ``eps p``. The floor lowers ``p32`` by less than ``2^-32``. A product below float32's smallest
   normal (``x < 2^-126``) rounds by more than ``u`` but realises ``0``, within ``p < 2^-32``; one that overflows, or an
   ``x`` beyond the clamp at ``1e30``, realises ``1``, within ``1 / (1 + x)``.
@@ -65,7 +65,7 @@ EPS = {"float32": (3 * U + U * U) / (1 - U), "float64": U + (1 + U) * E64, "vari
 #: that violate the bound with it, which shows the sweep can fail
 PERTURBED_EPS = {form: eps / 3 for form, eps in EPS.items()}
 #: the ranges of ``x``: ``[lo, hi]`` as float32 values
-RANGES = {"application": (2.0 ** -34, 0.1124), "full": (2.0 ** -34, 2.0 ** 26)}
+RANGES = {"small": (2.0 ** -34, 0.1124), "full": (2.0 ** -34, 2.0 ** 26)}
 CHUNK = 1 << 22
 #: a float64 ratio above this is recomputed in exact rationals
 EXACT_ABOVE = 1.0 - 2.0 ** -16

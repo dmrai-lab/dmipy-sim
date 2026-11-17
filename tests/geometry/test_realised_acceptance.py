@@ -12,7 +12,7 @@ The bound, ``|r - p| < 2^-32 + eps p`` with ``eps = (3 u + u^2) / (1 - u)``, ``u
 ``eps = u + (1 + u) 2 v / (1 - v)``, ``v = 2^-53``, for the float64 form (its derivation is the docstring of
 ``tools/realised_acceptance_bound.py``, which checks it over every float32 ``x`` of ``[2^-34, 2^26]``; its record is
 ``docs/realised-acceptance-bound-*.json``), is checked here in exact rationals on a few thousand inputs: the corner
-just below ``p = 2^-32``, the application range, the saturation at ``x = 2^24`` and random pairs whose product rounds.
+just below ``p = 2^-32``, the small-x range, the saturation at ``x = 2^24`` and random pairs whose product rounds.
 Each statement is shown to fail when perturbed: the old relative ``2^-23`` on an input whose float32 ``p`` is
 ``1.46 x 2^-23`` off, the ceiling in place of the floor, and the bound without its absolute ``2^-32``.
 """
@@ -119,8 +119,8 @@ def test_every_edge_is_the_kernels_threshold(row, dtype):
 def test_the_threshold_saturates_at_two_to_the_24():
     """``p32 = 1 - 2^-24`` (the largest float32 below 1) at ``x = 2^24 - 1`` gives ``2^32 - 256``; at ``x = 2^24`` the
     sum ``1 + x`` rounds to ``x`` and ``p32 = 1``: every word is granted. Over every float32 ``x`` of ``[2^23, 2^25]``
-    the first with ``p32 = 1`` is ``2^24``; up to ``2^25`` the sum rounds to the even neighbour and ``p32`` alternates
-    between ``1`` and ``1 - 2^-23``; from ``2^25`` on it is ``1``."""
+    the first with ``p32 = 1`` is ``2^24``; up to ``2^25`` the sum rounds to the even neighbour, ``x`` or ``x + 2``, and ``p32``
+    takes exactly the three values ``1``, ``1 - 2^-24`` and ``1 - 2^-23``; from ``2^25`` on it is ``1``."""
     x = np.arange(F(2.0 ** 23).view(np.uint32), F(2.0 ** 25).view(np.uint32) + 1, dtype=np.uint32).view(F)
     p = np.asarray(transmit_probability(jnp.asarray(x / F(2.0)), jnp.float32(1.0)))
     first = int(np.argmax(p >= 1))
@@ -129,6 +129,9 @@ def test_the_threshold_saturates_at_two_to_the_24():
     assert realised_acceptance(x[first] / 2, 1.0) == TRIAL_WORDS
     assert realised_acceptance(F(2.0 ** 24 + 2) / 2, 1.0) == TWO32 - 512                  # 1 + x rounds to x + 2
     assert np.all(p[x >= 2.0 ** 25] == 1) and not np.all(p[x >= 2.0 ** 24] == 1)
+    between = p[(x > 2.0 ** 24) & (x < 2.0 ** 25)]
+    assert set(np.unique(between).tolist()) == {1.0, float(F(1.0) - F(2.0 ** -24)), float(F(1.0) - F(2.0 ** -23))}
+    assert realised_acceptance(F(16777215.0), 1.0) == TWO32 - 256                         # x = 2^25 - 2: p32 = 1 - 2^-24
 
 
 def test_float64_needs_x64_and_another_dtype_is_refused():
@@ -185,7 +188,7 @@ def test_the_realised_probability_is_the_floor_of_p_and_never_above_it(dtype):
 
 # ── the bound, in exact rationals, on a small exact subset ──────────────────────────────────────────────────────────
 def _x_subset():
-    """A few thousand float32 ``x``: every float32 within 256 of the grid corner, 2000 drawn from the application
+    """A few thousand float32 ``x``: every float32 within 256 of the grid corner, 2000 drawn from the small-x
     range ``[2^-34, 0.1124]`` over its bit patterns, and every float32 within 256 of ``2^24``."""
     rng = np.random.default_rng(7)
     bits = lambda v: int(F(v).view(np.uint32))
@@ -278,7 +281,7 @@ def test_outside_the_domain_the_float32_trial_is_off_the_formula():
 
 
 # ── the record of the exhaustive sweep ──────────────────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("name", ["application", "full"])
+@pytest.mark.parametrize("name", ["small", "full"])
 def test_the_recorded_sweep_covers_every_float32_and_holds(name):
     import importlib.util
     spec = importlib.util.spec_from_file_location("realised_acceptance_bound",
@@ -291,5 +294,5 @@ def test_the_recorded_sweep_covers_every_float32_and_holds(name):
     assert {s["form"]: Fraction(s["eps"]) for s in rec["sweeps"]}["float32"] == EPS[np.float32]
     assert {s["form"]: Fraction(s["eps"]) for s in rec["sweeps"]}["float64"] == EPS[np.float64]
     assert tool.check(rec) == []
-    other = "full" if name == "application" else "application"
+    other = "full" if name == "small" else "small"
     assert tool.check(dict(rec, range=other)), "a record relabelled with the other range is refused"
