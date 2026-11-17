@@ -769,11 +769,12 @@ def test_a_walk_of_a_cell_reads_the_periodic_field(tmp_path):
     the lumen of the sheath at the cell's centre never meets a face of the cell, so the minimum image subtracts
     nothing and per sub-step the two positions drift apart by at most the roundings of the step ``r_new - r`` (``u
     2a``) and of its addition to a position within ``a`` (``u a``): ``3 u a sqrt 2`` per sub-step, through the
-    sources' gradients at the point (:func:`_gradient_at`), plus both reads' float32 rounding. The comparison is on
-    those walkers (21 of 96), at recorded positions farther than the drift from the lumen's wall: the bound is at
-    most 4.3e-6 at the start and 3.7e-5 at the last block end (measured 1.5e-8 at most), and the image sum of six
-    images per side differs from the periodic field by 4.3e-5 to 1.4e-4 at the same samples: beyond the bound at
-    every one."""
+    sources' gradients at the point (:func:`_gradient_at`), plus both reads' float32 rounding. On those walkers (21
+    of 96, every sample farther than the drift from the lumen's wall) the bound is at most 4.3e-6 at the start and
+    3.7e-5 at the last block end (measured 1.5e-8 at most), and the image sum of six images per side differs from the
+    periodic field by 4.3e-5 to 1.4e-4 at the same samples: beyond the bound at every one. Every other raw walker is
+    compared at every block end within the general drift bound (below): 7e-6 at the start to 5.5e-4 at the last
+    block end (measured 4.8e-7 at most), which zeros in place of its reads violate at every sample."""
     from dmipy_sim.coefficient_walk import CoefficientWalk
     D = 2e-9
     g = np.array([0.7, 1.0, 0.7, 1.0])
@@ -797,19 +798,39 @@ def test_a_walk_of_a_cell_reads_the_periodic_field(tmp_path):
     steps = np.arange(pos.shape[1]) * round(w.block["h"] / w.dt_sim)
     drift = steps * 3 * U32 * a0 * math.sqrt(2.0)                          # (n_blocks + 1,) metres
     P = pos[centre]
-    keep = rho[centre] < a0 - drift[None, :]                               # farther than the drift from the wall
+    assert np.all(rho[centre] < a0 - drift[None, :])                    # every sample farther than the drift from the wall
     flat = P.reshape(-1, 3)
     G = _gradient_at(f, flat[:, :2]).sum(1).reshape(P.shape[:2])
     rnd = 2.0 * _rounding_bound(f, flat[:, :2], U32, M=a0).reshape(P.shape[:2])
     bound = drift[None, :] * G + rnd
     direct = f.channels(flat, np.float32).reshape(F[centre].shape)
     err = np.abs(F[centre] - direct).max(-1)
-    assert keep[:, 1:].all(axis=0).any()
-    assert np.all(err[keep] <= bound[keep]), float((err - bound)[keep].max())
+    assert np.all(err <= bound), float((err - bound).max())
     # the neighbour: the truncated image sum's field at the same samples is beyond the bound
     old = _image_sum(f, flat[:, :2], 6).reshape(F[centre].shape)
     old_err = np.abs(old - direct).max(-1)
-    assert np.all(old_err[keep] > bound[keep]), float((old_err - bound)[keep].min())
+    assert np.all(old_err > bound), float((old_err - bound).min())
+    # every other raw walker, at every block end: its in-cell and continuous positions drift apart by at most u (M +
+    # 3 L) per coordinate per sub-step (the step's minimum image, a face's wrap of the in-cell position and the
+    # continuous sum below M), through the sources' gradients at the point; a sample within that drift of a wall may
+    # read the other side, where the bound is the closed form's largest jump across a wall (1 per channel and source:
+    # the sheath's 1/2 P and a^2 / (2 rho^2) S at rho = a). Zeros in place of the reads fail it (the control).
+    Q = pos[~centre]
+    flatq = Q.reshape(-1, 3)
+    Mq = float(np.abs(Q).max())
+    drift_q = steps * U32 * (Mq + 3 * f.L) * math.sqrt(2.0)
+    near = np.zeros(Q.shape[:2], bool)
+    for k in range(len(f.centers)):
+        d = ((Q[..., :2] - f.centers[k] + 0.5 * f.L) % f.L) - 0.5 * f.L
+        r = np.hypot(d[..., 0], d[..., 1])
+        near |= (np.abs(r - f.inner_radii[k]) <= drift_q[None, :]) | (np.abs(r - f.outer_radii[k]) <= drift_q[None, :])
+    Gq = _gradient_at(f, flatq[:, :2]).sum(1).reshape(Q.shape[:2])
+    bound_q = drift_q[None, :] * Gq + 2.0 * _rounding_bound(f, flatq[:, :2], U32, M=Mq).reshape(Q.shape[:2])
+    bound_q = bound_q + np.where(near, float(len(f.centers)), 0.0)
+    direct_q = f.channels(flatq, np.float32).reshape(F[~centre].shape)
+    err_q = np.abs(F[~centre] - direct_q).max(-1)
+    assert np.all(err_q <= bound_q), float((err_q - bound_q).max())
+    assert np.any(np.abs(direct_q).max(-1) > bound_q)
 
 
 def test_a_walk_of_an_isolated_cylinder_reads_the_closed_form_at_its_recorded_position():
