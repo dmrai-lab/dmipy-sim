@@ -30,6 +30,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 # Plain Python floats, NOT jnp scalars. A module-level jnp value is a DEVICE buffer created
 # at import, and `gpu.py` calls `jax.clear_caches()` on session teardown -- after which every
@@ -202,26 +203,84 @@ def transmit_probability(kappa_over_D, d_perp):
     return x / (jnp.float32(1.0) + x)
 
 
-def trial_granted(word, p):
-    """Whether a transmission trial of probability ``p`` is granted by the 32-bit word ``word``.
+#: The number of 32-bit words a transmission trial draws from: a trial's threshold is a count of words out of these.
+TRIAL_WORDS = 2 ** 32
 
-    ``word`` is a ``uint32`` (``jax.random.bits(key, shape, dtype=jnp.uint32)``) and ``p`` the float32 probability
-    :func:`transmit_probability` returns, in ``[0, 1]``. The trial is granted when ``word < t`` with
-    ``t = floor(p 2^32)`` (a float32 product by a power of two is exact, and for ``p < 1`` it is at most
-    ``2^32 - 2^8``, which a ``uint32`` holds), always when ``p >= 1`` (an infinite permeability transmits) and never
-    when ``p <= 0``. Over a uniform word the realised probability is therefore ``floor(p 2^32) / 2^32``: within
-    ``2^-32`` of ``p`` and never above it.
 
-    The word is the one a float32 uniform of the same key is made of (``uniform = (word >> 9) 2^-23``), so drawing
-    words in place of uniforms moves no other draw; the trial decided by ``uniform < p`` realised
-    ``ceil(p 2^23) / 2^23``, above ``p`` by up to ``2^-23``. What remains is the float32 evaluation of ``p`` itself
-    (a relative error up to ``2^-23`` from :func:`transmit_probability`'s ``x / (1 + x)``): the coin adds an absolute
-    error below ``2^-32`` to it, where the float32 uniform added up to ``2^-23`` (a relative bias of ``1.7e-6``
-    against ``1.7e-4`` at ``p = 1e-4``)."""
+def _trial_threshold(p):
+    """The threshold of a transmission trial of probability ``p``: ``(always, inside, t)``.
+
+    ``p`` is cast to float32. ``always`` is ``p >= 1``; ``inside`` is ``0 < p < 1``; ``t`` is the ``uint32``
+    ``floor(p 2^32)`` where ``inside`` and ``0`` elsewhere (a NaN ``p`` is neither ``always`` nor ``inside``). The one
+    definition :func:`trial_granted` decides with and :func:`realised_acceptance` reads."""
     p = jnp.asarray(p, jnp.float32)
     inside = (p > jnp.float32(0.0)) & (p < jnp.float32(1.0))
     t = jnp.floor(jnp.where(inside, p, jnp.float32(0.0)) * jnp.float32(2.0 ** 32)).astype(jnp.uint32)
-    return (p >= jnp.float32(1.0)) | (inside & (jnp.asarray(word, jnp.uint32) < t))
+    return p >= jnp.float32(1.0), inside, t
+
+
+def trial_granted(word, p):
+    """Whether a transmission trial of probability ``p`` is granted by the 32-bit word ``word``.
+
+    ``word`` is a ``uint32`` (``jax.random.bits(key, shape, dtype=jnp.uint32)``) and ``p`` the probability
+    :func:`transmit_probability` returns, cast to float32 here. The trial is granted when ``word < t`` with
+    ``t = floor(p 2^32)`` (a float32 product by a power of two is exact, and for ``p < 1`` it is at most
+    ``2^32 - 2^8``, which a ``uint32`` holds), always when ``p >= 1`` (an infinite permeability transmits) and never
+    when ``p <= 0`` or ``p`` is NaN. Over a uniform word the realised probability is therefore ``floor(p 2^32) / 2^32``
+    (:func:`realised_acceptance` returns its numerator): within ``2^-32`` of the float32 ``p`` and never above it, and
+    equal to it from ``p = 2^-9`` on, where ``p 2^32`` is an integer.
+
+    The word is the one a float32 uniform of the same key is made of (``uniform = (word >> 9) 2^-23``), so drawing
+    words in place of uniforms moves no other draw; the trial decided by ``uniform < p`` realised
+    ``ceil(p 2^23) / 2^23``, above ``p`` by up to ``2^-23``.
+
+    **The distance from the formula.** With ``p = x / (1 + x)``, ``x = 2 kappa_over_D d_perp`` in exact arithmetic of
+    the float32 inputs, the realised probability ``r`` of the trial :func:`transmit_probability` and this function
+    decide satisfies
+
+        ``|r - p| < 2^-32 + eps p``,  ``eps = (3 u + u^2) / (1 - u)``,  ``u = 2^-24``  (``eps = 3 u`` to first order),
+
+    on the domain: ``kappa_over_D`` and ``d_perp`` each zero or a positive normal finite float32, and
+    ``kappa_over_D < 2^127``. Where the product ``2 kappa_over_D d_perp`` is normal (``x >= 2^-126``) the float32 ``p``
+    alone is within ``eps p`` of the formula: the product, the sum ``1 + x`` and the quotient round once each, the
+    product's rounding damped by ``1 / (1 + x)``; the floor adds less than ``2^-32``. Below that the product may
+    underflow (to zero on a platform that flushes), the realised probability is ``0`` and the distance ``p < 2^-32``. A relative statement alone holds nowhere near ``p = 2^-32``: just below it the realised
+    probability is ``0``. Outside the domain the trial is the same arithmetic and the bound is not claimed: a
+    subnormal operand may be flushed to zero (``(1e37, 1e-40)`` realises ``0`` where the formula gives ``2e-3``);
+    ``kappa_over_D >= 2^127`` makes ``2 kappa_over_D`` infinite and the trial always granted (``(2^127, 2^-126)``,
+    ``x = 4``, realises ``1``); an infinite input with a positive other operand transmits; ``inf x 0`` and a NaN input
+    give a NaN ``p``, never granted; a negative ``x`` gives ``p`` outside ``[0, 1]``, never granted below ``0`` and
+    always above ``1``."""
+    always, inside, t = _trial_threshold(p)
+    return always | (inside & (jnp.asarray(word, jnp.uint32) < t))
+
+
+def realised_acceptance(kappa_over_D, d_perp, dtype=np.float32):
+    """The realised acceptance of a membrane trial as the integer threshold ``t`` in ``[0, 2^32]``: a 32-bit word ``w``
+    is granted if and only if ``w < t`` (``t = 2^32``: every word), so the realised probability of the trial is
+    exactly ``Fraction(t, 2**32)``.
+
+    ``kappa_over_D`` (1/m) and ``d_perp`` (m) are cast to ``dtype`` and passed to :func:`transmit_probability`, whose
+    probability goes through the threshold :func:`trial_granted` decides with, cast to float32 where it casts: the
+    arithmetic of a walk's trial, so a consumer that re-weights a walk and holds a trial's own inputs recomputes its
+    threshold bit for bit. ``dtype`` is ``numpy.float32`` (the walk's) or ``numpy.float64`` (the inputs and the
+    formula in float64, which needs JAX's x64 mode and is refused by name without it; a walk under x64 still forms
+    its probability from float32 inputs). Returns a Python ``int`` for scalar inputs and a ``numpy.uint64`` array of
+    the broadcast shape otherwise. Its distance from ``x / (1 + x)`` and the behaviour at the edges of the inputs are
+    stated in :func:`trial_granted`; with float64 arguments that are float32 values (the product then exact, the sum
+    and the quotient rounded in float64, the probability cast to float32 once) the bound there holds with
+    ``eps = u + (1 + u) 2 v / (1 - v)``, ``v = 2^-53``."""
+    dt = np.dtype(dtype)
+    if dt not in (np.dtype(np.float32), np.dtype(np.float64)):
+        raise ValueError(f"realised_acceptance: dtype must be numpy.float32 or numpy.float64, not {dt}")
+    if dt == np.dtype(np.float64) and not jax.config.read("jax_enable_x64"):
+        raise ValueError("realised_acceptance: dtype=numpy.float64 needs JAX's x64 mode (jax_enable_x64); without "
+                         "it the inputs would be float32")
+    k = np.asarray(kappa_over_D, dt)
+    d = np.asarray(d_perp, dt)
+    always, _, t = _trial_threshold(transmit_probability(jnp.asarray(k, dt), jnp.asarray(d, dt)))
+    out = np.where(np.asarray(always), np.uint64(TRIAL_WORDS), np.asarray(t).astype(np.uint64))
+    return int(out) if out.ndim == 0 else out
 
 
 def off_wall(r_hit, n_out, stay_inside, nudge):
