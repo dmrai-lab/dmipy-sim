@@ -64,6 +64,36 @@ FAMILIES = {
                     "7ac4047d43a83524622f202a99027af4df10ebcbf607c8079b8401c0a0405ac4",
                     "e5f307e5bd533a68a1eabbe7c01d8f203f188f40e5d1b7fe51245d446cd12b2d"],
     },
+    "71a3eff2d8554b5c1d9b4ba3f78575b636f50281a3de6c62a08a0bd5e459ae58": {
+        "field": {
+            "position_coeffs": "1e24584f8b69eb81d7a20577212d049b4a39d9fad81d06254f5bf844c4a23c89",
+            "boundary_endpoint": "07dcdc414151478a130cfdb7d5e6b4ad9e6bf7974842fa37136ce0a728f7b1f8",
+            "boundary_bands": "2011a5bb8054280b2ecda6eceb4bba907fe3f3007e186ebcdb2038131ccaef02",
+            "compartment": "9d97d188917dec920eabca932dad8e76680a4634394776226c1896b470ca47ab",
+            "comp_events": "8e63dde602a3ea9378abbb8dd463aaebc6238cc6e953d967d2966ef2ae3ec8d6",
+            "bound_start": "d13d4a8b3b8add19b5970157f09d00c12cbda4fed4d74d8493156523f7069b66",
+            "bound_events": "5fceeabde86a91a42fdcd3e4387e8ad12dc05e256ba127dcdead4e397e1b86ef",
+            "field_coeffs": "6d883f5790310f7796daf9f5598337cae94a04674564d29ab5c72424ffa0e2d9",
+            "qv_positions": "db0980f9294b73fa9b48a80e6595ca0ecbf14fd0d9d0eae07bb433a2204243c0",
+            "qv_boundary": "9702e0d46ac4d36a8561fe5f564aca4c8d3f755f11516f652172e0d91261d390",
+            "qv_field": "078a77dff2fb7669676cec35646485d4bc9cb2b2a478f500c566f081951e0525",
+            "qv_field_increments": "7eb99296c49eb8099fab89bc7763dcc20fa7d8b9ca00dcf9ffa20072abfe63ee",
+        },
+        "no_field": {
+            "position_coeffs": "2c3ff1b7479fc28fda231daa411cd5d29cab703a10f3ad45e8d942d4f0b860f5",
+            "boundary_endpoint": "91209249d3cfee857d741f2e7cea0ff16e79dc037bd1d5fca8a2707eaa1452a9",
+            "boundary_bands": "bf537107fc57b7fadb571ef7c8704147bb60cef18ba19bba63f2b89ea21cc783",
+            "compartment": "9d97d188917dec920eabca932dad8e76680a4634394776226c1896b470ca47ab",
+            "comp_events": "2f56bc4c3598c6f0629ca864e727aa46b27c10d550146be5795ae23bc25caea0",
+            "qv_positions": "9817631e68112b312e074b230bd0bc01988cac30a9a555e1a10ff1ee84dd8e65",
+            "qv_boundary": "cfae902d2c581d091108097b10c89dc6a0ce796b24945457a8c0c3d5baef2a5b",
+        },
+        "forward": ["c2d5c7d4fc9bf1d5bfef8a0e4c89c2fc6db589578aa245ecf9b69cce853abd4f",
+                    "af197e46ba0cfc590830fd5cae9f874da496969454db10331188111b7a2c07a7",
+                    "64c397c8733b4e81c7d7eac42f90cb73d8ce36f6cc6e7b24705c6c4767debf56",
+                    "d2868ae53f19de9c8fede8432c22ea0c3b5c9d87eb160c9164abfb14546ee3ab",
+                    "7b7a491a00920b19d6da47a73250e6a1bee97fc02d9c442dee9d00260f5bcbcb"],
+    },
 }
 
 
