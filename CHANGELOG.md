@@ -5,6 +5,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The realised acceptance of a membrane trial, exactly** (no change to any walk).
+  `geometry._boundary.realised_acceptance(kappa_over_D, d_perp, dtype=numpy.float32)` returns the integer threshold
+  `t` in `[0, 2^32]` of the plain walls' transmission trial: a 32-bit word `w` is granted if and only if `w < t`, so the
+  trial's realised probability is exactly `t / 2^32`. It runs the kernel's own `transmit_probability` and the threshold
+  `trial_granted` decides with (one definition, `_trial_threshold`), on float32 arguments or, under JAX's x64 mode, on
+  float64 ones (refused by name without it). The `trial_granted` docstring states the derived distance from
+  `x / (1 + x)`: `|r - p| < 2^-32 + eps p`, `eps = (3 u + u^2) / (1 - u)`, `u = 2^-24`, for float32 inputs each zero
+  or normal and `kappa_over_D < 2^127`, and the behaviour outside that domain; it replaces the relative
+  `2^-23`, which an input with a float32 `p` `1.46 x 2^-23` off the formula violates. `tools/realised_acceptance_bound.py`
+  checks the bound over every float32 `x` of `[2^-34, 0.1124]` and `[2^-34, 2^26]` (records
+  `docs/realised-acceptance-bound-{application,full}.json`); `tests/geometry/test_realised_acceptance.py` holds the
+  function to the kernel's decisions on the edge table in both dtypes and on 100 000 random inputs.
 - **Recorded bits per CPU family** (tests, CI). The recorded hashes of the all-myelinated reference walks are kept per
   family of compiled CPU arithmetic in `tests/recorded_bits.py` `FAMILIES`, keyed by the family's canary (the hash of a
   small fixed walk), and the `recorded_bits` fixture returns this host's family's values. The canary selects the family
