@@ -250,8 +250,10 @@ class PackedCylinders(Geometry):
     carries_side = True            #: `permeate` accepts the walker's own side
 
     @property
-    def seeds_every_pool(self):
-        """The placement is uniform over the whole cell when it names no pool (``pool=None``)."""
+    def placement_is_stationary(self):
+        """Whether the placement's law is the walk's stationary law: the placement is uniform over the whole cell when
+        it names no pool (``pool=None``); a placement of one pool is stationary only behind sealed walls, which the
+        walk reads from the permeability itself (:func:`~dmipy_sim.engine.physics.start_record`)."""
         return self.pool is None
 
     # `classify_position` returns 0=extra and 1..N = the cylinder the walker is in,
@@ -455,8 +457,10 @@ class PackedSpheres(Geometry):
     supports_permeability = True   #: has a membrane a walker can cross
 
     @property
-    def seeds_every_pool(self):
-        """The placement is uniform over the whole cell when it names no pool (``pool=None``)."""
+    def placement_is_stationary(self):
+        """Whether the placement's law is the walk's stationary law: the placement is uniform over the whole cell when
+        it names no pool (``pool=None``); a placement of one pool is stationary only behind sealed walls, which the
+        walk reads from the permeability itself (:func:`~dmipy_sim.engine.physics.start_record`)."""
         return self.pool is None
 
     # `classify_position` returns 0=extra and 1..N = the sphere the walker is in,

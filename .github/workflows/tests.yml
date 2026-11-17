@@ -108,7 +108,9 @@ jobs:
           pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e . "jax==0.10.2" "jaxlib==0.10.2"
       - name: Run the recorded-bits tests
+        shell: bash
         run: |
+          set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
           JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py -k "recorded" -q -rs --tb=short | tee out.txt
           grep -q "3 passed" out.txt && ! grep -q "skipped" out.txt
