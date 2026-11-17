@@ -62,6 +62,12 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   internal oracles the replay is held to: underscored, exported nowhere, imported by the parity admissions, the step-law
   certificate, the tier certificates and the tests. `simulate()` itself runs the oracle only for a run a coefficient walk
   is not validated to serve (`core._replay_gap`, the geometry's `replay_parity`).
+- **The membrane trial.** A plain wall (`PackedCylinders`, `PackedSpheres`, a plain cylinder of
+  `PackedMyelinatedCylinders`) decides each encounter's transmission trial from one 32-bit word of the step's key
+  (`jax.random.bits`), granted when the word is below `floor(p 2^32)` (`_boundary.trial_granted`): the realised
+  probability is `floor(p 2^32) / 2^32`, within `2^-32` of the float32 `p` and never above it (the float32 uniform it
+  replaces realised `ceil(p 2^23) / 2^23`). The sheathed cylinder's one trial per step and the other geometries'
+  trials keep their float32 uniform.
 
 ## Environment & GPU
 
@@ -276,13 +282,13 @@ build from the worst case (a step zig-zagging across the narrowest passage: `min
 sheath, or the shortest nudged grazing chord), not fixed. Per-axon `T2_*`, `rho_inner/outer`,
 `kappa_inner/outer` are indexed by the walker's axon (the pools' `D` is the `Pool`'s, one per pool: `D_intra=`, `D_extra=`, `D_myelin=` and `water_fractions=` are refused by name); `rho` is applied per hit with the
 diffusivity of the pool the walker is in.
-A `PackedMyelinatedCylinders` cylinder with g-ratio 1 is PLAIN (no sheath): one wall at its radius between its lumen and the extra pool (`kappa_outer`, `rho_outer`), a transmission trial at every encounter of a step (the packed kernel's rule, with the uniforms `us` of the step), where a myelinated cylinder's two walls keep one trial per step at the step's first encounter with any wall; so one cell holds myelinated and unmyelinated axons, the field is the myelinated sheaths', and `seed_pools=` names the pools seeded (default: every pool whose water fraction is not 0, by area; the spec's `seeding.pools` states them and `geometry_from_spec` reads them literally).
+A `PackedMyelinatedCylinders` cylinder with g-ratio 1 is PLAIN (no sheath): one wall at its radius between its lumen and the extra pool (`kappa_outer`, `rho_outer`), a transmission trial at every encounter of a step (the packed kernel's rule, with the 32-bit words of the step), where a myelinated cylinder's two walls keep one trial per step at the step's first encounter with any wall; so one cell holds myelinated and unmyelinated axons, the field is the myelinated sheaths', and `seed_pools=` names the pools seeded (default: every pool whose water fraction is not 0, by area; the spec's `seeding.pools` states them and `geometry_from_spec` reads them literally).
 
 **Packed substrates** (`PackedCylinders`, `PackedSpheres`) are stepped by
 `geometry.packed.packed_wall_kernel`: the same ray-traced multi-bounce rule, tested against the
 objects within reach of the step (`packed_candidate_count`), with the budget
 `bounce_budget` (`geometry._boundary`) derived from the narrowest passage (`min_gap` or the nudged grazing
-chord). **Every wall encounter is its own Powles trial** with an independent uniform: summed over
+chord). **Every wall encounter is its own Powles trial** decided by an independent 32-bit word (`_boundary.trial_granted`): summed over
 a step that is `κ/D` times the boundary local time the encounters record, so transmission does
 not depend on how many walls a sub-step meets and no gap-based sub-step rule is needed. A
 single-hit rule at outer packing 0.45 ended 90% of extra-axonal walkers inside a cylinder.

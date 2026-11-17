@@ -5,7 +5,7 @@ Exact, not statistical:
 
 * a cell whose every cylinder is myelinated walks as it always has: every array a walk returns, with and without the
   field, and the forward signal, hash to the values recorded for it;
-* a plain cylinder's wall is the plain packing's wall, step for step: the same start, step and uniforms fed to
+* a plain cylinder's wall is the plain packing's wall, step for step: the same start, step and trial words fed to
   :func:`~dmipy_sim.geometry.packed.packed_wall_kernel` and to the cell's kernel end at the same position, with the
   same crossings, encounters and contact, bit for bit, on sparse and dense cells, near walls and across gaps, at
   every prefix of the bounce loop; also where a step meets a (reflecting) sheathed cylinder and a plain wall;
@@ -285,19 +285,19 @@ def _pair(radii, centres, Lc, kappa, plain, n, seed, *, budget=None, sheath=None
     w_p = packed_wall_kernel(cj, rj, f32(Lc), eps, nudge, step_max, min_gap, count=True, budget=budget)
     w_u = concentric_wall_kernel(cj, jnp.asarray(inner, f32), rj, f32(Lc), Dj, Dj, Dj, jnp.zeros(N, f32), jnp.asarray(kap),
                                  jnp.full((N, 4), rho_over_D), eps, nudge, step_max, min_gap, count=True, budget=budget)
-    B = w_p.bounce_loop.budget if coins is None else coins          # ``coins``: the length the uniforms are drawn at
+    B = w_p.bounce_loop.budget if coins is None else coins          # ``coins``: the length the words are drawn at
     sides = [1.0, -1.0] if sheath is None else [1.0]
     pts, dirs, ls = _starts(rng, radii, centres, Lc, step_max, n, sides)
     inside, own = _owner(pts, radii, centres, Lc)
     keep = ~inside | plain[own]                                          # never inside a myelinated cylinder
     pts, dirs, ls, inside, own = pts[keep], dirs[keep], ls[keep], inside[keep], own[keep]
     keys = jax.random.split(jax.random.PRNGKey(seed), len(pts))
-    us = jax.vmap(lambda k: jax.random.uniform(k, (B,), dtype=jnp.float32))(keys)
+    words = jax.vmap(lambda k: jax.random.bits(k, (B,), dtype=jnp.uint32))(keys)     # the plain packing's draw
     pool = jnp.asarray(inside.astype(np.int32)); k0 = jnp.asarray(own.astype(np.int32))
     hp = jax.jit(jax.vmap(lambda p, d, l, s, key: w_p(p, d, l, s, kod, rho_over_D, key)))(
         jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
     hu = jax.jit(jax.vmap(lambda p, d, l, pl, k, u: w_u(p, d, l, pl, k, f32(0.5), u)))(
-        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), pool, k0, us[:, :w_u.bounce_loop.budget])
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), pool, k0, words[:, :w_u.bounce_loop.budget])
     return w_p, w_u, hp, hu, pool
 
 
@@ -318,7 +318,7 @@ def test_a_plain_wall_is_the_plain_packings_wall_step_for_step(kappa):
     the starts within two steps of a wall on both sides and uniform in the cell: the end position, the crossing, the
     encounters (reflections plus crossings) and the contact are bit-identical, with the derived budget (compiled) and at
     every prefix of the loop (a budget of one, two and three encounters, each primitive evaluated on its own), each
-    prefix with its own uniforms. At the large
+    prefix with its own words. At the large
     permeability some steps reject their first encounter and transmit at a later one, which a one-trial-per-step
     rule cannot do."""
     n_steps = n_later = n_cross = n_reject = 0

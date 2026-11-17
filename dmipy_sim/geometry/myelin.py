@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
+from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability, trial_granted,
                         BounceLoop, wall_push, bounce_budget)
 
 from .base import Geometry, LengthScales, acquisition_rotation
@@ -89,7 +89,8 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
 
     The transmission trials, per kind of wall: a SHEATHED cylinder's two interfaces make one Powles trial per
     step, at the step's first encounter with any wall, with the step's scalar uniform ``u``; a PLAIN cylinder's
-    wall makes a trial at every encounter of the step, encounter ``i`` with ``us[i]``, as
+    wall makes a trial at every encounter of the step, encounter ``i`` decided by the 32-bit word ``words[i]``
+    (:func:`~dmipy_sim.geometry._boundary.trial_granted`), as
     :func:`~dmipy_sim.geometry.packed.packed_wall_kernel` does, whatever walls the step met before.
 
     The bounce budget and the candidate count are derived from the worst case a walker can meet. For the sheathed
@@ -103,14 +104,14 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint disks, ``R_min`` the
     smallest lumen. ``budget=`` overrides the derived budget for one walk.
 
-    Returns ``wall(xy, d_hat, step_l, pool, k, u, us=None)`` giving a :class:`ConcentricHit`: the end position,
+    Returns ``wall(xy, d_hat, step_l, pool, k, u, words=None)`` giving a :class:`ConcentricHit`: the end position,
     the pool and owning / nearest cylinder after the step, the four boundary local-time channels ``-2 d_perp``
     (inner wall met from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall
     met from outside; a plain cylinder's wall met from its lumen is the first channel, from outside the fourth),
     the surface log-weight increment with ``rho_weights[k] = (rho_in/D_in, rho_in/D_my, rho_out/D_my,
     rho_out/D_ex)`` applied per hit (a plain cylinder's first weight is its wall's ``rho/D_in``), whether a
-    crossing was granted, the encounters when ``count``, and whether the budget ran out. ``us``, the ``(budget,)``
-    uniforms of the plain walls' trials, is required when the cell holds a plain cylinder and is not read
+    crossing was granted, the encounters when ``count``, and whether the budget ran out. ``words``, the ``(budget,)``
+    ``uint32`` words of the plain walls' trials, is required when the cell holds a plain cylinder and is not read
     otherwise; ``wall.bounce_loop.budget`` is its length.
     """
     N = int(inner.shape[0])
@@ -144,10 +145,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     def _pin(xy, q, R_in, R_out, pool):
         return pin_to_pool(xy, q, R_in, R_out, pool, nudge)
 
-    def wall(xy, d_hat, step_l, pool, k, u, us=None):
-        if any_plain and us is None:
-            raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the uniforms of its plain walls' trials, "
-                             f"us of shape ({loop.budget},)")
+    def wall(xy, d_hat, step_l, pool, k, u, words=None):
+        if any_plain and words is None:
+            raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the 32-bit words of its plain walls' trials, "
+                             f"words of shape ({loop.budget},), uint32")
         q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
         dist_wall = jnp.where(real, jnp.sqrt(jnp.sum(q_all * q_all, -1)) - outer, jnp.inf)
         k0 = jnp.where(pool == 0, jnp.argmin(dist_wall).astype(jnp.int32), k)
@@ -212,7 +213,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             transmit = first & (u < p_cross)
             if any_plain:                                                      # a plain wall: a trial at every encounter
                 plain_hit = (~hit_in) & plain_c[kh]
-                transmit = jnp.where(plain_hit, any_hit & (us[i] < p_cross), transmit)
+                transmit = jnp.where(plain_hit, any_hit & trial_granted(words[i], p_cross), transmit)
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)

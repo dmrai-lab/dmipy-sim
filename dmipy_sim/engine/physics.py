@@ -934,11 +934,12 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     diffusivity (the axon's, indexed by the carried compartment); the axial coordinate is free.
 
     Returns ``sub(r, step_key, u, comp_id, perm_key) -> (r_new, comp_id_new, chan, dlog_rho, work)``, and
-    ``sub.move(r, s, comp_id, u, us)`` the same for a given step vector ``s`` and the plain walls' uniforms ``us``
+    ``sub.move(r, s, comp_id, u, words)`` the same for a given step vector ``s`` and the plain walls' words ``words``
     (``None`` when the cell has no plain cylinder), where
     ``u`` is the uniform of a sheathed cylinder's one trial per step and ``perm_key`` the key of the plain
-    cylinders' trials (``uniform(perm_key, (budget,))``, one per encounter, the plain packing's draw, made only when the
-    cell holds a plain cylinder; its first is ``u``, and the first encounter of a step meets one wall), ``chan``
+    cylinders' trials (``bits(perm_key, (budget,), uint32)``, one 32-bit word per encounter, the plain packing's draw,
+    made only when the cell holds a plain cylinder; its first is the word ``u`` is made of, ``u = (word >> 9) 2^-23``,
+    and the first encounter of a step meets one wall), ``chan``
     holds the four unit boundary local-time channels of the wall kernel, ``dlog_rho``
     the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None), and ``work``
     the step's ``(hits, crossings, exhausted)`` as int32 -- the first two None unless the geometry counts
@@ -966,7 +967,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         budget=geometry.bounce_budget)
     budget = wall.bounce_loop.budget
 
-    def move(r, s_c, comp_id, u, us):
+    def move(r, s_c, comp_id, u, words):
         """The step ``s_c`` (a 3-vector) of the walker at ``r`` in the encoded compartment ``comp_id``, through the
         walls: the in-plane part meets the walls, the axial part is free."""
         pool, k = _pool_and_axon(geometry, comp_id)
@@ -974,7 +975,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         l_xy = jnp.linalg.norm(s_c[:2])
         d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
                           jnp.zeros(2, jnp.float32))
-        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, us)
+        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, words)
         xy_new = h.xy
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
@@ -987,9 +988,9 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         pool, k = _pool_and_axon(geometry, comp_id)
         unit = pair_step(step_key)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
-        us = (jax.random.uniform(perm_key, (budget,), dtype=jnp.float32)
+        words = (jax.random.bits(perm_key, (budget,), dtype=jnp.uint32)
               if wall.has_plain else None)
-        return move(r, unit * step_l, comp_id, u, us)
+        return move(r, unit * step_l, comp_id, u, words)
 
     sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand

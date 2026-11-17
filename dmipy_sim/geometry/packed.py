@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..math.step_law import LONGEST_STEP
-from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
+from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, trial_granted, off_wall,
                         BounceLoop, WallHit, bounce_budget, wall_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
@@ -41,7 +41,8 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     carried state that changes only where a crossing is granted.
 
     Every wall encounter is its own trial, ``p = x / (1 + x)`` with ``x = 2 (kappa/D) d_perp``
-    (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), with an independent uniform. To first order
+    (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), decided by an independent 32-bit word
+    (:func:`~dmipy_sim.geometry._boundary.trial_granted`: the realised probability is ``floor(p 2^32) / 2^32``). To first order
     in ``x`` the trials summed over the encounters of a step are ``(kappa/D)`` times the boundary local
     time the reflections record, the same estimator the surface-relaxivity channel is validated
     on (Brownstein-Tarr), so the transmission does not depend on how many walls a step happens
@@ -74,7 +75,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
         return q - L * jnp.floor(q / L + f32(0.5))
 
     def wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key):
-        us = jax.random.uniform(key, (loop.budget,), dtype=jnp.float32)      # one draw per encounter
+        words = jax.random.bits(key, (loop.budget,), dtype=jnp.uint32)      # one 32-bit word per encounter
         q_all = _wrap(p[None, :] - centers)                                    # (N, dim)
         dist_wall = jnp.sqrt(jnp.sum(q_all * q_all, -1)) - radii
         if n_cand < N:
@@ -104,7 +105,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             cos_a = jnp.sqrt(jnp.maximum(disc[kh], f32(0.0))) / R_hit
             d_perp = jnp.where(any_hit, rem_a * cos_a, f32(0.0))
             stay_in = in_own & (kh == kc)
-            transmit = any_hit & (us[i] < transmit_probability(k_c[kh] if per_object else k_c, d_perp))
+            transmit = any_hit & trial_granted(words[i], transmit_probability(k_c[kh] if per_object else k_c, d_perp))
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)

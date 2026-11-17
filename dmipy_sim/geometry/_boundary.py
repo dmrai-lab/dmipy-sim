@@ -202,6 +202,28 @@ def transmit_probability(kappa_over_D, d_perp):
     return x / (jnp.float32(1.0) + x)
 
 
+def trial_granted(word, p):
+    """Whether a transmission trial of probability ``p`` is granted by the 32-bit word ``word``.
+
+    ``word`` is a ``uint32`` (``jax.random.bits(key, shape, dtype=jnp.uint32)``) and ``p`` the float32 probability
+    :func:`transmit_probability` returns, in ``[0, 1]``. The trial is granted when ``word < t`` with
+    ``t = floor(p 2^32)`` (a float32 product by a power of two is exact, and for ``p < 1`` it is at most
+    ``2^32 - 2^8``, which a ``uint32`` holds), always when ``p >= 1`` (an infinite permeability transmits) and never
+    when ``p <= 0``. Over a uniform word the realised probability is therefore ``floor(p 2^32) / 2^32``: within
+    ``2^-32`` of ``p`` and never above it.
+
+    The word is the one a float32 uniform of the same key is made of (``uniform = (word >> 9) 2^-23``), so drawing
+    words in place of uniforms moves no other draw; the trial decided by ``uniform < p`` realised
+    ``ceil(p 2^23) / 2^23``, above ``p`` by up to ``2^-23``. What remains is the float32 evaluation of ``p`` itself
+    (a relative error up to ``2^-23`` from :func:`transmit_probability`'s ``x / (1 + x)``): the coin adds an absolute
+    error below ``2^-32`` to it, where the float32 uniform added up to ``2^-23`` (a relative bias of ``1.7e-6``
+    against ``1.7e-4`` at ``p = 1e-4``)."""
+    p = jnp.asarray(p, jnp.float32)
+    inside = (p > jnp.float32(0.0)) & (p < jnp.float32(1.0))
+    t = jnp.floor(jnp.where(inside, p, jnp.float32(0.0)) * jnp.float32(2.0 ** 32)).astype(jnp.uint32)
+    return (p >= jnp.float32(1.0)) | (inside & (jnp.asarray(word, jnp.uint32) < t))
+
+
 def off_wall(r_hit, n_out, stay_inside, nudge):
     """Move a point sitting exactly ON a surface to ``nudge`` clear of it, correct side.
 
