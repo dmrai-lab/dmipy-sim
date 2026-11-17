@@ -116,6 +116,7 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short --durations=25 --durations-min=1.0"
 markers = [
     "gpu: tier 2, run on a GPU by .github/workflows/gpu-tier.yml (deselected on the CPU runners with -m 'not gpu')",
+    "recorded_bits: bits recorded on one JAX build and one host's kernels, asserted only in the pinned recorded-bits CI job (DMIPY_SIM_RECORDED_BITS=1)",
 ]
 filterwarnings = [
     # A sub-step longer than the collision-lookup cell means the walk misses walls, so any confinement,

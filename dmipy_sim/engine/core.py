@@ -1310,8 +1310,9 @@ def _walk_geometry(
         Record the walk's membrane trials at its plain walls (:mod:`dmipy_sim.trial_record`): per walker and per
         (object, time band) cell the trials, the granted trials and ``modes`` Chebyshev sums of the trials'
         overshoots, returned as ``CoefficientWalk.trial_record``. None (the default) records nothing and the walk is
-        the same program as before; with it the walk is the same walk, bit for bit, at the same counting, which the
-        record turns on (``Geometry.count_walls``). Refused by name: a geometry with no plain wall, a backend other
+        the same program as before; with it the walk has every discrete outcome of the walk without it at the same
+        counting, which the record turns on (``Geometry.count_walls``), and the same bits where the two compiled
+        programs round alike (another JAX build may differ in the positions' last bits). Refused by name: a geometry with no plain wall, a backend other
         than the JAX kernels, the MT burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
         every reweighted read), a field channel whose ``K_c3`` or ``field_read_interval`` a pilot of this walk would
         choose, band edges that do not run from 0 to ``T_max`` or miss a storage window's boundary, a record above

@@ -73,7 +73,6 @@ jobs:
           # GitHub runners have no GPU, so JAX is pinned to the CPU and the `gpu` tier (gpu-tier.yml) is deselected.
           # A test that is merely expensive is slimmed or deleted, not marked (tests/test_no_tiers.py).
           python tools/ci_groups.py 8 --check
-          lscpu | grep -E "Model name" || true; grep -q avx512f /proc/cpuinfo && echo "avx512f: yes" || echo "avx512f: no"  # TEMPORARY diagnostic
           PATHS=$(python tools/ci_groups.py 8 ${{ matrix.group }})
           JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not gpu"
 
@@ -92,9 +91,10 @@ jobs:
           if-no-files-found: ignore
 
   recorded-bits:
-    # The all-myelinated walks hashed before plain cylinders existed are bits of one JAX build (jax / jaxlib 0.10.2,
-    # tests/geometry/test_mixed_myelinated_plain_cell.py RECORDED_WITH): this job installs that build and runs those
-    # three tests alone, so the bit-identity holds in CI whatever the matrix above resolves.
+    # Recorded bits are bits of one JAX build (jax / jaxlib 0.10.2, tests/conftest.py RECORDED_WITH) and of the kernels
+    # the compiler emits for one host's CPU: the all-myelinated walks hashed before plain cylinders existed, and the
+    # walk with and without the trial record. This job installs that build, checks its host with a canary walk first,
+    # and runs the tests marked recorded_bits alone (DMIPY_SIM_RECORDED_BITS=1; skipped by name everywhere else).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,6 +113,6 @@ jobs:
         run: |
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
-          lscpu | grep -E "Model name" || true; grep -q avx512f /proc/cpuinfo && echo "avx512f: yes" || echo "avx512f: no"  # TEMPORARY diagnostic
-          JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py -k "recorded" -q -rs --tb=short | tee out.txt
-          grep -q "3 passed" out.txt && ! grep -q "skipped" out.txt
+          JAX_PLATFORMS=cpu python tools/recorded_bits_canary.py
+          DMIPY_SIM_RECORDED_BITS=1 JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -m recorded_bits -q -rs --tb=short | tee out.txt
+          grep -q "5 passed" out.txt && ! grep -q "skipped" out.txt

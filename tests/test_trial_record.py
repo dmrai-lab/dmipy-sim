@@ -7,7 +7,8 @@ tests that compare sums accumulate in float64, under the ``x64`` fixture). The r
 2. only the trials of steps the walk keeps are recorded (a walker held bound records none);
 3. every encounter of a plain wall is a trial, later encounters of a step and sealed objects included, and the counts
    are the walk's work counts on an all-plain cell;
-4. the record changes nothing: the walk with it is the walk without it, bit for bit, at the same counting;
+4. the record changes nothing: the walk with it has every discrete outcome of the walk without it at the same counting,
+   its positions within a stated tolerance, and bit for bit on the recording build and host (``recorded_bits``);
 5. a trial's overshoot is within its object's a priori bound, and a walk that exceeds it is refused;
 6. a scheduled permeability is read at the step's midpoint and the band is the step's end;
 8. the trial count is stored beside the granted count;
@@ -253,60 +254,56 @@ def test_a_mixed_cells_record_is_its_plain_walls_encounters():
 
 # ── 4. the record changes nothing ───────────────────────────────────────────────────────────────────────────────────
 
-def test_the_record_changes_no_array_of_a_plain_cells_walk(plain_walks):
-    _assert_same_walk(*plain_walks)
+#: The walk with the record and without it are two compiled programs. Bit for bit they are equal on the recording
+#: build and host (the pinned recorded-bits job asserts it); another JAX build may compile them to float32 arithmetic
+#: that rounds differently (measured on jax 0.12: a few ulp of a position per block of ~360 steps, grown by the
+#: reflections to at most 2.9e-4 of the cell over the 4 ms walk, every discrete outcome equal). Everywhere the discrete
+#: outcomes are asserted exactly, which a walk whose history diverged could not meet, and each walker's start and
+#: displacement within this fraction of the cell: 3.5 times the largest measured, a tenth of the mixed cell's step.
+POSITION_TOLERANCE = 1e-3
+
+
+def _assert_same_outcomes(a, b, cell):
+    """Every discrete outcome of two walks equal exactly, positions within :data:`POSITION_TOLERANCE` of ``cell``."""
+    for name in ("compartment", "bound_start"):
+        x, y = getattr(a, name), getattr(b, name)
+        assert (x is None) == (y is None), name
+        if x is not None:
+            np.testing.assert_array_equal(np.asarray(x), np.asarray(y), err_msg=name)
+    for name in ("comp_events", "bound_events"):
+        x, y = getattr(a, name), getattr(b, name)
+        assert (x is None) == (y is None), name
+        if x is not None:
+            for f in ("offsets", "t", "label"):
+                np.testing.assert_array_equal(getattr(x, f), getattr(y, f), err_msg=f"{name}.{f}")
+    keys = ("n_hits", "n_crossings", "exhausted_steps", "label_deviations", "walker_steps")
+    assert {k: a.work[k] for k in keys} == {k: b.work[k] for k in keys}
+    assert a.illegal_crossings == b.illegal_crossings
+    ends = lambda w: np.asarray(w.position_coeffs, np.float64)[:, :, :2, :]       # start and displacement per window
+    np.testing.assert_allclose(ends(a), ends(b), rtol=0.0, atol=POSITION_TOLERANCE * cell)
+
+
+def test_the_record_changes_no_outcome_of_a_plain_cells_walk(plain_walks):
+    _assert_same_outcomes(*plain_walks, cell=pack_cylinders(RADII, target_vf=0.45, seed=1)[1])
     assert plain_walks[0].trial_record is None
 
 
-def _diagnose(a, b):
-    """TEMPORARY diagnostic: per array the largest absolute / relative difference, the walkers whose displacement
-    differs by more than 1e-6 of the cell, the discrete outcomes, and the host."""
-    import platform, subprocess
-    out = []
-    for name in ARRAYS:
-        x, y = getattr(a, name), getattr(b, name)
-        if x is None:
-            continue
-        x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
-        d = np.abs(x - y)
-        rel = d / np.maximum(np.abs(y), 1e-300)
-        out.append(f"{name}: max_abs {d.max():.3e} max_rel {rel.max():.3e} n_diff {int((d > 0).sum())}/{d.size}")
-    disp = np.abs(np.asarray(a.position_coeffs, np.float64)[:, :, 1, :] - np.asarray(b.position_coeffs, np.float64)[:, :, 1, :])
-    out.append(f"walkers |d disp| > 1e-6 L: {int((disp.max(axis=(1, 2)) > 1e-6 * L_CELL).sum())}, max |d disp| / L {disp.max() / L_CELL:.3e}")
-    wa = {k: v for k, v in a.work.items() if k in ('n_hits', 'n_crossings', 'exhausted_steps', 'label_deviations')}
-    wb = {k: v for k, v in b.work.items() if k in ('n_hits', 'n_crossings', 'exhausted_steps', 'label_deviations')}
-    out.append(f"work off {wa} on {wb}")
-    ea, eb = a.comp_events, b.comp_events
-    out.append(f"events equal: {all(np.array_equal(getattr(ea, f), getattr(eb, f)) for f in ('offsets', 't', 'label'))}; "
-               f"n events {len(ea.t)} vs {len(eb.t)}; illegal {a.illegal_crossings} vs {b.illegal_crossings}")
-    try:
-        cpu = subprocess.run(["lscpu"], capture_output=True, text=True).stdout
-        model = [l for l in cpu.splitlines() if "Model name" in l]
-        out.append(f"cpu {model} avx512f {'avx512f' in cpu}")
-    except Exception as e:                                             # noqa: BLE001 -- a diagnostic
-        out.append(f"cpu: {e}")
-    import os
-    out.append(f"jax cache dir {jax.config.jax_compilation_cache_dir} env {os.environ.get('DMIPY_JAX_CACHE')}")
-    return "\n".join(out)
-
-
-def test_the_record_changes_no_array_of_a_mixed_cells_walk(mixed_walks):
-    a, b = mixed_walks
-    same = all(np.array_equal(np.asarray(getattr(a, n)), np.asarray(getattr(b, n)))
-               for n in ARRAYS if getattr(a, n) is not None)
-    if not same:                                                       # TEMPORARY: the diagnosis, then the fresh compile
-        import subprocess, sys, os
-        code = ("import sys; sys.path.insert(0, 'tests'); import numpy as np; import test_trial_record as t; "
-                "r = t._mixed(); r.count_walls = True; a = t._walk(r); b = t._walk(t._mixed(), record_trials=t.SPEC); "
-                "print(t._diagnose(a, b))")
-        fresh = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                               env=dict(os.environ, DMIPY_JAX_CACHE="0"))
-        raise AssertionError("DIAGNOSIS (in-process, persistent cache as configured):\n" + _diagnose(a, b)
-                             + "\nFRESH PROCESS, NO PERSISTENT CACHE:\n" + fresh.stdout[-3000:] + fresh.stderr[-1500:])
-    _assert_same_walk(*mixed_walks)
+def test_the_record_changes_no_outcome_of_a_mixed_cells_walk(mixed_walks):
+    _assert_same_outcomes(*mixed_walks, cell=L_CELL)
     r = mixed_walks[1].trial_record
     assert r.n.shape == (32, 4, 3)
     assert int(r.n[:, [0, 2]].sum()) == 0 and int(r.n[:, [1, 3]].sum()) > 0       # the myelinated cylinders' cells empty
+
+
+@pytest.mark.recorded_bits
+def test_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_bits, plain_walks):
+    """On the recording build and host the two programs walk the same bits: every array, the work, the events."""
+    _assert_same_walk(*plain_walks)
+
+
+@pytest.mark.recorded_bits
+def test_the_record_changes_no_bit_of_a_mixed_cells_walk(recorded_bits, mixed_walks):
+    _assert_same_walk(*mixed_walks)
 
 
 # ── 5. the overshoot's bound ────────────────────────────────────────────────────────────────────────────────────────
