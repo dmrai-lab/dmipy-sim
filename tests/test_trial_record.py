@@ -286,7 +286,7 @@ def _diagnose(a, b):
     except Exception as e:                                             # noqa: BLE001 -- a diagnostic
         out.append(f"cpu: {e}")
     import os
-    out.append(f"jax cache dir {jax.config.read('jax_compilation_cache_dir')} env {os.environ.get('DMIPY_JAX_CACHE')}")
+    out.append(f"jax cache dir {jax.config.jax_compilation_cache_dir} env {os.environ.get('DMIPY_JAX_CACHE')}")
     return "\n".join(out)
 
 
@@ -350,19 +350,20 @@ def test_a_schedules_breakpoint_at_a_band_edge_splits_the_trials():
 
 
 def test_a_trial_goes_to_the_band_of_its_steps_end():
-    """Edges at step ends 0, 4, 6.5 (inside step 6) and 10: a step ending at an edge is in the later band, the step
-    straddling 6.5 in the later band, and the walk's last step in the final band."""
+    """Edges at step ends 0, 4, 6.5 (inside step 6) and 10, bands ``(a, b]``: the step ending at the edge 4 is in the
+    earlier band, the step straddling 6.5 (ending at 7) in the later band, and the walk's last step, ending at
+    ``T_max``, in the final band."""
     from dmipy_sim.trial_record import edge_steps
     spec = TrialRecordSpec(modes=1, band_edges=(0.0, 4.0, 6.5, 10.0))
     steps = edge_steps(spec, 10.0, 1.0, 10, 10)
-    np.testing.assert_array_equal(steps, [0, 4, 7, 10])
+    np.testing.assert_array_equal(steps, [0, 4, 6, 10])
     init, add = device_record(1, steps, [1.0], 1, jnp.float32)
     one = TrialLog(jnp.array([True]), jnp.array([0], jnp.int32), jnp.array([0.5], jnp.float32), jnp.array([False]))
     bands = {}
     for s in range(10):
         n = np.asarray(add(init(), one, jnp.int32(s))[0])[0]
         bands[s] = int(np.flatnonzero(n)[0])
-    assert bands == {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1, 6: 2, 7: 2, 8: 2, 9: 2}
+    assert bands == {0: 0, 1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 2, 7: 2, 8: 2, 9: 2}
 
 
 # ── 8. the stored count ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -432,10 +433,9 @@ def test_a_walkers_row_is_its_index_in_the_seed(tmp_path):
 
 
 def test_a_windows_record_is_its_own_bands():
-    """A walk of two 2 ms windows: ``window(i)`` holds the bands of window ``i``. Against the walk of window 0's 2 ms
-    alone (the same walkers and steps, the same positions): its first band is window 0's, exactly; its last step ends
-    on the window boundary, an edge of the two-window walk, so there it is in the later band (window 1's), and in the
-    walk alone, whose last instant it is, in the final band."""
+    """A walk of two 2 ms windows: ``window(i)`` holds the bands of window ``i``, and window 0's record is the record of
+    the walk of its 2 ms alone (the same walkers, steps and positions): a step ending on the window boundary is in the
+    earlier band, window 0's."""
     spec = TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3, 3e-3, T))
     w = _walk(_dense(), window_T=2e-3, record_trials=spec, K=4)
     assert w.n_windows == 2
@@ -445,12 +445,46 @@ def test_a_windows_record_is_its_own_bands():
     alone = _walk(_dense(), T_max=2e-3, sub_steps=w.sub_steps, K=4,
                   record_trials=TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3)))
     np.testing.assert_array_equal(np.asarray(alone.position_coeffs), np.asarray(w.window(0).position_coeffs))
-    a = alone.trial_record
-    np.testing.assert_array_equal(a.n[:, :, 0], w0.n[:, :, 0])
-    np.testing.assert_array_equal(a.N[:, :, 0], w0.N[:, :, 0])
-    np.testing.assert_array_equal(a.S[:, :, 0], w0.S[:, :, 0])
-    last = a.n[:, :, 1] - w0.n[:, :, 1]                               # the last step's trials, moved to window 1
-    assert last.min() >= 0 and np.all(last <= w1.n[:, :, 0])
+    _assert_same_record(alone.trial_record, w0)
+
+
+def test_an_edge_half_a_step_off_a_window_boundary_is_refused():
+    """The window-boundary check reads the edges as given: an edge half a physics step before the 2 ms boundary does
+    not contain it, although it would be placed on the boundary's step end."""
+    from dmipy_sim.engine.core import walk_cost
+    dt = walk_cost(4, D, _dense(), T, BLOCK, tiers="all", K=8, window_T=2e-3).dt_sim
+    spec = TrialRecordSpec(modes=1, band_edges=(0.0, 2e-3 - 0.5 * dt, T))
+    with pytest.raises(ValueError, match="^" + re.escape("trial_record: band_edges must contain the window boundary 0.002") + "$"):
+        _walk(_dense(), n=4, window_T=2e-3, record_trials=spec)
+
+
+def test_a_trial_is_attributed_through_the_candidate_index():
+    """A cell of 40 cylinders, more than the kernel's candidates per step: every logged trial is at an object whose
+    wall lies within the step's reach of its start (an attribution by candidate slot instead of object would name a
+    distant object), and objects beyond the candidate count are among those met."""
+    rng = np.random.default_rng(3)
+    radii = rng.uniform(0.8, 1.3, 40) * 1e-6
+    c, Lc, _ = pack_cylinders(radii, target_vf=0.5, seed=2)
+    f32 = np.float32
+    step_max = LONGEST_STEP * radii.min() / 6
+    w = packed_wall_kernel(jnp.asarray(c, f32), jnp.asarray(radii, f32), f32(Lc), f32(1e-7 * radii.min()),
+                           f32(1e-4 * radii.min()), step_max, periodic_min_gap(c, radii, Lc), count=True, trials=True)
+    assert w.n_cand < len(radii)
+    pts, dirs, ls, inside, _ = _kernel_steps(radii, c, Lc, 8000, 13, step_max)
+    keys = jax.random.split(jax.random.PRNGKey(13), len(pts))
+    kod = jnp.full((len(radii),), 4e-3 / D, jnp.float32)
+    h = jax.jit(jax.vmap(lambda p, d, l, s, k: w(p, d, l, s, kod, f32(0.0), k)))(
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
+    valid = np.asarray(h.trials.valid); obj = np.asarray(h.trials.obj)
+    np.testing.assert_array_equal(valid.sum(1), np.asarray(h.n_hits))
+    s_idx, i_idx = np.nonzero(valid)
+    o = obj[s_idx, i_idx]
+    q = pts[s_idx].astype(np.float64) - c[o]
+    q -= Lc * np.round(q / Lc)
+    wall_distance = np.abs(np.linalg.norm(q, axis=1) - radii[o])
+    assert len(o) > 1000
+    assert np.all(wall_distance <= ls[s_idx] * (1 + 1e-5) + 1e-4 * radii.min())
+    assert (o >= w.n_cand).sum() > 0
 
 
 # ── 11. no rounding ─────────────────────────────────────────────────────────────────────────────────────────────────
