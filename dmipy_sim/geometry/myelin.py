@@ -699,13 +699,37 @@ class PackedMyelinatedCylinders(Geometry):
         return self.seed_pools if self.seed_pools is not None else _wet_pools(self.compartments)
 
     @property
-    def seeds_every_pool(self):
-        """The placement is uniform over every pool of positive area: each such pool is seeded, by area."""
+    def placement_is_stationary(self):
+        """Whether the placement's law is the walk's stationary law. The placement is the uniform law over the union of
+        the seeded pools (:attr:`seeded_pools`, by area among them), so every pair of seeded pools that exchange is
+        seeded in proportion to its area; the law is stationary exactly when no walker can reach a pool that holds
+        water and is not seeded, i.e. every pool of positive area outside the seeded pools either holds no water or has
+        every path to it from a seeded pool sealed. A face between two pools is the axolemma (lumen | sheath,
+        ``kappa_inner``) or the sheath's outer face (sheath | extra, ``kappa_outer``) of a myelinated cylinder, or the
+        one wall (lumen | extra, ``kappa_outer``) of a plain cylinder; it lets walkers through when the permeability of
+        any cylinder that has it is above 0. The permeabilities are per cylinder and constant in time (a schedule is
+        refused at construction), so these are every face the walk can open."""
         N = self.N_actual
         inner = self._inner_radii_np[:N]; outer = self._outer_radii_np[:N]
         area = {"extra": self._L_float ** 2 - float(np.sum(np.pi * outer ** 2)),
                 "intra": float(np.sum(np.pi * inner ** 2)), "myelin": float(np.sum(np.pi * (outer ** 2 - inner ** 2)))}
-        return all(n in self.seeded_pools for n in _POOL_NAMES if area[n] > 0.0)
+        sheathed = ~np.asarray(self.plain_mask[:N], bool)
+        k_in = np.asarray(self._kappa_inner_jax)[:N]; k_out = np.asarray(self._kappa_outer_jax)[:N]
+        faces = []                                                     # the pairs of pools a walker can cross between
+        if np.any(k_in[sheathed] > 0):
+            faces.append(("intra", "myelin"))
+        if np.any(k_out[sheathed] > 0):
+            faces.append(("myelin", "extra"))
+        if np.any(k_out[~sheathed] > 0):
+            faces.append(("intra", "extra"))
+        reach = set(self.seeded_pools)
+        while True:                                                   # every pool a seeded walker can reach
+            more = {q for f in faces for p, q in (f, f[::-1]) if p in reach and q not in reach}
+            if not more:
+                break
+            reach |= more
+        wet = _wet_pools(self.compartments)
+        return not any(n in wet and area[n] > 0.0 for n in reach - set(self.seeded_pools))
 
     @property
     def length_scales(self):

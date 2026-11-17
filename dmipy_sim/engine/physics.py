@@ -205,10 +205,10 @@ def start_record(geometry, r0_given: bool, diffusivity: float, dt_step: float) -
     """What a walk records of its start (``work["start"]``).
 
     - ``spatial_equilibrium``:
-      - True when the walkers start at the walk's stationary density, uniform over every pool they can reach. That holds
-        for a placement on a geometry with no permeable wall (each pool it seeds is uniform and keeps its walkers), and
-        on one whose placement is uniform over every pool (``Geometry.seeds_every_pool``).
-      - False when a permeable wall separates a pool the placement fills from one it leaves empty.
+      - True when the walkers start at the walk's stationary density, uniform over every pool with water they can
+        reach. That holds for a placement on a geometry with no permeable wall (each pool it seeds is uniform and keeps
+        its walkers), and on one whose placement's law is the stationary law (``Geometry.placement_is_stationary``).
+      - False when a permeable wall leads from a pool the placement fills to one with water it leaves empty.
       - None when the walk was handed its starts (``r0``) and cannot tell.
     - ``reason``: why.
     - ``kappa_over_D_max``: the largest permeability over ``diffusivity``, over every object and schedule interval.
@@ -221,7 +221,7 @@ def start_record(geometry, r0_given: bool, diffusivity: float, dt_step: float) -
         eq, why = None, "the walk was handed its starts (r0), whose density it cannot tell"
     elif not membrane:
         eq, why = True, "no wall is permeable: each pool the placement seeds is uniform and keeps its walkers"
-    elif bool(geometry.seeds_every_pool):
+    elif bool(geometry.placement_is_stationary):
         eq, why = True, "the placement is uniform over every pool a walker can reach"
     else:
         eq, why = False, "the placement leaves a pool empty that a walker reaches across a permeable wall"

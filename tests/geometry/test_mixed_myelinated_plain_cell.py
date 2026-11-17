@@ -471,6 +471,7 @@ def test_no_walker_starts_in_a_sheath_when_the_sheath_is_not_seeded():
     np.testing.assert_array_equal(np.asarray(geo.pool_of(geo.classify_positions_exact(r0))), pools)
     w = _walk_geometry(500, D, geo, 4e-3, 5e-5, seed=3, K=8, require_gpu=False, raw_subset=500)
     assert (np.asarray(w.raw_compartment) != 2).all()
+    assert w.work["start"]["spatial_equilibrium"] is True                # the unseeded sheaths are sealed
     assert (np.asarray(w.raw_compartment) != np.asarray(w.raw_compartment)[:, :1]).any(), "the plain walls exchange"
     wf = pgse([[1, 0, 0]], 2e-3, 8e-3, bvalues=[1e9], n_t=50, slew_rate=np.inf)
     out = simulate_fused(500, waveform=wf, geometry=geo, seed=3, require_gpu=False, return_compartments="full")
@@ -618,3 +619,27 @@ def test_a_walk_through_the_spec_seeds_the_pools_the_cell_seeds(comps, seed_pool
     f = _walk_geometry(64, D, cell, 1e-3, 2.5e-4, seed=1, K=4, require_gpu=False, raw_subset=64,
                        field_basis=HollowCylinderField.of(cell), K_c3=4, field_read_interval=1.25e-4)
     assert np.bincount(np.asarray(f.compartment), minlength=3).tolist() == want
+
+
+KIN = [4e-5, 0.0, 4e-5, 0.0]                                             # the axolemma of the myelinated cylinders
+
+
+@pytest.mark.parametrize("comps, seed_pools, kappa_inner, kappa_outer, stationary", [
+    (COMPS, None, KIN, 4e-5, True),                                       # every pool seeded
+    (DRY, None, KIN, 4e-5, True),                                         # a dry sheath unseeded, behind open faces
+    (COMPS, ("extra", "intra"), 0.0, [0.0, 4e-5, 0.0, 4e-5], True),      # a wet sheath unseeded, sealed
+    (COMPS, ("extra", "intra"), 0.0, 4e-5, False),                        # a wet sheath unseeded behind its open face
+    (COMPS, ("extra", "intra"), [4e-5, 0.0, 0.0, 0.0], 0.0, False),       # one cylinder's open axolemma is enough
+    (COMPS, ("intra",), KIN, [0.0, 0.0, 0.0, 0.0], False),               # lumen -> sheath reachable, sheath wet
+    (COMPS, ("intra",), 0.0, [4e-5, 0.0, 4e-5, 0.0], True),              # sheaths sealed inside, plain walls sealed
+    (COMPS, ("intra",), 0.0, [0.0, 4e-5, 0.0, 0.0], False),              # a plain wall opens the extra pool
+])
+def test_the_start_record_states_whether_the_placement_is_the_stationary_law(comps, seed_pools, kappa_inner,
+                                                                             kappa_outer, stationary):
+    """The placement is uniform over the seeded pools; it is the walk's stationary law exactly when every pool that is
+    not seeded is dry or sealed from every seeded pool (each face read per cylinder), and the walk records that."""
+    from dmipy_sim.engine import physics
+    geo = _cell(MIXED, compartments=comps, seed_pools=seed_pools, kappa_inner=kappa_inner, kappa_outer=kappa_outer)
+    assert geo.placement_is_stationary is stationary
+    start = physics.start_record(geo, False, D, 5e-6)
+    assert start["spatial_equilibrium"] is stationary and start["transient_coefficient"] == physics.TRANSIENT_COEFFICIENT
