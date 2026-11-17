@@ -410,11 +410,16 @@ def test_the_lattice_sum_is_periodic_and_its_rows_are_converged(x64):
         # the shifted argument carries one more rounding (z + s L); 1 / z^2 is within 7 u of its value
         bound = k2 * U64 * (_A_W(x0, U64) + _A_W(x1, U64, x_roundings=4)) + 8.0 * U64 * (np.abs(z) ** -2 + np.abs(zs) ** -2)
         assert np.all(np.abs(S1 - S0) <= bound), s
+        if s in (1, 1j):                                   # the specification's limit for one period along each axis
+            gap, limit = float(np.abs(S1 - S0).max()), 5e-14 * float(np.abs(S0).max())
+            assert gap <= limit, (s, gap, limit)
     J = LATTICE_ROWS
     omitted = 8.0 * np.exp(np.pi) * sum(np.exp(-2 * np.pi * j) for j in range(J + 1, 2 * J + 1))
     x = np.pi * z / f.L
     bound = k2 * (omitted + U64 * (_A_W(x, U64) + _A_W(x, U64, rows=2 * J)))
     assert np.all(np.abs(Wj(z) - Wj(z, 2 * J)) <= bound)
+    gap, limit = float(np.abs(Wj(z) - Wj(z, 2 * J)).max()), 1e-16 * float(np.abs(S0).max())   # the specification's limit
+    assert gap <= limit, (gap, limit)
 
 
 @pytest.mark.parametrize("dtype", ["float32", "float64"])
