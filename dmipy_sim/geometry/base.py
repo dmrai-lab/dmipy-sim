@@ -274,9 +274,8 @@ class Geometry(ABC):
     supports_permeability = False
 
     #: Is the law of this geometry's own placement (`init_positions`) the walk's stationary law -- uniform over every
-    #: pool that holds water and that a walker can reach? A walk with a permeable wall records its start as at spatial
-    #: equilibrium only then (`engine.physics.start_record`); a placement that leaves a reachable pool with water empty
-    #: is a start out of it.
+    #: pool a walker can reach? A walk with a permeable wall records its start as at spatial equilibrium only then
+    #: (`engine.physics.start_record`); a placement that leaves a reachable pool empty is a start out of it.
     placement_is_stationary = False
 
     #: Does `_wall` accept a carried `side` (the walker's own compartment)? Only the

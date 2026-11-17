@@ -626,7 +626,8 @@ KIN = [4e-5, 0.0, 4e-5, 0.0]                                             # the a
 
 @pytest.mark.parametrize("comps, seed_pools, kappa_inner, kappa_outer, stationary", [
     (COMPS, None, KIN, 4e-5, True),                                       # every pool seeded
-    (DRY, None, KIN, 4e-5, True),                                         # a dry sheath unseeded, behind open faces
+    (DRY, None, 0.0, [0.0, 4e-5, 0.0, 4e-5], True),                     # a dry sheath unseeded, sealed
+    (DRY, None, KIN, 4e-5, False),                                        # a dry sheath unseeded behind open faces fills
     (COMPS, ("extra", "intra"), 0.0, [0.0, 4e-5, 0.0, 4e-5], True),      # a wet sheath unseeded, sealed
     (COMPS, ("extra", "intra"), 0.0, 4e-5, False),                        # a wet sheath unseeded behind its open face
     (COMPS, ("extra", "intra"), [4e-5, 0.0, 0.0, 0.0], 0.0, False),       # one cylinder's open axolemma is enough
@@ -637,7 +638,8 @@ KIN = [4e-5, 0.0, 4e-5, 0.0]                                             # the a
 def test_the_start_record_states_whether_the_placement_is_the_stationary_law(comps, seed_pools, kappa_inner,
                                                                              kappa_outer, stationary):
     """The placement is uniform over the seeded pools; it is the walk's stationary law exactly when every pool that is
-    not seeded is dry or sealed from every seeded pool (each face read per cylinder), and the walk records that."""
+    not seeded is sealed from every seeded pool (each face read per cylinder; a dry pool behind an open face fills like
+    any other), and the walk records that."""
     from dmipy_sim.engine import physics
     geo = _cell(MIXED, compartments=comps, seed_pools=seed_pools, kappa_inner=kappa_inner, kappa_outer=kappa_outer)
     assert geo.placement_is_stationary is stationary
