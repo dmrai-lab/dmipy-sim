@@ -747,6 +747,12 @@ class PackedMyelinatedCylinders(Geometry):
         return tuple(n for n in _POOL_NAMES if n in reach)
 
     @property
+    def sheath_in_reach(self):
+        """Whether a sheath of positive area is among the :attr:`reachable_pools`: seeded, or behind an open face of a
+        seeded pool. Without one, every sheath is unseeded and sealed from every seeded pool."""
+        return bool("myelin" in self.reachable_pools and np.any(self.sheathed))
+
+    @property
     def placement_is_stationary(self):
         """Whether the placement's law is the walk's stationary law. The placement is the uniform law over the union of
         the seeded pools (:attr:`seeded_pools`, by area among them), so every pair of seeded pools that exchange is
@@ -788,7 +794,7 @@ class PackedMyelinatedCylinders(Geometry):
             When a sheath is among the :attr:`reachable_pools` (seeded, or behind an open face of a seeded pool): its
             water joins a domain whose walls this form does not count.
         """
-        if "myelin" in self.reachable_pools and np.any(self.sheathed):
+        if self.sheath_in_reach:
             raise ValueError(f"the myelin pool is reachable from the seeded pools {self.seeded_pools!r}: the water "
                              f"domains are stated for a cell whose sheaths are unseeded and sealed from every seeded pool")
         N = self.N_actual

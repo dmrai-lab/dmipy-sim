@@ -166,7 +166,7 @@ def test_one_sealed_myelinated_cylinder_is_the_isolated_cylinder():
 def test_one_sealed_plain_cylinder_is_the_sealed_packing_of_one():
     cell = _cell(g=(1.0,), kappa_outer=(0.0,), outer=[R], centres=np.zeros((1, 2)))
     want = mt.equilibrium_bound_fraction(PackedCylinders(np.array([R]), np.zeros((1, 2)), L), KAPPA_MT, TAU)
-    assert _within(mt.equilibrium_bound_fraction(cell, KAPPA_MT, TAU), want, 4)
+    assert mt.equilibrium_bound_fraction(cell, KAPPA_MT, TAU) == want
 
 
 # ── refusals, each beside a neighbour that has a table ─────────────────────────────────────────────────────────────
@@ -216,19 +216,22 @@ def test_the_table_is_of_the_cell_alone():
 def test_fast_binds_each_walker_by_its_own_draw_against_its_domains_equilibrium(precision, request):
     """The bound flag at the start is ``u_i < float32(P_d(i))`` for walker ``i``'s own draw and the closed form of the
     domain its start lies in, walker for walker. Against ``P_d`` in float64 the flag differs only for a draw within
-    one float32 spacing of ``P_d``; those walkers are counted and left out of that comparison."""
+    one float32 spacing of ``P_d``; those walkers are counted and left out of that comparison. The cell is the one whose
+    domains differ widely (g-ratio 0.5, ``kappa_MT`` 4e-4 m/s: lumina 0.44, exterior 0.34, the scalar 0.35), so some
+    lumen draws and some exterior draws lie between their domain's value and the scalar's: a seeding by any single
+    value fails."""
     if precision == "float64":
         request.getfixturevalue("x64")
-    n, seed = 512, 7
-    geo = _cell()
+    n, seed, kappa, g = 2048, 7, 4e-4, (0.5, 1.0, 0.5, 1.0)
+    geo = _cell(g=g)
     w = _walk_geometry(n, D, geo, 1e-4, 5e-5, tiers="all", seed=seed, require_gpu=False, K=4, raw_subset=n,
-                       kappa_MT=KAPPA_MT, dwell_time=TAU, equilibrate_binding="fast", accumulation_dtype=precision)
+                       kappa_MT=kappa, dwell_time=TAU, equilibrate_binding="fast", accumulation_dtype=precision)
     assert w.work["mt_equilibration"] == {"kind": "fast"}
     from dmipy_sim.engine.physics import walker_keys
     ek = walker_keys(jax.random.fold_in(jax.random.PRNGKey(seed), 0xB0117E), 0, n)
     u = np.asarray(jax.vmap(lambda k: jax.random.uniform(k, (2,), dtype=jnp.float32))(ek))[:, 0]
-    rows, _ = _formula(MIXED, OPEN, SEEDED)
-    table = mt.equilibrium_domains(geo, KAPPA_MT, TAU)
+    rows, p_scalar = _formula(g, OPEN, SEEDED, kappa=kappa)
+    table = mt.equilibrium_domains(geo, kappa, TAU)
     for dom, row in zip(table.domains, rows):
         assert np.float32(dom["p_eq"]) == np.float32(row[5])
     enc = np.asarray(jax.vmap(geo.classify_position)(jnp.asarray(np.asarray(w.raw_positions)[:, 0])))
@@ -241,8 +244,9 @@ def test_fast_binds_each_walker_by_its_own_draw_against_its_domains_equilibrium(
     near = np.abs(u.astype(np.float64) - P) <= np.spacing(P.astype(np.float32)).astype(np.float64)
     assert np.array_equal(bound[~near], (u.astype(np.float64) < P)[~near])
     assert near.sum() == 0, f"{near.sum()} draws within a float32 spacing of their P"    # ~4e-9 per walker
-    lumen = np.isin(enc, [1, 3])                              # both kinds of domain hold walkers
-    assert 0 < lumen.sum() < n
+    between = (u > np.minimum(P, p_scalar)) & (u < np.maximum(P, p_scalar))     # a draw the scalar would flip
+    lumen = np.isin(enc, [1, 3])
+    assert between[lumen].sum() > 0 and between[~lumen].sum() > 0, (between[lumen].sum(), between[~lumen].sum())
 
 
 def test_fast_refuses_a_walker_that_starts_in_a_sheath():

@@ -212,7 +212,7 @@ _DOMAINS_REFUSAL = ("only a sheath that is unseeded and sealed from every seeded
 
 def _domains_refusal(geometry):
     """Why a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell has no water domains of its own here, or None."""
-    if "myelin" not in geometry.reachable_pools or not np.any(geometry.sheathed):
+    if not geometry.sheath_in_reach:
         return None
     if "myelin" in geometry.seeded_pools:
         return f"the myelin pool is seeded: {_DOMAINS_REFUSAL}"
