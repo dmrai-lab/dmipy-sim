@@ -5,7 +5,7 @@ Exact, not statistical:
 
 * a cell whose every cylinder is myelinated walks as it always has: every array a walk returns, with and without the
   field, and the forward signal, hash to the values recorded for it;
-* a plain cylinder's wall is the plain packing's wall, step for step: the same start, step and uniforms fed to
+* a plain cylinder's wall is the plain packing's wall, step for step: the same start, step and trial words fed to
   :func:`~dmipy_sim.geometry.packed.packed_wall_kernel` and to the cell's kernel end at the same position, with the
   same crossings, encounters and contact, bit for bit, on sparse and dense cells, near walls and across gaps, at
   every prefix of the bounce loop; also where a step meets a (reflecting) sheathed cylinder and a plain wall;
@@ -147,7 +147,8 @@ def test_a_cell_of_plain_cylinders_is_one_wall_and_walks_back_to_the_same_class(
 # ── the all-myelinated cell is today's walk ─────────────────────────────────────────────────────────────────────────
 
 #: The arrays of the all-myelinated reference walks, recorded on the class before plain cylinders existed (CPU,
-#: ``JAX_PLATFORMS=cpu``, :data:`RECORDED_WITH`). A walk of the same cell, seed and settings returns these bytes.
+#: ``JAX_PLATFORMS=cpu``, the build ``RECORDED_WITH`` of ``tests/conftest.py``, on a host whose kernels the pinned
+#: recorded-bits job checks). A walk of the same cell, seed and settings returns these bytes.
 REFERENCE = {
     "field": {
         "position_coeffs": "cf784afe6f1372399844bcab7cb93f574ba8a88c778f5d7fd0f2bcaaa1c43351",
@@ -179,25 +180,13 @@ REFERENCE = {
                 "e5f307e5bd533a68a1eabbe7c01d8f203f188f40e5d1b7fe51245d446cd12b2d"],
 }
 G_ALL = [0.7, 0.8, 0.7, 0.75]
-#: the JAX build the hashes were recorded with: another build compiles the same walk to other float32 bits (measured:
-#: jaxlib 0.12 differs from 0.10 on every float array), so the hashes are an expectation of this build alone
-RECORDED_WITH = ("0.10.2", "0.10.2")
-
-
-@pytest.fixture
-def recorded_build():
-    import jax
-    import jaxlib
-    if (jax.__version__, jaxlib.__version__) != RECORDED_WITH:
-        pytest.skip(f"the reference hashes were recorded with jax / jaxlib {RECORDED_WITH}; this is "
-                    f"{(jax.__version__, jaxlib.__version__)}, which compiles the walk to other float32 bits")
 
 
 def _hashes(w, names):
     return {n: (_events_sha(getattr(w, n)) if n.endswith("events") else _sha(getattr(w, n))) for n in names}
 
 
-def test_the_all_myelinated_walk_with_the_field_is_the_recorded_walk(recorded_build):
+def test_recorded_bits_the_all_myelinated_walk_with_the_field(recorded_bits):
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
@@ -207,14 +196,14 @@ def test_the_all_myelinated_walk_with_the_field_is_the_recorded_walk(recorded_bu
     assert _hashes(w, REFERENCE["field"]) == REFERENCE["field"]
 
 
-def test_the_all_myelinated_walk_without_the_field_is_the_recorded_walk(recorded_build):
+def test_recorded_bits_the_all_myelinated_walk_without_the_field(recorded_bits):
     from dmipy_sim.engine.core import _walk_geometry
     geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
     w = _walk_geometry(300, D, geo, 4e-3, 5e-5, tiers="all", seed=3, require_gpu=False, K=8)
     assert _hashes(w, REFERENCE["no_field"]) == REFERENCE["no_field"]
 
 
-def test_the_all_myelinated_forward_signal_is_the_recorded_signal(recorded_build):
+def test_recorded_bits_the_all_myelinated_forward_signal(recorded_bits):
     from dmipy_replay import pgse
     from dmipy_sim.engine._fused import simulate_fused
     geo = _cell(G_ALL, compartments=Compartments(intra=Pool(D=D, T2=0.08), myelin=Pool(D=0.0, T2=0.015),
@@ -285,19 +274,19 @@ def _pair(radii, centres, Lc, kappa, plain, n, seed, *, budget=None, sheath=None
     w_p = packed_wall_kernel(cj, rj, f32(Lc), eps, nudge, step_max, min_gap, count=True, budget=budget)
     w_u = concentric_wall_kernel(cj, jnp.asarray(inner, f32), rj, f32(Lc), Dj, Dj, Dj, jnp.zeros(N, f32), jnp.asarray(kap),
                                  jnp.full((N, 4), rho_over_D), eps, nudge, step_max, min_gap, count=True, budget=budget)
-    B = w_p.bounce_loop.budget if coins is None else coins          # ``coins``: the length the uniforms are drawn at
+    B = w_p.bounce_loop.budget if coins is None else coins          # ``coins``: the length the words are drawn at
     sides = [1.0, -1.0] if sheath is None else [1.0]
     pts, dirs, ls = _starts(rng, radii, centres, Lc, step_max, n, sides)
     inside, own = _owner(pts, radii, centres, Lc)
     keep = ~inside | plain[own]                                          # never inside a myelinated cylinder
     pts, dirs, ls, inside, own = pts[keep], dirs[keep], ls[keep], inside[keep], own[keep]
     keys = jax.random.split(jax.random.PRNGKey(seed), len(pts))
-    us = jax.vmap(lambda k: jax.random.uniform(k, (B,), dtype=jnp.float32))(keys)
+    words = jax.vmap(lambda k: jax.random.bits(k, (B,), dtype=jnp.uint32))(keys)     # the plain packing's draw
     pool = jnp.asarray(inside.astype(np.int32)); k0 = jnp.asarray(own.astype(np.int32))
     hp = jax.jit(jax.vmap(lambda p, d, l, s, key: w_p(p, d, l, s, kod, rho_over_D, key)))(
         jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
     hu = jax.jit(jax.vmap(lambda p, d, l, pl, k, u: w_u(p, d, l, pl, k, f32(0.5), u)))(
-        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), pool, k0, us[:, :w_u.bounce_loop.budget])
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), pool, k0, words[:, :w_u.bounce_loop.budget])
     return w_p, w_u, hp, hu, pool
 
 
@@ -318,7 +307,7 @@ def test_a_plain_wall_is_the_plain_packings_wall_step_for_step(kappa):
     the starts within two steps of a wall on both sides and uniform in the cell: the end position, the crossing, the
     encounters (reflections plus crossings) and the contact are bit-identical, with the derived budget (compiled) and at
     every prefix of the loop (a budget of one, two and three encounters, each primitive evaluated on its own), each
-    prefix with its own uniforms. At the large
+    prefix with its own words. At the large
     permeability some steps reject their first encounter and transmit at a later one, which a one-trial-per-step
     rule cannot do."""
     n_steps = n_later = n_cross = n_reject = 0

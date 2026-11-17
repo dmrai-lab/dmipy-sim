@@ -170,7 +170,8 @@ def test_interact_is_available_on_every_geometry(name):
     s = jnp.asarray(np.array([1.0, 0.5, -0.3], np.float32) * 1e-8)
 
     hit = geom.interact(r, s)
-    assert hit._fields == ("r", "dlog_w", "crossed", "illegal", "n_hits", "exhausted")
+    assert hit._fields == ("r", "dlog_w", "crossed", "illegal", "n_hits", "exhausted", "trials")
+    assert hit.trials is None, f"{name}: a geometry that does not log its trials returns none"
     assert np.all(np.isfinite(np.asarray(hit.r))), f"{name}: non-finite position"
     assert not bool(hit.crossed), "an impermeable interaction granted a crossing"
 

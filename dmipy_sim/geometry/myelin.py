@@ -9,8 +9,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability,
-                        BounceLoop, wall_push, bounce_budget)
+from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability, trial_granted,
+                        BounceLoop, TrialLog, wall_push, bounce_budget)
 
 from .base import Geometry, LengthScales, acquisition_rotation
 from ..compartments import Compartments, Pool
@@ -33,6 +33,8 @@ class ConcentricHit(NamedTuple):
     crossed: jnp.ndarray   #: bool -- a crossing was granted
     n_hits: object         #: int32 reflections plus the granted crossings; None unless the kernel counts
     exhausted: jnp.ndarray #: bool -- the bounce budget ran out with path untested
+    trials: object = None  #: the step's plain-wall trials (:class:`~dmipy_sim.geometry._boundary.TrialLog`); None
+                           #: unless the kernel logs them
 
 
 
@@ -75,7 +77,8 @@ def _pin_seeds(xy, centers, L, R_in, R_out, pool, nudge):
 
 
 def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
-                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None):
+                           kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None,
+                           trials=False):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
 
     Cylinder ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
@@ -89,7 +92,8 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
 
     The transmission trials, per kind of wall: a SHEATHED cylinder's two interfaces make one Powles trial per
     step, at the step's first encounter with any wall, with the step's scalar uniform ``u``; a PLAIN cylinder's
-    wall makes a trial at every encounter of the step, encounter ``i`` with ``us[i]``, as
+    wall makes a trial at every encounter of the step, encounter ``i`` decided by the 32-bit word ``words[i]``
+    (:func:`~dmipy_sim.geometry._boundary.trial_granted`), as
     :func:`~dmipy_sim.geometry.packed.packed_wall_kernel` does, whatever walls the step met before.
 
     The bounce budget and the candidate count are derived from the worst case a walker can meet. For the sheathed
@@ -103,15 +107,17 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint disks, ``R_min`` the
     smallest lumen. ``budget=`` overrides the derived budget for one walk.
 
-    Returns ``wall(xy, d_hat, step_l, pool, k, u, us=None)`` giving a :class:`ConcentricHit`: the end position,
+    Returns ``wall(xy, d_hat, step_l, pool, k, u, words=None)`` giving a :class:`ConcentricHit`: the end position,
     the pool and owning / nearest cylinder after the step, the four boundary local-time channels ``-2 d_perp``
     (inner wall met from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall
     met from outside; a plain cylinder's wall met from its lumen is the first channel, from outside the fourth),
     the surface log-weight increment with ``rho_weights[k] = (rho_in/D_in, rho_in/D_my, rho_out/D_my,
     rho_out/D_ex)`` applied per hit (a plain cylinder's first weight is its wall's ``rho/D_in``), whether a
-    crossing was granted, the encounters when ``count``, and whether the budget ran out. ``us``, the ``(budget,)``
-    uniforms of the plain walls' trials, is required when the cell holds a plain cylinder and is not read
-    otherwise; ``wall.bounce_loop.budget`` is its length.
+    crossing was granted, the encounters when ``count``, and whether the budget ran out. ``words``, the ``(budget,)``
+    ``uint32`` words of the plain walls' trials, is required when the cell holds a plain cylinder and is not read
+    otherwise; ``wall.bounce_loop.budget`` is its length. With ``trials`` (a cell with a plain cylinder) the hit also
+    carries the step's plain-wall trials (:class:`~dmipy_sim.geometry._boundary.TrialLog`: every encounter of a plain
+    wall, the cylinder met, its overshoot ``2 d_perp / R`` and its outcome); a sheathed wall's encounters are not in it.
     """
     N = int(inner.shape[0])
     outer_np = np.asarray(outer, np.float64); inner_np = np.asarray(inner, np.float64)
@@ -128,7 +134,9 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         derived = int(max(2.0, np.ceil(float(step_max) / passage) + 1))
     if any_plain:
         derived = max(derived, bounce_budget(float(np.min(outer_np[real_np])), nudge, min_gap, step_max))
-    loop = BounceLoop(budget or derived, count=count)
+    if trials and not any_plain:
+        raise ValueError("a cell without a plain cylinder has no plain-wall trials to log")
+    loop = BounceLoop(budget or derived, count=count, log=trials)
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
     real = outer > 0
@@ -144,10 +152,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     def _pin(xy, q, R_in, R_out, pool):
         return pin_to_pool(xy, q, R_in, R_out, pool, nudge)
 
-    def wall(xy, d_hat, step_l, pool, k, u, us=None):
-        if any_plain and us is None:
-            raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the uniforms of its plain walls' trials, "
-                             f"us of shape ({loop.budget},)")
+    def wall(xy, d_hat, step_l, pool, k, u, words=None):
+        if any_plain and words is None:
+            raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the 32-bit words of its plain walls' trials, "
+                             f"words of shape ({loop.budget},), uint32")
         q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
         dist_wall = jnp.where(real, jnp.sqrt(jnp.sum(q_all * q_all, -1)) - outer, jnp.inf)
         k0 = jnp.where(pool == 0, jnp.argmin(dist_wall).astype(jnp.int32), k)
@@ -212,7 +220,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             transmit = first & (u < p_cross)
             if any_plain:                                                      # a plain wall: a trial at every encounter
                 plain_hit = (~hit_in) & plain_c[kh]
-                transmit = jnp.where(plain_hit, any_hit & (us[i] < p_cross), transmit)
+                transmit = jnp.where(plain_hit, any_hit & trial_granted(words[i], p_cross), transmit)
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)
@@ -237,6 +245,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             code = jnp.where(plain_hit, jnp.where(pool_c == 1, f32(5.0), f32(6.0)), code)
             last = jnp.where(transmit, jnp.round(code).astype(jnp.int32), last)   # the pool follows the last crossing
             dlw = jnp.concatenate([chan, dlog_rho[None], transmit.astype(f32)[None]])
+            if trials:
+                entry = TrialLog(any_hit & plain_hit, idx[kh].astype(jnp.int32), f32(2.0) * d_perp / R_hit,
+                                 transmit & plain_hit)
+                return p_new, d_new, rem_new, (decided | first, last), dlw, transmit, reflecting, entry
             return p_new, d_new, rem_new, (decided | first, last), dlw, transmit, reflecting
 
         if any_plain:
@@ -253,7 +265,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         k_new = jnp.argmin(dist_f).astype(jnp.int32)                         # owner, or nearest
         xy_f = _pin(xy_f, q_all_f[k_new], inner[k_new], outer[k_new], pool_new)
         n_hits = None if b.n_reflections is None else b.n_reflections + n_cross
-        return ConcentricHit(xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed, n_hits, b.exhausted)
+        return ConcentricHit(xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed, n_hits, b.exhausted, b.log)
 
     wall.bounce_loop = loop
     wall.n_cand = n_cand
@@ -932,6 +944,17 @@ class PackedMyelinatedCylinders(Geometry):
                 f"PackedMyelinatedCylinders: sheaths overlap (closest outer walls are {-self.min_gap:.3g} m "
                 "inside each other). Place the axons with pack_myelinated_cylinders(inner_radii, g_ratios, "
                 "...), which packs the OUTER radii, rather than pack_cylinders on the inner radii.")
+
+    def trial_objects(self, diffusivity):
+        """The cell's cylinders, in their order, when it holds a plain one: ``(radii, D)``, each cylinder's outer
+        radius and the larger of its lumen's and the extra pool's diffusivity (a plain wall separates those two; a
+        myelinated cylinder's cells of the record stay empty, its trials being the sheathed kind). None for a cell of
+        myelinated cylinders only. ``diffusivity`` is not read: each pool steps at its own."""
+        if not self.has_plain:
+            return None
+        N = self.N_actual
+        D = np.maximum(np.asarray(self._D_intra_jax, np.float64)[:N], np.asarray(self._D_extra_jax, np.float64)[:N])
+        return np.asarray(self._outer_radii_np[:N], np.float64).copy(), D
 
     @property
     def has_plain(self):

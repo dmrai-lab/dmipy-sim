@@ -57,6 +57,30 @@ if _cache != "0":
 # fails at its own boundary instead of corrupting an unrelated test run later in the same process
 # (dmipy-sim#591: `test_replay_kernel.py` left it on and broke a caterpillar test two files later,
 # only when collection order put them in that sequence).
+#: The JAX build the recorded bits were recorded with (jax, jaxlib): another build compiles the same walk to other
+#: float32 bits (measured: jaxlib 0.12 differs from 0.10 on every float array).
+RECORDED_WITH = ("0.10.2", "0.10.2")
+#: The variable the pinned recorded-bits job sets; everywhere else a recorded-bits test is skipped by name.
+RECORDED_BITS_ENV = "DMIPY_SIM_RECORDED_BITS"
+
+
+@pytest.fixture
+def recorded_bits():
+    """Bits recorded on one JAX build AND one host's kernels: a compiled walk's float32 bits depend on both (the
+    CPU features the compiler targets), so they are asserted only in the pinned ``recorded-bits`` CI job, which sets
+    ``DMIPY_SIM_RECORDED_BITS=1``, installs :data:`RECORDED_WITH`, selects the tests named ``test_recorded_bits_*``
+    and, when one fails, runs the host canary ``tools/recorded_bits_canary.py``. Elsewhere the test is
+    skipped by name; in that job a skip is a failure and a
+    build other than :data:`RECORDED_WITH` is an error, not a skip."""
+    import jax
+    import jaxlib
+    if os.environ.get(RECORDED_BITS_ENV) != "1":
+        pytest.skip(f"recorded bits are asserted only in the pinned recorded-bits job ({RECORDED_BITS_ENV}=1): they are "
+                    f"bits of one JAX build and one host's kernels")
+    got = (jax.__version__, jaxlib.__version__)
+    assert got == RECORDED_WITH, f"the recorded-bits job runs jax / jaxlib {RECORDED_WITH}, this is {got}"
+
+
 @pytest.fixture
 def x64():
     """``jax_enable_x64`` for the one test that asks for it; the flag is restored on teardown."""

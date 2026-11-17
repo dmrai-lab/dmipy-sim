@@ -62,6 +62,23 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   internal oracles the replay is held to: underscored, exported nowhere, imported by the parity admissions, the step-law
   certificate, the tier certificates and the tests. `simulate()` itself runs the oracle only for a run a coefficient walk
   is not validated to serve (`core._replay_gap`, the geometry's `replay_parity`).
+- **The membrane trial.** A plain wall (`PackedCylinders`, `PackedSpheres`, a plain cylinder of
+  `PackedMyelinatedCylinders`) decides each encounter's transmission trial from one 32-bit word of the step's key
+  (`jax.random.bits`), granted when the word is below `floor(p 2^32)` (`_boundary.trial_granted`): the realised
+  probability is `floor(p 2^32) / 2^32`, within `2^-32` of the float32 `p` and never above it (the float32 uniform it
+  replaces realised `ceil(p 2^23) / 2^23`). The sheathed cylinder's one trial per step and the other geometries'
+  trials keep their float32 uniform. `record_trials=TrialRecordSpec(modes=M, band_edges=...)` (`dmipy_sim.trial_record`;
+  `_walk_geometry`, `walk`) records those trials: per walker and per (object, time band) cell the trial count `n`, the
+  granted count `N` (int32) and `S_j = sum u T_j(2 u / u_max - 1)`, `j < M`, in the accumulation dtype, `u = 2 d_perp
+  / R` the overshoot and `u_max = 2 LONGEST_STEP h / R` per object (`CoefficientWalk.trial_record`). Every encounter of
+  a plain wall is a trial (later encounters of a step and sealed objects included), a step belongs to the band whose
+  interval `(edge_k, edge_k+1]` contains its end time (an end on an edge to the earlier band, so a window's bands hold
+  exactly its steps), a step a bound walker discards records none. Off
+  by default and the same program then; on, it forces `count_walls` and enters none of the walk's arithmetic (one kernel step is the same bits; the whole
+  walk is the same bits on the recording build, the `test_recorded_bits_*` tests; the geometry's
+  `log_trials` makes its kernel return `WallHit.trials`, carried as the work's fourth entry). Refused by name: no plain
+  wall, a backend, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
+  missing a window boundary, more than 64 bands or 64 KiB per walker, a trial beyond `u_max`.
 
 ## Environment & GPU
 
@@ -94,6 +111,10 @@ JAX_PLATFORMS=cpu pytest tests/ -q -m "not slow and not gpu"   # fast: every PR
 - `@pytest.mark.slow`: heavy statistical MC validation (auto-marked per module in
   `tests/conftest.py::_SLOW_MC_MODULES`) — runs weekly / `workflow_dispatch`.
   Add a new heavy MC module's name to that set. `--heavy` bumps `N_WALKERS` to 1e6.
+- `test_recorded_bits_*` (fixture `recorded_bits`; `gpu` stays the only marker): bits of one JAX build (`conftest.RECORDED_WITH`) and one host's
+  kernels, asserted only by the pinned `recorded-bits` job (`DMIPY_SIM_RECORDED_BITS=1`; on a failure it runs the host canary
+  `tools/recorded_bits_canary.py` to say whether the runner's kernels are the recording host's) and skipped by name
+  everywhere else; in that job a skip is a failure.
 
 Tests mirror the package where a module has a home: `tests/geometry/` holds the substrate tests (walls, bounces,
 packings, meshes, myelin, compartments, the per-geometry MC validations) — the test for `dmipy_sim/geometry/X` is under
@@ -276,13 +297,13 @@ build from the worst case (a step zig-zagging across the narrowest passage: `min
 sheath, or the shortest nudged grazing chord), not fixed. Per-axon `T2_*`, `rho_inner/outer`,
 `kappa_inner/outer` are indexed by the walker's axon (the pools' `D` is the `Pool`'s, one per pool: `D_intra=`, `D_extra=`, `D_myelin=` and `water_fractions=` are refused by name); `rho` is applied per hit with the
 diffusivity of the pool the walker is in.
-A `PackedMyelinatedCylinders` cylinder with g-ratio 1 is PLAIN (no sheath): one wall at its radius between its lumen and the extra pool (`kappa_outer`, `rho_outer`), a transmission trial at every encounter of a step (the packed kernel's rule, with the uniforms `us` of the step), where a myelinated cylinder's two walls keep one trial per step at the step's first encounter with any wall; so one cell holds myelinated and unmyelinated axons, the field is the myelinated sheaths', and `seed_pools=` names the pools seeded (default: every pool whose water fraction is not 0, by area; the spec's `seeding.pools` states them and `geometry_from_spec` reads them literally).
+A `PackedMyelinatedCylinders` cylinder with g-ratio 1 is PLAIN (no sheath): one wall at its radius between its lumen and the extra pool (`kappa_outer`, `rho_outer`), a transmission trial at every encounter of a step (the packed kernel's rule, with the 32-bit words of the step), where a myelinated cylinder's two walls keep one trial per step at the step's first encounter with any wall; so one cell holds myelinated and unmyelinated axons, the field is the myelinated sheaths', and `seed_pools=` names the pools seeded (default: every pool whose water fraction is not 0, by area; the spec's `seeding.pools` states them and `geometry_from_spec` reads them literally).
 
 **Packed substrates** (`PackedCylinders`, `PackedSpheres`) are stepped by
 `geometry.packed.packed_wall_kernel`: the same ray-traced multi-bounce rule, tested against the
 objects within reach of the step (`packed_candidate_count`), with the budget
 `bounce_budget` (`geometry._boundary`) derived from the narrowest passage (`min_gap` or the nudged grazing
-chord). **Every wall encounter is its own Powles trial** with an independent uniform: summed over
+chord). **Every wall encounter is its own Powles trial** decided by an independent 32-bit word (`_boundary.trial_granted`): summed over
 a step that is `κ/D` times the boundary local time the encounters record, so transmission does
 not depend on how many walls a sub-step meets and no gap-based sub-step rule is needed. A
 single-hit rule at outer packing 0.45 ended 90% of extra-axonal walkers inside a cylinder.

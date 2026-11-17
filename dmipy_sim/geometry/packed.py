@@ -9,8 +9,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..math.step_law import LONGEST_STEP
-from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, off_wall,
-                        BounceLoop, WallHit, bounce_budget, wall_push)
+from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, trial_granted, off_wall,
+                        BounceLoop, WallHit, TrialLog, bounce_budget, wall_push)
 from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
 from .packing import periodic_min_gap
 
@@ -30,7 +30,7 @@ def packed_candidate_count(N, R_min, step_max, dim):
     return int(min(N, max(8, n)))
 
 
-def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None):
+def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None, trials=False):
     """The wall interaction of a periodic pack of disjoint objects, in ``centers``' space.
 
     ``centers`` is ``(N, 2)`` for parallel cylinders (the cross-section plane) or ``(N, 3)`` for
@@ -41,7 +41,8 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     carried state that changes only where a crossing is granted.
 
     Every wall encounter is its own trial, ``p = x / (1 + x)`` with ``x = 2 (kappa/D) d_perp``
-    (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), with an independent uniform. To first order
+    (:func:`~dmipy_sim.geometry._boundary.transmit_probability`), decided by an independent 32-bit word
+    (:func:`~dmipy_sim.geometry._boundary.trial_granted`: the realised probability is ``floor(p 2^32) / 2^32``). To first order
     in ``x`` the trials summed over the encounters of a step are ``(kappa/D)`` times the boundary local
     time the reflections record, the same estimator the surface-relaxivity channel is validated
     on (Brownstein-Tarr), so the transmission does not depend on how many walls a step happens
@@ -61,11 +62,13 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     :class:`~dmipy_sim.geometry._boundary.WallHit` in ``centers``' space: the end position, the surface
     log-weight increment ``-2 (rho/D) d_perp`` summed over every encounter that touches a wall, reflected or crossed (plus the nudge's push on a reflection), whether the side changed (an odd
     number of crossings), whether the end sentinel had to correct the side, the encounters when ``count``
-    (reflections and every crossing granted), and whether the budget ran out.
+    (reflections and every crossing granted), and whether the budget ran out. With ``trials`` the hit also carries
+    the step's trials (:class:`~dmipy_sim.geometry._boundary.TrialLog`: every encounter is one, of the object met, with
+    its overshoot ``2 d_perp / R`` and its outcome).
     """
     N, dim = int(centers.shape[0]), int(centers.shape[1])
     R_min = float(np.min(np.asarray(radii)))
-    loop = BounceLoop(budget or bounce_budget(R_min, nudge, min_gap, step_max), count=count)
+    loop = BounceLoop(budget or bounce_budget(R_min, nudge, min_gap, step_max), count=count, log=trials)
     n_cand = packed_candidate_count(N, R_min, step_max, dim)
     f32 = jnp.float32
     ar = jnp.arange(n_cand)
@@ -74,7 +77,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
         return q - L * jnp.floor(q / L + f32(0.5))
 
     def wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key):
-        us = jax.random.uniform(key, (loop.budget,), dtype=jnp.float32)      # one draw per encounter
+        words = jax.random.bits(key, (loop.budget,), dtype=jnp.uint32)      # one 32-bit word per encounter
         q_all = _wrap(p[None, :] - centers)                                    # (N, dim)
         dist_wall = jnp.sqrt(jnp.sum(q_all * q_all, -1)) - radii
         if n_cand < N:
@@ -104,7 +107,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             cos_a = jnp.sqrt(jnp.maximum(disc[kh], f32(0.0))) / R_hit
             d_perp = jnp.where(any_hit, rem_a * cos_a, f32(0.0))
             stay_in = in_own & (kh == kc)
-            transmit = any_hit & (us[i] < transmit_probability(k_c[kh] if per_object else k_c, d_perp))
+            transmit = any_hit & trial_granted(words[i], transmit_probability(k_c[kh] if per_object else k_c, d_perp))
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)
@@ -115,6 +118,9 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             rem_new = jnp.where(reflecting, jnp.maximum(rem_a - nudge, f32(0.0)), f32(0.0))
             dlw = jnp.stack([jnp.where(any_hit, -rho_over_D * wall_push(transmit, d_perp, nudge, cos_a, rem_a), f32(0.0)),
                              transmit.astype(f32)])
+            if trials:
+                entry = TrialLog(any_hit, idx[kh].astype(jnp.int32), f32(2.0) * d_perp / R_hit, transmit)
+                return p_new, d_new, rem_new, state, dlw, transmit, reflecting, entry
             return p_new, d_new, rem_new, state, dlw, transmit, reflecting
 
         b = loop(rule, p, d_hat, step_l, dlog_init=jnp.zeros(2, f32))
@@ -127,7 +133,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
         k_f = jnp.argmin(jnp.sqrt(jnp.sum(q_f * q_f, -1)) - radii)               # nearest wall
         p_f, illegal = keep_side_radial(p_f, q_f[k_f], radii[k_f], want_in, nudge)
         n_hits = None if b.n_reflections is None else b.n_reflections + jnp.round(dlw[1]).astype(jnp.int32)
-        return WallHit(p_f, dlog_w, crossed, illegal, n_hits, b.exhausted)
+        return WallHit(p_f, dlog_w, crossed, illegal, n_hits, b.exhausted, b.log)
 
     wall.bounce_loop = loop
     wall.n_cand = n_cand
@@ -299,9 +305,9 @@ class PackedCylinders(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._build_kernel = lambda count, budget: packed_wall_kernel(
+        self._build_kernel = lambda count, budget, trials=False: packed_wall_kernel(
             self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=LONGEST_STEP * min_r / 6.0,
-            min_gap=self.min_gap, count=count, budget=budget)
+            min_gap=self.min_gap, count=count, budget=budget, trials=trials)
         self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 
     @property
@@ -326,7 +332,7 @@ class PackedCylinders(Geometry):
         use -- which the engine makes outside any trace (`_bounce_budget_override` touches `bounce_loop` when it
         sets the override): a kernel built lazily inside a trace closes over that trace's tracers (its candidate
         index) and leaks them into the next program."""
-        key = (bool(self.count_walls), self.bounce_budget)
+        key = (bool(self.count_walls), self.bounce_budget) + ((True,) if self.log_trials else ())
         if key not in self._walls:
             self._walls[key] = self._build_kernel(*key)
         return self._walls[key]
@@ -334,6 +340,10 @@ class PackedCylinders(Geometry):
     @property
     def bounce_loop(self):
         return self._kernel.bounce_loop
+
+    def trial_objects(self, diffusivity):
+        """Every object's wall is plain: ``(radii, D)`` with the walk's one diffusivity (both pools step at it)."""
+        return self._radii_np.copy(), np.full(len(self._radii_np), float(diffusivity))
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
         """Wall interaction in the pack: reflect off the cylinders the step meets, or cross one
@@ -502,9 +512,9 @@ class PackedSpheres(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._build_kernel = lambda count, budget: packed_wall_kernel(
+        self._build_kernel = lambda count, budget, trials=False: packed_wall_kernel(
             self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=LONGEST_STEP * min_r / 6.0,
-            min_gap=self.min_gap, count=count, budget=budget)
+            min_gap=self.min_gap, count=count, budget=budget, trials=trials)
         self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 
     @property
@@ -529,7 +539,7 @@ class PackedSpheres(Geometry):
         use -- which the engine makes outside any trace (`_bounce_budget_override` touches `bounce_loop` when it
         sets the override): a kernel built lazily inside a trace closes over that trace's tracers (its candidate
         index) and leaks them into the next program."""
-        key = (bool(self.count_walls), self.bounce_budget)
+        key = (bool(self.count_walls), self.bounce_budget) + ((True,) if self.log_trials else ())
         if key not in self._walls:
             self._walls[key] = self._build_kernel(*key)
         return self._walls[key]
@@ -537,6 +547,10 @@ class PackedSpheres(Geometry):
     @property
     def bounce_loop(self):
         return self._kernel.bounce_loop
+
+    def trial_objects(self, diffusivity):
+        """Every object's wall is plain: ``(radii, D)`` with the walk's one diffusivity (both pools step at it)."""
+        return self._radii_np.copy(), np.full(len(self._radii_np), float(diffusivity))
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key):
         """Wall interaction in the pack: reflect off the spheres the step meets, or cross one where

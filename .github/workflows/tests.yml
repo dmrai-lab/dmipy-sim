@@ -91,9 +91,11 @@ jobs:
           if-no-files-found: ignore
 
   recorded-bits:
-    # The all-myelinated walks hashed before plain cylinders existed are bits of one JAX build (jax / jaxlib 0.10.2,
-    # tests/geometry/test_mixed_myelinated_plain_cell.py RECORDED_WITH): this job installs that build and runs those
-    # three tests alone, so the bit-identity holds in CI whatever the matrix above resolves.
+    # Recorded bits are bits of one JAX build (jax / jaxlib 0.10.2, tests/conftest.py RECORDED_WITH) and of the kernels
+    # the compiler emits for one host's CPU: the all-myelinated walks hashed before plain cylinders existed, and the
+    # walk with and without the trial record. This job installs that build and runs the tests named test_recorded_bits_*
+    # alone (DMIPY_SIM_RECORDED_BITS=1; skipped by name everywhere else); only when one fails does it run the host
+    # canary, to say whether this runner's kernels are the recording host's.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,5 +114,9 @@ jobs:
         run: |
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
-          JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py -k "recorded" -q -rs --tb=short | tee out.txt
-          grep -q "3 passed" out.txt && ! grep -q "skipped" out.txt
+          status=0
+          DMIPY_SIM_RECORDED_BITS=1 JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
+          if [ "$status" -eq 0 ] && grep -q "5 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
+          # a recorded test failed (or was skipped): say whether this runner's kernels are the recording host's
+          JAX_PLATFORMS=cpu python tools/recorded_bits_canary.py || true
+          exit 1

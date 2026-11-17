@@ -5,6 +5,42 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A walk records its membrane trials at its plain walls** (`record_trials=`, off by default). `_walk_geometry` and
+  `walk` take a `dmipy_sim.trial_record.TrialRecordSpec(modes=M, band_edges=...)` (seconds from 0 to `T_max`, at most
+  64 bands, containing every storage-window boundary) and return `CoefficientWalk.trial_record`, a `TrialRecord`: per
+  walker and per (object, time band) cell the trials `n` and the granted trials `N` (int32) and the sums `S_j = sum u
+  T_j(2 u / u_max - 1)`, `j = 0 .. M - 1`, in the walk's accumulation dtype, `u = 2 d_perp / R` the trial's overshoot
+  and `u_max = 2 LONGEST_STEP h / R` each object's bound (`h = sqrt(6 D dt)` at the larger diffusivity of the wall's
+  two pools). Every encounter of a plain wall (`PackedCylinders`, `PackedSpheres`, the plain cylinders of
+  `PackedMyelinatedCylinders`) is a trial, a sealed object's included; a trial belongs to its step and a step to the band
+  whose left-open, right-closed interval `(edge_k, edge_k+1]` contains its end time (an end on an edge in the earlier
+  band, so `window(i)` holds exactly its own steps); a step a bound walker discards
+  records none. The record turns `count_walls` on (`sum n` over an all-plain cell is `work["n_hits"]`, `sum N` is
+  `work["n_crossings"]`), draws nothing and rounds nothing, and enters none of the walk's arithmetic: one step of a wall kernel is the same
+  bits with and without it, and the whole walk with and without it is the same bits on the recording build (another
+  JAX build may compile the two programs to positions that differ in the last bits, which reflections can grow into
+  another encounter: two valid walks of one law); a walk without it is the same program as before (the same optimised
+  HLO, instruction for instruction). It is carried by `window`, `take`, `join_walks`, `save` / `load` and
+  `nbytes`, and holds `n_objects * n_bands * (8 + M * itemsize)` bytes per walker. Refused by name: a geometry with no
+  plain wall, a backend other than the JAX kernels, `equilibrate_binding='burnin'`, a field channel without a stated
+  `K_c3` and `field_read_interval`, malformed edges, more than 65536 bytes per walker, and a walk with a trial beyond
+  `u_max`. The wall kernels log the trials on `WallHit.trials` (`_boundary.TrialLog`) when the geometry's `log_trials`
+  is set, which the walk does for its duration.
+- **A plain wall's transmission trial is decided by a 32-bit word** (behaviour change: the walk's stream changes at
+  the trials it decides). `packed_wall_kernel` (`PackedCylinders`, `PackedSpheres`) and the plain cylinders of
+  `PackedMyelinatedCylinders` draw one `uint32` word per encounter (`jax.random.bits`, the word the float32 uniform of
+  the same key was made of, so no other draw moves) and grant the crossing when the word is below `floor(p 2^32)`
+  (`geometry._boundary.trial_granted`; always at `p >= 1`, never at `p <= 0`). The realised probability is
+  `floor(p 2^32) / 2^32`, within `2^-32` of the float32 `p` and never above it, where the uniform realised
+  `ceil(p 2^23) / 2^23`, above `p` by up to `2^-23` (at `p = 1e-4` a relative bias of `1.7e-4`, now `1.7e-6`). A
+  decision differs from the old one only when its word lies between the two grids, with probability at most `2^-23`
+  per trial and about `2^-24` on average: a walker of 4 570 trials (a 60 ms walk of a dense cell) changes path with
+  probability about `2.7e-4`. A walk with no plain permeable wall is unchanged. Known cost of the correction: on a
+  dense cell of six plain cylinders (64 walkers, 60 ms, CPU) the walk takes 6 % longer (71.3 s against 67.2 s, run
+  without compilation, the median of three interleaved repeats); deriving the threshold from the float's bits in
+  integers was slower (74.8 s). Known: the sheathed cylinder's one
+  trial per step and the trials of the other permeable geometries (the analytic geometries, the mesh, the label
+  volume) keep their float32 uniform.
 - **A packed myelinated cell's spec states the pools it seeds, and a pool that holds no water is not seeded** (behaviour change). `PackedMyelinatedCylinders` seeds by default every pool whose `Pool.water_fraction` is not 0, by area among them (`seeded_pools`); its spec's `seeding.pools` lists exactly those pools, or the pools `seed_pools=` names, and `geometry_from_spec` reads that list literally, so a cell built from its spec places the same walkers in the same pools. A cell whose every pool holds water walks byte for byte as before. A default cell with a sheath (or another pool) of water fraction 0 no longer starts walkers in it: on the four-cylinder cell of the tests, 662 of 4000 walkers started in its dry sheaths and none does now, so its walks change; its spec's seeding list ([0, 1]) does not. `seed_pools=` naming a pool of water fraction 0 is refused by name; naming exactly the pools that hold water is the default (`seed_pools` is `None`). `UnstatedSeedingError` is removed: every seeding of the cell is stated by its spec, and the cell is walked through it (`geometry.spec`, `walk(cell)`, with the field). `Geometry.seeds_every_pool` is replaced by `Geometry.placement_is_stationary`, what the walk's start record reads: whether the placement's law is the walk's stationary law. For the packed myelinated cell it is True when every pool of positive area that is not seeded is sealed from every seeded pool (each face read per cylinder; a dry pool behind an open face fills like any other), so a cell whose unseeded sheaths are sealed records its start at spatial equilibrium and one with an unseeded sheath behind an open face does not; a cell that seeds every pool records it as before. Known limitation: within the seeded pools the placement is by area, not by area times water fraction as the specification's `uniform_by_volume` reads, for a pool whose water fraction lies between 0 and 1.
 - **Myelinated and plain cylinders in one periodic cell.** `PackedMyelinatedCylinders` takes a g-ratio of 1 for a cylinder without a sheath: one wall at its radius between its lumen and the extra pool, with `kappa_outer` / `rho_outer`, a transmission trial at every encounter of a step as `PackedCylinders` makes (a myelinated cylinder keeps one trial per step, at the step's first encounter with any wall). A g-ratio outside (0, 1], a myelinated cylinder whose sheath has no thickness in float32 and an axolemma property given to a plain cylinder are refused by name. The field (`HollowCylinderField.of`, `field_grid_of`) is the myelinated cylinders' sheaths only; the spec writes a plain cylinder as one wall (`membrane`, lumen | extra) over its own instances and `geometry_from_spec` builds the cell back, myelinated cylinders first. `seed_pools=` names the pools the walkers start in. `simulate` on the cell takes `r0=` and a pinned `sub_steps`. A cell of myelinated cylinders only walks byte for byte as before.
 - **The walk states the precision of its projection** (`block["projection_precision"]`): the dtype name of the product a ring's moments are projected with, read from `accumulate.projection_precision(dtype, K, m)` (the output of `ring_projection` itself), so a consumer reads the precision of the projection as data. `None` for a producer that states none (a backend that does not, a walk read from stored positions); a bundle walk joined from pools that differ states `"mixed"`. No array changes.

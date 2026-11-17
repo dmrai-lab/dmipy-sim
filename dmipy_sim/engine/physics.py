@@ -925,6 +925,15 @@ def _add_work(work, w, keep=None):
     return tuple(out)
 
 
+def _add_step_work(work, w, step_index, trial_add, keep=None):
+    """The carried work after one step: :func:`_add_work` of ``(hits, crossings, exhausted)``, and, when the walk records
+    its membrane trials (``trial_add``, :func:`~dmipy_sim.trial_record.device_record`), the record carried as the
+    work's fourth entry with the step's trials (``w``'s fourth) added in the band of the walk-wide step ``step_index``."""
+    if trial_add is None:
+        return _add_work(work, w, keep=keep)
+    return _add_work(work[:3], w[:3], keep=keep) + (trial_add(work[3], w[3], step_index, keep),)
+
+
 def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = None):
     """The one displacement-and-wall rule for the concentric-cylinder substrates.
 
@@ -934,15 +943,17 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     diffusivity (the axon's, indexed by the carried compartment); the axial coordinate is free.
 
     Returns ``sub(r, step_key, u, comp_id, perm_key) -> (r_new, comp_id_new, chan, dlog_rho, work)``, and
-    ``sub.move(r, s, comp_id, u, us)`` the same for a given step vector ``s`` and the plain walls' uniforms ``us``
+    ``sub.move(r, s, comp_id, u, words)`` the same for a given step vector ``s`` and the plain walls' words ``words``
     (``None`` when the cell has no plain cylinder), where
     ``u`` is the uniform of a sheathed cylinder's one trial per step and ``perm_key`` the key of the plain
-    cylinders' trials (``uniform(perm_key, (budget,))``, one per encounter, the plain packing's draw, made only when the
-    cell holds a plain cylinder; its first is ``u``, and the first encounter of a step meets one wall), ``chan``
+    cylinders' trials (``bits(perm_key, (budget,), uint32)``, one 32-bit word per encounter, the plain packing's draw,
+    made only when the cell holds a plain cylinder; its first is the word ``u`` is made of, ``u = (word >> 9) 2^-23``,
+    and the first encounter of a step meets one wall), ``chan``
     holds the four unit boundary local-time channels of the wall kernel, ``dlog_rho``
     the surface log-weight increment under ``rho_weights`` (``(N_max, 4)``; zero when None), and ``work``
     the step's ``(hits, crossings, exhausted)`` as int32 -- the first two None unless the geometry counts
-    (``count_walls``), the exhaustion always.
+    (``count_walls``), the exhaustion always -- followed by the step's plain-wall trials
+    (:class:`~dmipy_sim.geometry._boundary.TrialLog`) when the geometry logs them (``log_trials``).
     """
     dt_f32 = jnp.float32(dt)
     N_max = geometry.N_max
@@ -963,10 +974,10 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         geometry._centers_jax, geometry._inner_radii_jax, geometry._outer_radii_jax, L,
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
         geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls,
-        budget=geometry.bounce_budget)
+        budget=geometry.bounce_budget, trials=bool(geometry.log_trials))
     budget = wall.bounce_loop.budget
 
-    def move(r, s_c, comp_id, u, us):
+    def move(r, s_c, comp_id, u, words):
         """The step ``s_c`` (a 3-vector) of the walker at ``r`` in the encoded compartment ``comp_id``, through the
         walls: the in-plane part meets the walls, the axial part is free."""
         pool, k = _pool_and_axon(geometry, comp_id)
@@ -974,22 +985,24 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         l_xy = jnp.linalg.norm(s_c[:2])
         d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
                           jnp.zeros(2, jnp.float32))
-        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, us)
+        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, words)
         xy_new = h.xy
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
         r_new = jnp.stack([xy_new[0], xy_new[1], r_c[2] + s_c[2]])
         counting = h.n_hits is not None
         work = (h.n_hits, h.crossed.astype(jnp.int32) if counting else None, h.exhausted.astype(jnp.int32))
+        if h.trials is not None:                                  # the step's plain-wall trials, for the record
+            work = work + (h.trials,)
         return r_new, _encode_compartment(geometry, h.pool, h.k), h.chan, h.dlog_rho, work
 
     def sub(r, step_key, u, comp_id, perm_key):
         pool, k = _pool_and_axon(geometry, comp_id)
         unit = pair_step(step_key)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
-        us = (jax.random.uniform(perm_key, (budget,), dtype=jnp.float32)
+        words = (jax.random.bits(perm_key, (budget,), dtype=jnp.uint32)
               if wall.has_plain else None)
-        return move(r, unit * step_l, comp_id, u, us)
+        return move(r, unit * step_l, comp_id, u, words)
 
     sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand
@@ -1084,12 +1097,14 @@ def _unwrapped_step(r_unwrapped, r_incell, r_incell_new, L):
 
 def make_packed_myelin_traj_step_fn(geometry, dt: float,
                                     kappa_MT: float = 0.0, dwell_time: float = 0.0,
-                                    mt_side_intra: float = 1.0, mt_side_extra: float = 1.0):
+                                    mt_side_intra: float = 1.0, mt_side_extra: float = 1.0, trial_add=None):
     """Trajectory step for PackedMyelinatedCylinders: geometry + permeability, no relaxation.
 
     Carry ``(r_incell, r_unwrapped, key, dlog_accum, comp_id, work)`` -- or ``(r_incell, r_unwrapped, key,
-    dlog_accum, comp_id, bound_rem, bound_acc, work)`` when ``kappa_MT > 0``; ``step_fn(carry, None) -> (carry,
-    None)``; ``work`` is the carried ``(hits, crossings, exhausted)`` or None (a bound walker's step adds nothing). ``r_incell`` is the position in the cell ``[-L/2, L/2)`` that the wall kernel reads;
+    dlog_accum, comp_id, bound_rem, bound_acc, work)`` when ``kappa_MT > 0``; ``step_fn(carry, step) -> (carry,
+    None)``, ``step`` the walk-wide step index, read only by ``trial_add``; ``work`` is the carried ``(hits, crossings,
+    exhausted)`` or None (a bound walker's step adds nothing), followed by the record of the walk's membrane trials
+    when ``trial_add`` (:func:`~dmipy_sim.trial_record.device_record`'s ``add``) is given. ``r_incell`` is the position in the cell ``[-L/2, L/2)`` that the wall kernel reads;
     ``r_unwrapped`` is the continuous position (:func:`_unwrapped_step`), the one a trajectory records. ``dlog_accum``
     accumulates the unit boundary local time (``-2 d_perp`` per reflection, i.e. ``rho/D = 1``) so
     a replay can apply any surface relaxivity. ``comp_id`` is the encoded compartment (0 extra,
@@ -1111,7 +1126,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
 
     L = jnp.float32(geometry._cell_size)
 
-    def step_fn(carry, _):
+    def step_fn(carry, step_index):
         if mt_on:
             r, r_uw, key, dlog_accum, comp_id, bound_rem, bound_acc, work = carry
             key, k_step, k_perm, stick_key, dwell_key = jax.random.split(key, 5)
@@ -1123,7 +1138,8 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         r_uw_new = _unwrapped_step(r_uw, r, r_new, L)
         dlog_boundary = jnp.sum(chan)
         if not mt_on:
-            return (r_new, r_uw_new, key, dlog_accum + dlog_boundary, comp_new, _add_work(work, w)), None
+            return (r_new, r_uw_new, key, dlog_accum + dlog_boundary, comp_new,
+                    _add_step_work(work, w, step_index, trial_add)), None
 
         pool, k = _pool_and_axon(geometry, comp_id)
         is_intra, is_extra = pool == 1, pool == 0
@@ -1152,7 +1168,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
         bound_acc_out = bound_acc + jnp.where(is_bound, jnp.minimum(bound_rem, jnp.float32(1.0)),
                                               jnp.where(newly, jnp.minimum(dwell_draw, u_when), jnp.float32(0.0)))
         return (r_out, r_uw_out, key, dlog_accum + dlog_contrib, comp_out, bound_rem_out, bound_acc_out,
-                _add_work(work, w, keep=~is_bound)), None
+                _add_step_work(work, w, step_index, trial_add, keep=~is_bound)), None
 
     step_fn.bounce_loop = sub.bounce_loop
     return step_fn

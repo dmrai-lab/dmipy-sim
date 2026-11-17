@@ -304,6 +304,19 @@ class Geometry(ABC):
     #: the pilot walk that calibrates a substrate's cost per hit turns it on, a production walk pays nothing.
     count_walls = False
 
+    #: Return the transmission trials of every step at a plain wall on `WallHit.trials`
+    #: (:class:`~dmipy_sim.geometry._boundary.TrialLog`). Set for the duration of one walk by
+    #: ``_walk_geometry(record_trials=)``, which records them (:mod:`dmipy_sim.trial_record`); off, the wall
+    #: interaction is the same program as before.
+    log_trials = False
+
+    def trial_objects(self, diffusivity):
+        """The objects whose plain walls a walk records the trials of (:mod:`dmipy_sim.trial_record`), in the order of
+        ``TrialLog.obj``: ``(radii (n_objects,), D (n_objects,))``, each object's radius (m) and the larger
+        diffusivity (m^2/s) of the two pools its wall separates, for a walk at the reference ``diffusivity``; or None
+        when the geometry has no plain wall."""
+        return None
+
     #: Stepped by the dedicated three-compartment kernel `physics.make_myelin_step_fn`
     #: (`MyelinatedCylinder`) rather than by `reflect`.
     _is_myelinated = False

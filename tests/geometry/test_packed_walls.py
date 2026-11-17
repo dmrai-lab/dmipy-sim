@@ -55,7 +55,7 @@ def _wall_step(geom):
     from dmipy_sim.engine.physics import make_myelin_substep
     h = float(np.min(geom._inner_radii_np[geom._inner_radii_np > 0])) / 6     # the kernel sizes for LONGEST_STEP * h
     sub = make_myelin_substep(geom, h * h / (6 * D))
-    ones = jnp.ones(sub.bounce_loop.budget, jnp.float32)                # no plain wall here is permeable
+    ones = jnp.full(sub.bounce_loop.budget, 2 ** 32 - 1, jnp.uint32)    # the largest words: no plain wall here is permeable
 
     def step(p, s):
         return sub.move(p, s, geom.classify_position(p), jnp.float32(1.0), ones)[0]

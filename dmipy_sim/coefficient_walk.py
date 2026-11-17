@@ -95,6 +95,9 @@ class CoefficientWalk:
         for a free walk): what the block table's error is proportional to.
     qv_boundary : (n_walkers, n_windows) in the accumulation's dtype, or None
         The cumulative local time's quadratic variation per window, ``sum (dlog)^2`` (each hit's contact squared).
+    trial_record : TrialRecord or None
+        The membrane trials at the walk's plain walls per walker and (object, time band) cell
+        (:class:`~dmipy_sim.trial_record.TrialRecord`), of a walk asked for it (``record_trials=``); None otherwise.
     """
     position_coeffs: np.ndarray
     T: float
@@ -137,6 +140,7 @@ class CoefficientWalk:
     work: Optional[dict] = field(default=None, compare=False)
     envelope: object = None    #: the :class:`~dmipy_replay.replay.envelope.Envelope` the walk was walked for (``walk``)
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
+    trial_record: object = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         if self.spec is None and self.geometry is not None:
@@ -220,6 +224,8 @@ class CoefficientWalk:
         for ev in (self.comp_events, self.bound_events):
             if ev is not None:
                 n += ev.offsets.nbytes + ev.t.nbytes + ev.label.nbytes
+        if self.trial_record is not None:
+            n += self.trial_record.nbytes
         return int(n)
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
@@ -246,6 +252,7 @@ class CoefficientWalk:
         for k in ("comp_events", "bound_events"):
             ev = getattr(self, k)
             out[k] = None if ev is None else ev.take(idx)
+        out["trial_record"] = None if self.trial_record is None else self.trial_record.take(idx)
         n_raw = 0 if self.raw_positions is None else int(self.raw_positions.shape[0])
         keep_raw = n_raw and idx.shape[0] >= n_raw and np.array_equal(idx[:n_raw], np.arange(n_raw))
         if not keep_raw:
@@ -254,8 +261,9 @@ class CoefficientWalk:
 
     def window(self, i):
         """Window ``i`` as a one-window coefficient walk: its coefficients, contact, field modes and quadratic
-        variation, the labels held at its start and the events inside it (times from the walk's start), and the raw
-        subset on its blocks (sharing the boundary block end)."""
+        variation, the labels held at its start and the events inside it (times from the walk's start), the raw
+        subset on its blocks (sharing the boundary block end), and the bands of the trial record within it (their
+        edges on the walk's clock)."""
         import dataclasses
         n, i = int(self.n_windows), int(i)
         if not 0 <= i < n:
@@ -284,7 +292,8 @@ class CoefficientWalk:
             field_coeffs=sl(self.field_coeffs), qv_field=sl(self.qv_field), qv_field_increments=sl(self.qv_field_increments),
             raw_positions=cut(self.raw_positions), raw_boundary=cut(self.raw_boundary),
             raw_compartment=cut(self.raw_compartment), raw_bound=cut(self.raw_bound), raw_field=cut_reads(self.raw_field),
-            qv_positions=sl(self.qv_positions), qv_boundary=sl(self.qv_boundary))
+            qv_positions=sl(self.qv_positions), qv_boundary=sl(self.qv_boundary),
+            trial_record=(None if self.trial_record is None else self.trial_record.bands(i * T_w, (i + 1) * T_w)))
 
     def shift_time(self, t_start):
         """This walk placed at ``t_start`` seconds on a longer clock (a continuation appended after a pack's windows):
@@ -317,6 +326,8 @@ class CoefficientWalk:
         for col, ev in (("comp", self.comp_events), ("bound", self.bound_events)):
             if ev is not None:
                 arrays[f"{col}_events_offsets"] = ev.offsets; arrays[f"{col}_events_t"] = ev.t; arrays[f"{col}_events_label"] = ev.label
+        if self.trial_record is not None:
+            arrays.update({k: np.ascontiguousarray(v) for k, v in self.trial_record.to_arrays().items()})
         run = self.run
         fb = self.field_basis
         header = {k: getattr(self, k) for k in self._FILE_SCALARS}
@@ -368,6 +379,8 @@ class CoefficientWalk:
                   T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h["illegal_crossings"]),
                   first_walker=int(h["first_walker"]),
                   K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)
+        from .trial_record import TrialRecord
+        kw["trial_record"] = TrialRecord.from_arrays(arrays)
         return cls(**kw)
 
 
@@ -437,7 +450,7 @@ def join_walks(walks):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):
             raise ValueError(f"some walks carry {key} and some do not")
-    for key in CoefficientWalk._WALKER_ARRAYS:
+    for key in CoefficientWalk._WALKER_ARRAYS + ("trial_record",):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):
             raise ValueError(f"some walks carry {key} and some do not")
@@ -462,6 +475,9 @@ def join_walks(walks):
            for k in CoefficientWalk._WALKER_ARRAYS}
     for key in ("comp_events", "bound_events"):
         out[key] = None if getattr(w0, key) is None else EventList.concatenate([getattr(w, key) for w in walks])
+    if w0.trial_record is not None:
+        from .trial_record import TrialRecord
+        out["trial_record"] = TrialRecord.concatenate([w.trial_record for w in walks])
     k0 = [w.block.get("k0_residual_m") for w in walks]
     block = dict(rules[0], **ensemble_block_stats(out["position_coeffs"], out["qv_positions"], out["qv_boundary"],
                                                   None if any(v is None for v in k0) else max(k0), w0.diffusivity, w0.T))
