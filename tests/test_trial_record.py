@@ -258,7 +258,51 @@ def test_the_record_changes_no_array_of_a_plain_cells_walk(plain_walks):
     assert plain_walks[0].trial_record is None
 
 
+def _diagnose(a, b):
+    """TEMPORARY diagnostic: per array the largest absolute / relative difference, the walkers whose displacement
+    differs by more than 1e-6 of the cell, the discrete outcomes, and the host."""
+    import platform, subprocess
+    out = []
+    for name in ARRAYS:
+        x, y = getattr(a, name), getattr(b, name)
+        if x is None:
+            continue
+        x, y = np.asarray(x, np.float64), np.asarray(y, np.float64)
+        d = np.abs(x - y)
+        rel = d / np.maximum(np.abs(y), 1e-300)
+        out.append(f"{name}: max_abs {d.max():.3e} max_rel {rel.max():.3e} n_diff {int((d > 0).sum())}/{d.size}")
+    disp = np.abs(np.asarray(a.position_coeffs, np.float64)[:, :, 1, :] - np.asarray(b.position_coeffs, np.float64)[:, :, 1, :])
+    out.append(f"walkers |d disp| > 1e-6 L: {int((disp.max(axis=(1, 2)) > 1e-6 * L_CELL).sum())}, max |d disp| / L {disp.max() / L_CELL:.3e}")
+    wa = {k: v for k, v in a.work.items() if k in ('n_hits', 'n_crossings', 'exhausted_steps', 'label_deviations')}
+    wb = {k: v for k, v in b.work.items() if k in ('n_hits', 'n_crossings', 'exhausted_steps', 'label_deviations')}
+    out.append(f"work off {wa} on {wb}")
+    ea, eb = a.comp_events, b.comp_events
+    out.append(f"events equal: {all(np.array_equal(getattr(ea, f), getattr(eb, f)) for f in ('offsets', 't', 'label'))}; "
+               f"n events {len(ea.t)} vs {len(eb.t)}; illegal {a.illegal_crossings} vs {b.illegal_crossings}")
+    try:
+        cpu = subprocess.run(["lscpu"], capture_output=True, text=True).stdout
+        model = [l for l in cpu.splitlines() if "Model name" in l]
+        out.append(f"cpu {model} avx512f {'avx512f' in cpu}")
+    except Exception as e:                                             # noqa: BLE001 -- a diagnostic
+        out.append(f"cpu: {e}")
+    import os
+    out.append(f"jax cache dir {jax.config.read('jax_compilation_cache_dir')} env {os.environ.get('DMIPY_JAX_CACHE')}")
+    return "\n".join(out)
+
+
 def test_the_record_changes_no_array_of_a_mixed_cells_walk(mixed_walks):
+    a, b = mixed_walks
+    same = all(np.array_equal(np.asarray(getattr(a, n)), np.asarray(getattr(b, n)))
+               for n in ARRAYS if getattr(a, n) is not None)
+    if not same:                                                       # TEMPORARY: the diagnosis, then the fresh compile
+        import subprocess, sys, os
+        code = ("import sys; sys.path.insert(0, 'tests'); import numpy as np; import test_trial_record as t; "
+                "r = t._mixed(); r.count_walls = True; a = t._walk(r); b = t._walk(t._mixed(), record_trials=t.SPEC); "
+                "print(t._diagnose(a, b))")
+        fresh = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                               env=dict(os.environ, DMIPY_JAX_CACHE="0"))
+        raise AssertionError("DIAGNOSIS (in-process, persistent cache as configured):\n" + _diagnose(a, b)
+                             + "\nFRESH PROCESS, NO PERSISTENT CACHE:\n" + fresh.stdout[-3000:] + fresh.stderr[-1500:])
     _assert_same_walk(*mixed_walks)
     r = mixed_walks[1].trial_record
     assert r.n.shape == (32, 4, 3)
