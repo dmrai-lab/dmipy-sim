@@ -5,6 +5,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The field of a periodic cell of hollow cylinders is exactly periodic** (behaviour change: a walk of a
+  `PackedMyelinatedCylinders` cell with `HollowCylinderField.of(cell)` reads a different field). Per sheath the field is
+  the closed form at its nearest image plus every other image's tail through the regular part of the square lattice's
+  Weierstrass function, `fields.hollow_cylinder.lattice_regular_part` (row-summed, DLMF 23.8.3): periodic exactly,
+  harmonic outside the sources, the walls the closed form's. It replaces the closed form summed over six images per
+  side, which jumped by up to 9e-4 of the field at the cell's faces and differed from its limit by up to 4.4e-4. The
+  cell mean is not subtracted (as before) and is stated in closed form in the class docstring. `n_images` and
+  `CELL_IMAGES` are removed; `device_read(dtype)` and `channels(points, dtype)` read in float32 (the walk's) or float64
+  (the reference, under `jax_enable_x64`). The record states `summation` (`"lattice"` or `"none"`) and `lattice_rows`;
+  a walk file whose field record names `n_images` for a cell is refused by name on load (re-walk it); an isolated
+  cylinder's record reads as before. The constructor refuses non-finite input and a sheath whose outer radius reaches
+  half the cell's side. The forward vector-Bloch provider `MyelinSusceptibility` keeps its own image sum.
 - **A cell of myelinated and plain cylinders has an equilibrium bound fraction, per water domain** (behaviour
   change: the MT burn-in of such a cell stops by its equilibrium, and `equilibrate_binding='fast'` is accepted there).
   `engine.mt.equilibrium_domains(geometry, kappa_MT, dwell_time)` states, for a `PackedMyelinatedCylinders` cell whose
