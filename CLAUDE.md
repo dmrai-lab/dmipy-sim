@@ -67,7 +67,16 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   (`jax.random.bits`), granted when the word is below `floor(p 2^32)` (`_boundary.trial_granted`): the realised
   probability is `floor(p 2^32) / 2^32`, within `2^-32` of the float32 `p` and never above it (the float32 uniform it
   replaces realised `ceil(p 2^23) / 2^23`). The sheathed cylinder's one trial per step and the other geometries'
-  trials keep their float32 uniform.
+  trials keep their float32 uniform. `record_trials=TrialRecordSpec(modes=M, band_edges=...)` (`dmipy_sim.trial_record`;
+  `_walk_geometry`, `walk`) records those trials: per walker and per (object, time band) cell the trial count `n`, the
+  granted count `N` (int32) and `S_j = sum u T_j(2 u / u_max - 1)`, `j < M`, in the accumulation dtype, `u = 2 d_perp
+  / R` the overshoot and `u_max = 2 LONGEST_STEP h / R` per object (`CoefficientWalk.trial_record`). Every encounter of
+  a plain wall is a trial (later encounters of a step and sealed objects included), a trial goes to the band of its
+  step's end (an edge to the later band, `T_max` to the final band), a step a bound walker discards records none. Off
+  by default and the same program then; on, it forces `count_walls` and changes no array of the walk (the geometry's
+  `log_trials` makes its kernel return `WallHit.trials`, carried as the work's fourth entry). Refused by name: no plain
+  wall, a backend, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
+  missing a window boundary, more than 64 bands or 64 KiB per walker, a trial beyond `u_max`.
 
 ## Environment & GPU
 

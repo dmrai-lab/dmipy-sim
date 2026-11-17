@@ -359,6 +359,19 @@ class WallHit(NamedTuple):
     n_hits: object        #: int32 -- wall encounters resolved in this step (reflections and granted crossings);
                           #: None unless the geometry counts (`Geometry.count_walls`), since counting costs
     exhausted: jnp.ndarray  #: bool -- the bounce budget ran out with path left untested
+    trials: object = None   #: the step's plain-wall transmission trials (:class:`TrialLog`); None unless the
+                            #: geometry logs them (`Geometry.log_trials`)
+
+
+class TrialLog(NamedTuple):
+    """The transmission trials of one step at a plain wall, one entry per iteration of the bounce loop
+    (``(budget,)`` each): whether the iteration was a trial (an encounter of a plain wall), the object met, its
+    overshoot ``u = 2 d_perp / R`` (``d_perp`` the normal depth of the step's path past the wall at the encounter,
+    ``R`` the object's radius) and whether the crossing was granted."""
+    valid: jnp.ndarray    #: bool -- the iteration met a plain wall (a trial)
+    obj: jnp.ndarray      #: int32 -- the object met (its index in the geometry's object order)
+    u: jnp.ndarray        #: float32 -- the overshoot ``2 d_perp / R``
+    granted: jnp.ndarray  #: bool -- the crossing was granted
 
 
 def no_hit(r_new, counting=False):
@@ -405,6 +418,7 @@ class Bounces(NamedTuple):
     n_reflections: object       #: int32 -- reflections resolved in this step; None unless the loop counts
     exhausted: jnp.ndarray      #: bool -- the budget ran out with path left untested
     state: object               #: the rule's state after its last iteration
+    log: object = None          #: the rule's per-iteration log stacked over the budget; None unless the loop logs
 
 
 class BounceLoop:
@@ -449,17 +463,24 @@ class BounceLoop:
     loop and it is not free: measured on the L40S, +5 % on the analytic sphere (4.8e9 walker-steps,
     3.99 s against 4.19 s), whose rule is a few dozen flops. Off by default, so a production walk
     pays nothing; a pilot walk that calibrates the cost of a substrate turns it on.
+
+    ``log`` (a fixed loop only) makes the rule return an eighth value, a pytree describing its iteration, which the
+    loop stacks over the budget into ``Bounces.log``: the per-encounter record a walk that records its membrane trials
+    reads. Off by default, so a loop that does not log is the same program as before.
     """
 
-    def __init__(self, budget, *, fixed=True, count=False):
+    def __init__(self, budget, *, fixed=True, count=False, log=False):
         self.budget = int(budget)
         self.fixed = bool(fixed)
         self.count = bool(count)
+        self.log = bool(log)
         if self.budget < 1:
             raise ValueError(f"a bounce loop needs a budget of at least one collision, got {budget!r}")
+        if self.log and not self.fixed:
+            raise ValueError("a bounce loop logs its iterations on a fixed budget (a lax.scan) only")
 
     def __repr__(self):
-        return f"BounceLoop(budget={self.budget}, fixed={self.fixed}, count={self.count})"
+        return f"BounceLoop(budget={self.budget}, fixed={self.fixed}, count={self.count}, log={self.log})"
 
     def __call__(self, rule, r0, d_hat, step_l, *, dlog_init=None, state_init=None):
         dlog0 = jnp.zeros((), jnp.float32) if dlog_init is None else dlog_init
@@ -469,22 +490,25 @@ class BounceLoop:
         # the carried count is the one thing in the loop that is not free, so it exists only when asked for
         init = (r0, d_hat, step_l, st0, dlog0, jnp.zeros((), bool), zero_i if counting else None)
 
+        logging = self.log
+
         def step(carry, i):
             r, d, rem, state, dlogw, crossed, nref = carry
-            r_n, d_n, rem_n, st_n, dlw, cr, refl = rule(r, d, rem, state, i)
+            out = rule(r, d, rem, state, i)
+            r_n, d_n, rem_n, st_n, dlw, cr, refl = out[:7]
             nref_n = nref + refl.astype(jnp.int32) if counting else None
-            return (r_n, d_n, rem_n, st_n, dlogw + dlw, crossed | cr, nref_n), rem_n
+            return (r_n, d_n, rem_n, st_n, dlogw + dlw, crossed | cr, nref_n), (rem_n, out[7] if logging else None)
 
         if self.fixed:
             def body(carry, i):
-                carry_n, rem_n = step(carry, i)
-                return carry_n, (rem_n < carry[2])
+                carry_n, (rem_n, entry) = step(carry, i)
+                return carry_n, ((rem_n < carry[2]), entry)
 
-            (r_f, d_f, rem_f, st_f, dlogw, crossed, nref), progressed = jax.lax.scan(
+            (r_f, d_f, rem_f, st_f, dlogw, crossed, nref), (progressed, log) = jax.lax.scan(
                 body, init, jnp.arange(self.budget))
             last = progressed[-1]
             r_out = r_f + d_f * jnp.where(last, jnp.float32(0.0), jnp.maximum(rem_f, jnp.float32(0.0)))
-            return Bounces(r_out, dlogw, crossed, nref, last & (rem_f > 0), st_f)
+            return Bounces(r_out, dlogw, crossed, nref, last & (rem_f > 0), st_f, log)
 
         budget = jnp.int32(self.budget)
 

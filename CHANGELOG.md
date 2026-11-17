@@ -5,6 +5,23 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A walk records its membrane trials at its plain walls** (`record_trials=`, off by default). `_walk_geometry` and
+  `walk` take a `dmipy_sim.trial_record.TrialRecordSpec(modes=M, band_edges=...)` (seconds from 0 to `T_max`, at most
+  64 bands, containing every storage-window boundary) and return `CoefficientWalk.trial_record`, a `TrialRecord`: per
+  walker and per (object, time band) cell the trials `n` and the granted trials `N` (int32) and the sums `S_j = sum u
+  T_j(2 u / u_max - 1)`, `j = 0 .. M - 1`, in the walk's accumulation dtype, `u = 2 d_perp / R` the trial's overshoot
+  and `u_max = 2 LONGEST_STEP h / R` each object's bound (`h = sqrt(6 D dt)` at the larger diffusivity of the wall's
+  two pools). Every encounter of a plain wall (`PackedCylinders`, `PackedSpheres`, the plain cylinders of
+  `PackedMyelinatedCylinders`) is a trial, a sealed object's included; a trial is in the band of its step's end time,
+  an end on an edge in the later band and the walk's last instant in the final band; a step a bound walker discards
+  records none. The record turns `count_walls` on (`sum n` over an all-plain cell is `work["n_hits"]`, `sum N` is
+  `work["n_crossings"]`), draws nothing and rounds nothing, and the walk with it is the walk without it, bit for bit; a
+  walk without it is the same program as before. It is carried by `window`, `take`, `join_walks`, `save` / `load` and
+  `nbytes`, and holds `n_objects * n_bands * (8 + M * itemsize)` bytes per walker. Refused by name: a geometry with no
+  plain wall, a backend other than the JAX kernels, `equilibrate_binding='burnin'`, a field channel without a stated
+  `K_c3` and `field_read_interval`, malformed edges, more than 65536 bytes per walker, and a walk with a trial beyond
+  `u_max`. The wall kernels log the trials on `WallHit.trials` (`_boundary.TrialLog`) when the geometry's `log_trials`
+  is set, which the walk does for its duration.
 - **A plain wall's transmission trial is decided by a 32-bit word** (behaviour change: the walk's stream changes at
   the trials it decides). `packed_wall_kernel` (`PackedCylinders`, `PackedSpheres`) and the plain cylinders of
   `PackedMyelinatedCylinders` draw one `uint32` word per encounter (`jax.random.bits`, the word the float32 uniform of

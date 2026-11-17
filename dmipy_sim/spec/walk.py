@@ -43,7 +43,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
-              field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32"):
+              field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -162,6 +162,10 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     multi-surface spec's pools are each accumulated in it and joined in it, and the adaptive walk refuses
     ``"float64"`` by name.
 
+    ``record_trials`` (a :class:`~dmipy_sim.trial_record.TrialRecordSpec`, or None) records the membrane trials of a
+    spec of one geometry with plain walls (:func:`~dmipy_sim.engine.core._walk_geometry`'s ``record_trials``); a
+    multi-surface bundle refuses it by name.
+
     ``sub_steps`` (None: the step law's count) pins the physics steps per block, so the walk steps at
     ``dt_sim = block / sub_steps`` seconds (:func:`~dmipy_sim.engine.core.walk_cost` states the step law's own count and
     the bound a pinned one is held to, ``sub_step_rules``). It is the lever of a walk matched to another walk's step: a
@@ -272,6 +276,11 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                 raise SpecError("field_pilot is the engine the fixed-step walk's field pilot walks on; the adaptive walk "
                                 "calibrates its field reads on its own backend")
             walk_kw["field_pilot"] = field_pilot
+        if record_trials is not None:
+            if _needs_bundle_walk(spec):
+                raise ValueError("trial_record: the membrane trials are recorded on a spec of one geometry with plain "
+                                 "walls; a multi-surface bundle walks its pools one by one and records none")
+            walk_kw["record_trials"] = record_trials
         if not _needs_bundle_walk(spec):
             permeable = bool(_permeable_walls(spec))
             if drop_pool_changes is not None:
@@ -303,7 +312,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                 field_kw = {} if fb is None else dict(field_basis=fb, K_c3=K_c3, field_read_interval=field_read_interval,
                                                       field_target_floor=field_target_floor)
                 law = walk_cost(1, float(D), g, T_max, block_h, tiers=tiers,
-                                **field_kw, **{k: v for k, v in walk_kw.items() if k != "sub_steps"}).sub_steps
+                                **field_kw, **{k: v for k, v in walk_kw.items() if k not in ("sub_steps", "record_trials")}).sub_steps
                 if int(sub_steps) < int(law):
                     raise SpecError(f"sub_steps={int(sub_steps)} is coarser than the step law's {int(law)} physics steps per "
                                     f"block for this walk; a pinned step may be finer, never coarser")

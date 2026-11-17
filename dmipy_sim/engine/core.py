@@ -67,6 +67,25 @@ def _bounce_budget_override(geometry, bounce_budget):
             del geometry.bounce_budget
 
 
+@contextlib.contextmanager
+def _trial_logging(geometry):
+    """``geometry.count_walls`` and ``geometry.log_trials`` on for a walk that records its membrane trials, restored
+    after it. Touches ``geometry.bounce_loop`` once here, on the host, so a geometry that builds a kernel per setting
+    (the packs) builds it outside any trace."""
+    saved = {k: (k in vars(geometry), getattr(geometry, k)) for k in ("count_walls", "log_trials")}
+    geometry.count_walls = True
+    geometry.log_trials = True
+    geometry.bounce_loop                                 # built now, on the host
+    try:
+        yield
+    finally:
+        for k, (had, prev) in saved.items():
+            if had:
+                setattr(geometry, k, prev)
+            else:
+                delattr(geometry, k)
+
+
 def _geometry_state(geometry):
     """The scalar state of a geometry that a step function bakes in at trace time.
 
@@ -1107,6 +1126,7 @@ def _walk_geometry(
     field_pilot: str = None,
     first_walker: int = 0,
     accumulation_dtype: str = "float32",
+    record_trials=None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1286,6 +1306,17 @@ def _walk_geometry(
         the dtype the projection product of a ring is formed in
         (:func:`~dmipy_sim.engine.accumulate.projection_precision`); a consumer reads the precision of the projection
         from it, not from ``accumulation``.
+    record_trials : TrialRecordSpec, optional
+        Record the walk's membrane trials at its plain walls (:mod:`dmipy_sim.trial_record`): per walker and per
+        (object, time band) cell the trials, the granted trials and ``modes`` Chebyshev sums of the trials'
+        overshoots, returned as ``CoefficientWalk.trial_record``. None (the default) records nothing and the walk is
+        the same program as before; with it the walk is the same walk, bit for bit, at the same counting, which the
+        record turns on (``Geometry.count_walls``). Refused by name: a geometry with no plain wall, a backend other
+        than the JAX kernels, the MT burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
+        every reweighted read), a field channel whose ``K_c3`` or ``field_read_interval`` a pilot of this walk would
+        choose, band edges that do not run from 0 to ``T_max`` or miss a storage window's boundary, a record above
+        :data:`~dmipy_sim.trial_record.MAX_BYTES_PER_WALKER` bytes per walker, and a walk in which a trial's overshoot
+        exceeded its object's bound (after the walk, never clipped).
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
@@ -1297,9 +1328,29 @@ def _walk_geometry(
     if drop_pool_changes and _backend is None:
         raise ValueError("drop_pool_changes asks a backend for the walkers of an impermeable walk that changed pool; the "
                          "JAX kernels carry each walker's label and report deviations (work['label_deviations']) instead")
-    with Run("_walk_geometry", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget):
+    _trial_objects = None
+    if record_trials is not None:
+        from ..trial_record import TrialRecordSpec
+        if not isinstance(record_trials, TrialRecordSpec):
+            raise TypeError(f"record_trials is a TrialRecordSpec (dmipy_sim.trial_record) or None, got {type(record_trials).__name__}")
+        if _backend is not None:
+            raise ValueError(f"trial_record: the membrane trials are recorded by the JAX kernels; the backend {_backend_name!r} "
+                             f"walks without the record")
+        if kappa_MT > 0.0 and equilibrate_binding == "burnin":
+            raise ValueError("trial_record: the start of a recorded walk is common to every reweighted read: use "
+                             "equilibrate_binding='fast' or 'off'")
+        if field_basis is not None:
+            for _name, _given in (("K_c3", K_c3), ("field_read_interval", field_read_interval)):
+                if _given is None:
+                    raise ValueError(f"trial_record: {_name} is stated, not chosen by a pilot of this walk's own walkers")
+    with Run("_walk_geometry", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget), contextlib.ExitStack() as _flags:
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
+        if record_trials is not None:
+            _trial_objects = geometry.trial_objects(diffusivity)
+            if _trial_objects is None:
+                raise ValueError(f"trial_record: {type(geometry).__name__} has no plain wall whose trials a walk records")
+            _flags.enter_context(_trial_logging(geometry))
         # GPU guard — never silently fall back to CPU for a heavy walk (CLAUDE rule).
         from .gpu import check_gpu
         check_gpu(n_walkers, require_gpu, what="_walk_geometry")
@@ -1365,18 +1416,37 @@ def _walk_geometry(
         _counting = bool(geometry.count_walls)
         _work = [0, 0, 0, False]                    # hits, crossings, exhausted steps; whether a kernel reported them
 
+        # ── The record of the membrane trials (record_trials): carried as the work's fourth entry, per walker, and
+        # added at every step from the wall's trial log in the band of the step's end
+        _trial = None
+        if record_trials is not None:
+            from .. import trial_record as _tr
+            _n_steps = int(res.n_blocks) * int(res.sub_steps)
+            from .accumulate import window_count
+            _steps = _tr.edge_steps(record_trials, T_max, float(res.dt_sim), _n_steps,
+                                    (int(res.n_blocks) // int(res.n_windows)) * int(res.sub_steps),
+                                    window_count(T_max, window_T)[1])
+            _radii, _D_obj = _trial_objects
+            _u_max = _tr.u_max_of(_radii, _D_obj, float(res.dt_sim))
+            _tr.check_bytes(len(_radii), record_trials.n_bands, record_trials.modes, _acc.itemsize)
+            _trial_init, _trial_add = _tr.device_record(len(_radii), _steps, _u_max, record_trials.modes, _acc)
+            _trial = dict(radii=_radii, u_max=_u_max, key=(tuple(int(x) for x in _steps), int(record_trials.modes),
+                                                           tuple(float(x) for x in _u_max)))
+
         def _work0():
             # hits and crossings only when counting; the budget's exhaustion on every walk (it is the AND of two
             # values the loop already holds, and one integer add per sub-step here)
             zero = jnp.int32(0)
-            return (zero if _counting else None, zero if _counting else None, zero)
+            w = (zero if _counting else None, zero if _counting else None, zero)
+            return w if _trial is None else w + (_trial_init(),)
 
-        def _work_add(w, hit):
+        def _work_add(w, hit, step_index=None):
             exh = w[2] + hit.exhausted.astype(jnp.int32)
             if not _counting:
                 return (None, None, exh)
             n = hit.n_hits if hit.n_hits is not None else jnp.int32(0)
-            return (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), exh)
+            out = (w[0] + n, w[1] + hit.crossed.astype(jnp.int32), exh)
+            return out if _trial is None else out + (_trial_add(w[3], hit.trials, step_index),)
 
         def _work_acc(w):
             if w is not None:
@@ -1420,20 +1490,20 @@ def _walk_geometry(
                     # WallHit, and a mesh does (#479), so a step held still is counted here rather than lost.
                     hit = interact(r, step, kappa_over_D=kappa_over_D, key=perm_key)
                 bad = bad + hit.illegal.astype(jnp.int32)
-                return (hit.r, key, side, bad, _work_add(work, hit)), None
+                return (hit.r, key, side, bad, _work_add(work, hit, step_index)), None
         else:
             # `interact`, not `reflect`: the same function at kappa = 0 (`Geometry.interact`), and the WallHit
             # carries the refusal and the work that `reflect` drops
             interact = geometry.interact
 
-            def inner_step(carry, _):
+            def inner_step(carry, step_index):
                 r, key, side, bad, work = carry
                 key, subkey = jax.random.split(key)
                 unit_noise = pair_step(subkey)
                 step = unit_noise * step_l_sim
                 hit = interact(r, step)
                 bad = bad + hit.illegal.astype(jnp.int32)
-                return (hit.r, key, side, bad, _work_add(work, hit)), None
+                return (hit.r, key, side, bad, _work_add(work, hit, step_index)), None
 
         # ── Universal compartment sentinel ───────────────────────────────────────
         # `permeate(..., side=)` gives PackedCylinders an exact ejection, but every other
@@ -1515,14 +1585,15 @@ def _walk_geometry(
             # kappa_MT == 0 keeps the pre-MT walk bit-for-bit (RNG stream + positions unchanged).
             _mt_on_pm = kappa_MT > 0.0
             step_fn_traj_pm = (make_packed_myelin_traj_step_fn(
-                                  geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time)
+                                  geometry, dt_sim, kappa_MT=kappa_MT, dwell_time=dwell_time,
+                                  trial_add=(None if _trial is None else _trial_add))
                               if is_packed_myelin_geom else make_myelin_traj_step_fn(geometry, dt_sim))
 
             def _compress_comp_pm(comp_id):
                 return geometry.pool_of(comp_id).astype(jnp.int8)
 
-            def _inner_pm(carry, _):
-                return step_fn_traj_pm(carry, None)
+            def _inner_pm(carry, step_index):
+                return step_fn_traj_pm(carry, step_index)
 
         if record and not uses_myelin_traj and not _mt_walls:
             if has_permeability:
@@ -1551,7 +1622,7 @@ def _walk_geometry(
                         r_new, dlog_w_unit = hit.r, hit.dlog_w
                         bad = bad + hit.illegal.astype(jnp.int32)
                         comp = geometry.classify_position_carry(r_new, comp)
-                    return (r_new, key, dlog_cum + dlog_w_unit, side, bad, comp, _work_add(work, hit)), None
+                    return (r_new, key, dlog_cum + dlog_w_unit, side, bad, comp, _work_add(work, hit, step_index)), None
 
             elif has_reflect_with_log_weight:
                 # `interact`, not `reflect_with_log_weight`: for an impermeable wall the two are the
@@ -1560,7 +1631,7 @@ def _walk_geometry(
                 # where the walker is held still -- is counted here instead of being invisible.
                 interact = geometry.interact
 
-                def inner_step_relax(carry, _):
+                def inner_step_relax(carry, step_index):
                     r, key, dlog_cum, side, bad, comp, work = carry
                     key, subkey = jax.random.split(key)
                     unit_noise = pair_step(subkey)
@@ -1569,7 +1640,7 @@ def _walk_geometry(
                     r_new, dlog_w_unit = hit.r, hit.dlog_w
                     bad = bad + hit.illegal.astype(jnp.int32)
                     comp = geometry.classify_position_carry(r_new, comp)
-                    return (r_new, key, dlog_cum + dlog_w_unit, side, bad, comp, _work_add(work, hit)), None
+                    return (r_new, key, dlog_cum + dlog_w_unit, side, bad, comp, _work_add(work, hit, step_index)), None
 
             else:
                 # FreeDiffusion: no boundaries → dlog_boundary_unit is always 0.
@@ -1664,7 +1735,7 @@ def _walk_geometry(
                 dlog_cum = dlog_cum + jnp.where(still | newly, jnp.float32(0.0), dlog_free)
                 if hit is not None:         # a held walker's move is discarded: its encounters are not walked
                     bad = bad + (hit.illegal & ~still).astype(jnp.int32)
-                    work = jax.tree_util.tree_map(lambda a, b: jnp.where(still, a, b), work, _work_add(work, hit))
+                    work = jax.tree_util.tree_map(lambda a, b: jnp.where(still, a, b), work, _work_add(work, hit, step_index))
                 if _mt_side:
                     # the side follows the crossing that was decided, whether or not the walker is then held at the end
                     # of its step: a held walker has not moved, so only a walker that moved can have crossed
@@ -1975,19 +2046,22 @@ def _walk_geometry(
                 ev_b_out = evz if ev_b is None else (ev_b.n, ev_b.steps, ev_b.labels)
                 work_f = phys[-2] if kind_name == "mt" else phys[-1]          # the MT carry ends in what the walker is seen as
                 bad = phys[3] if kind_name == "gen" else (phys[4] if kind_name in ("relax", "mt") else jnp.int32(0))
-                return (C, resid, blt[1], blt[0], lab0, bnd0, fc, qf, qd, ec, occ, bnd, fs, pos, dlog, qp, qb,
+                trial = ()
+                if _trial is not None:                                         # the record leaves the work as its own arrays
+                    trial, work_f = tuple(work_f[3]), work_f[:3]
+                return (C, resid, blt[1], blt[0], lab0, bnd0, fc, qf, qd, ec, occ, bnd, fs, pos, dlog, qp, qb, *trial,
                         ev_c_out, ev_b_out, n.sum(), bad, work_f)
             return one
 
         def _batch_fn(raw, cap, K_c3, rd):
             return cached_batch(geometry, ("coefficient walk", kind_name, raw, cap, K_c3, crossing, binding, n_blocks, n_win,
                                            sub_steps, float(dt_sim), diffusivity, K, m, kappa_MT, dwell_time, _counting,
-                                           _f_key, rd, _acc.name),
+                                           _f_key, rd, _acc.name) + (() if _trial is None else (("trial record",) + _trial["key"],)),
                                 lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd), in_axes=(0, 0, 0, 0, 0, None)),
                                                     compiler_options=walk_compiler_options()))
 
         names = ("C", "resid", "blt_end", "blt_bands", "lab", "bnd", "fc", "qv_f", "qv_d", "chk", "occ", "bound", "fs", "pos", "dlog",
-                 "qv_pos", "qv_blt")
+                 "qv_pos", "qv_blt") + (() if _trial is None else ("tr_n", "tr_N", "tr_S", "tr_x"))
         dev = [0]
         _rd = [(1, float(dt_sim), (), True)]                # the read the batches take: the step's, then the walk's
 
@@ -2250,6 +2324,15 @@ def _walk_geometry(
                                  f"refused rather than an event dropped (RPK.md 9.5.7). Walk again with events_capacity={int(np.ceil(1.5 * ev_overflow[key])) + 8} "
                                  f"(the pilot of {n_pilot} walkers saw at most {events_record.get('pilot_max_changes', '?')})")
         illegal, work = _work_record()
+        trial_record = None
+        if _trial is not None:
+            exceed = int(np.asarray(rows["tr_x"].array(), np.int64).sum())
+            if exceed:
+                raise ValueError(f"trial_record: {exceed} trials exceed u_max = {[float(x) for x in _trial['u_max']]}")
+            trial_record = _tr.TrialRecord(n=rows["tr_n"].array(), N=rows["tr_N"].array(), S=rows["tr_S"].array(),
+                                           u_max=np.asarray(_trial["u_max"], np.float64),
+                                           band_edges=tuple(record_trials.band_edges), modes=int(record_trials.modes),
+                                           object_radii=np.asarray(_trial["radii"], np.float64))
         resid = rows["resid"].array()
         n_dev = int(dev[0])
         if n_dev:
@@ -2317,7 +2400,7 @@ def _walk_geometry(
             qv_boundary=qv_b,
             illegal_crossings=illegal, seed=int(seed), first_walker=int(first_walker), diffusivity=(None if diffusivity is None else float(diffusivity)),
             pool_changed=(np.concatenate(pc_parts) if drop_pool_changes else None),
-            geometry=geometry, work=work)
+            trial_record=trial_record, geometry=geometry, work=work)
         object.__setattr__(cw, "run", run)
         return cw
 
