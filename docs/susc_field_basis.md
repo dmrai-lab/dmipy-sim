@@ -69,7 +69,7 @@ against that of every read, `measured_read_constants`); a channel whose constant
 curvature across a sheath) is charged at the measured one, at the rung at or above the walk's read; and the field
 band per pool (`bank.derive_field_band_per_pool`, the widest). The pilot is walked by the JAX kernels whatever the
 walk's backend. A myelinated cylinder is read in closed form (`fields.hollow_cylinder.HollowCylinderField`, exact
-at the walker's position); a raster's trilinear read smears the sheath's jump over a voxel, which a walker near a
+at the walker's position; a periodic cell's over every image of the lattice, exactly periodic); a raster's trilinear read smears the sheath's jump over a voxel, which a walker near a
 wall reads as a gradient (its QV and its constants say so). When the floor would ask for less than the
 physics step, **the read is the step** (a read along the chord between two steps carries the same bridge
 deviation), and the pack's envelope states the `B0·χ` product under which the term stays below the floor

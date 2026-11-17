@@ -1,4 +1,4 @@
-"""The exactly periodic field of a cell of parallel hollow cylinders (:meth:`HollowCylinderField.periodic_read`).
+"""The exactly periodic field of a cell of parallel hollow cylinders (:class:`HollowCylinderField` with a cell side ``L``).
 
 Exact oracles, each against a bound derived in this file (no tolerance is chosen):
 
@@ -49,12 +49,15 @@ CENTRES = np.array([[0.0, 0.0], [2.2, 0.0], [0.0, 2.2], [2.2, 2.2]]) * R
 G4 = math.gamma(0.25) ** 8 / (960.0 * math.pi ** 2)       # sum' w^-4 of the unit square lattice (DLMF 23.5(iii))
 
 
-def _smoke_field():
+def _smoke_cell():
     D = 2e-9
     g = np.array([0.7, 1.0, 0.7, 1.0])
-    cell = PackedMyelinatedCylinders(OUTER * g, g, CENTRES, L, N_max=4,
+    return PackedMyelinatedCylinders(OUTER * g, g, CENTRES, L, N_max=4,
                                      compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D)))
-    return HollowCylinderField.of(cell)
+
+
+def _smoke_field():
+    return HollowCylinderField.of(_smoke_cell())
 
 
 def _one_sheath(Lc):
@@ -69,10 +72,10 @@ def _read(f, P, dtype):
         was = bool(jax.config.read("jax_enable_x64"))
         jax.config.update("jax_enable_x64", True)
         try:
-            return f.periodic_channels(P3, np.float64)
+            return f.channels(P3, np.float64)
         finally:
             jax.config.update("jax_enable_x64", was)
-    return f.periodic_channels(P3, np.float32)
+    return f.channels(P3, np.float32)
 
 
 # ── test-local references ───────────────────────────────────────────────────────────────────────────────────────────
@@ -460,7 +463,7 @@ def test_a_lone_sheath_tends_to_the_isolated_closed_form_as_L_to_the_minus_four(
 # ── 5. the cell mean ────────────────────────────────────────────────────────────────────────────────────────────────
 
 def _docstring_mean(f):
-    """The cell mean stated in :meth:`HollowCylinderField.periodic_read`'s docstring."""
+    """The cell mean stated in :class:`HollowCylinderField`'s docstring."""
     a, b, Lc = f.inner_radii, f.outer_radii, f.L
     A = np.sum(np.pi * (b ** 2 - a ** 2))
     I = (b ** 2 - a ** 2) / 4 - (a ** 2 / 2) * np.log(b / a)
@@ -592,7 +595,7 @@ def test_the_periodic_read_costs_no_more_than_six_images_per_side(dtype, x64):
     dt = jnp.float32 if dtype == "float32" else jnp.float64
     rng = np.random.default_rng(0)
     P = jnp.asarray(rng.uniform(-0.5 * f.L, 0.5 * f.L, (8192, 3)), dt)
-    arrays, read, _ = f.periodic_read(dt)
+    arrays, read, _ = f.device_read(dt)
     periodic = jax.jit(jax.vmap(lambda r: read(arrays, r)))
     assert _best(periodic, P) <= _best(_image_read_jax(f, 6, dt), P)
 
@@ -600,22 +603,135 @@ def test_the_periodic_read_costs_no_more_than_six_images_per_side(dtype, x64):
 # ── refusals ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_a_sheath_reaching_half_the_cell_is_refused_by_name():
-    f = HollowCylinderField([[0.0, 0.0]], [0.7 * R], [R], L=2 * R)
     with pytest.raises(ValueError, match="reaches half the cell's side"):
-        f.periodic_read()
-    _one_sheath(2.0001 * R).periodic_read()                     # just inside: read
+        HollowCylinderField([[0.0, 0.0]], [0.7 * R], [R], L=2 * R)
+    _one_sheath(2.0001 * R).device_read()                       # just inside: read
+
+
+@pytest.mark.parametrize("bad", ["centers", "inner_radii", "outer_radii", "L"])
+def test_non_finite_construction_is_refused_by_name(bad):
+    kw = dict(centers=[[0.0, 0.0]], inner_radii=[0.7 * R], outer_radii=[R], L=L)
+    kw[bad] = np.nan if bad == "L" else np.full(np.shape(kw[bad]), np.nan)
+    with pytest.raises(ValueError, match=("the cell's side L" if bad == "L" else f"{bad} are not all finite")):
+        HollowCylinderField(kw.pop("centers"), kw.pop("inner_radii"), kw.pop("outer_radii"), **kw)
+
+
+def test_the_image_count_is_not_a_parameter():
+    """One field: the periodic lattice sum. ``n_images`` is no argument and ``CELL_IMAGES`` no name of the module."""
+    import dmipy_sim.fields.hollow_cylinder as hc
+    with pytest.raises(TypeError, match="n_images"):
+        HollowCylinderField([[0.0, 0.0]], [0.7 * R], [R], L=L, n_images=6)
+    with pytest.raises(TypeError, match="n_images"):
+        HollowCylinderField.of(_smoke_cell(), n_images=6)
+    assert "CELL_IMAGES" not in vars(hc)
+
+
+def test_a_record_of_the_image_sum_field_is_refused_and_an_isolated_one_reads():
+    """A field record that names ``n_images`` for a cell is refused by name; a record of an isolated cylinder (no
+    cell, no images) reads as recorded; a cell's record round-trips."""
+    f = _smoke_field()
+    m = dict(f.meta)
+    assert m["summation"] == "lattice" and m["lattice_rows"] == LATTICE_ROWS and "n_images" not in m
+    assert HollowCylinderField.from_meta(m).meta == m
+    old = {k: v for k, v in m.items() if k not in ("summation", "lattice_rows")}
+    old["n_images"] = 6
+    with pytest.raises(ValueError, match="walked with the image-sum field .* re-walk"):
+        HollowCylinderField.from_meta(old)
+    iso = dict(kind="hollow_cylinder", centers=[[0.0, 0.0]], inner_radii=[0.7 * R], outer_radii=[R], L=None, n_images=0,
+               channels=list(HollowCylinderField.channel_names), mean_subtracted=False, periodic=[False, False, False])
+    back = HollowCylinderField.from_meta(iso)
+    assert back.L is None and back.summation == "none"
 
 
 def test_non_finite_points_are_refused_by_name():
     f = _smoke_field()
     with pytest.raises(ValueError, match="points are not finite"):
-        f.periodic_channels(np.array([[0.0, np.nan, 0.0], [1e-6, 0.0, 0.0]]))
+        f.channels(np.array([[0.0, np.nan, 0.0], [1e-6, 0.0, 0.0]]))
     with pytest.raises(ValueError, match="points are not finite"):
-        f.periodic_channels(np.array([[np.inf, 0.0, 0.0]]))
+        f.channels(np.array([[np.inf, 0.0, 0.0]]))
 
 
 def test_a_float64_read_without_x64_is_refused_by_name():
     if jax.config.read("jax_enable_x64"):
         pytest.skip("this process runs with jax_enable_x64: the refusal is of a float64 read without it")
     with pytest.raises(ValueError, match="needs jax_enable_x64"):
-        _smoke_field().periodic_read(jnp.float64)
+        _smoke_field().device_read(jnp.float64)
+
+
+# ── 8. the walk reads it ────────────────────────────────────────────────────────────────────────────────────────────
+
+def _walk(geo, f, n=32, T_max=1e-3):
+    from dmipy_sim.engine.core import _walk_geometry
+    return _walk_geometry(n, 2e-9, geo, T_max, 5e-5, seed=3, require_gpu=False, K=4, field_basis=f, K_c3=4,
+                          field_read_interval=1.25e-5, raw_subset=n)
+
+
+def _block_reads(w):
+    """The raw subset's field reads at the block ends (a read instant every ``reads_per_block``-th read)."""
+    nb, nr = w.raw_positions.shape[1] - 1, w.raw_field.shape[1] - 1
+    assert nr % nb == 0
+    return w.raw_field[:, ::nr // nb]
+
+
+def _assert_an_image_sum_record_is_refused_on_load(path, old_path):
+    """The same walk file with its field record as the image-sum field wrote it (``n_images``, no summation): its
+    load is refused by name."""
+    import json
+    from safetensors import safe_open
+    from safetensors.numpy import save_file
+    from dmipy_sim.coefficient_walk import CoefficientWalk
+    with safe_open(str(path), framework="numpy") as fh:
+        md = dict(fh.metadata())
+        arrays = {k: fh.get_tensor(k) for k in fh.keys()}
+    h = json.loads(md["walk"])
+    fm = h["field"]["meta"]
+    for k in ("summation", "lattice_rows"):
+        fm.pop(k)
+    fm["n_images"] = 6
+    md["walk"] = json.dumps(h)
+    save_file(arrays, str(old_path), metadata=md)
+    with pytest.raises(ValueError, match="walked with the image-sum field .* re-walk"):
+        CoefficientWalk.load(old_path)
+
+
+def test_a_walk_of_a_cell_reads_the_periodic_field(tmp_path):
+    """A walk of the cell with the field and its raw subset: the field modes are finite, the record states the lattice
+    sum and no image count (and a walk file of it loads), and every raw walker's read at every block end is the
+    float32 read of the same function at its recorded position, within a derived bound. The walk reads the field at
+    the walker's position in the cell (the kernel's ``r_incell``) and records the continuous position (``r_unwrapped``,
+    advanced by the minimum-image step), which it does not read: the two differ by a lattice vector and by the
+    rounding of the continuous position's sums, at most ``u (M + 3 L)`` per coordinate per step (the step's minimum
+    image ``r_new - r - L round(.)`` and its addition to a position below ``M``), through the gradient bound, plus both
+    reads' float32 rounding."""
+    from dmipy_sim.coefficient_walk import CoefficientWalk
+    cell = _smoke_cell()
+    f = HollowCylinderField.of(cell)
+    w = _walk(cell, f)
+    assert np.all(np.isfinite(w.field_coeffs))
+    meta = w.field_basis.meta
+    assert meta["summation"] == "lattice" and "n_images" not in meta and meta["mean_subtracted"] is False
+    w.save(tmp_path / "w.safetensors")
+    assert CoefficientWalk.load(tmp_path / "w.safetensors").field_basis.meta == meta
+    _assert_an_image_sum_record_is_refused_on_load(tmp_path / "w.safetensors", tmp_path / "old.safetensors")
+    F = _block_reads(w)
+    pos = w.raw_positions.astype(np.float64)
+    direct = f.channels(pos.reshape(-1, 3), np.float32).reshape(F.shape)
+    steps = np.arange(pos.shape[1]) * round(w.block["h"] / w.dt_sim)
+    M = float(np.abs(pos).max())
+    drift = steps * U32 * (M + 3 * f.L) * math.sqrt(2.0) * _gradient_bound(f)
+    rnd = 2.0 * _rounding_bound(f, pos.reshape(-1, 3)[:, :2], U32, M=M).reshape(pos.shape[:2])
+    err = np.abs(F.astype(np.float64) - direct)
+    assert np.all(err <= (drift[None, :] + rnd)[..., None]), float((err - (drift[None, :] + rnd)[..., None]).max())
+
+
+def test_a_walk_of_an_isolated_cylinder_reads_the_closed_form_at_its_recorded_position():
+    """An isolated myelinated cylinder's walk reads the field at the position it records: every raw walker's read at
+    every block end is the float32 read at its recorded position, bit for bit."""
+    import dmipy_sim as d
+    g = d.MyelinatedCylinder(0.7e-6, 1e-6, (0, 0, 1), compartments=Compartments(intra=Pool(D=2e-9), extra=Pool(D=2e-9),
+                                                                                myelin=Pool(D=0.0)))
+    f = HollowCylinderField.of(g)
+    w = _walk(g, f)
+    F = _block_reads(w)
+    direct = f.channels(w.raw_positions.reshape(-1, 3), np.float32).reshape(F.shape).astype(np.float32)
+    np.testing.assert_array_equal(F, direct)

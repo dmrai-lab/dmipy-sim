@@ -377,8 +377,8 @@ def _myelin(D, r_in, r_out):
 
 def _myelin_field(g, field):
     """The field a myelinated substrate's walk reads: ``"closed"`` the hollow cylinder's closed form
-    (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`, exact at the walker's position; a cell's with its
-    periodic images, the forward Bloch provider's), ``"raster"`` the sheath rasterised by ``field_grid_of``."""
+    (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`, exact at the walker's position; a cell's exactly
+    periodic over every image), ``"raster"`` the sheath rasterised by ``field_grid_of``."""
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     from dmipy_sim.fields.susceptibility_field import field_grid_of
     if field == "closed":
@@ -414,9 +414,10 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
       axis, ``chi_aniso = dchi_a``: the scalar route against the pack's vector-Bloch route beside the pack's own
       ``_susc_path_bloch_fidelity`` (``err_susc_bloch``); and, since the forward vector-Bloch engine does not step
       the myelinated substrates, the cross-engine oracle on the SAME hollow-cylinder field: the one-axon periodic
-      cell's extra-axonal pool walked with the closed form and its periodic images (``n_images=6``), against
-      ``_simulate_bloch`` with ``MyelinSusceptibility`` (the same closed form, the same images) on that pool (and,
-      with ``field="raster"``, the cell's periodic grid against the forward engine on that grid).
+      cell's extra-axonal pool walked with the exactly periodic closed form, against ``_simulate_bloch`` with
+      ``MyelinSusceptibility`` (the same closed form summed over six images per side, which differs from the periodic
+      field by the window's truncation, up to 4.4e-4 of the field) on that pool (and, with ``field="raster"``, the
+      cell's periodic grid against the forward engine on that grid).
 
     Every row carries both signals, their difference and the replay's standard error."""
     import dmipy_sim as d
@@ -526,8 +527,8 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     prov = MyelinSusceptibility(centers=[[0.0, 0.0]], inner_radii=[r_in], outer_radii=[r_out], L=L, delta_chi_a=dchi_a, B0=B0,
                                 theta=th, alpha=0.0, periodic=True, n_images=6)
     # the forward engine on the SAME grid the walk read (the 13 channels contracted at this (B0, chi, H)), so the two
-    # engines read one field and the comparison is the accumulation and the replay alone; the closed form's periodic
-    # images (n_images=6) beside it are the independent physics
+    # engines read one field and the comparison is the accumulation and the replay alone; the provider's closed form
+    # over six images per side beside it is the independent physics (the window's truncation apart)
     from dmipy_replay.replay.field import contract
     from dmipy_sim.fields.susceptibility import GridSusceptibility
     prov_grid = prov                                                     # the closed form: the walk read the provider's field
