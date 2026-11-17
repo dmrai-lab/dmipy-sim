@@ -240,10 +240,11 @@ def trial_granted(word, p):
 
         ``|r - p| < 2^-32 + eps p``,  ``eps = (3 u + u^2) / (1 - u)``,  ``u = 2^-24``  (``eps = 3 u`` to first order),
 
-    on the domain: ``kappa_over_D`` and ``d_perp`` each zero or a normal finite float32, and ``kappa_over_D < 2^127``.
-    The float32 ``p`` alone is within ``eps p`` of the formula: the product ``2 kappa_over_D d_perp``, the sum
-    ``1 + x`` and the quotient round once each, the product's rounding damped by ``1 / (1 + x)``; the floor adds less
-    than ``2^-32``. A relative statement alone holds nowhere near ``p = 2^-32``: just below it the realised
+    on the domain: ``kappa_over_D`` and ``d_perp`` each zero or a positive normal finite float32, and
+    ``kappa_over_D < 2^127``. Where the product ``2 kappa_over_D d_perp`` is normal (``x >= 2^-126``) the float32 ``p``
+    alone is within ``eps p`` of the formula: the product, the sum ``1 + x`` and the quotient round once each, the
+    product's rounding damped by ``1 / (1 + x)``; the floor adds less than ``2^-32``. Below that the product may
+    underflow (to zero on a platform that flushes), the realised probability is ``0`` and the distance ``p < 2^-32``. A relative statement alone holds nowhere near ``p = 2^-32``: just below it the realised
     probability is ``0``. Outside the domain the trial is the same arithmetic and the bound is not claimed: a
     subnormal operand may be flushed to zero (``(1e37, 1e-40)`` realises ``0`` where the formula gives ``2e-3``);
     ``kappa_over_D >= 2^127`` makes ``2 kappa_over_D`` infinite and the trial always granted (``(2^127, 2^-126)``,

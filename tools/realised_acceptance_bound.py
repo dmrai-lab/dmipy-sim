@@ -15,9 +15,10 @@ with, per way of forming the probability,
 * ``float32`` (the walk's trial, ``realised_acceptance(..., dtype=numpy.float32)``): ``eps = (3 u + u^2) / (1 - u)``,
   ``u = 2^-24``. The product ``2 kappa_over_D d_perp``, the sum ``1 + x`` and the quotient round once each (relative
   ``|d_i| <= u``), so ``p32 / p = (1 + d0) / (1 + d0 x / (1 + x)) (1 + d2) / (1 + d1)``, which lies in
-  ``[(1 - u)^2 / (1 + u), (1 + u)^2 / (1 - u)]``: ``|p32 - p| <= eps p``. Where ``p32 = 1`` (from ``x = 2^24`` on, where
-  ``1 + x`` rounds to ``x``) the realised probability is ``p32`` itself and the distance ``1 / (1 + x)``, just below
-  ``2^-24``, is inside ``eps p``. The floor lowers ``p32`` by less than ``2^-32``. A product below float32's smallest
+  ``[(1 - u)^2 / (1 + u), (1 + u)^2 / (1 - u)]``: ``|p32 - p| <= eps p``. Where ``p32 = 1`` (first at ``x = 2^24``,
+  where ``1 + x`` rounds to ``x``; between ``2^24`` and ``2^25`` the sum rounds to the even neighbour, so ``p32 = 1``
+  and ``p32 = 1 - 2^-23`` alternate, and from ``2^25`` on ``p32 = 1``) the realised probability is ``p32`` itself and
+  the distance ``1 / (1 + x)``, at most ``1 / (1 + 2^24)``, is inside ``eps p``. The floor lowers ``p32`` by less than ``2^-32``. A product below float32's smallest
   normal (``x < 2^-126``) rounds by more than ``u`` but realises ``0``, within ``p < 2^-32``; one that overflows, or an
   ``x`` beyond the clamp at ``1e30``, realises ``1``, within ``1 / (1 + x)``.
 * ``float64`` (``realised_acceptance(..., dtype=numpy.float64)``: the inputs and the formula in float64, the
@@ -217,10 +218,18 @@ def run(range_name):
 def check(rec):
     """The record's verdicts: every sweep covered every float32 of its range and every ratio is at most 1."""
     bad = []
+    if rec.get("range") not in RANGES:
+        return [f"unknown range {rec.get('range')!r}"]
+    b0, b1 = float32_range(*RANGES[rec["range"]])
+    want = (float(np.uint32(b0).view(np.float32)), float(np.uint32(b1).view(np.float32)))
+    if [s["form"] for s in rec["sweeps"]] != list(EPS) or [c["form"] for c in rec["random_pairs"]] != list(EPS):
+        bad.append("the record does not hold one sweep and one random-pair check per form")
     for s in rec["sweeps"]:
-        b0, b1 = float32_range(s["x_lo"], s["x_hi"])
-        if s["n"] != b1 - b0 + 1:
-            bad.append(f"{s['form']}: {s['n']} values, the range holds {b1 - b0 + 1}")
+        if (s["x_lo"], s["x_hi"]) != want or s["n"] != b1 - b0 + 1:
+            bad.append(f"{s['form']}: [{s['x_lo']}, {s['x_hi']}], {s['n']} values; the {rec['range']} range is "
+                       f"[{want[0]}, {want[1]}], {b1 - b0 + 1} values")
+        if Fraction(s["eps"]) != EPS[s["form"]]:
+            bad.append(f"{s['form']}: eps {s['eps']} is not {EPS[s['form']]}")
         if not (s["max_ratio_exact_le_1"] and s["max_ratio_exact"] <= 1 and s["exact_checked_max"] <= 1):
             bad.append(f"{s['form']}: ratio above 1")
         if rec["range"] == "full" and s["form"] != "variant" and s["perturbed_violations"] == 0:
