@@ -5,6 +5,14 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Recorded bits per CPU family** (tests, CI). The recorded hashes of the all-myelinated reference walks are kept per
+  family of compiled CPU arithmetic in `tests/recorded_bits.py` `FAMILIES`, keyed by the family's canary (the hash of a
+  small fixed walk), and the `recorded_bits` fixture returns this host's family's values. The canary selects the family
+  only; the recorded tests are the evidence. In the `recorded-bits` job (`DMIPY_SIM_RECORDED_BITS=1`) a canary of no
+  recorded family fails naming it and another JAX build is an error; elsewhere both skip with that reason, and a host
+  of a recorded family on the recorded build runs the tests. The job prints the runner's CPU model, flags, numpy's SIMD
+  dispatch and canary on every run, and on a failure the runner's entry (`tools/record_recorded_bits.py`).
+  `tools/recorded_bits_canary.py` is removed: `tests/recorded_bits.py` `canary` is the canary.
 - **The field of a periodic cell of hollow cylinders is exactly periodic** (behaviour change: a walk of a
   `PackedMyelinatedCylinders` cell with `HollowCylinderField.of(cell)` reads a different field). Per sheath the field is
   the closed form at its nearest image plus every other image's tail through the regular part of the square lattice's

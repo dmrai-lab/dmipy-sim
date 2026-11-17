@@ -9,7 +9,7 @@ tests that compare sums accumulate in float64, under the ``x64`` fixture). The r
    are the walk's work counts on an all-plain cell;
 4. the record changes nothing: one step of each wall kernel is the same bits with and without it, over every branch;
    the record is exactly consistent with its own walk's counts and events; and the whole walk with and without it is
-   the same bits on the recording build and host (the ``test_recorded_bits_*`` tests of the pinned job);
+   the same bits on the recorded build and CPU families (the ``test_recorded_bits_*`` tests, ``tests/recorded_bits.py``);
 5. a trial's overshoot is within its object's a priori bound, and a walk that exceeds it is refused;
 6. a scheduled permeability is read at the step's midpoint and the band is the step's end;
 8. the trial count is stored beside the granted count;
@@ -257,8 +257,8 @@ def test_a_mixed_cells_record_is_its_plain_walls_encounters():
 #
 # The record reads the walk and enters none of its arithmetic: one step of each wall kernel is the same bits with and
 # without it, over states that reach every branch (below, on every host and build). The whole walk with and without it
-# is two compiled programs; on the recording build and host they are the same bits (the test_recorded_bits_* tests,
-# run by the pinned job), and another build may arrange the programs so that a position's last bits differ, which the
+# is two compiled programs; on the recorded build and CPU families they are the same bits (the test_recorded_bits_*
+# tests, tests/recorded_bits.py), and another build may arrange the programs so that a position's last bits differ, which the
 # reflections can grow into another encounter: two valid walks of one law. What a reweighted read needs is the record
 # consistent with its own walk, which is asserted exactly on every host (``test_the_record_is_exactly_its_own_walks_count``).
 

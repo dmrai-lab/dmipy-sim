@@ -91,12 +91,16 @@ jobs:
           if-no-files-found: ignore
 
   recorded-bits:
-    # Recorded bits are bits of one JAX build (jax / jaxlib 0.10.2, tests/conftest.py RECORDED_WITH) and of the kernels
-    # the compiler emits for one host's CPU: the all-myelinated walks hashed before plain cylinders existed, and the
-    # walk with and without the trial record. This job installs that build and runs the tests named test_recorded_bits_*
-    # alone (DMIPY_SIM_RECORDED_BITS=1; skipped by name everywhere else); only when one fails does it run the host
-    # canary, to say whether this runner's kernels are the recording host's.
+    # Recorded bits are bits of one JAX build (jax / jaxlib 0.10.2, tests/recorded_bits.py RECORDED_WITH) and of the
+    # arithmetic XLA's CPU backend emits for a family of CPUs: the all-myelinated walks, and the walk with and without
+    # the trial record. The recorded values are kept per family, selected by the canary (a small fixed walk;
+    # tests/recorded_bits.py FAMILIES). This job installs that build, prints the runner's CPU model, its flags, numpy's
+    # SIMD dispatch and the canary, and runs the tests named test_recorded_bits_* with DMIPY_SIM_RECORDED_BITS=1, which
+    # makes a canary of no recorded family a failure that names it (elsewhere such a host skips). On a failure it prints
+    # this runner's entry (tools/record_recorded_bits.py), the values a new family would be recorded with.
     runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -109,14 +113,20 @@ jobs:
           pip install "dmipy-analytic[special,jax] @ git+https://github.com/dmrai-lab/dmipy-analytic@${DMIPY_ANALYTIC_REF}"
           pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e . "jax==0.10.2" "jaxlib==0.10.2"
+      - name: The runner's CPU and canary
+        run: |
+          grep -m1 "^model name" /proc/cpuinfo
+          grep -m1 "^flags" /proc/cpuinfo
+          python -c "import jax, jaxlib, numpy; print('jax', jax.__version__, 'jaxlib', jaxlib.__version__, 'numpy', numpy.__version__); numpy.show_runtime()"
+          python -c "from tests.recorded_bits import FAMILIES, canary; c = canary(); print('canary', c, 'recorded family' if c in FAMILIES else 'NO recorded family')"
       - name: Run the recorded-bits tests
         shell: bash
         run: |
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
           status=0
-          DMIPY_SIM_RECORDED_BITS=1 JAX_PLATFORMS=cpu pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
+          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
           if [ "$status" -eq 0 ] && grep -q "5 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
-          # a recorded test failed (or was skipped): say whether this runner's kernels are the recording host's
-          JAX_PLATFORMS=cpu python tools/recorded_bits_canary.py || true
+          # a recorded test failed (or was skipped): print this runner's entry, the values its family would be recorded with
+          python tools/record_recorded_bits.py || true
           exit 1
