@@ -12,8 +12,9 @@ the project follows [Semantic Versioning](https://semver.org/).
   T_j(2 u / u_max - 1)`, `j = 0 .. M - 1`, in the walk's accumulation dtype, `u = 2 d_perp / R` the trial's overshoot
   and `u_max = 2 LONGEST_STEP h / R` each object's bound (`h = sqrt(6 D dt)` at the larger diffusivity of the wall's
   two pools). Every encounter of a plain wall (`PackedCylinders`, `PackedSpheres`, the plain cylinders of
-  `PackedMyelinatedCylinders`) is a trial, a sealed object's included; a trial is in the band of its step's end time,
-  an end on an edge in the later band and the walk's last instant in the final band; a step a bound walker discards
+  `PackedMyelinatedCylinders`) is a trial, a sealed object's included; a trial belongs to its step and a step to the band
+  whose left-open, right-closed interval `(edge_k, edge_k+1]` contains its end time (an end on an edge in the earlier
+  band, so `window(i)` holds exactly its own steps); a step a bound walker discards
   records none. The record turns `count_walls` on (`sum n` over an all-plain cell is `work["n_hits"]`, `sum N` is
   `work["n_crossings"]`), draws nothing and rounds nothing, and the walk with it is the walk without it, bit for bit; a
   walk without it is the same program as before. It is carried by `window`, `take`, `join_walks`, `save` / `load` and
@@ -31,7 +32,10 @@ the project follows [Semantic Versioning](https://semver.org/).
   `ceil(p 2^23) / 2^23`, above `p` by up to `2^-23` (at `p = 1e-4` a relative bias of `1.7e-4`, now `1.7e-6`). A
   decision differs from the old one only when its word lies between the two grids, with probability at most `2^-23`
   per trial and about `2^-24` on average: a walker of 4 570 trials (a 60 ms walk of a dense cell) changes path with
-  probability about `2.7e-4`. A walk with no plain permeable wall is unchanged. Known: the sheathed cylinder's one
+  probability about `2.7e-4`. A walk with no plain permeable wall is unchanged. Known cost of the correction: on a
+  dense cell of six plain cylinders (64 walkers, 60 ms, CPU) the walk takes 6 % longer (71.3 s against 67.2 s, run
+  without compilation, the median of three interleaved repeats); deriving the threshold from the float's bits in
+  integers was slower (74.8 s). Known: the sheathed cylinder's one
   trial per step and the trials of the other permeable geometries (the analytic geometries, the mesh, the label
   volume) keep their float32 uniform.
 - **A packed myelinated cell's spec states the pools it seeds, and a pool that holds no water is not seeded** (behaviour change). `PackedMyelinatedCylinders` seeds by default every pool whose `Pool.water_fraction` is not 0, by area among them (`seeded_pools`); its spec's `seeding.pools` lists exactly those pools, or the pools `seed_pools=` names, and `geometry_from_spec` reads that list literally, so a cell built from its spec places the same walkers in the same pools. A cell whose every pool holds water walks byte for byte as before. A default cell with a sheath (or another pool) of water fraction 0 no longer starts walkers in it: on the four-cylinder cell of the tests, 662 of 4000 walkers started in its dry sheaths and none does now, so its walks change; its spec's seeding list ([0, 1]) does not. `seed_pools=` naming a pool of water fraction 0 is refused by name; naming exactly the pools that hold water is the default (`seed_pools` is `None`). `UnstatedSeedingError` is removed: every seeding of the cell is stated by its spec, and the cell is walked through it (`geometry.spec`, `walk(cell)`, with the field). `Geometry.seeds_every_pool` is replaced by `Geometry.placement_is_stationary`, what the walk's start record reads: whether the placement's law is the walk's stationary law. For the packed myelinated cell it is True when every pool of positive area that is not seeded is sealed from every seeded pool (each face read per cylinder; a dry pool behind an open face fills like any other), so a cell whose unseeded sheaths are sealed records its start at spatial equilibrium and one with an unseeded sheath behind an open face does not; a cell that seeds every pool records it as before. Known limitation: within the seeded pools the placement is by area, not by area times water fraction as the specification's `uniform_by_volume` reads, for a pool whose water fraction lies between 0 and 1.

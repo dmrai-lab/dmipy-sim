@@ -15,9 +15,10 @@ The rules, each a condition a consumer's arithmetic relies on:
 * every encounter of a plain wall is a trial and is recorded, the second and later encounters of a step included and
   an object of permeability 0 included (its trials are always refused: ``N`` is 0, ``n`` counts them); a step the walk
   discards (a walker held bound through its dwell) records none;
-* a trial is recorded in the band of its step's END time ``(step + 1) dt``: band ``k`` holds ``[edge_k, edge_k+1)``, an
-  end time exactly at an edge belongs to the later band, and the final band holds the walk's last instant ``T_max``;
-  a scheduled permeability is read at the step's midpoint (:func:`~dmipy_sim.engine.physics.membrane_kappa`);
+* a trial belongs to the step it is decided in, and a step to the band whose interval contains the step's END time
+  ``(step + 1) dt``: band ``k`` is the left-open, right-closed ``(edge_k, edge_k+1]``, so a step ending exactly on an
+  edge belongs to the earlier band, the final band contains ``T_max``, and a storage window's bands hold exactly its
+  own steps; a scheduled permeability is read at the step's midpoint (:func:`~dmipy_sim.engine.physics.membrane_kappa`);
 * the counts are integers and the sums are held in the walk's accumulation dtype; nothing is rounded or dithered, and
   the record draws nothing (the walk's random stream is the walk's without the record);
 * the record changes nothing else: the walk with it is the walk without it, bit for bit, at the same counting
@@ -69,23 +70,25 @@ class TrialRecordSpec:
 def edge_steps(spec, T_max, dt, n_steps, window_steps, window_s=None):
     """The step-end index of every band edge of ``spec`` for a walk of ``n_steps`` physics steps of ``dt`` seconds over
     ``T_max`` seconds in storage windows of ``window_steps`` steps (``window_s`` seconds each, the walk's
-    ``window_T``): edge ``e`` is at the first step end ``j dt >= e``
-    (an edge within :data:`EDGE_SNAP` of a step of a step end is that step end). Refused by name: edges that do not run
-    from 0 to ``T_max``, or that miss a window boundary."""
+    ``window_T``): edge ``e`` is at the last step end ``j dt <= e``, ``j = floor(e / dt)`` (an edge within
+    :data:`EDGE_SNAP` of a step of a step end is that step end, the rounding of seconds), so the steps ending in
+    ``(edge_k, edge_k+1]`` are those of index ``j`` with ``steps[k] < j + 1 <= steps[k + 1]``. Refused by name: edges that
+    do not run from 0 to ``T_max``, and edges that miss a window boundary, checked on the times as given (an edge
+    farther than :data:`EDGE_SNAP` of a step from the boundary misses it, before any edge is placed on a step end)."""
     edges = np.asarray(spec.band_edges, np.float64)
     if edges[0] != 0.0 or edges[-1] != float(T_max):
         raise ValueError(f"trial_record: band_edges must run from 0 to T_max = {float(T_max)!r}, got "
                          f"[{float(edges[0])!r}, {float(edges[-1])!r}]")
+    window_steps = int(window_steps)
+    tol = EDGE_SNAP * float(dt)
+    for w in range(1, int(n_steps) // window_steps):
+        t = w * (float(window_s) if window_s is not None else window_steps * float(dt))
+        if not np.any(np.abs(edges - t) <= tol):
+            raise ValueError(f"trial_record: band_edges must contain the window boundary {t!r}")
     q = edges / float(dt)
     near = np.rint(q)
-    steps = np.where(np.abs(q - near) <= EDGE_SNAP, near, np.ceil(q)).astype(np.int64)
-    steps[-1] = int(n_steps)                                  # the final band holds the walk's last instant
-    window_steps = int(window_steps)
-    have = set(int(s) for s in steps)
-    for w in range(1, int(n_steps) // window_steps):
-        if w * window_steps not in have:
-            t = w * (float(window_s) if window_s is not None else window_steps * float(dt))
-            raise ValueError(f"trial_record: band_edges must contain the window boundary {t!r}")
+    steps = np.where(np.abs(q - near) <= EDGE_SNAP, near, np.floor(q)).astype(np.int64)
+    steps[0], steps[-1] = 0, int(n_steps)                     # the walk's first and last instants
     return steps
 
 
@@ -127,8 +130,8 @@ def device_record(n_objects, steps, u_max, modes, dtype):
     """The record as a walk carries it per walker: ``(init, add)``. ``init()`` is the empty record ``(n (n_objects,
     n_bands) int32, N (n_objects, n_bands) int32, S (n_objects, n_bands, modes) dtype, exceed int32)``; ``add(rec,
     log, step, keep=None)`` adds the trials of a :class:`~dmipy_sim.geometry._boundary.TrialLog` of the walk-wide step
-    ``step`` (int32) in the band of the step's end, ``keep`` False discarding the step (a walker held bound); ``exceed``
-    counts the trials whose ``u`` exceeds the object's ``u_max``."""
+    ``step`` (int32) in the band whose ``(edge_k, edge_k+1]`` holds the step's end, ``keep`` False discarding the step
+    (a walker held bound); ``exceed`` counts the trials whose ``u`` exceeds the object's ``u_max``."""
     import jax.numpy as jnp
     n_bands = int(len(steps) - 1)
     interior = jnp.asarray(np.asarray(steps[1:-1], np.int64), jnp.int32)
@@ -142,7 +145,7 @@ def device_record(n_objects, steps, u_max, modes, dtype):
     def add(rec, log, step, keep=None):
         n, N, S, exceed = rec
         valid = log.valid if keep is None else (log.valid & keep)
-        band = jnp.sum(interior <= (jnp.asarray(step, jnp.int32) + 1)).astype(jnp.int32)
+        band = jnp.sum(interior < (jnp.asarray(step, jnp.int32) + 1)).astype(jnp.int32)    # (edge_k, edge_k+1]
         obj = log.obj.astype(jnp.int32)
         n = n.at[obj, band].add(valid.astype(jnp.int32))
         N = N.at[obj, band].add((valid & log.granted).astype(jnp.int32))
@@ -172,8 +175,7 @@ class TrialRecord:
     u_max : (n_objects,) float64
         Each object's bound on ``u`` (:func:`u_max_of`).
     band_edges : tuple of float
-        The bands' edges in seconds on the walk's clock; band ``k`` holds the steps ending in ``[edge_k, edge_k+1)``,
-        the final band its end too.
+        The bands' edges in seconds on the walk's clock; band ``k`` holds the steps ending in ``(edge_k, edge_k+1]``.
     modes : int
         ``M``, the sums per cell.
     object_radii : (n_objects,) float64

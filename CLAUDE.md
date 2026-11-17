@@ -71,8 +71,9 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   `_walk_geometry`, `walk`) records those trials: per walker and per (object, time band) cell the trial count `n`, the
   granted count `N` (int32) and `S_j = sum u T_j(2 u / u_max - 1)`, `j < M`, in the accumulation dtype, `u = 2 d_perp
   / R` the overshoot and `u_max = 2 LONGEST_STEP h / R` per object (`CoefficientWalk.trial_record`). Every encounter of
-  a plain wall is a trial (later encounters of a step and sealed objects included), a trial goes to the band of its
-  step's end (an edge to the later band, `T_max` to the final band), a step a bound walker discards records none. Off
+  a plain wall is a trial (later encounters of a step and sealed objects included), a step belongs to the band whose
+  interval `(edge_k, edge_k+1]` contains its end time (an end on an edge to the earlier band, so a window's bands hold
+  exactly its steps), a step a bound walker discards records none. Off
   by default and the same program then; on, it forces `count_walls` and changes no array of the walk (the geometry's
   `log_trials` makes its kernel return `WallHit.trials`, carried as the work's fourth entry). Refused by name: no plain
   wall, a backend, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
