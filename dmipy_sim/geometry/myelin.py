@@ -38,6 +38,16 @@ class ConcentricHit(NamedTuple):
 
 
 
+class WaterDomain(NamedTuple):
+    """One water domain of a :class:`PackedMyelinatedCylinders` cell (:meth:`PackedMyelinatedCylinders.water_domains`),
+    per unit length of the cylinders."""
+    pools: tuple           #: the pools whose water the domain holds, by name
+    cylinders: tuple       #: the cylinders whose lumen is in the domain, by index
+    volume: float          #: m^2: the domain's area in the cross-section
+    surface: float         #: m: every face a walker of the domain meets, once per face and side
+    surface_to_volume: float  #: 1/m: ``surface / volume``; a lumen's is the circle's ``2 / radius``
+    seeded_area: float     #: m^2: the area of its seeded pools
+
 def _refuse_schedule(owner, **kappas):
     """Refuse a :class:`~dmipy_sim.geometry.PermeabilitySchedule` on a myelinated substrate by name: its walls are
     stepped by its own three-compartment kernel, whose permeability per axon is constant in time."""
@@ -711,21 +721,14 @@ class PackedMyelinatedCylinders(Geometry):
         return self.seed_pools if self.seed_pools is not None else _wet_pools(self.compartments)
 
     @property
-    def placement_is_stationary(self):
-        """Whether the placement's law is the walk's stationary law. The placement is the uniform law over the union of
-        the seeded pools (:attr:`seeded_pools`, by area among them), so every pair of seeded pools that exchange is
-        seeded in proportion to its area; the law is stationary exactly when no walker can reach a pool of positive area
-        that is not seeded, i.e. every path to such a pool from a seeded pool is sealed. A pool that holds no water is
-        no exception: a walker crosses into it as into any pool (the crossing reads the diffusivity of the side it
-        leaves), so an unseeded dry pool behind an open face fills during the walk. A face between two pools is the
-        axolemma (lumen | sheath, ``kappa_inner``) or the sheath's outer face (sheath | extra, ``kappa_outer``) of a
-        myelinated cylinder, or the one wall (lumen | extra, ``kappa_outer``) of a plain cylinder; it lets walkers
-        through when the permeability of any cylinder that has it is above 0. The permeabilities are per cylinder and
-        constant in time (a schedule is refused at construction), so these are every face the walk can open."""
+    def reachable_pools(self):
+        """The pools a seeded walker can reach, in ``("extra", "intra", "myelin")`` order: the seeded pools
+        (:attr:`seeded_pools`) and every pool joined to one of them by a chain of open faces. A face between two pools is
+        the axolemma (lumen | sheath, ``kappa_inner``) or the sheath's outer face (sheath | extra, ``kappa_outer``) of a
+        myelinated cylinder, or the one wall (lumen | extra, ``kappa_outer``) of a plain cylinder; it is open when the
+        permeability of any cylinder that has it is above 0. The permeabilities are per cylinder and constant in time
+        (a schedule is refused at construction), so these are every face the walk can open."""
         N = self.N_actual
-        inner = self._inner_radii_np[:N]; outer = self._outer_radii_np[:N]
-        area = {"extra": self._L_float ** 2 - float(np.sum(np.pi * outer ** 2)),
-                "intra": float(np.sum(np.pi * inner ** 2)), "myelin": float(np.sum(np.pi * (outer ** 2 - inner ** 2)))}
         sheathed = ~np.asarray(self.plain_mask[:N], bool)
         k_in = np.asarray(self._kappa_inner_jax)[:N]; k_out = np.asarray(self._kappa_outer_jax)[:N]
         faces = []                                                     # the pairs of pools a walker can cross between
@@ -736,12 +739,79 @@ class PackedMyelinatedCylinders(Geometry):
         if np.any(k_out[~sheathed] > 0):
             faces.append(("intra", "extra"))
         reach = set(self.seeded_pools)
-        while True:                                                   # every pool a seeded walker can reach
+        while True:
             more = {q for f in faces for p, q in (f, f[::-1]) if p in reach and q not in reach}
             if not more:
                 break
             reach |= more
-        return not any(area[n] > 0.0 for n in reach - set(self.seeded_pools))
+        return tuple(n for n in _POOL_NAMES if n in reach)
+
+    @property
+    def placement_is_stationary(self):
+        """Whether the placement's law is the walk's stationary law. The placement is the uniform law over the union of
+        the seeded pools (:attr:`seeded_pools`, by area among them), so every pair of seeded pools that exchange is
+        seeded in proportion to its area; the law is stationary exactly when no pool of positive area outside the
+        seeded pools is among the :attr:`reachable_pools`. A pool that holds no water is no exception: a walker
+        crosses into it as into any pool (the crossing reads the diffusivity of the side it leaves), so an unseeded
+        dry pool behind an open face fills during the walk."""
+        N = self.N_actual
+        inner = self._inner_radii_np[:N]; outer = self._outer_radii_np[:N]
+        area = {"extra": self._L_float ** 2 - float(np.sum(np.pi * outer ** 2)),
+                "intra": float(np.sum(np.pi * inner ** 2)), "myelin": float(np.sum(np.pi * (outer ** 2 - inner ** 2)))}
+        return not any(area[n] > 0.0 for n in set(self.reachable_pools) - set(self.seeded_pools))
+
+    def water_domains(self):
+        """The water domains of the seeded walkers, when no sheath is among the :attr:`reachable_pools`.
+
+        A water domain is a connected component of the water through the open faces; with every sheath unseeded and
+        sealed from the seeded pools they are, per unit length of the cylinders:
+
+        * the lumen of each myelinated cylinder ``k``, ``V = pi a_k^2``, ``S = 2 pi a_k`` (its axolemma, from inside),
+          and of each sealed plain cylinder (``kappa_outer = 0``), ``V = pi b_k^2``, ``S = 2 pi b_k`` (its wall, from
+          inside);
+        * the exterior: the extra pool and the lumina of the open plain cylinders (``kappa_outer > 0``),
+          ``V = L^2 - sum pi b_k^2`` over the myelinated and the sealed plain cylinders, ``S = sum 2 pi b_k`` over them
+          (the sheath's outer face and the sealed plain wall, each from the extra side, once) ``+ sum 2 (2 pi b_k)``
+          over the open plain cylinders (both faces of an open wall: a walker of the domain meets it from either side).
+
+        ``a_k`` is the lumen radius, ``b_k`` the outer radius, ``L`` the cell's side. A domain is listed when it holds
+        seeded water: its ``seeded_area`` is the area of its seeded pools (the placement is uniform by area over the
+        seeded pools), and a domain with none is left out. Lumina first, in the cylinders' order, then the exterior.
+
+        Returns
+        -------
+        tuple of WaterDomain
+
+        Raises
+        ------
+        ValueError
+            When a sheath is among the :attr:`reachable_pools` (seeded, or behind an open face of a seeded pool): its
+            water joins a domain whose walls this form does not count.
+        """
+        if "myelin" in self.reachable_pools and np.any(self.sheathed):
+            raise ValueError(f"the myelin pool is reachable from the seeded pools {self.seeded_pools!r}: the water "
+                             f"domains are stated for a cell whose sheaths are unseeded and sealed from every seeded pool")
+        N = self.N_actual
+        a = np.asarray(self._inner_radii_np[:N], np.float64)
+        b = np.asarray(self._outer_radii_np[:N], np.float64)
+        plain = np.asarray(self.plain_mask[:N], bool)
+        open_plain = plain & (np.asarray(self._kappa_outer_jax, np.float64)[:N] > 0.0)
+        seeded = self.seeded_pools
+        domains = []
+        if "intra" in seeded:
+            for k in np.flatnonzero(~open_plain):                     # a sealed lumen: its own wall, from inside
+                V = float(np.pi * a[k] ** 2)
+                domains.append(WaterDomain(("intra",), (int(k),), V, float(2.0 * np.pi * a[k]), float(2.0 / a[k]), V))
+        closed = ~open_plain
+        V = float(self._L_float ** 2 - np.sum(np.pi * b[closed] ** 2))
+        S = float(2.0 * np.pi * np.sum(b[closed]) + 2.0 * (2.0 * np.pi * np.sum(b[open_plain])))
+        seeded_area = ((float(self._L_float ** 2 - np.sum(np.pi * b ** 2)) if "extra" in seeded else 0.0)
+                       + (float(np.sum(np.pi * b[open_plain] ** 2)) if "intra" in seeded else 0.0))
+        if seeded_area > 0.0:
+            pools = ("extra", "intra") if np.any(open_plain) else ("extra",)
+            domains.append(WaterDomain(pools, tuple(int(k) for k in np.flatnonzero(open_plain)), V, S, S / V,
+                                       seeded_area))
+        return tuple(domains)
 
     @property
     def length_scales(self):

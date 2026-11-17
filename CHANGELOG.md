@@ -5,6 +5,22 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A cell of myelinated and plain cylinders has an equilibrium bound fraction, per water domain** (behaviour
+  change: the MT burn-in of such a cell stops by its equilibrium, and `equilibrate_binding='fast'` is accepted there).
+  `engine.mt.equilibrium_domains(geometry, kappa_MT, dwell_time)` states, for a `PackedMyelinatedCylinders` cell whose
+  sheaths are unseeded and sealed from every seeded pool, one record per water domain that holds seeded water
+  (`pools`, `cylinders`, `volume`, `surface`, `surface_to_volume`, `weight`, `p_eq`; per unit length): the lumen of
+  each myelinated cylinder (`S / V = 2 / a`), the lumen of each sealed plain cylinder (`2 / b`), and the exterior, the
+  extra pool with the lumina of the open plain cylinders, whose surface holds the outer face of every sheath and
+  sealed plain wall once and both faces of every open plain wall. Each domain is at `P = x / (1 + x)`,
+  `x = kappa_MT dwell_time S / V`; its weight is its seeded area over the cell's. `equilibrium_bound_fraction` of the
+  cell is the seeded-weight sum of the domains; a sheath that is seeded or reachable from a seeded pool through an
+  open face has none (`EquilibriumDomains.reason`). The walk's `work["mt_equilibration"]` of such a cell carries
+  `equilibrium_domains`, or `p_eq_reason` beside `p_eq: None`; every other geometry's record is unchanged.
+  `'fast'` seeds each walker bound with its own start domain's `P` (by `classify_position` of its start) and refuses a
+  cell without domains with the reason, and a walker that starts in a sheath. The cell's reach is one property,
+  `PackedMyelinatedCylinders.reachable_pools`, which `placement_is_stationary` reads; its domains are
+  `PackedMyelinatedCylinders.water_domains()`. `surface_to_volume` stays `None` for the cell.
 - **A walk records its membrane trials at its plain walls** (`record_trials=`, off by default). `_walk_geometry` and
   `walk` take a `dmipy_sim.trial_record.TrialRecordSpec(modes=M, band_edges=...)` (seconds from 0 to `T_max`, at most
   64 bands, containing every storage-window boundary) and return `CoefficientWalk.trial_record`, a `TrialRecord`: per

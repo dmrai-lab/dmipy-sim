@@ -1029,6 +1029,32 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     return cost
 
 
+def _domain_bound_fractions(geometry, kappa_MT, dwell_time, r0):
+    """``(n,)`` float32: the equilibrium bound fraction of each walker's water domain at its start ``r0``
+    (:func:`~dmipy_sim.engine.mt.equilibrium_domains`), the domain read from ``classify_position``: the lumen of the
+    cylinder that holds it when that lumen is a domain of its own, else the exterior. A walker that starts in a
+    sheath or in a domain holding no seeded water is refused by name."""
+    from . import mt as _mt
+    table = _mt.equilibrium_domains(geometry, kappa_MT, dwell_time)
+    if table.domains is None:
+        raise ValueError(f"equilibrate_binding='fast': {table.reason}")
+    n_ids = 2 * int(geometry.N_max) + 1
+    lookup = np.full(n_ids, np.nan)                       # encoded id -> P of its domain; NaN: no domain
+    for d in table.domains:
+        if "extra" in d["pools"]:
+            lookup[0] = d["p_eq"]
+        for k in d["cylinders"]:
+            lookup[k + 1] = d["p_eq"]
+    enc = np.asarray(jax.vmap(geometry.classify_position)(jnp.asarray(r0)))
+    P = lookup[enc]
+    if np.any(np.isnan(P)):
+        bad = np.unique(enc[np.isnan(P)])
+        raise ValueError(f"equilibrate_binding='fast': {int(np.isnan(P).sum())} walkers start in compartments "
+                         f"{bad.tolist()} (encoded ids), which are not in a water domain of the seeded walkers "
+                         f"(a sheath, or a lumen of an unseeded pool): their equilibrium is not stated; use 'burnin'")
+    return jnp.asarray(P.astype(np.float32))
+
+
 def _compact_events(n, steps, labels, dt_sim):
     """One batch's events buffers ``(n (nb,), steps (nb, cap), labels (nb, cap))`` as the host's list: ``(counts,
     t (float64, seconds), label (int8))`` of the first ``n`` entries per walker, exact in time (``step x dt_sim``)."""
@@ -1823,8 +1849,11 @@ def _walk_geometry(
             _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
             if _mode == "fast":                 # seed f_b walkers bound with a residual dwell (a known S/V)
                 S_V = _mt.surface_to_volume(geometry)
-                from dmipy_analytic.relaxation import bound_fraction
-                P_eq = bound_fraction(kappa_MT, dwell_time, S_V)
+                if S_V is not None:
+                    from dmipy_analytic.relaxation import bound_fraction
+                    P_eq = bound_fraction(kappa_MT, dwell_time, S_V)
+                else:                           # a cell's walkers: each its start domain's equilibrium
+                    P_eq = _domain_bound_fractions(geometry, kappa_MT, dwell_time, r0_all)
                 from .physics import walker_keys as _walker_keys    # each walker's own draw: a function of its index
                 ek = _walker_keys(jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E), first_walker, n_walkers)
                 u_state, u_dwell = jax.vmap(lambda k: jax.random.uniform(k, (2,), dtype=jnp.float32))(ek).T
@@ -1869,6 +1898,8 @@ def _walk_geometry(
                     comp0_all = _comp[0]
                 log.info(f"  [mt] equilibrate 'burnin' ({_criterion.kind}): <bound>={_eq_record['occupancy']:.4f}"
                          f" after {_eq_record['chunks_run']} chunks")
+                if _criterion.p_eq_reason is not None:
+                    log.info(f"  [mt] no equilibrium bound fraction: {_criterion.p_eq_reason}")
                 if not _eq_record["converged"]:
                     import warnings
                     warnings.warn(f"equilibrate_binding: the burn-in's {_criterion.kind} criterion did not hold within "
