@@ -69,7 +69,8 @@ def recorded_bits():
     """Bits recorded on one JAX build AND one host's kernels: a compiled walk's float32 bits depend on both (the
     CPU features the compiler targets), so they are asserted only in the pinned ``recorded-bits`` CI job, which sets
     ``DMIPY_SIM_RECORDED_BITS=1``, installs :data:`RECORDED_WITH` and checks its host first
-    (``tools/recorded_bits_canary.py``). Elsewhere the test is skipped by name; in that job a skip is a failure and a
+    (``tools/recorded_bits_canary.py``) and selects the tests named ``test_recorded_bits_*``. Elsewhere the test is
+    skipped by name; in that job a skip is a failure and a
     build other than :data:`RECORDED_WITH` is an error, not a skip."""
     import jax
     import jaxlib

@@ -8,7 +8,7 @@ tests that compare sums accumulate in float64, under the ``x64`` fixture). The r
 3. every encounter of a plain wall is a trial, later encounters of a step and sealed objects included, and the counts
    are the walk's work counts on an all-plain cell;
 4. the record changes nothing: the walk with it has every discrete outcome of the walk without it at the same counting,
-   its positions within a stated tolerance, and bit for bit on the recording build and host (``recorded_bits``);
+   its positions within a stated tolerance, and bit for bit on the recording build and host (the ``test_recorded_bits_*`` tests);
 5. a trial's overshoot is within its object's a priori bound, and a walk that exceeds it is refused;
 6. a scheduled permeability is read at the step's midpoint and the band is the step's end;
 8. the trial count is stored beside the granted count;
@@ -295,14 +295,12 @@ def test_the_record_changes_no_outcome_of_a_mixed_cells_walk(mixed_walks):
     assert int(r.n[:, [0, 2]].sum()) == 0 and int(r.n[:, [1, 3]].sum()) > 0       # the myelinated cylinders' cells empty
 
 
-@pytest.mark.recorded_bits
-def test_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_bits, plain_walks):
+def test_recorded_bits_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_bits, plain_walks):
     """On the recording build and host the two programs walk the same bits: every array, the work, the events."""
     _assert_same_walk(*plain_walks)
 
 
-@pytest.mark.recorded_bits
-def test_the_record_changes_no_bit_of_a_mixed_cells_walk(recorded_bits, mixed_walks):
+def test_recorded_bits_the_record_changes_no_bit_of_a_mixed_cells_walk(recorded_bits, mixed_walks):
     _assert_same_walk(*mixed_walks)
 
 
@@ -480,6 +478,43 @@ def test_a_trial_is_attributed_through_the_candidate_index():
     q -= Lc * np.round(q / Lc)
     wall_distance = np.abs(np.linalg.norm(q, axis=1) - radii[o])
     assert len(o) > 1000
+    assert np.all(wall_distance <= ls[s_idx] * (1 + 1e-5) + 1e-4 * radii.min())
+    assert (o >= w.n_cand).sum() > 0
+
+
+def test_a_mixed_cells_trial_is_attributed_through_the_candidate_index():
+    """A mixed cell of 40 cylinders, every other one plain, more than the kernel's candidates per step: every logged
+    trial is at a plain cylinder whose wall lies within the step's reach of its start, and cylinders beyond the
+    candidate count are among those met."""
+    rng = np.random.default_rng(4)
+    radii = rng.uniform(0.8, 1.3, 40) * 1e-6
+    c, Lc, _ = pack_cylinders(radii, target_vf=0.45, seed=5)
+    N = len(radii)
+    plain = (np.arange(N) % 2) == 0
+    f32 = np.float32
+    step_max = LONGEST_STEP * (0.7 * radii).min() / 6
+    inner = np.where(plain, radii, 0.7 * radii)
+    Dj = jnp.full((N,), f32(D))
+    kap = np.where(plain, 4e-3, 0.0).astype(f32)
+    w = concentric_wall_kernel(jnp.asarray(c, f32), jnp.asarray(inner, f32), jnp.asarray(radii, f32), f32(Lc), Dj, Dj, Dj,
+                               jnp.zeros(N, f32), jnp.asarray(kap), jnp.zeros((N, 4), f32), f32(1e-7 * inner.min()),
+                               f32(1e-4 * inner.min()), step_max, periodic_min_gap(c, radii, Lc), count=True, trials=True)
+    assert w.n_cand < N
+    pts, dirs, ls, inside, own = _kernel_steps(radii, c, Lc, 20000, 17, step_max)
+    keep = ~inside | plain[own]                                            # outside the sheaths, or in a plain lumen
+    pts, dirs, ls, inside, own = pts[keep], dirs[keep], ls[keep], inside[keep], own[keep]
+    keys = jax.random.split(jax.random.PRNGKey(17), len(pts))
+    words = jax.vmap(lambda k: jax.random.bits(k, (w.bounce_loop.budget,), dtype=jnp.uint32))(keys)
+    h = jax.jit(jax.vmap(lambda p, d, l, pl, k, u: w(p, d, l, pl, k, f32(0.5), u)))(
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside.astype(np.int32)),
+        jnp.asarray(own.astype(np.int32)), words)
+    valid = np.asarray(h.trials.valid); obj = np.asarray(h.trials.obj)
+    s_idx, i_idx = np.nonzero(valid)
+    o = obj[s_idx, i_idx]
+    assert len(o) > 1000 and plain[o].all()
+    q = pts[s_idx].astype(np.float64) - c[o]
+    q -= Lc * np.round(q / Lc)
+    wall_distance = np.abs(np.linalg.norm(q, axis=1) - radii[o])
     assert np.all(wall_distance <= ls[s_idx] * (1 + 1e-5) + 1e-4 * radii.min())
     assert (o >= w.n_cand).sum() > 0
 

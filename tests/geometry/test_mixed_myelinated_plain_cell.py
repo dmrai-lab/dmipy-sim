@@ -186,8 +186,7 @@ def _hashes(w, names):
     return {n: (_events_sha(getattr(w, n)) if n.endswith("events") else _sha(getattr(w, n))) for n in names}
 
 
-@pytest.mark.recorded_bits
-def test_the_all_myelinated_walk_with_the_field_is_the_recorded_walk(recorded_bits):
+def test_recorded_bits_the_all_myelinated_walk_with_the_field(recorded_bits):
     from dmipy_sim.engine.core import _walk_geometry
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
     geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
@@ -197,16 +196,14 @@ def test_the_all_myelinated_walk_with_the_field_is_the_recorded_walk(recorded_bi
     assert _hashes(w, REFERENCE["field"]) == REFERENCE["field"]
 
 
-@pytest.mark.recorded_bits
-def test_the_all_myelinated_walk_without_the_field_is_the_recorded_walk(recorded_bits):
+def test_recorded_bits_the_all_myelinated_walk_without_the_field(recorded_bits):
     from dmipy_sim.engine.core import _walk_geometry
     geo = _cell(G_ALL, kappa_inner=4e-5, kappa_outer=4e-5)
     w = _walk_geometry(300, D, geo, 4e-3, 5e-5, tiers="all", seed=3, require_gpu=False, K=8)
     assert _hashes(w, REFERENCE["no_field"]) == REFERENCE["no_field"]
 
 
-@pytest.mark.recorded_bits
-def test_the_all_myelinated_forward_signal_is_the_recorded_signal(recorded_bits):
+def test_recorded_bits_the_all_myelinated_forward_signal(recorded_bits):
     from dmipy_replay import pgse
     from dmipy_sim.engine._fused import simulate_fused
     geo = _cell(G_ALL, compartments=Compartments(intra=Pool(D=D, T2=0.08), myelin=Pool(D=0.0, T2=0.015),
