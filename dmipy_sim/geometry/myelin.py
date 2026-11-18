@@ -639,7 +639,21 @@ class MyelinatedCell(NamedTuple):
     Compartments are encoded as the kernel encodes them (:meth:`PackedMyelinatedCylinders.pool_of`): 0 the extra pool,
     ``k + 1`` the lumen of cylinder ``k`` (``1 .. N_max``), ``N_max + k + 1`` its sheath (``N_max + 1 .. 2 N_max``,
     empty for a plain cylinder). A walker in pool ``p`` of cylinder ``k`` steps ``sqrt(6 D_p[k] dt_sim)`` times the
-    step law's atom, ``D_p`` the pool's array below and ``dt_sim`` the request's (:mod:`dmipy_sim.math.step_law`)."""
+    step law's atom, ``D_p`` the pool's array below and ``dt_sim`` the request's (:mod:`dmipy_sim.math.step_law`).
+
+    Every input of :func:`concentric_wall_kernel` as the coefficient walk builds it
+    (:func:`~dmipy_sim.engine.physics.make_packed_myelin_traj_step_fn`) is here or is a property of the walk:
+
+    - ``centers``, ``inner``, ``outer``, ``L`` (``cell_size`` in float32), ``D_intra``, ``D_myelin``, ``D_extra``,
+      ``kappa_inner``, ``kappa_outer``, ``eps``, ``nudge``, ``min_gap`` and ``budget`` (``bounce_budget``) are fields;
+    - ``step_max``, the longest step the loop is sized for, depends on the walk's step: :meth:`step_max` of
+      :attr:`~dmipy_sim.engine.backends.WalkRequest.dt_sim`;
+    - ``rho_weights`` is zero in the coefficient walk, which applies no surface relaxivity: the contact is recorded as
+      the four boundary local-time channels at ``rho / D = 1`` (:attr:`~dmipy_sim.engine.backends.WalkRequest.record`),
+      a relaxivity being a replay knob. The cell's ``rho_inner`` / ``rho_outer`` are read only by the forward-signal
+      step (:func:`~dmipy_sim.engine.physics.make_packed_myelin_step_fn`), which no backend walks;
+    - ``count`` is :attr:`~dmipy_sim.engine.backends.WalkRequest.count_walls` and ``trials`` whether the request
+      carries a :attr:`~dmipy_sim.engine.backends.WalkRequest.trial_record`."""
     centers: np.ndarray       #: (N_max, 2) float32 the cylinders' centres (m)
     inner_radii: np.ndarray   #: (N_max,) float32 the lumen radii (m)
     outer_radii: np.ndarray   #: (N_max,) float32 the outer radii (m); a plain cylinder's equals its inner radius
@@ -658,6 +672,15 @@ class MyelinatedCell(NamedTuple):
     bounce_budget: Optional[int]  #: the budget the kernel's loop runs at: the cell's ``bounce_budget``, which is the
                                   #: :attr:`~dmipy_sim.engine.backends.WalkRequest.bounce_budget` of a walk of it;
                                   #: None for the budget the kernel derives
+
+    def step_max(self, dt_sim):
+        """The longest step (m) the kernel's loop is sized for at a physics step of ``dt_sim`` seconds:
+        ``sqrt(6 D_max dt_sim)``, ``D_max`` the largest diffusivity of the three pools, times
+        :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when the cell holds a plain cylinder."""
+        from ..math.step_law import LONGEST_STEP
+        D_max = float(max(np.max(self.D_intra), np.max(self.D_myelin), np.max(self.D_extra)))
+        step = float(np.sqrt(6.0 * D_max * float(dt_sim)))
+        return float(LONGEST_STEP) * step if bool(np.any(self.plain_mask)) else step
 
 
 class PackedMyelinatedCylinders(Geometry):

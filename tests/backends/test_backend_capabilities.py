@@ -5,7 +5,7 @@
 
 A stand-in backend whose walkers never move (``tests/backends/test_backend_hook.py``'s ``_Still``) declares each; the walk
 that needs the capability is handed to it with the request's fields and is the stand-in's batch as it came; a stand-in
-that does not declare it is refused by the string the producer has always refused it with, asserted in full; each
+that does not declare it is refused by the text of the JAX-only list (the trial record by its own), asserted in full; each
 refusal has a neighbour that walks with the one thing changed, and a declaring stand-in that returns the capability's
 arrays missing or of another shape is refused by name."""
 import numpy as np
@@ -99,24 +99,53 @@ def test_the_three_capabilities_are_names_the_jax_kernels_declare():
 
 # ── the public descriptions a backend reads ───────────────────────────────────────────────────────────────────────
 
-def test_the_cell_arrays_are_the_arrays_the_cell_kernel_is_built_from():
-    g = _cell(kappa_outer=[0.0, 4e-5, 0.0, 4e-5], kappa_inner=1e-5)
+def test_the_cell_arrays_are_every_input_of_the_cell_kernel(monkeypatch):
+    """Every argument the coefficient walk's step factory passes to the wall kernel is a field of the cell's
+    description or a stated property of the walk, compared with the argument itself; the list is the kernel's
+    signature, complete."""
+    import inspect
+    import dmipy_sim.geometry.myelin as myelin
+    from dmipy_sim.engine.physics import make_packed_myelin_traj_step_fn
+    real = myelin.concentric_wall_kernel
+    seen = {}
+
+    def kernel(*a, **kw):
+        seen.update(inspect.signature(real).bind(*a, **kw).arguments)
+        return real(*a, **kw)
+    monkeypatch.setattr(myelin, "concentric_wall_kernel", kernel)
+    g = _cell(kappa_outer=[0.0, 4e-5, 0.0, 4e-5], kappa_inner=1e-5, rho_inner=1e-6, rho_outer=2e-6)
+    g.bounce_budget = 9
+    dt = 1e-6
+    make_packed_myelin_traj_step_fn(g, dt)
     c = g.cell_arrays()
     assert isinstance(c, MyelinatedCell)
-    for name, ref in (("centers", g._centers_jax), ("inner_radii", g._inner_radii_jax), ("outer_radii", g._outer_radii_jax),
-                      ("D_intra", g._D_intra_jax), ("D_myelin", g._D_myelin_jax), ("D_extra", g._D_extra_jax),
-                      ("kappa_inner", g._kappa_inner_jax), ("kappa_outer", g._kappa_outer_jax), ("plain_mask", g.plain_mask)):
-        a = getattr(c, name)
-        assert a.dtype == np.asarray(ref).dtype and a.shape[0] == 8, name
-        np.testing.assert_array_equal(a, np.asarray(ref), err_msg=name)
+    fields = dict(centers="centers", inner="inner_radii", outer="outer_radii", D_intra="D_intra", D_myelin="D_myelin",
+                  D_extra="D_extra", kappa_inner="kappa_inner", kappa_outer="kappa_outer")
+    scalars = dict(eps="eps", nudge="nudge", min_gap="min_gap")
+    of_the_walk = ("L", "step_max", "rho_weights", "count", "budget", "trials")
+    assert set(inspect.signature(real).parameters) == set(fields) | set(scalars) | set(of_the_walk)
+    for arg, name in fields.items():
+        a, k = getattr(c, name), np.asarray(seen[arg])
+        assert a.dtype == k.dtype and a.shape == (8,) + k.shape[1:], name
+        np.testing.assert_array_equal(a, k, err_msg=name)
         assert not a.flags.writeable, name
-    assert (c.cell_size, c.N_actual, c.N_max) == (g._cell_size, 4, 8)
-    assert (c.eps, c.nudge, c.min_gap) == (float(g._eps), float(g._nudge), g.min_gap)
-    assert c.bounce_budget is None
+    for arg, name in scalars.items():
+        assert np.float32(getattr(c, name)) == np.float32(seen[arg]), name
+    assert np.float32(c.cell_size) == np.asarray(seen["L"])
+    assert c.step_max(dt) == seen["step_max"]
+    assert c.bounce_budget == seen["budget"] == 9
+    np.testing.assert_array_equal(np.asarray(seen["rho_weights"]), np.zeros((8, 4), np.float32))
+    assert not seen["count"] and not seen["trials"]
+    np.testing.assert_array_equal(c.plain_mask, g.plain_mask)
+    assert (c.N_actual, c.N_max) == (4, 8)
     with pytest.raises(AttributeError):
         c.cell_size = 1.0
     with pytest.raises(ValueError):
         c.centers[0, 0] = 1.0
+    plainless = PackedMyelinatedCylinders(OUTER * 0.7, 0.7, CENTRES, L_CELL, N_max=8, compartments=COMPS)
+    seen.clear()
+    make_packed_myelin_traj_step_fn(plainless, dt)
+    assert plainless.cell_arrays().step_max(dt) == seen["step_max"]           # no plain cylinder: the Gaussian step
 
 
 def test_the_device_arrays_are_the_arrays_device_read_passes():
@@ -149,7 +178,7 @@ def test_a_backend_that_declares_the_packed_myelinated_class_walks_the_cell_as_i
     assert be7.requests[0].bounce_budget == 7
 
 
-def test_a_backend_that_does_not_declare_the_packed_myelinated_class_is_refused_by_todays_string():
+def test_a_backend_that_does_not_declare_the_packed_myelinated_class_is_refused_by_the_jax_only_list():
     with pytest.raises(ValueError) as e:
         _walk(_cell(), backend=_Still())
     assert str(e.value) == f"backend 'still': this walk uses the myelinated substrates, {REFUSED}"
@@ -252,7 +281,7 @@ class _Recording(_Record):
         return super().walk_batch(request, r0, keys, out=out)._replace(trial_record=self.record(request, r0))
 
 
-def test_a_backend_that_does_not_declare_the_trial_record_is_refused_by_todays_string_before_the_run(monkeypatch):
+def test_a_backend_that_does_not_declare_the_trial_record_is_refused_by_name_before_the_run(monkeypatch):
     started = []
     real = core.Run
 
@@ -305,3 +334,24 @@ def test_a_backend_that_declares_the_trial_record_and_returns_none_or_another_sh
         return z, z, np.zeros((n, 4, 2, 3), np.float32), np.ones((n,), np.int32)
     with pytest.raises(ValueError, match=r"trial_record: 64 trials exceed u_max = "):
         _walk(_packing(), backend=_Recording(exceeding), record_trials=SPEC)
+
+
+def test_a_trial_record_of_non_integer_or_out_of_range_counts_is_refused_and_integer_counts_join():
+    def record(n_dtype, n_value, S_dtype=np.float32):
+        def make(request, r0):
+            n = r0.shape[0]
+            c = np.full((n, 4, 2), n_value, dtype=n_dtype)
+            return c, np.zeros((n, 4, 2), np.int64), np.ones((n, 4, 2, 3), S_dtype), np.zeros((n,), np.int64)
+        return make
+    with pytest.raises(ValueError, match=r"backend 'record' returned the trial record's n as float64 in \[2.7, 2.7\]: "
+                                         r"a count is an integer in \[0, 2\^31\)"):
+        _walk(_packing(), backend=_Recording(record(np.float64, 2.7)), record_trials=SPEC)
+    with pytest.raises(ValueError, match=r"returned the trial record's n as int64 in \[-1, -1\]"):
+        _walk(_packing(), backend=_Recording(record(np.int64, -1)), record_trials=SPEC)
+    with pytest.raises(ValueError, match=r"returned the trial record's n as int64 in \[4294967296, 4294967296\]"):
+        _walk(_packing(), backend=_Recording(record(np.int64, 2 ** 32)), record_trials=SPEC)
+    with pytest.raises(ValueError, match=r"returned the trial record's S as int32: the sums are floating point"):
+        _walk(_packing(), backend=_Recording(record(np.int64, 3, S_dtype=np.int32)), record_trials=SPEC)
+    w = _walk(_packing(), backend=_Recording(record(np.int64, 3, S_dtype=np.float64)), record_trials=SPEC)   # the neighbour
+    assert w.trial_record.n.dtype == np.int32 and np.all(w.trial_record.n == 3)
+    assert w.trial_record.S.dtype == np.float64                                # the backend's precision, as returned

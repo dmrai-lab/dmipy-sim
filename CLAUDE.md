@@ -379,8 +379,8 @@ returning a `WalkBatch` of saves is refused by name) and reads nothing else from
 implement (the isolated myelinated cylinder, MT binding on a mesh's binding side or without the recorded channels, the
 compartment guard) are refused for another backend, never fallen back from; a walk of several storage windows goes to
 a backend that declares `backends.STORAGE_WINDOWS` (each window's form its own, on the batch's second axis) and is
-refused by the capability's name otherwise. Three more are declared the same way and gate the refusal the walk has
-always met, by its text: `backends.PACKED_MYELINATED` (a `PackedMyelinatedCylinders` walk, the cell read through
+refused by the capability's name otherwise. Three more are declared the same way; a backend that does not declare one is
+refused by the JAX-only list's text (the trial record by its own): `backends.PACKED_MYELINATED` (a `PackedMyelinatedCylinders` walk, the cell read through
 `cell_arrays()`, a read-only `myelin.MyelinatedCell` of its kernel's arrays and constants, `bounce_budget` the
 request's), `backends.FIELD_IN_WALK` (a closed-form basis such as a `HollowCylinderField` handed as `WalkRequest.field`,
 its data through `device_arrays()`, its modes returned as a raster's; a declaring backend that does not implement a

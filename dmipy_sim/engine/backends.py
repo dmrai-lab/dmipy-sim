@@ -283,10 +283,12 @@ class CoefficientBatch(NamedTuple):
     n_windows: int = 1                #: the storage windows on the form's second axis: the request's
     trial_record: object = None       #: the record of the batch's membrane trials when the request asks for it
                                       #: (:attr:`WalkRequest.trial_record`): ``(n, N, S, exceed)``, ``n`` and ``N``
-                                      #: ``(n_b, n_objects, n_bands)`` int32 the trials and the granted trials per walker
-                                      #: and (object, band) cell, ``S`` ``(n_b, n_objects, n_bands, modes)`` the Chebyshev
-                                      #: sums in the batch's ``precision``, ``exceed`` ``(n_b,)`` int32 the trials whose
-                                      #: overshoot exceeded the object's ``trial_u_max``; None otherwise
+                                      #: ``(n_b, n_objects, n_bands)`` the trials and the granted trials per walker
+                                      #: and (object, band) cell, ``exceed`` ``(n_b,)`` the trials whose overshoot
+                                      #: exceeded the object's ``trial_u_max`` -- each count an integer array with values
+                                      #: in ``[0, 2^31)``, held as int32 -- and ``S`` ``(n_b, n_objects, n_bands, modes)``
+                                      #: the Chebyshev sums, floating point in the backend's accumulation precision (the
+                                      #: batch's ``precision``), joined into the walk's record as returned; None otherwise
 
 
 class Backend:

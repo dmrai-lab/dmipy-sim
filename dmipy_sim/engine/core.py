@@ -2235,8 +2235,19 @@ def _walk_geometry(
                 if shapes != want:
                     raise ValueError(f"backend {_backend_name!r} returned a trial record of shapes {shapes} for a walk that "
                                      f"records its membrane trials: (n, N, S, exceed) of shapes {want}")
-                got["tr_n"], got["tr_N"] = np.asarray(tr[0], np.int32), np.asarray(tr[1], np.int32)
-                got["tr_S"], got["tr_x"] = np.asarray(tr[2]), np.asarray(tr[3], np.int32)
+                counts = {}
+                for name, x in (("n", tr[0]), ("N", tr[1]), ("exceed", tr[3])):
+                    a = np.asarray(x)
+                    if not np.issubdtype(a.dtype, np.integer) or (a.size and (int(a.min()) < 0 or int(a.max()) > np.iinfo(np.int32).max)):
+                        raise ValueError(f"backend {_backend_name!r} returned the trial record's {name} as {a.dtype} in "
+                                         f"[{a.min() if a.size else None}, {a.max() if a.size else None}]: a count is an "
+                                         f"integer in [0, 2^31)")
+                    counts[name] = a.astype(np.int32)
+                S_b = np.asarray(tr[2])
+                if not np.issubdtype(S_b.dtype, np.floating):
+                    raise ValueError(f"backend {_backend_name!r} returned the trial record's S as {S_b.dtype}: the sums are "
+                                     f"floating point, in the backend's accumulation precision")
+                got["tr_n"], got["tr_N"], got["tr_S"], got["tr_x"] = counts["n"], counts["N"], S_b, counts["exceed"]
             work_b = tuple(None if w is None else np.asarray(w) for w in batch.work)
             if drop_pool_changes:
                 if batch.pool_changed is None or np.asarray(batch.pool_changed).shape != (n_b,):
