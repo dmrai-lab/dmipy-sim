@@ -202,16 +202,29 @@ def test_the_longest_draw_exhausts_the_all_myelinated_budget_at_the_witness_lane
     assert np.linalg.norm(_minimum_image(end[0] - fly[lane])) > 5e-9
 
 
-def test_a_budget_that_runs_out_in_a_lumen_leaves_the_walker_on_the_reference_path_in_its_pool():
-    """Near-tangent lanes of every lumen at the longest draw: where the budget runs out (the smallest lumen at the small
-    steps) the label does not change, the end position is in the pool its label names and at the reference's stop
-    point, and the point the remainder would reach is in the lumen as well; at ``dt`` 4e-6 the budget is not reached."""
-    for dt, k, runs_out in ((2e-7, 1, True), (1e-6, 1, True), (2e-7, 3, True), (4e-6, 1, False)):
+EXHAUSTED_LANES = {2e-7: 5285, 5e-7: 3293, 1e-6: 1377, 2e-6: 2638, 4e-6: 0}   #: of N_DEPTH x N_OFFSET = 90 300, lumen 1
+
+
+def test_a_budget_that_runs_out_in_a_lumen_truncates_the_step_and_leaves_the_walker_in_its_pool():
+    """Near-tangent lanes of the smallest lumen at the longest draw. The budget runs out in 5.9, 3.6, 1.5, 2.9 and 0 %
+    of the 90 300 lanes at ``dt`` 2e-7, 5e-7, 1e-6, 2e-6 and 4e-6 s (the counts, to 3 %: a float32 lane at a different
+    vector unit may flip). A step that runs out stops at the reference's stop point, shorter than drawn by the
+    remainder (at most 1.9e-8 m, at ``dt`` 2e-7); the label does not change, the end position is in the pool its label
+    names and the point the remainder would reach is in the lumen as well."""
+    k = 1
+    for dt, expected in EXHAUSTED_LANES.items():
         out = _compare(dt, *_near_tangent_lanes(INNER[k], CENTRES[k], -1), k + 1, _lumen(k))
-        assert (out["exhausted"] > 0) == runs_out, (dt, k, out)
+        assert abs(out["exhausted"] - expected) <= 0.03 * expected, (dt, out)
         assert out["label_changed"] == out["end_not_in_label"] == out["end_outside_pool"] == out["fly_outside_pool"] == 0, \
-            (dt, k, out)
-        assert out["max_stop_deviation"] < MAX_STOP_DEVIATION, (dt, k, out)
+            (dt, out)
+        assert out["max_stop_deviation"] < MAX_STOP_DEVIATION, (dt, out)
+        assert out["max_remainder"] < 1.92e-8, (dt, out)
+        if dt == 2e-7:
+            assert 1.9e-8 < out["max_remainder"] < 1.92e-8, out
+    out = _compare(2e-7, *_near_tangent_lanes(INNER[3], CENTRES[3], -1), 4, _lumen(3))   # the second-smallest lumen
+    assert out["exhausted"] > 0
+    assert out["label_changed"] == out["end_not_in_label"] == out["end_outside_pool"] == out["fly_outside_pool"] == 0, out
+    assert out["max_stop_deviation"] < MAX_STOP_DEVIATION, out
 
 
 # ── the sheath and the extra-axonal pool ────────────────────────────────────────────────────────────────────────────
@@ -233,10 +246,10 @@ def test_a_budget_that_runs_out_in_a_sheath_leaves_the_walker_on_the_reference_p
             assert out["max_stop_deviation"] < MAX_STOP_DEVIATION, (dt, radius, out)
 
 
-def test_the_extra_axonal_pool_makes_one_reflection_where_the_walls_are_convex_and_never_runs_out():
-    """From outside, an outer wall is convex: lanes grazing it, and lanes anywhere in the narrowest gap between two
+def test_no_lane_of_the_extra_axonal_pool_exhausts_the_budget():
+    """Lanes grazing the outer wall of two cylinders from outside, and lanes anywhere in the narrowest gap between two
     cylinders at every direction, make at most one reflection at the longest draw, so the smallest budget (3, at
-    ``dt`` 2e-7) is never reached."""
+    ``dt`` 2e-7) is never reached: nothing is shown for this pool beyond that."""
     walls = _images([(*CENTRES[i], OUTER[i], -1) for i in range(4)])
     gap = np.array([0.0, 1.1 * R])                               # the middle of the gap between cylinders 0 and 2
     rng = np.random.default_rng(0)
@@ -264,15 +277,23 @@ def _sixteen_cylinders():
                                      compartments=DRY_SHEATH)
 
 
-def test_the_candidate_count_is_8_at_step_max_and_at_the_longest_draw_up_to_x_0_55():
-    """``x`` is the step over the smallest lumen radius. The kernel is sized at ``step_max``; the count a longest draw
-    would ask for is 8 up to ``x`` 0.55 and 9 beyond (``x`` 0.56 and 0.6, coarser than the step law's own ceiling)."""
-    cell = _sixteen_cylinders()
+def _sixteen_with_a_plain_cylinder():
+    g = np.full(16, G_RATIO)
+    g[0] = 1.0                                                   # same lumen radius, no sheath: sized for the longest draw
+    centres = np.array([[(i + 0.5) * 5e-6, (j + 0.5) * 5e-6] for i in range(4) for j in range(4)])
+    return PackedMyelinatedCylinders(np.full(16, G_RATIO * R), g, centres, 2e-5, N_max=16, compartments=DRY_SHEATH)
+
+
+def test_the_candidate_count_is_8_at_step_max_and_follows_the_formula_at_the_longest_draw():
+    """``x`` is the step over the smallest lumen radius. The cell of sheathed cylinders is sized at ``step_max``: 8 for
+    every ``x`` here. The same cell holding a plain cylinder is sized at the longest draw, ``LONGEST_STEP x``, and its
+    kernel's count is the formula's: 8 up to ``x`` 0.55 and 9 at 0.56 and 0.6 (coarser than the step law's ceiling)."""
+    sheathed, plain = _sixteen_cylinders(), _sixteen_with_a_plain_cylinder()
     R_in = G_RATIO * R
     for x, at_longest in ((0.1, 8), (0.3, 8), (0.55, 8), (0.56, 9), (0.6, 9)):
         dt = (x * R_in) ** 2 / (6.0 * D)
-        assert ph.make_myelin_substep(cell, dt).n_cand == _candidates(x, 16) == 8
-        assert _candidates(LONGEST_STEP * x, 16) == at_longest
+        assert ph.make_myelin_substep(sheathed, dt).n_cand == _candidates(x, 16) == 8
+        assert ph.make_myelin_substep(plain, dt).n_cand == _candidates(LONGEST_STEP * x, 16) == at_longest
 
 
 # ── the sizing of the two classes ───────────────────────────────────────────────────────────────────────────────────
@@ -286,3 +307,6 @@ def test_the_sheathed_class_is_sized_for_sqrt_6_D_dt_and_the_plain_class_for_the
             size = concentric_step_max(cell._D_intra_jax, cell._D_myelin_jax, cell._D_extra_jax, dt, bool(cell.has_plain))
             assert abs(size / (factor * step) - 1.0) < 1e-12
             assert ph.make_myelin_substep(cell, dt).bounce_loop.budget == budget
+    # the budget a sheathed cell would be sized with for the longest draw: 5 at dt 1e-6 for sqrt(6 D dt), 7 for 1.6495 x
+    assert _substep(1e-6).bounce_loop.budget == 5
+    assert ph.make_myelin_substep(sheathed, LONGEST_STEP ** 2 * 1e-6).bounce_loop.budget == 7

@@ -686,19 +686,16 @@ def concentric_step_max(D_intra, D_myelin, D_extra, dt, has_plain):
     :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when ``has_plain`` (a cell holding a plain cylinder sizes its loop
     for the longest step the law draws, as the plain packing does).
 
-    A cell of sheathed cylinders only is sized for ``sqrt(6 D_max dt)``, ``LONGEST_STEP`` (1.6495) times shorter than
-    the longest draw. Its bounce budget is then one reflection smaller than the longest draw's worst case gives (5
-    against 6 at ``dt`` 1e-6 s on a cell whose smallest lumen has radius 1.12 um), and a draw up to ``LONGEST_STEP``
-    times ``step_max`` that grazes the wall of the smallest lumen, or of a sheath of positive diffusivity, within a few
-    nudges can use all of it. A loop that runs out stops the walker at its last collision and does not fly the
-    remainder; the walker stays in its pool, the walk counts the step in ``exhausted_steps`` and warns, and
-    :func:`~dmipy_sim.replay.bank.build_replay_pack` refuses the walk. In the near-tangent lanes of
-    ``tests/geometry/test_myelin_longest_step.py`` (starts 0.05 to 6 nudges off the wall, directions within 0.05 rad of
-    the tangent, in a lumen, in a sheath and in the extra-axonal pool, at the longest draw) every walker that exhausts
-    the budget ends in its own pool at the stop point of an independent float64 specular ray, and the remainder it did
-    not fly (at most 1.9e-8 m, below the 3.2e-8 m chord floor the budget is derived from) would have ended in that pool
-    too. The candidate count ``min(N, max(8, ceil(pi (1 + step_max / R_min)) + 2))`` is 8 at ``step_max`` and at the
-    longest draw alike for ``step_max / R_min`` up to 0.55, and 9 at the longest draw beyond it."""
+    A cell of sheathed cylinders only is sized for ``sqrt(6 D_max dt)``, and a draw can be up to ``LONGEST_STEP`` times
+    longer. The bounce budget derived from the sizing can then be exhausted by such a draw: on the four-cylinder test
+    cell at ``dt`` 1e-6 s it is 5, where the longest draw would size 7. A step that exhausts its budget stops the walker
+    at its last collision: the step is shorter than drawn, it is reported as ``exhausted`` (the flag a walk sums into
+    ``exhausted_steps``), and the walker stays in its pool. In ``tests/geometry/test_myelin_longest_step.py``, 5.9, 3.6,
+    1.5, 2.9 and 0 % of 90 300 near-tangent lanes of the smallest lumen exhaust at ``dt`` 2e-7, 5e-7, 1e-6, 2e-6 and
+    4e-6 s, a step is shortened by at most 1.9e-8 m, and in every searched lane the unflown remainder ends in the
+    walker's pool (an enumeration of those lanes, not a bound): also in the sheath, where the budget runs out on the
+    outer wall at ``dt`` 2e-7, and in the extra-axonal pool, where no lane exhausts it. The candidate count
+    ``min(N, max(8, ceil(pi (1 + step_max / R_min)) + 2))`` is the one a kernel sized at the longest draw has."""
     from ..math.step_law import LONGEST_STEP
     D_max = float(max(np.max(np.asarray(D_intra)), np.max(np.asarray(D_myelin)), np.max(np.asarray(D_extra))))
     step_max = float(np.sqrt(6.0 * D_max * dt))
