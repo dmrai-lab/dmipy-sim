@@ -962,11 +962,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     step_i = jnp.sqrt(jnp.float32(6.0) * D_i * dt_f32)
     step_m = jnp.sqrt(jnp.float32(6.0) * D_m * dt_f32)
     step_e = jnp.sqrt(jnp.float32(6.0) * D_e * dt_f32)
-    D_max = float(max(np.max(np.asarray(D_i)), np.max(np.asarray(D_m)), np.max(np.asarray(D_e))))
-    step_max = float(np.sqrt(6.0 * D_max * dt))
-    if geometry._is_packed_myelinated and geometry.has_plain:
-        # a cell with plain walls sizes its loop for the longest step the law draws, as the plain packing does
-        step_max = float(LONGEST_STEP) * step_max
+    from ..geometry.myelin import concentric_step_max
+    step_max = concentric_step_max(D_i, D_m, D_e, dt, bool(geometry._is_packed_myelinated and geometry.has_plain))
     if rho_weights is None:
         rho_weights = jnp.zeros((N_max, 4), jnp.float32)
     from ..geometry.myelin import concentric_wall_kernel

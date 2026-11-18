@@ -677,10 +677,20 @@ class MyelinatedCell(NamedTuple):
         """The longest step (m) the kernel's loop is sized for at a physics step of ``dt_sim`` seconds:
         ``sqrt(6 D_max dt_sim)``, ``D_max`` the largest diffusivity of the three pools, times
         :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when the cell holds a plain cylinder."""
-        from ..math.step_law import LONGEST_STEP
-        D_max = float(max(np.max(self.D_intra), np.max(self.D_myelin), np.max(self.D_extra)))
-        step = float(np.sqrt(6.0 * D_max * float(dt_sim)))
-        return float(LONGEST_STEP) * step if bool(np.any(self.plain_mask)) else step
+        return concentric_step_max(self.D_intra, self.D_myelin, self.D_extra, dt_sim, bool(np.any(self.plain_mask)))
+
+
+def concentric_step_max(D_intra, D_myelin, D_extra, dt, has_plain):
+    """The longest step (m) :func:`concentric_wall_kernel`'s loop is sized for at a physics step of ``dt`` seconds:
+    ``sqrt(6 D_max dt)``, ``D_max`` the largest of the three pools' per-cylinder diffusivities (m^2/s), times
+    :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when ``has_plain`` (a cell holding a plain cylinder sizes its loop
+    for the longest step the law draws, as the plain packing does)."""
+    from ..math.step_law import LONGEST_STEP
+    D_max = float(max(np.max(np.asarray(D_intra)), np.max(np.asarray(D_myelin)), np.max(np.asarray(D_extra))))
+    step_max = float(np.sqrt(6.0 * D_max * dt))
+    if has_plain:
+        step_max = float(LONGEST_STEP) * step_max
+    return step_max
 
 
 class PackedMyelinatedCylinders(Geometry):
