@@ -45,7 +45,7 @@ def coefficient_batch(request, r0, *, precision="fake64", bands=None, blt_bands=
         events = None
     field_bands = field_qv = field_qv_increments = None
     if request.field is not None:                                     # the field: every mode 0, the start's bare channels at every block end
-        grid = request.field if isinstance(request.field, FieldGrid) else request.field.basis
+        grid = request.field.basis if isinstance(request.field, backends.FieldSampling) else request.field
         n_ch = len(grid.channel_names)
         field_qv = np.zeros((n, W, n_ch))
         field_qv_increments = np.zeros((n, W, n_ch)) if field_increments else None
@@ -127,7 +127,8 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     assert backends.WalkRequest._fields == ("geometry", "block_h", "n_blocks", "sub_steps", "dt_sim", "diffusivity", "record",
                                             "kappa_over_D", "count_walls", "bounce_budget", "seed", "K", "m", "K_c3",
                                             "field_read_interval", "events", "raw_subset", "stepping", "field",
-                                            "drop_pool_changes", "n_windows", "kappa_MT_over_D", "dwell_time")
+                                            "drop_pool_changes", "n_windows", "kappa_MT_over_D", "dwell_time",
+                                            "trial_record", "trial_steps", "trial_radii", "trial_u_max")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests

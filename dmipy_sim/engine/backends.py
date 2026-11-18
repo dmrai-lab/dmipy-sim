@@ -58,8 +58,33 @@ STORAGE_WINDOWS = "storage_windows"
 #: :meth:`Backend.walk_batch` takes each walker's dwell at the start (``dwell0=``).
 MT_BINDING = "mt_binding"
 
-#: What the JAX kernels declare: they walk a permeability table, several storage windows and MT binding.
-JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS, MT_BINDING})
+#: A capability a backend declares in :attr:`Backend.capabilities`: it walks the packed myelinated class
+#: (:class:`~dmipy_sim.geometry.PackedMyelinatedCylinders`, a periodic cell of myelinated and plain cylinders), the cell
+#: read from the request's geometry through its public description
+#: (:meth:`~dmipy_sim.geometry.PackedMyelinatedCylinders.cell_arrays`, a
+#: :class:`~dmipy_sim.geometry.myelin.MyelinatedCell`). The isolated
+#: :class:`~dmipy_sim.geometry.MyelinatedCylinder` is not this class and is walked by the JAX kernels alone.
+PACKED_MYELINATED = "packed_myelinated"
+
+#: A capability a backend declares in :attr:`Backend.capabilities`: it reads a closed-form field basis in the walk (a
+#: basis that is not a raster, such as :class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`, whose data a
+#: backend reads through :meth:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField.device_arrays`), handed as
+#: :attr:`WalkRequest.field`, ``K_c3`` cosine modes per channel every ``field_read_interval`` seconds, returned as the
+#: batch's ``field_bands``, ``field_qv``, ``field_qv_increments`` and ``dt_f`` as for a raster. A backend that declares it
+#: and is handed a basis class it does not implement refuses by name (:meth:`Backend.refuses`).
+FIELD_IN_WALK = "field_in_walk"
+
+#: A capability a backend declares in :attr:`Backend.capabilities`: it records the walk's membrane trials at its plain
+#: walls (``record_trials=``, :mod:`dmipy_sim.trial_record`), handed the spec and what the producer resolved from it
+#: (:attr:`WalkRequest.trial_record`, ``trial_steps``, ``trial_radii``, ``trial_u_max``, with ``count_walls`` on) and
+#: returning the batch's record per walker (:attr:`CoefficientBatch.trial_record`), which the producer joins into
+#: :attr:`~dmipy_sim.coefficient_walk.CoefficientWalk.trial_record` as it joins the JAX kernels' record.
+TRIAL_RECORD = "trial_record"
+
+#: What the JAX kernels declare: they walk a permeability table, several storage windows, MT binding, the packed
+#: myelinated class, a closed-form field read in the walk and the record of the membrane trials.
+JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS, MT_BINDING, PACKED_MYELINATED, FIELD_IN_WALK,
+                              TRIAL_RECORD})
 
 
 class FieldSampling(NamedTuple):
@@ -101,7 +126,9 @@ class WalkRequest(NamedTuple):
     stepping: object = None   #: an adaptive walk's :class:`~dmipy_sim.engine.adaptive.AdaptivePlan`; None for the fused walk
     field: object = None      #: a :class:`FieldSampling` when the adaptive walk samples a strand field, the
                               #: :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` itself when the fixed-step walk
-                              #: reads a raster (``K_c3`` modes every ``field_read_interval``); None otherwise
+                              #: reads a raster, the closed-form basis itself (a backend that declares
+                              #: :data:`FIELD_IN_WALK`) when it reads one (``K_c3`` modes every ``field_read_interval``);
+                              #: None otherwise
     drop_pool_changes: bool = False   #: an impermeable walk returns its walkers that changed pool as
                                       #: :attr:`CoefficientBatch.pool_changed` instead of being refused
     n_windows: int = 1        #: the storage windows the walk accumulates separately: ``n_blocks`` is ``n_windows`` times
@@ -113,6 +140,15 @@ class WalkRequest(NamedTuple):
                                   #: declares :data:`MT_BINDING`
     dwell_time: float = 0.0   #: the bound pool's mean dwell (s) of a walk that binds (the geminate rebinds scale it per
                               #: bind, :func:`~dmipy_sim.geometry._boundary.dwell_scale`); 0 for a walk that binds nothing
+    trial_record: object = None   #: the :class:`~dmipy_sim.trial_record.TrialRecordSpec` of a walk that records its
+                                  #: membrane trials (a backend that declares :data:`TRIAL_RECORD`); None otherwise
+    trial_steps: object = None    #: ``(n_bands + 1,)`` int64 the step-end index of every band edge
+                                  #: (:func:`~dmipy_sim.trial_record.edge_steps`): band ``k`` holds the steps of index
+                                  #: ``j`` with ``trial_steps[k] < j + 1 <= trial_steps[k + 1]``; None without a record
+    trial_radii: object = None    #: ``(n_objects,)`` float64 the radius (m) of each object, in the geometry's object
+                                  #: order; None without a record
+    trial_u_max: object = None    #: ``(n_objects,)`` float64 each object's bound on a trial's overshoot
+                                  #: (:func:`~dmipy_sim.trial_record.u_max_of`); None without a record
 
     @property
     def T(self):
@@ -245,6 +281,12 @@ class CoefficientBatch(NamedTuple):
     pool_changed: object = None       #: (n,) bool the walkers of an impermeable walk whose label changed, when the request
                                       #: asked for them (``drop_pool_changes``); None otherwise
     n_windows: int = 1                #: the storage windows on the form's second axis: the request's
+    trial_record: object = None       #: the record of the batch's membrane trials when the request asks for it
+                                      #: (:attr:`WalkRequest.trial_record`): ``(n, N, S, exceed)``, ``n`` and ``N``
+                                      #: ``(n_b, n_objects, n_bands)`` int32 the trials and the granted trials per walker
+                                      #: and (object, band) cell, ``S`` ``(n_b, n_objects, n_bands, modes)`` the Chebyshev
+                                      #: sums in the batch's ``precision``, ``exceed`` ``(n_b,)`` int32 the trials whose
+                                      #: overshoot exceeded the object's ``trial_u_max``; None otherwise
 
 
 class Backend:

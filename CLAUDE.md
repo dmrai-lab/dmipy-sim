@@ -77,7 +77,7 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   by default and the same program then; on, it forces `count_walls` and enters none of the walk's arithmetic (one kernel step is the same bits; the whole
   walk is the same bits on the recording build, the `test_recorded_bits_*` tests; the geometry's
   `log_trials` makes its kernel return `WallHit.trials`, carried as the work's fourth entry). Refused by name: no plain
-  wall, a backend, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
+  wall, a backend that does not declare `backends.TRIAL_RECORD`, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
   missing a window boundary, more than 64 bands or 64 KiB per walker, a trial beyond `u_max`.
 
 ## Environment & GPU
@@ -376,10 +376,17 @@ finished them (so a pack of the walk is bit for bit the backend's own writer's),
 (`field_bands`, `field_qv`), the raw subset's block ends, refusals and the work record; it converts nothing (a backend
 returning a `WalkBatch` of saves is refused by name) and reads nothing else from a backend
 (`tests/backends/` locks it). An unknown name is refused naming what is installed; the paths only the JAX kernels
-implement (the myelinated substrates, MT binding, in-walk field sampling, the compartment guard) are refused for
-another backend, never fallen back from; a walk of several storage windows goes to a backend that declares
-`backends.STORAGE_WINDOWS` (each window's form its own, on the batch's second axis) and is refused by the capability's
-name otherwise. `work["backend"]` and the run record say which backend
+implement (the isolated myelinated cylinder, MT binding on a mesh's binding side or without the recorded channels, the
+compartment guard) are refused for another backend, never fallen back from; a walk of several storage windows goes to
+a backend that declares `backends.STORAGE_WINDOWS` (each window's form its own, on the batch's second axis) and is
+refused by the capability's name otherwise. Three more are declared the same way and gate the refusal the walk has
+always met, by its text: `backends.PACKED_MYELINATED` (a `PackedMyelinatedCylinders` walk, the cell read through
+`cell_arrays()`, a read-only `myelin.MyelinatedCell` of its kernel's arrays and constants, `bounce_budget` the
+request's), `backends.FIELD_IN_WALK` (a closed-form basis such as a `HollowCylinderField` handed as `WalkRequest.field`,
+its data through `device_arrays()`, its modes returned as a raster's; a declaring backend that does not implement a
+basis class refuses it itself) and `backends.TRIAL_RECORD` (`record_trials=`: the request carries `trial_record`,
+`trial_steps`, `trial_radii`, `trial_u_max`, the batch returns `trial_record = (n, N, S, exceed)`, joined into
+`CoefficientWalk.trial_record`; the refusal of a backend that does not declare it stays before the run starts). `work["backend"]` and the run record say which backend
 walked; `walk_cost` warns when an installed backend accepts a walk run on the jax kernels. A backend is admitted per
 engine class by `backends.parity_report` on the coefficient form (the same starts and sub-step, counting on: hit and
 crossing rates within Poisson noise, exhaustion and refusal rates compared the same way, each channel's quadratic
