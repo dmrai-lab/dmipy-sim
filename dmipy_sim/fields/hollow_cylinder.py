@@ -239,6 +239,20 @@ class HollowCylinderField:
         key = ("hollow_cylinder", self.centers.shape[0], self.summation, dtype.name)
         return arrays, read, key
 
+    def device_arrays(self, dtype=None):
+        """The six arrays :meth:`device_read` passes to the walk, as read-only host arrays in ``dtype`` (``float32`` by
+        default, the walk's): ``centers`` ``(N, 2)``, ``inner_radii`` and ``outer_radii`` ``(N,)`` (m), the tail
+        weights ``-(b^2 - a^2) / 2`` and ``(b^2 - a^2) / 12`` ``(N,)`` (m^2) of ``iso_P`` and ``aniso_G``, and the cell's
+        side ``L`` ``()`` (m; 0 for the cylinders alone, :attr:`L` None). The field at a position is :meth:`device_read`'s
+        ``read`` of these; the channels are :attr:`channel_names`, in that order."""
+        arrays, _, _ = self.device_read(dtype)
+        out = []
+        for a in arrays:
+            a = np.array(a)
+            a.flags.writeable = False
+            out.append(a)
+        return tuple(out)
+
     def channels(self, points, dtype=np.float32):
         """``(n, 12)`` basis channels at ``points`` ``(n, 3)`` (metres): :meth:`device_read` in ``dtype`` (the points
         rounded to it) evaluated on the host, returned in float64. Non-finite points are refused by name."""

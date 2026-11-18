@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
 
-from .backends import JAX, WalkRequest, CoefficientBatch, capability_refusal, event_capacity, resolve as resolve_backend
+from .backends import (JAX, WalkRequest, CoefficientBatch, capability_refusal, event_capacity, resolve as resolve_backend,
+                       PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD)
 import logging
 
 log = logging.getLogger(__name__)
@@ -658,9 +659,17 @@ def _backend_refusal(backend, name, res, geometry):
     kernels implement are refused for any other backend rather than fallen back from, and the backend may refuse
     the walk itself. A permeability per object or over time is walked by a backend that declares
     :data:`~dmipy_sim.engine.backends.PERMEABILITY_TABLE` among its ``capabilities``, several storage windows by one
-    that declares :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`."""
-    if res.jax_only:
-        return (f"backend {name!r}: this walk uses {', '.join(res.jax_only)}, which only the jax kernels "
+    that declares :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`. Of the paths the JAX kernels implement, the
+    packed myelinated class is walked by a backend that declares
+    :data:`~dmipy_sim.engine.backends.PACKED_MYELINATED` (the isolated myelinated cylinder by none) and a closed-form
+    field read in the walk by one that declares :data:`~dmipy_sim.engine.backends.FIELD_IN_WALK`; the rest are
+    refused together, in their order."""
+    have = getattr(backend, "capabilities", ())
+    jax_only = [what for what in res.jax_only if not (
+        (what == "the myelinated substrates" and geometry._is_packed_myelinated and PACKED_MYELINATED in have)
+        or (what.startswith("in-walk field sampling of a") and FIELD_IN_WALK in have))]
+    if jax_only:
+        return (f"backend {name!r}: this walk uses {', '.join(jax_only)}, which only the jax kernels "
                 f"implement; it does not fall back")
     reason = capability_refusal(backend, name, res.request, permeability_table=geometry.permeability_table is not None)
     if reason:
@@ -966,6 +975,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
                             events_capacity=arg("events_capacity"), raw_subset=arg("raw_subset"), envelope=arg("envelope"))
         n_ch = 0 if fb is None else len(fb.channel_names)
         if be is not None:
+            res = res._replace(request=res.request._replace(field=fb))          # the basis the walk reads, as handed to it
             refusal = _backend_refusal(be, name, res, geometry)
             if refusal:
                 raise ValueError(refusal)
@@ -1310,10 +1320,12 @@ def _walk_geometry(
         Which execution of the physics walks: ``"jax"`` (the default, the kernels of this module), the name of
         an installed backend (the ``dmipy_sim.backends`` entry point), or a backend object. An unknown name is
         refused naming what is installed; a backend that does not implement this walk (an engine class, a
-        tier, a wall) refuses by name, and the paths only the JAX kernels implement (the myelinated substrates,
-        MT binding, in-walk field sampling, the compartment guard) are refused for any other backend rather than
-        fallen back from, as is a walk of several storage windows on a backend that does not declare
-        :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`. A backend walks each batch in the coefficient form
+        tier, a wall) refuses by name, and the paths only the JAX kernels implement (the isolated myelinated
+        cylinder, MT binding on a mesh's binding side or without the recorded channels, the compartment guard) are refused for any other
+        backend rather than fallen back from, as are a walk of several storage windows, the packed myelinated class,
+        a closed-form field read in the walk and the record of the membrane trials on a backend that does not declare
+        :data:`~dmipy_sim.engine.backends.STORAGE_WINDOWS`, :data:`~dmipy_sim.engine.backends.PACKED_MYELINATED`,
+        :data:`~dmipy_sim.engine.backends.FIELD_IN_WALK` or :data:`~dmipy_sim.engine.backends.TRIAL_RECORD`. A backend walks each batch in the coefficient form
         (:class:`~dmipy_sim.engine.backends.CoefficientBatch`: the bands it accumulated, its events, the raw
         subset's block ends) and the walk takes it as it takes its own, converting nothing; a backend that returns
         a walk of saves is refused by name. ``work["backend"]`` and the run record say which backend walked. See
@@ -1338,8 +1350,8 @@ def _walk_geometry(
         overshoots, returned as ``CoefficientWalk.trial_record``. None (the default) records nothing and the walk is
         the same program as before; with it, at the same counting (which the record turns on, ``Geometry.count_walls``),
         each step is the same arithmetic and the whole walk the same bits on the recording build (another JAX build may
-        compile the two programs to positions that differ in the last bits: two valid walks of one law). Refused by name: a geometry with no plain wall, a backend other
-        than the JAX kernels, the MT burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
+        compile the two programs to positions that differ in the last bits: two valid walks of one law). Refused by name: a geometry with no plain wall, a backend that
+        does not declare :data:`~dmipy_sim.engine.backends.TRIAL_RECORD`, the MT burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
         every reweighted read), a field channel whose ``K_c3`` or ``field_read_interval`` a pilot of this walk would
         choose, band edges that do not run from 0 to ``T_max`` or miss a storage window's boundary, a record above
         :data:`~dmipy_sim.trial_record.MAX_BYTES_PER_WALKER` bytes per walker, and a walk in which a trial's overshoot
@@ -1360,7 +1372,7 @@ def _walk_geometry(
         from ..trial_record import TrialRecordSpec
         if not isinstance(record_trials, TrialRecordSpec):
             raise TypeError(f"record_trials is a TrialRecordSpec (dmipy_sim.trial_record) or None, got {type(record_trials).__name__}")
-        if _backend is not None:
+        if _backend is not None and TRIAL_RECORD not in getattr(_backend, "capabilities", ()):
             raise ValueError(f"trial_record: the membrane trials are recorded by the JAX kernels; the backend {_backend_name!r} "
                              f"walks without the record")
         if kappa_MT > 0.0 and equilibrate_binding == "burnin":
@@ -1957,7 +1969,14 @@ def _walk_geometry(
 
         if _backend is not None:
             # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
-            # never fallen back from; a backend walks each batch in the coefficient form (#747)
+            # never fallen back from; a backend walks each batch in the coefficient form (#747). It is handed the field
+            # basis the walk reads (a raster, or a closed form for a backend that declares FIELD_IN_WALK) and the
+            # resolved trial record (a backend that declares TRIAL_RECORD)
+            res = res._replace(request=res.request._replace(
+                field=field_basis,
+                **({} if _trial is None else dict(trial_record=record_trials, trial_steps=np.asarray(_steps, np.int64),
+                                                  trial_radii=np.asarray(_trial["radii"], np.float64),
+                                                  trial_u_max=np.asarray(_trial["u_max"], np.float64)))))
             reason = _backend_refusal(_backend, _backend_name, res, geometry)
             if reason:
                 raise ValueError(reason)
@@ -2153,7 +2172,7 @@ def _walk_geometry(
             if req.K_c3 and (batch.field_bands is None or np.asarray(batch.field_bands).shape != (n_b, n_win, _n_ch, int(req.K_c3))):
                 raise ValueError(f"backend {_backend_name!r} returned field modes of shape "
                                  f"{None if batch.field_bands is None else np.asarray(batch.field_bands).shape} for a walk that reads "
-                                 f"the {_n_ch} channels of its FieldGrid at K_c3 = {req.K_c3} in {n_win} windows: "
+                                 f"the {_n_ch} channels of its {type(field_basis).__name__} at K_c3 = {req.K_c3} in {n_win} windows: "
                                  f"{(n_b, n_win, _n_ch, int(req.K_c3))}")
             if req.K_c3 and not (batch.dt_f is not None and abs(float(batch.dt_f) - float(req.field_read_interval)) <= 1e-9 * float(req.field_read_interval)):
                 raise ValueError(f"backend {_backend_name!r} read the field every {batch.dt_f!r} s; the walk reads it every "
@@ -2208,6 +2227,27 @@ def _walk_geometry(
                     return out
                 got["occ"] = _at_block_ends(got["lab"], got["ev_c"]) if ev_comp_on else np.repeat(got["lab"][:, None], n_t, axis=1)
                 got["bound"] = _at_block_ends(got["bnd"], got["ev_b"])
+            if _trial is not None:
+                n_obj, n_bands, modes = len(_trial["radii"]), len(_steps) - 1, int(record_trials.modes)
+                want = ((n_b, n_obj, n_bands), (n_b, n_obj, n_bands), (n_b, n_obj, n_bands, modes), (n_b,))
+                tr = batch.trial_record
+                shapes = None if tr is None else tuple(np.shape(x) for x in tr)
+                if shapes != want:
+                    raise ValueError(f"backend {_backend_name!r} returned a trial record of shapes {shapes} for a walk that "
+                                     f"records its membrane trials: (n, N, S, exceed) of shapes {want}")
+                counts = {}
+                for name, x in (("n", tr[0]), ("N", tr[1]), ("exceed", tr[3])):
+                    a = np.asarray(x)
+                    if not np.issubdtype(a.dtype, np.integer) or (a.size and (int(a.min()) < 0 or int(a.max()) > np.iinfo(np.int32).max)):
+                        raise ValueError(f"backend {_backend_name!r} returned the trial record's {name} as {a.dtype} in "
+                                         f"[{a.min() if a.size else None}, {a.max() if a.size else None}]: a count is an "
+                                         f"integer in [0, 2^31)")
+                    counts[name] = a.astype(np.int32)
+                S_b = np.asarray(tr[2])
+                if not np.issubdtype(S_b.dtype, np.floating):
+                    raise ValueError(f"backend {_backend_name!r} returned the trial record's S as {S_b.dtype}: the sums are "
+                                     f"floating point, in the backend's accumulation precision")
+                got["tr_n"], got["tr_N"], got["tr_S"], got["tr_x"] = counts["n"], counts["N"], S_b, counts["exceed"]
             work_b = tuple(None if w is None else np.asarray(w) for w in batch.work)
             if drop_pool_changes:
                 if batch.pool_changed is None or np.asarray(batch.pool_changed).shape != (n_b,):

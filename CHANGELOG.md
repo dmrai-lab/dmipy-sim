@@ -5,6 +5,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A backend may declare the packed myelinated class, a closed-form field read in the walk and the record of the
+  membrane trials.** Three capability names beside `PERMEABILITY_TABLE`, `STORAGE_WINDOWS` and `MT_BINDING` in
+  `engine.backends`, each in `JAX_CAPABILITIES`: `PACKED_MYELINATED` (a `PackedMyelinatedCylinders` walk is handed to the
+  backend, which reads the cell through `PackedMyelinatedCylinders.cell_arrays()`, a read-only `MyelinatedCell` of the
+  arrays and constants its wall kernel is built from), `FIELD_IN_WALK` (a closed-form basis such as a
+  `HollowCylinderField` is handed as `WalkRequest.field`, its data public through `HollowCylinderField.device_arrays()`,
+  and its modes come back as a raster's do) and `TRIAL_RECORD` (`record_trials=` hands the backend the spec and its
+  resolution, `WalkRequest.trial_record`, `trial_steps`, `trial_radii`, `trial_u_max`, and takes back
+  `CoefficientBatch.trial_record` per batch, joined into `CoefficientWalk.trial_record`). A capability decides only
+  whether the existing refusal fires: a backend that does not declare it is refused by the same string as before, and
+  the isolated `MyelinatedCylinder` stays a path of the JAX kernels alone. A declaring backend's missing or mis-shaped
+  field modes or trial record are refused by name.
 - **The realised acceptance of a membrane trial, exactly** (no change to any walk).
   `geometry._boundary.realised_acceptance(kappa_over_D, d_perp, dtype=numpy.float32)` returns the integer threshold
   `t` in `[0, 2^32]` of the plain walls' transmission trial: a 32-bit word `w` is granted if and only if `w < t`, so the

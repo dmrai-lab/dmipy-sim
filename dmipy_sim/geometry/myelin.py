@@ -3,7 +3,7 @@
 These are NOT stepped by `reflect`: their compartment is carried state, so the engine
 routes them to the fused kernels in `physics` (see each class's `reflect`, which raises).
 """
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -630,6 +630,69 @@ class MyelinatedCylinder(Geometry):
                 f"compartment must be 'intra', 'myelin', or 'extra'; got {compartment!r}")
 
 
+class MyelinatedCell(NamedTuple):
+    """What a backend walks of a :class:`PackedMyelinatedCylinders` cell (:meth:`PackedMyelinatedCylinders.cell_arrays`):
+    the arrays and constants its wall kernel (:func:`concentric_wall_kernel`) is built from, read-only, in the
+    substrate frame (the cylinders along +z, the cross-section ``[-L/2, L/2)^2``), SI units. The per-cylinder arrays are
+    padded to ``N_max`` (zero radii past ``N_actual``), as the kernel pads them.
+
+    Compartments are encoded as the kernel encodes them (:meth:`PackedMyelinatedCylinders.pool_of`): 0 the extra pool,
+    ``k + 1`` the lumen of cylinder ``k`` (``1 .. N_max``), ``N_max + k + 1`` its sheath (``N_max + 1 .. 2 N_max``,
+    empty for a plain cylinder). A walker in pool ``p`` of cylinder ``k`` steps ``sqrt(6 D_p[k] dt_sim)`` times the
+    step law's atom, ``D_p`` the pool's array below and ``dt_sim`` the request's (:mod:`dmipy_sim.math.step_law`).
+
+    Every input of :func:`concentric_wall_kernel` as the coefficient walk builds it
+    (:func:`~dmipy_sim.engine.physics.make_packed_myelin_traj_step_fn`) is here or is a property of the walk:
+
+    - ``centers``, ``inner``, ``outer``, ``L`` (``cell_size`` in float32), ``D_intra``, ``D_myelin``, ``D_extra``,
+      ``kappa_inner``, ``kappa_outer``, ``eps``, ``nudge``, ``min_gap`` and ``budget`` (``bounce_budget``) are fields;
+    - ``step_max``, the longest step the loop is sized for, depends on the walk's step: :meth:`step_max` of
+      :attr:`~dmipy_sim.engine.backends.WalkRequest.dt_sim`;
+    - ``rho_weights`` is zero in the coefficient walk, which applies no surface relaxivity: the contact is recorded as
+      the four boundary local-time channels at ``rho / D = 1`` (:attr:`~dmipy_sim.engine.backends.WalkRequest.record`),
+      a relaxivity being a replay knob. The cell's ``rho_inner`` / ``rho_outer`` are read only by the forward-signal
+      step (:func:`~dmipy_sim.engine.physics.make_packed_myelin_step_fn`), which no backend walks;
+    - ``count`` is :attr:`~dmipy_sim.engine.backends.WalkRequest.count_walls` and ``trials`` whether the request
+      carries a :attr:`~dmipy_sim.engine.backends.WalkRequest.trial_record`."""
+    centers: np.ndarray       #: (N_max, 2) float32 the cylinders' centres (m)
+    inner_radii: np.ndarray   #: (N_max,) float32 the lumen radii (m)
+    outer_radii: np.ndarray   #: (N_max,) float32 the outer radii (m); a plain cylinder's equals its inner radius
+    cell_size: float          #: the cell's side ``L`` (m)
+    D_intra: np.ndarray       #: (N_max,) float32 the lumen's diffusivity per cylinder (m^2/s)
+    D_myelin: np.ndarray      #: (N_max,) float32 the sheath's diffusivity per cylinder (m^2/s)
+    D_extra: np.ndarray       #: (N_max,) float32 the extra pool's diffusivity seen from each cylinder (m^2/s)
+    kappa_inner: np.ndarray   #: (N_max,) float32 the axolemma's permeability (m/s); 0 at a plain cylinder
+    kappa_outer: np.ndarray   #: (N_max,) float32 the outer wall's permeability (m/s); a plain cylinder's one wall
+    plain_mask: np.ndarray    #: (N_max,) bool the plain cylinders (g-ratio 1); False past ``N_actual``
+    N_actual: int             #: the cylinders in the cell
+    N_max: int                #: the padded length of every per-cylinder array
+    eps: float                #: the kernel's distance tolerance (m), ``1e-7`` of the smallest lumen radius
+    nudge: float              #: the kernel's push off a wall after a reflection (m), ``1e-4`` of the smallest lumen radius
+    min_gap: float            #: the narrowest gap between two outer walls in the periodic cell (m)
+    bounce_budget: Optional[int]  #: the budget the kernel's loop runs at: the cell's ``bounce_budget``, which is the
+                                  #: :attr:`~dmipy_sim.engine.backends.WalkRequest.bounce_budget` of a walk of it;
+                                  #: None for the budget the kernel derives
+
+    def step_max(self, dt_sim):
+        """The longest step (m) the kernel's loop is sized for at a physics step of ``dt_sim`` seconds:
+        ``sqrt(6 D_max dt_sim)``, ``D_max`` the largest diffusivity of the three pools, times
+        :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when the cell holds a plain cylinder."""
+        return concentric_step_max(self.D_intra, self.D_myelin, self.D_extra, dt_sim, bool(np.any(self.plain_mask)))
+
+
+def concentric_step_max(D_intra, D_myelin, D_extra, dt, has_plain):
+    """The longest step (m) :func:`concentric_wall_kernel`'s loop is sized for at a physics step of ``dt`` seconds:
+    ``sqrt(6 D_max dt)``, ``D_max`` the largest of the three pools' per-cylinder diffusivities (m^2/s), times
+    :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when ``has_plain`` (a cell holding a plain cylinder sizes its loop
+    for the longest step the law draws, as the plain packing does)."""
+    from ..math.step_law import LONGEST_STEP
+    D_max = float(max(np.max(np.asarray(D_intra)), np.max(np.asarray(D_myelin)), np.max(np.asarray(D_extra))))
+    step_max = float(np.sqrt(6.0 * D_max * dt))
+    if has_plain:
+        step_max = float(LONGEST_STEP) * step_max
+    return step_max
+
+
 class PackedMyelinatedCylinders(Geometry):
     """A periodic square cell of parallel cylinders, each myelinated or plain: one packing of axons.
 
@@ -1031,6 +1094,22 @@ class PackedMyelinatedCylinders(Geometry):
         N = self.N_actual
         D = np.maximum(np.asarray(self._D_intra_jax, np.float64)[:N], np.asarray(self._D_extra_jax, np.float64)[:N])
         return np.asarray(self._outer_radii_np[:N], np.float64).copy(), D
+
+    def cell_arrays(self):
+        """The cell as a backend walks it: a :class:`MyelinatedCell` of read-only copies of the arrays and constants the
+        wall kernel is built from (``bounce_budget`` the cell's at the call, which a walk sets to its own)."""
+        def ro(x, dtype):
+            a = np.array(x, dtype=dtype)
+            a.flags.writeable = False
+            return a
+        return MyelinatedCell(
+            centers=ro(self._centers_jax, np.float32), inner_radii=ro(self._inner_radii_jax, np.float32),
+            outer_radii=ro(self._outer_radii_jax, np.float32), cell_size=float(self._cell_size),
+            D_intra=ro(self._D_intra_jax, np.float32), D_myelin=ro(self._D_myelin_jax, np.float32),
+            D_extra=ro(self._D_extra_jax, np.float32), kappa_inner=ro(self._kappa_inner_jax, np.float32),
+            kappa_outer=ro(self._kappa_outer_jax, np.float32), plain_mask=ro(self.plain_mask, bool),
+            N_actual=int(self.N_actual), N_max=int(self.N_max), eps=float(self._eps), nudge=float(self._nudge),
+            min_gap=float(self.min_gap), bounce_budget=(None if self.bounce_budget is None else int(self.bounce_budget)))
 
     @property
     def has_plain(self):
