@@ -684,7 +684,21 @@ def concentric_step_max(D_intra, D_myelin, D_extra, dt, has_plain):
     """The longest step (m) :func:`concentric_wall_kernel`'s loop is sized for at a physics step of ``dt`` seconds:
     ``sqrt(6 D_max dt)``, ``D_max`` the largest of the three pools' per-cylinder diffusivities (m^2/s), times
     :data:`~dmipy_sim.math.step_law.LONGEST_STEP` when ``has_plain`` (a cell holding a plain cylinder sizes its loop
-    for the longest step the law draws, as the plain packing does)."""
+    for the longest step the law draws, as the plain packing does).
+
+    A cell of sheathed cylinders only is sized for ``sqrt(6 D_max dt)``, ``LONGEST_STEP`` (1.6495) times shorter than
+    the longest draw. Its bounce budget is then one reflection smaller than the longest draw's worst case gives (5
+    against 6 at ``dt`` 1e-6 s on a cell whose smallest lumen has radius 1.12 um), and a draw up to ``LONGEST_STEP``
+    times ``step_max`` that grazes the wall of the smallest lumen, or of a sheath of positive diffusivity, within a few
+    nudges can use all of it. A loop that runs out stops the walker at its last collision and does not fly the
+    remainder; the walker stays in its pool, the walk counts the step in ``exhausted_steps`` and warns, and
+    :func:`~dmipy_sim.replay.bank.build_replay_pack` refuses the walk. In the near-tangent lanes of
+    ``tests/geometry/test_myelin_longest_step.py`` (starts 0.05 to 6 nudges off the wall, directions within 0.05 rad of
+    the tangent, in a lumen, in a sheath and in the extra-axonal pool, at the longest draw) every walker that exhausts
+    the budget ends in its own pool at the stop point of an independent float64 specular ray, and the remainder it did
+    not fly (at most 1.9e-8 m, below the 3.2e-8 m chord floor the budget is derived from) would have ended in that pool
+    too. The candidate count ``min(N, max(8, ceil(pi (1 + step_max / R_min)) + 2))`` is 8 at ``step_max`` and at the
+    longest draw alike for ``step_max / R_min`` up to 0.55, and 9 at the longest draw beyond it."""
     from ..math.step_law import LONGEST_STEP
     D_max = float(max(np.max(np.asarray(D_intra)), np.max(np.asarray(D_myelin)), np.max(np.asarray(D_extra))))
     step_max = float(np.sqrt(6.0 * D_max * dt))
