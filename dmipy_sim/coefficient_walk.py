@@ -151,6 +151,9 @@ class CoefficientWalk:
     trial_record: object = field(default=None, compare=False, repr=False)
     segment_rows: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     segments: Optional[dict] = None
+    permeability_factor: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    #: (n,) float32 each walker's permeability factor (``_walk_geometry(permeability_factor=)``): walker ``w`` met the
+    #: walls the geometry scales at ``kappa * permeability_factor[w]``; None when every walker walked at the stated value
 
     def __post_init__(self):
         if self.spec is None and self.geometry is not None:
@@ -230,7 +233,8 @@ class CoefficientWalk:
                                                 self.compartment, self.bound_start, self.field_coeffs, self.qv_field,
                                                 self.qv_field_increments,
                                                 self.raw_positions, self.raw_boundary, self.raw_compartment, self.raw_bound,
-                                                self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows) if a is not None)
+                                                self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows,
+                                                self.permeability_factor) if a is not None)
         for ev in (self.comp_events, self.bound_events):
             if ev is not None:
                 n += ev.offsets.nbytes + ev.t.nbytes + ev.label.nbytes
@@ -240,7 +244,8 @@ class CoefficientWalk:
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
-                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows")
+                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows",
+                      "permeability_factor")
 
     def start_error(self, t, *, per_face_local_time=False):
         """The start's term of a read at time ``t`` (s after the walk's start): ``{"relative_error", "flag"}``
@@ -267,7 +272,8 @@ class CoefficientWalk:
         keep_raw = n_raw and idx.shape[0] >= n_raw and np.array_equal(idx[:n_raw], np.arange(n_raw))
         if not keep_raw:
             out.update(raw_positions=None, raw_boundary=None, raw_compartment=None, raw_bound=None, raw_field=None)
-        return dataclasses.replace(self, **out)
+        work = _with_factor_count(self.work, out["permeability_factor"])
+        return dataclasses.replace(self, **out, **({} if work is self.work else dict(work=work)))
 
     def window(self, i):
         """Window ``i`` as a one-window coefficient walk: its coefficients, contact, field modes and quadratic
@@ -321,7 +327,7 @@ class CoefficientWalk:
     #: the arrays a walk file holds (those present); the events as three tensors each; the rest in the header
     _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
-                    "qv_boundary", "weights", "segment_rows")
+                    "qv_boundary", "weights", "segment_rows", "permeability_factor")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
                      "illegal_crossings", "seed", "first_walker", "diffusivity", "work", "stepping")
 
@@ -397,7 +403,9 @@ class CoefficientWalk:
                   segments=h.get("segments"), **events)
         from .trial_record import TrialRecord
         kw["trial_record"] = TrialRecord.from_arrays(arrays)
-        return cls(**kw)
+        walk = cls(**kw)
+        check_permeability_factor(walk)
+        return walk
 
 
 #: the entries of a walk's block record that are statistics of its walkers (:func:`ensemble_block_stats`)
@@ -423,6 +431,37 @@ def ensemble_block_stats(position_coeffs, qv_positions, qv_boundary, k0_residual
                     positions_mean_m2=[float(x) for x in qv_p],
                     positions_over_2DT=([float(x) / (2.0 * float(diffusivity) * float(T)) for x in qv_p] if diffusivity else None),
                     boundary_mean_m2=(None if qv_boundary is None else float(np.asarray(qv_boundary).sum(axis=1).mean()))))
+
+
+def _without_count(rec):
+    """A permeability-factor record without its walker count (what the pieces of one walk share)."""
+    return {k: v for k, v in rec.items() if k != "n"} if isinstance(rec, dict) else rec
+
+
+def _with_factor_count(work, factor):
+    """``work`` with its permeability-factor record's ``n`` the length of ``factor``; ``work`` itself when it states
+    none."""
+    if not work or "permeability_factor" not in work or factor is None:
+        return work
+    return dict(work, permeability_factor=dict(work["permeability_factor"], n=int(np.asarray(factor).shape[0])))
+
+
+def check_permeability_factor(walk):
+    """Refuse a walk whose work record states a permeability per walker that its array does not hold: the array
+    missing, of another length than the record's ``n``, or of another dtype; or an array the record does not state."""
+    rec = (walk.work or {}).get("permeability_factor")
+    arr = walk.permeability_factor
+    if rec is None and arr is None:
+        return
+    if rec is None:
+        raise ValueError("the walk holds a permeability_factor array that its work record does not state")
+    if arr is None:
+        raise ValueError(f"the walk's work record states a permeability factor per walker (n = {rec.get('n')}) and the "
+                         f"walk holds no permeability_factor array")
+    arr = np.asarray(arr)
+    if arr.shape != (int(rec["n"]),) or arr.dtype != np.dtype(rec["dtype"]):
+        raise ValueError(f"the walk's permeability_factor array is {arr.dtype} of shape {arr.shape}; its work record "
+                         f"states {rec['dtype']} of length {rec['n']}")
 
 
 def join_walks(walks):
@@ -475,7 +514,8 @@ def join_walks(walks):
         raise ValueError("some walks carry a work record and some do not")
     work = None
     if works[0] is not None:
-        same = [{k: v for k, v in x.items() if k not in WORK_COUNTS and k != "block"} for x in works]
+        same = [{k: (_without_count(v) if k == "permeability_factor" else v) for k, v in x.items()
+                 if k not in WORK_COUNTS and k != "block"} for x in works]
         for j, r in enumerate(same[1:], 1):
             if r != same[0]:
                 diff = sorted(k for k in set(r) | set(same[0]) if r.get(k) != same[0].get(k))
@@ -500,6 +540,7 @@ def join_walks(walks):
     block = {k: block[k] for k in w0.block}                                   # the walk's own key order
     if work is not None and "block" in work:
         work["block"] = block
+    work = _with_factor_count(work, out["permeability_factor"])
     return dataclasses.replace(w0, **out, block=block, work=work,
                                illegal_crossings=int(sum(int(w.illegal_crossings) for w in walks)), run=None)
 

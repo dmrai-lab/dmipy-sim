@@ -30,6 +30,15 @@ def packed_candidate_count(N, R_min, step_max, dim):
     return int(min(N, max(8, n)))
 
 
+#: How a walker's permeability factor ``f_w`` enters a :class:`PackedCylinders` walk (the walk's
+#: ``work["permeability_factor"]["rule"]``): the product with the ``kappa / D`` the walk reads, in float32
+#: (:func:`~dmipy_sim.engine.physics.walker_kappa_over_D`).
+PERMEABILITY_FACTOR_RULE = ("PackedCylinders: walker w's trials at cylinder k read "
+                            "kappa_over_D_w = float32(float32(kappa[k] / D) * float32(permeability_factor[w])) (1/m), "
+                            "float32(kappa[k] / D) the float32 of the stated permeability over the walk's diffusivity "
+                            "(one number, or one per cylinder)")
+
+
 def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None, trials=False):
     """The wall interaction of a periodic pack of disjoint objects, in ``centers``' space.
 
@@ -344,6 +353,24 @@ class PackedCylinders(Geometry):
     def trial_objects(self, diffusivity):
         """Every object's wall is plain: ``(radii, D)`` with the walk's one diffusivity (both pools step at it)."""
         return self._radii_np.copy(), np.full(len(self._radii_np), float(diffusivity))
+
+    def permeability_factor_rule(self):
+        """:data:`PERMEABILITY_FACTOR_RULE`."""
+        return PERMEABILITY_FACTOR_RULE
+
+    def permeability_factor_gap(self):
+        """``None`` when the cell's walls are stated permeable and constant in time: a walker's factor scales the
+        ``kappa / D`` every step of the walker reads (one number, or one per cylinder, whose ratios it keeps; a
+        cylinder stated sealed stays sealed). Else the reason a permeability per walker is refused."""
+        if self.permeability is None or not float(self.permeability) > 0.0:
+            return ("PackedCylinders: a permeability per walker scales the cell's stated permeability, and this cell's "
+                    "walls are impermeable: there is nothing to scale")
+        table = self.permeability_table
+        if table is not None and np.asarray(table.breakpoints).size:
+            return ("PackedCylinders: a permeability per walker scales a permeability constant in time; this cell "
+                    "states a schedule (PermeabilitySchedule), and a permeability varying by walker and in time is "
+                    "not walked")
+        return None
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
         """Wall interaction in the pack: reflect off the cylinders the step meets, or cross one

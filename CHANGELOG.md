@@ -5,6 +5,17 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Each walker of a walk carries its own membrane permeability, stated by the caller.**
+  `_walk_geometry(permeability_factor=)` (and `walk(permeability_factor=)` on a spec of one geometry) takes one float32
+  factor `f_w` in `[0, 1]` per walker, in walker order, formed into the walker's permeability in float32 by its cell's
+  rule: a `PackedMyelinatedCylinders` walker meets plain cylinder `k` at `float32(kappa_outer_k * f_w)` (m/s), divided
+  by the diffusivity of the pool it leaves, and the sheathed walls at their stated values; a `PackedCylinders` walker
+  reads `float32(float32(kappa / D) * f_w)` (1/m). Its trials are decided by the walk's own words and uniforms. `None`
+  and an array of ones are the walk at the stated permeability, bit for bit. The walk returns the array as
+  `CoefficientWalk.permeability_factor` and states the cell's rule, the array's length and dtype in
+  `work["permeability_factor"]`; a walk file whose array disagrees with that record is refused on load. Every other
+  geometry, a cell with nothing to scale, a schedule in time, MT binding, another backend and a factor outside `[0, 1]`
+  refuse it by name.
 - **A walk accumulates the time integral of its displacement over declared time segments.** `_walk_geometry(segments=[(a, b), ...])`
   adds per walker and segment `int_a^b (x(t) - x(0)) dt`, the trapezoid of its positions at the walk's own step, as
   `CoefficientWalk.segment_rows` beside the unchanged bands, and `segment_rows` of the time-segment layout reads it as
