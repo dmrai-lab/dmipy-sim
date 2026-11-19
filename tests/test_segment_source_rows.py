@@ -84,6 +84,17 @@ def test_the_row_is_the_trapezoid_of_the_raw_positions_in_float32(walk32):
     assert np.max(err / scale) > 0.0                                  # float32 rounding is there, within its depth
 
 
+def test_a_segment_in_a_later_window_is_referred_to_the_walks_start():
+    """Over two storage windows the second segment lies in the second window; its row is still ``int (x(t) - x(0))
+    dt`` from the walk's start, the first window's displacement entering through the weight's constant."""
+    w = _walk("float32", n=500, window_T=T / 2)
+    assert w.n_windows == 2
+    trap, scale = _trapezoid(w)
+    err = np.abs(np.asarray(w.segment_rows, np.float64) - trap)
+    bound = _float32_depth(w) * np.finfo(np.float32).eps / 2.0 * scale + 1e-12 * (np.abs(trap) + scale)
+    assert np.all(err <= bound), f"worst error / bound {np.max(err / bound):.3g}"
+
+
 def test_the_row_is_the_trapezoid_of_the_raw_positions_in_float64(x64):
     w = _walk("float64")
     rows = np.asarray(w.segment_rows)
