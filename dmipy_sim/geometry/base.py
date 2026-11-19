@@ -360,6 +360,11 @@ class Geometry(ABC):
                 f"(permeability_factor) is taken by PackedCylinders and by the plain cylinders of "
                 f"PackedMyelinatedCylinders")
 
+    def permeability_factor_rule(self):
+        """The rule by which a walker's permeability factor enters its trials on this geometry, as the walk states it
+        (``work["permeability_factor"]["rule"]``); ``None`` for a geometry that does not take one."""
+        return None
+
     # ---- wall / bulk properties (instance attributes; None = not set) ----
 
     #: Membrane permeability kappa (m/s): the largest over the geometry's objects and the walk's time, or None for

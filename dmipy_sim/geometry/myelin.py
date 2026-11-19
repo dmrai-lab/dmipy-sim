@@ -57,6 +57,15 @@ def _refuse_schedule(owner, **kappas):
             raise NotImplementedError(f"{owner}({name}=) takes a permeability per axon constant in time; its walls are "
                                       f"stepped by the myelinated kernel, which does not read a PermeabilitySchedule")
 
+#: How a walker's permeability factor ``f_w`` enters a :class:`PackedMyelinatedCylinders` walk (the walk's
+#: ``work["permeability_factor"]["rule"]``): the product with the plain cylinder's stated ``kappa_outer`` in m/s, in float32,
+#: then the division by the diffusivity of the pool the walker leaves (:func:`concentric_wall_kernel`).
+PERMEABILITY_FACTOR_RULE = ("PackedMyelinatedCylinders: walker w meets plain cylinder k's wall at "
+                            "kappa_w = float32(float32(kappa_outer[k]) * float32(permeability_factor[w])) (m/s); the "
+                            "trial's kappa/D is float32(kappa_w / D), D the float32 diffusivity of the pool it leaves; "
+                            "the sheathed cylinders' walls keep their stated kappa_inner and kappa_outer")
+
+
 def pin_to_pool(xy, q, R_in, R_out, pool, nudge):
     """``xy`` pulled strictly onto the side of the concentric walls (radii ``R_in < R_out``) that ``pool`` (0 extra,
     1 lumen, 2 sheath) occupies, ``q`` its offset from the axon's centre: the side rule the fused step kernel applies
@@ -1117,6 +1126,10 @@ class PackedMyelinatedCylinders(Geometry):
             return ("PackedMyelinatedCylinders: a permeability per walker scales the plain cylinders' kappa_outer, and "
                     "every plain cylinder of this cell is stated sealed (kappa_outer = 0): there is nothing to scale")
         return None
+
+    def permeability_factor_rule(self):
+        """:data:`PERMEABILITY_FACTOR_RULE`."""
+        return PERMEABILITY_FACTOR_RULE
 
     def trial_objects(self, diffusivity):
         """The cell's cylinders, in their order, when it holds a plain one: ``(radii, D)``, each cylinder's outer

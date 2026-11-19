@@ -30,6 +30,15 @@ def packed_candidate_count(N, R_min, step_max, dim):
     return int(min(N, max(8, n)))
 
 
+#: How a walker's permeability factor ``f_w`` enters a :class:`PackedCylinders` walk (the walk's
+#: ``work["permeability_factor"]["rule"]``): the product with the ``kappa / D`` the walk reads, in float32
+#: (:func:`~dmipy_sim.engine.physics.walker_kappa_over_D`).
+PERMEABILITY_FACTOR_RULE = ("PackedCylinders: walker w's trials at cylinder k read "
+                            "kappa_over_D_w = float32(float32(kappa[k] / D) * float32(permeability_factor[w])) (1/m), "
+                            "float32(kappa[k] / D) the float32 of the stated permeability over the walk's diffusivity "
+                            "(one number, or one per cylinder)")
+
+
 def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None, trials=False):
     """The wall interaction of a periodic pack of disjoint objects, in ``centers``' space.
 
@@ -344,6 +353,10 @@ class PackedCylinders(Geometry):
     def trial_objects(self, diffusivity):
         """Every object's wall is plain: ``(radii, D)`` with the walk's one diffusivity (both pools step at it)."""
         return self._radii_np.copy(), np.full(len(self._radii_np), float(diffusivity))
+
+    def permeability_factor_rule(self):
+        """:data:`PERMEABILITY_FACTOR_RULE`."""
+        return PERMEABILITY_FACTOR_RULE
 
     def permeability_factor_gap(self):
         """``None`` when the cell's walls are stated permeable and constant in time: a walker's factor scales the

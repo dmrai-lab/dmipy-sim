@@ -25,7 +25,10 @@ import numpy as np
 import pytest
 
 from dmipy_sim.compartments import Compartments, Pool
-from dmipy_sim.engine.core import PERMEABILITY_FACTOR_RULE, _walk_geometry
+from dmipy_sim.engine.core import _walk_geometry
+from dmipy_sim.engine.physics import membrane_kappa, walker_kappa_over_D
+from dmipy_sim.geometry.myelin import PERMEABILITY_FACTOR_RULE as MIXED_RULE
+from dmipy_sim.geometry.packed import PERMEABILITY_FACTOR_RULE as PACKED_RULE
 from dmipy_sim.geometry import (Cylinder, MyelinatedCylinder, PackedCylinders, PackedMyelinatedCylinders, PackedSpheres,
                                 pack_cylinders)
 from dmipy_sim.geometry._boundary import realised_acceptance
@@ -143,19 +146,22 @@ def test_an_array_of_ones_is_the_position_only_walk_without_it():
 
 @pytest.mark.parametrize("cell", ["mixed", "packed"])
 def test_an_array_of_two_values_is_two_walks_walker_by_walker(cell):
-    """Even walkers at ``F_A``, odd at ``F_B``: each half's rows are the rows of the walk of the cell stated at the
-    scaled permeability, walked without the argument on the same seed; the two factors grant different counts."""
-    mixed = _walk(CELLS[cell](), permeability_factor=_two_values())
-    got = _rows(mixed)
+    """Even walkers at ``F_A``, odd at ``F_B``, on two seeds: each half's rows are the rows of the walk of the cell
+    stated at the scaled permeability, walked without the argument on the same seed; the two factors grant different
+    counts on the same walkers, on each seed."""
+    geos = {f: CELLS[cell](f) for f in (1.0, F_A, F_B)}
     even, odd = np.arange(0, N_W, 2), np.arange(1, N_W, 2)
-    refs = {}
-    for f, idx in ((F_A, even), (F_B, odd)):
-        refs[f] = _walk(CELLS[cell](f))
-        _assert_rows_equal(_rows(mixed, idx), _rows(refs[f], idx), f"{cell} factor {f}")
-    # the same walkers at the two factors: different granted counts, so a factor read from the wrong walker shows
-    N_A, N_B = (int(refs[f].trial_record.N.sum()) for f in (F_A, F_B))
-    assert 0 < N_A < N_B, (N_A, N_B)
-    assert int(got["N"][even].sum()) != int(refs[F_B].trial_record.N[even].sum())
+    for seed in (3, 4):
+        mixed = _walk(geos[1.0], seed, permeability_factor=_two_values())
+        got = _rows(mixed)
+        refs = {}
+        for f, idx in ((F_A, even), (F_B, odd)):
+            refs[f] = _walk(geos[f], seed)
+            _assert_rows_equal(_rows(mixed, idx), _rows(refs[f], idx), f"{cell} seed {seed} factor {f}")
+        # the same walkers at the two factors: different granted counts, so a factor read from the wrong walker shows
+        N_A, N_B = (int(refs[f].trial_record.N.sum()) for f in (F_A, F_B))
+        assert 0 < N_A < N_B, (seed, N_A, N_B)
+        assert int(got["N"][even].sum()) != int(refs[F_B].trial_record.N[even].sum())
 
 
 # ── 3. zero never crosses ──────────────────────────────────────────────────────────────────────────────────────────
@@ -233,11 +239,130 @@ def test_a_trials_outcome_is_its_word_against_the_walkers_own_threshold():
     assert np.any(granted != (word < stated))                                  # the stated value misjudges some
 
 
+# ── 4b. the stated rule is the product the walk forms ─────────────────────────────────────────────────────────────
+
+F_ODD = np.float32(0.3)                    # not a power of two: the two orders of the product differ in the last bit
+
+
+def _mixed_rule(k_out, D_leave, f):
+    """The mixed cell's stated rule (:data:`MIXED_RULE`): ``float32(float32(kappa_outer) * f) / D``, float32."""
+    return (np.float32(k_out) * np.float32(f)).astype(np.float32) / np.float32(D_leave)
+
+
+def _packed_rule(kappa, Dw, f):
+    """The packed cylinders' stated rule (:data:`PACKED_RULE`): ``float32(float32(kappa / D) * f)``, ``kappa / D`` in
+    float64 cast once."""
+    return (np.asarray(np.asarray(kappa, np.float64) / Dw, np.float32) * np.float32(f)).astype(np.float32)
+
+
+def _thresholds(wall, args, factor=None, n_iter=33):
+    """The threshold ``t`` of each step's first trial as the kernel decides it, recovered exactly: the first word is
+    searched (granted iff ``word < t``) with every later word ``2^32 - 1``; the first encounter precedes every decision,
+    so its ``d_perp`` does not depend on the words. Returns ``(t, valid)``, ``valid`` where the first loop entry is a
+    plain-wall trial."""
+    pts, dirs, ls, pool, own, us = args
+    n = pts.shape[0]
+    budget = wall.bounce_loop.budget
+    f = (lambda p, d, l, pl, o, u, w: wall(p, d, l, pl, o, u, w)) if factor is None else \
+        (lambda p, d, l, pl, o, u, w, fc: wall(p, d, l, pl, o, u, w, fc))
+    run = jax.jit(jax.vmap(f))
+    extra = () if factor is None else (jnp.asarray(factor),)
+    lo, hi = np.zeros(n, np.uint64), np.full(n, 2 ** 32, np.uint64)
+    valid = None
+    for _ in range(n_iter):
+        mid = (lo + hi) // 2
+        words = np.full((n, budget), 2 ** 32 - 1, np.uint64)
+        words[:, 0] = np.minimum(mid, 2 ** 32 - 1)
+        h = run(*args, jnp.asarray(words.astype(np.uint32)), *extra)
+        g = np.asarray(h.trials.granted)[:, 0]
+        if valid is None:
+            valid = np.asarray(h.trials.valid)[:, 0]
+        lo, hi = np.where(g, mid + 1, lo), np.where(g, hi, mid)
+    return lo, valid
+
+
+def _plain_starts(n, step_max, seed):
+    rng = np.random.default_rng(seed)
+    f32 = np.float32
+    k = rng.choice(np.flatnonzero(PLAIN), n)
+    off = rng.uniform(-1.0, 1.0, n) * step_max
+    ang = rng.uniform(0, 2 * np.pi, n)
+    pts = (CENTRES[k] + (OUTER[k] + off)[:, None] * np.stack([np.cos(ang), np.sin(ang)], 1)).astype(f32)
+    th = rng.uniform(0, 2 * np.pi, n)
+    dirs = np.stack([np.cos(th), np.sin(th)], 1).astype(f32)
+    ls = (step_max * rng.uniform(0.2, 1.0, n)).astype(f32)
+    pool = np.where(off < 0, 1, 0).astype(np.int32)
+    own = np.where(off < 0, k, 0).astype(np.int32)
+    us = np.ones(n, f32)
+    return tuple(jnp.asarray(a) for a in (pts, dirs, ls, pool, own, us))
+
+
+@pytest.mark.parametrize("rule", ["stated"])
+def test_the_mixed_cells_stated_rule_is_the_threshold_of_every_trial(rule):
+    """The mixed cell at factor 0.3: every step's first plain-wall trial has, exactly, the threshold of the kernel
+    without a factor whose plain ``kappa_outer`` is the stated rule's ``kappa / D`` and whose diffusivities are 1, so
+    the kernel's own division leaves it unchanged. The packed cylinders' order of the product gives another
+    ``kappa / D`` for the cell's values (asserted), so a rule stated the other way round fails here."""
+    f32 = np.float32
+    cell = _mixed().cell_arrays()
+    step_max = cell.step_max(1e-6)
+    common = dict(eps=f32(cell.eps), nudge=f32(cell.nudge))
+
+    def kernel(Ds, k_out):
+        return concentric_wall_kernel(jnp.asarray(cell.centers), jnp.asarray(cell.inner_radii),
+                                      jnp.asarray(cell.outer_radii), f32(cell.cell_size), *(jnp.asarray(x) for x in Ds),
+                                      jnp.asarray(cell.kappa_inner), jnp.asarray(k_out, f32), jnp.zeros((4, 4), f32),
+                                      common["eps"], common["nudge"], step_max, cell.min_gap, trials=True)
+
+    walk_kernel = kernel((cell.D_intra, cell.D_myelin, cell.D_extra), cell.kappa_outer)       # the walk's own
+    stated = np.where(cell.plain_mask, _mixed_rule(cell.kappa_outer, D, F_ODD), cell.kappa_outer)
+    other = np.where(cell.plain_mask, _packed_rule(KAPPA_OUTER, D, F_ODD), cell.kappa_outer)   # from the stated m/s
+    assert not np.array_equal(stated[cell.plain_mask], other[cell.plain_mask])
+    ref_kernel = kernel((np.ones(4, f32),) * 3, stated if rule == "stated" else other)
+    assert walk_kernel.bounce_loop.budget == ref_kernel.bounce_loop.budget
+    args = _plain_starts(6000, step_max, 11)
+    t_walk, v = _thresholds(walk_kernel, args, factor=np.full(6000, F_ODD, f32))
+    t_ref, v_ref = _thresholds(ref_kernel, args)
+    assert np.array_equal(v, v_ref) and v.sum() > 800
+    assert np.sum((t_walk[v] > 0) & (t_walk[v] < 2 ** 32)) > 800                    # thresholds strictly inside
+    np.testing.assert_array_equal(t_walk[v], t_ref[v])
+
+
+@pytest.mark.parametrize("rule", ["stated"])
+def test_the_packed_cylinders_stated_rule_is_the_product_the_walk_forms(rule):
+    """The packed cylinders at factor 0.3: the ``kappa / D`` the walk forms (its own ``membrane_kappa`` and
+    ``walker_kappa_over_D``) is the stated rule's bit for bit, per cylinder, so the threshold of every trial is the
+    rule's (the kernel reads nothing else of the permeability); the mixed cell's order of the product
+    gives another value for these permeabilities (asserted), so a rule stated the other way round fails here. The walk
+    at factor 0.3 is the walk of the cell stated at the rule's permeability, walked without the argument."""
+    geo = _packed()
+    kod_at, _ = membrane_kappa(geo, D, 1e-6)
+    formed = np.asarray(walker_kappa_over_D(kod_at(0), jnp.float32(F_ODD)))
+    stated = _packed_rule(KAPPA, D, F_ODD)
+    other = _mixed_rule(KAPPA, D, F_ODD)
+    assert not np.array_equal(stated, other)
+    want = stated if rule == "stated" else other
+    np.testing.assert_array_equal(formed, want)
+    w = _walk(geo, permeability_factor=np.full(N_W, F_ODD, np.float32))
+    kappa_ref = np.asarray(stated, np.float64) * D
+    assert np.array_equal(np.asarray(kappa_ref / D, np.float32), stated)       # the reference cell states the rule
+    ref = _walk(_packed_from(kappa_ref))
+    _assert_rows_equal(_rows(w), _rows(ref), "packed factor 0.3")
+    assert int(w.trial_record.N.sum()) > 0
+
+
+def _packed_from(kappa):
+    c, Lc, _ = pack_cylinders(RADII, target_vf=0.45, seed=1)
+    return PackedCylinders(RADII, c, Lc, permeability=kappa)
+
+
 # ── 5. the record ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_the_walk_returns_each_walkers_factor_and_states_the_rule(tmp_path):
     """The array, float32 in walker order, on the walk and through its walk file, a take and a join; the rule and the
-    dtype the caller gave in the work record; a walk without the argument carries neither."""
+    dtype the caller gave, the array's dtype and length in the work record, a walk file whose array disagrees with
+    them refused on load; a walk without the argument carries neither."""
+    import dataclasses
     from dmipy_sim.coefficient_walk import CoefficientWalk, join_walks
     geo = _mixed()
     fac64 = np.linspace(0.0, 1.0, N_W)
@@ -245,18 +370,28 @@ def test_the_walk_returns_each_walkers_factor_and_states_the_rule(tmp_path):
     np.testing.assert_array_equal(w.permeability_factor, fac64.astype(np.float32))
     assert w.permeability_factor.dtype == np.float32 and w.permeability_factor.shape == (N_W,)
     rec = w.work["permeability_factor"]
-    assert rec == dict(rule=PERMEABILITY_FACTOR_RULE, values="CoefficientWalk.permeability_factor", dtype="float32",
+    assert rec == dict(rule=MIXED_RULE, values="CoefficientWalk.permeability_factor", dtype="float32", n=N_W,
                        given_dtype="float64")
     w.save(tmp_path / "w.safetensors")
     back = CoefficientWalk.load(tmp_path / "w.safetensors")
     np.testing.assert_array_equal(back.permeability_factor, w.permeability_factor)
     assert back.work["permeability_factor"] == rec
-    np.testing.assert_array_equal(w.take(np.arange(5, 9)).permeability_factor, fac64[5:9].astype(np.float32))
+    part = w.take(np.arange(5, 9))
+    np.testing.assert_array_equal(part.permeability_factor, fac64[5:9].astype(np.float32))
+    assert part.work["permeability_factor"]["n"] == 4
     a = _walk_geometry(16, D, geo, T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8,
                        permeability_factor=fac64[:16], events_capacity=64)
     b = _walk_geometry(16, D, geo, T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8, first_walker=16,
                        permeability_factor=fac64[16:], events_capacity=64)
-    np.testing.assert_array_equal(join_walks([a, b]).permeability_factor, fac64.astype(np.float32))
+    joined = join_walks([a, b])
+    np.testing.assert_array_equal(joined.permeability_factor, fac64.astype(np.float32))
+    assert joined.work["permeability_factor"] == dict(rec, n=N_W)
+    for broken, match in ((None, "holds no permeability_factor array"),
+                          (w.permeability_factor[:5], "of length 32"),
+                          (w.permeability_factor.astype(np.float64), "of length 32")):
+        dataclasses.replace(w, permeability_factor=broken).save(tmp_path / "broken.safetensors")
+        with pytest.raises(ValueError, match=match):
+            CoefficientWalk.load(tmp_path / "broken.safetensors")
     bare = _walk(geo)
     assert bare.permeability_factor is None and "permeability_factor" not in bare.work
 

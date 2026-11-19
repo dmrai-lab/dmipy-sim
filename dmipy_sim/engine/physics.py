@@ -185,6 +185,14 @@ def membrane_kappa(geometry, diffusivity, dt_step):
     return kappa_at, record
 
 
+def walker_kappa_over_D(kappa_over_D, factor):
+    """The ``kappa / D`` a walker of permeability factor ``factor`` reads where the walk reads ``kappa_over_D``:
+    ``float32(kappa_over_D * factor)``, both float32 (``kappa_over_D`` is :func:`membrane_kappa`'s value, the float32 of
+    the stated permeability over the walk's diffusivity, one number or one per object). The rule a
+    :class:`~dmipy_sim.geometry.PackedCylinders` walk states (:data:`dmipy_sim.geometry.packed.PERMEABILITY_FACTOR_RULE`)."""
+    return kappa_over_D * factor
+
+
 def has_membrane(geometry) -> bool:
     """Whether a walker on ``geometry`` can cross a wall: a permeability on the geometry, or on a myelinated
     substrate's inner or outer boundary."""

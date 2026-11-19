@@ -1135,12 +1135,6 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_pe
     return {k: np.concatenate([p[k] for p in parts], axis=0) for k in parts[0]}
 
 
-#: The rule a walk with a permeability per walker states (``work["permeability_factor"]["rule"]``).
-PERMEABILITY_FACTOR_RULE = ("walker w meets each wall the geometry states at kappa with the permeability "
-                            "kappa * permeability_factor[w] (float32); walls the geometry does not scale keep their "
-                            "stated values")
-
-
 def _permeability_factor(factor, n_walkers, geometry, kappa_MT, backend_name):
     """``(values, record)`` of a walk's ``permeability_factor``: the float32 ``(n_walkers,)`` device array and the
     record the walk states, or ``(None, None)`` for ``None``; refused by name where the walk cannot take it."""
@@ -1169,8 +1163,8 @@ def _permeability_factor(factor, n_walkers, geometry, kappa_MT, backend_name):
         raise ValueError(f"permeability_factor: a factor is at most 1, got {float(values.max())!r}: the walk's step and "
                          f"its event capacity are sized at the geometry's stated permeability, the largest a walker can "
                          f"have; state the largest permeability in the geometry and the others as factors below 1")
-    record = dict(rule=PERMEABILITY_FACTOR_RULE, values="CoefficientWalk.permeability_factor", dtype="float32",
-                  given_dtype=given.dtype.name)
+    record = dict(rule=geometry.permeability_factor_rule(), values="CoefficientWalk.permeability_factor",
+                  dtype="float32", n=int(n_walkers), given_dtype=given.dtype.name)
     return jnp.asarray(values), record
 
 
@@ -1422,21 +1416,31 @@ def _walk_geometry(
         reversed segment, edges that are not increasing, a segment outside the walk, ``block_order=0``; and on any
         backend but the JAX kernels.
     permeability_factor : array of shape (n_walkers,), optional
-        Each walker's own membrane permeability, as a factor in ``[0, 1]`` of the permeability the geometry states:
-        row ``w`` is walker ``first_walker + w`` of the seed (the order of every per-walker array of the walk). Walker
-        ``w`` meets a wall the geometry states at ``kappa`` with the permeability ``kappa * permeability_factor[w]``,
-        the float32 product: the plain cylinders of a :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` cell
-        (each at its own ``kappa_outer``; a sheathed cylinder's two walls stay at their stated values) and the walls
-        of a :class:`~dmipy_sim.geometry.PackedCylinders` cell (the ``kappa / D`` each step reads, one number or one
-        per cylinder, times the factor). The ratios between the walls are kept and a wall stated sealed stays sealed.
-        Every trial is the walk's own: the same 32-bit word or uniform decides it at the walker's probability
-        ``x / (1 + x)``, ``x = 2 (kappa * factor / D) d_perp``, and no draw depends on the factor; a factor of 1 is
-        the stated permeability, so an array of ones is the walk without the argument, bit for bit. Finite and in
+        Each walker's own membrane permeability, as a factor ``f_w`` in ``[0, 1]`` of the permeability the geometry
+        states: row ``w`` is walker ``first_walker + w`` of the seed (the order of every per-walker array of the walk).
+        The product is formed in float32, and where depends on the cell (each cell's rule,
+        ``Geometry.permeability_factor_rule()``, is the walk's ``work["permeability_factor"]["rule"]``):
+
+        - :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders`: the walker meets plain cylinder ``k``'s wall at
+          ``kappa_w = float32(float32(kappa_outer_k) * f_w)`` (m/s), and the trial's ``kappa / D`` is
+          ``float32(kappa_w / D)``, ``D`` the float32 diffusivity of the pool it leaves; a sheathed cylinder's two
+          walls stay at their stated values.
+        - :class:`~dmipy_sim.geometry.PackedCylinders`: the walker reads ``float32(float32(kappa / D) * f_w)`` (1/m)
+          where the walk reads ``float32(kappa / D)`` (one number or one per cylinder;
+          :func:`~dmipy_sim.engine.physics.walker_kappa_over_D`).
+
+        The two differ in the last bit for a factor that is not a power of two; a reader recomputes a trial's
+        threshold by the cell's own rule. The ratios between the walls are kept and a wall stated sealed stays
+        sealed. Every trial is the walk's own: the same 32-bit word or uniform decides it at the walker's probability
+        ``x / (1 + x)``, ``x = 2 (kappa / D) d_perp`` at the walker's own ``kappa / D``, and no draw depends on the
+        factor; a factor of 1 is the stated permeability, so an array of ones is the walk without the argument, bit
+        for bit. Finite and in
         ``[0, 1]``: the walk's step and its event capacity are sized at the stated permeability, the largest a walker
         can have. A float array of another precision is cast to float32 (the walk's record states the dtype it was
-        given). The walk returns it as ``CoefficientWalk.permeability_factor`` (float32, walker order) and states the
-        rule in ``work["permeability_factor"]``; a reader recomputes any trial's probability from the walker's own
-        ``kappa * factor`` (:func:`~dmipy_sim.geometry._boundary.realised_acceptance`). None (the default) is the walk
+        given). The walk returns it as ``CoefficientWalk.permeability_factor`` (float32, walker order) and states in
+        ``work["permeability_factor"]`` the cell's rule, the array's dtype and length ``n`` and the dtype it was given;
+        a reader recomputes any trial's threshold from the walker's own ``kappa / D`` by that rule
+        (:func:`~dmipy_sim.geometry._boundary.realised_acceptance`). None (the default) is the walk
         at the stated permeability and the same program as without the keyword. Refused by name: a geometry that
         does not take it (:meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_gap`: every geometry but the
         two cells, a cell with nothing to scale, a schedule in time), a shape other than ``(n_walkers,)``, a
@@ -1585,7 +1589,7 @@ def _walk_geometry(
         _carries_side = False   # set below only where the geometry accepts a carried side
         # the permeability each step reads: one number, one per object, or the schedule's at the step's midpoint
         # (physics.membrane_kappa); the walk records a stated table in its work record
-        from .physics import membrane_kappa
+        from .physics import membrane_kappa, walker_kappa_over_D
         kappa_at, _perm_record = membrane_kappa(geometry, diffusivity, dt_sim)
         if has_permeability:
             permeate = geometry.permeate
@@ -1605,7 +1609,7 @@ def _walk_geometry(
                 r, key, side, bad, work = carry
                 kappa_over_D = kappa_at(step_index)
                 if factor is not None:                  # the walker's own permeability (permeability_factor)
-                    kappa_over_D = kappa_over_D * factor
+                    kappa_over_D = walker_kappa_over_D(kappa_over_D, factor)
                 key, step_key, perm_key = jax.random.split(key, 3)
                 unit_noise = pair_step(step_key)
                 step = unit_noise * step_l_sim
@@ -1734,7 +1738,7 @@ def _walk_geometry(
                     r, key, dlog_cum, side, bad, comp, work = carry
                     kappa_over_D_relax = kappa_at(step_index)
                     if factor is not None:              # the walker's own permeability (permeability_factor)
-                        kappa_over_D_relax = kappa_over_D_relax * factor
+                        kappa_over_D_relax = walker_kappa_over_D(kappa_over_D_relax, factor)
                     key, step_key, perm_key = jax.random.split(key, 3)
                     unit_noise = pair_step(step_key)
                     step = unit_noise * step_l_sim
