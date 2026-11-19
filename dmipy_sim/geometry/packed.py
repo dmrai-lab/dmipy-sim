@@ -345,6 +345,20 @@ class PackedCylinders(Geometry):
         """Every object's wall is plain: ``(radii, D)`` with the walk's one diffusivity (both pools step at it)."""
         return self._radii_np.copy(), np.full(len(self._radii_np), float(diffusivity))
 
+    def permeability_factor_gap(self):
+        """``None`` when the cell's walls are stated permeable and constant in time: a walker's factor scales the
+        ``kappa / D`` every step of the walker reads (one number, or one per cylinder, whose ratios it keeps; a
+        cylinder stated sealed stays sealed). Else the reason a permeability per walker is refused."""
+        if self.permeability is None or not float(self.permeability) > 0.0:
+            return ("PackedCylinders: a permeability per walker scales the cell's stated permeability, and this cell's "
+                    "walls are impermeable: there is nothing to scale")
+        table = self.permeability_table
+        if table is not None and np.asarray(table.breakpoints).size:
+            return ("PackedCylinders: a permeability per walker scales a permeability constant in time; this cell "
+                    "states a schedule (PermeabilitySchedule), and a permeability varying by walker and in time is "
+                    "not walked")
+        return None
+
     def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
         """Wall interaction in the pack: reflect off the cylinders the step meets, or cross one
         where its membrane grants it (a Powles trial at every encounter). Multi-bounce, so a step longer than the gap

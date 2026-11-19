@@ -348,6 +348,18 @@ class Geometry(ABC):
         """
         return None
 
+    def permeability_factor_gap(self):
+        """``None`` if a walk of this geometry takes a permeability per walker
+        (`engine.core._walk_geometry`'s ``permeability_factor``), else the reason it refuses.
+
+        A walker's factor scales the permeability the geometry states for its plain walls: the walls of a
+        `PackedCylinders` cell and the plain cylinders of a `PackedMyelinatedCylinders` cell take it; every other
+        geometry walks each walker at its stated permeability and refuses the argument by name.
+        """
+        return (f"{type(self).__name__} walks every walker at its stated permeability: a permeability per walker "
+                f"(permeability_factor) is taken by PackedCylinders and by the plain cylinders of "
+                f"PackedMyelinatedCylinders")
+
     # ---- wall / bulk properties (instance attributes; None = not set) ----
 
     #: Membrane permeability kappa (m/s): the largest over the geometry's objects and the walk's time, or None for

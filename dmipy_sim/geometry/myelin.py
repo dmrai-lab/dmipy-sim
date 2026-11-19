@@ -117,7 +117,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint disks, ``R_min`` the
     smallest lumen. ``budget=`` overrides the derived budget for one walk.
 
-    Returns ``wall(xy, d_hat, step_l, pool, k, u, words=None)`` giving a :class:`ConcentricHit`: the end position,
+    Returns ``wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None)`` giving a :class:`ConcentricHit`: the end position,
     the pool and owning / nearest cylinder after the step, the four boundary local-time channels ``-2 d_perp``
     (inner wall met from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall
     met from outside; a plain cylinder's wall met from its lumen is the first channel, from outside the fourth),
@@ -128,6 +128,10 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     otherwise; ``wall.bounce_loop.budget`` is its length. With ``trials`` (a cell with a plain cylinder) the hit also
     carries the step's plain-wall trials (:class:`~dmipy_sim.geometry._boundary.TrialLog`: every encounter of a plain
     wall, the cylinder met, its overshoot ``2 d_perp / R`` and its outcome); a sheathed wall's encounters are not in it.
+    ``factor`` (a float32 scalar, or None) is the walker's permeability factor: the walker meets plain cylinder ``k``'s
+    wall at the permeability ``kappa_outer_k * factor`` (the float32 product), and a sheathed cylinder's two walls at
+    their stated values; ``None`` is the factor 1 and the same program as before. A cell without a plain cylinder
+    refuses a factor.
     """
     N = int(inner.shape[0])
     outer_np = np.asarray(outer, np.float64); inner_np = np.asarray(inner, np.float64)
@@ -162,7 +166,9 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     def _pin(xy, q, R_in, R_out, pool):
         return pin_to_pool(xy, q, R_in, R_out, pool, nudge)
 
-    def wall(xy, d_hat, step_l, pool, k, u, words=None):
+    def wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None):
+        if factor is not None and not any_plain:
+            raise ValueError("a permeability factor scales the plain cylinders' walls; this cell has no plain cylinder")
         if any_plain and words is None:
             raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the 32-bit words of its plain walls' trials, "
                              f"words of shape ({loop.budget},), uint32")
@@ -179,6 +185,8 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         real_c = out_c > 0
         plain_c = plain[idx]
         ki_c, ko_c = kappa_inner[idx], kappa_outer[idx]
+        if factor is not None:                                                 # the walker's own plain-wall permeability
+            ko_c = jnp.where(plain_c, ko_c * factor, ko_c)
         Di_c, Dm_c, De_c = D_intra[idx], D_myelin[idx], D_extra[idx]
         w_c = rho_weights[idx]                                                 # (n_cand, 4)
 
@@ -1094,6 +1102,21 @@ class PackedMyelinatedCylinders(Geometry):
                 f"PackedMyelinatedCylinders: sheaths overlap (closest outer walls are {-self.min_gap:.3g} m "
                 "inside each other). Place the axons with pack_myelinated_cylinders(inner_radii, g_ratios, "
                 "...), which packs the OUTER radii, rather than pack_cylinders on the inner radii.")
+
+    def permeability_factor_gap(self):
+        """``None`` when the cell holds a plain cylinder stated permeable (``kappa_outer > 0``): a walker's factor
+        scales the plain cylinders' ``kappa_outer`` (a sealed one stays sealed) and leaves the sheathed cylinders'
+        walls at their stated values. Else the reason a permeability per walker is refused: nothing to scale."""
+        N = self.N_actual
+        plain = np.asarray(self.plain_mask[:N], bool)
+        if not plain.any():
+            return ("PackedMyelinatedCylinders: a permeability per walker scales the plain cylinders' walls, and this "
+                    "cell has no plain cylinder (g-ratio 1); the sheathed cylinders' walls are walked at their stated "
+                    "values")
+        if not np.any(np.asarray(self._kappa_outer_jax, np.float64)[:N][plain] > 0.0):
+            return ("PackedMyelinatedCylinders: a permeability per walker scales the plain cylinders' kappa_outer, and "
+                    "every plain cylinder of this cell is stated sealed (kappa_outer = 0): there is nothing to scale")
+        return None
 
     def trial_objects(self, diffusivity):
         """The cell's cylinders, in their order, when it holds a plain one: ``(radii, D)``, each cylinder's outer

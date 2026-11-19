@@ -151,6 +151,9 @@ class CoefficientWalk:
     trial_record: object = field(default=None, compare=False, repr=False)
     segment_rows: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     segments: Optional[dict] = None
+    permeability_factor: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    #: (n,) float32 each walker's permeability factor (``_walk_geometry(permeability_factor=)``): walker ``w`` met the
+    #: walls the geometry scales at ``kappa * permeability_factor[w]``; None when every walker walked at the stated value
 
     def __post_init__(self):
         if self.spec is None and self.geometry is not None:
@@ -230,7 +233,8 @@ class CoefficientWalk:
                                                 self.compartment, self.bound_start, self.field_coeffs, self.qv_field,
                                                 self.qv_field_increments,
                                                 self.raw_positions, self.raw_boundary, self.raw_compartment, self.raw_bound,
-                                                self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows) if a is not None)
+                                                self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows,
+                                                self.permeability_factor) if a is not None)
         for ev in (self.comp_events, self.bound_events):
             if ev is not None:
                 n += ev.offsets.nbytes + ev.t.nbytes + ev.label.nbytes
@@ -240,7 +244,8 @@ class CoefficientWalk:
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
-                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows")
+                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows",
+                      "permeability_factor")
 
     def start_error(self, t, *, per_face_local_time=False):
         """The start's term of a read at time ``t`` (s after the walk's start): ``{"relative_error", "flag"}``
@@ -321,7 +326,7 @@ class CoefficientWalk:
     #: the arrays a walk file holds (those present); the events as three tensors each; the rest in the header
     _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
-                    "qv_boundary", "weights", "segment_rows")
+                    "qv_boundary", "weights", "segment_rows", "permeability_factor")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
                      "illegal_crossings", "seed", "first_walker", "diffusivity", "work", "stepping")
 
