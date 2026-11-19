@@ -235,8 +235,45 @@ def test_the_layout_writer_reads_the_rows_as_their_own_source(tmp_path):
     stored = np.load(tmp_path / "rows" / "p_pgse.npy")
     order = np.lexsort((np.zeros(w.n_walkers, np.uint8), np.zeros(w.n_walkers, np.int64)))
     assert np.array_equal(stored, (GAMMA * np.asarray(w.segment_rows, np.float64)).astype(stored.dtype)[order])
+    with pytest.raises(ValueError, match="a layout from segment rows with background=True is refused"):
+        segment_rows(w, {"pgse": part}, str(tmp_path / "bg"), grid=grid, pack=pk, g_max=1.0, background=True)
+    assert "systematic" in terms["rows"]["step_quadrature"]["nature"]
     man = write_time_segment_layout([str(tmp_path / "rows")], str(tmp_path / "lay"))
     assert man["source"]["kind"] == "walk_segments" and "truncation" not in man["certificate"]["terms"]
     mixed = segment_rows(w, {"pgse": part, "other": other}, str(tmp_path / "mixed"), grid=grid, pack=pk, g_max=1.0)
     assert mixed["source"]["kind"] == "walk"
     assert mixed["partitions"]["pgse"]["vectors"] == "accumulated" and mixed["partitions"]["other"]["vectors"] == "bands"
+
+
+def test_the_step_quadrature_is_the_free_walks_signal_excess():
+    """The constant and the power of :func:`step_quadrature_term`, against free diffusion: two adjacent square lobes of
+    one step each (``delta = Delta = dt``) along x, walked at the step ``dt`` and at ``dt / 4``. The walk's phase is the
+    trapezoid of its positions, so its variance is the continuous path's less ``V`` and its signal is the exact
+    ``exp(-b D)`` times ``exp(V / 2)``, with ``V / 2`` the term at the lobes' level (``V`` falls as ``dt^2``: ``V / 32``
+    at ``dt / 4``). The two walks cannot be paired (a finer step draws other increments), so each is held to the exact
+    free signal times its predicted excess, and their difference to ``S (exp(V / 2) - exp(V / 32))``, within three
+    standard errors (the walkers' spread of ``cos phi``; the step law's matched moments leave the non-Gaussian part of a
+    step's phase below 1e-4 here). A term off by a factor two (a wrong ``/ 6`` or power of ``dt``) moves the
+    difference by 0.024, ten standard errors."""
+    from types import SimpleNamespace
+    from dmipy_analytic.constants import GAMMA
+    from dmipy_sim.replay.time_segments import step_quadrature_term
+    dt, G, n = 1e-3, None, 20000
+    segs = ((0.0, dt), (dt, 2 * dt))
+    b_unit = GAMMA ** 2 * dt ** 3 * 2.0 / 3.0                       # b / G^2 of adjacent square lobes, Delta = delta
+    G = float(np.sqrt(0.25 / (b_unit * D)))                          # b D = 0.25
+    S_exact = float(np.exp(-b_unit * G ** 2 * D))
+    sig = {}
+    for h in (dt, dt / 4):
+        w = _walk_geometry(n, D, d.FreeDiffusion(), 2 * dt, seed=3, window_T=2 * dt, block_h=h, sub_steps=1, K=4,
+                           tiers=(), require_gpu=False, segments=segs, accumulation_dtype="float32")
+        r = np.asarray(w.segment_rows, np.float64)
+        c = np.cos(GAMMA * G * (r[:, 0, 0] - r[:, 1, 0]))
+        V = 2.0 * step_quadrature_term(SimpleNamespace(segments=segs), [G, G], D, w.dt_sim)
+        sig[h] = (c.mean(), c.std(ddof=1) / np.sqrt(n), V)
+    (s1, e1, V1), (s4, e4, V4) = sig[dt], sig[dt / 4]
+    assert V4 == pytest.approx(V1 / 16, rel=1e-12) and V1 / 2 == pytest.approx(0.25 / 4, rel=1e-9)
+    assert abs(s1 - S_exact * np.exp(V1 / 2)) <= 3 * e1
+    assert abs(s4 - S_exact * np.exp(V4 / 2)) <= 3 * e4
+    assert abs((s1 - s4) - S_exact * (np.exp(V1 / 2) - np.exp(V4 / 2))) <= 3 * np.hypot(e1, e4)
+    assert abs((s1 - s4) - S_exact * (np.exp(V1 / 4) - np.exp(V4 / 4))) > 3 * np.hypot(e1, e4)   # half the term fails

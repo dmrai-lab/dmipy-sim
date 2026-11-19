@@ -288,8 +288,14 @@ def step_quadrature_term(partition, reach, D, dt):
     between two steps a free path's integral departs from the chord's by a bridge term of variance ``2 D dt^3 / 12``
     per axis, independent over steps and axes, so segment ``s`` (``(b_s - a_s) / dt`` steps) carries per axis ``(b_s -
     a_s) D dt^2 / 6`` and a level of at most ``reach_s`` (T/m) the phase variance ``gamma^2 reach_s^2 (b_s - a_s) D
-    dt^2 / 6``; the term is half their sum over the segments. A restricted walk's bridge is no wider than a free one's,
-    so the free value at the walk's ``D`` bounds it."""
+    dt^2 / 6``; the term is half their sum over the segments.
+
+    Its nature is SYSTEMATIC: the bridge is independent of the step positions in free diffusion, so the continuous
+    path's signal is the walk's times ``exp(-V / 2)`` (``V`` the summed phase variance): the walk's signal is too high
+    by that factor, and more walkers do not average it down. For free diffusion the value is exact at a level of
+    ``reach_s``. For a restricted walk it bounds the VARIANCE part of the bridge only (a confined bridge is no wider than
+    a free one): near a wall the bridge between two step positions has a non-zero mean, a first-order error that
+    belongs to the step law at the walls, which this term does not carry."""
     from dmipy_analytic.constants import GAMMA
     dur = np.asarray([b - a for a, b in np.asarray(partition.segments, np.float64).reshape(-1, 2)])
     v = float(np.sum(GAMMA ** 2 * np.asarray(reach, np.float64) ** 2 * dur * float(D) * float(dt) ** 2 / 6.0))
@@ -310,7 +316,13 @@ def row_terms(terms, partitions, D, dt):
         out["quadrature"] = q
     out["step_quadrature"] = max(step_quadrature_term(p, r, D, dt) for p, r in partitions.values())
     out["rows"] = dict(carries=["step_quadrature"] + (["rounding"] if "rounding" in out else []),
-                       absent=["truncation", "quadrature.positions"], step_s=float(dt), D=float(D))
+                       absent=["truncation", "quadrature.positions"], step_s=float(dt), D=float(D),
+                       step_quadrature=dict(
+                           nature="systematic: the walk's signal exceeds the continuous path's by exp(V / 2); not "
+                                  "reduced by more walkers",
+                           scope="exact for free diffusion at the partition's reach; for a restricted walk a bound on the "
+                                 "bridge's variance only, not on its mean near a wall (the step law at the walls, not "
+                                 "carried)"))
     return out
 
 
@@ -664,7 +676,8 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     :class:`~dmipy_replay.replay.replay.ReplayPack`. A walk's partition of declared constant segments
     (:func:`accumulated_terms`) takes its vectors from the walk's accumulated rows (``"vectors": "accumulated"`` in its
     record, ``"bands"`` otherwise) and needs no band check; when every partition does, the source's kind is
-    ``"walk_segments"`` and the certificate's terms are :func:`row_terms` of the pack's. The floor target is ``floor_target``, else the pack's declared one, else
+    ``"walk_segments"`` and the certificate's terms are :func:`row_terms` of the pack's; such a layout with
+    ``background`` (a column contracted from the bands) is refused by name. The floor target is ``floor_target``, else the pack's declared one, else
     its median per-voxel floor; the envelope the pack's (``g_max`` at most its ``G_max``). Returns the record.
 
     The source is read a walker range at a time (:meth:`~dmipy_replay.replay.replay.ReplayPack.walkers`, ranges of
@@ -718,6 +731,11 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     acc = {name: (accumulated_terms(source, p) if kind == "walk" else None) for name, p in parts.items()}
     if kind == "walk" and all(v is not None for v in acc.values()):
         kind = src["kind"] = "walk_segments"
+        if background:
+            raise ValueError("a layout read from a walk's segment rows carries no band truncation and no block quadrature "
+                             "in its certificate, but the background column is contracted from the position bands and "
+                             "incurs both: a layout from segment rows with background=True is refused; write it without "
+                             "background, or from a walk without declared segments")
     for name, p in parts.items():
         if p.template is None:
             raise ValueError(f"partition {name!r} carries no template sequence: build it with Partition.of")
