@@ -273,8 +273,9 @@ class CoefficientWalk:
         """Window ``i`` as a one-window coefficient walk: its coefficients, contact, field modes and quadratic
         variation, the labels held at its start and the events inside it (times from the walk's start), the raw
         subset on its blocks (sharing the boundary block end), and the bands of the trial record within it (their
-        edges on the walk's clock). A window of a walk of several carries no segment rows: a row is referred to the
-        walk's start."""
+        edges on the walk's clock). A one-window walk is its own window 0, its segment rows with it; a window of a walk
+        of several carries no segment rows, since a row is ``int (x(t) - x(0)) dt`` from the walk's start and the
+        window's coefficients are referred to the window's own start."""
         import dataclasses
         n, i = int(self.n_windows), int(i)
         if not 0 <= i < n:

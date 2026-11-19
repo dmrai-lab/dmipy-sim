@@ -45,7 +45,9 @@ contracts the pack's bands: the certificate then carries the pack's band quantis
 A walk that accumulated rows for declared segments (``CoefficientWalk.segment_rows``) is a third source: a partition
 of constant segments each of which is a declared one takes its vectors from those rows, ``gamma`` times the trapezoid
 of the walker's positions at the walk's own step (:func:`accumulated_terms`), so no band enters it; when every
-partition does, the source is ``"walk_segments"`` and the certificate's terms carry no band truncation.
+partition does, the source is ``"walk_segments"`` and the certificate's terms are those a row carries
+(:func:`row_terms`): the step quadrature (:func:`step_quadrature_term`) and the accumulator's rounding, with no band
+truncation and no block quadrature of the positions.
 
 **Widths derived per term.** A rounding ``delta_s`` per component of ``m_s`` is a phase error of variance at most
 ``|a_s|^2 delta_s^2 / 12``. The envelope bounds the levels: ``|a_s| <= G_max`` (a shape has ``max |psi| = 1``) and the
@@ -278,6 +280,38 @@ def accumulated_terms(walk, partition):
             return None
         idx.append(int(hit[0]))
     return np.asarray(idx, np.int64)
+
+
+def step_quadrature_term(partition, reach, D, dt):
+    """The step quadrature of ``partition``'s rows accumulated in a walk of physics step ``dt`` and diffusivity ``D``
+    (rad^2 / 2, the criterion of every other term): a row is the trapezoid of the positions at the walk's steps, and
+    between two steps a free path's integral departs from the chord's by a bridge term of variance ``2 D dt^3 / 12``
+    per axis, independent over steps and axes, so segment ``s`` (``(b_s - a_s) / dt`` steps) carries per axis ``(b_s -
+    a_s) D dt^2 / 6`` and a level of at most ``reach_s`` (T/m) the phase variance ``gamma^2 reach_s^2 (b_s - a_s) D
+    dt^2 / 6``; the term is half their sum over the segments. A restricted walk's bridge is no wider than a free one's,
+    so the free value at the walk's ``D`` bounds it."""
+    from dmipy_analytic.constants import GAMMA
+    dur = np.asarray([b - a for a, b in np.asarray(partition.segments, np.float64).reshape(-1, 2)])
+    v = float(np.sum(GAMMA ** 2 * np.asarray(reach, np.float64) ** 2 * dur * float(D) * float(dt) ** 2 / 6.0))
+    return 0.5 * v
+
+
+def row_terms(terms, partitions, D, dt):
+    """The certificate's terms for vectors read from a walk's accumulated rows, from the pack's ``terms`` of the same
+    walk: a row is the trapezoid of the walker's positions at the walk's own step, so it carries no band
+    ``truncation`` and no block quadrature of the positions (``quadrature.positions``; the other channels' quadrature,
+    which the tiers read from the bands, stays), and it carries ``step_quadrature``, the largest over ``partitions``
+    (``{name: (Partition, reach)}``) of :func:`step_quadrature_term`, and the accumulator's ``rounding``; the field
+    read's term and the other channels' quadrature are the tiers'. ``rows`` names the terms a row carries and those it
+    does not."""
+    out = {k: v for k, v in terms.items() if k not in ("truncation", "truncation_from", "quadrature")}
+    q = {k: v for k, v in (terms.get("quadrature") or {}).items() if k != "positions"}
+    if q:
+        out["quadrature"] = q
+    out["step_quadrature"] = max(step_quadrature_term(p, r, D, dt) for p, r in partitions.values())
+    out["rows"] = dict(carries=["step_quadrature"] + (["rounding"] if "rounding" in out else []),
+                       absent=["truncation", "quadrature.positions"], step_s=float(dt), D=float(D))
+    return out
 
 
 def level_bound(partition, A, env):
@@ -630,7 +664,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     :class:`~dmipy_replay.replay.replay.ReplayPack`. A walk's partition of declared constant segments
     (:func:`accumulated_terms`) takes its vectors from the walk's accumulated rows (``"vectors": "accumulated"`` in its
     record, ``"bands"`` otherwise) and needs no band check; when every partition does, the source's kind is
-    ``"walk_segments"`` and the certificate's terms are the pack's without ``truncation``. The floor target is ``floor_target``, else the pack's declared one, else
+    ``"walk_segments"`` and the certificate's terms are :func:`row_terms` of the pack's. The floor target is ``floor_target``, else the pack's declared one, else
     its median per-voxel floor; the envelope the pack's (``g_max`` at most its ``G_max``). Returns the record.
 
     The source is read a walker range at a time (:meth:`~dmipy_replay.replay.replay.ReplayPack.walkers`, ranges of
@@ -750,8 +784,9 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         cols.discard()
     fid = meta.get("fidelity") or {}
     terms = fid.get("terms")
-    if src["kind"] == "walk_segments" and isinstance(terms, dict):         # the rows carry no band truncation
-        terms = {k: v for k, v in terms.items() if k not in ("truncation", "truncation_from")}
+    if src["kind"] == "walk_segments" and isinstance(terms, dict):
+        terms = row_terms(terms, {name: (p, np.asarray(part_rec[name]["reach"], np.float64)) for name, p in parts.items()},
+                          source.diffusivity, source.dt_sim)
     certificate = dict(terms=terms, source=kind,
                        pack_quantisation=(None if kind == "walk" else
                                           dict(err_quantisation=fid.get("err_quantisation"),

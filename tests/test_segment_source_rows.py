@@ -95,6 +95,13 @@ def test_a_segment_in_a_later_window_is_referred_to_the_walks_start():
     assert np.all(err <= bound), f"worst error / bound {np.max(err / bound):.3g}"
 
 
+def test_a_window_keeps_the_rows_where_they_are_referred_to_its_start(walk32):
+    """A one-window walk's window 0 is the walk, rows included; a window of a walk of several carries none."""
+    assert walk32.window(0).segment_rows is walk32.segment_rows
+    w = _walk("float32", n=50, window_T=T / 2)
+    assert w.segment_rows is not None and w.window(0).segment_rows is None and w.window(1).segments is None
+
+
 def test_the_row_is_the_trapezoid_of_the_raw_positions_in_float64(x64):
     w = _walk("float64")
     rows = np.asarray(w.segment_rows)
@@ -218,7 +225,13 @@ def test_the_layout_writer_reads_the_rows_as_their_own_source(tmp_path):
                            voxel_grid=grid)
     rec = segment_rows(w, {"pgse": part}, str(tmp_path / "rows"), grid=grid, pack=pk, g_max=1.0)
     assert rec["source"]["kind"] == "walk_segments" and rec["partitions"]["pgse"]["vectors"] == "accumulated"
-    assert "truncation" not in rec["certificate"]["terms"] and "truncation" in pk.meta["fidelity"]["terms"]
+    terms, pk_terms = rec["certificate"]["terms"], pk.meta["fidelity"]["terms"]
+    assert "truncation" in pk_terms and "positions" in pk_terms["quadrature"]
+    assert "truncation" not in terms and "positions" not in terms.get("quadrature", {})
+    assert terms["rows"]["carries"] == ["step_quadrature", "rounding"] and terms["rounding"] == pk_terms["rounding"]
+    reach = np.asarray(rec["partitions"]["pgse"]["reach"])         # by hand: gamma^2 reach^2 (b - a) D dt^2 / 6, halved
+    want = 0.5 * sum(GAMMA ** 2 * r ** 2 * (b - a) * D * w.dt_sim ** 2 / 6.0 for r, (a, b) in zip(reach, part.segments))
+    assert terms["step_quadrature"] == pytest.approx(want, rel=1e-12) and want > 0.0
     stored = np.load(tmp_path / "rows" / "p_pgse.npy")
     order = np.lexsort((np.zeros(w.n_walkers, np.uint8), np.zeros(w.n_walkers, np.int64)))
     assert np.array_equal(stored, (GAMMA * np.asarray(w.segment_rows, np.float64)).astype(stored.dtype)[order])
