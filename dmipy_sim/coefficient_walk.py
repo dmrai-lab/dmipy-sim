@@ -98,6 +98,14 @@ class CoefficientWalk:
     trial_record : TrialRecord or None
         The membrane trials at the walk's plain walls per walker and (object, time band) cell
         (:class:`~dmipy_sim.trial_record.TrialRecord`), of a walk asked for it (``record_trials=``); None otherwise.
+    segment_rows : (n_walkers, n_seg, 3) in the accumulation's dtype, or None
+        Per walker, declared time segment ``[a_s, b_s]`` and axis, ``int_{a_s}^{b_s} (x(t) - x(0)) dt`` (m s, ``x(0)``
+        the walker's start) with ``x`` linear between the walk's steps: the trapezoid of its positions at its own step,
+        accumulated in the walk (``segments=`` of :func:`~dmipy_sim.engine.core._walk_geometry`); no band enters it.
+        None for a walk that declared no segments.
+    segments : dict or None
+        The declaration the rows were accumulated for: ``edges`` (s), their ``blocks`` (walk-wide block indices), the
+        block ``h`` and the ``step`` (s), the ``weight`` rule, what a ``row`` is and the accumulation ``precision``.
     """
     position_coeffs: np.ndarray
     T: float
@@ -141,6 +149,8 @@ class CoefficientWalk:
     envelope: object = None    #: the :class:`~dmipy_replay.replay.envelope.Envelope` the walk was walked for (``walk``)
     stepping: Optional[dict] = field(default=None, compare=False, repr=False)
     trial_record: object = field(default=None, compare=False, repr=False)
+    segment_rows: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    segments: Optional[dict] = None
 
     def __post_init__(self):
         if self.spec is None and self.geometry is not None:
@@ -220,7 +230,7 @@ class CoefficientWalk:
                                                 self.compartment, self.bound_start, self.field_coeffs, self.qv_field,
                                                 self.qv_field_increments,
                                                 self.raw_positions, self.raw_boundary, self.raw_compartment, self.raw_bound,
-                                                self.raw_field, self.qv_positions, self.qv_boundary) if a is not None)
+                                                self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows) if a is not None)
         for ev in (self.comp_events, self.bound_events):
             if ev is not None:
                 n += ev.offsets.nbytes + ev.t.nbytes + ev.label.nbytes
@@ -230,7 +240,7 @@ class CoefficientWalk:
 
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
-                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed")
+                      "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows")
 
     def start_error(self, t, *, per_face_local_time=False):
         """The start's term of a read at time ``t`` (s after the walk's start): ``{"relative_error", "flag"}``
@@ -263,7 +273,9 @@ class CoefficientWalk:
         """Window ``i`` as a one-window coefficient walk: its coefficients, contact, field modes and quadratic
         variation, the labels held at its start and the events inside it (times from the walk's start), the raw
         subset on its blocks (sharing the boundary block end), and the bands of the trial record within it (their
-        edges on the walk's clock)."""
+        edges on the walk's clock). A one-window walk is its own window 0, its segment rows with it; a window of a walk
+        of several carries no segment rows, since a row is ``int (x(t) - x(0)) dt`` from the walk's start and the
+        window's coefficients are referred to the window's own start."""
         import dataclasses
         n, i = int(self.n_windows), int(i)
         if not 0 <= i < n:
@@ -293,7 +305,8 @@ class CoefficientWalk:
             raw_positions=cut(self.raw_positions), raw_boundary=cut(self.raw_boundary),
             raw_compartment=cut(self.raw_compartment), raw_bound=cut(self.raw_bound), raw_field=cut_reads(self.raw_field),
             qv_positions=sl(self.qv_positions), qv_boundary=sl(self.qv_boundary),
-            trial_record=(None if self.trial_record is None else self.trial_record.bands(i * T_w, (i + 1) * T_w)))
+            trial_record=(None if self.trial_record is None else self.trial_record.bands(i * T_w, (i + 1) * T_w)),
+            segment_rows=None, segments=None)
 
     def shift_time(self, t_start):
         """This walk placed at ``t_start`` seconds on a longer clock (a continuation appended after a pack's windows):
@@ -308,7 +321,7 @@ class CoefficientWalk:
     #: the arrays a walk file holds (those present); the events as three tensors each; the rest in the header
     _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
-                    "qv_boundary", "weights")
+                    "qv_boundary", "weights", "segment_rows")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
                      "illegal_crossings", "seed", "first_walker", "diffusivity", "work", "stepping")
 
@@ -336,6 +349,8 @@ class CoefficientWalk:
                                                                 if fb.meta.get("kind") == "hollow_cylinder" else "strands"), meta=fb.meta)),
                       run=(None if run is None else (run.summary if hasattr(run, "summary") else run)),
                       geometry=(None if self.geometry is None else type(self.geometry).__name__))
+        if self.segments is not None:
+            header["segments"] = self.segments
         save_file(arrays, str(path), metadata={"walk": json.dumps(header, default=float)})
 
     @classmethod
@@ -378,7 +393,8 @@ class CoefficientWalk:
         kw.update(K=int(h["K"]), m=int(h["m"]), n_windows=int(h["n_windows"]), sub_steps=int(h["sub_steps"]),
                   T=float(h["T"]), dt_sim=float(h["dt_sim"]), illegal_crossings=int(h["illegal_crossings"]),
                   first_walker=int(h["first_walker"]),
-                  K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"), **events)
+                  K_c3=(None if h.get("K_c3") is None else int(h["K_c3"])), spec=spec, field_basis=basis, run=h.get("run"),
+                  segments=h.get("segments"), **events)
         from .trial_record import TrialRecord
         kw["trial_record"] = TrialRecord.from_arrays(arrays)
         return cls(**kw)
@@ -431,7 +447,7 @@ def join_walks(walks):
         nxt += w.n_walkers
         if j and w.raw_positions is not None:
             raise ValueError(f"walk {j} keeps a raw subset: a joined walk's raw subset leads it, so only the first walk keeps one")
-    for key in ("T", "K", "m", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval", "seed", "diffusivity"):
+    for key in ("T", "K", "m", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval", "seed", "diffusivity", "segments"):
         vals = [getattr(w, key) for w in walks]
         if any(v != vals[0] for v in vals[1:]):
             raise ValueError(f"the walks differ in {key}: {vals}")

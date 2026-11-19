@@ -138,6 +138,72 @@ def block_length(T, K):
     return float(T) / max(int(round(float(T) / h)), 1)
 
 
+#: how close (in blocks) a declared segment's edge must be to a block edge to lie on the walk's block grid
+SEGMENT_GRID_TOL = 1e-9
+
+
+def segment_blocks(segments, h, n_bw, n_windows, m):
+    """The block edges ``(A, B)`` (two int64 arrays of walk-wide block indices, ``a_s = A_s h`` and ``b_s = B_s h``) of
+    the time segments ``segments``, a sequence of ``(a_s, b_s)`` in seconds on the walk's clock (0 at its first step),
+    for a walk of ``n_windows`` storage windows of ``n_bw`` blocks of ``h`` seconds and block order ``m``.
+
+    Refused by name, before any step: no segment; a segment that is not a pair of finite numbers; an empty or
+    reversed segment (``b_s <= a_s``); edges that are not increasing (``a_s < b_{s-1}``); a segment outside the walk
+    ``[0, n_windows n_bw h]``; an edge off the walk's block grid (``a / h`` not a whole number to
+    :data:`SEGMENT_GRID_TOL`; the nearest grid edges are named); a segment that crosses a storage window's boundary;
+    and a block order 0 (a segment's weight is of degree one in a block, which the order-0 table does not hold)."""
+    h, n_bw, n_windows, m = float(h), int(n_bw), int(n_windows), int(m)
+    try:
+        S = np.asarray(segments, np.float64)
+    except (TypeError, ValueError):
+        raise ValueError(f"segments is a sequence of (a, b) pairs in seconds; got {segments!r}") from None
+    if S.ndim != 2 or S.shape[1] != 2 or S.shape[0] < 1 or not np.all(np.isfinite(S)):
+        raise ValueError(f"segments is a non-empty sequence of (a, b) pairs of finite seconds; got {segments!r}")
+    if m < 1:
+        raise ValueError("segments need a block order of at least 1: a segment's weight is a polynomial of degree one in a "
+                         "block, which the order-0 table does not hold (block_order=0)")
+    n_total = n_windows * n_bw
+    A, B = np.zeros(len(S), np.int64), np.zeros(len(S), np.int64)
+    for s, (a, b) in enumerate(S):
+        if not b > a:
+            raise ValueError(f"segment {s} = ({a:.9g}, {b:.9g}) s is empty or reversed: a segment is (a, b) with b > a")
+        if s and a < S[s - 1, 1] - SEGMENT_GRID_TOL * h:
+            raise ValueError(f"segment edges are not increasing: segment {s} starts at {a:.9g} s, before segment {s - 1} "
+                             f"ends at {S[s - 1, 1]:.9g} s")
+        if a < -SEGMENT_GRID_TOL * h or b > n_total * h * (1.0 + 1e-12) + SEGMENT_GRID_TOL * h:
+            raise ValueError(f"segment {s} = ({a:.9g}, {b:.9g}) s lies outside the walk [0, {n_total * h:.9g}] s")
+        for name, t, out in (("starts", a, A), ("ends", b, B)):
+            q = t / h
+            k = int(np.rint(q))
+            if abs(q - k) > SEGMENT_GRID_TOL:
+                lo, hi = int(np.floor(q)), int(np.ceil(q))
+                raise ValueError(f"segment {s} {name} at {t:.9g} s, off the walk's block grid of h = {h:.9g} s ({q:.6f} "
+                                 f"blocks); the nearest grid edges are {lo * h:.9g} s and {hi * h:.9g} s. Give a block_h "
+                                 f"that divides every edge")
+            out[s] = k
+        if A[s] // n_bw != (B[s] - 1) // n_bw:
+            raise ValueError(f"segment {s} = ({a:.9g}, {b:.9g}) s crosses the boundary of the storage window at "
+                             f"{(A[s] // n_bw + 1) * n_bw * h:.9g} s: a segment lies within one window")
+    return A, B
+
+
+def segment_table(A, B, blocks, *, dtype):
+    """The rows' table ``(n, n_seg, 2)`` on the blocks ``blocks`` (walk-wide indices, traced): the weight ``w_s(t) =
+    (b_s - max(a_s, t))_+`` of segment ``s`` (edges ``a_s = A_s h``, ``b_s = B_s h``) in block units, as the
+    coefficients of ``1`` and ``tau`` in block ``b`` (``t = (b + 1/2 + tau) h``): ``(B_s - A_s, 0)`` before the segment,
+    ``(B_s - b - 1/2, -1)`` within it, ``(0, 0)`` after it. Every entry is a half-integer, exact in ``dtype``, so that
+    ``h sum_b sum_j table[b, s, j] M_j = sum_i w_s(t_i) dx_i`` (``t_i`` each step's midpoint) is, by parts, ``int_{a_s}^{b_s}
+    (x(t) - x(0)) dt`` with ``x`` linear between the walk's steps: the trapezoid of its positions at its own step."""
+    b = jnp.asarray(blocks).astype(jnp.int32)[:, None]
+    A_ = jnp.asarray(np.asarray(A, np.int32))[None, :]
+    B_ = jnp.asarray(np.asarray(B, np.int32))[None, :]
+    inside = (b >= A_) & (b < B_)
+    c0 = jnp.where(b < A_, (B_ - A_).astype(dtype), jnp.where(inside, (B_ - b).astype(dtype) - jnp.asarray(0.5, dtype),
+                                                              jnp.zeros((), dtype)))
+    c1 = jnp.where(inside, -jnp.ones((), dtype), jnp.zeros((), dtype))
+    return jnp.stack([c0, c1], axis=-1)
+
+
 #: the floating-point types the walk's accumulators may hold (``accumulation_dtype``): float32 is the production
 #: precision, float64 the reference precision of the same walk
 ACCUMULATION_DTYPES = ("float32", "float64")
@@ -639,17 +705,21 @@ def ring_projection(tab, mom):
     return acc
 
 
-def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, dtype, K_c3=None, n_ch=0, emit=None, count=None, offset=0, n_checks=0):
+def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, dtype, K_c3=None, n_ch=0, emit=None, count=None, offset=0, n_checks=0,
+              segments=None):
     """The ``n_blocks`` blocks of one walker (one window): ``interval(carry, b) -> (carry, ys, (M, B, Q, Qb, F, Qf, Qd,
     E, reads))`` walks block ``b`` (its moments from :func:`moment_scan`; ``b + offset`` is the walk-wide block index).
     Returns ``(carry, acc_pos (K+1, 3), acc_blt (K+1,) or None, acc_field (K_c3, n_ch) or None, emitted, counted,
     (qv_pos (3,), qv_blt () or None, qv_field (n_ch,) or None, qv_increments (n_ch,) or None, checks (2, n_checks,
-    n_ch) or None))``: the accumulators of the cosine projections
+    n_ch) or None), acc_seg (n_seg, 3) or None)``: the accumulators of the cosine projections
     (:func:`~dmipy_sim.replay.compression.block_table` evaluated per ring, the field's ``K_c3`` modes ``k = 0 .. K_c3 - 1`` at its own band),
     ``emit(ys)`` stacked over the blocks (None without ``emit``), ``count(ys)`` summed over them (int32; None without
     ``count``), each channel's quadratic variation over the window (the field's of its trapezoid increments and of its
-    read series) and the trapezoid's checks, summed per ring like the projections. The accumulators, the table and
-    the ring's product are ``dtype`` (:func:`accumulation_dtype`), the dtype ``interval``'s moments are held in."""
+    read series) and the trapezoid's checks, summed per ring like the projections, and with ``segments = (A, B)`` (the
+    walk-wide block edges of declared time segments, :func:`segment_blocks`) each segment's row ``sum_i c_s(t_i) dx_i``
+    in block units, the moments projected on :func:`segment_table` by a :func:`ring_projection` of its own (the bands'
+    product is the same program with or without it). The accumulators, the table and the ring's product are ``dtype``
+    (:func:`accumulation_dtype`), the dtype ``interval``'s moments are held in."""
     from ..replay.compression import block_table
     n_blocks, K, m = int(n_blocks), int(K), int(m)
     reads_f = int(n_ch) > 0                                                            # the field is read: its QVs
@@ -661,10 +731,12 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, dtype, K_c3=None, n_c
         return c, (mom, None if emit is None else emit(ys), None if count is None else count(ys).astype(jnp.int32))
 
     def ring(state, idx):
-        c, ap, ab, af, n, qp, qb, qf, qd, ec = state
+        c, ap, ab, af, n, qp, qb, qf, qd, ec, asg = state
         c, (mom, e, k) = jax.lax.scan(block, c, idx)
         tab = block_table(1.0, n_blocks, K, m, blocks=idx, xp=jnp, dtype=dtype)       # (R, K+1, m+1), no walker in it
         ap = ap + ring_projection(tab, mom[0])
+        if segments is not None:                                                       # (R, n_seg, 2): the rows' own product
+            asg = asg + ring_projection(segment_table(segments[0], segments[1], idx + offset, dtype=dtype), mom[0])
         qp = qp + mom[2].sum(axis=0)
         if has_blt:
             ab = ab + ring_projection(tab, mom[1])
@@ -679,14 +751,15 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, dtype, K_c3=None, n_c
                 ec = ec + mom[7].sum(axis=0)
         if count is not None:
             n = n + k.sum().astype(jnp.int32)
-        return (c, ap, ab, af, n, qp, qb, qf, qd, ec), e
+        return (c, ap, ab, af, n, qp, qb, qf, qd, ec, asg), e
 
     state = (carry, jnp.zeros((K + 1, 3), dtype), jnp.zeros((K + 1,), dtype) if has_blt else None,
              jnp.zeros((K_c3, int(n_ch)), dtype) if has_f else None,
              jnp.int32(0) if count is not None else None, jnp.zeros((3,), dtype),
              jnp.zeros((), dtype) if has_blt else None, jnp.zeros((int(n_ch),), dtype) if reads_f else None,
              jnp.zeros((int(n_ch),), dtype) if reads_f else None,
-             jnp.zeros((2, int(n_checks), int(n_ch)), dtype) if (reads_f and n_checks) else None)
+             jnp.zeros((2, int(n_checks), int(n_ch)), dtype) if (reads_f and n_checks) else None,
+             jnp.zeros((len(segments[0]), 3), dtype) if segments is not None else None)
     n_full, rem = divmod(n_blocks, RING)
     parts = []
     if n_full:
@@ -697,8 +770,8 @@ def ring_scan(interval, carry, n_blocks, K, m, *, has_blt, dtype, K_c3=None, n_c
         state, e = ring(state, n_full * RING + jnp.arange(rem, dtype=jnp.int32))
         parts.append(e)
     stacked = parts[0] if len(parts) == 1 else jax.tree_util.tree_map(lambda *a: jnp.concatenate(a, axis=0), *parts)
-    c, ap, ab, af, n, qp, qb, qf, qd, ec = state
-    return c, ap, ab, af, stacked, n, (qp, qb, qf, qd, ec)
+    c, ap, ab, af, n, qp, qb, qf, qd, ec, asg = state
+    return c, ap, ab, af, stacked, n, (qp, qb, qf, qd, ec), asg
 
 
 def coefficient_form(r0, r_end, acc_pos, scale):
@@ -720,15 +793,16 @@ def field_mode_form(acc_field, T):
     return jnp.asarray(cosine_mode_scale(acc_field.shape[0] - 1, T), acc_field.dtype)[:, None] * acc_field
 
 
-def accumulator_bytes(K, m, record, K_c3=0, n_ch=0, events_cap=0, *, itemsize):
+def accumulator_bytes(K, m, record, K_c3=0, n_ch=0, events_cap=0, n_seg=0, *, itemsize):
     """Device bytes one walker's accumulation holds through a batch: the level-2 accumulators (``(K+1)`` modes x 3
-    axes, + the local time's ``K+1`` when recorded, + the field's ``(K_c3+1) n_ch``), a ring's moments and the block's
-    running moments, the last field read, each of ``itemsize`` bytes (the accumulation dtype's: 4 for float32, 8 for
-    float64), and an events buffer of ``events_cap`` entries (five bytes each)."""
+    axes, + the local time's ``K+1`` when recorded, + the field's ``(K_c3+1) n_ch``, + ``n_seg`` declared segments'
+    rows x 3 axes), a ring's moments and the block's running moments, the last field read, each of ``itemsize`` bytes
+    (the accumulation dtype's: 4 for float32, 8 for float64), and an events buffer of ``events_cap`` entries (five
+    bytes each)."""
     ch = 3 + (1 if record else 0)
     w = int(itemsize)
     out = w * ch * ((int(K) + 1) + (RING + 1) * (int(m) + 1))
     if n_ch:
         out += w * int(n_ch) * (int(K_c3) + (RING + 1) * (int(m) + 1) + 1)
-    out += 5 * int(events_cap)
+    out += 5 * int(events_cap) + w * 3 * int(n_seg)
     return out

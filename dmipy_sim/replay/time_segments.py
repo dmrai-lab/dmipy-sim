@@ -42,6 +42,12 @@ carrying the walk's terms (truncation, quadrature, field read, the accumulator's
 band quantisation. Given a quantised :class:`~dmipy_replay.replay.replay.ReplayPack` instead (``source: "pack"``) it
 contracts the pack's bands: the certificate then carries the pack's band quantisation contracted through the partition
 (:func:`quantisation_term`), and the vectors are held to what the floor's budget leaves of it, so their words are wider.
+A walk that accumulated rows for declared segments (``CoefficientWalk.segment_rows``) is a third source: a partition
+of constant segments each of which is a declared one takes its vectors from those rows, ``gamma`` times the trapezoid
+of the walker's positions at the walk's own step (:func:`accumulated_terms`), so no band enters it; when every
+partition does, the source is ``"walk_segments"`` and the certificate's terms are those a row carries
+(:func:`row_terms`): the step quadrature (:func:`step_quadrature_term`) and the accumulator's rounding, with no band
+truncation and no block quadrature of the positions.
 
 **Widths derived per term.** A rounding ``delta_s`` per component of ``m_s`` is a phase error of variance at most
 ``|a_s|^2 delta_s^2 / 12``. The envelope bounds the levels: ``|a_s| <= G_max`` (a shape has ``max |psi| = 1``) and the
@@ -254,6 +260,70 @@ def segment_vectors(pack, partition):
         part = GAMMA * np.einsum("wjc,sj->wsc", C, W)
         m = part if m is None else m + part
     return m
+
+
+def accumulated_terms(walk, partition):
+    """The indices into ``walk.segment_rows`` of ``partition``'s terms, or None: a partition of constant segments each
+    of which is a segment the walk declared (its edges within :data:`~dmipy_sim.engine.accumulate.SEGMENT_GRID_TOL`
+    blocks, on the walk's clock) is served from the walk's accumulated rows; any other (a shaped term, a segment the
+    walk did not declare, a walk with no rows) from the bands."""
+    from ..coefficient_walk import _t_start
+    from ..engine.accumulate import SEGMENT_GRID_TOL
+    if walk.segment_rows is None or walk.segments is None or not partition.is_constant:
+        return None
+    edges = np.asarray(walk.segments["edges"], np.float64) + _t_start(walk.block)
+    tol = SEGMENT_GRID_TOL * float(walk.segments["h"])
+    idx = []
+    for a, b in np.asarray(partition.segments, np.float64).reshape(-1, 2):
+        hit = np.flatnonzero((np.abs(edges[:, 0] - a) <= tol) & (np.abs(edges[:, 1] - b) <= tol))
+        if hit.size != 1:
+            return None
+        idx.append(int(hit[0]))
+    return np.asarray(idx, np.int64)
+
+
+def step_quadrature_term(partition, reach, D, dt):
+    """The step quadrature of ``partition``'s rows accumulated in a walk of physics step ``dt`` and diffusivity ``D``
+    (rad^2 / 2, the criterion of every other term): a row is the trapezoid of the positions at the walk's steps, and
+    between two steps a free path's integral departs from the chord's by a bridge term of variance ``2 D dt^3 / 12``
+    per axis, independent over steps and axes, so segment ``s`` (``(b_s - a_s) / dt`` steps) carries per axis ``(b_s -
+    a_s) D dt^2 / 6`` and a level of at most ``reach_s`` (T/m) the phase variance ``gamma^2 reach_s^2 (b_s - a_s) D
+    dt^2 / 6``; the term is half their sum over the segments.
+
+    Its nature is SYSTEMATIC: the bridge is independent of the step positions in free diffusion, so the continuous
+    path's signal is the walk's times ``exp(-V / 2)`` (``V`` the summed phase variance): the walk's signal is too high
+    by that factor, and more walkers do not average it down. For free diffusion the value is exact at a level of
+    ``reach_s``. For a restricted walk it bounds the VARIANCE part of the bridge only (a confined bridge is no wider than
+    a free one): near a wall the bridge between two step positions has a non-zero mean, a first-order error that
+    belongs to the step law at the walls, which this term does not carry."""
+    from dmipy_analytic.constants import GAMMA
+    dur = np.asarray([b - a for a, b in np.asarray(partition.segments, np.float64).reshape(-1, 2)])
+    v = float(np.sum(GAMMA ** 2 * np.asarray(reach, np.float64) ** 2 * dur * float(D) * float(dt) ** 2 / 6.0))
+    return 0.5 * v
+
+
+def row_terms(terms, partitions, D, dt):
+    """The certificate's terms for vectors read from a walk's accumulated rows, from the pack's ``terms`` of the same
+    walk: a row is the trapezoid of the walker's positions at the walk's own step, so it carries no band
+    ``truncation`` and no block quadrature of the positions (``quadrature.positions``; the other channels' quadrature,
+    which the tiers read from the bands, stays), and it carries ``step_quadrature``, the largest over ``partitions``
+    (``{name: (Partition, reach)}``) of :func:`step_quadrature_term`, and the accumulator's ``rounding``; the field
+    read's term and the other channels' quadrature are the tiers'. ``rows`` names the terms a row carries and those it
+    does not."""
+    out = {k: v for k, v in terms.items() if k not in ("truncation", "truncation_from", "quadrature")}
+    q = {k: v for k, v in (terms.get("quadrature") or {}).items() if k != "positions"}
+    if q:
+        out["quadrature"] = q
+    out["step_quadrature"] = max(step_quadrature_term(p, r, D, dt) for p, r in partitions.values())
+    out["rows"] = dict(carries=["step_quadrature"] + (["rounding"] if "rounding" in out else []),
+                       absent=["truncation", "quadrature.positions"], step_s=float(dt), D=float(D),
+                       step_quadrature=dict(
+                           nature="systematic: the walk's signal exceeds the continuous path's by exp(V / 2); not "
+                                  "reduced by more walkers",
+                           scope="exact for free diffusion at the partition's reach; for a restricted walk a bound on the "
+                                 "bridge's variance only, not on its mean near a wall (the step law at the walls, not "
+                                 "carried)"))
+    return out
 
 
 def level_bound(partition, A, env):
@@ -603,7 +673,11 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
 
     ``source`` is the walk (:class:`~dmipy_sim.coefficient_walk.CoefficientWalk`), read in its float coefficients, with
     ``pack`` the pack built from it (its sibling; refused when its walkers' starts are not the walk's), or a quantised
-    :class:`~dmipy_replay.replay.replay.ReplayPack`. The floor target is ``floor_target``, else the pack's declared one, else
+    :class:`~dmipy_replay.replay.replay.ReplayPack`. A walk's partition of declared constant segments
+    (:func:`accumulated_terms`) takes its vectors from the walk's accumulated rows (``"vectors": "accumulated"`` in its
+    record, ``"bands"`` otherwise) and needs no band check; when every partition does, the source's kind is
+    ``"walk_segments"`` and the certificate's terms are :func:`row_terms` of the pack's; such a layout with
+    ``background`` (a column contracted from the bands) is refused by name. The floor target is ``floor_target``, else the pack's declared one, else
     its median per-voxel floor; the envelope the pack's (``g_max`` at most its ``G_max``). Returns the record.
 
     The source is read a walker range at a time (:meth:`~dmipy_replay.replay.replay.ReplayPack.walkers`, ranges of
@@ -611,6 +685,7 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     walker order and gathered into (voxel, pool) order by one sort over all rows at the end; a record's largest
     values are those of the stored float32 rows, the largest over the ranges. The rows and the record do not depend on the ranges: memory is bounded
     by one range, not by the walker count."""
+    from dmipy_analytic.constants import GAMMA
     from ..coefficient_walk import CoefficientWalk
     from .compression import slice_walkers
     from dmipy_replay.phantom.grid import Grid
@@ -653,6 +728,14 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     vox = np.ravel_multi_index(ijk.T, tuple(grid.shape)).astype(np.int64)
     part_rec, group_of = {}, {}
     groups = collections.OrderedDict()
+    acc = {name: (accumulated_terms(source, p) if kind == "walk" else None) for name, p in parts.items()}
+    if kind == "walk" and all(v is not None for v in acc.values()):
+        kind = src["kind"] = "walk_segments"
+        if background:
+            raise ValueError("a layout read from a walk's segment rows carries no band truncation and no block quadrature "
+                             "in its certificate, but the background column is contracted from the position bands and "
+                             "incurs both: a layout from segment rows with background=True is refused; write it without "
+                             "background, or from a walk without declared segments")
     for name, p in parts.items():
         if p.template is None:
             raise ValueError(f"partition {name!r} carries no template sequence: build it with Partition.of")
@@ -664,10 +747,13 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         if not np.any(reach > 0):
             raise ValueError(f"partition {name!r} has no refocused encoding within the envelope (fewer than two segments "
                              "carry a phase)")
-        _check_band(view, p, env)
-        v_src = 0.0 if kind == "walk" else quantisation_term(view, p, env)
+        if acc[name] is None:
+            _check_band(view, p, env)
+        v_src = 0.0 if kind in ("walk", "walk_segments") else quantisation_term(view, p, env)
         part_rec[name] = dict(p.to_meta(), group=group_of[name], reach=reach.tolist(), quantisation=float(v_src),
                               amax=None, column=f"p_{name}.npy")
+        if kind in ("walk", "walk_segments"):
+            part_rec[name]["vectors"] = "bands" if acc[name] is None else "accumulated"
     # the rows a walker range at a time, each column spilled in walker order; the records' largest values over them
     step = slice_walkers(view.arrays, slice_bytes)
     cols, group_rec, top = _Spill(out_dir), {}, {}
@@ -676,7 +762,9 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
         for a in range(0, n, step):
             sl = _positions_decoded(view.walkers(a, a + step))
             for name, p in parts.items():
-                _top(top, ("p", name), cols.add(f"p_{name}", segment_vectors(sl, p)))
+                vec = (segment_vectors(sl, p) if acc[name] is None else
+                       GAMMA * np.asarray(source.segment_rows[a:a + sl.n_walkers], np.float64)[:, acc[name], :])
+                _top(top, ("p", name), cols.add(f"p_{name}", vec))
             for key, (g, seq, names) in groups.items():
                 rows, rec = _group_tiers(sl, _gate_sequence(seq), tiers=tiers, background=background,
                                          background_amplitude=background_amplitude, ref=group_rec.get(g))
@@ -713,7 +801,11 @@ def segment_rows(source, partitions, out_dir, *, grid=None, pack=None, floor_tar
     finally:
         cols.discard()
     fid = meta.get("fidelity") or {}
-    certificate = dict(terms=fid.get("terms"), source=kind,
+    terms = fid.get("terms")
+    if src["kind"] == "walk_segments" and isinstance(terms, dict):
+        terms = row_terms(terms, {name: (p, np.asarray(part_rec[name]["reach"], np.float64)) for name, p in parts.items()},
+                          source.diffusivity, source.dt_sim)
+    certificate = dict(terms=terms, source=kind,
                        pack_quantisation=(None if kind == "walk" else
                                           dict(err_quantisation=fid.get("err_quantisation"),
                                                err_surface_quantisation=fid.get("err_surface_quantisation"),

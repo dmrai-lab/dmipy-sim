@@ -5,6 +5,11 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A walk accumulates the time integral of its displacement over declared time segments.** `_walk_geometry(segments=[(a, b), ...])`
+  adds per walker and segment `int_a^b (x(t) - x(0)) dt`, the trapezoid of its positions at the walk's own step, as
+  `CoefficientWalk.segment_rows` beside the unchanged bands, and `segment_rows` of the time-segment layout reads it as
+  a source whose certificate carries no band truncation; off by default, refused by name off the block grid, across a
+  storage window, empty, reversed or not increasing, and on any backend but the JAX kernels.
 - **A backend may declare the packed myelinated class, a closed-form field read in the walk and the record of the
   membrane trials.** Three capability names beside `PERMEABILITY_TABLE`, `STORAGE_WINDOWS` and `MT_BINDING` in
   `engine.backends`, each in `JAX_CAPABILITIES`: `PACKED_MYELINATED` (a `PackedMyelinatedCylinders` walk is handed to the

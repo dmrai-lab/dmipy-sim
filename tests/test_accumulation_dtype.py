@@ -199,7 +199,7 @@ def test_the_quadratic_variation_is_summed_in_the_dtype_from_a_float32_path(prec
         return c, None, mom
 
     c0 = ((jnp.int32(0),), None, None, None)
-    _, ap, _, _, _, _, (qp, _, _, _, _) = ring_scan(interval, c0, len(steps), 0, 0, has_blt=False, dtype=dtype)
+    _, ap, _, _, _, _, (qp, _, _, _, _), _ = ring_scan(interval, c0, len(steps), 0, 0, has_blt=False, dtype=dtype)
     assert qp.dtype == dtype and ap.dtype == dtype
     assert float(qp[0]) == (BIG + ONES if precision == "float64" else BIG)
     assert float(qp[1]) == float(qp[2]) == 0.0
@@ -218,7 +218,7 @@ def test_the_level2_accumulator_is_summed_in_the_dtype(precision):
         M = jnp.zeros((1, 3), dtype).at[0, 0].set(M0[b])
         return c, None, (M, None, jnp.zeros((3,), dtype), None, None, None, None, None, None)
 
-    _, ap, _, _, _, _, _ = ring_scan(interval, jnp.int32(0), int(M0.shape[0]), 0, 0, has_blt=False, dtype=dtype)
+    _, ap, _, _, _, _, _, _ = ring_scan(interval, jnp.int32(0), int(M0.shape[0]), 0, 0, has_blt=False, dtype=dtype)
     assert ap.dtype == dtype
     assert float(ap[0, 0]) == (BIG + ONES if precision == "float64" else BIG)
 
