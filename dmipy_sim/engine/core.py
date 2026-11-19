@@ -1721,6 +1721,8 @@ def _walk_geometry(
                 return geometry.pool_of(comp_id).astype(jnp.int8)
 
             def _inner_pm(carry, step_index, factor=None):
+                if factor is None:
+                    return step_fn_traj_pm(carry, step_index)
                 return step_fn_traj_pm(carry, step_index, factor)
 
         if record and not uses_myelin_traj and not _mt_walls:

@@ -183,7 +183,8 @@ def test_a_packed_cylinder_walker_of_factor_zero_never_crosses():
 # ── 4. the walker's own probability ────────────────────────────────────────────────────────────────────────────────
 
 def test_a_trials_outcome_is_its_word_against_the_walkers_own_threshold():
-    """One step of the mixed kernel per walker, factors 1/8, 1/2 and 1 in turn, its plain-wall trials logged: every
+    """One step of the mixed kernel per walker (steps up to six times the longest, so a step meets a plain wall
+    several times), factors 1/8, 1/2 and 1 in turn, its plain-wall trials logged: every
     granted trial's word is below :func:`realised_acceptance` at the walker's ``kappa_outer * factor / D`` and the
     logged overshoot (``d_perp = u R / 2``, bracketed by its float32 rounding), every refused trial's word is not; the
     cell's stated ``kappa_outer`` misjudges some of them."""
@@ -206,7 +207,7 @@ def test_a_trials_outcome_is_its_word_against_the_walkers_own_threshold():
     pts = (CENTRES[k] + (outer[k] + off)[:, None] * np.stack([np.cos(ang), np.sin(ang)], 1)).astype(f32)
     th = rng.uniform(0, 2 * np.pi, n)
     dirs = np.stack([np.cos(th), np.sin(th)], 1).astype(f32)
-    ls = (step_max * rng.uniform(0.2, 1.0, n)).astype(f32)
+    ls = (step_max * rng.uniform(0.2, 6.0, n)).astype(f32)                    # long: several encounters a step
     pool = np.where(off < 0, 1, 0).astype(np.int32)
     own = np.where(off < 0, k, 0).astype(np.int32)
     fac = np.array([F_A, F_B, 1.0], f32)[np.arange(n) % 3]
@@ -221,6 +222,7 @@ def test_a_trials_outcome_is_its_word_against_the_walkers_own_threshold():
     walker = np.broadcast_to(np.arange(n)[:, None], v.shape)[v]
     obj, ov, granted, word = o[v], u[v].astype(np.float64), g[v], W[v]
     assert obj.size > 500 and granted.sum() > 50 and (~granted).sum() > 50
+    assert v[:, 1:].sum() > 100                                                 # later encounters, each its own word
     kod_w = (k_out[obj] * fac[walker]).astype(f32) / f32(D)                  # the walker's own kappa / D, float32
     d_perp = ov * outer[obj].astype(f32).astype(np.float64) / 2.0
     lo = realised_acceptance(kod_w, (d_perp * (1 - 4e-7)).astype(f32)).astype(np.uint64)
