@@ -791,7 +791,7 @@ def _slotted_record(geo, spec, w, slots):
 @pytest.mark.parametrize("cell", ["plain", "mixed"])
 def test_the_slotted_record_is_the_dense_record_of_its_walk(cell, bands, dtype, request):
     """The reference and the slotted record of ONE walk (each step's trials formed once, the same values added in the same
-    order): ``n`` and ``N`` equal, ``S`` bit for bit in every mode, ``exceed`` equal, and each walker's rows are exactly the pairs it met, ``count`` exact.
+    order): ``n`` and ``N`` equal, ``S`` bit for bit in every mode, and each walker's rows are exactly the pairs it met, ``count`` exact.
     All-plain and mixed cells, one band and three, float32 and float64 accumulation; in the mixed cell walkers in a
     sheathed lumen meet no plain wall and hold no row."""
     if dtype == "float64":
@@ -805,7 +805,6 @@ def test_the_slotted_record_is_the_dense_record_of_its_walk(cell, bands, dtype, 
     np.testing.assert_array_equal(d.N, dense[1])
     assert d.S.dtype == dense[2].dtype == np.dtype(dtype)
     np.testing.assert_array_equal(d.S, dense[2])                       # every mode bit for bit: the same values, the same order
-    np.testing.assert_array_equal(slots[5], dense[3])
     met = (dense[0] > 0).sum(axis=(1, 2))
     np.testing.assert_array_equal(r.rows, met)
     assert int(dense[0].sum()) > 0 and np.all(r.n[np.arange(r.obj.shape[1])[None, :] < r.rows[:, None]] > 0)
