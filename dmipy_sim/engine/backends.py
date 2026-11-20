@@ -76,7 +76,7 @@ FIELD_IN_WALK = "field_in_walk"
 
 #: A capability a backend declares in :attr:`Backend.capabilities`: it records the walk's membrane trials at its plain
 #: walls (``record_trials=``, :mod:`dmipy_sim.trial_record`), handed the spec and what the producer resolved from it
-#: (:attr:`WalkRequest.trial_record`, ``trial_steps``, ``trial_radii``, ``trial_u_max``, with ``count_walls`` on) and
+#: (:attr:`WalkRequest.trial_record`, ``trial_steps``, ``trial_radii``, ``trial_u_max``, ``trial_slots``, with ``count_walls`` on) and
 #: returning the batch's record per walker (:attr:`CoefficientBatch.trial_record`), which the producer joins into
 #: :attr:`~dmipy_sim.coefficient_walk.CoefficientWalk.trial_record` as it joins the JAX kernels' record.
 TRIAL_RECORD = "trial_record"
@@ -149,6 +149,9 @@ class WalkRequest(NamedTuple):
                                   #: order; None without a record
     trial_u_max: object = None    #: ``(n_objects,)`` float64 each object's bound on a trial's overshoot
                                   #: (:func:`~dmipy_sim.trial_record.u_max_of`); None without a record
+    trial_slots: object = None    #: the slots each walker's record holds (:func:`~dmipy_sim.trial_record.device_record`):
+                                  #: the spec's, the pilot's while it walks, then the capacity the pilot states; None
+                                  #: without a record
 
     @property
     def T(self):
@@ -282,13 +285,17 @@ class CoefficientBatch(NamedTuple):
                                       #: asked for them (``drop_pool_changes``); None otherwise
     n_windows: int = 1                #: the storage windows on the form's second axis: the request's
     trial_record: object = None       #: the record of the batch's membrane trials when the request asks for it
-                                      #: (:attr:`WalkRequest.trial_record`): ``(n, N, S, exceed)``, ``n`` and ``N``
-                                      #: ``(n_b, n_objects, n_bands)`` the trials and the granted trials per walker
-                                      #: and (object, band) cell, ``exceed`` ``(n_b,)`` the trials whose overshoot
-                                      #: exceeded the object's ``trial_u_max`` -- each count an integer array with values
-                                      #: in ``[0, 2^31)``, held as int32 -- and ``S`` ``(n_b, n_objects, n_bands, modes)``
-                                      #: the Chebyshev sums, floating point in the backend's accumulation precision (the
-                                      #: batch's ``precision``), joined into the walk's record as returned; None otherwise
+                                      #: (:attr:`WalkRequest.trial_record`), in the request's ``trial_slots`` slots
+                                      #: per walker as :func:`~dmipy_sim.trial_record.device_record` holds them:
+                                      #: ``(key, n, N, S, count, exceed)``, ``key`` ``(n_b, slots)`` each slot's pair
+                                      #: ``object * n_bands + band`` in the order the walker first met it (-1 a free
+                                      #: slot), ``n`` and ``N`` ``(n_b, slots)`` its trials and granted trials, ``S``
+                                      #: ``(n_b, slots, modes)`` its Chebyshev sums, floating point in the backend's
+                                      #: accumulation precision (the batch's ``precision``), ``count`` ``(n_b,)`` the
+                                      #: distinct pairs the walker met (counting on past the slots) and ``exceed``
+                                      #: ``(n_b,)`` the trials whose overshoot exceeded the object's ``trial_u_max`` --
+                                      #: each count an integer array with values in ``[0, 2^31)``, held as int32 --
+                                      #: joined into the walk's record as returned; None otherwise
 
 
 class Backend:

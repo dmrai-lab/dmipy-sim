@@ -5,6 +5,20 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A walk records its membrane trials in a bounded number of slots per walker, one per (object, band) pair met.** The
+  record of `record_trials=` holds, per walker, one row per (object, time band) pair the walker met, in the order it
+  first met them (`TrialRecord.obj`, `band`, `n`, `N`, `S` of shape `(n_walkers, width)`, and `rows`, the pairs each
+  walker met), instead of one cell per pair of the cell: its memory is `bytes_per_walker(slots, modes, itemsize)`,
+  independent of the cell's object count, and a cell of thousands of objects is recorded. The numbers are those of
+  one cell per pair, exactly: `TrialRecord.to_dense()` gives that form for a small cell (refused by name above
+  `MAX_DENSE_BYTES_PER_WALKER` bytes per walker), its `n` and `N` equal and its `S` the same bits. The slots are
+  `TrialRecordSpec(slots=)`, or, when None, the largest count of a pilot of the walk's own walkers with the events
+  buffer's margin (`SLOTS_MARGIN`, `pilot_capacity`), stated in `work["trial_slots"]`; a walker that meets more pairs
+  than the slots refuses the walk by name with the count it reached and a suggested capacity, no trial dropped.
+  `MAX_BYTES_PER_WALKER` caps the slots' bytes. `take`, `bands`, `same_layout`, `concatenate`, `to_arrays` and
+  `from_arrays` work on the rows; `totals()` and `walker(w)` read them. A walk file holds the rows as `trial_row_*`
+  and `trial_rows`; a file holding the cells (`trial_n`, `trial_N`, `trial_S`) is refused by name. A backend that
+  declares `TRIAL_RECORD` is handed `WalkRequest.trial_slots` and returns `(key, n, N, S, count, exceed)` per slot.
 - **The field of a periodic cell of many parallel hollow cylinders is read from the near cylinders exactly and from a
   per-cell series for all the others, with a derived remainder bound.** `HollowCylinderField(read="near_far")` lays a
   grid of cells about the mean outer diameter over the cell (the shared periodic planar bucketing,

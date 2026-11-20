@@ -15,7 +15,14 @@ tests that compare sums accumulate in float64, under the ``x64`` fixture). The r
 8. the trial count is stored beside the granted count;
 9. a recorded walk's start and field read are stated, not chosen by its own walkers;
 10. a walker's row is its index in the seed, through joins, windows and the walk file;
-11. nothing is rounded: the sums are a recomputation of the kernel's own per-trial log.
+11. nothing is rounded: the sums are a recomputation of the kernel's own per-trial log;
+12. the record is held in bounded slots per walker, one per (object, band) pair met: the slotted record is the record
+    of one cell per pair, exactly, on the same walk; a walker that meets more pairs than the slots refuses the walk by
+    name with a counted, never dropped, overflow; the slots are stated or set by a pilot whose rule is recorded; the
+    walk itself does not change; and the record's bytes do not grow with the cell's object count.
+
+The record of one cell per (object, band) pair that the slotted record is compared to is :func:`_dense_record` below,
+a test-only reference carried through the walk beside the slotted record by ``_walk_geometry``'s ``_trial_device``.
 
 Requirement 7 (the coin) is ``tests/geometry/test_trial_coin.py``.
 """
@@ -34,7 +41,7 @@ from dmipy_sim.geometry.myelin import concentric_wall_kernel
 from dmipy_sim.geometry.packed import packed_wall_kernel
 from dmipy_sim.geometry.packing import periodic_min_gap
 from dmipy_sim.math.step_law import LONGEST_STEP
-from dmipy_sim.trial_record import TrialRecordSpec, device_record, u_max_of
+from dmipy_sim.trial_record import DeviceRecord, TrialRecord, TrialRecordSpec, device_record, u_max_of
 
 D = 2e-9
 T = 4e-3
@@ -66,6 +73,52 @@ def _walk(geo, n=32, T_max=T, **kw):
     return _walk_geometry(n, D, geo, T_max, BLOCK, seed=3, tiers="all", require_gpu=False, **kw)
 
 
+def _one_walker_dense(rec, u_max, band_edges, modes):
+    """One walker's slotted record (``device_record``'s ``(key, n, N, S, count, exceed)``) as ``(n, N, S)`` of one cell
+    per (object, band) pair (:meth:`TrialRecord.to_dense`)."""
+    key, n, N, S, count, _ = (np.asarray(x)[None] for x in rec)
+    r = TrialRecord.from_slots(key, n, N, S, count, u_max=u_max, band_edges=band_edges, modes=modes,
+                               object_radii=np.ones(len(u_max)))
+    d = r.to_dense()
+    return d.n[0], d.N[0], d.S[0]
+
+
+def _dense_record(steps, u_max, modes, dtype):
+    """The test's reference: the record of one cell per (object, band) pair, carried per walker in the form of
+    :func:`~dmipy_sim.trial_record.device_record` (``init`` takes the slots and ignores them). ``init`` is ``(n
+    (n_objects, n_bands) int32, N (n_objects, n_bands) int32, S (n_objects, n_bands, modes), exceed int32)``;
+    ``add_trials`` scatters a step's trials (the record's own :attr:`~dmipy_sim.trial_record.DeviceRecord.trials`: the
+    same band, terms and outcomes) into the cell of their object and band, one ``.at[].add`` per array."""
+    record = device_record(steps, u_max, modes, dtype)
+    n_objects, n_bands = len(u_max), int(len(steps) - 1)
+
+    def init(slots):
+        z = jnp.zeros((n_objects, n_bands), jnp.int32)
+        return (z, z, jnp.zeros((n_objects, n_bands, modes), dtype), jnp.int32(0))
+
+    def add_trials(rec, t):
+        n, N, S, exceed = rec
+        n = n.at[t.obj, t.band].add(t.valid.astype(jnp.int32))
+        N = N.at[t.obj, t.band].add((t.valid & t.granted).astype(jnp.int32))
+        S = S.at[t.obj, t.band].add(jnp.where(t.valid[:, None], t.terms, jnp.zeros((), dtype)))
+        return (n, N, S, exceed + jnp.sum(t.exceeds).astype(jnp.int32))
+
+    return DeviceRecord(init, lambda rec, log, step, keep=None: add_trials(rec, record.trials(log, step, keep)),
+                        record.trials, add_trials)
+
+
+def _dense_and_slotted(steps, u_max, modes, dtype):
+    """The reference and the slotted record carried side by side in one walk: ``((n, N, S, exceed), (key, n, N, S,
+    count, exceed))`` per walker; each step's trials are formed ONCE (:attr:`~dmipy_sim.trial_record.DeviceRecord.trials`)
+    and the same values added to both, in the log's order."""
+    dense, slotted = _dense_record(steps, u_max, modes, dtype), device_record(steps, u_max, modes, dtype)
+
+    def add(rec, log, step, keep=None):
+        t = slotted.trials(log, step, keep)
+        return (dense.add_trials(rec[0], t), slotted.add_trials(rec[1], t))
+    return DeviceRecord(lambda slots: (dense.init(slots), slotted.init(slots)), add, None, None)
+
+
 ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "qv_positions",
           "qv_boundary", "field_coeffs", "qv_field", "qv_field_increments")
 
@@ -82,8 +135,8 @@ def _assert_same_walk(a, b):
         if x is not None:
             for f in ("offsets", "t", "label"):
                 np.testing.assert_array_equal(getattr(x, f), getattr(y, f), err_msg=f"{name}.{f}")
-    wa = {k: v for k, v in a.work.items() if k != "block"}
-    wb = {k: v for k, v in b.work.items() if k != "block"}
+    wa = {k: v for k, v in a.work.items() if k not in ("block", "trial_slots")}     # the record states its slots
+    wb = {k: v for k, v in b.work.items() if k not in ("block", "trial_slots")}
     assert wa == wb
     assert a.illegal_crossings == b.illegal_crossings
 
@@ -110,8 +163,8 @@ def test_a_trial_is_accounted_in_its_cell_with_its_overshoot_and_outcome(x64):
     against ``numpy.polynomial.chebyshev`` at relative 1e-12."""
     steps = np.array([0, 4, 10])                                       # two bands: steps ending in [0, 4) and [4, 10]
     u_max = np.array([0.5, 0.25, 0.4])
-    init, add = device_record(3, steps, u_max, 4, jnp.float64)
-    rec = init()
+    init, add = device_record(steps, u_max, 4, jnp.float64)[:2]
+    rec = init(6)
     # step 1 (ends at 2: band 0): three entries of the loop, two trials at object 0, one iteration without a trial
     log1 = TrialLog(jnp.array([True, True, False, False]), jnp.array([0, 0, 2, 0], jnp.int32),
                     jnp.array([0.1, 0.3, 0.2, 0.0], jnp.float32), jnp.array([True, False, True, False]))
@@ -120,7 +173,8 @@ def test_a_trial_is_accounted_in_its_cell_with_its_overshoot_and_outcome(x64):
                     jnp.array([0.05, 0.35, 0.15, 0.25], jnp.float32), jnp.array([False, True, True, False]))
     rec = add(rec, log1, jnp.int32(1))
     rec = add(rec, log2, jnp.int32(6))
-    n, N, S, exceed = (np.asarray(x) for x in rec)
+    exceed = np.asarray(rec[5])
+    n, N, S = _one_walker_dense(rec, u_max, (0.0, 4.0, 10.0), 4)
     want_n = np.zeros((3, 2), int); want_n[0, 0] = 2; want_n[2, 1] = 4
     want_N = np.zeros((3, 2), int); want_N[0, 0] = 1; want_N[2, 1] = 2
     np.testing.assert_array_equal(n, want_n)
@@ -203,7 +257,8 @@ def test_the_records_counts_are_the_walks_work_on_an_all_plain_cell(plain_walks)
     _, w = plain_walks
     r = w.trial_record
     assert int(r.n.sum()) == w.work["n_hits"] and int(r.N.sum()) == w.work["n_crossings"]
-    assert int(r.n[:, 1].sum()) > 0 and int(r.N[:, 1].sum()) == 0
+    d = r.to_dense()
+    assert int(d.n[:, 1].sum()) > 0 and int(d.N[:, 1].sum()) == 0
 
 
 def test_a_mixed_cells_record_is_its_plain_walls_encounters():
@@ -381,31 +436,41 @@ def test_the_record_is_exactly_its_own_walks_count(cell, dtype, request):
     r = w.trial_record
     assert r.S.dtype == np.dtype(dtype) and w.n_windows == 2
     assert np.all(r.N <= r.n)
+    d = r.to_dense()
     ev = _event_counts(w, (0, 1))
-    granted = r.N.sum(axis=1)                                                        # (walkers, bands)
+    granted = d.N.sum(axis=1)                                                        # (walkers, bands)
     assert np.all(granted >= ev) and np.all((granted - ev) % 2 == 0)
     if cell == "plain":
         assert int(np.asarray(w.comp_events.t).size) == w.work["n_crossings"]   # a crossing step changes the label
         assert int(r.n.sum()) == w.work["n_hits"]
     else:                          # a mixed cell's step counts as crossing when it grants any, an even number included
         assert int(np.asarray(w.comp_events.t).size) <= w.work["n_crossings"]
-        assert int(r.n[:, [0, 2]].sum()) == 0 and int(r.n[:, [1, 3]].sum()) > 0
+        assert int(d.n[:, [0, 2]].sum()) == 0 and int(d.n[:, [1, 3]].sum()) > 0
         assert int(r.n.sum()) <= w.work["n_hits"]
     assert int(ev.sum()) > 0
     for i in range(2):
         wi = w.window(i)
         evi = _event_counts(wi, (0, 1))
         np.testing.assert_array_equal(evi, ev[:, 2 * i:2 * i + 2])
-        np.testing.assert_array_equal(wi.trial_record.N, r.N[:, :, 2 * i:2 * i + 2])
+        np.testing.assert_array_equal(wi.trial_record.to_dense().N, d.N[:, :, 2 * i:2 * i + 2])
 
 
 def test_recorded_bits_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_bits, plain_walks):
-    """On the recording build and host the two programs walk the same bits: every array, the work, the events."""
+    """On the recording build and host the two programs walk the same bits: every array, the work, the events; and the
+    walk carrying the record of one cell per (object, band) pair (:func:`_dense_record`) is the same bits as both."""
     _assert_same_walk(*plain_walks)
+    dense = _walk(_dense(), record_trials=SPEC, _trial_device=_dense_record)
+    _assert_same_walk(dense, plain_walks[1])
+    _assert_same_walk(dense, plain_walks[0])
 
 
 def test_recorded_bits_the_record_changes_no_bit_of_a_mixed_cells_walk(recorded_bits, mixed_walks):
+    """As on the plain cell: the walks with and without the record, and the walk carrying the record of one cell per
+    (object, band) pair (:func:`_dense_record`), are the same bits."""
     _assert_same_walk(*mixed_walks)
+    dense = _walk(_mixed(), record_trials=SPEC, _trial_device=_dense_record)
+    _assert_same_walk(dense, mixed_walks[1])
+    _assert_same_walk(dense, mixed_walks[0])
 
 
 # ── 5. the overshoot's bound ────────────────────────────────────────────────────────────────────────────────────────
@@ -417,7 +482,8 @@ def test_every_overshoot_is_within_its_objects_bound():
     r = w.trial_record
     assert int(r.n.sum()) >= 100_000
     np.testing.assert_allclose(r.u_max, u_max_of(RADII, np.full(6, D), w.dt_sim), rtol=0, atol=0)
-    mean_u = r.S[..., 0].sum(axis=(0, 2)) / np.maximum(r.n.sum(axis=(0, 2)), 1)
+    d = r.to_dense()
+    mean_u = d.S[..., 0].sum(axis=(0, 2)) / np.maximum(d.n.sum(axis=(0, 2)), 1)
     assert np.all(mean_u < r.u_max)
 
 
@@ -441,7 +507,7 @@ def test_a_schedules_breakpoint_at_a_band_edge_splits_the_trials():
     head = _dense(permeability=sched)
     head.count_walls = True
     first = _walk(head, T_max=1e-3, sub_steps=full.sub_steps, K=4)
-    r = full.trial_record
+    r = full.trial_record.to_dense()
     assert full.dt_sim == first.dt_sim
     assert int(r.n[:, :, 0].sum()) == first.work["n_hits"] and int(r.N[:, :, 0].sum()) == first.work["n_crossings"]
     assert int(r.N[:, :, 0].sum()) > 0
@@ -456,12 +522,12 @@ def test_a_trial_goes_to_the_band_of_its_steps_end():
     spec = TrialRecordSpec(modes=1, band_edges=(0.0, 4.0, 6.5, 10.0))
     steps = edge_steps(spec, 10.0, 1.0, 10, 10)
     np.testing.assert_array_equal(steps, [0, 4, 6, 10])
-    init, add = device_record(1, steps, [1.0], 1, jnp.float32)
+    init, add = device_record(steps, [1.0], 1, jnp.float32)[:2]
     one = TrialLog(jnp.array([True]), jnp.array([0], jnp.int32), jnp.array([0.5], jnp.float32), jnp.array([False]))
     bands = {}
     for s in range(10):
-        n = np.asarray(add(init(), one, jnp.int32(s))[0])[0]
-        bands[s] = int(np.flatnonzero(n)[0])
+        n, _, _ = _one_walker_dense(add(init(1), one, jnp.int32(s)), [1.0], (0.0, 4.0, 6.5, 10.0), 1)
+        bands[s] = int(np.flatnonzero(n[0])[0])
     assert bands == {0: 0, 1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 2, 7: 2, 8: 2, 9: 2}
 
 
@@ -470,7 +536,11 @@ def test_a_trial_goes_to_the_band_of_its_steps_end():
 def test_the_record_stores_the_trial_count_beside_the_granted_count(plain_walks):
     r = plain_walks[1].trial_record
     assert r.n.dtype == np.int32 and r.N.dtype == np.int32 and np.all(r.N <= r.n)
-    assert r.n.shape == r.N.shape == (32, 6, 3) and r.S.shape == (32, 6, 3, 3)
+    width = int(r.rows.max())
+    assert r.rows.shape == (32,) and 0 < width <= 6 * 3
+    assert r.n.shape == r.N.shape == r.obj.shape == r.band.shape == (32, width) and r.S.shape == (32, width, 3)
+    d = r.to_dense()
+    assert d.n.shape == d.N.shape == (32, 6, 3) and d.S.shape == (32, 6, 3, 3)
     assert r.modes == 3 and r.band_edges == SPEC.band_edges
     np.testing.assert_array_equal(r.object_radii, RADII)
 
@@ -509,7 +579,7 @@ def test_a_recorded_walk_walks_the_stated_forms():
 # ── 10. a stable walker index ───────────────────────────────────────────────────────────────────────────────────────
 
 def _assert_same_record(a, b):
-    for f in ("n", "N", "S", "u_max", "object_radii"):
+    for f in ("obj", "band", "n", "N", "S", "rows", "u_max", "object_radii"):
         np.testing.assert_array_equal(getattr(a, f), getattr(b, f), err_msg=f)
     assert a.band_edges == b.band_edges and a.modes == b.modes
 
@@ -518,10 +588,11 @@ def test_a_walkers_row_is_its_index_in_the_seed(tmp_path):
     """The walk of walkers [0, 32) and the join of the walks of [0, 16) and [16, 32) (each its own batch size) record
     the same; a walk file holds the record."""
     from dmipy_sim.coefficient_walk import CoefficientWalk, join_walks
-    whole = _walk(_dense(), n=32, record_trials=SPEC, events_capacity=64)
-    a = _walk_geometry(16, D, _dense(), T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8, record_trials=SPEC,
+    spec = TrialRecordSpec(modes=SPEC.modes, band_edges=SPEC.band_edges, slots=18)     # stated: the pieces' records agree
+    whole = _walk(_dense(), n=32, record_trials=spec, events_capacity=64)
+    a = _walk_geometry(16, D, _dense(), T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8, record_trials=spec,
                        events_capacity=64, walker_batch_size=8)
-    b = _walk_geometry(16, D, _dense(), T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8, record_trials=SPEC,
+    b = _walk_geometry(16, D, _dense(), T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8, record_trials=spec,
                        events_capacity=64, first_walker=16)
     _assert_same_record(join_walks([a, b]).trial_record, whole.trial_record)
     _assert_same_record(whole.take(np.arange(16)).trial_record, a.trial_record)
@@ -540,7 +611,7 @@ def test_a_windows_record_is_its_own_bands():
     assert w.n_windows == 2
     w0, w1 = w.window(0).trial_record, w.window(1).trial_record
     assert w0.band_edges == (0.0, 1e-3, 2e-3) and w1.band_edges == (2e-3, 3e-3, T)
-    np.testing.assert_array_equal(np.concatenate([w0.n, w1.n], axis=2), w.trial_record.n)
+    np.testing.assert_array_equal(np.concatenate([w0.to_dense().n, w1.to_dense().n], axis=2), w.trial_record.to_dense().n)
     alone = _walk(_dense(), T_max=2e-3, sub_steps=w.sub_steps, K=4,
                   record_trials=TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3)))
     np.testing.assert_array_equal(np.asarray(alone.position_coeffs), np.asarray(w.window(0).position_coeffs))
@@ -641,12 +712,14 @@ def test_the_sums_are_the_kernels_own_trials_recomputed(x64):
         jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
     u_max = 2.0 * LONGEST_STEP * (RADII.min() / 6) / RADII
     steps = np.array([0, 1000, 2000])
-    init, add = device_record(6, steps, u_max, 5, jnp.float64)
-    rec = init()
+    init, add = device_record(steps, u_max, 5, jnp.float64)[:2]
+    rec = init(12)
     log = jax.tree_util.tree_map(np.asarray, h.trials)
     for s in range(len(pts)):
         rec = add(rec, jax.tree_util.tree_map(lambda a: jnp.asarray(a[s]), h.trials), jnp.int32(s))
-    n, N, S, exceed = (np.asarray(x) for x in rec)
+    exceed = np.asarray(rec[5])
+    assert int(rec[4]) <= 12                                          # every pair in a slot
+    n, N, S = _one_walker_dense(rec, u_max, (0.0, 1000.0, 2000.0), 5)
     assert int(exceed) == 0
     want_n = np.zeros((6, 2), np.int64); want_N = np.zeros((6, 2), np.int64); want_S = np.zeros((6, 2, 5))
     for s in range(len(pts)):
@@ -669,6 +742,8 @@ def test_the_sums_are_the_kernels_own_trials_recomputed(x64):
     (lambda: TrialRecordSpec(modes=1, band_edges=(0.0, 2e-3, 2e-3, T)),
      "trial_record: band_edges must be strictly increasing, got (0.0, 0.002, 0.002, 0.004)"),
     (lambda: TrialRecordSpec(modes=1, band_edges=tuple(np.linspace(0.0, T, 66))), "trial_record: 65 bands exceed 64"),
+    (lambda: TrialRecordSpec(modes=1, band_edges=(0.0, T), slots=0),
+     "trial_record: slots must be a whole number of at least 1, or None for a pilot, got 0"),
 ])
 def test_a_malformed_record_spec_is_refused(make, message):
     with pytest.raises(ValueError, match="^" + re.escape(message) + "$"):
@@ -682,8 +757,8 @@ def test_a_malformed_record_spec_is_refused(make, message):
      "trial_record: band_edges must run from 0 to T_max = 0.004, got [0.0001, 0.004]"),
     ("dense", TrialRecordSpec(modes=1, band_edges=(0.0, 1e-3, T)), dict(window_T=2e-3),
      "trial_record: band_edges must contain the window boundary 0.002"),
-    ("dense", TrialRecordSpec(modes=50, band_edges=tuple(np.linspace(0.0, T, 65))), {},
-     "trial_record: 79872 bytes per walker exceed 65536"),
+    ("dense", TrialRecordSpec(modes=50, band_edges=tuple(np.linspace(0.0, T, 65)), slots=400), {},
+     "trial_record: 400 slots of 50 modes are 84808 bytes per walker, above 65536"),
     ("myelinated", SPEC, {}, "trial_record: PackedMyelinatedCylinders has no plain wall whose trials a walk records"),
 ])
 def test_a_record_the_walk_cannot_hold_is_refused(geo, spec, kw, message):
@@ -691,3 +766,192 @@ def test_a_record_the_walk_cannot_hold_is_refused(geo, spec, kw, message):
                                                                   compartments=COMPS)
     with pytest.raises(ValueError, match="^" + re.escape(message) + "$"):
         _walk(g, n=4, record_trials=spec, **kw)
+
+
+# ── 12. bounded slots per walker ────────────────────────────────────────────────────────────────────────────────────
+
+def _side_by_side(geo, spec, dtype="float32", **kw):
+    """The walk carrying the reference (:func:`_dense_record`) and the slotted record side by side, each step's trial
+    log added to both: ``(walk, (n, N, S, exceed) of the reference, (key, n, N, S, count, exceed) of the slots)``,
+    walker first."""
+    w = _walk(geo, record_trials=spec, accumulation_dtype=dtype, _trial_device=_dense_and_slotted, **kw)
+    leaves = w.trial_record
+    assert isinstance(leaves, tuple) and len(leaves) == 10
+    return w, leaves[:4], leaves[4:]
+
+
+def _slotted_record(geo, spec, w, slots):
+    radii, D_obj = geo.trial_objects(D)
+    return TrialRecord.from_slots(*slots[:5], u_max=u_max_of(radii, D_obj, w.dt_sim), band_edges=spec.band_edges,
+                                  modes=spec.modes, object_radii=radii)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("bands", ["one", "several"])
+@pytest.mark.parametrize("cell", ["plain", "mixed"])
+def test_the_slotted_record_is_the_dense_record_of_its_walk(cell, bands, dtype, request):
+    """The reference and the slotted record of ONE walk (each step's trials formed once, the same values added in the same
+    order): ``n`` and ``N`` equal, ``S`` bit for bit in every mode, and each walker's rows are exactly the pairs it met, ``count`` exact.
+    All-plain and mixed cells, one band and three, float32 and float64 accumulation; in the mixed cell walkers in a
+    sheathed lumen meet no plain wall and hold no row."""
+    if dtype == "float64":
+        request.getfixturevalue("x64")
+    spec = SPEC if bands == "several" else TrialRecordSpec(modes=2, band_edges=(0.0, T))
+    geo = _dense() if cell == "plain" else _mixed()
+    w, dense, slots = _side_by_side(geo, spec, dtype)
+    r = _slotted_record(geo, spec, w, slots)
+    d = r.to_dense()
+    np.testing.assert_array_equal(d.n, dense[0])
+    np.testing.assert_array_equal(d.N, dense[1])
+    assert d.S.dtype == dense[2].dtype == np.dtype(dtype)
+    np.testing.assert_array_equal(d.S, dense[2])                       # every mode bit for bit: the same values, the same order
+    met = (dense[0] > 0).sum(axis=(1, 2))
+    np.testing.assert_array_equal(r.rows, met)
+    assert int(dense[0].sum()) > 0 and np.all(r.n[np.arange(r.obj.shape[1])[None, :] < r.rows[:, None]] > 0)
+    if cell == "mixed":
+        assert (r.rows == 0).sum() > 0 and int(dense[0][r.rows == 0].sum()) == 0
+
+
+def test_a_walker_beyond_its_slots_is_counted_and_nothing_is_added_to_another_pair():
+    """One slot per walker beside the reference in one walk: the count is exact while it is at most 1 and at least the
+    pairs met beyond; the one slot holds the first pair met with exactly its own trials -- the trials of the pairs that
+    found no slot are added nowhere."""
+    spec = TrialRecordSpec(modes=SPEC.modes, band_edges=SPEC.band_edges, slots=1)
+    w, dense, slots = _side_by_side(_dense(), spec)
+    key, n, N, S, count, _ = slots
+    assert key.shape == (32, 1)
+    met = (dense[0] > 0).sum(axis=(1, 2))
+    assert (met > 1).sum() > 0
+    np.testing.assert_array_equal(count[met <= 1], met[met <= 1])
+    assert np.all(count[met > 1] >= met[met > 1])
+    first = count > 0
+    o, k = key[first, 0] // 3, key[first, 0] % 3
+    rows = np.flatnonzero(first)
+    np.testing.assert_array_equal(n[first, 0], dense[0][rows, o, k])
+    np.testing.assert_array_equal(N[first, 0], dense[1][rows, o, k])
+    np.testing.assert_array_equal(S[first, 0], dense[2][rows, o, k])
+    assert np.all(n[~first] == 0) and np.all(key[~first] == -1)
+
+
+def test_a_walk_beyond_its_slots_is_refused_with_the_count_and_a_capacity():
+    from dmipy_sim.trial_record import suggested_capacity
+    spec = TrialRecordSpec(modes=SPEC.modes, band_edges=SPEC.band_edges, slots=1)
+    with pytest.raises(ValueError, match=r"^trial_record: a walker met at least (\d+) \(object, band\) pairs where the "
+                                         r"record holds 1 slots: the walk is refused rather than a trial dropped\. Walk "
+                                         r"again with TrialRecordSpec\(slots=(\d+)\) \(the record's slots: "
+                                         r"\{'rule': 'given', 'pairs': 18, 'capacity': 1, 'bytes_per_walker': 32\}\)$") as e:
+        _walk(_dense(), record_trials=spec)
+    top, suggested = (int(x) for x in re.search(r"at least (\d+) .*slots=(\d+)\)", str(e.value)).groups())
+    assert top > 1 and suggested == suggested_capacity(top) >= top
+
+
+def test_the_pilot_states_the_slots_and_they_hold_the_walk(monkeypatch):
+    """A pilot of 8 of the 32 walkers that first carry 2 slots: it walks again until its largest count fits, and the
+    capacity is the stated rule on that count (the events buffer's margin), at least the largest count of the whole walk,
+    with the rule's inputs in ``work["trial_slots"]``; a stated capacity is recorded as given."""
+    from dmipy_sim import trial_record
+    from dmipy_sim.engine import accumulate
+    monkeypatch.setattr(accumulate, "PILOT_WALKERS", 8)
+    monkeypatch.setattr(trial_record, "PILOT_SLOTS", 2)
+    w = _walk(_dense(), record_trials=SPEC)
+    rec = w.work["trial_slots"]
+    assert trial_record.SLOTS_MARGIN == accumulate.EVENTS_MARGIN
+    assert rec["rule"] == "pilot" and rec["pilot_walkers"] == 8 and rec["pairs"] == 18
+    assert rec["pilot_slots"] > 2 and rec["pilot_max_pairs"] <= rec["pilot_slots"]
+    assert rec["margin"] == dict(factor=1.5, plus=8)
+    assert rec["capacity"] == trial_record.pilot_capacity(rec["pilot_max_pairs"], 18)
+    assert rec["capacity"] >= int(w.trial_record.rows.max())
+    assert rec["bytes_per_walker"] == trial_record.bytes_per_walker(rec["capacity"], 3, 4)
+    given = _walk(_dense(), n=8, record_trials=TrialRecordSpec(modes=1, band_edges=(0.0, T), slots=6))
+    assert given.work["trial_slots"] == dict(rule="given", pairs=6, capacity=6, bytes_per_walker=6 * 16 + 8)
+
+
+def test_the_rows_survive_take_bands_concatenate_and_the_walk_file(plain_walks, tmp_path):
+    """``take``, ``bands`` and ``concatenate`` are the dense record's selections, and the walk file holds the rows."""
+    r = plain_walks[1].trial_record
+    d = r.to_dense()
+    idx = np.array([5, 0, 31, 7])
+    for name in ("n", "N", "S"):
+        np.testing.assert_array_equal(getattr(r.take(idx).to_dense(), name), getattr(d, name)[idx])
+        np.testing.assert_array_equal(getattr(r.bands(1e-3, T).to_dense(), name), getattr(d, name)[:, :, 1:])
+        np.testing.assert_array_equal(getattr(r.bands(0.0, 1e-3).to_dense(), name), getattr(d, name)[:, :, :1])
+    b = r.bands(1e-3, T)
+    assert b.band_edges == SPEC.band_edges[1:] and np.all(b.band[b.obj >= 0] < 2)
+    joined = TrialRecord.concatenate([r.take(slice(0, 11)), r.take(slice(11, 32))])
+    for f in ("obj", "band", "n", "N", "S", "rows"):
+        np.testing.assert_array_equal(getattr(joined, f), getattr(r, f), err_msg=f)
+    back = TrialRecord.from_arrays(r.to_arrays())
+    for f in ("obj", "band", "n", "N", "S", "rows", "u_max", "object_radii"):
+        np.testing.assert_array_equal(getattr(back, f), getattr(r, f), err_msg=f)
+    n_tot, N_tot = r.totals()
+    np.testing.assert_array_equal(n_tot, d.n.sum(axis=(1, 2)))
+    np.testing.assert_array_equal(N_tot, d.N.sum(axis=(1, 2)))
+    one = r.walker(7)
+    assert len(one.obj) == r.rows[7]
+    np.testing.assert_array_equal(one.n, d.n[7][one.obj, one.band])
+
+
+def test_a_walk_file_of_the_dense_tensors_is_refused_by_name(plain_walks, tmp_path):
+    import json
+    from safetensors import safe_open
+    from safetensors.numpy import save_file
+    from dmipy_sim.coefficient_walk import CoefficientWalk
+    w = plain_walks[1]
+    path = tmp_path / "w.safetensors"
+    w.save(path)
+    with safe_open(str(path), framework="numpy") as f:
+        meta = f.metadata()
+        arrays = {k: f.get_tensor(k) for k in f.keys()}
+    d = w.trial_record.to_dense()
+    arrays = {k: v for k, v in arrays.items() if not k.startswith("trial_row")}
+    arrays.update(trial_n=d.n, trial_N=d.N, trial_S=d.S)
+    save_file(arrays, str(tmp_path / "dense.safetensors"), metadata=meta)
+    with pytest.raises(ValueError, match="^" + re.escape(
+            "trial_record: the walk file holds the record as one cell per (object, band) pair (trial_n, trial_N, "
+            "trial_S); this revision reads the record's rows (trial_row_obj, trial_row_band, trial_row_n, trial_row_N, "
+            "trial_row_S, trial_rows, trial_u_max, trial_band_edges, trial_object_radii): re-walk it") + "$"):
+        CoefficientWalk.load(tmp_path / "dense.safetensors")
+    assert json.loads(meta["walk"])["work"]["trial_slots"]["rule"] == "pilot"
+
+
+def test_the_dense_form_is_refused_above_its_size():
+    """``to_dense`` of 10 000 objects in 64 bands (24 B a cell) is refused by name; the rows hold it."""
+    from dmipy_sim.trial_record import MAX_DENSE_BYTES_PER_WALKER, dense_bytes_per_walker
+    n_obj = 10_000
+    r = TrialRecord(obj=np.array([[9_999]]), band=np.array([[63]]), n=np.array([[2]]), N=np.array([[1]]),
+                    S=np.ones((1, 1, 4), np.float32), rows=np.array([1]), u_max=np.ones(n_obj),
+                    band_edges=tuple(np.linspace(0.0, T, 65)), modes=4, object_radii=np.ones(n_obj))
+    b = dense_bytes_per_walker(n_obj, 64, 4, 4)
+    assert b == 15_360_000 > MAX_DENSE_BYTES_PER_WALKER
+    with pytest.raises(ValueError, match="^" + re.escape(
+            f"trial_record: the dense form of 10000 objects and 64 bands is {b} bytes per walker, above 65536") + "$"):
+        r.to_dense()
+    assert r.walker(0).obj.tolist() == [9_999] and r.totals()[0].tolist() == [2]
+
+
+def test_a_cell_of_ten_thousand_objects_is_recorded_in_bounded_slots():
+    """10 000 parallel cylinders, 3 000 of them plain (g-ratio 1, the class's plain cylinder), at a volume fraction of
+    0.6 (:func:`~dmipy_sim.geometry.densify.densify_packing`, gaps at least 0.03 of the mean radius, Gamma radii of CV
+    0.25, seed 0): 64 walkers over 312 steps record in the pilot's slots, a few hundred bytes per walker, where one
+    cell per (object, band) pair would hold 960 000 bytes per walker, above the dense form's limit."""
+    from dmipy_sim.geometry.densify import densify_packing
+    from dmipy_sim.trial_record import MAX_BYTES_PER_WALKER, MAX_DENSE_BYTES_PER_WALKER, dense_bytes_per_walker
+    n, cv = 10_000, 0.25
+    rng = np.random.default_rng(0)
+    radii = rng.gamma(1 / cv ** 2, 1e-6 * cv ** 2, n)
+    (centres, L), = densify_packing(radii, (0.6,), 2, seed=0, min_gap=0.03 * float(radii.mean()))
+    g = np.full(n, 0.7)
+    g[rng.permutation(n)[:3000]] = 1.0
+    geo = PackedMyelinatedCylinders(radii * g, g, centres, L, N_max=n, compartments=COMPS, kappa_inner=1e-5,
+                                    kappa_outer=np.where(g == 1.0, 4e-3, 0.0))
+    T_big = 6.4e-6                                         # a few hundred steps at this cell's step
+    spec = TrialRecordSpec(modes=4, band_edges=tuple(np.linspace(0.0, T_big, 5)))
+    w = _walk_geometry(64, D, geo, T_big, T_big / 4, seed=0, tiers="all", require_gpu=False, K=4, record_trials=spec)
+    r, rec = w.trial_record, w.work["trial_slots"]
+    assert 200 <= w.work["walker_steps"] // 64 <= 400
+    assert r.n_objects == n and rec["pairs"] == 4 * n and rec["rule"] == "pilot"
+    assert int(r.rows.max()) <= rec["capacity"] and rec["bytes_per_walker"] <= MAX_BYTES_PER_WALKER
+    assert int(r.n.sum()) > 0 and np.all(r.obj[r.obj >= 0] < n) and np.all(g[r.obj[r.obj >= 0]] == 1.0)
+    assert dense_bytes_per_walker(n, 4, 4, 4) == 960_000 > MAX_DENSE_BYTES_PER_WALKER
+    with pytest.raises(ValueError, match=r"^trial_record: the dense form of 10000 objects and 4 bands is 960000 bytes"):
+        r.to_dense()
