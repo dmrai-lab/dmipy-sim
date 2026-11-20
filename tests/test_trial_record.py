@@ -460,8 +460,12 @@ def test_the_record_is_exactly_its_own_walks_count(cell, dtype, request):
 
 
 def test_recorded_bits_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_bits, plain_walks):
-    """On the recording build and host the two programs walk the same bits: every array, the work, the events."""
+    """On the recording build and host the two programs walk the same bits: every array, the work, the events; and the
+    walk carrying the record of one cell per (object, band) pair (:func:`_dense_record`) is the same bits as both."""
     _assert_same_walk(*plain_walks)
+    dense = _walk(_dense(), record_trials=SPEC, _trial_device=_dense_record)
+    _assert_same_walk(dense, plain_walks[1])
+    _assert_same_walk(dense, plain_walks[0])
 
 
 def test_recorded_bits_the_record_changes_no_bit_of_a_mixed_cells_walk(recorded_bits, mixed_walks):
@@ -865,14 +869,6 @@ def test_the_pilot_states_the_slots_and_they_hold_the_walk(monkeypatch):
     assert rec["bytes_per_walker"] == trial_record.bytes_per_walker(rec["capacity"], 3, 4)
     given = _walk(_dense(), n=8, record_trials=TrialRecordSpec(modes=1, band_edges=(0.0, T), slots=6))
     assert given.work["trial_slots"] == dict(rule="given", pairs=6, capacity=6, bytes_per_walker=6 * 16 + 8)
-
-
-def test_recorded_bits_the_slotted_and_dense_records_walk_the_same_bits(recorded_bits, plain_walks):
-    """On the recording build and host, the walk carrying the reference and the walk carrying the slotted record are
-    the same bits (and both the walk without a record, :func:`test_recorded_bits_the_record_changes_no_bit_of_a_plain_cells_walk`)."""
-    dense = _walk(_dense(), record_trials=SPEC, _trial_device=_dense_record)
-    _assert_same_walk(dense, plain_walks[1])
-    _assert_same_walk(dense, plain_walks[0])
 
 
 def test_the_rows_survive_take_bands_concatenate_and_the_walk_file(plain_walks, tmp_path):
