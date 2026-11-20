@@ -981,7 +981,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         geometry._centers_jax, geometry._inner_radii_jax, geometry._outer_radii_jax, L,
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
         geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls,
-        budget=geometry.bounce_budget, trials=bool(geometry.log_trials))
+        budget=geometry.bounce_budget, trials=bool(geometry.log_trials),
+        search=geometry.wall_search if geometry._is_packed_myelinated else None)
     budget = wall.bounce_loop.budget
 
     def move(r, s_c, comp_id, u, words, factor=None):
@@ -1014,6 +1015,7 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
 
     sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand
+    sub.wall_search, sub.grid_report = wall.search, wall.grid_report
     sub.move = move
     return sub
 

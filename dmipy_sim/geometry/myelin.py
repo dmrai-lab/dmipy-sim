@@ -95,9 +95,163 @@ def _pin_seeds(xy, centers, L, R_in, R_out, pool, nudge):
                                      jnp.asarray(R_out, f32), jnp.asarray(pool, jnp.int32)))
 
 
+#: The byte cap of a wall-search grid's cell table (int32 entries): a layout priced above it is not built.
+WALL_GRID_BYTE_CAP = 64 * 2 ** 20
+#: The cells per side a wall-search grid is priced at: ``ceil(sqrt(N_real) f)`` for each ``f`` here.
+WALL_GRID_CELL_FACTORS = (0.5, 1.0, 2.0)
+#: The float32 pad of the inclusion rule, in units of ``eps32 L`` (``eps32 = 2^-23``, ``L`` the cell side).
+WALL_GRID_PAD_EPS = 16.0
+
+
+def _grid_reach(half_diagonal, pad):
+    """The margin (m) of a grid cell's inclusion rule beyond the ``n_cand``-th smallest wall distance at its centre:
+    twice the cell's half-diagonal plus the float32 pad (:func:`_wall_grid_lists`)."""
+    return 2.0 * (half_diagonal + pad)
+
+
+def _periodic_spans(lo, hi, G):
+    """Per object the cell-index intervals ``[a, b]`` that cover the unwrapped index range ``[lo, hi]`` on a periodic
+    axis of ``G`` cells: one interval (the whole axis when the range spans ``G`` cells or more, else ``[lo mod G,
+    hi mod G]`` when it does not cross the seam) or two (``[lo mod G, G - 1]`` and ``[0, hi mod G]``). Returns
+    ``(a1, b1, a2, b2, two)``; the intervals of one object are disjoint."""
+    full = (hi - lo + 1) >= G
+    a, b = np.mod(lo, G), np.mod(hi, G)
+    two = (~full) & (a > b)
+    a1 = np.where(full, 0, a)
+    b1 = np.where(full, G - 1, np.where(two, G - 1, b))
+    a2 = np.where(two, 0, 0)
+    b2 = np.where(two, b, -1)
+    return a1, b1, a2, b2, two
+
+
+def _wall_grid_lists(c, R, ids, L, G, n_cand, gmin, cs, pad):
+    """The cell table of a wall-search grid of ``G x G`` cells over the periodic cell of side ``L``.
+
+    ``c`` ``(n, 2)`` and ``R`` ``(n,)`` are the real cylinders' centres and outer radii (float64 values of the
+    kernel's float32 operands), ``ids`` their indices in the kernel's arrays (ascending); ``gmin`` and ``cs`` the
+    float32 origin and cell size the kernel's lookup reads, ``pad`` the float32 pad (m). Cell ``(i, j)`` has the
+    centre ``x0 = gmin + ((i, j) + 1/2) cs``; its list is every cylinder whose exact minimum-image wall distance
+    ``d_k(x0) = |x0 - c_k|_per - R_k`` is at most ``D + _grid_reach(h, pad)``, ``D`` the ``n_cand``-th smallest
+    ``d_k(x0)`` and ``h = cs / sqrt(2)`` the cell's half-diagonal, in ascending index.
+
+    The cylinders within a reach ``r`` of the cell are found by the shared bucketing
+    (:func:`._grid.bucket_by_bbox`) of each cylinder's box ``c_k +- (R_k + r)``, split at the periodic seam into
+    the intervals of :func:`_periodic_spans`; ``r`` grows until every cell's ``D + _grid_reach`` is within it, so
+    the bucket holds every cylinder the rule lists. Returns ``(table (G * G, M) int32, M)``, ``-1`` padding a row."""
+    from ._grid import bucket_by_bbox
+    n = len(R)
+    s = L / G                                             # the bucketing's spacing (a superset filter)
+    h = float(cs) / np.sqrt(2.0)
+    extra = _grid_reach(h, pad)
+    ii = np.arange(G)
+    x0 = float(gmin) + (ii + 0.5) * float(cs)
+    X, Y = np.meshgrid(x0, x0, indexing="ij")
+    cells = np.stack([X.ravel(), Y.ravel()], 1)           # (G*G, 2), cell id = i * G + j
+    slack = 1e-9 * L
+    r = extra + np.sqrt(n_cand * L * L / (np.pi * n)) + float(np.max(R))
+    while True:
+        half = R + r + slack
+        lo = np.floor((c - half[:, None] + L / 2.0) / s).astype(np.int64)
+        hi = np.floor((c + half[:, None] + L / 2.0) / s).astype(np.int64)
+        xa1, xb1, xa2, xb2, x2 = _periodic_spans(lo[:, 0], hi[:, 0], G)
+        ya1, yb1, ya2, yb2, y2 = _periodic_spans(lo[:, 1], hi[:, 1], G)
+        own, LO, HI = [], [], []
+        for (xa, xb, xm) in ((xa1, xb1, np.ones(n, bool)), (xa2, xb2, x2)):
+            for (ya, yb, ym) in ((ya1, yb1, np.ones(n, bool)), (ya2, yb2, y2)):
+                m = xm & ym
+                own.append(np.flatnonzero(m))
+                LO.append(np.stack([xa[m], ya[m], np.zeros(m.sum(), np.int64)], 1))
+                HI.append(np.stack([xb[m], yb[m], np.zeros(m.sum(), np.int64)], 1))
+        own = np.concatenate(own)
+        order = np.argsort(own, kind="stable")            # rows by cylinder: ids ascend within a cell
+        own = own[order]
+        table, C, _, _ = bucket_by_bbox(np.concatenate(LO)[order], np.concatenate(HI)[order], (G, G, 1))
+        valid = table >= 0
+        cand = np.where(valid, own[np.where(valid, table, 0)], 0)
+        q = cells[:, None, :] - c[cand]
+        q -= L * np.round(q / L)
+        d = np.where(valid, np.hypot(q[..., 0], q[..., 1]) - R[cand], np.inf)
+        if C >= n_cand:
+            D = np.partition(d, n_cand - 1, axis=1)[:, n_cand - 1]
+        else:
+            D = np.full(G * G, np.inf)
+        need = D + extra
+        if np.all(need <= r):
+            break
+        r = float(np.max(need)) if np.all(np.isfinite(need)) else 2.0 * r
+    keep = d <= need[:, None]
+    M = int(keep.sum(1).max())
+    pos = np.argsort(~keep, axis=1, kind="stable")[:, :M]
+    rows = np.arange(G * G)[:, None]
+    out = np.where(keep[rows, pos], ids[cand[rows, pos]], -1).astype(np.int32)
+    return out, M
+
+
+def _wall_search(search, centers, outer, L, N, n_cand):
+    """The candidate search :func:`concentric_wall_kernel` runs: ``(name, grid, report, reason)``.
+
+    ``name`` is ``"grid"`` or ``"dense"``; ``grid`` the ``(table, gmin, cs, G)`` of the grid (None for the dense
+    search), ``report`` its record (None for the dense search) and ``reason`` the sentence that states why the search
+    is the one it is. The rule: no grid without a periodic cell (``L`` None), when the candidate count is the whole
+    array (``n_cand == N``, where the dense search takes every slot in index order) or when fewer than ``n_cand``
+    cylinders are real (the dense search's candidates then include padding slots). Otherwise the grid is priced at
+    the cells per side of :data:`WALL_GRID_CELL_FACTORS` and the layout of the smallest list length ``M`` within
+    :data:`WALL_GRID_BYTE_CAP` is taken (ties: the fewer bytes); ``search=None`` runs it when ``M < N`` (it reads
+    fewer walls per search than the dense search's ``N``), ``"grid"`` runs it whatever ``M``, ``"dense"`` never.
+    ``"grid"`` where no grid can be built is refused, naming the reason."""
+    if search not in (None, "dense", "grid"):
+        raise ValueError(f"search is None (the stated rule), 'dense' or 'grid'; got {search!r}")
+    outer64 = np.asarray(outer, np.float32).astype(np.float64)
+    real = outer64 > 0
+    n_real = int(real.sum())
+    if L is None:
+        reason = "no periodic cell (L is None): the grid covers a periodic cell"
+    elif n_cand >= N:
+        reason = f"the candidates are every one of the {N} slots (n_cand = N): there is nothing to search"
+    elif n_real < n_cand:
+        reason = (f"{n_real} real cylinders, fewer than the {n_cand} candidates: the dense search's candidates "
+                  f"include padding slots, which no cell list holds")
+    else:
+        reason = None
+    if reason is not None:
+        if search == "grid":
+            raise ValueError(f"concentric_wall_kernel(search='grid') is refused: {reason}")
+        return "dense", None, None, reason
+    if search == "dense":
+        return "dense", None, None, "search='dense' was given"
+    L32 = np.float32(L)
+    L64 = float(L32)
+    gmin = np.float32(-0.5) * L32
+    pad = WALL_GRID_PAD_EPS * float(np.finfo(np.float32).eps) * L64
+    c = np.asarray(centers, np.float32).astype(np.float64)[real]
+    ids = np.flatnonzero(real)
+    options, best = [], None
+    for f in WALL_GRID_CELL_FACTORS:
+        G = max(1, int(np.ceil(np.sqrt(n_real) * f)))
+        cs = np.float32(L32 / np.float32(G))
+        table, M = _wall_grid_lists(c, outer64[real], ids, L64, G, n_cand, gmin, cs, pad)
+        nbytes = int(table.size * 4)
+        options.append(dict(factor=float(f), cells_per_side=G, list_length=M, bytes=nbytes))
+        if nbytes <= WALL_GRID_BYTE_CAP and (best is None or (M, nbytes) < (best[1], best[2])):
+            best = (table, M, nbytes, gmin, cs, G)
+    if best is None:
+        reason = f"every priced layout is above the byte cap {WALL_GRID_BYTE_CAP} B: {options}"
+        if search == "grid":
+            raise ValueError(f"concentric_wall_kernel(search='grid') is refused: {reason}")
+        return "dense", None, None, reason
+    table, M, nbytes, gmin, cs, G = best
+    report = dict(cells_per_side=G, list_length=M, bytes=nbytes, byte_cap=WALL_GRID_BYTE_CAP, pad_m=pad,
+                  cell_size_m=float(cs), n_cand=int(n_cand), n_slots=int(N), options=options)
+    if search is None and M >= N:
+        return "dense", None, None, (f"the grid's list length {M} is not below the {N} slots the dense search reads")
+    reason = "search='grid' was given" if search == "grid" else (f"the grid's list length {M} is below the {N} slots "
+                                                                 f"the dense search reads, at {nbytes} B")
+    return "grid", (table, gmin, cs, G), report, reason
+
+
 def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
                            kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None,
-                           trials=False):
+                           trials=False, search=None):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
 
     Cylinder ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
@@ -141,6 +295,50 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     wall at the permeability ``kappa_outer_k * factor`` (the float32 product), and a sheathed cylinder's two walls at
     their stated values; ``None`` is the factor 1 and the same program as before. A cell without a plain cylinder
     refuses a factor.
+
+    The candidate search. A step searches the cylinders twice: at its start, for the nearest cylinder (``argmin``
+    of the wall distance ``d_k = |_wrap(xy - c_k)| - outer_k`` in float32, a padding slot at infinity) and the
+    ``n_cand`` candidates (``top_k`` of ``-d``), and at its end ``xy_f``, for the owner (``argmin`` of ``d`` there).
+    The DENSE search computes ``d`` over all ``N`` slots. The GRID search reads ``d`` only on the list of the grid
+    cell holding the (wrapped) position: a table built once on the host over ``G x G`` cells of side ``s`` covering
+    the periodic cell, read through the shared cell grid (:func:`._grid.gather` with the walker's own cell as the one
+    offset, :func:`._grid.wrap_periodic`), each list in ascending cylinder index and padded with an entry at
+    infinite distance; the listed ``d`` are the dense search's values bit for bit (the same float32 operations on
+    the same operands), and ``argmin`` / ``top_k`` break ties by the lower position, which in an ascending list is
+    the lower cylinder index, as in the dense search. Both searches therefore return the same integers whenever
+    each list holds every cylinder that can be among the ``n_cand`` nearest anywhere in its cell, which the
+    inclusion rule guarantees:
+
+    *Inclusion rule.* Cell ``x0`` (its centre) lists every real cylinder with ``d_k(x0) <= D + 2 (h + pad)``,
+    ``d_k`` the exact minimum-image wall distance of the float32 operands, ``D`` the ``n_cand``-th smallest
+    ``d_k(x0)``, ``h = s / sqrt(2)`` the cell's half-diagonal and ``pad = 16 eps32 L`` (:data:`WALL_GRID_PAD_EPS`,
+    ``eps32 = 2^-23``). *Proof.* ``d_k`` is 1-Lipschitz (a minimum of distances to the images, less a constant).
+    Let ``p`` be the position (any periodic image of it), ``e`` a bound on the float32 error of a computed ``d_k``
+    and ``l`` a bound on how far the float32 lookup (the wrap, the division by ``s``, the clip into range) can place
+    ``p`` outside its cell, so that ``|p - x0| <= h + l`` for the cell read. The ``n_cand`` cylinders of
+    ``d_k(x0) <= D`` have ``d_k(p) <= D + h + l`` and computed values at most ``D + h + l + e``, so the
+    ``n_cand``-th smallest computed value at ``p`` is at most that; any cylinder ``j`` among the ``n_cand`` nearest
+    at ``p`` (or tied with the last of them) has a computed value at most that, so ``d_j(p) <= D + h + l + 2e`` and
+    ``d_j(x0) <= D + 2h + 2l + 2e``: listed when ``l + e <= pad``. With the coordinates of the position and the
+    centres within ``L`` of the origin (a walk wraps the position into the cell every step; a step's end is within
+    one step of it), with ``u = eps32 / 2``: the difference ``xy - c`` is within ``2 u L`` per component, the image
+    choice ``floor(q / L + 1/2)`` is decided within ``4.5 u`` of a half-integer, so a wrong image changes the
+    component's magnitude by at most ``9 u L``, and the wrapped component's rounding adds ``u L / 2``: ``11.5 u L``
+    per component, ``16.3 u L`` on the norm, and the norm's and the subtraction's own rounding ``2.2 u L``, so
+    ``e <= 18.5 u L``. The lookup's wrap is within ``3 u L``, the cell index (the float32 origin and cell size the
+    table was built with) within ``2 u L`` and the clip into range within ``u L`` per component, ``l <= 8.5 u L``.
+    ``e + l <= 27 u L = 13.5 eps32 L <= pad``. The end-of-step search is the case
+    ``n_cand = 1`` of the same lists (its ``D`` is no larger). Listing fewer than ``n_cand`` real cylinders cannot
+    happen (the ``n_cand`` of ``d_k(x0) <= D`` are listed).
+
+    Which search runs is the stated rule of :func:`_wall_search`, a cost choice since both return the same
+    integers: the grid when the cell is periodic, at least ``n_cand`` cylinders are real, ``n_cand < N``, and the
+    priced layout's list length ``M`` is below ``N`` within :data:`WALL_GRID_BYTE_CAP`; the dense search otherwise
+    (always without a periodic cell). ``search=`` forces ``"dense"`` or ``"grid"``; ``"grid"`` where the rule cannot
+    build one is refused, naming why. The kernel carries ``wall.search`` (``"grid"`` or ``"dense"``),
+    ``wall.grid_report`` (cells per side, list length ``M``, bytes, the priced options; None for the dense search),
+    ``wall.search_reason`` and the two searches themselves, ``wall.nearest(xy) -> (k_near, idx)`` and
+    ``wall.owner(xy_f) -> k_new``, which ``wall`` calls.
     """
     N = int(inner.shape[0])
     outer_np = np.asarray(outer, np.float64); inner_np = np.asarray(inner, np.float64)
@@ -162,6 +360,8 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     loop = BounceLoop(budget or derived, count=count, log=trials)
     n_cand = int(min(N, max(8, np.ceil(np.pi * (1.0 + float(step_max) / R_in_min)) + 2)))
 
+    search_name, grid, grid_report, search_reason = _wall_search(search, centers, outer, L, N, n_cand)
+
     real = outer > 0
     plain = jnp.asarray(plain_np)
     ar = jnp.arange(n_cand)
@@ -175,21 +375,61 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     def _pin(xy, q, R_in, R_out, pool):
         return pin_to_pool(xy, q, R_in, R_out, pool, nudge)
 
+    if grid is not None:
+        from ._grid import gather, wrap_periodic
+        table, gmin, cs, G = grid
+        CELL = jnp.asarray(table)
+        OFF = jnp.zeros((1, 3), jnp.int32)                                     # the walker's own cell, inflated
+        GMIN = jnp.asarray([gmin, gmin, 0.0], f32)
+        CS = f32(cs)
+        DIMS = jnp.asarray([G, G, 1], jnp.int32)
+        VMIN = jnp.asarray([gmin, gmin], f32)
+        PER = jnp.ones(2, jnp.int32)
+
+    def _listed(xy):
+        """The listed cylinders of the cell holding ``xy`` (wrapped into the cell) and their wall distances, the
+        unlisted padding at infinity: ``(ids (M,), dist (M,))``."""
+        p = wrap_periodic(VMIN, L, PER, xy)
+        ids, valid = gather(CELL, OFF, GMIN, CS, DIMS, jnp.concatenate([p, jnp.zeros(1, f32)]))
+        q = _wrap(xy[None, :] - centers[ids])
+        return ids, jnp.where(valid, jnp.sqrt(jnp.sum(q * q, -1)) - outer[ids], jnp.inf)
+
+    def nearest(xy):
+        """``(k_near, idx)`` at ``xy``: the cylinder of the smallest wall distance ``|_wrap(xy - c_k)| - outer_k``
+        (int32; the lowest index on a tie) and the ``n_cand`` candidates, the cylinders of the smallest wall
+        distances in ``top_k``'s order (every slot in index order when ``n_cand == N``)."""
+        if grid is not None:
+            ids, dist = _listed(xy)
+            _, pos = jax.lax.top_k(-dist, n_cand)
+            return ids[jnp.argmin(dist)].astype(jnp.int32), ids[pos]
+        q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
+        dist_wall = jnp.where(real, jnp.sqrt(jnp.sum(q_all * q_all, -1)) - outer, jnp.inf)
+        if n_cand < N:
+            _, idx = jax.lax.top_k(-dist_wall, n_cand)                         # walls within reach
+        else:
+            idx = ar
+        return jnp.argmin(dist_wall).astype(jnp.int32), idx
+
+    def owner(xy_f):
+        """The cylinder of the smallest wall distance at the step's end ``xy_f`` (int32): the owner, or the
+        nearest."""
+        if grid is not None:
+            ids, dist = _listed(xy_f)
+            return ids[jnp.argmin(dist)].astype(jnp.int32)
+        q_all_f = _wrap(xy_f[None, :] - centers)
+        dist_f = jnp.where(real, jnp.sqrt(jnp.sum(q_all_f * q_all_f, -1)) - outer, jnp.inf)
+        return jnp.argmin(dist_f).astype(jnp.int32)
+
     def wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None):
         if factor is not None and not any_plain:
             raise ValueError("a permeability factor scales the plain cylinders' walls; this cell has no plain cylinder")
         if any_plain and words is None:
             raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the 32-bit words of its plain walls' trials, "
                              f"words of shape ({loop.budget},), uint32")
-        q_all = _wrap(xy[None, :] - centers)                                   # (N, 2)
-        dist_wall = jnp.where(real, jnp.sqrt(jnp.sum(q_all * q_all, -1)) - outer, jnp.inf)
-        k0 = jnp.where(pool == 0, jnp.argmin(dist_wall).astype(jnp.int32), k)
-        xy = _pin(xy, q_all[k0], inner[k0], outer[k0], pool)                  # the carried pool rules
+        k_near, idx = nearest(xy)
+        k0 = jnp.where(pool == 0, k_near, k)
+        xy = _pin(xy, _wrap(xy - centers[k0]), inner[k0], outer[k0], pool)   # the carried pool rules
 
-        if n_cand < N:
-            _, idx = jax.lax.top_k(-dist_wall, n_cand)                         # walls within reach
-        else:
-            idx = ar
         c_c, in_c, out_c = centers[idx], inner[idx], outer[idx]
         real_c = out_c > 0
         plain_c = plain[idx]
@@ -287,16 +527,19 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
             code, n_cross = jnp.round(b.dlog_w[5]).astype(jnp.int32), b.crossed.astype(jnp.int32)
         xy_f, dlw, crossed = b.r, b.dlog_w, b.crossed
         pool_new = jnp.where(crossed, pool_after[code], pool)
-        q_all_f = _wrap(xy_f[None, :] - centers)
-        dist_f = jnp.where(real, jnp.sqrt(jnp.sum(q_all_f * q_all_f, -1)) - outer, jnp.inf)
-        k_new = jnp.argmin(dist_f).astype(jnp.int32)                         # owner, or nearest
-        xy_f = _pin(xy_f, q_all_f[k_new], inner[k_new], outer[k_new], pool_new)
+        k_new = owner(xy_f)                                                    # owner, or nearest
+        xy_f = _pin(xy_f, _wrap(xy_f - centers[k_new]), inner[k_new], outer[k_new], pool_new)
         n_hits = None if b.n_reflections is None else b.n_reflections + n_cross
         return ConcentricHit(xy_f, pool_new, k_new, dlw[:4], dlw[4], crossed, n_hits, b.exhausted, b.log)
 
     wall.bounce_loop = loop
     wall.n_cand = n_cand
     wall.has_plain = any_plain
+    wall.search = search_name
+    wall.grid_report = grid_report
+    wall.search_reason = search_reason
+    wall.nearest = nearest
+    wall.owner = owner
     return wall
 
 
@@ -670,7 +913,9 @@ class MyelinatedCell(NamedTuple):
       a relaxivity being a replay knob. The cell's ``rho_inner`` / ``rho_outer`` are read only by the forward-signal
       step (:func:`~dmipy_sim.engine.physics.make_packed_myelin_step_fn`), which no backend walks;
     - ``count`` is :attr:`~dmipy_sim.engine.backends.WalkRequest.count_walls` and ``trials`` whether the request
-      carries a :attr:`~dmipy_sim.engine.backends.WalkRequest.trial_record`."""
+      carries a :attr:`~dmipy_sim.engine.backends.WalkRequest.trial_record`;
+    - ``search`` is the cell's ``wall_search``, the choice of the candidate search, which returns the same candidates
+      either way: nothing a backend walks depends on it."""
     centers: np.ndarray       #: (N_max, 2) float32 the cylinders' centres (m)
     inner_radii: np.ndarray   #: (N_max,) float32 the lumen radii (m)
     outer_radii: np.ndarray   #: (N_max,) float32 the outer radii (m); a plain cylinder's equals its inner radius
@@ -944,6 +1189,10 @@ class PackedMyelinatedCylinders(Geometry):
     ):
         self.compartments, t2 = _pool_t2(compartments)
         self.seed_pools = _seed_pools(seed_pools, _wet_pools(self.compartments))
+        #: The wall kernel's candidate search (:func:`concentric_wall_kernel` ``search=``): None for its stated rule,
+        #: ``"dense"`` or ``"grid"`` to force one. Both return the same integers; a program built after a change is
+        #: a new one (a string of the instance is part of the compiled-program key).
+        self.wall_search = None
         for name, arr in (("extra", T2_extra), ("intra", T2_intra), ("myelin", T2_myelin)):
             if arr is not None and np.ndim(arr) == 0:
                 raise ValueError(f"T2_{name}= is per cylinder (an array over the objects); a pool-wide T2 is spelled "
