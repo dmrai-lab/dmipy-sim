@@ -109,21 +109,6 @@ def _grid_reach(half_diagonal, pad):
     return 2.0 * (half_diagonal + pad)
 
 
-def _periodic_spans(lo, hi, G):
-    """Per object the cell-index intervals ``[a, b]`` that cover the unwrapped index range ``[lo, hi]`` on a periodic
-    axis of ``G`` cells: one interval (the whole axis when the range spans ``G`` cells or more, else ``[lo mod G,
-    hi mod G]`` when it does not cross the seam) or two (``[lo mod G, G - 1]`` and ``[0, hi mod G]``). Returns
-    ``(a1, b1, a2, b2, two)``; the intervals of one object are disjoint."""
-    full = (hi - lo + 1) >= G
-    a, b = np.mod(lo, G), np.mod(hi, G)
-    two = (~full) & (a > b)
-    a1 = np.where(full, 0, a)
-    b1 = np.where(full, G - 1, np.where(two, G - 1, b))
-    a2 = np.where(two, 0, 0)
-    b2 = np.where(two, b, -1)
-    return a1, b1, a2, b2, two
-
-
 def _wall_grid_lists(c, R, ids, L, G, n_cand, gmin, cs, pad):
     """The cell table of a wall-search grid of ``G x G`` cells over the periodic cell of side ``L``.
 
@@ -135,12 +120,11 @@ def _wall_grid_lists(c, R, ids, L, G, n_cand, gmin, cs, pad):
     ``d_k(x0)`` and ``h = cs / sqrt(2)`` the cell's half-diagonal, in ascending index.
 
     The cylinders within a reach ``r`` of the cell are found by the shared bucketing
-    (:func:`._grid.bucket_by_bbox`) of each cylinder's box ``c_k +- (R_k + r)``, split at the periodic seam into
-    the intervals of :func:`_periodic_spans`; ``r`` grows until every cell's ``D + _grid_reach`` is within it, so
+    (:func:`._grid.bucket_periodic_plane`) of each cylinder's box ``c_k +- (R_k + r)``, split at the periodic seam
+    into the intervals of :func:`._grid.periodic_spans`; ``r`` grows until every cell's ``D + _grid_reach`` is within it, so
     the bucket holds every cylinder the rule lists. Returns ``(table (G * G, M) int32, M)``, ``-1`` padding a row."""
-    from ._grid import bucket_by_bbox
+    from ._grid import bucket_periodic_plane
     n = len(R)
-    s = L / G                                             # the bucketing's spacing (a superset filter)
     h = float(cs) / np.sqrt(2.0)
     extra = _grid_reach(h, pad)
     ii = np.arange(G)
@@ -151,23 +135,10 @@ def _wall_grid_lists(c, R, ids, L, G, n_cand, gmin, cs, pad):
     r = extra + np.sqrt(n_cand * L * L / (np.pi * n)) + float(np.max(R))
     while True:
         half = R + r + slack
-        lo = np.floor((c - half[:, None] + L / 2.0) / s).astype(np.int64)
-        hi = np.floor((c + half[:, None] + L / 2.0) / s).astype(np.int64)
-        xa1, xb1, xa2, xb2, x2 = _periodic_spans(lo[:, 0], hi[:, 0], G)
-        ya1, yb1, ya2, yb2, y2 = _periodic_spans(lo[:, 1], hi[:, 1], G)
-        own, LO, HI = [], [], []
-        for (xa, xb, xm) in ((xa1, xb1, np.ones(n, bool)), (xa2, xb2, x2)):
-            for (ya, yb, ym) in ((ya1, yb1, np.ones(n, bool)), (ya2, yb2, y2)):
-                m = xm & ym
-                own.append(np.flatnonzero(m))
-                LO.append(np.stack([xa[m], ya[m], np.zeros(m.sum(), np.int64)], 1))
-                HI.append(np.stack([xb[m], yb[m], np.zeros(m.sum(), np.int64)], 1))
-        own = np.concatenate(own)
-        order = np.argsort(own, kind="stable")            # rows by cylinder: ids ascend within a cell
-        own = own[order]
-        table, C, _, _ = bucket_by_bbox(np.concatenate(LO)[order], np.concatenate(HI)[order], (G, G, 1))
+        table = bucket_periodic_plane(c, half, L, G)
+        C = table.shape[1]
         valid = table >= 0
-        cand = np.where(valid, own[np.where(valid, table, 0)], 0)
+        cand = np.where(valid, table, 0)
         q = cells[:, None, :] - c[cand]
         q -= L * np.round(q / L)
         d = np.where(valid, np.hypot(q[..., 0], q[..., 1]) - R[cand], np.inf)
