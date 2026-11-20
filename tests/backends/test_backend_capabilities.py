@@ -122,7 +122,7 @@ def test_the_cell_arrays_are_every_input_of_the_cell_kernel(monkeypatch):
     fields = dict(centers="centers", inner="inner_radii", outer="outer_radii", D_intra="D_intra", D_myelin="D_myelin",
                   D_extra="D_extra", kappa_inner="kappa_inner", kappa_outer="kappa_outer")
     scalars = dict(eps="eps", nudge="nudge", min_gap="min_gap")
-    of_the_walk = ("L", "step_max", "rho_weights", "count", "budget", "trials")
+    of_the_walk = ("L", "step_max", "rho_weights", "count", "budget", "trials", "search")
     assert set(inspect.signature(real).parameters) == set(fields) | set(scalars) | set(of_the_walk)
     for arg, name in fields.items():
         a, k = getattr(c, name), np.asarray(seen[arg])

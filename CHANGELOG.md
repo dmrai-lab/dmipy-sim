@@ -5,6 +5,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The wall search of a packed cell of myelinated and plain cylinders reads a grid.** In a periodic cell,
+  `concentric_wall_kernel` finds the nearest cylinder, the `n_cand` candidates and the end-of-step owner from the list
+  of the grid cell holding the walker (a table built once on the host through the shared cell grid, `geometry._grid`),
+  so neither of a step's two wall searches reads every cylinder. Each list holds every cylinder whose wall distance at
+  the cell's centre is at most `D + 2 (h + pad)` -- `D` the `n_cand`-th smallest there, `h` the cell's half-diagonal,
+  `pad` a float32 pad of 16 eps32 L, so twice the half-diagonal plus twice the pad -- which by the argument in the
+  kernel's docstring contains the `n_cand` nearest at any point of the cell; the grid's integers are the dense search's at every position, and a walk is the same bits under either. The kernel
+  states which search ran (`wall.search`, `"grid"` or `"dense"`) and the grid's layout (`wall.grid_report`: cells per
+  side, list length, bytes, the priced options); the grid runs when the cell is periodic, at least `n_cand` cylinders
+  are real and the priced list length is below the number of real cylinders within 64 MB, the dense search otherwise.
+  `concentric_wall_kernel(search=)` and `PackedMyelinatedCylinders.wall_search` force either; a grid that cannot be
+  built is refused by name.
 - **Each walker of a walk carries its own membrane permeability, stated by the caller.**
   `_walk_geometry(permeability_factor=)` (and `walk(permeability_factor=)` on a spec of one geometry) takes one float32
   factor `f_w` in `[0, 1]` per walker, in walker order, formed into the walker's permeability in float32 by its cell's
