@@ -31,7 +31,7 @@ CENTRES = np.array([[0.0, 0.0], [2.2, 0.0], [0.0, 2.2], [2.2, 2.2]]) * R
 L_CELL = 4.4 * R
 COMPS = Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D))
 FIELD = dict(K_c3=3, field_read_interval=4e-5)
-SPEC = TrialRecordSpec(modes=3, band_edges=(0.0, 1e-3, 2e-3))
+SPEC = TrialRecordSpec(modes=3, band_edges=(0.0, 1e-3, 2e-3), slots=8)       # 4 objects x 2 bands: every pair
 REFUSED = "which only the jax kernels implement; it does not fall back"
 
 
@@ -94,7 +94,7 @@ def test_the_three_capabilities_are_names_the_jax_kernels_declare():
     assert backends.CoefficientBatch._fields[-1] == "trial_record"
     assert backends.CoefficientBatch._field_defaults["trial_record"] is None
     assert all(backends.WalkRequest._field_defaults[f] is None
-               for f in ("trial_record", "trial_steps", "trial_radii", "trial_u_max"))
+               for f in ("trial_record", "trial_steps", "trial_radii", "trial_u_max", "trial_slots"))
 
 
 # ── the public descriptions a backend reads ───────────────────────────────────────────────────────────────────────
@@ -258,16 +258,22 @@ def test_a_backend_that_declares_the_field_and_returns_modes_of_another_shape_is
 
 # ── TRIAL_RECORD ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-def _record(seed, n_obj=4, n_bands=2, modes=3):
+def _record(seed, n_pairs=8, modes=3):
+    """A batch's slotted record at the request's slots: each walker met ``count`` pairs (at most the slots), its keys a
+    draw of distinct pairs, then -1."""
     rng = np.random.default_rng(seed)
     made = []
 
     def record(request, r0):
-        n = r0.shape[0]
-        made.append((rng.integers(0, 50, (n, n_obj, n_bands)).astype(np.int32),
-                     rng.integers(0, 5, (n, n_obj, n_bands)).astype(np.int32),
-                     rng.standard_normal((n, n_obj, n_bands, modes)).astype(np.float32),
-                     np.zeros((n,), np.int32)))
+        n, k = r0.shape[0], int(request.trial_slots)
+        count = rng.integers(0, min(k, n_pairs) + 1, n).astype(np.int32)
+        held = np.arange(k)[None, :] < count[:, None]
+        key = np.where(held, np.stack([rng.permutation(n_pairs)[:k] if k <= n_pairs else
+                                       np.pad(rng.permutation(n_pairs), (0, k - n_pairs)) for _ in range(n)]), -1)
+        made.append((key.astype(np.int32), np.where(held, rng.integers(1, 50, (n, k)), 0).astype(np.int32),
+                     np.where(held, rng.integers(0, 5, (n, k)), 0).astype(np.int32),
+                     np.where(held[:, :, None], rng.standard_normal((n, k, modes)), 0.0).astype(np.float32),
+                     count, np.zeros((n,), np.int32)))
         return made[-1]
     return record, made
 
@@ -312,26 +318,46 @@ def test_a_backend_that_declares_the_trial_record_is_handed_its_resolution_and_t
     np.testing.assert_array_equal(r.trial_u_max, u_max_of(radii, D_obj, r.dt_sim))
     n_steps = r.n_blocks * r.sub_steps
     np.testing.assert_array_equal(r.trial_steps, edge_steps(SPEC, 2e-3, r.dt_sim, n_steps, n_steps))
+    assert r.trial_slots == 8
     tr = w.trial_record
-    for i, name in enumerate(("n", "N", "S")):
-        np.testing.assert_array_equal(getattr(tr, name), np.concatenate([m[i] for m in made]), err_msg=name)
+    key = np.concatenate([m[0] for m in made])
+    width = int(tr.rows.max())
+    np.testing.assert_array_equal(tr.rows, np.concatenate([m[4] for m in made]))
+    np.testing.assert_array_equal(tr.obj, np.where(key >= 0, key // 2, -1)[:, :width])
+    np.testing.assert_array_equal(tr.band, np.where(key >= 0, key % 2, -1)[:, :width])
+    for i, name in ((1, "n"), (2, "N"), (3, "S")):
+        np.testing.assert_array_equal(getattr(tr, name), np.concatenate([m[i] for m in made])[:, :width], err_msg=name)
     assert tr.band_edges == SPEC.band_edges and tr.modes == SPEC.modes
     np.testing.assert_array_equal(tr.object_radii, radii)
+    assert w.work["trial_slots"]["rule"] == "given"
+
+
+def test_a_backend_that_declares_the_trial_record_walks_the_pilot_of_its_slots():
+    """Without stated slots the pilot walks on the backend at the pilot's slots (every pair here, 8), and the batches
+    at the capacity it states."""
+    record, made = _record(5)
+    be = _Recording(record)
+    w = _walk(_packing(), backend=be, record_trials=TrialRecordSpec(modes=3, band_edges=SPEC.band_edges))
+    rec = w.work["trial_slots"]
+    assert len(be.requests) == 3 and be.requests[0].trial_slots == 8 and rec["rule"] == "pilot"
+    assert rec["capacity"] == min(8, int(np.ceil(1.5 * rec["pilot_max_pairs"])) + 8) == 8
+    assert [r.trial_slots for r in be.requests[1:]] == [8, 8]
 
 
 def test_a_backend_that_declares_the_trial_record_and_returns_none_or_another_shape_is_refused():
     with pytest.raises(ValueError, match=r"backend 'record' returned a trial record of shapes None for a walk that records "
-                                         r"its membrane trials: \(n, N, S, exceed\) of shapes \(\(32, 4, 2\), \(32, 4, 2\), "
-                                         r"\(32, 4, 2, 3\), \(32,\)\)"):
+                                         r"its membrane trials in 8 slots: \(key, n, N, S, count, exceed\) of shapes "
+                                         r"\(\(32, 8\), \(32, 8\), \(32, 8\), \(32, 8, 3\), \(32,\), \(32,\)\)"):
         _walk(_packing(), backend=_Record(), record_trials=SPEC)
     record, _ = _record(4, modes=2)
-    with pytest.raises(ValueError, match=r"returned a trial record of shapes \(\(32, 4, 2\), \(32, 4, 2\), \(32, 4, 2, 2\), \(32,\)\)"):
+    with pytest.raises(ValueError, match=r"returned a trial record of shapes \(\(32, 8\), \(32, 8\), \(32, 8\), \(32, 8, 2\), "
+                                         r"\(32,\), \(32,\)\)"):
         _walk(_packing(), backend=_Recording(record), record_trials=SPEC)
 
     def exceeding(request, r0):
         n = r0.shape[0]
-        z = np.zeros((n, 4, 2), np.int32)
-        return z, z, np.zeros((n, 4, 2, 3), np.float32), np.ones((n,), np.int32)
+        z = np.zeros((n, 8), np.int32)
+        return z - 1, z, z, np.zeros((n, 8, 3), np.float32), np.zeros((n,), np.int32), np.ones((n,), np.int32)
     with pytest.raises(ValueError, match=r"trial_record: 64 trials exceed u_max = "):
         _walk(_packing(), backend=_Recording(exceeding), record_trials=SPEC)
 
@@ -340,8 +366,10 @@ def test_a_trial_record_of_non_integer_or_out_of_range_counts_is_refused_and_int
     def record(n_dtype, n_value, S_dtype=np.float32):
         def make(request, r0):
             n = r0.shape[0]
-            c = np.full((n, 4, 2), n_value, dtype=n_dtype)
-            return c, np.zeros((n, 4, 2), np.int64), np.ones((n, 4, 2, 3), S_dtype), np.zeros((n,), np.int64)
+            c = np.full((n, 8), n_value, dtype=n_dtype)
+            key = np.tile(np.arange(8, dtype=np.int64), (n, 1))
+            return (key, c, np.zeros((n, 8), np.int64), np.ones((n, 8, 3), S_dtype), np.full((n,), 8, np.int64),
+                    np.zeros((n,), np.int64))
         return make
     with pytest.raises(ValueError, match=r"backend 'record' returned the trial record's n as float64 in \[2.7, 2.7\]: "
                                          r"a count is an integer in \[0, 2\^31\)"):
@@ -355,3 +383,21 @@ def test_a_trial_record_of_non_integer_or_out_of_range_counts_is_refused_and_int
     w = _walk(_packing(), backend=_Recording(record(np.int64, 3, S_dtype=np.float64)), record_trials=SPEC)   # the neighbour
     assert w.trial_record.n.dtype == np.int32 and np.all(w.trial_record.n == 3)
     assert w.trial_record.S.dtype == np.float64                                # the backend's precision, as returned
+
+
+def test_a_trial_record_of_keys_outside_the_pairs_or_a_count_beyond_the_slots_is_refused():
+    def record(key_value=None, count_value=8):
+        def make(request, r0):
+            n = r0.shape[0]
+            key = np.tile(np.arange(8, dtype=np.int32), (n, 1))
+            if key_value is not None:
+                key[:, 0] = key_value
+            z = np.zeros((n, 8), np.int32)
+            return key, z, z, np.zeros((n, 8, 3), np.float32), np.full((n,), count_value, np.int32), np.zeros((n,), np.int32)
+        return make
+    with pytest.raises(ValueError, match=r"returned the trial record's key as int32 in \[1, 8\]: a key is an integer in "
+                                         r"\[-1, n_objects \* n_bands\)"):
+        _walk(_packing(), backend=_Recording(record(key_value=8)), record_trials=SPEC)
+    with pytest.raises(ValueError, match=r"^trial_record: a walker met at least 9 \(object, band\) pairs where the record "
+                                         r"holds 8 slots"):
+        _walk(_packing(), backend=_Recording(record(count_value=9)), record_trials=SPEC)

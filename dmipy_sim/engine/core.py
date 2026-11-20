@@ -1204,6 +1204,7 @@ def _walk_geometry(
     record_trials=None,
     segments=None,
     permeability_factor=None,
+    _trial_device=None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1387,16 +1388,19 @@ def _walk_geometry(
         from it, not from ``accumulation``.
     record_trials : TrialRecordSpec, optional
         Record the walk's membrane trials at its plain walls (:mod:`dmipy_sim.trial_record`): per walker and per
-        (object, time band) cell the trials, the granted trials and ``modes`` Chebyshev sums of the trials'
-        overshoots, returned as ``CoefficientWalk.trial_record``. None (the default) records nothing and the walk is
+        (object, time band) pair it met the trials, the granted trials and ``modes`` Chebyshev sums of the trials'
+        overshoots, in the spec's ``slots`` per walker or the capacity a pilot of :data:`~dmipy_sim.engine.accumulate.PILOT_WALKERS`
+        of the walk's walkers states (:func:`~dmipy_sim.trial_record.pilot_capacity`, stated in ``work["trial_slots"]``),
+        returned as ``CoefficientWalk.trial_record``. None (the default) records nothing and the walk is
         the same program as before; with it, at the same counting (which the record turns on, ``Geometry.count_walls``),
         each step is the same arithmetic and the whole walk the same bits on the recording build (another JAX build may
         compile the two programs to positions that differ in the last bits: two valid walks of one law). Refused by name: a geometry with no plain wall, a backend that
         does not declare :data:`~dmipy_sim.engine.backends.TRIAL_RECORD`, the MT burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
         every reweighted read), a field channel whose ``K_c3`` or ``field_read_interval`` a pilot of this walk would
-        choose, band edges that do not run from 0 to ``T_max`` or miss a storage window's boundary, a record above
-        :data:`~dmipy_sim.trial_record.MAX_BYTES_PER_WALKER` bytes per walker, and a walk in which a trial's overshoot
-        exceeded its object's bound (after the walk, never clipped).
+        choose, band edges that do not run from 0 to ``T_max`` or miss a storage window's boundary, slots above
+        :data:`~dmipy_sim.trial_record.MAX_BYTES_PER_WALKER` bytes per walker, a walker that met more (object, band)
+        pairs than the slots (after the walk, with the largest count and a suggested capacity; no trial is dropped),
+        and a walk in which a trial's overshoot exceeded its object's bound (after the walk, never clipped).
     segments : sequence of (a, b), optional
         Time segments (s, on the walk's clock from its first step) whose rows the walk accumulates beside the bands:
         per walker and segment ``int_a^b (x(t) - x(0)) dt`` per axis (m s), ``x(0)`` the walker's start, as the sum
@@ -1549,6 +1553,7 @@ def _walk_geometry(
         # ── The record of the membrane trials (record_trials): carried as the work's fourth entry, per walker, and
         # added at every step from the wall's trial log in the band of the step's end
         _trial = None
+        _trial_names = ()
         if record_trials is not None:
             from .. import trial_record as _tr
             _n_steps = int(res.n_blocks) * int(res.sub_steps)
@@ -1558,17 +1563,25 @@ def _walk_geometry(
                                     window_count(T_max, window_T)[1])
             _radii, _D_obj = _trial_objects
             _u_max = _tr.u_max_of(_radii, _D_obj, float(res.dt_sim))
-            _tr.check_bytes(len(_radii), record_trials.n_bands, record_trials.modes, _acc.itemsize)
-            _trial_init, _trial_add = _tr.device_record(len(_radii), _steps, _u_max, record_trials.modes, _acc)
-            _trial = dict(radii=_radii, u_max=_u_max, key=(tuple(int(x) for x in _steps), int(record_trials.modes),
-                                                           tuple(float(x) for x in _u_max)))
+            _trial_init, _trial_add = (_tr.device_record if _trial_device is None else _trial_device)(
+                _steps, _u_max, record_trials.modes, _acc)
+            # the slots each walker carries: the spec's, or set by the pilot below (a pilot walks at its own)
+            _slots0 = record_trials.slots if record_trials.slots is not None else min(
+                _tr.PILOT_SLOTS, len(_radii) * record_trials.n_bands)
+            _tr.check_bytes(_slots0, record_trials.modes, _acc.itemsize)
+            _trial = dict(radii=_radii, u_max=_u_max, slots=int(_slots0),
+                          key=(tuple(int(x) for x in _steps), int(record_trials.modes), tuple(float(x) for x in _u_max),
+                               _trial_device is not None))
+            _trial_names = (("tr_key", "tr_n", "tr_N", "tr_S", "tr_c", "tr_x") if _trial_device is None else
+                            tuple(f"tr_{i}" for i in range(len(jax.tree_util.tree_leaves(
+                                jax.eval_shape(lambda: _trial_init(_slots0)))))))
 
         def _work0():
             # hits and crossings only when counting; the budget's exhaustion on every walk (it is the AND of two
             # values the loop already holds, and one integer add per sub-step here)
             zero = jnp.int32(0)
             w = (zero if _counting else None, zero if _counting else None, zero)
-            return w if _trial is None else w + (_trial_init(),)
+            return w if _trial is None else w + (_trial_init(_trial["slots"]),)
 
         def _work_add(w, hit, step_index=None):
             exh = w[2] + hit.exhausted.astype(jnp.int32)
@@ -2211,7 +2224,7 @@ def _walk_geometry(
                 bad = phys[3] if kind_name == "gen" else (phys[4] if kind_name in ("relax", "mt") else jnp.int32(0))
                 trial = ()
                 if _trial is not None:                                         # the record leaves the work as its own arrays
-                    trial, work_f = tuple(work_f[3]), work_f[:3]
+                    trial, work_f = tuple(jax.tree_util.tree_leaves(work_f[3])), work_f[:3]
                 return (C, resid, blt[1], blt[0], lab0, bnd0, fc, qf, qd, ec, occ, bnd, fs, pos, dlog, qp, qb, *seg_out, *trial,
                         ev_c_out, ev_b_out, n.sum(), bad, work_f)
             return one
@@ -2219,7 +2232,7 @@ def _walk_geometry(
         def _batch_fn(raw, cap, K_c3, rd):
             return cached_batch(geometry, ("coefficient walk", kind_name, raw, cap, K_c3, crossing, binding, n_blocks, n_win,
                                            sub_steps, float(dt_sim), diffusivity, K, m, kappa_MT, dwell_time, _counting,
-                                           _f_key, rd, _acc.name) + (() if _trial is None else (("trial record",) + _trial["key"],))
+                                           _f_key, rd, _acc.name) + (() if _trial is None else (("trial record", _trial["slots"]) + _trial["key"],))
                                 + (() if _seg is None else (("segments", tuple(int(x) for x in _seg[0]), tuple(int(x) for x in _seg[1])),))
                                 + (() if _fac_all is None else (("permeability factor",),)),
                                 lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd),
@@ -2227,7 +2240,7 @@ def _walk_geometry(
                                                     compiler_options=walk_compiler_options()))
 
         names = ("C", "resid", "blt_end", "blt_bands", "lab", "bnd", "fc", "qv_f", "qv_d", "chk", "occ", "bound", "fs", "pos", "dlog",
-                 "qv_pos", "qv_blt") + (() if _seg is None else ("seg",)) + (() if _trial is None else ("tr_n", "tr_N", "tr_S", "tr_x"))
+                 "qv_pos", "qv_blt") + (() if _seg is None else ("seg",)) + (() if _trial is None else _trial_names)
         dev = [0]
         _rd = [(1, float(dt_sim), (), True)]                # the read the batches take: the step's, then the walk's
 
@@ -2263,6 +2276,7 @@ def _walk_geometry(
             n_b = int(r0_all[sel].shape[0])
             req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=(0 if K_c3 is None else int(K_c3)), drop_pool_changes=bool(drop_pool_changes),
                                        events=(int(cap) if cap else res.request.events),
+                                       **({} if _trial is None else dict(trial_slots=int(_trial["slots"]))),
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
             keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
@@ -2344,26 +2358,31 @@ def _walk_geometry(
                 got["occ"] = _at_block_ends(got["lab"], got["ev_c"]) if ev_comp_on else np.repeat(got["lab"][:, None], n_t, axis=1)
                 got["bound"] = _at_block_ends(got["bnd"], got["ev_b"])
             if _trial is not None:
-                n_obj, n_bands, modes = len(_trial["radii"]), len(_steps) - 1, int(record_trials.modes)
-                want = ((n_b, n_obj, n_bands), (n_b, n_obj, n_bands), (n_b, n_obj, n_bands, modes), (n_b,))
+                k, modes = int(_trial["slots"]), int(record_trials.modes)
+                want = ((n_b, k), (n_b, k), (n_b, k), (n_b, k, modes), (n_b,), (n_b,))
                 tr = batch.trial_record
                 shapes = None if tr is None else tuple(np.shape(x) for x in tr)
                 if shapes != want:
                     raise ValueError(f"backend {_backend_name!r} returned a trial record of shapes {shapes} for a walk that "
-                                     f"records its membrane trials: (n, N, S, exceed) of shapes {want}")
+                                     f"records its membrane trials in {k} slots: (key, n, N, S, count, exceed) of shapes {want}")
                 counts = {}
-                for name, x in (("n", tr[0]), ("N", tr[1]), ("exceed", tr[3])):
+                n_keys = len(_trial["radii"]) * (len(_steps) - 1)
+                for name, x, lo, hi in (("key", tr[0], -1, n_keys - 1), ("n", tr[1], 0, None), ("N", tr[2], 0, None),
+                                        ("count", tr[4], 0, None), ("exceed", tr[5], 0, None)):
                     a = np.asarray(x)
-                    if not np.issubdtype(a.dtype, np.integer) or (a.size and (int(a.min()) < 0 or int(a.max()) > np.iinfo(np.int32).max)):
+                    hi = np.iinfo(np.int32).max if hi is None else hi
+                    if not np.issubdtype(a.dtype, np.integer) or (a.size and (int(a.min()) < lo or int(a.max()) > hi)):
                         raise ValueError(f"backend {_backend_name!r} returned the trial record's {name} as {a.dtype} in "
-                                         f"[{a.min() if a.size else None}, {a.max() if a.size else None}]: a count is an "
-                                         f"integer in [0, 2^31)")
+                                         f"[{a.min() if a.size else None}, {a.max() if a.size else None}]: "
+                                         + ("a key is an integer in [-1, n_objects * n_bands)" if name == "key"
+                                            else "a count is an integer in [0, 2^31)"))
                     counts[name] = a.astype(np.int32)
-                S_b = np.asarray(tr[2])
+                S_b = np.asarray(tr[3])
                 if not np.issubdtype(S_b.dtype, np.floating):
                     raise ValueError(f"backend {_backend_name!r} returned the trial record's S as {S_b.dtype}: the sums are "
                                      f"floating point, in the backend's accumulation precision")
-                got["tr_n"], got["tr_N"], got["tr_S"], got["tr_x"] = counts["n"], counts["N"], S_b, counts["exceed"]
+                got.update(tr_key=counts["key"], tr_n=counts["n"], tr_N=counts["N"], tr_S=S_b, tr_c=counts["count"],
+                           tr_x=counts["exceed"])
             work_b = tuple(None if w is None else np.asarray(w) for w in batch.work)
             if drop_pool_changes:
                 if batch.pool_changed is None or np.asarray(batch.pool_changed).shape != (n_b,):
@@ -2397,9 +2416,37 @@ def _walk_geometry(
         n_pilot = int(pidx.shape[0])
         cap = res.events_capacity
         events_record = None
+        trial_slots_record = None
+        got_trial_pilot = None                 # the trial record's pilot, walked at an events capacity of 0
+        if _trial is not None and _trial_device is None:
+            # the slots: the spec's, or the pilot's largest count of distinct (object, band) pairs with the margin. A
+            # pilot walker that meets more pairs than it carries is an upper count; the pilot walks again at twice it
+            # until its largest count fits, so the count the rule reads is exact
+            n_pairs = len(_trial["radii"]) * (len(_steps) - 1)
+            if record_trials.slots is None:
+                run.phase("trial record pilot", walkers=n_pilot)
+                while True:
+                    got_trial_pilot, _, _, _ = _walk_batch(pidx, None, False, 0, None)
+                    top_pairs = int(np.asarray(got_trial_pilot["tr_c"]).max())
+                    if top_pairs <= _trial["slots"]:
+                        break
+                    _trial["slots"] = min(n_pairs, 2 * top_pairs)
+                    _tr.check_bytes(_trial["slots"], record_trials.modes, _acc.itemsize)
+                pilot_slots = int(_trial["slots"])
+                _trial["slots"] = _tr.pilot_capacity(top_pairs, n_pairs)
+                trial_slots_record = dict(rule="pilot", pilot_walkers=n_pilot, pilot_slots=pilot_slots,
+                                          pilot_max_pairs=top_pairs, pairs=n_pairs,
+                                          margin=dict(factor=float(_tr.SLOTS_MARGIN[0]), plus=int(_tr.SLOTS_MARGIN[1])))
+            else:
+                trial_slots_record = dict(rule="given", pairs=n_pairs)
+            trial_slots_record.update(capacity=int(_trial["slots"]), bytes_per_walker=_tr.check_bytes(
+                _trial["slots"], record_trials.modes, _acc.itemsize))
         if (ev_comp_on or ev_bound_on) and cap is None:
-            run.phase("events pilot", walkers=n_pilot)
-            got, _, _, _ = _walk_batch(pidx, None, False, 0, None)
+            if got_trial_pilot is not None:
+                got = got_trial_pilot
+            else:
+                run.phase("events pilot", walkers=n_pilot)
+                got, _, _, _ = _walk_batch(pidx, None, False, 0, None)
             top = max(got["ev_max_c"] if ev_comp_on else 0, got["ev_max_b"] if ev_bound_on else 0)
             cap = int(np.ceil(EVENTS_MARGIN[0] * top)) + int(EVENTS_MARGIN[1])
             events_record = dict(rule="pilot", pilot_walkers=n_pilot, pilot_max_changes=int(top), capacity=cap,
@@ -2513,14 +2560,24 @@ def _walk_geometry(
                                  f"(the pilot of {n_pilot} walkers saw at most {events_record.get('pilot_max_changes', '?')})")
         illegal, work = _work_record()
         trial_record = None
-        if _trial is not None:
+        if _trial is not None and _trial_device is not None:
+            trial_record = tuple(rows[k].array() for k in _trial_names)
+        elif _trial is not None:
+            top_pairs = int(np.asarray(rows["tr_c"].array(), np.int64).max(initial=0))
+            if top_pairs > _trial["slots"]:
+                raise ValueError(f"trial_record: a walker met at least {top_pairs} (object, band) pairs where the record holds "
+                                 f"{_trial['slots']} slots: the walk is refused rather than a trial dropped. Walk again with "
+                                 f"TrialRecordSpec(slots={_tr.suggested_capacity(top_pairs)}) (the record's slots: "
+                                 f"{trial_slots_record})")
             exceed = int(np.asarray(rows["tr_x"].array(), np.int64).sum())
             if exceed:
                 raise ValueError(f"trial_record: {exceed} trials exceed u_max = {[float(x) for x in _trial['u_max']]}")
-            trial_record = _tr.TrialRecord(n=rows["tr_n"].array(), N=rows["tr_N"].array(), S=rows["tr_S"].array(),
-                                           u_max=np.asarray(_trial["u_max"], np.float64),
-                                           band_edges=tuple(record_trials.band_edges), modes=int(record_trials.modes),
-                                           object_radii=np.asarray(_trial["radii"], np.float64))
+            trial_record = _tr.TrialRecord.from_slots(
+                rows["tr_key"].array(), rows["tr_n"].array(), rows["tr_N"].array(), rows["tr_S"].array(),
+                rows["tr_c"].array(), u_max=np.asarray(_trial["u_max"], np.float64),
+                band_edges=tuple(record_trials.band_edges), modes=int(record_trials.modes),
+                object_radii=np.asarray(_trial["radii"], np.float64))
+            work["trial_slots"] = dict(trial_slots_record)
         resid = rows["resid"].array()
         n_dev = int(dev[0])
         if n_dev:

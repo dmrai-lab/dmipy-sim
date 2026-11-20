@@ -68,9 +68,12 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   probability is `floor(p 2^32) / 2^32`, within `2^-32` of the float32 `p` and never above it (the float32 uniform it
   replaces realised `ceil(p 2^23) / 2^23`). The sheathed cylinder's one trial per step and the other geometries'
   trials keep their float32 uniform. `record_trials=TrialRecordSpec(modes=M, band_edges=...)` (`dmipy_sim.trial_record`;
-  `_walk_geometry`, `walk`) records those trials: per walker and per (object, time band) cell the trial count `n`, the
-  granted count `N` (int32) and `S_j = sum u T_j(2 u / u_max - 1)`, `j < M`, in the accumulation dtype, `u = 2 d_perp
-  / R` the overshoot and `u_max = 2 LONGEST_STEP h / R` per object (`CoefficientWalk.trial_record`). Every encounter of
+  `_walk_geometry`, `walk`) records those trials: per walker and per (object, time band) pair it met, one row each in
+  a bounded number of slots per walker (`TrialRecordSpec(slots=)` or a pilot's count with the events buffer's margin,
+  stated in `work["trial_slots"]`; a walker beyond the slots refuses the walk by name, no trial dropped), the trial
+  count `n`, the granted count `N` (int32) and `S_j = sum u T_j(2 u / u_max - 1)`, `j < M`, in the accumulation dtype,
+  `u = 2 d_perp / R` the overshoot and `u_max = 2 LONGEST_STEP h / R` per object (`CoefficientWalk.trial_record`;
+  `TrialRecord.to_dense()` the form of one cell per pair for a small cell). Every encounter of
   a plain wall is a trial (later encounters of a step and sealed objects included), a step belongs to the band whose
   interval `(edge_k, edge_k+1]` contains its end time (an end on an edge to the earlier band, so a window's bands hold
   exactly its steps), a step a bound walker discards records none. Off
@@ -78,7 +81,8 @@ signals. Any refactor/backend change is fine as long as the suite stays green.
   walk is the same bits on the recording build, the `test_recorded_bits_*` tests; the geometry's
   `log_trials` makes its kernel return `WallHit.trials`, carried as the work's fourth entry). Refused by name: no plain
   wall, a backend that does not declare `backends.TRIAL_RECORD`, the MT burn-in, a pilot-chosen `K_c3` / `field_read_interval`, edges not from 0 to `T_max` or
-  missing a window boundary, more than 64 bands or 64 KiB per walker, a trial beyond `u_max`.
+  missing a window boundary, more than 64 bands or slots of more than 64 KiB per walker, a walker beyond its slots,
+  a trial beyond `u_max`.
 
 ## Environment & GPU
 
@@ -385,7 +389,8 @@ refused by the JAX-only list's text (the trial record by its own): `backends.PAC
 request's), `backends.FIELD_IN_WALK` (a closed-form basis such as a `HollowCylinderField` handed as `WalkRequest.field`,
 its data through `device_arrays()`, its modes returned as a raster's; a declaring backend that does not implement a
 basis class refuses it itself) and `backends.TRIAL_RECORD` (`record_trials=`: the request carries `trial_record`,
-`trial_steps`, `trial_radii`, `trial_u_max`, the batch returns `trial_record = (n, N, S, exceed)`, joined into
+`trial_steps`, `trial_radii`, `trial_u_max`, `trial_slots`, the batch returns `trial_record = (key, n, N, S, count,
+exceed)` per slot, joined into
 `CoefficientWalk.trial_record`; the refusal of a backend that does not declare it stays before the run starts). `work["backend"]` and the run record say which backend
 walked; `walk_cost` warns when an installed backend accepts a walk run on the jax kernels. A backend is admitted per
 engine class by `backends.parity_report` on the coefficient form (the same starts and sub-step, counting on: hit and

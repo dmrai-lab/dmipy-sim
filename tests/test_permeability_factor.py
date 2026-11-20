@@ -84,11 +84,12 @@ def _rows(w, idx=None):
     ev = w.comp_events
     off = np.asarray(ev.offsets)
     events = [(np.asarray(ev.t)[off[i]:off[i + 1]], np.asarray(ev.label)[off[i]:off[i + 1]]) for i in idx]
+    trials = w.trial_record.take(idx).to_dense()                  # per (object, band) pair: any walk's rows compare
     out = dict(position_coeffs=w.position_coeffs[idx], boundary_endpoint=w.boundary_endpoint[idx],
                boundary_bands=w.boundary_bands[idx], qv_positions=w.qv_positions[idx], qv_boundary=w.qv_boundary[idx],
                compartment=w.compartment[idx], raw_positions=w.raw_positions[idx],
-               raw_compartment=w.raw_compartment[idx], raw_boundary=w.raw_boundary[idx], n=w.trial_record.n[idx],
-               N=w.trial_record.N[idx], S=w.trial_record.S[idx])
+               raw_compartment=w.raw_compartment[idx], raw_boundary=w.raw_boundary[idx], n=trials.n,
+               N=trials.N, S=trials.S)
     out = {k: np.asarray(v) for k, v in out.items()}
     out["events_t"] = [t for t, _ in events]
     out["events_label"] = [lab for _, lab in events]

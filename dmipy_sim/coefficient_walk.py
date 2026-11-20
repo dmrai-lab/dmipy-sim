@@ -96,7 +96,7 @@ class CoefficientWalk:
     qv_boundary : (n_walkers, n_windows) in the accumulation's dtype, or None
         The cumulative local time's quadratic variation per window, ``sum (dlog)^2`` (each hit's contact squared).
     trial_record : TrialRecord or None
-        The membrane trials at the walk's plain walls per walker and (object, time band) cell
+        The membrane trials at the walk's plain walls per walker, one row per (object, time band) pair it met
         (:class:`~dmipy_sim.trial_record.TrialRecord`), of a walk asked for it (``record_trials=``); None otherwise.
     segment_rows : (n_walkers, n_seg, 3) in the accumulation's dtype, or None
         Per walker, declared time segment ``[a_s, b_s]`` and axis, ``int_{a_s}^{b_s} (x(t) - x(0)) dt`` (m s, ``x(0)``
