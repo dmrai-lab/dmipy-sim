@@ -13,8 +13,10 @@ where the value can be found (or 'NEEDS VERIFICATION' if not yet pinpointed).
 
 The membrane water-exchange entries (``kappa_membrane``, ``exchange_time_grey_matter``,
 ``exchange_rate_grey_matter``, ``exchange_rate_white_matter``, ``intracellular_residence_time``,
-``kappa_membrane_direct``) also carry, per source: ``doi``; ``printed`` (the value and unit as the
-paper prints them; ``value`` is that number in SI); ``range`` with ``value`` None where the paper
+``kappa_membrane_direct``) also carry, per source: ``doi``; ``printed`` where the paper prints a
+value (that value and its unit as printed; ``value`` is the same number in SI) -- a source whose
+value is not printed by its paper (``kappa_membrane``'s default, a 'NEEDS VERIFICATION' source, a
+permeability derived by this table) has no ``printed``; ``range`` with ``value`` None where the paper
 prints a range; ``temperature_C`` where the paper states it; and ``derived_permeability`` (value,
 formula, geometry, radius and who derived it) where a permeability is derived from the measured
 quantity.  Their naming rule is stated in the comment above ``kappa_membrane``.
@@ -1147,14 +1149,15 @@ BIOPHYSICAL_CONSTANTS = {
     # k = k_sf + k_fs (Lampinen 2017, Theory, Eqs. (1)-(3)), the SUM of the forward and reverse
     # rates between the slow and the fast diffusion components, which need not be the intra- and
     # extracellular spaces.
-    # 'printed' is the value with its unit as the paper prints it; 'value' is that number in SI
-    # (ms x 1e-3 = s; cm/s x 1e-2 = m/s); a printed range is 'range' with 'value' None.
+    # 'printed' (present where the paper prints the value) is the value with its unit as the paper
+    # prints it; 'value' is that number in SI (ms x 1e-3 = s; cm/s x 1e-2 = m/s; mm/s x 1e-3 = m/s;
+    # um/ms x 1e-3 = m/s; um/s x 1e-6 = m/s); a printed range is 'range' with 'value' None.
     'kappa_membrane': {
         'default': {
             'value': 1e-5,
             'unit': 'm/s',
             'field_T': None,   # membrane permeability is geometric, field-independent
-            'species': 'human',
+            'species': None,   # not applicable: no measurement produced this value
             'method': 'none: 1e-5 m/s is not printed by the cited paper (see note)',
             'source_key': 'nilsson2013',
             'doi': '10.1002/mrm.24395',
@@ -1553,7 +1556,8 @@ BIOPHYSICAL_CONSTANTS = {
                 'text; the permeabilities derived by authors from residence times (Yang 2018, Olesen 2022) and '
                 'from exchange times (Jelescu 2022) are stored, labelled derived, under '
                 'intracellular_residence_time and exchange_time_grey_matter. The default is not a human value '
-                '(none verified).',
+                '(none verified). It is the 25 °C row of Nevis 1958 Table VII, which is ONE axon; the 13 °C row '
+                '(four axons, 2.5e-6 m/s) and the 30 °C row (three axons, 4.8e-6 m/s) are the alternatives.',
     },
     'rho2_axon_membrane': {
         'default': {
