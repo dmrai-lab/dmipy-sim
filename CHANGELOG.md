@@ -9,12 +9,12 @@ the project follows [Semantic Versioning](https://semver.org/).
   `concentric_wall_kernel` finds the nearest cylinder, the `n_cand` candidates and the end-of-step owner from the list
   of the grid cell holding the walker (a table built once on the host through the shared cell grid, `geometry._grid`),
   so neither of a step's two wall searches reads every cylinder. Each list holds every cylinder whose wall distance at
-  the cell's centre is within the `n_cand`-th smallest plus twice the cell's half-diagonal and a float32 pad of
-  16 eps32 L, which by the argument in the kernel's docstring contains the `n_cand` nearest at any point of the cell;
-  the grid's integers are the dense search's at every position, and a walk is the same bits under either. The kernel
+  the cell's centre is at most `D + 2 (h + pad)` -- `D` the `n_cand`-th smallest there, `h` the cell's half-diagonal,
+  `pad` a float32 pad of 16 eps32 L, so twice the half-diagonal plus twice the pad -- which by the argument in the
+  kernel's docstring contains the `n_cand` nearest at any point of the cell; the grid's integers are the dense search's at every position, and a walk is the same bits under either. The kernel
   states which search ran (`wall.search`, `"grid"` or `"dense"`) and the grid's layout (`wall.grid_report`: cells per
   side, list length, bytes, the priced options); the grid runs when the cell is periodic, at least `n_cand` cylinders
-  are real and the priced list length is below the slot count within 64 MB, the dense search otherwise.
+  are real and the priced list length is below the number of real cylinders within 64 MB, the dense search otherwise.
   `concentric_wall_kernel(search=)` and `PackedMyelinatedCylinders.wall_search` force either; a grid that cannot be
   built is refused by name.
 - **Each walker of a walk carries its own membrane permeability, stated by the caller.**

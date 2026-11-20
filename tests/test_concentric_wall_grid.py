@@ -180,7 +180,7 @@ def test_the_inclusion_margin_is_needed(monkeypatch):
 @pytest.mark.parametrize("n", [150, 1000, 10_000])
 def test_the_rule_chooses_the_grid_and_reports_it(n):
     """By default (``search=None``) the packed cell's kernel runs the grid; its report states the cells per side,
-    the list length ``M`` (below the slot count; below a tenth of it at 10 000 cylinders) and the bytes."""
+    the list length ``M`` (below the real cylinder count, which is the slot count here; below a tenth of it at 10 000 cylinders) and the bytes."""
     geo = _cell(n)
     from dmipy_sim.engine.physics import make_myelin_substep
     sub = make_myelin_substep(geo, 1e-6)
@@ -218,6 +218,29 @@ def test_without_a_periodic_cell_the_search_is_dense_and_a_forced_grid_is_refuse
     assert w.search == "dense" and "padding" in w.search_reason
     with pytest.raises(ValueError, match="padding"):
         concentric_wall_kernel(*padded, search="grid")
+
+
+def test_the_rule_compares_the_list_length_with_the_real_cylinders():
+    """The rule reads the real cylinders (``outer > 0``), not the slots: 150 real cylinders in ``N_max = 400`` slots
+    run the grid, its report stating both counts; the same 400 slots with 9 real cylinders, where the list length 9 is
+    below the slot count but not below the real count, run the dense search."""
+    outer, g, centres, L = _packing(150)
+    geo = PackedMyelinatedCylinders(outer * g, g, centres, L, N_max=400, compartments=COMPS)
+    c = geo.cell_arrays()
+    a = [jnp.asarray(c.centers), jnp.asarray(c.inner_radii), jnp.asarray(c.outer_radii), f32(c.cell_size),
+         jnp.asarray(c.D_intra), jnp.asarray(c.D_myelin), jnp.asarray(c.D_extra), jnp.asarray(c.kappa_inner),
+         jnp.asarray(c.kappa_outer), jnp.zeros((c.N_max, 4), f32), c.eps, c.nudge, 0.07 * R_MEAN, c.min_gap]
+    w = concentric_wall_kernel(*a)
+    assert w.search == "grid"
+    assert (w.grid_report["n_real"], w.grid_report["n_slots"]) == (150, 400)
+    assert w.grid_report["list_length"] < 150 and "150 real cylinders" in w.search_reason
+    outer9 = np.array(c.outer_radii)
+    outer9[9:] = 0.0
+    a[2] = jnp.asarray(outer9)
+    w = concentric_wall_kernel(*a)
+    assert w.n_cand == 8 and w.search == "dense" and w.grid_report is None
+    assert w.search_reason == "the grid's list length 9 is not below the 9 real cylinders"
+    assert concentric_wall_kernel(*a, search="grid").grid_report["list_length"] == 9      # forced: built, M < 400
 
 
 # ── 4. the walk ──────────────────────────────────────────────────────────────────────────────────────────────────────

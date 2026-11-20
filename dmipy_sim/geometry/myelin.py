@@ -196,8 +196,8 @@ def _wall_search(search, centers, outer, L, N, n_cand):
     array (``n_cand == N``, where the dense search takes every slot in index order) or when fewer than ``n_cand``
     cylinders are real (the dense search's candidates then include padding slots). Otherwise the grid is priced at
     the cells per side of :data:`WALL_GRID_CELL_FACTORS` and the layout of the smallest list length ``M`` within
-    :data:`WALL_GRID_BYTE_CAP` is taken (ties: the fewer bytes); ``search=None`` runs it when ``M < N`` (it reads
-    fewer walls per search than the dense search's ``N``), ``"grid"`` runs it whatever ``M``, ``"dense"`` never.
+    :data:`WALL_GRID_BYTE_CAP` is taken (ties: the fewer bytes); ``search=None`` runs it when ``M`` is below the
+    number of real cylinders (``outer > 0``), ``"grid"`` runs it whatever ``M``, ``"dense"`` never.
     ``"grid"`` where no grid can be built is refused, naming the reason."""
     if search not in (None, "dense", "grid"):
         raise ValueError(f"search is None (the stated rule), 'dense' or 'grid'; got {search!r}")
@@ -241,11 +241,11 @@ def _wall_search(search, centers, outer, L, N, n_cand):
         return "dense", None, None, reason
     table, M, nbytes, gmin, cs, G = best
     report = dict(cells_per_side=G, list_length=M, bytes=nbytes, byte_cap=WALL_GRID_BYTE_CAP, pad_m=pad,
-                  cell_size_m=float(cs), n_cand=int(n_cand), n_slots=int(N), options=options)
-    if search is None and M >= N:
-        return "dense", None, None, (f"the grid's list length {M} is not below the {N} slots the dense search reads")
-    reason = "search='grid' was given" if search == "grid" else (f"the grid's list length {M} is below the {N} slots "
-                                                                 f"the dense search reads, at {nbytes} B")
+                  cell_size_m=float(cs), n_cand=int(n_cand), n_slots=int(N), n_real=n_real, options=options)
+    if search is None and M >= n_real:
+        return "dense", None, None, (f"the grid's list length {M} is not below the {n_real} real cylinders")
+    reason = "search='grid' was given" if search == "grid" else (f"the grid's list length {M} is below the {n_real} "
+                                                                 f"real cylinders, at {nbytes} B")
     return "grid", (table, gmin, cs, G), report, reason
 
 
@@ -333,7 +333,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
 
     Which search runs is the stated rule of :func:`_wall_search`, a cost choice since both return the same
     integers: the grid when the cell is periodic, at least ``n_cand`` cylinders are real, ``n_cand < N``, and the
-    priced layout's list length ``M`` is below ``N`` within :data:`WALL_GRID_BYTE_CAP`; the dense search otherwise
+    priced layout's list length ``M`` is below the number of real cylinders within :data:`WALL_GRID_BYTE_CAP`; the dense search otherwise
     (always without a periodic cell). ``search=`` forces ``"dense"`` or ``"grid"``; ``"grid"`` where the rule cannot
     build one is refused, naming why. The kernel carries ``wall.search`` (``"grid"`` or ``"dense"``),
     ``wall.grid_report`` (cells per side, list length ``M``, bytes, the priced options; None for the dense search),
