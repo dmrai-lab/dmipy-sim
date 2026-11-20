@@ -604,15 +604,15 @@ def test_a_walkers_row_is_its_index_in_the_seed(tmp_path):
 def test_a_windows_record_is_its_own_bands():
     """A walk of two 2 ms windows: ``window(i)`` holds the bands of window ``i``, and window 0's record is the record of
     the walk of its 2 ms alone (the same walkers, steps and positions): a step ending on the window boundary is in the
-    earlier band, window 0's."""
-    spec = TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3, 3e-3, T))
+    earlier band, window 0's. Both walks carry the same 24 slots, so that their programs carry records of one shape."""
+    spec = TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3, 3e-3, T), slots=24)
     w = _walk(_dense(), window_T=2e-3, record_trials=spec, K=4)
     assert w.n_windows == 2
     w0, w1 = w.window(0).trial_record, w.window(1).trial_record
     assert w0.band_edges == (0.0, 1e-3, 2e-3) and w1.band_edges == (2e-3, 3e-3, T)
     np.testing.assert_array_equal(np.concatenate([w0.to_dense().n, w1.to_dense().n], axis=2), w.trial_record.to_dense().n)
     alone = _walk(_dense(), T_max=2e-3, sub_steps=w.sub_steps, K=4,
-                  record_trials=TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3)))
+                  record_trials=TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3), slots=24))
     np.testing.assert_array_equal(np.asarray(alone.position_coeffs), np.asarray(w.window(0).position_coeffs))
     _assert_same_record(alone.trial_record, w0)
 
