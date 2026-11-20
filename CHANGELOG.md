@@ -19,6 +19,25 @@ the project follows [Semantic Versioning](https://semver.org/).
   `from_arrays` work on the rows; `totals()` and `walker(w)` read them. A walk file holds the rows as `trial_row_*`
   and `trial_rows`; a file holding the cells (`trial_n`, `trial_N`, `trial_S`) is refused by name. A backend that
   declares `TRIAL_RECORD` is handed `WalkRequest.trial_slots` and returns `(key, n, N, S, count, exceed)` per slot.
+- **The field of a periodic cell of many parallel hollow cylinders is read from the near cylinders exactly and from a
+  per-cell series for all the others, with a derived remainder bound.** `HollowCylinderField(read="near_far")` lays a
+  grid of cells about the mean outer diameter over the cell (the shared periodic planar bucketing,
+  `geometry._grid.bucket_periodic_plane`, which the concentric wall search now also uses); per cell the near list is
+  every cylinder whose outer wall is within `near_cells` cell sides of the cell, summed in closed form at its nearest
+  image exactly as the exact read sums it (lumen and sheath included), and the rest is the Taylor series of one
+  analytic function of `z = x + i y` about the cell's centre -- every far cylinder's periodic field (all images) plus
+  every cylinder's lattice regular part -- with coefficients summed on the host in float64, read by Horner's rule.
+  Outside its outer wall a cylinder's six non-local channels are `-(b^2 - a^2)/2` or `(b^2 - a^2)/12` times the real or
+  imaginary part of `1/z^2` and its other six are zero (tested against the closed form). The remainder bound,
+  computed per cell, is the geometric tail `sum_j |b_j^2 - a_j^2| tail(rho / d_j, order) / d_j^2` over every far
+  singularity (the nearest image of every far cylinder, a closed-form bound for every other image), `rho` the cell's
+  half-diagonal. The order is the smallest whose largest bound is at most `tolerance` (1e-6) of the exact field's rms
+  in its largest channel, the near set widened by a cell when no order up to 24 meets it, refused by name beyond four
+  cells. `read=None` reads near / far in a periodic cell of at least 512 cylinders and exactly otherwise; the record's
+  `summation` is `"lattice_near_far"` with `series_order`, `near_cells`, `series_cells_per_side`, `series_list_length`,
+  `series_tolerance`, `series_tolerance_abs`, `series_bound_max` and `series_table_bytes`, a record is rebuilt as it
+  was read and `from_meta(read=)` refuses the other read by name; `remainder_bound(points)` states the bound per point
+  and channel. `device_arrays` (the exact read's six arrays) is refused for a near / far field.
 - **The wall search of a packed cell of myelinated and plain cylinders reads a grid.** In a periodic cell,
   `concentric_wall_kernel` finds the nearest cylinder, the `n_cand` candidates and the end-of-step owner from the list
   of the grid cell holding the walker (a table built once on the host through the shared cell grid, `geometry._grid`),
