@@ -41,7 +41,7 @@ from dmipy_sim.geometry.myelin import concentric_wall_kernel
 from dmipy_sim.geometry.packed import packed_wall_kernel
 from dmipy_sim.geometry.packing import periodic_min_gap
 from dmipy_sim.math.step_law import LONGEST_STEP
-from dmipy_sim.trial_record import TrialRecord, TrialRecordSpec, chebyshev_terms, device_record, u_max_of
+from dmipy_sim.trial_record import DeviceRecord, TrialRecord, TrialRecordSpec, device_record, u_max_of
 
 D = 2e-9
 T = 4e-3
@@ -84,43 +84,39 @@ def _one_walker_dense(rec, u_max, band_edges, modes):
 
 
 def _dense_record(steps, u_max, modes, dtype):
-    """The test's reference: the record of one cell per (object, band) pair, carried per walker as ``(init, add)`` in the
-    form of :func:`~dmipy_sim.trial_record.device_record` (``init`` takes the slots and ignores them). ``init`` is ``(n
-    (n_objects, n_bands) int32, N (n_objects, n_bands) int32, S (n_objects, n_bands, modes), exceed int32)``; ``add``
-    scatters each step's trial log into the cell of its object and band, as one ``.at[].add`` per array."""
-    n_bands = int(len(steps) - 1)
-    interior = jnp.asarray(np.asarray(steps[1:-1], np.int64), jnp.int32)
-    umax = jnp.asarray(np.asarray(u_max, np.float64), dtype)
-    n_objects = len(u_max)
+    """The test's reference: the record of one cell per (object, band) pair, carried per walker in the form of
+    :func:`~dmipy_sim.trial_record.device_record` (``init`` takes the slots and ignores them). ``init`` is ``(n
+    (n_objects, n_bands) int32, N (n_objects, n_bands) int32, S (n_objects, n_bands, modes), exceed int32)``;
+    ``add_trials`` scatters a step's trials (the record's own :attr:`~dmipy_sim.trial_record.DeviceRecord.trials`: the
+    same band, terms and outcomes) into the cell of their object and band, one ``.at[].add`` per array."""
+    record = device_record(steps, u_max, modes, dtype)
+    n_objects, n_bands = len(u_max), int(len(steps) - 1)
 
     def init(slots):
         z = jnp.zeros((n_objects, n_bands), jnp.int32)
         return (z, z, jnp.zeros((n_objects, n_bands, modes), dtype), jnp.int32(0))
 
-    def add(rec, log, step, keep=None):
+    def add_trials(rec, t):
         n, N, S, exceed = rec
-        valid = log.valid if keep is None else (log.valid & keep)
-        band = jnp.sum(interior < (jnp.asarray(step, jnp.int32) + 1)).astype(jnp.int32)
-        obj = log.obj.astype(jnp.int32)
-        n = n.at[obj, band].add(valid.astype(jnp.int32))
-        N = N.at[obj, band].add((valid & log.granted).astype(jnp.int32))
-        u = log.u.astype(dtype)
-        um = umax[obj]
-        terms = u[:, None] * chebyshev_terms(2 * u / um - 1, modes, jnp)
-        S = S.at[obj, band].add(jnp.where(valid[:, None], terms, jnp.zeros((), dtype)))
-        exceed = exceed + jnp.sum(valid & (u > um)).astype(jnp.int32)
-        return (n, N, S, exceed)
+        n = n.at[t.obj, t.band].add(t.valid.astype(jnp.int32))
+        N = N.at[t.obj, t.band].add((t.valid & t.granted).astype(jnp.int32))
+        S = S.at[t.obj, t.band].add(jnp.where(t.valid[:, None], t.terms, jnp.zeros((), dtype)))
+        return (n, N, S, exceed + jnp.sum(t.exceeds).astype(jnp.int32))
 
-    return init, add
+    return DeviceRecord(init, lambda rec, log, step, keep=None: add_trials(rec, record.trials(log, step, keep)),
+                        record.trials, add_trials)
 
 
 def _dense_and_slotted(steps, u_max, modes, dtype):
     """The reference and the slotted record carried side by side in one walk: ``((n, N, S, exceed), (key, n, N, S,
-    count, exceed))`` per walker, each step's one trial log added to both."""
-    di, da = _dense_record(steps, u_max, modes, dtype)
-    si, sa = device_record(steps, u_max, modes, dtype)
-    return (lambda slots: (di(slots), si(slots)),
-            lambda rec, log, step, keep=None: (da(rec[0], log, step, keep), sa(rec[1], log, step, keep)))
+    count, exceed))`` per walker; each step's trials are formed ONCE (:attr:`~dmipy_sim.trial_record.DeviceRecord.trials`)
+    and the same values added to both, in the log's order."""
+    dense, slotted = _dense_record(steps, u_max, modes, dtype), device_record(steps, u_max, modes, dtype)
+
+    def add(rec, log, step, keep=None):
+        t = slotted.trials(log, step, keep)
+        return (dense.add_trials(rec[0], t), slotted.add_trials(rec[1], t))
+    return DeviceRecord(lambda slots: (dense.init(slots), slotted.init(slots)), add, None, None)
 
 
 ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "qv_positions",
@@ -167,7 +163,7 @@ def test_a_trial_is_accounted_in_its_cell_with_its_overshoot_and_outcome(x64):
     against ``numpy.polynomial.chebyshev`` at relative 1e-12."""
     steps = np.array([0, 4, 10])                                       # two bands: steps ending in [0, 4) and [4, 10]
     u_max = np.array([0.5, 0.25, 0.4])
-    init, add = device_record(steps, u_max, 4, jnp.float64)
+    init, add = device_record(steps, u_max, 4, jnp.float64)[:2]
     rec = init(6)
     # step 1 (ends at 2: band 0): three entries of the loop, two trials at object 0, one iteration without a trial
     log1 = TrialLog(jnp.array([True, True, False, False]), jnp.array([0, 0, 2, 0], jnp.int32),
@@ -469,7 +465,12 @@ def test_recorded_bits_the_record_changes_no_bit_of_a_plain_cells_walk(recorded_
 
 
 def test_recorded_bits_the_record_changes_no_bit_of_a_mixed_cells_walk(recorded_bits, mixed_walks):
+    """As on the plain cell: the walks with and without the record, and the walk carrying the record of one cell per
+    (object, band) pair (:func:`_dense_record`), are the same bits."""
     _assert_same_walk(*mixed_walks)
+    dense = _walk(_mixed(), record_trials=SPEC, _trial_device=_dense_record)
+    _assert_same_walk(dense, mixed_walks[1])
+    _assert_same_walk(dense, mixed_walks[0])
 
 
 # ── 5. the overshoot's bound ────────────────────────────────────────────────────────────────────────────────────────
@@ -521,7 +522,7 @@ def test_a_trial_goes_to_the_band_of_its_steps_end():
     spec = TrialRecordSpec(modes=1, band_edges=(0.0, 4.0, 6.5, 10.0))
     steps = edge_steps(spec, 10.0, 1.0, 10, 10)
     np.testing.assert_array_equal(steps, [0, 4, 6, 10])
-    init, add = device_record(steps, [1.0], 1, jnp.float32)
+    init, add = device_record(steps, [1.0], 1, jnp.float32)[:2]
     one = TrialLog(jnp.array([True]), jnp.array([0], jnp.int32), jnp.array([0.5], jnp.float32), jnp.array([False]))
     bands = {}
     for s in range(10):
@@ -711,7 +712,7 @@ def test_the_sums_are_the_kernels_own_trials_recomputed(x64):
         jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(inside), keys)
     u_max = 2.0 * LONGEST_STEP * (RADII.min() / 6) / RADII
     steps = np.array([0, 1000, 2000])
-    init, add = device_record(steps, u_max, 5, jnp.float64)
+    init, add = device_record(steps, u_max, 5, jnp.float64)[:2]
     rec = init(12)
     log = jax.tree_util.tree_map(np.asarray, h.trials)
     for s in range(len(pts)):
@@ -785,11 +786,12 @@ def _slotted_record(geo, spec, w, slots):
                                   modes=spec.modes, object_radii=radii)
 
 
-@pytest.mark.parametrize("cell, bands, dtype", [("plain", "several", "float32"), ("plain", "one", "float64"),
-                                               ("mixed", "one", "float32"), ("mixed", "several", "float64")])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("bands", ["one", "several"])
+@pytest.mark.parametrize("cell", ["plain", "mixed"])
 def test_the_slotted_record_is_the_dense_record_of_its_walk(cell, bands, dtype, request):
-    """The reference and the slotted record of ONE walk (the same trial logs, added in the same order): ``n`` and ``N``
-    equal, ``S`` bit for bit, ``exceed`` equal, and each walker's rows are exactly the pairs it met, ``count`` exact.
+    """The reference and the slotted record of ONE walk (each step's trials formed once, the same values added in the same
+    order): ``n`` and ``N`` equal, ``S`` bit for bit in every mode, ``exceed`` equal, and each walker's rows are exactly the pairs it met, ``count`` exact.
     All-plain and mixed cells, one band and three, float32 and float64 accumulation; in the mixed cell walkers in a
     sheathed lumen meet no plain wall and hold no row."""
     if dtype == "float64":
@@ -802,13 +804,7 @@ def test_the_slotted_record_is_the_dense_record_of_its_walk(cell, bands, dtype, 
     np.testing.assert_array_equal(d.n, dense[0])
     np.testing.assert_array_equal(d.N, dense[1])
     assert d.S.dtype == dense[2].dtype == np.dtype(dtype)
-    # the sums: the same trials added in the same order. The overshoot's own sum (mode 0) is the same bits; a higher
-    # mode is within 4 last places of the overshoot's sum S_0 (|T_j| <= 1, so S_0 bounds every |S_j|): the two forms
-    # evaluate the terms in separately compiled code of one program, and a term may round differently in its last place
-    # (measured on the mixed cell: at most 0.5 of S_0's last place, 2 of S_j's)
-    np.testing.assert_array_equal(d.S[..., 0], dense[2][..., 0])
-    ulp = np.spacing(np.abs(dense[2][..., :1]).astype(dense[2].dtype)).astype(np.float64)
-    assert np.all(np.abs(d.S.astype(np.float64) - dense[2].astype(np.float64)) <= 4 * ulp)
+    np.testing.assert_array_equal(d.S, dense[2])                       # every mode bit for bit: the same values, the same order
     np.testing.assert_array_equal(slots[5], dense[3])
     met = (dense[0] > 0).sum(axis=(1, 2))
     np.testing.assert_array_equal(r.rows, met)

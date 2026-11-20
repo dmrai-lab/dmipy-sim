@@ -170,16 +170,37 @@ def chebyshev_terms(x, modes, xp):
     return xp.stack(out, axis=-1)
 
 
+class StepTrials(NamedTuple):
+    """One step's trials as the record adds them (:attr:`DeviceRecord.trials`), one entry per entry of the step's
+    :class:`~dmipy_sim.geometry._boundary.TrialLog`, in its order."""
+    valid: object    #: (L,) bool -- a trial of a step the walk keeps
+    obj: object      #: (L,) int32 -- the object met
+    band: object     #: int32 -- the band whose ``(edge_k, edge_k+1]`` holds the step's end
+    granted: object  #: (L,) bool -- the crossing was granted
+    terms: object    #: (L, modes) in the record's dtype -- ``u T_j(2 u / u_max - 1)``, ``j < modes``
+    exceeds: object  #: (L,) bool -- a trial whose ``u`` exceeds its object's ``u_max``
+
+
+class DeviceRecord(NamedTuple):
+    """The record as a walk carries it per walker (:func:`device_record`)."""
+    init: object        #: ``init(slots)``: the empty record
+    add: object         #: ``add(rec, log, step, keep=None)``: ``add_trials(rec, trials(log, step, keep))``
+    trials: object      #: ``trials(log, step, keep=None)``: the step's :class:`StepTrials`
+    add_trials: object  #: ``add_trials(rec, trials)``: the record with a step's trials added
+
+
 def device_record(steps, u_max, modes, dtype):
-    """The record as a walk carries it per walker: ``(init, add)``. ``init(slots)`` is the empty record ``(key (slots,)
-    int32, n (slots,) int32, N (slots,) int32, S (slots, modes) dtype, count int32, exceed int32)``, every key -1 (no
-    pair). ``add(rec, log, step, keep=None)`` adds the trials of a :class:`~dmipy_sim.geometry._boundary.TrialLog` of
-    the walk-wide step ``step`` (int32) in the band ``k`` whose ``(edge_k, edge_k+1]`` holds the step's end, ``keep``
-    False discarding the step (a walker held bound). The log's entries are taken in order: an entry of a pair already
-    held (key ``object * n_bands + k``) adds to that slot; an entry of a new pair takes the next free slot and adds
-    1 to ``count``. ``count`` keeps counting past the slots: exact while it is at most ``slots``, an upper count beyond
-    (the keys of the pairs that found no slot are not held), and an entry that finds no slot adds to no slot.
-    ``exceed`` counts the trials whose ``u`` exceeds the object's ``u_max``."""
+    """The record as a walk carries it per walker: a :class:`DeviceRecord`. ``init(slots)`` is the empty record ``(key
+    (slots,) int32, n (slots,) int32, N (slots,) int32, S (slots, modes) dtype, count int32, exceed int32)``, every key
+    -1 (no pair). ``trials(log, step, keep=None)`` is the :class:`StepTrials` of a
+    :class:`~dmipy_sim.geometry._boundary.TrialLog` of the walk-wide step ``step`` (int32): its band, the band ``k``
+    whose ``(edge_k, edge_k+1]`` holds the step's end, and each trial's terms, ``keep`` False discarding the step (a
+    walker held bound). ``add_trials(rec, trials)`` adds them in the log's order: an entry of a pair already held (key
+    ``object * n_bands + k``) adds its terms to that slot's sums; an entry of a new pair takes the next free slot and
+    adds 1 to ``count``. ``count`` keeps counting past the slots: exact while it is at most ``slots``, an upper count
+    beyond (the keys of the pairs that found no slot are not held), and an entry that finds no slot adds to no slot.
+    ``exceed`` counts the trials whose ``u`` exceeds the object's ``u_max``. ``add(rec, log, step, keep=None)`` is
+    ``add_trials(rec, trials(log, step, keep))``."""
     import jax.numpy as jnp
     n_bands = int(len(steps) - 1)
     interior = jnp.asarray(np.asarray(steps[1:-1], np.int64), jnp.int32)
@@ -191,31 +212,39 @@ def device_record(steps, u_max, modes, dtype):
         z = jnp.zeros((slots,), jnp.int32)
         return (jnp.full((slots,), -1, jnp.int32), z, z, jnp.zeros((slots, modes), dtype), jnp.int32(0), jnp.int32(0))
 
-    def add(rec, log, step, keep=None):
-        key, n, N, S, count, exceed = rec
-        slot_index = jnp.arange(key.shape[0], dtype=jnp.int32)
+    def trials(log, step, keep=None):
         valid = log.valid if keep is None else (log.valid & keep)
         band = jnp.sum(interior < (jnp.asarray(step, jnp.int32) + 1)).astype(jnp.int32)    # (edge_k, edge_k+1]
         obj = log.obj.astype(jnp.int32)
         u = log.u.astype(dtype)
         um = umax[obj]
         terms = u[:, None] * chebyshev_terms(2 * u / um - 1, modes, jnp)
-        entry_key = obj * jnp.int32(n_bands) + band
-        for i in range(int(valid.shape[0])):              # the log's entries in order (the bounce loop's iterations)
-            v = valid[i]
+        return StepTrials(valid, obj, band, log.granted, terms, valid & (u > um))
+
+    def add_trials(rec, t):
+        key, n, N, S, count, exceed = rec
+        slot_index = jnp.arange(key.shape[0], dtype=jnp.int32)
+        entry_key = t.obj * jnp.int32(n_bands) + t.band
+        for i in range(int(t.valid.shape[0])):            # the log's entries in order (the bounce loop's iterations)
+            v = t.valid[i]
             held = (key == entry_key[i]) & v
             opens = v & ~jnp.any(held)
             new = (slot_index == count) & opens          # the next free slot; none once the slots are full
             key = jnp.where(new, entry_key[i], key)
             at = held | new
             n = n + at.astype(jnp.int32)
-            N = N + (at & log.granted[i]).astype(jnp.int32)
-            S = jnp.where(at[:, None], S + terms[i], S)
+            N = N + (at & t.granted[i]).astype(jnp.int32)
+            # the sums: the entry's terms, as formed, added to its slot by a scatter-add (a select of ``S + terms``
+            # over the slots compiles to a fused multiply-add of the product into the sum, one rounding fewer)
+            S = S.at[jnp.argmax(at)].add(jnp.where(jnp.any(at), t.terms[i], jnp.zeros((), S.dtype)))
             count = count + opens.astype(jnp.int32)
-        exceed = exceed + jnp.sum(valid & (u > um)).astype(jnp.int32)
+        exceed = exceed + jnp.sum(t.exceeds).astype(jnp.int32)
         return (key, n, N, S, count, exceed)
 
-    return init, add
+    def add(rec, log, step, keep=None):
+        return add_trials(rec, trials(log, step, keep))
+
+    return DeviceRecord(init, add, trials, add_trials)
 
 
 class DenseTrials(NamedTuple):

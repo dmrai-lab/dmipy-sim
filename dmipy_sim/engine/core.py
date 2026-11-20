@@ -1563,8 +1563,9 @@ def _walk_geometry(
                                     window_count(T_max, window_T)[1])
             _radii, _D_obj = _trial_objects
             _u_max = _tr.u_max_of(_radii, _D_obj, float(res.dt_sim))
-            _trial_init, _trial_add = (_tr.device_record if _trial_device is None else _trial_device)(
+            _trial_dev = (_tr.device_record if _trial_device is None else _trial_device)(
                 _steps, _u_max, record_trials.modes, _acc)
+            _trial_init, _trial_add = _trial_dev.init, _trial_dev.add
             # the slots each walker carries: the spec's, or set by the pilot below (a pilot walks at its own)
             _slots0 = record_trials.slots if record_trials.slots is not None else min(
                 _tr.PILOT_SLOTS, len(_radii) * record_trials.n_bands)
