@@ -10,6 +10,14 @@ plus an optional 'alternatives' list of values from other experimental
 conditions (field strength, species, method).  Every source includes a
 'location' field pointing to the specific section/table/figure in the paper
 where the value can be found (or 'NEEDS VERIFICATION' if not yet pinpointed).
+
+The membrane water-exchange entries (``kappa_membrane``, ``exchange_time_grey_matter``,
+``exchange_rate_grey_matter``, ``exchange_rate_white_matter``, ``intracellular_residence_time``,
+``kappa_membrane_direct``) also carry, per source: ``doi``; ``printed`` (the value and unit as the
+paper prints them; ``value`` is that number in SI); ``range`` with ``value`` None where the paper
+prints a range; ``temperature_C`` where the paper states it; and ``derived_permeability`` (value,
+formula, geometry, radius and who derived it) where a permeability is derived from the measured
+quantity.  Their naming rule is stated in the comment above ``kappa_membrane``.
 """
 
 import warnings
@@ -1122,17 +1130,41 @@ BIOPHYSICAL_CONSTANTS = {
         'description': 'T1 surface relaxivity of the axon membrane (axolemma). '
                        'Use paired with corrected T1_bulk_intra (~1.40 s), not T1_apparent.',
     },
+    # ── Membrane water exchange ──────────────────────────────────────────────────────────
+    # Naming rule: an entry is named by the quantity the paper MEASURED, followed by the tissue
+    # class when the quantity is a tissue average (exchange_time_grey_matter,
+    # exchange_rate_grey_matter, exchange_rate_white_matter); a per-cell quantity carries the
+    # cell type in a 'cell_type' field instead (intracellular_residence_time), and a directly
+    # measured membrane permeability is kappa_membrane_direct.  An exchange time, an exchange
+    # rate (AXR) and a residence time are NOT permeabilities.  A permeability derived from one
+    # is stored beside it under 'derived_permeability' with the formula, the geometry, the
+    # radius and who derived it.  For a well-mixed interior the intracellular residence time is
+    #     cylinder of radius R:  tau_i = R / (2 kappa)      sphere of radius R:  tau_i = R / (3 kappa)
+    # (Nedjati-Gilani 2017 Section 2.2 writes the cylinder form as k = R / (2 tau_i); Yang 2018
+    # Eq. [1] writes the general form P_d = V_i / (A tau_i)).  The two exchange quantities differ
+    # from tau_i: NEXI's t_ex = 1 / (r_ie + r_ei) (Jelescu 2022 Section 2.1.2), which is
+    # (1 - f) tau_i for an intra-neurite fraction f, and FEXI's AXR is the apparent estimate of
+    # k = k_sf + k_fs (Lampinen 2017, Theory, Eqs. (1)-(3)), the SUM of the forward and reverse
+    # rates between the slow and the fast diffusion components, which need not be the intra- and
+    # extracellular spaces.
+    # 'printed' is the value with its unit as the paper prints it; 'value' is that number in SI
+    # (ms x 1e-3 = s; cm/s x 1e-2 = m/s); a printed range is 'range' with 'value' None.
     'kappa_membrane': {
         'default': {
             'value': 1e-5,
             'unit': 'm/s',
             'field_T': None,   # membrane permeability is geometric, field-independent
             'species': 'human',
-            'method': 'filter-exchange imaging',
+            'method': 'none: 1e-5 m/s is not printed by the cited paper (see note)',
             'source_key': 'nilsson2013',
-            'location': 'Section "Results", exchange rate ~10 s^-1 for WM; '
-                        'converted to permeability kappa ~ 10^-5 m/s '
-                        'using kappa = k * R / 3 for typical axon radius',
+            'doi': '10.1002/mrm.24395',
+            'value_in_cited_paper': False,
+            'location': 'ABSTRACT ONLY (the full text was not reached; see note). The abstract prints: '
+                        '"Apparent exchange rates in white matter range from 0.8±0.08 s(-1) in the internal '
+                        'capsule, to 1.6±0.11 s(-1) for frontal white matter, indicating that low values are '
+                        'associated with high myelination." and "In white matter, the apparent exchange rate '
+                        'values suggest intra-axonal exchange times in the order of seconds". No permeability '
+                        'and no radius appear in the abstract.',
         },
         'alternatives': [],
         'citation': {
@@ -1145,8 +1177,383 @@ BIOPHYSICAL_CONSTANTS = {
             'year': 2013,
             'doi': '10.1002/mrm.24395',
         },
-        'description': 'Axonal membrane permeability',
-        'note': 'Derived from exchange rate measurements; depends on assumed axon geometry',
+        'description': 'Axonal membrane permeability used by canonical_white_matter() (the walk\'s '
+                       'kappa_inner of Substrate.canonical()).',
+        'note': 'The value 1e-5 m/s is NOT given by Nilsson et al. 2013: the paper reports apparent exchange '
+                'rates (AXR) of 0.8 and 1.6 s^-1 in white matter, not ~10 s^-1, and no permeability. The '
+                'conversion the entry formerly stated, kappa = k R / 3, would need R = 3 kappa / k = '
+                '3 x 1e-5 / 0.8 = 37.5 um (internal capsule) or 3 x 1e-5 / 1.6 = 18.75 um (frontal WM) to '
+                'produce 1e-5 m/s; the cylinder form kappa = k R / 2 would need 25 um or 12.5 um. Both are '
+                'tens of times the radius of a white-matter axon, and an AXR is in any case the sum of two '
+                'rates between diffusion components, not an intra-axonal exit rate (see the membrane-exchange '
+                'block comment). The value is kept as the default only so that canonical_white_matter() and '
+                'Substrate.canonical() do not move silently; the measured quantities are in '
+                'exchange_rate_white_matter, intracellular_residence_time and kappa_membrane_direct. '
+                'The full text of Nilsson 2013 was not reached, so the location quotes the abstract.',
+    },
+    'exchange_time_grey_matter': {
+        'default': {
+            'value': 42.3e-3,
+            'unit': 's',
+            'printed': '42.3 [40.0, 44.7] ms (mean and 95% CI of the per-ROI medians)',
+            'field_T': None,
+            'species': 'human',
+            'temperature_C': None,   # in vivo; the paper states no temperature
+            'method': 'NEXI_RM (NEXI with Rician-mean correction), in vivo, 300 mT/m Connectom 3 T, '
+                      'b up to 7.5 ms/um^2, Delta 20-49 ms, 4 healthy adults',
+            'region': 'cortical grey matter, DKT atlas ROIs',
+            'source_key': 'uhl2024',
+            'doi': '10.1162/imag_a_00104',
+            'location': 'Section 3.2 "Experimental", Table 3 ("Mean estimates and 95% confidence intervals of '
+                        'the median in every ROI of the DKT atlas using NEXI, NEXI dot , corrected for rice '
+                        'mean (RM) or not."), row "NEXI RM", column "t ex (ms)": "42.3 [40.0, 44.7]". The '
+                        'model with the lowest AICc in that table (-143.0 ± 16.0).',
+        },
+        'alternatives': [
+            {'value': 103.9e-3, 'unit': 's', 'printed': '103.9 [100.3, 107.5] ms', 'field_T': None,
+             'species': 'human', 'method': 'NEXI (no Rician correction), in vivo', 'source_key': 'uhl2024',
+             'doi': '10.1162/imag_a_00104',
+             'location': 'Section 3.2 "Experimental", Table 3, row "NEXI", column "t ex (ms)": "103.9 [100.3, 107.5]"'},
+            {'value': 14.3e-3, 'unit': 's', 'printed': '14.3 [12.2, 16.3] ms', 'field_T': None,
+             'species': 'human', 'method': 'NEXI_dot (NEXI with an immobile dot compartment), in vivo',
+             'source_key': 'uhl2024', 'doi': '10.1162/imag_a_00104',
+             'location': 'Section 3.2 "Experimental", Table 3, row "NEXI dot", '
+                         'column "t ex (ms)": "14.3 [12.2, 16.3]"'},
+            {'value': 2.90e-3, 'unit': 's', 'printed': '2.90 [2.71, 3.09] ms', 'field_T': None,
+             'species': 'human', 'method': 'NEXI_dot,RM, in vivo', 'source_key': 'uhl2024',
+             'doi': '10.1162/imag_a_00104',
+             'location': 'Section 3.2 "Experimental", Table 3, row "NEXI dot, RM", '
+                         'column "t ex (ms)": "2.90 [2.71, 3.09]". '
+                         'More than ten times shorter than the default from the same data: the four model '
+                         'variants disagree (Section 3.2: "The four model variants give very different '
+                         'exchange time estimates.").'},
+            {'value': None, 'range': (30e-3, 60e-3), 'unit': 's', 'printed': '30–60 ms', 'field_T': None,
+             'species': 'rat', 'temperature_C': 38.0,
+             'method': 'NEXI, in vivo, multi-b multi-t PGSE, Datasets 1-3', 'region': 'cortex',
+             'source_key': 'jelescu2022', 'doi': '10.1016/j.neuroimage.2022.119277',
+             'location': 'Section 3.2.2 "Experimental: in vivo rat GM": "For Datasets 1–3, the estimated exchange '
+                         'time t ex was higher with NEXI than with t ex K(t): 30–60 ms vs 10–40 ms, respectively, '
+                         'in cortex and 25–65 ms vs 10–25 ms, respectively, in hippocampus." Temperature: Section '
+                         '2.2 "body temperature was monitored and maintained around 38 °C".',
+             'derived_permeability': {
+                 'by': 'the authors', 'value': None, 'range': (2.1e-6, 33e-6), 'unit': 'm/s',
+                 'printed': 'P ∼ [2.1 − 33] × 10^−3 μm/ms',
+                 'formula': 'P = d / (4 (t_ex − d^2 / (32 D_i,∥))), approximated by the authors as P ≅ d / (4 t_ex)',
+                 'geometry': 'cylinder (neurite) of diameter d', 'radius_m': (0.25e-6, 1.0e-6),
+                 'location': 'Section 3.2.2: "Assuming d ∼ [0.5 − 2] μm, a characteristic exchange time '
+                             't ex = [15 − 60] ms, as estimated here using NEXI, yields P ∼ [2.1 − 33] × 10^−3 μm/ms."',
+                 'note': 'Uses t_ex, which is (1 - f) tau_i, in place of tau_i.'}},
+            {'value': None, 'range': (10e-3, 30e-3), 'unit': 's', 'printed': '10–30 ms', 'field_T': None,
+             'species': 'rat', 'temperature_C': 38.0, 'method': 'NEXI, in vivo, Dataset 4 (x2.5 voxel volume)',
+             'region': 'cortex and hippocampus', 'source_key': 'jelescu2022',
+             'doi': '10.1016/j.neuroimage.2022.119277',
+             'location': 'Section 3.2.2: "Remarkably, for Dataset 4 (x2.5 voxel volume compared to Datasets 1–3), '
+                         'the two approaches displayed better agreement and estimates for t ex ranged 10–30 ms."'},
+            {'value': 21e-3, 'unit': 's', 'printed': '21±4 ms', 'field_T': None, 'species': 'rat',
+             'temperature_C': 38.0, 'method': 'Kärger-model fit of time-dependent mean kurtosis MK(t), in vivo',
+             'region': 'cortex', 'source_key': 'jelescu2022', 'doi': '10.1016/j.neuroimage.2022.119277',
+             'location': 'Section 3.1.2 "Exchange vs structural disorder: time-dependent diffusion and kurtosis": '
+                         '"The GM yielded exchange times in the same range as the diffusion times explored and '
+                         'thus with better precision, e.g., tex=21±4ms in cortex and tex=16±3ms in hippocampus."'},
+        ],
+        'citation': {
+            'key': 'uhl2024',
+            'authors': 'Uhl Q, Pavan T, Molendowska M, Jones DK, Palombo M, Jelescu IO',
+            'title': 'Quantifying human gray matter microstructure using neurite exchange imaging (NEXI) '
+                     'and 300 mT/m gradients',
+            'journal': 'Imaging Neuroscience',
+            'year': 2024,
+            'doi': '10.1162/imag_a_00104',
+        },
+        'citations': {
+            'jelescu2022': {
+                'authors': 'Jelescu IO, de Skowronski A, Geffroy F, Palombo M, Novikov DS',
+                'title': 'Neurite Exchange Imaging (NEXI): A minimal model of diffusion in gray matter with '
+                         'inter-compartment water exchange',
+                'journal': 'NeuroImage', 'year': 2022, 'doi': '10.1016/j.neuroimage.2022.119277'},
+        },
+        'description': 'Neurite / extra-neurite water exchange time t_ex = 1 / (r_ie + r_ei) of grey matter, '
+                       'from fits of the anisotropic Kärger (NEXI) model. Not a permeability and not tau_i.',
+        'note': 'Model-dependent: on one human dataset the NEXI variants span 2.9 ms to 104 ms (Uhl 2024 '
+                'Table 3). The default is the variant with the lowest AICc. Human in vivo. Full texts read: '
+                'Uhl 2024 and Jelescu 2022 (open access, PubMed Central).',
+    },
+    'exchange_rate_grey_matter': {
+        'default': {
+            'value': 1.2,
+            'unit': 's^-1',
+            'printed': '1.2 ± 0.6 s^-1 (mean ± SD over 2 x 18 measurements)',
+            'field_T': None,
+            'species': 'human',
+            'temperature_C': None,   # in vivo; not stated
+            'method': 'filter exchange imaging (FEXI), in vivo, 3 T, 18 healthy volunteers, test-retest',
+            'region': 'lenticular nucleus (deep grey matter)',
+            'source_key': 'lampinen2017',
+            'doi': '10.1002/mrm.26195',
+            'location': 'Results "Test-Retest Study", Table 2 ("FEXI Test-Retest Results In the 18 Healthy '
+                        'Volunteers"), row "LN", column "AXR (s −1 )": "1.2 ± 0.6". Table note: "LN, '
+                        'lenticular nucleus; TH, thalamus."',
+        },
+        'alternatives': [
+            {'value': 0.8, 'unit': 's^-1', 'printed': '0.8 ± 0.4 s^-1', 'field_T': None, 'species': 'human',
+             'method': 'FEXI, in vivo, 3 T', 'region': 'thalamus', 'source_key': 'lampinen2017',
+             'doi': '10.1002/mrm.26195',
+             'location': 'Results "Test-Retest Study", Table 2, row "TH", column "AXR (s −1 )": "0.8 ± 0.4"'},
+            {'value': 110.0, 'unit': 's^-1', 'printed': '110 ± 20 s −1 at 25° C', 'field_T': None,
+             'species': 'mouse (neonatal, excised spinal cord, fixed)', 'temperature_C': 25.0,
+             'method': 'diffusion exchange spectroscopy (DEXSY), rapid four-point method, single-sided '
+                       'static-gradient NMR', 'region': 'spinal cord ("contains mostly gray matter", Discussion)',
+             'source_key': 'williamson2019', 'doi': '10.7554/eLife.51101',
+             'location': 'Results, "Rapid exchange measurement agrees with full DEXSY": "Additionally, the value '
+                         'from repeated measurements on five fixed samples was 110 ± 20 s −1 at 25° C (mean ± SD '
+                         'taken across all 3 × 5 measurements)". The same section: "The AXR from three repeat '
+                         'measurements was 110 ± 30 s −1."',
+             'note': 'About 90 times the default. Fixed tissue at 25 °C, and the measurement is sensitive to '
+                     'structures smaller than about 1400 nm (Discussion), so the restricted pool is not the '
+                     'whole intracellular space; the two values are not the same quantity of the same tissue.'},
+        ],
+        'citation': {
+            'key': 'lampinen2017',
+            'authors': 'Lampinen B, Szczepankiewicz F, van Westen D, Englund E, Sundgren PC, Latt J, '
+                       'Stahlberg F, Nilsson M',
+            'title': 'Optimal experimental design for filter exchange imaging: Apparent exchange rate '
+                     'measurements in the healthy brain and in intracranial tumors',
+            'journal': 'Magnetic Resonance in Medicine',
+            'year': 2017,
+            'doi': '10.1002/mrm.26195',
+        },
+        'citations': {
+            'williamson2019': {
+                'authors': 'Williamson NH, Ravin R, Benjamini D, Merkle H, Falgairolle M, O\'Donovan MJ, '
+                           'Blivis D, Ide D, Cai TX, Ghorashi NS, Bai R, Basser PJ',
+                'title': 'Magnetic resonance measurements of cellular and sub-cellular membrane structures in '
+                         'live and fixed neural tissue',
+                'journal': 'eLife', 'year': 2019, 'doi': '10.7554/eLife.51101'},
+        },
+        'description': 'Apparent exchange rate (AXR) of grey matter: the apparent estimate of k = k_sf + k_fs '
+                       'between the slow and fast diffusion components (Lampinen 2017, Theory). Not a permeability.',
+        'note': 'Full texts read: Lampinen 2017 and Williamson 2019 (open access, PubMed Central).',
+    },
+    'exchange_rate_white_matter': {
+        'default': {
+            'value': 0.3,
+            'unit': 's^-1',
+            'printed': '0.3 ± 0.2 s^-1 (mean ± SD over 2 x 18 measurements)',
+            'field_T': None,
+            'species': 'human',
+            'temperature_C': None,   # in vivo; not stated
+            'method': 'filter exchange imaging (FEXI), in vivo, 3 T, 18 healthy volunteers, test-retest',
+            'region': 'corpus callosum (genu and splenium)',
+            'source_key': 'lampinen2017',
+            'doi': '10.1002/mrm.26195',
+            'location': 'Results "Test-Retest Study", Table 2 ("FEXI Test-Retest Results In the 18 Healthy '
+                        'Volunteers"), row "CC", column "AXR (s −1 )": "0.3 ± 0.2" (CV 78 %). Table note: '
+                        '"CC, genu and splenium of the corpus callosum".',
+        },
+        'alternatives': [
+            {'value': 0.9, 'unit': 's^-1', 'printed': '0.9 ± 0.3 s^-1', 'field_T': None, 'species': 'human',
+             'method': 'FEXI, in vivo, 3 T', 'region': 'anterior limb of the internal capsule',
+             'source_key': 'lampinen2017', 'doi': '10.1002/mrm.26195',
+             'location': 'Results "Test-Retest Study", Table 2, row "ALIC", column "AXR (s −1 )": "0.9 ± 0.3"'},
+            {'value': 0.4, 'unit': 's^-1', 'printed': '0.4 ± 0.1 s^-1', 'field_T': None, 'species': 'human',
+             'method': 'FEXI, in vivo, 3 T', 'region': 'corticospinal tract (printed "cerebrospinal tract")',
+             'source_key': 'lampinen2017', 'doi': '10.1002/mrm.26195',
+             'location': 'Results "Test-Retest Study", Table 2, row "CST", column "AXR (s −1 )": "0.4 ± 0.1"'},
+            {'value': 1.8, 'unit': 's^-1', 'printed': '1.8 ± 0.3 s^-1', 'field_T': None, 'species': 'human',
+             'method': 'FEXI, in vivo, 3 T', 'region': 'anterior corona radiata', 'source_key': 'lampinen2017',
+             'doi': '10.1002/mrm.26195',
+             'location': 'Results "Test-Retest Study", Table 2, row "ACR", column "AXR (s −1 )": "1.8 ± 0.3"'},
+            {'value': None, 'unit': 's^-1', 'field_T': None, 'species': 'human',
+             'method': 'FEXI, in vivo', 'region': 'internal capsule; frontal white matter',
+             'source_key': 'nilsson2013', 'doi': '10.1002/mrm.24395',
+             'location': 'NEEDS VERIFICATION',
+             'note': 'Full text not reached; no value is entered from the abstract (the abstract is quoted in '
+                     'kappa_membrane\'s location).'},
+        ],
+        'citation': {
+            'key': 'lampinen2017',
+            'authors': 'Lampinen B, Szczepankiewicz F, van Westen D, Englund E, Sundgren PC, Latt J, '
+                       'Stahlberg F, Nilsson M',
+            'title': 'Optimal experimental design for filter exchange imaging: Apparent exchange rate '
+                     'measurements in the healthy brain and in intracranial tumors',
+            'journal': 'Magnetic Resonance in Medicine',
+            'year': 2017,
+            'doi': '10.1002/mrm.26195',
+        },
+        'description': 'Apparent exchange rate (AXR) of white matter: the apparent estimate of k = k_sf + k_fs '
+                       'between the slow and fast diffusion components (Lampinen 2017, Theory). Not a permeability.',
+        'note': 'Varies six-fold across white-matter ROIs of one study (Table 2). Full text read: Lampinen 2017 '
+                '(open access, PubMed Central).',
+    },
+    'intracellular_residence_time': {
+        'default': {
+            'value': 0.57,
+            'unit': 's',
+            'printed': '0.57(0.05) s (mean (SD) over the ROI)',
+            'field_T': None,
+            'species': 'human',
+            'temperature_C': None,   # in vivo; not stated
+            'cell_type': 'myelinated axon (white matter)',
+            'method': 'random-forest regression trained on Monte Carlo simulations of permeable cylinders, '
+                      'PGSTE protocol, in vivo, 3 T, healthy volunteers',
+            'region': 'splenium of the corpus callosum (CC-S)',
+            'source_key': 'nedjatigilani2017',
+            'doi': '10.1016/j.neuroimage.2017.02.013',
+            'location': 'Section 3.2 "Healthy subjects", '
+                        'Table 3 ("Mean, standard deviation and coefficient of variation of all '
+                        'parameters estimated using the random forest model in all six regions of interest."), '
+                        'row "CC-S", column "τi (s)": "0.57(0.05)"; the same row gives α (μm) "1.65(0.58)". '
+                        'Full text: the published version deposited in the Imperial College repository '
+                        '(hdl.handle.net/10044/1/48363).',
+            'derived_permeability': {
+                'by': 'this table (not printed by the paper)', 'value': 1.447e-6, 'unit': 'm/s',
+                'formula': 'kappa = R / (2 tau_i) (the paper\'s own relation, Section 2.2: "k = R/(2 τi)")',
+                'geometry': 'cylinder, well-mixed interior',
+                'radius_m': 1.65e-6,
+                'note': 'R = the row\'s alpha, a volume-weighted radius index (Section 2.4), not a mean radius: '
+                        '1.65e-6 / (2 x 0.57) = 1.447e-6 m/s.'},
+        },
+        'alternatives': [
+            {'value': 0.60, 'unit': 's', 'printed': '0.60(0.04) s', 'field_T': None, 'species': 'human',
+             'cell_type': 'myelinated axon (white matter)', 'method': 'as the default',
+             'region': 'genu of the corpus callosum (CC-G)', 'source_key': 'nedjatigilani2017',
+             'doi': '10.1016/j.neuroimage.2017.02.013',
+             'location': 'Section 3.2 "Healthy subjects", Table 3, row "CC-G", column "τi (s)": "0.60(0.04)"'},
+            {'value': 0.48, 'unit': 's', 'printed': '0.48(0.10) s', 'field_T': None, 'species': 'human',
+             'cell_type': 'myelinated axon (white matter)', 'method': 'as the default',
+             'region': 'left anterior limb of the internal capsule (ALIC-L)', 'source_key': 'nedjatigilani2017',
+             'doi': '10.1016/j.neuroimage.2017.02.013',
+             'location': 'Section 3.2 "Healthy subjects", Table 3, row "ALIC-L", column "τi (s)": "0.48(0.10)"'},
+            {'value': 0.46, 'unit': 's', 'printed': '0.46(0.11) s', 'field_T': None, 'species': 'human',
+             'cell_type': 'myelinated axon (white matter)', 'method': 'as the default',
+             'region': 'right anterior limb of the internal capsule (ALIC-R)', 'source_key': 'nedjatigilani2017',
+             'doi': '10.1016/j.neuroimage.2017.02.013',
+             'location': 'Section 3.2 "Healthy subjects", Table 3, row "ALIC-R", column "τi (s)": "0.46(0.11)"'},
+            {'value': 0.54, 'unit': 's', 'printed': '0.54(0.08) s', 'field_T': None, 'species': 'human',
+             'cell_type': 'myelinated axon (white matter)', 'method': 'as the default',
+             'region': 'left corticospinal tract (CST-L)', 'source_key': 'nedjatigilani2017',
+             'doi': '10.1016/j.neuroimage.2017.02.013',
+             'location': 'Section 3.2 "Healthy subjects", Table 3, row "CST-L", column "τi (s)": "0.54(0.08)"'},
+            {'value': 0.52, 'unit': 's', 'printed': '0.52(0.09) s', 'field_T': None, 'species': 'human',
+             'cell_type': 'myelinated axon (white matter)', 'method': 'as the default',
+             'region': 'right corticospinal tract (CST-R)', 'source_key': 'nedjatigilani2017',
+             'doi': '10.1016/j.neuroimage.2017.02.013',
+             'location': 'Section 3.2 "Healthy subjects", Table 3, row "CST-R", column "τi (s)": "0.52(0.09)"'},
+            {'value': 0.75, 'unit': 's', 'printed': '0.75 ± 0.05 s', 'field_T': None,
+             'species': 'rat (cultured cortical neurons on microbeads)', 'temperature_C': 36.5,
+             'cell_type': 'neuron', 'method': 'inversion-recovery spin echo (IRSE) T1 relaxometry of perfused '
+             'microbead-adherent cells, slow-exchange regime', 'source_key': 'yang2018',
+             'doi': '10.1002/mrm.26781',
+             'location': 'Results, "τi under Normal Conditions": "The estimated τ i is 0.75 ± 0.05 s for neurons '
+                         '( n measurement = 12, n pup = 6) and 0.57 ± 0.03 s for astrocytes ( n measurement = 21, '
+                         'n pup = 12)". Temperature: Methods, "IRSE Experiments with Perfused Microbead-Adherent '
+                         'Cells": "Tyrode\'s solution (media) was perfused through the sample at 36.5 °C".',
+             'derived_permeability': {
+                 'by': 'the authors', 'value': 2e-6, 'unit': 'm/s', 'printed': '∼2 × 10^-3 mm/s',
+                 'formula': 'P_d = V_i / (A τ_i) (Eq. [1]); for a sphere V_i / A = R / 3',
+                 'geometry': 'sphere ("∼10-μm diameter spherical cell bodies", dendrites ignored)',
+                 'radius_m': 5e-6,
+                 'location': 'Discussion: "Making the very rough approximation that neurons can be considered as '
+                             'having ∼10-μm diameter spherical cell bodies, as suggested by Fig. 2 , and ignoring '
+                             'dendritic branching, the diffusional water permeability P d is ∼2 × 10 -3 mm/s."'}},
+            {'value': 0.57, 'unit': 's', 'printed': '0.57 ± 0.03 s', 'field_T': None,
+             'species': 'rat (cultured cortical astrocytes on microbeads)', 'temperature_C': 36.5,
+             'cell_type': 'astrocyte', 'method': 'as the neuron row', 'source_key': 'yang2018',
+             'doi': '10.1002/mrm.26781',
+             'location': 'Results, "τi under Normal Conditions" (the sentence quoted on the neuron row).'},
+            {'value': None, 'range': (3.8e-3, 4.5e-3), 'unit': 's', 'printed': '3.8–4.5 ms', 'field_T': None,
+             'species': 'rat (perfusion-fixed brain, ex vivo)', 'temperature_C': 37.0, 'cell_type': 'neurite',
+             'method': 'SMEX model fit (stick-Gaussian Kärger exchange), PGSE at 16.4 T, b up to 100 ms/um^2',
+             'region': 'cortex (sub-ROIs)', 'source_key': 'olesen2022', 'doi': '10.1016/j.neuroimage.2022.118976',
+             'location': 'Table 1 ("Model parameter estimates given as min-max ranges from fitting to each sub-ROI '
+                         'in the cortex"), row "SMEX", column "τ n" (ms): "3.8–4.5". Temperature: Section 2.5 '
+                         '"placed in a 5 mm NMR tube with Fluorinert kept at 37 ᵒC".',
+             'note': 'More than a hundred times shorter than the default: fixed tissue (Section 4.3 discusses '
+                     'fixation raising permeability), grey matter, and a different model.',
+             'derived_permeability': {
+                 'by': 'the authors', 'value': 125e-6, 'unit': 'm/s', 'printed': '125 μm/s',
+                 'formula': 'kappa = R / (2 tau_n) (well-mixed cylinder; "relation to exchange rate and surface to '
+                            'volume ratio")', 'geometry': 'cylinder (neurite)', 'radius_m': 1e-6,
+                 'location': 'Section 4.3: "for a typical neurite radius of 1 μm ( Palombo et al., 2021 ) with '
+                             'residence time 4 ms, this results in a permeability of 125 μm/s."'}},
+        ],
+        'citation': {
+            'key': 'nedjatigilani2017',
+            'authors': 'Nedjati-Gilani GL, Schneider T, Hall MG, Cawley N, Hill I, Ciccarelli O, Drobnjak I, '
+                       'Wheeler-Kingshott CAMG, Alexander DC',
+            'title': 'Machine learning based compartment models with permeability for white matter '
+                     'microstructure imaging',
+            'journal': 'NeuroImage',
+            'year': 2017,
+            'doi': '10.1016/j.neuroimage.2017.02.013',
+        },
+        'citations': {
+            'yang2018': {
+                'authors': 'Yang DM, Huettner JE, Bretthorst GL, Neil JJ, Garbow JR, Ackerman JJH',
+                'title': 'Intracellular water preexchange lifetime in neurons and astrocytes',
+                'journal': 'Magnetic Resonance in Medicine', 'year': 2018, 'doi': '10.1002/mrm.26781'},
+            'olesen2022': {
+                'authors': 'Olesen JL, Østergaard L, Shemesh N, Jespersen SN',
+                'title': 'Diffusion time dependence, power-law scaling, and exchange in gray matter',
+                'journal': 'NeuroImage', 'year': 2022, 'doi': '10.1016/j.neuroimage.2022.118976'},
+        },
+        'description': 'Mean residence time tau_i of water inside a cell (cell type in each source\'s '
+                       '\'cell_type\'). kappa = R / (2 tau_i) for a cylinder, R / (3 tau_i) for a sphere, '
+                       'both for a well-mixed interior.',
+        'note': 'Spans 3.8 ms (fixed rat neurites) to 0.75 s (cultured rat neurons). Full texts read: '
+                'Nedjati-Gilani 2017 (published version, Imperial College repository), Yang 2018 and Olesen '
+                '2022 (PubMed Central).',
+    },
+    'kappa_membrane_direct': {
+        'default': {
+            'value': 3.4e-6,
+            'unit': 'm/s',
+            'printed': '3.4 x 10^-4 cm/sec (Pd at 25 °C, one axon)',
+            'field_T': None,
+            'species': 'squid (Loligo pealii), giant axon',
+            'temperature_C': 25.0,
+            'cell_type': 'unmyelinated axon (squid giant axon)',
+            'method': 'tritiated-water (HTO) efflux from a single axon; Pd from the efflux half-time and the '
+                      'optically measured axon radius b (Methods: for a cylinder "the V_i/A_m ratio becomes half '
+                      'the radius")',
+            'source_key': 'nevis1958',
+            'doi': '10.1085/jgp.41.5.927',
+            'location': 'Results B, "Squid giant axon water fluxes", Table VII (Pd x 10^4 cm/sec by temperature): '
+                        'the 25 °C row (one axon) "3.4"; Table V, axon VIa at 25 °C, "3.4". The abstract states '
+                        '"Pd measurements were made for squid giant axons at 25°C. and found to yield a value of '
+                        '4 x 10–4 cm.–1 sec.–1." Read from the PubMed Central record of the scanned article '
+                        '(text layer of the page scans); the table columns were checked by recomputing each '
+                        'row of Table VII from the per-axon Pd of Table V.',
+        },
+        'alternatives': [
+            {'value': 2.5e-6, 'unit': 'm/s', 'printed': '2.5 ± 0.15 x 10^-4 cm/sec (4 axons)', 'field_T': None,
+             'species': 'squid (Loligo pealii), giant axon', 'temperature_C': 13.0,
+             'cell_type': 'unmyelinated axon (squid giant axon)', 'method': 'as the default',
+             'source_key': 'nevis1958', 'doi': '10.1085/jgp.41.5.927',
+             'location': 'Table VII, the 13 °C row (4 axons): "2.5 ± 0.15" (x 10^-4 cm/sec); Table V axons at 13 °C: '
+                         '2.5, 2.6, 2.4, 2.3.'},
+            {'value': 4.8e-6, 'unit': 'm/s', 'printed': '4.8 ± 1.1 x 10^-4 cm/sec (3 axons)', 'field_T': None,
+             'species': 'squid (Loligo pealii), giant axon', 'temperature_C': 30.0,
+             'cell_type': 'unmyelinated axon (squid giant axon)', 'method': 'as the default',
+             'source_key': 'nevis1958', 'doi': '10.1085/jgp.41.5.927',
+             'location': 'Table VII, the 30 °C row (3 axons): "4.8 ± 1.1" (x 10^-4 cm/sec); Table V axons at 30 °C: '
+                         '3.9, 4.3, 6.2.'},
+        ],
+        'citation': {
+            'key': 'nevis1958',
+            'authors': 'Nevis AH',
+            'title': 'Water transport in invertebrate peripheral nerve fibers',
+            'journal': 'Journal of General Physiology',
+            'year': 1958,
+            'doi': '10.1085/jgp.41.5.927',
+        },
+        'description': 'Diffusional water permeability of a cell membrane measured directly (tracer flux), '
+                       'not inferred from a diffusion-MRI exchange model.',
+        'note': 'No direct measurement of a mammalian neuronal, glial or axonal membrane was verified in full '
+                'text; the permeabilities derived by authors from residence times (Yang 2018, Olesen 2022) and '
+                'from exchange times (Jelescu 2022) are stored, labelled derived, under '
+                'intracellular_residence_time and exchange_time_grey_matter. The default is not a human value '
+                '(none verified).',
     },
     'rho2_axon_membrane': {
         'default': {
