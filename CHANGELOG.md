@@ -5,6 +5,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The default-permeability test requires each of its exemptions to remove a flag, and `kappa_membrane`'s `location` and `method` name Nedjati-Gilani et al. 2017.** `test_every_allowance_is_still_needed` now fails for an allowance whose removal adds no hit to the literal-number scan; the unused `biophysical_constants.py` allowance is deleted. The row's value, `value_from`, DOI and citation are unchanged.
 - **`Substrate()` and `Substrate.canonical()` default to a membrane permeability of 1.447e-6 m/s, Nedjati-Gilani et
   al. 2017's in-vivo human white matter, instead of 1e-5 m/s, which no cited paper gave.** The value is the paper's own
   cylinder relation `kappa = R / (2 tau_i)` (Section 2.2) at the splenium's `alpha` = 1.65 um, a volume-weighted radius
