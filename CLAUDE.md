@@ -393,10 +393,15 @@ basis class refuses it itself) and `backends.TRIAL_RECORD` (`record_trials=`: th
 exceed)` per slot, joined into
 `CoefficientWalk.trial_record`; the refusal of a backend that does not declare it stays before the run starts). `work["backend"]` and the run record say which backend
 walked; `walk_cost` warns when an installed backend accepts a walk run on the jax kernels. A backend is admitted per
-engine class by `backends.parity_report` on the coefficient form (the same starts and sub-step, counting on: hit and
-crossing rates within Poisson noise, exhaustion and refusal rates compared the same way, each channel's quadratic
-variation and each band's mean square within the combined standard errors, confinement at the raw block ends, the
-PGSE signal replayed from each side's bands within the combined standard errors); the public package ships `"jax"`
+engine class by `backends.parity_report` on the coefficient form (the same starts and sub-step, counting on; every
+rate case walks at its own seeds, `case_seeds(seed, name, sweep + 1)`, stream 0 the starts, the reference's walk and the
+backend's, streams `1 .. sweep` the sweep, a seed two cases share refused by name before any walk: the hit and crossing
+counts each a Student t against the sweep's spread alone (`sweep - 1` dof, never the stream the backend walks), the
+exhaustion and refusal counts a binomial rate against the sweep's pooled count, each channel's quadratic variation and
+each band's mean square within the combined standard errors, confinement at the raw block ends, the PGSE signal
+replayed from each side's bands within the combined standard errors; the pooled hit-count `Z` (Stouffer over the
+cases' normal scores, `pooled_bias`, which refuses two entries of one walk seed) is `N(0, 1)` under a correct backend
+and alone decides the pooled `ok`, its `per_class` Z per engine class reported, never judged); the public package ships `"jax"`
 alone, so for a regular user the option does nothing.
 
 `interact` is defined once on `Geometry` and is the entry point callers should use. A geometry implements

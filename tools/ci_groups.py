@@ -106,6 +106,7 @@ SECONDS = {
     "test_replay_guide.py": 19,
     "geometry/test_mesh_acceleration_invariance.py": 19,
     "geometry/test_myelinated_cylinder_walk.py": 18,
+    "backends/test_parity_pooling.py": 18,
     "spectrum/test_packs.py": 17,
     "test_brain_from_csd.py": 17,
     "test_readers_against_the_walk.py": 17,

@@ -5,6 +5,22 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The backend parity report pools only independent walks; parity reports are not comparable across this change
+  (every rate case's seeds change).** Every rate case of `parity_report` now walks at seeds of its own,
+  `case_seeds(seed, name, sweep + 1)` (the first four bytes of `sha256(f"{seed}/{name}/{i}")`, sign bit cleared):
+  stream 0 draws the starts and is walked by the reference and the backend, streams `1 .. sweep` are the sweep.
+  Before, every case walked `seed` and swept `seed + 1 ..`, so cases of one geometry family (the three `label_slab*`
+  cases, which share sub-steps and starts) were one walk until a first crossing, and their hit-count `t` values entered
+  the pooled Stouffer `Z` as if independent. A seed two `(case, stream)` pairs share is refused by name before any walk,
+  and `sweep < 2` is refused. The spread a backend's hit and crossing counts are judged against, and the rate its rare
+  counts are judged against, now read the sweep streams alone (`dof = sweep - 1`, `streams == sweep`), never the stream
+  the backend walks; the record's `jax` still reports stream 0's count. Each rate record carries `seeds = {"walk",
+  "sweep"}` and `starts_sha256`. `pooled_bias` takes `(case, t, dof, relative, walk_seed, engine_class)` entries,
+  refuses two entries of one walk seed naming both cases, and adds `per_class` (`Z` and the case count per engine
+  class, reported with no `ok`); the overall `Z` alone decides `ok`, so the false-failure rate is unchanged.
+  `tools/parity_calibration.py` measures the pooled `Z` over report seeds on the CPU, under this rule or the old one.
+  `parity_report(backend, cases={})` now returns an empty report: an empty mapping is a selection of no cases,
+  where it ran the default cases before; `cases=None` (the default) still runs `parity_cases()`.
 - **The default-permeability test requires each of its exemptions to remove a flag, and `kappa_membrane`'s `location` and `method` name Nedjati-Gilani et al. 2017.** `test_every_allowance_is_still_needed` now fails for an allowance whose removal adds no hit to the literal-number scan; the unused `biophysical_constants.py` allowance is deleted. The row's value, `value_from`, DOI and citation are unchanged.
 - **A walk backend declares that it walks a permeability per walker, and each of its batches is handed its own
   rows.** `backends.PERMEABILITY_FACTOR` (`"permeability_factor"`, among `JAX_CAPABILITIES`) is the capability;

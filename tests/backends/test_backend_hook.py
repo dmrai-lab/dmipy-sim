@@ -430,8 +430,11 @@ def test_the_producer_reads_nothing_from_a_backend_but_the_interface():
 
 
 def test_the_parity_harness_compares_the_coefficient_form():
-    """``parity_report`` on the JAX kernels against themselves (one walk, the same starts): every check passes with
-    z = 0, on the bands, the quadratic variation, the work, confinement and the replayed signal."""
+    """``parity_report`` on the JAX kernels against themselves: the "backend" walks the case's stream 0 from the
+    reference's starts, so it is the reference walk to the bit and the band-level checks (the bands, the quadratic
+    variation, the replayed signal) have z = 0 by construction. The count checks score that walk against the sweep's
+    spread, which excludes stream 0, so their t is an ordinary draw and not 0 by construction: the test is
+    deterministic at the stated seeds (the report's default ``seed=11``, 200 walkers), where every check passes."""
     report = backends.parity_report(None, cases={"sphere": backends.parity_cases()["sphere"]}, n_walkers=200)
     assert len(report) == 1 and report[0]["ok"] is True
     ch = report[0]["checks"]
@@ -463,8 +466,8 @@ def test_the_parity_statistics_read_the_references_own_spread():
     assert _spread_p(94400, sweep)[1] > 0.5 and _spread_p(80000, sweep)[1] < 1e-6
     assert _spread_p(0, [0, 0, 0]) == (0.0, 1.0, 0.0) and _spread_p(3, [0, 0, 0])[1] == 0.0  # no spread: its value alone
     assert _rate_p(0, 10, 0, 90) == 1.0 and _rate_p(1, 10, 9, 90) > 0.5 and _rate_p(30, 10, 3, 90) < 1e-10
-    shared = [(f"c{i}", -1.5, 8, -0.012) for i in range(15)]                          # each p = 0.17: passes alone
+    shared = [(f"c{i}", -1.5, 8, -0.012, 1000 + i, "Sphere") for i in range(15)]                          # each p = 0.17: passes alone
     got = pooled_bias(shared, 1e-2)
     assert got["ok"] is False and got["Z"] < -got["z_crit"] and got["sign_test"]["below"] == 15
-    mixed = [(f"c{i}", (-1.0) ** i * 1.2, 8, 0.0) for i in range(15)]
+    mixed = [(f"c{i}", (-1.0) ** i * 1.2, 8, 0.0, 2000 + i, "Sphere") for i in range(15)]
     assert pooled_bias(mixed, 1e-2)["ok"] is True
