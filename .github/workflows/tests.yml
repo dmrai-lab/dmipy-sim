@@ -17,6 +17,10 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Last-resort limit for the whole job: the measured maximum of a healthy run of this job is
+    # 45 minutes (Python 3.11, group 2); 60 leaves headroom for a busy runner and cancels a job
+    # that is stuck instead of letting it wait for hours.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +78,14 @@ jobs:
           # A test that is merely expensive is slimmed or deleted, not marked (tests/test_no_tiers.py).
           python tools/ci_groups.py 8 --check
           PATHS=$(python tools/ci_groups.py 8 ${{ matrix.group }})
-          JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not gpu"
+          # Each test's name is printed as it finishes (the -v in addopts), so the last line of a
+          # log is the test that never finished. A test that runs past the per-test limit has
+          # every thread's stack dumped to stderr and the process exits at once with a non-zero
+          # status, so a stuck test names itself and this job ends in minutes, not hours. The
+          # limit is on this command line only, never in the project config, so a local run is
+          # never limited. 600 s = 3x the longest single test of a measured group run (173 s),
+          # with a floor of 600 s.
+          JAX_PLATFORMS=cpu pytest $PATHS --tb=short -m "not gpu" -o faulthandler_timeout=600 -o faulthandler_exit_on_timeout=true
 
       - name: Collect the whole suite
         run: |
@@ -99,6 +110,10 @@ jobs:
     # makes a canary of no recorded family a failure that names it (elsewhere such a host skips). On a failure it prints
     # this runner's entry (tools/record_recorded_bits.py), the values a new family would be recorded with.
     runs-on: ubuntu-latest
+    # Last-resort limit for the whole job: the measured maximum of this job's test command is
+    # 2.4 minutes (5 recorded-bit tests, one local run of them), and 3x that is below the
+    # 15-minute floor, so the limit is 15.
+    timeout-minutes: 15
     env:
       JAX_PLATFORMS: cpu
     steps:
@@ -125,7 +140,8 @@ jobs:
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
           status=0
-          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
+          # the same per-test limit as the other job, and each test's name printed as it finishes
+          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -rs --tb=short -o faulthandler_timeout=600 -o faulthandler_exit_on_timeout=true | tee out.txt || status=$?
           if [ "$status" -eq 0 ] && grep -q "5 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
           # a recorded test failed (or was skipped): print this runner's entry, the values its family would be recorded with
           python tools/record_recorded_bits.py || true
