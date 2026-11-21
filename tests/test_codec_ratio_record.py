@@ -193,7 +193,7 @@ def test_the_committed_record_checks_clean_and_skips_what_is_absent(tool, capsys
     checked, skipped = (int(x) for x in re.search(r"checked (\d+), skipped (\d+)", out).groups())
     assert checked >= 2 and checked + skipped == len(record["packs"])
 
-    # a record with more packs than are present (nine entries, seven of them absent): the absent ones are
+    # a record with seven more packs than the committed one, all seven absent: the absent ones are
     # SKIPped by name and do not fail the check
     bigger = json.loads(json.dumps(record))
     for i in range(7):
@@ -204,7 +204,9 @@ def test_the_committed_record_checks_clean_and_skips_what_is_absent(tool, capsys
     out = capsys.readouterr().out
     for i in range(7):
         assert f"SKIP fixture/absent{i}: absent{i}.rpk not found" in out
-    assert "checked 2, skipped 7" in out
+    m2 = re.search(r"checked (\d+), skipped (\d+)", out)
+    assert m2 is not None and int(m2.group(1)) >= 2
+    assert int(m2.group(1)) + int(m2.group(2)) == len(bigger["packs"])        # the seven added ones are among the skipped
 
     # the committed record carries the in-repo ratios of the record's table to 6 decimals
     tiers = {p["id"]: p["tiers"] for p in record["packs"]}
