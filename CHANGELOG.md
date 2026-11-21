@@ -6,6 +6,14 @@ the project follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - **A backend's refusal check receives the slots of a recorded walk, and the field pilot on a backend asks to drop pool changes only of a walk no walker of which changes pool.** The request `_backend_refusal` hands `Backend.refuses` for a walk with `record_trials=` now carries `trial_slots` (the spec's slots, or the pilot's starting `min(PILOT_SLOTS, pairs)`) beside the spec, the edge steps, the radii and the overshoot bounds it carried; before, it carried none, so a backend that sizes its record by the request refused every recorded walk through `_walk_geometry`, with slots given or not. `field_pilot_on_backend` takes the required keyword `impermeable`, which the producer sets to `not res.crossing`: the resolution's statement that no walker changes pool. Before, the pilot read `kappa_over_D`, which is 0 for a packed myelinated cell whose plain walls are permeable, and asked a backend to drop the pool changes of a walk whose walkers cross. The pilot's request changes for that family only; every other walk's requests are unchanged.
+- **`plan_of_pack` reads the exact bytes of a built pack per tier, and `packed_row_bytes` is the one definition of a
+  bit-packed row's byte count.** `dmipy_sim/replay/plan.py` returns, from a pack file's header only, per tier of the
+  writer's tier table its tensors and the raw, bit-packed and stored byte counts, each with its source: the stored
+  count is the sum of the file's tensor byte ranges, the bit-packed count the closed form of the header's containers
+  through `packed_row_bytes` (the function `pack_bits` itself writes with), the raw count the float container's
+  coefficient bytes; `plan_problems` reports what a plan cannot account for. `dmipy_sim/replay/codec_ratios.json`
+  records the measured stored-over-bit-packed ratio of the lossless codec per tier per pack; the record is written
+  and checked by `tools/codec_ratio_record.py`.
 - **The backend parity report pools only independent walks; parity reports are not comparable across this change
   (every rate case's seeds change).** Every rate case of `parity_report` now walks at seeds of its own,
   `case_seeds(seed, name, sweep + 1)` (the first four bytes of `sha256(f"{seed}/{name}/{i}")`, sign bit cleared):

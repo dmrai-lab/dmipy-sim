@@ -283,12 +283,35 @@ def band_curve(K, b1, taper=1.0, b_min=3, b_max=16):
     return _group_bits(bits)
 
 
+def packed_row_bytes(ranges):
+    """The bytes of one walker's row of the bit-packed container of ``ranges``: the sum over the ranges of
+    ``ceil((k1 - k0) * bits / 8)``, in integer arithmetic. ``ranges`` is a list of range entries as a pack's metadata
+    records them -- dicts with ``"bands": [k0, k1]`` or ``"modes": [k0, k1]`` and ``"bits": b``. A range that names
+    neither ``"bands"`` nor ``"modes"``, that ends before it starts (``k1 < k0``), or whose ``bits`` is below 1 is
+    refused naming the entry."""
+    total = 0
+    for r in ranges:
+        if "bands" in r:
+            k0, k1 = r["bands"]
+        elif "modes" in r:
+            k0, k1 = r["modes"]
+        else:
+            raise ValueError(f"a band range names neither 'bands' nor 'modes': {r!r}")
+        k0, k1, bits = int(k0), int(k1), int(r["bits"])
+        if k1 < k0:
+            raise ValueError(f"a band range ends before it starts: {r!r}")
+        if bits < 1:
+            raise ValueError(f"a band range has fewer than 1 bit: {r!r}")
+        total += -(-(k1 - k0) * bits // 8)
+    return total
+
+
 def pack_bits(u, bits):
     """Unsigned integers ``u`` ``(N, m)`` below ``2**bits`` as ``(N, ceil(m*bits/8))`` ``uint8``: each row's values
     side by side, MSB first, the last byte zero-padded."""
     u = np.asarray(u)
     shifts = np.arange(bits - 1, -1, -1, dtype=np.uint32)
-    out = np.empty((u.shape[0], -(-u.shape[1] * bits // 8)), np.uint8)
+    out = np.empty((u.shape[0], packed_row_bytes([{"bands": [0, u.shape[1]], "bits": bits}])), np.uint8)
     for i in range(0, u.shape[0], _PACK_ROWS):
         c = u[i:i + _PACK_ROWS].astype(np.uint32)
         out[i:i + _PACK_ROWS] = np.packbits(((c[:, :, None] >> shifts) & 1).astype(np.uint8).reshape(c.shape[0], -1), axis=1)
