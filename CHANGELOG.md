@@ -5,6 +5,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The default-permeability test requires each of its exemptions to remove a flag, and `kappa_membrane`'s `location` and `method` name Nedjati-Gilani et al. 2017.** `test_every_allowance_is_still_needed` now fails for an allowance whose removal adds no hit to the literal-number scan; the unused `biophysical_constants.py` allowance is deleted. The row's value, `value_from`, DOI and citation are unchanged.
 - **A walk backend declares that it walks a permeability per walker, and each of its batches is handed its own
   rows.** `backends.PERMEABILITY_FACTOR` (`"permeability_factor"`, among `JAX_CAPABILITIES`) is the capability;
   `WalkRequest.permeability_factor` is the batch's `(n,)` float32 factors in `r0`'s row order (None: the stated

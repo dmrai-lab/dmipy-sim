@@ -1178,13 +1178,13 @@ BIOPHYSICAL_CONSTANTS = {
             'species': 'human',
             'cell_type': 'myelinated axon (white matter)',
             'region': 'splenium of the corpus callosum (CC-S)',
-            'method': 'derived by this table from intracellular_residence_time (in vivo, 3 T): the paper\'s own '
+            'method': 'Nedjati-Gilani et al. 2017, derived by this table from intracellular_residence_time (in vivo, 3 T): the paper\'s own '
                       'cylinder relation kappa = R / (2 tau_i) with R = alpha and tau_i of Table 3, row CC-S',
             'by': 'this table (not printed by the paper)',
             'value_in_cited_paper': False,
             'source_key': 'nedjatigilani2017',
             'doi': '10.1016/j.neuroimage.2017.02.013',
-            'location': 'Section 2.2 (the relation "k = R/(2 τi)"), Section 2.4 (alpha, the volume-weighted '
+            'location': 'Nedjati-Gilani et al. 2017: Section 2.2 (the relation "k = R/(2 τi)"), Section 2.4 (alpha, the volume-weighted '
                         'radius index) and Table 3, row "CC-S", columns "τi (s)" and "α (μm)"; the values and '
                         'the derivation are those of intracellular_residence_time\'s default and its '
                         'derived_permeability.',
