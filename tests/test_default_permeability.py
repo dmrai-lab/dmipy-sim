@@ -30,8 +30,6 @@ PERMEABILITY_WORDS = re.compile(r'\b(kappa|kappa_inner|kappa_outer|permeability|
 # The lines allowed to hold such a number, each with its reason (file relative to the package, and
 # a substring the physical line must contain).
 ALLOWED = {
-    ('substrate/biophysical_constants.py', "'by': 'this table (not printed by the paper)', 'value': "):
-        'the source entry itself: the one place the derived permeability is stored',
     ('engine/backends.py', '"sphere_perm"'): 'a parity case of the backends contract: a chosen input',
     ('engine/backends.py', '"cylinder_perm"'): 'a parity case of the backends contract: a chosen input',
     ('engine/backends.py', '"label_slab_perm"'): 'a parity case of the backends contract: a chosen input',
@@ -93,9 +91,9 @@ def test_kappa_membrane_stores_no_value_of_its_own():
     assert tuple(row['default']['value_from']) == SOURCE_PATH
 
 
-def _offending_lines():
+def _offending_lines(allowed=ALLOWED):
     """(path, row, line, number) of every NUMBER token equal to the old default or to the table's
-    value (rel 1e-3) on a physical line that names a permeability, outside ``ALLOWED``."""
+    value (rel 1e-3) on a physical line that names a permeability, outside ``allowed``."""
     targets = (OLD_DEFAULT, _source_entry()['value'])
     hits = []
     for path in sorted(PACKAGE.rglob('*.py')):
@@ -114,7 +112,7 @@ def _offending_lines():
             line = lines[tok.start[0] - 1]
             if not PERMEABILITY_WORDS.search(line):
                 continue
-            if any(rel == f and s in line for f, s in ALLOWED):
+            if any(rel == f and s in line for f, s in allowed):
                 continue
             hits.append((rel, tok.start[0], line.strip(), tok.string))
     return hits
@@ -127,9 +125,12 @@ def test_no_permeability_literal_stands_for_the_default():
 
 
 def test_every_allowance_is_still_needed():
-    for (rel, substring), reason in ALLOWED.items():
-        text = (PACKAGE / rel).read_text(encoding='utf-8')
-        assert substring in text, f'allowance for {rel} ({reason}) matches no line'
+    """Each exemption must remove a flag: without it, the scan reports a line of its file holding its text."""
+    for key, reason in ALLOWED.items():
+        rel, substring = key
+        without = {k: v for k, v in ALLOWED.items() if k != key}
+        flagged = [h for h in _offending_lines(without) if h[0] == rel and substring in h[2]]
+        assert flagged, f'allowance {key!r} ({reason}) suppresses no flag; remove it'
 
 
 def test_the_row_cites_nedjati_gilani_2017_and_states_the_derivation():
@@ -147,6 +148,10 @@ def test_the_row_cites_nedjati_gilani_2017_and_states_the_derivation():
     for name, text in fields.items():
         assert 'nilsson' not in text.lower(), f'{name} still credits Nilsson'
         assert '10.1002/mrm.24395' not in text, f'{name} still carries the Nilsson DOI'
+
+    for name in ('location', 'method', 'note'):
+        text = fields[name]
+        assert 'Nedjati-Gilani' in text and '2017' in text, f'{name} does not name Nedjati-Gilani et al. 2017'
 
     note = row['note']
     radius_um = source['default']['derived_permeability']['radius_m'] * 1e6
