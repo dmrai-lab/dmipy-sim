@@ -61,10 +61,12 @@ def _steps(job_lines):
 
 
 def _field(step, prefix):
-    """The first line of the step that carries ``prefix`` (with or without the list dash)."""
+    """The first line of the step that carries ``prefix``, with or without the list dash."""
     for line in step:
         s = line.strip()
-        if s.startswith(prefix) or s.startswith("- " + prefix):
+        if s.startswith("- "):
+            s = s[2:]
+        if s.startswith(prefix):
             return s
     return None
 
@@ -77,7 +79,13 @@ def _problems(text):
         return ["the boundaries of the test job were not found in the workflow text"]
     steps = _steps(job)
 
-    uses = [s.strip() for line in job for s in [line.strip()] if s.startswith("uses:")]
+    uses = []
+    for line in job:
+        s = line.strip()
+        if s.startswith("- "):
+            s = s[2:]
+        if s.startswith("uses:"):
+            uses.append(s)
     if "uses: " + COMBINED in uses:
         problems.append("combined cache action: a step still uses actions/cache@v4, whose "
                         "post-job save is skipped when the job fails or is cancelled")
@@ -131,7 +139,11 @@ def _problems(text):
         if "success()" in cond or "cancelled()" in cond:
             problems.append("save condition uses success() or cancelled(): " + cond)
 
-    tests_steps = [st for _, st in steps if (_field(st, "name:") or "").endswith("Run tests (CPU)")]
+    tests_steps = [st for _, st in steps
+                   if _field(st, "id:") == "id: tests"
+                   or (_field(st, "name:") or "").endswith("Run tests (CPU)")]
+    if not tests_steps:
+        problems.append("no test step found: no step has id: tests or the name Run tests (CPU)")
     for st in tests_steps:
         if _field(st, "id:") != "id: tests":
             problems.append("missing step id: the Run tests (CPU) step has no id: tests")
@@ -176,8 +188,15 @@ def test_each_planted_fault_is_found():
          "            " + RESTORE_KEYS_LINE,
          "            " + restore_keys_without_group),
         ("combined cache action", "uses: " + SAVE, "uses: " + COMBINED),
+        ("combined cache action",
+         "      - name: Save JAX compilation cache",
+         "      - uses: actions/cache@v4\n        with: {path: .jax_cache, key: x}\n\n"
+         "      - name: Save JAX compilation cache"),
         ("missing step id", "        id: tests\n", ""),
         ("save not restricted to main", " && github.ref == 'refs/heads/main'", ""),
+        ("no test step found",
+         "      - name: Run tests (CPU)\n        id: tests\n",
+         "      - name: Run the group\n"),
     ]
     for phrase, old, new in plants:
         assert real.count(old) == 1, "planted string occurs %d times: %r" % (real.count(old), old)
