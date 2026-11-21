@@ -16,10 +16,10 @@ of scope for this public engine.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 import math
 
-from .biophysical_constants import canonical_white_matter, get_default_value
+from .biophysical_constants import canonical_white_matter, get_default_value, get_value
 from ..compartments import Compartments, Pool
 
 
@@ -86,7 +86,8 @@ class Substrate:
 
     # -- membrane / surface --
     rho2: float = 1.16e-6         # transverse surface relaxivity (m/s)
-    kappa: float = 1.0e-5         # axolemma permeability (m/s)
+    # axolemma permeability (m/s): the catalogue's kappa_membrane, read when a Substrate is made
+    kappa: float = field(default_factory=lambda: get_value('kappa_membrane'))
 
     # -- magnetization transfer (bound / semisolid pool); OFF by default --
     # kappa_MT is the MT surface REACTIVITY (m/s): a free spin sticks at a wall hit

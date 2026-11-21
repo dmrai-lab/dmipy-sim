@@ -5,6 +5,18 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`Substrate()` and `Substrate.canonical()` default to a membrane permeability of 1.447e-6 m/s, Nedjati-Gilani et
+  al. 2017's in-vivo human white matter, instead of 1e-5 m/s, which no cited paper gave.** The value is the paper's own
+  cylinder relation `kappa = R / (2 tau_i)` (Section 2.2) at the splenium's `alpha` = 1.65 um, a volume-weighted radius
+  index, and `tau_i` = 0.57 s (Table 3, row CC-S, 3 T): the paper does not print the permeability, the constants table
+  derives it under `intracellular_residence_time` and stores it there once. `kappa_membrane` now holds no number of its
+  own but a `value_from` reference to that entry, which `get_constant` resolves into a copy when it is called (a
+  source holding both a `value` and a `value_from` is refused), and the `Substrate` dataclass reads it through a
+  `default_factory`, so `get_value('kappa_membrane')`, `canonical_white_matter()['kappa']`, `Substrate.canonical()` and
+  `Substrate()` all read that one entry at call time. The row's credit to Nilsson et al. 2013 is gone; its citation is
+  Nedjati-Gilani 2017. The default substrate therefore exchanges water about seven times more slowly (1e-5 / 1.447e-6
+  = 6.9; the intra-axonal residence time `R / (2 kappa)` grows by the same factor). Code that wants the old behaviour
+  passes `kappa=1e-5`.
 - **A walk records its membrane trials in a bounded number of slots per walker, one per (object, band) pair met.** The
   record of `record_trials=` holds, per walker, one row per (object, time band) pair the walker met, in the order it
   first met them (`TrialRecord.obj`, `band`, `n`, `N`, `S` of shape `(n_walkers, width)`, and `rows`, the pairs each

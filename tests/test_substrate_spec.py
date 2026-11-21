@@ -6,6 +6,7 @@ import pathlib
 
 import pytest
 
+from dmipy_sim.substrate.biophysical_constants import get_value
 from dmipy_replay.spec.substrate import SubstrateSpec, SpecError, validate, load_spec, SCHEMA_PATH, PoolSpec, Wall, Surface, Susceptibility
 
 FIX = pathlib.Path(__file__).parent / "fixtures" / "substrates"
@@ -35,6 +36,8 @@ def test_the_examples_say_what_the_readme_leaves_unsaid():
     assert pm.domain.boundary == ["periodic", "periodic", "open"]
     assert [p.name for p in pm.field_source_pools] == ["myelin"] and pm.pool("myelin").susceptibility.director == "radial"
     assert pm.wall("axolemma").permeability.in_to_out > 0 and pm.realisation["packing_fraction"] < pm.request["packing_fraction"]
+    # the fixture says it is the canonical cell, so its axolemma carries the catalogue's default permeability
+    assert pm.wall("axolemma").permeability.in_to_out == pm.wall("axolemma").permeability.out_to_in == get_value("kappa_membrane")
     assert len(pm.wall("sheath").surface.instances["radii"]) == 3
     mesh = load_spec(FIX / "mesh_bundle.sub.json")
     assert {w.surface.kind for w in mesh.walls} == {"mesh"} and mesh.seeding.weights == "thin"
