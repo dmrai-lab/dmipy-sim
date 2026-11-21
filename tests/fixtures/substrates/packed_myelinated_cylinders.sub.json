@@ -14,7 +14,7 @@
     {"name": "axolemma", "surface": {"kind": "cylinder", "axis": [0.0, 0.0, 1.0],
        "instances": {"centers": [[-0.9e-6, -0.7e-6, 0.0], [0.8e-6, -0.6e-6, 0.0], [0.0, 0.9e-6, 0.0]], "radii": [0.35e-6, 0.42e-6, 0.28e-6]}},
      "inside_pool": 1, "outside_pool": 2,
-     "permeability": {"in_to_out": 1.0e-5, "out_to_in": 1.0e-5},
+     "permeability": {"in_to_out": 1.447e-06, "out_to_in": 1.447e-06},
      "surface_relaxivity": {"inside": 1.16e-6, "outside": 1.16e-6},
      "mt_reactivity": {"inside": 0.0, "outside": 0.0}},
     {"name": "sheath", "surface": {"kind": "cylinder", "axis": [0.0, 0.0, 1.0],

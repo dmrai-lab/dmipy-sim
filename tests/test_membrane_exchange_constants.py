@@ -1,5 +1,5 @@
-"""The membrane water-exchange entries of the constants table: sourced, in their measured unit, and
-``kappa_membrane``'s value unchanged for its consumers.
+"""The membrane water-exchange entries of the constants table: sourced and in their measured unit.
+``kappa_membrane``'s value and its consumers are covered by ``test_default_permeability.py``.
 
 Covers only ``kappa_membrane`` and the five exchange entries; the rest of the table is not checked here.
 """
@@ -20,9 +20,6 @@ EXCHANGE_ENTRIES = {
 ENTRIES = {'kappa_membrane': 'm/s', **EXCHANGE_ENTRIES}
 UNITS = {'s', 's^-1', 'm/s'}
 NEEDS = 'NEEDS VERIFICATION'
-# The one exemption (its source's full text was not reached): the default's location quotes the
-# abstract, labelled as such, and the value is flagged as not printed by the cited paper.
-ABSTRACT_ONLY_DEFAULTS = {'kappa_membrane'}
 
 
 def _sources(name):
@@ -47,11 +44,7 @@ def test_no_default_needs_verification(name):
     default = bc.get_constant(name)['default']
     assert NEEDS not in default['location'], name
     assert isinstance(default['value'], float) and math.isfinite(default['value']), name
-    if name in ABSTRACT_ONLY_DEFAULTS:
-        assert default['location'].startswith('ABSTRACT ONLY'), name
-        assert default['value_in_cited_paper'] is False, name
-    else:
-        assert not default['location'].startswith('ABSTRACT ONLY'), name
+    assert not default['location'].startswith('ABSTRACT ONLY'), name
 
 
 @pytest.mark.parametrize('name', sorted(ENTRIES))
@@ -116,8 +109,8 @@ def _printed_sources(name):
 def test_value_is_the_printed_number_in_si(name):
     for where, src in _printed_sources(name):
         if 'printed' not in src:
-            # only a value no paper prints: kappa_membrane's default, an unverified source, or a
-            # permeability derived by this table
+            # only a value no paper prints: an unverified source, or a permeability derived by this
+            # table (kappa_membrane's default among them)
             assert (src.get('value_in_cited_paper') is False or src.get('location') == NEEDS
                     or src.get('by', '').startswith('this table')), f'{name} {where}: no printed value'
             continue
@@ -142,8 +135,3 @@ def test_the_printed_parser_reads_every_form_used():
     assert unit == 'μm/ms' and math.isclose(lo, 2.1e-3) and math.isclose(hi, 33e-3)
     lo, _, unit = _parse_printed('2.5 ± 0.15 x 10^-4 cm/sec (4 axons)')
     assert unit == 'cm/sec' and math.isclose(lo, 2.5e-4)
-
-
-def test_kappa_membrane_default_is_unchanged_for_its_consumers():
-    assert bc.get_value('kappa_membrane') == 1e-5
-    assert bc.canonical_white_matter(3.0)['kappa'] == 1e-5

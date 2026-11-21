@@ -20,8 +20,14 @@ permeability derived by this table) has no ``printed``; ``range`` with ``value``
 prints a range; ``temperature_C`` where the paper states it; and ``derived_permeability`` (value,
 formula, geometry, radius and who derived it) where a permeability is derived from the measured
 quantity.  Their naming rule is stated in the comment above ``kappa_membrane``.
+
+A source may hold ``value_from`` (a key path into this table) instead of a ``value``: its value IS the
+``value`` at that path, resolved by :func:`get_constant` when it is called, so a number lives in one
+place.  ``kappa_membrane``'s default refers this way to the permeability derived from
+``intracellular_residence_time`` (Nedjati-Gilani 2017).
 """
 
+import copy
 import warnings
 
 from dmipy_analytic.constants import GAMMA
@@ -176,6 +182,17 @@ _CITATION_TOFTS2003 = {
     'journal': 'John Wiley & Sons (book)',
     'year': 2003,
     'doi': '10.1002/0470869526',
+}
+
+_CITATION_NEDJATIGILANI2017 = {
+    'key': 'nedjatigilani2017',
+    'authors': 'Nedjati-Gilani GL, Schneider T, Hall MG, Cawley N, Hill I, Ciccarelli O, Drobnjak I, '
+               'Wheeler-Kingshott CAMG, Alexander DC',
+    'title': 'Machine learning based compartment models with permeability for white matter '
+             'microstructure imaging',
+    'journal': 'NeuroImage',
+    'year': 2017,
+    'doi': '10.1016/j.neuroimage.2017.02.013',
 }
 
 BIOPHYSICAL_CONSTANTS = {
@@ -1154,45 +1171,35 @@ BIOPHYSICAL_CONSTANTS = {
     # um/ms x 1e-3 = m/s; um/s x 1e-6 = m/s); a printed range is 'range' with 'value' None.
     'kappa_membrane': {
         'default': {
-            'value': 1e-5,
+            # No value of its own: get_constant resolves this reference, so the number lives in one place.
+            'value_from': ('intracellular_residence_time', 'default', 'derived_permeability'),
             'unit': 'm/s',
             'field_T': None,   # membrane permeability is geometric, field-independent
-            'species': None,   # not applicable: no measurement produced this value
-            'method': 'none: 1e-5 m/s is not printed by the cited paper (see note)',
-            'source_key': 'nilsson2013',
-            'doi': '10.1002/mrm.24395',
+            'species': 'human',
+            'cell_type': 'myelinated axon (white matter)',
+            'region': 'splenium of the corpus callosum (CC-S)',
+            'method': 'derived by this table from intracellular_residence_time (in vivo, 3 T): the paper\'s own '
+                      'cylinder relation kappa = R / (2 tau_i) with R = alpha and tau_i of Table 3, row CC-S',
+            'by': 'this table (not printed by the paper)',
             'value_in_cited_paper': False,
-            'location': 'ABSTRACT ONLY (the full text was not reached; see note). The abstract prints: '
-                        '"Apparent exchange rates in white matter range from 0.8±0.08 s(-1) in the internal '
-                        'capsule, to 1.6±0.11 s(-1) for frontal white matter, indicating that low values are '
-                        'associated with high myelination." and "In white matter, the apparent exchange rate '
-                        'values suggest intra-axonal exchange times in the order of seconds". No permeability '
-                        'and no radius appear in the abstract.',
+            'source_key': 'nedjatigilani2017',
+            'doi': '10.1016/j.neuroimage.2017.02.013',
+            'location': 'Section 2.2 (the relation "k = R/(2 τi)"), Section 2.4 (alpha, the volume-weighted '
+                        'radius index) and Table 3, row "CC-S", columns "τi (s)" and "α (μm)"; the values and '
+                        'the derivation are those of intracellular_residence_time\'s default and its '
+                        'derived_permeability.',
         },
         'alternatives': [],
-        'citation': {
-            'key': 'nilsson2013',
-            'authors': 'Nilsson M, Latt J, van Westen D, Brockstedt S, Lasic S, '
-                       'Stahlberg F, Topgaard D',
-            'title': 'Noninvasive mapping of water diffusional exchange in the human '
-                     'brain using filter-exchange imaging',
-            'journal': 'Magnetic Resonance in Medicine',
-            'year': 2013,
-            'doi': '10.1002/mrm.24395',
-        },
+        'citation': _CITATION_NEDJATIGILANI2017,
         'description': 'Axonal membrane permeability used by canonical_white_matter() (the walk\'s '
-                       'kappa_inner of Substrate.canonical()).',
-        'note': 'The value 1e-5 m/s is NOT given by Nilsson et al. 2013: the paper reports apparent exchange '
-                'rates (AXR) of 0.8 and 1.6 s^-1 in white matter, not ~10 s^-1, and no permeability. The '
-                'conversion the entry formerly stated, kappa = k R / 3, would need R = 3 kappa / k = '
-                '3 x 1e-5 / 0.8 = 37.5 um (internal capsule) or 3 x 1e-5 / 1.6 = 18.75 um (frontal WM) to '
-                'produce 1e-5 m/s; the cylinder form kappa = k R / 2 would need 25 um or 12.5 um. Both are '
-                'tens of times the radius of a white-matter axon, and an AXR is in any case the sum of two '
-                'rates between diffusion components, not an intra-axonal exit rate (see the membrane-exchange '
-                'block comment). The value is kept as the default only so that canonical_white_matter() and '
-                'Substrate.canonical() do not move silently; the measured quantities are in '
-                'exchange_rate_white_matter, intracellular_residence_time and kappa_membrane_direct. '
-                'The full text of Nilsson 2013 was not reached, so the location quotes the abstract.',
+                       'kappa_inner of Substrate.canonical()) and by the Substrate dataclass default.',
+        'note': 'Nedjati-Gilani et al. 2017 measured the intra-axonal residence time of human white matter in '
+                'vivo at 3 T (Table 3, row CC-S, splenium: tau_i = 0.57 s, alpha = 1.65 um). The permeability '
+                'is the paper\'s own cylinder relation kappa = R / (2 tau_i) (Section 2.2) with R = alpha, a '
+                'volume-weighted radius index (Section 2.4), not a mean radius. The paper does not print the '
+                'permeability: this table derived it, and stores it once, under '
+                'intracellular_residence_time -> default -> derived_permeability, which this row refers to. '
+                'The default was formerly 1e-5 m/s, which no cited paper gave.',
     },
     'exchange_time_grey_matter': {
         'default': {
@@ -1370,8 +1377,10 @@ BIOPHYSICAL_CONSTANTS = {
              'method': 'FEXI, in vivo', 'region': 'internal capsule; frontal white matter',
              'source_key': 'nilsson2013', 'doi': '10.1002/mrm.24395',
              'location': 'NEEDS VERIFICATION',
-             'note': 'Full text not reached; no value is entered from the abstract (the abstract is quoted in '
-                     'kappa_membrane\'s location).'},
+             'note': 'Full text not reached; no value is entered from the abstract, which prints: "Apparent '
+                     'exchange rates in white matter range from 0.8±0.08 s(-1) in the internal capsule, to '
+                     '1.6±0.11 s(-1) for frontal white matter, indicating that low values are associated with '
+                     'high myelination."'},
         ],
         'citation': {
             'key': 'lampinen2017',
@@ -1480,16 +1489,7 @@ BIOPHYSICAL_CONSTANTS = {
                  'location': 'Section 4.3: "for a typical neurite radius of 1 μm ( Palombo et al., 2021 ) with '
                              'residence time 4 ms, this results in a permeability of 125 μm/s."'}},
         ],
-        'citation': {
-            'key': 'nedjatigilani2017',
-            'authors': 'Nedjati-Gilani GL, Schneider T, Hall MG, Cawley N, Hill I, Ciccarelli O, Drobnjak I, '
-                       'Wheeler-Kingshott CAMG, Alexander DC',
-            'title': 'Machine learning based compartment models with permeability for white matter '
-                     'microstructure imaging',
-            'journal': 'NeuroImage',
-            'year': 2017,
-            'doi': '10.1016/j.neuroimage.2017.02.013',
-        },
+        'citation': _CITATION_NEDJATIGILANI2017,
         'citations': {
             'yang2018': {
                 'authors': 'Yang DM, Huettner JE, Bretthorst GL, Neil JJ, Garbow JR, Ackerman JJH',
@@ -1924,13 +1924,37 @@ BIOPHYSICAL_CONSTANTS = {
 }
 
 
+def _resolve_reference(name, where, source):
+    """Set ``source['value']`` to the ``value`` its ``value_from`` key path names in the table."""
+    if 'value' in source:
+        raise ValueError(
+            f"biophysical constant '{name}' {where} holds both 'value' and 'value_from'; a number is "
+            f"stored in one place: keep the reference {source['value_from']!r} alone.")
+    node = BIOPHYSICAL_CONSTANTS
+    for key in source['value_from']:
+        node = node[key]
+    source['value'] = node['value']
+
+
 def get_constant(name):
-    """Return a biophysical constant entry by name."""
+    """Return a copy of a biophysical constant entry by name, references resolved.
+
+    A source (the ``default`` or an alternative) that holds ``value_from`` -- a key path into
+    :data:`BIOPHYSICAL_CONSTANTS` -- gets the ``value`` stored at that path, read now; a source
+    holding both is refused (``ValueError``).  The returned dict is a deep copy: the table is never
+    written.
+    """
     if name not in BIOPHYSICAL_CONSTANTS:
         raise KeyError(
             "Unknown biophysical constant '{}'. Available: {}".format(
                 name, list(BIOPHYSICAL_CONSTANTS.keys())))
-    return BIOPHYSICAL_CONSTANTS[name]
+    entry = copy.deepcopy(BIOPHYSICAL_CONSTANTS[name])
+    sources = [('default', entry['default'])] + [
+        (f'alternatives[{i}]', a) for i, a in enumerate(entry.get('alternatives', []))]
+    for where, source in sources:
+        if 'value_from' in source:
+            _resolve_reference(name, where, source)
+    return entry
 
 
 def get_default_value(name):
