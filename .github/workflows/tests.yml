@@ -13,6 +13,9 @@ env:
   # dmipy-replay at the head of dmrai-lab/dmipy-replay#35 (a time view at any diffusivity), on its main at that merge
   DMIPY_ANALYTIC_REF: be8ece558451389fbf9303981b78cfc1dade3aea
   DMIPY_REPLAY_REF: 116ee0de7ab22bdaf2c1a0994dcf0915286c8372
+  # bump this number by hand to drop every group's compile cache: the key changes, the entries of
+  # the older number are never read again and leave by eviction
+  JAX_CACHE_EPOCH: "1"
 
 jobs:
   test:
@@ -56,25 +59,57 @@ jobs:
       # on the HLO instead, and restoring it across runs is what makes that win real on CI:
       # measured locally, the full fast tier went 1,030 s cold -> 670 s warm.
       #
-      # The key carries the Python version and a hash of the sources that shape the compiled
-      # programs, so a change to the engine or geometries invalidates it rather than serving
-      # a stale executable. `restore-keys` lets an edited run start from the nearest previous
-      # cache and re-fill only what actually changed.
+      # The cache is one entry per Python version AND per test group. With one key per version,
+      # all eight groups of that version compute the same key: the first job to end well writes
+      # the entry and the other seven never save their own programs. The key below therefore
+      # carries the group next to the Python version, the epoch and a hash of the sources that
+      # shape the compiled programs, so a change to the engine or geometries misses the exact
+      # key, restores the newest entry of the same group and epoch (restore-keys below, the
+      # group number followed by a dash, so g1- never matches another group) and the save
+      # writes a new entry under the new hash: only what changed is re-filled.
+      #
+      # The save is its own step, directly after the test step, and its condition begins with
+      # always(): it also runs after a failed or a timed-out test step, which the combined
+      # action's post-job save does not (that one is skipped when the job fails or is
+      # cancelled). The save still runs only when the test step actually ran (its outcome is
+      # not 'skipped'), only on refs/heads/main (a pull request reads the entries main saved
+      # and never writes its own), and only when the exact key missed, so an existing entry is
+      # never written again.
+      #
+      # Size budget: sixteen live entries per source hash (two Python versions times eight
+      # groups), each expected at about one eighth of a whole-version entry, about 0.18 GB for
+      # 3.11 and 0.04 GB for 3.12 if the programs split evenly -- a guess until measured,
+      # because a whole-version entry holds whichever group wrote it, not an even share. The
+      # repository store is capped at 10 GB and GitHub evicts the least recently used entries
+      # above that cap, so entries of older source hashes and of older epochs leave by
+      # eviction; no step here deletes anything and no extra permission is needed. Accepted
+      # consequence of having no delete step: an entry written by a main run whose test step
+      # failed or timed out stays partial until the sources change or the epoch is bumped; it
+      # still holds more than the combined action stores after a failed run, which is nothing.
       - name: Restore JAX compilation cache
-        uses: actions/cache@v4
+        id: jaxcache
+        uses: actions/cache/restore@v4
         with:
           path: .jax_cache
-          key: jax-${{ matrix.python-version }}-${{ hashFiles('dmipy_sim/**/*.py') }}
+          key: jax-${{ matrix.python-version }}-g${{ matrix.group }}-e${{ env.JAX_CACHE_EPOCH }}-${{ hashFiles('dmipy_sim/**/*.py') }}
           restore-keys: |
-            jax-${{ matrix.python-version }}-
+            jax-${{ matrix.python-version }}-g${{ matrix.group }}-e${{ env.JAX_CACHE_EPOCH }}-
 
       - name: Run tests (CPU)
+        id: tests
         run: |
           # GitHub runners have no GPU, so JAX is pinned to the CPU and the `gpu` tier (gpu-tier.yml) is deselected.
           # A test that is merely expensive is slimmed or deleted, not marked (tests/test_no_tiers.py).
           python tools/ci_groups.py 8 --check
           PATHS=$(python tools/ci_groups.py 8 ${{ matrix.group }})
           JAX_PLATFORMS=cpu pytest $PATHS -q --tb=short -m "not gpu"
+
+      - name: Save JAX compilation cache
+        if: always() && steps.tests.outcome != 'skipped' && github.ref == 'refs/heads/main' && steps.jaxcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .jax_cache
+          key: jax-${{ matrix.python-version }}-g${{ matrix.group }}-e${{ env.JAX_CACHE_EPOCH }}-${{ hashFiles('dmipy_sim/**/*.py') }}
 
       - name: Collect the whole suite
         run: |
