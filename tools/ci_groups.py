@@ -47,6 +47,7 @@ SECONDS = {
     "geometry/test_sphere_union.py": 85,
     "test_rph_constructor.py": 84,
     "backends/test_backend_hook.py": 79,
+    "backends/test_parity_pooling.py": 18,
     "math/test_step_certificate.py": 79,
     "test_step_law_report.py": 75,
     "test_storage_windows.py": 68,
