@@ -83,8 +83,8 @@ jobs:
           # every thread's stack dumped to stderr and the process exits at once with a non-zero
           # status, so a stuck test names itself and this job ends in minutes, not hours. The
           # limit is on this command line only, never in the project config, so a local run is
-          # never limited. 600 s = 3x the longest single test of a measured group run (173 s),
-          # with a floor of 600 s.
+          # never limited. The limit is the larger of 600 s and 3x the longest single test; the
+          # longest in one local run of a group was 173 s (3x = 519 s), so the floor of 600 s holds.
           JAX_PLATFORMS=cpu pytest $PATHS --tb=short -m "not gpu" -o faulthandler_timeout=600 -o faulthandler_exit_on_timeout=true
 
       - name: Collect the whole suite
@@ -110,9 +110,9 @@ jobs:
     # makes a canary of no recorded family a failure that names it (elsewhere such a host skips). On a failure it prints
     # this runner's entry (tools/record_recorded_bits.py), the values a new family would be recorded with.
     runs-on: ubuntu-latest
-    # Last-resort limit for the whole job: the measured maximum of this job's test command is
-    # 2.4 minutes (5 recorded-bit tests, one local run of them), and 3x that is below the
-    # 15-minute floor, so the limit is 15.
+    # Last-resort limit for the whole job: the measured maximum of this whole job over the last
+    # eight successful runs is 3.1 minutes (installs included); 3x that is below the 15-minute
+    # floor, so the limit is 15.
     timeout-minutes: 15
     env:
       JAX_PLATFORMS: cpu
