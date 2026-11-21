@@ -1,0 +1,103 @@
+{
+ "codec": "bitshuffle-zlib",
+ "level": 6,
+ "packs": [
+  {
+   "K": 12,
+   "chunk_walkers": 4096,
+   "file": "cylinder_k12.rpk",
+   "id": "fixture/cylinder_k12",
+   "n_walkers": 400,
+   "sha256": "f941eaf7a24182f1efb3f00d2ce489fe39dd77505742ed046f620249e3e6e67d",
+   "tiers": {
+    "contact": {
+     "bands": 12,
+     "bit_packed_bytes": 5248,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 4580,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 2000,
+     "range_coded_bytes": 1332,
+     "range_ratio": 0.666,
+     "ratio": 0.872713,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 12,
+     "bit_packed_bytes": 34944,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 35274,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 25200,
+     "range_coded_bytes": 25530,
+     "range_ratio": 1.013095,
+     "ratio": 1.009444,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
+   "K": 4,
+   "chunk_walkers": 4096,
+   "file": "strands_field_k4.rpk",
+   "id": "fixture/strands_field_k4",
+   "n_walkers": 90,
+   "sha256": "e08026851529961cc4fa45cd07257300e0910a2d5728119d63a2d7645ab35246",
+   "tiers": {
+    "contact": {
+     "bands": 4,
+     "bit_packed_bytes": 916,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 847,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 180,
+     "range_coded_bytes": 111,
+     "range_ratio": 0.616667,
+     "ratio": 0.924672,
+     "via": "re-encoded"
+    },
+    "field": {
+     "bands": 4,
+     "bit_packed_bytes": 2352,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 997,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 2160,
+     "range_coded_bytes": 805,
+     "range_ratio": 0.372685,
+     "ratio": 0.423895,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 4,
+     "bit_packed_bytes": 3558,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 3779,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 1350,
+     "range_coded_bytes": 1571,
+     "range_ratio": 1.163704,
+     "ratio": 1.062114,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  }
+ ],
+ "schema": "codec_ratio_record/1",
+ "summary": {},
+ "tolerance": {
+  "coded_relative": 0.005
+ }
+}

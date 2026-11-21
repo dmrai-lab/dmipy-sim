@@ -5,6 +5,14 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`plan_of_pack` reads the exact bytes of a built pack per tier, and `packed_row_bytes` is the one definition of a
+  bit-packed row's byte count.** `dmipy_sim/replay/plan.py` returns, from a pack file's header only, per tier of the
+  writer's tier table its tensors and the raw, bit-packed and stored byte counts, each with its source: the stored
+  count is the sum of the file's tensor byte ranges, the bit-packed count the closed form of the header's containers
+  through `packed_row_bytes` (the function `pack_bits` itself writes with), the raw count the float container's
+  coefficient bytes; `plan_problems` reports what a plan cannot account for. `dmipy_sim/replay/codec_ratios.json`
+  records the measured stored-over-bit-packed ratio of the lossless codec per tier per pack; the record is written
+  and checked by `tools/codec_ratio_record.py`.
 - **The backend parity report pools only independent walks; parity reports are not comparable across this change
   (every rate case's seeds change).** Every rate case of `parity_report` now walks at seeds of its own,
   `case_seeds(seed, name, sweep + 1)` (the first four bytes of `sha256(f"{seed}/{name}/{i}")`, sign bit cleared):
