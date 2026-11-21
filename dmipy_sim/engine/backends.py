@@ -82,10 +82,17 @@ FIELD_IN_WALK = "field_in_walk"
 #: :attr:`~dmipy_sim.coefficient_walk.CoefficientWalk.trial_record` as it joins the JAX kernels' record.
 TRIAL_RECORD = "trial_record"
 
+#: A capability a backend declares in :attr:`Backend.capabilities`: it walks each walker at its own fraction of the
+#: geometry's stated permeability (``permeability_factor=``), handed the batch's own factors as
+#: :attr:`WalkRequest.permeability_factor` and forming each trial's threshold by the geometry's
+#: :meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_rule`.
+PERMEABILITY_FACTOR = "permeability_factor"
+
 #: What the JAX kernels declare: they walk a permeability table, several storage windows, MT binding, the packed
-#: myelinated class, a closed-form field read in the walk and the record of the membrane trials.
+#: myelinated class, a closed-form field read in the walk, the record of the membrane trials and a permeability per
+#: walker.
 JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS, MT_BINDING, PACKED_MYELINATED, FIELD_IN_WALK,
-                              TRIAL_RECORD})
+                              TRIAL_RECORD, PERMEABILITY_FACTOR})
 
 
 class FieldSampling(NamedTuple):
@@ -153,6 +160,11 @@ class WalkRequest(NamedTuple):
     trial_slots: object = None    #: the slots each walker's record holds (:func:`~dmipy_sim.trial_record.device_record`):
                                   #: the spec's, the pilot's while it walks, then the capacity the pilot states; None
                                   #: without a record
+    permeability_factor: object = None    #: ``(n,)`` float32 each walker's factor of the geometry's stated
+                                          #: permeability for THIS batch, in ``r0``'s row order; None walks every
+                                          #: walker at the stated permeability. A backend that declares
+                                          #: :data:`PERMEABILITY_FACTOR` forms each trial's threshold by the
+                                          #: geometry's :meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_rule`
 
     @property
     def T(self):
@@ -174,8 +186,12 @@ def capability_refusal(backend, name, request, *, permeability_table=False):
     """Why ``backend`` (named ``name``) does not walk ``request`` for want of a capability it does not declare in its
     ``capabilities``, by the capability's name, or None: a permeability per object or over time
     (``permeability_table``) needs :data:`PERMEABILITY_TABLE`, a walk of several storage windows
-    :data:`STORAGE_WINDOWS`, a walk that binds (``request.kappa_MT_over_D > 0``) :data:`MT_BINDING`."""
+    :data:`STORAGE_WINDOWS`, a walk that binds (``request.kappa_MT_over_D > 0``) :data:`MT_BINDING`, a request
+    carrying a permeability per walker (``request.permeability_factor``) :data:`PERMEABILITY_FACTOR`."""
     have = getattr(backend, "capabilities", ())
+    if request.permeability_factor is not None and PERMEABILITY_FACTOR not in have:
+        return (f"backend {name!r}: this walk walks each walker at its own permeability (permeability_factor), which the "
+                f"backend does not declare it walks (capability {PERMEABILITY_FACTOR!r})")
     if float(request.kappa_MT_over_D) > 0.0 and MT_BINDING not in have:
         return (f"backend {name!r}: this walk binds at the walls (MT, kappa_MT/D = {float(request.kappa_MT_over_D):.4g} 1/m), "
                 f"which the backend does not declare it walks (capability {MT_BINDING!r})")

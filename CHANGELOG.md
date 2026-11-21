@@ -19,7 +19,16 @@ the project follows [Semantic Versioning](https://semver.org/).
   refuses two entries of one walk seed naming both cases, and adds `per_class` (`Z` and the case count per engine
   class, reported with no `ok`); the overall `Z` alone decides `ok`, so the false-failure rate is unchanged.
   `tools/parity_calibration.py` measures the pooled `Z` over report seeds on the CPU, under this rule or the old one.
-
+  `parity_report(backend, cases={})` now returns an empty report: an empty mapping is a selection of no cases,
+  where it ran the default cases before; `cases=None` (the default) still runs `parity_cases()`.
+- **A walk backend declares that it walks a permeability per walker, and each of its batches is handed its own
+  rows.** `backends.PERMEABILITY_FACTOR` (`"permeability_factor"`, among `JAX_CAPABILITIES`) is the capability;
+  `WalkRequest.permeability_factor` is the batch's `(n,)` float32 factors in `r0`'s row order (None: the stated
+  permeability), and a declaring backend forms each trial's threshold by `Geometry.permeability_factor_rule()`. The
+  producer hands every backend call its walkers' rows: the walk's batches, the events and trial-record pilots, and the
+  field pilot's batches. `_walk_geometry(permeability_factor=)` refuses a backend that does not declare the capability by
+  its name, and so does `capability_refusal` for a request carrying factors. The returned
+  `CoefficientWalk.permeability_factor` and `work["permeability_factor"]` are those of the JAX walk.
 - **`Substrate()` and `Substrate.canonical()` default to a membrane permeability of 1.447e-6 m/s, Nedjati-Gilani et
   al. 2017's in-vivo human white matter, instead of 1e-5 m/s, which no cited paper gave.** The value is the paper's own
   cylinder relation `kappa = R / (2 tau_i)` (Section 2.2) at the splenium's `alpha` = 1.65 um, a volume-weighted radius
@@ -86,8 +95,8 @@ the project follows [Semantic Versioning](https://semver.org/).
   and an array of ones are the walk at the stated permeability, bit for bit. The walk returns the array as
   `CoefficientWalk.permeability_factor` and states the cell's rule, the array's length and dtype in
   `work["permeability_factor"]`; a walk file whose array disagrees with that record is refused on load. Every other
-  geometry, a cell with nothing to scale, a schedule in time, MT binding, another backend and a factor outside `[0, 1]`
-  refuse it by name.
+  geometry, a cell with nothing to scale, a schedule in time, MT binding, any backend that does not declare
+  `PERMEABILITY_FACTOR` and a factor outside `[0, 1]` refuse it by name.
 - **A walk accumulates the time integral of its displacement over declared time segments.** `_walk_geometry(segments=[(a, b), ...])`
   adds per walker and segment `int_a^b (x(t) - x(0)) dt`, the trapezoid of its positions at the walk's own step, as
   `CoefficientWalk.segment_rows` beside the unchanged bands, and `segment_rows` of the time-segment layout reads it as

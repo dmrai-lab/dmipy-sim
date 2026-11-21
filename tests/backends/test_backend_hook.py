@@ -128,7 +128,8 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
                                             "kappa_over_D", "count_walls", "bounce_budget", "seed", "K", "m", "K_c3",
                                             "field_read_interval", "events", "raw_subset", "stepping", "field",
                                             "drop_pool_changes", "n_windows", "kappa_MT_over_D", "dwell_time",
-                                            "trial_record", "trial_steps", "trial_radii", "trial_u_max", "trial_slots")
+                                            "trial_record", "trial_steps", "trial_radii", "trial_u_max", "trial_slots",
+                                            "permeability_factor")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests
@@ -429,8 +430,11 @@ def test_the_producer_reads_nothing_from_a_backend_but_the_interface():
 
 
 def test_the_parity_harness_compares_the_coefficient_form():
-    """``parity_report`` on the JAX kernels against themselves (one walk, the same starts): every check passes with
-    z = 0, on the bands, the quadratic variation, the work, confinement and the replayed signal."""
+    """``parity_report`` on the JAX kernels against themselves: the "backend" walks the case's stream 0 from the
+    reference's starts, so it is the reference walk to the bit and the band-level checks (the bands, the quadratic
+    variation, the replayed signal) have z = 0 by construction. The count checks score that walk against the sweep's
+    spread, which excludes stream 0, so their t is an ordinary draw and not 0 by construction: the test is
+    deterministic at the stated seeds (the report's default ``seed=11``, 200 walkers), where every check passes."""
     report = backends.parity_report(None, cases={"sphere": backends.parity_cases()["sphere"]}, n_walkers=200)
     assert len(report) == 1 and report[0]["ok"] is True
     ch = report[0]["checks"]

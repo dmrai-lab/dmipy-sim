@@ -16,7 +16,7 @@ from typing import NamedTuple
 import numpy as np
 
 from .backends import (JAX, WalkRequest, CoefficientBatch, capability_refusal, event_capacity, resolve as resolve_backend,
-                       PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD)
+                       PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD, PERMEABILITY_FACTOR, JAX_CAPABILITIES)
 import logging
 
 log = logging.getLogger(__name__)
@@ -1111,7 +1111,9 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_pe
             progress(a, n)
         n_b = min(size, n - a)
         req = request._replace(block_h=float(request.dt_sim), n_blocks=n_steps, sub_steps=1, K=1, m=0, K_c3=0, field=None,
-                               field_read_interval=0.0, raw_subset=n_b, drop_pool_changes=bool(impermeable and record))
+                               field_read_interval=0.0, raw_subset=n_b, drop_pool_changes=bool(impermeable and record),
+                               permeability_factor=(None if request.permeability_factor is None
+                                                    else np.asarray(request.permeability_factor[a:a + n_b], np.float32)))
         t0 = _time.perf_counter()
         batch = backend.walk_batch(req, r0[a:a + n_b], keys[a:a + n_b])
         t1 = _time.perf_counter()
@@ -1135,14 +1137,16 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_pe
     return {k: np.concatenate([p[k] for p in parts], axis=0) for k in parts[0]}
 
 
-def _permeability_factor(factor, n_walkers, geometry, kappa_MT, backend_name):
+def _permeability_factor(factor, n_walkers, geometry, kappa_MT, backend_name, capabilities):
     """``(values, record)`` of a walk's ``permeability_factor``: the float32 ``(n_walkers,)`` device array and the
-    record the walk states, or ``(None, None)`` for ``None``; refused by name where the walk cannot take it."""
+    record the walk states, or ``(None, None)`` for ``None``; refused by name where the walk cannot take it, a backend
+    whose ``capabilities`` do not include :data:`~.backends.PERMEABILITY_FACTOR`."""
     if factor is None:
         return None, None
-    if backend_name != JAX:
-        raise ValueError(f"permeability_factor: a permeability per walker is walked by the JAX kernels; the backend "
-                         f"{backend_name!r} walks every walker at the geometry's stated permeability")
+    if PERMEABILITY_FACTOR not in capabilities:
+        raise ValueError(f"permeability_factor: the backend {backend_name!r} does not declare that it walks a "
+                         f"permeability per walker (capability {PERMEABILITY_FACTOR!r}); it walks every walker at the "
+                         f"geometry's stated permeability")
     if kappa_MT > 0.0:
         raise ValueError("permeability_factor: a permeability per walker is not walked with MT binding (kappa_MT > 0)")
     gap = geometry.permeability_factor_gap()
@@ -1449,7 +1453,8 @@ def _walk_geometry(
         does not take it (:meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_gap`: every geometry but the
         two cells, a cell with nothing to scale, a schedule in time), a shape other than ``(n_walkers,)``, a
         non-float array, a value that is negative, above 1 or not finite, MT binding (``kappa_MT > 0``), and any
-        backend but the JAX kernels.
+        backend that does not declare ``PERMEABILITY_FACTOR`` (:data:`~dmipy_sim.engine.backends.PERMEABILITY_FACTOR`);
+        a backend that declares it is handed each batch's own rows (``WalkRequest.permeability_factor``).
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
@@ -1479,7 +1484,8 @@ def _walk_geometry(
     with Run("_walk_geometry", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget), contextlib.ExitStack() as _flags:
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
-        _fac_all, _fac_record = _permeability_factor(permeability_factor, n_walkers, geometry, kappa_MT, _backend_name)
+        _fac_all, _fac_record = _permeability_factor(permeability_factor, n_walkers, geometry, kappa_MT, _backend_name,
+                                                      JAX_CAPABILITIES if _backend is None else getattr(_backend, "capabilities", ()))
         if record_trials is not None:
             _trial_objects = geometry.trial_objects(diffusivity)
             if _trial_objects is None:
@@ -2278,7 +2284,8 @@ def _walk_geometry(
             req = res.request._replace(raw_subset=(n_b if raw else 0), K_c3=(0 if K_c3 is None else int(K_c3)), drop_pool_changes=bool(drop_pool_changes),
                                        events=(int(cap) if cap else res.request.events),
                                        **({} if _trial is None else dict(trial_slots=int(_trial["slots"]))),
-                                       field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0))
+                                       field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0),
+                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[sel], np.float32)))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
             keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
             brem_b = np.ascontiguousarray(np.asarray(brem0_all[sel]), np.float32) if binding else None
@@ -2398,7 +2405,8 @@ def _walk_geometry(
             """The field pilot on the backend (:func:`field_pilot_on_backend`) of the walkers ``idx``, with the
             pilot's start labels as the JAX pilot takes them."""
             idx = np.asarray(idx)
-            req = res.request._replace(events=(int(cap) if cap else res.request.events))
+            req = res.request._replace(events=(int(cap) if cap else res.request.events),
+                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[idx], np.float32)))
             got = field_pilot_on_backend(_backend, req, np.asarray(r0_all[idx], np.float32), np.asarray(walker_keys_all[idx], np.uint32),
                                          field_basis, blocks_per_window=int(n_bw), checks=checks, progress=run.progress)
             if kind_name == "relax":
