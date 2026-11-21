@@ -50,10 +50,11 @@ def _meta_key(meta, dotted):
     return node
 
 
-def _tier_ranges(meta, tier):
-    """The band ranges the metadata declares for ``tier``: ``compression.container`` (positions),
+def tier_ranges(meta, tier):
+    """The band ranges the pack's metadata declares for ``tier``: ``compression.container`` (positions),
     ``compression.channels.boundary_local_time.container`` (contact),
-    ``compression.channels.susc_field_basis.container`` (field); ``None`` for the other tiers."""
+    ``compression.channels.susc_field_basis.container`` (field); ``None`` for the other tiers. The one lookup of a
+    tier's container, used by :func:`plan_of_pack` and by the tools that read a pack's ranges."""
     cx = meta.get("compression") or {}
     ch = cx.get("channels") or {}
     if tier == "positions":
@@ -128,7 +129,7 @@ def plan_of_pack(path):
                             "shape": [int(s) for s in tensors[name]["shape"]], "bytes": b - a,
                             "_range": _is_range_tensor(name)})
         entries.sort(key=lambda e: e["name"])
-        ranges = _tier_ranges(meta, tier)
+        ranges = tier_ranges(meta, tier)
         has_range_tensor = any(e["_range"] for e in entries)
         if has_range_tensor and tier in _RANGE_TIERS and not ranges:
             raise ValueError(f"tier {tier!r} holds range tensors but the metadata declares no container for it")

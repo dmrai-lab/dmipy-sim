@@ -22,11 +22,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dmipy_replay.replay import codec as _codec  # private names of the reader's codec: _range_entry, encode_chunks
+from dmipy_replay.replay import codec as _codec  # private names of the reader's codec: encode_chunks
 from dmipy_replay.replay.compression import _load_range, range_name  # _load_range: private name of the reader's codec
 from dmipy_replay.replay.container import read_safetensors
 from dmipy_replay.replay.hub import sha256_of
 
+from dmipy_sim.replay import plan as _plan
 from dmipy_sim.replay.compression import packed_row_bytes
 from dmipy_sim.replay.plan import plan_of_pack
 
@@ -48,29 +49,18 @@ _EXACT_TIER_FIELDS = ("bands", "bit_packed_bytes", "range_bit_packed_bytes", "ch
 _CODED_TIER_FIELDS = ("coded_bytes", "range_coded_bytes", "ratio", "range_ratio", "chunk_ratio_min", "chunk_ratio_max")
 
 
-def _tier_ranges(meta, tier):
-    """The band ranges the pack's metadata declares for ``tier`` (positions, contact, field)."""
-    cx = meta.get("compression") or {}
-    ch = cx.get("channels") or {}
-    if tier == "positions":
-        return cx.get("container")
-    if tier == "contact":
-        return (ch.get("boundary_local_time") or {}).get("container")
-    if tier == "field":
-        return (ch.get("susc_field_basis") or {}).get("container")
-    return None
-
-
 def measure_pack(path, chunk_walkers=4096):
     """One record entry for the pack at ``path``: ``id``, ``file`` (a base name), ``sha256``, ``n_walkers``,
     ``windows``, ``K``, ``chunk_walkers`` and, per banded tier, ``bands``, ``bit_packed_bytes`` (the plan's closed
-    form), ``coded_bytes``, ``ratio`` and ``via``, plus the range-level and per-chunk numbers of a re-encode. An
-    uncoded tier (``via`` ``"re-encoded"``) is re-encoded range by range, axis by axis and window by window with
+    form), ``coded_bytes``, ``ratio`` and ``via``, plus the range-level and per-chunk numbers of a re-encode. The
+    tier's ranges are read through :func:`dmipy_sim.replay.plan.tier_ranges`, the plan's one lookup. An uncoded tier
+    (``via`` ``"re-encoded"``) is re-encoded range by range, axis by axis and window by window with
     :func:`dmipy_replay.replay.codec.encode_chunks` at level 6: ``range_bit_packed_bytes`` is the range tensors'
     stored bytes, ``range_coded_bytes`` the streams' and chunk tables' bytes, ``coded_bytes`` the tier's bit-packed
     bytes with the range tensors replaced by their coded form, ``chunks`` the chunks per range, ``full_chunks`` the
-    full ones, and ``chunk_ratio_min`` / ``chunk_ratio_max`` the per-chunk coded-over-bit-packed ratios over the full
-    chunks only (``null`` when there is none). A coded tier (``via`` ``"file"``) takes ``coded_bytes`` from the
+    full ones, and ``chunk_ratio_min`` / ``chunk_ratio_max`` the per-chunk ratios over the full chunks only: per
+    chunk index, the chunk's coded bytes summed over the tier's ranges, axes and windows, over the same chunk's
+    bit-packed bytes of all windows (``null`` when there is none). A coded tier (``via`` ``"file"``) takes ``coded_bytes`` from the
     file's stored bytes, its own ``chunk_walkers``, and ``null`` range and chunk numbers."""
     path = os.fspath(path)
     plan = plan_of_pack(path)
@@ -89,7 +79,7 @@ def measure_pack(path, chunk_walkers=4096):
         bases = _TIER_BASES[tier]
         axes = len(bases)
         channels = tv["channels"] or 1
-        ranges = _tier_ranges(meta, tier)
+        ranges = _plan.tier_ranges(meta, tier)
         row_bytes = packed_row_bytes(ranges)
         bit_packed = tv["bit_packed"]["value"]
         if tv["codec"] is None:
@@ -98,9 +88,10 @@ def measure_pack(path, chunk_walkers=4096):
             chunk_coded = {}
             for w in range(windows):
                 prefix = "" if w == 0 else f"s{w}/"
-                for i in range(len(ranges)):
-                    r, _n_ch, width = _codec._range_entry(meta, bases[0], i)
+                for i, r in enumerate(ranges):
                     bits = int(r["bits"])
+                    k0, k1 = r["bands"] if "bands" in r else r["modes"]
+                    width = int(k1) - int(k0)
                     for base in bases:
                         name = f"{prefix}{range_name(base, i, bits)}"
                         if name not in arrays:
@@ -118,7 +109,8 @@ def measure_pack(path, chunk_walkers=4096):
             coded = bit_packed - range_bit_packed + range_coded
             chunks_n = -(-n_walkers // cw)
             full = n_walkers // cw
-            denom = cw * axes * channels * row_bytes
+            # a chunk's bit-packed bytes are the same over every window: W windows of cw walkers each
+            denom = windows * cw * axes * channels * row_bytes
             ratios = [round(chunk_coded[c] / denom, 6) for c in range(full)]
             entry["tiers"][tier] = {"bands": tv["bands"], "bit_packed_bytes": bit_packed, "coded_bytes": coded,
                                     "ratio": round(coded / bit_packed, 6), "via": "re-encoded",
