@@ -158,8 +158,9 @@ class WalkRequest(NamedTuple):
     trial_u_max: object = None    #: ``(n_objects,)`` float64 each object's bound on a trial's overshoot
                                   #: (:func:`~dmipy_sim.trial_record.u_max_of`); None without a record
     trial_slots: object = None    #: the slots each walker's record holds (:func:`~dmipy_sim.trial_record.device_record`):
-                                  #: the spec's, the pilot's while it walks, then the capacity the pilot states; None
-                                  #: without a record
+                                  #: the spec's, or the pilot's starting slots ``min(PILOT_SLOTS, pairs)`` (in the request the
+                                  #: backend's refusal check receives and in the pilot's batches), then the capacity the
+                                  #: pilot states; None without a record
     permeability_factor: object = None    #: ``(n,)`` float32 each walker's factor of the geometry's stated
                                           #: permeability for THIS batch, in ``r0``'s row order; None walks every
                                           #: walker at the stated permeability. A backend that declares

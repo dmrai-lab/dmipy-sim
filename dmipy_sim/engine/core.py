@@ -1081,7 +1081,7 @@ def _compact_events(n, steps, labels, dt_sim):
     return keep, np.asarray(steps[mask], np.float64) * float(dt_sim), np.asarray(labels[mask], np.int8)
 
 
-def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_per_window, checks, progress=None):
+def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeable, blocks_per_window, checks, progress=None):
     """A field pilot walked on ``backend``: the walkers ``r0`` / ``keys`` walked as ``request`` walks them but one
     physics step a block (``n_blocks sub_steps`` blocks of ``dt_sim``: the same steps, keys and walls, no field
     accumulated, ``K = 1`` at ``m = 0``), every walker in the raw subset, so that its saves are the positions after every step -- the
@@ -1090,8 +1090,10 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_pe
     (:func:`~.accumulate.field_read_statistics` over ``request.sub_steps`` steps a block and ``blocks_per_window``
     blocks a window, the trapezoid's ``checks``): ``fs`` ``(n, n_blocks + 1, n_ch)`` the start's read and the block
     means, ``qv_d`` ``(n, n_win, n_ch)`` the read series' quadratic variation, ``chk`` ``(n, n_win, 2, n_checks, n_ch)``
-    the checks. Walked in batches of at most :data:`~.accumulate.PILOT_READ_BYTES` of positions and reads; an
-    impermeable recorded walk is asked for its pool changes (``drop_pool_changes``), which the pilot keeps."""
+    the checks. Walked in batches of at most :data:`~.accumulate.PILOT_READ_BYTES` of positions and reads; ``impermeable``
+    is the resolved walk's statement that no walker changes pool (``not res.crossing``: no permeable wall of any object,
+    a myelinated cell's own walls included); an impermeable recorded walk is asked for its pool changes
+    (``drop_pool_changes``), which the pilot keeps."""
     import time as _time
     from .accumulate import field_read_statistics, PILOT_READ_BYTES
     name = str(getattr(backend, "name", backend))
@@ -1102,7 +1104,6 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, blocks_pe
     sub_steps, n_ch = int(request.sub_steps), len(field_basis.channel_names)
     n_steps = int(request.n_blocks) * sub_steps
     record = bool(request.record)
-    impermeable = not float(request.kappa_over_D) > 0.0
     size = max(1, int(PILOT_READ_BYTES) // ((n_steps + 1) * (3 + 2 * int(record) + n_ch) * 4))   # float32 positions, saves, reads
     r0 = np.ascontiguousarray(r0, np.float32); keys = np.ascontiguousarray(keys, np.uint32)
     n = int(r0.shape[0]); parts = []
@@ -2095,7 +2096,8 @@ def _walk_geometry(
                 field=field_basis,
                 **({} if _trial is None else dict(trial_record=record_trials, trial_steps=np.asarray(_steps, np.int64),
                                                   trial_radii=np.asarray(_trial["radii"], np.float64),
-                                                  trial_u_max=np.asarray(_trial["u_max"], np.float64)))))
+                                                  trial_u_max=np.asarray(_trial["u_max"], np.float64),
+                                                  trial_slots=int(_trial["slots"])))))
             reason = _backend_refusal(_backend, _backend_name, res, geometry)
             if reason:
                 raise ValueError(reason)
@@ -2408,7 +2410,8 @@ def _walk_geometry(
             req = res.request._replace(events=(int(cap) if cap else res.request.events),
                                        permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[idx], np.float32)))
             got = field_pilot_on_backend(_backend, req, np.asarray(r0_all[idx], np.float32), np.asarray(walker_keys_all[idx], np.uint32),
-                                         field_basis, blocks_per_window=int(n_bw), checks=checks, progress=run.progress)
+                                         field_basis, impermeable=not res.crossing, blocks_per_window=int(n_bw), checks=checks,
+                                         progress=run.progress)
             if kind_name == "relax":
                 lab = np.minimum(np.asarray(geometry.classify_positions_exact(r0_all[idx]), np.int64), 1).astype(np.int8)
             elif kind_name == "pm":
