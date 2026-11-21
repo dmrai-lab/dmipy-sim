@@ -468,4 +468,4 @@ def test_mt_binding_and_another_backend_refuse_the_factor():
         def walk_batch(self, request, r0, keys):
             raise AssertionError("not walked")
 
-    _refused(_mixed(), np.ones(8, np.float32), "JAX kernels", backend=Other())
+    _refused(_mixed(), np.ones(8, np.float32), "capability 'permeability_factor'", backend=Other())
