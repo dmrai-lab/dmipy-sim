@@ -42,6 +42,8 @@ def main(argv=None):
     ap.add_argument("--sweep", type=int, default=4)
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.getLogger("dmipy_sim").setLevel(logging.WARNING)             # the walks' own records stay quiet
+    log.setLevel(logging.INFO)
 
     from scipy.stats import chi2
     from dmipy_sim.engine.backends import _normal_scores, _spread_p, case_seeds, parity_cases
