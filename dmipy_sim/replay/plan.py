@@ -15,6 +15,7 @@ with its source and a range where it is a proxy. ``compare_plans`` compares a pl
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -355,6 +356,35 @@ def _stage_figure(tier, stage):
     return tier.get(stage) if tier.get("banded") else tier.get("raw")
 
 
+def _validate_provider_tier(provider, tier_name, tier, taken):
+    """Whether a provider's tier ``tier_name`` (``tier``) may enter the plan beside the tiers already ``taken``:
+    a ``ValueError`` naming the provider and the tier when the name is already used, the tier lacks ``why``, ``raw``,
+    ``bit_packed``, ``coded`` or ``stored``, a figure is not the five-key shape, a provenance is outside
+    :data:`PROVENANCE`, or the tier is not JSON."""
+    def bad(why):
+        raise ValueError(f"pack_plan: provider {provider}: tier {tier_name!r}: {why}")
+
+    if tier_name in taken:
+        bad("the tier name is already used")
+    if not isinstance(tier, dict):
+        bad(f"a tier is a dict; got {type(tier).__name__}")
+    for key in ("why", "raw", "bit_packed", "coded", "stored"):
+        if key not in tier:
+            bad(f"lacks the key {key!r}")
+    if not isinstance(tier["why"], str) or not tier["why"]:
+        bad("'why' is a non-empty string")
+    for key in ("raw", "bit_packed", "coded", "stored"):
+        fig = tier[key]
+        if not isinstance(fig, dict) or set(fig) != _FIG_KEYS:
+            bad(f"{key!r} is not a five-key figure")
+        if fig["provenance"] not in PROVENANCE:
+            bad(f"{key!r} carries provenance {fig['provenance']!r}, not one of {', '.join(PROVENANCE)}")
+    try:
+        json.dumps(tier, allow_nan=False)
+    except (TypeError, ValueError) as e:
+        bad(f"is not JSON: {e}")
+
+
 def _wall_rate(wall, group, key):
     """The rate ``key`` of a wall's ``group`` (``permeability``, ``mt_reactivity``), 0 when it states none."""
     rates = wall.get(group) if isinstance(wall, dict) else None
@@ -381,7 +411,7 @@ def _events_figures(column, pools, N, W, bank_shared):
 
 
 def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", chunk_walkers=4096, weights=False,
-              n_voxels=None, field_bands=None):
+              n_voxels=None, field_bands=None, providers=()):
     """The pre-walk plan of a pack, schema ``pack_plan/1``: a plain dict
 
     ``{"schema", "inputs": {"spec": {"id", "sha256"}, "envelope", "tolerance", "n_walkers", "codec", "chunk_walkers",
@@ -396,10 +426,11 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
     and read by no rule of version 1. ``n_walkers`` is an integer >= 1. ``codec`` is ``None`` or ``"bitshuffle-zlib"``;
     ``chunk_walkers`` a power of two. ``weights`` says the pack carries ``spin_weights``; ``n_voxels`` (``None`` or an
     integer >= 1) that it carries a voxel certificate; ``field_bands`` (``None`` or an integer >= 1) a stated field
-    band count.
+    band count. ``providers`` is a sequence of callables, each called with a deep copy of ``inputs`` and returning
+    ``{tier: tier}`` added after the simulator's own tiers.
 
     The tiers appear only when the stated rules switch them on, in the order positions, contact, field, occupancy,
-    mt, weights, voxel. Every figure is built by :func:`_fig` and carries one of
+    mt, weights, voxel, then the providers'. Every figure is built by :func:`_fig` and carries one of
     :data:`PROVENANCE` with a non-empty source; the band count of positions and of the contact is
     ``mode_count(window_s, band_hz)``, the bit-packed rows are
     :func:`~dmipy_sim.replay.compression.packed_row_bytes` at the ends of :data:`BITS_RANGE`, and whether a tensor is
@@ -632,10 +663,19 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
         "weights": bool(weights),
         "n_voxels": None if n_voxels is None else int(n_voxels),
         "field_bands": None if field_bands is None else int(field_bands),
-        "providers": [],
+        "providers": [getattr(p, "__name__", type(p).__name__) for p in providers],
         "ratios": None,
         "unread": ["tolerance", "G_max", "slew_max"],
     }
+
+    for prov in providers:
+        pname = getattr(prov, "__name__", type(prov).__name__)
+        result = prov(copy.deepcopy(inputs))
+        if not isinstance(result, dict):
+            raise ValueError(f"pack_plan: provider {pname}: returns {{tier: tier}}; got {type(result).__name__}")
+        for tname, tier in result.items():
+            _validate_provider_tier(pname, tname, tier, set(tiers))
+            tiers[tname] = tier
 
     rank = {"derived": 0, "measured": 1, "proxy": 2}
     total = {}

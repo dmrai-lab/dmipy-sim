@@ -280,3 +280,187 @@ def _assert_plain(node):
     else:
         assert not isinstance(node, np.generic)
         assert node is None or isinstance(node, (bool, int, float, str))
+
+
+def _dummy_fig(v, lo, hi=None):
+    return plan._fig(v, lo, lo if hi is None else hi, provenance="derived", source="dummy")
+
+
+def test_a_provider_adds_a_tier_and_a_bad_one_is_refused():
+    def dummy(inputs):
+        assert isinstance(inputs, dict) and "spec" in inputs
+        return {"extra": {"why": "dummy", "raw": _dummy_fig(10, 10), "bit_packed": _dummy_fig(None, None),
+                          "coded": _dummy_fig(None, None), "stored": _dummy_fig(10, 10)}}
+
+    kw = inputs_of(CYLINDER)
+    base = pack_plan(**kw)
+    pl = pack_plan(**kw, providers=(dummy,))
+    assert list(pl["tiers"])[-1] == "extra"
+    assert list(pl["tiers"])[:-1] == list(base["tiers"])
+    assert pl["inputs"]["providers"] == ["dummy"]
+    assert pl["total"]["raw"]["value"] == base["total"]["raw"]["value"] + 10
+    assert pack_plan_problems(pl) == []
+
+    def dup(inputs):
+        return {"positions": {"why": "dup", "raw": _dummy_fig(1, 1), "bit_packed": _dummy_fig(1, 1),
+                              "coded": _dummy_fig(1, 1), "stored": _dummy_fig(1, 1)}}
+
+    def guess(inputs):
+        return {"extra": {"why": "guess", "raw": plan._fig(1, 1, 1, provenance="guess", source="guess"),
+                          "bit_packed": _dummy_fig(1, 1), "coded": _dummy_fig(1, 1), "stored": _dummy_fig(1, 1)}}
+
+    def numpy_value(inputs):
+        return {"extra": {"why": "numpy", "raw": {"value": np.int64(3), "lo": 3, "hi": 3,
+                                                   "provenance": "derived", "source": "numpy"},
+                          "bit_packed": _dummy_fig(1, 1), "coded": _dummy_fig(1, 1), "stored": _dummy_fig(1, 1)}}
+
+    def no_stored(inputs):
+        return {"extra": {"why": "no stored", "raw": _dummy_fig(1, 1), "bit_packed": _dummy_fig(1, 1),
+                          "coded": _dummy_fig(1, 1)}}
+
+    for bad, tier in ((dup, "positions"), (guess, "extra"), (numpy_value, "extra"), (no_stored, "extra")):
+        with pytest.raises(ValueError) as e:
+            pack_plan(**kw, providers=(bad,))
+        assert bad.__name__ in str(e.value) and tier in str(e.value), (bad.__name__, str(e.value))
+
+
+def test_windows_count_per_window_tensors_and_shared_tensors_once(packs, tmp_path):
+    fixed = packs[-1]
+    arrays, hdr = container.read_safetensors(fixed)
+    meta = json.loads(hdr["rpk"])
+    two_arrays = dict(arrays)
+    two_arrays.update({f"s1/{k}": v for k, v in arrays.items() if not bank._is_shared_key(k)})
+    two_meta = json.loads(json.dumps(meta))
+    two_meta["walk_params"]["windows"] = {"n": 2, "T": meta["walk_params"]["windows"]["T"], "walks": []}
+    two = tmp_path / "two_windows.rpk"
+    write_rpk(two, two_arrays, two_meta)
+
+    kw = inputs_of(two)
+    assert kw["envelope"]["n_windows"] == 2
+    pl = pack_plan(**kw)
+    built_two = plan_of_pack(two)
+    built_one = plan_of_pack(fixed)
+    assert compare_plans(pl, built_two) == []
+    assert pl["pack"]["windows"] == 2
+    assert pl["tiers"]["occupancy"]["raw"]["value"] == built_one["tiers"]["occupancy"]["raw"]["value"] \
+        == built_two["tiers"]["occupancy"]["raw"]["value"]
+    assert pl["tiers"]["positions"]["raw"]["value"] == 2 * built_one["tiers"]["positions"]["raw"]["value"] \
+        == built_two["tiers"]["positions"]["raw"]["value"]
+    assert pack_plan_problems(pl) == []
+
+
+def test_each_planted_fault_is_found(packs, tmp_path, monkeypatch):
+    cylinder, strands = CYLINDER, STRANDS
+    kw_c = inputs_of(cylinder)
+    kw_c["codec"] = None
+    kw_s = inputs_of(strands)
+    kw_s["codec"] = None
+    assert compare_plans(pack_plan(**kw_c), plan_of_pack(cylinder)) == []
+    assert compare_plans(pack_plan(**kw_s), plan_of_pack(strands)) == []
+
+    # A, K one too many
+    real_mode_count = plan.mode_count
+    with monkeypatch.context() as m:
+        m.setattr(plan, "mode_count", lambda T, f: real_mode_count(T, f) + 1)
+        problems = compare_plans(pack_plan(**kw_c), plan_of_pack(cylinder))
+    assert any("tier positions: raw" in s and "differs from the planned" in s for s in problems), problems
+
+    # B, a clip too narrow
+    with monkeypatch.context() as m:
+        m.setattr(plan, "BITS_RANGE", (3, 12))
+        problems = compare_plans(pack_plan(**kw_c), plan_of_pack(cylinder))
+    assert any("tier positions: bit_packed" in s and "is outside the planned" in s for s in problems), problems
+
+    # C, a shared tensor counted per window
+    fixed = packs[-1]
+    arrays, hdr = container.read_safetensors(fixed)
+    meta = json.loads(hdr["rpk"])
+    two_arrays = dict(arrays)
+    two_arrays.update({f"s1/{k}": v for k, v in arrays.items() if not bank._is_shared_key(k)})
+    two_meta = json.loads(json.dumps(meta))
+    two_meta["walk_params"]["windows"] = {"n": 2, "T": meta["walk_params"]["windows"]["T"], "walks": []}
+    two = tmp_path / "two_windows.rpk"
+    write_rpk(two, two_arrays, two_meta)
+    kw_two = inputs_of(two)
+    with monkeypatch.context() as m:
+        m.setattr(bank, "_SHARED_KEYS", ())
+        problems = compare_plans(pack_plan(**kw_two), plan_of_pack(two))
+    assert any("tier occupancy: raw" in s for s in problems), problems
+
+    # D, a spec that disagrees with the pack
+    kw = json.loads(json.dumps(kw_c))
+    kw["spec"]["walls"][0]["permeability"]["in_to_out"] = 1e-6
+    problems = compare_plans(pack_plan(**kw), plan_of_pack(cylinder))
+    assert any("tier occupancy: raw 400 is outside the planned" in s for s in problems), problems
+
+    # E, the wrong channel set
+    kw = json.loads(json.dumps(kw_s))
+    for pool in kw["spec"]["pools"]:
+        if isinstance(pool.get("susceptibility"), dict):
+            pool["susceptibility"]["chi_aniso"] = None
+    problems = compare_plans(pack_plan(**kw), plan_of_pack(strands))
+    assert any("tier field: channels 12 differs from the planned 6" in s for s in problems), problems
+
+    # F, a fourth label
+    def exact_fig(value=None, lo=None, hi=None, *, provenance, source):
+        return {"value": value, "lo": lo, "hi": hi,
+                "provenance": "exact" if provenance == "derived" else provenance, "source": source}
+
+    with monkeypatch.context() as m:
+        m.setattr(plan, "_fig", exact_fig)
+        problems = pack_plan_problems(pack_plan(**kw_s))
+    assert any("carries provenance 'exact'" in s for s in problems), problems
+
+    # G, a proxy with a made-up centre
+    real_fig = plan._fig
+
+    def centred_fig(value=None, lo=None, hi=None, *, provenance, source):
+        if provenance == "proxy" and lo is not None:
+            value = lo
+        return real_fig(value, lo, hi, provenance=provenance, source=source)
+
+    with monkeypatch.context() as m:
+        m.setattr(plan, "_fig", centred_fig)
+        problems = pack_plan_problems(pack_plan(**kw_s))
+    assert any("is proxy and states a central value" in s for s in problems), problems
+
+    # H, not JSON
+    def numpy_fig(value=None, lo=None, hi=None, *, provenance, source):
+        return {"value": None if value is None else np.int64(value),
+                "lo": None if lo is None else np.int64(lo),
+                "hi": None if hi is None else np.int64(hi),
+                "provenance": provenance, "source": source}
+
+    with monkeypatch.context() as m:
+        m.setattr(plan, "_fig", numpy_fig)
+        problems = pack_plan_problems(pack_plan(**kw_s))
+    assert any("the plan is not JSON" in s for s in problems), problems
+
+    # I, the refusals removed
+    table = [("tolerance", lambda kw: kw.__setitem__("tolerance", None)),
+             ("n_walkers", lambda kw: kw.__setitem__("n_walkers", 0))]
+    with monkeypatch.context() as m:
+        m.setattr(plan, "_refuse", lambda *a, **k: None)
+        problems = refusal_problems(table)
+    assert problems and any("did not refuse by name" in s for s in problems), problems
+
+    # J, a provider validated by nobody
+    def guess(inputs):
+        return {"extra": {"why": "guess", "raw": plan._fig(1, 1, 1, provenance="guess", source="guess"),
+                          "bit_packed": _dummy_fig(1, 1), "coded": _dummy_fig(1, 1), "stored": _dummy_fig(1, 1)}}
+
+    with monkeypatch.context() as m:
+        m.setattr(plan, "_validate_provider_tier", lambda *a, **k: None)
+        pl = pack_plan(**kw_s, providers=(guess,))
+        problems = pack_plan_problems(pl)
+    assert any("carries provenance 'guess'" in s for s in problems), problems
+
+    # a stand-in source on a derived figure
+    def stand_in_fig(value=None, lo=None, hi=None, *, provenance, source):
+        return real_fig(value, lo, hi, provenance=provenance,
+                        source="stand-in:x" if source.startswith("dmipy_replay.replay.storage") else source)
+
+    with monkeypatch.context() as m:
+        m.setattr(plan, "_fig", stand_in_fig)
+        problems = pack_plan_problems(pack_plan(**kw_s))
+    assert any("stand-in" in s for s in problems), problems
