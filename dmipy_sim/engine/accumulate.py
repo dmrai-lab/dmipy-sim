@@ -61,9 +61,9 @@ STORAGE_BAND_HZ = 1280.0
 #: ``build_to_floor``'s ``sigma_star``): ``v_read / 2 <= FIELD_READ_FLOOR`` at the envelope's ``B0`` and ``chi``
 FIELD_READ_FLOOR = 1e-3
 
-#: the library's default field strength (T), the largest of the default field strengths
-#: ``B0_list``, and susceptibility scale (myelin's isotropic chi) for a substrate whose spec states no magnetic pool:
-#: what :func:`~dmipy_sim.replay.compression.certified_envelope` writes into an envelope that states none
+#: the library's default maximum field strength (T), and susceptibility scale (myelin's isotropic chi) for a substrate
+#: whose spec states no magnetic pool: what :func:`~dmipy_sim.replay.compression.certified_envelope` writes into an
+#: envelope that states none
 FIELD_RULE_B0 = 7.0
 FIELD_RULE_CHI = 1.06e-6
 

@@ -49,12 +49,12 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 
 
-def stated(settings=None, spec=None, *, band_hz=1e9, G_max=100.0):
+def stated(settings=None, spec=None, *, band_hz=1e9, G_max=100.0, B0_max=7.0):
     """``dict(envelope=, battery=)`` of this tool's own limits from its certificate ``settings``: the waveforms it
     replays are ideal lobes no catalogue scanner plays (``G_max``, 100 T/m per axis unless a measured certificate is read
     on the battery, at the strongest human class's amplitude; a band wider than any pack it stores, which then states the band it stores), and a replay
     beyond them is still refused. The battery keys are the battery; the
-    envelope states the settings' field strengths, their largest surface relaxivity and refocusing depth, and the
+    envelope states the settings' maximum field strength ``B0_max`` (T; this tool's own 7 T where they state none), their largest surface relaxivity and refocusing depth, and the
     susceptibility scale of the substrate ``spec`` where it has a field."""
     from dmipy_replay import Envelope
     from dmipy_sim.engine.accumulate import spec_chi_scale
@@ -62,7 +62,7 @@ def stated(settings=None, spec=None, *, band_hz=1e9, G_max=100.0):
     s = dict(settings or {})
     rho = s.get("rho2_list", [1e-4])
     chi = s.get("chi_max", None if spec is None else spec_chi_scale(spec))
-    env = Envelope(name="coefficient_walk_measure", band_hz=band_hz, G_max=G_max, B0_list=tuple(s.get("B0_list", (3.0, 7.0))),
+    env = Envelope(name="coefficient_walk_measure", band_hz=band_hz, G_max=G_max, B0_list=(float(s["B0_max"] if "B0_max" in s else B0_max),),
                    chi_max=chi, rho2_max=(max(rho) if rho else None), max_refocusing_pulses=s.get("max_refocus_pulses"))
     return dict(envelope=env, battery={k: v for k, v in s.items() if k in BATTERY_KEYS} or None)
 
@@ -437,7 +437,7 @@ def multiphysics(*, n=4000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, dchi_a=-0.1e-6
     n_raw = n if n_raw is None else min(int(n_raw), n)
     g = _myelin(D, r_in, r_out)
     fg = _myelin_field(g, field)
-    env = dict(cx.default_battery(), B0_list=[B0], theta_deg=[float(theta_deg)], max_refocus_pulses=8, rho2_list=[1e-5, 1e-4])
+    env = dict(cx.default_battery(), B0_max=B0, theta_deg=[float(theta_deg)], max_refocus_pulses=8, rho2_list=[1e-5, 1e-4])
     rho = max(env["rho2_list"]) if rho is None else float(rho)
     env["rho2_list"] = sorted(set(env["rho2_list"]) | {rho})
     with warnings.catch_warnings():
@@ -660,7 +660,7 @@ def read_check(*, n=20000, D=2e-9, T=0.1, K=256, seed=1, B0=7.0, theta_deg=90.0,
     from dmipy_replay.spec.tissue import Tissue
     g = _myelin(D, r_in, r_out)
     fg = _myelin_field(g, field)
-    env = dict(cx.default_battery(), B0_list=[B0], theta_deg=[float(theta_deg)])
+    env = dict(cx.default_battery(), B0_max=B0, theta_deg=[float(theta_deg)])
     secs = {}
 
     def walk(name, **kw):
@@ -718,7 +718,7 @@ def strands(*, n=2000, T=2e-3, block_h=2e-4, K=8, seed=0, B0=7.0, theta_deg=90.0
     from dmipy_replay.spec.tissue import Tissue
     import time
     spec = _strands_spec(tempfile.mkdtemp())
-    env = dict(cx.default_battery(), B0_list=[B0], theta_deg=[float(theta_deg)])
+    env = dict(cx.default_battery(), B0_max=B0, theta_deg=[float(theta_deg)])
     secs = {}
 
     def walked(name, **kw):

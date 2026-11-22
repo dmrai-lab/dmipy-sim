@@ -494,7 +494,7 @@ def _envelope(meta, g_max):
     (:meth:`~dmipy_replay.replay.envelope.Envelope.from_header`: every level at most ``G_max`` per axis, ``b_max``
     None), ``G_max`` (``g_max``, at most the envelope's, else the envelope's), the largest ``rho2 / D`` (the contact
     tier's envelope, ``replay_envelope.tissue.rho2_over_D_max``; 0 for a pack with no contact channel, and a pack with
-    one that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest of
+    one that states none is refused) and the largest ``B0 chi``: the one certified field scale, the largest entry of
     ``replay_envelope.acquisition.B0_list`` times ``replay_envelope.tissue.chi_max`` (0 for a pack with no field
     channel, and a pack with one that states either not is refused). A header that states no envelope is refused."""
     from dmipy_replay.replay.envelope import Envelope
@@ -514,9 +514,9 @@ def _envelope(meta, g_max):
         rho = 0.0
     b0chi = b0max = 0.0
     if ((meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis") is not None:
-        if e.chi_max is None or not e.B0_list:
+        if e.chi_max is None or e.B0_max is None:
             raise ValueError("the pack carries a field channel and states no certified susceptibility scale "
-                             "(replay_envelope.tissue.chi_max) or field strengths (replay_envelope.acquisition.B0_list): "
+                             "(replay_envelope.tissue.chi_max) or maximum field strength (replay_envelope.acquisition.B0_list): "
                              "the field's width is derived at the one certified B0 chi")
         b0max = float(e.B0_max)
         b0chi = b0max * float(e.chi_max)

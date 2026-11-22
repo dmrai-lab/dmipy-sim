@@ -20,7 +20,7 @@ from dmipy_sim.replay import publish as pub
 from dmipy_sim.replay.container import save_pack
 
 ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
+           theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 REPO = "owner/packs"
 
 

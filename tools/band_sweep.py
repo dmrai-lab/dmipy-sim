@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 D0, T, K = 2.0e-9, 0.100, 256
 DIAM = 5.0e-6
+B0_MAX = 7.0        # T: the one maximum field strength the sweep's packs state
 
 
 
@@ -35,7 +36,7 @@ def tool_envelope():
     scanner plays (100 T/m per axis, a band wider than any pack it stores, which then states the band it stores); a
     replay beyond them is still refused."""
     from dmipy_replay import Envelope
-    return Envelope(name="band_sweep", band_hz=1e9, G_max=100.0, B0_list=(3.0, 7.0), chi_max=None, rho2_max=1e-4,
+    return Envelope(name="band_sweep", band_hz=1e9, G_max=100.0, B0_list=(B0_MAX,), chi_max=None, rho2_max=1e-4,
                     max_refocusing_pulses=None)
 
 
@@ -83,7 +84,7 @@ def strand_walk(n, T_s, seed=3):
     np.savetxt(dia, np.array([2 * r for r in (1.5e-6, 1.0e-6, 2.0e-6)]) / 1e-3)
     spec = disco_spec(tck, dia, side_m=20e-6)
     return walk(spec, n, T_max=T_s, seed=seed, n_probe=20_000, require_gpu=False, adaptive_steps=True,
-                field_cutoff_max_m=25e-6, envelope=envelope_of("connectom", B0_list=(3.0, 7.0), chi_max=spec_chi_scale(spec), rho2_max=1e-4).replace(G_max=100.0))
+                field_cutoff_max_m=25e-6, envelope=envelope_of("connectom", B0_list=(B0_MAX,), chi_max=spec_chi_scale(spec), rho2_max=1e-4).replace(G_max=100.0))
 
 
 def sweep_c3(a):

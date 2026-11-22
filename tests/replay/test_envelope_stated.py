@@ -1,8 +1,8 @@
 """A pack's certificate is read over the envelope it states, and a replay beyond it is refused.
 
-The build envelope states the largest surface relaxivity ``rho2_max`` (m/s), the field strengths ``B0_list`` (T) and the
+The build envelope states the largest surface relaxivity ``rho2_max`` (m/s), the one maximum field strength ``B0_max`` (T) and the
 susceptibility scale ``chi_max``; there is no default. The pack records them (``replay_envelope.tissue.rho2_over_D_max``
-over the walk's ``D``, ``replay_envelope.acquisition.B0_list``, ``replay_envelope.tissue.chi_max``); every field term is
+over the walk's ``D``, ``replay_envelope.acquisition.B0_list`` (one entry), ``replay_envelope.tissue.chi_max``); every field term is
 read at the one certified ``B0 chi``, the largest ``B0`` times ``chi_max``; the field read's own limit is
 ``field_read.read_limit_B0_chi_T``, a different quantity.
 """
@@ -56,8 +56,8 @@ def _pack(walk, **env):
 
 @pytest.fixture(scope="module")
 def disco_like(walk):
-    """DiSCo's envelope: rho2 <= 3 um/s, B0 1.5 / 3 / 7 T, chi the substrate's."""
-    return _pack(walk, rho2_list=[3e-6], B0_list=[1.5, 3.0, 7.0])
+    """DiSCo's envelope: rho2 <= 3 um/s, B0 up to 7 T, chi the substrate's."""
+    return _pack(walk, rho2_list=[3e-6], B0_max=7.0)
 
 
 def _seq(pk):
@@ -82,7 +82,7 @@ def test_the_contact_certificate_is_read_at_the_stated_relaxivity(walk, disco_li
     """The surface quadrature term is the one at the STATED rho2 (computed again from the pack's own record), and
     the pack states the range it was certified over."""
     D = disco_like.diffusivity
-    wider = _pack(walk, rho2_list=[1e-5], B0_list=[1.5, 3.0, 7.0])
+    wider = _pack(walk, rho2_list=[1e-5], B0_max=7.0)
     for pk, rho2 in ((disco_like, 3e-6), (wider, 1e-5)):
         assert pk.fidelity["quadrature"]["surface_rho_over_D"] == _round_sig(rho2 / D, 6)         # written as the certificate is
         assert pk.fidelity["err_quadrature_surface"] > 0
@@ -109,9 +109,9 @@ def test_an_envelope_states_every_bound_and_a_field_pack_without_one_is_refused(
             build_replay_pack(walk, envelope=walk.envelope.replace(chi_max=None), **kw)
         with pytest.raises(ValueError, match="states no B0_list"):
             build_replay_pack(walk, envelope=walk.envelope.replace(B0_list=()), **kw)
-    pk = _pack(walk, rho2_list=[1e-4], B0_list=[3.0, 7.0])
+    pk = _pack(walk, rho2_list=[1e-4], B0_max=7.0)
     assert pk.rho2_over_D_max == pytest.approx(1e-4 / pk.diffusivity) and pk.envelope.rho2_max == pytest.approx(1e-4)
-    assert pk.replay_envelope["acquisition"]["B0_list"] == [3.0, 7.0]
+    assert pk.replay_envelope["acquisition"]["B0_list"] == [7.0]
     assert pk.replay_envelope["tissue"]["chi_max"] == pytest.approx(spec_chi_scale(spec))
 
 
@@ -121,7 +121,7 @@ def test_every_field_term_is_read_at_the_one_certified_scale(walk, spec, disco_l
     certified scale."""
     env = disco_like.replay_envelope
     chi = spec_chi_scale(spec)
-    assert env["acquisition"]["B0_list"] == [1.5, 3.0, 7.0] and env["tissue"]["chi_max"] == pytest.approx(chi)
+    assert env["acquisition"]["B0_list"] == [7.0] and env["tissue"]["chi_max"] == pytest.approx(chi)
     fe = disco_like.field_envelope
     assert fe["B0_max"] == 7.0 and fe["B0_chi_max"] == pytest.approx(7.0 * chi)
     fr = env["field_read"]
@@ -131,7 +131,7 @@ def test_every_field_term_is_read_at_the_one_certified_scale(walk, spec, disco_l
     consts = disco_like.meta["compression"]["channels"]["susc_field_basis"]["read"]["constants"]
     assert disco_like.fidelity["terms"]["field_read"] == pytest.approx(
         field_read_term(disco_like.meta["walk_params"]["field_read_interval"], qv, 7.0, chi, consts), rel=1e-12)
-    low = _pack(walk, rho2_list=[3e-6], B0_list=[3.0])
+    low = _pack(walk, rho2_list=[3e-6], B0_max=3.0)
     t7, t3 = disco_like.fidelity["terms"], low.fidelity["terms"]
     # both terms are (gamma B0 chi)^2 times the walk's own quantities, exactly (fidelity.terms carries them unrounded):
     # the ratio is (7 / 3)^2 to float64's rounding

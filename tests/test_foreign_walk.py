@@ -87,7 +87,7 @@ def test_a_cylinder_walk_re_encoded_from_its_saves_replays_within_its_certificat
     h = 2e-4
     fw = walk_from_positions(x, sample_interval=h, K=20, pool="intra", spec=nat.spec, D=D0, producer=PRODUCER)
     env = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
-               shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5],
+               shortd_deltas_frac=[0.05], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5],
                G_max=10.0)                                                  # the test's ideal lobes: limits of its own
     pf = build_replay_pack(fw, id="t/foreign", license="x", citation="x", **stated(env, of=fw))
     pn = build_replay_pack(nat, id="t/native", license="x", citation="x", **stated(env, of=nat), K=20)

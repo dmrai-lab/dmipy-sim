@@ -56,7 +56,7 @@ def _slab_walk(n_w=N_W, seed=0, *, T=T_WALK, block_h=DT, K=None, magnetic=False,
 
 def _lean_env():
     return dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2],
-                shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0],
+                shortd_b=1e9, shortd_deltas_frac=[0.05], theta_deg=[0],
                 delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5, 1e-4])
 
 
@@ -163,7 +163,7 @@ def _susc_walk(n_w=N_W, seed=0, **kw):
 
 
 def _env7(**kw):
-    env = dict(_lean_env(), B0_list=[7.0], theta_deg=[0]); env.update(kw)
+    env = dict(_lean_env(), B0_max=7.0, theta_deg=[0]); env.update(kw)
     return env
 
 

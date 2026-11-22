@@ -14,6 +14,7 @@ import numpy as np
 from dmipy_replay.replay.compression import c2_bands_K as _cx_bands_K
 from dmipy_replay.replay.hub import sha256_of
 
+from .compression import read_envelope, restate_one_maximum
 from .container import save_pack, write_rpk
 
 __all__ = ["truncate_pack", "rewindow_pack", "prefix_pack", "stated_envelope", "restate_surface_envelope"]
@@ -43,7 +44,7 @@ def truncate_pack(pack, n_keep, *, id=None, out_path=None):
     meta.setdefault("provenance", {})["truncated"] = dict(parent_id=pack.meta.get("id"), windows_kept=n_keep, of=n)
     if id is not None:
         meta["id"] = id
-    out = type(pack)(keep, meta, source=None)
+    out = type(pack)(keep, restate_one_maximum(meta), source=None)
     if out_path is not None:
         save_pack(out, out_path)
     return out
@@ -127,13 +128,12 @@ def rewindow_pack(pack, T_seg, *, out_path, id=None, max_dropped_fraction=1e-3, 
 def stated_envelope(pack):
     """The certificate settings a re-encoding of this pack (a window, a prefix) is certified under: the pack's
     :attr:`envelope` on :func:`~dmipy_sim.replay.compression.default_battery` -- its name, band, ``G_max`` and field
-    strengths (``acquisition.B0_list``) -- with the refocusing depth its field channel serves
+    strength (``acquisition.B0_list``'s largest entry, ``B0_max``) -- with the refocusing depth its field channel serves
     (``max_refocus_pulses``), its contact envelope as ``rho2_list`` (over the walk's ``D``) and its ``chi_max``."""
     from .compression import default_battery
-    e = pack.envelope
+    e = read_envelope(pack)
     env = dict(default_battery(), name=e.name, band_hz=e.band_hz, G_max=e.G_max)
-    if e.B0_list:
-        env["B0_list"] = [float(b) for b in e.B0_list]
+    env["B0_max"] = None if e.B0_max is None else float(e.B0_max)
     pm = ((pack.meta.get("compression") or {}).get("channels") or {}).get("susc_field_basis")
     if pm is not None and pm.get("max_refocus_pulses"):
         env["max_refocus_pulses"] = int(pm["max_refocus_pulses"])

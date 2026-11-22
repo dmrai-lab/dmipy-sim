@@ -95,7 +95,8 @@ spec.save("wm.sub.json")
 
 # 1. walk once, from the spec and nothing else -- positions, occupancy and boundary local time are recorded
 # the envelope is what the pack is certified for: a scanner class's band and amplitude, the field and tissue bounds
-env = envelope_of("connectom", B0_list=(3.0,), chi_max=1.06e-6, rho2_max=1e-4)
+B0_max = 3.0                       # T: the one maximum field strength a pack states
+env = envelope_of("connectom", B0_list=(B0_max,), chi_max=1.06e-6, rho2_max=1e-4)
 w = walk(spec, 200_000, T_max=0.05, seed=0, envelope=env)   # the walk accumulates the envelope's band
 
 # 2. compress into a pack: channels (positions, occupancy, local time, field basis) and the spec -- not one

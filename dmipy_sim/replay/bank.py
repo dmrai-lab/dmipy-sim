@@ -706,8 +706,8 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         raise ValueError("field confidence weights require at least two positive finite entries")
     chi_i = float(chi) if chi is not None else _cx.envelope_chi_max(env)
     ca = 0.1 * chi_i if has_aniso else 0.0
-    B0s = [float(B0)] if B0 is not None else _cx.envelope_B0_list(env)
-    settings = [(b0, th) for b0 in B0s for th in (env.get("theta_deg") or [0, 90])]
+    B0 = float(B0) if B0 is not None else _cx.envelope_B0_max(env)
+    settings = [(B0, th) for th in (env.get("theta_deg") or [0, 90])]
     raw = {}
     from dmipy_replay.replay.field import contract
     for b0, th in settings:
@@ -784,7 +784,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
         fl = f_max if target_floor is None else target_floor
         fl_e = np.maximum(2.0 * se_e * scale, absolute_floor) if target_floor is None else np.full(len(se_e), target_floor)
         ends = [len(gre) - 1, len(gre) + len(se_t) - 1]                                    # the window's own echoes
-        ranges = DerivedFieldContainer(floor=min([fl] + [float(fl_e[i]) for i in ends]), B0=max(B0s), chi_iso=chi_i,
+        ranges = DerivedFieldContainer(floor=min([fl] + [float(fl_e[i]) for i in ends]), B0=B0, chi_iso=chi_i,
                                        chi_aniso=ca).ranges(np.abs(c_k).max(axis=0), stored, float(h) * n_t)
         a_k, m_k = _quantise_susc_path(c_k, meta_k, ranges)
         e_max, _, ee, _ = read(a_k, m_k, k, gates)
@@ -842,7 +842,7 @@ def derive_field_band(series, names, h, env=None, *, K_max, B0=None, chi=None, w
                   container=[dict(r) for r in cont[K]],
                   floor_is=("the explicit numerical field error budget" if target_floor is not None else
                             "max(twice the per-walker standard error scaled to the production count (x floor_scale), float32 resolution)"),
-                  floor_scale=float(floor_scale), target_floor=(None if target_floor is None else float(target_floor)), B0_list=[float(b) for b in B0s], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
+                  floor_scale=float(floor_scale), target_floor=(None if target_floor is None else float(target_floor)), B0_list=[B0], chi_iso=chi_i, chi_aniso=float(ca), n_blocks=int(n_t))
     return int(K), record
 
 
@@ -1517,6 +1517,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[
                         dict(id=pk.meta.get("id"), n_walkers=int(m), **({} if r is None else dict(field_read_interval=r["interval"])))
                         for pk, m, r in zip(pks, n, reads)]))
+        _cx.restate_one_maximum(meta)
         charge_field_read(meta, reads)                                   # each shard read the field at its own interval; the pack states the coarsest
         ReplayPack(arrays, meta).susceptibility_field                    # the merged pack holds the equivalence
         if out_path is None:
@@ -2061,21 +2062,21 @@ def _susc_path_fidelity(series_raw, arrays, pm, gm, env, *, K_band, h=None, edge
     err = floor = 0.0
     worst = None
     from dmipy_replay.replay.field import contract
-    for B0 in _cx.envelope_B0_list(env):
-        for th in (env.get("theta_deg") or [0, 90]):
-            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = contract(series_raw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
-            f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=bool(gm.get("has_aniso")))
-            e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
-            ee, se = _echo_errors(f_raw[:, 1:], f_dec[:, 1:], dt[1:], gre, se_t, w)
-            fl_e = 2.0 * se
-            ratio = ee / np.maximum(fl_e, 1e-300)
-            i = int(np.argmax(ratio))
-            if worst is None or ratio[i] > worst["ratio"]:
-                kind, te = _echo_name(i, gre, se_t, 1.0)
-                worst = dict(acquisition=kind, TE=float(np.cumsum(dt[1:])[int(te) - 1]), err=float(ee[i]), floor=float(fl_e[i]),
-                             ratio=float(ratio[i]), B0=float(B0), theta_deg=float(th))
-            err, floor = max(err, e, float(ee.max())), max(floor, f, float(fl_e.max()))
+    B0 = _cx.envelope_B0_max(env)
+    for th in (env.get("theta_deg") or [0, 90]):
+        t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+        f_raw = contract(series_raw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
+        f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=bool(gm.get("has_aniso")))
+        e, f = _gate_battery(f_raw, f_dec, gates, w, A, B, dt)
+        ee, se = _echo_errors(f_raw[:, 1:], f_dec[:, 1:], dt[1:], gre, se_t, w)
+        fl_e = 2.0 * se
+        ratio = ee / np.maximum(fl_e, 1e-300)
+        i = int(np.argmax(ratio))
+        if worst is None or ratio[i] > worst["ratio"]:
+            kind, te = _echo_name(i, gre, se_t, 1.0)
+            worst = dict(acquisition=kind, TE=float(np.cumsum(dt[1:])[int(te) - 1]), err=float(ee[i]), floor=float(fl_e[i]),
+                         ratio=float(ratio[i]), B0=float(B0), theta_deg=float(th))
+        err, floor = max(err, e, float(ee.max())), max(floor, f, float(fl_e.max()))
     return dict(err=float(err), floor=float(floor), worst=worst, n_pulses_certified=n_p, n_walkers=int(n_w))
 
 
@@ -2127,17 +2128,16 @@ def _susc_path_bloch_fidelity(series_raw, arrays, pm, gm, env, *, h, w=None, chi
     perm = np.random.RandomState(0).permutation(k); A, B = perm[:k // 2], perm[k // 2:]
     err = floor = 0.0
     from dmipy_replay.replay.field import contract
-    B0s = [_cx.envelope_B0_max(env)]          # one field strength, the certified largest: the tier scales linearly in B0
-    for B0 in B0s:
-        for th in (env.get("theta_deg") or [90]):
-            t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
-            f_raw = contract(series_raw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
-            f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=bool(gm.get("has_aniso")))
-            for npul in (1, n_p):
-                rf = rf_train(npul)
-                sr = sig(f_raw, rf)
-                err = max(err, abs(sig(f_dec, rf) - sr))
-                floor = max(floor, abs(sig(f_raw, rf, A) - sig(f_raw, rf, B)))
+    B0 = _cx.envelope_B0_max(env)           # one field strength, the certified largest: the tier scales linearly in B0
+    for th in (env.get("theta_deg") or [90]):
+        t = np.deg2rad(float(th)); d = [np.sin(t), 0.0, np.cos(t)]
+        f_raw = contract(series_raw, d, B0=B0, chi_iso=chi_i, chi_aniso=ca)
+        f_dec = susc_path_field(b_dec, d, B0=B0, chi_iso=chi_i, chi_aniso=ca, has_aniso=bool(gm.get("has_aniso")))
+        for npul in (1, n_p):
+            rf = rf_train(npul)
+            sr = sig(f_raw, rf)
+            err = max(err, abs(sig(f_dec, rf) - sr))
+            floor = max(floor, abs(sig(f_raw, rf, A) - sig(f_raw, rf, B)))
     return dict(err=float(err), floor=float(floor), n_pulses=n_p, n_walkers=k)
 
 
@@ -2377,7 +2377,7 @@ def build_replay_pack(walk, *, id, license, citation, weights=None, envelope=Non
     window (:meth:`~dmipy_replay.replay.envelope.Envelope.mode_count`), never more than the walk's own ``K``; ``K`` or
     ``temporal_bandwidth_hz`` state fewer bands, and the pack's header then states the band it stores. Nothing is
     searched on the walk: the certificate measures whether the band holds, it does not choose it. The header states the
-    envelope (``replay_envelope.acquisition``: ``bound = "envelope"``, ``name``, ``band_hz``, ``G_max``, ``B0_list``;
+    envelope (``replay_envelope.acquisition``: ``bound = "envelope"``, ``name``, ``band_hz``, ``G_max``, ``B0_list``, one entry;
     ``replay_envelope.tissue``: ``rho2_over_D_max``, ``chi_max``). A contact channel under an envelope with no
     ``rho2_max`` is certified at no surface relaxivity (its ``rho2_over_D_max`` is 0); a field channel under one with no
     ``chi_max`` or ``B0_list`` is refused by name.
@@ -2567,11 +2567,11 @@ def _build_coefficient_window(cw, *, id, license, citation, weights, envelope, b
     K = int(K)
     if K > cw.K:
         raise ValueError(f"the walk accumulated {cw.K} bands per window; a pack of {K} needs a walk with K >= {K}")
-    if cw.field_coeffs is not None and (envelope.chi_max is None or not envelope.B0_list):
+    if cw.field_coeffs is not None and (envelope.chi_max is None or envelope.B0_max is None):
         raise ValueError("the walk stores a field channel and the envelope states no "
                          + ("chi_max" if envelope.chi_max is None else "B0_list")
-                         + ": state the susceptibility scale and the field strengths the field tier is certified at "
-                           "(Envelope(chi_max=..., B0_list=...), envelope_of(..., chi_max=..., B0_list=...))")
+                         + ": state the susceptibility scale and the one maximum field strength the field tier is certified at "
+                           "(Envelope(chi_max=..., B0_list=(B0_max,)), envelope_of(..., chi_max=..., B0_list=(B0_max,)))")
     env = _cx.certified_envelope(_cx.certificate_settings(envelope, battery), spec)
     C = np.asarray(cw.position_coeffs, np.float64)[:, 0, :K + 2, :]
     run.phase("floor")
@@ -3025,14 +3025,14 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
         g_chi = cosine_projection(gates[:, :-1, None], h_new, T_new, Kf_new)[:, :, 0]
         Cq_new, _ = susc_path_coeffs(a_, pm_new)
         e_rep = 0.0
-        for B0 in _cx.envelope_B0_list(env):
-            for th in (env.get("theta_deg") or [0, 90]):
-                tt = np.deg2rad(float(th)); d = [np.sin(tt), 0.0, np.cos(tt)]
-                f_par = susc_path_field(np.einsum("gk,wck->wcg", g_par, Cf), d, B0=B0, chi_iso=chi_i, chi_aniso=(ca if gm.get("has_aniso") else 0.0), has_aniso=bool(gm.get("has_aniso")))
-                f_chi = susc_path_field(np.einsum("gk,wck->wcg", g_chi, Cq_new), d, B0=B0, chi_iso=chi_i, chi_aniso=(ca if gm.get("has_aniso") else 0.0), has_aniso=bool(gm.get("has_aniso")))
-                S_par = (w[:, None] * np.exp(1j * GAMMA * f_par)).sum(0) / w.sum()
-                S_chi = (w[:, None] * np.exp(1j * GAMMA * f_chi)).sum(0) / w.sum()
-                e_rep = max(e_rep, float(np.abs(S_chi - S_par).max()))
+        B0 = _cx.envelope_B0_max(env)
+        for th in (env.get("theta_deg") or [0, 90]):
+            tt = np.deg2rad(float(th)); d = [np.sin(tt), 0.0, np.cos(tt)]
+            f_par = susc_path_field(np.einsum("gk,wck->wcg", g_par, Cf), d, B0=B0, chi_iso=chi_i, chi_aniso=(ca if gm.get("has_aniso") else 0.0), has_aniso=bool(gm.get("has_aniso")))
+            f_chi = susc_path_field(np.einsum("gk,wck->wcg", g_chi, Cq_new), d, B0=B0, chi_iso=chi_i, chi_aniso=(ca if gm.get("has_aniso") else 0.0), has_aniso=bool(gm.get("has_aniso")))
+            S_par = (w[:, None] * np.exp(1j * GAMMA * f_par)).sum(0) / w.sum()
+            S_chi = (w[:, None] * np.exp(1j * GAMMA * f_chi)).sum(0) / w.sum()
+            e_rep = max(e_rep, float(np.abs(S_chi - S_par).max()))
         err_rep["field"] = e_rep
         qv_f = None if qv.get("field") is None else np.asarray(qv["field"], np.float64) * (T_new / T)
         if qv.get("field_increments") is None:
@@ -3084,7 +3084,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     env_out = dict(pack.meta.get("replay_envelope") or {})
     env_out.update(bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"], field=channels["susceptibility"],
                    magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition")
-                                                                      or _envelope_summary(pack.envelope, env, T_new, float(K_new) / (2.0 * T_new))))
+                                                                      or _envelope_summary(_cx.read_envelope(pack), env, T_new, float(K_new) / (2.0 * T_new))))
     if pm is not None:
         env_out["acquisition"]["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
         env_out["acquisition"]["max_refocusing_pulses"] = int(chan_meta["susc_field_basis"]["max_refocus_pulses"])
@@ -3108,7 +3108,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     for key in ("pack_license", "pack_license_url"):
         if pack.meta.get(key):
             meta[key] = pack.meta[key]
-    return ReplayPack(arrays, meta, source=None)
+    return ReplayPack(arrays, _cx.restate_one_maximum(meta), source=None)
 
 
 def copy_provenance(prov):
