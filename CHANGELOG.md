@@ -5,6 +5,14 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **The `walk_cost` pilot times each shape as the minimum of three calls with the garbage collector held off.** A pilot
+  shape's seconds were one timed call, so one stall (a full garbage collection, a scheduler pause) of 0.2 s in a timed
+  2-block call turned a 1.18 s projection into 4.32 s. A shape is now one untimed call (it holds the compile), then
+  `PILOT_TIMED_CALLS = 3` timed calls with the collector disabled and restored to the state it was found in; its seconds
+  are their minimum, and the fit and the projection do not move under one stalled call. The collector is collected once
+  before a pilot. Cost: a pilot shape makes 4 calls of the walk against 2 (the number of shapes is unchanged), the timed
+  part triples (0.57 s to 1.71 s for a sphere of 1000 walkers and 8 blocks), the compile is unchanged, and one
+  collection per pilot adds 0.1 to 0.2 s on a large heap.
 - **`walk_cost` counts the membrane-trial record and costs it in the dtype the walk holds it in.** With
   `record_trials=` a stated capacity adds `trial_record.bytes_per_walker(slots, modes, itemsize)` to
   `WalkCost.bytes_per_walker` (and to the memory-limited batch and the profile), reported in the new field
