@@ -35,7 +35,7 @@ def stated(settings=None, G_max=None, *, of=None, band_hz=TEST_BAND_HZ, chi_max=
         chi_max = spec_chi_scale(getattr(of, "spec", of))
     battery = {k: v for k, v in s.items() if k in BATTERY_KEYS} or None
     rho = s.get("rho2_list", [TEST_RHO2_MAX])
-    env = Envelope(name="test", band_hz=band_hz, G_max=(G_max if G_max is not None else s.get("G_max", TEST_G_MAX)), B0_list=(float(s["B0_max"]) if "B0_max" in s else TEST_B0_MAX,),
+    env = Envelope(name="test", band_hz=band_hz, G_max=(G_max if G_max is not None else s.get("G_max", TEST_G_MAX)), B0_list=(() if "B0_max" in s and s["B0_max"] is None else (float(s["B0_max"]) if "B0_max" in s else TEST_B0_MAX,)),
                    chi_max=s.get("chi_max", chi_max),
                    rho2_max=(max(rho) if rho else None), max_refocusing_pulses=s.get("max_refocus_pulses"))
     return dict(envelope=env, battery=battery)

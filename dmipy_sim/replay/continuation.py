@@ -13,6 +13,7 @@ import json
 
 import numpy as np
 
+from .compression import read_envelope, restate_one_maximum
 from .container import write_rpk
 from dmipy_replay import ReplayPack
 
@@ -37,7 +38,7 @@ def end_state(pack):
 def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, walker_batch_size=50_000):
     """The walk of ``pack`` continued for ``T_add`` seconds on its own substrate: every walker resumed from the last
     window's endpoint in the pool it is in, a fresh ``seed``, the pack's block, band and window and the channels it
-    carries, for the pack's own envelope (``pack.envelope``, which the continuation carries).
+    carries, for the pack's own envelope (:func:`~dmipy_sim.replay.compression.read_envelope`, which the continuation carries).
     ``T_add`` is a whole number of the pack's windows. A single-geometry spec walks as one; a multi-surface spec
     walks pool by pool, and the walk is returned in the pack's walker order either way, so that walker ``w`` of the
     continuation is walker ``w`` of the pack.
@@ -77,7 +78,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
         w = _walk_geometry(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
                                   K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **(field_kw if fb is not None else {}))
-        return dataclasses.replace(w, geometry=g, spec=(spec if w.spec is None else w.spec), envelope=pack.envelope)
+        return dataclasses.replace(w, geometry=g, spec=(spec if w.spec is None else w.spec), envelope=read_envelope(pack))
     if pool is None:
         raise ValueError("a multi-surface spec is continued pool by pool, and the pack carries no compartment channel to say "
                          "which pool each walker is in")
@@ -91,7 +92,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
                        weights={names[pid]: weights[pool == pid] for pid in ids}, grid=grid, seed=int(seed))
     if field_source_kind(spec) == "strands":
         adaptive_steps = True
-    w = walk(spec, T_max=float(T_add), block_h=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu, envelope=pack.envelope,
+    w = walk(spec, T_max=float(T_add), block_h=dt, seed=int(seed), seeding=seeds, require_gpu=require_gpu, envelope=read_envelope(pack),
                   walker_batch_size=walker_batch_size, adaptive_steps=adaptive_steps, tiers=tiers,
                   K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **field_kw)
     inv = np.empty_like(order); inv[order] = np.arange(order.size)                     # back to the pack's order
@@ -127,7 +128,7 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
         raise ValueError(f"the continuation's block {h:.6g} s is not the pack's {float(pack.dt):.6g} s")
     c2 = ch.get("boundary_local_time") or {}
     pm = ch.get("susc_field_basis") or {}
-    kw = dict(K=int(pack.K), window_T=float(seg["T"]), envelope=(pack.envelope if envelope is None else envelope), device=device,
+    kw = dict(K=int(pack.K), window_T=float(seg["T"]), envelope=(read_envelope(pack) if envelope is None else envelope), device=device,
               weights=np.asarray(pack.spin_weights, np.float64), license=pack.license, citation=pack.citation,
               position_container=(None if cm.get("container") is None else _container_of(cm["container"])),
               blt_temporal_K=(int(c2["K"]) if c2 else None), blt_dtype=(np.float32 if c2.get("dtype") in (None, "bands") else np.dtype(c2["dtype"])),
@@ -168,6 +169,7 @@ def append_windows(pack, walk, *, seed, out_path=None, envelope=None, device="au
                                                                   bool(meta["compression"].get("precision_tiers", {}).get("walkers_shuffled", False)))
     prov = meta.setdefault("provenance", {})
     prov["continuations"] = list(prov.get("continuations") or []) + [dict(first=S0, last=S0 + S1 - 1, seed=int(seed))]
+    restate_one_maximum(meta)
     out = ReplayPack(arrays, meta, source=out_path)
     if out_path is not None:
         write_rpk(out_path, {k: v for k, v in arrays.items() if v is not None}, meta)

@@ -802,6 +802,26 @@ def envelope_B0_max(env):
     return out
 
 
+def read_envelope(pack):
+    """The :class:`~dmipy_replay.replay.envelope.Envelope` of a pack read from its header, stating its one maximum field
+    strength: ``pack.envelope`` with ``B0_list`` reduced to its largest entry (empty stays empty). A published header may
+    list several strengths; every producer and certificate reads the pack at the largest."""
+    e = pack.envelope
+    return e if len(e.B0_list) <= 1 else e.replace(B0_list=(float(e.B0_max),))
+
+
+def restate_one_maximum(meta):
+    """``meta`` (a pack header a producer derives from a parent's) with ``replay_envelope.acquisition.B0_list`` reduced
+    to the one entry that is the parent's largest strength, returned: the pack states ONE maximum field strength, and a
+    derived pack is certified at it alone. Only ``meta``'s own ``replay_envelope`` entry is replaced, never the parent's
+    nested dictionaries. A header that states no list, or one entry, is unchanged."""
+    env = meta.get("replay_envelope") or {}
+    acq = env.get("acquisition") or {}
+    if len(acq.get("B0_list") or ()) > 1:
+        meta["replay_envelope"] = dict(env, acquisition=dict(acq, B0_list=[float(max(acq["B0_list"]))]))
+    return meta
+
+
 def envelope_chi_max(env):
     """The susceptibility scale ``|chi_iso| + |chi_aniso|`` envelope ``env`` certifies the field tier at: its
     ``chi_max``, finite and positive; an envelope stating none is refused by name."""

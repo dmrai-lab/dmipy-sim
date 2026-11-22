@@ -26,7 +26,7 @@ the project follows [Semantic Versioning](https://semver.org/).
   `envelope_B0_max` refuses a None by name, `acquisition_envelope` takes `B0_max=` in place of `B0_list=`, and the field
   band, the susceptibility-path fidelity and a prefix's re-projection error read the maximum alone. The header keeps its key
   `replay_envelope.acquisition.B0_list`, now one entry; a published header with several entries is read at its largest, and
-  a re-encoding of it writes that one entry.
+  a re-encoding of it writes that one entry. A pack read from such a header is continued, appended to and re-certified at its largest entry (`compression.read_envelope`), and every pack derived from a parent's header (`compression.restate_one_maximum`: window, prefix, truncation, merge, append) states the one entry.
 - **`pack_plan` returns the pre-walk plan of a pack per tier, and `compare_plans` compares it with a built pack's
   `plan_of_pack`.** `dmipy_sim/replay/plan.py` plans, before any walk, per tier that the stated rules switch on (positions,
   contact, field, occupancy, mt, weights, voxel, then a caller's providers) the band count and the bytes at the raw,

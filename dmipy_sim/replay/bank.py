@@ -1517,6 +1517,7 @@ def merge_packs(packs, *, id, out_path=None, overlap="refuse", envelope=None, de
                     provenance=dict(pks[0].meta.get("provenance") or {}, shards=[
                         dict(id=pk.meta.get("id"), n_walkers=int(m), **({} if r is None else dict(field_read_interval=r["interval"])))
                         for pk, m, r in zip(pks, n, reads)]))
+        _cx.restate_one_maximum(meta)
         charge_field_read(meta, reads)                                   # each shard read the field at its own interval; the pack states the coarsest
         ReplayPack(arrays, meta).susceptibility_field                    # the merged pack holds the equivalence
         if out_path is None:
@@ -3083,7 +3084,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     env_out = dict(pack.meta.get("replay_envelope") or {})
     env_out.update(bulk_relaxation=channels["T1T2"], surface_relaxivity=channels["rho2"], field=channels["susceptibility"],
                    magnetization_transfer=channels["mt"], acquisition=dict(env_out.get("acquisition")
-                                                                      or _envelope_summary(pack.envelope, env, T_new, float(K_new) / (2.0 * T_new))))
+                                                                      or _envelope_summary(_cx.read_envelope(pack), env, T_new, float(K_new) / (2.0 * T_new))))
     if pm is not None:
         env_out["acquisition"]["field_modes"] = int(chan_meta["susc_field_basis"]["K"])
         env_out["acquisition"]["max_refocusing_pulses"] = int(chan_meta["susc_field_basis"]["max_refocus_pulses"])
@@ -3107,7 +3108,7 @@ def window_of_pack(pack, t0, T_new, *, K=None, blt_K=None, path_K=None, id=None,
     for key in ("pack_license", "pack_license_url"):
         if pack.meta.get(key):
             meta[key] = pack.meta[key]
-    return ReplayPack(arrays, meta, source=None)
+    return ReplayPack(arrays, _cx.restate_one_maximum(meta), source=None)
 
 
 def copy_provenance(prov):
