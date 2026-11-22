@@ -37,7 +37,12 @@ the project follows [Semantic Versioning](https://semver.org/).
   `compression.packed_row_bytes`, and shared tensors are asked of `bank._is_shared_key`. Only a missing input is
   refused, by name. `pack_plan_problems` lists the faults of a plan itself; `tests/test_pack_plan.py` checks the plan of
   the two committed fixtures and of a built pack against their `plan_of_pack`, the refusals, the JSON round trip and
-  planted faults.
+  planted faults. With a codec, a banded tier's `coded` and `stored` stages are the range from the measured ratio
+  record `dmipy_sim/replay/codec_ratios.json` (the basis `full_chunks` or `sub_chunk_packs` of the requested
+  `chunk_walkers`, named in the figure's source) widened at its upper end by the lane bound derived from the codec's
+  own constants, or that bound alone as a proxy where the record holds no pack at that chunk size; `pack_plan` takes
+  the record through the new `ratios` keyword and `tests/test_pack_plan_codec.py` holds the range to the stored bytes
+  of every pack of the record.
 - **A walk backend that records the membrane trials states the dtype of the record's sums, and the walk sizes, caps,
   states and checks the record with it.** A backend that declares `backends.TRIAL_RECORD` now also declares
   `Backend.trial_sum_dtype` (`"float32"` or `"float64"`, None for one that returns no record), read through
@@ -49,12 +54,6 @@ the project follows [Semantic Versioning](https://semver.org/).
   when it is of another dtype than declared. The JAX path is unchanged: its record stays in the walk's accumulation
   dtype in either mode.
 - **A placement's seed is a typed `int32` draw, so a walker's start does not depend on JAX's 64-bit mode.** `dmipy_sim.geometry.base.placement_seed(key)` returns `int(jax.random.randint(key, (), 0, 2**30, dtype=jnp.int32))`, and the ten placement seed lines draw their NumPy generator with it instead of an untyped `randint`. With the 64-bit mode off the typed draw is the value the untyped draw has always given, so every walk made in that mode keeps its starts; with the mode on the starts change, which is the point of the change.
-  planted faults. With a codec, a banded tier's `coded` and `stored` stages are the range from the measured ratio
-  record `dmipy_sim/replay/codec_ratios.json` (the basis `full_chunks` or `sub_chunk_packs` of the requested
-  `chunk_walkers`, named in the figure's source) widened at its upper end by the lane bound derived from the codec's
-  own constants, or that bound alone as a proxy where the record holds no pack at that chunk size; `pack_plan` takes
-  the record through the new `ratios` keyword and `tests/test_pack_plan_codec.py` holds the range to the stored bytes
-  of every pack of the record.
 - **A backend's refusal check receives the slots of a recorded walk, and the field pilot on a backend asks to drop pool changes only of a walk no walker of which changes pool.** The request `_backend_refusal` hands `Backend.refuses` for a walk with `record_trials=` now carries `trial_slots` (the spec's slots, or the pilot's starting `min(PILOT_SLOTS, pairs)`) beside the spec, the edge steps, the radii and the overshoot bounds it carried; before, it carried none, so a backend that sizes its record by the request refused every recorded walk through `_walk_geometry`, with slots given or not. `field_pilot_on_backend` takes the required keyword `impermeable`, which the producer sets to `not res.crossing`: the resolution's statement that no walker changes pool. Before, the pilot read `kappa_over_D`, which is 0 for a packed myelinated cell whose plain walls are permeable, and asked a backend to drop the pool changes of a walk whose walkers cross. The pilot's request changes for that family only; every other walk's requests are unchanged.
 - **`plan_of_pack` reads the exact bytes of a built pack per tier, and `packed_row_bytes` is the one definition of a
   bit-packed row's byte count.** `dmipy_sim/replay/plan.py` returns, from a pack file's header only, per tier of the
