@@ -16,7 +16,7 @@ from typing import NamedTuple
 import numpy as np
 
 from .backends import (JAX, WalkRequest, CoefficientBatch, capability_refusal, event_capacity, resolve as resolve_backend,
-                       PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD, PERMEABILITY_FACTOR, JAX_CAPABILITIES)
+                       trial_sum_dtype, PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD, PERMEABILITY_FACTOR, JAX_CAPABILITIES)
 import logging
 
 log = logging.getLogger(__name__)
@@ -1399,13 +1399,19 @@ def _walk_geometry(
         returned as ``CoefficientWalk.trial_record``. None (the default) records nothing and the walk is
         the same program as before; with it, at the same counting (which the record turns on, ``Geometry.count_walls``),
         each step is the same arithmetic and the whole walk the same bits on the recording build (another JAX build may
-        compile the two programs to positions that differ in the last bits: two valid walks of one law). Refused by name: a geometry with no plain wall, a backend that
-        does not declare :data:`~dmipy_sim.engine.backends.TRIAL_RECORD`, the MT burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
+        compile the two programs to positions that differ in the last bits: two valid walks of one law). The stated bytes
+        per walker are those of the record returned: in the walk's accumulation dtype on the JAX kernels, in the dtype
+        a backend declares otherwise. Refused by name: a geometry with no plain wall, a backend that
+        does not declare :data:`~dmipy_sim.engine.backends.TRIAL_RECORD`, a backend that declares it but states no
+        ``Backend.trial_sum_dtype`` or one other than ``'float32'`` or ``'float64'`` (before the run starts), the MT
+        burn-in (``equilibrate_binding='burnin'``: a recorded walk's start is common to
         every reweighted read), a field channel whose ``K_c3`` or ``field_read_interval`` a pilot of this walk would
         choose, band edges that do not run from 0 to ``T_max`` or miss a storage window's boundary, slots above
-        :data:`~dmipy_sim.trial_record.MAX_BYTES_PER_WALKER` bytes per walker, a walker that met more (object, band)
+        :data:`~dmipy_sim.trial_record.MAX_BYTES_PER_WALKER` bytes per walker (with the record's own item size, before
+        any batch is walked), a walker that met more (object, band)
         pairs than the slots (after the walk, with the largest count and a suggested capacity; no trial is dropped),
-        and a walk in which a trial's overshoot exceeded its object's bound (after the walk, never clipped).
+        a batch whose ``S`` is of another dtype than the backend declared (on every batch), and a walk in which a
+        trial's overshoot exceeded its object's bound (after the walk, never clipped).
     segments : sequence of (a, b), optional
         Time segments (s, on the walk's clock from its first step) whose rows the walk accumulates beside the bands:
         per walker and segment ``int_a^b (x(t) - x(0)) dt`` per axis (m s), ``x(0)`` the walker's start, as the sum
@@ -1475,6 +1481,9 @@ def _walk_geometry(
         if _backend is not None and TRIAL_RECORD not in getattr(_backend, "capabilities", ()):
             raise ValueError(f"trial_record: the membrane trials are recorded by the JAX kernels; the backend {_backend_name!r} "
                              f"walks without the record")
+        # the record's item size, held once for the whole walk and read before any batch: the JAX kernels build the
+        # record in the accumulation dtype, a backend in the dtype it declares (refused by name when it states none)
+        _trial_dtype = _acc if _backend is None else trial_sum_dtype(_backend, _backend_name)
         if kappa_MT > 0.0 and equilibrate_binding == "burnin":
             raise ValueError("trial_record: the start of a recorded walk is common to every reweighted read: use "
                              "equilibrate_binding='fast' or 'off'")
@@ -1576,7 +1585,7 @@ def _walk_geometry(
             # the slots each walker carries: the spec's, or set by the pilot below (a pilot walks at its own)
             _slots0 = record_trials.slots if record_trials.slots is not None else min(
                 _tr.PILOT_SLOTS, len(_radii) * record_trials.n_bands)
-            _tr.check_bytes(_slots0, record_trials.modes, _acc.itemsize)
+            _tr.check_bytes(_slots0, record_trials.modes, _trial_dtype.itemsize)
             _trial = dict(radii=_radii, u_max=_u_max, slots=int(_slots0),
                           key=(tuple(int(x) for x in _steps), int(record_trials.modes), tuple(float(x) for x in _u_max),
                                _trial_device is not None))
@@ -2391,6 +2400,10 @@ def _walk_geometry(
                 if not np.issubdtype(S_b.dtype, np.floating):
                     raise ValueError(f"backend {_backend_name!r} returned the trial record's S as {S_b.dtype}: the sums are "
                                      f"floating point, in the backend's accumulation precision")
+                if S_b.dtype != _trial_dtype:
+                    raise ValueError(f"backend {_backend_name!r} returned the trial record's S as {S_b.dtype} where it declared "
+                                     f"trial_sum_dtype '{_trial_dtype.name}': the sums of the record it returns are "
+                                     f"{_trial_dtype}, on every batch")
                 got.update(tr_key=counts["key"], tr_n=counts["n"], tr_N=counts["N"], tr_S=S_b, tr_c=counts["count"],
                            tr_x=counts["exceed"])
             work_b = tuple(None if w is None else np.asarray(w) for w in batch.work)
@@ -2443,7 +2456,7 @@ def _walk_geometry(
                     if top_pairs <= _trial["slots"]:
                         break
                     _trial["slots"] = min(n_pairs, 2 * top_pairs)
-                    _tr.check_bytes(_trial["slots"], record_trials.modes, _acc.itemsize)
+                    _tr.check_bytes(_trial["slots"], record_trials.modes, _trial_dtype.itemsize)
                 pilot_slots = int(_trial["slots"])
                 _trial["slots"] = _tr.pilot_capacity(top_pairs, n_pairs)
                 trial_slots_record = dict(rule="pilot", pilot_walkers=n_pilot, pilot_slots=pilot_slots,
@@ -2452,7 +2465,7 @@ def _walk_geometry(
             else:
                 trial_slots_record = dict(rule="given", pairs=n_pairs)
             trial_slots_record.update(capacity=int(_trial["slots"]), bytes_per_walker=_tr.check_bytes(
-                _trial["slots"], record_trials.modes, _acc.itemsize))
+                _trial["slots"], record_trials.modes, _trial_dtype.itemsize))
         if (ev_comp_on or ev_bound_on) and cap is None:
             if got_trial_pilot is not None:
                 got = got_trial_pilot

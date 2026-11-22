@@ -27,7 +27,8 @@ The rules, each a condition a consumer's arithmetic relies on:
   ``(step + 1) dt``: band ``k`` is the left-open, right-closed ``(edge_k, edge_k+1]``, so a step ending exactly on an
   edge belongs to the earlier band, the final band contains ``T_max``, and a storage window's bands hold exactly its
   own steps; a scheduled permeability is read at the step's midpoint (:func:`~dmipy_sim.engine.physics.membrane_kappa`);
-* the counts are integers and the sums are held in the walk's accumulation dtype, each pair's sums added trial by
+* the counts are integers and the sums are in the walk's accumulation dtype on the JAX kernels, in the dtype a backend
+  declares otherwise, each pair's sums added trial by
   trial in the walk's order; nothing is rounded or dithered, and the record draws nothing (the walk's random stream is
   the walk's without the record);
 * the record reads the walk and enters none of its arithmetic: one step of a wall kernel is the same bits with and
