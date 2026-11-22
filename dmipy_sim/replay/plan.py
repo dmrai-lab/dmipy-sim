@@ -11,9 +11,11 @@ count is the sum of the file's own tensor byte ranges; the raw count is the floa
 any walk it returns, per tier that the stated rules switch on, the band count and the bytes at the raw, bit-packed,
 coded and stored stages, every figure built by :func:`_fig` and labelled ``derived``, ``measured`` or ``proxy``
 with its source and a range where it is a proxy. With a codec, a banded tier's ``coded`` and ``stored`` stages are
-the range from the measured ratio record (``codec_ratios.json``, read through the ``ratios`` keyword) widened at its
-upper end by the lane bound :func:`_lane_bound` derives from the codec's own constants, or that bound alone as a
-proxy where the record holds no pack at the requested chunk size. ``compare_plans`` compares a plan with a built
+the range from the measured ratio record (``codec_ratios.json``, read through the ``ratios`` keyword), taken over the
+record's packs that have the planned pack's own chunk fill (at least one full chunk, or less than one chunk). The range
+is the spread measured over those packs and holds for them; the lane bound :func:`_lane_bound` derives from the codec's
+own constants is the only bound, and it is the range's upper end below one chunk and where the record holds no pack of
+the basis, where it stands alone as a proxy. ``compare_plans`` compares a plan with a built
 pack's :func:`plan_of_pack` key by key; ``pack_plan_problems`` lists the faults of a plan itself.
 """
 from __future__ import annotations
@@ -363,18 +365,21 @@ def _lane_bound(tier, n_walkers, windows, K, Cx, axes, chunk_walkers, other):
     return windows * axes * (streams + 8 * K * (n_chunks + 1)) + int(other)
 
 
-def _ratio_packs(record, tier, chunk_walkers):
-    """The ``(basis, ratios)`` the codec-ratio ``record`` holds for the banded ``tier`` at ``chunk_walkers``:
-    ``("full_chunks", [...])`` over the record's packs that carry the tier at this chunk size with at least one full
-    chunk of their own (``n_walkers >= chunk_walkers``), else ``("sub_chunk_packs", [...])`` over the packs that carry
-    the tier at this chunk size at any size, else ``(None, [])``. Each ratio is the pack's ``tiers[tier].ratio``. A
+def _ratio_packs(record, tier, chunk_walkers, n_walkers):
+    """The ``(basis, ratios)`` the codec-ratio ``record`` holds for the banded ``tier`` at ``chunk_walkers``, chosen by
+    the chunk fill of the planned pack of ``n_walkers`` walkers: ``("full_chunks", [...])`` when the planned pack has at
+    least one full chunk (``n_walkers >= chunk_walkers``), over the record's packs of that chunk size that carry the
+    tier and have at least one full chunk themselves; ``("sub_chunk_packs", [...])`` when it has less than one chunk,
+    over the record's packs of that chunk size that carry the tier and have less than one chunk. Where the record holds
+    no pack of that basis the result is ``(None, [])``; the other basis is not read. Each ratio is the pack's
+    ``tiers[tier].ratio``. A
     pack entry that is not a dict with a ``tiers`` dict, or whose ``n_walkers`` is not an integer, is refused naming
     ``ratios``."""
     packs = record.get("packs")
     if not isinstance(packs, list):
         _refuse("ratios", f"the record's 'packs' is a list; got {type(packs).__name__}")
     cw = int(chunk_walkers)
-    same, full = [], []
+    full, sub = [], []
     for p in packs:
         if not isinstance(p, dict) or not isinstance(p.get("tiers"), dict):
             _refuse("ratios", f"a pack entry is a dict with a 'tiers' dict; got {p!r}")
@@ -386,37 +391,34 @@ def _ratio_packs(record, tier, chunk_walkers):
         n = p.get("n_walkers")
         if isinstance(n, bool) or not isinstance(n, int):
             _refuse("ratios", f"a pack entry of tier {tier!r} states an integer 'n_walkers'; got {n!r}")
-        same.append(float(t["ratio"]))
-        if n >= cw:
-            full.append(float(t["ratio"]))
-    if full:
-        return "full_chunks", full
-    if same:
-        return "sub_chunk_packs", same
-    return None, []
+        (full if n >= cw else sub).append(float(t["ratio"]))
+    if int(n_walkers) >= cw:
+        return ("full_chunks", full) if full else (None, [])
+    return ("sub_chunk_packs", sub) if sub else (None, [])
 
 
 def _coded_stages(tier, codec, record, n_walkers, windows, chunk_walkers, K, Cx, axes, bit_packed, other_lo, other_hi):
     """The ``(coded, stored)`` figures of the banded ``tier``: with no codec the coded stage is not applicable and the
-    stored stage is the bit-packed one. With a codec, ``coded`` is the range from the record's ratio of the tier at
-    ``chunk_walkers`` -- ``lo = floor(ratio_min * bit_packed.lo)`` and ``hi = ceil(ratio_max * bit_packed.hi)``, widened
-    at ``hi`` to the lane bound when the basis is ``sub_chunk_packs`` or the plan's walkers fall short of one chunk --
-    with provenance ``measured`` and a source naming the record and the basis; where the record holds no pack of the
-    tier at that chunk size, the lane bound alone, from ``other_lo`` to the bound, as a proxy. ``K`` is the band count
+    stored stage is the bit-packed one. With a codec, ``coded`` is the spread of the record's ratio of the tier over the
+    packs of the planned pack's own chunk fill (:func:`_ratio_packs`) -- ``lo = floor(ratio_min * bit_packed.lo)`` and
+    ``hi = ceil(ratio_max * bit_packed.hi)``, widened at ``hi`` to the lane bound when the basis is ``sub_chunk_packs``
+    -- with provenance ``measured`` and a source naming the record and the basis; the ratio applies to the whole
+    bit-packed stage, a ragged last chunk included. Where the record holds no pack of the basis, the lane bound alone,
+    from ``other_lo`` to the bound, as a proxy. ``K`` is the band count
     the bound is taken at (``K_f``'s hi for the field), ``Cx`` the elements per band per walker (the field's channels,
     else 1), ``axes`` the range tensors per range, and ``other_lo`` / ``other_hi`` the tier's uncoded bytes at the
     ends of its range. ``stored`` is a copy of ``coded`` with its own source ``coded``."""
     if codec is None:
         return _fig(None, None, None, provenance="derived", source="none:no_codec"), bit_packed
     lane_hi = _lane_bound(tier, n_walkers, windows, K, Cx, axes, chunk_walkers, other_hi)
-    basis, ratios = _ratio_packs(record, tier, chunk_walkers)
+    basis, ratios = _ratio_packs(record, tier, chunk_walkers, n_walkers)
     if not ratios:
         coded = _fig(None, other_lo, lane_hi, provenance="proxy",
                      source="bound:lane_widened_block_padded")
     else:
         lo = math.floor(min(ratios) * bit_packed["lo"])
         hi = math.ceil(max(ratios) * bit_packed["hi"])
-        if basis == "sub_chunk_packs" or int(n_walkers) < int(chunk_walkers):
+        if basis == "sub_chunk_packs":
             hi = max(hi, lane_hi)
         coded = _fig(None, lo, hi, provenance="measured", source=f"codec_ratios.json#{basis}/{tier}")
     stored = dict(coded)

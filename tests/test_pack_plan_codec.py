@@ -1,13 +1,15 @@
-"""``pack_plan``'s coded stage: the measured ratio record widened by the lane bound.
+"""``pack_plan``'s coded stage: the ratio spread measured on the record's packs of the planned pack's chunk fill.
 
 With a codec, ``pack_plan`` states a banded tier's ``coded`` and ``stored`` as a range from the committed ratio record
-``dmipy_sim/replay/codec_ratios.json`` -- the basis ``full_chunks`` or ``sub_chunk_packs`` of the requested
-``chunk_walkers``, named in the figure's source -- widened at its upper end by the lane bound where padding rules, or
-as the lane bound alone (a proxy) where the record holds no pack at that chunk size; the ``ratios`` keyword hands the
-plan another record of the same schema. The range contains the stored bytes of every pack of the record re-encoded
-with the codec's own :func:`~dmipy_replay.replay.codec.encode_ranges`; the lane bound holds for incompressible data;
-the basis falls back from full chunks to sub-chunk packs to none; a record that does not fit is refused by name; and
-the planted faults (doubled ratios, no lane bound, a ratio taken from packs of another chunk size) are each found.
+``dmipy_sim/replay/codec_ratios.json``. The basis is the planned pack's own chunk fill at the requested
+``chunk_walkers``: ``full_chunks`` (the record's packs with at least one full chunk) for a plan of at least one chunk,
+``sub_chunk_packs`` (the record's packs with less than one chunk) below it, named in the figure's source. The range is
+the spread measured over the packs of that basis and holds for them; the lane bound is the only bound, the range's
+upper end below one chunk, and it stands alone (a proxy) where the record holds no pack of the basis; the ``ratios``
+keyword hands the plan another record of the same schema. The range contains the stored bytes of every pack of the
+record in ``tests/data`` re-encoded with the codec's own :func:`~dmipy_replay.replay.codec.encode_ranges`; the lane
+bound holds for incompressible data; a record that does not fit is refused by name; and the planted faults (doubled
+ratios, no lane bound, a ratio taken from packs of another chunk size) are each found.
 """
 import importlib.util
 import json
@@ -26,6 +28,11 @@ from tests.test_pack_plan import (CYLINDER, DATA, STRANDS, built_pack, coded_pac
 
 ROOT = Path(__file__).resolve().parents[1]
 RECORD = ROOT / "dmipy_sim" / "replay" / "codec_ratios.json"
+
+#: the packs of the packaged record, ``{id: n_walkers}``, all at 4096 walkers per chunk
+PACKAGED = {"cactus/bundle00000-100ms": 111011, "fixture/plane-linear-field": 8000, "fixture/slab-exchange": 8000,
+            "fixture/cylinder": 2000, "fixture/cylinder_k12": 400, "fixture/field": 150, "fixture/permeable": 2000,
+            "fixture/strands_field_k4": 90, "fixture/windows": 600}
 
 
 @pytest.fixture(scope="module")
@@ -134,10 +141,10 @@ def test_the_lane_bound_holds_for_incompressible_data(N, K, Cx, bits, axes, cw):
     assert stored <= bound, (N, K, Cx, bits, axes, cw, stored, bound)
 
 
-def test_the_ratio_basis_is_full_chunks_then_sub_chunk_packs_then_none():
+def test_the_ratio_basis_follows_the_planned_packs_chunk_fill():
     kw = {**inputs_of(CYLINDER), "codec": "bitshuffle-zlib", "chunk_walkers": 4096}
     packaged = pack_plan(**kw)
-    assert packaged["inputs"]["ratios"] == {"schema": "codec_ratio_record/1", "codec": "bitshuffle-zlib", "packs": 2}
+    assert packaged["inputs"]["ratios"] == {"schema": "codec_ratio_record/1", "codec": "bitshuffle-zlib", "packs": len(PACKAGED)}
     assert packaged["tiers"]["positions"]["coded"]["source"] == "codec_ratios.json#sub_chunk_packs/positions"
 
     # full-chunk packs present (0.5 and 0.7 at 8192 and 4096 walkers; 0.1 at 150 is sub-chunk and excluded):
@@ -148,16 +155,17 @@ def test_the_ratio_basis_is_full_chunks_then_sub_chunk_packs_then_none():
     assert fig["provenance"] == "measured" and fig["source"] == "codec_ratios.json#full_chunks/positions"
     assert fig["lo"] == math.floor(0.5 * bp["lo"]) and fig["hi"] == math.ceil(0.7 * bp["hi"])
 
-    # the same record at n_walkers < cw: hi is widened to the lane bound
+    # the same record at n_walkers < cw: the basis is the sub-chunk pack alone (0.1 at 150 walkers), hi is widened to
+    # the lane bound
     small = pack_plan(**kw, ratios=rec_full)
     fig_s, bp_s = small["tiers"]["positions"]["coded"], small["tiers"]["positions"]["bit_packed"]
-    assert fig_s["provenance"] == "measured" and fig_s["source"] == "codec_ratios.json#full_chunks/positions"
-    assert fig_s["lo"] == math.floor(0.5 * bp_s["lo"])
+    assert fig_s["provenance"] == "measured" and fig_s["source"] == "codec_ratios.json#sub_chunk_packs/positions"
+    assert fig_s["lo"] == math.floor(0.1 * bp_s["lo"])
     proxy = pack_plan(**kw, ratios=_hand_record([(8192, 1024, 0.5)]))    # another chunk size: case 3
     lane_hi = proxy["tiers"]["positions"]["coded"]["hi"]
     assert proxy["tiers"]["positions"]["coded"]["provenance"] == "proxy"
     assert proxy["tiers"]["positions"]["coded"]["source"] == "bound:lane_widened_block_padded"
-    assert fig_s["hi"] == max(math.ceil(0.7 * bp_s["hi"]), lane_hi)
+    assert fig_s["hi"] == max(math.ceil(0.1 * bp_s["hi"]), lane_hi) == lane_hi
 
     # a tier the record lacks is case 3 for that tier only
     assert small["tiers"]["contact"]["coded"]["provenance"] == "proxy"
@@ -230,15 +238,76 @@ def test_each_planted_fault_is_found(tmp_path, coded_pack, monkeypatch):
     assert any("tier positions: stored" in s for s in problems), problems
 
     # C, a ratio taken from packs of another chunk size: the sound plan is case 3, the planted one is measured
-    rec_other = _hand_record([(8192, 1024, 0.5), (4096, 1024, 0.7)])
+    rec_other = _hand_record([(8192, 1024, 0.5), (4096, 1024, 0.7), (300, 1024, 0.9)])
     kw4096 = {**inputs_of(CYLINDER), "codec": "bitshuffle-zlib", "chunk_walkers": 4096}
     sound = pack_plan(**kw4096, ratios=rec_other)
     assert sound["tiers"]["positions"]["coded"]["provenance"] == "proxy"
     assert basis_problems(sound, rec_other) == []
     real = plan._ratio_packs
     with monkeypatch.context() as m:
-        m.setattr(plan, "_ratio_packs", lambda record, tier, cw: real(record, tier, 1024))
+        m.setattr(plan, "_ratio_packs", lambda record, tier, cw, n: real(record, tier, 1024, n))
         planted = pack_plan(**kw4096, ratios=rec_other)
     assert planted["tiers"]["positions"]["coded"]["provenance"] == "measured"
     problems = basis_problems(planted, rec_other)
     assert any("ratio taken from packs of another chunk size" in s for s in problems), problems
+
+
+@pytest.mark.parametrize("n", [1, 4095, 4096, 4097, 8192, 111011])
+def test_the_basis_is_the_planned_packs_own_chunk_fill(n):
+    kw = {**inputs_of(CYLINDER), "codec": "bitshuffle-zlib", "chunk_walkers": 4096, "n_walkers": n}
+    record = _hand_record([(8192, 4096, 0.5), (4096, 4096, 0.7), (4095, 4096, 0.9), (90, 4096, 1.1)])
+    full = n >= 4096
+    basis, lo_ratio, hi_ratio = ("full_chunks", 0.5, 0.7) if full else ("sub_chunk_packs", 0.9, 1.1)
+    lane = pack_plan(**kw, ratios=_hand_record([(8192, 1024, 0.5)]))["tiers"]["positions"]
+    lane_hi = lane["coded"]["hi"]
+    assert lane["coded"]["provenance"] == "proxy" and lane["coded"]["lo"] < lane_hi
+
+    tier = pack_plan(**kw, ratios=record)["tiers"]["positions"]
+    fig, bp = tier["coded"], tier["bit_packed"]
+    assert fig["provenance"] == "measured" and fig["source"] == f"codec_ratios.json#{basis}/positions"
+    assert fig["lo"] == math.floor(lo_ratio * bp["lo"])
+    if full:
+        assert fig["hi"] == math.ceil(hi_ratio * bp["hi"]) < lane_hi
+    else:
+        assert fig["hi"] == max(math.ceil(hi_ratio * bp["hi"]), lane_hi)
+
+    # a record that holds only the packs of the other basis gives the lane bound alone
+    other = _hand_record([(90, 4096, 1.1), (4095, 4096, 0.9)] if full else [(8192, 4096, 0.5), (4096, 4096, 0.7)])
+    fig = pack_plan(**kw, ratios=other)["tiers"]["positions"]["coded"]
+    assert fig["provenance"] == "proxy" and fig["source"] == "bound:lane_widened_block_padded"
+    assert fig["hi"] == lane_hi
+
+
+def test_a_ragged_pack_and_a_sub_chunk_pack_of_one_record_take_their_own_basis(tool, built_pack, tmp_path):
+    paths = [CYLINDER, built_pack, STRANDS]
+    record = tool.build_record(paths, chunk_walkers=256)
+    by_file = {Path(p["file"]).name: p for p in record["packs"]}
+    counts = [by_file[Path(p).name]["n_walkers"] for p in paths]
+    assert counts == [400, 600, 90]
+    assert [by_file[Path(p).name]["tiers"]["positions"]["full_chunks"] for p in paths] == [1, 2, 0]
+    for path, basis in zip(paths, ["full_chunks", "full_chunks", "sub_chunk_packs"]):
+        built = _encode(path, tmp_path, 256)
+        pre = pack_plan(**{**inputs_of(path), "codec": "bitshuffle-zlib", "chunk_walkers": 256}, ratios=record)
+        assert compare_plans(pre, built) == []
+        checked = 0
+        for tier, bt in built["tiers"].items():
+            if not (bt["banded"] and bt["codec"]):
+                continue
+            fig = pre["tiers"][tier]["coded"]
+            assert fig["provenance"] == "measured", (path, tier)
+            assert fig["source"] == f"codec_ratios.json#{basis}/{tier}", (path, tier, fig["source"])
+            assert fig["lo"] <= bt["stored"]["value"] <= fig["hi"], (path, tier, fig)
+            checked += 1
+        assert checked
+
+
+def test_the_packaged_record_is_the_nine_public_packs_and_holds_both_bases(tool):
+    record = json.loads(RECORD.read_text())
+    assert {p["id"]: p["n_walkers"] for p in record["packs"]} == PACKAGED
+    assert {p["chunk_walkers"] for p in record["packs"]} == {4096}
+    assert record["summary"] == tool.summarise(record["packs"])
+    for tier in ("positions", "contact", "field"):
+        have = [p for p in record["packs"] if tier in p["tiers"]]
+        full = [p for p in have if p["n_walkers"] >= p["chunk_walkers"]]
+        assert full and len(full) < len(have), tier
+        assert record["summary"][tier]["packs"] == len(full), tier
