@@ -384,7 +384,7 @@ def test_a_coded_pack_is_planned_sound_and_a_wrong_figure_is_still_reported(code
             fig = pl["tiers"][t][stage]
             assert (fig["value"], fig["lo"], fig["hi"]) == (None, None, None)
             assert fig["provenance"] == "proxy"
-            assert "not planned in this version" in fig["source"]
+            assert fig["source"] == "none:coded_stage_not_planned"
         # the raw and bit-packed stages are still pinned and compared on a coded pack
         assert pl["tiers"][t]["raw"]["value"] == built["tiers"][t]["raw"]["value"]
         assert pl["tiers"][t]["bit_packed"]["lo"] <= built["tiers"][t]["bit_packed"]["value"] \

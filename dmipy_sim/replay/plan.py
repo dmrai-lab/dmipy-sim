@@ -317,7 +317,8 @@ def _fig(value=None, lo=None, hi=None, *, provenance, source):
     """One figure of a plan: ``{"value", "lo", "hi", "provenance", "source"}`` with Python ``int``/``float``/``None``
     entries. A derived figure has ``value == lo == hi``; a proxy or measured figure has ``value`` ``None`` and a
     range ``lo <= hi``; a not-applicable figure has all three ``None`` with provenance ``derived`` and a source
-    beginning ``none:``."""
+    beginning ``none:``; a proxy that this version does not plan has all three ``None`` and a source beginning
+    ``none:`` as well."""
     return {"value": _plain(value), "lo": _plain(lo), "hi": _plain(hi), "provenance": provenance, "source": source}
 
 
@@ -338,7 +339,7 @@ def _banded_tail(codec, bit_packed):
     if codec is None:
         return _fig(None, None, None, provenance="derived", source="none:no_codec"), bit_packed
     coded = _fig(None, None, None, provenance="proxy",
-                 source="the coded size is not planned in this version: unknown before the walk")
+                 source="none:coded_stage_not_planned")
     return coded, coded
 
 
