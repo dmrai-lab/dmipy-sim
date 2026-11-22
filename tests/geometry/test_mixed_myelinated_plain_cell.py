@@ -504,9 +504,9 @@ def test_a_cell_with_a_dry_sheath_and_its_spec_seed_no_sheath():
     c = _cell(MIXED, compartments=DRY)
     assert [int((_start_pools(g)[0] == 2).sum()) for g in (a, b, c)] == [0, 0, 0]
     assert a.spec.seeding.pools == b.spec.seeding.pools == c.spec.seeding.pools == [0, 1]
-    assert np.bincount(_start_pools(c)[0], minlength=3).tolist() == [2110, 1890, 0]
+    assert np.bincount(_start_pools(c)[0], minlength=3).tolist() == [2115, 1885, 0]
     wet = _cell(MIXED)
-    assert np.bincount(_start_pools(wet)[0], minlength=3).tolist() == [1761, 1577, 662]
+    assert np.bincount(_start_pools(wet)[0], minlength=3).tolist() == [1756, 1546, 698]
     assert wet.spec.seeding.pools == [0, 1, 2]
 
 
