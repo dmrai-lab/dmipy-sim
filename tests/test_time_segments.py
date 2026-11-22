@@ -511,14 +511,49 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
         np.testing.assert_array_equal(aniso, ref["aniso"])
 
 
+# The streamed image's own fixture: a machine's delivery is held to the scanner's slew, so the protocol it delivers is
+# the trapezoidal pulsed pair the Swoop can play -- ramps at its 22 T/m/s on a 66.7 us grid, lobes of 3 samples 6 samples
+# apart, the whole echo the walk's 0.8 ms -- and its partition is the ten constant pieces of that staircase (the ramps'
+# samples and the plateaus: a class's vertex count grows as 2^pieces, so a finer grid is not read). On this timing the
+# machine's slew reaches b = 14.81 s/m^2 and no more (the search over the grid's lobes and gaps, 9 to 21 samples).
+RAMP_TE, RAMP_N_T, RAMP_DELTA, RAMP_DELTA_BIG, RAMP_B = 0.8e-3, 13, 3 * 0.8e-3 / 12, 6 * 0.8e-3 / 12, 14.8
+
+
+def _ramped_pgse(dirs, b):
+    """The pulsed pair of the streamed-image fixture on the Swoop's slew (22 T/m/s), one row per direction at ``b``."""
+    return dr.pgse(dirs, RAMP_DELTA, RAMP_DELTA_BIG, bvalues=b, TE=RAMP_TE, n_t=RAMP_N_T, slew_rate=22.0)
+
+
+@pytest.fixture(scope="module")
+def ramped_blocks(spec_grid):
+    """The two blocks of ``blocks`` (the same walks and packs), their rows written against the constant pieces of a
+    ramped pulsed pair; the layout of both blocks and the merged pack."""
+    spec, grid, tmp = spec_grid
+    packs, dirs = [], []
+    for b in (0, 1):
+        want = np.zeros(grid.shape, np.int64); want[b] = 12
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
+        pk = build_replay_pack(w, id=f"t/rb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
+                               **stated(dict(default_battery(), chi_max=2e-6), of=w), **shard_containers(packs))
+        packs.append(pk)
+        dirs.append(str(tmp / f"rb_rows{b}"))
+        segment_rows(w, {"se": Partition.of("se", _ramped_pgse([[0, 0, 1]], RAMP_B))}, dirs[-1], grid=grid, pack=pk, g_max=60.0,
+                     floor_target=0.3, tiers=True, background=True)
+    m = write_time_segment_layout(dirs, str(tmp / "rb_layout"))
+    return TimeSegmentLayout(str(tmp / "rb_layout")), merge_packs(packs, id="t/rb-merged"), grid, packs[0].n_t, m, tmp
+
+
 @pytest.mark.parametrize("backend", _backends())
-def test_a_streamed_image_is_the_resident_image_to_the_bit(blocks, backend):
+def test_a_streamed_image_is_the_resident_image_to_the_bit(ramped_blocks, backend):
     """``resident=False`` reads and uploads each chunk of every column on its own and keeps nothing; its image is the
-    resident one to the bit -- bare, with every tier at an oblique field, and with a machine's delivery and its own
-    gradient -- and so are the tier maps."""
+    resident one to the bit -- bare, with every tier at an oblique field, and with a machine's delivery (ramped lobes on
+    constant pieces, within the machine's slew) and its own gradient -- and so are the tier maps."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    lay, merged, grid, n_t, m, tmp = blocks
-    seq = _strand_protocol(n_t, 3)
+    lay, merged, grid, n_t, m, tmp = ramped_blocks
+    rng = np.random.default_rng(5)
+    u = rng.normal(size=(3, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    seq = _ramped_pgse(np.concatenate([u, [[0, 0, 1]]]).tolist(), np.r_[np.full(3, RAMP_B), 0.0])
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     u = (0.6, 0.0, 0.8)
     fresh = TimeSegmentLayout(lay.path)

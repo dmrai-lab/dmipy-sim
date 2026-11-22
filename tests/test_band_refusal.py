@@ -103,7 +103,7 @@ def test_a_waveform_is_refused_when_its_truncation_exceeds_the_cap_less_the_othe
 def test_a_cap_already_spent_by_the_other_terms_admits_only_what_costs_nothing():
     pk = _with_cap(_static_pack(K=20), 1e-3, err_quantisation=2e-3)
     assert pk.truncation_budget["budget"] == 0.0
-    with pytest.raises(ValueError, match="temporal band"):
+    with pytest.raises(ValueError, match="is spent by"):
         pk._check_band(_ogse(750.0, 4e-3))
 
 
