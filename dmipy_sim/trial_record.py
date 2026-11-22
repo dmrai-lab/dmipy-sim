@@ -202,6 +202,7 @@ def device_record(steps, u_max, modes, dtype):
     beyond (the keys of the pairs that found no slot are not held), and an entry that finds no slot adds to no slot.
     ``exceed`` counts the trials whose ``u`` exceeds the object's ``u_max``. ``add(rec, log, step, keep=None)`` is
     ``add_trials(rec, trials(log, step, keep))``."""
+    import jax
     import jax.numpy as jnp
     n_bands = int(len(steps) - 1)
     interior = jnp.asarray(np.asarray(steps[1:-1], np.int64), jnp.int32)
@@ -222,23 +223,30 @@ def device_record(steps, u_max, modes, dtype):
         terms = u[:, None] * chebyshev_terms(2 * u / um - 1, modes, jnp)
         return StepTrials(valid, obj, band, log.granted, terms, valid & (u > um))
 
+    def entry(c, x):
+        """One entry of a step's log added to the record ``c = (key, n, N, S, count)``."""
+        key, n, N, S, count = c
+        v, k, granted, terms = x
+        held = (key == k) & v
+        opens = v & ~jnp.any(held)
+        new = (jnp.arange(key.shape[0], dtype=jnp.int32) == count) & opens   # the next free slot; none once full
+        key = jnp.where(new, k, key)
+        at = held | new
+        n = n + at.astype(jnp.int32)
+        N = N + (at & granted).astype(jnp.int32)
+        # the sums: the entry's terms, as formed, added to its slot by a scatter-add (a select of ``S + terms``
+        # over the slots compiles to a fused multiply-add of the product into the sum, one rounding fewer)
+        S = S.at[jnp.argmax(at)].add(jnp.where(jnp.any(at), terms, jnp.zeros((), S.dtype)))
+        count = count + opens.astype(jnp.int32)
+        return (key, n, N, S, count), None
+
     def add_trials(rec, t):
         key, n, N, S, count, exceed = rec
-        slot_index = jnp.arange(key.shape[0], dtype=jnp.int32)
         entry_key = t.obj * jnp.int32(n_bands) + t.band
-        for i in range(int(t.valid.shape[0])):            # the log's entries in order (the bounce loop's iterations)
-            v = t.valid[i]
-            held = (key == entry_key[i]) & v
-            opens = v & ~jnp.any(held)
-            new = (slot_index == count) & opens          # the next free slot; none once the slots are full
-            key = jnp.where(new, entry_key[i], key)
-            at = held | new
-            n = n + at.astype(jnp.int32)
-            N = N + (at & t.granted[i]).astype(jnp.int32)
-            # the sums: the entry's terms, as formed, added to its slot by a scatter-add (a select of ``S + terms``
-            # over the slots compiles to a fused multiply-add of the product into the sum, one rounding fewer)
-            S = S.at[jnp.argmax(at)].add(jnp.where(jnp.any(at), t.terms[i], jnp.zeros((), S.dtype)))
-            count = count + opens.astype(jnp.int32)
+        # the log's entries in order (the bounce loop's iterations) as a loop, not unrolled: an unrolled loop of
+        # ``budget`` entries is a straight-line program the CPU compiler optimises in time super-linear in the budget
+        (key, n, N, S, count), _ = jax.lax.scan(entry, (key, n, N, S, count),
+                                                (t.valid, entry_key, t.granted, t.terms))
         exceed = exceed + jnp.sum(t.exceeds).astype(jnp.int32)
         return (key, n, N, S, count, exceed)
 
