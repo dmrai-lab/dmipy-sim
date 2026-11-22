@@ -441,6 +441,67 @@ def test_a_backend_that_declares_float64_states_the_record_in_its_own_bytes():
     assert recp["bytes_per_walker"] == bytes_per_walker(recp["capacity"], 3, wp.trial_record.S.dtype.itemsize) == 296
 
 
+_COST_SPEC = TrialRecordSpec(modes=5, band_edges=(0.0, 1e-3, 2e-3), slots=12)
+
+
+def _cost(backend, **kw):
+    kw.setdefault("walker_batch_size", 32)
+    return core.walk_cost(64, D, _packing(), 2e-3, 0.5e-3, tiers="all", backend=backend, **kw)
+
+
+def test_the_cost_counts_the_trial_record_in_the_dtype_the_walk_holds_it():
+    """The record's bytes are ``bytes_per_walker`` of the stated slots, modes and item size: 4 bytes on the JAX
+    kernels and on a float32 backend, 8 on a float64 backend; no record costs and states nothing."""
+    from dmipy_sim.trial_record import bytes_per_walker
+    for be in (None, _Record(), _Record64()):
+        base = _cost(be)
+        assert base.trial_record_bytes_per_walker == 0 and base.bytes_per_walker == 1364
+    for be, item, total in ((None, 4, 1756), (_Record(), 4, 1756), (_Record64(), 8, 1996)):
+        c = _cost(be, record_trials=_COST_SPEC)
+        assert c.trial_record_bytes_per_walker == bytes_per_walker(12, 5, item)
+        assert c.bytes_per_walker - 1364 == bytes_per_walker(12, 5, item)
+        assert c.bytes_per_walker == total
+        assert c.accumulator_bytes_per_walker == _cost(be).accumulator_bytes_per_walker
+
+
+def test_the_cost_of_a_record_whose_slots_a_pilot_sizes_is_stated_as_none():
+    c = _cost(_Record64(), record_trials=TrialRecordSpec(modes=5, band_edges=_COST_SPEC.band_edges))
+    assert c.trial_record_bytes_per_walker is None and c.bytes_per_walker == 1364
+
+
+def test_the_cost_of_a_float64_accumulation_on_the_jax_kernels_counts_the_record_in_float64(x64):
+    c = _cost(None, record_trials=_COST_SPEC, accumulation_dtype="float64")
+    assert c.trial_record_bytes_per_walker == 632
+
+
+def test_the_cost_is_the_walks_own_statement_of_the_record():
+    for be, stated in ((None, 200), (_Recording64(_record_in(4, np.float64)[0]), 296)):
+        w = _walk(_packing(), record_trials=SPEC, **({} if be is None else dict(backend=be)))
+        rows = [r for r in w.run._events if r["kind"] == "cost"]
+        assert len(rows) == 1
+        assert rows[0]["trial_record_bytes_per_walker"] == w.work["trial_slots"]["bytes_per_walker"] == stated
+
+
+def test_the_cost_refuses_what_the_walk_refuses_about_the_record():
+    with pytest.raises(ValueError, match="the membrane trials are recorded by the JAX kernels"):
+        _cost(_Still(), record_trials=_COST_SPEC)
+    with pytest.raises(TypeError, match="record_trials is a TrialRecordSpec"):
+        _cost(None, record_trials="x")
+
+    class _NoDtype(_Record):
+        name = "nodtype"
+        trial_sum_dtype = None
+
+    with pytest.raises(ValueError, match="does not state: declare Backend.trial_sum_dtype"):
+        _cost(_NoDtype(), record_trials=_COST_SPEC)
+
+
+def test_the_memory_limited_batch_counts_the_record(monkeypatch):
+    monkeypatch.setattr(core, "_free_device_bytes", lambda: 20 * 1996)
+    c = _cost(_Record64(), record_trials=_COST_SPEC, walker_batch_size=None)
+    assert c.walker_batch_size == 20
+
+
 def test_a_backend_that_declares_the_trial_record_but_states_no_sum_dtype_is_refused_by_name_before_the_run(monkeypatch):
     """A declaring backend that states no ``trial_sum_dtype``, or one other than 'float32'/'float64', is refused by
     name before the run starts and receives no request."""

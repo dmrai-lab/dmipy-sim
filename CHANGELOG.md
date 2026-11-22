@@ -5,6 +5,13 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`walk_cost` counts the membrane-trial record and costs it in the dtype the walk holds it in.** With
+  `record_trials=` a stated capacity adds `trial_record.bytes_per_walker(slots, modes, itemsize)` to
+  `WalkCost.bytes_per_walker` (and to the memory-limited batch and the profile), reported in the new field
+  `trial_record_bytes_per_walker` (0 without a record, None where `slots=None` and a pilot sizes it). The item size is
+  the accumulation dtype on the JAX kernels and the dtype a backend states, decided by one function that the walk and
+  its cost both call; `walk_cost` now refuses a record the walk refuses (a non-spec `record_trials`, a backend without
+  the capability, one that states no sum dtype), with the walk's messages.
 - **`pack_plan` returns the pre-walk plan of a pack per tier, and `compare_plans` compares it with a built pack's
   `plan_of_pack`.** `dmipy_sim/replay/plan.py` plans, before any walk, per tier that the stated rules switch on (positions,
   contact, field, occupancy, mt, weights, voxel, then a caller's providers) the band count and the bytes at the raw,
