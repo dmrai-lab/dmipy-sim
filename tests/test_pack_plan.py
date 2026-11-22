@@ -1,0 +1,282 @@
+"""``pack_plan``: the pre-walk plan of a pack per tier -- band count and the bytes at the raw, bit-packed, coded and
+stored stages, every figure labelled ``derived``, ``measured`` or ``proxy`` -- compared with a built pack's
+``plan_of_pack`` by ``compare_plans``, and checked itself by ``pack_plan_problems``.
+
+``inputs_of(path)`` reads a pack file's own header and returns the keyword arguments for ``pack_plan``; the pack set
+is the two committed fixtures and the built fixed-width pack of the module fixture (600 walkers). Planted faults
+check that each problem sentence is produced.
+"""
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import dmipy_sim as d
+from dmipy_replay.replay import container
+from dmipy_replay.replay.container import parse_header
+from dmipy_replay.replay.envelope import Envelope
+from dmipy_sim.engine.core import _walk_geometry
+from dmipy_sim.replay import bank, plan
+from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.replay.container import write_rpk
+from dmipy_sim.replay.plan import compare_plans, pack_plan, pack_plan_problems, plan_of_pack
+from tests._envelope import battery_reach, stated
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "tests" / "data"
+CYLINDER = DATA / "cylinder_k12.rpk"
+STRANDS = DATA / "strands_field_k4.rpk"
+
+#: the two committed fixtures, plus the built fixed-width pack of the module fixture appended by ``packs``
+PACKS = (CYLINDER, STRANDS)
+
+#: the keys of a tier's dictionary of a pre-walk plan
+TIER_KEYS = {"why", "banded", "bands", "channels", "codec", "bits", "eps", "events",
+             "raw", "bit_packed", "coded", "stored"}
+
+#: the expected figures of ``pack_plan(**inputs_of(path), codec=None)`` per fixture tier and for the total:
+#: (raw lo, raw hi, bit_packed lo, bit_packed hi), ``None`` for a stage the tier does not carry
+EXPECTED = {
+    CYLINDER.name: {"positions": (67200, 67200, 15744, 38544),
+                    "contact": (22400, 22400, 5248, 12848),
+                    "occupancy": (400, 400, None, None),
+                    "total": (90000, 90000, 21392, 51792)},
+    STRANDS.name: {"positions": (6480, 6480, 2748, 4368),
+                   "contact": (2160, 2160, 916, 1456),
+                   "field": (17280, 8847360, 2352, 4521984),
+                   "occupancy": (90, 90, None, None),
+                   "weights": (360, 360, None, None),
+                   "total": (26370, 8856450, 6466, 4528258)},
+}
+
+#: the strands fixture planned with a stated field band count
+EXPECTED_FIELD_BANDS_4 = {"field": (17280, 17280, 2352, 8832)}
+
+
+def _header_of(path):
+    """The ``(header, meta)`` of the pack file at ``path``, read from its header only."""
+    with open(path, "rb") as f:
+        first = f.read(8)
+        n = int.from_bytes(first, "little")
+        head = first + f.read(n)
+    _, hdr = parse_header(head)
+    return hdr, json.loads((hdr.get("__metadata__") or {})["rpk"])
+
+
+def inputs_of(path):
+    """The keyword arguments for ``pack_plan`` read from the pack file at ``path``'s own header: its substrate
+    metadata as ``spec``, the replay envelope's maxima, the stored band and window, one fixed tolerance, the
+    walker count, whether the pack carries ``spin_weights`` and a voxel certificate, and the codec with its chunk
+    width."""
+    hdr, meta = _header_of(path)
+    env = Envelope.from_header(meta)
+    win = meta["walk_params"]["windows"]
+    built = plan_of_pack(path)
+    coded = any(t["codec"] is not None for t in built["tiers"].values())
+    chunk_walkers = 4096
+    if coded:
+        for r in (meta.get("compression") or {}).get("container") or []:
+            if r.get("codec") is not None and "chunk_walkers" in r:
+                chunk_walkers = int(r["chunk_walkers"])
+                break
+    n_voxels = int(hdr["voxel_ijk"]["shape"][0]) if "voxel_ijk" in hdr else None
+    return {
+        "spec": meta["substrate"],
+        "envelope": {"band_hz": float(meta["compression"]["temporal_bandwidth_hz"]), "window_s": float(win["T"]),
+                     "n_windows": int(win["n"]), "G_max": env.G_max, "slew_max": None, "B0_max": env.B0_max,
+                     "chi_max": env.chi_max, "rho2_max": env.rho2_max,
+                     "max_refocusing_pulses": env.max_refocusing_pulses},
+        "tolerance": 5e-3,
+        "n_walkers": int(meta["walk_params"]["n_walkers"]),
+        "codec": "bitshuffle-zlib" if coded else None,
+        "chunk_walkers": chunk_walkers,
+        "weights": "weights" in built["tiers"],
+        "n_voxels": n_voxels,
+        "field_bands": None,
+    }
+
+
+def _figures_of(node, path=""):
+    """Every figure (a dict with a ``lo`` key) under ``node``, as ``(path, figure)`` pairs."""
+    return plan._figures_of(node, path)
+
+
+@pytest.fixture(scope="module")
+def walk():
+    g = d.PackedCylinders([1e-6], [[0.0, 0.0]], 10e-6)
+    return _walk_geometry(600, 2e-9, g, 20e-3, 2.5e-4, seed=7, require_gpu=False)
+
+
+@pytest.fixture(scope="module")
+def built_pack(walk, tmp_path_factory):
+    d_ = tmp_path_factory.mktemp("pack_plan")
+    path = d_ / "fixed.rpk"
+    build_replay_pack(walk, id="test/codec", license="x", citation="x", K=16, out_path=str(path),
+                      **stated(of=walk, G_max=battery_reach(walk.T_window)))
+    return path
+
+
+@pytest.fixture(scope="module")
+def packs(built_pack):
+    return list(PACKS) + [built_pack]
+
+
+def test_the_plan_of_a_packs_own_inputs_agrees_with_plan_of_pack(packs):
+    for path in packs:
+        kw = inputs_of(path)
+        kw["codec"] = None
+        pl = pack_plan(**kw)
+        built = plan_of_pack(path)
+        assert compare_plans(pl, built) == []
+        assert list(pl["tiers"]) == list(built["tiers"])
+        assert pl["pack"] == {"n_walkers": built["pack"]["n_walkers"], "windows": built["pack"]["windows"]}
+
+    for path in (CYLINDER, STRANDS):
+        kw = inputs_of(path)
+        kw["codec"] = None
+        pl = pack_plan(**kw)
+        built = plan_of_pack(path)
+        expected = EXPECTED[path.name]
+        for tier, (rlo, rhi, blo, bhi) in expected.items():
+            fig = pl["total"] if tier == "total" else pl["tiers"][tier]
+            assert (fig["raw"]["lo"], fig["raw"]["hi"]) == (rlo, rhi), (path.name, tier)
+            if blo is None:
+                assert fig["bit_packed"]["lo"] is None
+            else:
+                assert (fig["bit_packed"]["lo"], fig["bit_packed"]["hi"]) == (blo, bhi), (path.name, tier)
+        for tier, t in pl["tiers"].items():
+            bt = built["tiers"][tier]
+            if tier in ("positions", "contact", "occupancy", "weights"):
+                assert t["raw"]["value"] == bt["raw"]["value"], (path.name, tier)
+            if bt["bit_packed"]["value"] is not None:
+                assert t["bit_packed"]["lo"] <= bt["bit_packed"]["value"] <= t["bit_packed"]["hi"], (path.name, tier)
+
+    kw = inputs_of(STRANDS)
+    kw["field_bands"] = 4
+    kw["codec"] = None
+    pl = pack_plan(**kw)
+    built = plan_of_pack(STRANDS)
+    for tier, (rlo, rhi, blo, bhi) in EXPECTED_FIELD_BANDS_4.items():
+        t = pl["tiers"][tier]
+        assert (t["raw"]["lo"], t["raw"]["hi"]) == (rlo, rhi)
+        assert (t["bit_packed"]["lo"], t["bit_packed"]["hi"]) == (blo, bhi)
+    assert pl["tiers"]["field"]["raw"]["value"] == built["tiers"]["field"]["raw"]["value"] == 17280
+    assert pl["tiers"]["field"]["bit_packed"]["lo"] <= built["tiers"]["field"]["bit_packed"]["value"] \
+        <= pl["tiers"]["field"]["bit_packed"]["hi"]
+    kw = inputs_of(STRANDS)
+    kw["codec"] = None
+    bands = pack_plan(**kw)["tiers"]["field"]["bands"]
+    assert (bands["lo"], bands["hi"]) == (4, 2048)
+    assert bands["lo"] <= built["tiers"]["field"]["bands"] <= bands["hi"]
+
+
+def test_every_figure_has_one_of_the_three_provenances(packs):
+    for path in packs:
+        pl = pack_plan(**inputs_of(path))
+        assert pack_plan_problems(pl) == []
+        figs = _figures_of(pl["tiers"]) + _figures_of(pl["total"])
+        assert figs
+        for _, fig in figs:
+            assert set(fig) == {"value", "lo", "hi", "provenance", "source"}
+            assert fig["provenance"] in plan.PROVENANCE
+        for t in pl["tiers"].values():
+            assert t["eps"] is None
+        assert pl["tiers"]["positions"]["raw"]["provenance"] == "derived"
+    strands = pack_plan(**inputs_of(STRANDS))
+    figs = dict(_figures_of(strands["tiers"]))
+    proxies = [p for p, f in figs.items() if f["provenance"] == "proxy"]
+    derived = [p for p, f in figs.items() if f["provenance"] == "derived" and f["value"] is not None]
+    assert any(p.endswith(".bits") for p in proxies)
+    assert any(p.endswith("field.bands") for p in proxies)
+    assert any(p.endswith("field.bit_packed") for p in proxies)
+    assert "positions.raw" in derived
+
+
+def _drop_spec_key(key):
+    def mutate(kw):
+        kw["spec"] = {k: v for k, v in kw["spec"].items() if k != key}
+    return mutate
+
+
+def _one_pool_spec(weights=False, mt=False):
+    def mutate(kw):
+        spec = json.loads(json.dumps(kw["spec"]))
+        spec["pools"] = spec["pools"][:1]
+        if mt:
+            spec["walls"][0]["mt_reactivity"]["inside"] = 1.0
+        kw["spec"] = spec
+        kw["weights"] = weights
+    return mutate
+
+
+def refusal_problems(table):
+    """One sentence per case of ``table`` -- ``(name, mutation)`` applied to the strands inputs -- that does not
+    raise a ``ValueError`` whose message names the input."""
+    problems = []
+    for name, mutate in table:
+        kw = inputs_of(STRANDS)
+        mutate(kw)
+        try:
+            pack_plan(**kw)
+        except ValueError as e:
+            if name not in str(e):
+                problems.append(f"{name}: did not refuse by name")
+        except Exception as e:
+            problems.append(f"{name}: did not refuse by name ({type(e).__name__}: {e})")
+        else:
+            problems.append(f"{name}: did not refuse by name")
+    return problems
+
+
+def test_missing_inputs_are_refused_by_name():
+    table = [
+        ("tolerance", lambda kw: kw.__setitem__("tolerance", None)),
+        ("tolerance", lambda kw: kw.__setitem__("tolerance", -1.0)),
+        ("n_walkers", lambda kw: kw.__setitem__("n_walkers", 0)),
+        ("band_hz", lambda kw: kw["envelope"].pop("band_hz")),
+        ("window_s", lambda kw: kw["envelope"].pop("window_s")),
+        ("n_windows", lambda kw: kw["envelope"].pop("n_windows")),
+        ("B0_max", lambda kw: kw["envelope"].__setitem__("B0_max", None)),
+        ("chi_max", lambda kw: kw["envelope"].__setitem__("chi_max", None)),
+        ("pools", _drop_spec_key("pools")),
+        ("walls", _drop_spec_key("walls")),
+        ("weights", _one_pool_spec(weights=True)),
+        ("mt", _one_pool_spec(mt=True)),
+        ("codec", lambda kw: kw.__setitem__("codec", "lz4")),
+        ("chunk_walkers", lambda kw: kw.__setitem__("chunk_walkers", 3)),
+        ("field_bands", lambda kw: kw.__setitem__("field_bands", 0)),
+        ("n_voxels", lambda kw: kw.__setitem__("n_voxels", 0)),
+        ("shares", lambda kw: kw["envelope"].__setitem__("shares", {})),
+    ]
+    assert refusal_problems(table) == []
+
+    kw = inputs_of(STRANDS)
+    spec = json.loads(json.dumps(kw["spec"]))
+    spec["pools"][2]["susceptibility"]["director"] = "unknown"
+    kw["spec"] = spec
+    pack_plan(**kw)
+
+
+def test_the_plan_is_json_and_round_trips(packs):
+    for path in packs:
+        pl = pack_plan(**inputs_of(path))
+        s = json.dumps(pl, allow_nan=False)
+        assert json.loads(s) == pl
+        assert pl["schema"] == "pack_plan/1"
+        assert set(pl) == {"schema", "inputs", "pack", "tiers", "total"}
+        for t in pl["tiers"].values():
+            assert set(t) == TIER_KEYS
+        _assert_plain(pl)
+
+
+def _assert_plain(node):
+    if isinstance(node, dict):
+        for v in node.values():
+            _assert_plain(v)
+    elif isinstance(node, list):
+        for v in node:
+            _assert_plain(v)
+    else:
+        assert not isinstance(node, np.generic)
+        assert node is None or isinstance(node, (bool, int, float, str))
