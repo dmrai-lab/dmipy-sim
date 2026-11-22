@@ -11,7 +11,7 @@ import numpy as np
 from ..math.step_law import LONGEST_STEP
 from ._boundary import (keep_side_radial, ray_sphere_t, specular, transmit_probability, trial_granted, off_wall,
                         BounceLoop, WallHit, TrialLog, bounce_budget, wall_push)
-from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
+from .base import permeability_of, Geometry, LengthScales, acquisition_rotation, placement_seed
 from .packing import periodic_min_gap
 
 _TINY = 1e-30
@@ -166,7 +166,7 @@ def _seed_periodic(n_walkers, key, L, radii, centers, ndim, pool, rng=None):
     NEAREST wall (:func:`keep_side_radial`) -- the same end-of-step sentinel :func:`packed_wall_kernel` applies --
     so the first step's classification can never disagree with the pool it was seeded into (#627)."""
     if rng is None:
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+        rng = np.random.default_rng(placement_seed(key))
     accepted, n_have = [], 0
     while n_have < n_walkers:
         batch = max(n_walkers * 4, 1024) if pool is not None else n_walkers
