@@ -11,7 +11,7 @@ the project follows [Semantic Versioning](https://semver.org/).
   `backends.trial_sum_dtype(backend, name)` before the walk starts: a declaring backend that states none, or another
   value, is refused by name before the run starts and receives no request. The record's stated
   `work["trial_slots"]["bytes_per_walker"]` and its cap (`trial_record.MAX_BYTES_PER_WALKER`, checked before any batch
-  is walked, the pilot's growth included) are now those of the record the backend returns -- its declared item size,
+  is walked, and, for a capacity grown by the pilot, before any batch at the grown capacity) are now those of the record the backend returns -- its declared item size,
   where before every backend was sized at the JAX accumulation's 4 bytes — and every batch's `S` is refused by name
   when it is of another dtype than declared. The JAX path is unchanged: its record stays in the walk's accumulation
   dtype in either mode.

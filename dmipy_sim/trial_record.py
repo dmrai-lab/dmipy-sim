@@ -290,7 +290,7 @@ class TrialRecord:
         The trials: every encounter of the object's wall by a step ending in the band.
     N : (n_walkers, width) int32
         The granted trials (crossings).
-    S : (n_walkers, width, modes) in the walk's accumulation dtype
+    S : (n_walkers, width, modes) in the walk's accumulation dtype, or in the dtype a recording backend states
         ``S_j = sum u T_j(2 u / u_max[o] - 1)`` over the row's trials, ``u = 2 d_perp / R_o`` the overshoot.
     rows : (n_walkers,) int32
         The pairs each walker met.
