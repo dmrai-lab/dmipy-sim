@@ -6,7 +6,7 @@ from dmipy_sim.fields.susceptibility_field import FieldGrid
 from dmipy_sim.engine.mt_walk import simulate_mt_trajectories
 from dmipy_sim.replay import bank
 
-ENV = dict(B0_list=[7.0], theta_deg=[0, 90], chi_max=1.06e-6, max_refocus_pulses=None)
+ENV = dict(B0_max=7.0, theta_deg=[0, 90], chi_max=1.06e-6, max_refocus_pulses=None)
 
 def capture(*, seed=43, pilot_walkers=1024, block_h=None):
     """The diagnosed slab's CPU pilot on a 400-node step raster."""

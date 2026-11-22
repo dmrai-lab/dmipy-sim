@@ -74,7 +74,7 @@ wall reads as a gradient (its QV and its constants say so). When the floor would
 physics step, **the read is the step** (a read along the chord between two steps carries the same bridge
 deviation), and the pack's envelope states the `B0·χ` product under which the term stays below the floor
 (`field_read.read_limit_B0_chi_T`): the read's own limit, not the certified field scale. The certificate charges
-the term at the envelope's ONE certified `B0·χ`, its largest `B0_list` entry times its `chi_max` (the substrate's
+the term at the envelope's ONE certified `B0·χ`, its one maximum field strength (`B0_list`, one entry) times its `chi_max` (the substrate's
 magnetic pools' `|chi_iso| + |chi_aniso|` unless the envelope states it), which the pack records in
 `replay_envelope.acquisition.B0_list` and `replay_envelope.tissue.chi_max`. `CoefficientWalk.block["field_read"]` records the rule, the interval, the reads per block, every
 pool's measured `QV` and interval, and the constants; a bundle walked pool by pool reads each pool at its own
@@ -327,7 +327,7 @@ the largest fraction of its own floor.
   new positions) need the field basis, which the embedded spec regenerates.
 - K is a **declared capability**, not a universal constant. A pack built for 16-echo trains is not valid
   for a 64-echo train; the envelope says so, and a larger band means a re-walk.
-- A pack's field strength is bounded by its envelope: a replay at a `B0` above the largest of `B0_list`, or at a
+- A pack's field strength is bounded by its envelope: a replay at a `B0` above the one entry of `B0_list`, or at a
   `B0·χ` above the certified one, is refused. Where the read is the step, `field_read.read_limit_B0_chi_T` is the
   largest `B0·χ` the field-read term stays below the read rule's floor under; above it, up to the certified scale,
   the term is charged in the certificate.

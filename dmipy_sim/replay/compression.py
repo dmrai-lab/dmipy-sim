@@ -662,9 +662,11 @@ RHO2_READ_FRACTIONS = (0.1, 0.3, 1.0)
 def certificate_settings(envelope, battery=None):
     """What every certificate term reads, from an :class:`~dmipy_replay.replay.envelope.Envelope` and a ``battery``
     (:func:`default_battery` when None; its keys :data:`BATTERY_KEYS` only): the battery with the envelope's ``name``,
-    ``band_hz``, ``G_max``, ``B0_list``, the contact tier's read points ``rho2_list`` (:data:`RHO2_READ_FRACTIONS` of
+    ``band_hz``, ``G_max``, ``B0_max`` (T; None where the envelope states none), the contact tier's read points ``rho2_list`` (:data:`RHO2_READ_FRACTIONS` of
     ``rho2_max``; none when the envelope states none), ``chi_max`` and the refocusing depth ``max_refocus_pulses``
-    where it states them. A battery that states one of the envelope's bounds is refused: the bound is the envelope's."""
+    where it states them. A pack states ONE maximum field strength: an envelope whose ``B0_list`` holds more than one
+    entry is refused, naming the largest as the one to pass. A battery that states one of the envelope's bounds is
+    refused: the bound is the envelope's."""
     from dmipy_replay.replay.envelope import Envelope
     if not isinstance(envelope, Envelope):
         raise TypeError(f"a pack is certified for an Envelope (dmipy_replay.envelope_of(scanner, ...) or "
@@ -675,8 +677,11 @@ def certificate_settings(envelope, battery=None):
         raise ValueError(f"the battery states {stray}, which are not a battery's ({sorted(BATTERY_KEYS)}): the field "
                          "strengths, the susceptibility, the surface relaxivity, the refocusing depth and the gradient "
                          "bound are the Envelope's")
+    if len(envelope.B0_list) > 1:
+        raise ValueError(f"a pack states one maximum field strength; the envelope states {len(envelope.B0_list)} "
+                         f"(B0_list={tuple(envelope.B0_list)}): pass the largest alone, B0_list=({float(envelope.B0_max)},)")
     env = dict(b, name=envelope.name, band_hz=float(envelope.band_hz), G_max=float(envelope.G_max),
-               B0_list=[float(x) for x in envelope.B0_list],
+               B0_max=(None if envelope.B0_max is None else float(envelope.B0_max)),
                rho2_list=([] if envelope.rho2_max is None else [f * float(envelope.rho2_max) for f in RHO2_READ_FRACTIONS]))
     if envelope.chi_max is not None:
         env["chi_max"] = float(envelope.chi_max)
@@ -685,26 +690,26 @@ def certificate_settings(envelope, battery=None):
     return env
 
 
-def acquisition_envelope(waveform, *, band_hz, rho2_max=None, B0_list=(), chi_max=None):
+def acquisition_envelope(waveform, *, band_hz, rho2_max=None, B0_max=None, chi_max=None):
     """The :class:`~dmipy_replay.replay.envelope.Envelope` of a pack built for ``waveform`` alone (``simulate``'s): named
     ``"acquisition"``, its ``G_max`` the acquisition's largest per-axis played gradient and its band ``band_hz`` the band
     the walk for it stores, so the reader's check holds for ``waveform`` by construction and refuses a waveform that
-    plays more. ``waveform`` is a sequence or a ``Protocol`` of them; the field and contact bounds are stated beside
-    it."""
+    plays more. ``waveform`` is a sequence or a ``Protocol`` of them; the maximum field strength ``B0_max`` (T) and the
+    contact bound are stated beside it."""
     from dmipy_replay.replay.envelope import Envelope
     seqs = list(waveform) if hasattr(waveform, "scatter") else [waveform]
     g = 0.0
     for q in seqs:
         played = np.asarray(getattr(q, "played_gradient", q.G), np.float64)
         g = max(g, float(np.abs(played).max(initial=0.0)))
-    return Envelope(name="acquisition", band_hz=float(band_hz), G_max=g, B0_list=tuple(B0_list), chi_max=chi_max,
+    return Envelope(name="acquisition", band_hz=float(band_hz), G_max=g, B0_list=(() if B0_max is None else (float(B0_max),)), chi_max=chi_max,
                     rho2_max=rho2_max, max_refocusing_pulses=None)
 
 
 def certified_envelope(envelope=None, spec=None):
     """The certificate settings a pack is walked, built and certified under, normalised: ``envelope`` (the settings
-    :func:`certificate_settings` gives; :func:`default_battery` when None) with ``rho2_list`` and ``B0_list`` as floats
-    (the defaults below where the settings state none: a floor read on a battery alone) and ``chi_max``, the
+    :func:`certificate_settings` gives; :func:`default_battery` when None) with ``rho2_list`` and ``B0_max`` as floats
+    (the defaults below where the settings state none: a floor read on a battery alone; ``B0_max`` None states no field tier) and ``chi_max``, the
     susceptibility scale ``|chi_iso| + |chi_aniso|`` the field tier is certified at (the substrate ``spec``'s magnetic
     pools', :func:`~dmipy_sim.engine.accumulate.spec_chi_scale`, where it states none). Settings with a ``G_max`` are
     certified for every waveform within it on the gradient side: the position terms are its bounds rather than the b
@@ -714,10 +719,14 @@ def certified_envelope(envelope=None, spec=None):
     from ..engine.accumulate import spec_chi_scale, FIELD_RULE_B0
     env = dict(default_battery() if envelope is None else envelope)
     env.setdefault("rho2_list", [1e-5, 3e-5, 1e-4])
-    env.setdefault("B0_list", [3.0, float(FIELD_RULE_B0)])
+    if "B0_list" in env:
+        raise ValueError("a pack states one maximum field strength: the settings carry the key 'B0_list'; "
+                         "state B0_max (T) instead")
+    env.setdefault("B0_max", float(FIELD_RULE_B0))
     env.setdefault("chi_max", spec_chi_scale(spec))
     env["rho2_list"] = envelope_rho2_list(env)
-    env["B0_list"] = envelope_B0_list(env, empty=True)
+    if env["B0_max"] is not None:
+        env["B0_max"] = envelope_B0_max(env)
     env["chi_max"] = envelope_chi_max(env)
     if env.get("G_max") is not None:
         env["G_max"] = envelope_G_max(env)
@@ -783,18 +792,14 @@ def envelope_rho2_max(env):
     return max(envelope_rho2_list(env), default=0.0)
 
 
-def envelope_B0_list(env, *, empty=False):
-    """The field strengths (T) envelope ``env`` certifies the field tier at: its ``B0_list`` as floats, finite and
-    positive; an envelope stating none (or, unless ``empty``, an empty list) is refused by name."""
-    out = [float(b) for b in _stated(env, "B0_list")]
-    if not all(np.isfinite(b) and b > 0.0 for b in out) or not (out or empty):
-        raise ValueError(f"the envelope's B0_list {out} is not a list of finite positive field strengths (T)")
-    return out
-
-
 def envelope_B0_max(env):
-    """The largest field strength (T) envelope ``env`` certifies (:func:`envelope_B0_list`)."""
-    return max(envelope_B0_list(env))
+    """The one maximum field strength (T) envelope ``env`` certifies the field tier at: its ``B0_max`` as a finite,
+    positive float; an envelope stating none (``B0_max`` absent or None) is refused by name."""
+    v = _stated(env, "B0_max")
+    out = float(v)
+    if not (np.isfinite(out) and out > 0.0):
+        raise ValueError(f"the envelope's B0_max {out} is not a finite positive field strength (T)")
+    return out
 
 
 def envelope_chi_max(env):

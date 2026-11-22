@@ -14,7 +14,7 @@ from dmipy_sim.replay.bank import (_battery_gates, _echo_errors, _echo_times, _g
 
 N_W, N_T, H = 2000, 200, 0.25e-3                 # 50 ms of 0.25 ms blocks
 B0, CHI = 7.0, 1e-7
-ENV = dict(B0_list=[B0], theta_deg=[0], max_refocus_pulses=1)
+ENV = dict(B0_max=B0, theta_deg=[0], max_refocus_pulses=1)
 
 
 def _pilot(seed=11):

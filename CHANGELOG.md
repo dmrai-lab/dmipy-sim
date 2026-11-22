@@ -5,6 +5,14 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A pack states ONE maximum field strength, and the field tier is certified at it.** `compression.certificate_settings`
+  refuses an envelope whose `B0_list` holds more than one entry, naming the largest as the one to pass, and emits `B0_max`
+  (a float, None when the envelope states none) instead of `B0_list`; `certified_envelope` refuses settings that carry the
+  key `B0_list` and defaults `B0_max` to `FIELD_RULE_B0` only when the key is absent. `envelope_B0_list` is deleted,
+  `envelope_B0_max` refuses a None by name, `acquisition_envelope` takes `B0_max=` in place of `B0_list=`, and the field
+  band, the susceptibility-path fidelity and a prefix's re-projection error read the maximum alone. The header keeps its key
+  `replay_envelope.acquisition.B0_list`, now one entry; a published header with several entries is read at its largest, and
+  a re-encoding of it writes that one entry.
 - **`pack_plan` returns the pre-walk plan of a pack per tier, and `compare_plans` compares it with a built pack's
   `plan_of_pack`.** `dmipy_sim/replay/plan.py` plans, before any walk, per tier that the stated rules switch on (positions,
   contact, field, occupancy, mt, weights, voxel, then a caller's providers) the band count and the bytes at the raw,

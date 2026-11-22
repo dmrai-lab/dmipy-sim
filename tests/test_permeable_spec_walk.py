@@ -36,7 +36,7 @@ LATER = [0.0, KAPPA, 2.0 * KAPPA, KAPPA]            # after the breakpoint: obje
 N = 64                                # an exact equality diverges on the first walker that reaches the branch
 SEED = 5
 ENV = dict(bvals=[0.0, 1e9], dirs=[[0, 0, 1]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05],
-           B0_list=[3.0], theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
+           B0_max=3.0, theta_deg=[90], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 
 
 def _cell(permeability):

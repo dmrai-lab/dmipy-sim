@@ -44,7 +44,7 @@ def test_a_valid_scoped_record_skips_the_hidden_pilot_and_does_not_depend_on_cou
 
     # Actual protocol/field budgets are part of the scope, not descriptive labels.
     for override, group in [
-        (dict(envelope=dict(B0_list=[3.])), "query"),
+        (dict(envelope=dict(B0_max=3.0)), "query"),
         (dict(query_scope=dict(kw["query_scope"], identity="different-RF-and-tissue")), "query"),
         (dict(calibration_floor=.002), "numerics"),
     ]:
