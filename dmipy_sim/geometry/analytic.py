@@ -15,7 +15,7 @@ from ..math.step_law import LONGEST_STEP, SPHERE_K1, SPHERE_WALL_COEFFICIENT, CY
 from ._boundary import (vdot, bounce_budget, BounceLoop, WallHit, wall_hit, keep_side_radial, keep_side_planar, keep_side_quadric,
                         ray_sphere_t, ray_quadric_t, specular,
                         transmit_probability, off_wall, step_off_wall, wall_push)
-from .base import permeability_of, Geometry, LengthScales, acquisition_rotation
+from .base import permeability_of, Geometry, LengthScales, acquisition_rotation, placement_seed
 
 
 def _radial_rule(R, EPS, NUDGE, u, kappa_over_D, rho_over_D):
@@ -119,7 +119,7 @@ class Sphere(Geometry):
         the same decision the walk's first step makes). The accept test above runs in float64;
         a draw within half a float32 ulp of |r| = R can round onto or past the wall once cast,
         and the first step then reads it as the far compartment for good (#627)."""
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
+        rng = np.random.default_rng(placement_seed(key))
         # Sphere fill factor ≈ π/6 ≈ 52%; batch of 4× is enough for one pass.
         accepted = []
         while sum(len(a) for a in accepted) < n_walkers:
@@ -215,7 +215,7 @@ class Cylinder(Geometry):
         strictly onto the inside of the wall's own nudge band (see Sphere.init_positions,
         #627): the float64 accept test above can round onto |r_xy| = R once cast to float32,
         and the first step would then read the walker as outside for good."""
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
+        rng = np.random.default_rng(placement_seed(key))
         # Circle fill factor = π/4 ≈ 78%; batch of 2× is enough for one pass.
         accepted = []
         while sum(len(a) for a in accepted) < n_walkers:
@@ -349,7 +349,7 @@ class Ellipsoid(Geometry):
         test above can round onto the surface once cast to float32, and the first step would
         then read the walker as outside for good.
         """
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
+        rng = np.random.default_rng(placement_seed(key))
         # Unit-ball fill factor ≈ π/6 ≈ 52%; batch of 4× usually suffices.
         accepted = []
         while sum(len(a) for a in accepted) < n_walkers:

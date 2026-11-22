@@ -658,6 +658,34 @@ def _refuse_accumulation_dtype(name, backend, backend_name):
     return dtype
 
 
+def _trial_record_dtype(record_trials, acc, backend, backend_name):
+    """The dtype of the membrane-trial record's sums, the one statement the walk and its cost read: None without a
+    record, ``acc`` (the accumulation dtype) on the JAX kernels, else the dtype the backend states
+    (:func:`~dmipy_sim.engine.backends.trial_sum_dtype`, refused by name when it states none). A ``record_trials`` that
+    is not a :class:`~dmipy_sim.trial_record.TrialRecordSpec` and a backend that does not declare
+    :data:`~dmipy_sim.engine.backends.TRIAL_RECORD` are refused by name."""
+    if record_trials is None:
+        return None
+    from ..trial_record import TrialRecordSpec
+    if not isinstance(record_trials, TrialRecordSpec):
+        raise TypeError(f"record_trials is a TrialRecordSpec (dmipy_sim.trial_record) or None, got {type(record_trials).__name__}")
+    if backend is not None and TRIAL_RECORD not in getattr(backend, "capabilities", ()):
+        raise ValueError(f"trial_record: the membrane trials are recorded by the JAX kernels; the backend {backend_name!r} "
+                         f"walks without the record")
+    return acc if backend is None else trial_sum_dtype(backend, backend_name)
+
+
+def _trial_record_bytes(record_trials, trial_dtype):
+    """The device bytes per walker of the trial record (:func:`~dmipy_sim.trial_record.bytes_per_walker`): 0 without a
+    record, None when its capacity is not stated (``slots=None``: a pilot of the walk sizes it)."""
+    if record_trials is None:
+        return 0
+    if record_trials.slots is None:
+        return None
+    from ..trial_record import bytes_per_walker
+    return bytes_per_walker(record_trials.slots, record_trials.modes, trial_dtype.itemsize)
+
+
 def _backend_refusal(backend, name, res, geometry):
     """Why ``backend`` (named ``name``) does not walk the resolved request ``res``, or None: the paths only the JAX
     kernels implement are refused for any other backend rather than fallen back from, and the backend may refuse
@@ -748,13 +776,15 @@ class WalkCost:
     field_read_interval: object = None  #: the field read's interval (s), or None without a field
     field_reads_per_block: object = None  #: reads per block (every ``n_read`` steps and the block's end), or None without a field
     events_capacity: object = None    #: the events buffer per walker and column, or None for "a pilot sizes it" (no events: 0)
+    trial_record_bytes_per_walker: object = 0  #: the membrane-trial record's bytes per walker (in ``bytes_per_walker``), None for "a pilot sizes it" (no record: 0)
     measured: object = None           #: :class:`WalkMeasured`, or None when not measured
     profile: object = None            #: :class:`WalkProfile`, or None unless ``measure="profile"``
 
 
-def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, itemsize, batch_rule="given", n_ch=0):
+def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, itemsize, batch_rule="given", n_ch=0,
+             trial_bytes=0):
     """The :class:`WalkCost` of a resolved walk (``walker_batch_size`` None is one batch) accumulated in a dtype of
-    ``itemsize`` bytes."""
+    ``itemsize`` bytes, its trial record (None: not yet sized) of ``trial_bytes`` per walker."""
     from .backends import installed
     n_walkers = int(n_walkers)
     size = n_walkers if (walker_batch_size is None or int(walker_batch_size) >= n_walkers) else int(walker_batch_size)
@@ -785,13 +815,14 @@ def _cost_of(res, geometry, n_walkers, walker_batch_size, backend_name, *, items
         length_scales=dict(min_feature=f(ls.min_feature), min_gap=f(ls.min_gap), lookup_cell=f(ls.lookup_cell),
                            surface_pore=f(ls.surface_pore)),
         walker_steps=n_walkers * int(res.n_blocks) * int(res.sub_steps),
-        bytes_per_walker=_device_bytes_per_walker(res, n_ch=n_ch, itemsize=itemsize),
+        bytes_per_walker=_device_bytes_per_walker(res, n_ch=n_ch, itemsize=itemsize, trial_bytes=trial_bytes),
         accumulator_bytes_per_walker=_accumulator_bytes(res, n_ch=n_ch, itemsize=itemsize),
         backend=backend_name, backends_accepting=accepting, backends_refusing=refusing,
         K_c3=(0 if res.field_read is None else res.K_c3),
         field_read_interval=(None if res.field_read is None else res.field_read["dt_f"]),
         field_reads_per_block=(None if res.field_read is None else int(res.field_read["reads_per_block"])),
-        events_capacity=(res.events_capacity if has_events else 0))
+        events_capacity=(res.events_capacity if has_events else 0),
+        trial_record_bytes_per_walker=trial_bytes)
 
 
 def _announce_cost(run, cost):
@@ -824,18 +855,20 @@ def _accumulator_bytes(res, *, itemsize, n_ch=0):
                              n_seg=(0 if res.segments is None else len(res.segments[0])), itemsize=itemsize)
 
 
-def _device_bytes_per_walker(res, *, itemsize, n_ch=0):
+def _device_bytes_per_walker(res, *, itemsize, n_ch=0, trial_bytes=0):
     """Bytes one walker holds on the device through a batch: its start (3 float32) and key (2 uint32), its
     accumulators (:func:`~dmipy_sim.engine.accumulate.accumulator_bytes`) and its coefficients per window (the bands
     per axis and channel, two exact endpoints each; the field's modes), the accumulators and coefficients of
     ``itemsize`` bytes each (the accumulation dtype's) -- independent of the block count. The output buffers only:
-    the walk's working set is not counted, so this is a lower bound."""
+    the walk's working set is not counted, so this is a lower bound. ``trial_bytes`` is the membrane-trial record's
+    bytes per walker (:func:`_trial_record_bytes`; None, a capacity a pilot sizes, adds nothing)."""
     ch = 3 + (1 if res.record else 0)
     w = int(itemsize)
     per_window = w * ch * (int(res.K) + 2) + w * 4
     if res.field_read is not None:
         per_window += w * int(n_ch) * ((res.K_c3 or 0) + 1)
-    return 20 + _accumulator_bytes(res, n_ch=n_ch, itemsize=w) + int(res.n_windows) * per_window
+    return (20 + _accumulator_bytes(res, n_ch=n_ch, itemsize=w) + int(res.n_windows) * per_window
+            + (trial_bytes or 0))
 
 
 def _free_device_bytes():
@@ -870,7 +903,7 @@ def _sweep(per_block_of, cap, limit):
     return per, limit
 
 
-def _profile(per_block, vb, res, max_batch, stopped_by, n_ch=0, *, itemsize):
+def _profile(per_block, vb, res, max_batch, stopped_by, n_ch=0, *, itemsize, trial_bytes=0):
     """The :class:`WalkProfile` of the seconds per block ``per_block`` ({batch: seconds}), the verdict read at batch ``vb``:
     the seconds per block of 2B against those of B."""
     rates = {b: b * res.sub_steps / tt for b, tt in sorted(per_block.items())}
@@ -883,7 +916,7 @@ def _profile(per_block, vb, res, max_batch, stopped_by, n_ch=0, *, itemsize):
                        plateau_walker_steps_per_s=plateau, batch_fraction_of_plateau=rates[vb] / plateau,
                        recommended_batch=int(_recommended(per_block)), stopped_by=stopped_by,
                        max_batch_memory=None if max_batch is None else int(max_batch),
-                       bytes_per_walker=_device_bytes_per_walker(res, n_ch=n_ch, itemsize=itemsize),
+                       bytes_per_walker=_device_bytes_per_walker(res, n_ch=n_ch, itemsize=itemsize, trial_bytes=trial_bytes),
                        memory_cap=("device free memory" if max_batch is not None
                                    else "unavailable: the device reports no memory statistics"),
                        verdict=verdict)
@@ -916,8 +949,11 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     ``walk_cost(...).sub_steps``) and refused where the walk refuses. ``walk_kwargs`` are the walk's other keywords
     (``K``, ``block_order``, ``tiers``, ``sub_steps``, ``f_band``, ``kappa_MT``, ``dwell_time``, ``seed``,
     ``bounce_budget``, ``field_basis``, ``K_c3``, ``field_read_interval``, ``events_capacity``, ``r0``, ...); a keyword
-    the walk does not take is refused. A band the walk would derive by a pilot (``K_c3``) or a buffer it would size by
-    one (``events_capacity``) is reported as None: the cost of a walk with those is stated once they are given.
+    the walk does not take is refused. A band the walk would derive by a pilot (``K_c3``), a buffer it would size by
+    one (``events_capacity``) or a trial record whose slots it would size by one (``record_trials`` with ``slots=None``,
+    :attr:`WalkCost.trial_record_bytes_per_walker`) is reported as None: the cost of a walk with those is stated once
+    they are given. A stated record is counted in the dtype the walk holds it in (the accumulation dtype on the JAX
+    kernels, the dtype a backend states).
 
     Parameters
     ----------
@@ -966,7 +1002,9 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     arg = lambda k: kw[k] if k in kw else walk_defaults[k]                 # the walk's own default: one copy of it
     be = resolve_backend(backend)
     name = JAX if be is None else str(be.name)
-    itemsize = _refuse_accumulation_dtype(arg("accumulation_dtype"), be, name).itemsize
+    acc = _refuse_accumulation_dtype(arg("accumulation_dtype"), be, name)
+    itemsize = acc.itemsize
+    trial_bytes = _trial_record_bytes(arg("record_trials"), _trial_record_dtype(arg("record_trials"), acc, be, name))
     from ..spec.build import as_geometry
     with _bounce_budget_override(geometry, arg("bounce_budget")):
         geometry = as_geometry(geometry)
@@ -986,11 +1024,12 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
             if refusal:
                 raise ValueError(refusal)
         free = _free_device_bytes()
-        max_batch = None if free is None else max(1, free // _device_bytes_per_walker(res, n_ch=n_ch, itemsize=itemsize))
+        max_batch = None if free is None else max(1, free // _device_bytes_per_walker(res, n_ch=n_ch, itemsize=itemsize, trial_bytes=trial_bytes))
         given = walker_batch_size is not None
         batch = int(walker_batch_size) if given else min(int(n_walkers), max_batch or int(n_walkers))
         cost = _cost_of(res, geometry, n_walkers, batch, name,
-                        batch_rule="given" if given else "n_walkers capped by memory", n_ch=n_ch, itemsize=itemsize)
+                        batch_rule="given" if given else "n_walkers capped by memory", n_ch=n_ch, itemsize=itemsize,
+                        trial_bytes=trial_bytes)
     if measure:
         max_blocks = cost.n_blocks
         r0 = None if kw.get("r0") is None else np.asarray(kw["r0"])
@@ -1022,7 +1061,7 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
             B = _recommended(per)
             if 2 * B not in per and (max_batch is None or 2 * B <= max_batch) and (available is None or 2 * B <= available):
                 per[2 * B] = per_block_of(2 * B)                 # the verdict's doubling, whatever n_walkers
-            profile = _profile(per, B, res, max_batch, stopped, n_ch=n_ch, itemsize=itemsize)
+            profile = _profile(per, B, res, max_batch, stopped, n_ch=n_ch, itemsize=itemsize, trial_bytes=trial_bytes)
             cost = dataclasses.replace(cost, walker_batch_size=int(B), walker_batch_rule="recommended by the sweep",
                                        walker_batches=-(-int(n_walkers) // int(B)))
         else:
@@ -1036,7 +1075,8 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
                     if (max_batch is not None and m * B > max_batch) or (available is not None and m * B > available):
                         break
                     per[m * B] = per_block_of(m * B)
-                profile = _profile(per, B, res, max_batch, "given", n_ch=n_ch, itemsize=itemsize)
+                profile = _profile(per, B, res, max_batch, "given", n_ch=n_ch, itemsize=itemsize,
+                                   trial_bytes=trial_bytes)
         ps, fixed, pilot = fit(B)
         measured = WalkMeasured(batch=int(B), pilot_blocks=pilot, seconds_per_block=ps, fixed_seconds_per_call=fixed,
                                 seconds_per_walker_step=ps / (B * res.sub_steps),
@@ -1474,16 +1514,9 @@ def _walk_geometry(
         raise ValueError("drop_pool_changes asks a backend for the walkers of an impermeable walk that changed pool; the "
                          "JAX kernels carry each walker's label and report deviations (work['label_deviations']) instead")
     _trial_objects = None
+    # the record's item size, held once for the whole walk and read before any batch
+    _trial_dtype = _trial_record_dtype(record_trials, _acc, _backend, _backend_name)
     if record_trials is not None:
-        from ..trial_record import TrialRecordSpec
-        if not isinstance(record_trials, TrialRecordSpec):
-            raise TypeError(f"record_trials is a TrialRecordSpec (dmipy_sim.trial_record) or None, got {type(record_trials).__name__}")
-        if _backend is not None and TRIAL_RECORD not in getattr(_backend, "capabilities", ()):
-            raise ValueError(f"trial_record: the membrane trials are recorded by the JAX kernels; the backend {_backend_name!r} "
-                             f"walks without the record")
-        # the record's item size, held once for the whole walk and read before any batch: the JAX kernels build the
-        # record in the accumulation dtype, a backend in the dtype it declares (refused by name when it states none)
-        _trial_dtype = _acc if _backend is None else trial_sum_dtype(_backend, _backend_name)
         if kappa_MT > 0.0 and equilibrate_binding == "burnin":
             raise ValueError("trial_record: the start of a recorded walk is common to every reweighted read: use "
                              "equilibrate_binding='fast' or 'off'")
@@ -1552,7 +1585,8 @@ def _walk_geometry(
 
         # the cost: what this walk costs and which rule sized it, in the run's record before the walk starts
         _announce_cost(run, _cost_of(res, geometry, n_walkers, walker_batch_size, _backend_name, n_ch=_n_ch,
-                                     itemsize=_acc.itemsize))
+                                     itemsize=_acc.itemsize,
+                                     trial_bytes=_trial_record_bytes(record_trials, _trial_dtype)))
 
         permeability = geometry.permeability
         has_permeability = permeability is not None

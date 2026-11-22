@@ -605,7 +605,17 @@ def test_a_walkers_row_is_its_index_in_the_seed(tmp_path):
 def test_a_windows_record_is_its_own_bands():
     """A walk of two 2 ms windows: ``window(i)`` holds the bands of window ``i``, and window 0's record is the record of
     the walk of its 2 ms alone (the same walkers, steps and positions): a step ending on the window boundary is in the
-    earlier band, window 0's."""
+    earlier band, window 0's.
+
+    Window 0 has the record, the walkers and the steps of the walk of its 2 ms alone, to the bit; its bands are that
+    walk's to the rounding of two compiled programs. The two walks are separately compiled programs (block and window
+    counts differ), each of which arranges its float32 sums on its own, and the compiled bits depend on the processor.
+    A stored band is ``scale_k`` times a sum of ``N = sub_steps + (m + 1) * blocks_per_window`` float32 additions:
+    ``sub_steps`` into a block's moment, ``(m + 1) * blocks_per_window`` in the window's projection. The running sum has
+    the size of a walker's displacement over the window, ``sqrt(2 D T_window)`` per axis, and two programs may round each
+    addition differently by at most one ``eps32`` of it. The count is linear (every addition of the same sign): a
+    first-order term, stated as such. So ``|a - b| <= tol_k = N eps32 scale_k sqrt(2 D T_window)``, in float64."""
+    from dmipy_replay.replay.compression import cosine_band_scale
     spec = TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3, 3e-3, T))
     w = _walk(_dense(), window_T=2e-3, record_trials=spec, K=4)
     assert w.n_windows == 2
@@ -614,8 +624,22 @@ def test_a_windows_record_is_its_own_bands():
     np.testing.assert_array_equal(np.concatenate([w0.to_dense().n, w1.to_dense().n], axis=2), w.trial_record.to_dense().n)
     alone = _walk(_dense(), T_max=2e-3, sub_steps=w.sub_steps, K=4,
                   record_trials=TrialRecordSpec(modes=2, band_edges=(0.0, 1e-3, 2e-3)))
-    np.testing.assert_array_equal(np.asarray(alone.position_coeffs), np.asarray(w.window(0).position_coeffs))
     _assert_same_record(alone.trial_record, w0)
+    a = np.asarray(alone.position_coeffs)
+    b = np.asarray(w.window(0).position_coeffs)
+    np.testing.assert_array_equal(a[:, :, :2], b[:, :, :2])                 # the start and the displacement: the steps
+    eps32 = float(np.finfo(np.float32).eps)
+    m = int(w.block["m"])
+    n_add = w.sub_steps + (m + 1) * (w.n_blocks // w.n_windows)
+    size = np.sqrt(2 * D * w.T_window)
+    scale = cosine_band_scale(w.K, w.T_window)
+    tol = n_add * eps32 * scale * size                                       # (K,)
+    diff = np.abs(a[:, :, 2:].astype(np.float64) - b[:, :, 2:].astype(np.float64))
+    worst = diff.max(axis=(0, 1, 3))                                         # per band
+    print(f"largest band difference per band {worst}, tol {tol}")
+    assert np.all(diff <= tol[None, None, :, None]), (worst, tol)
+    # one step in the wrong window moves a band by scale_k sqrt(2 D dt_sim): far outside the tolerance, for every band
+    assert np.all(scale * np.sqrt(2 * D * w.dt_sim) / tol > 50)
 
 
 def test_an_edge_half_a_step_off_a_window_boundary_is_refused():
