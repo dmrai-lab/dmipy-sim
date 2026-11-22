@@ -391,7 +391,9 @@ its data through `device_arrays()`, its modes returned as a raster's; a declarin
 basis class refuses it itself) and `backends.TRIAL_RECORD` (`record_trials=`: the request carries `trial_record`,
 `trial_steps`, `trial_radii`, `trial_u_max`, `trial_slots`, the batch returns `trial_record = (key, n, N, S, count,
 exceed)` per slot, joined into
-`CoefficientWalk.trial_record`; the refusal of a backend that does not declare it stays before the run starts). `work["backend"]` and the run record say which backend
+`CoefficientWalk.trial_record`; a declaring backend also states `Backend.trial_sum_dtype`, the dtype of the sums `S`
+it returns, which the walk reads before the first batch to size, cap and state the record and to refuse a batch whose
+`S` is of another dtype; the refusal of a backend that does not declare the capability stays before the run starts). `work["backend"]` and the run record say which backend
 walked; `walk_cost` warns when an installed backend accepts a walk run on the jax kernels. A backend is admitted per
 engine class by `backends.parity_report` on the coefficient form (the same starts and sub-step, counting on; every
 rate case walks at its own seeds, `case_seeds(seed, name, sweep + 1)`, stream 0 the starts, the reference's walk and the

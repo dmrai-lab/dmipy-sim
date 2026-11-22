@@ -38,7 +38,7 @@ from ._boundary import vdot, WallHit, keep_side_radial, ray_quadric_t, specular,
 from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather
 import numpy as np
 
-from .base import Geometry, LengthScales
+from .base import Geometry, LengthScales, placement_seed
 
 
 _BIG = jnp.float32(1e30)
@@ -237,7 +237,7 @@ class CurvedCylinder(Geometry):
 
     # ---- seeding: uniform inside the tube (arc-uniform x disk-uniform) ----
     def init_positions(self, n_walkers, key):
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+        rng = np.random.default_rng(placement_seed(key))
         cl = self.centerline
         seg = cl[1:] - cl[:-1]
         L = self._seglen
@@ -341,7 +341,7 @@ class CurvedMyelinatedCylinder(CurvedCylinder):
         lo, hi = {"intra": (0.0, self.r_in),
                   "myelin": (self.r_in, self.r_out),
                   "extra": (self.r_out, 1.5 * self.r_out)}[shell]
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+        rng = np.random.default_rng(placement_seed(key))
         cl = self.centerline; seg = cl[1:] - cl[:-1]; L = self._seglen
         cumL = np.cumsum(L); total = float(cumL[-1])
         s = rng.uniform(0.0, total, n_walkers)
@@ -729,7 +729,7 @@ class PackedCurvedCylinders(Geometry):
         return C + rad[:, None] * (np.cos(th)[:, None] * e1 + np.sin(th)[:, None] * e2)
 
     def init_positions(self, n_walkers, key):
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2 ** 30)))
+        rng = np.random.default_rng(placement_seed(key))
         if self.interior:
             pts = self.sample_inside(n_walkers, rng)
             if self.box is not None:                       # strands overrun the voxel: seed only inside it

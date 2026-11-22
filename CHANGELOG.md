@@ -15,6 +15,18 @@ the project follows [Semantic Versioning](https://semver.org/).
   `compression.packed_row_bytes`, and shared tensors are asked of `bank._is_shared_key`. Only a missing input is
   refused, by name. `pack_plan_problems` lists the faults of a plan itself; `tests/test_pack_plan.py` checks the plan of
   the two committed fixtures and of a built pack against their `plan_of_pack`, the refusals, the JSON round trip and
+  planted faults.
+- **A walk backend that records the membrane trials states the dtype of the record's sums, and the walk sizes, caps,
+  states and checks the record with it.** A backend that declares `backends.TRIAL_RECORD` now also declares
+  `Backend.trial_sum_dtype` (`"float32"` or `"float64"`, None for one that returns no record), read through
+  `backends.trial_sum_dtype(backend, name)` before the walk starts: a declaring backend that states none, or another
+  value, is refused by name before the run starts and receives no request. The record's stated
+  `work["trial_slots"]["bytes_per_walker"]` and its cap (`trial_record.MAX_BYTES_PER_WALKER`, checked before any batch
+  is walked, and, for a capacity grown by the pilot, before any batch at the grown capacity) are now those of the record the backend returns -- its declared item size,
+  where before every backend was sized at the JAX accumulation's 4 bytes — and every batch's `S` is refused by name
+  when it is of another dtype than declared. The JAX path is unchanged: its record stays in the walk's accumulation
+  dtype in either mode.
+- **A placement's seed is a typed `int32` draw, so a walker's start does not depend on JAX's 64-bit mode.** `dmipy_sim.geometry.base.placement_seed(key)` returns `int(jax.random.randint(key, (), 0, 2**30, dtype=jnp.int32))`, and the ten placement seed lines draw their NumPy generator with it instead of an untyped `randint`. With the 64-bit mode off the typed draw is the value the untyped draw has always given, so every walk made in that mode keeps its starts; with the mode on the starts change, which is the point of the change.
   planted faults. With a codec, a banded tier's `coded` and `stored` stages are the range from the measured ratio
   record `dmipy_sim/replay/codec_ratios.json` (the basis `full_chunks` or `sub_chunk_packs` of the requested
   `chunk_walkers`, named in the figure's source) widened at its upper end by the lane bound derived from the codec's
