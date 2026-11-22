@@ -10,8 +10,11 @@ count is the sum of the file's own tensor byte ranges; the raw count is the floa
 ``pack_plan(spec, envelope, tolerance, n_walkers, ...)`` is the pre-walk plan of a pack, schema ``pack_plan/1``: before
 any walk it returns, per tier that the stated rules switch on, the band count and the bytes at the raw, bit-packed,
 coded and stored stages, every figure built by :func:`_fig` and labelled ``derived``, ``measured`` or ``proxy``
-with its source and a range where it is a proxy. ``compare_plans`` compares a plan with a built pack's
-:func:`plan_of_pack` key by key; ``pack_plan_problems`` lists the faults of a plan itself.
+with its source and a range where it is a proxy. With a codec, a banded tier's ``coded`` and ``stored`` stages are
+the range from the measured ratio record (``codec_ratios.json``, read through the ``ratios`` keyword) widened at its
+upper end by the lane bound :func:`_lane_bound` derives from the codec's own constants, or that bound alone as a
+proxy where the record holds no pack at the requested chunk size. ``compare_plans`` compares a plan with a built
+pack's :func:`plan_of_pack` key by key; ``pack_plan_problems`` lists the faults of a plan itself.
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from dmipy_replay.replay import codec as _codec  # private names of the reader's codec: _FIXED, _STREAM, _field_channels
@@ -332,15 +336,92 @@ def _not_banded():
     return _fig(None, None, None, provenance="derived", source="none:not_banded")
 
 
-def _banded_tail(codec, bit_packed):
-    """The ``(coded, stored)`` figures of a banded tier: with no codec the coded stage is not applicable and the
-    stored stage is the bit-packed one; with a codec the coded size is not planned in this version, so both figures
-    are unknown before the walk (``value``, ``lo`` and ``hi`` all ``None``) and the stored stage is the coded one."""
+#: the schema of the codec-ratio record ``pack_plan`` reads through its ``ratios`` keyword
+RATIO_SCHEMA = "codec_ratio_record/1"
+
+#: the packaged codec-ratio record, read when ``ratios`` is ``None``
+RATIO_RECORD = Path(__file__).with_name("codec_ratios.json")
+
+
+def _lane_bound(tier, n_walkers, windows, K, Cx, axes, chunk_walkers, other):
+    """The exact upper bound, in bytes, on what the ``bitshuffle-zlib`` codec stores for the band ranges of the banded
+    ``tier`` (named for the caller's source and messages): per chunk of ``chunk_walkers`` walkers (the last chunk the
+    remainder ``r_c``), per range of at most ``K``, the 16-bit lane's 2 bytes per element of the chunk's
+    ``r_c * Cx * K`` elements plus one pad to :data:`dmipy_replay.replay.codec.BLOCK` elements per range, and
+    deflate's stored-block worst case ``5 * ceil(S / 16383) + 6`` bytes per range on the padded ``S``; plus each
+    range's chunk table of ``8 (n_chunks + 1)`` bytes. All of it per axis and per window, plus ``other``, the tier's
+    uncoded bytes. Exact integer arithmetic throughout."""
+    n, cw = int(n_walkers), int(chunk_walkers)
+    K, Cx, axes, windows = int(K), int(Cx), int(axes), int(windows)
+    block = _codec.BLOCK
+    n_chunks = -(-n // cw)
+    streams = 0
+    for c in range(n_chunks):
+        r = min(cw, n - c * cw)
+        s = 2 * r * Cx * K + 2 * block * K
+        streams += s + 5 * (-(-s // 16383) + K) + 6 * K
+    return windows * axes * (streams + 8 * K * (n_chunks + 1)) + int(other)
+
+
+def _ratio_packs(record, tier, chunk_walkers):
+    """The ``(basis, ratios)`` the codec-ratio ``record`` holds for the banded ``tier`` at ``chunk_walkers``:
+    ``("full_chunks", [...])`` over the record's packs that carry the tier at this chunk size with at least one full
+    chunk of their own (``n_walkers >= chunk_walkers``), else ``("sub_chunk_packs", [...])`` over the packs that carry
+    the tier at this chunk size at any size, else ``(None, [])``. Each ratio is the pack's ``tiers[tier].ratio``. A
+    pack entry that is not a dict with a ``tiers`` dict, or whose ``n_walkers`` is not an integer, is refused naming
+    ``ratios``."""
+    packs = record.get("packs")
+    if not isinstance(packs, list):
+        _refuse("ratios", f"the record's 'packs' is a list; got {type(packs).__name__}")
+    cw = int(chunk_walkers)
+    same, full = [], []
+    for p in packs:
+        if not isinstance(p, dict) or not isinstance(p.get("tiers"), dict):
+            _refuse("ratios", f"a pack entry is a dict with a 'tiers' dict; got {p!r}")
+        t = p["tiers"].get(tier)
+        if not isinstance(t, dict) or "ratio" not in t:
+            continue
+        if p.get("chunk_walkers") != cw:
+            continue
+        n = p.get("n_walkers")
+        if isinstance(n, bool) or not isinstance(n, int):
+            _refuse("ratios", f"a pack entry of tier {tier!r} states an integer 'n_walkers'; got {n!r}")
+        same.append(float(t["ratio"]))
+        if n >= cw:
+            full.append(float(t["ratio"]))
+    if full:
+        return "full_chunks", full
+    if same:
+        return "sub_chunk_packs", same
+    return None, []
+
+
+def _coded_stages(tier, codec, record, n_walkers, windows, chunk_walkers, K, Cx, axes, bit_packed, other_lo, other_hi):
+    """The ``(coded, stored)`` figures of the banded ``tier``: with no codec the coded stage is not applicable and the
+    stored stage is the bit-packed one. With a codec, ``coded`` is the range from the record's ratio of the tier at
+    ``chunk_walkers`` -- ``lo = floor(ratio_min * bit_packed.lo)`` and ``hi = ceil(ratio_max * bit_packed.hi)``, widened
+    at ``hi`` to the lane bound when the basis is ``sub_chunk_packs`` or the plan's walkers fall short of one chunk --
+    with provenance ``measured`` and a source naming the record and the basis; where the record holds no pack of the
+    tier at that chunk size, the lane bound alone, from ``other_lo`` to the bound, as a proxy. ``K`` is the band count
+    the bound is taken at (``K_f``'s hi for the field), ``Cx`` the elements per band per walker (the field's channels,
+    else 1), ``axes`` the range tensors per range, and ``other_lo`` / ``other_hi`` the tier's uncoded bytes at the
+    ends of its range. ``stored`` is a copy of ``coded`` with its own source ``coded``."""
     if codec is None:
         return _fig(None, None, None, provenance="derived", source="none:no_codec"), bit_packed
-    coded = _fig(None, None, None, provenance="proxy",
-                 source="none:coded_stage_not_planned")
-    return coded, coded
+    lane_hi = _lane_bound(tier, n_walkers, windows, K, Cx, axes, chunk_walkers, other_hi)
+    basis, ratios = _ratio_packs(record, tier, chunk_walkers)
+    if not ratios:
+        coded = _fig(None, other_lo, lane_hi, provenance="proxy",
+                     source="bound:lane_widened_block_padded")
+    else:
+        lo = math.floor(min(ratios) * bit_packed["lo"])
+        hi = math.ceil(max(ratios) * bit_packed["hi"])
+        if basis == "sub_chunk_packs" or int(n_walkers) < int(chunk_walkers):
+            hi = max(hi, lane_hi)
+        coded = _fig(None, lo, hi, provenance="measured", source=f"codec_ratios.json#{basis}/{tier}")
+    stored = dict(coded)
+    stored["source"] = "coded"
+    return coded, stored
 
 
 def _bits_fig():
@@ -416,7 +497,7 @@ def _events_figures(column, pools, N, W, bank_shared):
 
 
 def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", chunk_walkers=4096, weights=False,
-              n_voxels=None, field_bands=None, providers=()):
+              n_voxels=None, field_bands=None, ratios=None, providers=()):
     """The pre-walk plan of a pack, schema ``pack_plan/1``: a plain dict
 
     ``{"schema", "inputs": {"spec": {"id", "sha256"}, "envelope", "tolerance", "n_walkers", "codec", "chunk_walkers",
@@ -431,7 +512,11 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
     and read by no rule of version 1. ``n_walkers`` is an integer >= 1. ``codec`` is ``None`` or ``"bitshuffle-zlib"``;
     ``chunk_walkers`` a power of two. ``weights`` says the pack carries ``spin_weights``; ``n_voxels`` (``None`` or an
     integer >= 1) that it carries a voxel certificate; ``field_bands`` (``None`` or an integer >= 1) a stated field
-    band count. ``providers`` is a sequence of callables, each called with a deep copy of ``inputs`` and returning
+    band count. ``ratios`` is ``None`` -- the packaged record ``dmipy_sim/replay/codec_ratios.json`` is read -- or a
+    dict of the ``codec_ratio_record/1`` schema; a record of another schema is refused naming ``ratios``, and a record
+    whose ``codec`` differs from the requested ``codec`` naming ``codec``. With ``codec=None`` the record is not read
+    and ``inputs["ratios"]`` is ``None``; otherwise it is ``{"schema", "codec", "packs"}`` of the record read.
+    ``providers`` is a sequence of callables, each called with a deep copy of ``inputs`` and returning
     ``{tier: tier}`` added after the simulator's own tiers.
 
     The tiers appear only when the stated rules switch them on, in the order positions, contact, field, occupancy,
@@ -439,8 +524,10 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
     :data:`PROVENANCE` with a non-empty source; the band count of positions and of the contact is
     ``mode_count(window_s, band_hz)``, the bit-packed rows are
     :func:`~dmipy_sim.replay.compression.packed_row_bytes` at the ends of :data:`BITS_RANGE`, and whether a tensor is
-    shared across windows is asked of ``bank._is_shared_key`` per tensor name. Only a missing input is refused, by
-    name, through :func:`_refuse`. The plan is JSON and equal to its own round trip."""
+    shared across windows is asked of ``bank._is_shared_key`` per tensor name. A banded tier's ``coded`` and
+    ``stored`` stages with a codec come from the ratio record through :func:`_ratio_packs` and the lane bound
+    :func:`_lane_bound`, as :func:`_coded_stages` states. Only a missing input is refused, by name, through
+    :func:`_refuse`. The plan is JSON and equal to its own round trip."""
     from . import bank as _bank
 
     spec_dict = spec.to_dict() if hasattr(spec, "to_dict") else spec
@@ -466,6 +553,22 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
             or chunk_walkers < 1 or chunk_walkers & (chunk_walkers - 1):
         _refuse("chunk_walkers", f"a power of two; got {chunk_walkers!r}")
     cw = int(chunk_walkers)
+    if codec is None:
+        record = None
+    else:
+        if ratios is None:
+            with open(RATIO_RECORD) as f:
+                ratios = json.load(f)
+        if not isinstance(ratios, dict):
+            _refuse("ratios", f"a dict of the {RATIO_SCHEMA} schema, or None to read the packaged record; "
+                              f"got {type(ratios).__name__}")
+        record = ratios
+        if record.get("schema") != RATIO_SCHEMA:
+            _refuse("ratios", f"schema {RATIO_SCHEMA!r}; got {record.get('schema')!r}")
+        if record.get("codec") != codec:
+            _refuse("codec", f"the ratio record's codec {record.get('codec')!r} is not the requested {codec!r}")
+        if not isinstance(record.get("packs"), list):
+            _refuse("ratios", f"the record's 'packs' is a list; got {type(record.get('packs')).__name__}")
     if not isinstance(weights, bool):
         _refuse("weights", f"a bool; got {weights!r}")
     if n_voxels is not None and (isinstance(n_voxels, bool) or not isinstance(n_voxels, int) or n_voxels < 1):
@@ -492,7 +595,9 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
                   provenance="proxy",
                   source="compression.packed_row_bytes of one walker's row at the ends of BITS_RANGE, plus the three "
                          "pos_*_ends float32 (N, 2) and the pos_band_scale float32 (1, 3, K) per window")
-    pos_coded, pos_stored = _banded_tail(codec, pos_bp)
+    pos_other = n_pos * (24 * N + 12 * K)
+    pos_coded, pos_stored = _coded_stages("positions", codec, record, N, W, cw, K, 1, 3, pos_bp,
+                                          pos_other, pos_other)
     tiers["positions"] = {
         "why": "always written",
         "banded": True,
@@ -521,7 +626,9 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
                     provenance="proxy",
                     source="compression.packed_row_bytes of one walker's row at the ends of BITS_RANGE, plus "
                            "blt_start and blt_endpoint float32 (N,) and the blt_band_scale float32 (1, K_b) per window")
-        c_coded, c_stored = _banded_tail(codec, c_bp)
+        c_other = n_c * (8 * N + 4 * Kb)
+        c_coded, c_stored = _coded_stages("contact", codec, record, N, W, cw, Kb, 1, 1, c_bp,
+                                          c_other, c_other)
         tiers["contact"] = {
             "why": "envelope.rho2_max > 0",
             "banded": True,
@@ -578,7 +685,10 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
                         provenance="proxy",
                         source="compression.packed_row_bytes of one walker's row of modes at the ends of BITS_RANGE "
                                "over the ends of K_f's range, plus the susc_path_scale float32 (C, K_f) per window")
-            f_coded, f_stored = _banded_tail(codec, f_bp)
+            f_other_lo = n_f * (4 * C * kf_lo)
+            f_other_hi = n_f * (4 * C * kf_hi)
+            f_coded, f_stored = _coded_stages("field", codec, record, N, W, cw, kf_hi, C, 1, f_bp,
+                                              f_other_lo, f_other_hi)
             tiers["field"] = {
                 "why": "a pool of the spec has a susceptibility and envelope.B0_max is not 0",
                 "banded": True,
@@ -671,7 +781,8 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
         "n_voxels": None if n_voxels is None else int(n_voxels),
         "field_bands": None if field_bands is None else int(field_bands),
         "providers": [getattr(p, "__name__", type(p).__name__) for p in providers],
-        "ratios": None,
+        "ratios": None if record is None else {"schema": record["schema"], "codec": record["codec"],
+                                               "packs": len(record["packs"])},
         "unread": ["tolerance", "G_max", "slew_max"],
     }
 

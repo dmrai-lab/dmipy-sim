@@ -12,7 +12,7 @@ import numpy as np
 from ._boundary import (vdot, keep_side_radial, specular, off_wall, ray_sphere_t, transmit_probability, trial_granted,
                         BounceLoop, TrialLog, wall_push, bounce_budget)
 
-from .base import Geometry, LengthScales, acquisition_rotation
+from .base import Geometry, LengthScales, acquisition_rotation, placement_seed
 from ..compartments import Compartments, Pool
 
 _TINY = 1e-30
@@ -697,7 +697,7 @@ class MyelinatedCylinder(Geometry):
         n_myelin = int(round(n_walkers * w_myelin / w_total))
         n_extra = n_walkers - n_intra - n_myelin
 
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
+        rng = np.random.default_rng(placement_seed(key))
 
         positions = np.zeros((n_walkers, 3), dtype=np.float32)
         compartments = np.zeros(n_walkers, dtype=np.int32)
@@ -1476,8 +1476,7 @@ class PackedMyelinatedCylinders(Geometry):
                     break
             n_extra = 0
 
-        rng = np.random.default_rng(
-            int(jax.random.randint(key, (), 0, 2 ** 30)))
+        rng = np.random.default_rng(placement_seed(key))
 
         positions    = np.zeros((n_walkers, 3), dtype=np.float32)
         compartments = np.zeros(n_walkers, dtype=np.int32)

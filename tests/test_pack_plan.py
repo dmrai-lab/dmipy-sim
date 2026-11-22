@@ -383,9 +383,10 @@ def test_a_coded_pack_is_planned_sound_and_a_wrong_figure_is_still_reported(code
         assert built["tiers"][t]["codec"] == "bitshuffle-zlib" == pl["tiers"][t]["codec"]
         for stage in ("coded", "stored"):
             fig = pl["tiers"][t][stage]
-            assert (fig["value"], fig["lo"], fig["hi"]) == (None, None, None)
+            assert fig["value"] is None
             assert fig["provenance"] == "proxy"
-            assert fig["source"] == "none:coded_stage_not_planned"
+            assert fig["source"] == ("bound:lane_widened_block_padded" if stage == "coded" else "coded")
+            assert fig["lo"] <= built["tiers"][t]["stored"]["value"] <= fig["hi"]
         # the raw and bit-packed stages are still pinned and compared on a coded pack
         assert pl["tiers"][t]["raw"]["value"] == built["tiers"][t]["raw"]["value"]
         assert pl["tiers"][t]["bit_packed"]["lo"] <= built["tiers"][t]["bit_packed"]["value"] \
