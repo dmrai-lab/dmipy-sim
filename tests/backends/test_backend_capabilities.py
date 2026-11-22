@@ -73,6 +73,13 @@ class _CellField(_Reads):
 class _Record(_Still):
     name = "record"
     capabilities = frozenset({backends.TRIAL_RECORD})
+    trial_sum_dtype = "float32"
+
+
+class _Record64(_Record):
+    """The float64 neighbour: the record's sums in the dtype it declares."""
+    name = "record64"
+    trial_sum_dtype = "float64"
 
 
 def _random_bands(seed):
@@ -287,6 +294,10 @@ class _Recording(_Record):
         return super().walk_batch(request, r0, keys, out=out)._replace(trial_record=self.record(request, r0))
 
 
+class _Recording64(_Recording, _Record64):
+    """A recording stand-in whose sums are float64, as it declares."""
+
+
 def test_a_backend_that_does_not_declare_the_trial_record_is_refused_by_name_before_the_run(monkeypatch):
     started = []
     real = core.Run
@@ -380,7 +391,7 @@ def test_a_trial_record_of_non_integer_or_out_of_range_counts_is_refused_and_int
         _walk(_packing(), backend=_Recording(record(np.int64, 2 ** 32)), record_trials=SPEC)
     with pytest.raises(ValueError, match=r"returned the trial record's S as int32: the sums are floating point"):
         _walk(_packing(), backend=_Recording(record(np.int64, 3, S_dtype=np.int32)), record_trials=SPEC)
-    w = _walk(_packing(), backend=_Recording(record(np.int64, 3, S_dtype=np.float64)), record_trials=SPEC)   # the neighbour
+    w = _walk(_packing(), backend=_Recording64(record(np.int64, 3, S_dtype=np.float64)), record_trials=SPEC)   # the neighbour
     assert w.trial_record.n.dtype == np.int32 and np.all(w.trial_record.n == 3)
     assert w.trial_record.S.dtype == np.float64                                # the backend's precision, as returned
 
@@ -401,3 +412,103 @@ def test_a_trial_record_of_keys_outside_the_pairs_or_a_count_beyond_the_slots_is
     with pytest.raises(ValueError, match=r"^trial_record: a walker met at least 9 \(object, band\) pairs where the record "
                                          r"holds 8 slots"):
         _walk(_packing(), backend=_Recording(record(count_value=9)), record_trials=SPEC)
+
+
+def _record_in(seed, dtype, n_pairs=8, modes=3):
+    """``_record``'s batch record with the sums ``S`` in ``dtype``."""
+    base, made = _record(seed, n_pairs=n_pairs, modes=modes)
+
+    def record(request, r0):
+        tr = base(request, r0)
+        return tr[:3] + (np.asarray(tr[3], dtype),) + tr[4:]
+    return record, made
+
+
+def test_a_backend_that_declares_float64_states_the_record_in_its_own_bytes():
+    """The stated bytes per walker are those of the record returned: the float64 stand-in states 296 for SPEC's 8
+    slots of 3 modes, where the float32 neighbour states 200 -- also with slots=None, where the pilot sets them."""
+    from dmipy_sim.trial_record import bytes_per_walker
+    w = _walk(_packing(), backend=_Recording64(_record_in(4, np.float64)[0]), record_trials=SPEC)
+    rec = w.work["trial_slots"]
+    assert w.trial_record.S.dtype == np.float64
+    assert rec["bytes_per_walker"] == bytes_per_walker(rec["capacity"], 3, w.trial_record.S.dtype.itemsize) == 296
+    w32 = _walk(_packing(), backend=_Recording(_record(4)[0]), record_trials=SPEC)
+    assert w32.work["trial_slots"]["bytes_per_walker"] == bytes_per_walker(8, 3, 4) == 200
+    wp = _walk(_packing(), backend=_Recording64(_record_in(5, np.float64)[0]),
+               record_trials=TrialRecordSpec(modes=3, band_edges=SPEC.band_edges))
+    recp = wp.work["trial_slots"]
+    assert recp["rule"] == "pilot" and recp["capacity"] == 8
+    assert recp["bytes_per_walker"] == bytes_per_walker(recp["capacity"], 3, wp.trial_record.S.dtype.itemsize) == 296
+
+
+def test_a_backend_that_declares_the_trial_record_but_states_no_sum_dtype_is_refused_by_name_before_the_run(monkeypatch):
+    """A declaring backend that states no ``trial_sum_dtype``, or one other than 'float32'/'float64', is refused by
+    name before the run starts and receives no request."""
+    started = []
+    real = core.Run
+
+    def run(*a, **kw):
+        started.append(a)
+        return real(*a, **kw)
+    monkeypatch.setattr(core, "Run", run)
+
+    class _NoDtype(_Record):
+        name = "nodtype"
+        trial_sum_dtype = None
+
+    class _Half(_Record):
+        name = "half"
+        trial_sum_dtype = "float16"
+
+    for be in (_NoDtype(), _Half()):
+        with pytest.raises(ValueError) as e:
+            _walk(_packing(), backend=be, record_trials=SPEC)
+        assert be.name in str(e.value) and "trial_sum_dtype" in str(e.value)
+        assert not started and not be.requests
+
+
+def test_a_batch_whose_sums_are_of_another_dtype_than_declared_is_refused_by_name():
+    """Every batch's ``S`` is checked against the declared dtype: float64 declared with float32 returned, float32
+    declared with float64 returned, and a second batch alone that differs are each refused by name."""
+    base32, _ = _record(4)
+    base64, _ = _record(4)
+
+    def as64(request, r0):
+        tr = base64(request, r0)
+        return tr[:3] + (np.asarray(tr[3], np.float64),) + tr[4:]
+
+    with pytest.raises(ValueError, match=r"backend 'record64' returned the trial record's S as float32 where it declared "
+                                         r"trial_sum_dtype 'float64'"):
+        _walk(_packing(), backend=_Recording64(base32), record_trials=SPEC)
+    with pytest.raises(ValueError, match=r"backend 'record' returned the trial record's S as float64 where it declared "
+                                         r"trial_sum_dtype 'float32'"):
+        _walk(_packing(), backend=_Recording(as64), record_trials=SPEC)
+
+    seen = []
+
+    def flip(request, r0):
+        tr = base32(request, r0)
+        dtype = np.float32 if not seen else np.float64
+        seen.append(dtype)
+        return tr[:3] + (np.asarray(tr[3], dtype),) + tr[4:]
+
+    with pytest.raises(ValueError, match=r"backend 'record' returned the trial record's S as float64 where it declared "
+                                         r"trial_sum_dtype 'float32'"):
+        _walk(_packing(), backend=_Recording(flip), record_trials=SPEC)
+    assert len(seen) == 2                                       # the second batch alone differed
+
+
+def test_the_cap_limits_the_true_size_of_the_record_before_any_batch():
+    """50 modes at 200 slots: 4 bytes per sum is 42408 bytes per walker, below the cap, and the float32 stand-in walks
+    it; 8 bytes is 82408, above the cap, and the float64 stand-in is refused before any batch, with the record's own
+    size in the message."""
+    from dmipy_sim.trial_record import MAX_BYTES_PER_WALKER, bytes_per_walker
+    big = TrialRecordSpec(modes=50, band_edges=SPEC.band_edges, slots=200)
+    assert bytes_per_walker(200, 50, 4) == 200 * (12 + 50 * 4) + 8 == 42408 <= MAX_BYTES_PER_WALKER
+    assert bytes_per_walker(200, 50, 8) == 200 * (12 + 50 * 8) + 8 == 82408 > MAX_BYTES_PER_WALKER
+    be64 = _Recording64(_record_in(4, np.float64, modes=50)[0])
+    with pytest.raises(ValueError, match=r"^trial_record: 200 slots of 50 modes are 82408 bytes per walker, above 65536$"):
+        _walk(_packing(), backend=be64, record_trials=big)
+    assert be64.requests == []
+    w = _walk(_packing(), backend=_Recording(_record(4, modes=50)[0]), record_trials=big)
+    assert w.work["trial_slots"]["bytes_per_walker"] == 42408

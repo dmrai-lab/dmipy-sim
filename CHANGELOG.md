@@ -16,6 +16,16 @@ the project follows [Semantic Versioning](https://semver.org/).
   refused, by name. `pack_plan_problems` lists the faults of a plan itself; `tests/test_pack_plan.py` checks the plan of
   the two committed fixtures and of a built pack against their `plan_of_pack`, the refusals, the JSON round trip and
   planted faults.
+- **A walk backend that records the membrane trials states the dtype of the record's sums, and the walk sizes, caps,
+  states and checks the record with it.** A backend that declares `backends.TRIAL_RECORD` now also declares
+  `Backend.trial_sum_dtype` (`"float32"` or `"float64"`, None for one that returns no record), read through
+  `backends.trial_sum_dtype(backend, name)` before the walk starts: a declaring backend that states none, or another
+  value, is refused by name before the run starts and receives no request. The record's stated
+  `work["trial_slots"]["bytes_per_walker"]` and its cap (`trial_record.MAX_BYTES_PER_WALKER`, checked before any batch
+  is walked, and, for a capacity grown by the pilot, before any batch at the grown capacity) are now those of the record the backend returns -- its declared item size,
+  where before every backend was sized at the JAX accumulation's 4 bytes — and every batch's `S` is refused by name
+  when it is of another dtype than declared. The JAX path is unchanged: its record stays in the walk's accumulation
+  dtype in either mode.
 - **A backend's refusal check receives the slots of a recorded walk, and the field pilot on a backend asks to drop pool changes only of a walk no walker of which changes pool.** The request `_backend_refusal` hands `Backend.refuses` for a walk with `record_trials=` now carries `trial_slots` (the spec's slots, or the pilot's starting `min(PILOT_SLOTS, pairs)`) beside the spec, the edge steps, the radii and the overshoot bounds it carried; before, it carried none, so a backend that sizes its record by the request refused every recorded walk through `_walk_geometry`, with slots given or not. `field_pilot_on_backend` takes the required keyword `impermeable`, which the producer sets to `not res.crossing`: the resolution's statement that no walker changes pool. Before, the pilot read `kappa_over_D`, which is 0 for a packed myelinated cell whose plain walls are permeable, and asked a backend to drop the pool changes of a walk whose walkers cross. The pilot's request changes for that family only; every other walk's requests are unchanged.
 - **`plan_of_pack` reads the exact bytes of a built pack per tier, and `packed_row_bytes` is the one definition of a
   bit-packed row's byte count.** `dmipy_sim/replay/plan.py` returns, from a pack file's header only, per tier of the
