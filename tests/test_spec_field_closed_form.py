@@ -175,3 +175,23 @@ def test_a_pack_whose_recorded_closed_form_differs_from_the_geometrys_is_not_con
     monkeypatch.setitem(closed_form_pack.meta["compression"]["channels"], "susceptibility_grid", rec)
     with pytest.raises(ValueError, match="field source.*closed form.*Walk the pack again"):
         _continue_spying(closed_form_pack, monkeypatch)
+
+
+def test_a_continuation_reads_the_field_at_the_packs_stated_field_strength():
+    """A closed-form pack built for a 3 T envelope is continued with a field-read record that states 3 T and the same
+    susceptibility scale as the pack's own walk."""
+    from dmipy_sim import build_replay_pack, walk
+    from dmipy_sim.replay.continuation import continue_walk
+    from tests._envelope import stated
+    from tests.test_grid_field_in_walk import ENV
+    spec = _cell().spec
+    w = walk(spec, 40, 5e-4, 1.25e-4, envelope=walk_envelope(of=spec, B0_max=3.0), seed=1, require_gpu=False, K=2, K_c3=2,
+             window_T=2.5e-4)
+    pack = build_replay_pack(w, id="test/cell-3T", license="x", citation="x", K=2, window_T=2.5e-4,
+                             **stated(dict(ENV, B0_max=3.0), of=w, G_max=0.5))
+    assert pack.envelope.B0_max == 3.0
+    cont = continue_walk(pack, 2.5e-4, seed=5, require_gpu=False)
+    want, got = w.block["field_read"], cont.block["field_read"]
+    assert want["B0"] == got["B0"] == 3.0
+    assert got["chi"] == want["chi"] and got["floor"] == want["floor"]
+    assert got["dt_f"] == want["dt_f"]

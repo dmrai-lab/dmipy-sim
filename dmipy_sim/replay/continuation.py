@@ -60,10 +60,12 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
 
     A spec that declares a susceptibility source has its field read in the walk at the pack's own band and read
     interval: a gridded source by every walk, a strand source with ``adaptive_steps=True`` regardless of what is
-    given (:func:`~dmipy_sim.spec.walk.field_source_kind`). A myelinated cylinder or cell is continued with its closed
+    given (:func:`~dmipy_sim.spec.walk.field_source_kind`), its field pilot and read rule taken at the pack's stated
+    envelope (its maximum field strength and ``chi_max``). A myelinated cylinder or cell is continued with its closed
     form, and the pack must record that same closed form as its field source: a pack whose field is a raster, or
     another closed form, is refused (``ValueError``) and is walked again."""
     from ..engine.core import _walk_geometry
+    from .compression import certificate_settings
     from ..spec.build import geometry_from_spec
     from ..spec.walk import walk, _needs_bundle_walk, field_source_kind, _single_geometry_field
     from ..spec.seeding import DrawnSeeds
@@ -97,7 +99,7 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
             _require_recorded_closed_form(ch.get("susceptibility_grid") or {}, fb, type(g).__name__)
         w = _walk_geometry(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
-                                  K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **(field_kw if fb is not None else {}))
+                                  K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **(dict(field_kw, envelope=certificate_settings(read_envelope(pack))) if fb is not None else {}))
         return dataclasses.replace(w, geometry=g, spec=(spec if w.spec is None else w.spec), envelope=read_envelope(pack))
     if pool is None:
         raise ValueError("a multi-surface spec is continued pool by pool, and the pack carries no compartment channel to say "

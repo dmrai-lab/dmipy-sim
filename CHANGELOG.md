@@ -11,7 +11,9 @@ the project follows [Semantic Versioning](https://semver.org/).
   cell, over its lattice, where it handed a raster of the sheaths (`field_grid_of`) that smears each
   wall over a voxel and whose cell mean is zero. The walk equals `_walk_geometry(field_basis=HollowCylinderField.of(g))`
   to the bit; its pack's `susceptibility_grid` states the closed form (`source`) in place of a grid shape, and a
-  backend that declares `FIELD_IN_WALK` (and, for a cell, `PACKED_MYELINATED`) walks it. `field_res=` is refused for these geometries (the closed form has
+  backend that declares `FIELD_IN_WALK` and `PACKED_MYELINATED` walks a cell's closed form; an isolated myelinated
+  cylinder is walked by the JAX kernels only. `continue_walk` reads the field pilot of a closed-form (or raster) pack at the
+  pack's stated maximum field strength. `field_res=` is refused for these geometries (the closed form has
   no nodes), and `continue_walk` refuses a pack whose recorded field is a raster or another closed form; every other
   gridded source keeps its raster.
 - **The `walk_cost` pilot times each shape as the minimum of three calls with the garbage collector held off.** A pilot

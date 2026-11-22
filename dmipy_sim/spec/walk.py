@@ -396,8 +396,8 @@ def field_source_kind(spec):
     between two swept-polyline walls (the per-segment closed form,
     :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`); ``"grid"`` when it is a shell between two cylinder
     walls (the closed form, :class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`) or is bounded by
-    surfaces of :data:`RASTERISED_KINDS` (the spec's own raster, :func:`field_grid_of_spec`); either is read at every
-    step of the fixed-step walk. Any other magnetic
+    surfaces of :data:`RASTERISED_KINDS` (the spec's own raster, :func:`field_grid_of_spec`); either is read by the fixed-step walk once per field
+    read interval (``field_read_interval`` where given, else the interval the field pilot's rule derives). Any other magnetic
     pool is refused, naming its surfaces: a field the walk cannot compute is never left out of the pack. So is a
     second magnetic pool, since a walk computes the field of one."""
     if susceptibility_field_of(spec) == "absent":
@@ -1231,7 +1231,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     if not seeded:
         raise SpecError("the seeding holds no seed of any pool; nothing to walk")
     # the field basis is built before the walk and read by it: a strand field certified on the start positions (read
-    # by the adaptive producer), a gridded one rasterised from the membership tests (read at every step)
+    # by the adaptive producer), a gridded one rasterised from the membership tests (read once per field read interval)
     current().phase("field basis")
     kind = field_source_kind(spec)                         # None when no pool is magnetic
     sf = fg = None
@@ -1244,7 +1244,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     elif kind == "grid":
         if adaptive_steps:
             raise SpecError("adaptive_steps reads a strand field in the walk; this spec's field source is gridded, which "
-                            "the fixed-step walk reads at every step (adaptive_steps=False)")
+                            "the fixed-step walk reads once per field read interval (adaptive_steps=False)")
         fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx, cache_dir=field_cache)
     works = []
     dropped = {}                                            # pool name -> its exclusion record (drop_pool_changes)
