@@ -49,7 +49,7 @@ from ._grid import bucket_by_bbox, NEIGHBOUR_OFFSETS, gather, wrap_periodic
 from ._boundary import vdot, BounceLoop, wall_hit, specular, transmit_probability, off_wall, wall_push
 import numpy as np
 
-from .base import Geometry, LengthScales
+from .base import Geometry, LengthScales, placement_seed
 from ..compartments import POOL_NAMES, Compartments, Pool
 
 # Above this median-edge / feature-radius ratio the surface is too coarsely
@@ -1482,7 +1482,7 @@ class Mesh(Geometry):
         """
         from ..fields.susceptibility_field import mesh_contains
         intra = _seed_pool(self.pool if pool is None else pool) == 1
-        rng = np.random.default_rng(int(jax.random.randint(key, (), 0, 2**30)))
+        rng = np.random.default_rng(placement_seed(key))
         V = np.asarray(self.vertices, float)
         F = np.asarray(self.faces, np.int64)
         out, need = [], n_walkers

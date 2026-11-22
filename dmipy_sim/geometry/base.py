@@ -172,6 +172,18 @@ seed and its index alone, whatever range of walkers a walk covers. The constant 
 change of it is a change of every walk."""
 
 
+def placement_seed(key) -> int:
+    """The NumPy seed of a placement drawn from the JAX key ``key``: an ``int32`` draw
+    ``jax.random.randint(key, (), 0, 2**30, dtype=jnp.int32)``, returned as a Python ``int``.
+
+    The draw is typed ``int32``, so it is the same number with JAX's 64-bit mode off and on; with the mode off it
+    is the value the untyped draw gives, so every placement seeded with the mode off keeps its walkers. A walker's
+    start is a function of the placement's seed, its index and the geometry alone, whatever the process's 64-bit
+    mode.
+    """
+    return int(jax.random.randint(key, (), 0, 2**30, dtype=jnp.int32))
+
+
 def initial_positions(geometry, n_walkers, key, r0=None, *, first_walker=0):
     """Seed positions for a walk: ``r0`` when the caller supplied one, else the geometry's own placement of the
     walkers ``first_walker .. first_walker + n_walkers - 1`` (:func:`placement`).
