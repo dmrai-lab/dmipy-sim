@@ -1,4 +1,4 @@
-"""The placement's seed is a typed int32 draw, so a walker's start does not depend on JAX's 64-bit mode (#558).
+"""The placement's seed is a typed int32 draw, so a walker's start does not depend on JAX's 64-bit mode.
 
 `jax.random.randint` without a `dtype` returns the process's default integer -- int32 with the 64-bit mode off,
 int64 with it on, and a different value for the same key -- so a placement seeded from it drew a different NumPy
