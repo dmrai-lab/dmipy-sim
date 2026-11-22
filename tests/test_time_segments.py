@@ -512,8 +512,8 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
 
 
 # The streamed image's own fixture: a machine's delivery is held to the scanner's slew, so the protocol it delivers is
-# the trapezoidal pulsed pair the Swoop can play -- ramps at its 22 T/m/s on a 66.7 us grid, lobes of 3 samples 6 samples
-# apart, the whole echo the walk's 0.8 ms, b = 14.8 s/m^2 along z -- and its partition is the ten constant pieces of that
+# the trapezoidal pulsed pair the Swoop can play -- ramps at its 22 T/m/s on a 66.7 us grid, lobes requested at 0.2 ms with
+# 0.4 ms between them (the built timings are the sequence's own, on that grid), the whole echo the walk's 0.8 ms, b = 14.8 s/m^2 along z -- and its partition is the ten constant pieces of that
 # staircase (the ramps' samples and the plateaus: a class's vertex count grows as 2^pieces, so a finer grid is not read).
 # The layout certifies its background vectors to 1 T/m, a step of 0.245 rad per T/m, fine enough that this encoding's
 # coefficients are stored as non-zero words: the magnet's own gradient (about 0.45 mT/m here) is then a term of the image.
