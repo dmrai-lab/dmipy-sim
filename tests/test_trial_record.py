@@ -866,6 +866,19 @@ def test_the_pilot_states_the_slots_and_they_hold_the_walk(monkeypatch):
     assert given.work["trial_slots"] == dict(rule="given", pairs=6, capacity=6, bytes_per_walker=6 * 16 + 8)
 
 
+def test_the_stated_bytes_are_the_record_sums_in_the_walk_s_accumulation_dtype(x64):
+    """On the JAX kernels the stated bytes per walker are those of the record returned, in the walk's accumulation
+    dtype, in either mode: 104 and float32 at 6 slots of 1 mode, 128 and float64 with a float64 accumulation."""
+    from dmipy_sim.trial_record import bytes_per_walker
+    spec = TrialRecordSpec(modes=1, band_edges=(0.0, T), slots=6)
+    w = _walk(_dense(), n=8, record_trials=spec)
+    assert w.work["trial_slots"]["bytes_per_walker"] == bytes_per_walker(6, 1, 4) == 104
+    assert w.trial_record.S.dtype == np.float32
+    w64 = _walk(_dense(), n=8, record_trials=spec, accumulation_dtype="float64")
+    assert w64.work["trial_slots"]["bytes_per_walker"] == bytes_per_walker(6, 1, 8) == 128
+    assert w64.trial_record.S.dtype == np.float64
+
+
 def test_the_rows_survive_take_bands_concatenate_and_the_walk_file(plain_walks, tmp_path):
     """``take``, ``bands`` and ``concatenate`` are the dense record's selections, and the walk file holds the rows."""
     r = plain_walks[1].trial_record

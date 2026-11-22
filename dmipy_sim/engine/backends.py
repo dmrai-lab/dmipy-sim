@@ -79,7 +79,10 @@ FIELD_IN_WALK = "field_in_walk"
 #: walls (``record_trials=``, :mod:`dmipy_sim.trial_record`), handed the spec and what the producer resolved from it
 #: (:attr:`WalkRequest.trial_record`, ``trial_steps``, ``trial_radii``, ``trial_u_max``, ``trial_slots``, with ``count_walls`` on) and
 #: returning the batch's record per walker (:attr:`CoefficientBatch.trial_record`), which the producer joins into
-#: :attr:`~dmipy_sim.coefficient_walk.CoefficientWalk.trial_record` as it joins the JAX kernels' record.
+#: :attr:`~dmipy_sim.coefficient_walk.CoefficientWalk.trial_record` as it joins the JAX kernels' record. A backend that
+#: declares it also states :attr:`Backend.trial_sum_dtype`, the dtype of the sums ``S`` of the record it returns: the
+#: walk sizes, caps and states the record with it before the first batch (:func:`trial_sum_dtype`) and refuses a batch
+#: whose ``S`` is of another dtype.
 TRIAL_RECORD = "trial_record"
 
 #: A capability a backend declares in :attr:`Backend.capabilities`: it walks each walker at its own fraction of the
@@ -308,8 +311,9 @@ class CoefficientBatch(NamedTuple):
                                       #: ``(key, n, N, S, count, exceed)``, ``key`` ``(n_b, slots)`` each slot's pair
                                       #: ``object * n_bands + band`` in the order the walker first met it (-1 a free
                                       #: slot), ``n`` and ``N`` ``(n_b, slots)`` its trials and granted trials, ``S``
-                                      #: ``(n_b, slots, modes)`` its Chebyshev sums, floating point in the backend's
-                                      #: accumulation precision (the batch's ``precision``), ``count`` ``(n_b,)`` the
+                                      #: ``(n_b, slots, modes)`` its Chebyshev sums, floating point in the dtype the
+                                      #: backend declares as :attr:`Backend.trial_sum_dtype` (every batch's ``S`` is
+                                      #: checked against it), ``count`` ``(n_b,)`` the
                                       #: distinct pairs the walker met (counting on past the slots) and ``exceed``
                                       #: ``(n_b,)`` the trials whose overshoot exceeded the object's ``trial_u_max`` --
                                       #: each count an integer array with values in ``[0, 2^31)``, held as int32 --
@@ -324,6 +328,11 @@ class Backend:
     #: :data:`PERMEABILITY_TABLE`). A walk that needs a capability the backend does not state is refused by name; a
     #: backend that defines no ``capabilities`` states none.
     capabilities = frozenset()
+    #: The dtype name of the sums ``S`` of the trial record this backend returns, for a backend that declares
+    #: :data:`TRIAL_RECORD`: ``"float32"`` or ``"float64"``; None for a backend that returns none. The walk reads it
+    #: through :func:`trial_sum_dtype` before the first batch, sizes, caps and states the record with it, and
+    #: refuses a batch whose ``S`` is of another dtype.
+    trial_sum_dtype = None
 
     def refuses(self, request: WalkRequest) -> Optional[str]:
         """Why this backend cannot walk ``request`` (an engine class, a tier, a wall it does not implement), or
@@ -342,6 +351,25 @@ class Backend:
         :data:`MT_BINDING`) is handed ``dwell0``, ``(n,)`` float32 each walker's dwell left at the start in physics steps
         (0 free: the producer's equilibration), and returns ``bound_events``; every other walk is handed none."""
         raise NotImplementedError
+
+
+def trial_sum_dtype(backend, name) -> np.dtype:
+    """The dtype of the sums ``S`` of the trial record ``backend`` (named ``name``) returns: its declared
+    :attr:`Backend.trial_sum_dtype`, as an :class:`numpy.dtype`. Read before the walk, so the record's stated bytes
+    per walker and its cap are those of the record the backend returns. Refused by name when the backend states none
+    or another value than ``"float32"`` or ``"float64"``: the declaration is required, never defaulted."""
+    stated = getattr(backend, "trial_sum_dtype", None)
+    if stated is None:
+        raise ValueError(f"trial_record: the backend {name!r} declares {TRIAL_RECORD} and returns a record whose sums' "
+                         f"dtype it does not state: declare Backend.trial_sum_dtype as 'float32' or 'float64'")
+    try:
+        dtype = np.dtype(stated)
+    except TypeError:
+        dtype = None
+    if dtype is None or dtype.name not in ("float32", "float64"):
+        raise ValueError(f"trial_record: the backend {name!r} states trial_sum_dtype={stated!r}: the sums S of the record "
+                         f"it returns are 'float32' or 'float64'")
+    return dtype
 
 
 def installed() -> dict:
