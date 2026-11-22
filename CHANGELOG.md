@@ -13,6 +13,7 @@ the project follows [Semantic Versioning](https://semver.org/).
   before a pilot. Cost: a pilot shape makes 4 calls of the walk against 2 (the number of shapes is unchanged), the timed
   part triples (0.57 s to 1.71 s for a sphere of 1000 walkers and 8 blocks), the compile is unchanged, and one
   collection per pilot adds 0.1 to 0.2 s on a large heap.
+- **A walk that records its membrane trials compiles in seconds on JAX 0.12 as on 0.10.** The record adds a step's log entries in a loop (`lax.scan`) where it unrolled one copy per entry of the bounce budget; on JAX 0.12 the CPU compiler took minutes on that unrolled program (about 150 s per walk program at a budget of 32, against about 2 s now). The record's values are unchanged to the bit.
 - **`walk_cost` counts the membrane-trial record and costs it in the dtype the walk holds it in.** With
   `record_trials=` a stated capacity adds `trial_record.bytes_per_walker(slots, modes, itemsize)` to
   `WalkCost.bytes_per_walker` (and to the memory-limited batch and the profile), reported in the new field
