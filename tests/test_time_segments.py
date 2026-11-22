@@ -513,9 +513,10 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
 
 # The streamed image's own fixture: a machine's delivery is held to the scanner's slew, so the protocol it delivers is
 # the trapezoidal pulsed pair the Swoop can play -- ramps at its 22 T/m/s on a 66.7 us grid, lobes of 3 samples 6 samples
-# apart, the whole echo the walk's 0.8 ms -- and its partition is the ten constant pieces of that staircase (the ramps'
-# samples and the plateaus: a class's vertex count grows as 2^pieces, so a finer grid is not read). On this timing the
-# machine's slew reaches b = 14.81 s/m^2 and no more (the search over the grid's lobes and gaps, 9 to 21 samples).
+# apart, the whole echo the walk's 0.8 ms, b = 14.8 s/m^2 along z -- and its partition is the ten constant pieces of that
+# staircase (the ramps' samples and the plateaus: a class's vertex count grows as 2^pieces, so a finer grid is not read).
+# The layout certifies its background vectors to 1 T/m, a step of 0.245 rad per T/m, fine enough that this encoding's
+# coefficients are stored as non-zero words: the magnet's own gradient (about 0.45 mT/m here) is then a term of the image.
 RAMP_TE, RAMP_N_T, RAMP_DELTA, RAMP_DELTA_BIG, RAMP_B = 0.8e-3, 13, 3 * 0.8e-3 / 12, 6 * 0.8e-3 / 12, 14.8
 
 
@@ -539,7 +540,7 @@ def ramped_blocks(spec_grid):
         packs.append(pk)
         dirs.append(str(tmp / f"rb_rows{b}"))
         segment_rows(w, {"se": Partition.of("se", _ramped_pgse([[0, 0, 1]], RAMP_B))}, dirs[-1], grid=grid, pack=pk, g_max=60.0,
-                     floor_target=0.3, tiers=True, background=True)
+                     floor_target=0.3, tiers=True, background=True, background_amplitude=1.0)
     m = write_time_segment_layout(dirs, str(tmp / "rb_layout"))
     return TimeSegmentLayout(str(tmp / "rb_layout")), merge_packs(packs, id="t/rb-merged"), grid, packs[0].n_t, m, tmp
 
@@ -556,23 +557,26 @@ def test_a_streamed_image_is_the_resident_image_to_the_bit(ramped_blocks, backen
     seq = _ramped_pgse(np.concatenate([u, [[0, 0, 1]]]).tolist(), np.r_[np.full(3, RAMP_B), 0.0])
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     u = (0.6, 0.0, 0.8)
-    fresh = TimeSegmentLayout(lay.path)
-    fresh.TILES = 1                                                   # many chunks, the last one padded
+    resident, fresh = TimeSegmentLayout(lay.path), TimeSegmentLayout(lay.path)   # the streamed calls run on a layout that never holds a column
+    resident.TILES = fresh.TILES = 1                                  # many chunks, the last one padded
     kw = dict(backend=backend, device="cpu") if backend == "torch" else dict(backend=backend)
     for extra in ({}, dict(tissue=t, scanner=7.0, b0_direction=u)):
-        S_r, f_r = fresh.image(seq, resident=True, **kw, **extra)
+        S_r, f_r = resident.image(seq, resident=True, **kw, **extra)
         S_s, f_s = fresh.image(seq, resident=False, **kw, **extra)
         np.testing.assert_array_equal(S_r, S_s); np.testing.assert_array_equal(f_r, f_s)
+        assert len(fresh._device) == 0
     swoop = ScannerLimits.of("hyperfine_swoop_64mT")
-    dl = fresh.delivery(seq, swoop, grid.centred_at((0.05, 0.0, 0.0)))
-    S_r, _ = fresh.image(seq, resident=True, delivered=dl, **kw)
+    dl = resident.delivery(seq, swoop, grid.centred_at((0.05, 0.0, 0.0)))
+    assert np.abs(dl.g0).max() > 0
+    bg = resident.manifest["groups"][resident.background_group(dl.partition)]["background"]
+    assert bg["n_words"] > 0 and np.load(os.path.join(resident.path, bg["column"])).any()   # the magnet's gradient is stored
+    S_r, _ = resident.image(seq, resident=True, delivered=dl, **kw)
     S_s, _ = fresh.image(seq, resident=False, delivered=dl, **kw)
     np.testing.assert_array_equal(S_r, S_s)
-    n_dev = len(fresh._device)
-    fresh.image(seq, resident=False, tissue=t, scanner=3.0, **kw)
-    assert len(fresh._device) == n_dev
-    a = fresh.tier_maps("se", t, 7.0, b0_direction=u, resident=True, **kw)
+    assert len(fresh._device) == 0
+    a = resident.tier_maps("se", t, 7.0, b0_direction=u, resident=True, **kw)
     b = fresh.tier_maps("se", t, 7.0, b0_direction=u, resident=False, **kw)
+    assert len(fresh._device) == 0
     for k in ("contact", "contact_weight", "phase", "phase_std"):
         np.testing.assert_array_equal(a[k], b[k])
 
