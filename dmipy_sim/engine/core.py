@@ -11,6 +11,8 @@ import jax
 import jax.numpy as jnp
 import contextlib
 import dataclasses
+import gc
+import time
 from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
@@ -719,7 +721,7 @@ class WalkMeasured:
     grows with the blocks."""
     batch: int                        #: walkers of the pilot, the walk's real batch
     pilot_blocks: tuple                #: ``(n1, n2)``: the block counts of the two pilot lengths
-    seconds_per_block: float           #: ``(t(n2) - t(n1)) / (n2 - n1)``, each ``t`` the second call of its shape (compile excluded)
+    seconds_per_block: float           #: ``(t(n2) - t(n1)) / (n2 - n1)``, each ``t`` the minimum of ``PILOT_TIMED_CALLS`` timed calls of its shape (compile excluded)
     fixed_seconds_per_call: float     #: ``t(n1) - seconds_per_block``: what a call costs whatever its blocks
     seconds_per_walker_step: float    #: ``seconds_per_block / (batch * sub_steps)``
     projected_s: float                #: the full walk: ``walker_batches * (fixed_seconds_per_call + seconds_per_block * (n_blocks - 1))``
@@ -728,7 +730,7 @@ class WalkMeasured:
 @dataclass(frozen=True)
 class WalkProfile:
     """How a walk's rate scales with the batch size, measured by :func:`walk_cost` (``measure="profile"``): the same
-    pilot at B/2, B, 2B and 4B (B the walk's batch), each the second call of its shape."""
+    pilot at B/2, B, 2B and 4B (B the walk's batch), each shape timed as the minimum of ``PILOT_TIMED_CALLS`` calls after one untimed call."""
     walker_steps_per_s: dict          #: batch size -> rate, from the seconds per block
     seconds_per_block: dict            #: batch size -> seconds per block of the pilot (the per-call part removed)
     plateau_walker_steps_per_s: float #: the largest rate
@@ -922,9 +924,32 @@ def _profile(per_block, vb, res, max_batch, stopped_by, n_ch=0, *, itemsize, tri
                        verdict=verdict)
 
 
+#: The timed calls of one pilot shape; the minimum of them is the shape's seconds.
+PILOT_TIMED_CALLS = 3
+
+
+def _pilot_seconds(call, clock=time.perf_counter):
+    """Seconds of ``call()``: the minimum of ``PILOT_TIMED_CALLS`` timed calls made after one untimed call that holds
+    the compile. The garbage collector is disabled around the timed calls and left in the state it was found in; a stall
+    adds to a timing and never subtracts, so the minimum is the timing nearest the undisturbed call."""
+    call()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    samples = []
+    try:
+        for _ in range(PILOT_TIMED_CALLS):
+            t0 = clock()
+            call()
+            samples.append(clock() - t0)
+    finally:
+        if was_enabled:
+            gc.enable()
+    return min(samples)
+
+
 def _fit_blocks(seconds, batch, max_blocks):
     """``(seconds_per_block, fixed_seconds_per_call, (n1, n2))`` of a ``batch`` from ``seconds(batch, blocks)``, the
-    second call of each shape: n1 = 1 block, n2 from 2 doubling until ``t(n2) >= 2 t(n1)`` (the blocks then weigh at
+    minimum of ``PILOT_TIMED_CALLS`` timed calls of each shape after one untimed call that holds the compile: n1 = 1 block, n2 from 2 doubling until ``t(n2) >= 2 t(n1)`` (the blocks then weigh at
     least as much as the fixed part of a call), at most ``max_blocks``."""
     t1 = seconds(batch, 1)
     if max_blocks <= 1:
@@ -973,7 +998,8 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
         The backend that would walk it (default the JAX kernels).
     measure : {False, True, "profile"}
         ``True`` walks the real batch (``min(walker_batch_size, n_walkers)`` walkers) on the real device and backend and
-        times it at two pilot lengths, each the second call of its shape (the compile is in the first):
+        times it at two pilot lengths, each the minimum of ``PILOT_TIMED_CALLS`` timed calls of its shape after one untimed
+        call that holds the compile; the collector is collected once before the pilot and held off around the timed calls:
         :attr:`WalkCost.measured`. The walk is the production program (``walk_kwargs`` included; ``r0`` is sliced
         to the batch). A timed call is the whole of :func:`_walk_geometry`: seeding, setup, the walk and the
         transfer to the host. Only the walk grows with the blocks; the rest is paid once per call, so one pilot
@@ -993,7 +1019,6 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
     WalkCost
     """
     import inspect
-    import time
     unknown = set(walk_kwargs) - set(inspect.signature(_walk_geometry).parameters)
     if unknown:
         raise TypeError(f"walk_cost got keywords _walk_geometry does not take: {sorted(unknown)}")
@@ -1031,18 +1056,17 @@ def walk_cost(n_walkers, diffusivity, geometry, T_max, block_h=None, *, walker_b
                         batch_rule="given" if given else "n_walkers capped by memory", n_ch=n_ch, itemsize=itemsize,
                         trial_bytes=trial_bytes)
     if measure:
+        gc.collect()
         max_blocks = cost.n_blocks
         r0 = None if kw.get("r0") is None else np.asarray(kw["r0"])
         kw.update(sub_steps=res.sub_steps, f_band=res.f_band, K=res.K, block_order=res.block_order)
 
         def seconds(b, blocks):
-            """Seconds of the second call of this shape (the first holds the compile)."""
+            """Seconds of this shape: the minimum of ``PILOT_TIMED_CALLS`` timed calls after one untimed call that holds the compile."""
             k = dict(kw, **({} if r0 is None else dict(r0=r0[:b])))
             walk = lambda: _walk_geometry(b, diffusivity, geometry, blocks * res.block_h, res.block_h,
                                                  walker_batch_size=b, backend=backend, **k)
-            walk()
-            t0 = time.perf_counter(); walk()
-            return time.perf_counter() - t0
+            return _pilot_seconds(walk)
 
         fits = {}
 

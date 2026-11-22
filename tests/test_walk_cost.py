@@ -319,3 +319,70 @@ def test_the_fixed_part_of_a_call_is_not_multiplied_by_the_blocks():
     assert sorted(per) == [4096, 8192, 16384, 32768] and core._recommended(per) == 16384 and why == "rate fell"
     # a walk of one block has no fixed part to separate
     assert core._fit_blocks(seconds, 4096, 1) == (seconds(4096, 1), 0.0, (1, 1))
+
+
+@pytest.mark.parametrize("stalled", [None] + list(range(12)))
+def test_one_stalled_pilot_call_does_not_move_the_fit(monkeypatch, stalled):
+    """One stalled call of the walk, untimed or timed, leaves the fit and the projection at the undisturbed values;
+    each shape is one untimed call and three timed calls with the collector held off, one collection before the pilot."""
+    import functools
+    import gc
+    from dmipy_sim.engine import core
+
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock, events = Clock(), []
+    real = core._pilot_seconds
+
+    @functools.wraps(core._walk_geometry)
+    def fake(n, diffusivity, geometry, T_max, block_h, *args, **kw):
+        blocks = round(T_max / block_h)
+        index = sum(1 for e in events if e[0] == "walk")
+        clock.now += 0.03 + 0.07 * blocks + (0.2 if index == stalled else 0.0)
+        events.append(("walk", n, blocks, gc.isenabled()))
+
+    monkeypatch.setattr(core, "_walk_geometry", fake)
+    monkeypatch.setattr(core, "_pilot_seconds", lambda call: real(call, clock=clock))
+    monkeypatch.setattr(core.gc, "collect", lambda *a: events.append(("collect",)))
+    c = d.walk_cost(2000, D, d.Sphere(radius=2e-6), 8e-3, 1e-3, walker_batch_size=1000, measure=True)
+    m = c.measured
+    assert events[0] == ("collect",) and sum(e == ("collect",) for e in events) == 1
+    walks = [e for e in events if e[0] == "walk"]
+    assert [(e[1], e[2]) for e in walks] == [(1000, b) for b in (1, 2, 4) for _ in range(4)]
+    assert [e[3] for e in walks] == [True, False, False, False] * 3
+    assert m.pilot_blocks == (1, 4)
+    assert m.seconds_per_block == pytest.approx(0.07, rel=1e-9)
+    assert m.fixed_seconds_per_call == pytest.approx(0.03, rel=1e-9)
+    assert m.projected_s == pytest.approx(2 * (0.03 + 8 * 0.07), rel=1e-9)
+    assert gc.isenabled()
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_the_pilot_leaves_the_collector_as_it_found_it(enabled):
+    """The collector is disabled around the timed calls and is in the state it was found in afterwards, also when a
+    timed call raises."""
+    import gc
+    from dmipy_sim.engine import core
+
+    saved = gc.isenabled()
+    try:
+        (gc.enable if enabled else gc.disable)()
+        record = []
+        core._pilot_seconds(lambda: record.append(gc.isenabled()))
+        assert record == [enabled, False, False, False] and gc.isenabled() is enabled
+        count = []
+
+        def raising():
+            count.append(1)
+            if len(count) == 3:
+                raise RuntimeError("stall")
+
+        with pytest.raises(RuntimeError):
+            core._pilot_seconds(raising)
+        assert gc.isenabled() is enabled
+    finally:
+        (gc.enable if saved else gc.disable)()
