@@ -176,10 +176,8 @@ def placement_seed(key) -> int:
     """The NumPy seed of a placement drawn from the JAX key ``key``: an ``int32`` draw
     ``jax.random.randint(key, (), 0, 2**30, dtype=jnp.int32)``, returned as a Python ``int``.
 
-    The draw is typed ``int32``, so it is the same number with JAX's 64-bit mode off and on; with the mode off it
-    is the value the untyped draw gives, so every placement seeded with the mode off keeps its walkers. A walker's
-    start is a function of the placement's seed, its index and the geometry alone, whatever the process's 64-bit
-    mode.
+    The draw is typed ``int32``, so it is the same number with JAX's 64-bit mode off and on. A walker's start is a
+    function of the placement's seed, its index and the geometry alone, whatever the process's 64-bit mode.
     """
     return int(jax.random.randint(key, (), 0, 2**30, dtype=jnp.int32))
 

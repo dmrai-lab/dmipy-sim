@@ -1,10 +1,9 @@
 """The placement's seed is a typed int32 draw, so a walker's start does not depend on JAX's 64-bit mode.
 
-`jax.random.randint` without a `dtype` returns the process's default integer -- int32 with the 64-bit mode off,
-int64 with it on, and a different value for the same key -- so a placement seeded from it drew a different NumPy
-generator, and placed different starts, in the two modes. `geometry.base.placement_seed` types the draw `int32`,
-which is the value the untyped draw gives with the mode off: the walks made in that mode keep their starts, and a
-start is a function of the seed, its index and the geometry alone in both modes.
+`jax.random.randint` without a `dtype` returns the process's default integer: int32 with the 64-bit mode off,
+int64 with it on, and a different value for the same key. `geometry.base.placement_seed` types the draw `int32`,
+which equals the default draw with the mode off. A start is a function of the seed, its index and the geometry
+alone in both modes.
 """
 from pathlib import Path
 
