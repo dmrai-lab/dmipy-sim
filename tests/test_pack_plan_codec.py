@@ -79,10 +79,10 @@ def test_the_coded_range_contains_the_stored_bytes_of_every_pack_of_the_record(t
 
     # every pack of the committed record whose file is in tests/data, re-encoded at 4096: the plan is sound and
     # each banded tier's coded range contains the file's stored bytes, measured within the record's tolerance
-    for entry in record["packs"]:
+    present = [e for e in record["packs"] if (DATA / e["file"]).is_file()]
+    assert present, "no pack of the record is in tests/data: the loop below would check nothing"
+    for entry in present:
         path = DATA / entry["file"]
-        if not path.is_file():
-            continue
         built = _encode(path, tmp_path, 4096)
         pre = pack_plan(**{**inputs_of(path), "codec": "bitshuffle-zlib", "chunk_walkers": 4096})
         assert compare_plans(pre, built) == []
@@ -201,10 +201,10 @@ def test_each_planted_fault_is_found(tmp_path, coded_pack, monkeypatch):
     record = json.loads(RECORD.read_text())
 
     # the sound comparison first: every pack of the record re-encoded at 4096 is inside the planned range
-    for entry in record["packs"]:
+    present = [e for e in record["packs"] if (DATA / e["file"]).is_file()]
+    assert present, "no pack of the record is in tests/data: the loop below would check nothing"
+    for entry in present:
         path = DATA / entry["file"]
-        if not path.is_file():
-            continue
         built = _encode(path, tmp_path, 4096)
         pre = pack_plan(**{**inputs_of(path), "codec": "bitshuffle-zlib", "chunk_walkers": 4096})
         assert compare_plans(pre, built) == []
