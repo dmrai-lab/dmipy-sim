@@ -137,21 +137,59 @@ def test_the_cost_is_in_the_runs_events(tmp_path):
         assert c[0][k] == getattr(p, k)
 
 
+def _first_ratio_within(attempt, factor=2.0, attempts=3):
+    """The first ratio ``attempt()`` returns that lies strictly between ``1 / factor`` and ``factor``, from at most
+    ``attempts`` calls; raises ``AssertionError`` listing every ratio when none does. A shared runner can stall one
+    timing, so one measurement can be off by a large factor; a projection that is wrong by its formula is wrong on
+    every attempt."""
+    ratios = []
+    for _ in range(attempts):
+        ratios.append(attempt())
+        if 1.0 / factor < ratios[-1] < factor:
+            return ratios[-1]
+    raise AssertionError(f"no attempt's projected / real wall time was within a factor {factor}: ratios {ratios}")
+
+
+def test_first_ratio_within_takes_the_first_good_attempt_and_fails_when_none_is():
+    calls = []
+
+    def scripted(values):
+        it = iter(values)
+
+        def attempt():
+            calls.append(1)
+            return next(it)
+        return attempt
+
+    assert _first_ratio_within(scripted([2.75, 1.0])) == 1.0 and len(calls) == 2
+    for bad in ([4.0, 4.0, 4.0], [0.4, 0.4, 0.4]):
+        with pytest.raises(AssertionError) as e:
+            _first_ratio_within(scripted(bad))
+        assert str(bad) in str(e.value)
+
+
 def test_measure_projects_the_walk():
     g = d.Sphere(radius=2e-6)
     n, t = 2000, 8e-3
-    p = cost(g, t, 1e-3, n, walker_batch_size=1000, measure=True)
-    m = p.measured
-    assert m.seconds_per_walker_step > 0 and m.projected_s > 0
-    assert m.batch == 1000 and m.pilot_blocks[0] == 1 and 1 < m.pilot_blocks[1] <= p.n_blocks
-    assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_block * p.n_blocks))
     assert cost(g, t, 1e-3, n).measured is None and cost(g, t, 1e-3, n).profile is None
-    # within 2x of a measured walk of the same shape (compile excluded)
-    _walk_geometry(n, D, g, t, 1e-3, walker_batch_size=1000)
-    t0 = time.perf_counter()
-    _walk_geometry(n, D, g, t, 1e-3, walker_batch_size=1000)
-    real = time.perf_counter() - t0
-    assert real / 2 < m.projected_s < real * 2
+    _walk_geometry(n, D, g, t, 1e-3, walker_batch_size=1000)                       # the compile, untimed
+
+    def attempt():
+        """A fresh measured cost, and the ratio of its projection to the faster of two timed walks (compile excluded)."""
+        p = cost(g, t, 1e-3, n, walker_batch_size=1000, measure=True)
+        m = p.measured
+        assert m.seconds_per_walker_step > 0 and m.projected_s > 0
+        assert m.batch == 1000 and m.pilot_blocks[0] == 1 and 1 < m.pilot_blocks[1] <= p.n_blocks
+        assert m.projected_s == pytest.approx(p.walker_batches * (m.fixed_seconds_per_call + m.seconds_per_block * p.n_blocks))
+        reals = []
+        for _ in range(2):
+            t0 = time.perf_counter()
+            _walk_geometry(n, D, g, t, 1e-3, walker_batch_size=1000)
+            reals.append(time.perf_counter() - t0)
+        return m.projected_s / min(reals)
+
+    # within 2x of a measured walk of the same shape; each attempt is its own pilot and its own timed walks
+    _first_ratio_within(attempt)
 
 
 def test_profile_times_the_pilot_at_several_batches(monkeypatch):

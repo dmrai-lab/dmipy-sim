@@ -5,6 +5,13 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **Two tests no longer fail on a slowed or different hosted runner, and still fail on a wrong result.**
+  `test_measure_projects_the_walk` compares the cost projection with a timed walk over up to three attempts (each its own
+  pilot and its own two timed walks) and passes on the first ratio strictly within a factor 2; a projection wrong by its
+  formula is wrong on every attempt and fails. `test_a_windows_record_is_its_own_bands` keeps the record, the start and
+  the displacement bit-exact and holds the bands to `N eps32 scale_k sqrt(2 D T_window)`, derived from the walk, since
+  two separately compiled programs may round their float32 sums differently; a step in the wrong window is over 100
+  times outside it. Tests only.
 - **`pack_plan` returns the pre-walk plan of a pack per tier, and `compare_plans` compares it with a built pack's
   `plan_of_pack`.** `dmipy_sim/replay/plan.py` plans, before any walk, per tier that the stated rules switch on (positions,
   contact, field, occupancy, mt, weights, voxel, then a caller's providers) the band count and the bytes at the raw,
