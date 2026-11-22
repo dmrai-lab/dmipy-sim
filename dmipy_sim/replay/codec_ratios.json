@@ -3,6 +3,98 @@
  "level": 6,
  "packs": [
   {
+   "K": 256,
+   "chunk_walkers": 4096,
+   "file": "cactus_bundle00000_100ms.rpk",
+   "id": "cactus/bundle00000-100ms",
+   "n_walkers": 111011,
+   "sha256": "860a5cae557340009bdc9e1911e74125cb3c0e1c7506723ceedfc9b8ead9acd6",
+   "tiers": {
+    "contact": {
+     "bands": 256,
+     "bit_packed_bytes": 11768190,
+     "chunk_ratio_max": 0.329161,
+     "chunk_ratio_min": 0.316845,
+     "chunks": 28,
+     "coded_bytes": 4396224,
+     "full_chunks": 27,
+     "range_bit_packed_bytes": 10879078,
+     "range_coded_bytes": 3507112,
+     "range_ratio": 0.322372,
+     "ratio": 0.373568,
+     "via": "re-encoded"
+    },
+    "field": {
+     "bands": 128,
+     "bit_packed_bytes": 114569496,
+     "chunk_ratio_max": 0.615985,
+     "chunk_ratio_min": 0.603142,
+     "chunks": 28,
+     "coded_bytes": 70084744,
+     "full_chunks": 27,
+     "range_bit_packed_bytes": 114563352,
+     "range_coded_bytes": 70078600,
+     "range_ratio": 0.611702,
+     "ratio": 0.611723,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 256,
+     "bit_packed_bytes": 95583543,
+     "chunk_ratio_max": 0.820752,
+     "chunk_ratio_min": 0.805375,
+     "chunks": 28,
+     "coded_bytes": 78479884,
+     "full_chunks": 27,
+     "range_bit_packed_bytes": 92916207,
+     "range_coded_bytes": 75812548,
+     "range_ratio": 0.815924,
+     "ratio": 0.821061,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
+   "K": 64,
+   "chunk_walkers": 4096,
+   "file": "cylinder.rpk",
+   "id": "fixture/cylinder",
+   "n_walkers": 2000,
+   "sha256": "c7370ac806261324db3601d6e4622eb87b78a7761f5581ae50446a344f4508a4",
+   "tiers": {
+    "contact": {
+     "bands": 64,
+     "bit_packed_bytes": 68256,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 55395,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 52000,
+     "range_coded_bytes": 39139,
+     "range_ratio": 0.752673,
+     "ratio": 0.811577,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 64,
+     "bit_packed_bytes": 354768,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 334982,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 306000,
+     "range_coded_bytes": 286214,
+     "range_ratio": 0.93534,
+     "ratio": 0.944228,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
    "K": 12,
    "chunk_walkers": 4096,
    "file": "cylinder_k12.rpk",
@@ -36,6 +128,204 @@
      "range_coded_bytes": 25530,
      "range_ratio": 1.013095,
      "ratio": 1.009444,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
+   "K": 16,
+   "chunk_walkers": 4096,
+   "file": "field.rpk",
+   "id": "fixture/field",
+   "n_walkers": 150,
+   "sha256": "c4cb0b09a0a9e92ac1c0e87d3d6401308c6e6bc262fe7b98a566d0c226bfba55",
+   "tiers": {
+    "contact": {
+     "bands": 16,
+     "bit_packed_bytes": 2164,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 1662,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 900,
+     "range_coded_bytes": 398,
+     "range_ratio": 0.442222,
+     "ratio": 0.768022,
+     "via": "re-encoded"
+    },
+    "field": {
+     "bands": 16,
+     "bit_packed_bytes": 11568,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 5409,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 10800,
+     "range_coded_bytes": 4641,
+     "range_ratio": 0.429722,
+     "ratio": 0.467583,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 16,
+     "bit_packed_bytes": 10542,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 11116,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 6750,
+     "range_coded_bytes": 7324,
+     "range_ratio": 1.085037,
+     "ratio": 1.054449,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
+   "K": 64,
+   "chunk_walkers": 4096,
+   "file": "permeable.rpk",
+   "id": "fixture/permeable",
+   "n_walkers": 2000,
+   "sha256": "6cf6c122dc213859b632940d043e12103203c216899c8218a8799b2a10f2c373",
+   "tiers": {
+    "contact": {
+     "bands": 64,
+     "bit_packed_bytes": 68256,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 47777,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 52000,
+     "range_coded_bytes": 31521,
+     "range_ratio": 0.606173,
+     "ratio": 0.699968,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 64,
+     "bit_packed_bytes": 342768,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 316843,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 294000,
+     "range_coded_bytes": 268075,
+     "range_ratio": 0.91182,
+     "ratio": 0.924366,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
+   "K": 160,
+   "chunk_walkers": 4096,
+   "file": "plane_linear_field.rpk",
+   "id": "fixture/plane-linear-field",
+   "n_walkers": 8000,
+   "sha256": "d6528bc6fcf05eeaf4fb968c8bc4b540ff9bb38668b64b0d1b3c52f5eb3bf6c9",
+   "tiers": {
+    "contact": {
+     "bands": 160,
+     "bit_packed_bytes": 544640,
+     "chunk_ratio_max": 0.621822,
+     "chunk_ratio_min": 0.621822,
+     "chunks": 2,
+     "coded_bytes": 363079,
+     "full_chunks": 1,
+     "range_bit_packed_bytes": 480000,
+     "range_coded_bytes": 298439,
+     "range_ratio": 0.621748,
+     "ratio": 0.66664,
+     "via": "re-encoded"
+    },
+    "field": {
+     "bands": 128,
+     "bit_packed_bytes": 440512,
+     "chunk_ratio_max": 0.740754,
+     "chunk_ratio_min": 0.740754,
+     "chunks": 2,
+     "coded_bytes": 326763,
+     "full_chunks": 1,
+     "range_bit_packed_bytes": 440000,
+     "range_coded_bytes": 326251,
+     "range_ratio": 0.74148,
+     "ratio": 0.74178,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 160,
+     "bit_packed_bytes": 3649920,
+     "chunk_ratio_max": 0.926026,
+     "chunk_ratio_min": 0.926026,
+     "chunks": 2,
+     "coded_bytes": 3396057,
+     "full_chunks": 1,
+     "range_bit_packed_bytes": 3456000,
+     "range_coded_bytes": 3202137,
+     "range_ratio": 0.926544,
+     "ratio": 0.930447,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 1
+  },
+  {
+   "K": 200,
+   "chunk_walkers": 4096,
+   "file": "slab_exchange.rpk",
+   "id": "fixture/slab-exchange",
+   "n_walkers": 8000,
+   "sha256": "ce8f3ff08d081eb09689bc494b912e02c3ce0f41306e45b8216668bf646f821f",
+   "tiers": {
+    "contact": {
+     "bands": 200,
+     "bit_packed_bytes": 704800,
+     "chunk_ratio_max": 0.683716,
+     "chunk_ratio_min": 0.683716,
+     "chunks": 2,
+     "coded_bytes": 502197,
+     "full_chunks": 1,
+     "range_bit_packed_bytes": 640000,
+     "range_coded_bytes": 437397,
+     "range_ratio": 0.683433,
+     "ratio": 0.712538,
+     "via": "re-encoded"
+    },
+    "field": {
+     "bands": 32,
+     "bit_packed_bytes": 112128,
+     "chunk_ratio_max": 0.261178,
+     "chunk_ratio_min": 0.261178,
+     "chunks": 2,
+     "coded_bytes": 29811,
+     "full_chunks": 1,
+     "range_bit_packed_bytes": 112000,
+     "range_coded_bytes": 29683,
+     "range_ratio": 0.265027,
+     "ratio": 0.265866,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 200,
+     "bit_packed_bytes": 4562400,
+     "chunk_ratio_max": 0.923037,
+     "chunk_ratio_min": 0.923037,
+     "chunks": 2,
+     "coded_bytes": 4226911,
+     "full_chunks": 1,
+     "range_bit_packed_bytes": 4368000,
+     "range_coded_bytes": 4032511,
+     "range_ratio": 0.923194,
+     "ratio": 0.926467,
      "via": "re-encoded"
     }
    },
@@ -93,10 +383,65 @@
     }
    },
    "windows": 1
+  },
+  {
+   "K": 32,
+   "chunk_walkers": 4096,
+   "file": "windows.rpk",
+   "id": "fixture/windows",
+   "n_walkers": 600,
+   "sha256": "402adfa5b655c6da2ec488874e734414074343ff02b9874e9e238402a591df6b",
+   "tiers": {
+    "contact": {
+     "bands": 32,
+     "bit_packed_bytes": 31456,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 29230,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 21600,
+     "range_coded_bytes": 19374,
+     "range_ratio": 0.896944,
+     "ratio": 0.929234,
+     "via": "re-encoded"
+    },
+    "positions": {
+     "bands": 32,
+     "bit_packed_bytes": 130368,
+     "chunk_ratio_max": null,
+     "chunk_ratio_min": null,
+     "chunks": 1,
+     "coded_bytes": 126942,
+     "full_chunks": 0,
+     "range_bit_packed_bytes": 100800,
+     "range_coded_bytes": 97374,
+     "range_ratio": 0.966012,
+     "ratio": 0.973721,
+     "via": "re-encoded"
+    }
+   },
+   "windows": 2
   }
  ],
  "schema": "codec_ratio_record/1",
- "summary": {},
+ "summary": {
+  "contact": {
+   "max": 0.712538,
+   "min": 0.373568,
+   "packs": 3
+  },
+  "field": {
+   "max": 0.74178,
+   "min": 0.265866,
+   "packs": 3
+  },
+  "positions": {
+   "max": 0.930447,
+   "min": 0.821061,
+   "packs": 3
+  }
+ },
  "tolerance": {
   "coded_relative": 0.005
  }
