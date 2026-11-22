@@ -5,6 +5,15 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`walk` reads the field of a myelinated cylinder and of a packed myelinated cell in closed form** (behaviour
+  change: a field-on `walk` of a `MyelinatedCylinder` or `PackedMyelinatedCylinders` spec gives different field
+  modes). The spec route hands the walk `HollowCylinderField.of(geometry)`, read at the walker's position and, in a
+  cell, over its lattice, where it handed a raster of the sheaths (`field_grid_of`) that smears each
+  wall over a voxel and whose cell mean is zero. The walk equals `_walk_geometry(field_basis=HollowCylinderField.of(g))`
+  to the bit; its pack's `susceptibility_grid` states the closed form (`source`) in place of a grid shape, and a
+  backend that declares `FIELD_IN_WALK` (and, for a cell, `PACKED_MYELINATED`) walks it. `field_res=` is refused for these geometries (the closed form has
+  no nodes), and `continue_walk` refuses a pack whose recorded field is a raster or another closed form; every other
+  gridded source keeps its raster.
 - **The `walk_cost` pilot times each shape as the minimum of three calls with the garbage collector held off.** A pilot
   shape's seconds were one timed call, so one stall (a full garbage collection, a scheduler pause) of 0.2 s in a timed
   2-block call turned a 1.18 s projection into 4.32 s. A shape is now one untimed call (it holds the compile), then
