@@ -249,7 +249,7 @@ class PlanEnvelope:
     strength; the field tier is planned when a pool of the spec has a susceptibility and it is not 0. ``chi_max`` is
     the largest susceptibility scale; its absence refuses a planned field tier. ``rho2_max`` (m/s) is the largest
     surface relaxivity; positive switches the contact tier on. ``max_refocusing_pulses`` bounds the field band's
-    stand-in range from below.
+    stand-in range from below; its absence refuses a planned field tier.
     """
     band_hz: float
     window_s: float
@@ -548,7 +548,9 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
                 _refuse("chi_max", "a pool of the spec has a susceptibility and the envelope states no susceptibility scale")
             C = 12 if any(isinstance(s, dict) and s.get("chi_aniso") is not None and float(s["chi_aniso"]) != 0.0
                           for s in suscs) else 6
-            pulses = env.max_refocusing_pulses or 0
+            if env.max_refocusing_pulses is None:
+                _refuse("max_refocusing_pulses", "a pool of the spec has a susceptibility and the envelope states no refocusing depth")
+            pulses = env.max_refocusing_pulses
             if field_bands is not None:
                 kf_lo = kf_hi = int(field_bands)
                 bands_fig = _fig(kf_lo, kf_lo, kf_lo, provenance="derived", source="input:field_bands")

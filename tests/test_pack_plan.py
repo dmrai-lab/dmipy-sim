@@ -252,6 +252,7 @@ def refusal_table():
         ("n_windows", lambda kw: kw["envelope"].pop("n_windows")),
         ("B0_max", lambda kw: kw["envelope"].__setitem__("B0_max", None)),
         ("chi_max", lambda kw: kw["envelope"].__setitem__("chi_max", None)),
+        ("max_refocusing_pulses", lambda kw: kw["envelope"].__setitem__("max_refocusing_pulses", None)),
         ("pools", _drop_spec_key("pools")),
         ("walls", _drop_spec_key("walls")),
         ("weights", _one_pool_spec(weights=True)),
