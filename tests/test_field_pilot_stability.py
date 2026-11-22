@@ -87,7 +87,7 @@ def test_constant_exact_signals_have_a_zero_bound():
     data = np.zeros((32, 16, 6))
     from dmipy_replay.replay.field import ISO_CHANNEL_NAMES
     k, record = derive_field_band(data, ISO_CHANNEL_NAMES, .001, K_max=8, B0=7, chi=1e-6,
-                                  env=dict(B0_list=[7], theta_deg=[0], max_refocus_pulses=1))
+                                  env=dict(B0_max=7.0, theta_deg=[0], max_refocus_pulses=1))
     assert k == 2 and record['upper_bound'] == 0
     assert record['threshold_term'] == 'absolute'
     assert record['floor'] == np.finfo(np.float32).resolution

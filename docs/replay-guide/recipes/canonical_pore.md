@@ -11,7 +11,8 @@ from dmipy_replay import Envelope, sequences
 from dmipy_replay.spec.tissue import Tissue
 
 D0, R, T = 2e-9, 2e-6, 0.02
-env = Envelope(name="guide", band_hz=800.0, G_max=50.0, B0_list=(3.0, 7.0), chi_max=None, rho2_max=1e-4,
+B0_max = 7.0                                  # T: the one maximum field strength a pack states
+env = Envelope(name="guide", band_hz=800.0, G_max=50.0, B0_list=(B0_max,), chi_max=None, rho2_max=1e-4,
                max_refocusing_pulses=None)          # the guide's: 800 Hz is 32 bands over 20 ms
 walk = d.walk(d.Cylinder(R, (0, 0, 1)), 2000, T_max=T, block_h=5e-4, envelope=env, diffusivity=D0, seed=0,
               require_gpu=False)                     # 0.5 ms blocks

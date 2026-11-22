@@ -49,10 +49,10 @@ def test_a_floor_or_share_that_is_not_positive_is_refused(fr):
 
 
 def test_a_family_declaration_is_stated_over_the_campaign_envelope(fr):
-    env = fr.family_envelope({"rho2_list": [1e-5], "bvals": [0.0, 1e9]}, {"B0_list": [3.0]}, max_refocus_pulses=8)
+    env = fr.family_envelope({"rho2_list": [1e-5], "bvals": [0.0, 1e9]}, {"B0_max": 3.0}, max_refocus_pulses=8)
     assert env["scanner"] == fr.ENVELOPE["scanner"]
     assert env["rho2_list"] == [1e-5] and env["bvals"] == [0.0, 1e9]
-    assert env["B0_list"] == [3.0] and env["max_refocus_pulses"] == 8
+    assert env["B0_max"] == 3.0 and env["max_refocus_pulses"] == 8
     assert "ogse_periods" in env                             # the library's battery shapes underneath
 
 

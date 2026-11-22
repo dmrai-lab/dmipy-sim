@@ -23,8 +23,7 @@ from dmipy_replay.spec.tissue import Tissue
 from tests.conftest import spec_without_source
 from tests.replay_frames import field_along
 
-ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05], B0_list=[],
-           theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
+ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, shortd_deltas_frac=[0.05], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 
 
 @pytest.fixture(scope="module")
@@ -114,7 +113,7 @@ def test_caterpillar_spec_is_walked_pool_by_pool_and_packed(caterpillar_csv):
     assert (C[ids == 2, 1:] == 0).all()                                            # myelin frozen: no path
     assert (np.linalg.norm(pos[ids == 3] - np.array([0, 3.5e-6, 0]), axis=-1) < 1.5e-6 + 2e-9).all()   # glia in its soma
     assert w.field_basis is not None and w.diffusivity == spec.pool("intra").D
-    pk = build_replay_pack(w, id="t/cat", license="x", citation="x", K=3, **stated(dict(ENV, B0_list=[3.0, 7.0]), of=w))   # a field pack states its B0
+    pk = build_replay_pack(w, id="t/cat", license="x", citation="x", K=3, **stated(dict(ENV, B0_max=7.0), of=w))   # a field pack states its B0
     assert pk.has_relaxation and pk.has_surface and pk.has_field and pk.substrate == spec
 
 

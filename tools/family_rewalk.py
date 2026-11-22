@@ -8,10 +8,10 @@ carries and built with :func:`~dmipy_sim.replay.bank.build_replay_pack` on the f
 
 * the gradient side for a scanner class (``scanner``: every waveform within its ``G_max`` per axis),
 * the contact tier at the surface relaxivities ``rho2_list`` (m/s),
-* the field tier at the strengths ``B0_list`` (T) and the susceptibility scale ``chi_max`` (the spec's magnetic
+* the field tier at the one maximum field strength ``B0_max`` (T) and the susceptibility scale ``chi_max`` (the spec's magnetic
   pools', or the family's where its field is not a pool's).
 
-The defaults are the DiSCo recipe's (connectome_2, rho2 <= 3 um/s, B0 in 1.5 / 3 / 7 T); ``--envelope`` replaces
+The defaults are the DiSCo recipe's (connectome_2, rho2 <= 3 um/s, B0 up to 7 T); ``--envelope`` replaces
 any of them from a JSON file.
 
 The walker count is the toggle-proof rule. Every physics toggle of a replay (relaxation, relaxivity, a field, a
@@ -70,10 +70,10 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-#: The certificate envelope every family states: DiSCo's (the recipe's ``pack`` table: rho2_max_m_s, B0_list_T; its
+#: The certificate envelope every family states: DiSCo's (the recipe's ``pack`` table: rho2_max_m_s, the largest of B0_list_T; its
 #: ``walk.scanner``). The battery's shapes are the library default's; ``chi_max`` is the spec's unless a family
 #: states its own.
-ENVELOPE = dict(scanner="connectome_2", rho2_list=[3e-6], B0_list=[1.5, 3.0, 7.0])
+ENVELOPE = dict(scanner="connectome_2", rho2_list=[3e-6], B0_max=7.0)
 
 #: Bands per 100 ms storage window: the storage band (1280 Hz), DiSCo's.
 K_BANDS = 256
@@ -226,13 +226,15 @@ def family_envelope(base, overrides=None, **family):
     env.update(base or {})
     env.update(family)
     env.update(overrides or {})
+    if "B0_list" in env:
+        raise ValueError("a family's envelope states one maximum field strength: the key 'B0_list' is not read; state B0_max (T)")
     return env
 
 
 def pack_envelope(env, spec):
     """The :class:`~dmipy_replay.Envelope` a family's packs are walked and certified for, from the campaign's keys
     ``env`` (:func:`family_envelope`): its ``scanner`` class (:func:`~dmipy_replay.envelope_of`) with the field
-    strengths ``B0_list``, the largest of ``rho2_list`` and the refocusing depth ``max_refocus_pulses`` the campaign
+    strength ``B0_max``, the largest of ``rho2_list`` and the refocusing depth ``max_refocus_pulses`` the campaign
     states, and the susceptibility scale ``chi_max`` it states -- for a substrate ``spec`` with a field and no stated
     ``chi_max``, the spec's own (:func:`~dmipy_sim.engine.accumulate.spec_chi_scale`)."""
     from dmipy_replay import envelope_of
@@ -241,7 +243,7 @@ def pack_envelope(env, spec):
     rho = env.get("rho2_list") or []
     chi = env["chi_max"] if "chi_max" in env else (
         spec_chi_scale(spec) if susceptibility_field_of(spec.to_dict()) == "present" else None)
-    return envelope_of(env["scanner"], B0_list=tuple(env.get("B0_list") or ()), chi_max=chi,
+    return envelope_of(env["scanner"], B0_list=(() if env.get("B0_max") is None else (float(env["B0_max"]),)), chi_max=chi,
                        rho2_max=(max(rho) if rho else None), max_refocusing_pulses=env.get("max_refocus_pulses"))
 
 
@@ -253,7 +255,7 @@ def battery_of(env):
 
 def stated(pack):
     """What a pack STATES of its envelope (``replay_envelope``): its name (the preset it came from), band and ``G_max``,
-    the contact tier's ``rho2_over_D_max``, the field's ``chi_max`` and ``B0_list``; None for a key it does not state."""
+    the contact tier's ``rho2_over_D_max``, the field's ``chi_max`` and ``B0_list`` (one entry); None for a key it does not state."""
     env = pack.meta.get("replay_envelope") or {}
     acq, tis = env.get("acquisition") or {}, env.get("tissue") or {}
     return dict(scanner=acq.get("name", acq.get("scanner")), band_hz=acq.get("band_hz"), G_max=acq.get("G_max"), bound=acq.get("bound"), b_max=acq.get("b_max"),
@@ -1005,7 +1007,7 @@ def main(argv=None):
     p.add_argument("--out", default=None, help="the family's output directory (packs/, receipts/)")
     p.add_argument("--backend", default="jax", help="an installed backend's name for production, 'jax' for a CPU smoke")
     p.add_argument("--envelope", default=None, help="a JSON file of envelope keys over the family's (scanner, "
-                                                    "rho2_list, B0_list, chi_max, ...)")
+                                                    "rho2_list, B0_max, chi_max, ...)")
     p.add_argument("--floor", type=float, default=None, help="the toggle-proof standard-error floor f")
     p.add_argument("--T", type=float, default=None, help="the walk's window (s); 0.1 by default")
     p.add_argument("--K", type=int, default=None, help="bands per window; 256 per 100 ms by default")

@@ -50,7 +50,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
     walked for and what a pack built from it is certified for: :func:`dmipy_replay.envelope_of` of a scanner class, or
     an ``Envelope`` stated directly. The walk carries it (``CoefficientWalk.envelope``). A spec with a susceptibility
-    field needs the envelope's ``chi_max`` and ``B0_list``, which the field tier is certified at. ``battery`` is where
+    field needs the envelope's ``chi_max`` and its one maximum field strength (``B0_list`` of one entry), which the field tier is certified at. ``battery`` is where
     the field pilot and a pack's certificate read their floors (:func:`~dmipy_sim.replay.compression.default_battery`
     when None).
 
@@ -208,11 +208,11 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
         if T_max is None:
             raise TypeError("walk needs T_max (seconds)")
         kind = field_source_kind(spec)
-        if kind is not None and (envelope.chi_max is None or not envelope.B0_list):
+        if kind is not None and (envelope.chi_max is None or envelope.B0_max is None):
             raise SpecError(f"spec {spec.id!r} has a susceptibility field, and the envelope states no "
                             + ("chi_max" if envelope.chi_max is None else "B0_list")
                             + ": the field tier is certified at a stated susceptibility scale and field strengths "
-                              "(envelope_of(..., chi_max=..., B0_list=...))")
+                              "(envelope_of(..., chi_max=..., B0_list=(B0_max,)))")
         if any(value is not None for value in (field_calibration, calibration_floor, query_scope)):
             if not adaptive_steps or kind != "strands":
                 raise SpecError("scoped field calibration requires an adaptive strand-field walk")

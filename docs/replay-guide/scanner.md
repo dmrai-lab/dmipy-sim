@@ -21,7 +21,8 @@ import dmipy_sim as d
 from dmipy_replay import Envelope, ScannerLimits, sequences
 from dmipy_replay.spec.tissue import Tissue
 
-env = Envelope(name="guide", band_hz=400.0, G_max=50.0, B0_list=(3.0, 7.0), chi_max=None, rho2_max=1e-4,
+B0_max = 7.0                                  # T: the one maximum field strength a pack states
+env = Envelope(name="guide", band_hz=400.0, G_max=50.0, B0_list=(B0_max,), chi_max=None, rho2_max=1e-4,
                max_refocusing_pulses=None)          # the guide's: a 400 Hz band, its short lobes' amplitude
 walk = d.walk(d.Cylinder(2e-6, (0, 0, 1)), 300, T_max=0.01, envelope=env, diffusivity=2e-9, seed=0, require_gpu=False)
 pack = d.build_replay_pack(walk, id="guide/cylinder", license="CC-BY-4.0", citation="the guide")

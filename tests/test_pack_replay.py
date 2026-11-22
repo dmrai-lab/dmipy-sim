@@ -20,7 +20,7 @@ from dmipy_sim.replay.container import save_pack
 
 D0 = 2e-9
 ENV = dict(bvals=[0.0, 1e9, 3e9], dirs=[[1, 0, 0], [0, 0, 1]], ogse_periods=[2], shortd_b=1e9,
-           shortd_deltas_frac=[0.05], B0_list=[], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
+           shortd_deltas_frac=[0.05], theta_deg=[0], delta_frac=0.2, Delta_frac=0.5, rho2_list=[1e-5])
 T2 = {"extra": 0.08, "intra": 0.03}; T1 = {"extra": 1.0, "intra": 1.2}    # by pool name, given at replay
 
 

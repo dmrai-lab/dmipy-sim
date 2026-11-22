@@ -56,7 +56,7 @@ def test_native_pilot_uses_native_reads_and_reuse_skips_all_pilot_work(backend, 
     query = dict(identity="synthetic-workflow-only", metric=SIGNAL_METRIC, target=.1, confidence=.99)
     kwargs = dict(T_max=.002, block_h=.0005, K=8, K_c3=3, field_basis=basis, query_scope=query,
                   backend=backend, require_gpu=True, walker_batch_size=256, field_list_k=16, calibration_floor=.001,
-                  envelope=dict(B0_list=[.1]))
+                  envelope=dict(B0_max=.1))
     start = time.monotonic()
     fresh = simulate_trajectories_adaptive(128, 2e-9, geometry, seed=3, **kwargs)
     cold = time.monotonic()-start
