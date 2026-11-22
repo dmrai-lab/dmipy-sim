@@ -122,6 +122,16 @@ def packs(built_pack):
     return list(PACKS) + [built_pack]
 
 
+@pytest.fixture(scope="module")
+def coded_pack(walk, tmp_path_factory):
+    d_ = tmp_path_factory.mktemp("pack_plan_coded")
+    path = d_ / "coded.rpk"
+    build_replay_pack(walk, id="test/codec", license="x", citation="x", K=16, out_path=str(path),
+                      codec="bitshuffle-zlib", chunk_walkers=256,
+                      **stated(of=walk, G_max=battery_reach(walk.T_window)))
+    return path
+
+
 def test_the_plan_of_a_packs_own_inputs_agrees_with_plan_of_pack(packs):
     for path in packs:
         kw = inputs_of(path)
@@ -229,11 +239,14 @@ def refusal_problems(table):
     return problems
 
 
-def test_missing_inputs_are_refused_by_name():
-    table = [
+def refusal_table():
+    """The ``(name, mutation)`` cases of test 3, applied to the strands inputs."""
+    return [
         ("tolerance", lambda kw: kw.__setitem__("tolerance", None)),
         ("tolerance", lambda kw: kw.__setitem__("tolerance", -1.0)),
         ("n_walkers", lambda kw: kw.__setitem__("n_walkers", 0)),
+        ("n_walkers", lambda kw: kw.__setitem__("n_walkers", float("inf"))),
+        ("n_walkers", lambda kw: kw.__setitem__("n_walkers", float("nan"))),
         ("band_hz", lambda kw: kw["envelope"].pop("band_hz")),
         ("window_s", lambda kw: kw["envelope"].pop("window_s")),
         ("n_windows", lambda kw: kw["envelope"].pop("n_windows")),
@@ -249,7 +262,10 @@ def test_missing_inputs_are_refused_by_name():
         ("n_voxels", lambda kw: kw.__setitem__("n_voxels", 0)),
         ("shares", lambda kw: kw["envelope"].__setitem__("shares", {})),
     ]
-    assert refusal_problems(table) == []
+
+
+def test_missing_inputs_are_refused_by_name():
+    assert refusal_problems(refusal_table()) == []
 
     kw = inputs_of(STRANDS)
     spec = json.loads(json.dumps(kw["spec"]))
@@ -314,11 +330,17 @@ def test_a_provider_adds_a_tier_and_a_bad_one_is_refused():
                                                    "provenance": "derived", "source": "numpy"},
                           "bit_packed": _dummy_fig(1, 1), "coded": _dummy_fig(1, 1), "stored": _dummy_fig(1, 1)}}
 
+    def numpy_float(inputs):
+        return {"extra": {"why": "numpy float", "raw": {"value": np.float64(3.0), "lo": 3.0, "hi": 3.0,
+                                                        "provenance": "derived", "source": "numpy float"},
+                          "bit_packed": _dummy_fig(1, 1), "coded": _dummy_fig(1, 1), "stored": _dummy_fig(1, 1)}}
+
     def no_stored(inputs):
         return {"extra": {"why": "no stored", "raw": _dummy_fig(1, 1), "bit_packed": _dummy_fig(1, 1),
                           "coded": _dummy_fig(1, 1)}}
 
-    for bad, tier in ((dup, "positions"), (guess, "extra"), (numpy_value, "extra"), (no_stored, "extra")):
+    for bad, tier in ((dup, "positions"), (guess, "extra"), (numpy_value, "extra"), (numpy_float, "extra"),
+                      (no_stored, "extra")):
         with pytest.raises(ValueError) as e:
             pack_plan(**kw, providers=(bad,))
         assert bad.__name__ in str(e.value) and tier in str(e.value), (bad.__name__, str(e.value))
@@ -347,6 +369,40 @@ def test_windows_count_per_window_tensors_and_shared_tensors_once(packs, tmp_pat
     assert pl["tiers"]["positions"]["raw"]["value"] == 2 * built_one["tiers"]["positions"]["raw"]["value"] \
         == built_two["tiers"]["positions"]["raw"]["value"]
     assert pack_plan_problems(pl) == []
+
+
+def test_a_coded_pack_is_planned_sound_and_a_wrong_figure_is_still_reported(coded_pack, monkeypatch):
+    kw = inputs_of(coded_pack)
+    assert kw["codec"] == "bitshuffle-zlib" and kw["chunk_walkers"] == 256
+    built = plan_of_pack(coded_pack)
+    pl = pack_plan(**kw)
+    assert compare_plans(pl, built) == []
+    assert pack_plan_problems(pl) == []
+    for t in ("positions", "contact"):
+        assert built["tiers"][t]["codec"] == "bitshuffle-zlib" == pl["tiers"][t]["codec"]
+        for stage in ("coded", "stored"):
+            fig = pl["tiers"][t][stage]
+            assert (fig["value"], fig["lo"], fig["hi"]) == (None, None, None)
+            assert fig["provenance"] == "proxy"
+            assert "not planned in this version" in fig["source"]
+        # the raw and bit-packed stages are still pinned and compared on a coded pack
+        assert pl["tiers"][t]["raw"]["value"] == built["tiers"][t]["raw"]["value"]
+        assert pl["tiers"][t]["bit_packed"]["lo"] <= built["tiers"][t]["bit_packed"]["value"] \
+            <= pl["tiers"][t]["bit_packed"]["hi"]
+
+    # a plant: a wrong raw on the coded pack is still reported
+    real_mode_count = plan.mode_count
+    with monkeypatch.context() as m:
+        m.setattr(plan, "mode_count", lambda T, f: real_mode_count(T, f) + 1)
+        problems = compare_plans(pack_plan(**kw), built)
+    assert any("tier positions: raw" in s and "differs from the planned" in s for s in problems), problems
+
+    # a plant: a wrong bit-packed range on the coded pack is still reported (its stored rows are 48792 bytes,
+    # above the hi a clip to 8 bits plans: 600*3*24 + 24*600 + 12*16)
+    with monkeypatch.context() as m:
+        m.setattr(plan, "BITS_RANGE", (3, 8))
+        problems = compare_plans(pack_plan(**kw), built)
+    assert any("tier positions: bit_packed" in s and "is outside the planned" in s for s in problems), problems
 
 
 def test_each_planted_fault_is_found(packs, tmp_path, monkeypatch):
@@ -436,13 +492,13 @@ def test_each_planted_fault_is_found(packs, tmp_path, monkeypatch):
         problems = pack_plan_problems(pack_plan(**kw_s))
     assert any("the plan is not JSON" in s for s in problems), problems
 
-    # I, the refusals removed
-    table = [("tolerance", lambda kw: kw.__setitem__("tolerance", None)),
-             ("n_walkers", lambda kw: kw.__setitem__("n_walkers", 0))]
+    # I, the refusals removed: every case of the full table must then be reported
     with monkeypatch.context() as m:
         m.setattr(plan, "_refuse", lambda *a, **k: None)
-        problems = refusal_problems(table)
-    assert problems and any("did not refuse by name" in s for s in problems), problems
+        problems = refusal_problems(refusal_table())
+    reported = {p.split(":")[0] for p in problems}
+    assert reported == {name for name, _ in refusal_table()}, problems
+    assert all("did not refuse by name" in s for s in problems), problems
 
     # J, a provider validated by nobody
     def guess(inputs):

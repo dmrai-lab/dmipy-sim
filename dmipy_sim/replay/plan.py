@@ -266,35 +266,35 @@ class PlanEnvelope:
             v = getattr(self, key)
             if v is None or isinstance(v, bool) or not isinstance(v, (int, float)) \
                     or not math.isfinite(float(v)) or (positive and float(v) <= 0.0):
-                raise ValueError(f"PlanEnvelope: {key} is a finite {'positive ' if positive else ''}number; got {v!r}")
+                _refuse(key, f"a finite {'positive ' if positive else ''}number; got {v!r}")
             object.__setattr__(self, key, float(v))
         n = self.n_windows
         if n is None or isinstance(n, bool) or not isinstance(n, int) or n < 1:
-            raise ValueError(f"PlanEnvelope: n_windows is an integer >= 1; got {n!r}")
+            _refuse("n_windows", f"an integer >= 1; got {n!r}")
         object.__setattr__(self, "n_windows", int(n))
         for key in ("G_max", "slew_max", "B0_max", "chi_max", "rho2_max"):
             v = getattr(self, key)
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v))):
-                raise ValueError(f"PlanEnvelope: {key} is a finite number or None; got {v!r}")
+                _refuse(key, f"a finite number or None; got {v!r}")
             object.__setattr__(self, key, None if v is None else float(v))
         p = self.max_refocusing_pulses
         if p is not None and (isinstance(p, bool) or not isinstance(p, int) or p < 0):
-            raise ValueError(f"PlanEnvelope: max_refocusing_pulses is a non-negative integer or None; got {p!r}")
+            _refuse("max_refocusing_pulses", f"a non-negative integer or None; got {p!r}")
         object.__setattr__(self, "max_refocusing_pulses", None if p is None else int(p))
 
     @classmethod
     def from_dict(cls, d):
         """The :class:`PlanEnvelope` of the dict ``d`` with these fields' names as keys. A missing required key
-        (``band_hz``, ``window_s``, ``n_windows``) or an unknown key is a ``ValueError`` naming it."""
+        (``band_hz``, ``window_s``, ``n_windows``) or an unknown key is refused by name through :func:`_refuse`."""
         if not isinstance(d, dict):
-            raise ValueError(f"PlanEnvelope.from_dict: a dict; got {type(d).__name__}")
+            _refuse("envelope", f"a dict; got {type(d).__name__}")
         fields = {f.name for f in cls.__dataclass_fields__.values()}
         for key in d:
             if key not in fields:
-                raise ValueError(f"PlanEnvelope.from_dict: unknown key {key!r}")
+                _refuse(key, "an unknown key of the envelope dict")
         for key in ("band_hz", "window_s", "n_windows"):
             if key not in d:
-                raise ValueError(f"PlanEnvelope.from_dict: missing required key {key!r}")
+                _refuse(key, "a required key the envelope dict lacks")
         return cls(**d)
 
     def to_dict(self):
@@ -333,11 +333,12 @@ def _not_banded():
 
 def _banded_tail(codec, bit_packed):
     """The ``(coded, stored)`` figures of a banded tier: with no codec the coded stage is not applicable and the
-    stored stage is the bit-packed one; with a codec the coded stage is not planned in version 1 and the stored
-    stage is the coded one."""
+    stored stage is the bit-packed one; with a codec the coded size is not planned in this version, so both figures
+    are unknown before the walk (``value``, ``lo`` and ``hi`` all ``None``) and the stored stage is the coded one."""
     if codec is None:
         return _fig(None, None, None, provenance="derived", source="none:no_codec"), bit_packed
-    coded = _fig(None, None, None, provenance="proxy", source="none:coded_stage_not_planned")
+    coded = _fig(None, None, None, provenance="proxy",
+                 source="the coded size is not planned in this version: unknown before the walk")
     return coded, coded
 
 
@@ -359,8 +360,8 @@ def _stage_figure(tier, stage):
 def _validate_provider_tier(provider, tier_name, tier, taken):
     """Whether a provider's tier ``tier_name`` (``tier``) may enter the plan beside the tiers already ``taken``:
     a ``ValueError`` naming the provider and the tier when the name is already used, the tier lacks ``why``, ``raw``,
-    ``bit_packed``, ``coded`` or ``stored``, a figure is not the five-key shape, a provenance is outside
-    :data:`PROVENANCE`, or the tier is not JSON."""
+    ``bit_packed``, ``coded`` or ``stored``, a figure is not the five-key shape, holds a NumPy scalar, a provenance is
+    outside :data:`PROVENANCE`, or the tier is not JSON."""
     def bad(why):
         raise ValueError(f"pack_plan: provider {provider}: tier {tier_name!r}: {why}")
 
@@ -379,6 +380,9 @@ def _validate_provider_tier(provider, tier_name, tier, taken):
             bad(f"{key!r} is not a five-key figure")
         if fig["provenance"] not in PROVENANCE:
             bad(f"{key!r} carries provenance {fig['provenance']!r}, not one of {', '.join(PROVENANCE)}")
+        for slot in ("value", "lo", "hi"):
+            if isinstance(fig[slot], np.generic):
+                bad(f"{key!r} holds a NumPy scalar in {slot!r}: {type(fig[slot]).__name__}")
     try:
         json.dumps(tier, allow_nan=False)
     except (TypeError, ValueError) as e:
@@ -452,7 +456,7 @@ def pack_plan(spec, envelope, tolerance, n_walkers, *, codec="bitshuffle-zlib", 
         _refuse("tolerance", f"one absolute error, finite and > 0; got {tolerance!r}")
     tol = float(tolerance)
     if isinstance(n_walkers, bool) or not isinstance(n_walkers, (int, float)) \
-            or int(n_walkers) != n_walkers or int(n_walkers) < 1:
+            or not math.isfinite(n_walkers) or n_walkers < 1 or int(n_walkers) != n_walkers:
         _refuse("n_walkers", f"an integer >= 1; got {n_walkers!r}")
     N = int(n_walkers)
     if codec is not None and codec != "bitshuffle-zlib":
@@ -698,8 +702,10 @@ def compare_plans(plan, built):
     """One sentence per fault of comparing the pre-walk ``plan`` with the :func:`plan_of_pack` result ``built`` of a
     built pack (empty: sound): a tier only in one of the two, a key of ``bands``, ``channels``, ``raw``,
     ``bit_packed``, ``stored`` that a planned derived figure pins and the pack does not hold, a planned range the
-    pack's value falls outside, a value ``None`` on one side only, a banded tier whose codec differs (its ``stored``
-    is then not compared), and ``pack.n_walkers`` or ``pack.windows`` that differ."""
+    pack's value falls outside (an end that is ``None`` is not checked, so a figure whose ``value``, ``lo`` and
+    ``hi`` are all ``None`` -- an unknown size -- is not compared and adds no sentence), a value ``None`` in the
+    pack against a planned one, a banded tier whose codec differs (its ``stored`` is then not compared), and
+    ``pack.n_walkers`` or ``pack.windows`` that differ."""
     problems = []
     pt = plan.get("tiers") or {}
     bt = built.get("tiers") or {}
@@ -726,16 +732,15 @@ def compare_plans(plan, built):
             if not isinstance(fig, dict) or "lo" not in fig:
                 continue
             v, lo, hi = fig.get("value"), fig.get("lo"), fig.get("hi")
+            if v is None and lo is None and hi is None:
+                continue
             if x is None:
-                if v is not None or lo is not None or hi is not None:
-                    planned = v if v is not None else f"[{lo}, {hi}]"
-                    problems.append(f"tier {t}: {key} is None in the pack and {planned} in the plan")
+                planned = v if v is not None else f"[{lo}, {hi}]"
+                problems.append(f"tier {t}: {key} is None in the pack and {planned} in the plan")
                 continue
             if fig.get("provenance") == "derived" and v is not None:
                 if x != v:
                     problems.append(f"tier {t}: {key} {x} differs from the planned {v}")
-            elif v is None and lo is None and hi is None:
-                problems.append(f"tier {t}: {key} is None in the plan and {x} in the pack")
             elif (lo is not None and x < lo) or (hi is not None and x > hi):
                 problems.append(f"tier {t}: {key} {x} is outside the planned [{lo}, {hi}]")
     pp, bp = plan.get("pack") or {}, built.get("pack") or {}
