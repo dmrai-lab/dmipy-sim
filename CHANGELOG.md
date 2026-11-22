@@ -5,6 +5,17 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`pack_plan` returns the pre-walk plan of a pack per tier, and `compare_plans` compares it with a built pack's
+  `plan_of_pack`.** `dmipy_sim/replay/plan.py` plans, before any walk, per tier that the stated rules switch on (positions,
+  contact, field, occupancy, mt, weights, voxel, then a caller's providers) the band count and the bytes at the raw,
+  bit-packed, coded and stored stages, schema `pack_plan/1`. Every figure is built by one function and carries one of
+  three labels with its source: `derived` (value == lo == hi), `measured`, or `proxy` (value None with a range), so a
+  later change replaces a proxy by changing the figure's constructor call and nothing else. The rules that exist are
+  called, not re-typed: the band count is `dmipy_replay.replay.storage.mode_count`, a bit-packed row is
+  `compression.packed_row_bytes`, and shared tensors are asked of `bank._is_shared_key`. Only a missing input is
+  refused, by name. `pack_plan_problems` lists the faults of a plan itself; `tests/test_pack_plan.py` checks the plan of
+  the two committed fixtures and of a built pack against their `plan_of_pack`, the refusals, the JSON round trip and
+  planted faults.
 - **A walk backend that records the membrane trials states the dtype of the record's sums, and the walk sizes, caps,
   states and checks the record with it.** A backend that declares `backends.TRIAL_RECORD` now also declares
   `Backend.trial_sum_dtype` (`"float32"` or `"float64"`, None for one that returns no record), read through
