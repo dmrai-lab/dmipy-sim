@@ -406,7 +406,7 @@ def test_the_walk_stores_the_field_exactly_when_a_pool_is_magnetic(kind, tmp_pat
             compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
         ).spec
         plain = d.Cylinder(radius=3e-6, orientation=(0, 0, 1)).spec.replace(D={"intra": D0})
-        res = dict(field_res=0.25e-6)
+        res = {}                                                  # read in closed form: no node spacing
     elif kind == "mesh":
         magnetic = _bundle_spec(tmp_path); plain = spec_without_source(magnetic); res = dict(field_res=0.4e-6)
     else:
