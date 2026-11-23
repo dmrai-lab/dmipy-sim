@@ -31,6 +31,13 @@ class _PlantedRng:
         out[:k] = self._rows[:k]
         return out
 
+    def multinomial(self, n, pvals):
+        """The pools' counts at their expectation (whole parts, the remainder to the first pool): every pool holds
+        seeds, so every pool's walls are checked."""
+        counts = np.floor(n * np.asarray(pvals, np.float64)).astype(int)
+        counts[0] += n - counts.sum()
+        return counts
+
 
 def _rows(R_in, R_out):
     """Draws within one float32 ulp of the inner wall (either side) and of the outer wall (either side)."""

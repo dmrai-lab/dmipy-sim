@@ -1419,9 +1419,13 @@ class PackedMyelinatedCylinders(Geometry):
                 f"compartment must be 'intra', 'myelin', or 'extra'; got {compartment!r}")
 
     def init_positions(self, n_walkers, key):
-        """Distribute walkers proportional to compartment area in the periodic cell.
+        """Distribute walkers by compartment area in the periodic cell: each walker's pool is drawn by area (one
+        multinomial draw of the pools' counts per seeding, from the seeding's key), its start uniform in that pool, so
+        the rows of one call are, as a set, independent draws of the area law over the seeded pools. The rows are returned
+        grouped by pool; :func:`~dmipy_sim.geometry.base.placement` permutes them, and
+        through it every walker's start is an independent draw.
 
-        Walker allocation (area-weighted):
+        Pool areas:
           - Extra-axonal : area = L^2 - sum(pi*R_outer_k^2)
           - Intra_k      : area = pi*R_inner_k^2  (zero for dummy cylinders)
           - Myelin_k     : area = pi*(R_outer_k^2 - R_inner_k^2)
@@ -1452,31 +1456,16 @@ class PackedMyelinatedCylinders(Geometry):
             raise ValueError(f"the seeded pools {seeded!r} (seed_pools={self.seed_pools!r}) hold no pool of positive "
                              f"area in this cell")
 
-        n_intra  = np.array([int(round(n_walkers * a / total_area))
-                             for a in area_intra], dtype=int)
-        n_myelin = np.array([int(round(n_walkers * a / total_area))
-                             for a in area_myelin], dtype=int)
-
-        # Extra fills remainder (handles rounding); without an extra pool to seed, the largest seeded lumen or sheath does
-        n_extra = n_walkers - int(np.sum(n_intra)) - int(np.sum(n_myelin))
-        if not area_extra > 0.0 and n_extra != 0:            # largest remainders: whole counts summing to n_walkers
-            share = n_walkers * np.concatenate([area_intra, area_myelin]) / total_area
-            counts = np.floor(share).astype(int)
-            short = n_walkers - int(counts.sum())
-            counts[np.argsort(-(share - counts), kind="stable")[:short]] += 1
-            n_intra, n_myelin = counts[:N].copy(), counts[N:].copy()
-            n_extra = 0
-        if n_extra < 0:
-            excess = -n_extra
-            for k in range(N):
-                trim = min(excess, n_intra[k])
-                n_intra[k] -= trim
-                excess -= trim
-                if excess == 0:
-                    break
-            n_extra = 0
-
+        # each walker's pool drawn by area (one multinomial draw per seeding): every pool's expected count is its area
+        # share of n_walkers EXACTLY, whatever the share; rounding each pool's share to a whole count would give every
+        # pool below half a walker none in every block (a 10^4-cylinder cell's lumens), the remainder to the outside
         rng = np.random.default_rng(placement_seed(key))
+        shares = np.concatenate([[area_extra], area_intra, area_myelin]) / total_area
+        counts = rng.multinomial(n_walkers, shares)
+        if np.any(counts[shares == 0.0]):                       # the draw's rounding remainder falls to the last pool
+            raise RuntimeError("init_positions: the area draw gave a walker to a pool of zero seeded area; "
+                               "re-seed with another key")
+        n_extra, n_intra, n_myelin = int(counts[0]), counts[1:N + 1], counts[N + 1:]
 
         positions    = np.zeros((n_walkers, 3), dtype=np.float32)
         compartments = np.zeros(n_walkers, dtype=np.int32)

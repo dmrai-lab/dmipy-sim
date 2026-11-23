@@ -5,6 +5,7 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A packed myelinated cell seeds its pools by area for any number of cylinders.** `PackedMyelinatedCylinders` rounded each pool's expected count to a whole number per placement block of 4,096 walkers and gave the remainder to the outside, so a pool below half a walker a block (every lumen of a cell of about 10^4 cylinders) held none and the outside took almost every start. The pool counts of a block are now one multinomial draw from the block's key and each start is uniform in its pool, so every walker's start is an independent draw of the area law over the seeded pools and each pool's expected count is its area share exactly; walker `i`'s start is still a function of the seed, `i` and the geometry alone. For a caller: the starts of every packed myelinated walk change, and so do the bits of its walks (the recorded-bits families are replaced by ones recorded with the new starts). No other geometry's seeding changes.
 - **`walk` reads the field of a myelinated cylinder and of a packed myelinated cell in closed form** (behaviour
   change: a field-on `walk` of a `MyelinatedCylinder` or `PackedMyelinatedCylinders` spec gives different field
   modes). The spec route hands the walk `HollowCylinderField.of(geometry)`, read at the walker's position and, in a
