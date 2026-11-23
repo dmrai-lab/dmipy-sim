@@ -16,6 +16,14 @@ the project follows [Semantic Versioning](https://semver.org/).
   pack's stated maximum field strength. `field_res=` is refused for these geometries (the closed form has
   no nodes), and `continue_walk` refuses a pack whose recorded field is a raster or another closed form; every other
   gridded source keeps its raster.
+- **`pack_plan` takes a banded tier's ratio from the record's packs that have the planned pack's own chunk fill.** The
+  packaged `codec_ratios.json` holds nine public packs, three of them with full chunks and six with less than one. A
+  plan of at least one chunk reads the record's `full_chunks` packs, a plan of less than one chunk its
+  `sub_chunk_packs`; a record with no pack of that basis gives the lane bound alone (provenance `proxy`), and the other
+  basis is never read in its place. The ratio range is a spread measured on those packs (the field of three
+  full-chunk packs spans 0.27 to 0.74) and no bound for another pack; the lane bound is the only bound, the range's
+  upper end below one chunk. For a caller: a plan below one chunk against a record that has full-chunk packs reads
+  `sub_chunk_packs`, and a plan of at least one chunk against a record of sub-chunk packs only becomes a proxy.
 - **The `walk_cost` pilot times each shape as the minimum of three calls with the garbage collector held off.** A pilot
   shape's seconds were one timed call, so one stall (a full garbage collection, a scheduler pause) of 0.2 s in a timed
   2-block call turned a 1.18 s projection into 4.32 s. A shape is now one untimed call (it holds the compile), then
