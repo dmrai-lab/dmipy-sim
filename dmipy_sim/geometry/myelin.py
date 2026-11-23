@@ -1421,7 +1421,9 @@ class PackedMyelinatedCylinders(Geometry):
     def init_positions(self, n_walkers, key):
         """Distribute walkers by compartment area in the periodic cell: each walker's pool is drawn by area (one
         multinomial draw of the pools' counts per seeding, from the seeding's key), its start uniform in that pool, so
-        every walker's start is an independent draw of the area law over the seeded pools.
+        the rows of one call are, as a set, independent draws of the area law over the seeded pools. The rows are returned
+        grouped by pool; :func:`~dmipy_sim.geometry.base.placement` permutes them, and
+        through it every walker's start is an independent draw.
 
         Pool areas:
           - Extra-axonal : area = L^2 - sum(pi*R_outer_k^2)
@@ -1458,7 +1460,11 @@ class PackedMyelinatedCylinders(Geometry):
         # share of n_walkers EXACTLY, whatever the share; rounding each pool's share to a whole count would give every
         # pool below half a walker none in every block (a 10^4-cylinder cell's lumens), the remainder to the outside
         rng = np.random.default_rng(placement_seed(key))
-        counts = rng.multinomial(n_walkers, np.concatenate([[area_extra], area_intra, area_myelin]) / total_area)
+        shares = np.concatenate([[area_extra], area_intra, area_myelin]) / total_area
+        counts = rng.multinomial(n_walkers, shares)
+        if np.any(counts[shares == 0.0]):                       # the draw's rounding remainder falls to the last pool
+            raise RuntimeError("init_positions: the area draw gave a walker to a pool of zero seeded area; "
+                               "re-seed with another key")
         n_extra, n_intra, n_myelin = int(counts[0]), counts[1:N + 1], counts[N + 1:]
 
         positions    = np.zeros((n_walkers, 3), dtype=np.float32)
