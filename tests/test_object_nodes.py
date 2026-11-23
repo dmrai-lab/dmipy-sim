@@ -739,7 +739,12 @@ def test_the_packed_kernel_reads_each_nodes_own_threshold():
     """Two nodes of factors 0.1 and 1 (thresholds an order of magnitude apart) on the permeable cylinders: every logged
     trial's outcome is its word against its OWN node's threshold; each node has granted and refused trials (both
     sides of its threshold populated); and for each node at least 100 trials would have the other outcome under the
-    other node's threshold, so a kernel reading the wrong node's threshold fails here whatever the draws."""
+    other node's threshold, so a kernel reading the wrong node's threshold fails here whatever the draws.
+
+    The kernel draws its own words, so this checks outcomes: its resolution is the smallest relative distance between
+    a logged word and its own threshold (measured, printed, asserted below 1e-3). A threshold shift below that
+    resolution passes this test; it is held by the mixed cell's exact threshold search
+    (``test_each_trial_reads_its_nodes_threshold``) and the ``node_of`` lookup both kernels share."""
     t = _packed_nodes_kernel(20000, 13, *TWO)
     perm = KAPPA[t["obj"]] > 0
     granted, word, node = t["granted"][perm], t["word"][perm], t["node"][perm]
@@ -754,7 +759,12 @@ def test_the_packed_kernel_reads_each_nodes_own_threshold():
         wrong_under_other = np.where(granted[sel], word[sel] >= hi_o, word[sel] < lo_o)
         pops[i] = (int(granted[sel].sum()), int((~granted[sel]).sum()), int(wrong_under_other.sum()))
         assert pops[i][0] >= 100 and pops[i][1] >= 100 and pops[i][2] >= 100, pops
-    print("packed two-node populations (granted, refused, wrong under the other node):", pops)
+    thr = (own_lo.astype(np.float64) + own_hi.astype(np.float64)) / 2.0
+    pos = thr > 0
+    resolution = float(np.min(np.abs(word[pos].astype(np.float64) - thr[pos]) / thr[pos]))
+    assert resolution < 1e-3, resolution
+    print("packed two-node populations (granted, refused, wrong under the other node):", pops,
+          "resolution (smallest relative word-threshold distance):", resolution)
 
 
 def _mixed_long(table, n=6000, seed=5):
@@ -859,3 +869,72 @@ def test_refuses_reads_the_nodes_the_batches_carry():
     assert seen["nodes"] is not None and int(seen["nodes"].seed) == SEED
     np.testing.assert_array_equal(seen["nodes"].walkers, mask)
     np.testing.assert_array_equal(seen["index"], 5 + np.arange(8))
+
+
+# ── review round 2: the fractions' rule, internal batches ─────────────────────────────────────────────────────────
+
+def test_fractions_outside_the_rule_are_refused():
+    """``[1 + 2^-32, 2^-32]`` sums to 1 within the tolerance but holds a fraction above 1 (its threshold would lie above
+    ``2^53`` and its masses be ``[1 + 2^-32, -2^-32]``): refused by name by the walk, the thresholds and the realised
+    masses; so is a running sum above 1 before the last fraction."""
+    from dmipy_sim.engine.physics import check_object_node_fractions
+    bad = np.array([1.0 + 2.0 ** -32, 2.0 ** -32])
+    assert abs(float(bad.sum()) - 1.0) <= 1e-9
+    with pytest.raises(ValueError, match="object_nodes_fractions"):
+        check_object_node_fractions(bad)
+    with pytest.raises(ValueError, match="object_nodes_fractions"):
+        object_node_thresholds(bad)
+    with pytest.raises(ValueError, match="object_nodes_fractions"):
+        ObjectNodes(np.ones(2, np.float32), bad, SEED, np.ones(8, bool)).realised_fractions
+    _refused(_mixed(), _nodes_of(8, factors=[0.5, 1.0], fractions=bad), "object_nodes_fractions")
+    with pytest.raises(ValueError, match="running sum"):
+        check_object_node_fractions(np.array([0.6, 0.4 + 2.0 ** -30, 1e-300]))      # running sum above 1, then a crumb
+
+
+def test_realised_masses_over_random_fraction_sets():
+    """2000 random fraction sets (K in 1..60, Dirichlet with tiny and equal entries mixed in): every set obeying the
+    rule has masses that are non-negative, sum to exactly 1, and equal the thresholds' differences times 2^-53."""
+    from fractions import Fraction
+    rng = np.random.default_rng(984)
+    checked = 0
+    for trial in range(2000):
+        K = int(rng.integers(1, 61))
+        f = rng.dirichlet(np.full(K, float(rng.choice([0.05, 1.0, 20.0]))))
+        if trial % 5 == 0 and K > 2:
+            f[rng.integers(0, K)] = 2.0 ** -int(rng.integers(30, 60))
+        f = np.maximum(f, 1e-300)
+        f = f / f.sum()
+        nodes = ObjectNodes(np.ones(K, np.float32), f.astype(np.float64), SEED, np.ones(1, bool))
+        try:
+            m = nodes.realised_fractions
+        except ValueError as e:
+            assert "object_nodes_fractions" in str(e)
+            continue
+        tau = [0] + object_node_thresholds(f) + [2 ** 53]
+        assert np.all(m >= 0.0) and float(np.sum(m)) == 1.0
+        assert [Fraction(float(x)) for x in m] == [Fraction(b - a, 2 ** 53) for a, b in zip(tau[:-1], tau[1:])]
+        checked += 1
+    assert checked >= 1900, checked
+
+
+def test_internal_batches_read_the_stable_index():
+    """64 masked walkers in ONE call with an internal batch of 32 (``walker_batch_size``) and of 64: the two walks are
+    the same bits; at kernel level only node 2 is permeable (factors ``[0, 0, 1, 0, 0]``), so every granted (walker,
+    object) pair is one the reference hash gives node 2 on the walker's stable index, among them pairs of the second
+    batch; walker 32's node at object 0 is 2 by the stated rule."""
+    geo = _packed()
+    nodes = _nodes_of(64, factors=[0.0, 0.0, 1.0, 0.0, 0.0])
+    spec = TrialRecordSpec(modes=3, band_edges=SPEC.band_edges, slots=48)
+    kw = dict(seed=3, tiers="all", require_gpu=False, K=8, record_trials=spec, events_capacity=64, raw_subset=64,
+              object_nodes=nodes)
+    two = _walk_geometry(64, D, geo, T, BLOCK, walker_batch_size=32, **kw)
+    one = _walk_geometry(64, D, geo, T, BLOCK, walker_batch_size=64, **kw)
+    masses = two.work["object_nodes"]["realised_fractions"]
+    assert int(_node_ref(SEED, 32, 0, masses)) == 2 and int(two.object_node_index[32]) == 32
+    dense = two.trial_record.to_dense()
+    N = dense.N.sum(axis=2)
+    walker, obj = np.nonzero(N)
+    node = _node_ref(SEED, np.asarray(two.object_node_index)[walker], obj, masses)
+    assert np.all(node == 2), (walker[node != 2], obj[node != 2])
+    assert np.sum(walker >= 32) >= 5 and np.sum(walker < 32) >= 5, walker
+    _assert_rows_equal(_rows(two), _rows(one), "two internal batches against one")

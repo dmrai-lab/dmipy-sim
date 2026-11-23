@@ -1275,7 +1275,7 @@ def _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, backend_name, cap
     """The walk's object nodes (:class:`_NodesResolved`), or None for ``None``; refused by name (``object_nodes_*``)
     where the walk cannot take them, before any walk. ``factor`` is the caller's ``permeability_factor`` as given (None,
     or the array), which must be exactly 1.0 on every walker under the mask, compared before any cast."""
-    from .physics import ObjectNodes, OBJECT_NODES_MAX, OBJECT_NODES_SUM_TOL, object_node_keys, object_node_table
+    from .physics import ObjectNodes, OBJECT_NODES_MAX, check_object_node_fractions, object_node_keys, object_node_table
     if object_nodes is None:
         return None
     if not isinstance(object_nodes, ObjectNodes):
@@ -1302,11 +1302,7 @@ def _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, backend_name, cap
     if frac.dtype != np.float64 or frac.shape != (K,):
         raise ValueError(f"object_nodes_fractions: fractions is a ({K},) float64 array, one per factor; got "
                          f"{frac.dtype} of shape {frac.shape}")
-    if not np.all(np.isfinite(frac)) or np.any(frac <= 0.0):
-        raise ValueError("object_nodes_fractions: every fraction is finite and positive")
-    if not abs(float(np.sum(frac)) - 1.0) <= OBJECT_NODES_SUM_TOL:
-        raise ValueError(f"object_nodes_fractions: the fractions sum to 1 within {OBJECT_NODES_SUM_TOL}; got "
-                         f"{float(np.sum(frac))!r}")
+    check_object_node_fractions(frac)            # the one rule (physics.OBJECT_NODE_FRACTIONS_RULE)
     seed = object_nodes.seed
     if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, (int, np.integer)) or not 0 <= int(seed) < 2 ** 64:
         raise ValueError(f"object_nodes_seed: seed is an integer in [0, 2^64); got {seed!r}")

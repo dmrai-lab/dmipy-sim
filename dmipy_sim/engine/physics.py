@@ -213,10 +213,12 @@ class ObjectNodes(NamedTuple):
     absorbs ``1 - sum(fractions)``. The nodes of two objects of one walker, or of two walkers, are those of a mixing
     hash of the pair, not exactly independent draws: their joint law is measured, not stated."""
     factors: object      #: ``(K,)`` float32 in ``[0, 1]``, ``1 <= K <= OBJECT_NODES_MAX``: node ``i``'s factor of the stated permeability
-    fractions: object    #: ``(K,)`` float64, positive, summing to 1 within ``OBJECT_NODES_SUM_TOL``: the requested
-                         #: node probabilities, from which the thresholds are formed
+    fractions: object    #: ``(K,)`` float64 obeying :data:`OBJECT_NODE_FRACTIONS_RULE`: the requested node
+                         #: probabilities, from which the thresholds are formed
     seed: int            #: an integer in ``[0, 2^64)``: the hash's seed, distinct from the walk's own seed stream
-    walkers: object      #: ``(n_walkers,)`` bool, walker order: the walkers that draw a node per object
+    walkers: object      #: ``(n_walkers,)`` bool, walker order: the walkers that draw a node per object; a piece of a
+                         #: split walk whose walkers are all outside the mask is walked with the object nodes and an
+                         #: all-false mask (it carries the record, ``n_per_object`` 0)
 
     @property
     def realised_fractions(self):
@@ -324,10 +326,38 @@ def object_node_index(m_hi, m_lo, tau_hi, tau_lo):
     return jnp.sum(at_or_above.astype(jnp.int32), axis=-1, dtype=jnp.int32)
 
 
+OBJECT_NODE_FRACTIONS_RULE = ("fractions: (K,) float64, every one finite and in (0, 1]; the float64 running sums "
+                              "c_i = f_0 + ... + f_i in order at most 1 for i < K - 1, and c_{K-1} within "
+                              "OBJECT_NODES_SUM_TOL of 1")
+"""The one rule a set of node fractions obeys (:func:`check_object_node_fractions`): it makes the thresholds a
+non-decreasing sequence of integers in ``[0, 2^53]``, so every realised mass is non-negative."""
+
+
+def check_object_node_fractions(fractions):
+    """``fractions`` as float64 when they obey :data:`OBJECT_NODE_FRACTIONS_RULE`; refused by name
+    (``object_nodes_fractions``) otherwise."""
+    f = np.asarray(fractions)
+    if f.dtype != np.float64 or f.ndim != 1 or f.shape[0] < 1:
+        raise ValueError(f"object_nodes_fractions: fractions is a (K,) float64 array; got {f.dtype} of shape {f.shape}")
+    if not np.all(np.isfinite(f)) or np.any(f <= 0.0) or np.any(f > 1.0):
+        raise ValueError(f"object_nodes_fractions: every fraction is finite and in (0, 1] ({OBJECT_NODE_FRACTIONS_RULE})")
+    c = np.float64(0.0)
+    for i in range(f.shape[0]):
+        c = np.float64(c + f[i])
+        if i < f.shape[0] - 1 and c > 1.0:
+            raise ValueError(f"object_nodes_fractions: the running sum of the first {i + 1} fractions is {float(c)!r}, "
+                             f"above 1 ({OBJECT_NODE_FRACTIONS_RULE})")
+    if not abs(float(c) - 1.0) <= OBJECT_NODES_SUM_TOL:
+        raise ValueError(f"object_nodes_fractions: the fractions sum to {float(c)!r}, not 1 within "
+                         f"{OBJECT_NODES_SUM_TOL} ({OBJECT_NODE_FRACTIONS_RULE})")
+    return f
+
+
 def object_node_thresholds(fractions):
     """The node thresholds ``tau_i = ceil(c_i 2^53)``, ``i < K - 1``, ``c_i = f_0 + ... + f_i`` accumulated in float64
-    in order, formed exactly on the host: a list of Python integers (``c_i 2^53`` is exact in float64)."""
-    f = np.asarray(fractions, np.float64)
+    in order, formed exactly on the host: a list of Python integers (``c_i 2^53`` is exact in float64), non-decreasing
+    in ``[0, 2^53]`` for fractions that obey :data:`OBJECT_NODE_FRACTIONS_RULE` (any other is refused by name)."""
+    f = check_object_node_fractions(fractions)
     c, out = np.float64(0.0), []
     for i in range(f.shape[0] - 1):
         c = np.float64(c + f[i])
@@ -337,9 +367,13 @@ def object_node_thresholds(fractions):
 
 def object_node_masses(thresholds):
     """``(K,)`` float64, exact: the masses ``(tau_i - tau_{i-1}) 2^-53`` of the thresholds ``tau`` (``K - 1``
-    integers, :func:`object_node_thresholds`), ``tau_{-1} = 0`` and ``tau_{K-1} = 2^53``. Each is a multiple of
-    ``2^-53`` below 1, so it and every partial sum are exact in float64 and the masses sum to 1 exactly."""
+    integers, :func:`object_node_thresholds`), ``tau_{-1} = 0`` and ``tau_{K-1} = 2^53``: the realised node masses,
+    defined by the thresholds themselves. Thresholds that are not non-decreasing in ``[0, 2^53]`` are refused, so each
+    mass is a non-negative multiple of ``2^-53`` at most 1, it and every partial sum are exact in float64, and the
+    masses sum to 1 exactly."""
     edges = [0] + [int(t) for t in thresholds] + [2 ** 53]
+    if any(b < a for a, b in zip(edges[:-1], edges[1:])):
+        raise ValueError(f"object_nodes_fractions: the thresholds are non-decreasing in [0, 2^53]; got {edges[1:-1]}")
     return np.asarray([np.ldexp(float(b - a), -53) for a, b in zip(edges[:-1], edges[1:])], np.float64)
 
 

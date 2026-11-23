@@ -540,7 +540,9 @@ def join_walks(walks):
     the result is the walk of the union walked at once: what a producer that commits a walk batch by batch
     assembles. Everything else -- the walk's parameters, the block's rules and pilots, the work record's rules, the
     envelope, the spec -- must agree and is refused by name where it does not; a raw subset is kept from the first
-    walk and refused on any other."""
+    walk and refused on any other. The pieces of a walk with object nodes are each walked with them, a piece whose
+    walkers are all outside the mask with an all-false mask; a piece walked without object nodes is another walk and
+    does not join them."""
     import dataclasses
     walks = list(walks)
     if not walks:
