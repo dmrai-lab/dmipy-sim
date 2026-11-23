@@ -16,6 +16,7 @@ import pytest
 import dmipy_sim as d
 
 import dmipy_replay as dr
+from dmipy_replay.acquisition.scanners import ScannerLimits
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_analytic.constants import GAMMA
 from dmipy_sim.replay import compression as cx
@@ -312,8 +313,8 @@ def test_a_tensor_encoding_is_three_shapes_on_one_interval(small):
 
 def test_a_sequence_that_matches_no_term_is_refused_by_name(small):
     """Another ramp duration (the support changes), a gradient that is the trapezoid tapered (the shape is not the stored
-    one), another cosine frequency, a ramp that differs by a fraction of a sample (0.29 ms for 0.25 ms) and a delivery on
-    shaped terms are each refused naming the partition."""
+    one), another cosine frequency, a ramp that differs by a fraction of a sample on the same support (0.22 ms for
+    0.25 ms) and a delivery on shaped terms are each refused naming the partition."""
     M = small
     trap = M["tmpl"][TRAP]
     for slew in (100.0, 130.0):
@@ -328,14 +329,17 @@ def test_a_sequence_that_matches_no_term_is_refused_by_name(small):
     with pytest.raises(ValueError, match=rf"{TRAP}: the sequence's effective gradient does not fit the shapes of partition "
                                          rf"'{TRAP}': row 0 leaves a residual of relative norm .* term [01] "):
         M["lay"].image(tapered, partition=TRAP)
-    near = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=170.0)   # a ramp 0.04 ms longer
+    # a ramp 0.03 ms shorter keeps every sample of the stored support (a longer one, 0.29 ms at 170 T/m/s, reaches one
+    # more sample each side and is refused as off the segments)
+    near = dr.pgse([[0, 0, 1]], 8e-3, 20e-3, gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=230.0)
     with pytest.raises(ValueError, match=rf"{TRAP}: .*does not fit the shapes of partition '{TRAP}': row 0 leaves a residual of relative norm"):
         M["lay"].image(_play(near, [[0, 0, 1]], [3e9]), partition=TRAP)
     faster = dr.ogse([[0, 0, 1]], 100.0, 0.02, shape="cosine", gradient_strengths=0.05, TE=TE, n_t=N_T, slew_rate=200.0)
     with pytest.raises(ValueError, match=rf"{COS}: .*partition '{COS}'"):
         M["lay"].image(_play(faster, [[0, 0, 1]], [2e9]), partition=COS)
+    # delivered by a machine that plays it: at b = 1e8 the trapezoid's 0.25 ms ramps reach 0.036 T/m, 142 T/m/s
     with pytest.raises(ValueError, match="shaped terms"):
-        M["lay"].delivery(_play(trap, [[0, 0, 1]], [1e9]), None, partition=TRAP)
+        M["lay"].delivery(_play(trap, [[0, 0, 1]], [1e8]), ScannerLimits.of("prisma"), partition=TRAP)
 
 
 def test_a_manifest_term_without_a_shape_record_is_refused_by_name(small, tmp_path):

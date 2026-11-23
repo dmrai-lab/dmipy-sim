@@ -353,10 +353,14 @@ def replay_bloch(trajectory, h, G, dt_wf, rf_events, *,
         ``duration_s``, ``offset_hz``); ``axis_deg`` is the B1 phase (0 = x, 90 = y); ``duration_s = 0`` is an
         instantaneous hard pulse at ``t_s`` (any instant, not a block end); ``offset_hz`` an off-resonance carrier
         over a finite pulse.
-    T2, T1 / T2_per_comp, T1_per_comp, comp_traj : as in :func:`replay`.
+    T2, T1 / T2_per_comp, T1_per_comp : as in :func:`replay`.
+    comp_traj : ``(n_w, n_p, n_pools)`` the occupancy of every geometric pool averaged over each PIECE of the walk (the
+        block grid cut at every RF instant, :func:`dmipy_replay.replay.bloch._bloch_timeline`);
+        :func:`dmipy_replay.replay.compression.occupancy_pieces` forms it from a walk's events.
     susceptibility : a :mod:`dmipy_sim.fields.susceptibility` provider or ``r -> dBz`` callable, sampled along
         the walk; mutually exclusive with ``extra_phase_per_step`` (the pre-baked per-block-end increment).
-    bound_frac, T2_bound, T1_bound, off_resonance_bound : the MT bound-pool blend per block end.
+    bound_frac, T2_bound, T1_bound, off_resonance_bound : the MT bound pool: ``bound_frac`` ``(n_w, n_p)`` its
+        occupancy averaged over each piece (as ``comp_traj``), its relaxation times (s) and its offset (Hz).
     b1_scale : transmit (B1+) scale of every flip; per walker for an inhomogeneous field.
     slice_offsets, slice_gradient : slice-select off-resonance ``gamma G_slice z_w`` during finite pulses.
     weights : (n_w,) ensemble weights of the walker mean.

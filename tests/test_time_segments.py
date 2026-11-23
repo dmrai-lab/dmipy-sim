@@ -511,33 +511,91 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
         np.testing.assert_array_equal(aniso, ref["aniso"])
 
 
+# The streamed image's own fixture: a machine's delivery is held to the scanner's slew, so the protocol it delivers is
+# the trapezoidal pulsed pair the Swoop can play -- ramps of the gradient's magnitude at its 22 T/m/s on a 66.7 us grid,
+# lobes requested at 0.2 ms with 0.4 ms between them and built (the reader's delta_built, Delta_built) at 0.2 ms with
+# seven steps, 466.7 us, between them, the whole echo the walk's 0.8 ms, b = 14.8 s/m^2 on every encoded row whatever its
+# direction (the largest these timings hold: at 14.9 s/m^2 the ramped lobes run off the grid) -- and its partition is
+# the ten constant pieces of that staircase (the ramps' samples and the plateaus: a class's vertex count grows as
+# 2^pieces, so a finer grid is not read).
+# The layout certifies its background vectors to 1 T/m, a step of 0.245 rad per T/m, fine enough that this encoding's
+# coefficients are stored as non-zero words: the magnet's own gradient (about 0.45 mT/m here) is then a term of the image.
+RAMP_TE, RAMP_N_T, RAMP_DELTA, RAMP_DELTA_BIG, RAMP_B = 0.8e-3, 13, 3 * 0.8e-3 / 12, 6 * 0.8e-3 / 12, 14.8
+RAMP_DELTA_BUILT = 7 * RAMP_TE / (RAMP_N_T - 1)                       # the built separation of the pair's centres
+
+
+def _ramped_pgse(dirs, b):
+    """The pulsed pair of the streamed-image fixture on the Swoop's slew (22 T/m/s), one row per direction at ``b``."""
+    return dr.pgse(dirs, RAMP_DELTA, RAMP_DELTA_BIG, bvalues=b, TE=RAMP_TE, n_t=RAMP_N_T, slew_rate=22.0)
+
+
+@pytest.fixture(scope="module")
+def ramped_blocks(spec_grid):
+    """The two blocks of ``blocks`` (the same walks and packs), their rows written against the constant pieces of a
+    ramped pulsed pair; the layout of both blocks and the merged pack."""
+    spec, grid, tmp = spec_grid
+    packs, dirs = [], []
+    for b in (0, 1):
+        want = np.zeros(grid.shape, np.int64); want[b] = 12
+        w = walk(spec, T_max=8e-4, block_h=2e-4, seed=21 + b, require_gpu=False, adaptive_steps=True, K=3,
+                      seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
+        pk = build_replay_pack(w, id=f"t/rb{b}", license="x", citation="x", K=3, susc_path_K=4, voxel_grid=grid,
+                               **stated(dict(default_battery(), chi_max=2e-6), of=w), **shard_containers(packs))
+        packs.append(pk)
+        dirs.append(str(tmp / f"rb_rows{b}"))
+        segment_rows(w, {"se": Partition.of("se", _ramped_pgse([[0, 0, 1]], RAMP_B))}, dirs[-1], grid=grid, pack=pk, g_max=60.0,
+                     floor_target=0.3, tiers=True, background=True, background_amplitude=1.0)
+    m = write_time_segment_layout(dirs, str(tmp / "rb_layout"))
+    return TimeSegmentLayout(str(tmp / "rb_layout")), merge_packs(packs, id="t/rb-merged"), grid, packs[0].n_t, m, tmp
+
+
 @pytest.mark.parametrize("backend", _backends())
-def test_a_streamed_image_is_the_resident_image_to_the_bit(blocks, backend):
+def test_a_streamed_image_is_the_resident_image_to_the_bit(ramped_blocks, backend):
     """``resident=False`` reads and uploads each chunk of every column on its own and keeps nothing; its image is the
-    resident one to the bit -- bare, with every tier at an oblique field, and with a machine's delivery and its own
-    gradient -- and so are the tier maps."""
+    resident one to the bit -- bare, with every tier at an oblique field, and with a machine's delivery (ramped lobes on
+    constant pieces, within the machine's slew) and its own gradient -- and so are the tier maps."""
     from dmipy_replay.acquisition.scanners import ScannerLimits
-    lay, merged, grid, n_t, m, tmp = blocks
-    seq = _strand_protocol(n_t, 3)
+    lay, merged, grid, n_t, m, tmp = ramped_blocks
+    rng = np.random.default_rng(5)
+    u = rng.normal(size=(3, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
+    dirs = np.concatenate([u, [[0, 0, 1]]])
+    seq = _ramped_pgse(dirs.tolist(), np.r_[np.full(3, RAMP_B), 0.0])
+    on = seq.encoding.bvalues > 0
+    np.testing.assert_allclose(seq.b()[on], RAMP_B, rtol=1e-6)                     # every encoded row at its own b
+    # the built timings are read off the float32 samples the sequence holds: to float32's resolution
+    np.testing.assert_allclose(seq.encoding.delta_built[on], RAMP_DELTA, rtol=1e-6)
+    np.testing.assert_allclose(seq.encoding.Delta_built[on], RAMP_DELTA_BUILT, rtol=1e-6)
+    for v in dirs[on]:                                                # RAMP_B is the largest each direction holds
+        with pytest.raises(ValueError, match="runs off the 13-sample grid"):
+            _ramped_pgse([v.tolist()], 14.9)
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     u = (0.6, 0.0, 0.8)
-    fresh = TimeSegmentLayout(lay.path)
-    fresh.TILES = 1                                                   # many chunks, the last one padded
+    resident, fresh = TimeSegmentLayout(lay.path), TimeSegmentLayout(lay.path)   # the streamed calls run on a layout that never holds a column
+    resident.TILES = fresh.TILES = 1                                  # many chunks, the last one padded
     kw = dict(backend=backend, device="cpu") if backend == "torch" else dict(backend=backend)
     for extra in ({}, dict(tissue=t, scanner=7.0, b0_direction=u)):
-        S_r, f_r = fresh.image(seq, resident=True, **kw, **extra)
+        S_r, f_r = resident.image(seq, resident=True, **kw, **extra)
         S_s, f_s = fresh.image(seq, resident=False, **kw, **extra)
         np.testing.assert_array_equal(S_r, S_s); np.testing.assert_array_equal(f_r, f_s)
+        assert len(fresh._device) == 0
     swoop = ScannerLimits.of("hyperfine_swoop_64mT")
-    dl = fresh.delivery(seq, swoop, grid.centred_at((0.05, 0.0, 0.0)))
-    S_r, _ = fresh.image(seq, resident=True, delivered=dl, **kw)
+    from dmipy_replay.phantom.bore import encoding_classes
+    placed = grid.centred_at((0.05, 0.0, 0.0))
+    every = np.stack(np.unravel_index(np.arange(int(np.prod(grid.shape))), tuple(grid.shape)), axis=1)
+    _, played = encoding_classes(swoop, placed, seq, every, tolerance=None)
+    for p in played:                                                  # what the machine plays at every voxel is within its limits
+        assert np.max(p.peak_slew()) <= swoop.slew_max and np.abs(np.asarray(p.G)).max() <= swoop.G_max
+    dl = resident.delivery(seq, swoop, placed)
+    assert np.abs(dl.g0).max() > 0
+    bg = resident.manifest["groups"][resident.background_group(dl.partition)]["background"]
+    assert bg["n_words"] > 0 and np.load(os.path.join(resident.path, bg["column"])).any()   # the magnet's gradient is stored
+    S_r, _ = resident.image(seq, resident=True, delivered=dl, **kw)
     S_s, _ = fresh.image(seq, resident=False, delivered=dl, **kw)
     np.testing.assert_array_equal(S_r, S_s)
-    n_dev = len(fresh._device)
-    fresh.image(seq, resident=False, tissue=t, scanner=3.0, **kw)
-    assert len(fresh._device) == n_dev
-    a = fresh.tier_maps("se", t, 7.0, b0_direction=u, resident=True, **kw)
+    assert len(fresh._device) == 0
+    a = resident.tier_maps("se", t, 7.0, b0_direction=u, resident=True, **kw)
     b = fresh.tier_maps("se", t, 7.0, b0_direction=u, resident=False, **kw)
+    assert len(fresh._device) == 0
     for k in ("contact", "contact_weight", "phase", "phase_std"):
         np.testing.assert_array_equal(a[k], b[k])
 

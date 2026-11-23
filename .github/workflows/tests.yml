@@ -10,9 +10,9 @@ on:
 env:
   # the forms and the reader at the commits this revision was tested against: dmipy-analytic main
   # through dmrai-lab/dmipy-analytic#23 (permeable_shell, its convention and surface tests), and
-  # dmipy-replay at the head of dmrai-lab/dmipy-replay#35 (a time view at any diffusivity), on its main at that merge
+  # dmipy-replay main through dmrai-lab/dmipy-replay#41 (a slew the machine cannot play refused on the read path)
   DMIPY_ANALYTIC_REF: be8ece558451389fbf9303981b78cfc1dade3aea
-  DMIPY_REPLAY_REF: 116ee0de7ab22bdaf2c1a0994dcf0915286c8372
+  DMIPY_REPLAY_REF: a2fa9c48069eb5cd63db8ee7fda7ce631728396d
   # bump this number by hand to drop every group's compile cache: the key changes, the entries of
   # the older number are never read again and leave by eviction
   JAX_CACHE_EPOCH: "1"

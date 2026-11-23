@@ -44,8 +44,10 @@ def test_cosine_ogse_spectral_peak_at_the_frequency(freq):
 
 
 def test_trapezoidal_ogse_refocused_at_every_slew():
+    # 701 samples over TE = 70 ms: a 100 us step, so the 30 ms blocks and the 180 at 35 ms lie on the grid; a grid that
+    # cannot hold a ramped block whole lengthens TE by the fewest whole steps that can
     for slew in (200e3, 200.0, np.inf):
-        wf = ogse(BVECS, 2 / (2 * 0.030), 0.030, gradient_strengths=0.05, shape="trapezoid", Delta=0.040, n_t=801,
+        wf = ogse(BVECS, 2 / (2 * 0.030), 0.030, gradient_strengths=0.05, shape="trapezoid", Delta=0.040, n_t=701,
                   slew_rate=slew)
         q, dt, G = _q_and_dt(wf)
         assert abs(q[wf.echo_idx - 1]) / (np.max(np.abs(q)) + 1e-30) < 1e-6, "trapezoidal OGSE not refocused"
