@@ -35,6 +35,21 @@ def end_state(pack):
     return r_end, pool
 
 
+def _require_recorded_closed_form(recorded, field, geometry_name):
+    """Refuses a continuation whose field would differ from the pack's: the pack's ``susceptibility_grid`` record must
+    state, as its ``source``, the closed form ``field`` (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`)
+    that the geometry's spec gives. A recorded raster (a ``shape``, no ``source``) or a source that differs (another
+    read, other radii) is refused, stating both; the pack is walked again."""
+    source = recorded.get("source")
+    want = field.meta
+    if source is not None and json.loads(json.dumps(source)) == json.loads(json.dumps(want)):
+        return
+    stated = (f"a raster of shape {recorded['shape']}" if source is None and "shape" in recorded
+              else "no field source" if source is None else f"the field source {source!r}")
+    raise ValueError(f"this pack's field is {stated}, and the field of its {geometry_name} is now the closed form {want!r}: "
+                     f"a continuation would extend the pack with a different field. Walk the pack again")
+
+
 def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, walker_batch_size=50_000):
     """The walk of ``pack`` continued for ``T_add`` seconds on its own substrate: every walker resumed from the last
     window's endpoint in the pool it is in, a fresh ``seed``, the pack's block, band and window and the channels it
@@ -45,12 +60,17 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
 
     A spec that declares a susceptibility source has its field read in the walk at the pack's own band and read
     interval: a gridded source by every walk, a strand source with ``adaptive_steps=True`` regardless of what is
-    given (:func:`~dmipy_sim.spec.walk.field_source_kind`)."""
+    given (:func:`~dmipy_sim.spec.walk.field_source_kind`), its field pilot and read rule taken at the pack's stated
+    envelope (its maximum field strength and ``chi_max``). A myelinated cylinder or cell is continued with its closed
+    form, and the pack must record that same closed form as its field source: a pack whose field is a raster, or
+    another closed form, is refused (``ValueError``) and is walked again."""
     from ..engine.core import _walk_geometry
+    from .compression import certificate_settings
     from ..spec.build import geometry_from_spec
-    from ..spec.walk import walk, _needs_bundle_walk, field_source_kind, _single_geometry_field_grid
+    from ..spec.walk import walk, _needs_bundle_walk, field_source_kind, _single_geometry_field
     from ..spec.seeding import DrawnSeeds
     from dmipy_replay.phantom.grid import Grid
+    from ..fields.hollow_cylinder import HollowCylinderField
     spec = pack.substrate
     if spec is None:
         raise ValueError("the pack embeds no substrate spec, so there is no substrate to continue the walk on")
@@ -74,10 +94,12 @@ def continue_walk(pack, T_add, *, seed, require_gpu=None, adaptive_steps=False, 
         D = pack.diffusivity
         if D is None:
             raise ValueError("the pack records no diffusivity to continue the walk at")
-        fb = _single_geometry_field_grid(spec, g, None, None) if field_source_kind(spec) == "grid" else None
+        fb = _single_geometry_field(spec, g, None, None) if field_source_kind(spec) == "grid" else None
+        if isinstance(fb, HollowCylinderField):
+            _require_recorded_closed_form(ch.get("susceptibility_grid") or {}, fb, type(g).__name__)
         w = _walk_geometry(n_w, float(D), g, T_max=float(T_add), block_h=dt, seed=int(seed), r0=r_end.astype(np.float32),
                                   require_gpu=require_gpu, walker_batch_size=walker_batch_size, tiers=tiers, field_basis=fb,
-                                  K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **(field_kw if fb is not None else {}))
+                                  K=int(pack.K), block_order=int(pack.block["m"]), window_T=T_seg, **(dict(field_kw, envelope=certificate_settings(read_envelope(pack))) if fb is not None else {}))
         return dataclasses.replace(w, geometry=g, spec=(spec if w.spec is None else w.spec), envelope=read_envelope(pack))
     if pool is None:
         raise ValueError("a multi-surface spec is continued pool by pool, and the pack carries no compartment channel to say "

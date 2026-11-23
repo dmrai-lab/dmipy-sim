@@ -5,6 +5,35 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A packed myelinated cell seeds its pools by area for any number of cylinders.** `PackedMyelinatedCylinders` rounded each pool's expected count to a whole number per placement block of 4,096 walkers and gave the remainder to the outside, so a pool below half a walker a block (every lumen of a cell of about 10^4 cylinders) held none and the outside took almost every start. The pool counts of a block are now one multinomial draw from the block's key and each start is uniform in its pool, so every walker's start is an independent draw of the area law over the seeded pools and each pool's expected count is its area share exactly; walker `i`'s start is still a function of the seed, `i` and the geometry alone. For a caller: the starts of every packed myelinated walk change, and so do the bits of its walks (the recorded-bits families are replaced by ones recorded with the new starts). No other geometry's seeding changes.
+- **`walk` reads the field of a myelinated cylinder and of a packed myelinated cell in closed form** (behaviour
+  change: a field-on `walk` of a `MyelinatedCylinder` or `PackedMyelinatedCylinders` spec gives different field
+  modes). The spec route hands the walk `HollowCylinderField.of(geometry)`, read at the walker's position and, in a
+  cell, over its lattice, where it handed a raster of the sheaths (`field_grid_of`) that smears each
+  wall over a voxel and whose cell mean is zero. The walk equals `_walk_geometry(field_basis=HollowCylinderField.of(g))`
+  to the bit; its pack's `susceptibility_grid` states the closed form (`source`) in place of a grid shape, and a
+  backend that declares `FIELD_IN_WALK` and `PACKED_MYELINATED` walks a cell's closed form; an isolated myelinated
+  cylinder is walked by the JAX kernels only. `continue_walk` reads the field pilot of a closed-form (or raster) pack at the
+  pack's stated maximum field strength. `field_res=` is refused for these geometries (the closed form has
+  no nodes), and `continue_walk` refuses a pack whose recorded field is a raster or another closed form; every other
+  gridded source keeps its raster.
+- **`pack_plan` takes a banded tier's ratio from the record's packs that have the planned pack's own chunk fill.** The
+  packaged `codec_ratios.json` holds nine public packs, three of them with full chunks and six with less than one. A
+  plan of at least one chunk reads the record's `full_chunks` packs, a plan of less than one chunk its
+  `sub_chunk_packs`; a record with no pack of that basis gives the lane bound alone (provenance `proxy`), and the other
+  basis is never read in its place. The ratio range is a spread measured on those packs (the field of three
+  full-chunk packs spans 0.27 to 0.74) and no bound for another pack; the lane bound is the only bound, the range's
+  upper end below one chunk. For a caller: a plan below one chunk against a record that has full-chunk packs reads
+  `sub_chunk_packs`, and a plan of at least one chunk against a record of sub-chunk packs only becomes a proxy.
+- **The `walk_cost` pilot times each shape as the minimum of three calls with the garbage collector held off.** A pilot
+  shape's seconds were one timed call, so one stall (a full garbage collection, a scheduler pause) of 0.2 s in a timed
+  2-block call turned a 1.18 s projection into 4.32 s. A shape is now one untimed call (it holds the compile), then
+  `PILOT_TIMED_CALLS = 3` timed calls with the collector disabled and restored to the state it was found in; its seconds
+  are their minimum, and the fit and the projection do not move under one stalled call. The collector is collected once
+  before a pilot. Cost: a pilot shape makes 4 calls of the walk against 2 (the number of shapes is unchanged), the timed
+  part triples (0.57 s to 1.71 s for a sphere of 1000 walkers and 8 blocks), the compile is unchanged, and one
+  collection per pilot adds 0.1 to 0.2 s on a large heap.
+- **A walk that records its membrane trials compiles in seconds on JAX 0.12 as on 0.10.** The record adds a step's log entries in a loop (`lax.scan`) where it unrolled one copy per entry of the bounce budget; on JAX 0.12 the CPU compiler took minutes on that unrolled program (about 150 s per walk program at a budget of 32, against about 2 s now). The record's values are unchanged to the bit.
 - **`walk_cost` counts the membrane-trial record and costs it in the dtype the walk holds it in.** With
   `record_trials=` a stated capacity adds `trial_record.bytes_per_walker(slots, modes, itemsize)` to
   `WalkCost.bytes_per_walker` (and to the memory-limited batch and the profile), reported in the new field

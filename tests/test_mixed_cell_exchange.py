@@ -32,7 +32,7 @@ T = 6e-3
 DT = 5e-5
 G = 0.7
 CENTRES = np.array([[10e-6, 20e-6], [30e-6, 20e-6]])
-N = 6000                                    # by area, 4027 start in the plain lumen and 1973 in the myelinated one
+N = 6200                                    # each walker starts in a lumen drawn by area: 4161 expected (sd 37) in the plain lumen
 COMPARISONS = 3
 
 #: the plain cylinder's permeability, the oracle comparison's (the isolated cylinder's)
