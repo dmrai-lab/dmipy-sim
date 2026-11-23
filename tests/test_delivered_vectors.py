@@ -25,12 +25,20 @@ from dmipy_sim.spec import StratifiedByVoxel
 from dmipy_sim import walk
 from dmipy_replay.spec.tissue import Tissue
 
-DELTA, BIG_DELTA = 0.2e-3, 0.5e-3
+# The machines play what their slew allows: every lobe is a trapezoid on a 1 ms grid, one ramp sample at half its
+# plateau each side (0.5 1 1 0.5), at most 0.022 T/m (the Swoop's 0.023 T/m), so every step is at most 11 T/m/s, under
+# the Swoop's 22 T/m/s and the Prisma's and the Terra's 200 T/m/s; the layout's partitions are each lobe's three
+# constant pieces. A spin echo of 12 ms, a stimulated echo of 12 ms and a double diffusion encoding of 22 ms, the walk's
+# length.
+DT, G_TOP, SLEW = 1e-3, 0.022, 22.0
+DELTA, BIG_DELTA, TM = 3e-3, 8e-3, 4e-3
+TE_SE, TE_DDE = 12e-3, 22e-3
+LOBE = np.array([0.5, 1.0, 1.0, 0.5])
 TISSUE = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, T1={"intra": 0.9, "extra": 1.4, "myelin": 0.3},
                 rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
 # the phantom's centre 7.1 cm from isocentre, off every axis: inside the Swoop's 8 cm anchor, every term non-zero
 OFFSET = np.array([0.05, 0.03, 0.04])
-G_MAX = 60.0                                                     # T/m: the envelope of a 0.8 ms walk
+G_MAX = 0.08                                                     # T/m: the largest amplitude the three machines play
 
 
 @pytest.fixture(scope="module")
@@ -41,47 +49,65 @@ def layout(spec_grid):
     packs, dirs = [], []
     for b in (0, 1):
         want = np.zeros(grid.shape, np.int64); want[b] = 12
-        w = walk(spec, T_max=8e-4, block_h=2e-5, seed=31 + b, require_gpu=False, adaptive_steps=True, K=12,
+        w = walk(spec, T_max=TE_DDE, block_h=2e-4, seed=31 + b, require_gpu=False, adaptive_steps=True, K=24,
                       seeding=StratifiedByVoxel(grid=grid, walkers_per_voxel={"extra": want, "intra": want}), envelope=walk_envelope(of=spec))
         kw = {} if not packs else dict(position_container=packs[0].meta["compression"]["container"],      # a fill's shards
                                        blt_container=packs[0].meta["compression"]["channels"]["boundary_local_time"]["container"])
-        pk = build_replay_pack(w, id=f"t/dm{b}", license="x", citation="x", K=12, susc_path_K=4, voxel_grid=grid, **stated(of=w), **kw)
+        pk = build_replay_pack(w, id=f"t/dm{b}", license="x", citation="x", K=24, susc_path_K=4, voxel_grid=grid, **stated(of=w), **kw)
         packs.append(pk)
         n_t = pk.n_t
         dirs.append(str(tmp / f"dm_rows{b}"))
-        segment_rows(w, _shapes(n_t), dirs[-1], grid=grid, pack=pk, g_max=G_MAX, tiers=True, background=True)
+        segment_rows(w, _shapes(), dirs[-1], grid=grid, pack=pk, g_max=G_MAX, tiers=True, background=True)
     write_time_segment_layout(dirs, str(tmp / "dm_layout"))
     return TimeSegmentLayout(str(tmp / "dm_layout")), merge_packs(packs, id="t/dm-merged"), grid, n_t, dirs, tmp
 
 
-def _dde(n_t, a=1.0):
+def _se():
+    """The spin echo: a trapezoidal pair along z at ``G_TOP``, the 180 at 6 ms."""
+    return dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=G_TOP, TE=TE_SE, n_t=round(TE_SE / DT) + 1, slew_rate=SLEW)
+
+
+def _ste():
+    """The stimulated echo: a trapezoidal lobe along z at ``G_TOP`` either side of a 4 ms mixing time."""
+    return dr.pgste([[0, 0, 1]], DELTA, TM, gradient_strengths=G_TOP, TE=TE_SE, n_t=round(TE_SE / DT) + 1, slew_rate=SLEW,
+                    ste_flip_angles=(90.0, 90.0, 90.0))
+
+
+def _dde(a=1.0):
     """A double diffusion encoding refocused by the spin echo's one pulse: a pair along z and a pair along x at ``a``
     times its amplitude, each pair's lobes of one polarity on either side of the pulse (so the Maxwell term refocuses
-    too, as it does not across a bipolar pair), four segments of two levels."""
-    se = dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf)
+    too, as it does not across a bipolar pair), the four trapezoids at ``G_TOP``, twelve constant pieces."""
+    n_t = round(TE_DDE / DT) + 1
+    se = dr.pgse([[0, 0, 1]], DELTA, 11e-3, gradient_strengths=G_TOP, TE=TE_DDE, n_t=n_t, slew_rate=SLEW)
     G = np.zeros((1, n_t, 3), np.float32)
-    for i0, v in ((1, [0, 0, 1.0]), (9, [a, 0, 0]), (22, [0, 0, 1.0]), (30, [a, 0, 0])):
-        G[0, i0:i0 + 8, :] = v
+    for i0, v in ((1, [0, 0, 1.0]), (6, [a, 0, 0]), (12, [0, 0, 1.0]), (17, [a, 0, 0])):
+        G[0, i0:i0 + LOBE.size, :] = G_TOP * LOBE[:, None] * np.asarray(v, np.float32)
     return se.with_gradient(G)
 
 
-def _shapes(n_t):
-    return {"se": dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf),
-            "ste": dr.pgste([[0, 0, 1]], DELTA, BIG_DELTA - DELTA, gradient_strengths=0.05, n_t=n_t, slew_rate=np.inf,
-                           ste_flip_angles=(90.0, 90.0, 90.0)),
-            "dde": _dde(n_t)}
+def _shapes():
+    return {"se": _se(), "ste": _ste(), "dde": _dde()}
 
 
-def _protocol(name, n_t):
+def _rows(template, dirs, amplitudes):
+    """``template`` (one row along z) played along each of ``dirs`` at ``amplitudes`` times its own: the one trapezoid
+    with its one-sample ramps at every amplitude, so no row steps faster than the template."""
+    prof = np.asarray(template.G, np.float64)[0, :, 2]
+    G = np.stack([prof[:, None] * (a * np.asarray(v, np.float64))[None, :] for a, v in zip(amplitudes, dirs)])
+    return dr.ScannerSequence(G=G.astype(np.float32), dt=template.dt, rf=template.rf, readout=template.readout)
+
+
+def _protocol(name):
+    """Five measurements: four oblique directions at b in the ratio 1 : 2 : 3 : 3 (amplitudes up to ``G_TOP``) and a
+    b = 0 row; the double diffusion encoding's rows play its two pairs at two levels."""
     rng = np.random.default_rng(5)
     u = rng.normal(size=(4, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
-    b = np.array([1e9, 2e9, 3e9, 3e9, 0.0]); dirs = np.concatenate([u, [[0, 0, 1]]])
-    if name == "se":
-        return dr.pgse(dirs.tolist(), DELTA, BIG_DELTA, bvalues=b, n_t=n_t, slew_rate=np.inf)
-    if name == "ste":
-        return dr.pgste(dirs.tolist(), DELTA, BIG_DELTA - DELTA, bvalues=b, n_t=n_t, slew_rate=np.inf, ste_flip_angles=(90.0, 90.0, 90.0))
-    rows = [np.asarray(_dde(n_t, a).G)[0] * g for g, a in ((20.0, 1.0), (40.0, 0.6), (50.0, 1.0), (30.0, -0.5), (0.0, 1.0))]
-    se = _dde(n_t)
+    dirs = np.concatenate([u, [[0, 0, 1]]])
+    amp = np.sqrt(np.array([1.0, 2.0, 3.0, 3.0, 0.0]) / 3.0)
+    if name in ("se", "ste"):
+        return _rows(_se() if name == "se" else _ste(), dirs, amp)
+    rows = [np.asarray(_dde(a).G)[0] * g for g, a in ((0.4, 1.0), (0.8, 0.6), (1.0, 1.0), (0.6, -0.5), (0.0, 1.0))]
+    se = _dde()
     return dr.ScannerSequence(G=np.stack(rows), dt=se.dt, rf=se.rf, readout=se.readout)
 
 
@@ -124,7 +150,7 @@ def test_the_delivered_layout_is_the_machines_own_replay(layout, scanner):
     live = sm.live_voxels
     ijk = np.stack(np.unravel_index(live, tuple(grid.shape)), axis=1)
     for name in ("se", "ste", "dde"):
-        seq = _protocol(name, n_t)
+        seq = _protocol(name)
         dl = sm.delivery(seq, sc, placed)
         assert dl.partition == name and dl.q.shape == (len(live), seq.n_meas, len(sm.partitions[name].segments), 3)
         assert (dl.g0 is not None) == sc.has_field_law and (dl.kappa is not None) == sc.has_transmit_profile
@@ -143,7 +169,7 @@ def test_the_torch_backend_is_the_jax_image_under_a_delivery(layout):
     pytest.importorskip("torch")
     sm, merged, grid, n_t, dirs, tmp = layout
     sc = ScannerLimits.of("swoop")
-    seq = _protocol("ste", n_t)
+    seq = _protocol("ste")
     dl = sm.delivery(seq, sc, sm.grid.centred_at(OFFSET))
     S, _ = sm.image(seq, tissue=TISSUE, scanner=sc, b0_direction=sc.b0_axis, delivered=dl)
     St, _ = sm.image(seq, tissue=TISSUE, scanner=sc, b0_direction=sc.b0_axis, delivered=dl, backend="torch", device="cpu")
@@ -156,7 +182,7 @@ def test_each_term_reaches_the_image(layout):
     sm, merged, grid, n_t, dirs, tmp = layout
     sc = ScannerLimits.of("swoop")
     placed = sm.grid.centred_at(OFFSET)
-    seq = _protocol("se", n_t)
+    seq = _protocol("se")
     off = dict(nonlinearity=False, background=False, concomitant=False, transmit=False)
     base, _ = sm.image(seq, delivered=sm.delivery(seq, sc, placed, **off))
     S0, _ = sm.image(seq)
@@ -164,8 +190,9 @@ def test_each_term_reaches_the_image(layout):
     for term in ("nonlinearity", "concomitant"):
         S, _ = sm.image(seq, delivered=sm.delivery(seq, sc, placed, **{**off, term: True}))
         assert np.nanmax(np.abs(S - S0)) > 1e-5, term
-    # the magnet's own gradient over a 0.8 ms walk winds its walkers by less than half the background's derived step:
-    # every background vector rounds to zero, no word is stored, and the term moves nothing it could resolve
+    # the magnet's own gradient moves the image when the layout stores its background words; when it winds the walkers
+    # by less than half the background's derived step, every background vector rounds to zero, no word is stored, and
+    # the term moves nothing it could resolve
     S, _ = sm.image(seq, delivered=sm.delivery(seq, sc, placed, **{**off, "background": True}))
     bg = sm.manifest["groups"][sm.manifest["partitions"]["se"]["group"]]["background"]
     if bg["n_words"]:
@@ -185,10 +212,10 @@ def test_each_term_reaches_the_image(layout):
 def test_a_delivery_of_another_sequence_is_refused(layout):
     sm, merged, grid, n_t, dirs, tmp = layout
     sc = ScannerLimits.of("prisma")
-    seq = _protocol("se", n_t)
+    seq = _protocol("se")
     dl = sm.delivery(seq, sc, sm.grid.centred_at(OFFSET))
     with pytest.raises(ValueError, match="another sequence"):
-        sm.image(dr.pgse([[0, 0, 1]], DELTA, BIG_DELTA, bvalues=[1e9], n_t=n_t, slew_rate=np.inf), delivered=dl)
+        sm.image(_se(), delivered=dl)
 
 
 def test_a_layout_without_background_refuses_a_magnet_gradient(layout):
@@ -197,12 +224,12 @@ def test_a_layout_without_background_refuses_a_magnet_gradient(layout):
     sm, merged, grid, n_t, dirs, tmp = layout
     plain_rows = str(tmp / "dm_plain_rows")
     # the merged pack's rows written again without the background
-    segment_rows(merged, _shapes(n_t), plain_rows, grid=grid, g_max=G_MAX, tiers=True)     # the pack's own declared floor
+    segment_rows(merged, _shapes(), plain_rows, grid=grid, g_max=G_MAX, tiers=True)     # the pack's own declared floor
     write_time_segment_layout([plain_rows], str(tmp / "dm_plain"))
     plain = TimeSegmentLayout(str(tmp / "dm_plain"))
     assert not any(grp.get("background") for grp in plain.manifest["groups"].values())
     sc = ScannerLimits.of("swoop")
-    seq = _protocol("se", n_t)
+    seq = _protocol("se")
     with pytest.raises(ValueError, match="background"):
         plain.image(seq, delivered=plain.delivery(seq, sc, plain.grid.centred_at(OFFSET)))
     plain.image(seq, delivered=plain.delivery(seq, sc, plain.grid.centred_at(OFFSET), background=False))

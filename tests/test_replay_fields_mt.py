@@ -27,7 +27,9 @@ from dmipy_sim import simulate_mt_trajectories, SusceptibilitySources, mt
 from dmipy_sim.engine.core import _walk_geometry
 from dmipy_sim.replay.trajectories import replay, replay_bloch
 from dmipy_replay.replay.bloch_jax import replay_bloch_jax
-from dmipy_replay.replay.bloch import finite_180_longitudinal_dwell
+from dmipy_replay.replay.bloch import _bloch_timeline, finite_180_longitudinal_dwell
+from dmipy_replay.replay.compression import occupancy_pieces
+from dmipy_sim.replay.compression import encode_events_occupancy
 
 
 # ── (a) vector-Bloch replay vs the forward engine: emergent SE refocusing ────────
@@ -132,10 +134,17 @@ def test_mt_replay_zspectrum_matches_oracle():
     Z = np.zeros((1, traj.shape[1], 3))
     flip = 360.0 * w1_hz * t_sat
     rep = np.empty_like(offsets)
+    # the Bloch route reads the bound pool's occupancy averaged over each piece of the walk (the block grid cut at every
+    # RF instant), from the walk's exact bind / unbind events
+    occ, desc = encode_events_occupancy({"comp": (walk.compartment, walk.comp_events),
+                                         "bound": (walk.bound_start, walk.bound_events)})
+    comp_col, bound_col = desc["columns"]
     for i, off in enumerate(offsets):
         rf = [RFEvent(t_sat / 2, flip, axis_deg=0.0, duration_s=t_sat, offset_hz=float(off))]
+        edges = _bloch_timeline(rf, traj.shape[1], dt_tr)[0]
+        _, f_bound = occupancy_pieces(occ, comp_col, edges, 2, bound_column=bound_col)
         Ml, _ = replay_bloch(traj, dt_tr, Z, dt, rf, T2=T2, T1=T1,
-                                     bound_frac=bfrac, T2_bound=T2b, T1_bound=T1b,
+                                     bound_frac=f_bound, T2_bound=T2b, T1_bound=T1b,
                                      return_walker_signals=True)
         rep[i] = float(np.mean(Ml[2]))
 

@@ -42,7 +42,9 @@ def _builders():
         "cpmg.alternate": S.cpmg(3, 20e-3, gradient_directions=bv, bvalues=[5e8, 1e9], n_t_per_echo=50, polarity="alternate"),
         "cpmg.timing": S.cpmg(3, 40e-3, gradient_directions=bv, bvalues=[5e8, 1e9], n_t_per_echo=200, timing=TM),
         "gre": S.gre(30e-3, gradient_directions=bv, bvalues=B, delta=4e-3, Delta=12e-3, n_t=300),
-        "ste": S.ste(24e-3, bvalues=B / 5, n_t=240),
+        # 24 ms of six ramped 4 ms lobes at the 200 T/m/s default slew reach b = 4.28e8 at most (triangles); B / 10
+        # keeps the larger row at 0.18 T/m, ramps of 0.9 ms
+        "ste": S.ste(24e-3, bvalues=B / 10, n_t=240),
         "pte": S.pte([0.0, 0.0, 1.0], 24e-3, bvalues=B / 5, n_t=240),
         "from_waveform": S.from_waveform(G, 1e-4, bv[:1]),
     }
