@@ -34,6 +34,36 @@ RECORDED_BITS_ENV = "DMIPY_SIM_RECORDED_BITS"
 #: carry the field (``field_coeffs``, ``qv_field``, ``qv_field_increments``) are the walk's with the cell's exactly
 #: periodic field (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`).
 FAMILIES = {
+    "d0d7a6f831ecca7f9d94e401041709594f0f2ecf0cd90194cc97f1efb76590ea": {
+        "field": {
+            "position_coeffs": "3886a6f2918f49d9db8150cab5b0db35708e2004a6c523a077c02f522c99d22b",
+            "boundary_endpoint": "a6468cc76b61593a891a20cdbb8a4122f4b8a7fb72cb56dcab8d481c255515d9",
+            "boundary_bands": "483a79705963fd16b2e5bd44a523670193fc2c57c1de8b06e21d3c2beebf8635",
+            "compartment": "94a6c8a51255a63f755262119e0751907ee258b1a45d5f6fd60bce2bf896cfef",
+            "comp_events": "c80c27f359a2e1e78d9cc18697d56de853dbe5b236a4e097b891fd7319a5bb61",
+            "bound_start": "d13d4a8b3b8add19b5970157f09d00c12cbda4fed4d74d8493156523f7069b66",
+            "bound_events": "d85e665e87915a0547074574123091b10559d70c45a417a9d658aab4736c0b1f",
+            "field_coeffs": "0885d62d5a6173f22669523cdd92fe3c501039ae9864283b589993db9bcd2316",
+            "qv_positions": "01dc9bd13aa70c2848fa2f52d99302059f79419abfbc41c943fe86c26f3b53f0",
+            "qv_boundary": "2a10f33414d66a537f794a962c6cd4eaa352d75ff9a7938c8bb0a7137e8333b9",
+            "qv_field": "4c685966cc3d7f4046fe27b4ed59cc46047fa35850ed95bb95a2f9439ea5c15f",
+            "qv_field_increments": "af21ef398b73a5b1748f3bdd6bc419cba9d538515b59e2475eaf44582d665ec0",
+        },
+        "no_field": {
+            "position_coeffs": "2e5fca48f9c1f003775cf741a47b3a37b89cb2382fdb834ea4c9d466bba2c3a9",
+            "boundary_endpoint": "44bef2ce5439f01e63b5716e10c4f9b2c89cc5c4b928c9e26f21975166d0dc8b",
+            "boundary_bands": "15d7ff33823cbea0ad3e5382e51c343b9573546695856daabad520f8e00054e6",
+            "compartment": "94a6c8a51255a63f755262119e0751907ee258b1a45d5f6fd60bce2bf896cfef",
+            "comp_events": "7ea15196b67da26fe05a79d221cec25db800801ea85e4a9d577af14cec143e6f",
+            "qv_positions": "081ed72cdf2fae25c262654a2c9b172e9f3d5d9bb8be4341ed6d2c1d2849836c",
+            "qv_boundary": "25802701c078b6cc96f6366a1101e6313d60c927bbff9af86ca01d2e3b002281",
+        },
+        "forward": ["bd76a93f00d43a0d0427a92dd1462aeafa0cf503abace23519d05dd7842777a9",
+                    "c411c50a8a9d328af16bb9757147c4000467fd76f7793a9ba63c08a40fe46ed0",
+                    "45d80fd89aaa416b48aa75c31b5a677af425783f6a89df7ee9c24892ea3195f3",
+                    "8eb40ffebb5d9d2c85cef70c3df5b61a2e4e1f22d9661bb99419e958518bacc8",
+                    "d74f0785f9b4e8d7cafade4125099db0551920906277888b20293a58be3ccef9"],
+    },
     "e74c68c7486e5194fea424efc88122e001a185a20b6925b53b1b9f79a1cef439": {
         "field": {
             "position_coeffs": "50414eae62de40d03fb55fa05f74c7afce290f7ffaec55234701f2376300f330",
