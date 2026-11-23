@@ -197,7 +197,7 @@ ENV = dict(bvals=[0.0, 1e9], dirs=[[1, 0, 0]], ogse_periods=[2], shortd_b=1e9, s
 
 @pytest.mark.parametrize("family", ["packed", "single"])
 def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_channel(family):
-    """(c) ``walk`` of a myelinated cylinder or a packed cell reads its grid in the walk; the default pack
+    """(c) ``walk`` of a myelinated cylinder or a packed cell reads its closed form in the walk; the default pack
     encodes the path channel from the modes the walk accumulated (no grid route: the positions are lossy) and its
     certificate is within twice its floor."""
     geom = _packed() if family == "packed" else d.MyelinatedCylinder(
@@ -207,8 +207,9 @@ def test_a_myelinated_walk_carries_its_samples_and_the_pack_certifies_the_path_c
         compartments=d.Compartments(intra=d.Pool(D=D0), extra=d.Pool(D=D0), myelin=d.Pool(D=0.0)),
     )
     w = walk(geom.spec, 600, 5e-3, seed=2, require_gpu=False, envelope=walk_envelope(of=geom.spec))
-    assert isinstance(w.field_basis, FieldGrid) and w.field_coeffs is not None
-    assert w.field_basis.periodic == ((True,) * 3 if family == "packed" else (False,) * 3)
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+    assert isinstance(w.field_basis, HollowCylinderField) and w.field_coeffs is not None
+    assert w.field_basis.periodic == ((True, True, False) if family == "packed" else (False,) * 3)
     assert w.field_coeffs.shape == (600, w.n_windows, w.K_c3, 12)
     pk = build_replay_pack(w, id=f"test/{family}-in-walk", license="x", citation="x",
                            **stated(ENV, of=w, G_max=0.5))       # the strongest human class: a certificate within its floor

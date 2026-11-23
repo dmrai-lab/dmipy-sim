@@ -5,6 +5,17 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **`walk` reads the field of a myelinated cylinder and of a packed myelinated cell in closed form** (behaviour
+  change: a field-on `walk` of a `MyelinatedCylinder` or `PackedMyelinatedCylinders` spec gives different field
+  modes). The spec route hands the walk `HollowCylinderField.of(geometry)`, read at the walker's position and, in a
+  cell, over its lattice, where it handed a raster of the sheaths (`field_grid_of`) that smears each
+  wall over a voxel and whose cell mean is zero. The walk equals `_walk_geometry(field_basis=HollowCylinderField.of(g))`
+  to the bit; its pack's `susceptibility_grid` states the closed form (`source`) in place of a grid shape, and a
+  backend that declares `FIELD_IN_WALK` and `PACKED_MYELINATED` walks a cell's closed form; an isolated myelinated
+  cylinder is walked by the JAX kernels only. `continue_walk` reads the field pilot of a closed-form (or raster) pack at the
+  pack's stated maximum field strength. `field_res=` is refused for these geometries (the closed form has
+  no nodes), and `continue_walk` refuses a pack whose recorded field is a raster or another closed form; every other
+  gridded source keeps its raster.
 - **`pack_plan` takes a banded tier's ratio from the record's packs that have the planned pack's own chunk fill.** The
   packaged `codec_ratios.json` holds nine public packs, three of them with full chunks and six with less than one. A
   plan of at least one chunk reads the record's `full_chunks` packs, a plan of less than one chunk its

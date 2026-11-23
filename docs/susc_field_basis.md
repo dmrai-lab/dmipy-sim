@@ -80,10 +80,11 @@ magnetic pools' `|chi_iso| + |chi_aniso|` unless the envelope states it), which 
 pool's measured `QV` and interval, and the constants; a bundle walked pool by pool reads each pool at its own
 interval and states the coarsest, and the certificate charges the term there on every pool's read series.
 
-A gridded basis (`FieldGrid`, from `fields.susceptibility_field.field_grid_of`) is read by
-`_walk_geometry(field_basis=)`; a strand basis (`StrandFieldBasis`) by the adaptive producer, at the
-end of every `n_read`-th round. `walk` builds and passes the basis whenever a pool of the spec is a field
-source: there is no switch and no deferral.
+A gridded basis (`FieldGrid`, from `fields.susceptibility_field.field_grid_of`) and the closed form of hollow
+cylinders (`HollowCylinderField`) are read by `_walk_geometry(field_basis=)`; a strand basis (`StrandFieldBasis`) by
+the adaptive producer, at the end of every `n_read`-th round. `walk` builds and passes the basis whenever a pool of
+the spec is a field source: the closed form for a `MyelinatedCylinder` and a `PackedMyelinatedCylinders` cell
+(`HollowCylinderField.of`), the spec's raster for every other gridded source; there is no switch and no deferral.
 
 ## The channel
 
@@ -107,8 +108,9 @@ There is no `n_t` and no `dt`: the modes are a function on the window `[0, T]`, 
 consumer names. The channels are **geometry only** — `B0` direction, `B0` magnitude, `χ_iso` and `χ_aniso` all
 remain replay knobs, applied by the same `Q(H)` contraction (`bank.susc_path_field`).
 
-`compression.channels.susceptibility_grid` records only the field's placement (origin, voxel size, shape,
-periodicity, `arrays_in_pack: false`, `replay_route: "path"`): the grid is not in the pack, and every
+`compression.channels.susceptibility_grid` records only the field's source: a raster's placement (origin, voxel
+size, shape, periodicity), or a closed form's record (`source`, `HollowCylinderField.meta`: the cylinders, the cell
+and its summation), with `arrays_in_pack: false` and `replay_route: "path"`: no grid is in the pack, and every
 consumer reads the path.
 
 **The integer container is sufficient** (certified, not assumed), and it is derived, not chosen from two depths.
@@ -301,8 +303,9 @@ Three things must hold for a prefix read to be *valid*:
 3. **The tier map must be declared**, not left to the reader to guess, derived from the pack's own floor, so
    `eps(N) = floor_measured * sqrt(N_full / N)`.
 
-The field basis is a function of the embedded spec (`spec.walk.field_grid_of_spec`, the strand basis from
-the spec's strands), so the pack carries no field grid: only the channel, whose modes were read from it.
+The field basis is a function of the embedded spec (the closed form of a myelinated cylinder or cell,
+`HollowCylinderField.of`; the raster `spec.walk.field_grid_of_spec`; the strand basis from the spec's strands), so
+the pack carries no field grid: only the channel, whose modes were read from it.
 
 ## Fidelity gate
 

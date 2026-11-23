@@ -117,7 +117,11 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     the basis records, with the change the last doubling still made when the bound stopped it (``converged:
     False``). With ``field_far`` the part beyond the grid's ``near_m`` is read from that grid instead of summed, and
     the cutoff is the grid's. A strand source needs ``adaptive_steps=True`` (the reads are the adaptive producer's)
-    and is refused otherwise. Every other field-source substrate rasterises the field basis on the domain grid at the
+    and is refused otherwise. A myelinated cylinder and a packed myelinated cell take the closed form of their sheaths
+    (:meth:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField.of`: read at the walker's position, a cell's summed over
+    its lattice or, from 512 sheaths, read near and far), which has no node spacing: ``field_res`` is refused for them, and ``field_budget`` and
+    ``field_cache`` are a raster's settings, without effect on a closed form. Every other
+    field-source substrate rasterises the field basis on the domain grid at the
     node spacing the field source's thinnest shell sets (:func:`~dmipy_sim.fields.susceptibility_field.field_resolution`
     of ``spec.validity.thinnest_shell``: :data:`~dmipy_sim.fields.susceptibility_field.FIELD_NODES_ACROSS` nodes
     across it, measured; ``field_res`` in metres overrides it, and a spec that records no shell needs it) within
@@ -316,7 +320,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                 raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
             fb = None
             if kind == "grid":
-                fb = _single_geometry_field_grid(spec, g, field_res, field_budget, field_cache)
+                fb = _single_geometry_field(spec, g, field_res, field_budget, field_cache)
             if adaptive_steps:
                 raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
                                 f"walks one {type(g).__name__} (fused steps)")
@@ -391,8 +395,9 @@ def field_source_kind(spec):
     magnetic, :func:`~dmipy_sim.spec.substrate.susceptibility_field_of`); ``"strands"`` when the magnetic pool lies
     between two swept-polyline walls (the per-segment closed form,
     :class:`~dmipy_sim.fields.strand_field.StrandFieldBasis`); ``"grid"`` when it is a shell between two cylinder
-    walls (the analytic raster, :func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`) or is bounded by
-    surfaces of :data:`RASTERISED_KINDS` (the spec's own raster, :func:`field_grid_of_spec`). Any other magnetic
+    walls (the closed form, :class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`) or is bounded by
+    surfaces of :data:`RASTERISED_KINDS` (the spec's own raster, :func:`field_grid_of_spec`); either is read by the fixed-step walk once per field
+    read interval (``field_read_interval`` where given, else the interval the field pilot's rule derives). Any other magnetic
     pool is refused, naming its surfaces: a field the walk cannot compute is never left out of the pack. So is a
     second magnetic pool, since a walk computes the field of one."""
     if susceptibility_field_of(spec) == "absent":
@@ -420,14 +425,20 @@ def field_source_kind(spec):
           "or describe the magnetic pool with surfaces a field route computes")
 
 
-def _single_geometry_field_grid(spec, g, field_res, field_budget, field_cache=None):
-    """The :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid` a single-geometry walk of ``spec`` samples: the
-    analytic raster of a myelinated cylinder or packed cell (:func:`~dmipy_sim.fields.susceptibility_field.field_grid_of`;
-    the cell's grid periodic), else the spec's own raster (:func:`field_grid_of_spec`)."""
+def _single_geometry_field(spec, g, field_res, field_budget, field_cache=None):
+    """The field basis a single-geometry walk of ``spec`` reads in the walk: the closed form of a
+    :class:`~dmipy_sim.geometry.MyelinatedCylinder` or :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders`
+    (:meth:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField.of`; a packed cell's over every image of its
+    lattice), else the spec's own raster (:func:`field_grid_of_spec`, a
+    :class:`~dmipy_sim.fields.susceptibility_field.FieldGrid`). ``field_res`` is a raster's node spacing: given for a
+    geometry read in closed form it is refused by name."""
     from ..geometry.myelin import MyelinatedCylinder, PackedMyelinatedCylinders
-    from ..fields.susceptibility_field import field_grid_of
+    from ..fields.hollow_cylinder import HollowCylinderField
     if isinstance(g, (MyelinatedCylinder, PackedMyelinatedCylinders)):
-        return field_grid_of(g, res=field_res)
+        if field_res is not None:
+            raise SpecError(f"field_res={field_res!r} is the node spacing of a field raster; the field of a "
+                            f"{type(g).__name__} is read in closed form (HollowCylinderField.of), which has no nodes")
+        return HollowCylinderField.of(g)
     return field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, cache_dir=field_cache)
 
 
@@ -1220,7 +1231,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     if not seeded:
         raise SpecError("the seeding holds no seed of any pool; nothing to walk")
     # the field basis is built before the walk and read by it: a strand field certified on the start positions (read
-    # by the adaptive producer), a gridded one rasterised from the membership tests (read at every step)
+    # by the adaptive producer), a gridded one rasterised from the membership tests (read once per field read interval)
     current().phase("field basis")
     kind = field_source_kind(spec)                         # None when no pool is magnetic
     sf = fg = None
@@ -1233,7 +1244,7 @@ def _walk_bundle(spec, n_walkers, T_max, block_h, seed, n_probe, field_res, *, f
     elif kind == "grid":
         if adaptive_steps:
             raise SpecError("adaptive_steps reads a strand field in the walk; this spec's field source is gridded, which "
-                            "the fixed-step walk reads at every step (adaptive_steps=False)")
+                            "the fixed-step walk reads once per field read interval (adaptive_steps=False)")
         fg = field_grid_of_spec(spec, field_res=field_res, field_budget=field_budget, context=ctx, cache_dir=field_cache)
     works = []
     dropped = {}                                            # pool name -> its exclusion record (drop_pool_changes)
