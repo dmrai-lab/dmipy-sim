@@ -409,10 +409,14 @@ def test_the_walk_returns_and_states_its_object_nodes(tmp_path):
     assert on.factors.dtype == np.float32 and on.fractions.dtype == np.float64 and on.walkers.dtype == np.bool_
     assert on.seed == 2 ** 64 - 1 and isinstance(on.seed, int)
     rec = w.work["object_nodes"]
-    assert rec == dict(rule=MIXED_NODES_RULE, seed=2 ** 64 - 1, K=5, n=N_W, n_per_object=int(mask.sum()))
+    assert rec == dict(rule=MIXED_NODES_RULE, seed=2 ** 64 - 1, K=5, n=N_W, n_per_object=int(mask.sum()),
+                       realised_fractions=[float(x) for x in on.realised_fractions])
+    np.testing.assert_array_equal(w.object_node_index, np.arange(N_W, dtype=np.int64))
     w.save(tmp_path / "w.safetensors")
     back = CoefficientWalk.load(tmp_path / "w.safetensors")
     assert back.work["object_nodes"] == rec and back.object_nodes.seed == on.seed
+    assert np.array_equal(np.asarray(back.work["object_nodes"]["realised_fractions"], np.float64), on.realised_fractions)
+    assert back.object_node_index.dtype == np.int64 and np.array_equal(back.object_node_index, w.object_node_index)
     for name in ("factors", "fractions", "walkers"):
         x, y = getattr(back.object_nodes, name), getattr(on, name)
         assert x.dtype == y.dtype and np.array_equal(x, y)
@@ -518,12 +522,14 @@ def test_refusals():
             (good._replace(seed=1.0), "object_nodes_seed"),
             (good._replace(seed=True), "object_nodes_seed"),
             (good._replace(walkers=np.ones(7, bool)), "object_nodes_walkers"),
-            (good._replace(walkers=np.ones(8, np.int64)), "object_nodes_walkers"),
-            (good._replace(walkers=np.zeros(8, bool)), "object_nodes_no_walker")):
+            (good._replace(walkers=np.ones(8, np.int64)), "object_nodes_walkers")):
         _refused(_mixed(), bad, match)
     _refused(_mixed(), dict(good._asdict()), "object_nodes_type", exc=TypeError)
     _refused(_mixed(), good, "object_nodes_factor_conflict",
              permeability_factor=np.r_[np.ones(7), np.float32(0.999)].astype(np.float32))
+    near_one = np.r_[np.ones(7), 1.0 - 2.0 ** -26]                           # float64: float32 rounds it to 1.0
+    assert np.float32(near_one[-1]) == np.float32(1.0)
+    _refused(_mixed(), good, "object_nodes_factor_conflict", permeability_factor=near_one)
     # a factor of exactly 1.0 under the mask and any factor outside it are taken
     half = np.arange(8) >= 4
     w = _walk_geometry(8, D, _mixed(), T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8,
@@ -548,3 +554,308 @@ def test_walk_forwards_the_nodes_on_a_spec_of_one_geometry():
         np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
     np.testing.assert_array_equal(a.trial_record.N, b.trial_record.N)
     assert b.work["object_nodes"]["K"] == 2
+
+
+# ── review: the realised masses, the stable index, pieces with an empty mask, the seed, the thresholds ────────────
+
+def _node_ref(seed, w, obj, masses):
+    """The node of the stated rule from the RECORD's quantities: the seed, the stable index and the realised masses,
+    whose running sums times ``2^53`` are the thresholds (NumPy reference hash)."""
+    tau = np.cumsum(np.round(np.ldexp(np.asarray(masses, np.float64), 53)).astype(np.uint64))[:-1]
+    m = _m_ref(np.uint64(seed), np.asarray(w, np.uint64), np.asarray(obj, np.uint64))
+    return np.sum(m[..., None] >= tau, axis=-1)
+
+
+@pytest.mark.parametrize("name", ["K1", "K5", "K201"])
+def test_the_realised_masses_are_the_thresholds(name):
+    """The masses the nodes are drawn with: the thresholds' differences times ``2^-53``, exactly; they sum to 1
+    exactly. Against the input: each mass of ``i < K - 1`` is within ``2^-53`` plus the float64 rounding of the
+    cumulative ``c_i``, the last within ``2^-53`` of ``1 - c_{K-2}`` (all in exact rationals); for the ticket's five
+    fractions every mass is within ``2^-53`` of its fraction. The device node index reads the same thresholds."""
+    from fractions import Fraction
+    from dmipy_sim.engine.physics import object_node_masses, object_node_thresholds_of_masses
+    f = _fraction_sets()[name]
+    nodes = ObjectNodes(np.ones(len(f), np.float32), f, SEED, np.ones(1, bool))
+    m = nodes.realised_fractions
+    tau = object_node_thresholds(f)
+    assert m.dtype == np.float64 and m.shape == f.shape
+    assert float(np.sum(m)) == 1.0 and sum(Fraction(float(x)) for x in m) == 1
+    edges = [0] + tau + [2 ** 53]
+    assert [Fraction(float(x)) for x in m] == [Fraction(b - a, 2 ** 53) for a, b in zip(edges[:-1], edges[1:])]
+    assert object_node_thresholds_of_masses(m) == tau
+    np.testing.assert_array_equal(object_node_masses(tau), m)
+    ulp = Fraction(1, 2 ** 53)
+    c = 0.0
+    cs = []
+    for x in f[:-1]:
+        c = c + float(x)
+        cs.append(Fraction(c))
+    prev = Fraction(0)
+    for i in range(len(f) - 1):
+        rounding = abs(cs[i] - (prev + Fraction(float(f[i]))))
+        assert abs(Fraction(float(m[i])) - Fraction(float(f[i]))) < ulp + rounding, i
+        prev = cs[i]
+    assert abs(Fraction(float(m[-1])) - (1 - prev)) < ulp
+    if name == "K5":
+        assert all(abs(Fraction(float(a)) - Fraction(float(b))) < ulp for a, b in zip(m, f))
+        assert m[0] == 900719925474100 / 2 ** 53 and m[0] != f[0]
+
+
+def test_take_keeps_the_stable_index_and_the_record_recomputes_the_node(tmp_path):
+    """``take([1])``: row 0 is walker 1, its stable index 1 is kept, and its node at object 0 recomputed from the
+    returned record alone (the seed, the realised masses, the stable index) is walker 1's node, 3 for the ticket's
+    seed and fractions; through the walk file too. Row 0 of the full walk has another node there."""
+    from dmipy_sim.coefficient_walk import CoefficientWalk
+    w = _walk(_packed(), object_nodes=_nodes_of(N_W))
+    part = w.take([1])
+    np.testing.assert_array_equal(part.object_node_index, [1])
+    part.save(tmp_path / "part.safetensors")
+    back = CoefficientWalk.load(tmp_path / "part.safetensors")
+    for walk in (part, back):
+        rec = walk.work["object_nodes"]
+        node = _node_ref(rec["seed"], walk.object_node_index[0], 0, rec["realised_fractions"])
+        assert int(node) == 3
+    assert int(_node_ref(SEED, 0, 0, w.work["object_nodes"]["realised_fractions"])) != 3
+    # the device's node, from the record's quantities, is the same
+    from dmipy_sim.engine.physics import object_node_key_rows, object_node_thresholds_of_masses
+    tau = object_node_thresholds_of_masses(part.work["object_nodes"]["realised_fractions"])
+    table = object_node_table(np.ones(5, np.float32), FRACTIONS)
+    assert list(table.key[1]) == tau
+    k = jnp.asarray(object_node_key_rows(part.work["object_nodes"]["seed"], part.object_node_index)[0])
+    assert int(table.node_of(k, jnp.asarray(0))) == 3
+
+
+def test_pieces_with_an_empty_mask_join():
+    """A 64-walker mask selecting only the last 32: walked in two pieces (the first piece's mask selects none of its
+    walkers, a walk with object nodes all the same), joined, equals the one-piece walk -- the records and the
+    positions bit for bit; a piece walked without object nodes does not join one with them."""
+    from dmipy_sim.coefficient_walk import join_walks
+    geo = _packed()
+    mask = np.arange(64) >= 32
+    spec = TrialRecordSpec(modes=3, band_edges=SPEC.band_edges, slots=48)
+    kw = dict(seed=3, tiers="all", require_gpu=False, K=8, record_trials=spec, events_capacity=64)
+    whole = _walk_geometry(64, D, geo, T, BLOCK, object_nodes=_nodes_of(64, mask), **kw)
+    a = _walk_geometry(32, D, geo, T, BLOCK, object_nodes=_nodes_of(32, mask[:32]), **kw)
+    b = _walk_geometry(32, D, geo, T, BLOCK, first_walker=32, object_nodes=_nodes_of(32, mask[32:]), **kw)
+    assert a.work["object_nodes"]["n_per_object"] == 0
+    joined = join_walks([a, b])
+    assert joined.work["object_nodes"] == whole.work["object_nodes"]
+    assert {k: v for k, v in joined.work.items() if k not in ("block",)} == \
+        {k: v for k, v in whole.work.items() if k not in ("block",)}
+    for name in ("position_coeffs", "boundary_bands", "compartment", "object_node_index"):
+        np.testing.assert_array_equal(getattr(joined, name), getattr(whole, name), err_msg=name)
+    np.testing.assert_array_equal(joined.object_nodes.walkers, mask)
+    tw, tj = whole.trial_record.to_dense(), joined.trial_record.to_dense()
+    for name in ("n", "N", "S"):
+        np.testing.assert_array_equal(getattr(tj, name), getattr(tw, name), err_msg=name)
+    bare = _walk_geometry(32, D, geo, T, BLOCK, **kw)
+    with pytest.raises(ValueError, match="object_nodes: walks"):
+        join_walks([bare, b])
+
+
+SEED_MAX = 2 ** 64 - 1
+
+
+def _seed_check(w, seed):
+    """Factors ``[0, 1]``: every (walker, object) pair whose node is 0 at ``seed`` (the reference hash on the
+    walker's stable index) grants nothing, and pairs whose node is 1 grant; returns the granted pairs."""
+    rec = w.work["object_nodes"]
+    N = w.trial_record.to_dense().N.sum(axis=2)                                 # (walker, object)
+    n = w.trial_record.to_dense().n.sum(axis=2)
+    walker, obj = np.nonzero(n)
+    node = _node_ref(seed, np.asarray(w.object_node_index)[walker], obj, rec["realised_fractions"])
+    granted = N[walker, obj] > 0
+    assert not np.any(granted & (node == 0)), "a pair of node 0 (factor 0) was granted"
+    assert np.sum(node == 0) > 20 and np.sum(granted & (node == 1)) > 20, (np.sum(node == 0), np.sum(granted))
+    return int(np.sum(granted))
+
+
+def test_the_seed_reaches_the_kernels_on_both_walk_paths():
+    """Factors ``[0, 1]`` at equal fractions and the seed ``2^64 - 1``: through ``_walk_geometry`` and through
+    ``walk`` on the spec, every pair the hash gives node 0 at THAT seed is never granted while pairs of node 1 are, so
+    the kernels read the walk's seed (a key built with any other seed puts about half of the granted pairs on node 0
+    by the stated rule)."""
+    from dmipy_replay import envelope_of
+    from dmipy_sim.spec.walk import walk
+    geo = _packed()
+    nodes = _nodes_of(N_W, factors=[0.0, 1.0], fractions=[0.5, 0.5], seed=SEED_MAX)
+    a = _walk(geo, object_nodes=nodes)
+    b = walk(geo.spec, N_W, T, BLOCK, envelope=envelope_of("prisma"), diffusivity=D, seed=3, K=8, record_trials=SPEC,
+             require_gpu=False, object_nodes=nodes)
+    assert a.work["object_nodes"]["seed"] == b.work["object_nodes"]["seed"] == SEED_MAX
+    for w in (a, b):
+        _seed_check(w, SEED_MAX)
+    with pytest.raises(AssertionError):
+        _seed_check(a, SEED)                                                   # the check tells the seeds apart
+
+
+TWO = (np.array([0.1, 1.0], np.float32), np.array([0.5, 0.5]))
+
+
+def _packed_nodes_kernel(n, seed_rng, factors, fractions):
+    """The packed cylinders' kernel with the node table of ``factors`` and ``fractions``, long steps from starts by the walls: per logged trial
+    its word, outcome, object, node (reference), and the bracket of every node's threshold."""
+    f32 = np.float32
+    table = object_node_table(factors, fractions)
+    c, Lc, _ = pack_cylinders(RADII, target_vf=0.45, seed=1)
+    r_min = float(RADII.min())
+    step = LONGEST_STEP * r_min / 6.0
+    pk = packed_wall_kernel(jnp.asarray(c, f32), jnp.asarray(RADII, f32), f32(Lc), f32(1e-7 * r_min),
+                            f32(1e-4 * r_min), step, periodic_min_gap(c, RADII, Lc), trials=True, nodes=table)
+    rng = np.random.default_rng(seed_rng)
+    k = rng.integers(0, len(RADII), n)
+    off = rng.uniform(-1.0, 1.0, n) * step
+    ang = rng.uniform(0, 2 * np.pi, n)
+    p = (c[k] + (RADII[k] + off)[:, None] * np.stack([np.cos(ang), np.sin(ang)], 1)).astype(f32)
+    th = rng.uniform(0, 2 * np.pi, n)
+    d = np.stack([np.cos(th), np.sin(th)], 1).astype(f32)
+    ln = (step * rng.uniform(0.2, 6.0, n)).astype(f32)
+    keys = jax.random.split(jax.random.PRNGKey(seed_rng), n)
+    nk = jnp.asarray(object_node_keys(SEED, FIRST, n))
+    kod = jnp.asarray(np.asarray(KAPPA / D, f32))
+    run = jax.jit(jax.vmap(lambda a, b, l, i0, kk, key: pk(a, b, l, i0, kod, f32(0.0), kk, key)))
+    h = run(jnp.asarray(p), jnp.asarray(d), jnp.asarray(ln), jnp.asarray(off < 0), keys, nk)
+    words = np.asarray(jax.vmap(lambda kk: jax.random.bits(kk, (pk.bounce_loop.budget,), dtype=jnp.uint32))(keys))
+    v, g, o, u = (np.asarray(x) for x in (h.trials.valid, h.trials.granted, h.trials.obj, h.trials.u))
+    walker = np.broadcast_to(np.arange(n)[:, None], v.shape)[v]
+    obj, granted, word = o[v], g[v], words.astype(np.uint64)[v]
+    node = _node_ref(SEED, FIRST + walker, obj, object_node_masses_of(fractions))
+    d_perp = u[v].astype(np.float64) * RADII[obj].astype(f32).astype(np.float64) / 2.0
+    brackets = []
+    for fac in factors:
+        kod_n = (np.asarray(KAPPA / D, f32)[obj] * fac).astype(f32)
+        lo = realised_acceptance(kod_n, (d_perp * (1 - 4e-7)).astype(f32)).astype(np.uint64)
+        hi = realised_acceptance(kod_n, (d_perp * (1 + 4e-7)).astype(f32)).astype(np.uint64)
+        brackets.append((lo, hi))
+    return dict(granted=granted, word=word, node=node, obj=obj, brackets=brackets, h=h)
+
+
+def object_node_masses_of(fractions):
+    from dmipy_sim.engine.physics import object_node_masses
+    return object_node_masses(object_node_thresholds(fractions))
+
+
+def test_the_packed_kernel_reads_each_nodes_own_threshold():
+    """Two nodes of factors 0.1 and 1 (thresholds an order of magnitude apart) on the permeable cylinders: every logged
+    trial's outcome is its word against its OWN node's threshold; each node has granted and refused trials (both
+    sides of its threshold populated); and for each node at least 100 trials would have the other outcome under the
+    other node's threshold, so a kernel reading the wrong node's threshold fails here whatever the draws."""
+    t = _packed_nodes_kernel(20000, 13, *TWO)
+    perm = KAPPA[t["obj"]] > 0
+    granted, word, node = t["granted"][perm], t["word"][perm], t["node"][perm]
+    own_lo = np.where(node == 0, t["brackets"][0][0][perm], t["brackets"][1][0][perm])
+    own_hi = np.where(node == 0, t["brackets"][0][1][perm], t["brackets"][1][1][perm])
+    assert np.all(np.where(granted, word < own_hi, word >= own_lo))
+    assert np.all((word < own_lo) | (word >= own_hi))
+    pops = {}
+    for i in (0, 1):
+        sel = node == i
+        lo_o, hi_o = t["brackets"][1 - i][0][perm][sel], t["brackets"][1 - i][1][perm][sel]
+        wrong_under_other = np.where(granted[sel], word[sel] >= hi_o, word[sel] < lo_o)
+        pops[i] = (int(granted[sel].sum()), int((~granted[sel]).sum()), int(wrong_under_other.sum()))
+        assert pops[i][0] >= 100 and pops[i][1] >= 100 and pops[i][2] >= 100, pops
+    print("packed two-node populations (granted, refused, wrong under the other node):", pops)
+
+
+def _mixed_long(table, n=6000, seed=5):
+    """The mixed cell's kernel with ``table`` at the factor test's long steps from starts by the plain walls."""
+    f32 = np.float32
+    cell = _mixed().cell_arrays()
+    long_max = LONGEST_STEP * float(cell.inner_radii.min()) / 6
+    kern = _mixed_kernel(cell, cell.kappa_outer, (cell.D_intra, cell.D_myelin, cell.D_extra), nodes=table,
+                         step_max=long_max)
+    rng = np.random.default_rng(seed)
+    pts, dirs, _, pool, own, _ = (np.asarray(a) for a in _plain_starts(n, long_max, seed))
+    ls = (long_max * rng.uniform(0.2, 6.0, n)).astype(f32)
+    rk = jax.random.split(jax.random.PRNGKey(seed), n)
+    words = jax.vmap(lambda kk: jax.random.bits(kk, (kern.bounce_loop.budget,), dtype=jnp.uint32))(rk)
+    us = jax.vmap(lambda kk: jax.random.uniform(kk, dtype=jnp.float32))(rk)
+    keys = jnp.asarray(object_node_keys(SEED, FIRST, n))
+    return jax.jit(jax.vmap(lambda p, d, l, pl, o, u, wd, nk: kern(p, d, l, pl, o, u, wd, None, nk)))(
+        jnp.asarray(pts), jnp.asarray(dirs), jnp.asarray(ls), jnp.asarray(pool), jnp.asarray(own), us, words, keys)
+
+
+@pytest.mark.parametrize("kernel", ["mixed", "packed"])
+def test_changing_one_nodes_factor_changes_only_its_trials(kernel):
+    """Node 2's factor changed (0.4 to 0.9), every other the same: a step with no trial at a (walker, object) pair of
+    node 2 (reference hash) is the same step bit for bit, and at least 100 steps that met node 2 change."""
+    changed = FACTORS.copy()
+    changed[2] = np.float32(0.9)
+    if kernel == "mixed":
+        a, b = _mixed_long(object_node_table(FACTORS, FRACTIONS)), _mixed_long(object_node_table(changed, FRACTIONS))
+        walker_of = np.arange(a.trials.valid.shape[0])
+    else:
+        a = _packed_nodes_kernel(6000, 17, FACTORS, FRACTIONS)["h"]
+        b = _packed_nodes_kernel(6000, 17, changed, FRACTIONS)["h"]
+        walker_of = np.arange(a.trials.valid.shape[0])
+    v, o = np.asarray(a.trials.valid), np.asarray(a.trials.obj)
+    node = _node_ref(SEED, FIRST + walker_of[:, None], np.where(v, o, 0), object_node_masses_of(FRACTIONS))
+    at_two = np.any(v & (node == 2), axis=1)
+    same = np.ones(v.shape[0], bool)
+    for x, y in zip(jax.tree_util.tree_leaves(a), jax.tree_util.tree_leaves(b)):
+        x, y = np.asarray(x), np.asarray(y)
+        same &= np.all((x == y).reshape(x.shape[0], -1), axis=1)
+    assert np.all(same[~at_two]), int(np.sum(~same[~at_two]))
+    assert int(np.sum(~same[at_two])) >= 100, int(np.sum(~same[at_two]))
+
+
+def test_the_sheathed_walls_read_no_node():
+    """Steps by the sheathed cylinders with small uniforms (their trials grant): the kernel with nodes is the kernel
+    without, bit for bit, while the kernel whose sheathed ``kappa_outer`` is scaled by a node's factor (0.05) gives at
+    least 20 other outcomes -- the equality is not vacuous."""
+    f32 = np.float32
+    cell = _mixed().cell_arrays()
+    Dw = (cell.D_intra, cell.D_myelin, cell.D_extra)
+    step_max = cell.step_max(1e-6)
+    with_nodes = _mixed_kernel(cell, cell.kappa_outer, Dw, nodes=object_node_table(FACTORS, FRACTIONS))
+    plain = _mixed_kernel(cell, cell.kappa_outer, Dw)
+    scaled = _mixed_kernel(cell, np.where(cell.plain_mask, cell.kappa_outer, cell.kappa_outer * f32(0.05)), Dw)
+    n = 6000
+    rng = np.random.default_rng(23)
+    ks = rng.choice(np.flatnonzero(~PLAIN), n)
+    off = rng.uniform(-1.0, 1.0, n) * step_max
+    ang = rng.uniform(0, 2 * np.pi, n)
+    sp = (CENTRES[ks] + (OUTER[ks] + off)[:, None] * np.stack([np.cos(ang), np.sin(ang)], 1)).astype(f32)
+    sd = np.stack([np.cos(ang + 2.0), np.sin(ang + 2.0)], 1).astype(f32)
+    sl = (step_max * rng.uniform(0.2, 1.0, n)).astype(f32)
+    spool = np.where(off < 0, 2, 0).astype(np.int32)
+    sown = np.where(off < 0, ks, 0).astype(np.int32)
+    su = rng.uniform(0, 1e-3, n).astype(f32)
+    rk = jax.random.split(jax.random.PRNGKey(23), n)
+    words = jax.vmap(lambda kk: jax.random.bits(kk, (with_nodes.bounce_loop.budget,), dtype=jnp.uint32))(rk)
+    keys = jnp.asarray(object_node_keys(SEED, FIRST, n))
+    args = tuple(jnp.asarray(x) for x in (sp, sd, sl, spool, sown, su))
+    a = jax.jit(jax.vmap(lambda p, d, l, pl, o, u, wd, nk: with_nodes(p, d, l, pl, o, u, wd, None, nk)))(*args, words, keys)
+    b = jax.jit(jax.vmap(lambda p, d, l, pl, o, u, wd: plain(p, d, l, pl, o, u, wd)))(*args, words)
+    c = jax.jit(jax.vmap(lambda p, d, l, pl, o, u, wd: scaled(p, d, l, pl, o, u, wd)))(*args, words)
+    for x, y in zip(jax.tree_util.tree_leaves(a), jax.tree_util.tree_leaves(b)):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+    crossed_a = np.asarray(a.pool) != spool
+    crossed_c = np.asarray(c.pool) != spool
+    assert crossed_a.sum() > 50 and int(np.sum(crossed_a != crossed_c)) >= 20, (crossed_a.sum(), np.sum(crossed_a != crossed_c))
+
+
+def test_refuses_reads_the_nodes_the_batches_carry():
+    """A backend declaring ``OBJECT_NODES`` is asked ``refuses`` with the whole walk's object nodes and stable indices,
+    which its batch requests then carry row by row."""
+    from dmipy_sim.engine import backends
+    seen = {}
+
+    class Rec:
+        name = "rec"
+        capabilities = backends.JAX_CAPABILITIES
+
+        def refuses(self, request):
+            seen["nodes"], seen["index"] = request.object_nodes, request.object_node_index
+            return "stop here"
+
+        def walk_batch(self, request, r0, keys):
+            raise AssertionError("not walked")
+
+    mask = np.arange(8) % 2 == 0
+    with pytest.raises(ValueError, match="stop here"):
+        _walk_geometry(8, D, _packed(), T, BLOCK, seed=3, tiers="all", require_gpu=False, K=8, first_walker=5,
+                       object_nodes=_nodes_of(8, mask), backend=Rec())
+    assert seen["nodes"] is not None and int(seen["nodes"].seed) == SEED
+    np.testing.assert_array_equal(seen["nodes"].walkers, mask)
+    np.testing.assert_array_equal(seen["index"], 5 + np.arange(8))

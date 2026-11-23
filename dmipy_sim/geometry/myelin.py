@@ -427,7 +427,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         if factor is not None:                                                 # the walker's own plain-wall permeability
             ko_c = jnp.where(plain_c, ko_c * factor, ko_c)
         if node_key is not None:                                               # the walker's node factor per candidate
-            ko_n = jnp.where(plain_c, ko_stated * nodes.factor_of(node_key, idx), ko_stated)
+            ko_n = jnp.where(plain_c, ko_stated * nodes.factors[nodes.node_of(node_key, idx)], ko_stated)
             ko_c = ko_n if node_on is None else jnp.where(node_on, ko_n, ko_c)
         Di_c, Dm_c, De_c = D_intra[idx], D_myelin[idx], D_extra[idx]
         w_c = rho_weights[idx]                                                 # (n_cand, 4)

@@ -201,13 +201,28 @@ class ObjectNodes(NamedTuple):
     factor of a node drawn for that (walker, object) pair (``_walk_geometry(object_nodes=)``).
 
     The node of walker ``w`` (its stable index in the seed, ``first_walker + row``) at object ``k`` (the object's index
-    as the trial record states it, ``obj``) is node ``i`` with probability ``fractions[i]``, a pure function of
-    ``(seed, w, k)`` (:func:`object_node_bits`, :func:`object_node_index`): the same pair draws the same node in every
-    walk, whatever the batch, the piece or the step, and two objects of one walker draw independent nodes."""
+    as the trial record states it, ``obj``) is a pure function of ``(seed, w, k)`` (:func:`object_node_bits`,
+    :func:`object_node_index`): the same pair draws the same node in every walk, whatever the batch, the piece or the
+    step.
+
+    The node's probabilities are the REALISED masses :attr:`realised_fractions`, not ``fractions``: node ``i`` is
+    selected on the integers ``tau_{i-1} <= m < tau_i`` of the 53-bit ``m`` (:func:`object_node_thresholds`), so its
+    mass is ``(tau_i - tau_{i-1}) 2^-53`` (``tau_{-1} = 0``, ``tau_{K-1} = 2^53``), exact over a seed uniform on
+    ``[0, 2^64)`` (for a fixed ``(w, k)`` the hash is a bijection of the seed). Each realised mass of ``i < K - 1`` is
+    within ``2^-53`` plus the float64 rounding of the cumulative ``c_i`` of ``fractions[i]``; the last one also
+    absorbs ``1 - sum(fractions)``. The nodes of two objects of one walker, or of two walkers, are those of a mixing
+    hash of the pair, not exactly independent draws: their joint law is measured, not stated."""
     factors: object      #: ``(K,)`` float32 in ``[0, 1]``, ``1 <= K <= OBJECT_NODES_MAX``: node ``i``'s factor of the stated permeability
-    fractions: object    #: ``(K,)`` float64, positive, summing to 1 within ``OBJECT_NODES_SUM_TOL``: node ``i``'s probability
+    fractions: object    #: ``(K,)`` float64, positive, summing to 1 within ``OBJECT_NODES_SUM_TOL``: the requested
+                         #: node probabilities, from which the thresholds are formed
     seed: int            #: an integer in ``[0, 2^64)``: the hash's seed, distinct from the walk's own seed stream
     walkers: object      #: ``(n_walkers,)`` bool, walker order: the walkers that draw a node per object
+
+    @property
+    def realised_fractions(self):
+        """``(K,)`` float64, exact: the masses the nodes are drawn with, ``(tau_i - tau_{i-1}) 2^-53``
+        (:func:`object_node_masses`); they sum to 1 exactly."""
+        return object_node_masses(object_node_thresholds(self.fractions))
 
 
 OBJECT_NODES_MAX = 4096
@@ -320,6 +335,27 @@ def object_node_thresholds(fractions):
     return out
 
 
+def object_node_masses(thresholds):
+    """``(K,)`` float64, exact: the masses ``(tau_i - tau_{i-1}) 2^-53`` of the thresholds ``tau`` (``K - 1``
+    integers, :func:`object_node_thresholds`), ``tau_{-1} = 0`` and ``tau_{K-1} = 2^53``. Each is a multiple of
+    ``2^-53`` below 1, so it and every partial sum are exact in float64 and the masses sum to 1 exactly."""
+    edges = [0] + [int(t) for t in thresholds] + [2 ** 53]
+    return np.asarray([np.ldexp(float(b - a), -53) for a, b in zip(edges[:-1], edges[1:])], np.float64)
+
+
+def object_node_thresholds_of_masses(masses):
+    """The thresholds ``tau_i`` (Python integers) of the realised masses (:func:`object_node_masses`), exactly: the
+    running sums of ``masses_i 2^53``, each an integer."""
+    out, t = [], 0
+    for x in np.asarray(masses, np.float64)[:-1]:
+        q = np.ldexp(float(x), 53)
+        if q != int(q):
+            raise ValueError(f"a realised mass is a multiple of 2^-53; got {float(x)!r}")
+        t += int(q)
+        out.append(t)
+    return out
+
+
 class ObjectNodeTable(NamedTuple):
     """The node table a wall kernel closes over: the ``K`` float32 factors and the ``K - 1`` thresholds as uint32
     words (:func:`object_node_table`); ``key`` its hashable identity (the factors' bits and the thresholds)."""
@@ -328,10 +364,10 @@ class ObjectNodeTable(NamedTuple):
     tau_lo: object
     key: tuple
 
-    def factor_of(self, node_key, k):
-        """The factor of the node of the walker ``node_key`` at the objects ``k`` (float32, ``k``'s shape)."""
+    def node_of(self, node_key, k):
+        """The node of the walker ``node_key`` at the objects ``k`` (int32, ``k``'s shape)."""
         m_hi, m_lo = object_node_bits(node_key, k)
-        return self.factors[object_node_index(m_hi, m_lo, self.tau_hi, self.tau_lo)]
+        return object_node_index(m_hi, m_lo, self.tau_hi, self.tau_lo)
 
 
 def object_node_table(factors, fractions):
@@ -348,10 +384,16 @@ def object_node_table(factors, fractions):
 def object_node_keys(seed, first_walker, n_walkers):
     """The node keys of the walkers ``first_walker .. first_walker + n_walkers - 1``: ``(n_walkers, 4)`` uint32, per
     walker the seed's high and low words and its stable index's high and low words, a function of the seed and the
-    index alone."""
+    index alone (:func:`object_node_key_rows`)."""
+    return object_node_key_rows(seed, np.uint64(int(first_walker)) + np.arange(int(n_walkers), dtype=np.uint64))
+
+
+def object_node_key_rows(seed, index):
+    """The node keys of the walkers of stable indices ``index`` (``(n,)`` non-negative integers below 2^64):
+    ``(n, 4)`` uint32, per walker the seed's high and low words and its index's high and low words."""
     seed_hi, seed_lo = _hi_lo(seed)
-    idx = np.uint64(int(first_walker)) + np.arange(int(n_walkers), dtype=np.uint64)
-    out = np.empty((int(n_walkers), 4), np.uint32)
+    idx = np.asarray(index).astype(np.uint64)
+    out = np.empty((idx.shape[0], 4), np.uint32)
     out[:, 0], out[:, 1] = seed_hi, seed_lo
     out[:, 2] = (idx >> np.uint64(32)).astype(np.uint32)
     out[:, 3] = (idx & np.uint64(0xFFFFFFFF)).astype(np.uint32)

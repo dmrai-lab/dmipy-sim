@@ -114,7 +114,7 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
         per_object = jnp.ndim(kappa_over_D) == 1                               # static: one kappa per object
         k_c = kappa_over_D[idx] if per_object else kappa_over_D
         if node_key is not None:                                               # the walker's node factor per candidate
-            k_n = k_c * nodes.factor_of(node_key, idx)                         # (n_cand,)
+            k_n = k_c * nodes.factors[nodes.node_of(node_key, idx)]            # (n_cand,)
 
         def rule(pp, d, rem, state, i):
             q = _wrap(pp[None, :] - c_c)                                       # (n_cand, dim)

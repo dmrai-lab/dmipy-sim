@@ -1273,8 +1273,8 @@ class _NodesResolved(NamedTuple):
 
 def _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, backend_name, capabilities, factor, first_walker):
     """The walk's object nodes (:class:`_NodesResolved`), or None for ``None``; refused by name (``object_nodes_*``)
-    where the walk cannot take them, before any walk. ``factor`` is the walk's resolved ``permeability_factor`` (None,
-    or the float32 array), which must be exactly 1.0 on every walker under the mask."""
+    where the walk cannot take them, before any walk. ``factor`` is the caller's ``permeability_factor`` as given (None,
+    or the array), which must be exactly 1.0 on every walker under the mask, compared before any cast."""
     from .physics import ObjectNodes, OBJECT_NODES_MAX, OBJECT_NODES_SUM_TOL, object_node_keys, object_node_table
     if object_nodes is None:
         return None
@@ -1314,19 +1314,16 @@ def _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, backend_name, cap
     if mask.dtype != np.bool_ or mask.shape != (int(n_walkers),):
         raise ValueError(f"object_nodes_walkers: walkers is a ({int(n_walkers)},) bool array, one per walker; got "
                          f"{mask.dtype} of shape {mask.shape}")
-    if not mask.any():
-        raise ValueError("object_nodes_no_walker: walkers holds no True: a walk without object nodes passes "
-                         "object_nodes=None")
-    if factor is not None:
-        on_fac = np.asarray(factor, np.float32)[mask]
-        if np.any(on_fac != np.float32(1.0)):
+    if factor is not None:                       # the caller's values, before any cast
+        on_fac = np.asarray(factor)[mask]
+        if np.any(on_fac != 1.0):
             raise ValueError(f"object_nodes_factor_conflict: a walker under the object nodes' mask has the "
                              f"permeability_factor 1.0 exactly (its node's factor is its permeability); "
-                             f"{int(np.sum(on_fac != np.float32(1.0)))} of them have another")
+                             f"{int(np.sum(on_fac != 1.0))} of them have another")
     seed = int(seed)
     echo = ObjectNodes(factors=fac.copy(), fractions=frac.copy(), seed=seed, walkers=mask.copy())
     record = dict(rule=geometry.object_nodes_rule(), seed=seed, K=K, n=int(n_walkers),
-                  n_per_object=int(mask.sum()))
+                  n_per_object=int(mask.sum()), realised_fractions=[float(x) for x in echo.realised_fractions])
     return _NodesResolved(object_node_table(fac, frac), mask.copy(), object_node_keys(seed, first_walker, n_walkers),
                           echo, record)
 
@@ -1629,8 +1626,9 @@ def _walk_geometry(
         ``factors[node]`` of the node ``node = node(seed, first_walker + w, k)``: the hash of
         :data:`~dmipy_sim.engine.physics.OBJECT_NODE_HASH` on the seed, the walker's stable index and the object's
         index, exact on uint32 pairs whatever JAX's 64-bit mode, so the node never depends on a position, a step,
-        the walk's keys or the batch or piece a walker is in, and two objects of one walker draw independent nodes
-        of law ``fractions``. The threshold is formed by the cell's factor rule with the node's factor in place of the
+        the walk's keys or the batch or piece a walker is in. The nodes are drawn with the realised masses
+        ``ObjectNodes.realised_fractions`` (the thresholds' differences times ``2^-53``), not the float64
+        ``fractions`` themselves; two objects' nodes are a mixing hash's, not exactly independent draws. The threshold is formed by the cell's factor rule with the node's factor in place of the
         walker's (``Geometry.object_nodes_rule()``, the walk's ``work["object_nodes"]["rule"]``):
         :class:`~dmipy_sim.geometry.PackedCylinders` ``float32(float32(kappa[k] / D) * factors[node])``;
         :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` ``float32(float32(kappa_outer[k]) * factors[node])``
@@ -1638,17 +1636,21 @@ def _walk_geometry(
         False walks as without the keyword (its ``permeability_factor[w]``, or the stated permeability), the same
         threshold bit for bit. No draw is added and the trial record is the walk's own. The node is computed where
         the candidate objects of a step are gathered, once per candidate per wall call. The walk returns
-        ``CoefficientWalk.object_nodes`` (the factors, fractions, seed and mask, float32 / float64 / int / bool) and
-        states ``work["object_nodes"] = {rule, seed, K, n, n_per_object}`` (``n`` the walkers of the walk,
-        ``n_per_object`` those under the mask, each drawing one node at every object). None (the default) is the
-        walk without it, the same program. Refused by name before any walk: a geometry that does not take a
+        ``CoefficientWalk.object_nodes`` (the factors, fractions, seed and mask, float32 / float64 / int / bool),
+        ``CoefficientWalk.object_node_index`` (int64, each walker's stable index, which the node hash reads, kept
+        through ``take``, ``join_walks`` and the walk file), and states ``work["object_nodes"] = {rule, seed, K, n,
+        n_per_object, realised_fractions}`` (``n`` the walkers of the walk, ``n_per_object`` those under the mask,
+        each drawing one node at every object; a mask that selects none of the walk's walkers is a walk with object
+        nodes all the same, so the pieces of one masked walk join). The seed, the realised masses and the stable
+        index of each walker recompute every node from the walk's record alone. None (the default) is the walk
+        without it, the same program. Refused by name before any walk: a geometry that does not take a
         permeability per walker (``object_nodes_geometry``, :meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_gap`),
         MT binding (``object_nodes_mt_binding``), a backend that does not declare
         :data:`~dmipy_sim.engine.backends.OBJECT_NODES` (``object_nodes_backend``), a malformed ``factors``,
         ``fractions``, ``seed`` or ``walkers`` (``object_nodes_factors`` / ``_fractions`` / ``_seed`` /
-        ``_walkers``), ``walkers`` with no True (``object_nodes_no_walker``: pass None), and a walker under the mask
-        whose ``permeability_factor`` is not exactly 1.0 (``object_nodes_factor_conflict``). A backend that declares
-        the capability is handed each batch's rows (``WalkRequest.object_nodes``, ``WalkRequest.object_node_index``).
+        ``_walkers``), and a walker under the mask whose ``permeability_factor``, as given and before any cast, is
+        not exactly 1.0 (``object_nodes_factor_conflict``). A backend that declares the capability is handed the
+        whole walk's in the request its ``refuses`` reads, and each batch's rows (``WalkRequest.object_nodes``, ``WalkRequest.object_node_index``).
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
@@ -1678,7 +1680,7 @@ def _walk_geometry(
         _fac_all, _fac_record = _permeability_factor(permeability_factor, n_walkers, geometry, kappa_MT, _backend_name,
                                                       _caps)
         _nodes = _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, _backend_name, _caps,
-                               None if _fac_all is None else np.asarray(_fac_all), first_walker)
+                               None if _fac_all is None else permeability_factor, first_walker)
         if _nodes is not None:
             _flags.enter_context(_object_node_table(geometry, _nodes.table))
         if record_trials is not None:
@@ -2293,6 +2295,9 @@ def _walk_geometry(
             # resolved trial record (a backend that declares TRIAL_RECORD)
             res = res._replace(request=res.request._replace(
                 field=field_basis,
+                **({} if _nodes is None else dict(
+                    object_nodes=_nodes.echo,
+                    object_node_index=np.int64(first_walker) + np.arange(int(n_walkers), dtype=np.int64))),
                 **({} if _trial is None else dict(trial_record=record_trials, trial_steps=np.asarray(_steps, np.int64),
                                                   trial_radii=np.asarray(_trial["radii"], np.float64),
                                                   trial_u_max=np.asarray(_trial["u_max"], np.float64),
@@ -2881,6 +2886,8 @@ def _walk_geometry(
             trial_record=trial_record, geometry=geometry, work=work,
             permeability_factor=(None if _fac_all is None else np.asarray(_fac_all, np.float32)),
             object_nodes=(None if _nodes is None else _nodes.echo),
+            object_node_index=(None if _nodes is None else
+                               np.int64(first_walker) + np.arange(int(n_walkers), dtype=np.int64)),
             segment_rows=(None if _seg is None else rows["seg"].array()),
             segments=(None if _seg is None else dict(
                 edges=[[float(a) * float(dt_actual), float(b) * float(dt_actual)] for a, b in zip(*_seg)],

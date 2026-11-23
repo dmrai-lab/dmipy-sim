@@ -157,6 +157,10 @@ class CoefficientWalk:
     object_nodes: object = field(default=None, compare=False, repr=False)
     #: the walk's :class:`~dmipy_sim.engine.physics.ObjectNodes` (``_walk_geometry(object_nodes=)``): the factors
     #: (float32), fractions (float64), seed (int) and mask (bool, walker order) it walked; None without object nodes
+    object_node_index: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    #: (n,) int64 each walker's stable index in the seed (``first_walker + row`` of the walk that walked it), the walker
+    #: index the node hash read: with the seed and the realised masses of ``work["object_nodes"]`` it recomputes every
+    #: walker's node at every object, through :meth:`take` and :func:`join_walks`; None without object nodes
 
     def __post_init__(self):
         if self.spec is None and self.geometry is not None:
@@ -237,7 +241,7 @@ class CoefficientWalk:
                                                 self.qv_field_increments,
                                                 self.raw_positions, self.raw_boundary, self.raw_compartment, self.raw_bound,
                                                 self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows,
-                                                self.permeability_factor) if a is not None)
+                                                self.permeability_factor, self.object_node_index) if a is not None)
         if self.object_nodes is not None:
             n += sum(np.asarray(a).nbytes for a in (self.object_nodes.factors, self.object_nodes.fractions,
                                                     self.object_nodes.walkers))
@@ -251,7 +255,7 @@ class CoefficientWalk:
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                       "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows",
-                      "permeability_factor")
+                      "permeability_factor", "object_node_index")
 
     def start_error(self, t, *, per_face_local_time=False):
         """The start's term of a read at time ``t`` (s after the walk's start): ``{"relative_error", "flag"}``
@@ -336,7 +340,7 @@ class CoefficientWalk:
     #: the arrays a walk file holds (those present); the events as three tensors each; the rest in the header
     _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
-                    "qv_boundary", "weights", "segment_rows", "permeability_factor")
+                    "qv_boundary", "weights", "segment_rows", "permeability_factor", "object_node_index")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
                      "illegal_crossings", "seed", "first_walker", "diffusivity", "work", "stepping")
 
@@ -523,6 +527,10 @@ def check_object_nodes(walk):
                          f"states n = {rec['n']}, n_per_object = {rec['n_per_object']}")
     if int(on.seed) != int(rec["seed"]):
         raise ValueError(f"the walk's object-node seed {int(on.seed)} is not its work record's {rec['seed']}")
+    idx = walk.object_node_index
+    if idx is None or np.asarray(idx).dtype != np.int64 or np.asarray(idx).shape != (int(rec["n"]),):
+        raise ValueError(f"the walk's object_node_index is {None if idx is None else (np.asarray(idx).dtype, np.asarray(idx).shape)}; "
+                         f"its work record states n = {rec['n']} walkers, each with its int64 stable index")
 
 
 def join_walks(walks):
@@ -566,6 +574,11 @@ def join_walks(walks):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):
             raise ValueError(f"some walks carry {key} and some do not")
+    has_nodes = [w.object_nodes is not None for w in walks]
+    if any(has_nodes) and not all(has_nodes):
+        raise ValueError(f"object_nodes: walks {[j for j, h in enumerate(has_nodes) if h]} were walked with object nodes "
+                         f"and walks {[j for j, h in enumerate(has_nodes) if not h]} without; a piece of a walk with "
+                         f"object nodes is walked with them, its mask selecting none of its walkers if need be")
     for key in CoefficientWalk._WALKER_ARRAYS + ("trial_record",):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):
@@ -603,9 +616,7 @@ def join_walks(walks):
     if work is not None and "block" in work:
         work["block"] = block
     nodes = [w.object_nodes for w in walks]
-    if any(x is not None for x in nodes):
-        if any(x is None for x in nodes):
-            raise ValueError("some walks carry object_nodes and some do not")
+    if any(x is not None for x in nodes):                    # all of them: refused above otherwise
         for j, x in enumerate(nodes[1:], 1):
             if (int(x.seed) != int(nodes[0].seed) or not np.array_equal(x.factors, nodes[0].factors)
                     or not np.array_equal(x.fractions, nodes[0].fractions)):
