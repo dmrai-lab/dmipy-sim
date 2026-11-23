@@ -65,6 +65,15 @@ PERMEABILITY_FACTOR_RULE = ("PackedMyelinatedCylinders: walker w meets plain cyl
                             "trial's kappa/D is float32(kappa_w / D), D the float32 diffusivity of the pool it leaves; "
                             "the sheathed cylinders' walls keep their stated kappa_inner and kappa_outer")
 
+#: How a walker's node factor at an object enters a :class:`PackedMyelinatedCylinders` walk with object nodes (the
+#: walk's ``work["object_nodes"]["rule"]``): the factor rule with the node's factor in place of the walker's.
+OBJECT_NODES_RULE = ("PackedMyelinatedCylinders: a walker w under the object nodes' mask meets plain cylinder k's wall "
+                     "at kappa_wk = float32(float32(kappa_outer[k]) * float32(factors[node(seed, w, k)])) (m/s), w the "
+                     "walker's stable index first_walker + row; the trial's kappa/D is float32(kappa_wk / D), D the "
+                     "float32 diffusivity of the pool it leaves; the sheathed cylinders' walls keep their stated "
+                     "kappa_inner and kappa_outer; a walker outside the mask reads its permeability_factor rule, or "
+                     "the stated kappa_outer")
+
 
 def pin_to_pool(xy, q, R_in, R_out, pool, nudge):
     """``xy`` pulled strictly onto the side of the concentric walls (radii ``R_in < R_out``) that ``pool`` (0 extra,
@@ -222,7 +231,7 @@ def _wall_search(search, centers, outer, L, N, n_cand):
 
 def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
                            kappa_inner, kappa_outer, rho_weights, eps, nudge, step_max, min_gap, count=False, budget=None,
-                           trials=False, search=None):
+                           trials=False, search=None, nodes=None):
     """The wall interaction of a concentric-cylinder substrate, in its cross-section plane.
 
     Cylinder ``k`` is the pair of coaxial circles ``|q - c_k| = inner_k`` (the axon membrane) and
@@ -251,7 +260,7 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     within reach of one step are those of at most ``pi (1 + step_max / R_min)`` disjoint disks, ``R_min`` the
     smallest lumen. ``budget=`` overrides the derived budget for one walk.
 
-    Returns ``wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None)`` giving a :class:`ConcentricHit`: the end position,
+    Returns ``wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None, node_key=None, node_on=None)`` giving a :class:`ConcentricHit`: the end position,
     the pool and owning / nearest cylinder after the step, the four boundary local-time channels ``-2 d_perp``
     (inner wall met from the lumen, inner wall met from the sheath, outer wall met from the sheath, outer wall
     met from outside; a plain cylinder's wall met from its lumen is the first channel, from outside the fourth),
@@ -265,7 +274,13 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
     ``factor`` (a float32 scalar, or None) is the walker's permeability factor: the walker meets plain cylinder ``k``'s
     wall at the permeability ``kappa_outer_k * factor`` (the float32 product), and a sheathed cylinder's two walls at
     their stated values; ``None`` is the factor 1 and the same program as before. A cell without a plain cylinder
-    refuses a factor.
+    refuses a factor. ``nodes`` (an :class:`~dmipy_sim.engine.physics.ObjectNodeTable`, or None) is the node table of
+    a walk with object nodes, closed over as the cell's arrays are; with ``node_key`` (four uint32,
+    :func:`~dmipy_sim.engine.physics.object_node_keys`) the walker meets plain cylinder ``k``'s wall at
+    ``float32(kappa_outer_k * factors[node(node_key, k)])``, the node computed once per candidate cylinder per call,
+    where ``node_on`` (a bool, None for True) holds; where it does not, at exactly the permeability of the call
+    without ``node_key`` (a ``jnp.where`` on the threshold). The sheathed walls keep their stated values.
+    ``node_key=None`` is the kernel without object nodes, the same program as before.
 
     The candidate search. A step searches the cylinders twice: at its start, for the nearest cylinder (``argmin``
     of the wall distance ``d_k = |_wrap(xy - c_k)| - outer_k`` in float32, a padding slot at infinity) and the
@@ -391,9 +406,12 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         dist_f = jnp.where(real, jnp.sqrt(jnp.sum(q_all_f * q_all_f, -1)) - outer, jnp.inf)
         return jnp.argmin(dist_f).astype(jnp.int32)
 
-    def wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None):
+    def wall(xy, d_hat, step_l, pool, k, u, words=None, factor=None, node_key=None, node_on=None):
         if factor is not None and not any_plain:
             raise ValueError("a permeability factor scales the plain cylinders' walls; this cell has no plain cylinder")
+        if node_key is not None and (nodes is None or not any_plain):
+            raise ValueError("a node key scales the plain cylinders' walls by the kernel's node table; this kernel has "
+                             + ("no node table" if nodes is None else "no plain cylinder"))
         if any_plain and words is None:
             raise ValueError("a cell with a plain cylinder (g-ratio 1) takes the 32-bit words of its plain walls' trials, "
                              f"words of shape ({loop.budget},), uint32")
@@ -405,8 +423,12 @@ def concentric_wall_kernel(centers, inner, outer, L, D_intra, D_myelin, D_extra,
         real_c = out_c > 0
         plain_c = plain[idx]
         ki_c, ko_c = kappa_inner[idx], kappa_outer[idx]
+        ko_stated = ko_c
         if factor is not None:                                                 # the walker's own plain-wall permeability
             ko_c = jnp.where(plain_c, ko_c * factor, ko_c)
+        if node_key is not None:                                               # the walker's node factor per candidate
+            ko_n = jnp.where(plain_c, ko_stated * nodes.factor_of(node_key, idx), ko_stated)
+            ko_c = ko_n if node_on is None else jnp.where(node_on, ko_n, ko_c)
         Di_c, Dm_c, De_c = D_intra[idx], D_myelin[idx], D_extra[idx]
         w_c = rho_weights[idx]                                                 # (n_cand, 4)
 
@@ -1350,6 +1372,10 @@ class PackedMyelinatedCylinders(Geometry):
     def permeability_factor_rule(self):
         """:data:`PERMEABILITY_FACTOR_RULE`."""
         return PERMEABILITY_FACTOR_RULE
+
+    def object_nodes_rule(self):
+        """:data:`OBJECT_NODES_RULE`."""
+        return OBJECT_NODES_RULE
 
     def trial_objects(self, diffusivity):
         """The cell's cylinders, in their order, when it holds a plain one: ``(radii, D)``, each cylinder's outer

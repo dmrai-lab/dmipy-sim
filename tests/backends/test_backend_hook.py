@@ -129,7 +129,7 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
                                             "field_read_interval", "events", "raw_subset", "stepping", "field",
                                             "drop_pool_changes", "n_windows", "kappa_MT_over_D", "dwell_time",
                                             "trial_record", "trial_steps", "trial_radii", "trial_u_max", "trial_slots",
-                                            "permeability_factor")
+                                            "permeability_factor", "object_nodes", "object_node_index")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests

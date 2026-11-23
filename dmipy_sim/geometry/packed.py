@@ -38,8 +38,16 @@ PERMEABILITY_FACTOR_RULE = ("PackedCylinders: walker w's trials at cylinder k re
                             "float32(kappa[k] / D) the float32 of the stated permeability over the walk's diffusivity "
                             "(one number, or one per cylinder)")
 
+#: How a walker's node factor at an object enters a :class:`PackedCylinders` walk with object nodes (the walk's
+#: ``work["object_nodes"]["rule"]``): the factor rule with the node's factor in place of the walker's.
+OBJECT_NODES_RULE = ("PackedCylinders: a walker w under the object nodes' mask reads, at cylinder k, "
+                     "kappa_over_D_wk = float32(float32(kappa[k] / D) * float32(factors[node(seed, w, k)])) (1/m), "
+                     "w the walker's stable index first_walker + row; a walker outside the mask reads its "
+                     "permeability_factor rule, or the stated kappa / D")
 
-def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None, trials=False):
+
+def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=False, budget=None, trials=False,
+                       nodes=None):
     """The wall interaction of a periodic pack of disjoint objects, in ``centers``' space.
 
     ``centers`` is ``(N, 2)`` for parallel cylinders (the cross-section plane) or ``(N, 3)`` for
@@ -67,7 +75,14 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     ``kappa_over_D`` is one number for every object or an array of one per object (``(N,)``, the order of
     ``centers``): the trial of an encounter reads the permeability of the object the ray meets.
 
-    Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key)`` giving a
+    ``nodes`` (an :class:`~dmipy_sim.engine.physics.ObjectNodeTable`, or None) is the node table of a walk with
+    object nodes, closed over as the cell's arrays are: ``wall(..., node_key=, node_on=)`` then reads the trial at
+    object ``k`` at ``float32(kappa_over_D_k * factors[node(node_key, k)])``, the node computed once per candidate
+    object per call, where ``node_on`` (a bool, None for True) holds; where it does not, the trial reads exactly the
+    ``kappa_over_D`` of the call without ``node_key`` (a ``jnp.where`` on the threshold). ``node_key=None`` is the
+    kernel without object nodes, the same program as before.
+
+    Returns ``wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key, node_key=None, node_on=None)`` giving a
     :class:`~dmipy_sim.geometry._boundary.WallHit` in ``centers``' space: the end position, the surface
     log-weight increment ``-2 (rho/D) d_perp`` summed over every encounter that touches a wall, reflected or crossed (plus the nudge's push on a reflection), whether the side changed (an odd
     number of crossings), whether the end sentinel had to correct the side, the encounters when ``count``
@@ -85,7 +100,9 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
     def _wrap(q):
         return q - L * jnp.floor(q / L + f32(0.5))
 
-    def wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key):
+    def wall(p, d_hat, step_l, inside0, kappa_over_D, rho_over_D, key, node_key=None, node_on=None):
+        if node_key is not None and nodes is None:
+            raise ValueError("a node key is read against the kernel's node table; this kernel was built without one")
         words = jax.random.bits(key, (loop.budget,), dtype=jnp.uint32)      # one 32-bit word per encounter
         q_all = _wrap(p[None, :] - centers)                                    # (N, dim)
         dist_wall = jnp.sqrt(jnp.sum(q_all * q_all, -1)) - radii
@@ -96,6 +113,8 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
         c_c, R_c = centers[idx], radii[idx]
         per_object = jnp.ndim(kappa_over_D) == 1                               # static: one kappa per object
         k_c = kappa_over_D[idx] if per_object else kappa_over_D
+        if node_key is not None:                                               # the walker's node factor per candidate
+            k_n = k_c * nodes.factor_of(node_key, idx)                         # (n_cand,)
 
         def rule(pp, d, rem, state, i):
             q = _wrap(pp[None, :] - c_c)                                       # (n_cand, dim)
@@ -116,7 +135,10 @@ def packed_wall_kernel(centers, radii, L, eps, nudge, step_max, min_gap, count=F
             cos_a = jnp.sqrt(jnp.maximum(disc[kh], f32(0.0))) / R_hit
             d_perp = jnp.where(any_hit, rem_a * cos_a, f32(0.0))
             stay_in = in_own & (kh == kc)
-            transmit = any_hit & trial_granted(words[i], transmit_probability(k_c[kh] if per_object else k_c, d_perp))
+            k_hit = k_c[kh] if per_object else k_c
+            if node_key is not None:
+                k_hit = k_n[kh] if node_on is None else jnp.where(node_on, k_n[kh], k_hit)
+            transmit = any_hit & trial_granted(words[i], transmit_probability(k_hit, d_perp))
             d_refl = specular(d, n_out)
             d_refl = d_refl / jnp.maximum(jnp.linalg.norm(d_refl), _TINY)
             q_off = off_wall(R_hit * n_out, n_out, stay_in, nudge)
@@ -314,9 +336,9 @@ class PackedCylinders(Geometry):
         self.min_gap = self._compute_min_gap(centers, radii, float(L))
         # the wall kernel, built here (outside any trace) at the worst-case step the sub-step
         # rule allows, R_min / 6
-        self._build_kernel = lambda count, budget, trials=False: packed_wall_kernel(
+        self._build_kernel = lambda count, budget, trials=False, nodes=None: packed_wall_kernel(
             self._centers_jax, self._radii_jax, self._L_jax, self._eps_detect, self._nudge, step_max=LONGEST_STEP * min_r / 6.0,
-            min_gap=self.min_gap, count=count, budget=budget, trials=trials)
+            min_gap=self.min_gap, count=count, budget=budget, trials=trials, nodes=nodes)
         self._walls = {(c, None): self._build_kernel(c, None) for c in (False, True)}
 
     @property
@@ -342,9 +364,11 @@ class PackedCylinders(Geometry):
         sets the override): a kernel built lazily inside a trace closes over that trace's tracers (its candidate
         index) and leaks them into the next program."""
         key = (bool(self.count_walls), self.bounce_budget) + ((True,) if self.log_trials else ())
-        if key not in self._walls:
-            self._walls[key] = self._build_kernel(*key)
-        return self._walls[key]
+        table = self.object_node_table
+        full = key if table is None else key + (("object nodes",) + table.key,)
+        if full not in self._walls:
+            self._walls[full] = self._build_kernel(*key, **({} if table is None else dict(nodes=table)))
+        return self._walls[full]
 
     @property
     def bounce_loop(self):
@@ -357,6 +381,10 @@ class PackedCylinders(Geometry):
     def permeability_factor_rule(self):
         """:data:`PERMEABILITY_FACTOR_RULE`."""
         return PERMEABILITY_FACTOR_RULE
+
+    def object_nodes_rule(self):
+        """:data:`OBJECT_NODES_RULE`."""
+        return OBJECT_NODES_RULE
 
     def permeability_factor_gap(self):
         """``None`` when the cell's walls are stated permeable and constant in time: a walker's factor scales the
@@ -372,14 +400,14 @@ class PackedCylinders(Geometry):
                     "not walked")
         return None
 
-    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None):
+    def _wall(self, r, step, kappa_over_D, rho_over_D, perm_key, side=None, node_key=None, node_on=None):
         """Wall interaction in the pack: reflect off the cylinders the step meets, or cross one
         where its membrane grants it (a Powles trial at every encounter). Multi-bounce, so a step longer than the gap
         between two cylinders zig-zags across it instead of ending inside the neighbour.
 
         With ``side`` (int8, ``< 0`` intra, ``>= 0`` extra) the walker's own compartment rules
-        the sentinel; without it the side is read at the start of the step. Returns a
-        :class:`~dmipy_sim.geometry._boundary.WallHit`.
+        the sentinel; without it the side is read at the start of the step. ``node_key`` / ``node_on`` are the
+        walker's object nodes (:func:`packed_wall_kernel`). Returns a :class:`~dmipy_sim.geometry._boundary.WallHit`.
         """
         r_c, step_c = r, step
         r2, step_xy, step_z = r_c[:2], step_c[:2], step_c[2]
@@ -393,7 +421,7 @@ class PackedCylinders(Geometry):
             q_all = q_all - self._L_jax * jnp.floor(q_all / self._L_jax + jnp.float32(0.5))
             inside0 = jnp.any(jnp.sum(q_all * q_all, axis=1) < self._radii_jax ** 2)
         h = self._kernel(r2, d_hat_xy, step_l_xy, inside0, jnp.float32(kappa_over_D), jnp.float32(rho_over_D),
-                       perm_key)
+                         perm_key, **({} if node_key is None else dict(node_key=node_key, node_on=node_on)))
         return h._replace(r=jnp.stack([h.r[0], h.r[1], r_c[2] + step_z]))
 
     def classify_position(self, r: jnp.ndarray) -> jnp.ndarray:

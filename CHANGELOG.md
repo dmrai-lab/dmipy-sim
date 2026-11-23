@@ -5,6 +5,19 @@ the project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- **A walk draws a permeability node per (walker, object).** `_walk_geometry(object_nodes=ObjectNodes(factors,
+  fractions, seed, walkers))` (and `walk(object_nodes=)` on a spec of one geometry; `dmipy_sim.engine.physics.ObjectNodes`)
+  gives each walker under the mask `walkers` a node at every object, drawn with the probabilities `fractions` by a
+  keyed hash of the seed, the walker's stable index `first_walker + w` and the object's index (splitmix64's finaliser,
+  computed on uint32 pairs, exact with JAX's 64-bit mode off or on; the node an integer comparison against
+  thresholds formed on the host). The walker meets that object's permeable wall at `factors[node]`, by the cell's
+  factor rule: the walls of a `PackedCylinders` cell, the plain cylinders of a `PackedMyelinatedCylinders` cell (the
+  sheathed walls as stated). The node never depends on a position, a step, the walk's keys or the batch or piece a
+  walker is in; no draw is added and the trial record is unchanged; a walker outside the mask walks as without the
+  keyword. The walk returns `CoefficientWalk.object_nodes` and states `work["object_nodes"]`; backends declare
+  `backends.OBJECT_NODES`. Refused by name (`object_nodes_*`): a geometry that takes no permeability per walker, MT
+  binding, a backend without the capability, malformed arrays or seed, a mask with no walker, and a walker under the
+  mask whose `permeability_factor` is not 1.0.
 - **A packed myelinated cell seeds its pools by area for any number of cylinders.** `PackedMyelinatedCylinders` rounded each pool's expected count to a whole number per placement block of 4,096 walkers and gave the remainder to the outside, so a pool below half a walker a block (every lumen of a cell of about 10^4 cylinders) held none and the outside took almost every start. The pool counts of a block are now one multinomial draw from the block's key and each start is uniform in its pool, so every walker's start is an independent draw of the area law over the seeded pools and each pool's expected count is its area share exactly; walker `i`'s start is still a function of the seed, `i` and the geometry alone. For a caller: the starts of every packed myelinated walk change, and so do the bits of its walks (the recorded-bits families are replaced by ones recorded with the new starts). No other geometry's seeding changes.
 - **`walk` reads the field of a myelinated cylinder and of a packed myelinated cell in closed form** (behaviour
   change: a field-on `walk` of a `MyelinatedCylinder` or `PackedMyelinatedCylinders` spec gives different field

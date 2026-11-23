@@ -91,11 +91,18 @@ TRIAL_RECORD = "trial_record"
 #: :meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_rule`.
 PERMEABILITY_FACTOR = "permeability_factor"
 
+#: A capability a backend declares in :attr:`Backend.capabilities`: it walks a permeability node per (walker, object)
+#: (``object_nodes=``, :class:`~dmipy_sim.engine.physics.ObjectNodes`), handed the batch's own mask rows and stable
+#: walker indices as :attr:`WalkRequest.object_nodes` and :attr:`WalkRequest.object_node_index`, drawing each node by
+#: :data:`~dmipy_sim.engine.physics.OBJECT_NODE_HASH` and forming each trial's threshold by the geometry's
+#: :meth:`~dmipy_sim.geometry.base.Geometry.object_nodes_rule`.
+OBJECT_NODES = "object_nodes"
+
 #: What the JAX kernels declare: they walk a permeability table, several storage windows, MT binding, the packed
-#: myelinated class, a closed-form field read in the walk, the record of the membrane trials and a permeability per
-#: walker.
+#: myelinated class, a closed-form field read in the walk, the record of the membrane trials, a permeability per
+#: walker and a permeability node per (walker, object).
 JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS, MT_BINDING, PACKED_MYELINATED, FIELD_IN_WALK,
-                              TRIAL_RECORD, PERMEABILITY_FACTOR})
+                              TRIAL_RECORD, PERMEABILITY_FACTOR, OBJECT_NODES})
 
 
 class FieldSampling(NamedTuple):
@@ -169,6 +176,14 @@ class WalkRequest(NamedTuple):
                                           #: walker at the stated permeability. A backend that declares
                                           #: :data:`PERMEABILITY_FACTOR` forms each trial's threshold by the
                                           #: geometry's :meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_rule`
+    object_nodes: object = None           #: the walk's :class:`~dmipy_sim.engine.physics.ObjectNodes` with ``walkers``
+                                          #: THIS batch's mask rows, in ``r0``'s row order; None walks no object
+                                          #: nodes. A backend that declares :data:`OBJECT_NODES` draws each node by
+                                          #: :data:`~dmipy_sim.engine.physics.OBJECT_NODE_HASH` and forms each trial's
+                                          #: threshold by the geometry's
+                                          #: :meth:`~dmipy_sim.geometry.base.Geometry.object_nodes_rule`
+    object_node_index: object = None      #: ``(n,)`` int64 each row's stable walker index ``first_walker + w``, the
+                                          #: walker index the node hash reads; None without object nodes
 
     @property
     def T(self):
@@ -191,8 +206,12 @@ def capability_refusal(backend, name, request, *, permeability_table=False):
     ``capabilities``, by the capability's name, or None: a permeability per object or over time
     (``permeability_table``) needs :data:`PERMEABILITY_TABLE`, a walk of several storage windows
     :data:`STORAGE_WINDOWS`, a walk that binds (``request.kappa_MT_over_D > 0``) :data:`MT_BINDING`, a request
-    carrying a permeability per walker (``request.permeability_factor``) :data:`PERMEABILITY_FACTOR`."""
+    carrying a permeability per walker (``request.permeability_factor``) :data:`PERMEABILITY_FACTOR`, a request
+    carrying object nodes (``request.object_nodes``) :data:`OBJECT_NODES`."""
     have = getattr(backend, "capabilities", ())
+    if request.object_nodes is not None and OBJECT_NODES not in have:
+        return (f"backend {name!r}: object_nodes_backend: this walk draws a permeability node per (walker, object) "
+                f"(object_nodes), which the backend does not declare it walks (capability {OBJECT_NODES!r})")
     if request.permeability_factor is not None and PERMEABILITY_FACTOR not in have:
         return (f"backend {name!r}: this walk walks each walker at its own permeability (permeability_factor), which the "
                 f"backend does not declare it walks (capability {PERMEABILITY_FACTOR!r})")
