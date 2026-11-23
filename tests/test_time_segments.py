@@ -512,12 +512,16 @@ def test_the_words_are_decoded_in_the_kernel_to_the_float32_decode(blocks, backe
 
 
 # The streamed image's own fixture: a machine's delivery is held to the scanner's slew, so the protocol it delivers is
-# the trapezoidal pulsed pair the Swoop can play -- ramps at its 22 T/m/s on a 66.7 us grid, lobes requested at 0.2 ms with
-# 0.4 ms between them (the built timings are the sequence's own, on that grid), the whole echo the walk's 0.8 ms, b = 14.8 s/m^2 along z -- and its partition is the ten constant pieces of that
-# staircase (the ramps' samples and the plateaus: a class's vertex count grows as 2^pieces, so a finer grid is not read).
+# the trapezoidal pulsed pair the Swoop can play -- ramps of the gradient's magnitude at its 22 T/m/s on a 66.7 us grid,
+# lobes requested at 0.2 ms with 0.4 ms between them and built (the reader's delta_built, Delta_built) at 0.2 ms with
+# seven steps, 466.7 us, between them, the whole echo the walk's 0.8 ms, b = 14.8 s/m^2 on every encoded row whatever its
+# direction (the largest these timings hold: at 14.9 s/m^2 the ramped lobes run off the grid) -- and its partition is
+# the ten constant pieces of that staircase (the ramps' samples and the plateaus: a class's vertex count grows as
+# 2^pieces, so a finer grid is not read).
 # The layout certifies its background vectors to 1 T/m, a step of 0.245 rad per T/m, fine enough that this encoding's
 # coefficients are stored as non-zero words: the magnet's own gradient (about 0.45 mT/m here) is then a term of the image.
 RAMP_TE, RAMP_N_T, RAMP_DELTA, RAMP_DELTA_BIG, RAMP_B = 0.8e-3, 13, 3 * 0.8e-3 / 12, 6 * 0.8e-3 / 12, 14.8
+RAMP_DELTA_BUILT = 7 * RAMP_TE / (RAMP_N_T - 1)                       # the built separation of the pair's centres
 
 
 def _ramped_pgse(dirs, b):
@@ -554,7 +558,16 @@ def test_a_streamed_image_is_the_resident_image_to_the_bit(ramped_blocks, backen
     lay, merged, grid, n_t, m, tmp = ramped_blocks
     rng = np.random.default_rng(5)
     u = rng.normal(size=(3, 3)); u /= np.linalg.norm(u, axis=1)[:, None]
-    seq = _ramped_pgse(np.concatenate([u, [[0, 0, 1]]]).tolist(), np.r_[np.full(3, RAMP_B), 0.0])
+    dirs = np.concatenate([u, [[0, 0, 1]]])
+    seq = _ramped_pgse(dirs.tolist(), np.r_[np.full(3, RAMP_B), 0.0])
+    on = seq.encoding.bvalues > 0
+    np.testing.assert_allclose(seq.b()[on], RAMP_B, rtol=1e-6)                     # every encoded row at its own b
+    # the built timings are read off the float32 samples the sequence holds: to float32's resolution
+    np.testing.assert_allclose(seq.encoding.delta_built[on], RAMP_DELTA, rtol=1e-6)
+    np.testing.assert_allclose(seq.encoding.Delta_built[on], RAMP_DELTA_BUILT, rtol=1e-6)
+    for v in dirs[on]:                                                # RAMP_B is the largest each direction holds
+        with pytest.raises(ValueError, match="runs off the 13-sample grid"):
+            _ramped_pgse([v.tolist()], 14.9)
     t = Tissue(T2={"intra": 0.03, "extra": 0.08, "myelin": 0.01}, rho2=1e-5, chi_iso=-1e-7, chi_aniso=-1.5e-8)
     u = (0.6, 0.0, 0.8)
     resident, fresh = TimeSegmentLayout(lay.path), TimeSegmentLayout(lay.path)   # the streamed calls run on a layout that never holds a column
@@ -566,7 +579,13 @@ def test_a_streamed_image_is_the_resident_image_to_the_bit(ramped_blocks, backen
         np.testing.assert_array_equal(S_r, S_s); np.testing.assert_array_equal(f_r, f_s)
         assert len(fresh._device) == 0
     swoop = ScannerLimits.of("hyperfine_swoop_64mT")
-    dl = resident.delivery(seq, swoop, grid.centred_at((0.05, 0.0, 0.0)))
+    from dmipy_replay.phantom.bore import encoding_classes
+    placed = grid.centred_at((0.05, 0.0, 0.0))
+    every = np.stack(np.unravel_index(np.arange(int(np.prod(grid.shape))), tuple(grid.shape)), axis=1)
+    _, played = encoding_classes(swoop, placed, seq, every, tolerance=None)
+    for p in played:                                                  # what the machine plays at every voxel is within its limits
+        assert np.max(p.peak_slew()) <= swoop.slew_max and np.abs(np.asarray(p.G)).max() <= swoop.G_max
+    dl = resident.delivery(seq, swoop, placed)
     assert np.abs(dl.g0).max() > 0
     bg = resident.manifest["groups"][resident.background_group(dl.partition)]["background"]
     assert bg["n_words"] > 0 and np.load(os.path.join(resident.path, bg["column"])).any()   # the magnet's gradient is stored
