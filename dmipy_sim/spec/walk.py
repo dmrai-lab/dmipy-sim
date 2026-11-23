@@ -44,7 +44,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
               field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None,
-              permeability_factor=None):
+              permeability_factor=None, object_nodes=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -177,6 +177,11 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     sheathed and plain cylinders, the walls of a packed-cylinder cell); a multi-surface bundle and the adaptive walk
     refuse it by name.
 
+    ``object_nodes`` (an :class:`~dmipy_sim.engine.physics.ObjectNodes`, or None) is a permeability node per (walker,
+    object) on the walls ``permeability_factor`` scales, drawn by a keyed hash of the seed, the walker's stable index
+    and the object's index (:func:`~dmipy_sim.engine.core._walk_geometry`'s ``object_nodes``); a multi-surface bundle
+    and the adaptive walk refuse it by name (``object_nodes_geometry``).
+
     ``sub_steps`` (None: the step law's count) pins the physics steps per block, so the walk steps at
     ``dt_sim = block / sub_steps`` seconds (:func:`~dmipy_sim.engine.core.walk_cost` states the step law's own count and
     the bound a pinned one is held to, ``sub_step_rules``). It is the lever of a walk matched to another walk's step: a
@@ -298,6 +303,12 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                                  "the fixed-step walk; a multi-surface bundle and the adaptive walk walk every walker at "
                                  "the spec's stated permeability")
             walk_kw["permeability_factor"] = permeability_factor
+        if object_nodes is not None:
+            if _needs_bundle_walk(spec) or adaptive_steps:
+                raise ValueError("object_nodes_geometry: a permeability node per (walker, object) is walked on a spec of "
+                                 "one geometry with the fixed-step walk; a multi-surface bundle and the adaptive walk walk "
+                                 "every walker at the spec's stated permeability")
+            walk_kw["object_nodes"] = object_nodes
         if not _needs_bundle_walk(spec):
             permeable = bool(_permeable_walls(spec))
             if drop_pool_changes is not None:
@@ -329,7 +340,8 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                 field_kw = {} if fb is None else dict(field_basis=fb, K_c3=K_c3, field_read_interval=field_read_interval,
                                                       field_target_floor=field_target_floor)
                 law = walk_cost(1, float(D), g, T_max, block_h, tiers=tiers,
-                                **field_kw, **{k: v for k, v in walk_kw.items() if k not in ("sub_steps", "record_trials", "permeability_factor")}).sub_steps
+                                **field_kw, **{k: v for k, v in walk_kw.items() if k not in ("sub_steps", "record_trials", "permeability_factor",
+                                                                                          "object_nodes")}).sub_steps
                 if int(sub_steps) < int(law):
                     raise SpecError(f"sub_steps={int(sub_steps)} is coarser than the step law's {int(law)} physics steps per "
                                     f"block for this walk; a pinned step may be finer, never coarser")

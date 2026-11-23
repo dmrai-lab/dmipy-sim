@@ -375,6 +375,17 @@ class Geometry(ABC):
         (``work["permeability_factor"]["rule"]``); ``None`` for a geometry that does not take one."""
         return None
 
+    def object_nodes_rule(self):
+        """The rule by which a walker's node factor at an object enters that object's trials on this geometry, as the
+        walk states it (``work["object_nodes"]["rule"]``); ``None`` for a geometry that does not take object nodes
+        (the geometries of :meth:`permeability_factor_gap`)."""
+        return None
+
+    #: The node table (:class:`~dmipy_sim.engine.physics.ObjectNodeTable`) the wall kernel closes over, set for the
+    #: duration of one walk by ``_walk_geometry(object_nodes=)``; None, the wall interaction is the same program as
+    #: before. A walker's node key (``interact(..., node_key=)``) is read against it.
+    object_node_table = None
+
     # ---- wall / bulk properties (instance attributes; None = not set) ----
 
     #: Membrane permeability kappa (m/s): the largest over the geometry's objects and the walk's time, or None for
@@ -463,7 +474,7 @@ class Geometry(ABC):
         return jnp.concatenate([f(jnp.asarray(pts[i:i + chunk])) for i in range(0, pts.shape[0], chunk)])
 
     def interact(self, r, step, *, kappa_over_D=0.0, rho_over_D=0.0,
-                 key=None, side=None):
+                 key=None, side=None, node_key=None, node_on=None):
         """One wall interaction, for every geometry: reflect, or cross if granted.
 
         The single entry point the engine uses. `reflect`, `reflect_with_log_weight` and
@@ -477,6 +488,11 @@ class Geometry(ABC):
 
         Returns a :class:`WallHit`, so a caller reads ``.r`` instead of unpacking a tuple
         whose length depended on which arguments were passed.
+
+        ``node_key`` (four uint32, :func:`~dmipy_sim.engine.physics.object_node_keys`) is the walker's key of its
+        object nodes, read against :attr:`object_node_table`, and ``node_on`` (a bool, or None for True) whether the
+        walker draws them; a geometry that takes object nodes (:meth:`object_nodes_rule`) reads both, and the call
+        without ``node_key`` is the same program as before.
         """
         kappa_is_zero = isinstance(kappa_over_D, (int, float)) and kappa_over_D == 0.0
         if not kappa_is_zero and not self.supports_permeability:
@@ -485,13 +501,21 @@ class Geometry(ABC):
                 f"kappa_over_D != 0. Build it with a permeable geometry, or pass "
                 f"kappa_over_D=0 for a purely reflecting wall.")
         k = key if key is not None else jax.random.PRNGKey(0)
+        nodes = {} if node_key is None else self._node_operands(node_key, node_on)
         if side is not None:
             if not self.carries_side:
                 raise NotImplementedError(
                     f"{type(self).__name__} carries no side: a position exactly on its wall "
                     f"cannot be resolved from a label alone. Omit `side`.")
-            return self._wall(r, step, kappa_over_D, rho_over_D, k, side)
-        return self._wall(r, step, kappa_over_D, rho_over_D, k)
+            return self._wall(r, step, kappa_over_D, rho_over_D, k, side, **nodes)
+        return self._wall(r, step, kappa_over_D, rho_over_D, k, **nodes)
+
+    def _node_operands(self, node_key, node_on):
+        """The keyword operands of ``_wall`` for a walker's object nodes; refused on a geometry that takes none."""
+        if self.object_nodes_rule() is None or self.object_node_table is None:
+            raise NotImplementedError(f"{type(self).__name__} takes no object nodes here: a node key is read against "
+                                      f"the walk's node table (_walk_geometry(object_nodes=))")
+        return dict(node_key=node_key, node_on=node_on)
 
     def _wall(self, r, step, kappa_over_D, rho_over_D, key):
         """The one wall interaction of this geometry: ``(r, step)`` resolved against its walls at membrane
@@ -516,11 +540,13 @@ class Geometry(ABC):
         h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
         return h.r, h.dlog_w
 
-    def permeate(self, r, step, kappa_over_D, rho_over_D, key, side=None):
-        """Wall interaction with the membrane's permeability: `_wall` itself. Returns the :class:`WallHit`."""
+    def permeate(self, r, step, kappa_over_D, rho_over_D, key, side=None, node_key=None, node_on=None):
+        """Wall interaction with the membrane's permeability: `_wall` itself (``node_key`` / ``node_on`` as for
+        :meth:`interact`). Returns the :class:`WallHit`."""
+        nodes = {} if node_key is None else self._node_operands(node_key, node_on)
         if side is not None:
-            return self._wall(r, step, kappa_over_D, rho_over_D, key, side)
-        return self._wall(r, step, kappa_over_D, rho_over_D, key)
+            return self._wall(r, step, kappa_over_D, rho_over_D, key, side, **nodes)
+        return self._wall(r, step, kappa_over_D, rho_over_D, key, **nodes)
 
 
 class FreeDiffusion(Geometry):

@@ -18,7 +18,8 @@ from typing import NamedTuple
 import numpy as np
 
 from .backends import (JAX, WalkRequest, CoefficientBatch, capability_refusal, event_capacity, resolve as resolve_backend,
-                       trial_sum_dtype, PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD, PERMEABILITY_FACTOR, JAX_CAPABILITIES)
+                       trial_sum_dtype, PACKED_MYELINATED, FIELD_IN_WALK, TRIAL_RECORD, PERMEABILITY_FACTOR, OBJECT_NODES,
+                       JAX_CAPABILITIES)
 import logging
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,26 @@ def _bounce_budget_override(geometry, bounce_budget):
             geometry.bounce_budget = prev
         else:
             del geometry.bounce_budget
+
+
+@contextlib.contextmanager
+def _object_node_table(geometry, table):
+    """``geometry.object_node_table`` set to ``table`` for the walk and restored after it. Touches
+    ``geometry.bounce_loop`` once here, on the host, so a geometry that builds a kernel per setting (the packs) builds
+    it outside any trace."""
+    if table is None:
+        yield
+        return
+    had, prev = "object_node_table" in vars(geometry), geometry.object_node_table
+    geometry.object_node_table = table
+    geometry.bounce_loop                                 # built now, on the host
+    try:
+        yield
+    finally:
+        if had:
+            geometry.object_node_table = prev
+        else:
+            del geometry.object_node_table
 
 
 @contextlib.contextmanager
@@ -1178,7 +1199,11 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeab
         req = request._replace(block_h=float(request.dt_sim), n_blocks=n_steps, sub_steps=1, K=1, m=0, K_c3=0, field=None,
                                field_read_interval=0.0, raw_subset=n_b, drop_pool_changes=bool(impermeable and record),
                                permeability_factor=(None if request.permeability_factor is None
-                                                    else np.asarray(request.permeability_factor[a:a + n_b], np.float32)))
+                                                    else np.asarray(request.permeability_factor[a:a + n_b], np.float32)),
+                               **({} if request.object_nodes is None else dict(
+                                   object_nodes=request.object_nodes._replace(
+                                       walkers=np.asarray(request.object_nodes.walkers)[a:a + n_b].copy()),
+                                   object_node_index=np.asarray(request.object_node_index)[a:a + n_b].copy())))
         t0 = _time.perf_counter()
         batch = backend.walk_batch(req, r0[a:a + n_b], keys[a:a + n_b])
         t1 = _time.perf_counter()
@@ -1237,6 +1262,68 @@ def _permeability_factor(factor, n_walkers, geometry, kappa_MT, backend_name, ca
     return jnp.asarray(values), record
 
 
+class _NodesResolved(NamedTuple):
+    """A walk's object nodes as the walk reads them (:func:`_object_nodes`)."""
+    table: object        #: the :class:`~.physics.ObjectNodeTable` the wall kernel closes over
+    mask: np.ndarray     #: ``(n_walkers,)`` bool, the walkers that draw a node per object
+    keys: np.ndarray     #: ``(n_walkers, 4)`` uint32 each walker's node key (:func:`~.physics.object_node_keys`)
+    echo: object         #: the :class:`~.physics.ObjectNodes` the walk returns
+    record: dict         #: ``work["object_nodes"]``
+
+
+def _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, backend_name, capabilities, factor, first_walker):
+    """The walk's object nodes (:class:`_NodesResolved`), or None for ``None``; refused by name (``object_nodes_*``)
+    where the walk cannot take them, before any walk. ``factor`` is the caller's ``permeability_factor`` as given (None,
+    or the array), which must be exactly 1.0 on every walker under the mask, compared before any cast."""
+    from .physics import ObjectNodes, OBJECT_NODES_MAX, check_object_node_fractions, object_node_keys, object_node_table
+    if object_nodes is None:
+        return None
+    if not isinstance(object_nodes, ObjectNodes):
+        raise TypeError(f"object_nodes_type: object_nodes is an ObjectNodes(factors, fractions, seed, walkers) "
+                        f"(dmipy_sim.engine.physics.ObjectNodes); got {type(object_nodes).__name__}")
+    if OBJECT_NODES not in capabilities:
+        raise ValueError(f"object_nodes_backend: the backend {backend_name!r} does not declare that it walks a "
+                         f"permeability node per (walker, object) (capability {OBJECT_NODES!r})")
+    if kappa_MT > 0.0:
+        raise ValueError("object_nodes_mt_binding: object nodes are not walked with MT binding (kappa_MT > 0)")
+    gap = geometry.permeability_factor_gap()
+    if gap is not None:
+        raise ValueError(f"object_nodes_geometry: {gap}")
+    fac = np.asarray(object_nodes.factors)
+    if fac.dtype != np.float32 or fac.ndim != 1 or not 1 <= fac.shape[0] <= OBJECT_NODES_MAX:
+        raise ValueError(f"object_nodes_factors: factors is a (K,) float32 array, K in 1..{OBJECT_NODES_MAX}; got "
+                         f"{fac.dtype} of shape {fac.shape}")
+    if not np.all(np.isfinite(fac)) or np.any(fac < 0.0) or np.any(fac > 1.0):
+        raise ValueError(f"object_nodes_factors: every factor is a fraction of the stated permeability, finite and in "
+                         f"[0, 1] (the walk's step and event capacity are sized at the stated permeability); got "
+                         f"[{float(np.nanmin(fac))!r}, {float(np.nanmax(fac))!r}]")
+    K = int(fac.shape[0])
+    frac = np.asarray(object_nodes.fractions)
+    if frac.dtype != np.float64 or frac.shape != (K,):
+        raise ValueError(f"object_nodes_fractions: fractions is a ({K},) float64 array, one per factor; got "
+                         f"{frac.dtype} of shape {frac.shape}")
+    check_object_node_fractions(frac)            # the one rule (physics.OBJECT_NODE_FRACTIONS_RULE)
+    seed = object_nodes.seed
+    if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, (int, np.integer)) or not 0 <= int(seed) < 2 ** 64:
+        raise ValueError(f"object_nodes_seed: seed is an integer in [0, 2^64); got {seed!r}")
+    mask = np.asarray(object_nodes.walkers)
+    if mask.dtype != np.bool_ or mask.shape != (int(n_walkers),):
+        raise ValueError(f"object_nodes_walkers: walkers is a ({int(n_walkers)},) bool array, one per walker; got "
+                         f"{mask.dtype} of shape {mask.shape}")
+    if factor is not None:                       # the caller's values, before any cast
+        on_fac = np.asarray(factor)[mask]
+        if np.any(on_fac != 1.0):
+            raise ValueError(f"object_nodes_factor_conflict: a walker under the object nodes' mask has the "
+                             f"permeability_factor 1.0 exactly (its node's factor is its permeability); "
+                             f"{int(np.sum(on_fac != 1.0))} of them have another")
+    seed = int(seed)
+    echo = ObjectNodes(factors=fac.copy(), fractions=frac.copy(), seed=seed, walkers=mask.copy())
+    record = dict(rule=geometry.object_nodes_rule(), seed=seed, K=K, n=int(n_walkers),
+                  n_per_object=int(mask.sum()), realised_fractions=[float(x) for x in echo.realised_fractions])
+    return _NodesResolved(object_node_table(fac, frac), mask.copy(), object_node_keys(seed, first_walker, n_walkers),
+                          echo, record)
+
+
 def _walk_geometry(
     n_walkers: int,
     diffusivity: float,
@@ -1273,6 +1360,7 @@ def _walk_geometry(
     record_trials=None,
     segments=None,
     permeability_factor=None,
+    object_nodes=None,
     _trial_device=None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
@@ -1526,6 +1614,39 @@ def _walk_geometry(
         non-float array, a value that is negative, above 1 or not finite, MT binding (``kappa_MT > 0``), and any
         backend that does not declare ``PERMEABILITY_FACTOR`` (:data:`~dmipy_sim.engine.backends.PERMEABILITY_FACTOR`);
         a backend that declares it is handed each batch's own rows (``WalkRequest.permeability_factor``).
+    object_nodes : ObjectNodes, optional
+        A permeability node per (walker, object) (:class:`~dmipy_sim.engine.physics.ObjectNodes`: ``factors`` (K,)
+        float32 in ``[0, 1]``, ``1 <= K <= 4096``; ``fractions`` (K,) float64, positive, summing to 1 within 1e-9;
+        ``seed`` an integer in ``[0, 2^64)``; ``walkers`` (n_walkers,) bool). A walker with ``walkers[w]`` True meets
+        object ``k``'s permeable wall (``k`` the object's index as the trial record states it, ``obj``) at the factor
+        ``factors[node]`` of the node ``node = node(seed, first_walker + w, k)``: the hash of
+        :data:`~dmipy_sim.engine.physics.OBJECT_NODE_HASH` on the seed, the walker's stable index and the object's
+        index, exact on uint32 pairs whatever JAX's 64-bit mode, so the node never depends on a position, a step,
+        the walk's keys or the batch or piece a walker is in. The nodes are drawn with the realised masses
+        ``ObjectNodes.realised_fractions`` (the thresholds' differences times ``2^-53``), not the float64
+        ``fractions`` themselves; two objects' nodes are a mixing hash's, not exactly independent draws. The threshold is formed by the cell's factor rule with the node's factor in place of the
+        walker's (``Geometry.object_nodes_rule()``, the walk's ``work["object_nodes"]["rule"]``):
+        :class:`~dmipy_sim.geometry.PackedCylinders` ``float32(float32(kappa[k] / D) * factors[node])``;
+        :class:`~dmipy_sim.geometry.PackedMyelinatedCylinders` ``float32(float32(kappa_outer[k]) * factors[node])``
+        on the plain walls before the division by ``D``, the sheathed walls as stated. A walker with ``walkers[w]``
+        False walks as without the keyword (its ``permeability_factor[w]``, or the stated permeability), the same
+        threshold bit for bit. No draw is added and the trial record is the walk's own. The node is computed where
+        the candidate objects of a step are gathered, once per candidate per wall call. The walk returns
+        ``CoefficientWalk.object_nodes`` (the factors, fractions, seed and mask, float32 / float64 / int / bool),
+        ``CoefficientWalk.object_node_index`` (int64, each walker's stable index, which the node hash reads, kept
+        through ``take``, ``join_walks`` and the walk file), and states ``work["object_nodes"] = {rule, seed, K, n,
+        n_per_object, realised_fractions}`` (``n`` the walkers of the walk, ``n_per_object`` those under the mask,
+        each drawing one node at every object; a mask that selects none of the walk's walkers is a walk with object
+        nodes all the same, so the pieces of one masked walk join). The seed, the realised masses and the stable
+        index of each walker recompute every node from the walk's record alone. None (the default) is the walk
+        without it, the same program. Refused by name before any walk: a geometry that does not take a
+        permeability per walker (``object_nodes_geometry``, :meth:`~dmipy_sim.geometry.base.Geometry.permeability_factor_gap`),
+        MT binding (``object_nodes_mt_binding``), a backend that does not declare
+        :data:`~dmipy_sim.engine.backends.OBJECT_NODES` (``object_nodes_backend``), a malformed ``factors``,
+        ``fractions``, ``seed`` or ``walkers`` (``object_nodes_factors`` / ``_fractions`` / ``_seed`` /
+        ``_walkers``), and a walker under the mask whose ``permeability_factor``, as given and before any cast, is
+        not exactly 1.0 (``object_nodes_factor_conflict``). A backend that declares the capability is handed the
+        whole walk's in the request its ``refuses`` reads, and each batch's rows (``WalkRequest.object_nodes``, ``WalkRequest.object_node_index``).
     """
     _backend = resolve_backend(backend)
     _backend_name = JAX if _backend is None else str(_backend.name)
@@ -1551,8 +1672,13 @@ def _walk_geometry(
     with Run("_walk_geometry", params=dict(n_walkers=n_walkers, diffusivity=diffusivity, geometry=type(geometry).__name__, T_max=T_max, block_h=block_h, backend=_backend_name, K=K)) as run, _bounce_budget_override(geometry, bounce_budget), contextlib.ExitStack() as _flags:
         from ..spec.build import as_geometry
         geometry = as_geometry(geometry)  # a SubstrateSpec or a Geometry
+        _caps = JAX_CAPABILITIES if _backend is None else getattr(_backend, "capabilities", ())
         _fac_all, _fac_record = _permeability_factor(permeability_factor, n_walkers, geometry, kappa_MT, _backend_name,
-                                                      JAX_CAPABILITIES if _backend is None else getattr(_backend, "capabilities", ()))
+                                                      _caps)
+        _nodes = _object_nodes(object_nodes, n_walkers, geometry, kappa_MT, _backend_name, _caps,
+                               None if _fac_all is None else permeability_factor, first_walker)
+        if _nodes is not None:
+            _flags.enter_context(_object_node_table(geometry, _nodes.table))
         if record_trials is not None:
             _trial_objects = geometry.trial_objects(diffusivity)
             if _trial_objects is None:
@@ -1693,22 +1819,23 @@ def _walk_geometry(
             _carries_side = geometry.carries_side
             interact = geometry.interact
 
-            def inner_step(carry, step_index, factor=None):
+            def inner_step(carry, step_index, factor=None, node=None):
                 r, key, side, bad, work = carry
                 kappa_over_D = kappa_at(step_index)
                 if factor is not None:                  # the walker's own permeability (permeability_factor)
                     kappa_over_D = walker_kappa_over_D(kappa_over_D, factor)
+                nodes = {} if node is None else dict(node_key=node[0], node_on=node[1])   # its object nodes
                 key, step_key, perm_key = jax.random.split(key, 3)
                 unit_noise = pair_step(step_key)
                 step = unit_noise * step_l_sim
                 if _carries_side:
-                    hit = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key, side)
+                    hit = permeate(r, step, kappa_over_D, jnp.float32(0.0), perm_key, side, **nodes)
                     # a granted crossing is the ONLY thing that flips the carried side
                     side = jnp.where(hit.crossed, -side, side)
                 else:
                     # `interact`, not `permeate`: a geometry that reports its own refusal returns it on the
                     # WallHit, and a mesh does (#479), so a step held still is counted here rather than lost.
-                    hit = interact(r, step, kappa_over_D=kappa_over_D, key=perm_key)
+                    hit = interact(r, step, kappa_over_D=kappa_over_D, key=perm_key, **nodes)
                 bad = bad + hit.illegal.astype(jnp.int32)
                 return (hit.r, key, side, bad, _work_add(work, hit, step_index)), None
         else:
@@ -1812,26 +1939,27 @@ def _walk_geometry(
             def _compress_comp_pm(comp_id):
                 return geometry.pool_of(comp_id).astype(jnp.int8)
 
-            def _inner_pm(carry, step_index, factor=None):
-                if factor is None:
+            def _inner_pm(carry, step_index, factor=None, node=None):
+                if factor is None and node is None:
                     return step_fn_traj_pm(carry, step_index)
-                return step_fn_traj_pm(carry, step_index, factor)
+                return step_fn_traj_pm(carry, step_index, factor, node)
 
         if record and not uses_myelin_traj and not _mt_walls:
             if has_permeability:
                 permeate_relax = geometry.permeate
                 interact_relax = geometry.interact
 
-                def inner_step_relax(carry, step_index, factor=None):
+                def inner_step_relax(carry, step_index, factor=None, node=None):
                     r, key, dlog_cum, side, bad, comp, work = carry
                     kappa_over_D_relax = kappa_at(step_index)
                     if factor is not None:              # the walker's own permeability (permeability_factor)
                         kappa_over_D_relax = walker_kappa_over_D(kappa_over_D_relax, factor)
+                    nodes = {} if node is None else dict(node_key=node[0], node_on=node[1])   # its object nodes
                     key, step_key, perm_key = jax.random.split(key, 3)
                     unit_noise = pair_step(step_key)
                     step = unit_noise * step_l_sim
                     if _carries_side:
-                        hit = permeate_relax(r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side)
+                        hit = permeate_relax(r, step, kappa_over_D_relax, jnp.float32(1.0), perm_key, side, **nodes)
                         r_new, dlog_w_unit = hit.r, hit.dlog_w
                         side = jnp.where(hit.crossed, -side, side)
                         bad = bad + hit.illegal.astype(jnp.int32)
@@ -1842,7 +1970,7 @@ def _walk_geometry(
                         comp = jnp.where(side < 0, jnp.int32(1), jnp.int32(0))
                     else:
                         hit = interact_relax(r, step, kappa_over_D=kappa_over_D_relax,
-                                             rho_over_D=jnp.float32(1.0), key=perm_key)
+                                             rho_over_D=jnp.float32(1.0), key=perm_key, **nodes)
                         r_new, dlog_w_unit = hit.r, hit.dlog_w
                         bad = bad + hit.illegal.astype(jnp.int32)
                         comp = geometry.classify_position_carry(r_new, comp)
@@ -2143,6 +2271,8 @@ def _walk_geometry(
                         exhausted_steps=(int(_work[2]) if _work[3] else None))
             if _fac_record is not None:           # the walkers' own permeability: the rule (the values are a walker array)
                 work["permeability_factor"] = _fac_record
+            if _nodes is not None:                # the object nodes: the rule, the seed and the counts
+                work["object_nodes"] = dict(_nodes.record)
             if _mt_on:                            # the MT burn-in's stopping rule and where it stopped
                 work["mt_equilibration"] = _eq_record if _eq_record is not None else dict(kind=_mode)
             if _work[3] and _work[2]:
@@ -2161,6 +2291,9 @@ def _walk_geometry(
             # resolved trial record (a backend that declares TRIAL_RECORD)
             res = res._replace(request=res.request._replace(
                 field=field_basis,
+                **({} if _nodes is None else dict(
+                    object_nodes=_nodes.echo,
+                    object_node_index=np.int64(first_walker) + np.arange(int(n_walkers), dtype=np.int64))),
                 **({} if _trial is None else dict(trial_record=record_trials, trial_steps=np.asarray(_steps, np.int64),
                                                   trial_radii=np.asarray(_trial["radii"], np.float64),
                                                   trial_u_max=np.asarray(_trial["u_max"], np.float64),
@@ -2216,12 +2349,15 @@ def _walk_geometry(
             reads at their instants (``reads``) or each block's mean (a pilot's, for the field band)."""
             _n_read, _dt_f, _checks, _keep_reads = rd
             def one(r0_w, key_w, side_w, comp0_w, brem0_w, *rest):
-                if _fac_all is None:
-                    (f_arrays,) = rest
+                rest = list(rest)
+                # the walker's permeability factor and its object nodes (key, mask): operands of its steps
+                fac_w = None if _fac_all is None else rest.pop(0)
+                node_w = None if _nodes is None else (rest.pop(0), rest.pop(0))
+                (f_arrays,) = rest
+                if fac_w is None and node_w is None:
                     kind_w = kind
-                else:                                   # the walker's permeability factor: an operand of its steps
-                    fac_w, f_arrays = rest
-                    kind_w = kind._replace(inner=(lambda c, s: kind.inner(c, s, fac_w)))
+                else:
+                    kind_w = kind._replace(inner=(lambda c, s: kind.inner(c, s, fac_w, node_w)))
                 read = _reader(f_arrays)
                 if kind_name == "gen":
                     phys0 = (r0_w, key_w, side_w, jnp.int32(0), _work0())
@@ -2310,9 +2446,11 @@ def _walk_geometry(
                                            sub_steps, float(dt_sim), diffusivity, K, m, kappa_MT, dwell_time, _counting,
                                            _f_key, rd, _acc.name) + (() if _trial is None else (("trial record", _trial["slots"]) + _trial["key"],))
                                 + (() if _seg is None else (("segments", tuple(int(x) for x in _seg[0]), tuple(int(x) for x in _seg[1])),))
-                                + (() if _fac_all is None else (("permeability factor",),)),
+                                + (() if _fac_all is None else (("permeability factor",),))
+                                + (() if _nodes is None else (("object nodes",) + _nodes.table.key,)),
                                 lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd),
-                                                         in_axes=(0, 0, 0, 0, 0) + (() if _fac_all is None else (0,)) + (None,)),
+                                                         in_axes=(0, 0, 0, 0, 0) + (() if _fac_all is None else (0,))
+                                                         + (() if _nodes is None else (0, 0)) + (None,)),
                                                     compiler_options=walk_compiler_options()))
 
         names = ("C", "resid", "blt_end", "blt_bands", "lab", "bnd", "fc", "qv_f", "qv_d", "chk", "occ", "bound", "fs", "pos", "dlog",
@@ -2330,8 +2468,10 @@ def _walk_geometry(
             pad = (lambda x: x) if n_b % WALKER_LANES == 0 else \
                 (lambda x: jnp.concatenate([x, jnp.repeat(x[-1:], WALKER_LANES - n_b % WALKER_LANES, axis=0)]))
             fac_b = () if _fac_all is None else (pad(_fac_all[sel]),)
+            node_b = () if _nodes is None else (pad(jnp.asarray(_nodes.keys[sel])), pad(jnp.asarray(_nodes.mask[sel])))
             out = _batch_fn(raw, cap, K_c3, _rd[0] if rd is None else rd)(pad(r0_b), pad(walker_keys_all[sel]), pad(_side0(r0_b)),
-                                                                       pad(comp0_b), pad(brem0_all[sel]), *fac_b, _f_arrays)
+                                                                       pad(comp0_b), pad(brem0_all[sel]), *fac_b, *node_b,
+                                                                       _f_arrays)
             out = jax.tree_util.tree_map(lambda x: x[:n_b], out)          # the lanes the batch was padded with dropped
             *arrs, ev_c, ev_b, n_dev, bad_f, work_f = out
             got = {k: np.asarray(v) for k, v in zip(names, arrs)}
@@ -2342,6 +2482,15 @@ def _walk_geometry(
             return got, int(jnp.sum(bad_f)), work_f, int(jnp.sum(n_dev))
 
         _backend_block = {}                                                  # how the backend accumulated: precision, window, summation
+
+        def _node_rows(sel):
+            """The request's object nodes for the walkers ``sel`` (a slice or indices): their mask rows and their
+            stable indices ``first_walker + row``; nothing for a walk without them."""
+            if _nodes is None:
+                return {}
+            rows = np.arange(int(n_walkers), dtype=np.int64)[sel]
+            return dict(object_nodes=_nodes.echo._replace(walkers=_nodes.mask[sel].copy()),
+                        object_node_index=np.int64(first_walker) + rows)
 
         def _backend_call(a, b, raw, cap, K_c3, rd=None):
             """One batch through the backend (#747): its :class:`~dmipy_sim.engine.backends.CoefficientBatch` laid out
@@ -2354,7 +2503,8 @@ def _walk_geometry(
                                        events=(int(cap) if cap else res.request.events),
                                        **({} if _trial is None else dict(trial_slots=int(_trial["slots"]))),
                                        field_read_interval=(float(res.field_read["dt_f"]) if res.field_read is not None else 0.0),
-                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[sel], np.float32)))
+                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[sel], np.float32)),
+                                       **_node_rows(sel))
             r0_b = np.ascontiguousarray(np.asarray(r0_all[sel]), np.float32)
             keys_b = np.ascontiguousarray(np.asarray(walker_keys_all[sel]), np.uint32)
             brem_b = np.ascontiguousarray(np.asarray(brem0_all[sel]), np.float32) if binding else None
@@ -2479,7 +2629,8 @@ def _walk_geometry(
             pilot's start labels as the JAX pilot takes them."""
             idx = np.asarray(idx)
             req = res.request._replace(events=(int(cap) if cap else res.request.events),
-                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[idx], np.float32)))
+                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[idx], np.float32)),
+                                       **_node_rows(idx))
             got = field_pilot_on_backend(_backend, req, np.asarray(r0_all[idx], np.float32), np.asarray(walker_keys_all[idx], np.uint32),
                                          field_basis, impermeable=not res.crossing, blocks_per_window=int(n_bw), checks=checks,
                                          progress=run.progress)
@@ -2730,6 +2881,9 @@ def _walk_geometry(
             pool_changed=(np.concatenate(pc_parts) if drop_pool_changes else None),
             trial_record=trial_record, geometry=geometry, work=work,
             permeability_factor=(None if _fac_all is None else np.asarray(_fac_all, np.float32)),
+            object_nodes=(None if _nodes is None else _nodes.echo),
+            object_node_index=(None if _nodes is None else
+                               np.int64(first_walker) + np.arange(int(n_walkers), dtype=np.int64)),
             segment_rows=(None if _seg is None else rows["seg"].array()),
             segments=(None if _seg is None else dict(
                 edges=[[float(a) * float(dt_actual), float(b) * float(dt_actual)] for a, b in zip(*_seg)],

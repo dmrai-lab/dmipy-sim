@@ -154,6 +154,13 @@ class CoefficientWalk:
     permeability_factor: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
     #: (n,) float32 each walker's permeability factor (``_walk_geometry(permeability_factor=)``): walker ``w`` met the
     #: walls the geometry scales at ``kappa * permeability_factor[w]``; None when every walker walked at the stated value
+    object_nodes: object = field(default=None, compare=False, repr=False)
+    #: the walk's :class:`~dmipy_sim.engine.physics.ObjectNodes` (``_walk_geometry(object_nodes=)``): the factors
+    #: (float32), fractions (float64), seed (int) and mask (bool, walker order) it walked; None without object nodes
+    object_node_index: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    #: (n,) int64 each walker's stable index in the seed (``first_walker + row`` of the walk that walked it), the walker
+    #: index the node hash read: with the seed and the realised masses of ``work["object_nodes"]`` it recomputes every
+    #: walker's node at every object, through :meth:`take` and :func:`join_walks`; None without object nodes
 
     def __post_init__(self):
         if self.spec is None and self.geometry is not None:
@@ -234,7 +241,10 @@ class CoefficientWalk:
                                                 self.qv_field_increments,
                                                 self.raw_positions, self.raw_boundary, self.raw_compartment, self.raw_bound,
                                                 self.raw_field, self.qv_positions, self.qv_boundary, self.segment_rows,
-                                                self.permeability_factor) if a is not None)
+                                                self.permeability_factor, self.object_node_index) if a is not None)
+        if self.object_nodes is not None:
+            n += sum(np.asarray(a).nbytes for a in (self.object_nodes.factors, self.object_nodes.fractions,
+                                                    self.object_nodes.walkers))
         for ev in (self.comp_events, self.bound_events):
             if ev is not None:
                 n += ev.offsets.nbytes + ev.t.nbytes + ev.label.nbytes
@@ -245,7 +255,7 @@ class CoefficientWalk:
     #: the per-walker arrays, walker first: what :meth:`take` reorders
     _WALKER_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                       "qv_field", "qv_field_increments", "qv_positions", "qv_boundary", "weights", "pool_changed", "segment_rows",
-                      "permeability_factor")
+                      "permeability_factor", "object_node_index")
 
     def start_error(self, t, *, per_face_local_time=False):
         """The start's term of a read at time ``t`` (s after the walk's start): ``{"relative_error", "flag"}``
@@ -272,7 +282,10 @@ class CoefficientWalk:
         keep_raw = n_raw and idx.shape[0] >= n_raw and np.array_equal(idx[:n_raw], np.arange(n_raw))
         if not keep_raw:
             out.update(raw_positions=None, raw_boundary=None, raw_compartment=None, raw_bound=None, raw_field=None)
+        out["object_nodes"] = (None if self.object_nodes is None else
+                               self.object_nodes._replace(walkers=np.asarray(self.object_nodes.walkers)[idx]))
         work = _with_factor_count(self.work, out["permeability_factor"])
+        work = _with_node_counts(work, out["object_nodes"])
         return dataclasses.replace(self, **out, **({} if work is self.work else dict(work=work)))
 
     def window(self, i):
@@ -327,7 +340,7 @@ class CoefficientWalk:
     #: the arrays a walk file holds (those present); the events as three tensors each; the rest in the header
     _FILE_ARRAYS = ("position_coeffs", "boundary_endpoint", "boundary_bands", "compartment", "bound_start", "field_coeffs",
                     "qv_field", "qv_field_increments", "raw_positions", "raw_boundary", "raw_compartment", "raw_bound", "raw_field", "qv_positions",
-                    "qv_boundary", "weights", "segment_rows", "permeability_factor")
+                    "qv_boundary", "weights", "segment_rows", "permeability_factor", "object_node_index")
     _FILE_SCALARS = ("T", "K", "m", "block", "n_windows", "dt_sim", "sub_steps", "K_c3", "field_read_interval",
                      "illegal_crossings", "seed", "first_walker", "diffusivity", "work", "stepping")
 
@@ -347,6 +360,11 @@ class CoefficientWalk:
                 arrays[f"{col}_events_offsets"] = ev.offsets; arrays[f"{col}_events_t"] = ev.t; arrays[f"{col}_events_label"] = ev.label
         if self.trial_record is not None:
             arrays.update({k: np.ascontiguousarray(v) for k, v in self.trial_record.to_arrays().items()})
+        if self.object_nodes is not None:
+            on = self.object_nodes
+            arrays.update(object_nodes_factors=np.ascontiguousarray(on.factors),
+                          object_nodes_fractions=np.ascontiguousarray(on.fractions),
+                          object_nodes_walkers=np.ascontiguousarray(on.walkers))
         run = self.run
         fb = self.field_basis
         header = {k: getattr(self, k) for k in self._FILE_SCALARS}
@@ -357,6 +375,8 @@ class CoefficientWalk:
                       geometry=(None if self.geometry is None else type(self.geometry).__name__))
         if self.segments is not None:
             header["segments"] = self.segments
+        if self.object_nodes is not None:
+            header["object_nodes_seed"] = int(self.object_nodes.seed)
         save_file(arrays, str(path), metadata={"walk": json.dumps(header, default=float)})
 
     @classmethod
@@ -403,8 +423,15 @@ class CoefficientWalk:
                   segments=h.get("segments"), **events)
         from .trial_record import TrialRecord
         kw["trial_record"] = TrialRecord.from_arrays(arrays)
+        if "object_nodes_factors" in arrays:
+            from .engine.physics import ObjectNodes
+            if h.get("object_nodes_seed") is None:
+                raise ValueError("the walk file holds object-node arrays and no object_nodes_seed")
+            kw["object_nodes"] = ObjectNodes(arrays["object_nodes_factors"], arrays["object_nodes_fractions"],
+                                             int(h["object_nodes_seed"]), arrays["object_nodes_walkers"])
         walk = cls(**kw)
         check_permeability_factor(walk)
+        check_object_nodes(walk)
         return walk
 
 
@@ -464,6 +491,48 @@ def check_permeability_factor(walk):
                          f"states {rec['dtype']} of length {rec['n']}")
 
 
+def _with_node_counts(work, nodes):
+    """``work`` with its object-node record's ``n`` and ``n_per_object`` those of ``nodes``' mask; ``work`` itself
+    when it states none."""
+    if not work or "object_nodes" not in work or nodes is None:
+        return work
+    mask = np.asarray(nodes.walkers)
+    return dict(work, object_nodes=dict(work["object_nodes"], n=int(mask.shape[0]), n_per_object=int(mask.sum())))
+
+
+def _without_node_counts(rec):
+    """An object-node record without its walker counts (what the pieces of one walk share)."""
+    return {k: v for k, v in rec.items() if k not in ("n", "n_per_object")} if isinstance(rec, dict) else rec
+
+
+def check_object_nodes(walk):
+    """Refuse a walk whose work record states object nodes that its :attr:`CoefficientWalk.object_nodes` does not
+    hold: missing, another seed or ``K``, a mask of another length or count, or arrays of another dtype; or object
+    nodes the record does not state."""
+    rec = (walk.work or {}).get("object_nodes")
+    on = walk.object_nodes
+    if rec is None and on is None:
+        return
+    if rec is None:
+        raise ValueError("the walk holds object nodes that its work record does not state")
+    if on is None:
+        raise ValueError("the walk's work record states object nodes and the walk holds none")
+    fac, frac, mask = np.asarray(on.factors), np.asarray(on.fractions), np.asarray(on.walkers)
+    if (fac.dtype != np.float32 or frac.dtype != np.float64 or mask.dtype != np.bool_
+            or fac.shape != (int(rec["K"]),) or frac.shape != (int(rec["K"]),)):
+        raise ValueError(f"the walk's object nodes are factors {fac.dtype} {fac.shape}, fractions {frac.dtype} "
+                         f"{frac.shape}; its work record states float32 and float64 of length K = {rec['K']}")
+    if mask.shape != (int(rec["n"]),) or int(mask.sum()) != int(rec["n_per_object"]):
+        raise ValueError(f"the walk's object-node mask is {mask.shape} with {int(mask.sum())} walkers; its work record "
+                         f"states n = {rec['n']}, n_per_object = {rec['n_per_object']}")
+    if int(on.seed) != int(rec["seed"]):
+        raise ValueError(f"the walk's object-node seed {int(on.seed)} is not its work record's {rec['seed']}")
+    idx = walk.object_node_index
+    if idx is None or np.asarray(idx).dtype != np.int64 or np.asarray(idx).shape != (int(rec["n"]),):
+        raise ValueError(f"the walk's object_node_index is {None if idx is None else (np.asarray(idx).dtype, np.asarray(idx).shape)}; "
+                         f"its work record states n = {rec['n']} walkers, each with its int64 stable index")
+
+
 def join_walks(walks):
     """One walk from walks of contiguous walker ranges of one seed, in order: walk ``j + 1``'s ``first_walker`` is walk
     ``j``'s plus its walkers. The per-walker arrays are concatenated, the events joined, the counts summed and the
@@ -471,7 +540,9 @@ def join_walks(walks):
     the result is the walk of the union walked at once: what a producer that commits a walk batch by batch
     assembles. Everything else -- the walk's parameters, the block's rules and pilots, the work record's rules, the
     envelope, the spec -- must agree and is refused by name where it does not; a raw subset is kept from the first
-    walk and refused on any other."""
+    walk and refused on any other. The pieces of a walk with object nodes are each walked with them, a piece whose
+    walkers are all outside the mask with an all-false mask; a piece walked without object nodes is another walk and
+    does not join them."""
     import dataclasses
     walks = list(walks)
     if not walks:
@@ -505,6 +576,11 @@ def join_walks(walks):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):
             raise ValueError(f"some walks carry {key} and some do not")
+    has_nodes = [w.object_nodes is not None for w in walks]
+    if any(has_nodes) and not all(has_nodes):
+        raise ValueError(f"object_nodes: walks {[j for j, h in enumerate(has_nodes) if h]} were walked with object nodes "
+                         f"and walks {[j for j, h in enumerate(has_nodes) if not h]} without; a piece of a walk with "
+                         f"object nodes is walked with them, its mask selecting none of its walkers if need be")
     for key in CoefficientWalk._WALKER_ARRAYS + ("trial_record",):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):
@@ -514,7 +590,8 @@ def join_walks(walks):
         raise ValueError("some walks carry a work record and some do not")
     work = None
     if works[0] is not None:
-        same = [{k: (_without_count(v) if k == "permeability_factor" else v) for k, v in x.items()
+        same = [{k: (_without_count(v) if k == "permeability_factor" else _without_node_counts(v)
+                     if k == "object_nodes" else v) for k, v in x.items()
                  if k not in WORK_COUNTS and k != "block"} for x in works]
         for j, r in enumerate(same[1:], 1):
             if r != same[0]:
@@ -540,7 +617,15 @@ def join_walks(walks):
     block = {k: block[k] for k in w0.block}                                   # the walk's own key order
     if work is not None and "block" in work:
         work["block"] = block
+    nodes = [w.object_nodes for w in walks]
+    if any(x is not None for x in nodes):                    # all of them: refused above otherwise
+        for j, x in enumerate(nodes[1:], 1):
+            if (int(x.seed) != int(nodes[0].seed) or not np.array_equal(x.factors, nodes[0].factors)
+                    or not np.array_equal(x.fractions, nodes[0].fractions)):
+                raise ValueError(f"walk {j}'s object nodes differ from walk 0's in their factors, fractions or seed")
+        out["object_nodes"] = nodes[0]._replace(walkers=np.concatenate([np.asarray(x.walkers) for x in nodes]))
     work = _with_factor_count(work, out["permeability_factor"])
+    work = _with_node_counts(work, out.get("object_nodes"))
     return dataclasses.replace(w0, **out, block=block, work=work,
                                illegal_crossings=int(sum(int(w.illegal_crossings) for w in walks)), run=None)
 

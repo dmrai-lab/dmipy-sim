@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 from ..geometry._boundary import bind_probability, dwell_left, dwell_scale
 import warnings
+from typing import NamedTuple
 
 import numpy as np
 
@@ -191,6 +192,246 @@ def walker_kappa_over_D(kappa_over_D, factor):
     the stated permeability over the walk's diffusivity, one number or one per object). The rule a
     :class:`~dmipy_sim.geometry.PackedCylinders` walk states (:data:`dmipy_sim.geometry.packed.PERMEABILITY_FACTOR_RULE`)."""
     return kappa_over_D * factor
+
+
+# ── A permeability node per (walker, object) ─────────────────────────────────────────────────────────────────────
+
+class ObjectNodes(NamedTuple):
+    """A permeability node per (walker, object): the walkers under ``walkers`` meet each object's permeable wall at the
+    factor of a node drawn for that (walker, object) pair (``_walk_geometry(object_nodes=)``).
+
+    The node of walker ``w`` (its stable index in the seed, ``first_walker + row``) at object ``k`` (the object's index
+    as the trial record states it, ``obj``) is a pure function of ``(seed, w, k)`` (:func:`object_node_bits`,
+    :func:`object_node_index`): the same pair draws the same node in every walk, whatever the batch, the piece or the
+    step.
+
+    The node's probabilities are the REALISED masses :attr:`realised_fractions`, not ``fractions``: node ``i`` is
+    selected on the integers ``tau_{i-1} <= m < tau_i`` of the 53-bit ``m`` (:func:`object_node_thresholds`), so its
+    mass is ``(tau_i - tau_{i-1}) 2^-53`` (``tau_{-1} = 0``, ``tau_{K-1} = 2^53``), exact over a seed uniform on
+    ``[0, 2^64)`` (for a fixed ``(w, k)`` the hash is a bijection of the seed). Each realised mass of ``i < K - 1`` is
+    within ``2^-53`` plus the float64 rounding of the cumulative ``c_i`` of ``fractions[i]``; the last one also
+    absorbs ``1 - sum(fractions)``. The nodes of two objects of one walker, or of two walkers, are those of a mixing
+    hash of the pair, not exactly independent draws: their joint law is measured, not stated."""
+    factors: object      #: ``(K,)`` float32 in ``[0, 1]``, ``1 <= K <= OBJECT_NODES_MAX``: node ``i``'s factor of the stated permeability
+    fractions: object    #: ``(K,)`` float64 obeying :data:`OBJECT_NODE_FRACTIONS_RULE`: the requested node
+                         #: probabilities, from which the thresholds are formed
+    seed: int            #: an integer in ``[0, 2^64)``: the hash's seed, distinct from the walk's own seed stream
+    walkers: object      #: ``(n_walkers,)`` bool, walker order: the walkers that draw a node per object; a piece of a
+                         #: split walk whose walkers are all outside the mask is walked with the object nodes and an
+                         #: all-false mask (it carries the record, ``n_per_object`` 0)
+
+    @property
+    def realised_fractions(self):
+        """``(K,)`` float64, exact: the masses the nodes are drawn with, ``(tau_i - tau_{i-1}) 2^-53``
+        (:func:`object_node_masses`); they sum to 1 exactly."""
+        return object_node_masses(object_node_thresholds(self.fractions))
+
+
+OBJECT_NODES_MAX = 4096
+"""The largest number of nodes ``K`` an :class:`ObjectNodes` holds."""
+
+OBJECT_NODES_SUM_TOL = 1e-9
+"""How far the sum of an :class:`ObjectNodes`'s ``fractions`` may be from 1."""
+
+OBJECT_NODE_GOLDEN = 0x9E3779B97F4A7C15
+"""``G`` of the node hash: the increment the hash adds ``(w + 1)`` and ``(k + 1)`` times."""
+
+OBJECT_NODE_MIX = (0xBF58476D1CE4E5B9, 0x94D049BB133111EB)
+"""The two multipliers of the hash's mix, splitmix64's finaliser."""
+
+OBJECT_NODE_HASH = ("arithmetic mod 2^64: z = mix(seed); z = mix(z + G (w + 1)); z = mix(z + G (k + 1)); "
+                    "mix(z) = z ^= z >> 30, z *= 0xBF58476D1CE4E5B9, z ^= z >> 27, z *= 0x94D049BB133111EB, "
+                    "z ^= z >> 31; G = 0x9E3779B97F4A7C15; m = z >> 11; u = m 2^-53; node = #{i < K - 1 : tau_i <= m}, "
+                    "tau_i = ceil(c_i 2^53), c_i = f_0 + ... + f_i accumulated in float64 in order")
+"""The node rule of :class:`ObjectNodes`: the hash of a walker and an object and the node it selects."""
+
+
+def _hi_lo(x):
+    """``(hi, lo)`` uint32 words of the non-negative integer ``x < 2^64``."""
+    x = int(x)
+    return np.uint32(x >> 32), np.uint32(x & 0xFFFFFFFF)
+
+
+def _add64(ah, al, bh, bl):
+    lo = al + bl
+    return ah + bh + (lo < al).astype(jnp.uint32), lo
+
+
+def _mul32_wide(a, b):
+    """``a b`` of two uint32 as the ``(hi, lo)`` words of the 64-bit product, by 16-bit limbs."""
+    a0, a1 = a & np.uint32(0xFFFF), a >> np.uint32(16)
+    b0, b1 = b & np.uint32(0xFFFF), b >> np.uint32(16)
+    p00, p01, p10, p11 = a0 * b0, a0 * b1, a1 * b0, a1 * b1
+    mid = p01 + p10
+    c_mid = (mid < p01).astype(jnp.uint32)
+    lo = p00 + (mid << np.uint32(16))
+    c_lo = (lo < p00).astype(jnp.uint32)
+    hi = p11 + (mid >> np.uint32(16)) + (c_mid << np.uint32(16)) + c_lo
+    return hi, lo
+
+
+def _mul64(ah, al, bh, bl):
+    hi, lo = _mul32_wide(al, bl)
+    return hi + al * bh + ah * bl, lo
+
+
+def _xor_shift_right(h, l, s):
+    s = np.uint32(s)
+    return h ^ (h >> s), l ^ ((l >> s) | (h << (np.uint32(32) - s)))
+
+
+_MIX_WORDS = tuple(_hi_lo(c) for c in OBJECT_NODE_MIX)
+_GOLDEN_WORDS = _hi_lo(OBJECT_NODE_GOLDEN)
+
+
+def _mix64(h, l):
+    h, l = _xor_shift_right(h, l, 30)
+    h, l = _mul64(h, l, *_MIX_WORDS[0])
+    h, l = _xor_shift_right(h, l, 27)
+    h, l = _mul64(h, l, *_MIX_WORDS[1])
+    return _xor_shift_right(h, l, 31)
+
+
+def _absorb(zh, zl, xh, xl):
+    """``mix(z + G (x + 1))`` mod 2^64."""
+    xh, xl = _add64(xh, xl, np.uint32(0), np.uint32(1))
+    gh, gl = _mul64(xh, xl, *_GOLDEN_WORDS)
+    return _mix64(*_add64(zh, zl, gh, gl))
+
+
+def object_node_bits(node_key, k):
+    """The node hash's ``m = z >> 11`` (:data:`OBJECT_NODE_HASH`) of the walker ``node_key`` at the objects ``k``, as
+    the ``(hi, lo)`` uint32 words of the 53-bit integer, computed on uint32 pairs so it is exact whether JAX's 64-bit
+    mode is on or off.
+
+    ``node_key`` is four uint32 (:func:`object_node_keys`): the seed's high and low words, the walker's stable index's
+    high and low words; ``k`` (any shape, non-negative integers below 2^32) the objects' indices. Returns two uint32
+    arrays of ``k``'s shape."""
+    node_key = jnp.asarray(node_key, jnp.uint32)
+    kl = jnp.asarray(k).astype(jnp.uint32)
+    zero = jnp.zeros_like(kl)
+    zh, zl = _mix64(node_key[0], node_key[1])
+    zh, zl = _absorb(zh, zl, node_key[2], node_key[3])
+    zh, zl = _absorb(zh + zero, zl + zero, zero, kl)
+    return zh >> np.uint32(11), (zl >> np.uint32(11)) | (zh << np.uint32(21))
+
+
+def object_node_index(m_hi, m_lo, tau_hi, tau_lo):
+    """The node of the hash's ``m`` (the ``(hi, lo)`` words of :func:`object_node_bits`): ``#{i < K - 1 : tau_i <=
+    m}``, an integer comparison against the thresholds ``tau_i = ceil(c_i 2^53)`` (``(K - 1,)`` uint32 words each,
+    :func:`object_node_thresholds`). Equal to ``searchsorted(c, u, side="right")`` at ``u = m 2^-53`` with the last
+    cumulative fraction above 1. int32 of ``m``'s shape."""
+    mh, ml = jnp.asarray(m_hi)[..., None], jnp.asarray(m_lo)[..., None]
+    at_or_above = (mh > tau_hi) | ((mh == tau_hi) & (ml >= tau_lo))
+    return jnp.sum(at_or_above.astype(jnp.int32), axis=-1, dtype=jnp.int32)
+
+
+OBJECT_NODE_FRACTIONS_RULE = ("fractions: (K,) float64, every one finite and in (0, 1]; the float64 running sums "
+                              "c_i = f_0 + ... + f_i in order at most 1 for i < K - 1, and c_{K-1} within "
+                              "OBJECT_NODES_SUM_TOL of 1")
+"""The one rule a set of node fractions obeys (:func:`check_object_node_fractions`): it makes the thresholds a
+non-decreasing sequence of integers in ``[0, 2^53]``, so every realised mass is non-negative."""
+
+
+def check_object_node_fractions(fractions):
+    """``fractions`` as float64 when they obey :data:`OBJECT_NODE_FRACTIONS_RULE`; refused by name
+    (``object_nodes_fractions``) otherwise."""
+    f = np.asarray(fractions)
+    if f.dtype != np.float64 or f.ndim != 1 or f.shape[0] < 1:
+        raise ValueError(f"object_nodes_fractions: fractions is a (K,) float64 array; got {f.dtype} of shape {f.shape}")
+    if not np.all(np.isfinite(f)) or np.any(f <= 0.0) or np.any(f > 1.0):
+        raise ValueError(f"object_nodes_fractions: every fraction is finite and in (0, 1] ({OBJECT_NODE_FRACTIONS_RULE})")
+    c = np.float64(0.0)
+    for i in range(f.shape[0]):
+        c = np.float64(c + f[i])
+        if i < f.shape[0] - 1 and c > 1.0:
+            raise ValueError(f"object_nodes_fractions: the running sum of the first {i + 1} fractions is {float(c)!r}, "
+                             f"above 1 ({OBJECT_NODE_FRACTIONS_RULE})")
+    if not abs(float(c) - 1.0) <= OBJECT_NODES_SUM_TOL:
+        raise ValueError(f"object_nodes_fractions: the fractions sum to {float(c)!r}, not 1 within "
+                         f"{OBJECT_NODES_SUM_TOL} ({OBJECT_NODE_FRACTIONS_RULE})")
+    return f
+
+
+def object_node_thresholds(fractions):
+    """The node thresholds ``tau_i = ceil(c_i 2^53)``, ``i < K - 1``, ``c_i = f_0 + ... + f_i`` accumulated in float64
+    in order, formed exactly on the host: a list of Python integers (``c_i 2^53`` is exact in float64), non-decreasing
+    in ``[0, 2^53]`` for fractions that obey :data:`OBJECT_NODE_FRACTIONS_RULE` (any other is refused by name)."""
+    f = check_object_node_fractions(fractions)
+    c, out = np.float64(0.0), []
+    for i in range(f.shape[0] - 1):
+        c = np.float64(c + f[i])
+        out.append(int(np.ceil(np.ldexp(c, 53))))
+    return out
+
+
+def object_node_masses(thresholds):
+    """``(K,)`` float64, exact: the masses ``(tau_i - tau_{i-1}) 2^-53`` of the thresholds ``tau`` (``K - 1``
+    integers, :func:`object_node_thresholds`), ``tau_{-1} = 0`` and ``tau_{K-1} = 2^53``: the realised node masses,
+    defined by the thresholds themselves. Thresholds that are not non-decreasing in ``[0, 2^53]`` are refused, so each
+    mass is a non-negative multiple of ``2^-53`` at most 1, it and every partial sum are exact in float64, and the
+    masses sum to 1 exactly."""
+    edges = [0] + [int(t) for t in thresholds] + [2 ** 53]
+    if any(b < a for a, b in zip(edges[:-1], edges[1:])):
+        raise ValueError(f"object_nodes_fractions: the thresholds are non-decreasing in [0, 2^53]; got {edges[1:-1]}")
+    return np.asarray([np.ldexp(float(b - a), -53) for a, b in zip(edges[:-1], edges[1:])], np.float64)
+
+
+def object_node_thresholds_of_masses(masses):
+    """The thresholds ``tau_i`` (Python integers) of the realised masses (:func:`object_node_masses`), exactly: the
+    running sums of ``masses_i 2^53``, each an integer."""
+    out, t = [], 0
+    for x in np.asarray(masses, np.float64)[:-1]:
+        q = np.ldexp(float(x), 53)
+        if q != int(q):
+            raise ValueError(f"a realised mass is a multiple of 2^-53; got {float(x)!r}")
+        t += int(q)
+        out.append(t)
+    return out
+
+
+class ObjectNodeTable(NamedTuple):
+    """The node table a wall kernel closes over: the ``K`` float32 factors and the ``K - 1`` thresholds as uint32
+    words (:func:`object_node_table`); ``key`` its hashable identity (the factors' bits and the thresholds)."""
+    factors: object
+    tau_hi: object
+    tau_lo: object
+    key: tuple
+
+    def node_of(self, node_key, k):
+        """The node of the walker ``node_key`` at the objects ``k`` (int32, ``k``'s shape)."""
+        m_hi, m_lo = object_node_bits(node_key, k)
+        return object_node_index(m_hi, m_lo, self.tau_hi, self.tau_lo)
+
+
+def object_node_table(factors, fractions):
+    """The :class:`ObjectNodeTable` of float32 ``factors`` and float64 ``fractions``, the thresholds formed host-side
+    (:func:`object_node_thresholds`)."""
+    fac = np.asarray(factors, np.float32)
+    tau = object_node_thresholds(fractions)
+    hi = np.asarray([t >> 32 for t in tau], np.uint32)
+    lo = np.asarray([t & 0xFFFFFFFF for t in tau], np.uint32)
+    return ObjectNodeTable(jnp.asarray(fac), jnp.asarray(hi), jnp.asarray(lo),
+                           (tuple(int(x) for x in fac.view(np.uint32)), tuple(tau)))
+
+
+def object_node_keys(seed, first_walker, n_walkers):
+    """The node keys of the walkers ``first_walker .. first_walker + n_walkers - 1``: ``(n_walkers, 4)`` uint32, per
+    walker the seed's high and low words and its stable index's high and low words, a function of the seed and the
+    index alone (:func:`object_node_key_rows`)."""
+    return object_node_key_rows(seed, np.uint64(int(first_walker)) + np.arange(int(n_walkers), dtype=np.uint64))
+
+
+def object_node_key_rows(seed, index):
+    """The node keys of the walkers of stable indices ``index`` (``(n,)`` non-negative integers below 2^64):
+    ``(n, 4)`` uint32, per walker the seed's high and low words and its index's high and low words."""
+    seed_hi, seed_lo = _hi_lo(seed)
+    idx = np.asarray(index).astype(np.uint64)
+    out = np.empty((idx.shape[0], 4), np.uint32)
+    out[:, 0], out[:, 1] = seed_hi, seed_lo
+    out[:, 2] = (idx >> np.uint64(32)).astype(np.uint32)
+    out[:, 3] = (idx & np.uint64(0xFFFFFFFF)).astype(np.uint32)
+    return out
 
 
 def has_membrane(geometry) -> bool:
@@ -950,8 +1191,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     :func:`dmipy_sim.geometry.myelin.concentric_wall_kernel`. Each pool steps with its own
     diffusivity (the axon's, indexed by the carried compartment); the axial coordinate is free.
 
-    Returns ``sub(r, step_key, u, comp_id, perm_key, factor=None) -> (r_new, comp_id_new, chan, dlog_rho, work)``, and
-    ``sub.move(r, s, comp_id, u, words, factor=None)`` the same for a given step vector ``s`` and the plain walls' words ``words``
+    Returns ``sub(r, step_key, u, comp_id, perm_key, factor=None, node=None) -> (r_new, comp_id_new, chan, dlog_rho,
+    work)``, and ``sub.move(r, s, comp_id, u, words, factor=None, node=None)`` the same for a given step vector ``s`` and the plain walls' words ``words``
     (``None`` when the cell has no plain cylinder), where
     ``u`` is the uniform of a sheathed cylinder's one trial per step and ``perm_key`` the key of the plain
     cylinders' trials (``bits(perm_key, (budget,), uint32)``, one 32-bit word per encounter, the plain packing's draw,
@@ -963,7 +1204,9 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
     (``count_walls``), the exhaustion always -- followed by the step's plain-wall trials
     (:class:`~dmipy_sim.geometry._boundary.TrialLog`) when the geometry logs them (``log_trials``). ``factor`` is the
     walker's permeability factor on the plain cylinders' walls (a float32 scalar;
-    :func:`~dmipy_sim.geometry.myelin.concentric_wall_kernel`), None their stated permeability.
+    :func:`~dmipy_sim.geometry.myelin.concentric_wall_kernel`), None their stated permeability; ``node`` the walker's
+    object nodes ``(node_key, node_on)`` read against the geometry's :attr:`object_node_table` (the kernel's
+    ``node_key`` / ``node_on``), None none.
     """
     dt_f32 = jnp.float32(dt)
     N_max = geometry.N_max
@@ -982,10 +1225,11 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         D_i, D_m, D_e, geometry._kappa_inner_jax, geometry._kappa_outer_jax, rho_weights,
         geometry._eps, geometry._nudge, step_max, geometry.min_gap, count=geometry.count_walls,
         budget=geometry.bounce_budget, trials=bool(geometry.log_trials),
-        search=geometry.wall_search if geometry._is_packed_myelinated else None)
+        search=geometry.wall_search if geometry._is_packed_myelinated else None,
+        nodes=geometry.object_node_table)
     budget = wall.bounce_loop.budget
 
-    def move(r, s_c, comp_id, u, words, factor=None):
+    def move(r, s_c, comp_id, u, words, factor=None, node=None):
         """The step ``s_c`` (a 3-vector) of the walker at ``r`` in the encoded compartment ``comp_id``, through the
         walls: the in-plane part meets the walls, the axial part is free; ``factor`` the walker's permeability factor
         on the plain walls (None: their stated permeability)."""
@@ -994,7 +1238,8 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
         l_xy = jnp.linalg.norm(s_c[:2])
         d_hat = jnp.where(l_xy > 0, s_c[:2] / jnp.maximum(l_xy, jnp.float32(1e-30)),
                           jnp.zeros(2, jnp.float32))
-        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, words, factor)
+        h = wall(r_c[:2], d_hat, l_xy, pool, k, u, words, factor,
+                 *(() if node is None else node))
         xy_new = h.xy
         if L is not None:
             xy_new = xy_new - L * jnp.floor(xy_new / L + jnp.float32(0.5))      # stay in the cell
@@ -1005,13 +1250,13 @@ def make_myelin_substep(geometry, dt: float, rho_weights=None, f_band: float = N
             work = work + (h.trials,)
         return r_new, _encode_compartment(geometry, h.pool, h.k), h.chan, h.dlog_rho, work
 
-    def sub(r, step_key, u, comp_id, perm_key, factor=None):
+    def sub(r, step_key, u, comp_id, perm_key, factor=None, node=None):
         pool, k = _pool_and_axon(geometry, comp_id)
         unit = pair_step(step_key)
         step_l = jnp.where(pool == 1, step_i[k], jnp.where(pool == 2, step_m[k], step_e[k]))
         words = (jax.random.bits(perm_key, (budget,), dtype=jnp.uint32)
               if wall.has_plain else None)
-        return move(r, unit * step_l, comp_id, u, words, factor)
+        return move(r, unit * step_l, comp_id, u, words, factor, node)
 
     sub.bounce_loop = wall.bounce_loop
     sub.n_cand = wall.n_cand
@@ -1111,9 +1356,10 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
     """Trajectory step for PackedMyelinatedCylinders: geometry + permeability, no relaxation.
 
     Carry ``(r_incell, r_unwrapped, key, dlog_accum, comp_id, work)`` -- or ``(r_incell, r_unwrapped, key,
-    dlog_accum, comp_id, bound_rem, bound_acc, work)`` when ``kappa_MT > 0``; ``step_fn(carry, step, factor=None) ->
-    (carry, None)``, ``step`` the walk-wide step index, read only by ``trial_add``, ``factor`` the walker's
-    permeability factor on the plain cylinders' walls (None: their stated permeability); ``work`` is the carried ``(hits, crossings,
+    dlog_accum, comp_id, bound_rem, bound_acc, work)`` when ``kappa_MT > 0``; ``step_fn(carry, step, factor=None,
+    node=None) -> (carry, None)``, ``step`` the walk-wide step index, read only by ``trial_add``, ``factor`` the walker's
+    permeability factor on the plain cylinders' walls (None: their stated permeability), ``node`` its object nodes
+    ``(node_key, node_on)`` (:func:`make_myelin_substep`; None: none); ``work`` is the carried ``(hits, crossings,
     exhausted)`` or None (a bound walker's step adds nothing), followed by the record of the walk's membrane trials
     when ``trial_add`` (:func:`~dmipy_sim.trial_record.device_record`'s ``add``) is given. ``r_incell`` is the position in the cell ``[-L/2, L/2)`` that the wall kernel reads;
     ``r_unwrapped`` is the continuous position (:func:`_unwrapped_step`), the one a trajectory records. ``dlog_accum``
@@ -1137,7 +1383,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
 
     L = jnp.float32(geometry._cell_size)
 
-    def step_fn(carry, step_index, factor=None):
+    def step_fn(carry, step_index, factor=None, node=None):
         if mt_on:
             r, r_uw, key, dlog_accum, comp_id, bound_rem, bound_acc, work = carry
             key, k_step, k_perm, stick_key, dwell_key = jax.random.split(key, 5)
@@ -1145,7 +1391,7 @@ def make_packed_myelin_traj_step_fn(geometry, dt: float,
             r, r_uw, key, dlog_accum, comp_id, work = carry
             key, k_step, k_perm = jax.random.split(key, 3)
         u = jax.random.uniform(k_perm, dtype=jnp.float32)
-        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id, k_perm, factor)
+        r_new, comp_new, chan, _, w = sub(r, k_step, u, comp_id, k_perm, factor, node)
         r_uw_new = _unwrapped_step(r_uw, r, r_new, L)
         dlog_boundary = jnp.sum(chan)
         if not mt_on:
