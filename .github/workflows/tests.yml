@@ -155,17 +155,26 @@ jobs:
           python -c "import jax, jaxlib, numpy; print('jax', jax.__version__, 'jaxlib', jaxlib.__version__, 'numpy', numpy.__version__); numpy.show_runtime()"
           python -c "from tests.recorded_bits import FAMILIES, canary; c = canary(); print('canary', c, 'recorded family' if c in FAMILIES else 'NO recorded family')"
       - name: Run the recorded-bits tests
+        id: recorded
         shell: bash
         run: |
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
           status=0
           DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py tests/test_fixed_step_read_calibration.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
-          if [ "$status" -eq 0 ]; then
-            if grep -q "6 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
-            # The fixed-step default baseline has been measured on one of the recorded CPU families.
-            if grep -q "5 passed, 1 skipped" out.txt && grep -q "fixed-step field read baseline was recorded on CPU arithmetic family" out.txt; then exit 0; fi
-          fi
-          # a recorded test failed (or was skipped): print this runner's entry, the values its family would be recorded with
-          python tools/record_recorded_bits.py || true
+          if [ "$status" -eq 0 ] && grep -qw "6 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
           exit 1
+      - name: Check out the independent fixed-step baseline
+        if: failure() && steps.recorded.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          # The default walk's baseline must come from before fixed-step calibration reuse.
+          ref: d2867a9ac4ee74d8351d8910dbd926a47762e38f
+          path: recorded-bits-base
+      - name: Print the runner's recorded-bits entry
+        if: failure() && steps.recorded.outcome == 'failure'
+        run: |
+          cp tools/record_recorded_bits.py recorded-bits-base/tools/
+          cp tests/recorded_bits.py recorded-bits-base/tests/
+          cd recorded-bits-base
+          python tools/record_recorded_bits.py

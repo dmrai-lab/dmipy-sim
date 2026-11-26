@@ -13,6 +13,7 @@ import os
 import pprint
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def main():
     import jax
     import jaxlib
-    from tests.recorded_bits import RECORDED_WITH, canary
+    from tests.recorded_bits import RECORDED_WITH, canary, fixed_step_default_hashes
     build = (jax.__version__, jaxlib.__version__)
     if build != RECORDED_WITH:
         print(f"not the recorded build: jax / jaxlib {build}, the recorded build is {RECORDED_WITH}")
@@ -30,8 +31,10 @@ def main():
         return 2
     from tests.geometry.test_mixed_myelinated_plain_cell import RECORDED_WALKS, recorded_hashes
     values = {name: recorded_hashes(name) for name in RECORDED_WALKS}
+    with TemporaryDirectory() as directory:
+        values["fixed_step_default"] = fixed_step_default_hashes(Path(directory) / "default.walk")
     print("# the entry of this host's family in tests/recorded_bits.py FAMILIES (canary first)")
-    print(pprint.pformat({canary(): values}, width=120, sort_dicts=False))
+    print(pprint.pformat({canary(): dict(sorted(values.items()))}, width=120, sort_dicts=False))
     return 0
 
 

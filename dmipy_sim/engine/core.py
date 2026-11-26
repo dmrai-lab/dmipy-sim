@@ -1374,6 +1374,7 @@ def _walk_geometry(
     object_nodes=None,
     _trial_device=None,
     field_calibration=None,
+    walker_rule=None,
     _measure_read=False,
     _calibration_spec=None,
 ):
@@ -1750,6 +1751,13 @@ def _walk_geometry(
             from .calibration import array_fingerprint, code_fingerprint, fingerprint, fixed_step_engine
             from ..fields.susceptibility_field import FieldGrid
 
+            if walker_rule is None and (_fac_record is not None or _nodes is not None):
+                raise ValueError("field_calibration requires walker_rule with permeability_factor or object_nodes")
+            try:
+                walker_rule_digest = None if walker_rule is None else fingerprint(walker_rule)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("walker_rule must be a string or canonical JSON value") from exc
+
             engine = fixed_step_engine(None if _measure_read and _pilot_name == JAX else _backend, _acc.name)
             spec_doc = _calibration_spec.to_dict()
             # A native pilot reads the raster on its own backend. Hash its source values as well as the
@@ -1770,8 +1778,9 @@ def _walk_geometry(
                 field_read_interval=fr["dt_f_rule"], n_read=fr["n_read"], dt_f=fr["dt_f"],
                 checks=list(read_checks(sub_steps)), B0=fr["B0"], chi=fr["chi"], floor=fr["floor"],
                 start_rule=spec_doc["seeding"], record=bool(record), bounce_budget=geometry.bounce_budget,
+                walker_rule=walker_rule_digest,
                 permeability_factor=None if _fac_record is None else _fac_record["rule"],
-                object_nodes=None if _nodes is None else dict(rule=_nodes.record["rule"], seed=_nodes.echo.seed,
+                object_nodes=None if _nodes is None else dict(rule=_nodes.record["rule"],
                     factors=_nodes.echo.factors.tolist(), realised_fractions=_nodes.record["realised_fractions"]),
                 backend=engine, code=code_fingerprint())
             if field_calibration is not None:
@@ -2444,7 +2453,8 @@ def _walk_geometry(
                     phys_a = c[0]
                     blt_a = kind.blt_of(phys_a) if has_blt else None
                     c, mom = _moment_scan(kind_w, c, sub_steps, m, dtype=_acc, read=read, n_ch=_n_ch, n_read=_n_read, dt_f=_dt_f,
-                                          step0=b * sub_steps, checks=_checks, keep_reads=(raw and _keep_reads))
+                                          step0=b * sub_steps, checks=_checks, keep_reads=(raw and _keep_reads),
+                                          exact_constant_checks=_measure_read)
                     phys = c[0]
                     ys = (kind.pos_of(phys), (kind.blt_of(phys) - blt_a) if has_blt else None,
                           kind.label_of(phys) if has_lab else None, kind.bound_of(phys) if kind.bound_of is not None else None,
@@ -2501,6 +2511,7 @@ def _walk_geometry(
                                            _f_key, rd, _acc.name) + (() if _trial is None else (("trial record", _trial["slots"]) + _trial["key"],))
                                 + (() if _seg is None else (("segments", tuple(int(x) for x in _seg[0]), tuple(int(x) for x in _seg[1])),))
                                 + (() if _fac_all is None else (("permeability factor",),))
+                                + (("exact constant checks",) if _measure_read else ())
                                 + (() if _nodes is None else (("object nodes",) + _nodes.table.key,)),
                                 lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd),
                                                          in_axes=(0, 0, 0, 0, 0) + (() if _fac_all is None else (0,))
@@ -2715,7 +2726,8 @@ def _walk_geometry(
             if rung is None:
                 constants, errors = [READ_CONSTANT] * _n_ch, [None] * _n_ch
             else:
-                constants, errors = fixed_step_constants(got["chk"][:, :, :, checks.index(rung), :], float(dt_sim), rung)
+                constants, errors = fixed_step_constants(got["chk"][:, :, :, checks.index(rung), :],
+                                                         float(dt_sim), rung, calibration_scope["channels"])
             return FieldReadCalibration.create(scope=calibration_scope, rung=rung, constants=constants,
                                                standard_error=errors, pilot_walkers=int(n_walkers), seed=int(seed))
 

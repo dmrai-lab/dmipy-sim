@@ -17,6 +17,7 @@ canary of no recorded family is a failure that prints the canary; anywhere else 
 """
 import hashlib
 import os
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -33,6 +34,7 @@ RECORDED_BITS_ENV = "DMIPY_SIM_RECORDED_BITS"
 #: ``field`` and ``no_field`` per array of the walk, ``forward`` per output of the forward signal. The arrays that
 #: carry the field (``field_coeffs``, ``qv_field``, ``qv_field_increments``) are the walk's with the cell's exactly
 #: periodic field (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`).
+#: ``fixed_step_default`` holds the full block and saved-array hashes of the default fixed-step field walk.
 FAMILIES = {
     "d0d7a6f831ecca7f9d94e401041709594f0f2ecf0cd90194cc97f1efb76590ea": {
         "field": {
@@ -65,6 +67,19 @@ FAMILIES = {
                     "d74f0785f9b4e8d7cafade4125099db0551920906277888b20293a58be3ccef9"],
     },
     "e74c68c7486e5194fea424efc88122e001a185a20b6925b53b1b9f79a1cef439": {
+        # From the default walk at d2867a9 with time.time fixed at 1000 s.
+        "fixed_step_default": {
+            "boundary_bands": "c2b4e7f01cdad7545689f0327b9db2f20d0371a42e42b71f014ea13023f0bb5b",
+            "boundary_endpoint": "4d964515c4cafd4572b3707244d4766651c80a071c4838260a195bec4cdeaef7",
+            "field_coeffs": "c9595d30efbc1885c15f5e82fbbe33777a5f1428e7ff2f3cc993d9c84611df13",
+            "position_coeffs": "d21a361471fd25ff07a33fca8c9be65361f122835d642f7989c569398d1fdce1",
+            "qv_boundary": "aaabb75945ca9f3206caefd7225c05e1e901bb27b609b7b8f1e6744ecc24852b",
+            "qv_field": "f72fdd3a50cb92f6d46f608db6216303049808821eb25da37bf0b517023b45ed",
+            "qv_field_increments": "67ed3b30aa8bb3087e8381e73104f284ad2890bf45fcb248c84ec28f967035b7",
+            "qv_positions": "266cdebff7a95b7fe0adcc84ba9ff13c2d564614ba2c560015112d8aa7942b57",
+            "compartment": "4a59c1136395d4124da5604dfd60e7d6739bf17eb1d80a6d40f84fc839f5f00e",
+            "block": "ce1443b33ae6e40e0fce297b8b6187891ca6b19a8ebfc0cf3a8fa87a20cf69fa",
+        },
         "field": {
             "position_coeffs": "50414eae62de40d03fb55fa05f74c7afce290f7ffaec55234701f2376300f330",
             "boundary_endpoint": "a22f9c158be02a6e4ec7063f7637c052cfccee718de77cd3e950a22de0a83d49",
@@ -95,6 +110,24 @@ FAMILIES = {
                     "7d943647b442068342534466ce4c5526b6ef1081908dc93df2908e3386503a1d"],
     },
 }
+
+
+def fixed_step_default_hashes(path):
+    """Hash the default fixed-step field walk's full block and saved tensors with a pinned clock."""
+    from safetensors.numpy import load_file
+    from dmipy_sim import walk
+    from dmipy_sim.engine.calibration import canonical
+    from tests._envelope import walk_envelope
+    from tests.test_spec_field_closed_form import _cell
+
+    with patch("time.time", return_value=1000.0):
+        spec = _cell().spec
+        w = walk(spec, 24, T_max=5e-4, block_h=1.25e-4, envelope=walk_envelope(of=spec), seed=3,
+                 require_gpu=False, K=4, K_c3=4, field_read_interval=1.25e-4)
+    w.save(path)
+    hashes = {name: hashlib.sha256(array.tobytes()).hexdigest() for name, array in load_file(str(path)).items()}
+    hashes["block"] = hashlib.sha256(canonical(w.block).encode()).hexdigest()
+    return hashes
 
 
 def canary():

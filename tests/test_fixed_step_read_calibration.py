@@ -1,7 +1,4 @@
 """A fixed-step field calibration records evidence and is reusable on the measured scope."""
-import hashlib
-import time
-
 import numpy as np
 import pytest
 from safetensors.numpy import load_file
@@ -28,37 +25,15 @@ def _walk_bytes(w, path):
     return {k: (a.dtype.str, a.shape, a.tobytes()) for k, a in load_file(str(path)).items()}
 
 
-def _hashes(w, path):
-    out = {k: hashlib.sha256(data).hexdigest() for k, (_, _, data) in _walk_bytes(w, path).items()}
-    out["block"] = hashlib.sha256(canonical(w.block).encode()).hexdigest()
-    return out
+def test_recorded_bits_fixed_step_default(recorded_bits, tmp_path):
+    from tests.recorded_bits import fixed_step_default_hashes, in_recorded_bits_job
 
-
-# Recorded from the default walk on the base revision with time.time fixed at 1000 s.
-# The JAX/JAXLIB build is selected by the recorded_bits fixture (0.10.2 / 0.10.2).
-_BASELINE_FAMILY = "e74c68c7486e5194fea424efc88122e001a185a20b6925b53b1b9f79a1cef439"
-_BASELINE = {
-    "boundary_bands": "c2b4e7f01cdad7545689f0327b9db2f20d0371a42e42b71f014ea13023f0bb5b",
-    "boundary_endpoint": "4d964515c4cafd4572b3707244d4766651c80a071c4838260a195bec4cdeaef7",
-    "field_coeffs": "c9595d30efbc1885c15f5e82fbbe33777a5f1428e7ff2f3cc993d9c84611df13",
-    "position_coeffs": "d21a361471fd25ff07a33fca8c9be65361f122835d642f7989c569398d1fdce1",
-    "qv_boundary": "aaabb75945ca9f3206caefd7225c05e1e901bb27b609b7b8f1e6744ecc24852b",
-    "qv_field": "f72fdd3a50cb92f6d46f608db6216303049808821eb25da37bf0b517023b45ed",
-    "qv_field_increments": "67ed3b30aa8bb3087e8381e73104f284ad2890bf45fcb248c84ec28f967035b7",
-    "qv_positions": "266cdebff7a95b7fe0adcc84ba9ff13c2d564614ba2c560015112d8aa7942b57",
-    "compartment": "4a59c1136395d4124da5604dfd60e7d6739bf17eb1d80a6d40f84fc839f5f00e",
-    "block": "ce1443b33ae6e40e0fce297b8b6187891ca6b19a8ebfc0cf3a8fa87a20cf69fa",
-}
-
-
-def test_recorded_bits_fixed_step_default(recorded_bits, monkeypatch, tmp_path):
-    from tests.recorded_bits import FAMILIES
-
-    if recorded_bits is not FAMILIES[_BASELINE_FAMILY]:
-        pytest.skip(f"fixed-step field read baseline was recorded on CPU arithmetic family {_BASELINE_FAMILY}")
-    monkeypatch.setattr(time, "time", lambda: 1000.0)
-    spec = _cell().spec
-    assert _hashes(walk(spec, 24, **_settings(spec)), tmp_path / "default.walk") == _BASELINE
+    if "fixed_step_default" not in recorded_bits:
+        reason = "this CPU family lacks fixed_step_default; tools/record_recorded_bits.py prints its entry"
+        if in_recorded_bits_job():
+            pytest.fail(reason, pytrace=False)
+        pytest.skip(reason)
+    assert fixed_step_default_hashes(tmp_path / "default.walk") == recorded_bits["fixed_step_default"]
 
 
 def test_measure_reuse_join_and_charge(x64, monkeypatch, tmp_path):
@@ -144,8 +119,6 @@ _SCOPE_CHANGES = {
     "start_rule": {"rule": "different placement"},
     "record": False,
     "bounce_budget": 10,
-    "permeability_factor": "per walker",
-    "object_nodes": {"rule": "per object"},
     "backend": {"name": "other"},
     "code": "different code",
 }
@@ -155,7 +128,7 @@ _SCOPE_CHANGES = {
 def test_walk_refuses_each_scope_entry_before_seeding(measured, entry, monkeypatch):
     spec, kw, calibration = measured
     data = calibration.record
-    assert data["scope"].keys() == _SCOPE_CHANGES.keys()
+    assert data["scope"].keys() == _SCOPE_CHANGES.keys() | {"permeability_factor", "object_nodes", "walker_rule"}
     assert data["scope"][entry] != _SCOPE_CHANGES[entry]
     data["scope"][entry] = _SCOPE_CHANGES[entry]
     altered = FieldReadCalibration.create(scope=data["scope"], rung=data["rung"], constants=data["constants"],
@@ -173,6 +146,57 @@ def test_walk_refuses_another_precision(measured, x64):
     spec, kw, calibration = measured
     with pytest.raises(ValueError, match="incompatible field calibration scope: backend"):
         walk(spec, 8, field_calibration=calibration, accumulation_dtype="float64", **kw)
+
+
+@pytest.mark.parametrize("input_name", ["permeability_factor", "object_nodes"])
+def test_per_walker_calibration_requires_matching_rule(input_name, monkeypatch):
+    from dmipy_sim.engine.physics import ObjectNodes
+    from tests.test_permeability_factor import _mixed
+
+    spec = _mixed().spec
+    kw = _settings(spec)
+    per_walker = {
+        "permeability_factor": np.full(8, 0.25, np.float32),
+        "object_nodes": ObjectNodes(np.array([0.25, 1.0], np.float32), np.array([0.5, 0.5]), 7, np.ones(8, bool)),
+    }
+    inputs = {input_name: per_walker[input_name]}
+    rule = "assignment-v1"
+    calibration = measure_field_read_calibration(spec, pilot_walkers=8, walker_rule=rule, **inputs, **kw)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("an incompatible calibration reached walker seeding")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(core, "seed_walkers", unexpected)
+        with pytest.raises(ValueError, match="field_calibration requires walker_rule"):
+            measure_field_read_calibration(spec, pilot_walkers=8, **inputs, **kw)
+        with pytest.raises(ValueError, match="field_calibration requires walker_rule"):
+            walk(spec, 8, field_calibration=calibration, **inputs, **kw)
+        with pytest.raises(ValueError, match="incompatible field calibration scope: walker_rule$"):
+            walk(spec, 8, field_calibration=calibration, walker_rule="assignment-v2", **inputs, **kw)
+        with pytest.raises(ValueError, match=rf"incompatible field calibration scope: {input_name}$"):
+            walk(spec, 8, field_calibration=calibration, walker_rule=rule, **kw)
+
+    if input_name == "object_nodes":
+        nodes = inputs[input_name]._replace(seed=9, walkers=np.arange(8) % 2 == 0)
+        other = walk(spec, 8, field_calibration=calibration, walker_rule=rule, object_nodes=nodes, **kw)
+        assert other.block["field_read"]["calibration_digest"] == calibration.record["digest"]
+
+
+def test_permeability_rule_reuses_calibration_across_distinct_walker_ranges():
+    from tests.test_permeability_factor import _mixed
+
+    spec = _mixed().spec
+    kw = _settings(spec)
+    rule = {"assignment": "alternating ranges of eight", "factors": [0.25, 1.0]}
+    first = np.full(8, 0.25, np.float32)
+    calibration = measure_field_read_calibration(spec, pilot_walkers=8, walker_rule=rule, permeability_factor=first, **kw)
+    same_rule = {"factors": [0.25, 1.0], "assignment": "alternating ranges of eight"}
+    for start, factors in [(0, first), (8, np.ones(8, np.float32))]:
+        piece = walk(spec, 8, first_walker=start, field_calibration=calibration, walker_rule=same_rule,
+                     permeability_factor=factors, **kw)
+        assert piece.block["field_read"]["calibration_digest"] == calibration.record["digest"]
+        np.testing.assert_array_equal(piece.permeability_factor, factors)
 
 
 @pytest.mark.parametrize("absent", ["K_c3", "field_read_interval", "field"])
@@ -195,13 +219,38 @@ def test_standard_error_of_ratio_uses_the_walker_spread():
     # Channel 1 has zero variation and uses the trapezoid bound with no estimate.
     check = np.array([[[[1, 0], [1, 0]], [[1, 0], [3, 0]]],
                       [[[3, 0], [4, 0]], [[3, 0], [8, 0]]]])
-    constants, se = fixed_step_constants(check, 0.5, 2)
+    constants, se = fixed_step_constants(check, 0.5, 2, ["varying", "constant"])
     assert constants == [1.25, READ_CONSTANT]
     assert se[0] == pytest.approx(0.375, rel=2 * np.finfo(float).eps)
     assert se[1] is None
     check[0, 0, 1, 0] = -1
     with pytest.raises(ValueError, match="nonnegative quadratic variation"):
-        fixed_step_constants(check, 0.5, 2)
+        fixed_step_constants(check, 0.5, 2, ["varying", "constant"])
+
+
+def test_measurement_refuses_an_excursion_hidden_between_coarse_reads(monkeypatch):
+    from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
+
+    cell = _cell()
+    spec = cell.spec
+    channels = HollowCylinderField.of(cell).channel_names
+    # The fine trapezoid of (0, 1, 0) at unit spacing is 1. The coarse trapezoid and QV are 0.
+    samples = np.array([0.0, 1.0, 0.0])
+    fine_integral = (samples[:-1] + samples[1:]).sum() / 2
+    coarse_integral = samples[0] + samples[-1]
+    coarse_qv = (samples[-1] - samples[0]) ** 2
+    with pytest.raises(ValueError, match="channel 'excursion' at rung 2 .*zero coarse quadratic variation"):
+        check = np.tile([coarse_integral - fine_integral, coarse_qv], (2, 1)).reshape(2, 1, 2, 1)
+        fixed_step_constants(check, 1.0, 2, ["excursion"])
+
+    def pilot(call, indices, checks, dt_sim, keep_means):
+        check = np.zeros((len(indices), 1, 2, len(checks), len(channels)))
+        check[:, :, 0, :, 0] = (coarse_integral - fine_integral) * dt_sim
+        return dict(chk=check)
+
+    monkeypatch.setattr(core, "_jax_field_pilot", pilot)
+    with pytest.raises(ValueError, match=rf"channel {channels[0]!r} at rung \d+ .*zero coarse quadratic variation"):
+        measure_field_read_calibration(spec, pilot_walkers=2, **_settings(spec))
 
 
 def test_backend_declares_precision_and_pilot_override_names_the_actual_engine(measured, monkeypatch):

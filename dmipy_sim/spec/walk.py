@@ -44,7 +44,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
               field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None,
-              permeability_factor=None, object_nodes=None, events_capacity=None):
+              permeability_factor=None, object_nodes=None, events_capacity=None, walker_rule=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -90,8 +90,9 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     For a fixed-step field walk of one geometry with both ``K_c3`` and ``field_read_interval`` given,
     ``field_calibration`` takes a :class:`~dmipy_sim.engine.calibration.FieldReadCalibration` from
     :func:`measure_field_read_calibration`. The walk checks its scope before stepping, skips the field pilot
-    and records the stated constants and their digest. Per-walker inputs must represent the same assignment
-    rule in measurement and reuse. The scope checks the active rules and the object-node distribution.
+    and records the stated constants and their digest. With ``permeability_factor`` or ``object_nodes``,
+    give the same ``walker_rule`` used to measure the calibration. This string or canonical JSON value
+    identifies the assignment rule and its parameters across walker ranges and seeds.
 
     For an adaptive walk, ``field_calibration`` maps every diffusing seeded pool name to its validated
     :class:`~dmipy_sim.engine.calibration.FieldCalibration`. Reuse checks physical, numerical,
@@ -214,14 +215,15 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
 
 
 def measure_field_read_calibration(spec, T_max, block_h=None, *, envelope, seed, K_c3=None,
-                                   field_read_interval=None, pilot_walkers=None, **walk_settings):
+                                   field_read_interval=None, pilot_walkers=None, walker_rule=None, **walk_settings):
     """Measure a fixed-step field read on one geometry and return its FieldReadCalibration.
 
     Give the walk's envelope, K_c3 and field_read_interval (s) along with its geometry,
     physics and backend settings. The field pilot runs on the selected field_pilot engine
     over T_max seconds, starting at walker zero of seed. The count defaults to the walk's
     pilot cap and must be at least two. Per-walker settings, when given, have one row per
-    pilot walker. Standard errors are dimensionless, one per channel.
+    pilot walker and require a ``walker_rule`` identifying their assignment rule and parameters
+    as a string or canonical JSON value. Standard errors are dimensionless, one per channel.
     """
     from ..engine.accumulate import PILOT_WALKERS
     count = PILOT_WALKERS if pilot_walkers is None else pilot_walkers
@@ -230,7 +232,8 @@ def measure_field_read_calibration(spec, T_max, block_h=None, *, envelope, seed,
     if not isinstance(seed, (int, np.integer)) or isinstance(seed, (bool, np.timedelta64)):
         raise ValueError("field calibration pilot seed must be an integer")
     return _walk_spec(spec, int(count), T_max, block_h, envelope=envelope, seed=int(seed), first_walker=0,
-                      K_c3=K_c3, field_read_interval=field_read_interval, _measure_read=True, **walk_settings)
+                      K_c3=K_c3, field_read_interval=field_read_interval, walker_rule=walker_rule,
+                      _measure_read=True, **walk_settings)
 
 
 def _walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivity=None,
@@ -241,7 +244,7 @@ def _walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diff
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
               field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None,
-              permeability_factor=None, object_nodes=None, events_capacity=None, _measure_read=False):
+              permeability_factor=None, object_nodes=None, events_capacity=None, walker_rule=None, _measure_read=False):
     with Run("measure_field_read_calibration" if _measure_read else "walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
                                       adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir) as run:
         import logging
@@ -413,7 +416,7 @@ def _walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diff
                                     f"block for this walk; a pinned step may be finer, never coarser")
             if fixed_read:
                 walk_kw.update(field_calibration=field_calibration, _measure_read=_measure_read,
-                               _calibration_spec=spec)
+                               _calibration_spec=spec, walker_rule=walker_rule)
             w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
                                first_walker=int(first_walker),
                                       field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
