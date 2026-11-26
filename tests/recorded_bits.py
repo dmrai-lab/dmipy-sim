@@ -3,8 +3,9 @@
 A compiled walk's float32 bits depend on the JAX build (:data:`RECORDED_WITH`) and on the arithmetic XLA's CPU backend
 emits for the host, which differs between families of CPUs (an instruction-set cap does not remove the difference).
 The recorded values are therefore kept per family in :data:`FAMILIES`, keyed by the family's canary: the hash of a
-small fixed walk (:func:`canary`) through the same concentric wall kernel. The ``test_recorded_bits_*`` tests read the
-values of this host's family through the ``recorded_bits`` fixture (:func:`recorded_values`).
+small fixed walk (:func:`canary`) through the same concentric wall kernel. The ``recorded_bits`` fixture
+(:func:`recorded_values`) selects the reference walks. The independent default fixed-step baseline uses
+:data:`FIXED_STEP_DEFAULT` with the same canary.
 
 The canary only SELECTS the family. A matching canary is not evidence that the recorded bits match: a compile setting
 can leave the canary unchanged and still change the bits of a recorded walk. The recorded tests themselves are that
@@ -12,11 +13,13 @@ evidence.
 
 Where the recorded tests run: wherever jax / jaxlib are :data:`RECORDED_WITH` and the canary names a recorded family.
 In the pinned ``recorded-bits`` CI job (which sets :data:`RECORDED_BITS_ENV` to ``1``) another build is an error and a
-canary of no recorded family is a failure that prints the canary; anywhere else either is a skip with that reason.
-``tools/record_recorded_bits.py`` prints a host's canary and the values in the form of :data:`FAMILIES`.
+canary of no recorded :data:`FAMILIES` entry is a failure that prints the canary. For a missing fixed-step baseline
+the job supplies one computed by the pre-calibration revision on the same runner. Local runs skip affected tests
+when the build or reference is missing. ``tools/record_recorded_bits.py`` prints a host's entries for both mappings.
 """
 import hashlib
 import os
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -27,6 +30,8 @@ RECORDED_WITH = ("0.10.2", "0.10.2")
 #: The variable the pinned ``recorded-bits`` CI job sets to ``1``: there a build other than :data:`RECORDED_WITH` is an
 #: error and a canary of no recorded family a failure; elsewhere both are skips.
 RECORDED_BITS_ENV = "DMIPY_SIM_RECORDED_BITS"
+#: JSON reference generated on the runner by the pre-calibration simulator for an unrecorded fixed-step walk.
+FIXED_STEP_BASELINE_ENV = "DMIPY_SIM_FIXED_STEP_BASELINE"
 
 #: The recorded values per family, keyed by the family's canary (:func:`canary`): for each, the hashes of the
 #: all-myelinated reference walks of ``tests/geometry/test_mixed_myelinated_plain_cell.py`` (``recorded_hashes``):
@@ -97,6 +102,43 @@ FAMILIES = {
 }
 
 
+#: Full block and saved-array hashes of the default fixed-step field walk, keyed by canary.
+#: Record these hashes from the pre-calibration simulator.
+FIXED_STEP_DEFAULT = {
+    # From the default walk at d2867a9 with time.time fixed at 1000 s.
+    "e74c68c7486e5194fea424efc88122e001a185a20b6925b53b1b9f79a1cef439": {
+        "boundary_bands": "c2b4e7f01cdad7545689f0327b9db2f20d0371a42e42b71f014ea13023f0bb5b",
+        "boundary_endpoint": "4d964515c4cafd4572b3707244d4766651c80a071c4838260a195bec4cdeaef7",
+        "field_coeffs": "c9595d30efbc1885c15f5e82fbbe33777a5f1428e7ff2f3cc993d9c84611df13",
+        "position_coeffs": "d21a361471fd25ff07a33fca8c9be65361f122835d642f7989c569398d1fdce1",
+        "qv_boundary": "aaabb75945ca9f3206caefd7225c05e1e901bb27b609b7b8f1e6744ecc24852b",
+        "qv_field": "f72fdd3a50cb92f6d46f608db6216303049808821eb25da37bf0b517023b45ed",
+        "qv_field_increments": "67ed3b30aa8bb3087e8381e73104f284ad2890bf45fcb248c84ec28f967035b7",
+        "qv_positions": "266cdebff7a95b7fe0adcc84ba9ff13c2d564614ba2c560015112d8aa7942b57",
+        "compartment": "4a59c1136395d4124da5604dfd60e7d6739bf17eb1d80a6d40f84fc839f5f00e",
+        "block": "ce1443b33ae6e40e0fce297b8b6187891ca6b19a8ebfc0cf3a8fa87a20cf69fa",
+    },
+}
+
+
+def fixed_step_default_hashes(path):
+    """Hash the default fixed-step field walk's full block and saved tensors with a pinned clock."""
+    from safetensors.numpy import load_file
+    from dmipy_sim import walk
+    from dmipy_sim.engine.calibration import canonical
+    from tests._envelope import walk_envelope
+    from tests.test_spec_field_closed_form import _cell
+
+    with patch("time.time", return_value=1000.0):
+        spec = _cell().spec
+        w = walk(spec, 24, T_max=5e-4, block_h=1.25e-4, envelope=walk_envelope(of=spec), seed=3,
+                 require_gpu=False, K=4, K_c3=4, field_read_interval=1.25e-4)
+    w.save(path)
+    hashes = {name: hashlib.sha256(array.tobytes()).hexdigest() for name, array in load_file(str(path)).items()}
+    hashes["block"] = hashlib.sha256(canonical(w.block).encode()).hexdigest()
+    return hashes
+
+
 def canary():
     """The canary: the sha256 of ``position_coeffs`` of a small fixed all-myelinated walk (16 walkers, 0.5 ms, four
     sheathed cylinders, permeable walls) through the concentric wall kernel, on the CPU. Its value names the family of
@@ -147,13 +189,17 @@ def family_of(canary_hash, *, in_job):
 _CANARY = []
 
 
-def recorded_values():
-    """This host's family's recorded values, after :func:`check_build` and :func:`family_of` (the canary is walked
-    once per process)."""
+def recorded_canary():
+    """This host's canary on the recorded build, evaluated once per process."""
     import jax
     import jaxlib
     in_job = in_recorded_bits_job()
     check_build((jax.__version__, jaxlib.__version__), in_job=in_job)
     if not _CANARY:
         _CANARY.append(canary())
-    return family_of(_CANARY[0], in_job=in_job)
+    return _CANARY[0]
+
+
+def recorded_values():
+    """This host's family's recorded values, after checking the build and selecting its canary."""
+    return family_of(recorded_canary(), in_job=in_recorded_bits_job())

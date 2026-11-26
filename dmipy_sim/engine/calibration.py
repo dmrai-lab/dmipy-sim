@@ -50,17 +50,50 @@ def code_fingerprint():
 
 
 @dataclass(frozen=True)
-class FieldCalibration:
-    """A JSON snapshot of physics, numerics, query, backend and evidence; no mutable shared dictionaries."""
+class _ScopedCalibration:
     document: str
 
-    def __post_init__(self):
-        data = json.loads(self.document)
+    def _checked_record(self, kind):
+        data = self.record
         digest = data.pop("digest", None)
         if digest != fingerprint(data):
             raise ValueError("field calibration checksum does not match its evidence")
-        if data.get("kind") != "field-calibration":
-            raise ValueError("not a field calibration record")
+        if data.get("kind") != kind:
+            raise ValueError(f"not a {kind.replace('-', ' ')} record")
+        return data
+
+    @property
+    def record(self):
+        return json.loads(self.document)
+
+    @classmethod
+    def _create(cls, **data):
+        data["digest"] = fingerprint(data)
+        return cls(canonical(data))
+
+    def _record_for_scope(self, scope):
+        record = self.record
+        expected = record["scope"]
+        if canonical(expected) != canonical(scope):
+            changed = sorted(key for key in set(scope) | set(expected)
+                             if key not in expected or key not in scope or canonical(scope[key]) != canonical(expected[key]))
+            raise ValueError(f"incompatible field calibration scope: {', '.join(changed)}")
+        return record
+
+    def save(self, path):
+        Path(path).write_text(self.document + "\n")
+
+    @classmethod
+    def load(cls, path):
+        return cls(Path(path).read_text())
+
+
+@dataclass(frozen=True)
+class FieldCalibration(_ScopedCalibration):
+    """A JSON snapshot of physics, numerics, query, backend and evidence; no mutable shared dictionaries."""
+
+    def __post_init__(self):
+        data = self._checked_record("field-calibration")
         scope = data.get("scope", {})
         if set(scope) != {"physics", "numerics", "query", "backend", "code"} or not scope["query"]:
             raise ValueError("field calibration needs physical, numerical, query, backend and code scope")
@@ -102,15 +135,9 @@ class FieldCalibration:
         if not 1 <= int(band["K"]) <= int(scope["numerics"]["blocks_per_window"]):
             raise ValueError("field calibration band is outside its sampled window")
 
-    @property
-    def record(self):
-        return json.loads(self.document)
-
     @classmethod
     def create(cls, *, scope, read, band, accuracy, step):
-        data = dict(kind="field-calibration", scope=scope, read=read, band=band, accuracy=accuracy, step=step)
-        data["digest"] = fingerprint(data)
-        return cls(canonical(data))
+        return cls._create(kind="field-calibration", scope=scope, read=read, band=band, accuracy=accuracy, step=step)
 
     @classmethod
     def from_walk(cls, walk, *, accuracy, step, pool=None):
@@ -130,19 +157,100 @@ class FieldCalibration:
                           band=block["field_band"], accuracy=accuracy, step=step)
 
     def for_scope(self, scope):
-        record = self.record
-        if canonical(record["scope"]) != canonical(scope):
-            changed = sorted(key for key in set(scope) | set(record["scope"])
-                             if scope.get(key) != record["scope"].get(key))
-            raise ValueError(f"incompatible field calibration scope: {', '.join(changed)}")
+        record = self._record_for_scope(scope)
         return record["read"], record["band"]
 
-    def save(self, path):
-        Path(path).write_text(self.document + "\n")
+
+@dataclass(frozen=True)
+class FieldReadCalibration(_ScopedCalibration):
+    """Fixed-step field-read constants and standard errors by channel at one check rung.
+
+    Time entries are in seconds, field strength in tesla, and susceptibility and constants are dimensionless.
+    A channel with zero pilot quadratic variation uses the trapezoid constant and has no standard error.
+    A one-step block has no coarser check rung and uses the trapezoid constant for all channels.
+    """
+
+    def __post_init__(self):
+        from .accumulate import READ_CONSTANT
+        data = self._checked_record("field-read-calibration")
+        try:
+            scope, evidence = data["scope"], data["evidence"]
+            channels, checks, n_read = scope["channels"], scope["checks"], scope["n_read"]
+            constants, rung = data["constants"], data["rung"]
+            errors, pilot_walkers, seed = evidence["standard_error"], evidence["pilot_walkers"], evidence["seed"]
+        except KeyError as exc:
+            raise ValueError(f"field-read calibration missing required entry {exc.args[0]!r}") from exc
+        n_channels = len(channels)
+        if not n_channels or len(constants) != n_channels or len(errors) != n_channels:
+            raise ValueError("field-read calibration needs a finite nonnegative constant and a standard error entry per channel")
+        for constant, error in zip(constants, errors):
+            if type(constant) not in (int, float) or not np.isfinite(constant) or constant < 0:
+                raise ValueError("field-read calibration constants must be finite nonnegative numbers")
+            if ((error is None and constant != READ_CONSTANT) or
+                    (error is not None and (type(error) not in (int, float) or not np.isfinite(error) or error < 0))):
+                raise ValueError("field-read calibration needs a finite nonnegative standard error or the trapezoid constant")
+        expected_rung = next((d for d in checks if d >= n_read), None)
+        if rung != expected_rung or (rung is None and any(error is not None for error in errors)):
+            raise ValueError("field-read calibration rung must be the check at or above n_read")
+        if type(pilot_walkers) is not int or pilot_walkers < 2 or type(seed) is not int:
+            raise ValueError("field-read calibration requires at least two pilot walkers and an integer seed")
 
     @classmethod
-    def load(cls, path):
-        return cls(Path(path).read_text())
+    def create(cls, *, scope, rung, constants, standard_error, pilot_walkers, seed):
+        return cls._create(kind="field-read-calibration", scope=scope, rung=rung, constants=constants,
+                           evidence=dict(standard_error=standard_error, pilot_walkers=pilot_walkers, seed=seed))
+
+    def for_scope(self, scope):
+        """The stated record when every entry matches the resolved walk scope."""
+        return self._record_for_scope(scope)
+
+
+def fixed_step_engine(backend, precision):
+    """Engine and declared precision used to measure or apply a fixed-step calibration."""
+    if backend is not None:
+        precision = getattr(backend, "precision", None)
+        if precision not in ("float32", "float64"):
+            raise ValueError(f"field_calibration: backend {backend.name!r} must declare its precision "
+                             "as 'float32' or 'float64'")
+        build = getattr(backend, "build", None)
+        return dict(name=str(backend.name), precision=precision, build=build() if callable(build) else None)
+    import jax
+    import jaxlib
+    device = jax.config.jax_default_device
+    return dict(name="jax", precision=precision, version=jax.__version__, jaxlib=jaxlib.__version__,
+                platform=jax.default_backend() if device is None else device.platform, x64=bool(jax.config.jax_enable_x64))
+
+
+def fixed_step_constants(check, step_s, rung, channels):
+    """Per-channel ratio of mean squared trapezoid error to mean interval-scaled QV.
+
+    The input has axes (walker, window, error or QV, channel). Average within each walker before
+    estimating standard errors by the delta method across independent walkers, retaining the
+    covariance of error squared and QV. A channel with zero QV and zero error uses the
+    trapezoid bound with no standard error. Zero QV with nonzero error prevents calibration.
+    """
+    from .accumulate import READ_CONSTANT, measured_read_constants
+    check = np.asarray(check, np.float64)
+    errors_sq, variations = check[:, :, 0] ** 2, check[:, :, 1]
+    if not np.isfinite(check).all() or (variations < 0).any():
+        raise ValueError("field-read calibration needs finite pilot errors and finite nonnegative quadratic variation")
+    for channel, zero_qv, has_error in zip(channels, (variations == 0).all(axis=(0, 1)),
+                                           (check[:, :, 0] != 0).any(axis=(0, 1)), strict=True):
+        if zero_qv and has_error:
+            raise ValueError(f"field-read calibration: channel {channel!r} at rung {rung} "
+                             "has positive fine-read error with zero coarse quadratic variation")
+    error_sq = errors_sq.mean(axis=1)
+    scaled_qv = (rung * step_s) ** 2 * variations.mean(axis=1)
+    qv = scaled_qv.mean(axis=0)
+    constants = measured_read_constants(errors_sq.mean(axis=(0, 1))[None],
+                                        variations.mean(axis=(0, 1))[None], step_s, (rung,))[rung]
+    resolved = qv > 0.0
+    residual = error_sq[:, resolved] - scaled_qv[:, resolved] * constants[resolved]
+    se = residual.std(axis=0, ddof=1) / (np.sqrt(len(check)) * qv[resolved])
+    errors = [None] * check.shape[-1]
+    for channel, value in zip(np.flatnonzero(resolved), se):
+        errors[channel] = float(value)
+    return np.where(resolved, constants, READ_CONSTANT).tolist(), errors
 
 
 def adaptive_scope(*, geometry, diffusivity, field_basis, spec, plan, T, K, m, h, envelope,

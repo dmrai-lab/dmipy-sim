@@ -588,7 +588,8 @@ def _events_step(ev, lab, gstep):
 
 
 # ---------------------------------------------------------------------------------------------------- the block
-def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, dt_f=0.0, step0=None, checks=(), keep_reads=False):
+def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, dt_f=0.0, step0=None, checks=(),
+                keep_reads=False, exact_constant_checks=False):
     """One block of ``length`` steps of ``kind`` from ``carry = (phys, b_prev, ev_comp, ev_bound)``: the physics carry
     stepped ``length`` times, with the moments of the increments ``M_j = sum_i tau_i^j (pos(c_i+1) - pos(c_i))`` (m+1,
     3) and the same ``B_j`` of the cumulative local time, ``tau_i = (i + 1/2) / length - 1/2``; each channel's
@@ -601,7 +602,8 @@ def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, d
     bridge variance, RPK.md 9.5.5), the last read carried in ``b_prev``; with ``checks`` (a walk that reads every step) ``E`` (2, n_checks,
     n_ch): per check ``d`` the trapezoid of every ``d``-th read and the block's end less the trapezoid of every read,
     over the block, and the quadratic variation of the series of those reads (the pilot's measurement of the
-    trapezoid's constant, :func:`measured_read_constants`); with ``keep_reads`` the reads themselves (n_reads, n_ch)
+    trapezoid's constant, :func:`measured_read_constants`). With ``exact_constant_checks``, channels with identical
+    fine reads throughout the block have exactly zero check error. With ``keep_reads`` the reads themselves (n_reads, n_ch)
     at the ends of the block's read intervals; with an events buffer the label after every step recorded on change at
     the global step ``step0 + i + 1``. Every moment, quadratic variation and check is held in ``dtype`` (float32 or
     float64, :func:`accumulation_dtype`), each increment formed in ``dtype`` from the carry's float32 values; the
@@ -649,7 +651,7 @@ def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, d
         wq = jnp.asarray(L / n_read, dtype)                      # a shorter interval enters the QV as (db dt_i / dt_f)^2
 
         def group(c, start):
-            cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec = c
+            cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec, varies = c
             idx = start + jnp.arange(L, dtype=jnp.int32)
             (cc, mp, mb, qp, qb, evc, evb), _ = jax.lax.scan(step, (cc, mp, mb, qp, qb, evc, evb), idx)
             b = None
@@ -662,6 +664,8 @@ def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, d
                 db = (b.astype(dtype) - bp.astype(dtype)) * wq
                 qd = qd + db * db                                                # the read series' quadratic variation
                 if checks:                                                       # the d-th reads and the block's end
+                    if exact_constant_checks:
+                        varies = varies | (b != bp)
                     k = start + 1
                     hit = (k % ds == 0) | (k == length)
                     span = jnp.where(k % ds == 0, ds, k % ds).astype(dtype)[:, None]
@@ -671,7 +675,7 @@ def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, d
                     ec = jnp.stack([e_d, q_d])
                     bpd = jnp.where(hit[:, None], b[None, :], bpd)
                 bp = b
-            return (cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec), (b if keep_reads else None)
+            return (cc, mp, mb, qp, qb, evc, evb, bp, mf, qf, qd, bpd, ec, varies), (b if keep_reads else None)
         return group
 
     m0 = jnp.zeros((m + 1, 3), dtype)
@@ -683,12 +687,16 @@ def moment_scan(kind, carry, length, m, *, dtype, read=None, n_ch=0, n_read=1, d
     qd0 = jnp.zeros((int(n_ch),), dtype) if read is not None else None
     bpd0 = jnp.broadcast_to(b_prev[None, :], (len(checks), int(n_ch))) if (read is not None and checks) else None
     ec0 = jnp.zeros((2, len(checks), int(n_ch)), dtype) if (read is not None and checks) else None
-    c = (phys, m0, b0, q0, qb0, ev_c, ev_b, b_prev, f0, qf0, qd0, bpd0, ec0)
+    varies0 = jnp.zeros(int(n_ch), dtype=bool) if checks and exact_constant_checks else None
+    c = (phys, m0, b0, q0, qb0, ev_c, ev_b, b_prev, f0, qf0, qd0, bpd0, ec0, varies0)
     c, reads = jax.lax.scan(group_of(n_read), c, jnp.arange(n_full, dtype=jnp.int32) * n_read)
     if rem:                                                                      # the block's end: the shorter interval
         c, last = group_of(rem)(c, jnp.int32(n_full * n_read))
         reads = None if reads is None else jnp.concatenate([reads, last[None]], axis=0)
-    phys, mp, mb, qp, qb, ev_c, ev_b, b_prev, mf, qf, qd, _bpd, ec = c
+    phys, mp, mb, qp, qb, ev_c, ev_b, b_prev, mf, qf, qd, _bpd, ec, varies = c
+    if varies is not None:
+        # Both trapezoids integrate a constant sample series exactly in real arithmetic.
+        ec = ec.at[0].set(jnp.where(varies, ec[0], 0.0))
     return (phys, b_prev, ev_c, ev_b), (mp, mb, qp, qb, mf, qf, qd, ec, reads)
 
 

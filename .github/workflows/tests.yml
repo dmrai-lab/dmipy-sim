@@ -127,15 +127,18 @@ jobs:
 
   recorded-bits:
     # Recorded bits are bits of one JAX build (jax / jaxlib 0.10.2, tests/recorded_bits.py RECORDED_WITH) and of the
-    # arithmetic XLA's CPU backend emits for a family of CPUs: the all-myelinated walks, and the walk with and without
-    # the trial record. The recorded values are kept per family, selected by the canary (a small fixed walk;
-    # tests/recorded_bits.py FAMILIES). This job installs that build, prints the runner's CPU model, its flags, numpy's
-    # SIMD dispatch and the canary, and runs the tests named test_recorded_bits_* with DMIPY_SIM_RECORDED_BITS=1, which
-    # makes a canary of no recorded family a failure that names it (elsewhere such a host skips). On a failure it prints
-    # this runner's entry (tools/record_recorded_bits.py), the values a new family would be recorded with.
+    # arithmetic XLA's CPU backend emits for a family of CPUs: the all-myelinated walks, the walk with and without
+    # the trial record, and the default fixed-step field read. The recorded values are kept per family, selected by
+    # the canary (a small fixed walk; tests/recorded_bits.py FAMILIES). This job installs that build, prints the runner's
+    # CPU model, its flags, numpy's SIMD dispatch and the canary, and runs test_recorded_bits_* with DMIPY_SIM_RECORDED_BITS=1, which
+    # makes a canary of no recorded FAMILIES entry a failure that names it (elsewhere such a host skips).
+    # A runner family without a FIXED_STEP_DEFAULT entry is compared against the base revision on that same runner.
+    # On a failure the job prints the head's FAMILIES entry and the base's FIXED_STEP_DEFAULT entry for recording.
     runs-on: ubuntu-latest
     env:
       JAX_PLATFORMS: cpu
+      # The default walk's baseline must come from before fixed-step calibration reuse.
+      FIXED_STEP_BASE_REF: d2867a9ac4ee74d8351d8910dbd926a47762e38f
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -149,19 +152,67 @@ jobs:
           pip install "dmipy-replay @ git+https://github.com/dmrai-lab/dmipy-replay@${DMIPY_REPLAY_REF}"
           pip install -e . "jax==0.10.2" "jaxlib==0.10.2"
       - name: The runner's CPU and canary
+        id: runner
         run: |
           grep -m1 "^model name" /proc/cpuinfo
           grep -m1 "^flags" /proc/cpuinfo
           python -c "import jax, jaxlib, numpy; print('jax', jax.__version__, 'jaxlib', jaxlib.__version__, 'numpy', numpy.__version__); numpy.show_runtime()"
-          python -c "from tests.recorded_bits import FAMILIES, canary; c = canary(); print('canary', c, 'recorded family' if c in FAMILIES else 'NO recorded family')"
+          python - <<'PY'
+          import os
+          from tests.recorded_bits import FAMILIES, FIXED_STEP_DEFAULT, canary
+
+          c = canary()
+          print('canary', c, 'recorded family' if c in FAMILIES else 'NO recorded family')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as outputs:
+              print(f'canary={c}', file=outputs)
+              print(f'needs_fixed_step_baseline={str(c not in FIXED_STEP_DEFAULT).lower()}', file=outputs)
+          PY
+      - name: Check out the independent fixed-step baseline
+        if: steps.runner.outputs.needs_fixed_step_baseline == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIXED_STEP_BASE_REF }}
+          path: recorded-bits-base
+      - name: Compute the fixed-step baseline for this runner
+        if: steps.runner.outputs.needs_fixed_step_baseline == 'true'
+        env:
+          RUNNER_CANARY: ${{ steps.runner.outputs.canary }}
+        run: |
+          cp tools/record_recorded_bits.py recorded-bits-base/tools/
+          cp tests/recorded_bits.py recorded-bits-base/tests/
+          cd recorded-bits-base
+          python tools/record_recorded_bits.py --fixed-step-default "$RUNNER_CANARY" > "$RUNNER_TEMP/fixed-step-default.json"
       - name: Run the recorded-bits tests
+        id: recorded
         shell: bash
         run: |
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
+          export DMIPY_SIM_FIXED_STEP_BASELINE="$RUNNER_TEMP/fixed-step-default.json"
           status=0
-          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
-          if [ "$status" -eq 0 ] && grep -q "5 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
-          # a recorded test failed (or was skipped): print this runner's entry, the values its family would be recorded with
-          python tools/record_recorded_bits.py || true
+          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py tests/test_fixed_step_read_calibration.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
+          if [ "$status" -eq 0 ] && grep -qw "6 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
           exit 1
+      - name: Print the runner's recorded family entry
+        if: failure() && steps.recorded.outcome == 'failure'
+        run: python tools/record_recorded_bits.py
+      - name: Check out the independent fixed-step baseline for the failure report
+        if: failure() && steps.recorded.outcome == 'failure' && steps.runner.outputs.needs_fixed_step_baseline == 'false'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIXED_STEP_BASE_REF }}
+          path: recorded-bits-base
+      - name: Print the runner's fixed-step baseline entry
+        if: failure() && steps.recorded.outcome == 'failure'
+        env:
+          RUNNER_CANARY: ${{ steps.runner.outputs.canary }}
+        run: |
+          if [ -s "$RUNNER_TEMP/fixed-step-default.json" ]; then
+            echo "# the entry of this host's family in tests/recorded_bits.py FIXED_STEP_DEFAULT"
+            cat "$RUNNER_TEMP/fixed-step-default.json"
+            exit 0
+          fi
+          cp tools/record_recorded_bits.py recorded-bits-base/tools/
+          cp tests/recorded_bits.py recorded-bits-base/tests/
+          cd recorded-bits-base
+          python tools/record_recorded_bits.py --fixed-step-default "$RUNNER_CANARY"
