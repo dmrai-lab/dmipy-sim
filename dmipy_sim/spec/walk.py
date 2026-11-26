@@ -87,12 +87,18 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     goes with a gridded field source whose band is derived (``K_c3`` None), and is the budget of the fixed-step
     walk's pilot as ``calibration_floor`` is of the adaptive strand walk's.
 
-    ``field_calibration`` maps every diffusing seeded pool name to its validated
+    For a fixed-step field walk of one geometry with both ``K_c3`` and ``field_read_interval`` given,
+    ``field_calibration`` takes a :class:`~dmipy_sim.engine.calibration.FieldReadCalibration` from
+    :func:`measure_field_read_calibration`. The walk checks its scope before stepping, skips the field pilot
+    and records the stated constants and their digest. Per-walker inputs must represent the same assignment
+    rule in measurement and reuse. The scope checks the active rules and the object-node distribution.
+
+    For an adaptive walk, ``field_calibration`` maps every diffusing seeded pool name to its validated
     :class:`~dmipy_sim.engine.calibration.FieldCalibration`. Reuse checks physical, numerical,
     query and backend scope before walking; records never cross pools. ``query_scope`` states
     the scanner-capability/tissue identity, absolute complex-signal target and confidence.
     ``calibration_floor`` sets the numerical field budget independently of walker count.
-    These options require adaptive strand fields; see ``docs/field-calibration.md``.
+    The adaptive calibration is described in ``docs/field-calibration.md``.
 
     ``adaptive_steps`` walks every pool whose geometry offers ``wall_scales`` (the curved tubes) with the adaptive
     producer (:func:`dmipy_sim.engine.adaptive.simulate_trajectories_adaptive`): free steps away from every
@@ -155,8 +161,8 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     seed's walkers ``first_walker .. first_walker + n_walkers - 1``, each a function of the seed and its index alone
     (:func:`~dmipy_sim.engine.physics.seed_walkers`). For :func:`~dmipy_sim.coefficient_walk.join_walks`, walk
     contiguous ranges in order with the same seed, ``K``, envelope, spec and other walk settings. State
-    ``events_capacity``, ``K_c3`` and ``field_read_interval`` for the channels that need them so the pieces agree
-    on what their pilots would derive. Keep any raw subset on the first piece alone.
+    ``events_capacity``, ``K_c3`` and ``field_read_interval`` for the channels that need them and reuse the same measured
+    ``field_calibration`` for a sampled field. Keep any raw subset on the first piece alone.
     The pool-by-pool walk of a multi-surface spec seeds its pools from the walk's count and is refused with
     ``first_walker`` > 0. With ``context`` the single geometry is the context's
     (:meth:`WalkContext.geometry`: built and compiled once) and its walkers may be placed ahead
@@ -204,7 +210,39 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
     in progress, not the walk.
     """
-    with Run("walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
+    return _walk_spec(**locals())
+
+
+def measure_field_read_calibration(spec, T_max, block_h=None, *, envelope, seed, K_c3=None,
+                                   field_read_interval=None, pilot_walkers=None, **walk_settings):
+    """Measure a fixed-step field read on one geometry and return its FieldReadCalibration.
+
+    Give the walk's envelope, K_c3 and field_read_interval (s) along with its geometry,
+    physics and backend settings. The field pilot runs on the selected field_pilot engine
+    over T_max seconds, starting at walker zero of seed. The count defaults to the walk's
+    pilot cap and must be at least two. Per-walker settings, when given, have one row per
+    pilot walker. Standard errors are dimensionless, one per channel.
+    """
+    from ..engine.accumulate import PILOT_WALKERS
+    count = PILOT_WALKERS if pilot_walkers is None else pilot_walkers
+    if (not isinstance(count, (int, np.integer)) or isinstance(count, (bool, np.timedelta64)) or count < 2):
+        raise ValueError("pilot_walkers must be an integer of at least two")
+    if not isinstance(seed, (int, np.integer)) or isinstance(seed, (bool, np.timedelta64)):
+        raise ValueError("field calibration pilot seed must be an integer")
+    return _walk_spec(spec, int(count), T_max, block_h, envelope=envelope, seed=int(seed), first_walker=0,
+                      K_c3=K_c3, field_read_interval=field_read_interval, _measure_read=True, **walk_settings)
+
+
+def _walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivity=None,
+              seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
+              field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
+              seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
+              run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
+              window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
+              field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
+              field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None,
+              permeability_factor=None, object_nodes=None, events_capacity=None, _measure_read=False):
+    with Run("measure_field_read_calibration" if _measure_read else "walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
                                       adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir) as run:
         import logging
         from ..engine.core import _walk_geometry
@@ -237,7 +275,18 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                             + ("chi_max" if envelope.chi_max is None else "B0_list")
                             + ": the field tier is certified at a stated susceptibility scale and field strengths "
                               "(envelope_of(..., chi_max=..., B0_list=(B0_max,)))")
-        if any(value is not None for value in (field_calibration, calibration_floor, query_scope)):
+        fixed_read = _measure_read or (field_calibration is not None and not adaptive_steps)
+        if fixed_read:
+            from ..engine.calibration import FieldReadCalibration
+            if adaptive_steps or kind != "grid" or _needs_bundle_walk(spec):
+                raise SpecError("field_calibration requires a fixed-step walk with a sampled field on one geometry")
+            if K_c3 is None or field_read_interval is None:
+                raise SpecError("field_calibration requires both K_c3 and field_read_interval")
+            if _measure_read and field_calibration is not None:
+                raise SpecError("measure_field_read_calibration needs a fresh field pilot")
+            if not _measure_read and not isinstance(field_calibration, FieldReadCalibration):
+                raise TypeError("fixed-step field_calibration needs a FieldReadCalibration")
+        if ((field_calibration is not None and not fixed_read) or calibration_floor is not None or query_scope is not None):
             if not adaptive_steps or kind != "strands":
                 raise SpecError("scoped field calibration requires an adaptive strand-field walk")
             from collections.abc import Mapping
@@ -362,11 +411,16 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
                 if int(sub_steps) < int(law):
                     raise SpecError(f"sub_steps={int(sub_steps)} is coarser than the step law's {int(law)} physics steps per "
                                     f"block for this walk; a pinned step may be finer, never coarser")
+            if fixed_read:
+                walk_kw.update(field_calibration=field_calibration, _measure_read=_measure_read,
+                               _calibration_spec=spec)
             w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
                                first_walker=int(first_walker),
                                       field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
                                                                                    field_target_floor=field_target_floor)),
                                       **walk_kw)
+            if _measure_read:
+                return w
             import dataclasses
             rule = PERMEABLE_POOL_RULE if permeable else IMPERMEABLE_POOL_RULE
             return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope,

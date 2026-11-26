@@ -343,6 +343,8 @@ class Backend:
     """The protocol. A backend subclasses or duck-types this: ``name``, :meth:`refuses`, :meth:`walk_batch`, and
     optionally :attr:`capabilities`."""
     name = "?"
+    #: CoefficientBatch.precision, declared before measurement or reuse of fixed-step field calibrations.
+    precision = None
     #: What this backend states it walks beyond the common path (a frozenset of the module's capability names, e.g.
     #: :data:`PERMEABILITY_TABLE`). A walk that needs a capability the backend does not state is refused by name; a
     #: backend that defines no ``capabilities`` states none.

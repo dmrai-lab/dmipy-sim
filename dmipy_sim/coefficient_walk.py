@@ -570,8 +570,8 @@ def join_walks(walks):
     for j, r in enumerate(rules[1:], 1):
         if r != rules[0]:
             diff = sorted(k for k in set(r) | set(rules[0]) if r.get(k) != rules[0].get(k))
-            raise ValueError(f"walk {j}'s block record differs from walk 0's in {diff}: a walk joined from pieces states what "
-                             f"its pilots derive (events_capacity, K_c3, field_read_interval) rather than deriving it per piece")
+            raise ValueError(f"walk {j}'s block record differs from walk 0's in {diff}: a walk joined from pieces needs "
+                             "matching events_capacity, K_c3, field_read_interval and field_calibration where used")
     for key, how in (("comp_events", None), ("bound_events", None)):
         present = [getattr(w, key) is not None for w in walks]
         if any(present) and not all(present):

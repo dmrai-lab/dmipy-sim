@@ -127,10 +127,10 @@ jobs:
 
   recorded-bits:
     # Recorded bits are bits of one JAX build (jax / jaxlib 0.10.2, tests/recorded_bits.py RECORDED_WITH) and of the
-    # arithmetic XLA's CPU backend emits for a family of CPUs: the all-myelinated walks, and the walk with and without
-    # the trial record. The recorded values are kept per family, selected by the canary (a small fixed walk;
-    # tests/recorded_bits.py FAMILIES). This job installs that build, prints the runner's CPU model, its flags, numpy's
-    # SIMD dispatch and the canary, and runs the tests named test_recorded_bits_* with DMIPY_SIM_RECORDED_BITS=1, which
+    # arithmetic XLA's CPU backend emits for a family of CPUs: the all-myelinated walks, the walk with and without
+    # the trial record, and the default fixed-step field read. The recorded values are kept per family, selected by
+    # the canary (a small fixed walk; tests/recorded_bits.py FAMILIES). This job installs that build, prints the runner's
+    # CPU model, its flags, numpy's SIMD dispatch and the canary, and runs test_recorded_bits_* with DMIPY_SIM_RECORDED_BITS=1, which
     # makes a canary of no recorded family a failure that names it (elsewhere such a host skips). On a failure it prints
     # this runner's entry (tools/record_recorded_bits.py), the values a new family would be recorded with.
     runs-on: ubuntu-latest
@@ -160,8 +160,12 @@ jobs:
           set -o pipefail
           python -c "import jax, jaxlib; assert (jax.__version__, jaxlib.__version__) == ('0.10.2', '0.10.2'), (jax.__version__, jaxlib.__version__)"
           status=0
-          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
-          if [ "$status" -eq 0 ] && grep -q "5 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
+          DMIPY_SIM_RECORDED_BITS=1 pytest tests/geometry/test_mixed_myelinated_plain_cell.py tests/test_trial_record.py tests/test_fixed_step_read_calibration.py -k "test_recorded_bits" -q -rs --tb=short | tee out.txt || status=$?
+          if [ "$status" -eq 0 ]; then
+            if grep -q "6 passed" out.txt && ! grep -q "skipped" out.txt; then exit 0; fi
+            # The fixed-step default baseline has been measured on one of the recorded CPU families.
+            if grep -q "5 passed, 1 skipped" out.txt && grep -q "fixed-step field read baseline was recorded on CPU arithmetic family" out.txt; then exit 0; fi
+          fi
           # a recorded test failed (or was skipped): print this runner's entry, the values its family would be recorded with
           python tools/record_recorded_bits.py || true
           exit 1

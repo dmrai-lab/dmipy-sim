@@ -18,7 +18,7 @@ from dmipy_replay._blas import cap_cpu_threads as _cap_cpu_threads  # noqa: E402
 _cap_cpu_threads()
 
 from .engine.core import simulate, simulate_mixture, simulate_cpmg, walk_cost, certify_bounce_budget
-from .spec.walk import walk
+from .spec.walk import measure_field_read_calibration, walk
 from .engine.mt_walk import simulate_mt_trajectories
 from .coefficient_walk import CoefficientWalk
 from .compartments import Compartments, Pool, pool_id
@@ -51,7 +51,7 @@ from .replay.bank import build_replay_pack, build_to_floor, frame_from_bundles
 
 __all__ = [
     # the walk and its contraction: the producers return a CoefficientWalk
-    "simulate", "simulate_mixture", "simulate_cpmg", "walk_cost", "walk",
+    "simulate", "simulate_mixture", "simulate_cpmg", "walk_cost", "walk", "measure_field_read_calibration",
     "certify_bounce_budget", "simulate_mt_trajectories", "CoefficientWalk",
     # replay pack assembler (producer side of the substrate bank)
     "build_replay_pack", "build_to_floor", "frame_from_bundles",

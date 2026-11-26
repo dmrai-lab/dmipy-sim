@@ -1166,7 +1166,14 @@ def _compact_events(n, steps, labels, dt_sim):
     return keep, np.asarray(steps[mask], np.float64) * float(dt_sim), np.asarray(labels[mask], np.int8)
 
 
-def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeable, blocks_per_window, checks, progress=None):
+def _jax_field_pilot(call, indices, checks, dt_sim, keep_means):
+    """Per-walker fine-read QV and trapezoid checks from the JAX walk kernels."""
+    got, _, _, _ = call(indices, None, keep_means, 0, None, (1, float(dt_sim), checks, False))
+    return got
+
+
+def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeable, blocks_per_window, checks,
+                           progress=None, precision=None):
     """A field pilot walked on ``backend``: the walkers ``r0`` / ``keys`` walked as ``request`` walks them but one
     physics step a block (``n_blocks sub_steps`` blocks of ``dt_sim``: the same steps, keys and walls, no field
     accumulated, ``K = 1`` at ``m = 0``), every walker in the raw subset, so that its saves are the positions after every step -- the
@@ -1178,7 +1185,8 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeab
     the checks. Walked in batches of at most :data:`~.accumulate.PILOT_READ_BYTES` of positions and reads; ``impermeable``
     is the resolved walk's statement that no walker changes pool (``not res.crossing``: no permeable wall of any object,
     a myelinated cell's own walls included); an impermeable recorded walk is asked for its pool changes
-    (``drop_pool_changes``), which the pilot keeps."""
+    (``drop_pool_changes``), which the pilot keeps. When given, ``precision`` is the backend's declared
+    accumulation dtype for a scoped measurement."""
     import time as _time
     from .accumulate import field_read_statistics, PILOT_READ_BYTES
     name = str(getattr(backend, "name", backend))
@@ -1206,6 +1214,9 @@ def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeab
                                    object_node_index=np.asarray(request.object_node_index)[a:a + n_b].copy())))
         t0 = _time.perf_counter()
         batch = backend.walk_batch(req, r0[a:a + n_b], keys[a:a + n_b])
+        if precision is not None and batch.precision != precision:
+            raise ValueError(f"field_calibration: backend {name!r} returned precision {batch.precision!r} "
+                             f"after declaring {precision!r}")
         t1 = _time.perf_counter()
         sv = getattr(batch, "saves", None)
         pos = None if sv is None else np.asarray(sv.positions, np.float32)
@@ -1362,6 +1373,9 @@ def _walk_geometry(
     permeability_factor=None,
     object_nodes=None,
     _trial_device=None,
+    field_calibration=None,
+    _measure_read=False,
+    _calibration_spec=None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1729,6 +1743,46 @@ def _walk_geometry(
             if K_c3 is not None or field_read_interval is not None:
                 raise ValueError("K_c3 and field_read_interval are the field channel's band and read interval: they go with field_basis=")
             _f_arrays, _f_read, _f_key, _n_ch = (), None, None, 0
+
+        calibration_scope = None
+        if _measure_read or field_calibration is not None:
+            from .accumulate import read_checks
+            from .calibration import array_fingerprint, code_fingerprint, fingerprint, fixed_step_engine
+            from ..fields.susceptibility_field import FieldGrid
+
+            engine = fixed_step_engine(None if _measure_read and _pilot_name == JAX else _backend, _acc.name)
+            spec_doc = _calibration_spec.to_dict()
+            # A native pilot reads the raster on its own backend. Hash its source values as well as the
+            # device arguments to cover that read's inputs.
+            field_arrays = [array_fingerprint(a) for a in jax.tree.leaves(_f_arrays)]
+            if isinstance(field_basis, FieldGrid) and engine["name"] != JAX:
+                field_arrays.extend(array_fingerprint(a) for a in (field_basis.origin, field_basis.basis["voxel_size"]))
+                field_arrays.extend(array_fingerprint(field_basis.basis[key])
+                                    for key in ("iso_local", "iso_P", "aniso_G")
+                                    if field_basis.basis.get(key) is not None)
+            fr = res.field_read
+            calibration_scope = dict(
+                spec=fingerprint(spec_doc), diffusivity=float(diffusivity), dt_sim=float(dt_sim), sub_steps=int(sub_steps),
+                block_h=float(dt_actual), n_blocks=int(n_blocks), K=int(res.K), block_order=int(res.block_order),
+                window_T=float(fr["T_e"]), n_windows=int(res.n_windows), K_c3=int(res.K_c3),
+                channels=list(field_basis.channel_names),
+                field_basis=fingerprint(dict(read=_f_key, arrays=field_arrays)),
+                field_read_interval=fr["dt_f_rule"], n_read=fr["n_read"], dt_f=fr["dt_f"],
+                checks=list(read_checks(sub_steps)), B0=fr["B0"], chi=fr["chi"], floor=fr["floor"],
+                start_rule=spec_doc["seeding"], record=bool(record), bounce_budget=geometry.bounce_budget,
+                permeability_factor=None if _fac_record is None else _fac_record["rule"],
+                object_nodes=None if _nodes is None else dict(rule=_nodes.record["rule"], seed=_nodes.echo.seed,
+                    factors=_nodes.echo.factors.tolist(), realised_fractions=_nodes.record["realised_fractions"]),
+                backend=engine, code=code_fingerprint())
+            if field_calibration is not None:
+                stated = field_calibration.for_scope(calibration_scope)
+                read = {key: value for key, value in fr.items() if key != "pools"}
+                read.update(constants=stated["constants"], constants_measured=stated["rung"] is not None,
+                            channels=calibration_scope["channels"], reused=True, calibration_digest=stated["digest"])
+                res = res._replace(field_read=read)
+            n_bw = n_blocks // int(res.n_windows)
+            if not 1 <= res.K_c3 <= n_bw:
+                raise ValueError(f"K_c3 is the field's modes per window, 1..{n_bw} (the blocks of a window); got {res.K_c3}")
 
         def _reader(arrays):
             return (lambda r: _f_read(arrays, r)) if _sampling else None
@@ -2514,6 +2568,9 @@ def _walk_geometry(
                 raise ValueError(f"backend {_backend_name!r} returned a {type(batch).__name__} for the coefficient walk; the "
                                  f"producer takes a CoefficientBatch (the bands accumulated in the walk) and converts "
                                  f"nothing: a walk of saves is refused (dmipy-sim#747)")
+            if field_calibration is not None and batch.precision != calibration_scope["backend"]["precision"]:
+                raise ValueError(f"field_calibration: backend {_backend_name!r} returned precision {batch.precision!r} "
+                                 f"after declaring {calibration_scope['backend']['precision']!r}")
             if (int(batch.K), int(batch.m), int(batch.sub_steps)) != (K, m, int(sub_steps)):
                 raise ValueError(f"backend {_backend_name!r} accumulated (K, m, sub_steps) = {(batch.K, batch.m, batch.sub_steps)} "
                                  f"for a request of {(K, m, int(sub_steps))}")
@@ -2633,7 +2690,8 @@ def _walk_geometry(
                                        **_node_rows(idx))
             got = field_pilot_on_backend(_backend, req, np.asarray(r0_all[idx], np.float32), np.asarray(walker_keys_all[idx], np.uint32),
                                          field_basis, impermeable=not res.crossing, blocks_per_window=int(n_bw), checks=checks,
-                                         progress=run.progress)
+                                         progress=run.progress,
+                                         **({"precision": calibration_scope["backend"]["precision"]} if _measure_read else {}))
             if kind_name == "relax":
                 lab = np.minimum(np.asarray(geometry.classify_positions_exact(r0_all[idx]), np.int64), 1).astype(np.int8)
             elif kind_name == "pm":
@@ -2641,6 +2699,25 @@ def _walk_geometry(
             else:
                 lab = np.zeros((idx.shape[0],), np.int8)
             return dict(got, lab=lab)
+
+        def _read_pilot(indices, checks, cap):
+            if _pilot_name == JAX:
+                return _jax_field_pilot(_call, indices, checks, dt_sim, res.K_c3 is None)
+            return _backend_field_pilot(indices, checks, cap)
+
+        if _measure_read:
+            from .accumulate import READ_CONSTANT
+            from .calibration import FieldReadCalibration, fixed_step_constants
+            checks = tuple(calibration_scope["checks"])
+            run.phase("field pilot", walkers=n_walkers)
+            got = _read_pilot(np.arange(n_walkers), checks, res.events_capacity)
+            rung = next((d for d in checks if d >= calibration_scope["n_read"]), None)
+            if rung is None:
+                constants, errors = [READ_CONSTANT] * _n_ch, [None] * _n_ch
+            else:
+                constants, errors = fixed_step_constants(got["chk"][:, :, :, checks.index(rung), :], float(dt_sim), rung)
+            return FieldReadCalibration.create(scope=calibration_scope, rung=rung, constants=constants,
+                                               standard_error=errors, pilot_walkers=int(n_walkers), seed=int(seed))
 
         # ── The pilots: the events buffer's capacity (the largest count a pilot walker reached, with a margin) and
         # the field's band (the ladder on the pilot's block means), each a walk of PILOT_WALKERS walkers spread over the walk (accumulate.pilot_walkers)
@@ -2692,7 +2769,7 @@ def _walk_geometry(
             cap = 0
         K_c3_ = res.K_c3
         field_band = None
-        if _sampling:
+        if _sampling and field_calibration is None:
             # the field's pilot reads every step: the read series' quadratic variation per pool (the read's rule), the
             # trapezoid's constant at every coarser read the block allows (what the walk's read is charged at, given
             # or derived), and the block means (the field band's ladder)
@@ -2701,10 +2778,7 @@ def _walk_geometry(
             checks = read_checks(sub_steps)
             run.phase("field pilot", walkers=n_pilot)
             _t0 = _time.time()
-            if _pilot_name == JAX:      # the JAX kernels accumulate the block means, the read series' variation and the checks
-                got, _, _, _ = _call(pidx, None, K_c3_ is None, 0, None, (1, float(dt_sim), checks, False))
-            else:                       # the backend's positions at every step, its own read there, the statistics on the host
-                got = _backend_field_pilot(pidx, checks, cap)
+            got = _read_pilot(pidx, checks, cap)
             B0, chi = field_rule_scale(geometry.spec, envelope)
             qd = np.asarray(got["qv_d"], np.float64)                                   # (n_pilot, n_win, n_ch)
             chk = np.asarray(got["chk"], np.float64)                                   # (n_pilot, n_win, 2, n_checks, n_ch)
