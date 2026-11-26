@@ -13,8 +13,9 @@ evidence.
 
 Where the recorded tests run: wherever jax / jaxlib are :data:`RECORDED_WITH` and the canary names a recorded family.
 In the pinned ``recorded-bits`` CI job (which sets :data:`RECORDED_BITS_ENV` to ``1``) another build is an error and a
-canary of no recorded family or no fixed-step baseline is a failure that prints the canary; local runs skip the
-affected tests with the reason. ``tools/record_recorded_bits.py`` prints a host's entries for both mappings.
+canary of no recorded :data:`FAMILIES` entry is a failure that prints the canary. For a missing fixed-step baseline
+the job supplies one computed by the pre-calibration revision on the same runner. Local runs skip affected tests
+when the build or reference is missing. ``tools/record_recorded_bits.py`` prints a host's entries for both mappings.
 """
 import hashlib
 import os
@@ -29,6 +30,8 @@ RECORDED_WITH = ("0.10.2", "0.10.2")
 #: The variable the pinned ``recorded-bits`` CI job sets to ``1``: there a build other than :data:`RECORDED_WITH` is an
 #: error and a canary of no recorded family a failure; elsewhere both are skips.
 RECORDED_BITS_ENV = "DMIPY_SIM_RECORDED_BITS"
+#: JSON reference generated on the runner by the pre-calibration simulator for an unrecorded fixed-step walk.
+FIXED_STEP_BASELINE_ENV = "DMIPY_SIM_FIXED_STEP_BASELINE"
 
 #: The recorded values per family, keyed by the family's canary (:func:`canary`): for each, the hashes of the
 #: all-myelinated reference walks of ``tests/geometry/test_mixed_myelinated_plain_cell.py`` (``recorded_hashes``):

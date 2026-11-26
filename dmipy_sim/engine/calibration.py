@@ -173,10 +173,14 @@ class FieldReadCalibration(_ScopedCalibration):
     def __post_init__(self):
         from .accumulate import READ_CONSTANT
         data = self._checked_record("field-read-calibration")
-        scope, evidence = data["scope"], data["evidence"]
-        n_channels = len(scope["channels"])
-        constants = data["constants"]
-        errors = evidence["standard_error"]
+        try:
+            scope, evidence = data["scope"], data["evidence"]
+            channels, checks, n_read = scope["channels"], scope["checks"], scope["n_read"]
+            constants, rung = data["constants"], data["rung"]
+            errors, pilot_walkers, seed = evidence["standard_error"], evidence["pilot_walkers"], evidence["seed"]
+        except KeyError as exc:
+            raise ValueError(f"field-read calibration missing required entry {exc.args[0]!r}") from exc
+        n_channels = len(channels)
         if not n_channels or len(constants) != n_channels or len(errors) != n_channels:
             raise ValueError("field-read calibration needs a finite nonnegative constant and a standard error entry per channel")
         for constant, error in zip(constants, errors):
@@ -185,11 +189,10 @@ class FieldReadCalibration(_ScopedCalibration):
             if ((error is None and constant != READ_CONSTANT) or
                     (error is not None and (type(error) not in (int, float) or not np.isfinite(error) or error < 0))):
                 raise ValueError("field-read calibration needs a finite nonnegative standard error or the trapezoid constant")
-        checks = scope["checks"]
-        rung = next((d for d in checks if d >= scope["n_read"]), None)
-        if data["rung"] != rung or (rung is None and any(error is not None for error in errors)):
+        expected_rung = next((d for d in checks if d >= n_read), None)
+        if rung != expected_rung or (rung is None and any(error is not None for error in errors)):
             raise ValueError("field-read calibration rung must be the check at or above n_read")
-        if type(evidence["pilot_walkers"]) is not int or evidence["pilot_walkers"] < 2 or type(evidence["seed"]) is not int:
+        if type(pilot_walkers) is not int or pilot_walkers < 2 or type(seed) is not int:
             raise ValueError("field-read calibration requires at least two pilot walkers and an integer seed")
 
     @classmethod

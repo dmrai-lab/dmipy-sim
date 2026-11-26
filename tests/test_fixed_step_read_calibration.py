@@ -1,4 +1,8 @@
 """A fixed-step field calibration records evidence and is reusable on the measured scope."""
+import json
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 from safetensors.numpy import load_file
@@ -7,7 +11,7 @@ from dmipy_sim import measure_field_read_calibration, walk
 from dmipy_sim.coefficient_walk import join_walks
 from dmipy_sim.engine import core
 from dmipy_sim.engine.accumulate import READ_CONSTANT, field_read_term
-from dmipy_sim.engine.calibration import FieldReadCalibration, canonical, fixed_step_constants
+from dmipy_sim.engine.calibration import FieldReadCalibration, canonical, fingerprint, fixed_step_constants
 from dmipy_sim.replay.bank import build_replay_pack
 from tests.conftest import spec_without_source
 from tests.test_spec_field_closed_form import _cell
@@ -26,15 +30,36 @@ def _walk_bytes(w, path):
 
 
 def test_recorded_bits_fixed_step_default(tmp_path):
-    from tests.recorded_bits import FIXED_STEP_DEFAULT, fixed_step_default_hashes, in_recorded_bits_job, recorded_canary
+    from tests.recorded_bits import (
+        FIXED_STEP_BASELINE_ENV, FIXED_STEP_DEFAULT, fixed_step_default_hashes, in_recorded_bits_job, recorded_canary,
+    )
 
     canary = recorded_canary()
-    if canary not in FIXED_STEP_DEFAULT:
+    if canary in FIXED_STEP_DEFAULT:
+        expected = FIXED_STEP_DEFAULT[canary]
+    else:
         reason = f"CPU family {canary} lacks fixed_step_default; tools/record_recorded_bits.py prints its entry"
-        if in_recorded_bits_job():
-            pytest.fail(reason, pytrace=False)
-        pytest.skip(reason)
-    assert fixed_step_default_hashes(tmp_path / "default.walk") == FIXED_STEP_DEFAULT[canary]
+        if not in_recorded_bits_job():
+            pytest.skip(reason)
+        baseline = os.environ.get(FIXED_STEP_BASELINE_ENV)
+        assert baseline and Path(baseline).is_file(), f"{reason}; missing the same-runner base revision reference"
+        entries = json.loads(Path(baseline).read_text())
+        assert canary in entries, f"the base revision reference has no entry for CPU family {canary}"
+        expected = entries[canary]
+    actual = fixed_step_default_hashes(tmp_path / "default.walk")
+    assert actual.keys() == expected.keys(), f"fixed_step_default has different entries: {sorted(actual.keys() ^ expected.keys())}"
+    for name, digest in expected.items():
+        assert actual[name] == digest, f"fixed_step_default {name} differs for CPU family {canary}"
+
+
+def test_handwritten_read_calibration_names_a_missing_entry(tmp_path):
+    record = dict(kind="field-read-calibration", scope={"channels": ["test"], "checks": [], "n_read": 1},
+                  rung=None, constants=[READ_CONSTANT], evidence={"standard_error": [None], "pilot_walkers": 2})
+    record["digest"] = fingerprint(record)
+    path = tmp_path / "calibration.json"
+    path.write_text(canonical(record))
+    with pytest.raises(ValueError, match=r"field-read calibration missing required entry 'seed'$"):
+        FieldReadCalibration.load(path)
 
 
 def test_measure_reuse_join_and_charge(x64, monkeypatch, tmp_path):
