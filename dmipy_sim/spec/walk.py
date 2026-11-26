@@ -44,7 +44,7 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
               field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None,
-              permeability_factor=None, object_nodes=None):
+              permeability_factor=None, object_nodes=None, events_capacity=None):
     """Walk ``spec`` and return a :class:`~dmipy_sim.coefficient_walk.CoefficientWalk` carrying the spec.
 
     ``envelope`` (an :class:`~dmipy_replay.replay.envelope.Envelope`; required, there is no default) is what the walk is
@@ -153,13 +153,22 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
 
     ``first_walker`` is the index of the walk's first walker in its ``seed``: the walk of a single geometry is the
     seed's walkers ``first_walker .. first_walker + n_walkers - 1``, each a function of the seed and its index alone
-    (:func:`~dmipy_sim.engine.physics.seed_walkers`), so the walks of contiguous ranges joined in order
-    (:func:`~dmipy_sim.coefficient_walk.join_walks`) are the walk of their union, bit for bit. What a walk derives
-    from its own walkers (the events buffer's and the field's pilots) a walk in pieces states instead
-    (``K_c3``, ``field_read_interval``); the pool-by-pool walk of a multi-surface spec seeds its pools from the walk's
-    count and is refused with ``first_walker`` > 0. With ``context`` the single geometry is the context's
+    (:func:`~dmipy_sim.engine.physics.seed_walkers`). For :func:`~dmipy_sim.coefficient_walk.join_walks`, walk
+    contiguous ranges in order with the same seed, ``K``, envelope, spec and other walk settings. State
+    ``events_capacity``, ``K_c3`` and ``field_read_interval`` for the channels that need them so the pieces agree
+    on what their pilots would derive. Keep any raw subset on the first piece alone.
+    The pool-by-pool walk of a multi-surface spec seeds its pools from the walk's count and is refused with
+    ``first_walker`` > 0. With ``context`` the single geometry is the context's
     (:meth:`WalkContext.geometry`: built and compiled once) and its walkers may be placed ahead
     (:meth:`WalkContext.place`).
+
+    ``events_capacity`` sets the buffer size per walker and per event column for a single-geometry walk that
+    records crossings or binding events. Give a positive integer (Python or NumPy), or None to size the buffer
+    with a pilot. With recording enabled, a stated capacity appears in ``block["events"]`` under the
+    ``"given"`` rule. The walk refuses an overflow. With sealed walls and no binding, or with ``tiers=()`` even
+    on permeable walls, JAX uses capacity zero and omits ``block["events"]``. A compute backend still receives
+    the supplied capacity in its request. A pool-by-pool walk accepts an explicit None and refuses a stated
+    capacity. The existing refusal of a permeable bundle takes precedence.
 
     ``accumulation_dtype`` (``"float32"``, the production precision, or ``"float64"``, the reference precision) is the
     dtype the walk accumulates its coefficients and quadratic variations in, for the same float32 walk
@@ -210,6 +219,12 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
         spec = _spec_of_door(spec)
         spec.validate()
         _refuse_permeable_bundle(spec)
+        if events_capacity is not None:
+            if _needs_bundle_walk(spec):
+                raise SpecError("events_capacity requires a single geometry. This spec is walked pool by pool")
+            if (not isinstance(events_capacity, (int, np.integer))
+                    or isinstance(events_capacity, (bool, np.timedelta64)) or events_capacity < 1):
+                raise ValueError(f"events_capacity must be a positive integer; got {events_capacity!r}")
         if int(first_walker) and _needs_bundle_walk(spec):
             raise SpecError("first_walker is a range of a single geometry's walk; the pool-by-pool walk of a multi-surface "
                             "spec deals its walkers to the pools from the walk's own count, so a range of it is not a "
@@ -281,6 +296,8 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
         walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=settings, bounce_budget=bounce_budget,
                        backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz),
                        accumulation_dtype=accumulation_dtype)
+        if events_capacity is not None:
+            walk_kw["events_capacity"] = int(events_capacity)
         if sub_steps is not None:
             if adaptive_steps:
                 raise SpecError("sub_steps pins the fixed-step walk's physics step; the adaptive producer sizes its own steps")
