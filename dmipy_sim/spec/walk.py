@@ -211,7 +211,11 @@ def walk(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivit
     ``run_dir`` resumes: the batches found there are read back, the rest walked -- a killed walk costs the batch
     in progress, not the walk.
     """
-    return _walk_spec(**locals())
+    settings = locals().copy()
+    settings.pop("run_dir")
+    with Run("walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
+                                 adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir):
+        return _walk_spec(**settings)
 
 
 def measure_field_read_calibration(spec, T_max, block_h=None, *, envelope, seed, K_c3=None,
@@ -231,212 +235,216 @@ def measure_field_read_calibration(spec, T_max, block_h=None, *, envelope, seed,
         raise ValueError("pilot_walkers must be an integer of at least two")
     if not isinstance(seed, (int, np.integer)) or isinstance(seed, (bool, np.timedelta64)):
         raise ValueError("field calibration pilot seed must be an integer")
-    return _walk_spec(spec, int(count), T_max, block_h, envelope=envelope, seed=int(seed), first_walker=0,
-                      K_c3=K_c3, field_read_interval=field_read_interval, walker_rule=walker_rule,
-                      _measure_read=True, **walk_settings)
+    count, seed = int(count), int(seed)
+    run_dir = walk_settings.pop("run_dir", None)
+    with Run("measure_field_read_calibration",
+             params=dict(spec=getattr(spec, "id", None), n_walkers=count, T_max=T_max, block_h=block_h,
+                         adaptive_steps=walk_settings.get("adaptive_steps", False), seed=seed, first_walker=0),
+             run_dir=run_dir):
+        return _walk_spec(spec, count, T_max, block_h, envelope=envelope, seed=seed, first_walker=0,
+                          K_c3=K_c3, field_read_interval=field_read_interval, walker_rule=walker_rule,
+                          _measure_read=True, **walk_settings)
 
 
 def _walk_spec(spec, n_walkers=None, T_max=None, block_h=None, *, envelope, diffusivity=None,
               seed=0, n_probe=200_000, field_res=None, field_budget=None, field_cutoff_m=25e-6,
               field_cutoff_tol=0.02, field_cutoff_max_m=50e-6, require_gpu=None, walker_batch_size=50_000, tiers="all",
               seeding=None, adaptive_steps=False, field_read_interval=None, K_c3=None, field_far=None, field_gather_every=4,
-              run_dir=None, spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
+              spool=False, context=None, bounce_budget=None, backend="jax", K=None, block_order=None,
               window_T=None, raw_subset=0, battery=None, field_calibration=None, calibration_floor=None, query_scope=None,
               field_target_floor=None, field_cache=None, drop_pool_changes=None, pool_checkpoint=None,
               field_pilot=None, first_walker=0, sub_steps=None, accumulation_dtype="float32", record_trials=None,
               permeability_factor=None, object_nodes=None, events_capacity=None, walker_rule=None, _measure_read=False):
-    with Run("measure_field_read_calibration" if _measure_read else "walk", params=dict(spec=getattr(spec, "id", None), n_walkers=n_walkers, T_max=T_max, block_h=block_h,
-                                      adaptive_steps=adaptive_steps, seed=seed, first_walker=first_walker), run_dir=run_dir) as run:
-        import logging
-        from ..engine.core import _walk_geometry
-        from ..engine.accumulate import accumulation_dtype as _accumulation_dtype
-        from dmipy_replay.replay.envelope import Envelope
-        from ..replay.compression import certificate_settings
-        _accumulation_dtype(accumulation_dtype)            # refused by name before anything is walked or read back
-        if not isinstance(envelope, Envelope):
-            raise TypeError(f"walk(spec, ..., envelope=) takes an Envelope: dmipy_replay.envelope_of(scanner, ...) for a "
-                            f"scanner class, or dmipy_replay.Envelope(...); got {type(envelope).__name__}")
-        settings = certificate_settings(envelope, battery)
-        spec = _spec_of_door(spec)
-        spec.validate()
-        _refuse_permeable_bundle(spec)
-        if events_capacity is not None:
-            if _needs_bundle_walk(spec):
-                raise SpecError("events_capacity requires a single geometry. This spec is walked pool by pool")
-            if (not isinstance(events_capacity, (int, np.integer))
-                    or isinstance(events_capacity, (bool, np.timedelta64)) or events_capacity < 1):
-                raise ValueError(f"events_capacity must be a positive integer; got {events_capacity!r}")
-        if int(first_walker) and _needs_bundle_walk(spec):
-            raise SpecError("first_walker is a range of a single geometry's walk; the pool-by-pool walk of a multi-surface "
-                            "spec deals its walkers to the pools from the walk's own count, so a range of it is not a "
-                            "range of one walk")
-        if T_max is None:
-            raise TypeError("walk needs T_max (seconds)")
-        kind = field_source_kind(spec)
-        if kind is not None and (envelope.chi_max is None or envelope.B0_max is None):
-            raise SpecError(f"spec {spec.id!r} has a susceptibility field, and the envelope states no "
-                            + ("chi_max" if envelope.chi_max is None else "B0_list")
-                            + ": the field tier is certified at a stated susceptibility scale and field strengths "
-                              "(envelope_of(..., chi_max=..., B0_list=(B0_max,)))")
-        fixed_read = _measure_read or (field_calibration is not None and not adaptive_steps)
-        if fixed_read:
-            from ..engine.calibration import FieldReadCalibration
-            if adaptive_steps or kind != "grid" or _needs_bundle_walk(spec):
-                raise SpecError("field_calibration requires a fixed-step walk with a sampled field on one geometry")
-            if K_c3 is None or field_read_interval is None:
-                raise SpecError("field_calibration requires both K_c3 and field_read_interval")
-            if _measure_read and field_calibration is not None:
-                raise SpecError("measure_field_read_calibration needs a fresh field pilot")
-            if not _measure_read and not isinstance(field_calibration, FieldReadCalibration):
-                raise TypeError("fixed-step field_calibration needs a FieldReadCalibration")
-        if ((field_calibration is not None and not fixed_read) or calibration_floor is not None or query_scope is not None):
-            if not adaptive_steps or kind != "strands":
-                raise SpecError("scoped field calibration requires an adaptive strand-field walk")
-            from collections.abc import Mapping
-            from ..engine.calibration import FieldCalibration
-            if field_calibration is not None:
-                if not isinstance(field_calibration, Mapping):
-                    raise TypeError("walk field_calibration maps pool names to FieldCalibration records")
-                expected = {p.name for p in spec.pools if p.id in spec.seeding.pools and p.D}
-                if set(field_calibration) != expected:
-                    raise ValueError(f"field calibration must cover exactly the diffusing seeded pools: {sorted(expected)}")
-                if not all(isinstance(c, FieldCalibration) for c in field_calibration.values()):
-                    raise TypeError("each pool needs a validated FieldCalibration")
-                bands = {c.record["band"]["K"] for c in field_calibration.values()}
-                if len(bands) != 1:
-                    raise ValueError("pool calibrations need a common field band; regenerate their evidence at that band")
-        if field_target_floor is not None:
-            if kind != "grid" or adaptive_steps:
-                raise SpecError("field_target_floor is the numerical budget of a gridded field's band in the fixed-step walk "
-                                "(the adaptive strand walk takes calibration_floor)")
-            if K_c3 is not None:
-                raise SpecError("field_target_floor is the budget of a field band the walk derives; K_c3 was given")
-        if kind == "strands" and not adaptive_steps:
-            raise SpecError(f"spec {spec.id!r} has a strand field source, which the adaptive producer reads along the walk: "
-                            "pass adaptive_steps=True (a fixed-step walk of a strand substrate carries no field)")
-        if context is not None:
-            if not isinstance(context, WalkContext):
-                raise TypeError(f"context must be a WalkContext, got {type(context).__name__}")
-            if field_far is not None:
-                raise TypeError("the context carries the far grid: give context= or field_far=, not both")
-            context.check(spec)
-        if seeding is not None:
-            from .seeding import DrawnSeeds, StratifiedByVoxel
-            if not isinstance(seeding, (StratifiedByVoxel, DrawnSeeds)):
-                raise TypeError(f"seeding must be a StratifiedByVoxel or the DrawnSeeds of one, got {type(seeding).__name__}")
-            if n_walkers is not None:
-                raise TypeError("n_walkers is what a stratified seeding produces: give seeding= or n_walkers=, not both")
-            if not _needs_bundle_walk(spec):
-                raise SpecError("stratified seeding is for the pool-by-pool walk of a multi-surface spec")
-            n_walkers = (int(seeding.n_walkers) if isinstance(seeding, DrawnSeeds)
-                         else int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools)))
-        elif n_walkers is None:
-            raise TypeError("walk needs n_walkers, or a seeding= that sets the count per voxel")
-        if diffusivity is not None and _needs_bundle_walk(spec):
-            # one number has nothing to mean for a walk that steps each pool at that pool's own D
-            stepped = [spec.pool(i).name for i in spec.seeding.pools if spec.pool(i).D]     # a D = 0 pool is frozen
-            stepped = stepped or [spec.pool(i).name for i in spec.seeding.pools]
-            raise SpecError(
-                f"walk: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
-                f"at its own D (" + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). Set the D of the pools "
-                f"in the spec -- the producer's own argument, or SubstrateSpec.replace, e.g. "
-                f"spec.replace(D={{{', '.join(f'{n!r}: {diffusivity!r}' for n in stepped)}}}) -- rather than beside "
-                f"it; a number here reaches the walk's resolution and nothing else.")
-        if K is None:                                        # the envelope's band per storage window (#643)
-            from ..engine.accumulate import window_count
-            K = envelope.mode_count(window_count(T_max, window_T)[1])
-        walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=settings, bounce_budget=bounce_budget,
-                       backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz),
-                       accumulation_dtype=accumulation_dtype)
-        if events_capacity is not None:
-            walk_kw["events_capacity"] = int(events_capacity)
-        if sub_steps is not None:
-            if adaptive_steps:
-                raise SpecError("sub_steps pins the fixed-step walk's physics step; the adaptive producer sizes its own steps")
-            if not (isinstance(sub_steps, (int, np.integer)) and not isinstance(sub_steps, bool) and sub_steps >= 1):
-                raise SpecError(f"sub_steps is a whole number of physics steps per block, at least 1; got {sub_steps!r}")
-            walk_kw["sub_steps"] = int(sub_steps)
-        if field_pilot is not None:
-            if adaptive_steps:
-                raise SpecError("field_pilot is the engine the fixed-step walk's field pilot walks on; the adaptive walk "
-                                "calibrates its field reads on its own backend")
-            walk_kw["field_pilot"] = field_pilot
-        if record_trials is not None:
-            if _needs_bundle_walk(spec):
-                raise ValueError("trial_record: the membrane trials are recorded on a spec of one geometry with plain "
-                                 "walls; a multi-surface bundle walks its pools one by one and records none")
-            walk_kw["record_trials"] = record_trials
-        if permeability_factor is not None:
-            if _needs_bundle_walk(spec) or adaptive_steps:
-                raise ValueError("permeability_factor: a permeability per walker is walked on a spec of one geometry with "
-                                 "the fixed-step walk; a multi-surface bundle and the adaptive walk walk every walker at "
-                                 "the spec's stated permeability")
-            walk_kw["permeability_factor"] = permeability_factor
-        if object_nodes is not None:
-            if _needs_bundle_walk(spec) or adaptive_steps:
-                raise ValueError("object_nodes_geometry: a permeability node per (walker, object) is walked on a spec of "
-                                 "one geometry with the fixed-step walk; a multi-surface bundle and the adaptive walk walk "
-                                 "every walker at the spec's stated permeability")
-            walk_kw["object_nodes"] = object_nodes
+    import logging
+    from ..engine.core import _walk_geometry
+    from ..engine.accumulate import accumulation_dtype as _accumulation_dtype
+    from dmipy_replay.replay.envelope import Envelope
+    from ..replay.compression import certificate_settings
+    _accumulation_dtype(accumulation_dtype)            # refused by name before anything is walked or read back
+    if not isinstance(envelope, Envelope):
+        raise TypeError(f"walk(spec, ..., envelope=) takes an Envelope: dmipy_replay.envelope_of(scanner, ...) for a "
+                        f"scanner class, or dmipy_replay.Envelope(...); got {type(envelope).__name__}")
+    settings = certificate_settings(envelope, battery)
+    spec = _spec_of_door(spec)
+    spec.validate()
+    _refuse_permeable_bundle(spec)
+    if events_capacity is not None:
+        if _needs_bundle_walk(spec):
+            raise SpecError("events_capacity requires a single geometry. This spec is walked pool by pool")
+        if (not isinstance(events_capacity, (int, np.integer))
+                or isinstance(events_capacity, (bool, np.timedelta64)) or events_capacity < 1):
+            raise ValueError(f"events_capacity must be a positive integer; got {events_capacity!r}")
+    if int(first_walker) and _needs_bundle_walk(spec):
+        raise SpecError("first_walker is a range of a single geometry's walk; the pool-by-pool walk of a multi-surface "
+                        "spec deals its walkers to the pools from the walk's own count, so a range of it is not a "
+                        "range of one walk")
+    if T_max is None:
+        raise TypeError("walk needs T_max (seconds)")
+    kind = field_source_kind(spec)
+    if kind is not None and (envelope.chi_max is None or envelope.B0_max is None):
+        raise SpecError(f"spec {spec.id!r} has a susceptibility field, and the envelope states no "
+                        + ("chi_max" if envelope.chi_max is None else "B0_list")
+                        + ": the field tier is certified at a stated susceptibility scale and field strengths "
+                          "(envelope_of(..., chi_max=..., B0_list=(B0_max,)))")
+    fixed_read = _measure_read or (field_calibration is not None and not adaptive_steps)
+    if fixed_read:
+        from ..engine.calibration import FieldReadCalibration
+        if adaptive_steps or kind != "grid" or _needs_bundle_walk(spec):
+            raise SpecError("field_calibration requires a fixed-step walk with a sampled field on one geometry")
+        if K_c3 is None or field_read_interval is None:
+            raise SpecError("field_calibration requires both K_c3 and field_read_interval")
+        if _measure_read and field_calibration is not None:
+            raise SpecError("measure_field_read_calibration needs a fresh field pilot")
+        if not _measure_read and not isinstance(field_calibration, FieldReadCalibration):
+            raise TypeError("fixed-step field_calibration needs a FieldReadCalibration")
+    if ((field_calibration is not None and not fixed_read) or calibration_floor is not None or query_scope is not None):
+        if not adaptive_steps or kind != "strands":
+            raise SpecError("scoped field calibration requires an adaptive strand-field walk")
+        from collections.abc import Mapping
+        from ..engine.calibration import FieldCalibration
+        if field_calibration is not None:
+            if not isinstance(field_calibration, Mapping):
+                raise TypeError("walk field_calibration maps pool names to FieldCalibration records")
+            expected = {p.name for p in spec.pools if p.id in spec.seeding.pools and p.D}
+            if set(field_calibration) != expected:
+                raise ValueError(f"field calibration must cover exactly the diffusing seeded pools: {sorted(expected)}")
+            if not all(isinstance(c, FieldCalibration) for c in field_calibration.values()):
+                raise TypeError("each pool needs a validated FieldCalibration")
+            bands = {c.record["band"]["K"] for c in field_calibration.values()}
+            if len(bands) != 1:
+                raise ValueError("pool calibrations need a common field band; regenerate their evidence at that band")
+    if field_target_floor is not None:
+        if kind != "grid" or adaptive_steps:
+            raise SpecError("field_target_floor is the numerical budget of a gridded field's band in the fixed-step walk "
+                            "(the adaptive strand walk takes calibration_floor)")
+        if K_c3 is not None:
+            raise SpecError("field_target_floor is the budget of a field band the walk derives; K_c3 was given")
+    if kind == "strands" and not adaptive_steps:
+        raise SpecError(f"spec {spec.id!r} has a strand field source, which the adaptive producer reads along the walk: "
+                        "pass adaptive_steps=True (a fixed-step walk of a strand substrate carries no field)")
+    if context is not None:
+        if not isinstance(context, WalkContext):
+            raise TypeError(f"context must be a WalkContext, got {type(context).__name__}")
+        if field_far is not None:
+            raise TypeError("the context carries the far grid: give context= or field_far=, not both")
+        context.check(spec)
+    if seeding is not None:
+        from .seeding import DrawnSeeds, StratifiedByVoxel
+        if not isinstance(seeding, (StratifiedByVoxel, DrawnSeeds)):
+            raise TypeError(f"seeding must be a StratifiedByVoxel or the DrawnSeeds of one, got {type(seeding).__name__}")
+        if n_walkers is not None:
+            raise TypeError("n_walkers is what a stratified seeding produces: give seeding= or n_walkers=, not both")
         if not _needs_bundle_walk(spec):
-            permeable = bool(_permeable_walls(spec))
-            if drop_pool_changes is not None:
-                raise SpecError("drop_pool_changes excludes the walkers of a multi-surface bundle walk; this spec walks one "
-                                "geometry, " + ("whose walkers cross its permeable walls: a pool change is an event of "
-                                                "the walker's occupancy and excludes no walker" if permeable else
-                                                "which refuses a walker that changes pool"))
-            g = context.geometry() if context is not None else geometry_from_spec(spec)
-            gap = g.trajectory_walk_gap()
-            if gap is not None:
-                raise SpecError(f"walk cannot walk spec {getattr(spec, 'id', None)!r}: its "
-                                f"geometry ({type(g).__name__}) has no persistent walk -- {gap}")
-            D = diffusivity
-            if D is None:                                   # the walk's reference diffusivity: the intra pool's when
-                names = {p.name: p for p in spec.pools}     # there is one (multi-pool kernels carry per-pool D), else
-                pool = names.get("intra") if names.get("intra") is not None and names["intra"].D is not None \
-                    else spec.pool(spec.seeding.pools[0])   # the seeded pool's
-                D = pool.D
-            if D is None:
-                raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
-            fb = None
-            if kind == "grid":
-                fb = _single_geometry_field(spec, g, field_res, field_budget, field_cache)
-            if adaptive_steps:
-                raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
-                                f"walks one {type(g).__name__} (fused steps)")
-            if sub_steps is not None:
-                from ..engine.core import walk_cost
-                field_kw = {} if fb is None else dict(field_basis=fb, K_c3=K_c3, field_read_interval=field_read_interval,
-                                                      field_target_floor=field_target_floor)
-                law = walk_cost(1, float(D), g, T_max, block_h, tiers=tiers,
-                                **field_kw, **{k: v for k, v in walk_kw.items() if k not in ("sub_steps", "record_trials", "permeability_factor",
-                                                                                          "object_nodes")}).sub_steps
-                if int(sub_steps) < int(law):
-                    raise SpecError(f"sub_steps={int(sub_steps)} is coarser than the step law's {int(law)} physics steps per "
-                                    f"block for this walk; a pinned step may be finer, never coarser")
-            if fixed_read:
-                walk_kw.update(field_calibration=field_calibration, _measure_read=_measure_read,
-                               _calibration_spec=spec, walker_rule=walker_rule)
-            w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
-                               first_walker=int(first_walker),
-                                      field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
-                                                                                   field_target_floor=field_target_floor)),
-                                      **walk_kw)
-            if _measure_read:
-                return w
-            import dataclasses
-            rule = PERMEABLE_POOL_RULE if permeable else IMPERMEABLE_POOL_RULE
-            return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope,
-                                       work=dict(w.work or {}, pool_rule=rule))
+            raise SpecError("stratified seeding is for the pool-by-pool walk of a multi-surface spec")
+        n_walkers = (int(seeding.n_walkers) if isinstance(seeding, DrawnSeeds)
+                     else int(sum(seeding.count_for(p.name).sum() for p in spec.pools if p.id in spec.seeding.pools)))
+    elif n_walkers is None:
+        raise TypeError("walk needs n_walkers, or a seeding= that sets the count per voxel")
+    if diffusivity is not None and _needs_bundle_walk(spec):
+        # one number has nothing to mean for a walk that steps each pool at that pool's own D
+        stepped = [spec.pool(i).name for i in spec.seeding.pools if spec.pool(i).D]     # a D = 0 pool is frozen
+        stepped = stepped or [spec.pool(i).name for i in spec.seeding.pools]
+        raise SpecError(
+            f"walk: diffusivity={diffusivity!r} was given for a multi-surface spec, which walks each pool "
+            f"at its own D (" + ", ".join(f"{p.name}={p.D!r}" for p in spec.pools) + "). Set the D of the pools "
+            f"in the spec -- the producer's own argument, or SubstrateSpec.replace, e.g. "
+            f"spec.replace(D={{{', '.join(f'{n!r}: {diffusivity!r}' for n in stepped)}}}) -- rather than beside "
+            f"it; a number here reaches the walk's resolution and nothing else.")
+    if K is None:                                        # the envelope's band per storage window (#643)
+        from ..engine.accumulate import window_count
+        K = envelope.mode_count(window_count(T_max, window_T)[1])
+    walk_kw = dict(K=K, block_order=block_order, window_T=window_T, raw_subset=raw_subset, envelope=settings, bounce_budget=bounce_budget,
+                   backend=backend, require_gpu=require_gpu, walker_batch_size=walker_batch_size, f_band=float(envelope.band_hz),
+                   accumulation_dtype=accumulation_dtype)
+    if events_capacity is not None:
+        walk_kw["events_capacity"] = int(events_capacity)
+    if sub_steps is not None:
+        if adaptive_steps:
+            raise SpecError("sub_steps pins the fixed-step walk's physics step; the adaptive producer sizes its own steps")
+        if not (isinstance(sub_steps, (int, np.integer)) and not isinstance(sub_steps, bool) and sub_steps >= 1):
+            raise SpecError(f"sub_steps is a whole number of physics steps per block, at least 1; got {sub_steps!r}")
+        walk_kw["sub_steps"] = int(sub_steps)
+    if field_pilot is not None:
+        if adaptive_steps:
+            raise SpecError("field_pilot is the engine the fixed-step walk's field pilot walks on; the adaptive walk "
+                            "calibrates its field reads on its own backend")
+        walk_kw["field_pilot"] = field_pilot
+    if record_trials is not None:
+        if _needs_bundle_walk(spec):
+            raise ValueError("trial_record: the membrane trials are recorded on a spec of one geometry with plain "
+                             "walls; a multi-surface bundle walks its pools one by one and records none")
+        walk_kw["record_trials"] = record_trials
+    if permeability_factor is not None:
+        if _needs_bundle_walk(spec) or adaptive_steps:
+            raise ValueError("permeability_factor: a permeability per walker is walked on a spec of one geometry with "
+                             "the fixed-step walk; a multi-surface bundle and the adaptive walk walk every walker at "
+                             "the spec's stated permeability")
+        walk_kw["permeability_factor"] = permeability_factor
+    if object_nodes is not None:
+        if _needs_bundle_walk(spec) or adaptive_steps:
+            raise ValueError("object_nodes_geometry: a permeability node per (walker, object) is walked on a spec of "
+                             "one geometry with the fixed-step walk; a multi-surface bundle and the adaptive walk walk "
+                             "every walker at the spec's stated permeability")
+        walk_kw["object_nodes"] = object_nodes
+    if not _needs_bundle_walk(spec):
+        permeable = bool(_permeable_walls(spec))
+        if drop_pool_changes is not None:
+            raise SpecError("drop_pool_changes excludes the walkers of a multi-surface bundle walk; this spec walks one "
+                            "geometry, " + ("whose walkers cross its permeable walls: a pool change is an event of "
+                                            "the walker's occupancy and excludes no walker" if permeable else
+                                            "which refuses a walker that changes pool"))
+        g = context.geometry() if context is not None else geometry_from_spec(spec)
+        gap = g.trajectory_walk_gap()
+        if gap is not None:
+            raise SpecError(f"walk cannot walk spec {getattr(spec, 'id', None)!r}: its "
+                            f"geometry ({type(g).__name__}) has no persistent walk -- {gap}")
+        D = diffusivity
+        if D is None:                                   # the walk's reference diffusivity: the intra pool's when
+            names = {p.name: p for p in spec.pools}     # there is one (multi-pool kernels carry per-pool D), else
+            pool = names.get("intra") if names.get("intra") is not None and names["intra"].D is not None \
+                else spec.pool(spec.seeding.pools[0])   # the seeded pool's
+            D = pool.D
+        if D is None:
+            raise SpecError("the spec's seeded pool has no D and no diffusivity= was given")
+        fb = None
+        if kind == "grid":
+            fb = _single_geometry_field(spec, g, field_res, field_budget, field_cache)
+        if adaptive_steps:
+            raise SpecError(f"adaptive_steps=True: adaptive stepping is for a bundle of curved tubes, and this spec "
+                            f"walks one {type(g).__name__} (fused steps)")
         if sub_steps is not None:
-            raise SpecError("sub_steps pins one geometry's physics step; a multi-surface bundle steps each pool at its own D")
-        return _walk_bundle(spec, int(n_walkers), float(T_max), (None if block_h is None else float(block_h)), seed, n_probe, field_res,
-                            field_budget=field_budget, envelope=envelope, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
-                            field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
-                            field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
-                            field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
-                            field_target_floor=field_target_floor, field_cache=field_cache,
-                            drop_pool_changes=drop_pool_changes, pool_checkpoint=pool_checkpoint)
+            from ..engine.core import walk_cost
+            field_kw = {} if fb is None else dict(field_basis=fb, K_c3=K_c3, field_read_interval=field_read_interval,
+                                                  field_target_floor=field_target_floor)
+            law = walk_cost(1, float(D), g, T_max, block_h, tiers=tiers,
+                            **field_kw, **{k: v for k, v in walk_kw.items() if k not in ("sub_steps", "record_trials", "permeability_factor",
+                                                                                      "object_nodes")}).sub_steps
+            if int(sub_steps) < int(law):
+                raise SpecError(f"sub_steps={int(sub_steps)} is coarser than the step law's {int(law)} physics steps per "
+                                f"block for this walk; a pinned step may be finer, never coarser")
+        if fixed_read:
+            walk_kw.update(field_calibration=field_calibration, _measure_read=_measure_read,
+                           _calibration_spec=spec, walker_rule=walker_rule)
+        w = _walk_geometry(int(n_walkers), float(D), g, T_max=T_max, block_h=block_h, seed=seed, tiers=tiers,
+                           first_walker=int(first_walker),
+                                  field_basis=fb, **({} if fb is None else dict(K_c3=K_c3, field_read_interval=field_read_interval,
+                                                                               field_target_floor=field_target_floor)),
+                                  **walk_kw)
+        if _measure_read:
+            return w
+        import dataclasses
+        rule = PERMEABLE_POOL_RULE if permeable else IMPERMEABLE_POOL_RULE
+        return dataclasses.replace(w, geometry=g, spec=spec, envelope=envelope,
+                                   work=dict(w.work or {}, pool_rule=rule))
+    if sub_steps is not None:
+        raise SpecError("sub_steps pins one geometry's physics step; a multi-surface bundle steps each pool at its own D")
+    return _walk_bundle(spec, int(n_walkers), float(T_max), (None if block_h is None else float(block_h)), seed, n_probe, field_res,
+                        field_budget=field_budget, envelope=envelope, field_cutoff_m=field_cutoff_m, field_cutoff_tol=field_cutoff_tol, seeding=seeding,
+                        field_cutoff_max_m=field_cutoff_max_m, adaptive_steps=adaptive_steps, field_read_interval=field_read_interval, K_c3=K_c3,
+                        field_far=field_far, field_gather_every=int(field_gather_every), context=context, spool=bool(spool), walk_kw=walk_kw,
+                        field_calibration=field_calibration, calibration_floor=calibration_floor, query_scope=query_scope,
+                        field_target_floor=field_target_floor, field_cache=field_cache,
+                        drop_pool_changes=drop_pool_changes, pool_checkpoint=pool_checkpoint)
 
 
 #: The rule a walk states when it excludes the walkers that changed pool (``walk(drop_pool_changes=)``).

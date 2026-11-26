@@ -25,15 +25,16 @@ def _walk_bytes(w, path):
     return {k: (a.dtype.str, a.shape, a.tobytes()) for k, a in load_file(str(path)).items()}
 
 
-def test_recorded_bits_fixed_step_default(recorded_bits, tmp_path):
-    from tests.recorded_bits import fixed_step_default_hashes, in_recorded_bits_job
+def test_recorded_bits_fixed_step_default(tmp_path):
+    from tests.recorded_bits import FIXED_STEP_DEFAULT, fixed_step_default_hashes, in_recorded_bits_job, recorded_canary
 
-    if "fixed_step_default" not in recorded_bits:
-        reason = "this CPU family lacks fixed_step_default; tools/record_recorded_bits.py prints its entry"
+    canary = recorded_canary()
+    if canary not in FIXED_STEP_DEFAULT:
+        reason = f"CPU family {canary} lacks fixed_step_default; tools/record_recorded_bits.py prints its entry"
         if in_recorded_bits_job():
             pytest.fail(reason, pytrace=False)
         pytest.skip(reason)
-    assert fixed_step_default_hashes(tmp_path / "default.walk") == recorded_bits["fixed_step_default"]
+    assert fixed_step_default_hashes(tmp_path / "default.walk") == FIXED_STEP_DEFAULT[canary]
 
 
 def test_measure_reuse_join_and_charge(x64, monkeypatch, tmp_path):

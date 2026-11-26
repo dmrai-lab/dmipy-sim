@@ -3,8 +3,9 @@
 A compiled walk's float32 bits depend on the JAX build (:data:`RECORDED_WITH`) and on the arithmetic XLA's CPU backend
 emits for the host, which differs between families of CPUs (an instruction-set cap does not remove the difference).
 The recorded values are therefore kept per family in :data:`FAMILIES`, keyed by the family's canary: the hash of a
-small fixed walk (:func:`canary`) through the same concentric wall kernel. The ``test_recorded_bits_*`` tests read the
-values of this host's family through the ``recorded_bits`` fixture (:func:`recorded_values`).
+small fixed walk (:func:`canary`) through the same concentric wall kernel. The ``recorded_bits`` fixture
+(:func:`recorded_values`) selects the reference walks. The independent default fixed-step baseline uses
+:data:`FIXED_STEP_DEFAULT` with the same canary.
 
 The canary only SELECTS the family. A matching canary is not evidence that the recorded bits match: a compile setting
 can leave the canary unchanged and still change the bits of a recorded walk. The recorded tests themselves are that
@@ -12,8 +13,8 @@ evidence.
 
 Where the recorded tests run: wherever jax / jaxlib are :data:`RECORDED_WITH` and the canary names a recorded family.
 In the pinned ``recorded-bits`` CI job (which sets :data:`RECORDED_BITS_ENV` to ``1``) another build is an error and a
-canary of no recorded family is a failure that prints the canary; anywhere else either is a skip with that reason.
-``tools/record_recorded_bits.py`` prints a host's canary and the values in the form of :data:`FAMILIES`.
+canary of no recorded family or no fixed-step baseline is a failure that prints the canary; local runs skip the
+affected tests with the reason. ``tools/record_recorded_bits.py`` prints a host's entries for both mappings.
 """
 import hashlib
 import os
@@ -34,7 +35,6 @@ RECORDED_BITS_ENV = "DMIPY_SIM_RECORDED_BITS"
 #: ``field`` and ``no_field`` per array of the walk, ``forward`` per output of the forward signal. The arrays that
 #: carry the field (``field_coeffs``, ``qv_field``, ``qv_field_increments``) are the walk's with the cell's exactly
 #: periodic field (:class:`~dmipy_sim.fields.hollow_cylinder.HollowCylinderField`).
-#: ``fixed_step_default`` holds the full block and saved-array hashes of the default fixed-step field walk.
 FAMILIES = {
     "d0d7a6f831ecca7f9d94e401041709594f0f2ecf0cd90194cc97f1efb76590ea": {
         "field": {
@@ -67,19 +67,6 @@ FAMILIES = {
                     "d74f0785f9b4e8d7cafade4125099db0551920906277888b20293a58be3ccef9"],
     },
     "e74c68c7486e5194fea424efc88122e001a185a20b6925b53b1b9f79a1cef439": {
-        # From the default walk at d2867a9 with time.time fixed at 1000 s.
-        "fixed_step_default": {
-            "boundary_bands": "c2b4e7f01cdad7545689f0327b9db2f20d0371a42e42b71f014ea13023f0bb5b",
-            "boundary_endpoint": "4d964515c4cafd4572b3707244d4766651c80a071c4838260a195bec4cdeaef7",
-            "field_coeffs": "c9595d30efbc1885c15f5e82fbbe33777a5f1428e7ff2f3cc993d9c84611df13",
-            "position_coeffs": "d21a361471fd25ff07a33fca8c9be65361f122835d642f7989c569398d1fdce1",
-            "qv_boundary": "aaabb75945ca9f3206caefd7225c05e1e901bb27b609b7b8f1e6744ecc24852b",
-            "qv_field": "f72fdd3a50cb92f6d46f608db6216303049808821eb25da37bf0b517023b45ed",
-            "qv_field_increments": "67ed3b30aa8bb3087e8381e73104f284ad2890bf45fcb248c84ec28f967035b7",
-            "qv_positions": "266cdebff7a95b7fe0adcc84ba9ff13c2d564614ba2c560015112d8aa7942b57",
-            "compartment": "4a59c1136395d4124da5604dfd60e7d6739bf17eb1d80a6d40f84fc839f5f00e",
-            "block": "ce1443b33ae6e40e0fce297b8b6187891ca6b19a8ebfc0cf3a8fa87a20cf69fa",
-        },
         "field": {
             "position_coeffs": "50414eae62de40d03fb55fa05f74c7afce290f7ffaec55234701f2376300f330",
             "boundary_endpoint": "a22f9c158be02a6e4ec7063f7637c052cfccee718de77cd3e950a22de0a83d49",
@@ -108,6 +95,25 @@ FAMILIES = {
                     "dbc2ededdf5901ec41ad255a99e309c84b034c7128ba778065ca43a302cdbb30",
                     "2fc0fd100afb026caaaadfcf399535365c56914cc96bf882993c749005908a97",
                     "7d943647b442068342534466ce4c5526b6ef1081908dc93df2908e3386503a1d"],
+    },
+}
+
+
+#: Full block and saved-array hashes of the default fixed-step field walk, keyed by canary.
+#: Record these hashes from the pre-calibration simulator.
+FIXED_STEP_DEFAULT = {
+    # From the default walk at d2867a9 with time.time fixed at 1000 s.
+    "e74c68c7486e5194fea424efc88122e001a185a20b6925b53b1b9f79a1cef439": {
+        "boundary_bands": "c2b4e7f01cdad7545689f0327b9db2f20d0371a42e42b71f014ea13023f0bb5b",
+        "boundary_endpoint": "4d964515c4cafd4572b3707244d4766651c80a071c4838260a195bec4cdeaef7",
+        "field_coeffs": "c9595d30efbc1885c15f5e82fbbe33777a5f1428e7ff2f3cc993d9c84611df13",
+        "position_coeffs": "d21a361471fd25ff07a33fca8c9be65361f122835d642f7989c569398d1fdce1",
+        "qv_boundary": "aaabb75945ca9f3206caefd7225c05e1e901bb27b609b7b8f1e6744ecc24852b",
+        "qv_field": "f72fdd3a50cb92f6d46f608db6216303049808821eb25da37bf0b517023b45ed",
+        "qv_field_increments": "67ed3b30aa8bb3087e8381e73104f284ad2890bf45fcb248c84ec28f967035b7",
+        "qv_positions": "266cdebff7a95b7fe0adcc84ba9ff13c2d564614ba2c560015112d8aa7942b57",
+        "compartment": "4a59c1136395d4124da5604dfd60e7d6739bf17eb1d80a6d40f84fc839f5f00e",
+        "block": "ce1443b33ae6e40e0fce297b8b6187891ca6b19a8ebfc0cf3a8fa87a20cf69fa",
     },
 }
 
@@ -180,13 +186,17 @@ def family_of(canary_hash, *, in_job):
 _CANARY = []
 
 
-def recorded_values():
-    """This host's family's recorded values, after :func:`check_build` and :func:`family_of` (the canary is walked
-    once per process)."""
+def recorded_canary():
+    """This host's canary on the recorded build, evaluated once per process."""
     import jax
     import jaxlib
     in_job = in_recorded_bits_job()
     check_build((jax.__version__, jaxlib.__version__), in_job=in_job)
     if not _CANARY:
         _CANARY.append(canary())
-    return family_of(_CANARY[0], in_job=in_job)
+    return _CANARY[0]
+
+
+def recorded_values():
+    """This host's family's recorded values, after checking the build and selecting its canary."""
+    return family_of(recorded_canary(), in_job=in_recorded_bits_job())
