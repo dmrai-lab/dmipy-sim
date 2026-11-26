@@ -1,6 +1,6 @@
 """A backend that walks a permeability per walker (:data:`~dmipy_sim.engine.backends.PERMEABILITY_FACTOR`): the walk's
 ``permeability_factor=`` reaches it as each batch's own rows (``WalkRequest.permeability_factor``, ``r0``'s row order),
-in the walk's batches, the events and trial-record pilots and the field pilot's batches; a backend that does not
+in the walk's batches, the events and trial-record pilots and the field pilot; a backend that does not
 declare it is refused by the capability's name before any batch is walked.
 
 The stand-ins (``tests/backends/test_backend_hook.py``'s ``_Still`` and its kin) keep every walker at its start, so a
@@ -54,11 +54,16 @@ class _Factors(_Seen, _Still):
 
 class _CellFieldFactors(_Seen, _CellField):
     name = "cellfieldfactors"
-    capabilities = frozenset({backends.PACKED_MYELINATED, backends.FIELD_IN_WALK, backends.PERMEABILITY_FACTOR})
+    capabilities = _CellField.capabilities | {backends.PERMEABILITY_FACTOR}
 
     def __init__(self, **kw):
         super().__init__(**kw)
         self.calls = []
+        self.pilot_calls = []
+
+    def field_pilot(self, request, r0, keys, checks):
+        self.pilot_calls.append((request, r0.copy(), request.permeability_factor.copy()))
+        return super().field_pilot(request, r0, keys, checks)
 
 
 class _RecordingFactors(_Seen, _Recording):
@@ -119,31 +124,17 @@ def _no_events(request, r0):
     return np.zeros((r0.shape[0] + 1,), np.int64), np.zeros((0,), np.float64), np.zeros((0,), np.int8)
 
 
-def _field_calls(be):
-    """The field pilot's calls: one physics step a block, every walker in the raw subset."""
-    return [c for c in be.calls if c[0].sub_steps == 1 and c[0].raw_subset == c[1].shape[0]]
+def test_the_field_pilot_receives_its_walkers_rows(monkeypatch):
+    """Using full-walk factors or the first rows would misalign the field pilot's spread-out walker subset."""
+    from dmipy_sim.engine import accumulate
 
-
-def test_the_field_pilots_batches_receive_their_walkers_rows(monkeypatch):
-    """The field pilot walked on the backend: one batch at the default read budget, then batches of 5 walkers at a
-    budget of five walkers' positions and reads; each batch its own rows."""
-    import dmipy_sim.engine.accumulate as accumulate
+    monkeypatch.setattr(accumulate, "PILOT_WALKERS", 5)
     g = _cell(kappa_outer=[0.0, 4e-5, 0.0, 4e-5])
     be = _CellFieldFactors(events=_no_events)
     w = _walk(g, backend=be, field_basis=HollowCylinderField.of(g), permeability_factor=FAC, **FIELD)
-    field = _field_calls(be)
-    assert len(field) == 1 and field[0][1].shape[0] == N
-    _check_rows(w, be.calls)
-
-    steps = int(field[0][0].n_blocks)                                      # the pilot's steps
-    record = bool(field[0][0].record)
-    monkeypatch.setattr(accumulate, "PILOT_READ_BYTES", 5 * (steps + 1) * (3 + 2 * int(record) + 12) * 4)
-    be = _CellFieldFactors(events=_no_events)
-    w = _walk(g, backend=be, field_basis=HollowCylinderField.of(g), permeability_factor=FAC, **FIELD)
-    field = _field_calls(be)
-    assert [c[1].shape[0] for c in field] == [5] * 6 + [2]
-    _check_rows(w, be.calls)
-    assert sorted(np.concatenate([_rows(w, c[1]) for c in field]).tolist()) == list(range(N))
+    pilot, = be.pilot_calls
+    np.testing.assert_array_equal(_rows(w, pilot[1]), [0, 8, 16, 23, 31])
+    _check_rows(w, be.pilot_calls + be.calls)
 
 
 def test_the_trial_pilot_receives_its_walkers_rows():

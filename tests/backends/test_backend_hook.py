@@ -121,15 +121,13 @@ def test_an_unknown_backend_is_refused_naming_what_is_installed():
 
 
 def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
-    """The request's fields are the agreed names (#747): the block, the blocks, the steps
-    per block, the band, the order, the field's modes and read interval, the event capacity, the raw subset; no
-    ``n_t``, no ``dt_save``, no ``field_sample_every``."""
+    """A saved grid or pilot-only initial dwell on a production request would violate the request contract."""
     assert backends.WalkRequest._fields == ("geometry", "block_h", "n_blocks", "sub_steps", "dt_sim", "diffusivity", "record",
                                             "kappa_over_D", "count_walls", "bounce_budget", "seed", "K", "m", "K_c3",
                                             "field_read_interval", "events", "raw_subset", "stepping", "field",
                                             "drop_pool_changes", "n_windows", "kappa_MT_over_D", "dwell_time",
                                             "trial_record", "trial_steps", "trial_radii", "trial_u_max", "trial_slots",
-                                            "permeability_factor", "object_nodes", "object_node_index")
+                                            "permeability_factor", "object_nodes", "object_node_index", "dwell0")
     still = _Still()
     w = _walk(d.Sphere(R), backend=still, K=8, block_order=2, raw_subset=10, walker_batch_size=32)
     reqs = still.requests
@@ -139,7 +137,7 @@ def test_the_request_names_the_walk_and_nothing_of_a_save_grid():
     assert r.sub_steps == w.sub_steps and r.dt_sim == pytest.approx(w.dt_sim) and r.record and r.kappa_over_D == 0.0
     assert r.events == 0 and r.K_c3 == 0 and r.field_read_interval == 0.0 and r.stepping is None and r.field is None
     assert r.n_windows == 1 and r.blocks_per_window == 4 and r.T_window == pytest.approx(2e-3)
-    assert r.kappa_MT_over_D == 0.0 and r.dwell_time == 0.0                # a walk that binds nothing
+    assert r.dwell0 is None and r.kappa_MT_over_D == 0.0 and r.dwell_time == 0.0                # a walk that binds nothing
     perm = _Still()
     _walk(d.Sphere(R, permeability=1e-5), backend=perm)
     r = perm.requests[0]
@@ -302,13 +300,13 @@ def test_a_raster_field_is_the_backends_request_and_its_modes_are_checked():
     """A FieldGrid read along the fixed-step walk is handed to the backend as the request's own field, every batch at
     the walk's read interval and band (the field's pilot walked by the JAX kernels, ``field_pilot="jax"``: the read rule's
     checks and the band's block means are theirs); a backend that returns no modes for it, or modes at another read, is
-    refused by name, as is a pilot on a backend that cannot read the field at given positions."""
+    refused by name, as is a pilot on a backend that has not declared the field pilot capability."""
     fg = _layer_grid()
     still = _Still()
     kw = dict(field_basis=fg, K_c3=3, field_read_interval=4e-5, field_pilot="jax")
     w = _walk(d.Sphere(R), backend=still, **kw)
     assert w.block["field_read"]["pilot_backend"] == "jax"
-    with pytest.raises(ValueError, match="does not read a field at given positions"):
+    with pytest.raises(ValueError, match="backend 'still'.*requires capability 'field_pilot'"):
         _walk(d.Sphere(R), backend=_Still(), **dict(kw, field_pilot=None))
     with pytest.raises(ValueError, match="field_pilot is the engine"):
         _walk(d.Sphere(R), backend=_Still(), **dict(kw, field_pilot="cuda"))

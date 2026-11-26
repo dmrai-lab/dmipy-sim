@@ -98,11 +98,14 @@ PERMEABILITY_FACTOR = "permeability_factor"
 #: :meth:`~dmipy_sim.geometry.base.Geometry.object_nodes_rule`.
 OBJECT_NODES = "object_nodes"
 
+#: A backend capability for accumulating fixed-step field pilot statistics in :meth:`Backend.field_pilot`.
+FIELD_PILOT = "field_pilot"
+
 #: What the JAX kernels declare: they walk a permeability table, several storage windows, MT binding, the packed
 #: myelinated class, a closed-form field read in the walk, the record of the membrane trials, a permeability per
-#: walker and a permeability node per (walker, object).
+#: walker, a permeability node per (walker, object), and the fixed-step field pilot.
 JAX_CAPABILITIES = frozenset({PERMEABILITY_TABLE, STORAGE_WINDOWS, MT_BINDING, PACKED_MYELINATED, FIELD_IN_WALK,
-                              TRIAL_RECORD, PERMEABILITY_FACTOR, OBJECT_NODES})
+                              TRIAL_RECORD, PERMEABILITY_FACTOR, OBJECT_NODES, FIELD_PILOT})
 
 
 class FieldSampling(NamedTuple):
@@ -184,6 +187,8 @@ class WalkRequest(NamedTuple):
                                           #: :meth:`~dmipy_sim.geometry.base.Geometry.object_nodes_rule`
     object_node_index: object = None      #: ``(n,)`` int64 each row's stable walker index ``first_walker + w``, the
                                           #: walker index the node hash reads; None without object nodes
+    dwell0: object = None                 #: In field_pilot, ``(n,)`` float32 remaining bound dwell in physics steps
+                                          #: for these MT walkers (0 free); None for a pilot without binding.
 
     @property
     def T(self):
@@ -201,13 +206,14 @@ class WalkRequest(NamedTuple):
         return float(self.block_h) * self.blocks_per_window
 
 
-def capability_refusal(backend, name, request, *, permeability_table=False):
+def capability_refusal(backend, name, request, *, permeability_table=False, field_pilot=False):
     """Why ``backend`` (named ``name``) does not walk ``request`` for want of a capability it does not declare in its
     ``capabilities``, by the capability's name, or None: a permeability per object or over time
     (``permeability_table``) needs :data:`PERMEABILITY_TABLE`, a walk of several storage windows
     :data:`STORAGE_WINDOWS`, a walk that binds (``request.kappa_MT_over_D > 0``) :data:`MT_BINDING`, a request
     carrying a permeability per walker (``request.permeability_factor``) :data:`PERMEABILITY_FACTOR`, a request
-    carrying object nodes (``request.object_nodes``) :data:`OBJECT_NODES`."""
+    carrying object nodes (``request.object_nodes``) :data:`OBJECT_NODES`, and a fixed-step pilot run on the backend
+    (``field_pilot``) :data:`FIELD_PILOT`."""
     have = getattr(backend, "capabilities", ())
     if request.object_nodes is not None and OBJECT_NODES not in have:
         return (f"backend {name!r}: object_nodes_backend: this walk draws a permeability node per (walker, object) "
@@ -224,6 +230,10 @@ def capability_refusal(backend, name, request, *, permeability_table=False):
     if int(request.n_windows) > 1 and STORAGE_WINDOWS not in have:
         return (f"backend {name!r}: this walk accumulates {int(request.n_windows)} storage windows, which the backend does "
                 f"not declare it walks (capability {STORAGE_WINDOWS!r})")
+    if field_pilot and FIELD_PILOT not in have:
+        return (f"backend {name!r}: the fixed-step field pilot requires capability {FIELD_PILOT!r}: "
+                "implement field_pilot(request, r0, keys, checks) and declare the capability, "
+                "use field_pilot='jax', or state a field_calibration")
     return None
 
 
@@ -341,7 +351,7 @@ class CoefficientBatch(NamedTuple):
 
 class Backend:
     """The protocol. A backend subclasses or duck-types this: ``name``, :meth:`refuses`, :meth:`walk_batch`, and
-    optionally :attr:`capabilities`."""
+    optionally :attr:`capabilities` and methods those capabilities require."""
     name = "?"
     #: CoefficientBatch.precision, declared before measurement or reuse of fixed-step field calibrations.
     precision = None
@@ -372,6 +382,26 @@ class Backend:
         :data:`MT_BINDING`) is handed ``dwell0``, ``(n,)`` float32 each walker's dwell left at the start in physics steps
         (0 free: the producer's equilibration), and returns ``bound_events``; every other walk is handed none."""
         raise NotImplementedError
+
+    def field_pilot(self, request: WalkRequest, r0: np.ndarray, keys: np.ndarray, checks: tuple) -> dict[str, np.ndarray]:
+        """Accumulate the fixed-step field pilot for a backend declaring :data:`FIELD_PILOT`.
+
+        Walk the ``(n, 3)`` float32 starts (metres) from their ``(n, 2)`` uint32 keys using the production
+        blocks, storage windows and per-walker inputs. Read the mean-subtracted ``request.field`` at the walk's
+        read position at the start and after every physics step, independently of the production read interval.
+        Each entry in ``checks`` is a coarser read interval in physics steps, restarting at each block and
+        including the block end.
+
+        Return ``fs`` float32 ``(n, n_blocks + 1, n_ch)``, the start read followed by fine trapezoid block
+        means; ``qv_d`` float64 ``(n, n_windows, n_ch)``, the sum of squared fine read increments per window;
+        and ``chk`` float64 ``(n, n_windows, 2, len(checks), n_ch)``. Its two entries per check and channel
+        are the window sum of coarse minus fine trapezoid integrals (field times seconds, before squaring)
+        and the sum of squared coarse field increments weighted by the squared ratio of actual to nominal
+        interval length. A constant channel over a block contributes zero to both checks.
+        The backend chooses its batching. The accumulation follows
+        :func:`~dmipy_sim.engine.accumulate.moment_scan`.
+        """
+        raise NotImplementedError(f"backend {self.name!r} must implement field_pilot to declare {FIELD_PILOT!r}")
 
 
 def trial_sum_dtype(backend, name) -> np.dtype:

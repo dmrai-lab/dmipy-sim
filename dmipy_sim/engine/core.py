@@ -13,6 +13,7 @@ import contextlib
 import dataclasses
 import gc
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import NamedTuple
 import numpy as np
@@ -709,7 +710,7 @@ def _trial_record_bytes(record_trials, trial_dtype):
     return bytes_per_walker(record_trials.slots, record_trials.modes, trial_dtype.itemsize)
 
 
-def _backend_refusal(backend, name, res, geometry):
+def _backend_refusal(backend, name, res, geometry, *, field_pilot=False):
     """Why ``backend`` (named ``name``) does not walk the resolved request ``res``, or None: the paths only the JAX
     kernels implement are refused for any other backend rather than fallen back from, and the backend may refuse
     the walk itself. A permeability per object or over time is walked by a backend that declares
@@ -726,7 +727,8 @@ def _backend_refusal(backend, name, res, geometry):
     if jax_only:
         return (f"backend {name!r}: this walk uses {', '.join(jax_only)}, which only the jax kernels "
                 f"implement; it does not fall back")
-    reason = capability_refusal(backend, name, res.request, permeability_table=geometry.permeability_table is not None)
+    reason = capability_refusal(backend, name, res.request, permeability_table=geometry.permeability_table is not None,
+                                field_pilot=field_pilot)
     if reason:
         return reason
     reason = backend.refuses(res.request)
@@ -1172,70 +1174,55 @@ def _jax_field_pilot(call, indices, checks, dt_sim, keep_means):
     return got
 
 
-def field_pilot_on_backend(backend, request, r0, keys, field_basis, *, impermeable, blocks_per_window, checks,
-                           progress=None, precision=None):
-    """A field pilot walked on ``backend``: the walkers ``r0`` / ``keys`` walked as ``request`` walks them but one
-    physics step a block (``n_blocks sub_steps`` blocks of ``dt_sim``: the same steps, keys and walls, no field
-    accumulated, ``K = 1`` at ``m = 0``), every walker in the raw subset, so that its saves are the positions after every step -- the
-    positions the backend's walk reads the field at; the field read there by the backend's own read
-    (``backend.sample_raster``); per walker the statistics the JAX pilot accumulates, of its definition
-    (:func:`~.accumulate.field_read_statistics` over ``request.sub_steps`` steps a block and ``blocks_per_window``
-    blocks a window, the trapezoid's ``checks``): ``fs`` ``(n, n_blocks + 1, n_ch)`` the start's read and the block
-    means, ``qv_d`` ``(n, n_win, n_ch)`` the read series' quadratic variation, ``chk`` ``(n, n_win, 2, n_checks, n_ch)``
-    the checks. Walked in batches of at most :data:`~.accumulate.PILOT_READ_BYTES` of positions and reads; ``impermeable``
-    is the resolved walk's statement that no walker changes pool (``not res.crossing``: no permeable wall of any object,
-    a myelinated cell's own walls included); an impermeable recorded walk is asked for its pool changes
-    (``drop_pool_changes``), which the pilot keeps. When given, ``precision`` is the backend's declared
-    accumulation dtype for a scoped measurement."""
-    import time as _time
-    from .accumulate import field_read_statistics, PILOT_READ_BYTES
-    name = str(getattr(backend, "name", backend))
-    sample = getattr(backend, "sample_raster", None)
-    if not callable(sample):
-        raise ValueError(f"backend {name!r} does not read a field at given positions (sample_raster): the field pilot "
-                         f"walks on the walk's backend; field_pilot='jax' walks it by the JAX kernels")
-    sub_steps, n_ch = int(request.sub_steps), len(field_basis.channel_names)
-    n_steps = int(request.n_blocks) * sub_steps
-    record = bool(request.record)
-    size = max(1, int(PILOT_READ_BYTES) // ((n_steps + 1) * (3 + 2 * int(record) + n_ch) * 4))   # float32 positions, saves, reads
-    r0 = np.ascontiguousarray(r0, np.float32); keys = np.ascontiguousarray(keys, np.uint32)
-    n = int(r0.shape[0]); parts = []
-    for a in range(0, n, size):
-        if progress is not None:
-            progress(a, n)
-        n_b = min(size, n - a)
-        req = request._replace(block_h=float(request.dt_sim), n_blocks=n_steps, sub_steps=1, K=1, m=0, K_c3=0, field=None,
-                               field_read_interval=0.0, raw_subset=n_b, drop_pool_changes=bool(impermeable and record),
-                               permeability_factor=(None if request.permeability_factor is None
-                                                    else np.asarray(request.permeability_factor[a:a + n_b], np.float32)),
-                               **({} if request.object_nodes is None else dict(
-                                   object_nodes=request.object_nodes._replace(
-                                       walkers=np.asarray(request.object_nodes.walkers)[a:a + n_b].copy()),
-                                   object_node_index=np.asarray(request.object_node_index)[a:a + n_b].copy())))
-        t0 = _time.perf_counter()
-        batch = backend.walk_batch(req, r0[a:a + n_b], keys[a:a + n_b])
-        if precision is not None and batch.precision != precision:
-            raise ValueError(f"field_calibration: backend {name!r} returned precision {batch.precision!r} "
-                             f"after declaring {precision!r}")
-        t1 = _time.perf_counter()
-        sv = getattr(batch, "saves", None)
-        pos = None if sv is None else np.asarray(sv.positions, np.float32)
-        if pos is None or pos.shape != (n_b, n_steps + 1, 3):
-            raise ValueError(f"backend {name!r} returned raw-subset positions of shape {None if pos is None else pos.shape} "
-                             f"for the field pilot's {n_b} walkers over {n_steps} steps: {(n_b, n_steps + 1, 3)}")
-        del sv, batch
-        reads = np.asarray(sample(field_basis, pos.reshape(-1, 3)), np.float32).reshape(n_b, n_steps + 1, n_ch)
-        del pos
-        t2 = _time.perf_counter()
-        st = field_read_statistics(reads, step_s=float(request.dt_sim), rounds_per_block=sub_steps,
-                                   blocks_per_window=int(blocks_per_window), checks=checks)
-        log.info("field pilot on %s: %d walkers x %d steps walked in %.1f s, read in %.1f s, statistics in %.1f s",
-                 name, n_b, n_steps, t1 - t0, t2 - t1, _time.perf_counter() - t2)
-        parts.append(dict(fs=np.concatenate([reads[:, :1], st["means"]], axis=1), qv_d=st["qv_increments"], chk=st["checks"]))
-        del reads, st
-    if progress is not None:
-        progress(n, n)
-    return {k: np.concatenate([p[k] for p in parts], axis=0) for k in parts[0]}
+def _jax_field_pilot_for_request(request, checks, r0=None, keys=None, *, call=None, indices=None, keep_means=True):
+    """Run the JAX field pilot on the request's block grid, using its prepared kernel when supplied.
+
+    Given explicit starts and keys, return the three arrays of the backend pilot interface.
+    """
+    if call is not None:
+        return _jax_field_pilot(call, indices, checks, request.dt_sim, keep_means)
+    got = _walk_geometry(
+        len(r0), request.diffusivity, request.geometry, request.T, request.block_h,
+        tiers="all" if request.record else (), sub_steps=request.sub_steps, K=request.K,
+        block_order=request.m, window_T=request.T_window, field_basis=request.field,
+        seed=request.seed, r0=r0, require_gpu=False, walker_batch_size=len(r0),
+        kappa_MT=request.kappa_MT_over_D * request.diffusivity, dwell_time=request.dwell_time,
+        permeability_factor=request.permeability_factor, object_nodes=request.object_nodes,
+        _pilot_only=(request, keys, checks),
+    )
+    return dict(fs=got["fs"].astype(np.float32), qv_d=got["qv_d"].astype(np.float64),
+                chk=got["chk"].astype(np.float64).reshape(
+                    len(r0), request.n_windows, 2, len(checks), len(request.field.channel_names)))
+
+
+def field_pilot_on_backend(backend, request, r0, keys, checks):
+    """Return the backend's fixed-step pilot arrays after checking the shapes and dtypes."""
+    name = str(backend.name)
+    pilot = getattr(backend, "field_pilot", None)
+    if not callable(pilot):
+        raise ValueError(f"backend {name!r} must implement field_pilot(request, r0, keys, checks)")
+    stats = pilot(request, r0, keys, checks)
+    if not isinstance(stats, Mapping):
+        raise ValueError(f"backend {name!r} field_pilot must return a mapping with fs, qv_d and chk")
+    n, n_win, n_ch = len(r0), request.n_windows, len(request.field.channel_names)
+    expected = {
+        "fs": ((n, request.n_blocks + 1, n_ch), np.dtype("float32")),
+        "qv_d": ((n, n_win, n_ch), np.dtype("float64")),
+        "chk": ((n, n_win, 2, len(checks), n_ch), np.dtype("float64")),
+    }
+    arrays = {}
+    for key, (shape, dtype) in expected.items():
+        if key not in stats:
+            raise ValueError(f"backend {name!r} field_pilot returned no {key!r} array")
+        try:
+            arr = np.asarray(stats[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"backend {name!r} field_pilot returned an invalid {key!r} array") from exc
+        if arr.shape != shape or arr.dtype != dtype:
+            raise ValueError(f"backend {name!r} field_pilot returned {key!r} with shape {arr.shape} and dtype "
+                             f"{arr.dtype}; expected shape {shape} and dtype {dtype}")
+        arrays[key] = arr
+    return arrays
 
 
 def _permeability_factor(factor, n_walkers, geometry, kappa_MT, backend_name, capabilities):
@@ -1377,6 +1364,7 @@ def _walk_geometry(
     walker_rule=None,
     _measure_read=False,
     _calibration_spec=None,
+    _pilot_only=None,
 ):
     """Walk the spins ONCE and keep, per walker, the bands a replay pack stores: the producer of the replay path.
 
@@ -1504,12 +1492,10 @@ def _walk_geometry(
         certificate charges the term from the walk's own quadratic variation).
     field_pilot : str, optional
         The engine the field's pilot walks on: None the walk's own backend, ``"jax"`` the JAX kernels whatever the
-        backend. Either measures the same quantities of the same definition (per walker the block means of the field
-        channels, the read series' quadratic variation per window and the trapezoid's checks,
-        :func:`~dmipy_sim.engine.accumulate.field_read_statistics`): the JAX kernels accumulate them in the walk; a
-        backend walks the pilot's walkers one step a block, returns their positions at every step as the raw subset
-        and reads its own field there (``backend.sample_raster``, the read its walk takes), the statistics computed on
-        the host. A backend that cannot read the field at given positions is refused by name.
+        backend. Both accumulate the block means, the read series' quadratic variation and the trapezoid checks
+        at the walk's own field read position every step. A native pilot requires the backend's
+        :data:`~dmipy_sim.engine.backends.FIELD_PILOT` capability. A stated calibration reuses its measurements
+        without running a pilot.
         ``CoefficientWalk.block["field_read"]["pilot_backend"]`` records which engine walked it.
     events_capacity : int, optional
         The events buffer per walker and column, in place of the pilot's.
@@ -1709,6 +1695,9 @@ def _walk_geometry(
                             field_basis=field_basis, K=K, block_order=block_order, window_T=window_T, K_c3=K_c3,
                             field_read_interval=field_read_interval, events_capacity=events_capacity, raw_subset=raw_subset,
                             envelope=envelope, segments=segments)
+        if _pilot_only is not None:
+            pilot_request, pilot_keys, pilot_checks = _pilot_only
+            res = res._replace(block_h=pilot_request.block_h, dt_sim=pilot_request.dt_sim)
         if drop_pool_changes and (res.crossing or res.binding_mt):
             raise ValueError("drop_pool_changes is for an impermeable walk; this walk's walkers may change pool, and every "
                              "change is an event of its occupancy (RPK.md 9.5.7)")
@@ -2204,7 +2193,34 @@ def _walk_geometry(
             def _side0(r_b):
                 return jnp.zeros((r_b.shape[0],), dtype=jnp.int8)
 
-        _, r0_all, walker_keys_all, labels0 = seed_walkers(geometry, n_walkers, seed, r0, first_walker=first_walker)
+        if _backend is not None:
+            # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
+            # never fallen back from; a backend walks each batch in the coefficient form (#747). It is handed the field
+            # basis the walk reads (a raster, or a closed form for a backend that declares FIELD_IN_WALK) and the
+            # resolved trial record (a backend that declares TRIAL_RECORD)
+            res = res._replace(request=res.request._replace(
+                field=field_basis,
+                **({} if _nodes is None else dict(
+                    object_nodes=_nodes.echo,
+                    object_node_index=np.int64(first_walker) + np.arange(int(n_walkers), dtype=np.int64))),
+                **({} if _trial is None else dict(trial_record=record_trials, trial_steps=np.asarray(_steps, np.int64),
+                                                  trial_radii=np.asarray(_trial["radii"], np.float64),
+                                                  trial_u_max=np.asarray(_trial["u_max"], np.float64),
+                                                  trial_slots=int(_trial["slots"])))))
+            reason = _backend_refusal(
+                _backend, _backend_name, res, geometry,
+                field_pilot=_sampling and field_calibration is None and _pilot_name != JAX)
+            if reason:
+                raise ValueError(reason)
+
+        if _pilot_only is None:
+            _, r0_all, walker_keys_all, labels0 = seed_walkers(geometry, n_walkers, seed, r0, first_walker=first_walker)
+        else:
+            r0_all, walker_keys_all, labels0 = jnp.asarray(r0), jnp.asarray(pilot_keys), None
+            if _nodes is not None:
+                from .physics import object_node_key_rows
+                _nodes = _nodes._replace(keys=object_node_key_rows(
+                    pilot_request.object_nodes.seed, pilot_request.object_node_index))
         # whether the walkers start at spatial equilibrium (work["start"]); a start out of it across a permeable wall is
         # served with the step law's transient term and a flag, and said so now
         _start_rec = _start_record(geometry, r0 is not None, diffusivity, dt_sim)
@@ -2232,7 +2248,9 @@ def _walk_geometry(
         # the preamble.  kappa_MT == 0 leaves brem0_all at zero and skips this entirely.
         brem0_all = jnp.zeros((n_walkers,), dtype=jnp.float32)
         _eq_record = None                       # the burn-in's criterion and outcome (work["mt_equilibration"])
-        if _mt_on:
+        if _mt_on and _pilot_only is not None:
+            brem0_all = jnp.asarray(pilot_request.dwell0)
+        elif _mt_on:
             from . import mt as _mt
             _mode = _mt.resolve_equilibrate_mode(equilibrate_binding, geometry)
             if _mode == "fast":                 # seed f_b walkers bound with a residual dwell (a known S/V)
@@ -2347,24 +2365,6 @@ def _walk_geometry(
 
             return illegal, work
 
-        if _backend is not None:
-            # another execution of the same physics (#635): the paths only the JAX kernels implement are refused,
-            # never fallen back from; a backend walks each batch in the coefficient form (#747). It is handed the field
-            # basis the walk reads (a raster, or a closed form for a backend that declares FIELD_IN_WALK) and the
-            # resolved trial record (a backend that declares TRIAL_RECORD)
-            res = res._replace(request=res.request._replace(
-                field=field_basis,
-                **({} if _nodes is None else dict(
-                    object_nodes=_nodes.echo,
-                    object_node_index=np.int64(first_walker) + np.arange(int(n_walkers), dtype=np.int64))),
-                **({} if _trial is None else dict(trial_record=record_trials, trial_steps=np.asarray(_steps, np.int64),
-                                                  trial_radii=np.asarray(_trial["radii"], np.float64),
-                                                  trial_u_max=np.asarray(_trial["u_max"], np.float64),
-                                                  trial_slots=int(_trial["slots"])))))
-            reason = _backend_refusal(_backend, _backend_name, res, geometry)
-            if reason:
-                raise ValueError(reason)
-
         from dmipy_replay.replay.compression import cosine_band_scale
         from ..coefficient_walk import CoefficientWalk
         from dmipy_replay.replay.events import EventList
@@ -2401,6 +2401,8 @@ def _walk_geometry(
         has_lab = kind.label_of is not None
         ev_comp_on = has_lab and crossing
         ev_bound_on = kind.bound_of is not None and binding
+
+        exact_constant_checks = _measure_read or _pilot_only is not None
 
         def _walker(raw, cap, K_c3, rd):
             """One walker's walk, window by window: per window its coefficients, contact, field modes, quadratic
@@ -2454,7 +2456,7 @@ def _walk_geometry(
                     blt_a = kind.blt_of(phys_a) if has_blt else None
                     c, mom = _moment_scan(kind_w, c, sub_steps, m, dtype=_acc, read=read, n_ch=_n_ch, n_read=_n_read, dt_f=_dt_f,
                                           step0=b * sub_steps, checks=_checks, keep_reads=(raw and _keep_reads),
-                                          exact_constant_checks=_measure_read)
+                                          exact_constant_checks=exact_constant_checks)
                     phys = c[0]
                     ys = (kind.pos_of(phys), (kind.blt_of(phys) - blt_a) if has_blt else None,
                           kind.label_of(phys) if has_lab else None, kind.bound_of(phys) if kind.bound_of is not None else None,
@@ -2511,7 +2513,7 @@ def _walk_geometry(
                                            _f_key, rd, _acc.name) + (() if _trial is None else (("trial record", _trial["slots"]) + _trial["key"],))
                                 + (() if _seg is None else (("segments", tuple(int(x) for x in _seg[0]), tuple(int(x) for x in _seg[1])),))
                                 + (() if _fac_all is None else (("permeability factor",),))
-                                + (("exact constant checks",) if _measure_read else ())
+                                + (("exact constant checks",) if exact_constant_checks else ())
                                 + (() if _nodes is None else (("object nodes",) + _nodes.table.key,)),
                                 lambda: jax.jit(jax.vmap(_walker(raw, cap, K_c3, rd),
                                                          in_axes=(0, 0, 0, 0, 0) + (() if _fac_all is None else (0,))
@@ -2545,6 +2547,9 @@ def _walk_geometry(
                 got["ev_" + key] = _compact_events(n_ev, steps_ev, labs_ev, dt_sim)
                 got["ev_max_" + key] = int(n_ev.max()) if n_ev.size else 0  # the count reached, buffer or no buffer
             return got, int(jnp.sum(bad_f)), work_f, int(jnp.sum(n_dev))
+
+        if _pilot_only is not None:
+            return _jax_field_pilot(_call, np.arange(n_walkers), pilot_checks, pilot_request.dt_sim, True)
 
         _backend_block = {}                                                  # how the backend accumulated: precision, window, summation
 
@@ -2696,13 +2701,17 @@ def _walk_geometry(
             """The field pilot on the backend (:func:`field_pilot_on_backend`) of the walkers ``idx``, with the
             pilot's start labels as the JAX pilot takes them."""
             idx = np.asarray(idx)
-            req = res.request._replace(events=(int(cap) if cap else res.request.events),
-                                       permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[idx], np.float32)),
-                                       **_node_rows(idx))
-            got = field_pilot_on_backend(_backend, req, np.asarray(r0_all[idx], np.float32), np.asarray(walker_keys_all[idx], np.uint32),
-                                         field_basis, impermeable=not res.crossing, blocks_per_window=int(n_bw), checks=checks,
-                                         progress=run.progress,
-                                         **({"precision": calibration_scope["backend"]["precision"]} if _measure_read else {}))
+            req = res.request._replace(
+                events=(int(cap) if cap else res.request.events), raw_subset=0,
+                drop_pool_changes=bool(drop_pool_changes),
+                permeability_factor=(None if _fac_all is None else np.asarray(_fac_all[idx], np.float32)),
+                dwell0=(np.ascontiguousarray(brem0_all[idx], np.float32) if binding else None),
+                **({} if _trial is None else dict(trial_slots=int(_trial["slots"]))),
+                **_node_rows(idx))
+            run.progress(0, idx.size)
+            got = field_pilot_on_backend(_backend, req, np.ascontiguousarray(r0_all[idx], np.float32),
+                                         np.ascontiguousarray(walker_keys_all[idx], np.uint32), checks)
+            run.progress(idx.size, idx.size)
             if kind_name == "relax":
                 lab = np.minimum(np.asarray(geometry.classify_positions_exact(r0_all[idx]), np.int64), 1).astype(np.int8)
             elif kind_name == "pm":
@@ -2713,7 +2722,8 @@ def _walk_geometry(
 
         def _read_pilot(indices, checks, cap):
             if _pilot_name == JAX:
-                return _jax_field_pilot(_call, indices, checks, dt_sim, res.K_c3 is None)
+                return _jax_field_pilot_for_request(res.request, checks, call=_call, indices=indices,
+                                                    keep_means=res.K_c3 is None)
             return _backend_field_pilot(indices, checks, cap)
 
         if _measure_read:
