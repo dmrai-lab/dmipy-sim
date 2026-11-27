@@ -159,20 +159,35 @@ def test_one_key_asked_from_eight_threads_is_computed_once():
 
 
 def test_a_failed_placement_is_not_cached():
-    import time
+    """A request waiting on a computation that fails gets that computation's exception, and the key is computed again
+    on the next request."""
+    import threading
+
+    class Announced(threading.Event):
+        """The in-flight entry's event, saying when a second request has started to wait on it."""
+
+        def __init__(self):
+            super().__init__()
+            self.waited_on = threading.Event()
+
+        def wait(self, timeout=None):
+            self.waited_on.set()
+            return super().wait(timeout)
+
     geo = _StandIn()
     geo.fail_next = True
     geo.release.clear()
     first, first_out = _in_thread(placement, geo, 16, jax.random.PRNGKey(4))
-    assert geo.started.wait(10.0)
+    assert geo.started.wait(10.0)                                        # the key is in flight
+    (pending,) = geo._placement_cache.values()
+    pending.done = Announced()
     waiter, waiter_out = _in_thread(placement, geo, 16, jax.random.PRNGKey(4))
-    time.sleep(0.05)                                                     # usually waiting on the failing computation
+    assert pending.done.waited_on.wait(10.0)                             # the second request waits on the first
     geo.release.set()
     first.join(10.0)
     waiter.join(10.0)
     assert isinstance(first_out.get("error"), RuntimeError)
-    # a request that waited on the failing computation gets its exception; one that came after computes afresh
-    assert waiter_out.get("error") is first_out["error"] or waiter_out["result"][0].shape == (16, 3)
+    assert waiter_out.get("error") is first_out["error"]
     r0, _ = placement(geo, 16, jax.random.PRNGKey(4))                 # computed again, not a stuck entry
     assert geo.calls == 2 and r0.shape == (16, 3)
     assert not any(type(v).__name__ == "_PendingPlacement" for v in geo._placement_cache.values())
