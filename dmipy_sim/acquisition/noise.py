@@ -28,6 +28,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from .._random import seed_key
+
 
 def add_rician_noise(signal, sigma, seed=0, *, rng="jax"):
     """Add Rician-distributed magnitude noise to noiseless signals.
@@ -45,7 +47,7 @@ def add_rician_noise(signal, sigma, seed=0, *, rng="jax"):
     seed : int
         The generator's seed. Same seed and ``rng`` → identical noise realisation.
     rng : 'jax' | 'numpy'
-        Which generator draws the two channels: JAX's (``PRNGKey(seed)`` split in two) or numpy's
+        Which generator draws the two channels: JAX's (a Threefry key split in two) or numpy's
         ``default_rng(seed)`` -- for a process that must not touch JAX (a forked GPU worker on a
         PyTorch-only host, dmipy-sim#510). The two streams differ; the distribution is the same.
 
@@ -63,7 +65,7 @@ def add_rician_noise(signal, sigma, seed=0, *, rng="jax"):
         raise ValueError(f"sigma must be positive, got {sigma}")
     signal = np.asarray(signal, dtype=np.float32)
     if rng == "jax":
-        key = jax.random.PRNGKey(seed)
+        key = seed_key(seed)
         k1, k2 = jax.random.split(key)
         n_real = sigma * jax.random.normal(k1, shape=signal.shape, dtype=jnp.float32)
         n_imag = sigma * jax.random.normal(k2, shape=signal.shape, dtype=jnp.float32)
@@ -101,7 +103,7 @@ def add_rician_noise_batch(signal, sigma, n_realizations, seed=0):
         raise ValueError(f"sigma must be positive, got {sigma}")
     signal = np.asarray(signal, dtype=np.float32)
     n_meas = signal.shape[0]
-    key = jax.random.PRNGKey(seed)
+    key = seed_key(seed)
     k1, k2 = jax.random.split(key)
     n_real = sigma * jax.random.normal(k1, shape=(n_realizations, n_meas), dtype=jnp.float32)
     n_imag = sigma * jax.random.normal(k2, shape=(n_realizations, n_meas), dtype=jnp.float32)
@@ -143,7 +145,7 @@ def add_nc_chi_noise(signal, sigma, n_coils, seed=0):
         raise ValueError(f"n_coils must be >= 1, got {n_coils}")
     signal = np.asarray(signal, dtype=np.float32)
     n_meas = signal.shape[0]
-    key = jax.random.PRNGKey(seed)
+    key = seed_key(seed)
     keys = jax.random.split(key, 2 * n_coils)
 
     # Each coil gets signal / sqrt(n_coils) of the total signal power

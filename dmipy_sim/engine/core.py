@@ -2216,7 +2216,8 @@ def _walk_geometry(
                 raise ValueError(reason)
 
         if _pilot_only is None:
-            _, r0_all, walker_keys_all, labels0 = seed_walkers(geometry, n_walkers, seed, r0, first_walker=first_walker)
+            master_key, r0_all, walker_keys_all, labels0 = seed_walkers(
+                geometry, n_walkers, seed, r0, first_walker=first_walker)
         else:
             r0_all, walker_keys_all, labels0 = jnp.asarray(r0), jnp.asarray(pilot_keys), None
             if _nodes is not None:
@@ -2263,7 +2264,7 @@ def _walk_geometry(
                 else:                           # a cell's walkers: each its start domain's equilibrium
                     P_eq = _domain_bound_fractions(geometry, kappa_MT, dwell_time, r0_all)
                 from .physics import walker_keys as _walker_keys    # each walker's own draw: a function of its index
-                ek = _walker_keys(jax.random.fold_in(jax.random.PRNGKey(int(seed)), 0xB0117E), first_walker, n_walkers)
+                ek = _walker_keys(jax.random.fold_in(master_key, 0xB0117E), first_walker, n_walkers)
                 u_state, u_dwell = jax.vmap(lambda k: jax.random.uniform(k, (2,), dtype=jnp.float32))(ek).T
                 brem0_all = jnp.where(u_state < jnp.float32(P_eq),
                                       -jnp.log(jnp.maximum(u_dwell, jnp.float32(1e-20))) * jnp.float32(float(dwell_time) / dt_sim),
