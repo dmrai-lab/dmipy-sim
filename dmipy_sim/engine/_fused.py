@@ -227,7 +227,9 @@ def simulate_fused(
         scan_inputs = (G_scan, chi_perp_scan)
 
         _r0_user_supplied = r0 is not None
-        _, r0, walker_keys, _ = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
+        _, r0, walker_keys, seeded_labels = seed_walkers(geometry, n_walkers, seed, r0)   # r0 (n_walkers, 3)
+        # the seeding's labels as this walk's placement returned them: the geometry's ``_init_compartments`` is shared,
+        # and a placement computed meanwhile in another thread (a producer placing the next walk) rewrites it
 
         # Check if this is a MyelinatedCylinder or LabelMap2D (custom step function path)
         is_myelin = geometry._is_myelinated
@@ -248,7 +250,8 @@ def simulate_fused(
         if is_myelin:
             # MyelinatedCylinder: extended carry state (r, phi, log_w, compartment_id, key)
             step_fn = make_myelin_step_fn(geometry, dt, T1=T1, sub_steps=sub_steps, f_band=f_band)
-            compartments0 = geometry._init_compartments  # (n_walkers,) int32, pool id
+            compartments0 = (seeded_labels if seeded_labels is not None   # (n_walkers,) int32, pool id
+                             else geometry._init_compartments)
             spin_w = jnp.asarray(geometry._water_fraction_by_pool, jnp.float32)[compartments0]
 
             emit_comp = track_comp and return_compartments == 'full'
@@ -280,7 +283,7 @@ def simulate_fused(
             step_fn = make_packed_myelin_step_fn(geometry, dt, T1=T1, f_band=f_band, sub_steps=sub_steps)
             # encoded: 0=extra, 1..N=intra, >N=myelin -- the seeding's own, or the given starts' by position
             compartments0 = (jax.vmap(geometry.classify_position)(jnp.asarray(r0, jnp.float32)).astype(jnp.int32)
-                             if _r0_user_supplied else geometry._init_compartments)
+                             if _r0_user_supplied else seeded_labels)
             _to3 = geometry.pool_of                            # -> 0 extra, 1 intra, 2 myelin
             spin_w = jnp.where(_to3(compartments0) == jnp.int32(2),
                                jnp.float32(geometry._myelin_proton_density), jnp.float32(1.0))
