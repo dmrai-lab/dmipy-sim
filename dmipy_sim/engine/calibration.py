@@ -232,27 +232,21 @@ def fixed_step_engine(backend, precision):
                 platform=jax.default_backend() if device is None else device.platform, x64=bool(jax.config.jax_enable_x64))
 
 
-def fixed_step_constants(check, step_s, rung, channels, *, fine_qv=None):
+def fixed_step_constants(check, step_s, rung, channels):
     """Per-channel ratio of mean squared trapezoid error to mean interval-scaled QV.
 
     The input has axes (walker, window, error or QV, channel). Average within each walker before
     estimating standard errors by the delta method across independent walkers, retaining the
     covariance of error squared and QV. A channel with zero QV and zero error uses the
     trapezoid bound with no standard error. Zero QV with nonzero error prevents calibration.
-    For uncorrected walk pilot checks, ``fine_qv`` is the per-walker, per-window, per-channel
-    QV of the fine reads. A window with zero fine QV contributes no error to the zero-coarse-QV
-    check, since both trapezoids integrate the same constant field.
     """
     from .accumulate import READ_CONSTANT, measured_read_constants
     check = np.asarray(check, np.float64)
     errors_sq, variations = check[:, :, 0] ** 2, check[:, :, 1]
     if not np.isfinite(check).all() or (variations < 0).any():
         raise ValueError("field-read calibration needs finite pilot errors and finite nonnegative quadratic variation")
-    nonzero_error = check[:, :, 0] != 0
-    if fine_qv is not None:
-        nonzero_error &= np.asarray(fine_qv) != 0
     for channel, zero_qv, has_error in zip(channels, (variations == 0).all(axis=(0, 1)),
-                                           nonzero_error.any(axis=(0, 1)), strict=True):
+                                           (check[:, :, 0] != 0).any(axis=(0, 1)), strict=True):
         if zero_qv and has_error:
             raise ValueError(f"field-read calibration: channel {channel!r} at rung {rung} "
                              "has positive fine-read error with zero coarse quadratic variation")
