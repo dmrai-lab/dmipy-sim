@@ -80,19 +80,76 @@ def test_default_read_calibration_keeps_original_evidence_and_digest(monkeypatch
     assert data["digest"] == fingerprint({key: value for key, value in data.items() if key != "digest"})
 
 
-def test_spread_read_calibration_matches_walk_pilot(x64, monkeypatch, tmp_path):
+@pytest.mark.parametrize("stationary_myelin", [True, False], ids=["stationary-myelin", "mobile-myelin"])
+def test_spread_read_calibration_matches_walk_pilot(monkeypatch, tmp_path, stationary_myelin):
+    from tests.test_permeability_factor import _mixed
+
     monkeypatch.setattr(accumulate, "PILOT_WALKERS", 8)
-    spec = _cell().spec
-    kw = dict(_settings(spec), accumulation_dtype="float64")
+    spec = (_cell() if stationary_myelin else _mixed()).spec
+    kw = _settings(spec)
+    if stationary_myelin:
+        # At this read spacing the mixed-channel ratios are below the charged floor.
+        kw["field_read_interval"] = 5e-6
+    pilots = []
+    jax_field_pilot = core._jax_field_pilot
+
+    def record_pilot(call, indices, checks, dt_sim, keep_means):
+        result = jax_field_pilot(call, indices, checks, dt_sim, keep_means)
+        pilots.append(result)
+        return result
+
+    monkeypatch.setattr(core, "_jax_field_pilot", record_pilot)
     calibration = measure_field_read_calibration(spec, n_walkers=np.int64(24), **kw)
     data = calibration.record
     read = walk(spec, 24, **kw).block["field_read"]
     assert read["pilot_walkers"] == data["evidence"]["pilot_walkers"] == 8
-    measured = read["measured_constants"][str(data["rung"])]
-    # The walk has no ratio for channels with zero QV; the calibration stores the bound.
-    assert any(value is not None for value in measured)
-    assert data["constants"] == [READ_CONSTANT if value is None else value for value in measured]
-    assert np.maximum(data["constants"], READ_CONSTANT).tolist() == read["constants"]
+    constants = np.asarray(data["constants"])
+    np.testing.assert_array_equal(np.maximum(constants, READ_CONSTANT), read["constants"])
+
+    # The row test proves that both pilots take the same walkers, starts, keys and rows.
+    # Their checks differ only by the measurement's constant-channel guard.
+    guarded, ordinary = pilots
+    np.testing.assert_array_equal(guarded["qv_d"], ordinary["qv_d"])
+    fine_qv = ordinary["qv_d"]
+    varying = (fine_qv > 0).all(axis=(0, 1))
+    constant = (fine_qv == 0).all(axis=(0, 1))
+    channels = np.asarray(read["channels"])
+    varying_channels = channels[varying].tolist()
+    assert bool(varying_channels) == (not stationary_myelin)
+    rung = data["rung"]
+    walk_ratios = np.array(read["measured_constants"][str(rung)], dtype=np.float64)
+    np.testing.assert_array_equal(constants[varying], walk_ratios[varying], err_msg=str(varying_channels))
+
+    rung_index = data["scope"]["checks"].index(rung)
+    guarded_check, ordinary_check = (p["chk"][:, :, :, rung_index, :].astype(np.float64) for p in pilots)
+    guarded_error, coarse_qv = guarded_check[:, :, 0], ordinary_check[:, :, 1]
+    ordinary_error = ordinary_check[:, :, 0]
+    np.testing.assert_array_equal(guarded_check[:, :, 1], coarse_qv)
+    constant_windows = fine_qv == 0
+    np.testing.assert_array_equal(coarse_qv[constant_windows], 0)
+    np.testing.assert_array_equal(guarded_error, np.where(constant_windows, 0, ordinary_error))
+    assert np.any(ordinary_error[..., constant] != 0)
+    assert np.isnan(walk_ratios[constant]).all()
+    np.testing.assert_array_equal(constants[constant], READ_CONSTANT)
+
+    # For the remaining resolved channels, the guard removes only the constant windows'
+    # float32 trapezoid residuals in these fixtures. The loss in mean squared error is
+    # mean(residual**2), with zeros in the varying windows. Divide by the common
+    # (rung * dt)^2 mean(coarse QV), then allow float64 rounding in both ratio reductions.
+    mixed = ~(varying | constant)
+    assert mixed.any() == stationary_myelin
+    if stationary_myelin:
+        residual = np.where(constant_windows[..., mixed], ordinary_error[..., mixed], 0)
+        norm = (rung * read["step_s"]) ** 2 * coarse_qv[..., mixed].mean(axis=(0, 1))
+        bound = (residual ** 2).mean(axis=(0, 1)) / norm
+        n_samples = residual.shape[0] * residual.shape[1]
+        bound += (n_samples + 4) * np.finfo(np.float64).eps * (constants[mixed] + walk_ratios[mixed])
+        difference = np.abs(constants[mixed] - walk_ratios[mixed])
+        assert difference.max() > 0
+        assert np.all(difference <= bound), (
+            f"{channels[mixed].tolist()}: maximum ratio difference {difference.max():.6g}, "
+            f"maximum bound {bound.max():.6g}; per-channel differences {difference}, bounds {bound}"
+        )
     assert data["evidence"] == dict(standard_error=data["evidence"]["standard_error"], pilot_walkers=8,
                                     seed=kw["seed"], walk_walkers=24, pilot_rule="pilot_walkers")
     assert {"walk_walkers", "pilot_walkers", "pilot_rule", "n_walkers"}.isdisjoint(data["scope"])

@@ -2403,8 +2403,7 @@ def _walk_geometry(
         ev_comp_on = has_lab and crossing
         ev_bound_on = kind.bound_of is not None and binding
 
-        # A spread calibration uses the production walk's check arithmetic.
-        exact_constant_checks = (_measure_read and _measure_pilot_walkers is None) or _pilot_only is not None
+        exact_constant_checks = _measure_read or _pilot_only is not None
 
         def _walker(raw, cap, K_c3, rd):
             """One walker's walk, window by window: per window its coefficients, contact, field modes, quadratic
@@ -2745,10 +2744,8 @@ def _walk_geometry(
             if rung is None:
                 constants, errors = [READ_CONSTANT] * _n_ch, [None] * _n_ch
             else:
-                fine_qv = got["qv_d"] if _measure_pilot_walkers is not None and _pilot_name == JAX else None
                 constants, errors = fixed_step_constants(got["chk"][:, :, :, checks.index(rung), :],
-                                                         float(dt_sim), rung, calibration_scope["channels"],
-                                                         fine_qv=fine_qv)
+                                                         float(dt_sim), rung, calibration_scope["channels"])
             return FieldReadCalibration.create(scope=calibration_scope, rung=rung, constants=constants,
                                                standard_error=errors, pilot_walkers=len(indices), seed=int(seed),
                                                **spread_evidence)
