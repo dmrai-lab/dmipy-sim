@@ -20,6 +20,11 @@ Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC3494918/ (Table 1 and Fig. 3
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+from copy import deepcopy
+from hashlib import sha256
+from threading import Lock
+
 import numpy as np
 from dmipy_replay.replay.field import CHANNEL_NAMES
 
@@ -77,6 +82,32 @@ NEAR_FAR_EDGE = 1e-7
 
 #: The read names a :class:`HollowCylinderField` takes (``read=``) and the ``summation`` each records.
 READS = {"exact": "lattice", "near_far": "lattice_near_far"}
+
+
+_NEAR_FAR_CACHE_SIZE = 4
+_near_far_cache = OrderedDict()
+_near_far_lock = Lock()
+
+
+def clear_near_far_cache():
+    """Discard the process's cached hollow-cylinder near / far host tables."""
+    with _near_far_lock:
+        _near_far_cache.clear()
+
+
+def _near_far_key(field):
+    """Fingerprint the geometry and numerical settings of the float64 host tables."""
+    arrays = (field.centers, field.inner_radii, field.outer_radii)
+    settings = (
+        NEAR_FAR_MAX_ORDER, NEAR_FAR_WIDTH, NEAR_FAR_MAX_WIDTH, NEAR_FAR_EXPLICIT_RADIUS,
+        NEAR_FAR_SAMPLE_RADIUS, NEAR_FAR_SAMPLES, NEAR_FAR_BOUND_RINGS, NEAR_FAR_RMS_POINTS,
+        LATTICE_ROWS, SERIES, tuple(sorted(SERIES_SWITCH.items())),
+    )
+    header = (tuple(a.shape for a in arrays), field.L.hex(), field.tolerance.hex(), field._forced, settings)
+    digest = sha256(repr(header).encode("ascii"))
+    for a in arrays:
+        digest.update(a.tobytes())
+    return digest.digest()
 
 
 def series_tail(x, order):
@@ -289,7 +320,6 @@ class HollowCylinderField:
         self.read = read
         self._forced = (None if order is None else int(order), None if near_cells is None else int(near_cells))
         self.tolerance = tolerance
-        self._nf = None
 
     @classmethod
     def of(cls, geometry, **read_options):
@@ -382,8 +412,11 @@ class HollowCylinderField:
         return f
 
     def near_far(self):
-        """The near / far read's host build (built once, then kept): a dict of ``order``, ``near_cells``,
-        ``cells_per_side`` ``G``, ``cell_size`` ``cs`` (m), ``half_diagonal`` ``rho`` (m), ``list_length`` ``M``,
+        """The near / far read's host tables, reused across fields with the same inputs in this process.
+
+        Returns a fresh dict with read-only array views and independent copies of the width search record. It contains
+        ``order``, ``near_cells``, ``cells_per_side`` ``G``, ``cell_size`` ``cs`` (m), ``half_diagonal`` ``rho`` (m),
+        ``list_length`` ``M``,
         ``near`` ``(G * G, M)`` int32 (each cell's near cylinders, ascending, ``-1`` padding), ``coefficients`` ``(G *
         G, order + 1)`` complex128 (the series of ``S`` in ``zeta / cs``), ``bound`` ``(G * G,)`` float64 (the
         remainder bound of ``S`` per cell), ``rms`` (the exact field's rms per channel), ``tolerance_abs``,
@@ -392,9 +425,24 @@ class HollowCylinderField:
         global part's ``explicit_poles``. Refused by name for the exact read; see the class docstring for what it is."""
         if self.read != "near_far":
             raise ValueError(f"HollowCylinderField.near_far: this field's read is {self.read!r}")
-        if self._nf is None:
-            self._nf = _build_near_far(self)
-        return self._nf
+        with _near_far_lock:
+            key = _near_far_key(self)
+            if key not in _near_far_cache:
+                _near_far_cache[key] = self._near_far_uncached()
+                if len(_near_far_cache) > _NEAR_FAR_CACHE_SIZE:
+                    _near_far_cache.popitem(last=False)
+            _near_far_cache.move_to_end(key)
+            tables = _near_far_cache[key]
+        return {k: v.view() if isinstance(v, np.ndarray) else deepcopy(v) for k, v in tables.items()}
+
+    def _near_far_uncached(self):
+        """Build independent read-only host tables for a near / far field."""
+        tables = _build_near_far(self)
+        for key, value in tables.items():
+            if isinstance(value, np.ndarray):
+                # Immutable backing also prevents callers from re-enabling writes or editing a base array.
+                tables[key] = np.frombuffer(value.tobytes(), dtype=value.dtype).reshape(value.shape)
+        return tables
 
     def remainder_bound(self, points):
         """``(n, 12)`` float64: the near / far read's remainder bound per channel at ``points`` ``(n, 2 or 3)``

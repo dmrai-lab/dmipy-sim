@@ -32,18 +32,25 @@ The 10^5-point checks and the 10 000-cylinder cell (an exact read of 7 000 sourc
    ``device_arrays`` refused for a near / far field. A walk reads the near / far field and records it.
 """
 import functools
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+from threading import Barrier
+from time import perf_counter
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import dmipy_sim.fields.hollow_cylinder as hollow_cylinder
 from dmipy_sim.fields.hollow_cylinder import (HollowCylinderField, NEAR_FAR_MIN_CYLINDERS, NEAR_FAR_TOLERANCE,
-                                              NEAR_FAR_WIDTH)
+                                              NEAR_FAR_WIDTH, clear_near_far_cache)
 from dmipy_sim.geometry.densify import densify_packing
 
 R_MEAN = 1e-6
 CHUNK = 128
+logger = logging.getLogger("dmipy_sim.fields.hollow_cylinder")
 
 
 @functools.lru_cache(maxsize=None)
@@ -279,21 +286,30 @@ def test_the_record_round_trips_and_refuses_the_other_read():
         HollowCylinderField.from_meta(dict(m, summation="lattice_window"))
 
 
+def _walk_geometry_150():
+    from dmipy_sim.compartments import Compartments, Pool
+    from dmipy_sim.geometry import PackedMyelinatedCylinders
+    outer, g, centres, L = _packing(150)
+    D = 2e-9
+    compartments = Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D))
+    return PackedMyelinatedCylinders(outer * g, g, centres, L, N_max=150, compartments=compartments), D
+
+
+def _short_field_walk(geo, D):
+    from dmipy_sim.engine.core import _walk_geometry
+    f = HollowCylinderField.of(geo, read="near_far")
+    assert f.read == "near_far"
+    return _walk_geometry(16, D, geo, 0.001, seed=0, K=4, window_T=0.001, field_basis=f, K_c3=2,
+                          field_read_interval=5e-4, raw_subset=16, require_gpu=False)
+
+
 def test_a_walk_reads_the_near_far_field_and_records_it(x64):
     """A short walk of the 150-cylinder cell with the near / far field forced: the walk runs, its field record states
     the read, and its float32 reads of the walk's own positions agree with the exact read within the bound plus the
     float32 deviation the exact read itself has there."""
-    from dmipy_sim.compartments import Compartments, Pool
-    from dmipy_sim.engine.core import _walk_geometry
-    from dmipy_sim.geometry import PackedMyelinatedCylinders
-    outer, g, centres, L = _packing(150)
-    D = 2e-9
-    geo = PackedMyelinatedCylinders(outer * g, g, centres, L, N_max=150,
-                                    compartments=Compartments(intra=Pool(D=D), myelin=Pool(D=0.0), extra=Pool(D=D)))
-    f = HollowCylinderField.of(geo, read="near_far")
-    assert f.read == "near_far"
-    w = _walk_geometry(16, D, geo, 0.001, seed=0, K=4, window_T=0.001, field_basis=f, K_c3=2,
-                       field_read_interval=5e-4, raw_subset=16, require_gpu=False)
+    geo, D = _walk_geometry_150()
+    w = _short_field_walk(geo, D)
+    f = w.field_basis
     assert w.field_basis.meta["summation"] == "lattice_near_far"
     P = np.asarray(w.raw_positions, np.float64).reshape(-1, 3)
     e = HollowCylinderField.of(geo, read="exact")
@@ -301,3 +317,195 @@ def test_a_walk_reads_the_near_far_field_and_records_it(x64):
     d_new = np.abs(_read(f, P, jnp.float32) - ex)
     d_old = np.abs(_read(e, P, jnp.float32) - ex)
     assert np.all(d_new <= f.remainder_bound(P) + 2.0 * d_old.max())
+
+
+# ---------------------------------------------------------------------------------------------------------- Cache
+
+@pytest.fixture
+def empty_near_far_cache():
+    clear_near_far_cache()
+    yield
+    clear_near_far_cache()
+
+
+@pytest.fixture
+def build_counts(empty_near_far_cache, monkeypatch):
+    counts = dict(build=0, rms=0)
+
+    def count(name, function):
+        @functools.wraps(function)
+        def counted(*args, **kwargs):
+            counts[name] += 1
+            return function(*args, **kwargs)
+
+        return counted
+
+    monkeypatch.setattr(hollow_cylinder, "_build_near_far", count("build", hollow_cylinder._build_near_far))
+    monkeypatch.setattr(hollow_cylinder, "_exact_rms", count("rms", hollow_cylinder._exact_rms))
+    return counts
+
+
+def _new_near_far_field(n=150, **options):
+    c, a, b, L = _sources(n)
+    return HollowCylinderField(c, a, b, **(dict(L=L, read="near_far") | options))
+
+
+def _assert_same_bits(cold, warm, bypassed):
+    hashes = []
+    for tables in (cold, warm, bypassed):
+        assert tables.keys() == bypassed.keys()
+        digest = sha256()
+        for name, value in sorted(tables.items()):
+            reference = bypassed[name]
+            if isinstance(reference, np.ndarray):
+                assert isinstance(value, np.ndarray), name
+                assert (value.dtype, value.shape) == (reference.dtype, reference.shape), name
+                payload = value.tobytes()
+                assert payload == reference.tobytes(), name
+                digest.update(repr((name, value.dtype.str, value.shape, len(payload))).encode("ascii"))
+                digest.update(payload)
+            else:
+                assert type(value) is type(reference) and value == reference, name
+                digest.update(repr((name, value)).encode("ascii"))
+        hashes.append(digest.hexdigest())
+    assert hashes[0] == hashes[1] == hashes[2]
+    logger.info("SHA-256 (cold, warm, bypassed): %s", hashes)
+
+
+@pytest.mark.parametrize("n", [150, 1000])
+def test_cached_tables_have_the_bits_of_an_independent_build(n, empty_near_far_cache):
+    cold = _new_near_far_field(n).near_far()
+    warm = _new_near_far_field(n).near_far()
+    bypassed = _new_near_far_field(n)._near_far_uncached()
+    for name, value in bypassed.items():
+        if isinstance(value, np.ndarray):
+            assert np.shares_memory(cold[name], warm[name]), name
+            assert not np.shares_memory(cold[name], value), name
+    _assert_same_bits(cold, warm, bypassed)
+
+
+def test_cached_tables_preserve_walk_bits(x64, build_counts, monkeypatch):
+    geo, D = _walk_geometry_150()
+    cold = _short_field_walk(geo, D)
+    warm = _short_field_walk(geo, D)
+    assert build_counts == dict(build=1, rms=1)
+    monkeypatch.setattr(HollowCylinderField, "near_far", HollowCylinderField._near_far_uncached)
+    bypassed = _short_field_walk(geo, D)
+    assert build_counts == dict(build=2, rms=2)
+    names = ("field_coeffs", "position_coeffs", "qv_field", "qv_field_increments", "raw_field", "raw_positions")
+    rows = []
+    for walk in (cold, warm, bypassed):
+        record = {}
+        for name in names:
+            value = getattr(walk, name)
+            assert value is not None, name
+            record[name] = np.asarray(value)
+        rows.append(record)
+    _assert_same_bits(*rows)
+
+
+def test_a_new_field_reuses_the_build_and_rms(build_counts):
+    _new_near_far_field().near_far()
+    assert build_counts == dict(build=1, rms=1)
+    new = _new_near_far_field()
+    new.near_far()
+    start = perf_counter()
+    arrays, _, _ = new.device_read()
+    jax.block_until_ready(arrays)
+    seconds = perf_counter() - start
+    logger.info("Warm device_read: %.6f s, cumulative counts %s", seconds, build_counts)
+    assert build_counts == dict(build=1, rms=1)
+    assert seconds < 0.5
+
+
+@pytest.mark.parametrize("component", [
+    "centers", "inner_radii", "outer_radii", "L", "tolerance", "order", "near_cells",
+    "NEAR_FAR_MAX_ORDER", "NEAR_FAR_WIDTH", "NEAR_FAR_MAX_WIDTH", "NEAR_FAR_EXPLICIT_RADIUS",
+    "NEAR_FAR_SAMPLE_RADIUS", "NEAR_FAR_SAMPLES", "NEAR_FAR_BOUND_RINGS", "NEAR_FAR_RMS_POINTS",
+    "LATTICE_ROWS", "SERIES", "SERIES_SWITCH",
+])
+def test_each_table_input_invalidates_the_cache(component, build_counts, monkeypatch):
+    _new_near_far_field().near_far()
+    _new_near_far_field().near_far()
+    assert build_counts == dict(build=1, rms=1)
+
+    changed = _new_near_far_field()
+    if component in ("centers", "inner_radii", "outer_radii"):
+        value = getattr(changed, component).reshape(-1)
+        value[0] = np.nextafter(value[0], np.inf)
+    elif component in ("L", "tolerance"):
+        value = float(np.nextafter(getattr(changed, component), np.inf))
+        changed = _new_near_far_field(**{component: value})
+    elif component in ("order", "near_cells"):
+        changed = _new_near_far_field(**{component: 10 if component == "order" else 2})
+    else:
+        value = getattr(hollow_cylinder, component)
+        # Constants bound as function defaults still belong to the lookup fingerprint.
+        if component == "SERIES":
+            value = (value[0] * 1.001, *value[1:])
+        elif component == "SERIES_SWITCH":
+            monkeypatch.setitem(value, "float64", value["float64"] * 0.999)
+        elif component == "NEAR_FAR_WIDTH":
+            value -= 1
+        elif isinstance(value, float):
+            value = float(np.nextafter(value, -np.inf))
+        else:
+            value += 1
+        monkeypatch.setattr(hollow_cylinder, component, value)
+    changed.near_far()
+    assert build_counts == dict(build=2, rms=2)
+    changed.near_far()
+    assert build_counts == dict(build=2, rms=2)
+    logger.info("%s miss and repeat: cumulative counts %s", component, build_counts)
+
+
+def test_returned_tables_protect_the_cached_entry(empty_near_far_cache):
+    field = _new_near_far_field()
+    tables = field.near_far()
+    bypassed = field._near_far_uncached()
+    for value in tables.values():
+        if isinstance(value, np.ndarray):
+            with pytest.raises(ValueError, match="read-only"):
+                value.flat[0] = 0
+            with pytest.raises(ValueError, match="WRITEABLE"):
+                value.setflags(write=True)
+    tables["coefficients"].shape = (-1,)
+    tables["widths"][0]["bound_max"][0] = -1
+    tables["widths"].clear()
+    tables.clear()
+    warm = field.near_far()
+    assert warm["widths"] == bypassed["widths"]
+    assert warm.keys() == bypassed.keys()
+    assert warm["coefficients"].shape == bypassed["coefficients"].shape
+
+
+def test_the_fifth_key_evicts_the_least_recently_used(build_counts):
+    fields = [_new_near_far_field(tolerance=NEAR_FAR_TOLERANCE * (1 + i / 10)) for i in range(5)]
+    for field in fields[:4]:
+        field.near_far()
+    assert build_counts == dict(build=4, rms=4)
+    fields[0].near_far()
+    fields[4].near_far()
+    assert build_counts == dict(build=5, rms=5)
+    for i in (0, 2, 3, 4):
+        fields[i].near_far()
+    assert build_counts == dict(build=5, rms=5)
+    fields[1].near_far()
+    assert build_counts == dict(build=6, rms=6)
+    logger.info("Eviction and rebuild: cumulative counts %s", build_counts)
+
+
+def test_concurrent_fields_share_one_cold_build(build_counts):
+    ready = Barrier(8)
+
+    def lookup(_):
+        field = _new_near_far_field()
+        ready.wait()
+        return field.near_far()
+
+    _packing(150)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        tables = list(pool.map(lookup, range(8)))
+    assert build_counts == dict(build=1, rms=1)
+    assert all(np.shares_memory(table["coefficients"], tables[0]["coefficients"]) for table in tables)
+    logger.info("Eight concurrent lookups: cumulative counts %s", build_counts)
