@@ -54,8 +54,15 @@ def test_seeds_with_the_same_low_word_place_different_first_walkers():
     assert not np.array_equal(first, other)
 
 
-@pytest.mark.parametrize("seed", [-1, 2**64, 1.5, "1", True, np.bool_(True)],
-                         ids=["negative", "too-large", "float", "str", "bool", "numpy-bool"])
+@pytest.mark.parametrize("seed", [
+    pytest.param(-1, id="negative"),
+    pytest.param(2**64, id="too-large"),
+    pytest.param(1.5, id="float"),
+    pytest.param("1", id="str"),
+    pytest.param(True, id="bool"),
+    pytest.param(np.bool_(True), id="numpy-bool"),
+    pytest.param(np.timedelta64(1, "ns"), id="numpy-timedelta"),
+])
 def test_invalid_seeds_are_refused_by_name(seed):
     with pytest.raises(ValueError, match=r"\bseed\b.*integer.*2\^64"):
         seed_keys(seed)
