@@ -27,6 +27,8 @@ from dmipy_replay.acquisition.rf import RFEvent, RFSchedule
 
 from dmipy_analytic.constants import GAMMA
 
+from .._random import seed_key
+
 _COMP_COLOR = {0: '#2ca02c', 1: '#1f77b4', 2: '#ff7f0e'}
 _COMP_NAME = {0: 'extra-axonal', 1: 'intra-axonal', 2: 'myelin'}
 
@@ -49,7 +51,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
     if geometry._is_packed_myelinated:
         from ..engine.physics import make_packed_myelin_traj_step_fn
         step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-        pk, wk = jax.random.split(jax.random.PRNGKey(seed))
+        pk, wk = jax.random.split(seed_key(seed))
         r0 = geometry.init_positions(n_walkers, pk)
         comp0 = geometry._init_compartments        # encoded: 0=extra, 1..N=intra, >N=myelin
 
@@ -88,7 +90,7 @@ def _walk_record(geometry, diffusivity, n_t, dt, n_walkers, seed):
         (_, _), pos = jax.lax.scan(step, (r0, key), jnp.arange(n_t, dtype=jnp.int32))
         return pos
 
-    mk = jax.random.PRNGKey(seed)
+    mk = seed_key(seed)
     pk, wk = jax.random.split(mk)
     r0 = geometry.init_positions(n_walkers, pk)
     traj = np.asarray(jax.vmap(one)(r0, jax.random.split(wk, n_walkers)))  # (n_w, n_t, 3)
@@ -362,7 +364,7 @@ def _magnitude_walk(geometry, waveform, rho2, T2_per_comp, n_walkers, seed, want
     dt = float(waveform.dt)
     n_t = G.shape[0]
     step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-    pk, wk = jax.random.split(jax.random.PRNGKey(seed))
+    pk, wk = jax.random.split(seed_key(seed))
     r0 = geometry.init_positions(n_walkers, pk)
     comp0 = geometry._init_compartments
 
@@ -419,7 +421,7 @@ def magnitude_movie(geometry, waveform, save, *, rho2, T2_per_comp, n_walkers=40
 
     # --- walk: per-walker (compartment_id, cumulative surface local time) over time ---
     step_fn = make_packed_myelin_traj_step_fn(geometry, dt)
-    pk, wk = jax.random.split(jax.random.PRNGKey(seed))
+    pk, wk = jax.random.split(seed_key(seed))
     r0 = geometry.init_positions(n_walkers, pk)
     comp0 = geometry._init_compartments
 

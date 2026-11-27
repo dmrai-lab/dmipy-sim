@@ -14,6 +14,7 @@ from typing import NamedTuple
 import numpy as np
 
 from dmipy_analytic.constants import GAMMA
+from .._random import seed_key
 from ..math.step_law import PAIR_SHORT, PAIR_LONG, PAIR_P_LONG, LONGEST_STEP
 
 
@@ -50,7 +51,7 @@ def walker_keys(walker_key, first_walker, n_walkers):
 def seed_keys(seed):
     """``(master_key, position_key, walker_key)`` of a seed: the master key split once into the key the placement
     folds its blocks off and the key the walkers' step streams fold their indices off."""
-    master_key = jax.random.PRNGKey(int(seed))
+    master_key = seed_key(seed)
     pos_key, walker_key = jax.random.split(master_key)
     return master_key, pos_key, walker_key
 

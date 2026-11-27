@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import NamedTuple, Optional
 
 from ._boundary import WallHit, no_hit
+from .._random import seed_key
 from ..compartments import Compartments
 import jax
 import jax.numpy as jnp
@@ -500,7 +501,7 @@ class Geometry(ABC):
                 f"{type(self).__name__} has no membrane: it cannot be given "
                 f"kappa_over_D != 0. Build it with a permeable geometry, or pass "
                 f"kappa_over_D=0 for a purely reflecting wall.")
-        k = key if key is not None else jax.random.PRNGKey(0)
+        k = key if key is not None else seed_key(0)
         nodes = {} if node_key is None else self._node_operands(node_key, node_on)
         if side is not None:
             if not self.carries_side:
@@ -532,12 +533,12 @@ class Geometry(ABC):
 
     def reflect(self, r, step):
         """Impermeable wall interaction: `_wall` at kappa = 0 and rho = 0. Returns the new position."""
-        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0), jax.random.PRNGKey(0)).r
+        return self._wall(r, step, jnp.float32(0.0), jnp.float32(0.0), seed_key(0)).r
 
     def reflect_with_log_weight(self, r, step, rho_over_D):
         """Impermeable wall interaction that also accrues surface relaxation: `_wall` at kappa = 0. Returns
         ``(r_new, dlog_w)``."""
-        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, jax.random.PRNGKey(0))
+        h = self._wall(r, step, jnp.float32(0.0), rho_over_D, seed_key(0))
         return h.r, h.dlog_w
 
     def permeate(self, r, step, kappa_over_D, rho_over_D, key, side=None, node_key=None, node_on=None):

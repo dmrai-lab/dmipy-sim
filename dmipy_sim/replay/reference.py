@@ -232,7 +232,7 @@ def pack_seed(pack_id) -> int:
     """The walk seed of the pack named ``pack_id``: the first four bytes of the SHA-256 of the id, big-endian.
 
     A deterministic function of the pack's identity alone (no process state, no Python ``hash``), in
-    ``[0, 2**32)``, which is the range ``jax.random.PRNGKey`` takes. Packs with distinct ids walk distinct random
+    ``[0, 2**32)`` because the seed uses four bytes. Packs with distinct ids walk distinct random
     streams whatever their walker counts.
     """
     return int.from_bytes(hashlib.sha256(str(pack_id).encode("utf-8")).digest()[:4], "big")

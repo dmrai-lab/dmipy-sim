@@ -19,6 +19,8 @@ except ImportError:
 from dmipy_analytic.constants import GAMMA
 from dmipy_replay.acquisition.rf import RFSchedule
 
+from .._random import seed_key
+
 # x / y / z colour palette
 _COLORS = ['#2196F3', '#4CAF50', '#F44336']   # blue, green, red
 _LABELS = ['x', 'y', 'z']
@@ -537,7 +539,7 @@ def walk_paths(mesh, n_walkers, n_steps, diffusivity, dt, seed=0, pool=None, r0=
     import jax
     import jax.numpy as jnp
     from ..engine.physics import pair_step
-    key = jax.random.PRNGKey(seed)
+    key = seed_key(seed)
     k0, kw = jax.random.split(key)
     if r0 is None:
         r0 = mesh.init_positions(n_walkers, k0, pool=pool)
