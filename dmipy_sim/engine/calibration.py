@@ -168,6 +168,7 @@ class FieldReadCalibration(_ScopedCalibration):
     Time entries are in seconds, field strength in tesla, and susceptibility and constants are dimensionless.
     A channel with zero pilot quadratic variation uses the trapezoid constant and has no standard error.
     A one-step block has no coarser check rung and uses the trapezoid constant for all channels.
+    A spread pilot records the walk's walker count and pilot selection rule in its evidence.
     """
 
     def __post_init__(self):
@@ -194,11 +195,21 @@ class FieldReadCalibration(_ScopedCalibration):
             raise ValueError("field-read calibration rung must be the check at or above n_read")
         if type(pilot_walkers) is not int or pilot_walkers < 2 or type(seed) is not int:
             raise ValueError("field-read calibration requires at least two pilot walkers and an integer seed")
+        if "walk_walkers" in evidence or "pilot_rule" in evidence:
+            walk_walkers = evidence.get("walk_walkers")
+            if type(walk_walkers) is not int or walk_walkers < pilot_walkers:
+                raise ValueError("field-read calibration walk_walkers must be an integer of at least pilot_walkers")
+            if evidence.get("pilot_rule") != "pilot_walkers":
+                raise ValueError("field-read calibration pilot_rule must be 'pilot_walkers'")
 
     @classmethod
-    def create(cls, *, scope, rung, constants, standard_error, pilot_walkers, seed):
+    def create(cls, *, scope, rung, constants, standard_error, pilot_walkers, seed,
+               walk_walkers=None, pilot_rule=None):
+        evidence = dict(standard_error=standard_error, pilot_walkers=pilot_walkers, seed=seed)
+        if walk_walkers is not None or pilot_rule is not None:
+            evidence.update(walk_walkers=walk_walkers, pilot_rule=pilot_rule)
         return cls._create(kind="field-read-calibration", scope=scope, rung=rung, constants=constants,
-                           evidence=dict(standard_error=standard_error, pilot_walkers=pilot_walkers, seed=seed))
+                           evidence=evidence)
 
     def for_scope(self, scope):
         """The stated record when every entry matches the resolved walk scope."""
@@ -221,21 +232,27 @@ def fixed_step_engine(backend, precision):
                 platform=jax.default_backend() if device is None else device.platform, x64=bool(jax.config.jax_enable_x64))
 
 
-def fixed_step_constants(check, step_s, rung, channels):
+def fixed_step_constants(check, step_s, rung, channels, *, fine_qv=None):
     """Per-channel ratio of mean squared trapezoid error to mean interval-scaled QV.
 
     The input has axes (walker, window, error or QV, channel). Average within each walker before
     estimating standard errors by the delta method across independent walkers, retaining the
     covariance of error squared and QV. A channel with zero QV and zero error uses the
     trapezoid bound with no standard error. Zero QV with nonzero error prevents calibration.
+    For uncorrected walk pilot checks, ``fine_qv`` is the per-walker, per-window, per-channel
+    QV of the fine reads. A window with zero fine QV contributes no error to the zero-coarse-QV
+    check, since both trapezoids integrate the same constant field.
     """
     from .accumulate import READ_CONSTANT, measured_read_constants
     check = np.asarray(check, np.float64)
     errors_sq, variations = check[:, :, 0] ** 2, check[:, :, 1]
     if not np.isfinite(check).all() or (variations < 0).any():
         raise ValueError("field-read calibration needs finite pilot errors and finite nonnegative quadratic variation")
+    nonzero_error = check[:, :, 0] != 0
+    if fine_qv is not None:
+        nonzero_error &= np.asarray(fine_qv) != 0
     for channel, zero_qv, has_error in zip(channels, (variations == 0).all(axis=(0, 1)),
-                                           (check[:, :, 0] != 0).any(axis=(0, 1)), strict=True):
+                                           nonzero_error.any(axis=(0, 1)), strict=True):
         if zero_qv and has_error:
             raise ValueError(f"field-read calibration: channel {channel!r} at rung {rung} "
                              "has positive fine-read error with zero coarse quadratic variation")

@@ -9,10 +9,11 @@ from safetensors.numpy import load_file
 
 from dmipy_sim import measure_field_read_calibration, walk
 from dmipy_sim.coefficient_walk import join_walks
-from dmipy_sim.engine import core
+from dmipy_sim.engine import accumulate, core
 from dmipy_sim.engine.accumulate import READ_CONSTANT, field_read_term
 from dmipy_sim.engine.calibration import FieldReadCalibration, canonical, fingerprint, fixed_step_constants
 from dmipy_sim.replay.bank import build_replay_pack
+from dmipy_sim.run import current
 from tests.conftest import spec_without_source
 from tests.test_spec_field_closed_form import _cell
 from tests._envelope import walk_envelope
@@ -60,6 +61,142 @@ def test_handwritten_read_calibration_names_a_missing_entry(tmp_path):
     path.write_text(canonical(record))
     with pytest.raises(ValueError, match=r"field-read calibration missing required entry 'seed'$"):
         FieldReadCalibration.load(path)
+
+
+def test_default_read_calibration_keeps_original_evidence_and_digest(monkeypatch):
+    monkeypatch.setattr(accumulate, "PILOT_WALKERS", 8)
+    spec = _cell().spec
+    kw = _settings(spec)
+    calibration = measure_field_read_calibration(spec, **kw)
+    data = calibration.record
+    evidence = data["evidence"]
+    assert evidence.keys() == {"standard_error", "pilot_walkers", "seed"}
+    assert evidence["pilot_walkers"] == 8
+    original = FieldReadCalibration.create(
+        scope=data["scope"], rung=data["rung"], constants=data["constants"],
+        standard_error=evidence["standard_error"], pilot_walkers=8, seed=kw["seed"],
+    )
+    assert calibration.document == original.document
+    assert data["digest"] == fingerprint({key: value for key, value in data.items() if key != "digest"})
+
+
+def test_spread_read_calibration_matches_walk_pilot(x64, monkeypatch, tmp_path):
+    monkeypatch.setattr(accumulate, "PILOT_WALKERS", 8)
+    spec = _cell().spec
+    kw = dict(_settings(spec), accumulation_dtype="float64")
+    calibration = measure_field_read_calibration(spec, n_walkers=np.int64(24), **kw)
+    data = calibration.record
+    read = walk(spec, 24, **kw).block["field_read"]
+    assert read["pilot_walkers"] == data["evidence"]["pilot_walkers"] == 8
+    measured = read["measured_constants"][str(data["rung"])]
+    # The walk has no ratio for channels with zero QV; the calibration stores the bound.
+    assert any(value is not None for value in measured)
+    assert data["constants"] == [READ_CONSTANT if value is None else value for value in measured]
+    assert np.maximum(data["constants"], READ_CONSTANT).tolist() == read["constants"]
+    assert data["evidence"] == dict(standard_error=data["evidence"]["standard_error"], pilot_walkers=8,
+                                    seed=kw["seed"], walk_walkers=24, pilot_rule="pilot_walkers")
+    assert {"walk_walkers", "pilot_walkers", "pilot_rule", "n_walkers"}.isdisjoint(data["scope"])
+    assert data["digest"] == fingerprint({key: value for key, value in data.items() if key != "digest"})
+    path = tmp_path / "spread.json"
+    calibration.save(path)
+    loaded = FieldReadCalibration.load(path)
+    assert loaded.record == data
+    assert loaded.document.rstrip("\n") == calibration.document
+
+
+def test_spread_read_calibration_takes_walk_pilot_rows(monkeypatch):
+    from dmipy_sim.engine.physics import ObjectNodes, object_node_keys
+    from tests.test_permeability_factor import _mixed
+
+    n_walkers, count = 24, 8
+    monkeypatch.setattr(accumulate, "PILOT_WALKERS", count)
+    spec = _mixed().spec
+    factors = np.repeat(np.array([0.25, 0.5, 1.0], np.float32), count)
+    nodes = ObjectNodes(np.array([0.25, 1.0], np.float32), np.array([0.5, 0.5]), 7, factors == 1.0)
+    kw = dict(_settings(spec), permeability_factor=factors, object_nodes=nodes,
+              walker_rule="three ranges with increasing permeability, object nodes on the last",
+              events_capacity=16)
+    pilot_calls, other_batches = [], []
+    jax_field_pilot, cached_batch = core._jax_field_pilot, core.cached_batch
+    active_pilot = []
+
+    def record_pilot(call, indices, checks, dt_sim, keep_means):
+        record = dict(indices=indices.copy(), params=current().params.copy())
+        pilot_calls.append(record)
+        active_pilot.append(record)
+        try:
+            return jax_field_pilot(call, indices, checks, dt_sim, keep_means)
+        finally:
+            active_pilot.pop()
+
+    def record_batch(*args, **kwargs):
+        batch = cached_batch(*args, **kwargs)
+
+        def run_batch(starts, keys, side, pool, dwell, factor, node_keys, mask, field):
+            rows = tuple(np.asarray(a) for a in (starts, keys, factor, node_keys, mask))
+            if active_pilot:
+                pilot = active_pilot[-1]
+                pilot["rows"] = tuple(a[:len(pilot["indices"])] for a in rows)
+            else:
+                other_batches.append(rows)
+            return batch(starts, keys, side, pool, dwell, factor, node_keys, mask, field)
+
+        return run_batch
+
+    monkeypatch.setattr(core, "_jax_field_pilot", record_pilot)
+    monkeypatch.setattr(core, "cached_batch", record_batch)
+    calibration = measure_field_read_calibration(spec, n_walkers=n_walkers, pilot_walkers=count, **kw)
+    measured, = pilot_calls
+    assert not other_batches
+    assert measured["params"]["n_walkers"] == n_walkers
+    assert measured["params"]["pilot_walkers"] == count
+    w = walk(spec, n_walkers, **kw)
+    _, walked = pilot_calls
+    expected = accumulate.pilot_walkers(n_walkers, count)
+    for pilot in (measured, walked):
+        np.testing.assert_array_equal(pilot["indices"], expected)
+    full_rows, = other_batches
+    for actual, reference, full in zip(measured["rows"], walked["rows"], full_rows, strict=True):
+        np.testing.assert_array_equal(actual, reference)
+        np.testing.assert_array_equal(actual, full[expected])
+        assert not np.array_equal(actual, full[:count])
+    np.testing.assert_array_equal(measured["rows"][2], factors[expected])
+    np.testing.assert_array_equal(measured["rows"][3], object_node_keys(nodes.seed, 0, n_walkers)[expected])
+    np.testing.assert_array_equal(measured["rows"][4], nodes.walkers[expected])
+    data = calibration.record
+    read = w.block["field_read"]
+    assert data["constants"] == [READ_CONSTANT if value is None else value
+                                 for value in read["measured_constants"][str(data["rung"])]]
+
+
+@pytest.mark.parametrize("n_walkers", [7, 24.0, "24", True, np.timedelta64(24, "s")])
+def test_spread_read_calibration_refuses_invalid_count(n_walkers):
+    spec = _cell().spec
+    with pytest.raises(ValueError, match=r"n_walkers must be an integer of at least pilot_walkers \(8\)"):
+        measure_field_read_calibration(spec, pilot_walkers=8, n_walkers=n_walkers, **_settings(spec))
+
+
+@pytest.mark.parametrize("input_name", ["permeability_factor", "object_nodes"])
+def test_spread_read_calibration_requires_full_rows_and_walker_rule(input_name, monkeypatch):
+    from dmipy_sim.engine.physics import ObjectNodes
+    from tests.test_permeability_factor import _mixed
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid calibration inputs reached walker seeding")
+
+    def rows(n):
+        if input_name == "permeability_factor":
+            return np.full(n, 0.25, np.float32)
+        return ObjectNodes(np.array([0.25, 1.0], np.float32), np.array([0.5, 0.5]), 7, np.ones(n, bool))
+
+    monkeypatch.setattr(core, "seed_walkers", unexpected)
+    spec = _mixed().spec
+    kw = dict(_settings(spec), n_walkers=24, pilot_walkers=8)
+    row_name = "object_nodes_walkers" if input_name == "object_nodes" else input_name
+    with pytest.raises(ValueError, match=rf"{row_name}.*one .*per walker"):
+        measure_field_read_calibration(spec, walker_rule="constant assignment", **{input_name: rows(8)}, **kw)
+    with pytest.raises(ValueError, match="field_calibration requires walker_rule"):
+        measure_field_read_calibration(spec, **{input_name: rows(24)}, **kw)
 
 
 def test_measure_reuse_join_and_charge(x64, monkeypatch, tmp_path):
@@ -254,7 +391,8 @@ def test_standard_error_of_ratio_uses_the_walker_spread():
         fixed_step_constants(check, 0.5, 2, ["varying", "constant"])
 
 
-def test_measurement_refuses_an_excursion_hidden_between_coarse_reads(monkeypatch):
+@pytest.mark.parametrize("n_walkers", [None, 6], ids=["default", "spread"])
+def test_measurement_refuses_an_excursion_hidden_between_coarse_reads(monkeypatch, n_walkers):
     from dmipy_sim.fields.hollow_cylinder import HollowCylinderField
 
     cell = _cell()
@@ -272,11 +410,13 @@ def test_measurement_refuses_an_excursion_hidden_between_coarse_reads(monkeypatc
     def pilot(call, indices, checks, dt_sim, keep_means):
         check = np.zeros((len(indices), 1, 2, len(checks), len(channels)))
         check[:, :, 0, :, 0] = (coarse_integral - fine_integral) * dt_sim
-        return dict(chk=check)
+        fine_qv = np.zeros((len(indices), 1, len(channels)))
+        fine_qv[:, :, 0] = np.sum(np.diff(samples) ** 2)
+        return dict(chk=check, qv_d=fine_qv)
 
     monkeypatch.setattr(core, "_jax_field_pilot", pilot)
     with pytest.raises(ValueError, match=rf"channel {channels[0]!r} at rung \d+ .*zero coarse quadratic variation"):
-        measure_field_read_calibration(spec, pilot_walkers=2, **_settings(spec))
+        measure_field_read_calibration(spec, pilot_walkers=2, n_walkers=n_walkers, **_settings(spec))
 
 
 def test_backend_declares_precision_and_pilot_override_names_the_actual_engine(measured, monkeypatch):
