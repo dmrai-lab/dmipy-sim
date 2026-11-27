@@ -13,7 +13,7 @@ from dmipy_sim.engine import accumulate, core
 from dmipy_sim.engine.accumulate import READ_CONSTANT, field_read_term
 from dmipy_sim.engine.calibration import FieldReadCalibration, canonical, fingerprint, fixed_step_constants
 from dmipy_sim.replay.bank import build_replay_pack
-from dmipy_sim.run import current
+from dmipy_sim.run import current, read_events
 from tests.conftest import spec_without_source
 from tests.test_spec_field_closed_form import _cell
 from tests._envelope import walk_envelope
@@ -64,6 +64,10 @@ def test_handwritten_read_calibration_names_a_missing_entry(tmp_path):
 
 
 def test_default_read_calibration_keeps_original_evidence_and_digest(monkeypatch):
+    """This test checks the evidence keys and original constructor path within one checkout, while a cross-checkout
+    comparison found that only the source hash in ``scope.code`` differed among the digested fields, so the test cannot
+    establish digest equality across source changes.
+    """
     monkeypatch.setattr(accumulate, "PILOT_WALKERS", 8)
     spec = _cell().spec
     kw = _settings(spec)
@@ -78,6 +82,19 @@ def test_default_read_calibration_keeps_original_evidence_and_digest(monkeypatch
     )
     assert calibration.document == original.document
     assert data["digest"] == fingerprint({key: value for key, value in data.items() if key != "digest"})
+
+
+@pytest.mark.parametrize("population", [{}, {"n_walkers": 8192}], ids=["default", "spread"])
+def test_read_calibration_cost_counts_pilot_walkers(tmp_path, population):
+    spec = _cell().spec
+    pilot_walkers = 8
+    calibration = measure_field_read_calibration(
+        spec, pilot_walkers=pilot_walkers, run_dir=tmp_path, **population, **_settings(spec),
+    )
+    cost, = (row for row in read_events(tmp_path) if row["kind"] == "cost")
+    scope = calibration.record["scope"]
+    assert cost["walker_steps"] == pilot_walkers * scope["n_blocks"] * scope["sub_steps"]
+    assert cost["n_walkers"] == pilot_walkers
 
 
 @pytest.mark.parametrize("stationary_myelin", [True, False], ids=["stationary-myelin", "mobile-myelin"])
