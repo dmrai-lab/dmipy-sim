@@ -280,6 +280,8 @@ def test_measurement_refuses_an_excursion_hidden_between_coarse_reads(monkeypatc
 
 
 def test_backend_declares_precision_and_pilot_override_names_the_actual_engine(measured, monkeypatch):
+    """Backend measurement uses its declared precision and one native pilot; reuse and the JAX override skip it."""
+    from dmipy_sim.engine.backends import FIELD_PILOT
     from tests.backends.test_backend_capabilities import _CellField
 
     spec, kw, jax_calibration = measured
@@ -293,22 +295,26 @@ def test_backend_declares_precision_and_pilot_override_names_the_actual_engine(m
     backend.precision = "float32"
     native = measure_field_read_calibration(spec, pilot_walkers=8, backend=backend, **kw)
     assert native.record["scope"]["backend"] == {"name": "cellfield", "precision": "float32", "build": None}
-    assert len(backend.requests) == 1
-    pilot, = backend.requests
-    assert pilot.sub_steps == 1 and pilot.raw_subset == 8
+    assert not backend.requests
+    pilot, = backend.pilot_requests
+    assert pilot.sub_steps == native.record["scope"]["sub_steps"] > 1
+    assert pilot.n_blocks == native.record["scope"]["n_blocks"] and pilot.raw_subset == 0
+    assert pilot.field is not None and pilot.K_c3 == kw["K_c3"]
 
     with pytest.raises(ValueError, match="incompatible field calibration scope: backend"):
         walk(spec, 8, field_calibration=native, **kw)
 
+    backend.capabilities -= {FIELD_PILOT}
     got = walk(spec, 8, backend=backend, field_calibration=native, **kw)
     assert got.block["field_read"]["constants"] == native.record["constants"]
-    assert len(backend.requests) == 2
-    assert backend.requests[-1].K_c3 == kw["K_c3"]
+    production, = backend.requests
+    assert (production.n_blocks, production.sub_steps, production.K_c3) == (pilot.n_blocks, pilot.sub_steps, pilot.K_c3)
+    assert backend.pilot_requests == [pilot]
 
     def jax_pilot(call, indices, checks, dt_sim, keep_means):
         return dict(chk=np.zeros((len(indices), 1, 2, len(checks), 12)))
 
     monkeypatch.setattr(core, "_jax_field_pilot", jax_pilot)
     override = measure_field_read_calibration(spec, pilot_walkers=8, backend=backend, field_pilot="jax", **kw)
-    assert len(backend.requests) == 2
+    assert backend.requests == [production] and backend.pilot_requests == [pilot]
     assert override.record["scope"]["backend"] == jax_calibration.record["scope"]["backend"]

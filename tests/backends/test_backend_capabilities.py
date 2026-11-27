@@ -48,26 +48,28 @@ def _walk(g, n=64, **kw):
     return _walk_geometry(n, D, g, 2e-3, 0.5e-3, seed=11, tiers="all", require_gpu=False, **kw)
 
 
-class _Reads(_Still):
-    """A still backend that reads a field basis at given positions (its field pilot's read)."""
-
-    def sample_raster(self, basis, points):
-        return basis.channels(points)
-
-
-class _Cell(_Reads):
+class _Cell(_Still):
     name = "cell"
     capabilities = frozenset({backends.PACKED_MYELINATED})
 
 
-class _Field(_Reads):
+class _Field(_Still):
     name = "field"
     capabilities = frozenset({backends.FIELD_IN_WALK})
 
 
-class _CellField(_Reads):
+class _CellField(_Still):
+    """A backend with still production walkers and a field pilot run by the JAX kernels."""
     name = "cellfield"
-    capabilities = frozenset({backends.PACKED_MYELINATED, backends.FIELD_IN_WALK})
+    capabilities = frozenset({backends.PACKED_MYELINATED, backends.FIELD_IN_WALK, backends.FIELD_PILOT})
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.pilot_requests = []
+
+    def field_pilot(self, request, r0, keys, checks):
+        self.pilot_requests.append(request)
+        return core._jax_field_pilot_for_request(request, checks, r0, keys)
 
 
 class _Record(_Still):
@@ -94,7 +96,9 @@ def _random_bands(seed):
 
 # ── the names ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-def test_the_three_capabilities_are_names_the_jax_kernels_declare():
+def test_the_backend_capabilities_are_names_the_jax_kernels_declare():
+    """A misspelled or undeclared capability would prevent routing to the matching kernel."""
+    assert backends.FIELD_PILOT == "field_pilot" and backends.FIELD_PILOT in backends.JAX_CAPABILITIES
     assert (backends.PACKED_MYELINATED, backends.FIELD_IN_WALK, backends.TRIAL_RECORD) == (
         "packed_myelinated", "field_in_walk", "trial_record")
     assert {backends.PACKED_MYELINATED, backends.FIELD_IN_WALK, backends.TRIAL_RECORD} <= backends.JAX_CAPABILITIES
@@ -207,11 +211,11 @@ def test_declaring_the_packed_class_does_not_lift_the_isolated_myelinated_cylind
 # ── FIELD_IN_WALK ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_the_cell_with_a_closed_form_field_is_refused_for_what_the_backend_does_not_declare():
-    """The strings of the walk that needs both capabilities: the items left, in the list's order."""
+    """Missing geometry or field support must name the missing capabilities even when a pilot is needed."""
     g = _cell()
     kw = dict(FIELD, field_basis=HollowCylinderField.of(g))
     expected = {
-        _Reads: "the myelinated substrates, in-walk field sampling of a HollowCylinderField",
+        _Still: "the myelinated substrates, in-walk field sampling of a HollowCylinderField",
         _Cell: "in-walk field sampling of a HollowCylinderField",
         _Field: "the myelinated substrates",
     }
@@ -225,6 +229,7 @@ def test_the_cell_with_a_closed_form_field_is_refused_for_what_the_backend_does_
 
 
 def test_a_backend_that_declares_the_field_is_handed_the_basis_and_its_modes_are_the_walks():
+    """A pilot with a stated band and interval must still leave the backend's production field modes intact."""
     g = _cell()
     f = HollowCylinderField.of(g)
     rng = np.random.default_rng(9)
@@ -249,6 +254,7 @@ def test_a_backend_that_declares_the_field_is_handed_the_basis_and_its_modes_are
 
 
 def test_a_backend_that_declares_the_field_and_returns_modes_of_another_shape_is_refused():
+    """A valid pilot must leave production checks able to reject missing or malformed field modes."""
     g = _cell()
     kw = dict(FIELD, field_basis=HollowCylinderField.of(g))
     with pytest.raises(ValueError, match="returned field modes of shape None for a walk that reads the 12 channels of its "

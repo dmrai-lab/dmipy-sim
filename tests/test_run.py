@@ -148,14 +148,15 @@ def test_the_cli_lists_and_reports(tmp_path):
 
 
 def test_every_long_producer_opens_a_run():
-    """The rule: a producer that can run for hours is a defect without a record."""
+    """A long producer, including calibration measurement, must open its own run record."""
     import inspect
     from dmipy_sim.engine import core, adaptive, bloch, mt_walk
     import dmipy_sim.spec.walk as walk_module
     from dmipy_sim.replay import bank
     from dmipy_sim.fields.strand_field import StrandFieldBasis
     for f in (core.simulate, core.simulate_cpmg, core._walk_geometry, adaptive.simulate_trajectories_adaptive,
-              bloch._simulate_bloch, walk_module.walk, bank.build_replay_pack, bank.merge_packs,
+              bloch._simulate_bloch, walk_module.walk, walk_module.measure_field_read_calibration,
+              bank.build_replay_pack, bank.merge_packs,
               StrandFieldBasis.build_far_grid):
         assert "with Run(" in inspect.getsource(f), f.__name__
     # the MT producer is a thin wrapper of _walk_geometry: its walk is that producer's, with that producer's record

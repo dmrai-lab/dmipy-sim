@@ -71,10 +71,6 @@ FIELD_RULE_CHI = 1.06e-6
 #: and the events buffer's capacity (the largest count a pilot walker reached, with :data:`EVENTS_MARGIN`)
 PILOT_WALKERS = 1024
 EVENTS_MARGIN = (1.5, 8)      # capacity = ceil(1.5 x the pilot's largest count) + 8
-#: the host bytes of one batch of a field pilot walked on a backend (its walkers' float32 positions, saves and reads at
-#: every step, :func:`~dmipy_sim.engine.core.field_pilot_on_backend`): 1,024 CACTUS walkers over 36k steps with 12
-#: channels and the recorded saves hold 2.5 GB, one batch -- a batch of fewer walkers leaves the device idle
-PILOT_READ_BYTES = 4 << 30
 
 
 def spec_chi_scale(spec):
@@ -337,7 +333,7 @@ def read_checks(steps):
 
 
 def field_read_statistics(reads, *, step_s, rounds_per_block, blocks_per_window, checks):
-    """Read-series calibration, shared by native and JAX pilots.
+    """Host reference for fixed-step field read statistics.
 
     Reads are mean-subtracted field channels at every round, including the initial value. Each block's
     last interval is kept at its actual length. Error integrals sum over a window before squaring, whereas
