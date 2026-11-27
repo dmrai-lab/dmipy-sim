@@ -1787,7 +1787,8 @@ def _walk_geometry(
             return (lambda r: _f_read(arrays, r)) if _sampling else None
 
         # the cost: what this walk costs and which rule sized it, in the run's record before the walk starts
-        _announce_cost(run, _cost_of(res, geometry, n_walkers, walker_batch_size, _backend_name, n_ch=_n_ch,
+        cost_walkers = n_walkers if _measure_pilot_walkers is None else _measure_pilot_walkers
+        _announce_cost(run, _cost_of(res, geometry, cost_walkers, walker_batch_size, _backend_name, n_ch=_n_ch,
                                      itemsize=_acc.itemsize,
                                      trial_bytes=_trial_record_bytes(record_trials, _trial_dtype)))
 
