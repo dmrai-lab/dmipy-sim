@@ -144,6 +144,7 @@ def _host():
     import contextlib
     import jax
     stack = contextlib.ExitStack()
+    # The near / far cache key is independent of the caller's JAX precision and device.
     stack.enter_context(jax.enable_x64(True))
     stack.enter_context(jax.default_device(jax.devices("cpu")[0]))
     return stack
@@ -419,7 +420,7 @@ class HollowCylinderField:
         ``list_length`` ``M``,
         ``near`` ``(G * G, M)`` int32 (each cell's near cylinders, ascending, ``-1`` padding), ``coefficients`` ``(G *
         G, order + 1)`` complex128 (the series of ``S`` in ``zeta / cs``), ``bound`` ``(G * G,)`` float64 (the
-        remainder bound of ``S`` per cell), ``rms`` (the exact field's rms per channel), ``tolerance_abs``,
+        remainder bound of ``S`` per cell), ``rms`` float64 (the exact field's rms per channel), ``tolerance_abs``,
         ``bound_max`` (the largest channel bound, ``max(bound) / 2``), ``table_bytes``, ``widths`` (the record of every
         near width the order search tried: its list length and the largest channel bound at every order) and the
         global part's ``explicit_poles``. Refused by name for the exact read; see the class docstring for what it is."""
@@ -717,6 +718,7 @@ def _build_near_far(field):
 
     with _host():
         cz_j, wabs_j = jnp.asarray(cz), jnp.asarray(np.abs(w))
+        assert cz_j.device == jax.devices("cpu")[0]
         poles_j, pw_j = jnp.asarray(poles), jnp.asarray(pole_w)
         order_f, width_f = field._forced
         widths = [width_f] if width_f is not None else (
@@ -783,6 +785,9 @@ def _build_near_far(field):
             keep[rr, o[rr, cc]] = False
             coef[s0:s0 + chunk] += np.asarray(_pole_sums(jnp.asarray(Z0[s0:s0 + chunk]), jnp.asarray(keep),
                                                          jnp.zeros(order + 1)))
+    assert (table.dtype, coef.dtype, bound.dtype, rms.dtype) == (
+        np.dtype("int32"), np.dtype("complex128"), np.dtype("float64"), np.dtype("float64")
+    )
     table_bytes = int(table.size * 4 + coef.size * 8)
     return dict(order=int(order), near_cells=int(width), cells_per_side=G, cell_size=cs, half_diagonal=rho,
                 list_length=int(M), near=table, coefficients=coef, bound=bound, rms=rms, tolerance_abs=tol_abs,
