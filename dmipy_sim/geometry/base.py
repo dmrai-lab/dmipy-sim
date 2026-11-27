@@ -3,6 +3,7 @@
 Holds the ABC every geometry implements, the two geometries with no curved wall
 (free diffusion, a 1-D box), and the frame helpers shared across the package.
 """
+import threading
 from abc import ABC, abstractmethod
 from typing import NamedTuple, Optional
 
@@ -208,6 +209,21 @@ def initial_positions(geometry, n_walkers, key, r0=None, *, first_walker=0):
     return out
 
 
+PLACEMENT_CACHE_SIZE = 4
+"""Placements a geometry keeps: the walk in flight and the one placed ahead, with room for both their successors."""
+
+
+class _PendingPlacement:
+    """A placement being computed: the requests for its key wait on ``done`` and read ``result`` or ``error``."""
+
+    __slots__ = ("done", "result", "error")
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.result = None
+        self.error = None
+
+
 def placement(geometry, n_walkers, key, first_walker=0):
     """``(r0, labels)``: the starts of the walkers ``first_walker .. first_walker + n_walkers - 1`` of the placement
     key ``key``, and their seeding labels (``None`` for a geometry whose seeding leaves none).
@@ -217,46 +233,78 @@ def placement(geometry, n_walkers, key, first_walker=0):
     sample of its blocks' seedings, a stratified seeding's proportions included, and a block walked whole holds the
     geometry's seeding of it exactly. The result is cached on the geometry by ``(key, first_walker, n_walkers)``, so a
     producer that places the next walk's walkers in a thread while the device walks (:func:`dmipy_sim.spec.walk`'s
-    ``context``) hands the walk the very arrays it would place itself."""
+    ``context``) hands the walk the very arrays it would place itself.
+
+    Concurrency: the cache's lock guards the dictionary alone, so a request whose placement is cached never waits for
+    another key's computation. A missing key is registered as in flight and computed outside that lock; a request for
+    the same key meanwhile waits for that one computation and gets its arrays (or its exception; a failed key is not
+    cached, so the next request computes it again). The computations themselves are serialised on a second lock: a
+    seeding reports its labels through the geometry's ``_init_compartments`` attribute and may build tables of its own
+    on first use, so two seedings never run at once on one geometry. At most :data:`PLACEMENT_CACHE_SIZE` finished
+    placements are kept, oldest evicted first; an in-flight one is never evicted."""
     n, first = int(n_walkers), int(first_walker)
     if n < 0 or first < 0:
         raise ValueError(f"a walk places n_walkers >= 0 walkers from first_walker >= 0; got {n} from {first}")
     tag = (tuple(np.asarray(jax.random.key_data(key) if jnp.issubdtype(key.dtype, jax.dtypes.prng_key) else key,
                             np.uint32).ravel().tolist()), first, n)
-    import threading
     lock = geometry.__dict__.setdefault("_placement_lock", threading.Lock())
     with lock:
         cache = geometry.__dict__.setdefault("_placement_cache", {})
-        if tag in cache:
-            return cache[tag]
-        if n == 0:
-            got = (jnp.zeros((0, 3), jnp.float32), None)
-        else:
-            P = PLACEMENT_BLOCK
-            b0, b1 = first // P, (first + n - 1) // P
-            rows, labels = [], []
-            for b in range(b0, b1 + 1):
-                kb = jax.random.fold_in(key, b)
-                geometry.__dict__.pop("_init_compartments", None)        # the labels of THIS block's seeding, if any
-                pos = np.asarray(geometry.init_positions(P, kb), np.float32)
-                if pos.shape != (P, 3):
-                    raise ValueError(f"{type(geometry).__name__}.init_positions returned {pos.shape} for {P} walkers")
-                order = np.asarray(jax.random.permutation(jax.random.fold_in(kb, 1), P))
-                rows.append(pos[order])
-                lab = geometry.__dict__.pop("_init_compartments", None)
-                labels.append(None if lab is None else np.asarray(lab)[order])
-            lo = first - b0 * P
-            r0 = jnp.asarray(np.concatenate(rows)[lo:lo + n], jnp.float32)
-            if all(lab is None for lab in labels):
-                got = (r0, None)
-            elif any(lab is None for lab in labels):
-                raise ValueError(f"{type(geometry).__name__}'s seeding labelled some placement blocks and not others")
-            else:
-                got = (r0, jnp.asarray(np.concatenate(labels)[lo:lo + n], jnp.int32))
-        if len(cache) >= 4:                                              # the walk in flight and the one placed ahead
-            cache.pop(next(iter(cache)))
+        entry = cache.get(tag)
+        if entry is not None and not isinstance(entry, _PendingPlacement):
+            return entry                                                 # cached: never waits
+        owner = entry is None
+        if owner:
+            entry = cache[tag] = _PendingPlacement()
+    if not owner:                                                        # the same key, being computed: wait for it
+        entry.done.wait()
+        if entry.error is not None:
+            raise entry.error
+        return entry.result
+    try:
+        with geometry.__dict__.setdefault("_placement_compute_lock", threading.Lock()):
+            got = _place(geometry, n, key, first)
+    except BaseException as error:
+        entry.error = error
+        with lock:
+            if cache.get(tag) is entry:
+                del cache[tag]
+        entry.done.set()
+        raise
+    entry.result = got
+    with lock:
         cache[tag] = got
-        return got
+        finished = [t for t, v in cache.items() if not isinstance(v, _PendingPlacement)]
+        for t in finished[:max(0, len(finished) - PLACEMENT_CACHE_SIZE)]:
+            del cache[t]
+    entry.done.set()
+    return got
+
+
+def _place(geometry, n, key, first):
+    """The placement :func:`placement` caches, computed; the caller holds the geometry's placement compute lock."""
+    if n == 0:
+        return jnp.zeros((0, 3), jnp.float32), None
+    P = PLACEMENT_BLOCK
+    b0, b1 = first // P, (first + n - 1) // P
+    rows, labels = [], []
+    for b in range(b0, b1 + 1):
+        kb = jax.random.fold_in(key, b)
+        geometry.__dict__.pop("_init_compartments", None)        # the labels of THIS block's seeding, if any
+        pos = np.asarray(geometry.init_positions(P, kb), np.float32)
+        if pos.shape != (P, 3):
+            raise ValueError(f"{type(geometry).__name__}.init_positions returned {pos.shape} for {P} walkers")
+        order = np.asarray(jax.random.permutation(jax.random.fold_in(kb, 1), P))
+        rows.append(pos[order])
+        lab = geometry.__dict__.pop("_init_compartments", None)
+        labels.append(None if lab is None else np.asarray(lab)[order])
+    lo = first - b0 * P
+    r0 = jnp.asarray(np.concatenate(rows)[lo:lo + n], jnp.float32)
+    if all(lab is None for lab in labels):
+        return r0, None
+    if any(lab is None for lab in labels):
+        raise ValueError(f"{type(geometry).__name__}'s seeding labelled some placement blocks and not others")
+    return r0, jnp.asarray(np.concatenate(labels)[lo:lo + n], jnp.int32)
 
 
 class Geometry(ABC):
