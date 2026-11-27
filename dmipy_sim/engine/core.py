@@ -1363,6 +1363,7 @@ def _walk_geometry(
     field_calibration=None,
     walker_rule=None,
     _measure_read=False,
+    _measure_pilot_walkers=None,
     _calibration_spec=None,
     _pilot_only=None,
 ):
@@ -1786,7 +1787,8 @@ def _walk_geometry(
             return (lambda r: _f_read(arrays, r)) if _sampling else None
 
         # the cost: what this walk costs and which rule sized it, in the run's record before the walk starts
-        _announce_cost(run, _cost_of(res, geometry, n_walkers, walker_batch_size, _backend_name, n_ch=_n_ch,
+        cost_walkers = n_walkers if _measure_pilot_walkers is None else _measure_pilot_walkers
+        _announce_cost(run, _cost_of(res, geometry, cost_walkers, walker_batch_size, _backend_name, n_ch=_n_ch,
                                      itemsize=_acc.itemsize,
                                      trial_bytes=_trial_record_bytes(record_trials, _trial_dtype)))
 
@@ -2726,12 +2728,19 @@ def _walk_geometry(
                                                     keep_means=res.K_c3 is None)
             return _backend_field_pilot(indices, checks, cap)
 
+        from .accumulate import pilot_walkers
         if _measure_read:
             from .accumulate import READ_CONSTANT
             from .calibration import FieldReadCalibration, fixed_step_constants
+            if _measure_pilot_walkers is None:
+                indices = np.arange(n_walkers)
+                spread_evidence = {}
+            else:
+                indices = pilot_walkers(n_walkers, _measure_pilot_walkers)
+                spread_evidence = dict(walk_walkers=int(n_walkers), pilot_rule="pilot_walkers")
             checks = tuple(calibration_scope["checks"])
-            run.phase("field pilot", walkers=n_walkers)
-            got = _read_pilot(np.arange(n_walkers), checks, res.events_capacity)
+            run.phase("field pilot", walkers=len(indices))
+            got = _read_pilot(indices, checks, res.events_capacity)
             rung = next((d for d in checks if d >= calibration_scope["n_read"]), None)
             if rung is None:
                 constants, errors = [READ_CONSTANT] * _n_ch, [None] * _n_ch
@@ -2739,12 +2748,12 @@ def _walk_geometry(
                 constants, errors = fixed_step_constants(got["chk"][:, :, :, checks.index(rung), :],
                                                          float(dt_sim), rung, calibration_scope["channels"])
             return FieldReadCalibration.create(scope=calibration_scope, rung=rung, constants=constants,
-                                               standard_error=errors, pilot_walkers=int(n_walkers), seed=int(seed))
+                                               standard_error=errors, pilot_walkers=len(indices), seed=int(seed),
+                                               **spread_evidence)
 
         # ── The pilots: the events buffer's capacity (the largest count a pilot walker reached, with a margin) and
         # the field's band (the ladder on the pilot's block means), each a walk of PILOT_WALKERS walkers spread over the walk (accumulate.pilot_walkers)
         # thrown away afterwards; the production program is compiled once they are known.
-        from .accumulate import pilot_walkers
         pidx = pilot_walkers(n_walkers)                    # spread over the walk: its walkers are seeded pool by pool
         n_pilot = int(pidx.shape[0])
         cap = res.events_capacity

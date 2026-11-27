@@ -168,6 +168,7 @@ class FieldReadCalibration(_ScopedCalibration):
     Time entries are in seconds, field strength in tesla, and susceptibility and constants are dimensionless.
     A channel with zero pilot quadratic variation uses the trapezoid constant and has no standard error.
     A one-step block has no coarser check rung and uses the trapezoid constant for all channels.
+    A spread pilot records the walk's walker count and pilot selection rule in its evidence.
     """
 
     def __post_init__(self):
@@ -194,11 +195,21 @@ class FieldReadCalibration(_ScopedCalibration):
             raise ValueError("field-read calibration rung must be the check at or above n_read")
         if type(pilot_walkers) is not int or pilot_walkers < 2 or type(seed) is not int:
             raise ValueError("field-read calibration requires at least two pilot walkers and an integer seed")
+        if "walk_walkers" in evidence or "pilot_rule" in evidence:
+            walk_walkers = evidence.get("walk_walkers")
+            if type(walk_walkers) is not int or walk_walkers < pilot_walkers:
+                raise ValueError("field-read calibration walk_walkers must be an integer of at least pilot_walkers")
+            if evidence.get("pilot_rule") != "pilot_walkers":
+                raise ValueError("field-read calibration pilot_rule must be 'pilot_walkers'")
 
     @classmethod
-    def create(cls, *, scope, rung, constants, standard_error, pilot_walkers, seed):
+    def create(cls, *, scope, rung, constants, standard_error, pilot_walkers, seed,
+               walk_walkers=None, pilot_rule=None):
+        evidence = dict(standard_error=standard_error, pilot_walkers=pilot_walkers, seed=seed)
+        if walk_walkers is not None or pilot_rule is not None:
+            evidence.update(walk_walkers=walk_walkers, pilot_rule=pilot_rule)
         return cls._create(kind="field-read-calibration", scope=scope, rung=rung, constants=constants,
-                           evidence=dict(standard_error=standard_error, pilot_walkers=pilot_walkers, seed=seed))
+                           evidence=evidence)
 
     def for_scope(self, scope):
         """The stated record when every entry matches the resolved walk scope."""
