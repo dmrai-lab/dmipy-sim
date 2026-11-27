@@ -103,7 +103,7 @@ def _near_far_key(field):
         NEAR_FAR_SAMPLE_RADIUS, NEAR_FAR_SAMPLES, NEAR_FAR_BOUND_RINGS, NEAR_FAR_RMS_POINTS,
         LATTICE_ROWS, SERIES, tuple(sorted(SERIES_SWITCH.items())),
     )
-    header = (tuple(a.shape for a in arrays), field.L.hex(), field.tolerance.hex(), field._forced, settings)
+    header = (tuple((a.shape, a.dtype.str) for a in arrays), field.L.hex(), field.tolerance.hex(), field._forced, settings)
     digest = sha256(repr(header).encode("ascii"))
     for a in arrays:
         digest.update(a.tobytes())

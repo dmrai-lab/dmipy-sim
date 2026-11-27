@@ -452,6 +452,23 @@ def test_matching_keys_reuse_tables_and_a_changed_key_rebuilds(build_counts):
     _assert_cached_table_bits(cold, warm, bypassed)
 
 
+def test_fingerprint_includes_normalized_array_dtypes(monkeypatch):
+    inputs = (np.zeros((1, 2), np.float32), np.array([1e-6], np.float32), np.array([2e-6], np.float32))
+    field = HollowCylinderField(*inputs, L=10e-6)
+    reference = HollowCylinderField(*(a.astype(np.float64) for a in inputs), L=10e-6)
+    key = hollow_cylinder._near_far_key(reference)
+    assert hollow_cylinder._near_far_key(field) == key
+
+    for name in ("centers", "inner_radii", "outer_radii"):
+        array = getattr(field, name)
+        assert array.dtype == np.float64
+        retyped = array.view(np.uint64)
+        assert retyped.shape == array.shape and retyped.tobytes() == array.tobytes()
+        with monkeypatch.context() as patch:
+            patch.setattr(field, name, retyped)
+            assert hollow_cylinder._near_far_key(field) != key, name
+
+
 @pytest.mark.parametrize("component", [
     "centers", "inner_radii", "outer_radii", "L", "tolerance", "order", "near_cells",
     "NEAR_FAR_MAX_ORDER", "NEAR_FAR_WIDTH", "NEAR_FAR_MAX_WIDTH", "NEAR_FAR_EXPLICIT_RADIUS",
