@@ -233,6 +233,9 @@ def measure_field_read_calibration(spec, T_max, block_h=None, *, envelope, seed,
     the walk and require a ``walker_rule`` (a string or canonical JSON value) describing the
     assignment rule and its parameters over the entire walk, including all ``n_walkers``
     in a spread measurement. Standard errors are dimensionless, one per channel.
+    The walk's walker count and the pilot's selection rule are recorded as evidence, not as
+    scope: a walk of another size under the same ``walker_rule`` accepts the calibration, which
+    is right for equal pieces of one population and is the caller's statement otherwise.
     """
     from ..engine.accumulate import PILOT_WALKERS
     count = PILOT_WALKERS if pilot_walkers is None else pilot_walkers
